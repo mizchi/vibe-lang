@@ -3032,6 +3032,127 @@ fn append_row_label(labels: Array[String], label: String) -> Unit {
   }
 }
 
+/// #2455: the type variables reachable from a value, WITHOUT descending
+/// `CtForAll`. A quantified scheme's bound ids belong to another scope's
+/// counter domain -- `instantiate` renames them precisely because they can
+/// collide with locally fresh ids (#743) -- so reading them as environment
+/// variables would reject valid programs. Everything a scheme leaves free is
+/// unreachable through this walk too, which is the conservative direction:
+/// the escape check below only ever reports fewer binders, never more.
+fn escape_tvars_into(ty: Type, out: Array[Int]) -> Unit {
+  match ty {
+    CtVar(id) => if !esc_int_has(out, id) {
+      Array::push(out, id)
+    } else {
+      ()
+    },
+    CtFn(ps, r, _) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        escape_tvars_into(Array::get(ps, i), out)
+        i = i + 1
+      }
+      escape_tvars_into(r, out)
+    },
+    CtArray(elem) => escape_tvars_into(elem, out),
+    CtOption(elem) => escape_tvars_into(elem, out),
+    CtTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        escape_tvars_into(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    CtRecord(rfields) => {
+      let mut i = 0
+      while i < Array::length(rfields) {
+        let (_, rft) = Array::get(rfields, i)
+        escape_tvars_into(rft, out)
+        i = i + 1
+      }
+    },
+    CtNamed(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        escape_tvars_into(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    CtApplied(head, args) => {
+      escape_tvars_into(head, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        escape_tvars_into(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn esc_int_has(xs: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn esc_ids_intersect(a: Array[Int], b: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(a) && !hit {
+    if esc_int_has(b, Array::get(a, i)) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// #2455: each name this closure CAPTURES from an enclosing scope, paired with
+/// the still-open type variables of the value bound to it.
+///
+/// A RECURSIVE binding does not need excluding here, measured both spellings
+/// (`let rec f = [T](..)` and a top-level `fn f[T](..)`) and both uses (a call
+/// and a bare value reference): an unannotated recursive name is bound to a
+/// placeholder variable that is unified with the signature only AFTER the body
+/// is checked, so while this runs it shares no id with the binders; an
+/// annotated one is a `CtForAll`, which the walk above does not descend. The
+/// controls are pinned in tests/generic_binder_escape_test.vibe -- a sentinel
+/// excluding the name being defined was written first and deleted, because no
+/// input could be found that made it change an answer.
+fn captured_escape_tvars(body: Expr, params: Array[(String, Option[TypeExpr])], env: TypeEnv, s: Subst) -> Array[(String, Array[Int])] {
+  let out = array_empty()
+  let names = closure_free_names(body, params)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    match env_lookup(env, name) {
+      Some(raw_ty) => {
+        let ids = array_empty()
+        escape_tvars_into(subst_apply(s, raw_ty), ids)
+        if Array::length(ids) == 0 {
+          ()
+        } else {
+          Array::push(out, (name, ids))
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Add closure-capture provenance to the checked row. The labels beginning
 /// with `#` are not effects and cannot be written by source; core/types keeps
 /// them through ordinary substitution while excluding them from effect-set
@@ -11556,6 +11677,46 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           }
           enum_dependency_effect
         }
+      }
+      // #2455: a declared binder that has unified with a type variable
+      // reachable from a CAPTURED binding is not generic -- it IS the
+      // enclosing binding's own slot. `[T]() -> Array[T] { xs }` makes `T` the
+      // element variable of the enclosing `let xs = []`, and the `CtForAll`
+      // below then lets every call instantiate that ONE runtime array at a
+      // different type: #2447's silent-wrong class, one quantifier away.
+      //
+      // #2450's value restriction cannot reach this. `ty_has_open_array_elem`
+      // does not descend `CtForAll`, and a refined walk that descends while
+      // excluding the bound vars still misses it, because after unification
+      // the captured slot and the bound var ARE one id. The distinguishing
+      // fact -- "this variable originated in an enclosing binding's type" --
+      // is provenance, so it is read from the environment here rather than
+      // from the type. Rank-1: the binder is rejected at its own declaration,
+      // so no call site has to carry the provenance.
+      let escaping = if tplen == 0 {
+        array_empty()
+      } else {
+        captured_escape_tvars(body, params, env, s3)
+      }
+      let mut esi = 0
+      while esi < tplen {
+        let evid = Array::get(tparam_ids, esi)
+        let binder_ids = array_empty()
+        escape_tvars_into(subst_apply(s3, CtVar(evid)), binder_ids)
+        let etpname = type_param_name(Array::get(tparams, esi))
+        let mut eci = 0
+        let mut ereported = false
+        while eci < Array::length(escaping) {
+          let (ecname, ecids) = Array::get(escaping, eci)
+          if !ereported && esc_ids_intersect(binder_ids, ecids) {
+            ereported = true
+            Array::push(errors, String::concat(String::concat(String::concat(String::concat(String::concat(String::concat("move `", ecname), "` inside the lambda, or drop the `["), etpname), "]` binder: the captured `"), ecname), String::concat(String::concat(String::concat("` fixes `", etpname), "`, so every call would use one value at a different type"), off_marker(railway_expr_off(body)))))
+          } else {
+            ()
+          }
+          eci = eci + 1
+        }
+        esi = esi + 1
       }
       let keep_ids = array_empty()
       let mut ki0 = 0
