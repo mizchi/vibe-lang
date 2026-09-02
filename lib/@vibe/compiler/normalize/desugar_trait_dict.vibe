@@ -12086,6 +12086,81 @@ fn builtin_string_map_applied(name: String, args: Array[TypeExpr]) -> Bool {
 /// field. Conservative in one direction only: an unproved name costs a trap.
 let dtd_eq_unsafe_types: Array[String] = empty_str_array()
 
+/// Codex round 3 on #2456: a source-owned `Result` / `Option` whose declared
+/// constructors are NOT the shape the special arms of `eq_for_typed` match
+/// on (`Ok(T) | Err(E)`, `Some(T) | None`). `Result` is always declared
+/// (#1324) and its conventional shape takes the constructor-match arm, which
+/// is the comparator its aggregate payloads need (#825); a declaration such
+/// as `enum Result[T, E] { Success(T); Failure(E) }` is an ordinary enum
+/// (docs/adding-modules.md) and must never reach an `Ok`/`Err` match.
+let dtd_eq_nonstandard_builtin_enums: Array[String] = empty_str_array()
+
+fn eq_enum_shape_is(variants: Array[(String, Array[TypeExpr])], expected: Array[(String, Int)]) -> Bool {
+  if Array::length(variants) != Array::length(expected) {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(expected) {
+      let (want_name, want_arity) = Array::get(expected, i)
+      let mut found = false
+      let mut vi = 0
+      while vi < Array::length(variants) {
+        let (vname, payload) = Array::get(variants, vi)
+        if vname == want_name && Array::length(payload) == want_arity {
+          found = true
+        } else {
+          ()
+        }
+        vi = vi + 1
+      }
+      if !found {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn eq_builtin_enum_arm_applies(head: String) -> Bool {
+  !str_array_contains(dtd_eq_nonstandard_builtin_enums, head)
+}
+
+/// Whether every argument is a word-sized scalar the raw `==` compares by
+/// content: the one case in which a nonstandard `Result` / `Option`'s derived
+/// `::equals` (payloads typed by formals, compared with the raw word) is a
+/// content comparison. Shared by the allow-list predicate and
+/// `eq_for_typed_nonstandard_enum`, so what the predicate admits is exactly
+/// what the dispatch answers.
+fn eq_args_all_word_scalar(args: Array[TypeExpr]) -> Bool {
+  let mut all_word_scalar = true
+  let mut i = 0
+  while i < Array::length(args) {
+    let word = match Array::get(args, i) {
+      TyName(n) => n == "Int" || n == "String" || n == "Bool" || n == "Char" || n == "Unit",
+      TyUnit => true,
+      _ => false
+    }
+    if !word {
+      all_word_scalar = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  all_word_scalar
+}
+
+/// A nonstandard-shape `Result` / `Option` head (see
+/// `dtd_eq_nonstandard_builtin_enums`) admitted by the allow-list: only with
+/// word-scalar arguments, where its derived comparator is content equality.
+fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
+  eq_builtin_enum_arm_applies(head) || eq_args_all_word_scalar(args)
+}
+
 fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_known_types, 0)
   Array::truncate(dtd_eq_generic_types, 0)
@@ -12093,6 +12168,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_generic_structs, 0)
   Array::truncate(dtd_eq_type_aliases, 0)
   Array::truncate(dtd_eq_type_owners, 0)
+  Array::truncate(dtd_eq_nonstandard_builtin_enums, 0)
   Array::truncate(dtd_eq_specializations, 0)
   Array::truncate(dtd_eq_specialization_ancestries, 0)
   Array::truncate(dtd_eq_specialization_stack, 0)
@@ -12114,10 +12190,23 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
           ()
         }
       },
-      SEnum(_, ename, decl_tparams, _, _) => {
+      SEnum(_, ename, decl_tparams, variants, _) => {
         Array::push(dtd_eq_type_owners, ename)
         if Array::length(decl_tparams) > 0 {
           Array::push(dtd_eq_generic_types, ename)
+        } else {
+          ()
+        }
+        if ename == "Result" && !eq_enum_shape_is(variants, [
+          ("Ok", 1),
+          ("Err", 1)
+        ]) {
+          Array::push(dtd_eq_nonstandard_builtin_enums, ename)
+        } else if ename == "Option" && !eq_enum_shape_is(variants, [
+          ("Some", 1),
+          ("None", 0)
+        ]) {
+          Array::push(dtd_eq_nonstandard_builtin_enums, ename)
         } else {
           ()
         }
@@ -12291,11 +12380,15 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
       // applies). A program-declared `Map[K, V]` is a generic struct and takes
       // the declared branch below, never the builtin arm -- `eq_for_typed`
       // makes the same decision, so this predicate and that dispatch agree.
-      // `Option` / `Result` are NOT ownership-gated: their `eq_for_typed` arms
-      // are constructor matches over `Some`/`None` and `Ok`/`Err` that hold
-      // for a declared enum of that shape (`Result` is always declared, #1324;
-      // its aggregate payloads compare structurally through that arm, #825).
-      let builtin_head = head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 || head == "Result" && Array::length(args) == 2 || head == "Map" && Array::length(args) == 2 && !str_array_contains(dtd_eq_type_owners, head)
+      // `Option` / `Result` are gated on the declared constructor SHAPE, not
+      // on ownership: their `eq_for_typed` arms are constructor matches over
+      // `Some`/`None` and `Ok`/`Err` that hold for a declared enum of that
+      // shape (`Result` is always declared, #1324; its aggregate payloads
+      // compare structurally through that arm, #825). A declaration of
+      // another shape is an ordinary enum whose derived comparator is content
+      // equality only for word-scalar arguments, so it is admitted exactly
+      // then (Codex round 3; `eq_for_typed_nonstandard_enum` is the dispatch).
+      let builtin_head = head == "Array" && Array::length(args) == 1 || head == "Option" && Array::length(args) == 1 && eq_nonstandard_enum_admitted(head, args) || head == "Result" && Array::length(args) == 2 && eq_nonstandard_enum_admitted(head, args) || head == "Map" && Array::length(args) == 2 && !str_array_contains(dtd_eq_type_owners, head)
       if eq_tparams_contain_name(tparams, head) {
         args_ok
       } else if builtin_head || builtin_string_map_applied(head, args) {
@@ -12771,7 +12864,9 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     } else {
       EBinOp("==", lhs, rhs, -1)
     },
-    TyApp("Option", args) => if Array::length(args) == 1 {
+    TyApp("Option", args) => if Array::length(args) == 1 && !eq_builtin_enum_arm_applies("Option") {
+      eq_for_typed_nonstandard_enum("Option", args, lhs, rhs)
+    } else if Array::length(args) == 1 {
       let t = Array::get(args, 0)
       let inner_eq = eq_for_typed(t, EIdent("__oeq_l", -1), EIdent("__oeq_r", -1), known_types)
       let some_inner = EMatch(rhs, Array::slice([
@@ -12792,10 +12887,14 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     // `Result` is always a declared enum (#1324) and this arm is ITS
     // comparator: a constructor match over `Ok`/`Err` whose payloads recurse
     // through eq_for_typed (#825 -- an aggregate payload compares by content,
-    // which a derived `::equals` does not give). Not ownership-gated for that
-    // reason; `Map` below is, because `__map_equals__` reads runtime map
-    // internals that a declared struct does not have.
-    TyApp("Result", args) => if Array::length(args) == 2 {
+    // which a derived `::equals` does not give). Gated on the declared
+    // constructor SHAPE rather than on ownership for that reason (Codex round
+    // 3: a `Success`/`Failure` declaration must not meet an `Ok`/`Err` match);
+    // `Map` below is ownership-gated, because `__map_equals__` reads runtime
+    // map internals that a declared struct does not have.
+    TyApp("Result", args) => if Array::length(args) == 2 && !eq_builtin_enum_arm_applies("Result") {
+      eq_for_typed_nonstandard_enum("Result", args, lhs, rhs)
+    } else if Array::length(args) == 2 {
       let t = Array::get(args, 0)
       let e = Array::get(args, 1)
       let ok_eq = eq_for_typed(t, EIdent("__req_l", -1), EIdent("__req_r", -1), known_types)
@@ -12884,6 +12983,22 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     },
     TyApp(n, args) => eq_for_typed_declared_app(fty, n, args, lhs, rhs, known_types),
     _ => EBinOp("==", lhs, rhs, -1)
+  }
+}
+
+/// Codex round 3 on #2456: a source-owned `Result` / `Option` declared with
+/// constructors other than the special arm's shape. Its derived `::equals`
+/// (`gen_enum_eq_fn`) compares a payload typed by a FORMAL with the raw
+/// word `==`, which is content equality only for a word-sized scalar: with
+/// such arguments the declared comparator answers; with any other argument
+/// (an aggregate, a `Double` boxed under RC, `Bytes`) the comparison fails
+/// closed, the same trap the untyped-empty arm and the expanding-recursion
+/// case use, rather than answering by reference.
+fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr) -> Expr {
+  if eq_args_all_word_scalar(args) {
+    ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
+  } else {
+    ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
   }
 }
 

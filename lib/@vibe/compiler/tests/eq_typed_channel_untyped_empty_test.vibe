@@ -179,3 +179,43 @@ test "#2456 r2: source-owned Map as a declared field" {
   inspect(a == b, content = "true")
   inspect(a == c, content = "false")
 }
+
+//# Codex round 3 on #2456: a declared `Result` of another constructor shape
+
+// `Result` is always a declared enum (#1324). `eq_for_typed`'s `Result` arm
+// is a constructor match over `Ok`/`Err`, gated on the DECLARED shape, so a
+// `Success`/`Failure` declaration takes its derived `Result::equals`, which
+// is content equality for word-sized payloads (an aggregate payload fails
+// closed instead -- pinned by the `_aggregate_trap` fixture). Measured on
+// the stage2 at 7cfea5c: every comparison below trapped.
+
+enum Result[T, E] {
+  Success(T);
+  Failure(E)
+}
+
+fn fill_custom_result(xs: Array[Result[Int, String]], v: Int) -> Unit {
+  Array::push(xs, Success(v))
+}
+
+test "#2456 r3: custom-shape Result elements filled through a function" {
+  let left = []
+  fill_custom_result(left, 1)
+  let right = []
+  fill_custom_result(right, 1)
+  let other = []
+  fill_custom_result(other, 2)
+  let failed = []
+  Array::push(failed, Failure("e"))
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+  inspect(left == failed, content = "false")
+}
+
+test "#2456 r3: custom-shape Result compared directly" {
+  let a: Result[Int, String] = Success(1)
+  let b: Result[Int, String] = Success(1)
+  let c: Result[Int, String] = Failure("e")
+  inspect(a == b, content = "true")
+  inspect(a == c, content = "false")
+}
