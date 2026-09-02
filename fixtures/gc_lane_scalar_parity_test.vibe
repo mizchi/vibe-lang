@@ -236,12 +236,15 @@ test "#2423 a large Int survives a let mut captured by a closure" {
     c
   }
   // Through the closure, and directly -- the seed rendered both as "".
-  assert(__to_string(f()) == "274877906944")
-  assert(__to_string(c) == "274877906944")
+  // Spelled with `inspect` per the snapshot policy: it desugars to the same
+  // `__to_string` this test is about, so the oracle is unchanged, and the
+  // expectations become refreshable by `vibe test --update`.
+  inspect(f(), content = "274877906944")
+  inspect(c, content = "274877906944")
   // After a mutation, so the cell is read back rather than folded.
   c = c + 1
-  assert(__to_string(f()) == "274877906945")
-  assert(__to_string(c) == "274877906945")
+  inspect(f(), content = "274877906945")
+  inspect(c, content = "274877906945")
   // The same capture through `eq`, the other spelling of the classifier. Two
   // conditions have to hold at once for these rows to be able to FAIL, and
   // each was measured by running the rows alone against the committed seed.
@@ -264,11 +267,21 @@ test "#2423 a large Int survives a let mut captured by a closure" {
   // still leaving the cell read back rather than folded, and the render
   // assertions above already cover the sharper low-word-1 case.
   c = c + ((1<<32) - 1)
-  assert(__to_string(c) == "279172874240")
+  inspect(c, content = "279172874240")
   let mut c2 = 66<<32
   let g = () -> Int {
     c2
   }
+  // These six stay `assert` rather than `inspect`, and the reason is a lane
+  // divergence this file exists to catch. `inspect(v, content = ..)` desugars
+  // to `__to_string(v)`, and `__to_string` of an `eq` RESULT answers "false"
+  // on linear and "0" on gc -- measured on this compiler, both lanes, and the
+  // gc side is a regression against the committed seed, which answers "false"
+  // there too. `gc_expr_is_boolish` (codegen/gc/backend_expr.vibe) has no
+  // ECall arm at all, so it cannot classify any of the Bool-returning
+  // builtins the linear `cc_builtin_call_ret_kind` recognizes. That is #2464.
+  // `assert` never renders the Bool, so it asks about `eq` and nothing else,
+  // which is what these rows are for.
   // Both call-shaped.
   assert(!eq(f(), g()))
   assert(eq(f(), f()))
@@ -284,12 +297,12 @@ test "#2423 a large Int survives a let mut captured by a closure" {
   let fs = () -> String {
     s
   }
-  assert(__to_string(fs()) == "hi")
+  inspect(fs(), content = "hi")
   let mut d = 1.5
   let fd = () -> Double {
     d
   }
-  assert(__to_string(fd()) == "1.5")
+  inspect(fd(), content = "1.5")
   // A captured `let mut` Bool is NOT asserted here, and the omission is the
   // point. Measured: `__to_string` of a Bool produced by a lambda whose `let`
   // is INSIDE a function body renders "1" rather than "true" -- on both lanes
