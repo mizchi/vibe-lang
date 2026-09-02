@@ -506,14 +506,14 @@ fn build_merged_stmts_inline_impl(sources: Array[(String, String)], flat_paths_o
 /// skips the check (the `*_unchecked_*` family) must keep the empty tables:
 /// reading rows an earlier compile of a DIFFERENT source at the same path left
 /// behind is exactly the silently-wrong shape these tables exist to remove.
-fn merged_stmts_and_offsets_inline(sources: Array[(String, String)]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
+fn merged_stmts_and_offsets_inline(sources: Array[(String, String)]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
   let merged = build_merged_stmts_inline_impl(sources, flat_paths, flat_bases, clone_float_offsets)
-  let (floats, rels, pluses, int_renders) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  let (floats, rels, pluses, int_renders, bool_renders) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
   let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)
-  (rewrite_string_binops_stmts(merged, rels, pluses, typed_lowering_binop_anchor), floats, int_renders, eq_offs, eq_keys)
+  (rewrite_string_binops_stmts(merged, rels, pluses, typed_lowering_binop_anchor), floats, int_renders, bool_renders, eq_offs, eq_keys)
 }
 
 fn prune_entry_stmts(stmts: Array[Stmt], entry_name: String) -> Array[Stmt] {
@@ -606,9 +606,9 @@ export fn compile_with_modules_wasi_cached(db: TypeDb, main_source: String, main
       // program has been checked in this process and published its
       // typed-lowering rows. The merge rebases them into one offset space and
       // hands them to codegen -- the tables the linked lane exists to consume.
-      let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
+      let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
       let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-      let bytes = compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+      let bytes = compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
       (bytes, db_store_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint, bytes))
     }
   }
@@ -626,9 +626,9 @@ export fn compile_with_closure_sources_wasi_cached(db: TypeDb, main_source: Stri
       // program has been checked in this process and published its
       // typed-lowering rows. The merge rebases them into one offset space and
       // hands them to codegen -- the tables the linked lane exists to consume.
-      let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
+      let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
       let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-      let bytes = compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+      let bytes = compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
       (bytes, db_store_artifact(next_db, main_path, "wasi-typed", entry_name, artifact_fingerprint, bytes))
     }
   }
@@ -653,12 +653,12 @@ export fn compile_with_closure_sources_wasi_mode_cached(db: TypeDb, main_source:
     Some(bytes) => (bytes, next_db),
     None => {
       // #2449: checked entry -- see compile_with_modules_wasi_cached above.
-      let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
+      let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets_inline(ordered_sources)
       let bytes = if mode == "mvp" {
         let pruned_stmts = prune_entry_stmts(merged_stmts, entry_name)
-        compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+        compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
       } else {
-        compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+        compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
       }
       (bytes, db_store_artifact(next_db, main_path, artifact_kind, entry_name, artifact_fingerprint, bytes))
     }

@@ -289,17 +289,14 @@ test "#2423 a large Int survives a let mut captured by a closure" {
   let g = () -> Int {
     c2
   }
-  // Each `eq` is snapshotted through a String-valued branch rather than
-  // handed to `inspect` directly. `inspect(eq(..), content = ..)` renders the
-  // Bool, and `__to_string` of an `eq` RESULT answers "false" on linear and
-  // "0" on gc -- measured on this compiler, both lanes, and the gc side is a
-  // regression against the committed seed, which answers "false" there too
-  // (`gc_expr_is_boolish` has no ECall arm, so it classifies none of the
-  // Bool-returning builtins the linear `cc_builtin_call_ret_kind` lists;
-  // that is #2464). The branch renders a String instead, so the row is a
-  // snapshot on this lane-divergent compiler and still asks about `eq` and
-  // nothing else. Each pair of branch strings is unique for the
-  // no-shared-literal reason above.
+  // Each `eq` is snapshotted through a String-valued branch rather than handed
+  // to `inspect` directly. That spelling was forced when `__to_string` of an
+  // `eq` RESULT answered "false" on linear and "0" on gc; #2464 has since fixed
+  // that, and the row below pins the fix directly. The branch stays because it
+  // asks about `eq` and NOTHING else -- it is false on a wrong comparison
+  // whatever the renderer does -- so the two questions are pinned separately
+  // instead of one row standing for both. Each pair of branch strings is
+  // unique for the no-shared-literal reason above.
   // Both call-shaped.
   inspect(if eq(f(), g()) {
     "f=g"
@@ -345,15 +342,28 @@ test "#2423 a large Int survives a let mut captured by a closure" {
     d
   }
   inspect(fd(), content = "1.5")
-  // A captured `let mut` Bool is NOT asserted here, and the omission is the
-  // point. Measured: `__to_string` of a Bool produced by a lambda whose `let`
-  // is INSIDE a function body renders "1" rather than "true" -- on both lanes
-  // and on the committed seed alike, so it is not this fix's doing. The same
-  // lambda bound at TOP LEVEL, and any named `fn`, answer correctly, because
-  // `collect_fn_returns` walks statements and an inner `let` is an expression.
-  // That is #2462, a separate defect, filed rather than pinned: this file's
-  // contract is that every assertion in it holds on every lane, and pinning
-  // the wrong answer would be worse than leaving the row out.
+  // A captured `let mut` Bool. This row was LEFT OUT when the test landed,
+  // because `__to_string` of a Bool produced by a lambda whose `let` is inside
+  // a function body rendered "1" on both lanes and on the seed -- #2462. The
+  // typed-lowering Bool channel (tag 5) closed it, so the row is here now, and
+  // it is the shape no syntactic rule could reach: the lambda's declared return
+  // type lives on an ELet-bound EFn, and `collect_fn_returns` walks statements.
+  let mut bl = 1 < 2
+  let fb = () -> Bool {
+    bl
+  }
+  inspect(fb(), content = "true")
+  bl = 1 > 2
+  inspect(fb(), content = "false")
+  // #2464: a Bool-returning BUILTIN call as a render argument. The gc lane
+  // rendered this "0" where linear rendered "false" -- a regression against the
+  // committed seed, and exactly the divergence this three-lane file exists to
+  // catch. Both halves of the channel are exercised: the value below is a
+  // builtin call result, and the `eq` rows above are the same classifier asked
+  // through a different consumer.
+  inspect(eq(1, 2), content = "false")
+  inspect(eq(2, 2), content = "true")
+  inspect(not(eq(1, 2)), content = "true")
 }
 
 test "#2405 polymorphic arithmetic is not assumed to be Int" {

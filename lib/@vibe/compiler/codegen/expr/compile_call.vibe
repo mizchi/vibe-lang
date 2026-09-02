@@ -1029,9 +1029,26 @@ export fn cc_expr_is_stringish(e: Expr, local_names: Array[String], ctx: Compile
 /// lookup does not). A bool bound to a local and then interpolated is covered
 /// by the kind-3 slot log. Never fires for an integer expression, so the
 /// pervasive `__to_string(<int>)` calls (lengths, offsets, ids) are untouched.
+/// #2462/#2464: does the CHECKER say this render/`eq` argument is a `Bool`?
+///
+/// Keyed by `typed_lowering_arg_offset` (@vibe/compiler/core), shared with the
+/// producer rather than restated here -- a consumer that spelled the key rule
+/// for itself would look up a key the producer never wrote and classify
+/// nothing, silently. Same shape as `ts_offset_says_int` one type over.
+fn bool_offset_says_bool(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.bool_render_offsets, off)
+}
+
 fn cc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let tag = expr_tag(e)
-  if tag == 1 {
+  // #2462/#2464: an extra `||`, never a replacement -- the table can only ADD
+  // a classification the syntactic arms below missed, never remove one they
+  // made. It is what reaches the shapes no syntax can: a lambda's declared
+  // return type (#2462) and a Bool-returning builtin call (#2464).
+  if bool_offset_says_bool(e, ctx) {
+    true
+  } else if tag == 1 {
     true
   } else if tag == 4 {
     // #769: a bare ident `let`-bound to a boolish value -- kind-3 entry in

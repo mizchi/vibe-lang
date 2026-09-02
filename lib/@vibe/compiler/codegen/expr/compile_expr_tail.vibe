@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   is_borrow_ret_builtin,
   leb128_encode_s64,
   leb128_encode_u32,
+  typed_lowering_arg_offset,
   typed_lowering_float_key
 }
 
@@ -452,13 +453,27 @@ fn slot_is_stringish(ctx: CompileCtx, slot: Int) -> Bool {
   result
 }
 
+/// #2462/#2464: does the CHECKER say this render/`eq` argument is a `Bool`?
+/// Keyed by `typed_lowering_arg_offset`, the producer's own key -- see
+/// `bool_offset_says_bool` in compile_call.vibe, the twin of this.
+fn tail_offset_says_bool(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.bool_render_offsets, off)
+}
+
 /// #769: does `e` statically evaluate to a Bool? Bool literals, comparison /
 /// logical operators, `!`, and -- via the kind-3 slot log above -- a bare ident
 /// `let`-bound to a boolish value. Syntactic over-approximation like
 /// expr_is_intish; consumers use it only to pick "true"/"false" formatting.
 export fn expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let tag = expr_tag(e)
-  if tag == 1 {
+  // #2462/#2464: the checker's answer first, as an extra `||` -- same channel
+  // and same key as `cc_expr_is_boolish`'s arm in compile_call.vibe. These two
+  // copies must agree; a table consulted by only one of them is a coin flip on
+  // which copy a given site reaches.
+  if tail_offset_says_bool(e, ctx) {
+    true
+  } else if tag == 1 {
     true
   } else if tag == 4 {
     let nm = get_eident_name(e)
