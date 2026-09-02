@@ -146,3 +146,25 @@ test "2464: the gc ECall arm is load-bearing, and its guard holds" {
   let b_builtin = "fn zz(a: Int, b: Int) -> Bool {\n  a < b\n}\nfn main() -> Int {\n  let s = __to_string(eq(1, 2))\n  0\n}\n"
   inspect(gc_size(b_builtin) > gc_size(a_user), content = "true")
 }
+
+test "a USER function named `not` owns its own call" {
+  // Codex on this PR. The `not(..)` clause checked only for a LOCAL named
+  // `not`, so a top-level `fn not(x: Bool) -> Int` had its Int result routed
+  // through the "true"/"false" formatter. Measured before the guard:
+  //
+  //   fn not(x: Bool) -> Int { 42 }   __to_string(not(true))
+  //     main          linear "true"   gc "42"
+  //     this PR, pre-guard    "true"      "true"
+  //
+  // linear had carried this since #825 as a documented "display-only and
+  // vanishingly rare" risk; it is a wrong VALUE with no diagnostic. gc was
+  // right only because it had no ECall arm, so porting the arm without the
+  // guard spread the bug instead of fixing one. The typed channel cannot
+  // rescue it: it is an extra `||`, so it can only ADD a classification, never
+  // correct a syntactic `true`.
+  let user_not = "fn not(x: Bool) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(not(true))\n  0\n}\n"
+  let other_name = "fn nope(x: Bool) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(nope(true))\n  0\n}\n"
+  // Same program shape, only the name differs -- and neither may be
+  // classified, so the two must cost the same.
+  inspect(gc_size(user_not) == gc_size(other_name), content = "true")
+}
