@@ -177,3 +177,26 @@ test "2459: a lambda's own binder is not read from the environment" {
   assert_eq(checks_clean("fn main() -> Int { let f = [S](v: S) -> Array[S] { [v] }\nlet a: Array[Int] = f(1)\nlet b: Array[String] = f(\"s\")\n1 }\n"), true)
   assert_eq(checks_clean("fn main() -> Int { let f = (v: Int) -> Array[Int] { [v] }\nlet a = f(1)\n1 }\n"), true)
 }
+
+test "2459: a record literal's type arguments are annotations too" {
+  // Codex P2 on #2460. `expr_children` visits an `ERecord`'s field expressions
+  // and drops its type-argument list, so `Box[T]::{ .. }` mentioned `T`
+  // nowhere the scan could see. Unlike the two findings before it, this one
+  // PREDATES the PR -- measured clean on `cacbf4d51` as well -- so it is
+  // residual scope rather than a regression, and the neighbouring annotated
+  // spelling was already improved by this work (clean before, rejected now).
+  //
+  // `EFn` and `ERecord` are the only `Expr` nodes carrying a `TypeExpr`
+  // (lib/@vibe/ast/index.vpkg), so enumerating the enum rather than patching
+  // the reported site is what makes this the end of the class.
+  let boxed = "struct Box[T] { value: Option[T] }\n"
+  let via_targs = String::concat(boxed, "fn outer[T](x: T) -> Int { let make = () -> { Box[T]::{ value: None } }\nlet a: Box[Int] = make()\nlet b: Box[String] = make()\n1 }\n")
+  assert_eq(checks_clean(via_targs), false)
+  let via_ann = String::concat(boxed, "fn outer[T](x: T) -> Int { let make = () -> Box[T] { Box[T]::{ value: None } }\nlet a: Box[Int] = make()\nlet b: Box[String] = make()\n1 }\n")
+  assert_eq(checks_clean(via_ann), false)
+  // One use is monomorphic, not rejected.
+  assert_eq(checks_clean(String::concat(boxed, "fn outer[T](x: T) -> Int { let make = () -> { Box[T]::{ value: None } }\nlet a = make()\n1 }\n")), true)
+  // The lambda's own binder, and a wholly concrete literal, stay generic.
+  assert_eq(checks_clean(String::concat(boxed, "fn main() -> Int { let make = [S]() -> Box[S] { Box[S]::{ value: None } }\nlet a: Box[Int] = make()\nlet b: Box[String] = make()\n1 }\n")), true)
+  assert_eq(checks_clean(String::concat(boxed, "fn main() -> Int { let make = () -> { Box[Int]::{ value: None } }\nlet a = make()\nlet b = make()\n1 }\n")), true)
+}

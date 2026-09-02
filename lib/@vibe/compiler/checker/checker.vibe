@@ -3267,8 +3267,27 @@ fn esc_collect_type_names(te: TypeExpr, skip: Array[String], out: Array[String])
 ///
 /// A lambda's OWN binders are skipped: `[S](v: S) -> Array[S]` owns `S`, and
 /// reading a shadowed outer `S` would monomorphize a genuinely generic lambda.
+///
+/// `EFn` and `ERecord` are the ONLY `Expr` nodes carrying a `TypeExpr`
+/// (lib/@vibe/ast/index.vpkg), so this walk is complete for expressions rather
+/// than complete-for-now. Codex found the `ERecord` half as a P2 on #2460 --
+/// `expr_children` visits an `ERecord`'s field expressions and drops its
+/// type-argument list, so `let make = () -> { Box[T]::{ value: None } }` inside
+/// `fn outer[T]` mentioned `T` nowhere this scan could see. That one predates
+/// this PR (measured clean on `cacbf4d51` too); enumerating the enum rather
+/// than patching the reported site is what makes the pair of them the end of
+/// it.
 fn esc_annotation_type_names(e: Expr, out: Array[String]) -> Unit {
   match e {
+    ERecord(_, _, targs) => {
+      // A record literal's type arguments are written at a site the lambda
+      // does not bind, so there is nothing to skip here.
+      let mut ti = 0
+      while ti < Array::length(targs) {
+        esc_collect_type_names(Array::get(targs, ti), array_empty(), out)
+        ti = ti + 1
+      }
+    },
     EFn(tparams, _, params, ret_ty, _, _) => {
       let skip = for tpk in tparams {
         type_param_name(tpk)
