@@ -180,42 +180,52 @@ test "#2456 r2: source-owned Map as a declared field" {
   inspect(a == c, content = "false")
 }
 
-//# Codex round 3 on #2456: a declared `Result` of another constructor shape
+//# Codex round 6 on #2456: an `Int` slot inside a generated comparator
 
-// `Result` is always a declared enum (#1324). `eq_for_typed`'s `Result` arm
-// is a constructor match over `Ok`/`Err`, gated on the DECLARED shape, so a
-// `Success`/`Failure` declaration takes its derived `Result::equals`, which
-// is content equality for word-sized payloads (an aggregate payload fails
-// closed instead -- pinned by the `_aggregate_trap` fixture). Measured on
-// the stage2 at 7cfea5c: every comparison below trapped.
+// A comparator `eq_for_typed` generates (an `Option` payload binder, an
+// array element, a generic struct's field) compared an `Int` slot with the
+// raw word `==`, which takes the generic `eq` builtin: its string fallback
+// reads a word with a zero low half as a zero-length string, so `64 << 32`
+// and `65 << 32` compared EQUAL. Measured on the stage2 at 67f7512: every
+// `false` below answered `true`. Every such slot now compares as a plain
+// i64 equality of the tagged words.
+//
+// Out of this file's reach: a ctor or tuple LITERAL compared directly
+// (`Some(big) == Some(other)`, `(big, 1) == (other, 1)`) never reaches
+// `eq_for_typed` -- codegen's own literal-shape walk (`emit_eq_shape_top`)
+// compares those payloads, with the same generic `eq`, and still answers
+// `true` (measured on the same stage2). Tracked as its own issue.
 
-enum Result[T, E] {
-  Success(T);
-  Failure(E)
+struct EqUeBox[T] {
+  v: T
+} derive (Eq)
+
+fn fill_big_opt(xs: Array[Option[Int]], v: Int) -> Unit {
+  Array::push(xs, Some(v))
 }
 
-fn fill_custom_result(xs: Array[Result[Int, String]], v: Int) -> Unit {
-  Array::push(xs, Success(v))
+test "#2456 r6: a generic struct's Int field is exact" {
+  let a: EqUeBox[Int] = EqUeBox::{ v: 64<<32 }
+  let b: EqUeBox[Int] = EqUeBox::{ v: 65<<32 }
+  let c: EqUeBox[Int] = EqUeBox::{ v: 64<<32 }
+  inspect(a == b, content = "false")
+  inspect(a == c, content = "true")
 }
 
-test "#2456 r3: custom-shape Result elements filled through a function" {
+test "#2456 r6: array Int elements are exact" {
+  let big = 64<<32
+  let other = 65<<32
+  inspect([big] == [other], content = "false")
+  inspect([big] == [big], content = "true")
+}
+
+test "#2456 r6: Option[Int] elements filled through a function are exact" {
   let left = []
-  fill_custom_result(left, 1)
+  fill_big_opt(left, 64<<32)
   let right = []
-  fill_custom_result(right, 1)
-  let other = []
-  fill_custom_result(other, 2)
-  let failed = []
-  Array::push(failed, Failure("e"))
-  inspect(left == right, content = "true")
-  inspect(left == other, content = "false")
-  inspect(left == failed, content = "false")
-}
-
-test "#2456 r3: custom-shape Result compared directly" {
-  let a: Result[Int, String] = Success(1)
-  let b: Result[Int, String] = Success(1)
-  let c: Result[Int, String] = Failure("e")
-  inspect(a == b, content = "true")
-  inspect(a == c, content = "false")
+  fill_big_opt(right, 65<<32)
+  let same = []
+  fill_big_opt(same, 64<<32)
+  inspect(left == right, content = "false")
+  inspect(left == same, content = "true")
 }
