@@ -13079,6 +13079,51 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
 /// parameter therefore costs nothing. An enum that names itself in a
 /// payload is refused at the second visit (conservative; the declared-field
 /// walk keys such recursion the same way).
+/// Codex round 8 on #2456: whether a payload type mentions one of the
+/// declaration's own formals, by spelling, anywhere inside it. Asked BEFORE
+/// the allow-list, because a formal may shadow a declared type of the same
+/// spelling -- `type T = Array[Int]` or an imported `struct T` next to
+/// `enum Wrap[T] { W(T) }` (the #2141 guard rejects only a same-file struct
+/// or enum) -- and the allow-list would then read the payload as that
+/// content-comparable type while the derived comparator treats it as the
+/// erased formal (measured: `false` for equal content). A shape this walk
+/// does not know is reported as mentioning a formal, which fails closed.
+fn eq_ty_mentions_formal(t: TypeExpr, formals: Array[String]) -> Bool {
+  match t {
+    TyName(n) => str_array_contains(formals, n),
+    TyApp(head, args) => if str_array_contains(formals, head) {
+      true
+    } else {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(args) {
+        if eq_ty_mentions_formal(Array::get(args, i), formals) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyTuple(ts) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(ts) {
+        if eq_ty_mentions_formal(Array::get(ts, i), formals) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyUnit => false,
+    _ => true
+  }
+}
+
 fn eq_generic_enum_payloads_concrete_comparable(name: String) -> Bool {
   if str_array_contains(dtd_eq_enum_payload_check_stack, name) {
     false
@@ -13096,7 +13141,8 @@ fn eq_generic_enum_payloads_concrete_comparable(name: String) -> Bool {
           let payload = Array::get(decl.2, vi).1
           let mut pi = 0
           while pi < Array::length(payload) {
-            if !eq_ty_field_is_content_comparable(Array::get(payload, pi), empty_str_array()) {
+            let pty = Array::get(payload, pi)
+            if eq_ty_mentions_formal(pty, decl.1) || !eq_ty_field_is_content_comparable(pty, empty_str_array()) {
               ok = false
             } else {
               ()
