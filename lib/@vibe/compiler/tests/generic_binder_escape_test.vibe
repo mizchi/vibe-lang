@@ -103,3 +103,19 @@ test "2455: a generic lambda passed to a higher-order function still checks" {
   let src = "fn ap[A, B](f: (A) -> B, x: A) -> B { f(x) }\nfn main() -> Int { ap([T](v: T) -> T { v }, 1) }"
   assert_eq(checks_clean(src), true)
 }
+
+test "2455: the escape is found however the capture is spelled" {
+  // The issue describes one shape (a bare captured name in RETURN position).
+  // The check is on the binder, not on that shape, so these are caught too --
+  // each measured, and each the same unsoundness.
+  //
+  // A `let mut` binding:
+  assert_eq(checks_clean("fn main() -> Int { let mut xs = []\nlet get = [T]() -> Array[T] { xs }\n1 }"), false)
+  // Reached through a nested closure rather than named directly:
+  assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet get = [T]() -> Array[T] { let inner = () -> { xs }\ninner() }\n1 }"), false)
+  // Projected out of a captured tuple:
+  assert_eq(checks_clean("fn main() -> Int { let p = ([], 1)\nlet get = [T]() -> Array[T] { p.0 }\n1 }"), false)
+  // The binder in PARAMETER position only -- nothing is returned, and the
+  // capture is still fixed by every call.
+  assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet put = [T](v: T) -> Unit { Array::push(xs, v) }\n1 }"), false)
+}
