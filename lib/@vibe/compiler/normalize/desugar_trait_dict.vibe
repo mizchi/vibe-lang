@@ -12095,20 +12095,52 @@ let dtd_eq_unsafe_types: Array[String] = empty_str_array()
 /// (docs/adding-modules.md) and must never reach an `Ok`/`Err` match.
 let dtd_eq_nonstandard_builtin_enums: Array[String] = empty_str_array()
 
-fn eq_enum_shape_is(variants: Array[(String, Array[TypeExpr])], expected: Array[(String, Int)]) -> Bool {
+/// Codex round 4 on #2456: a `Result` / `Option` spelling owned by a STRUCT
+/// or a type alias. Not an enum at all, so neither the constructor-match arm
+/// nor a derived enum comparator applies; it takes the declared-type
+/// dispatch (`eq_for_typed_declared_app`), the same route a source-owned
+/// `Map` takes.
+let dtd_eq_nonenum_builtin_heads: Array[String] = empty_str_array()
+
+/// Whether `variants` is EXACTLY the expected constructor set, payload by
+/// payload: each expected constructor present once with the arity given,
+/// and each payload slot spelled as the named formal (`Ok(T)` is
+/// `TyName("T")` where `T` is the declaration's first parameter). Names and
+/// arities alone are not enough: `enum Result[T, E] { Ok(E); Err(T) }` has
+/// both right and swaps the formals, and the special arm would then compare
+/// an `Ok` payload with the FIRST argument's comparator (Codex round 4).
+fn eq_enum_shape_is(variants: Array[(String, Array[TypeExpr])], expected: Array[(String, Array[String])]) -> Bool {
   if Array::length(variants) != Array::length(expected) {
     false
   } else {
     let mut ok = true
     let mut i = 0
     while i < Array::length(expected) {
-      let (want_name, want_arity) = Array::get(expected, i)
+      let (want_name, want_formals) = Array::get(expected, i)
       let mut found = false
       let mut vi = 0
       while vi < Array::length(variants) {
         let (vname, payload) = Array::get(variants, vi)
-        if vname == want_name && Array::length(payload) == want_arity {
-          found = true
+        if vname == want_name && Array::length(payload) == Array::length(want_formals) {
+          let mut slots_ok = true
+          let mut pi = 0
+          while pi < Array::length(payload) {
+            let slot_ok = match Array::get(payload, pi) {
+              TyName(pn) => pn == Array::get(want_formals, pi),
+              _ => false
+            }
+            if !slot_ok {
+              slots_ok = false
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          if slots_ok {
+            found = true
+          } else {
+            ()
+          }
         } else {
           ()
         }
@@ -12126,7 +12158,11 @@ fn eq_enum_shape_is(variants: Array[(String, Array[TypeExpr])], expected: Array[
 }
 
 fn eq_builtin_enum_arm_applies(head: String) -> Bool {
-  !str_array_contains(dtd_eq_nonstandard_builtin_enums, head)
+  !str_array_contains(dtd_eq_nonstandard_builtin_enums, head) && !str_array_contains(dtd_eq_nonenum_builtin_heads, head)
+}
+
+fn eq_builtin_head_owned_by_nonenum(head: String) -> Bool {
+  str_array_contains(dtd_eq_nonenum_builtin_heads, head)
 }
 
 /// Whether every argument is a word-sized scalar the raw `==` compares by
@@ -12154,11 +12190,18 @@ fn eq_args_all_word_scalar(args: Array[TypeExpr]) -> Bool {
   all_word_scalar
 }
 
-/// A nonstandard-shape `Result` / `Option` head (see
-/// `dtd_eq_nonstandard_builtin_enums`) admitted by the allow-list: only with
-/// word-scalar arguments, where its derived comparator is content equality.
+/// A `Result` / `Option` head admitted by the allow-list as an ENUM: the
+/// special arm's shape, or a nonstandard shape (see
+/// `dtd_eq_nonstandard_builtin_enums`) with word-scalar arguments only,
+/// where its derived comparator is content equality. A struct-owned
+/// spelling is not admitted here at all; it is a generic struct and the
+/// declared branch of the predicate decides it.
 fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
-  eq_builtin_enum_arm_applies(head) || eq_args_all_word_scalar(args)
+  if eq_builtin_head_owned_by_nonenum(head) {
+    false
+  } else {
+    eq_builtin_enum_arm_applies(head) || eq_args_all_word_scalar(args)
+  }
 }
 
 fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
@@ -12169,6 +12212,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_type_aliases, 0)
   Array::truncate(dtd_eq_type_owners, 0)
   Array::truncate(dtd_eq_nonstandard_builtin_enums, 0)
+  Array::truncate(dtd_eq_nonenum_builtin_heads, 0)
   Array::truncate(dtd_eq_specializations, 0)
   Array::truncate(dtd_eq_specialization_ancestries, 0)
   Array::truncate(dtd_eq_specialization_stack, 0)
@@ -12189,6 +12233,11 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
+        if sname == "Result" || sname == "Option" {
+          Array::push(dtd_eq_nonenum_builtin_heads, sname)
+        } else {
+          ()
+        }
       },
       SEnum(_, ename, decl_tparams, variants, _) => {
         Array::push(dtd_eq_type_owners, ename)
@@ -12197,15 +12246,22 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
-        if ename == "Result" && !eq_enum_shape_is(variants, [
-          ("Ok", 1),
-          ("Err", 1)
-        ]) {
-          Array::push(dtd_eq_nonstandard_builtin_enums, ename)
-        } else if ename == "Option" && !eq_enum_shape_is(variants, [
-          ("Some", 1),
-          ("None", 0)
-        ]) {
+        // The special arm's shape, payload by payload against THIS
+        // declaration's own formals (see eq_enum_shape_is).
+        let standard = if ename == "Result" {
+          Array::length(decl_tparams) == 2 && eq_enum_shape_is(variants, [
+            ("Ok", [Array::get(decl_tparams, 0)]),
+            ("Err", [Array::get(decl_tparams, 1)])
+          ])
+        } else if ename == "Option" {
+          Array::length(decl_tparams) == 1 && eq_enum_shape_is(variants, [
+            ("Some", [Array::get(decl_tparams, 0)]),
+            ("None", [])
+          ])
+        } else {
+          true
+        }
+        if !standard {
           Array::push(dtd_eq_nonstandard_builtin_enums, ename)
         } else {
           ()
@@ -12215,6 +12271,11 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
       STypeAlias(_, aname, alias_tparams, target) => {
         Array::push(dtd_eq_type_owners, aname)
         Array::push(dtd_eq_type_aliases, (aname, alias_tparams, target))
+        if aname == "Result" || aname == "Option" {
+          Array::push(dtd_eq_nonenum_builtin_heads, aname)
+        } else {
+          ()
+        }
       },
       SEffectDef(_, name, _, _) => Array::push(dtd_eq_type_owners, name),
       _ => ()
@@ -12864,7 +12925,9 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     } else {
       EBinOp("==", lhs, rhs, -1)
     },
-    TyApp("Option", args) => if Array::length(args) == 1 && !eq_builtin_enum_arm_applies("Option") {
+    TyApp("Option", args) => if eq_builtin_head_owned_by_nonenum("Option") {
+      eq_for_typed_declared_app(fty, "Option", args, lhs, rhs, known_types)
+    } else if Array::length(args) == 1 && !eq_builtin_enum_arm_applies("Option") {
       eq_for_typed_nonstandard_enum("Option", args, lhs, rhs)
     } else if Array::length(args) == 1 {
       let t = Array::get(args, 0)
@@ -12892,7 +12955,9 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     // 3: a `Success`/`Failure` declaration must not meet an `Ok`/`Err` match);
     // `Map` below is ownership-gated, because `__map_equals__` reads runtime
     // map internals that a declared struct does not have.
-    TyApp("Result", args) => if Array::length(args) == 2 && !eq_builtin_enum_arm_applies("Result") {
+    TyApp("Result", args) => if eq_builtin_head_owned_by_nonenum("Result") {
+      eq_for_typed_declared_app(fty, "Result", args, lhs, rhs, known_types)
+    } else if Array::length(args) == 2 && !eq_builtin_enum_arm_applies("Result") {
       eq_for_typed_nonstandard_enum("Result", args, lhs, rhs)
     } else if Array::length(args) == 2 {
       let t = Array::get(args, 0)
