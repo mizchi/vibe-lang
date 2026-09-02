@@ -168,3 +168,32 @@ test "a USER function named `not` owns its own call" {
   // classified, so the two must cost the same.
   inspect(gc_size(user_not) == gc_size(other_name), content = "true")
 }
+
+test "2464: gc does not classify a call by the NAME `T::equals`" {
+  // Codex on this PR, second round. The linear twin's `::equals` clause
+  // matches on the name and two arguments, nothing else -- so a user's own
+  // `fn Foo::equals(a: Int, b: Int) -> Int` has its Int result rendered
+  // "true". Measured, `__to_string(Foo::equals(1, 2))`:
+  //
+  //   compiler       linear   gc
+  //   main            true    42
+  //   this PR, ported true    true
+  //   as shipped      true    42
+  //
+  // gc was right because it had no ECall arm; porting the clause spread the
+  // bug. It is NOT ported, and it costs nothing: measured through
+  // `compile_wasi_gc`, the `==` rewrite's output compiles BYTE-IDENTICALLY on
+  // gc with and without the clause -- 6446 for a struct `==`, 6227 for an
+  // array `==` -- because something else already classifies those here. A dead
+  // clause that can only misfire.
+  //
+  // The guard cannot be the user-function table, which is why this is an
+  // omission rather than a guard: `desugar_derives` GENERATES `T::equals` into
+  // that same table, so the guard would disable the `==` rewrite's own output.
+  // linear's copy still carries the hole; it is reported, not half-fixed here.
+  let user_equals = "fn Foo::equals(a: Int, b: Int) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(Foo::equals(1, 2))\n  0\n}\n"
+  let other_name = "fn Foo::eqx(a: Int, b: Int) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(Foo::eqx(1, 2))\n  0\n}\n"
+  // Neither may be classified, so the two must cost the same. With the clause
+  // ported, only the first would take the boolish path and they would differ.
+  inspect(gc_size(user_equals) == gc_size(other_name), content = "true")
+}

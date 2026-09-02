@@ -483,16 +483,27 @@ fn gc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) ->
       },
       EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
       EUnaryOp(op, _) => op == "!",
-      // #2464: the ECall arm this classifier never had. Its linear twin
-      // `cc_expr_is_boolish` has covered `__arr_equals__*`, `T::equals`,
-      // `not(..)` and the Bool-returning builtin registry since #815/#825; gc
-      // covered NONE of them, so `__to_string(eq(a, b))` rendered "0" here
-      // while linear rendered "false". Measured: the committed seed answers
-      // "false" on gc too, so the divergence is a regression, and it is the
-      // reason this arm is a plain port rather than a new rule.
+      // #2464: the ECall arm this classifier never had, so
+      // `__to_string(eq(a, b))` rendered "0" here while linear rendered
+      // "false" -- and the committed seed answers "false" on gc too, so that
+      // was a regression.
+      //
+      // TWO of the linear twin's four clauses are deliberately NOT ported.
+      // `__arr_equals__*` and `T::equals` classify the `==` rewrite's output,
+      // and measured through `compile_wasi_gc` (empty tables, so only this
+      // predicate can answer) gc emits BYTE-IDENTICAL modules with and without
+      // them -- 6446 for a struct `==`, 6227 for an array `==` either way. They
+      // are dead here, and they are not harmless: `T::equals` matches on the
+      // NAME, so a user's own `fn Foo::equals(a: Int, b: Int) -> Int` had its
+      // Int result rendered "true". Measured, main: linear "true", gc "42" --
+      // gc was right precisely because it had no arm. Porting all four would
+      // have spread that. The guard linear needs cannot be the user-function
+      // table either, because `desugar_derives` GENERATES `T::equals` into
+      // that same table; linear's copy still carries the hole, reported
+      // separately rather than half-fixed here.
       ECall(callee, args, _) => match callee {
         EIdent(cn, _) =>
-        String::starts_with(cn, "__arr_equals__") || (String::ends_with(cn, "::equals") && Array::length(args) == 2) || (cn == "not" && Array::length(args) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && gc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) || gc_builtin_ret_is_bool(cn, local_names, ctx),
+        (cn == "not" && Array::length(args) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && gc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) || gc_builtin_ret_is_bool(cn, local_names, ctx),
         _ => false
       },
       _ => false
