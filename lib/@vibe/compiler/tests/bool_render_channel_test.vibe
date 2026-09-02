@@ -41,7 +41,7 @@ import @vibe/compiler/syntax {
 }
 
 import @vibe/compiler/checker {
-  check_program_result, checked_bool_render_offsets, checked_int_render_offsets
+  check_program_double_call_result_located_observation, check_program_result, checked_bool_render_offsets, checked_int_render_offsets
 }
 
 import ./codegen_test_support.vibe {
@@ -73,6 +73,22 @@ fn gc_size(src: String) -> Int {
   handle {
     Bytes::length(compile_wasi_gc(src, "main"))
   } with { Exception::Throw(_) => 0 - 1 }
+}
+
+/// Did the LOCATED observation accept this program, or refuse it?
+///
+/// The refusal is `primary_calls > 0 && located_primary_calls == 0` -- an AST
+/// that has calls and located none of them, which is what a plain
+/// `parse_program(lex(src))` produces. `None` means every channel is empty for
+/// that module.
+fn observation_present(src: String) -> Bool {
+  handle {
+    let (toks, starts, _) = lex_with_offsets(src)
+    match check_program_double_call_result_located_observation(parse_program_located(toks, starts, src)) {
+      Some(_) => true,
+      None => false
+    }
+  } with { Exception::Throw(_) => false }
 }
 
 //# Tests
@@ -196,4 +212,31 @@ test "2464: gc does not classify a call by the NAME `T::equals`" {
   // Neither may be classified, so the two must cost the same. With the clause
   // ported, only the first would take the boolish path and they would differ.
   inspect(gc_size(user_equals) == gc_size(other_name), content = "true")
+}
+
+test "an interpolation-only module keeps its rows" {
+  // Codex on this PR, third round: the concern was that a module whose ONLY
+  // calls are the ones `build_interp_expr` synthesizes for `"\{..}"` -- both
+  // carrying offset -1 -- would trip the located-channel refusal
+  // (`primary_calls > 0 && located_primary_calls == 0`) and lose every channel,
+  // Bool rows included.
+  //
+  // Measured, it does not. The observation is present for such a module, and
+  // the Bool row is filed:
+  let interp_only = "fn render() -> String {\n  let l = () -> Bool { 1 < 2 }\n  let v = l()\n  \"\\{v}\"\n}\n"
+  inspect(observation_present(interp_only), content = "true")
+  inspect(bool_rows(interp_only), content = "1")
+  // And end to end, through the FS module lane -- that lane reaches the very
+  // entry the concern named (`check_module_publishing_typed_lowering_offsets`
+  // -> `check_program_with_env_typed_lowering_located_observation`). A module
+  // of exactly this shape, imported and called from a `.vibex` root, rendered
+  // "1" on the merge base and renders "true" here, on BOTH lanes. The shape is
+  // the #2462 one, so nothing syntactic can classify it: the row is the only
+  // thing that can be doing the work.
+  //
+  // The refusal is real code with a real trigger -- an UNLOCATED parse -- and
+  // the neighbouring `observation_present` rows below say what that looks
+  // like. Synthesized calls inside a located parse are not it.
+  inspect(observation_present("fn f() -> Int {\n  1\n}\n\nfn g() -> Int {\n  f()\n}\n"), content = "true")
+  inspect(observation_present("fn h(x: Int) -> Int {\n  x + 1\n}\n"), content = "true")
 }
