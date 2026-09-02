@@ -8616,6 +8616,51 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             _ => CtUnknown
           }
           (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
+        } else if name == "__rec_field" && Array::length(args) == 2 {
+          // #2452: `r.field` on an anonymous-record BINDING never reaches the
+          // `EDot` arm below -- the desugar rewrites it to
+          // `__rec_field(r, slot)` first (`anon_dot_rewrite`,
+          // normalize/desugar_trait_dict.vibe), and the builtin table types
+          // that call `(CtUnknown, Int) -> CtUnknown`. Its own comment called
+          // that "lenient ... only needs to resolve, not constrain", which was
+          // true while it served only the record-PATTERN desugar; #1839 routed
+          // EVERY dot access on an anonymous record through it and the
+          // leniency became a silent-wrong hole.
+          //
+          // Measured before this, all clean: `let r = record { n: 1 }` then
+          // `let s: String = r.n`, `String::length(r.n)`, `if r.n { .. }`,
+          // `r.n(1)`, and `let r = record { xs: [1] }` then
+          // `Array::push(r.xs, "s")`. An INLINE `(record { n: 1 }).n` was
+          // strict the whole time -- with no binding there is no sentinel, so
+          // it keeps its `EDot` and reaches the record arm there. Two
+          // spellings of one read disagreed, and the loose one is the one
+          // people write.
+          //
+          // Resolve the slot against the receiver's own field list, the same
+          // way the `EDot` `CtTuple` arm resolves `.N`. A non-record receiver
+          // keeps the tolerant answer: this call is also emitted for record
+          // PATTERNS over receivers this pass cannot resolve, and the fix is
+          // to stop losing a type that IS known, not to start rejecting types
+          // that are not.
+          let (obj_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
+          let (_, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
+          let result = match subst_apply(s2, obj_ty) {
+            CtRecord(rfields) => match Array::get(args, 1) {
+              // The index is always a literal here (both producers emit
+              // `EInt`). Anything else, or out of range, stays tolerant --
+              // the desugar cannot emit it, so an error would be unreachable
+              // and this is not the place to invent a new rejection.
+              EInt(slot) => if slot >= 0 && slot < Array::length(rfields) {
+                let (_, fty) = Array::get(rfields, slot)
+                fty
+              } else {
+                CtUnknown
+              },
+              _ => CtUnknown
+            },
+            _ => CtUnknown
+          }
+          (tab_call_ty(tytab, call_off, result, capture, lane), s2, c2)
         } else if name == "__slice" && Array::length(args) == 3 {
           // #1682: the old fallback signature was
           // `(CtUnknown, Int, Int) -> CtUnknown`, so both the receiver and

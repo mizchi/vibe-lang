@@ -118,3 +118,67 @@ test "839: nonexistent field on an anon record is still rejected" {
   assert_eq(compiles_via_check_program(src, "main"), false)
   assert_eq(compiles_via_desugar_trait_dicts(src, "main"), false)
 }
+
+//# #2452: the projection is TYPED, not merely resolved.
+//
+// `r.field` on an anonymous-record binding is rewritten to
+// `__rec_field(r, slot)` before the check runs (`anon_dot_rewrite`,
+// normalize/desugar_trait_dict.vibe), and the builtin table typed that call
+// `(CtUnknown, Int) -> CtUnknown` -- deliberately, while it served only the
+// record-PATTERN desugar, where nothing knows the field type. #1839 routed
+// every dot access on an anonymous record through it and the leniency became
+// a hole: the read resolved to the right SLOT and carried no type at all.
+//
+// Measured before the fix, every one of these checked CLEAN. The inline
+// spelling `(record { n: 1 }).n` was strict the whole time -- with no binding
+// there is no sentinel, so it keeps its `EDot` and reaches the checker's
+// record arm -- so the two spellings of one read disagreed, and the loose one
+// is the one people write.
+
+fn checks_clean(src: String) -> Bool {
+  handle {
+    let _ = check_program(parse_program(lex(src)))
+    true
+  } with { Exception::Throw(_) => false }
+}
+
+test "2452: a scalar field read at the wrong type is rejected" {
+  assert_eq(checks_clean("fn g() -> Int {\n  let r = record { n: 1 }\n  let s: String = r.n\n  1\n}\n"), false)
+  // The same read at its own type still checks.
+  assert_eq(checks_clean("fn g() -> Int {\n  let r = record { n: 1 }\n  let s: Int = r.n\n  1\n}\n"), true)
+}
+
+test "2452: each field keeps its own type" {
+  assert_eq(checks_clean("fn g() -> Int {\n  let r = record { n: 1, m: \"x\" }\n  let a: Int = r.n\n  let b: String = r.m\n  1\n}\n"), true)
+  // Swapping the two annotations must fail -- a slot-only answer would pass.
+  assert_eq(checks_clean("fn g() -> Int {\n  let r = record { n: 1, m: \"x\" }\n  let a: String = r.n\n  1\n}\n"), false)
+}
+
+test "2452: an array field is pushed at its own element type" {
+  assert_eq(checks_clean("fn g() -> Int {\n  let r = record { xs: [1] }\n  let u = Array::push(r.xs, \"s\")\n  1\n}\n"), false)
+  assert_eq(checks_clean("fn g() -> Int {\n  let r = record { xs: [1] }\n  let u = Array::push(r.xs, 2)\n  1\n}\n"), true)
+}
+
+test "2452: the #2447 shape one projection away" {
+  // An EMPTY array in a record: the value restriction gives it a real element
+  // slot, and the projection now carries that slot instead of losing it, so
+  // the second push at another type is rejected.
+  assert_eq(checks_clean("fn g() -> Int {\n  let r = record { xs: [] }\n  let u1 = Array::push(r.xs, 1)\n  let u2 = Array::push(r.xs, \"s\")\n  1\n}\n"), false)
+}
+
+test "2452: the projection constrains its use position, not just a binding" {
+  // A binding annotation is only one consumer. Before the fix these were
+  // clean too, which is why the fix is in the projection rather than in the
+  // `let`.
+  assert_eq(checks_clean("fn g() -> Int {\n  let r = record { n: 1 }\n  let z = String::length(r.n)\n  1\n}\n"), false)
+  assert_eq(checks_clean("fn g() -> Int {\n  let r = record { n: 1 }\n  if r.n {\n    1\n  } else {\n    2\n  }\n}\n"), false)
+}
+
+test "2452: a record PATTERN binding still checks" {
+  // `__rec_field` is also emitted for record patterns, where the receiver may
+  // be one this pass cannot resolve. Those keep the tolerant answer -- the fix
+  // stops losing a type that IS known, it does not start rejecting types that
+  // are not.
+  assert_eq(checks_clean("fn g() -> Int {\n  let record { n: a } = record { n: 1 }\n  a\n}\n"), true)
+}
+
