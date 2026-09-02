@@ -1,0 +1,111 @@
+//# #2459 / #2461: a `let` generalizes exactly the type variables that are NOT
+//# free in the enclosing environment.
+//#
+//# Two independent rules were being run as one predicate, and the conflation
+//# broke both directions:
+//#
+//#   (A) the VALUE restriction -- a binding that HOLDS a mutable container
+//#       keeps its element variable a monotype (#938, #2447);
+//#   (B) the ENVIRONMENT restriction -- a variable free in the enclosing scope
+//#       belongs to something else and is not this binding's to quantify.
+//#
+//# (A) is about what the value IS, (B) about where its variables CAME FROM.
+//# (B) was missing entirely, so `let g2 = g` quantified a captured array slot
+//# and put an Int and a String in one array (#2459); and (A) was applied to
+//# FUNCTION types, where the array is produced per call rather than held, so
+//# aliasing a perfectly generic `mk[T](v: T) -> Array[T]` was refused (#2461).
+//#
+//# Both were measured on the committed seed: the unsound one is a long-standing
+//# hole, the false rejection is a regression from #2450.
+
+//# Imports
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn checks_clean(source: String) -> Bool {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    true
+  } with { Exception::Throw(_) => false }
+}
+
+/// A lambda that CAPTURES `xs` and pushes its second, unannotated argument
+/// into it. Its scheme is correct on its own: `forall U. (U, ?k) -> U`, with
+/// `?k` -- the captured array's element slot -- FREE.
+let capturing_g: String = "let xs = []\nlet g = [U](u: U, k) -> U { Array::push(xs, k)\nu }\n"
+
+test "2459: aliasing a scheme does not quantify its free environment slot" {
+  // Measured before: `forall U. (U, ?k) -> U` became `forall U ?k. (U, ?k) -> U`
+  // at the alias, and the two calls below both passed -- one runtime array
+  // holding `1` and `"s"`.
+  assert_eq(checks_clean(String::concat(capturing_g, "let g2 = g\nlet a = g2(0, 1)\nlet b = g2(0, \"s\")\n")), false)
+}
+
+test "2459: the alias answers the same as the direct use" {
+  // The A/B that isolates it: the alias is the ONLY difference between these,
+  // and before the fix they disagreed.
+  let direct = String::concat(capturing_g, "let a = g(0, 1)\nlet b = g(0, \"s\")\n")
+  let aliased = String::concat(capturing_g, "let g2 = g\nlet a = g2(0, 1)\nlet b = g2(0, \"s\")\n")
+  assert_eq(checks_clean(direct), checks_clean(aliased))
+  assert_eq(checks_clean(direct), false)
+}
+
+test "2459: a wrapper closure over the same capture is rejected too" {
+  // The spelling #2459 was first found with. It reaches the captured slot
+  // through a call rather than a name, which is why the scan reads bare
+  // callees as well as free names.
+  let src = String::concat(capturing_g, "let put = [T](t: T) -> Unit { let _ = g(0, t)\n() }\nput(1)\nput(\"s\")\n")
+  assert_eq(checks_clean(src), false)
+}
+
+test "2459: homogeneous use through the alias still checks" {
+  // The restriction is on QUANTIFYING the slot, not on using it. One element
+  // type through the alias is exactly what the shared slot allows.
+  assert_eq(checks_clean(String::concat(capturing_g, "let g2 = g\nlet a = g2(0, 1)\nlet b = g2(0, 2)\n")), true)
+}
+
+test "2461: aliasing a generic function keeps it polymorphic" {
+  // `mk` builds a FRESH array from its own argument every call, so `m2(1)` and
+  // `m2(\"s\")` return two different arrays and nothing is shared. Rejecting
+  // this was a regression: measured, the committed seed accepts it.
+  let src = "fn mk[T](v: T) -> Array[T] { [v] }\nlet m2 = mk\nlet a: Array[Int] = m2(1)\nlet b: Array[String] = m2(\"s\")\n"
+  assert_eq(checks_clean(src), true)
+  // Without the alias it was always accepted -- the alias was the whole
+  // difference, in the opposite direction from #2459's.
+  assert_eq(checks_clean("fn mk[T](v: T) -> Array[T] { [v] }\nlet a: Array[Int] = mk(1)\nlet b: Array[String] = mk(\"s\")\n"), true)
+}
+
+test "2461: only an Array in the return position was affected" {
+  // The narrowing that identified the predicate: `ty_has_open_array_elem` was
+  // the arm firing, so an alias whose return mentions no Array was never hit.
+  assert_eq(checks_clean("fn idf[T](v: T) -> T { v }\nlet i2 = idf\nlet a = i2(1)\nlet b = i2(\"s\")\n"), true)
+  assert_eq(checks_clean("fn opt[T](v: T) -> Option[T] { Some(v) }\nlet o2 = opt\nlet a = o2(1)\nlet b = o2(\"s\")\n"), true)
+}
+
+test "2459: a recursive binding is not its own environment" {
+  // `let rec` binds a placeholder for its recursive uses BEFORE the body is
+  // checked and unifies it with the signature afterwards, so at generalization
+  // time the recursive name carries the very variables being generalized.
+  // Reading those as environment-owned would monomorphize every recursive
+  // generic function, which is why `let_generalize` takes the name being
+  // defined.
+  assert_eq(checks_clean("fn main() -> Int { let rec go = [T](n: Int, v: T) -> T { if n == 0 { v } else { go(n - 1, v) } }\nlet a = go(2, 1)\nlet b = go(2, \"s\")\n1 }"), true)
+}
+
+test "2459: the rule is spelled once, so a top-level let answers like a local" {
+  // This site had its own copy of the predicate in checker_stmt.vibe, so a
+  // top-level `let g2 = g` kept quantifying the captured slot after both local
+  // arms stopped. Three places for one rule is how they drift.
+  let toplevel = String::concat(capturing_g, "let g2 = g\nlet a = g2(0, 1)\nlet b = g2(0, \"s\")\n")
+  let local = String::concat(capturing_g, "fn main() -> Unit { let g2 = g\nlet a = g2(0, 1)\nlet b = g2(0, \"s\")\n() }")
+  assert_eq(checks_clean(toplevel), checks_clean(local))
+  assert_eq(checks_clean(toplevel), false)
+}

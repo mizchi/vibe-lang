@@ -26,6 +26,7 @@ import @vibe/compiler/core {
   find_typedef,
   fresh_var,
   generalize,
+  generalize_except,
   hkt_apply_ctor,
   instantiate,
   is_alias_constructor,
@@ -3032,26 +3033,25 @@ fn append_row_label(labels: Array[String], label: String) -> Unit {
   }
 }
 
-/// #2455: the type variables reachable from a value, WITHOUT descending
-/// `CtForAll`. A quantified scheme's bound ids belong to another scope's
-/// counter domain -- `instantiate` renames them precisely because they can
-/// collide with locally fresh ids (#743) -- and a scheme's FREE ids carry the
-/// same hazard, since #829 records that those are NOT renamed at all. Reading
-/// either as an environment variable can reject a valid program, so the walk
-/// stops at a scheme. It is the conservative direction: this check only ever
-/// reports fewer binders, never more.
+/// The FREE type variables of a value. A scheme's own bound ids are excluded
+/// -- they belong to another scope's counter domain, and `instantiate` renames
+/// them precisely because they can collide with locally fresh ids (#743) --
+/// but its body IS walked, because what a scheme leaves free is an enclosing
+/// binding's slot showing through.
 ///
-/// Codex P1 on #2458 asked for the body to be walked, excluding the binder
-/// array, and gave a captured
-/// `let g = [U](u: U, k) -> U { Array::push(xs, k)\nu }` as the exploit. The
-/// walk was implemented that way and MEASURED: it does surface the scheme's
-/// free id, and the answer does not change, because the exploit does not run
-/// through a binder at all. Removing the second closure's `[T]` leaves the
-/// program equally accepted, and both spellings put an `Int` and a `String`
-/// into one array at runtime (`1 | s`). What leaks there is `g`'s own scheme,
-/// built from an unannotated parameter that no longer constrains its callers
-/// -- filed separately. Walking the body would therefore add the #829
-/// false-positive risk and close nothing, so it was reverted.
+/// Codex P1 on #2458 asked for exactly this. It was implemented, measured to
+/// change no answer for #2455's binder check, and reverted rather than shipped
+/// on faith. #2459 supplied the input that makes it load-bearing: `let g2 = g`
+/// where `g` captures `let xs = []` reads `g`'s scheme, and the slot that must
+/// not be quantified is precisely the one free variable inside it. Without the
+/// descent `env_reachable_tvars` returns nothing there and the alias
+/// generalizes a captured array -- measured, `1 | s` in one array at runtime.
+///
+/// The #829 hazard the revert cited is real but narrower than it reads: a
+/// scheme's free ids are not renamed by `instantiate`, so an IMPORTED
+/// scheme's free id can collide with a local one. That costs a spurious
+/// exclusion (a binding stays monomorphic) rather than a wrong answer, which
+/// is the safe direction for both callers.
 fn escape_tvars_into(ty: Type, out: Array[Int]) -> Unit {
   match ty {
     CtVar(id) => if !esc_int_has(out, id) {
@@ -3096,6 +3096,20 @@ fn escape_tvars_into(ty: Type, out: Array[Int]) -> Unit {
       let mut i = 0
       while i < Array::length(args) {
         escape_tvars_into(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    CtForAll(bound, _, scheme_body) => {
+      let inner = array_empty()
+      escape_tvars_into(scheme_body, inner)
+      let mut i = 0
+      while i < Array::length(inner) {
+        let id = Array::get(inner, i)
+        if esc_int_has(bound, id) || esc_int_has(out, id) {
+          ()
+        } else {
+          Array::push(out, id)
+        }
         i = i + 1
       }
     },
@@ -3159,6 +3173,97 @@ fn esc_name_is_param(name: String, params: Array[(String, Option[TypeExpr])]) ->
     i = i + 1
   }
   found
+}
+
+/// #2459: the type variables an expression can reach THROUGH THE ENVIRONMENT
+/// -- the free names it mentions (including bare callees, per #2455), looked
+/// up in `env` and zonked. A variable can only have entered the expression's
+/// type through a name it mentions, a parameter, or an annotation, so this is
+/// a sound over-approximation of "free in the environment" for the value being
+/// bound, and it costs one walk of the right-hand side instead of a scan of
+/// the whole environment.
+///
+/// `self_name` is the binding being defined. A `let rec` binds a placeholder
+/// for its own recursive uses BEFORE the body is checked and unifies it with
+/// the signature afterwards, so at generalization time the recursive name
+/// carries the very variables being generalized; reading them as
+/// environment-owned would monomorphize every recursive generic function.
+fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Option[String]) -> Array[Int] {
+  let out = array_empty()
+  let names = closure_free_names(val, array_empty())
+  for callee in closure_bare_callee_names(val) {
+    if string_array_has(names, callee) {
+      ()
+    } else {
+      Array::push(names, callee)
+    }
+  }
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    let is_self = match self_name {
+      Some(sn) => sn == name,
+      None => false
+    }
+    if is_self {
+      ()
+    } else {
+      match env_lookup(env, name) {
+        // `subst_apply_except` and NOT `subst_apply`: the latter returns a
+        // `CtForAll` untouched (core/types.vibe), so a scheme's free variable
+        // would come back with its pre-unification id and match nothing. The
+        // `except` form substitutes through the body while protecting the
+        // scheme's own bound vars, which is the zonk this needs.
+        Some(raw_ty) => escape_tvars_into(subst_apply_except(s, raw_ty, array_empty()), out),
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2459 / #2461: the two independent reasons not to generalize a `let`.
+///
+/// (A) The VALUE RESTRICTION: the binding HOLDS a mutable container, so its
+///     element variable must stay a monotype -- `let xs = []` is one array,
+///     and quantifying its element would let two uses disagree about it
+///     (#938, #2447).
+/// (B) The ENVIRONMENT RESTRICTION: a variable that is free in the enclosing
+///     environment belongs to something else and is not this binding's to
+///     quantify (#2459).
+///
+/// (A) is about what the value IS; (B) is about where its variables CAME
+/// FROM. Conflating them is what made both neighbouring bugs: (A) was applied
+/// to a FUNCTION type, where the array is produced per call rather than held,
+/// so `let mk2 = mk` on a perfectly generic `mk[T](v: T) -> Array[T]` was
+/// refused (#2461); and (B) was missing, so `let g2 = g` quantified a captured
+/// slot (#2459). A function value holds a container only when it CAPTURED one,
+/// which is (B)'s question, not (A)'s -- so the `CtFn` case is decided by
+/// environment reachability and every other case by (A) as before.
+export fn let_generalize(val: Expr, vt: Type, env: TypeEnv, s: Subst, self_name: Option[String]) -> Type {
+  let vt_resolved = subst_apply(s, vt)
+  if Array::length(collect_tvars(vt_resolved)) == 0 {
+    // Nothing to quantify; skip the right-hand-side walk entirely. Most
+    // bindings in a real program land here.
+    generalize(s, vt)
+  } else {
+    let env_ids = env_reachable_tvars(val, env, s, self_name)
+    let holds_container = is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) || ty_has_open_array_elem(vt_resolved)
+    let restricted = if !holds_container {
+      false
+    } else {
+      match vt_resolved {
+        CtFn(_, _, _) => esc_ids_intersect(collect_tvars(vt_resolved), env_ids),
+        _ => true
+      }
+    }
+    if restricted {
+      vt
+    } else {
+      generalize_except(s, vt, env_ids)
+    }
+  }
 }
 
 /// #2455: each name this closure CAPTURES from an enclosing scope, paired with
@@ -6996,14 +7101,11 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // `CtNamed("ArrayBuilder", [v])` would re-instantiate a fresh v at
         // every use and pushes could never constrain each other (the exact
         // hole this issue is about). Bind the monotype instead.
-        let vt_resolved = subst_apply(ns, vt)
         // #2447: a still-open Array element var gets the same treatment as
-        // a builder's -- see ty_has_open_array_elem.
-        let gen = if is_array_builder_ty(vt_resolved) || is_region_tagged_ty(vt_resolved) || ty_has_open_array_elem(vt_resolved) {
-          vt
-        } else {
-          generalize(ns, vt)
-        }
+        // a builder's; #2459: a variable free in the ENVIRONMENT is not this
+        // binding's to quantify. See let_generalize for why those are two
+        // rules and not one.
+        let gen = let_generalize(val, vt, cenv, ns, None)
         let aliases_outer = expression_aliases_outer_binding(val, cenv)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
@@ -7060,12 +7162,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // restriction as ELet above -- `let rec get = () -> { xs }` returns
         // the same captured array every call, and this site generalized
         // unconditionally.
-        let rec_resolved = subst_apply(s2, tv)
-        let gen = if is_array_builder_ty(rec_resolved) || is_region_tagged_ty(rec_resolved) || ty_has_open_array_elem(rec_resolved) {
-          tv
-        } else {
-          generalize(s2, tv)
-        }
+        let gen = let_generalize(val, tv, cenv, s2, Some(name))
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
         s1 = s2

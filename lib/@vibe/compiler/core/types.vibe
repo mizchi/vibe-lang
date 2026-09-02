@@ -4757,6 +4757,45 @@ export fn collect_subst_bounds_pairs(s: Subst) -> Array[(Int, Array[String])] {
   out
 }
 
+/// #2459: `generalize`, minus the variables that are still FREE IN THE
+/// ENVIRONMENT. Quantifying one of those hands every use its own copy of a
+/// slot that has exactly one runtime home -- measured, `let g2 = g` on a
+/// lambda capturing `let xs = []` turned `forall U. (U, ?k) -> U` into
+/// `forall U ?k. (U, ?k) -> U`, and the two calls then put an `Int` and a
+/// `String` into one array.
+///
+/// `exclude` is the caller's answer to "which variables belong to something
+/// else". An empty `exclude` is exactly `generalize`.
+export fn generalize_except(s: Subst, ty: Type, exclude: Array[Int]) -> Type {
+  match ty {
+    CtForAll(vars, bounds, body) => CtForAll(vars, bounds, subst_apply_except(s, body, vars)),
+    _ => {
+      let resolved = subst_apply(s, ty)
+      let tvars = array_empty()
+      for vid in collect_tvars(resolved) {
+        if array_has_int(exclude, vid, 0) {
+          ()
+        } else {
+          Array::push(tvars, vid)
+        }
+      }
+      if Array::length(tvars) == 0 {
+        resolved
+      } else {
+        let bounds_pairs = collect_subst_bounds_pairs(s)
+        let var_bounds = array_empty()
+        for vid in tvars {
+          let bounds = int_bounds_lookup(bounds_pairs, vid, 0)
+          if Array::length(bounds) != 0 {
+            Array::push(var_bounds, (vid, bounds))
+          }
+        }
+        CtForAll(tvars, var_bounds, resolved)
+      }
+    }
+  }
+}
+
 export fn generalize(s: Subst, ty: Type) -> Type {
   match ty {
     CtForAll(vars, bounds, body) => CtForAll(vars, bounds, subst_apply_except(s, body, vars)),
