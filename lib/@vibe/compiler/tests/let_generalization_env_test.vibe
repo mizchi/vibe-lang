@@ -109,3 +109,23 @@ test "2459: the rule is spelled once, so a top-level let answers like a local" {
   assert_eq(checks_clean(toplevel), checks_clean(local))
   assert_eq(checks_clean(toplevel), false)
 }
+
+test "2459: an excluded variable is resolved, not taken as written" {
+  // Codex P1 on #2460. `subst_apply` and `subst_apply_except` BOTH return a
+  // `CtForAll` untouched, so a scheme's free variable comes back with the id
+  // it was written with. Unify the captured slot with another open slot
+  // BEFORE the alias and the alias's type resolves to the second id while the
+  // scan still reports the first, so the exclusion misses and the captured
+  // array takes two element types again.
+  //
+  // Measured before the fix: the `link` call is the whole difference --
+  // without it the alias was already rejected, with it the program was clean.
+  let link = "fn link[T](a: Array[T], b: Array[T]) -> Unit { () }\n"
+  let g = "let xs = []\nlet ys = []\nlet g = [U](u: U, k) -> U { Array::push(xs, k)\nu }\n"
+  let calls = "let g2 = g\nlet a = g2(0, 1)\nlet b = g2(0, \"s\")\n"
+  // The slots are joined BEFORE the alias -- the case that regressed.
+  assert_eq(checks_clean(String::concat(link, String::concat(g, String::concat("let u0 = link(xs, ys)\n", calls)))), false)
+  // Joined AFTER the alias: the exclusion never went stale here, and this is
+  // the control that shows the `link` call is what the fix is about.
+  assert_eq(checks_clean(String::concat(link, String::concat(g, String::concat(calls, "let u0 = link(xs, ys)\n")))), false)
+}

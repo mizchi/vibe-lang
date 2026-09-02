@@ -3131,6 +3131,33 @@ fn esc_int_has(xs: Array[Int], v: Int) -> Bool {
   found
 }
 
+/// The free variables of a value, each RESOLVED through the substitution.
+///
+/// Collecting from `subst_apply(s, ty)` is not the same thing and is wrong for
+/// a scheme: `subst_apply` and `subst_apply_except` BOTH return a `CtForAll`
+/// untouched (`CtForAll(_, _, _) => ty` in core/types.vibe), so a scheme's free
+/// variable comes back with the id it was written with. Codex P1 on #2460
+/// found what that costs: unify a captured slot `k` with another open slot `j`
+/// -- `link(xs, ys)` for a `fn link[T](a: Array[T], b: Array[T])` -- BEFORE
+/// `let g2 = g`, and the alias's type resolves to `j` while the scan still
+/// reports the stale `k`. `generalize_except` then quantifies `j`, and the
+/// captured array takes an Int and a String again with no diagnostic.
+/// Measured: clean before this, rejected after, with the same program minus
+/// the `link` call rejected either way.
+///
+/// So collect the ids as WRITTEN, then resolve each one. An unbound id
+/// resolves to itself, and for a non-scheme type this is exactly collecting
+/// from the zonked type.
+fn escape_tvars_zonked_into(ty: Type, s: Subst, out: Array[Int]) -> Unit {
+  let raw = array_empty()
+  escape_tvars_into(ty, raw)
+  let mut i = 0
+  while i < Array::length(raw) {
+    escape_tvars_into(subst_apply(s, CtVar(Array::get(raw, i))), out)
+    i = i + 1
+  }
+}
+
 fn esc_ids_intersect(a: Array[Int], b: Array[Int]) -> Bool {
   let mut i = 0
   let mut hit = false
@@ -3209,12 +3236,7 @@ fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Option[Stri
       ()
     } else {
       match env_lookup(env, name) {
-        // `subst_apply_except` and NOT `subst_apply`: the latter returns a
-        // `CtForAll` untouched (core/types.vibe), so a scheme's free variable
-        // would come back with its pre-unification id and match nothing. The
-        // `except` form substitutes through the body while protecting the
-        // scheme's own bound vars, which is the zonk this needs.
-        Some(raw_ty) => escape_tvars_into(subst_apply_except(s, raw_ty, array_empty()), out),
+        Some(raw_ty) => escape_tvars_zonked_into(raw_ty, s, out),
         None => ()
       }
     }
