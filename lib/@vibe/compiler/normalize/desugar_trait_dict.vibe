@@ -12557,6 +12557,14 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
     } else if str_array_contains(dtd_eq_generic_types, n) || str_array_contains(dtd_eq_unsafe_types, n) {
       // A bare generic name says nothing about its arguments.
       false
+    } else if str_array_contains(dtd_eq_type_owners, n) {
+      // Codex round 17 on #2456: a source declaration owns this spelling,
+      // scalar-looking or not (`struct Int { value: String }`). It is
+      // content-comparable exactly when it is a declared struct / enum the
+      // unsafe walk above admitted; an alias or an effect wearing a scalar
+      // name has no comparator and fails closed. `eq_for_typed` dispatches
+      // the same name to its declared comparator, never the scalar arm.
+      str_array_contains(dtd_eq_known_types, n)
     } else {
       is_scalar_type_name(n) || str_array_contains(dtd_eq_known_types, n)
     },
@@ -13050,6 +13058,17 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
   let fty = eq_expand_alias_ty(subst_scope_formals_ty(fty0))
   match fty {
     TyName(n) => if n == "__EqAliasCycle" {
+      ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+    } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) {
+      // Codex round 17 on #2456: a source-owned spelling takes its declared
+      // comparator BEFORE any builtin arm below can claim it. Measured: with
+      // `struct Int { value: String }`, an untyped-empty `Array[Int]` filled
+      // by name reached the `Int` arm and compared the reference words
+      // (`+ 0`), answering `false` for equal content.
+      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
+    } else if str_array_contains(dtd_eq_type_owners, n) {
+      // Owned by an alias or an effect: no comparator to call. Fail closed
+      // rather than fall to a builtin arm for a name that is not the builtin.
       ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
     } else if n == "Double" || n == "Float" {
       // Under RC a Double is a BOXED heap value, so a raw `==` between two
