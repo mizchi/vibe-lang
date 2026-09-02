@@ -3202,6 +3202,100 @@ fn esc_name_is_param(name: String, params: Array[(String, Option[TypeExpr])]) ->
   found
 }
 
+/// #2459: the type NAMES an annotation mentions, minus the ones the annotated
+/// lambda binds itself. A type parameter is bound in the value environment
+/// under its own name (the `EFn` arm does `env_bind(tp_env, tpname, ..)`), so
+/// once the names are in hand the ordinary lookup finds the outer binder's
+/// variable and nothing else is needed.
+fn esc_collect_type_names(te: TypeExpr, skip: Array[String], out: Array[String]) -> Unit {
+  match te {
+    TyName(n) => if string_array_has(skip, n) || string_array_has(out, n) {
+      ()
+    } else {
+      Array::push(out, n)
+    },
+    TyApp(n, args) => {
+      if string_array_has(skip, n) || string_array_has(out, n) {
+        ()
+      } else {
+        Array::push(out, n)
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        esc_collect_type_names(Array::get(args, i), skip, out)
+        i = i + 1
+      }
+    },
+    TyFn(ps, r, _) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        esc_collect_type_names(Array::get(ps, i), skip, out)
+        i = i + 1
+      }
+      esc_collect_type_names(r, skip, out)
+    },
+    TyTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        esc_collect_type_names(Array::get(elems, i), skip, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// #2459: every type name written in an ANNOTATION anywhere inside a value.
+///
+/// Codex P1 on #2460. `env_reachable_tvars`'s own doc says a variable enters a
+/// value's type "through a name it mentions, a parameter, or an annotation",
+/// and then only read the names -- so a lambda that mentions an enclosing type
+/// parameter ONLY in its signature looked independent:
+///
+///     fn outer[T](x: T) -> Int {
+///       let f = (v: T) -> Array[T] { [v] }
+///       let a = f(1)
+///       let b = f("s")          // accepted
+///     }
+///
+/// Measured, this is a regression introduced by narrowing the value
+/// restriction for `CtFn`: on `cacbf4d51` the old `ty_has_open_array_elem`
+/// conservatism refused the binding for its `Array` shape and covered this by
+/// accident. Adding `let _ = x` inside the lambda -- a VALUE of type `T` --
+/// made the old scan see it, which is the A/B that isolates the annotation
+/// path.
+///
+/// A lambda's OWN binders are skipped: `[S](v: S) -> Array[S]` owns `S`, and
+/// reading a shadowed outer `S` would monomorphize a genuinely generic lambda.
+fn esc_annotation_type_names(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    EFn(tparams, _, params, ret_ty, _, _) => {
+      let skip = for tpk in tparams {
+        type_param_name(tpk)
+      }
+      let mut i = 0
+      while i < Array::length(params) {
+        match Array::get(params, i) {
+          (_, Some(te)) => esc_collect_type_names(te, skip, out),
+          _ => ()
+        }
+        i = i + 1
+      }
+      match ret_ty {
+        Some(te) => esc_collect_type_names(te, skip, out),
+        None => ()
+      }
+    },
+    _ => ()
+  }
+  let kids = expr_children(e)
+  let mut ci = 0
+  while ci < Array::length(kids) {
+    esc_annotation_type_names(Array::get(kids, ci), out)
+    ci = ci + 1
+  }
+}
+
 /// #2459: the type variables an expression can reach THROUGH THE ENVIRONMENT
 /// -- the free names it mentions (including bare callees, per #2455), looked
 /// up in `env` and zonked. A variable can only have entered the expression's
@@ -3223,6 +3317,17 @@ fn env_reachable_tvars(val: Expr, env: TypeEnv, s: Subst, self_name: Option[Stri
       ()
     } else {
       Array::push(names, callee)
+    }
+  }
+  // A type parameter is bound in this same environment under its own name, so
+  // an annotation that mentions one is read exactly like a value name.
+  let ann_names = array_empty()
+  esc_annotation_type_names(val, ann_names)
+  for tn in ann_names {
+    if string_array_has(names, tn) {
+      ()
+    } else {
+      Array::push(names, tn)
     }
   }
   let mut i = 0

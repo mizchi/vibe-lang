@@ -146,3 +146,34 @@ test "2461: a lambda's alias keeps its polymorphism too" {
   // And through two hops, where the #2461 direction could equally decay.
   assert_eq(checks_clean("fn mk[T](v: T) -> Array[T] { [v] }\nlet m2 = mk\nlet m3 = m2\nlet a: Array[Int] = m3(1)\nlet b: Array[String] = m3(\"s\")\n"), true)
 }
+
+test "2459: a variable reached only through an ANNOTATION is excluded too" {
+  // Codex P1 on #2460, and a regression this PR introduced: narrowing the
+  // value restriction for `CtFn` removed a cover the old predicate provided by
+  // accident. Measured on `cacbf4d51`, the two-use program below was REJECTED
+  // (the old `ty_has_open_array_elem` refused the binding for its `Array`
+  // shape); after the narrowing it checked clean.
+  //
+  // `env_reachable_tvars`'s own doc said a variable enters through "a name it
+  // mentions, a parameter, or an ANNOTATION", and then read only the names --
+  // so a lambda mentioning the enclosing type parameter solely in its
+  // signature looked independent of it.
+  let ann = "fn outer[T](x: T) -> Int { let f = (v: T) -> Array[T] { [v] }\nlet a = f(1)\nlet b = f(\"s\")\n1 }\n"
+  assert_eq(checks_clean(ann), false)
+  // The A/B that isolates the annotation path: add a VALUE of type `T` inside
+  // the lambda and even the name-only scan saw it.
+  let value_too = "fn outer[T](x: T) -> Int { let f = (v: T) -> Array[T] { let _ = x\n[v] }\nlet a = f(1)\nlet b = f(\"s\")\n1 }\n"
+  assert_eq(checks_clean(value_too), false)
+  // One use is fine -- the binding is monomorphic, not rejected outright.
+  assert_eq(checks_clean("fn outer[T](x: T) -> Int { let f = (v: T) -> Array[T] { [v] }\nlet a = f(x)\n1 }\n"), true)
+}
+
+test "2459: a lambda's own binder is not read from the environment" {
+  // The skip list. Without it, an inner `[S]` that SHADOWS an outer `[S]`
+  // would resolve to the outer binder's variable and monomorphize a genuinely
+  // generic lambda -- the #2461 direction, reintroduced through annotations.
+  assert_eq(checks_clean("fn outer[S](x: S) -> Int { let f = [S](v: S) -> Array[S] { [v] }\nlet a: Array[Int] = f(1)\nlet b: Array[String] = f(\"s\")\n1 }\n"), true)
+  // No enclosing generic at all, and a wholly concrete annotation.
+  assert_eq(checks_clean("fn main() -> Int { let f = [S](v: S) -> Array[S] { [v] }\nlet a: Array[Int] = f(1)\nlet b: Array[String] = f(\"s\")\n1 }\n"), true)
+  assert_eq(checks_clean("fn main() -> Int { let f = (v: Int) -> Array[Int] { [v] }\nlet a = f(1)\n1 }\n"), true)
+}
