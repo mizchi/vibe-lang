@@ -12068,8 +12068,65 @@ let dtd_eq_enum_payload_check_stack: Array[String] = empty_str_array()
 /// path did; the payload gate applies only to the derived one.
 let dtd_eq_explicit_equals: Array[String] = empty_str_array()
 
+/// Codex round 12 on #2456: the instantiation an explicit comparator is
+/// written for -- its first parameter's annotation (`fn Wrap::equals(a:
+/// Wrap[Array[Int]], ..)` records `Wrap[Array[Int]]`). The generated array
+/// helper calls the comparator after checking has finished, so handing it
+/// another instantiation (`Wrap[String]`) would read a string payload as an
+/// array; a concrete application is admitted only when it matches this
+/// type exactly (after alias expansion). A comparator with no annotation,
+/// or one generic over its own formals (whose post-check call would bypass
+/// the `Eq` witness dispatch), records nothing and every application fails
+/// closed.
+let dtd_eq_explicit_equals_param: Array[(String, TypeExpr)] = array_empty()
+
 fn eq_has_explicit_equals(name: String) -> Bool {
   str_array_contains(dtd_eq_explicit_equals, name)
+}
+
+fn eq_explicit_equals_matches(head: String, args: Array[TypeExpr]) -> Bool {
+  let want = impl_target_key(eq_expand_alias_ty(TyApp(head, args)))
+  let mut matched = false
+  let mut i = 0
+  while i < Array::length(dtd_eq_explicit_equals_param) {
+    let entry = Array::get(dtd_eq_explicit_equals_param, i)
+    if entry.0 == head && impl_target_key(eq_expand_alias_ty(entry.1)) == want {
+      matched = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  matched
+}
+
+/// Record an explicit `<ename>::equals` and, when it is monomorphic and
+/// annotated, the instantiation its first parameter names.
+fn eq_record_explicit_equals(stmts: Array[Stmt], ename: String) -> Unit {
+  let fname = qualified_name(ename, "equals")
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) => if name == fname {
+        Array::push(dtd_eq_explicit_equals, ename)
+        match value {
+          EFn(tps, _, params, _, _, _) => if Array::length(tps) == 0 && Array::length(params) > 0 {
+            match Array::get(params, 0).1 {
+              Some(t) => Array::push(dtd_eq_explicit_equals_param, (ename, t)),
+              None => ()
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
 }
 let dtd_eq_type_aliases: Array[(String, Array[String], TypeExpr)] = array_empty()
 // Source declarations that own a type spelling. This is deliberately
@@ -12206,7 +12263,11 @@ fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
   if eq_builtin_head_owned_by_nonenum(head) {
     false
   } else {
-    eq_builtin_enum_arm_applies(head) || eq_has_explicit_equals(head) || eq_generic_enum_payloads_concrete_comparable(head)
+    eq_builtin_enum_arm_applies(head) || (if eq_has_explicit_equals(head) {
+      eq_explicit_equals_matches(head, args)
+    } else {
+      eq_generic_enum_payloads_concrete_comparable(head)
+    })
   }
 }
 
@@ -12218,6 +12279,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_enum_decls, 0)
   Array::truncate(dtd_eq_enum_payload_check_stack, 0)
   Array::truncate(dtd_eq_explicit_equals, 0)
+  Array::truncate(dtd_eq_explicit_equals_param, 0)
   Array::truncate(dtd_eq_type_aliases, 0)
   Array::truncate(dtd_eq_type_owners, 0)
   Array::truncate(dtd_eq_nonstandard_builtin_enums, 0)
@@ -12251,11 +12313,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
       SEnum(_, ename, decl_tparams, variants, _) => {
         Array::push(dtd_eq_type_owners, ename)
         Array::push(dtd_eq_enum_decls, (ename, decl_tparams, variants))
-        if top_level_fn_exists(stmts, qualified_name(ename, "equals")) {
-          Array::push(dtd_eq_explicit_equals, ename)
-        } else {
-          ()
-        }
+        eq_record_explicit_equals(stmts, ename)
         if Array::length(decl_tparams) > 0 {
           Array::push(dtd_eq_generic_types, ename)
         } else {
@@ -12481,8 +12539,13 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
         // `Int` (`64 << 32` vs `65 << 32` compared equal). Admitted exactly
         // when no payload is typed by a formal, the condition under which
         // `eq_for_typed_declared_app` dispatches to that comparator -- or
-        // when the program wrote its own `::equals` (round 11).
-        eq_has_explicit_equals(head) || eq_generic_enum_payloads_concrete_comparable(head)
+        // when the program wrote its own `::equals` for exactly this
+        // instantiation (rounds 11-12).
+        if eq_has_explicit_equals(head) {
+          eq_explicit_equals_matches(head, args)
+        } else {
+          eq_generic_enum_payloads_concrete_comparable(head)
+        }
       } else {
         // Concrete declared generic instantiations get a comparator specialized
         // with these arguments. Unknown heads (Map included) remain fail-closed.
@@ -13264,7 +13327,12 @@ fn eq_generic_enum_payloads_concrete_comparable(name: String) -> Bool {
 /// untyped-empty arm and the expanding-recursion case use -- rather than
 /// comparing a formal-typed payload through the erased `==`.
 fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr) -> Expr {
-  if eq_has_explicit_equals(head) || eq_generic_enum_payloads_concrete_comparable(head) {
+  let admitted = if eq_has_explicit_equals(head) {
+    eq_explicit_equals_matches(head, args)
+  } else {
+    eq_generic_enum_payloads_concrete_comparable(head)
+  }
+  if admitted {
     ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
   } else {
     ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
