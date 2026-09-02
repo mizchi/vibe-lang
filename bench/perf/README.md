@@ -104,7 +104,7 @@ it, and note old -> new (and why) in the PR.
 
 ## Continuous perf tracking (per-PR report + main history)
 
-`.github/workflows/perf.yml` runs on every PR and every main push
+The `perf-metrics` job in `.github/workflows/ci.yml` runs on every PR and every main push, after `compiler-gate`, reusing its stage2 and generated artifacts
 (non-blocking — the blocking allocation gate stays in ci.yml's KPI step):
 
 - `scripts/bench_metrics.sh <stage2.wasm> [out.json]` collects one snapshot:

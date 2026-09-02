@@ -3,7 +3,7 @@
 `bench/exec/` is a small, fixed set of **general programs** — the kind of code
 the compiler produces for users, deliberately NOT the selfhost compiler
 compiling itself — used by the continuous perf pipeline
-(`scripts/bench_metrics.sh` → `.github/workflows/perf.yml`) to answer three
+(`scripts/bench_metrics.sh` → the `perf-metrics` job in `.github/workflows/ci.yml`) to answer three
 questions with **deterministic, rule-based measurements**:
 
 1. **How many instructions does generated code take to run?** Each scenario is

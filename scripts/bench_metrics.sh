@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Collect the per-commit performance metrics snapshot the continuous perf
-# pipeline tracks (.github/workflows/perf.yml, bench/perf/README.md).
+# pipeline tracks (the perf-metrics job in .github/workflows/ci.yml, bench/perf/README.md).
 #
 #   scripts/bench_metrics.sh <stage2.wasm> [out.json]
 #
