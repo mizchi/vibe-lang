@@ -3035,10 +3035,23 @@ fn append_row_label(labels: Array[String], label: String) -> Unit {
 /// #2455: the type variables reachable from a value, WITHOUT descending
 /// `CtForAll`. A quantified scheme's bound ids belong to another scope's
 /// counter domain -- `instantiate` renames them precisely because they can
-/// collide with locally fresh ids (#743) -- so reading them as environment
-/// variables would reject valid programs. Everything a scheme leaves free is
-/// unreachable through this walk too, which is the conservative direction:
-/// the escape check below only ever reports fewer binders, never more.
+/// collide with locally fresh ids (#743) -- and a scheme's FREE ids carry the
+/// same hazard, since #829 records that those are NOT renamed at all. Reading
+/// either as an environment variable can reject a valid program, so the walk
+/// stops at a scheme. It is the conservative direction: this check only ever
+/// reports fewer binders, never more.
+///
+/// Codex P1 on #2458 asked for the body to be walked, excluding the binder
+/// array, and gave a captured
+/// `let g = [U](u: U, k) -> U { Array::push(xs, k)\nu }` as the exploit. The
+/// walk was implemented that way and MEASURED: it does surface the scheme's
+/// free id, and the answer does not change, because the exploit does not run
+/// through a binder at all. Removing the second closure's `[T]` leaves the
+/// program equally accepted, and both spellings put an `Int` and a `String`
+/// into one array at runtime (`1 | s`). What leaks there is `g`'s own scheme,
+/// built from an unannotated parameter that no longer constrains its callers
+/// -- filed separately. Walking the body would therefore add the #829
+/// false-positive risk and close nothing, so it was reverted.
 fn escape_tvars_into(ty: Type, out: Array[Int]) -> Unit {
   match ty {
     CtVar(id) => if !esc_int_has(out, id) {
@@ -3118,6 +3131,36 @@ fn esc_ids_intersect(a: Array[Int], b: Array[Int]) -> Bool {
   hit
 }
 
+/// #2455: a closure's own parameter, under either optional-argument spelling
+/// (`x~` / `x?`), is not a capture. `closure_free_names` strips these itself;
+/// the bare-callee scan beside it does not, so the same normalization is
+/// applied here.
+fn esc_name_is_param(name: String, params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) && !found {
+    let (raw_name, _) = Array::get(params, i)
+    let nlen = String::length(raw_name)
+    let pname = if nlen > 0 {
+      let last = String::char_code_at(raw_name, nlen - 1)
+      if last == '~' || last == '?' {
+        raw_name[0: nlen - 1]
+      } else {
+        raw_name
+      }
+    } else {
+      raw_name
+    }
+    if pname == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// #2455: each name this closure CAPTURES from an enclosing scope, paired with
 /// the still-open type variables of the value bound to it.
 ///
@@ -3133,6 +3176,21 @@ fn esc_ids_intersect(a: Array[Int], b: Array[Int]) -> Bool {
 fn captured_escape_tvars(body: Expr, params: Array[(String, Option[TypeExpr])], env: TypeEnv, s: Subst) -> Array[(String, Array[Int])] {
   let out = array_empty()
   let names = closure_free_names(body, params)
+  // A DIRECTLY CALLED capture is a capture. `closure_free_names` skips the
+  // callee of an `ECall(EIdent(..))`, so `put(v)` recorded nothing while
+  // `let p = put\np(v)` recorded `put` -- the binder laundered the escape
+  // exactly when the value was spelled as a call. Codex P1 on #2458;
+  // measured, all three of `[T](v: T) -> Array[T] { put(v) }` (clean),
+  // the same closure without the binder (rejected), and the value spelling
+  // with the binder (rejected). `closure_capture_row` reads the same two
+  // sources for the same reason.
+  for callee in closure_bare_callee_names(body) {
+    if esc_name_is_param(callee, params) || string_array_has(names, callee) {
+      ()
+    } else {
+      Array::push(names, callee)
+    }
+  }
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i)

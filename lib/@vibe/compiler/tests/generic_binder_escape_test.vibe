@@ -119,3 +119,30 @@ test "2455: the escape is found however the capture is spelled" {
   // capture is still fixed by every call.
   assert_eq(checks_clean("fn main() -> Int { let xs = []\nlet put = [T](v: T) -> Unit { Array::push(xs, v) }\n1 }"), false)
 }
+
+test "2455: a DIRECTLY CALLED capture is a capture" {
+  // Codex P1 on #2458. `closure_free_names` skips the callee of an
+  // `ECall(EIdent(..))`, so the binder laundered the escape exactly when the
+  // captured value was spelled as a call rather than named. Three-way
+  // measurement, one program, before the fix:
+  //
+  //   [T](v: T) -> Array[T] { put(v) }        CLEAN      <- laundered
+  //   (v) -> { put(v) }                       rejected   <- no binder
+  //   [T](v: T) -> Array[T] { let p = put; p(v) }  rejected  <- named value
+  //
+  // `put` is monomorphic here because `(v) -> { Array::push(xs, v); xs }`
+  // returns an open Array, which is #2450's CtFn arm of the value
+  // restriction -- that is what makes the two calls share one slot.
+  let put = "let put = (v) -> { Array::push(xs, v)\nxs }\n"
+  let called = String::concat(fill_prelude, String::concat("fn main() -> Unit { let xs = []\n", String::concat(put, "let w = [T](v: T) -> Array[T] { put(v) }\nfill(w(1), 1)\nfill_s(w(\"s\"), \"s\") }")))
+  assert_eq(checks_clean(called), false)
+  // The same capture named as a value -- caught before the fix too, and the
+  // control that proves the two spellings now agree.
+  let named = String::concat(fill_prelude, String::concat("fn main() -> Unit { let xs = []\n", String::concat(put, "let w = [T](v: T) -> Array[T] { let p = put\np(v) }\nfill(w(1), 1)\nfill_s(w(\"s\"), \"s\") }")))
+  assert_eq(checks_clean(named), false)
+  // A top-level function called from the body is NOT a capture: its type is
+  // ground, so the callee scan adds a name that contributes no variable.
+  assert_eq(checks_clean("fn idn(v: Int) -> Int { v }\nfn main() -> Int { let w = [T](v: T) -> T { let _ = idn(1)\nv }\nw(1) }"), true)
+  // Nor is the closure's own parameter, called as a function.
+  assert_eq(checks_clean("fn main() -> Int { let w = [T](v: T, f: (T) -> T) -> T { f(v) }\nw(1, (x) -> x) }"), true)
+}
