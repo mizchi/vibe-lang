@@ -13119,6 +13119,23 @@ fn eq_ty_rename_formals(t: TypeExpr, formals: Array[String]) -> TypeExpr {
   }
 }
 
+/// The formals of a declared generic struct, or an empty array for any other
+/// head (a builtin container, a generic enum, an unknown name).
+fn eq_generic_struct_formals(head: String) -> Array[String] {
+  let mut out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_generic_structs) {
+    let decl = Array::get(dtd_eq_generic_structs, i)
+    if decl.0 == head {
+      out = decl.1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Whether a (renamed, expanded) payload type still mentions a formal
 /// sentinel anywhere inside it. Asked BEFORE the allow-list: a leftover
 /// formal reaches the derived comparator as the erased `==`, so it fails
@@ -13130,10 +13147,23 @@ fn eq_ty_mentions_formal(t: TypeExpr, formals: Array[String]) -> Bool {
     TyApp(head, args) => if str_array_contains(formals, head) {
       true
     } else {
+      // Codex round 10 on #2456: a declared generic STRUCT's specialised
+      // comparator reads only the fields, so a formal forwarded to one of
+      // its UNOBSERVED parameters (`struct Phantom[X] { tag: Int }`,
+      // `W(Phantom[T])`) never reaches the erased `==`. Only the observed
+      // argument positions are walked -- the same question
+      // `generic_eq_observed_args_content_comparable` asks. Any other head
+      // (a builtin container, a generic enum) walks every argument.
+      let struct_formals = eq_generic_struct_formals(head)
       let mut hit = false
       let mut i = 0
       while i < Array::length(args) {
-        if eq_ty_mentions_formal(Array::get(args, i), formals) {
+        let walk = if Array::length(struct_formals) == Array::length(args) {
+          generic_eq_formal_is_observed(head, Array::get(struct_formals, i), empty_str_array())
+        } else {
+          true
+        }
+        if walk && eq_ty_mentions_formal(Array::get(args, i), formals) {
           hit = true
         } else {
           ()
