@@ -12323,6 +12323,12 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
     Array::push(dtd_eq_known_types, Array::get(names, i))
     i = i + 1
   }
+  // Codex round 14 on #2456: an explicit comparator's signature is validated
+  // through `eq_expand_alias_ty`, so the enums are collected here and their
+  // comparators recorded only AFTER this scan has entered every alias --
+  // `-> Truth` with `type Truth = Bool` declared below the enum used to be
+  // validated against a half-filled alias table and fail closed.
+  let enum_names = empty_str_array()
   let mut j = 0
   while j < Array::length(stmts) {
     match Array::get(stmts, j) {
@@ -12343,7 +12349,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
       SEnum(_, ename, decl_tparams, variants, _) => {
         Array::push(dtd_eq_type_owners, ename)
         Array::push(dtd_eq_enum_decls, (ename, decl_tparams, variants))
-        eq_record_explicit_equals(stmts, ename)
+        Array::push(enum_names, ename)
         if Array::length(decl_tparams) > 0 {
           Array::push(dtd_eq_generic_types, ename)
         } else {
@@ -12384,6 +12390,11 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
       _ => ()
     }
     j = j + 1
+  }
+  let mut ei = 0
+  while ei < Array::length(enum_names) {
+    eq_record_explicit_equals(stmts, Array::get(enum_names, ei))
+    ei = ei + 1
   }
   eq_unsafe_types_fill(stmts)
 }
@@ -19740,21 +19751,67 @@ fn dtd_typed_eq_residual(op: String, rl: Expr, rr: Expr, boff: Int) -> Expr {
 /// `eq_for_typed` has a structural arm for every head the field test admits
 /// (Codex P2 on #2456 -- `Array[Option[Int]]` filled through a function
 /// trapped under the scan's test although the documented allow-list admits
-/// it). No formals are in scope here: a row is only recorded for a fully
-/// concrete operand type.
+/// it). The producer records a row only for a fully concrete operand type
+/// (a checker type variable -- what a lexical formal is inside a generic
+/// body -- never rides the channel: measured, `fn same[T]` comparing two
+/// untyped-empty `Array[T]` records no row). Codex round 14 on #2456: the
+/// consumer does not rely on that. A row whose spelling names a formal in
+/// scope at this site (`T` next to a merged-in `struct T`, the #2141
+/// collision) is refused here, before the allow-list could read that
+/// spelling as the declaration and admit a comparator that compares the
+/// formal's elements by reference.
 fn dtd_typed_eq_admitted_ty(boff: Int) -> Option[TypeExpr] {
   let key = dtd_typed_eq_key_for(boff)
   if String::length(key) == 0 {
     None
   } else {
     match impl_target_from_key(key) {
-      Some(te) => if eq_ty_field_is_content_comparable(te, empty_str_array()) {
+      Some(te) => if !eq_ty_mentions_scope_formal(te) && eq_ty_field_is_content_comparable(te, empty_str_array()) {
         Some(te)
       } else {
         None
       },
       None => None
     }
+  }
+}
+
+/// Whether a channel row's TypeExpr spells a formal that is lexically in
+/// scope at the rewrite site (the same test `eq_for_typed` applies to a
+/// binder). A shape this walk does not know counts as mentioning one.
+fn eq_ty_mentions_scope_formal(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => is_marked_formal_name(n) || formal_in_scope(n) || formals_contain_source_name(dtd_scope_formals, n),
+    TyApp(head, args) => if is_marked_formal_name(head) || formal_in_scope(head) || formals_contain_source_name(dtd_scope_formals, head) {
+      true
+    } else {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(args) {
+        if eq_ty_mentions_scope_formal(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyTuple(ts) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(ts) {
+        if eq_ty_mentions_scope_formal(Array::get(ts, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyUnit => false,
+    _ => true
   }
 }
 
