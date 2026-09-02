@@ -12078,10 +12078,14 @@ let dtd_eq_explicit_equals: Array[String] = empty_str_array()
 /// parameters, BOTH annotated with the same instantiation (round 13: a
 /// `(Wrap[String], Wrap[Array[Int]])` signature admitted `Wrap[String]`
 /// from the first parameter alone and fed the second a string payload), and
-/// declare a `Bool` result, since the post-check call is used as one. A
-/// comparator missing any of that, or generic over its own formals (whose
-/// post-check call would bypass the `Eq` witness dispatch), records nothing
-/// and every application fails closed.
+/// declare a `Bool` result, since the post-check call is used as one, and
+/// carry NO effect row (round 16: the call is injected after effect
+/// checking, so `with Console` on the comparator would run inside a caller
+/// checked as pure; a comparator whose body performs an effect it does not
+/// declare is already rejected at its declaration). A comparator missing
+/// any of that, or generic over its own formals (whose post-check call
+/// would bypass the `Eq` witness dispatch), records nothing and every
+/// application fails closed.
 let dtd_eq_explicit_equals_param: Array[(String, TypeExpr)] = array_empty()
 
 fn eq_has_explicit_equals(name: String) -> Bool {
@@ -12115,7 +12119,7 @@ fn eq_record_explicit_equals(stmts: Array[Stmt], ename: String) -> Unit {
       SLet(_, _, name, _, value) => if name == fname {
         Array::push(dtd_eq_explicit_equals, ename)
         match value {
-          EFn(tps, _, params, ret_ty, _, _) => if Array::length(tps) == 0 && Array::length(params) == 2 {
+          EFn(tps, _, params, ret_ty, eff, _) => if Array::length(tps) == 0 && Array::length(params) == 2 && eq_effect_row_is_empty(eff) {
             match eq_explicit_equals_signature_ty(Array::get(params, 0).1, Array::get(params, 1).1, ret_ty) {
               Some(t) => Array::push(dtd_eq_explicit_equals_param, (ename, t)),
               None => ()
@@ -12131,6 +12135,16 @@ fn eq_record_explicit_equals(stmts: Array[Stmt], ename: String) -> Unit {
       _ => ()
     }
     i = i + 1
+  }
+}
+
+/// Whether a declaration's `with` clause is absent or empty. The injected
+/// comparator call is never effect-checked, so only such a comparator may
+/// be recorded.
+fn eq_effect_row_is_empty(eff: Option[String]) -> Bool {
+  match eff {
+    Some(row) => String::length(row) == 0,
+    None => true
   }
 }
 
