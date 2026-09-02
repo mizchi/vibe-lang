@@ -13079,15 +13079,51 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
 /// parameter therefore costs nothing. An enum that names itself in a
 /// payload is refused at the second visit (conservative; the declared-field
 /// walk keys such recursion the same way).
-/// Codex round 8 on #2456: whether a payload type mentions one of the
-/// declaration's own formals, by spelling, anywhere inside it. Asked BEFORE
-/// the allow-list, because a formal may shadow a declared type of the same
-/// spelling -- `type T = Array[Int]` or an imported `struct T` next to
+/// Codex rounds 8-9 on #2456: the declaration's own formals, renamed to a
+/// spelling no declaration can own (`#formal:T`), so that alias expansion
+/// can run over the payload without ever reading a formal as a same-spelled
+/// declared type -- `type T = Array[Int]` or an imported `struct T` next to
 /// `enum Wrap[T] { W(T) }` (the #2141 guard rejects only a same-file struct
-/// or enum) -- and the allow-list would then read the payload as that
-/// content-comparable type while the derived comparator treats it as the
-/// erased formal (measured: `false` for equal content). A shape this walk
-/// does not know is reported as mentioning a formal, which fails closed.
+/// or enum). Expansion substitutes alias arguments, so an alias that does
+/// not observe its argument erases the formal (`type Ignore[X] = Int`,
+/// `Mark(Ignore[T])` becomes `Int`, exact) while one that does keeps it
+/// (`type Keep[X] = Array[X]`, `W(Keep[T])` becomes `Array[#formal:T]`).
+fn eq_formal_sentinel(f: String) -> String {
+  String::concat("#formal:", f)
+}
+
+fn eq_ty_rename_formals(t: TypeExpr, formals: Array[String]) -> TypeExpr {
+  match t {
+    TyName(n) => if str_array_contains(formals, n) {
+      TyName(eq_formal_sentinel(n))
+    } else {
+      t
+    },
+    TyApp(head, args) => {
+      let renamed_args = for arg in args {
+        eq_ty_rename_formals(arg, formals)
+      }
+      if str_array_contains(formals, head) {
+        TyApp(eq_formal_sentinel(head), renamed_args)
+      } else {
+        TyApp(head, renamed_args)
+      }
+    },
+    TyTuple(ts) => TyTuple(for item in ts {
+      eq_ty_rename_formals(item, formals)
+    }),
+    TyFn(params, result, effect) => TyFn(for param in params {
+      eq_ty_rename_formals(param, formals)
+    }, eq_ty_rename_formals(result, formals), effect),
+    TyUnit => TyUnit
+  }
+}
+
+/// Whether a (renamed, expanded) payload type still mentions a formal
+/// sentinel anywhere inside it. Asked BEFORE the allow-list: a leftover
+/// formal reaches the derived comparator as the erased `==`, so it fails
+/// closed whatever the allow-list would say. A shape this walk does not
+/// know is reported as mentioning one.
 fn eq_ty_mentions_formal(t: TypeExpr, formals: Array[String]) -> Bool {
   match t {
     TyName(n) => str_array_contains(formals, n),
@@ -13141,8 +13177,14 @@ fn eq_generic_enum_payloads_concrete_comparable(name: String) -> Bool {
           let payload = Array::get(decl.2, vi).1
           let mut pi = 0
           while pi < Array::length(payload) {
-            let pty = Array::get(payload, pi)
-            if eq_ty_mentions_formal(pty, decl.1) || !eq_ty_field_is_content_comparable(pty, empty_str_array()) {
+            // Rename the declaration's formals to sentinels FIRST, then expand
+            // aliases (Codex round 9): an alias that ignores its argument
+            // erases the formal, one that uses it keeps the sentinel.
+            let pty = eq_expand_alias_ty(eq_ty_rename_formals(Array::get(payload, pi), decl.1))
+            let sentinels = for f in decl.1 {
+              eq_formal_sentinel(f)
+            }
+            if eq_ty_mentions_formal(pty, sentinels) || !eq_ty_field_is_content_comparable(pty, empty_str_array()) {
               ok = false
             } else {
               ()
