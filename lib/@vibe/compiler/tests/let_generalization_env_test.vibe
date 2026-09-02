@@ -129,3 +129,20 @@ test "2459: an excluded variable is resolved, not taken as written" {
   // the control that shows the `link` call is what the fix is about.
   assert_eq(checks_clean(String::concat(link, String::concat(g, String::concat(calls, "let u0 = link(xs, ys)\n")))), false)
 }
+
+test "2459: the capture is tracked through a chain of aliases" {
+  // `g2 = g` then `g3 = g2`. Each alias re-generalizes, so an exclusion that
+  // only survived one hop would leak at the second -- `g3` would quantify the
+  // captured slot even though `g2` did not.
+  let g = "let xs = []\nlet g = [U](u: U, k) -> U { Array::push(xs, k)\nu }\n"
+  assert_eq(checks_clean(String::concat(g, "let g2 = g\nlet g3 = g2\nlet a = g3(0, 1)\nlet b = g3(0, \"s\")\n")), false)
+}
+
+test "2461: a lambda's alias keeps its polymorphism too" {
+  // `let mk = [T](..)` binds a `CtForAll` DIRECTLY, so the alias takes a
+  // different path from `let m2 = mk` on a named `fn`. Both must stay generic.
+  assert_eq(checks_clean("let idf = [T](v: T) -> T { v }\nlet id2 = idf\nlet a = id2(1)\nlet b = id2(\"s\")\n"), true)
+  assert_eq(checks_clean("let mk = [T](v: T) -> Array[T] { [v] }\nlet m2 = mk\nlet a: Array[Int] = m2(1)\nlet b: Array[String] = m2(\"s\")\n"), true)
+  // And through two hops, where the #2461 direction could equally decay.
+  assert_eq(checks_clean("fn mk[T](v: T) -> Array[T] { [v] }\nlet m2 = mk\nlet m3 = m2\nlet a: Array[Int] = m3(1)\nlet b: Array[String] = m3(\"s\")\n"), true)
+}
