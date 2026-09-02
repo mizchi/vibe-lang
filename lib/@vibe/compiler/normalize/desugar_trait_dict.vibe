@@ -12068,16 +12068,20 @@ let dtd_eq_enum_payload_check_stack: Array[String] = empty_str_array()
 /// path did; the payload gate applies only to the derived one.
 let dtd_eq_explicit_equals: Array[String] = empty_str_array()
 
-/// Codex round 12 on #2456: the instantiation an explicit comparator is
-/// written for -- its first parameter's annotation (`fn Wrap::equals(a:
-/// Wrap[Array[Int]], ..)` records `Wrap[Array[Int]]`). The generated array
-/// helper calls the comparator after checking has finished, so handing it
-/// another instantiation (`Wrap[String]`) would read a string payload as an
-/// array; a concrete application is admitted only when it matches this
-/// type exactly (after alias expansion). A comparator with no annotation,
-/// or one generic over its own formals (whose post-check call would bypass
-/// the `Eq` witness dispatch), records nothing and every application fails
-/// closed.
+/// Codex rounds 12-13 on #2456: the instantiation an explicit comparator is
+/// written for. `fn Wrap::equals(a: Wrap[Array[Int]], b: Wrap[Array[Int]])
+/// -> Bool` records `Wrap[Array[Int]]`. The generated array helper calls
+/// the comparator after checking has finished, so handing it another
+/// instantiation (`Wrap[String]`) would read a string payload as an array;
+/// a concrete application is admitted only when it matches this type
+/// exactly (after alias expansion). The comparator must take exactly two
+/// parameters, BOTH annotated with the same instantiation (round 13: a
+/// `(Wrap[String], Wrap[Array[Int]])` signature admitted `Wrap[String]`
+/// from the first parameter alone and fed the second a string payload), and
+/// declare a `Bool` result, since the post-check call is used as one. A
+/// comparator missing any of that, or generic over its own formals (whose
+/// post-check call would bypass the `Eq` witness dispatch), records nothing
+/// and every application fails closed.
 let dtd_eq_explicit_equals_param: Array[(String, TypeExpr)] = array_empty()
 
 fn eq_has_explicit_equals(name: String) -> Bool {
@@ -12100,8 +12104,9 @@ fn eq_explicit_equals_matches(head: String, args: Array[TypeExpr]) -> Bool {
   matched
 }
 
-/// Record an explicit `<ename>::equals` and, when it is monomorphic and
-/// annotated, the instantiation its first parameter names.
+/// Record an explicit `<ename>::equals` and, when it is monomorphic, takes
+/// two parameters annotated with one instantiation and returns `Bool`, that
+/// instantiation.
 fn eq_record_explicit_equals(stmts: Array[Stmt], ename: String) -> Unit {
   let fname = qualified_name(ename, "equals")
   let mut i = 0
@@ -12110,8 +12115,8 @@ fn eq_record_explicit_equals(stmts: Array[Stmt], ename: String) -> Unit {
       SLet(_, _, name, _, value) => if name == fname {
         Array::push(dtd_eq_explicit_equals, ename)
         match value {
-          EFn(tps, _, params, _, _, _) => if Array::length(tps) == 0 && Array::length(params) > 0 {
-            match Array::get(params, 0).1 {
+          EFn(tps, _, params, ret_ty, _, _) => if Array::length(tps) == 0 && Array::length(params) == 2 {
+            match eq_explicit_equals_signature_ty(Array::get(params, 0).1, Array::get(params, 1).1, ret_ty) {
               Some(t) => Array::push(dtd_eq_explicit_equals_param, (ename, t)),
               None => ()
             }
@@ -12126,6 +12131,30 @@ fn eq_record_explicit_equals(stmts: Array[Stmt], ename: String) -> Unit {
       _ => ()
     }
     i = i + 1
+  }
+}
+
+/// The one instantiation both parameters of an explicit comparator name,
+/// or `None` when either is unannotated, the two differ (after alias
+/// expansion), or the result is not annotated `Bool`.
+fn eq_explicit_equals_signature_ty(a: Option[TypeExpr], b: Option[TypeExpr], ret_ty: Option[TypeExpr]) -> Option[TypeExpr] {
+  let ret_is_bool = match ret_ty {
+    Some(r) => match eq_expand_alias_ty(r) {
+      TyName(rn) => rn == "Bool",
+      _ => false
+    },
+    None => false
+  }
+  match a {
+    Some(ta) => match b {
+      Some(tb) => if ret_is_bool && impl_target_key(eq_expand_alias_ty(ta)) == impl_target_key(eq_expand_alias_ty(tb)) {
+        Some(ta)
+      } else {
+        None
+      },
+      None => None
+    },
+    None => None
   }
 }
 let dtd_eq_type_aliases: Array[(String, Array[String], TypeExpr)] = array_empty()
@@ -12278,6 +12307,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_generic_structs, 0)
   Array::truncate(dtd_eq_enum_decls, 0)
   Array::truncate(dtd_eq_enum_payload_check_stack, 0)
+  Array::truncate(dtd_eq_enum_formal_visit_stack, 0)
   Array::truncate(dtd_eq_explicit_equals, 0)
   Array::truncate(dtd_eq_explicit_equals_param, 0)
   Array::truncate(dtd_eq_type_aliases, 0)
@@ -13236,14 +13266,21 @@ fn eq_ty_mentions_formal(t: TypeExpr, formals: Array[String]) -> Bool {
       // its UNOBSERVED parameters (`struct Phantom[X] { tag: Int }`,
       // `W(Phantom[T])`) never reaches the erased `==`. Only the observed
       // argument positions are walked -- the same question
-      // `generic_eq_observed_args_content_comparable` asks. Any other head
-      // (a builtin container, a generic enum) walks every argument.
+      // `generic_eq_observed_args_content_comparable` asks. Round 13: a
+      // declared generic ENUM with a derived comparator is read the same
+      // way (`enum Inner[X] { Mark(Int) }`, `Wrap(Inner[T])`: the derived
+      // `Inner::equals` never reads `X`). Any other head (a builtin
+      // container, an enum with a program-written comparator, whose reads
+      // are unknown) walks every argument.
       let struct_formals = eq_generic_struct_formals(head)
+      let enum_formals = eq_generic_enum_formals(head)
       let mut hit = false
       let mut i = 0
       while i < Array::length(args) {
         let walk = if Array::length(struct_formals) == Array::length(args) {
           generic_eq_formal_is_observed(head, Array::get(struct_formals, i), empty_str_array())
+        } else if Array::length(enum_formals) == Array::length(args) && !eq_has_explicit_equals(head) {
+          eq_generic_enum_formal_is_observed(head, Array::get(enum_formals, i))
         } else {
           true
         }
@@ -13271,6 +13308,70 @@ fn eq_ty_mentions_formal(t: TypeExpr, formals: Array[String]) -> Bool {
     },
     TyUnit => false,
     _ => true
+  }
+}
+
+/// The formals of a declared generic enum, or an empty array for any other
+/// head.
+fn eq_generic_enum_formals(head: String) -> Array[String] {
+  let mut out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_enum_decls) {
+    let decl = Array::get(dtd_eq_enum_decls, i)
+    if decl.0 == head && Array::length(decl.1) > 0 {
+      out = decl.1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Recursion guard for `eq_generic_enum_formal_is_observed`: `head::formal`
+/// pairs whose payloads are being walked.
+let dtd_eq_enum_formal_visit_stack: Array[String] = empty_str_array()
+
+/// Whether a declared generic enum's DERIVED comparator can read the given
+/// formal: some payload, with the declaration's formals renamed to sentinels
+/// and aliases expanded, still mentions it in an observed position. A pair
+/// met again while its own payloads are being walked (`enum Loop[T] {
+/// L(Loop[T]) }`) counts as observed -- fail closed, never "unobserved" by
+/// construction.
+fn eq_generic_enum_formal_is_observed(head: String, formal: String) -> Bool {
+  let key = String::concat(head, String::concat("::", formal))
+  if str_array_contains(dtd_eq_enum_formal_visit_stack, key) {
+    true
+  } else {
+    Array::push(dtd_eq_enum_formal_visit_stack, key)
+    let mut observed = false
+    let mut i = 0
+    while i < Array::length(dtd_eq_enum_decls) {
+      let decl = Array::get(dtd_eq_enum_decls, i)
+      if decl.0 == head {
+        let sentinels = Array::slice([eq_formal_sentinel(formal)], 0, 1)
+        let mut vi = 0
+        while vi < Array::length(decl.2) {
+          let payload = Array::get(decl.2, vi).1
+          let mut pi = 0
+          while pi < Array::length(payload) {
+            let pty = eq_expand_alias_ty(eq_ty_rename_formals(Array::get(payload, pi), decl.1))
+            if eq_ty_mentions_formal(pty, sentinels) {
+              observed = true
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    Array::truncate(dtd_eq_enum_formal_visit_stack, Array::length(dtd_eq_enum_formal_visit_stack) - 1)
+    observed
   }
 }
 
