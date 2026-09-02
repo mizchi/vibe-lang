@@ -212,6 +212,62 @@ test "#2422 a large Int survives every binding form" {
   assert(lam_d(1.5) == "1.5")
 }
 
+/// #2423: a `let mut` CAPTURED BY A CLOSURE is the one binding form neither
+/// test above reaches. `#2422 a large Int survives every binding form` pins an
+/// uncaptured `let mut`, and `#2424 .. the binding forms the slot log never
+/// seeded` pins a captured plain `let` -- this is the intersection, and it is
+/// the shape #2423 was filed about.
+///
+/// It is different in kind, not just in spelling. A captured `let mut` does
+/// not hold its value in a local at all: it becomes a heap ref cell and the
+/// local holds the cell's ADDRESS, so every read is a load. That is why the
+/// slot log could never classify it -- the thing in the slot is a pointer, and
+/// calling a pointer an Int is the confusion the log exists to prevent. #2423
+/// proposed a second log keyed on "slot holds a cell whose CONTENT is an Int".
+///
+/// What actually closed it is #2424's channel: the checker hands codegen the
+/// type it already computed for the render argument, so where the value LIVES
+/// stops mattering. Measured on the committed seed, both reads below render
+/// the EMPTY STRING on linear and on gc; on the current compiler both answer,
+/// on all three lanes this file runs.
+test "#2423 a large Int survives a let mut captured by a closure" {
+  let mut c = 64<<32
+  let f = () -> Int {
+    c
+  }
+  // Through the closure, and directly -- the seed rendered both as "".
+  assert(__to_string(f()) == "274877906944")
+  assert(__to_string(c) == "274877906944")
+  // After a mutation, so the cell is read back rather than folded.
+  c = c + 1
+  assert(__to_string(f()) == "274877906945")
+  assert(__to_string(c) == "274877906945")
+  // The same capture through `eq`, the other spelling of the classifier.
+  assert(eq(f(), 274877906945))
+  assert(!eq(f(), 274877906944))
+  // Controls: the classifier must not start answering Int for every captured
+  // cell. A captured `let mut` of another type keeps its own rendering.
+  let mut s = "hi"
+  let fs = () -> String {
+    s
+  }
+  assert(__to_string(fs()) == "hi")
+  let mut d = 1.5
+  let fd = () -> Double {
+    d
+  }
+  assert(__to_string(fd()) == "1.5")
+  // A captured `let mut` Bool is NOT asserted here, and the omission is the
+  // point. Measured: `__to_string` of a Bool produced by a lambda whose `let`
+  // is INSIDE a function body renders "1" rather than "true" -- on both lanes
+  // and on the committed seed alike, so it is not this fix's doing. The same
+  // lambda bound at TOP LEVEL, and any named `fn`, answer correctly, because
+  // `collect_fn_returns` walks statements and an inner `let` is an expression.
+  // That is #2462, a separate defect, filed rather than pinned: this file's
+  // contract is that every assertion in it holds on every lane, and pinning
+  // the wrong answer would be worse than leaving the row out.
+}
+
 test "#2405 polymorphic arithmetic is not assumed to be Int" {
   // `+ - * /` are resolved from the OPERANDS by the checker (Int, then Double,
   // then String for `+`, then a user impl), so the operator alone says
