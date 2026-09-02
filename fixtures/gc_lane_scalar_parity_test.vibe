@@ -242,15 +242,30 @@ test "#2423 a large Int survives a let mut captured by a closure" {
   c = c + 1
   assert(__to_string(f()) == "274877906945")
   assert(__to_string(c) == "274877906945")
-  // The same capture through `eq`, the other spelling of the classifier.
-  // NEITHER operand may be a literal. The linear `eq` gate is a disjunction
-  // (the reason is spelled out at the `irc_ret_big` block below), so an
-  // `eq(f(), 274877906945)` is satisfied by the literal alone and never asks
-  // about the captured cell -- it would re-check `f()`'s VALUE, which the
-  // renders above already pin, and pin nothing about `eq`. So: a second
-  // captured cell, and comparisons where every operand is either a call or a
-  // ref-cell read.
-  let mut c2 = 65<<32
+  // The same capture through `eq`, the other spelling of the classifier. Two
+  // conditions have to hold at once for these rows to be able to FAIL, and
+  // each was measured by running the rows alone against the committed seed.
+  //
+  // (1) NEITHER operand may be a literal. The linear `eq` gate is a
+  //     disjunction (the reason is spelled out at the `irc_ret_big` block
+  //     below), so `eq(f(), 274877906945)` is satisfied by the literal alone
+  //     and never asks about the captured cell.
+  // (2) The two values must have the SAME low 32 bits. With the
+  //     classification lost, `eq` falls back to the string comparison, which
+  //     reads a value as (ptr<<32)|len -- so unequal low words are unequal
+  //     "lengths" and it returns false immediately, which is the answer these
+  //     rows want. Measured: with both low words 1 the fallback goes on to
+  //     compare one byte at two different addresses and gets the right answer
+  //     by luck, so only low word 0 on both sides is reliably red -- there the
+  //     fallback compares two EMPTY strings, calls them equal, and `!eq`
+  //     traps.
+  //
+  // Hence the second mutation: it puts `c` back on a zero low word while
+  // still leaving the cell read back rather than folded, and the render
+  // assertions above already cover the sharper low-word-1 case.
+  c = c + ((1<<32) - 1)
+  assert(__to_string(c) == "279172874240")
+  let mut c2 = 66<<32
   let g = () -> Int {
     c2
   }
