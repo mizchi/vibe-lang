@@ -44,7 +44,19 @@ fn collide(stmts: Array[Stmt], k: Int) -> Array[Stmt] {
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(a, b, name, ty, value) => match value {
-        ECall(callee, args, _) => Array::push(out, SLet(a, b, name, ty, ECall(callee, args, k))),
+        // A one-argument call whose argument is itself a call is the render
+        // shape (`__to_string(fd())`): the offset that collides is the INNER
+        // one, because that is the call whose result the channel classifies.
+        ECall(callee, args, off) => if Array::length(args) == 1 {
+          match Array::get(args, 0) {
+            ECall(icallee, iargs, _) => Array::push(out, SLet(a, b, name, ty, ECall(callee, [
+              ECall(icallee, iargs, k)
+            ], off))),
+            _ => Array::push(out, SLet(a, b, name, ty, ECall(callee, args, k)))
+          }
+        } else {
+          Array::push(out, SLet(a, b, name, ty, ECall(callee, args, k)))
+        },
         _ => Array::push(out, Array::get(stmts, i))
       },
       _ => Array::push(out, Array::get(stmts, i))
@@ -75,10 +87,16 @@ fn rows(src: String, k: Int) -> Int {
 
 /// Rows in the tag-4 render/`eq` ARGUMENT table -- the other producer that
 /// reaches the same Double array, under a different key.
-fn tag4_rows(src: String) -> Int {
+fn tag4_rows(src: String, k: Int) -> Int {
   handle {
     let (toks, starts, _) = lex_with_offsets(src)
-    Array::length(checked_double_render_offsets(check_program_result(parse_program_located(toks, starts, src))))
+    let parsed = parse_program_located(toks, starts, src)
+    let stmts = if k < 0 {
+      parsed
+    } else {
+      collide(parsed, k)
+    }
+    Array::length(checked_double_render_offsets(check_program_result(stmts)))
   } with { Exception::Throw(_) => 0 - 1 }
 }
 
@@ -115,25 +133,37 @@ test "#2427: an offset no claimant calls Double files nothing" {
   inspect(rows(both_int, 777), content = "0")
 }
 
-test "#2427: poisoning does not cost the RENDER path its classification" {
-  // Why dropping the row is the right direction, measured rather than
-  // assumed (Codex round 1). Poisoning costs the Double claimant its
-  // call-result row too, so the choice only makes sense if the two claimants
-  // do not lose the same things -- and they do not.
+test "#2427: a mixed collision costs the Double claimant BOTH channels" {
+  // The residue, measured on the collision itself rather than beside it.
   //
-  // A Double reaching the RENDERER is keyed by `typed_lowering_arg_offset` on
-  // the enclosing `__to_string` call, which is a different key from the call
-  // result's own offset. So it survives the poison, and the render path is
-  // exactly the one #2427 reports (a corrupt `(ptr|len)` into
-  // `__rt_str_concat`). After the poison NEITHER claimant's render is
-  // misclassified; before it, the Int claimant's was.
-  let render = "fn fd() -> Double {\n  1.5\n}\nlet s = __to_string(fd())\n"
-  inspect(tag4_rows(render), content = "1")
-  // Arithmetic has no second channel, so it genuinely changes hands: the
-  // Double claimant's `fd() + 1.0` goes unclassified where the Int
-  // claimant's used to be read as an f64. Wrong either way -- this row is
-  // the residue that keeps #2427 open, and it is pinned so a later fix has
-  // to notice it rather than inherit it.
-  let arith = "fn fd() -> Double {\n  1.5\n}\nlet v = fd() + 1.0\n"
-  inspect(tag4_rows(arith), content = "0")
+  // An earlier cut of this test called `tag4_rows` on the UNCOLLIDED source,
+  // saw a row, and concluded the render path survives the poison. It does
+  // not, and the test could never have shown it: `typed_lowering_float_key`
+  // keys a call-result argument on the call's OWN offset -- the colliding one
+  // -- and `irc_render_arg_offsets` drops a candidate whose occurrences
+  // disagree, which is exactly what a mixed collision makes them do.
+  //
+  //   natural    tag0=1  tag4=1
+  //   collided   tag0=0  tag4=0
+  //
+  // So poisoning is a SWAP, not a rescue: before it the Double claimant kept
+  // its row and the Int claimant was misclassified; after it neither is
+  // classified and both fall to the syntactic classifiers. The reason to
+  // prefer that is not that it hurts less -- it is that an offset whose
+  // claimants disagree has no single true answer, and this channel's contract
+  // is "absent, never wrong". Every sibling channel already fails closed the
+  // same way: tags 3, 4 and 5 emit an offset only when EVERY occurrence there
+  // agrees, and the String binops poison a disagreeing anchor. Tag 0 was the
+  // only one asserting an answer it could not know, which is what
+  // `typed_lowering_float_key`'s own comment says when it explains why the
+  // FLOAT key needs a restriction the Int key does not.
+  let render = "fn fd() -> Double {\n  1.5\n}\nfn fi() -> Int {\n  1\n}\nlet s = __to_string(fd())\nlet b = fi()\n"
+  inspect(tag4_rows(render, 0 - 1), content = "1")
+  inspect(rows(render, 0 - 1), content = "1")
+  // Both channels gone once the two calls share an offset. tag4 answers 0
+  // here WITHOUT this PR too -- that producer's agreement rule is
+  // pre-existing -- so this row is the residue #2427 keeps open, not
+  // something this change introduced.
+  inspect(tag4_rows(render, 777), content = "0")
+  inspect(rows(render, 777), content = "0")
 }
