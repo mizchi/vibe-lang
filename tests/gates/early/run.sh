@@ -1630,6 +1630,57 @@ fi
 rm -rf "$cdir"
 echo "[compiler-gate] coverage instrumentation regression ok"
 
+# 13b. #2469: an INSTRUMENTED build must lower a render the way the production
+#      build does. The coverage entry parsed with plain `lex`/`parse_program`,
+#      which leaves every node at offset -1, so the checker's offset-keyed
+#      typed-lowering tables came out empty BY CONSTRUCTION and only the
+#      syntactic classifiers answered. The program below is the #2462 shape --
+#      a lambda bound by a `let` INSIDE a function body, which
+#      `collect_fn_returns` (a STATEMENT walk) cannot see -- so nothing
+#      syntactic classifies it and the table is the whole mechanism.
+#
+#      Encoded as an Int rather than compared as text so the failure names the
+#      wrong value: "true" -> 4*1000 + 't'(116) = 4116, "1" -> 1*1000 +
+#      '1'(49) = 1049. Red-tested by reverting the entry to the unlocated
+#      parse: 1049.
+echo "[compiler-gate] 13b/13 instrumented build typed-lowering tables (#2469)"
+tldir="_build/_gate_typed_instrumented"
+rm -rf "$tldir"; mkdir -p "$tldir"
+cat > "$tldir/bool_render.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let l = () -> Bool { 1 < 2 }
+  let s = __to_string(l())
+  String::length(s) * 1000 + String::char_code_at(s, 0)
+}
+EOF
+VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tldir/bool_render.vibe" "$tldir/cov.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$tldir/cov.wasm" ]; then
+  echo "[compiler-gate] FAIL: coverage build of the #2469 probe produced no wasm" >&2
+  cat "$tldir/cov.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+tl_cov_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$tldir/cov.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$tl_cov_out" != "4116" ]; then
+  echo "[compiler-gate] FAIL: VIBE_COVERAGE=1 rendered a Bool as '$tl_cov_out' (want 4116 = \"true\"; 1049 = \"1\" means the coverage entry is back on the unlocated parse and its typed-lowering tables are empty -- #2469)" >&2
+  exit 1
+fi
+# The control: the SAME program through the ordinary entry. Both must agree --
+# that agreement, not the constant, is what #2469 is about.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tldir/bool_render.vibe" "$tldir/plain.wasm" _start >/dev/null 2>&1 || true
+tl_plain_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$tldir/plain.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$tl_plain_out" != "$tl_cov_out" ]; then
+  echo "[compiler-gate] FAIL: the coverage build ($tl_cov_out) and the ordinary build ($tl_plain_out) rendered the same Bool differently (#2469)" >&2
+  exit 1
+fi
+rm -rf "$tldir"
+echo "[compiler-gate] instrumented build typed-lowering tables ok (#2469)"
+
 # 14. method-bearing-trait dictionary passing regression (#641 PR-3): a
 #     `[T: Trait]` generic calling `T::method(x)` must dispatch to the concrete
 #     impl via a synthesized witness dictionary (desugar_trait_dict.vibe). Covers

@@ -1,25 +1,23 @@
 //# Imports
 
 import @vibe/compiler/checker {
-  check_program,
   check_program_double_call_result_located_observation,
-  checked_bool_render_offsets,
-  checked_int_render_offsets,
+  checked_int_and_bool_render_offsets,
   effect_row_contains_label,
   validate_user_source_stmts
 }
 
 import @vibe/compiler/codegen/wasi {
-  compile_wasi_module_coverage_impl,
   compile_wasi_module_impl,
   compile_wasi_module_impl_with_typed_offsets,
   compile_wasi_module_rc_impl,
   compile_wasi_module_rc_impl_with_typed_offsets,
-  compile_wasi_module_rc_shadow_impl
+  compile_wasi_module_rc_shadow_impl_with_typed_offsets,
+  compile_wasi_module_with_sources_coverage_impl_with_typed_offsets
 }
 
 import @vibe/compiler/syntax {
-  lex, lex_with_offsets, parse_program, parse_program_located
+  lex_with_offsets, parse_program_located
 }
 import ./preprocess_interp.vibe {
   expand_interp_stmts
@@ -213,9 +211,10 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with Exce
 /// The observation replaces the `check_program` that already ran on this path,
 /// so no second pass over the program is introduced.
 /// #2424, #2462/#2464: every table from the SAME observation.
-/// `checked_int_render_offsets` and `checked_bool_render_offsets`
-/// are pure functions of the CheckedProgram it already returns, so they all
-/// cost one check between them. `None` is the observation refusing an
+/// `checked_int_and_bool_render_offsets` is a pure function of the
+/// CheckedProgram it already returns, so they all cost one check between them
+/// -- and the Int and Bool halves cost ONE walk, not two: they share a
+/// candidate set exactly. `None` is the observation refusing an
 /// unlocated AST, and an empty table classifies nothing.
 /// #2441: the typed-`==` rows ride the same observation. One text, one
 /// offset space, no merge and no renames -- the rows apply as-is, and an
@@ -223,7 +222,10 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with Exce
 /// `anchor_off >= 0` guard).
 fn source_offsets(stmts: Array[Stmt]) -> (Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
   match check_program_double_call_result_located_observation(stmts) {
-    Some((checked, offsets, eq_offs, eq_keys)) => (offsets, checked_int_render_offsets(checked), checked_bool_render_offsets(checked), eq_offs, eq_keys),
+    Some((checked, offsets, eq_offs, eq_keys)) => {
+      let (int_renders, bool_renders) = checked_int_and_bool_render_offsets(checked)
+      (offsets, int_renders, bool_renders, eq_offs, eq_keys)
+    },
     None => ([], [], [], [], [])
   }
 }
@@ -264,16 +266,29 @@ export fn compile_generated_source_wasi_only(source: String, entry_name: String)
 /// VIBE_COVERAGE=1 yields an instrumented compiler (per-function hit bitmap +
 /// `vibe_cov` section).
 fn compile_source_wasi_only_coverage_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
+  // #2469: located parse + the checker's typed-lowering offsets, same as the
+  // production sibling above. The instrumented build compiles the SAME program
+  // the ordinary one does, so with the plain `lex`/`parse_program` every node
+  // was at offset -1 and the tables came out empty by construction -- a
+  // coverage build rendered a Double, an Int or a Bool by the syntactic
+  // classifier alone while the build it is meant to measure rendered it by
+  // type.
+  //
+  // `compile_wasi_module_coverage_impl(stmts, e)` is by definition
+  // `compile_wasi_module_with_sources_coverage_impl(stmts, e, array_empty())`
+  // (wasi.vibe), and the two `*_with_sources_coverage_*` bodies pass the same
+  // arguments to `compile_wasi_module_linked_impl*`, so going through the
+  // `srcs`-taking typed entry with an empty `srcs` is the same compile.
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
-  let _ = check_program(stmts)
+  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys) = source_offsets(stmts)
   strip_generic_type_params(stmts)
   // Coverage consumers require a standalone instrumented core. StdinStream's
   // raw provider ABI is satisfiable only inside the dedicated component, so
   // parse the emitted core imports and fail before returning any artifact.
-  reject_stdin_provider_core(compile_wasi_module_coverage_impl(stmts, entry_name), "VIBE_COVERAGE=1")
+  reject_stdin_provider_core(compile_wasi_module_with_sources_coverage_impl_with_typed_offsets(stmts, entry_name, array_empty(), float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), "VIBE_COVERAGE=1")
 }
 
 export fn compile_source_wasi_only_coverage(source: String, entry_name: String) -> Bytes with Exception {
@@ -318,14 +333,19 @@ export fn compile_generated_source_wasi_only_rc(source: String, entry_name: Stri
 /// deterministic trap at the faulting operation. Debug-only (VIBE_RC=shadow):
 /// adds a memory-reservation pad and per-dup/drop checks, so never the default.
 fn compile_source_wasi_only_rc_shadow_impl(source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
+  // #2469: located parse + typed-lowering offsets, as in the RC sibling above.
+  // A shadow build exists to reproduce an RC bug, so it has to lower the
+  // program the way the RC build does; on the unlocated parse the tables were
+  // empty and the two lanes disagreed on exactly the renders this channel
+  // carries.
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
-  let _ = check_program(stmts)
+  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys) = source_offsets(stmts)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
-  maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl(stmts, entry_name), wrap_async)
+  maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async)
 }
 
 export fn compile_source_wasi_only_rc_shadow(source: String, entry_name: String) -> Bytes with Exception {

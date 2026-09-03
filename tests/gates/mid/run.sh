@@ -452,6 +452,43 @@ fi
 rm -rf "$shdir"
 echo "[compiler-gate] RC shadow-liveness regression guard ok (25297489)"
 
+# 40f1b. #2469: the shadow build must lower a render the way the RC build does.
+#        A shadow build exists to REPRODUCE an RC bug, so a program that
+#        lowers differently under it is a debugging tool that changes the
+#        thing being debugged. The shadow entry parsed with plain
+#        `lex`/`parse_program`, leaving every node at offset -1, so the
+#        checker's offset-keyed typed-lowering tables were empty by
+#        construction. The probe is the #2462 shape (a lambda bound by a `let`
+#        INSIDE a function body), which no syntactic rule reaches -- the table
+#        is the whole mechanism. "true" -> 4*1000 + 't'(116) = 4116;
+#        "1" -> 1*1000 + '1'(49) = 1049 is the pre-fix answer.
+echo "[compiler-gate] 40f1b/40 shadow build typed-lowering tables (#2469)"
+tlsdir="_build/_gate_typed_shadow"
+rm -rf "$tlsdir"; mkdir -p "$tlsdir"
+cat > "$tlsdir/bool_render.vibe" <<'EOF'
+export let _start: () -> Int = () -> {
+  let l = () -> Bool { 1 < 2 }
+  let s = __to_string(l())
+  String::length(s) * 1000 + String::char_code_at(s, 0)
+}
+EOF
+VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$tlsdir/bool_render.vibe" "$tlsdir/shadow.wasm" _start >/dev/null 2>&1 || true
+if [ ! -s "$tlsdir/shadow.wasm" ]; then
+  echo "[compiler-gate] FAIL: VIBE_RC=shadow build of the #2469 probe produced no wasm" >&2
+  cat "$tlsdir/shadow.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+tls_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+  --invoke _start "$tlsdir/shadow.wasm" 2>/dev/null | tr -dc '0-9')"
+if [ "$tls_out" != "4116" ]; then
+  echo "[compiler-gate] FAIL: VIBE_RC=shadow rendered a Bool as '$tls_out' (want 4116 = \"true\"; 1049 = \"1\" means the shadow entry is back on the unlocated parse and its typed-lowering tables are empty -- #2469)" >&2
+  exit 1
+fi
+rm -rf "$tlsdir"
+echo "[compiler-gate] shadow build typed-lowering tables ok (#2469)"
+
 # 40f2. Shadow-RC checked-artifact smoke (#1986).
 #      40f covers the #715 shape corpus. That is not enough: the first cut of
 #      #1964 (`460e8421c`) double-freed inside railway_rw when the compiled
