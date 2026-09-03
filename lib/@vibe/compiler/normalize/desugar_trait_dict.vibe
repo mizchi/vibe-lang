@@ -13056,8 +13056,15 @@ fn generic_eq_graph_node_is_finite(head: String, args: Array[TypeExpr], visiting
     // non-regular enum recursion (`enum Nest[T] { N(Nest[Array[T]]); End }`)
     // must be caught here as a struct's is -- without this loop an enum head
     // found no declaration and every enum recursion was judged finite.
+    // An enum is a node only where `eq_for_typed_nonstandard_enum` would
+    // specialize it: a head with a program-written `::equals` dispatches
+    // there and records nothing, and an instantiation carrying a formal
+    // takes the declaration-level answer (Codex round 1 on #2477: walking
+    // such an enum's declaration made an unrelated `E[Int]` field, whose
+    // declaration holds `E[Array[T]]`, report a closing graph as infinite).
+    let enum_specialized = !eq_has_explicit_equals(head) && !eq_ty_has_formal(TyApp(head, args))
     let mut ei = 0
-    while ei < Array::length(dtd_eq_enum_decls) {
+    while enum_specialized && ei < Array::length(dtd_eq_enum_decls) {
       let edecl = Array::get(dtd_eq_enum_decls, ei)
       if edecl.0 == head && Array::length(edecl.1) == Array::length(args) && Array::length(edecl.1) > 0 {
         let mut vi = 0
@@ -13627,10 +13634,16 @@ let dtd_eq_enum_inst_check_stack: Array[TypeExpr] = empty_type_exprs()
 
 /// Where `inst` stands against the instantiations being walked: 1 when the
 /// same instantiation is already active (coinductive: answered by the
-/// comparator under examination), -1 when a LARGER instantiation of the same
-/// head is (a non-regular recursion -- `Nest[T]` holding `Nest[Array[T]]` --
-/// whose walk would never end, the same shape
-/// `generic_eq_graph_node_is_finite` rejects), 0 otherwise.
+/// comparator under examination); -1 when a LARGER instantiation of the same
+/// head is active AND the larger one's own specialization graph does not
+/// close -- the non-regular recursion `Nest[T]` holding `Nest[Array[T]]`,
+/// whose walk would never end. A larger node whose edges close on
+/// themselves (`enum Stable[T] { End(Int); Next(Stable[Array[Int]]) }`:
+/// `Stable[String]` reaches `Stable[Array[Int]]`, which reaches only itself)
+/// is finite and is walked (Codex round 1 on #2477: treating every size
+/// increase as non-regular made that phantom enum trap where it answered).
+/// The finiteness test is the one `generic_eq_is_expanding_recursion` uses,
+/// so the predicate and the dispatch agree. 0 otherwise.
 fn eq_enum_inst_stack_verdict(head: String, args: Array[TypeExpr]) -> Int {
   let key = generic_eq_name(head, args)
   let mut verdict = 0
@@ -13639,7 +13652,7 @@ fn eq_enum_inst_stack_verdict(head: String, args: Array[TypeExpr]) -> Int {
     match Array::get(dtd_eq_enum_inst_check_stack, i) {
       TyApp(active_head, active_args) => if generic_eq_name(active_head, active_args) == key {
         verdict = 1
-      } else if active_head == head && generic_eq_types_size(args) > generic_eq_types_size(active_args) && verdict == 0 {
+      } else if active_head == head && generic_eq_types_size(args) > generic_eq_types_size(active_args) && verdict == 0 && !generic_eq_specialization_graph_is_finite(head, args) {
         verdict = 0 - 1
       } else {
         ()

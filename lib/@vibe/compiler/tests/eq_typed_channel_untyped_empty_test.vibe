@@ -354,3 +354,31 @@ test "#2467: a regular recursive enum compares its spine by content" {
   inspect(a == c, content = "false")
   inspect(a == d, content = "false")
 }
+
+//# Codex round 1 on #2477: constant recursion is finite
+
+// `enum Stable[T] { End(Int); Next(Stable[Array[Int]]) }` reaches a larger
+// instantiation that recurs into itself. The per-instantiation predicate
+// must walk it (its graph closes) rather than read the size increase as the
+// non-regular `Nest[T] -> Nest[Array[T]]` shape; on the first head of
+// #2477 this compare trapped.
+
+enum EqUeStable[T] {
+  SEnd(Int);
+  SNext(EqUeStable[Array[Int]])
+}
+
+fn fill_stable(xs: Array[EqUeStable[String]], v: Int) -> Unit {
+  Array::push(xs, SNext(SNext(SEnd(v))))
+}
+
+test "#2477 r1: constant enum recursion answers through the typed channel" {
+  let left = []
+  fill_stable(left, 64<<32)
+  let right = []
+  fill_stable(right, 64<<32)
+  let other = []
+  fill_stable(other, 65<<32)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
