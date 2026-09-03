@@ -5671,12 +5671,19 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
     None
   } else {
     let out: Array[Int] = []
-    // #2427: one row per CLAIMED offset, with the verdict every claimant
-    // agreed on -- not a deduplicated list of the Double ones. See the doc
-    // comment above for why the difference is the bug.
-    let keys: Array[Int] = []
-    let verdicts: Array[Int] = []
-    let poisoned: Array[Bool] = []
+    // #2427: the Double claimants (deduplicated, as before) and the offsets
+    // some primary call resolved to something ELSE. An offset in both is a
+    // disagreeing collision and is dropped below.
+    //
+    // Two passes with a sorted lookup, not one pass with a linear scan
+    // (Codex round 1 on this PR). The scan would have run for EVERY primary
+    // call against a key list that grows to all of them -- quadratic on the
+    // minified bundle, and quadratic even for a program with no Double calls
+    // at all. The comment twenty lines below records what that costs here:
+    // an earlier version of this loop took one file from 6.1s to 77.5s.
+    // These two pushes are linear, and the sort is skipped entirely when
+    // there is no Double candidate to check.
+    let others: Array[Int] = []
     let mut primary_calls = 0
     let mut located_primary_calls = 0
     let mut i = 0
@@ -5696,29 +5703,22 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
         primary_calls = primary_calls + 1
         if off >= 0 {
           located_primary_calls = located_primary_calls + 1
-          let verdict = if subst_resolves_to_double(checked.final_subst, raw_ty) {
-            1
-          } else {
-            0
-          }
-          let mut idx = 0 - 1
-          let mut j = 0
-          while j < Array::length(keys) {
-            if Array::get(keys, j) == off {
-              idx = j
-              j = Array::length(keys)
-            } else {
-              j = j + 1
+          if subst_resolves_to_double(checked.final_subst, raw_ty) {
+            let mut seen = false
+            let mut j = 0
+            while j < Array::length(out) {
+              if Array::get(out, j) == off {
+                seen = true
+                j = Array::length(out)
+              } else {
+                j = j + 1
+              }
             }
-          }
-          if idx < 0 {
-            Array::push(keys, off)
-            Array::push(verdicts, verdict)
-            Array::push(poisoned, false)
-          } else if Array::get(verdicts, idx) != verdict {
-            Array::set(poisoned, idx, true)
+            if !seen {
+              Array::push(out, off)
+            }
           } else {
-            ()
+            Array::push(others, off)
           }
         } else {
           ()
@@ -5728,16 +5728,26 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
       }
       i = i + 1
     }
-    let mut k = 0
-    while k < Array::length(keys) {
-      if Array::get(verdicts, k) == 1 && !Array::get(poisoned, k) {
-        Array::push(out, Array::get(keys, k))
-      } else {
-        ()
+    // Nothing to check when no offset was claimed as Double: the sort is the
+    // only super-linear step here and this is the common case.
+    let kept = if Array::length(out) == 0 {
+      out
+    } else {
+      let sorted_others = irc_sorted_unique(others)
+      let keep: Array[Int] = []
+      let mut k = 0
+      while k < Array::length(out) {
+        let off = Array::get(out, k)
+        if irc_index_of(sorted_others, off) < 0 {
+          Array::push(keep, off)
+        } else {
+          ()
+        }
+        k = k + 1
       }
-      k = k + 1
+      keep
     }
-    Some((out, primary_calls, located_primary_calls))
+    Some((kept, primary_calls, located_primary_calls))
   }
 }
 
@@ -6614,14 +6624,31 @@ export fn typed_lowering_enc_tag(enc: Int) -> Int {
 /// question that matters is whether the claimants AGREE. Two claimants that
 /// agree still collapse to one row, exactly as before.
 ///
-/// What this does NOT do is find the colliding claimants. #2427 reports the
-/// symptom on the minified bundle, where an unlucky anchoring coincidence
-/// shifts with any edit; no naturally colliding pair was found in today's
-/// bundle while writing this, and a curried `f()()` -- the obvious candidate
-/// -- anchors its two calls four bytes apart. The rule closes the hole
-/// whether or not an instance is live, and degrades to the syntactic
-/// classifiers when it fires, which is the channel's standing fail-closed
-/// direction.
+/// Poisoning does NOT make a mixed collision harmless, and the choice is
+/// measured rather than assumed (Codex round 1 on this PR). Dropping the row
+/// costs the Double claimant its classification too. What decides the
+/// direction is that the two claimants do not lose the same things:
+///
+///   `__to_string(fd())`   tag-4 render row present  -- a DIFFERENT key
+///   `fd() + 1.0`          no tag-4 row              -- this table only
+///
+/// A Double call result reaching the RENDERER is keyed by
+/// `typed_lowering_arg_offset` on the enclosing `__to_string` call, so it
+/// keeps its classification when this row is poisoned. That is the path
+/// #2427 reports -- a corrupt `(ptr|len)` into `__rt_str_concat` -- so after
+/// the poison NEITHER claimant's render is misclassified, where before the
+/// Int claimant's was. Arithmetic and comparison have no second channel and
+/// do change hands: the Double claimant's `fd() + 1.0` goes unclassified
+/// where the Int claimant's used to be read as an f64. Wrong either way, and
+/// the residue is the reason #2427 stays open.
+///
+/// The real fix is node identity in the key, which an offset-keyed consumer
+/// cannot express; that is #2427's remaining step, the audit of the #2231
+/// anchoring rules for shapes whose recorded offset can equal another node's.
+///
+/// No colliding pair was found in today's bundle while writing this, and a
+/// curried `f()()` -- the obvious candidate -- anchors its two calls four
+/// bytes apart. The rule closes the hole whether or not an instance is live.
 fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int, Array[Int], Array[String])] with Exception {
   let capture = reset_double_call_capture()
   let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program

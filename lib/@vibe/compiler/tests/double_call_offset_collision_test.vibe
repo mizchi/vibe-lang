@@ -28,7 +28,7 @@ import @vibe/compiler/syntax {
 }
 
 import @vibe/compiler/checker {
-  check_program_double_call_result_located_observation
+  check_program_double_call_result_located_observation, check_program_result, checked_double_render_offsets
 }
 
 import @vibe/compiler/core {
@@ -73,6 +73,15 @@ fn rows(src: String, k: Int) -> Int {
   } with { Exception::Throw(_) => 0 - 2 }
 }
 
+/// Rows in the tag-4 render/`eq` ARGUMENT table -- the other producer that
+/// reaches the same Double array, under a different key.
+fn tag4_rows(src: String) -> Int {
+  handle {
+    let (toks, starts, _) = lex_with_offsets(src)
+    Array::length(checked_double_render_offsets(check_program_result(parse_program_located(toks, starts, src))))
+  } with { Exception::Throw(_) => 0 - 1 }
+}
+
 //# Tests
 
 test "#2427: a disagreeing offset collision is poisoned" {
@@ -104,4 +113,27 @@ test "#2427: an offset no claimant calls Double files nothing" {
   let both_int = "fn fi() -> Int {\n  1\n}\nfn fj() -> Int {\n  2\n}\nlet a = fi()\nlet b = fj()\n"
   inspect(rows(both_int, 0 - 1), content = "0")
   inspect(rows(both_int, 777), content = "0")
+}
+
+test "#2427: poisoning does not cost the RENDER path its classification" {
+  // Why dropping the row is the right direction, measured rather than
+  // assumed (Codex round 1). Poisoning costs the Double claimant its
+  // call-result row too, so the choice only makes sense if the two claimants
+  // do not lose the same things -- and they do not.
+  //
+  // A Double reaching the RENDERER is keyed by `typed_lowering_arg_offset` on
+  // the enclosing `__to_string` call, which is a different key from the call
+  // result's own offset. So it survives the poison, and the render path is
+  // exactly the one #2427 reports (a corrupt `(ptr|len)` into
+  // `__rt_str_concat`). After the poison NEITHER claimant's render is
+  // misclassified; before it, the Int claimant's was.
+  let render = "fn fd() -> Double {\n  1.5\n}\nlet s = __to_string(fd())\n"
+  inspect(tag4_rows(render), content = "1")
+  // Arithmetic has no second channel, so it genuinely changes hands: the
+  // Double claimant's `fd() + 1.0` goes unclassified where the Int
+  // claimant's used to be read as an f64. Wrong either way -- this row is
+  // the residue that keeps #2427 open, and it is pinned so a later fix has
+  // to notice it rather than inherit it.
+  let arith = "fn fd() -> Double {\n  1.5\n}\nlet v = fd() + 1.0\n"
+  inspect(tag4_rows(arith), content = "0")
 }
