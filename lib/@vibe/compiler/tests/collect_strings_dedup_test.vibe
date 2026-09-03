@@ -1,0 +1,40 @@
+//# Functions
+
+// #2479: `collect_strings_stmts` builds the string table -- every literal
+// once, in first-occurrence order -- and both its collectors (expression
+// literals and `PString` patterns) dedup through ONE membership set. Measured
+// while the set was on the expression side only: a literal first met as a
+// match-arm pattern and again as an expression (`canonical_builtin_name`'s
+// arms, then the same names in an array literal) was emitted twice, and every
+// later string's address shifted -- the output wasm of an unchanged program
+// changed. The table is program ABI for string constants, so this pins it.
+
+import @vibe/compiler/codegen/common_analysis {
+  collect_strings_stmts
+}
+
+import @vibe/parser {
+  lex, parse_program
+}
+
+fn table(src: String) -> String with Exception {
+  String::join(collect_strings_stmts(parse_program(lex(src))), "|")
+}
+
+//# Tests
+
+test "#2479: an array literal dedups repeated strings in first-occurrence order" {
+  inspect(table("let ops = [\"Fs::ReadFile\", \"Fs::WriteFile\", \"Env::Get\", \"Fs::ReadFile\"]"), content = "Fs::ReadFile|Fs::WriteFile|Env::Get")
+}
+
+test "#2479: a pattern literal and an expression literal are one entry" {
+  inspect(table("fn f(s: String) -> Int { match s { \"a\" => 1, \"b\" => 2, _ => 0 } }\nlet t = [\"b\", \"c\"]"), content = "a|b|c")
+}
+
+test "#2479: an expression literal then the same pattern is one entry" {
+  inspect(table("let t = [\"b\"]\nfn f(s: String) -> Int { match s { \"a\" => 1, \"b\" => 2, _ => 0 } }"), content = "b|a")
+}
+
+test "#2479: literals across functions dedup" {
+  inspect(table("fn g() -> String { \"Map::has\" }\nfn h() -> Array[String] { [\"Map::has\", \"Map::set\"] }"), content = "Map::has|Map::set")
+}

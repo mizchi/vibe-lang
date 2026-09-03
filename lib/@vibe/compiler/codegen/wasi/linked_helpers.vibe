@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import @vibe/compiler/core {
@@ -59,30 +59,46 @@ export fn stmts_use_builtin(stmts: Array[Stmt], fn_names: Array[String], target:
 /// compiler-closure compile profiles. Same semantics: a name counts as "used"
 /// only where it is FREE (not a user fn, not locally bound), and the flag
 /// reads compare canonical names exactly like expr_uses_builtin did.
-fn push_free_canonical(expr: Expr, fn_name_index: Array[String], sink: Array[(String, Bool)]) -> Unit {
+fn push_free_canonical(expr: Expr, fn_name_index: Array[String], sink: Array[(String, Bool)], seen_raw: MutSet[String]) -> Unit {
   // #1348: collect_free_vars_USED_BUILTINS, not ..._indexed. The capture
   // variant drops inlined-builtin call callees, which is right for closure
   // capture and exactly wrong here -- the dropped name is the only evidence
   // that the builtin's host import must be reserved. See the doc comment on
   // collect_free_vars_used_builtins (codegen/common_analysis).
+  //
+  // #2479: a name is canonicalized ONCE per program. Every top-level body
+  // used to push every free name it saw, so `canonical_builtin_name` (a
+  // 40-arm string match) and the final map insert ran once per OCCURRENCE
+  // across the whole program; `seen_raw` cuts that to once per distinct name.
   let fvs = collect_free_vars_used_builtins(expr, array_empty(), fn_name_index)
   let mut j = 0
   while j < Array::length(fvs) {
-    Array::push(sink, (canonical_builtin_name(Array::get(fvs, j)), true))
+    let raw = Array::get(fvs, j)
+    if MutSet::has(seen_raw, raw) {
+      ()
+    } else {
+      MutSet::add(seen_raw, raw)
+      Array::push(sink, (canonical_builtin_name(raw), true))
+    }
     j = j + 1
   }
 }
 
 export fn collect_used_builtin_names_into(stmts: Array[Stmt], fn_names: Array[String], fn_name_index: Array[String], sink: Array[(String, Bool)]) -> Unit {
+  let seen_raw: MutSet[String] = MutSet::new_string()
+  collect_used_builtin_names_into_seen(stmts, fn_names, fn_name_index, sink, seen_raw)
+}
+
+fn collect_used_builtin_names_into_seen(stmts: Array[Stmt], fn_names: Array[String], fn_name_index: Array[String], sink: Array[(String, Bool)], seen_raw: MutSet[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => push_free_canonical(expr, fn_name_index, sink),
-      SLetMut(_, _, expr) => push_free_canonical(expr, fn_name_index, sink),
-      STest(_, expr) => push_free_canonical(expr, fn_name_index, sink),
-      SBench(_, expr) => push_free_canonical(expr, fn_name_index, sink),
-      SExpr(expr) => push_free_canonical(expr, fn_name_index, sink),
-      SModule(_, _, inner) => collect_used_builtin_names_into(inner, fn_names, fn_name_index, sink),
+      SLet(_, _, _, _, expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
+      SLetMut(_, _, expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
+      STest(_, expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
+      SBench(_, expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
+      SExpr(expr) => push_free_canonical(expr, fn_name_index, sink, seen_raw),
+      SModule(_, _, inner) => collect_used_builtin_names_into_seen(inner, fn_names, fn_name_index, sink, seen_raw),
       _ => ()
     }
     i = i + 1

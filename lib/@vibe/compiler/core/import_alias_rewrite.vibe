@@ -2716,20 +2716,6 @@ fn resolve_known_import_path(known_paths: Array[String], base_dir: String, raw_p
   }
 }
 
-fn plan_triple_lookup(tpaths: Array[String], tnames: Array[String], tvalues: Array[String], path: String, name: String) -> Option[String] {
-  let mut i = 0
-  let mut found = None
-  while i < Array::length(tpaths) {
-    if Array::get(tpaths, i) == path && Array::get(tnames, i) == name {
-      found = Some(Array::get(tvalues, i))
-      i = Array::length(tpaths)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
 /// Re-export edges of one file: `export ./dep.vibe { a, b as c }` plus the
 /// `import { x } ... export { x }` facade idiom (an `export {}` item with no
 /// local declaration but a matching import). Pushed as parallel arrays
@@ -2859,18 +2845,38 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   // export names of a linked library / component entry) and stay bare.
   let excluded_paths = empty_strings()
   let excluded_names = empty_strings()
-  let file_idx_of: (String) -> Int = (path) -> {
-    let mut i = 0
-    let mut found = -1
-    while i < file_count {
-      if Array::get(paths, i) == path {
-        found = i
-        i = file_count
-      } else {
-        i = i + 1
-      }
+  // #2479: the three lookups below used to scan their parallel arrays per
+  // edge (`file_idx_of` over `paths`, `plan_triple_lookup` over the edge
+  // arrays and over the exclusions) -- 150 ms of a warm compiler-closure
+  // compile. Index each once; `plan_triple_lookup` answered the FIRST match,
+  // so an index entry is written only when absent.
+  let path_idx: MutMap[String, Int] = MutMap::new_string()
+  let mut pi = 0
+  while pi < file_count {
+    if !MutMap::has(path_idx, Array::get(paths, pi)) {
+      MutMap::set(path_idx, Array::get(paths, pi), pi)
+    } else {
+      ()
     }
-    found
+    pi = pi + 1
+  }
+  let edge_idx: MutMap[String, Int] = MutMap::new_string()
+  let mut ei2 = 0
+  while ei2 < Array::length(edge_from) {
+    let ekey = plan_rename_key(Array::get(edge_from, ei2), Array::get(edge_pub, ei2))
+    if !MutMap::has(edge_idx, ekey) {
+      MutMap::set(edge_idx, ekey, ei2)
+    } else {
+      ()
+    }
+    ei2 = ei2 + 1
+  }
+  let excluded_idx: MutMap[String, Bool] = MutMap::new_string()
+  let file_idx_of: (String) -> Int = (path) -> {
+    match MutMap::get(path_idx, path) {
+      Some(i) => i,
+      None => -1
+    }
   }
   let mut xi = 0
   while xi < Array::length(edge_from) {
@@ -2888,20 +2894,14 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
         if is_def {
           Array::push(excluded_paths, cur_path)
           Array::push(excluded_names, cur_name)
+          MutMap::set(excluded_idx, plan_rename_key(cur_path, cur_name), true)
           depth = 16
         } else {
-          match plan_triple_lookup(edge_from, edge_pub, edge_tpath, cur_path, cur_name) {
-            Some(next_path) => {
-              match plan_triple_lookup(edge_from, edge_pub, edge_tname, cur_path, cur_name) {
-                Some(next_name) => {
-                  cur_path = next_path
-                  cur_name = next_name
-                  depth = depth + 1
-                },
-                None => {
-                  depth = 16
-                }
-              }
+          match MutMap::get(edge_idx, plan_rename_key(cur_path, cur_name)) {
+            Some(eidx) => {
+              cur_path = Array::get(edge_tpath, eidx)
+              cur_name = Array::get(edge_tname, eidx)
+              depth = depth + 1
             },
             None => {
               depth = 16
@@ -2918,6 +2918,29 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
   let rename_names = empty_strings()
   let rename_mangled = empty_strings()
   let rename_idx: MutMap[String, String] = MutMap::new_string()
+  // #2479: the facade-closure fixpoint below scans every rename entry per
+  // edge for the ones on the edge's target path (O(passes x edges x
+  // renames); the whole of this function's 0.2 s on a warm
+  // compiler-closure compile). `rename_by_path` keeps each path's entry
+  // indices in insertion order, so that scan reads one bucket. Every push to
+  // the three parallel arrays goes through `add_rename`, which also appends
+  // to the bucket -- an entry appended while a bucket is being walked lands
+  // at its end, exactly where the array scan would have met it.
+  let rename_by_path: MutMap[String, Array[Int]] = MutMap::new_string()
+  let add_rename: (String, String, String) -> Unit = (rpath, rname, rmangled) -> {
+    let ridx = Array::length(rename_paths)
+    Array::push(rename_paths, rpath)
+    Array::push(rename_names, rname)
+    Array::push(rename_mangled, rmangled)
+    match MutMap::get(rename_by_path, rpath) {
+      Some(bucket) => Array::push(bucket, ridx),
+      None => {
+        let bucket: Array[Int] = []
+        Array::push(bucket, ridx)
+        MutMap::set(rename_by_path, rpath, bucket)
+      }
+    }
+  }
   let mut ri = 0
   while ri < file_count {
     let path = Array::get(paths, ri)
@@ -2928,17 +2951,12 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       let mut ni = 0
       while ni < Array::length(def_names) {
         let name = Array::get(def_names, ni)
-        let excluded = match plan_triple_lookup(excluded_paths, excluded_names, excluded_names, path, name) {
-          Some(_) => true,
-          None => false
-        }
+        let excluded = MutMap::has(excluded_idx, plan_rename_key(path, name))
         if excluded {
           ()
         } else {
           let mangled = namespace_exported_def_name(path, name)
-          Array::push(rename_paths, path)
-          Array::push(rename_names, name)
-          Array::push(rename_mangled, mangled)
+          add_rename(path, name, mangled)
           let key = plan_rename_key(path, name)
           if !MutMap::has(rename_idx, key) {
             MutMap::set(rename_idx, key, mangled)
@@ -2959,9 +2977,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
       while ci < Array::length(trait_collision_renames) {
         let (name, mangled) = Array::get(trait_collision_renames, ci)
         if string_array_contains(exported_names, name) {
-          Array::push(rename_paths, path)
-          Array::push(rename_names, name)
-          Array::push(rename_mangled, mangled)
+          add_rename(path, name, mangled)
           let key = plan_rename_key(path, name)
           if !MutMap::has(rename_idx, key) {
             MutMap::set(rename_idx, key, mangled)
@@ -2995,9 +3011,7 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
             if MutMap::has(rename_idx, from_key) {
               ()
             } else {
-              Array::push(rename_paths, from)
-              Array::push(rename_names, pub_name)
-              Array::push(rename_mangled, mangled)
+              add_rename(from, pub_name, mangled)
               MutMap::set(rename_idx, from_key, mangled)
               changed = true
             }
@@ -3012,27 +3026,30 @@ export fn build_export_rename_plan(paths: Array[String], stmts_list: Array[Array
         let target_name = Array::get(edge_tname, ci)
         let target_prefix = String::concat(target_name, "::")
         let public_prefix = String::concat(pub_name, "::")
-        let mut ri2 = 0
-        while ri2 < Array::length(rename_paths) {
-          let source_path = Array::get(rename_paths, ri2)
-          let source_name = Array::get(rename_names, ri2)
-          if source_path == target_path && String::starts_with(source_name, target_prefix) {
-            let from_name = String::concat(public_prefix, String::substring(source_name, String::length(target_prefix), String::length(source_name)))
-            let from_key = plan_rename_key(from, from_name)
-            if !MutMap::has(rename_idx, from_key) {
-              let mangled = Array::get(rename_mangled, ri2)
-              Array::push(rename_paths, from)
-              Array::push(rename_names, from_name)
-              Array::push(rename_mangled, mangled)
-              MutMap::set(rename_idx, from_key, mangled)
-              changed = true
-            } else {
-              ()
+        match MutMap::get(rename_by_path, target_path) {
+          Some(bucket) => {
+            let mut bi = 0
+            while bi < Array::length(bucket) {
+              let ri2 = Array::get(bucket, bi)
+              let source_name = Array::get(rename_names, ri2)
+              if String::starts_with(source_name, target_prefix) {
+                let from_name = String::concat(public_prefix, String::substring(source_name, String::length(target_prefix), String::length(source_name)))
+                let from_key = plan_rename_key(from, from_name)
+                if !MutMap::has(rename_idx, from_key) {
+                  let mangled = Array::get(rename_mangled, ri2)
+                  add_rename(from, from_name, mangled)
+                  MutMap::set(rename_idx, from_key, mangled)
+                  changed = true
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+              bi = bi + 1
             }
-          } else {
-            ()
-          }
-          ri2 = ri2 + 1
+          },
+          None => ()
         }
       }
       ci = ci + 1
