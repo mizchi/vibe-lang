@@ -1,0 +1,242 @@
+//# #2462 / #2464: the typed-lowering Bool render channel (tag 5), and the gc
+//# lane's missing ECall arm.
+//
+// Two P0s that were one gap seen from two sides. Both lanes decided "is this
+// render/`eq` argument a Bool" SYNTACTICALLY, and both answers were incomplete
+// in ways invisible from the source:
+//
+//   - linear read `fn_returns`, which `collect_fn_returns` fills from the
+//     STATEMENT list. A lambda bound by a `let` INSIDE a function body is an
+//     ELet expression, never a statement, so `__to_string(f())` rendered "1".
+//     The SAME lambda bound at top level rendered "true" -- the tell that the
+//     rule was about where the binding sat, not about the type (#2462).
+//   - gc's `gc_expr_is_boolish` had no ECall arm at all, so no Bool-returning
+//     builtin was classified: `__to_string(eq(a, b))` rendered "0" where linear
+//     rendered "false". A REGRESSION -- the committed seed answers "false" on
+//     both lanes (#2464).
+//
+// The fix is the channel #2424 built for Int and Double, one type over: the
+// checker already knows the type, and it does not care where the producer was
+// bound or whether the callee is a builtin.
+//
+// This file pins the two halves that behaviour alone cannot separate:
+//
+//   1. THE PRODUCER files the right offsets. A channel can be wired up and
+//      permanently inert (#2449 shipped exactly that), and a behavioural test
+//      passing for the OTHER classifier's reason would not notice.
+//   2. THE GC ECALL ARM is load-bearing on its own. On the shipping gc lane
+//      (`gc_only.vibe`) the channel also fires for `eq`, so a behavioural test
+//      there cannot tell the two mechanisms apart. `compile_wasi_gc` passes
+//      EMPTY tables, so under it only the arm can classify -- which is also the
+//      honest statement of what the arm is for: it keeps the two lanes'
+//      SYNTACTIC answers equal for callers that have no checked program.
+//
+// The end-to-end behaviour is pinned in fixtures/gc_lane_scalar_parity_test.vibe,
+// which the early gate runs on all three lanes.
+
+//# Imports
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+import @vibe/compiler/checker {
+  check_program_double_call_result_located_observation, check_program_result, checked_bool_render_offsets, checked_int_render_offsets
+}
+
+import ./codegen_test_support.vibe {
+  compile_wasi_gc
+}
+
+//# Functions
+
+fn bool_rows(src: String) -> Int {
+  handle {
+    let (toks, starts, _) = lex_with_offsets(src)
+    let checked = check_program_result(parse_program_located(toks, starts, src))
+    Array::length(checked_bool_render_offsets(checked))
+  } with { Exception::Throw(_) => 0 - 1 }
+}
+
+fn int_rows(src: String) -> Int {
+  handle {
+    let (toks, starts, _) = lex_with_offsets(src)
+    let checked = check_program_result(parse_program_located(toks, starts, src))
+    Array::length(checked_int_render_offsets(checked))
+  } with { Exception::Throw(_) => 0 - 1 }
+}
+
+/// Bytes of the gc module for `src`, compiled through the test-support entry
+/// that passes EMPTY typed-lowering tables -- so only the syntactic classifiers
+/// can answer, which is what isolates the ECall arm from the channel.
+fn gc_size(src: String) -> Int {
+  handle {
+    Bytes::length(compile_wasi_gc(src, "main"))
+  } with { Exception::Throw(_) => 0 - 1 }
+}
+
+/// Did the LOCATED observation accept this program, or refuse it?
+///
+/// The refusal is `primary_calls > 0 && located_primary_calls == 0` -- an AST
+/// that has calls and located none of them, which is what a plain
+/// `parse_program(lex(src))` produces. `None` means every channel is empty for
+/// that module.
+fn observation_present(src: String) -> Bool {
+  handle {
+    let (toks, starts, _) = lex_with_offsets(src)
+    match check_program_double_call_result_located_observation(parse_program_located(toks, starts, src)) {
+      Some(_) => true,
+      None => false
+    }
+  } with { Exception::Throw(_) => false }
+}
+
+//# Tests
+
+test "2462: a let-bound lambda's Bool result is a tag-5 row" {
+  // No syntactic rule can reach this: the lambda's declared return type lives
+  // on an ELet-bound EFn, and `collect_fn_returns` walks statements.
+  let src = "fn main() -> Unit { let l = () -> Bool { 1 < 2 }\nlet s = __to_string(l())\n() }"
+  inspect(bool_rows(src), content = "1")
+  inspect(int_rows(src), content = "0")
+}
+
+test "2464: an eq result is a tag-5 row, and its own arguments stay tag 3" {
+  // Both channels fire on this one program and must not collide: the `eq` CALL
+  // is the Bool row, its two Int ARGUMENTS are the Int rows. One shared key
+  // with two type answers is the collision the separate tags exist to prevent.
+  let src = "fn main() -> Unit { let a = 1\nlet b = 2\nlet s = __to_string(eq(a, b))\n() }"
+  inspect(bool_rows(src), content = "1")
+  inspect(int_rows(src), content = "2")
+}
+
+test "an Int render argument files no Bool row" {
+  // The fail-closed direction. A Bool offset reaching `ts_known_int` would
+  // render a number as "true"; an Int offset reaching the boolish predicate
+  // would render 7 as "true". Neither may happen.
+  let src = "fn main() -> Unit { let n = 7\nlet s = __to_string(n)\n() }"
+  inspect(bool_rows(src), content = "0")
+  inspect(int_rows(src), content = "1")
+}
+
+test "a Double render argument files no Bool row" {
+  let src = "fn main() -> Unit { let d = 1.5\nlet s = __to_string(d)\n() }"
+  inspect(bool_rows(src), content = "0")
+}
+
+test "an unlocated program files nothing -- the channel fails closed" {
+  // Not spelled as an unlocated parse (this file has no way to reach one that
+  // the producer would accept); the point is the neighbouring guarantee, that
+  // a program with no render call at all yields no rows rather than a default.
+  inspect(bool_rows("fn main() -> Unit { let b = 1 < 2\n() }"), content = "0")
+  inspect(int_rows("fn main() -> Unit { let b = 1 < 2\n() }"), content = "0")
+}
+
+test "2464: the gc ECall arm is load-bearing, and its guard holds" {
+  // `compile_wasi_gc` passes EMPTY typed-lowering tables, so the channel cannot
+  // answer here and only `bc_expr_is_boolish`'s new ECall arm can.
+  //
+  // These two programs are byte-identical except for the declared function's
+  // NAME, so the only semantic difference is whether the call resolves to the
+  // builtin `eq` or to a user function -- which is exactly the variable the arm
+  // and its guard key on. A classified argument lowers to
+  // `if b { "true" } else { "false" }` and costs more than the unclassified
+  // form, so the ordering is the signal.
+  //
+  // Red-tested by disabling the arm's builtin test in the source and
+  // re-measuring through this same helper:
+  //
+  //   program     with the arm   without
+  //   a_user           5949        5949
+  //   b_builtin        5968        5947
+  //
+  // So the assertion below is TRUE with the arm and FALSE without it. Absolute
+  // sizes are deliberately not pinned -- any codegen change moves them, and
+  // what this test is about is the difference between the two.
+  //
+  // Two things at once, which is why they share a test: `b_builtin` proves the
+  // arm fires, and `a_user` proves the "a USER function owns this call" guard
+  // holds. Without that guard an `fn eq(..) -> Int` would render its result as
+  // "true"/"false" -- worse than the bug being fixed.
+  let a_user = "fn eq(a: Int, b: Int) -> Bool {\n  a < b\n}\nfn main() -> Int {\n  let s = __to_string(eq(1, 2))\n  0\n}\n"
+  let b_builtin = "fn zz(a: Int, b: Int) -> Bool {\n  a < b\n}\nfn main() -> Int {\n  let s = __to_string(eq(1, 2))\n  0\n}\n"
+  inspect(gc_size(b_builtin) > gc_size(a_user), content = "true")
+}
+
+test "a USER function named `not` owns its own call" {
+  // Codex on this PR. The `not(..)` clause checked only for a LOCAL named
+  // `not`, so a top-level `fn not(x: Bool) -> Int` had its Int result routed
+  // through the "true"/"false" formatter. Measured before the guard:
+  //
+  //   fn not(x: Bool) -> Int { 42 }   __to_string(not(true))
+  //     main          linear "true"   gc "42"
+  //     this PR, pre-guard    "true"      "true"
+  //
+  // linear had carried this since #825 as a documented "display-only and
+  // vanishingly rare" risk; it is a wrong VALUE with no diagnostic. gc was
+  // right only because it had no ECall arm, so porting the arm without the
+  // guard spread the bug instead of fixing one. The typed channel cannot
+  // rescue it: it is an extra `||`, so it can only ADD a classification, never
+  // correct a syntactic `true`.
+  let user_not = "fn not(x: Bool) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(not(true))\n  0\n}\n"
+  let other_name = "fn nope(x: Bool) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(nope(true))\n  0\n}\n"
+  // Same program shape, only the name differs -- and neither may be
+  // classified, so the two must cost the same.
+  inspect(gc_size(user_not) == gc_size(other_name), content = "true")
+}
+
+test "2464: gc does not classify a call by the NAME `T::equals`" {
+  // Codex on this PR, second round. The linear twin's `::equals` clause
+  // matches on the name and two arguments, nothing else -- so a user's own
+  // `fn Foo::equals(a: Int, b: Int) -> Int` has its Int result rendered
+  // "true". Measured, `__to_string(Foo::equals(1, 2))`:
+  //
+  //   compiler       linear   gc
+  //   main            true    42
+  //   this PR, ported true    true
+  //   as shipped      true    42
+  //
+  // gc was right because it had no ECall arm; porting the clause spread the
+  // bug. It is NOT ported, and it costs nothing: measured through
+  // `compile_wasi_gc`, the `==` rewrite's output compiles BYTE-IDENTICALLY on
+  // gc with and without the clause -- 6446 for a struct `==`, 6227 for an
+  // array `==` -- because something else already classifies those here. A dead
+  // clause that can only misfire.
+  //
+  // The guard cannot be the user-function table, which is why this is an
+  // omission rather than a guard: `desugar_derives` GENERATES `T::equals` into
+  // that same table, so the guard would disable the `==` rewrite's own output.
+  // linear's copy still carries the hole; it is reported, not half-fixed here.
+  let user_equals = "fn Foo::equals(a: Int, b: Int) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(Foo::equals(1, 2))\n  0\n}\n"
+  let other_name = "fn Foo::eqx(a: Int, b: Int) -> Int {\n  42\n}\nfn main() -> Int {\n  let s = __to_string(Foo::eqx(1, 2))\n  0\n}\n"
+  // Neither may be classified, so the two must cost the same. With the clause
+  // ported, only the first would take the boolish path and they would differ.
+  inspect(gc_size(user_equals) == gc_size(other_name), content = "true")
+}
+
+test "an interpolation-only module keeps its rows" {
+  // Codex on this PR, third round: the concern was that a module whose ONLY
+  // calls are the ones `build_interp_expr` synthesizes for `"\{..}"` -- both
+  // carrying offset -1 -- would trip the located-channel refusal
+  // (`primary_calls > 0 && located_primary_calls == 0`) and lose every channel,
+  // Bool rows included.
+  //
+  // Measured, it does not. The observation is present for such a module, and
+  // the Bool row is filed:
+  let interp_only = "fn render() -> String {\n  let l = () -> Bool { 1 < 2 }\n  let v = l()\n  \"\\{v}\"\n}\n"
+  inspect(observation_present(interp_only), content = "true")
+  inspect(bool_rows(interp_only), content = "1")
+  // And end to end, through the FS module lane -- that lane reaches the very
+  // entry the concern named (`check_module_publishing_typed_lowering_offsets`
+  // -> `check_program_with_env_typed_lowering_located_observation`). A module
+  // of exactly this shape, imported and called from a `.vibex` root, rendered
+  // "1" on the merge base and renders "true" here, on BOTH lanes. The shape is
+  // the #2462 one, so nothing syntactic can classify it: the row is the only
+  // thing that can be doing the work.
+  //
+  // The refusal is real code with a real trigger -- an UNLOCATED parse -- and
+  // the neighbouring `observation_present` rows below say what that looks
+  // like. Synthesized calls inside a located parse are not it.
+  inspect(observation_present("fn f() -> Int {\n  1\n}\n\nfn g() -> Int {\n  f()\n}\n"), content = "true")
+  inspect(observation_present("fn h(x: Int) -> Int {\n  x + 1\n}\n"), content = "true")
+}

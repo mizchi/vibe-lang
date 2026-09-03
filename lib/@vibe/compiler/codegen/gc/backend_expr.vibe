@@ -55,6 +55,7 @@ import @vibe/compiler/codegen/common_base {
   expr_tag,
   find_func_stmt,
   find_local_slot,
+  func_table_user_index_of,
   gc_ctor_field_is_ref,
   gc_slot_log_reset_above,
   gc_slot_map_get,
@@ -462,17 +463,69 @@ fn gc_value_is_intish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) ->
   }
 }
 
+/// #2462/#2464: does the CHECKER say this render/`eq` argument is a `Bool`?
+/// The gc twin of `bool_offset_says_bool` (codegen/expr/compile_call.vibe),
+/// reading the same channel under the same key.
+fn gc_offset_says_bool(e: Expr, ctx: CompileCtxGc) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.gc_bool_render_offsets, off)
+}
+
 fn gc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
-  match e {
-    EBool(_) => true,
-    EIdent(fname, _) => {
-      let slot = find_local_slot(local_names, fname)
-      slot >= 0 && array_contains_int(ctx.gc_bool_locals, slot)
-    },
-    EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
-    EUnaryOp(op, _) => op == "!",
-    _ => false
+  if gc_offset_says_bool(e, ctx) {
+    true
+  } else {
+    match e {
+      EBool(_) => true,
+      EIdent(fname, _) => {
+        let slot = find_local_slot(local_names, fname)
+        slot >= 0 && array_contains_int(ctx.gc_bool_locals, slot)
+      },
+      EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
+      EUnaryOp(op, _) => op == "!",
+      // #2464: the ECall arm this classifier never had, so
+      // `__to_string(eq(a, b))` rendered "0" here while linear rendered
+      // "false" -- and the committed seed answers "false" on gc too, so that
+      // was a regression.
+      //
+      // TWO of the linear twin's four clauses are deliberately NOT ported.
+      // `__arr_equals__*` and `T::equals` classify the `==` rewrite's output,
+      // and measured through `compile_wasi_gc` (empty tables, so only this
+      // predicate can answer) gc emits BYTE-IDENTICAL modules with and without
+      // them -- 6446 for a struct `==`, 6227 for an array `==` either way. They
+      // are dead here, and they are not harmless: `T::equals` matches on the
+      // NAME, so a user's own `fn Foo::equals(a: Int, b: Int) -> Int` had its
+      // Int result rendered "true". Measured, main: linear "true", gc "42" --
+      // gc was right precisely because it had no arm. Porting all four would
+      // have spread that. The guard linear needs cannot be the user-function
+      // table either, because `desugar_derives` GENERATES `T::equals` into
+      // that same table; linear's copy still carries the hole, reported
+      // separately rather than half-fixed here.
+      ECall(callee, args, _) => match callee {
+        EIdent(cn, _) =>
+        (cn == "not" && Array::length(args) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && gc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) || gc_builtin_ret_is_bool(cn, local_names, ctx),
+        _ => false
+      },
+      _ => false
+    }
   }
+}
+
+/// #2464: the gc twin of the linear `cc_builtin_call_ret_kind == 1` test --
+/// is `n` a Bool-returning BUILTIN that this program has not shadowed?
+///
+/// The name list is the linear one verbatim (compile_call.vibe). Copying it
+/// rather than deriving it is the lesser evil only because the two lanes'
+/// registries are separate structures; the typed-lowering Bool channel above
+/// is what makes a name missing from this list a missed classification rather
+/// than a wrong one, and it is the reason a future builtin does not have to be
+/// added in two places to render correctly.
+fn gc_builtin_ret_is_bool(n: String, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  let known = n == "eq" || n == "not" || n == "String::equals" || n == "String::contains" || n == "String::starts_with" || n == "String::ends_with" || n == "Array::contains" || n == "Array::any" || n == "Array::all" || n == "Map::has_key" || n == "Map::has" || n == "map_has" || n == "MapBuilder::has_key" || n == "Path::is_absolute" || n == "Fs::exists" || n == "Fs::is_dir" || n == "Fs::is_file"
+  // A local of the same name, or a USER function of that name, owns the call
+  // -- its return type is unknown here, so classify nothing rather than
+  // assume Bool. Same two guards the linear `cc_builtin_call_ret_kind` applies.
+  known && find_local_slot(local_names, n) < 0 && func_table_user_index_of(ctx.func_table, n, ctx.num_user_funcs) < 0
 }
 
 /// #538 P4.5: is `e` syntactically a constructor value (ctor call or nullary

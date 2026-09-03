@@ -15,6 +15,7 @@ import @vibe/compiler/core {
   is_borrow_ret_builtin,
   leb128_encode_s64,
   leb128_encode_u32,
+  typed_lowering_arg_offset,
   typed_lowering_float_key
 }
 
@@ -61,6 +62,7 @@ import @vibe/compiler/codegen/common_base {
   expr_tag,
   find_local_slot,
   func_table_index_of,
+  func_table_user_index_of,
   get_arm_body,
   get_arm_pat,
   get_ebinop_op,
@@ -452,13 +454,27 @@ fn slot_is_stringish(ctx: CompileCtx, slot: Int) -> Bool {
   result
 }
 
+/// #2462/#2464: does the CHECKER say this render/`eq` argument is a `Bool`?
+/// Keyed by `typed_lowering_arg_offset`, the producer's own key -- see
+/// `bool_offset_says_bool` in compile_call.vibe, the twin of this.
+fn tail_offset_says_bool(e: Expr, ctx: CompileCtx) -> Bool {
+  let off = typed_lowering_arg_offset(e)
+  off >= 0 && array_contains_int(ctx.bool_render_offsets, off)
+}
+
 /// #769: does `e` statically evaluate to a Bool? Bool literals, comparison /
 /// logical operators, `!`, and -- via the kind-3 slot log above -- a bare ident
 /// `let`-bound to a boolish value. Syntactic over-approximation like
 /// expr_is_intish; consumers use it only to pick "true"/"false" formatting.
 export fn expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
   let tag = expr_tag(e)
-  if tag == 1 {
+  // #2462/#2464: the checker's answer first, as an extra `||` -- same channel
+  // and same key as `cc_expr_is_boolish`'s arm in compile_call.vibe. These two
+  // copies must agree; a table consulted by only one of them is a coin flip on
+  // which copy a given site reaches.
+  if tail_offset_says_bool(e, ctx) {
+    true
+  } else if tag == 1 {
     true
   } else if tag == 4 {
     let nm = get_eident_name(e)
@@ -529,13 +545,13 @@ export fn expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) 
     // `__arr_equals__` is a reserved compiler prefix; `::equals` (2 args) is
     // the == rewrite's exact output shape. A `not(...)` wrap (the `!=`
     // rewrite's output) is classified only when its single argument is itself
-    // boolish AND `not` is not locally shadowed — a user global `not` taking
-    // a boolish arg but returning non-Bool could still misformat, but that is
-    // display-only and vanishingly rare (relaxes the #785-P2 caution).
+    // boolish, `not` is not locally shadowed, AND no USER function is named
+    // `not` -- see the cc_expr_is_boolish twin in compile_call.vibe for what
+    // that last guard fixed and why the typed channel could not.
     let bcallee = get_ecall_callee(e)
     if is_eident(bcallee) {
       let bcn = get_eident_name(bcallee)
-      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(local_names, "not") < 0 && expr_is_boolish(Array::get(get_ecall_args(e), 0), local_names, ctx)) || cc_builtin_call_ret_kind(e, local_names, ctx) == 1
+      String::starts_with(bcn, "__arr_equals__") || (String::ends_with(bcn, "::equals") && Array::length(get_ecall_args(e)) == 2) || (bcn == "not" && Array::length(get_ecall_args(e)) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && expr_is_boolish(Array::get(get_ecall_args(e), 0), local_names, ctx)) || cc_builtin_call_ret_kind(e, local_names, ctx) == 1
     } else if is_efn(bcallee) && Array::length(get_ecall_args(e)) == 1 {
       // #815: `let x: Bool = e` parses to the ascription marker
       // `((__asc: Bool) -> __asc)(e)` (ELet carries no type field, see

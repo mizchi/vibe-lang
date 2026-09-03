@@ -508,15 +508,15 @@ fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, St
 /// codegen. The rewrite anchors with the checker's own channel anchor
 /// (typed_lowering_binop_anchor), so
 /// both sides compute the anchor identically by construction.
-fn merged_stmts_and_offsets(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
+fn merged_stmts_and_offsets(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
   let merged = build_grouped_merged_stmts_impl(source_groups, true, flat_paths, flat_bases, clone_float_offsets)
-  let (floats, rels, pluses, int_renders) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  let (floats, rels, pluses, int_renders, bool_renders) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
   // #2441: the typed-`==` rows ride the same disjoint offset spaces.
   let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)
-  (rewrite_string_binops_stmts(merged, rels, pluses, typed_lowering_binop_anchor), floats, int_renders, eq_offs, eq_keys)
+  (rewrite_string_binops_stmts(merged, rels, pluses, typed_lowering_binop_anchor), floats, int_renders, bool_renders, eq_offs, eq_keys)
 }
 
 /// Interior-line breakpoints (span-arc step5): the basename of a file path (text
@@ -719,12 +719,12 @@ export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: Str
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
   if mode == "mvp" {
     let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else if mode == "no-dce" {
-    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
@@ -757,8 +757,8 @@ export fn compile_file_fs_mode_rc(entry_path: String, entry_name: String) -> Byt
   // `VIBE_RC` unset is `"" != "0"`. The checker's Double call-result offsets
   // ride the modular check; see compile_file_fs_mode above for the design and
   // the measurements.
-  let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
-  compile_wasi_module_rc_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  compile_wasi_module_rc_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
 }
 
 /// #2388 step 3: like the rc lane's merge, but ALSO reports, per flat source
@@ -1067,7 +1067,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   let (merged_stmts_raw, file_paths, file_fps, file_counts, file_bases, clone_float_offsets) = build_grouped_merged_stmts_counted(source_groups)
-  let (float_offsets, tl_rels, tl_pluses, int_offsets) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(file_paths, file_bases, clone_float_offsets))
+  let (float_offsets, tl_rels, tl_pluses, int_offsets, bool_offsets) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(file_paths, file_bases, clone_float_offsets))
   let (eq_offsets, eq_keys) = union_module_typed_eq_rows(file_paths, file_bases)
   let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, typed_lowering_binop_anchor)
   // The key is independent of source CONTENT (the point is to hit after an
@@ -1081,7 +1081,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   }
   if cache_mode == "verify" {
     let fresh_out = codegen_body_cache_new()
-    let fresh = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, float_offsets, int_offsets, eq_offsets, eq_keys)
+    let fresh = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
     if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_in, fresh_out) {
       // Guard drift (an edit flipped a whole-program fact the guards pin)
       // is an EXPECTED cache miss, checked above against the fresh
@@ -1093,7 +1093,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
       // replay/sliced gates prove that recompile is byte-identical to the
       // first, so any difference here is attributable to the persisted
       // bodies being replayed.
-      let replayed = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), float_offsets, int_offsets, eq_offsets, eq_keys)
+      let replayed = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
       let fresh_n = Bytes::length(fresh)
       let rn = Bytes::length(replayed)
       if fresh_n != rn {
@@ -1122,7 +1122,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
     fresh
   } else {
     let cache_out = codegen_body_cache_new()
-    let bytes = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, cache_in, cache_out, float_offsets, int_offsets, eq_offsets, eq_keys)
+    let bytes = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, cache_in, cache_out, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
     // Replayed entries are not re-recorded, so the refreshed artifact is
     // the new harvest plus the entries it replayed -- but ONLY when the
     // cache was actually consumed (its guards match the new harvest's).
@@ -1171,9 +1171,9 @@ export fn compile_file_fs_mode_rc_heap_marked(entry_path: String, entry_name: St
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   fs_heap_mark("prepared_db")
-  let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
   fs_heap_mark("merged_stmts")
-  let bytes = compile_wasi_module_rc_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+  let bytes = compile_wasi_module_rc_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   fs_heap_mark("codegen_rc")
   bytes
 }
@@ -1190,9 +1190,9 @@ export fn compile_file_fs_mode_bump_heap_marked(entry_path: String, entry_name: 
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
   fs_heap_mark("prepared_db")
-  let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
   fs_heap_mark("merged_stmts")
-  let bytes = compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+  let bytes = compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   fs_heap_mark("codegen_bump")
   bytes
 }
@@ -1205,8 +1205,8 @@ export fn compile_file_fs_mode_rc_shadow(entry_path: String, entry_name: String)
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
-  compile_wasi_module_rc_shadow_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  compile_wasi_module_rc_shadow_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
 }
 
 /// #634 (ADR-0026): same as compile_file_fs_mode, but ALSO writes the pure-test
@@ -1220,7 +1220,7 @@ export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, 
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
   // Compute the cacheability verdict BEFORE codegen (it only needs the stmts)
   // but write it only AFTER codegen succeeds, so a failed compile leaves no
   // stale sidecar.
@@ -1231,9 +1231,9 @@ export fn compile_file_fs_mode_testmeta(entry_path: String, entry_name: String, 
   }
   let bytes = if mode == "mvp" {
     let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else if mode == "no-dce" {
-    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
@@ -1273,8 +1273,8 @@ export fn compile_file_fs_mode_coverage(entry_path: String, entry_name: String) 
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
-  compile_wasi_module_with_sources_coverage_impl_with_typed_offsets(merged_stmts, entry_name, array_empty(), float_offsets, int_offsets, eq_offsets, eq_keys)
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  compile_wasi_module_with_sources_coverage_impl_with_typed_offsets(merged_stmts, entry_name, array_empty(), float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
 }
 
 /// Trace (debugger / DAP P1 groundwork): FS-mode compile with function-call
@@ -1286,8 +1286,8 @@ export fn compile_file_fs_mode_trace(entry_path: String, entry_name: String) -> 
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
-  let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
-  compile_wasi_module_with_sources_trace_impl_with_typed_offsets(merged_stmts, entry_name, array_empty(), float_offsets, int_offsets, eq_offsets, eq_keys)
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  compile_wasi_module_with_sources_trace_impl_with_typed_offsets(merged_stmts, entry_name, array_empty(), float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
 }
 
 /// Break (debugger / DAP P1): FS-mode compile with `vibe::dbg_break` host-hook
@@ -1308,7 +1308,7 @@ export fn compile_file_fs_mode_break(entry_path: String, entry_name: String) -> 
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
   let (merged_stmts_raw, dbg_files, dbg_file_nls, dbg_stmt_file_id) = build_grouped_merged_stmts_prov(source_groups, flat_paths, flat_bases, clone_float_offsets)
-  let (float_offsets, tl_rels, tl_pluses, int_offsets) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  let (float_offsets, tl_rels, tl_pluses, int_offsets, bool_offsets) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
   let (eq_offsets, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)
   // The String-binop rewrite keeps every surviving node's offset, so the
   // per-file newline tables and stmt->file mapping stay valid: a rewritten
@@ -1318,7 +1318,7 @@ export fn compile_file_fs_mode_break(entry_path: String, entry_name: String) -> 
     files: dbg_files,
     file_nls: dbg_file_nls,
     stmt_file_id: dbg_stmt_file_id
-  }, float_offsets, int_offsets, eq_offsets, eq_keys)
+  }, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
 }
 
 export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, mode: String) -> (Bytes, Int, Int, Int, Int, Int, Int) with Exception + Fs + Profiler {
@@ -1334,14 +1334,14 @@ export fn compile_file_fs_mode_profiled(entry_path: String, entry_name: String, 
   let _ = build_source_groups_fingerprint(source_groups)
   let bundle_us = elapsed_us_since(bundle_start)
   let parse_start = profiler_now_us()
-  let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
   let parse_us = elapsed_us_since(parse_start)
   let compile_start = profiler_now_us()
   let bytes = if mode == "mvp" {
     let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+    compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else if mode == "no-dce" {
-    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+    compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
@@ -1381,14 +1381,14 @@ fn compile_file_fs_mode_cached_slow_profiled(db: TypeDb, entry_path: String, ent
         Some(bytes) => (bytes, next_db, load_us, type_us, bundle_us, 0, 0),
         None => {
           let parse_start = profiler_now_us()
-          let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+          let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
           let parse_us = elapsed_us_since(parse_start)
           let compile_start = profiler_now_us()
           let bytes = if mode == "mvp" {
             let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-            compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+            compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
           } else {
-            compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+            compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
           }
           store_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint, bytes)
           let compile_us = elapsed_us_since(compile_start)
@@ -1422,12 +1422,12 @@ fn compile_file_fs_mode_cached_slow_observed(db: TypeDb, entry_path: String, ent
       match db_load_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint) {
         Some(bytes) => (bytes, next_db, source_groups_fingerprint, persistent_artifact_fingerprint, "miss"),
         None => {
-          let (merged_stmts, float_offsets, int_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
+          let (merged_stmts, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys) = merged_stmts_and_offsets(source_groups)
           let bytes = if mode == "mvp" {
             let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
-            compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+            compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
           } else {
-            compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, eq_offsets, eq_keys)
+            compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
           }
           store_persistent_artifact(persistent_artifact_kind, entry_name, persistent_artifact_fingerprint, bytes)
           (bytes, db_store_artifact(next_db, entry_path, artifact_kind, entry_name, artifact_fingerprint, bytes), source_groups_fingerprint, persistent_artifact_fingerprint, "miss")

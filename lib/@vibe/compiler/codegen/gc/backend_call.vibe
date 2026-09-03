@@ -493,16 +493,45 @@ fn bc_expr_is_floatish_syntactic(e: Expr, local_names: Array[String], ctx: Compi
 /// argument to the "true"/"false" formatter instead of the generic runtime
 /// dispatch (which would mis-render `true` as `"1"`).
 fn bc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
-  match e {
-    EBool(_) => true,
-    EIdent(fname, _) => {
-      let slot = find_local_slot(local_names, fname)
-      slot >= 0 && array_contains_int(ctx.gc_bool_locals, slot)
-    },
-    EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
-    EUnaryOp(op, _) => op == "!",
-    _ => false
+  // #2462/#2464: the checker's answer first, then the syntactic arms -- the
+  // same order, channel and key as `gc_expr_is_boolish` in backend_expr.vibe.
+  // This mirror is the copy the `__to_string` dispatch below actually reaches,
+  // so a table wired into only one of the two would look wired up and stay
+  // silent exactly where it matters.
+  let toff = typed_lowering_arg_offset(e)
+  if toff >= 0 && array_contains_int(ctx.gc_bool_render_offsets, toff) {
+    true
+  } else {
+    match e {
+      EBool(_) => true,
+      EIdent(fname, _) => {
+        let slot = find_local_slot(local_names, fname)
+        slot >= 0 && array_contains_int(ctx.gc_bool_locals, slot)
+      },
+      EBinOp(op, _, _, _) => op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=" || op == "&&" || op == "||",
+      EUnaryOp(op, _) => op == "!",
+      // #2464: the ECall arm, the same two of the linear twin's four clauses
+      // as backend_expr's copy -- see there for why `__arr_equals__*` and
+      // `T::equals` are left out (measured dead on gc, and `T::equals` matches
+      // on the name, so it misrenders a user's own `Foo::equals`).
+      ECall(callee, args, _) => match callee {
+        EIdent(cn, _) =>
+        (cn == "not" && Array::length(args) == 1 && find_local_slot(local_names, "not") < 0 && func_table_user_index_of(ctx.func_table, "not", ctx.num_user_funcs) < 0 && bc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) || bc_builtin_ret_is_bool(cn, local_names, ctx),
+        _ => false
+      },
+      _ => false
+    }
   }
+}
+
+/// #2464: the local mirror of backend_expr's `gc_builtin_ret_is_bool` (same
+/// cycle precedent as `bc_expr_is_boolish` above). The name list is the linear
+/// `cc_builtin_call_ret_kind`'s kind-1 set verbatim, and both guards are the
+/// linear ones: a local of that name, or a USER function of that name, owns
+/// the call and its return type is unknown here.
+fn bc_builtin_ret_is_bool(n: String, local_names: Array[String], ctx: CompileCtxGc) -> Bool {
+  let known = n == "eq" || n == "not" || n == "String::equals" || n == "String::contains" || n == "String::starts_with" || n == "String::ends_with" || n == "Array::contains" || n == "Array::any" || n == "Array::all" || n == "Map::has_key" || n == "Map::has" || n == "map_has" || n == "MapBuilder::has_key" || n == "Path::is_absolute" || n == "Fs::exists" || n == "Fs::is_dir" || n == "Fs::is_file"
+  known && find_local_slot(local_names, n) < 0 && func_table_user_index_of(ctx.func_table, n, ctx.num_user_funcs) < 0
 }
 
 fn gc_native_array_receiver_slot(args: Array[Expr], local_names: Array[String], ctx: CompileCtxGc) -> Int {
