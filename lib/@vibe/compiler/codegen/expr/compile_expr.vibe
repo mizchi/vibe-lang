@@ -54,6 +54,7 @@ import @vibe/compiler/codegen/common_base {
   emit_unbox_float,
   expr_tag,
   float_log_reset_above,
+  func_table_builtin_index_of,
   func_table_index_of,
   get_arm_body,
   get_arm_pat,
@@ -752,6 +753,13 @@ fn expr_names_nothing(e: Expr) -> Bool {
   }
 }
 
+fn is_estring(e: Expr) -> Bool {
+  match e {
+    EString(_) => true,
+    _ => false
+  }
+}
+
 /// #672: emit the equality test for `lhs == rhs`, leaving a raw i64 0/1 on the
 /// stack (1 = equal). Routes through the structural comparators when an operand
 /// is a tuple / ctor literal (non-rc), else the generic runtime `eq`. Every `==`
@@ -850,6 +858,26 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
     emit_i64_eq(buf)
     emit_i64_extend_i32_s(buf)
+    nl2
+  } else if (is_estring(lhs) || is_estring(rhs)) && func_table_builtin_index_of(ctx.func_table, "String::equals", ctx.num_user_funcs) >= 0 {
+    // #2483: a string-LITERAL operand is the string twin of the intish case.
+    // The checker guarantees the other side is a String, so both operands
+    // are genuine fat pointers and `eq`'s answer for them is exactly
+    // `str_eq`'s -- `eq` only reaches `str_eq` after an i64 compare and two
+    // looks-like-a-string range checks, per call. The compiler's own name
+    // ladders (`f == "Array::get" || f == ...`, ~7,000 literal compares in
+    // its sources) paid that every time: `__rt_eq` was 6.5% of a warm
+    // compiler-closure compile, and its top callers were all such ladders.
+    // Same operand compilation, same 0/1 i64 result, a different callee.
+    //
+    // The callee is the BUILTIN entry, found positionally (#2309): the
+    // prelude defines a program-level `String::equals`, and a lookup by
+    // name in a closure that carries it answered that function -- three
+    // parameters on the linked lane -- so the emitted two-argument call
+    // failed to validate. `==` never meant the program's function.
+    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+    emit_call(buf, func_table_builtin_index_of(ctx.func_table, "String::equals", ctx.num_user_funcs))
     nl2
   } else {
     let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
