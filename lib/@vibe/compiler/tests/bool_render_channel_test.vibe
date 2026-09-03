@@ -41,7 +41,11 @@ import @vibe/compiler/syntax {
 }
 
 import @vibe/compiler/checker {
-  check_program_double_call_result_located_observation, check_program_result, checked_bool_render_offsets, checked_int_render_offsets
+  check_program_double_call_result_located_observation,
+  check_program_result,
+  checked_bool_render_offsets,
+  checked_int_and_bool_render_offsets,
+  checked_int_render_offsets
 }
 
 import ./codegen_test_support.vibe {
@@ -239,4 +243,86 @@ test "an interpolation-only module keeps its rows" {
   // like. Synthesized calls inside a located parse are not it.
   inspect(observation_present("fn f() -> Int {\n  1\n}\n\nfn g() -> Int {\n  f()\n}\n"), content = "true")
   inspect(observation_present("fn h(x: Int) -> Int {\n  x + 1\n}\n"), content = "true")
+}
+
+test "2468: a Show wrapper's argument gets the same rows as `__to_string`" {
+  // A Show wrapper is a one-parameter function whose body is exactly
+  // `__to_string(param)` -- the prelude's `to_string[T: Show]` has that shape.
+  // `desugar_trait_dict` treats a call to one like `__to_string` itself, so
+  // `to_string(x)` and `__to_string(x)` are ONE lowering, and the two
+  // spellings of one render disagreed:
+  //
+  //   __to_string(l())  ->  "true"      to_string(l())  ->  "1"
+  //
+  // The wrapper is GENERIC in every program here, which is what makes the
+  // count readable: `x: T` resolves to nothing, so the shim's own body files
+  // no row and the only row that can appear is the one for the outer call's
+  // argument. The argument is the #2462 shape (a lambda bound by a `let`
+  // INSIDE a function body), so nothing syntactic reaches it either -- the row
+  // is the whole mechanism.
+  let shim = "fn to_string[T](x: T) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = to_string(l())\n  ()\n}\n"
+  inspect(bool_rows(shim), content = "1")
+  // Red direction: a one-parameter function that is NOT a bare `__to_string`
+  // of its parameter is an ordinary call, and its argument files nothing.
+  // Same program otherwise, so the only variable is the body.
+  let not_shim = "fn to_string[T](x: T) -> String {\n  let y = x\n  __to_string(y)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = to_string(l())\n  ()\n}\n"
+  inspect(bool_rows(not_shim), content = "0")
+  // And the wrapper must be recognized by its SHAPE, not by the name
+  // `to_string`.
+  let other_name = "fn zz[T](x: T) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = zz(l())\n  ()\n}\n"
+  inspect(bool_rows(other_name), content = "1")
+  // An Int through the same wrapper stays an Int row -- the wrapper widens
+  // WHICH calls are renders, never which type an argument has.
+  let int_shim = "fn to_string[T](x: T) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let n = 7\n  let s = to_string(n)\n  ()\n}\n"
+  inspect(bool_rows(int_shim), content = "0")
+  inspect(int_rows(int_shim), content = "1")
+  // A MONOMORPHIC wrapper files its own body's row too, and that is not a
+  // second answer about the same expression: `__to_string(x)` inside the
+  // wrapper is a render of a Bool in its own right.
+  let mono = "fn to_string(x: Bool) -> String {\n  __to_string(x)\n}\nfn main() -> Unit {\n  let l = () -> Bool { 1 < 2 }\n  let s = to_string(l())\n  ()\n}\n"
+  inspect(bool_rows(mono), content = "2")
+}
+
+test "the folded Int+Bool walk answers exactly as the two separate walks" {
+  // Perf: tags 3 and 5 share a key (`typed_lowering_arg_offset`), so they scan
+  // the same candidate set and one walk can fill both arrays. Tag 4 keeps its
+  // own walk -- `typed_lowering_float_key` is a genuinely different key.
+  //
+  // The fold is an optimization, so what it has to prove is that it changed
+  // nothing. Each program below is one where the two tags disagree, so a fold
+  // that crossed the arrays would be caught by count alone.
+  let progs = [
+    "fn main() -> Unit { let a = 1\nlet b = 2\nlet s = __to_string(eq(a, b))\n() }",
+    "fn main() -> Unit { let l = () -> Bool { 1 < 2 }\nlet s = __to_string(l())\n() }",
+    "fn main() -> Unit { let n = 7\nlet s = __to_string(n)\n() }",
+    "fn main() -> Unit { let b = 1 < 2\n() }"
+  ]
+  let mut i = 0
+  let mut agree = true
+  while i < Array::length(progs) {
+    let src: String = Array::get(progs, i)
+    let (pi, pb) = handle {
+      let (toks, starts, _) = lex_with_offsets(src)
+      let checked = check_program_result(parse_program_located(toks, starts, src))
+      let (a, b) = checked_int_and_bool_render_offsets(checked)
+      (Array::length(a), Array::length(b))
+    } with { Exception::Throw(_) => (0 - 1, 0 - 1) }
+    if pi != int_rows(src) {
+      agree = false
+    }
+    if pb != bool_rows(src) {
+      agree = false
+    }
+    i = i + 1
+  }
+  inspect(agree, content = "true")
+  // The counts the loop compares against, spelled out -- so a fold that
+  // returned two EMPTY arrays could not pass by agreeing with a
+  // simultaneously-broken single-tag path.
+  inspect(int_rows(Array::get(progs, 0)), content = "2")
+  inspect(bool_rows(Array::get(progs, 0)), content = "1")
+  inspect(int_rows(Array::get(progs, 1)), content = "0")
+  inspect(bool_rows(Array::get(progs, 1)), content = "1")
+  inspect(int_rows(Array::get(progs, 2)), content = "1")
+  inspect(bool_rows(Array::get(progs, 2)), content = "0")
 }
