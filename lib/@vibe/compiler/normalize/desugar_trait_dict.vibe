@@ -10238,10 +10238,29 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             expanded
           } else {
             let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
-            if missing == "" {
-              expanded
-            } else {
+            if missing != "" {
               throw(interp_missing_show_msg(missing))
+            } else if is_show_shim_call(callee, args) {
+              // #2468: nothing HERE resolved it, and for a shim call leaving
+              // the call standing is not the same as leaving a `__to_string`
+              // standing. A shim is by definition `fn s(x) { __to_string(x) }`,
+              // so `s(arg)` and `__to_string(arg)` are one lowering -- but only
+              // the second is a render call to CODEGEN, which is where the
+              // typed-lowering channel (#2424/#2462) and the syntactic boolish
+              // classifiers get their turn. Left as `s(arg)` the argument was
+              // never classified and the two spellings of one render disagreed:
+              //
+              //   __to_string(l())  ->  "true"      to_string(l())  ->  "1"
+              //
+              // Rewriting to the direct spelling, at the SAME call offset, is
+              // what makes them one answer again. The callee is unreachable
+              // afterwards only if nothing else calls it; that is DCE's
+              // business, not this pass's.
+              Some(ECall(EIdent("__to_string", -1), Array::slice([
+                rewrite_expr(Array::get(args, 0), gens, traits, struct_sets, dict_binds, var_types, fn_returns)
+              ], 0, 1), off))
+            } else {
+              expanded
             }
           }
         }
