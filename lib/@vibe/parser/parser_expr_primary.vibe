@@ -751,8 +751,29 @@ fn parse_throw_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse
   let (expr, next_pos) = parse_recur(tokens, open_pos, 0, context)
   let close_pos = expect_tk(tokens, next_pos, ")")
   let off = offset_at(starts, pos)
+  // #2427: the INNER op call carries no offset. Both call nodes used to be
+  // anchored at the `throw` keyword, which made them share one
+  // `get_ecall_off` key -- the exact hazard `call_site_offset` (#2231) exists
+  // to remove, reintroduced here because this desugar builds `ECall` nodes
+  // directly instead of going through `parse_postfix`. Measured over the whole
+  // tree (998 files) it was the ONLY shape with two call nodes on one key,
+  // 904 sites in `lib/**` and 782 more in the reprinted flat module source.
+  //
+  // It has not misclassified anything, because the checker's `perform` arm
+  // returns without routing either result through `tab_call_ty`, so neither
+  // node records a typed occurrence. That is an accident of a distant arm, not
+  // a property of this shape: the moment `perform`'s result is typed -- an
+  // obvious thing to want, the result of `throw` in a `Double`-returning
+  // function IS a Double -- the offset becomes a claim about BOTH nodes, and
+  // #2427's report is what that looks like from the outside.
+  //
+  // -1 is the honest key, not a fallback: the source has no
+  // `Exception::Throw(...)` call to point at. An unlocated call is never
+  // recorded and never looked up. The `perform` node keeps `off` so a
+  // diagnostic still points at the `throw` keyword, and so does the op's
+  // `EIdent` -- `op_off` in the checker's perform arm reads that, not this.
   (ECall(EIdent("perform", off), [
-    ECall(EIdent("Exception::Throw", off), [expr], off)
+    ECall(EIdent("Exception::Throw", off), [expr], 0 - 1)
   ], off), close_pos)
 }
 

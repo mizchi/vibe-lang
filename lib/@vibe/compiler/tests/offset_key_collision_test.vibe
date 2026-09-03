@@ -1,0 +1,291 @@
+//# #2427: no two call nodes may share one `get_ecall_off` key.
+//
+// The Double typed-lowering table (#2158 tag 0, #2424 tag 4) is keyed by
+// OFFSET, so an offset in it classifies EVERY node anchored there. #2476 made
+// the extraction poison an offset whose claimants disagree, which keeps a
+// collision from being silently wrong. This file is the other half: the
+// invariant that says a collision should not exist in the first place.
+//
+// `call_site_offset` (#2231) establishes it for every call the expression
+// parser builds. The hazard is a DESUGAR that constructs `ECall` nodes
+// directly and picks their offsets by hand -- it bypasses that function
+// entirely. `throw(x)` was such a desugar: it anchored `perform`, the op call,
+// and both callee idents at the `throw` keyword, so two call nodes answered
+// `get_ecall_off` with one number.
+//
+// Measured over the tree at the time of writing: 998 files, 904 colliding
+// sites in `lib/**` and 782 more in the reprinted flat module source
+// (`_cli_adapter_module_source.vibe`, the shape the single-source lane
+// compiles) -- every one of them this desugar, and no other shape anywhere,
+// including zero `EDot` field-name keys colliding with a call key.
+//
+// The scan below is the durable form of that measurement. It is a scan, not an
+// example: the failure mode this guards against is a shape nobody thought to
+// write a case for.
+
+//# Imports
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt, expr_children
+}
+
+//# Walk
+
+fn push_stmt_exprs(stmts: Array[Stmt], out: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, v) => Array::push(out, v),
+      SLetMut(_, _, v) => Array::push(out, v),
+      SLetPat(_, v) => Array::push(out, v),
+      STest(_, v) => Array::push(out, v),
+      SBench(_, v) => Array::push(out, v),
+      SExample(_, v) => Array::push(out, v),
+      SExpr(v) => Array::push(out, v),
+      SFnDecl(_, _, v, reqs, enss) => {
+        Array::push(out, v)
+        let mut r = 0
+        while r < Array::length(reqs) {
+          Array::push(out, Array::get(reqs, r))
+          r = r + 1
+        }
+        let mut e = 0
+        while e < Array::length(enss) {
+          Array::push(out, Array::get(enss, e))
+          e = e + 1
+        }
+      },
+      SModule(_, _, inner) => push_stmt_exprs(inner, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Every key in the Double table's key space, as (offset, label).
+///
+/// Both producers are here, because they file into ONE array and the consumer
+/// reads it with one lookup: tag 0 keys a call result by `get_ecall_off`, and
+/// tag 4 keys a render/`eq` argument by `typed_lowering_float_key` -- a call's
+/// own offset, or an `EDot`'s FIELD-NAME offset. A projection key that landed
+/// on a call key would classify that call, which is why dot keys are collected
+/// alongside call keys rather than in a separate pass.
+fn collect_call_keys(stmts: Array[Stmt]) -> Array[(Int, String)] {
+  let roots: Array[Expr] = []
+  push_stmt_exprs(stmts, roots)
+  let out: Array[(Int, String)] = []
+  let mut i = 0
+  while i < Array::length(roots) {
+    let e = Array::get(roots, i)
+    match e {
+      ECall(callee, args, off) => if off >= 0 {
+        Array::push(out, (off, callee_label(callee) + "/" + Int::to_string(Array::length(args))))
+      } else {
+        ()
+      },
+      EDot(_, name, _, field_off) => if field_off >= 0 {
+        Array::push(out, (field_off, "." + name))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    let kids = expr_children(e)
+    let mut k = 0
+    while k < Array::length(kids) {
+      Array::push(roots, Array::get(kids, k))
+      k = k + 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn callee_label(callee: Expr) -> String {
+  match callee {
+    EIdent(n, _) => n,
+    EDot(_, n, _, _) => "." + n,
+    ECall(_, _, _) => "<call>",
+    EFn(_, _, _, _, _, _) => "<fn>",
+    _ => "<expr>"
+  }
+}
+
+/// Offsets claimed twice, through an open-addressed table sized by the NODE
+/// count. Nothing here may be sized by the file's LENGTH: the reprinted flat
+/// module source this is meant to cover is over 7MB, and a counting array
+/// indexed by byte offset would be the reason the scan could not be run on the
+/// one input that matters most.
+fn colliding_offsets(keys: Array[(Int, String)]) -> Array[Int] {
+  let n = Array::length(keys)
+  let mut cap = 16
+  while cap < n * 4 {
+    cap = cap * 2
+  }
+  let slot: Array[Int] = []
+  let mut z = 0
+  while z < cap {
+    Array::push(slot, 0 - 1)
+    z = z + 1
+  }
+  let dups: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    let (off, _) = Array::get(keys, i)
+    let mut h = off - off / cap * cap
+    let mut placed = false
+    while !placed {
+      let cur = Array::get(slot, h)
+      if cur < 0 {
+        Array::set(slot, h, off)
+        placed = true
+      } else if cur == off {
+        Array::push(dups, off)
+        placed = true
+      } else {
+        h = h + 1
+        if h >= cap {
+          h = 0
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  dups
+}
+
+/// "" when the file is clean; otherwise one line naming the file and the
+/// SHAPES that collide -- the labels of every key at each claimed offset. A
+/// list of offsets would repeat the same finding once per site; the shape is
+/// what a reader has to act on.
+fn scan_source(path: String, src: String) -> String with Exception {
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let stmts = parse_program_located(tokens, starts, src)
+  let keys = collect_call_keys(stmts)
+  let dups = colliding_offsets(keys)
+  if Array::length(dups) == 0 {
+    ""
+  } else {
+    let mut report = path + ": " + Int::to_string(Array::length(dups)) + " colliding offset(s)"
+    let mut d = 0
+    while d < Array::length(dups) && d < 4 {
+      let off = Array::get(dups, d)
+      report = report + " @" + Int::to_string(off) + "{"
+      let mut m = 0
+      while m < Array::length(keys) {
+        let (mo, label) = Array::get(keys, m)
+        if mo == off {
+          report = report + label + " "
+        } else {
+          ()
+        }
+        m = m + 1
+      }
+      report = report + "}"
+      d = d + 1
+    }
+    report + "\n"
+  }
+}
+
+//# Corpus
+
+/// `.vibe` files under `dir`, recursively, minus the two kinds that are not
+/// vibe programs:
+///
+///   - `builtins/declarations.vibe` is a `declare <name>(T) -> T` DSL read by
+///     the binary encoder, not by the parser. Feeding it to
+///     `parse_program_located` throws.
+///   - the generated bundles hold compiler sources as STRING CONSTANTS, so
+///     parsing one sees a few dozen call nodes and answers "clean" about code
+///     it never looked at. `_cli_adapter_module_source.vibe` is the generated
+///     file that IS code, and it is not excluded.
+fn vibe_sources_under(dir: String, out: Array[String]) -> Unit with Fs {
+  let names = Fs::readdir(dir)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    let path = dir + "/" + name
+    if Fs::is_dir(path) {
+      vibe_sources_under(path, out)
+    } else if String::ends_with(name, ".vibe") && name != "declarations.vibe" && !String::ends_with(name, "_bundle.vibe") {
+      Array::push(out, path)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+//# Tests
+
+test "#2427: the `throw` desugar's two call nodes do not share a key" {
+  let src = "fn f() -> Int with Exception {\n  throw(\"x\")\n}\n"
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let stmts = parse_program_located(tokens, starts, src)
+  let keys = collect_call_keys(stmts)
+  // One located call node: `perform`, at the `throw` keyword. The op call is
+  // unlocated, so it contributes no key at all -- the source has no
+  // `Exception::Throw(...)` to point at.
+  assert(Array::length(colliding_offsets(keys)) == 0)
+  let mut performs = 0
+  let mut i = 0
+  while i < Array::length(keys) {
+    let (off, label) = Array::get(keys, i)
+    if label == "perform/1" {
+      performs = performs + 1
+      assert(off == String::index_of(src, "throw"))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  assert(performs == 1)
+}
+
+test "#2427: the explicit `perform` spelling keys its two calls apart" {
+  // The control. `perform Exception::Throw(x)` anchors the outer call at the
+  // `perform` keyword and the op call at its own name, so it never had the
+  // collision -- only the sugar, which has no op-name token to anchor to, did.
+  let src = "fn f() -> Int with Exception {\n  perform Exception::Throw(\"x\")\n}\n"
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let stmts = parse_program_located(tokens, starts, src)
+  let keys = collect_call_keys(stmts)
+  assert(Array::length(colliding_offsets(keys)) == 0)
+  assert(Array::length(keys) == 2)
+}
+
+test "#2427: no source in the tree has two keys on one offset" {
+  let paths: Array[String] = []
+  vibe_sources_under("lib", paths)
+  let mut findings = ""
+  let mut keys = 0
+  let mut i = 0
+  while i < Array::length(paths) {
+    let path = Array::get(paths, i)
+    let src = Fs::read_file(path)
+    let (tokens, starts, _) = lex_with_offsets(src)
+    let stmts = parse_program_located(tokens, starts, src)
+    let file_keys = collect_call_keys(stmts)
+    keys = keys + Array::length(file_keys)
+    if Array::length(colliding_offsets(file_keys)) == 0 {
+      ()
+    } else {
+      findings = findings + scan_source(path, src)
+    }
+    i = i + 1
+  }
+  // A scan that reads nothing reports "clean", so the corpus is pinned by
+  // SIZE, not just walked. Both numbers are floors well under what the tree
+  // holds today (997 files, 161423 keys) -- they exist to fail when the walk
+  // silently returns little or nothing, not to be updated as the tree grows.
+  assert(Array::length(paths) > 900)
+  assert(keys > 100000)
+  assert_eq(findings, "")
+}

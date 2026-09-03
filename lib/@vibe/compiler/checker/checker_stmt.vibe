@@ -6689,9 +6689,25 @@ export fn typed_lowering_enc_tag(enc: Int) -> Int {
 /// Double claimant unclassified. Node identity in the key is the fix, and an
 /// offset-keyed consumer cannot express it -- #2427's remaining step.
 ///
-/// No colliding pair was found in today's bundle while writing this, and a
-/// curried `f()()` -- the obvious candidate -- anchors its two calls four
-/// bytes apart. The rule closes the hole whether or not an instance is live.
+/// A curried `f()()` -- the obvious candidate -- anchors its two calls four
+/// bytes apart, and this comment used to stop there, at "no colliding pair was
+/// found in today's bundle". That was measured on the wrong file. The bundle
+/// holds compiler sources as STRING CONSTANTS, so parsing it sees a few dozen
+/// call nodes and answers "clean" about code it never looked at; the flat
+/// source the single-source lane actually compiles is the reprinted
+/// `_cli_adapter_module_source.vibe`.
+///
+/// Scanned properly (998 files, every `ECall` offset and every `EDot`
+/// field-name offset -- both halves of this table's key space), exactly ONE
+/// shape collided: the `throw(x)` desugar, which anchored `perform` and the op
+/// call at the same `throw` keyword. 904 sites in `lib/**`, 782 more in the
+/// flat module source, and nothing else -- no dot key on a call key, no second
+/// shape. It never misclassified anything, because the `perform` arm returns
+/// without routing either result through `tab_call_ty`, so neither node
+/// records an occurrence. `parse_throw_primary` now leaves the op call
+/// unlocated (#2427), and `tests/offset_key_collision_test.vibe` scans for the
+/// next one. The rule here still closes the hole whether or not an instance is
+/// live -- a desugar is one edit away from making one.
 fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int, Array[Int], Array[String])] with Exception {
   let capture = reset_double_call_capture()
   let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
