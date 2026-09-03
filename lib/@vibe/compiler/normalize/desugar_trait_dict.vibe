@@ -12432,11 +12432,7 @@ fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
   if eq_builtin_head_owned_by_nonenum(head) {
     false
   } else {
-    eq_builtin_enum_arm_applies(head) || (if eq_has_explicit_equals(head) {
-      eq_explicit_equals_matches(head, args)
-    } else {
-      eq_generic_enum_payloads_concrete_comparable(head)
-    })
+    eq_builtin_enum_arm_applies(head) || eq_generic_enum_instantiation_content_comparable(head, args, empty_str_array())
   }
 }
 
@@ -12727,20 +12723,11 @@ fn eq_ty_field_is_content_comparable_expanded(t: TypeExpr, tparams: Array[String
       } else if str_array_contains(dtd_eq_known_types, head) && !str_array_contains(dtd_eq_generic_types, head) {
         args_ok
       } else if eq_generic_enum_declared(head) {
-        // Codex rounds 5-7 on #2456: a generic ENUM has only its derived
-        // comparator, which compares a formal-typed payload with the raw
-        // word `==` -- reference equality for an aggregate and, through the
-        // generic `eq` builtin's string fallback, not even exact for an
-        // `Int` (`64 << 32` vs `65 << 32` compared equal). Admitted exactly
-        // when no payload is typed by a formal, the condition under which
-        // `eq_for_typed_declared_app` dispatches to that comparator -- or
-        // when the program wrote its own `::equals` for exactly this
-        // instantiation (rounds 11-12).
-        if eq_has_explicit_equals(head) {
-          eq_explicit_equals_matches(head, args)
-        } else {
-          eq_generic_enum_payloads_concrete_comparable(head)
-        }
+        // #2467: a generic ENUM is decided per instantiation, the way
+        // `eq_for_typed_nonstandard_enum` dispatches it -- the arguments
+        // substituted into every payload, each payload then held to this
+        // same allow-list.
+        eq_generic_enum_instantiation_content_comparable(head, args, tparams)
       } else {
         // Concrete declared generic instantiations get a comparator specialized
         // with these arguments. Unknown heads (Map included) remain fail-closed.
@@ -12997,7 +12984,11 @@ fn generic_eq_graph_types_are_finite(types: Array[TypeExpr], visiting: Array[Typ
 fn generic_eq_graph_type_is_finite(ty: TypeExpr, visiting: Array[TypeExpr], done: Array[String]) -> Bool {
   match ty {
     TyName(_) => true,
-    TyApp(head, args) => if generic_eq_struct_declared(head) && Array::length(args) > 0 {
+    // #2467: a generic ENUM head is a node of this graph too. Measured with
+    // it left out: `enum Nest[T] { N(Nest[Array[T]]); End(T) }` at `Int` was
+    // judged finite through its arguments alone, the worklist grew by one
+    // `Array` per specialization, and the compiler died of memory.
+    TyApp(head, args) => if (generic_eq_struct_declared(head) || eq_generic_enum_declared(head)) && Array::length(args) > 0 {
       let canonical_args = for arg in args {
         eq_expand_alias_ty(arg)
       }
@@ -13060,6 +13051,34 @@ fn generic_eq_graph_node_is_finite(head: String, args: Array[TypeExpr], visiting
         ()
       }
       di = di + 1
+    }
+    // #2467: a generic ENUM's specializations grow the same worklist, so a
+    // non-regular enum recursion (`enum Nest[T] { N(Nest[Array[T]]); End }`)
+    // must be caught here as a struct's is -- without this loop an enum head
+    // found no declaration and every enum recursion was judged finite.
+    let mut ei = 0
+    while ei < Array::length(dtd_eq_enum_decls) {
+      let edecl = Array::get(dtd_eq_enum_decls, ei)
+      if edecl.0 == head && Array::length(edecl.1) == Array::length(args) && Array::length(edecl.1) > 0 {
+        let mut vi = 0
+        while vi < Array::length(edecl.2) {
+          let payload = Array::get(edecl.2, vi).1
+          let mut pi = 0
+          while pi < Array::length(payload) {
+            let pty = eq_expand_alias_ty(eq_subst_ty(Array::get(payload, pi), edecl.1, args))
+            if !generic_eq_graph_type_is_finite(pty, visiting, done) {
+              finite = false
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          vi = vi + 1
+        }
+      } else {
+        ()
+      }
+      ei = ei + 1
     }
     Array::truncate(visiting, Array::length(visiting) - 1)
     if finite {
@@ -13602,25 +13621,141 @@ fn eq_generic_enum_payloads_concrete_comparable(name: String) -> Bool {
   }
 }
 
+/// Recursion guard for `eq_generic_enum_instantiation_content_comparable`:
+/// the instantiations whose payloads are being walked.
+let dtd_eq_enum_inst_check_stack: Array[TypeExpr] = empty_type_exprs()
+
+/// Where `inst` stands against the instantiations being walked: 1 when the
+/// same instantiation is already active (coinductive: answered by the
+/// comparator under examination), -1 when a LARGER instantiation of the same
+/// head is (a non-regular recursion -- `Nest[T]` holding `Nest[Array[T]]` --
+/// whose walk would never end, the same shape
+/// `generic_eq_graph_node_is_finite` rejects), 0 otherwise.
+fn eq_enum_inst_stack_verdict(head: String, args: Array[TypeExpr]) -> Int {
+  let key = generic_eq_name(head, args)
+  let mut verdict = 0
+  let mut i = 0
+  while i < Array::length(dtd_eq_enum_inst_check_stack) {
+    match Array::get(dtd_eq_enum_inst_check_stack, i) {
+      TyApp(active_head, active_args) => if generic_eq_name(active_head, active_args) == key {
+        verdict = 1
+      } else if active_head == head && generic_eq_types_size(args) > generic_eq_types_size(active_args) && verdict == 0 {
+        verdict = 0 - 1
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  verdict
+}
+
+/// #2467: is this INSTANTIATION of a declared generic enum compared by
+/// content? Mirrors `eq_for_typed_nonstandard_enum` decision for decision: a
+/// program's own `::equals` counts for exactly the instantiation it names;
+/// an argument that is a formal of an enclosing binder leaves only the
+/// declaration-level answer (a phantom parameter's payloads never read it);
+/// otherwise the arguments are substituted into every payload -- before
+/// alias expansion, so a formal shadowing a declared spelling is never read
+/// as that declaration (round 8) -- and each payload is held to the field
+/// allow-list. An instantiation met again inside its own payload walk
+/// (`enum Loop[T] { End(Int); Next(Loop[T]) }` at `Int`) is compared by the
+/// specialized comparator under examination, whose other payloads this walk
+/// still checks (round 18's coinductive answer).
+fn eq_generic_enum_instantiation_content_comparable(head: String, args: Array[TypeExpr], tparams: Array[String]) -> Bool {
+  if eq_has_explicit_equals(head) {
+    eq_explicit_equals_matches(head, args)
+  } else if eq_ty_has_formal(TyApp(head, args)) {
+    eq_generic_enum_payloads_concrete_comparable(head)
+  } else {
+    let verdict = eq_enum_inst_stack_verdict(head, args)
+    if verdict == 1 {
+      true
+    } else if verdict < 0 {
+      false
+    } else {
+      Array::push(dtd_eq_enum_inst_check_stack, TyApp(head, args))
+      let mut found = false
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(dtd_eq_enum_decls) {
+        let decl = Array::get(dtd_eq_enum_decls, i)
+        if decl.0 == head && Array::length(decl.1) == Array::length(args) && Array::length(decl.1) > 0 {
+          found = true
+          let mut vi = 0
+          while vi < Array::length(decl.2) {
+            let payload = Array::get(decl.2, vi).1
+            let mut pi = 0
+            while pi < Array::length(payload) {
+              let pty = eq_expand_alias_ty(eq_subst_ty(Array::get(payload, pi), decl.1, args))
+              if !eq_ty_field_is_content_comparable(pty, tparams) {
+                ok = false
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
+            vi = vi + 1
+          }
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      Array::truncate(dtd_eq_enum_inst_check_stack, Array::length(dtd_eq_enum_inst_check_stack) - 1)
+      found && ok
+    }
+  }
+}
+
 /// Codex rounds 3-7 on #2456: a source-owned generic ENUM -- a `Result` /
 /// `Option` declared with constructors other than the special arm's shape,
-/// an `enum Map[K, V]`, any `enum Wrap[T]`. Generic enums have no
-/// per-instantiation comparator (only generic structs do, #2195); the
-/// derived `::equals` answers when every payload is a concrete
-/// content-comparable type (`eq_generic_enum_payloads_concrete_comparable`),
-/// and otherwise the comparison fails closed -- the same trap the
-/// untyped-empty arm and the expanding-recursion case use -- rather than
-/// comparing a formal-typed payload through the erased `==`.
+/// an `enum Map[K, V]`, any `enum Wrap[T]`.
+///
+/// #2467: a concrete instantiation gets a comparator specialized with its
+/// arguments, exactly as a generic struct does (#2195, `gen_specialized_eq_fn`):
+/// `Wrap::equals__<key>` substitutes the arguments into every payload and
+/// compares each through `eq_for_typed`, so `Wrap[Int]` compares its `Int`
+/// payload exactly (the derived `Wrap::equals` read it through the erased
+/// `==`, where `64 << 32` and `65 << 32` compared equal -- #2457 row 4) and
+/// `Wrap[Array[Int]]` compares by content where the derived comparator
+/// compared by reference. What stays on the derived `::equals`: a program's
+/// own `::equals` for exactly this instantiation (rounds 11-16), and an
+/// instantiation whose argument is a FORMAL of an enclosing binder, which is
+/// admitted only when no payload reads a formal (a phantom parameter, round
+/// 7) -- there is nothing concrete to specialize on. Everything else fails
+/// closed, as does a non-regular recursion whose specializations never
+/// close (`generic_eq_is_expanding_recursion`).
 fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr) -> Expr {
-  let admitted = if eq_has_explicit_equals(head) {
-    eq_explicit_equals_matches(head, args)
+  let fail_closed = ESeq(ECall(EIdent("assert_true", -1), Array::slice([
+    EBool(false)
+  ], 0, 1), -1), EBool(false))
+  if eq_has_explicit_equals(head) {
+    if eq_explicit_equals_matches(head, args) {
+      ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
+    } else {
+      fail_closed
+    }
+  } else if eq_ty_has_formal(TyApp(head, args)) {
+    if eq_generic_enum_payloads_concrete_comparable(head) {
+      ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
+    } else {
+      fail_closed
+    }
   } else {
-    eq_generic_enum_payloads_concrete_comparable(head)
-  }
-  if admitted {
-    ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
-  } else {
-    ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+    let canonical_args = for arg in args {
+      eq_expand_alias_ty(arg)
+    }
+    if generic_eq_is_expanding_recursion(head, canonical_args) {
+      fail_closed
+    } else {
+      generic_eq_record(head, canonical_args)
+      ECall(EIdent(generic_eq_name(head, canonical_args), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    }
   }
 }
 
@@ -13632,11 +13767,9 @@ fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr,
 /// comparator and never by the builtin's.
 fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr, known_types: Array[String]) -> Expr {
   if eq_generic_enum_declared(n) && Array::length(args) > 0 {
-    // Codex rounds 5-7 on #2456: a source-owned generic ENUM (`enum Map[K, V]
-    // { Entry(K, V) }`, or any `enum Wrap[T]`) has no per-instantiation
-    // comparator -- only generic structs get one (#2195). Its derived
-    // `::equals` answers only when no payload is typed by a formal (see
-    // eq_for_typed_nonstandard_enum); otherwise this fails closed.
+    // A source-owned generic ENUM (`enum Map[K, V] { Entry(K, V) }`, or any
+    // `enum Wrap[T]`): a concrete instantiation takes its specialized
+    // comparator (#2467), the rest is decided in eq_for_typed_nonstandard_enum.
     eq_for_typed_nonstandard_enum(n, args, lhs, rhs)
   } else if generic_eq_struct_declared(n) && Array::length(args) > 0 && !eq_ty_has_formal(fty) {
     let canonical_args = for arg in args {
@@ -13880,6 +14013,51 @@ fn gen_specialized_eq_fn(head: String, args: Array[TypeExpr], params0: Array[Str
   stmt
 }
 
+/// #2467: `let Wrap::equals__<key> = (a: Wrap[Int], b: Wrap[Int]) -> Bool {
+/// match a { W(__a0) => match b { W(__b0) => <payload eq>, _ => false }, ... } }`
+/// -- `gen_enum_eq_fn` with the instantiation's arguments substituted into
+/// every payload (before alias expansion, round 8), so each payload takes the
+/// exact comparator `eq_for_typed` gives its concrete type.
+fn gen_specialized_enum_eq_fn(head: String, args: Array[TypeExpr], formals: Array[String], variants: Array[(String, Array[TypeExpr])], known_types: Array[String]) -> Stmt {
+  Array::push(dtd_eq_specialization_stack, TyApp(head, args))
+  let outer_arms = array_empty()
+  let mut vi = 0
+  while vi < Array::length(variants) {
+    let (vname, ftypes0) = Array::get(variants, vi)
+    let ftypes = for t in ftypes0 {
+      eq_expand_alias_ty(eq_subst_ty(t, formals, args))
+    }
+    let nf = Array::length(ftypes)
+    let abinds = array_empty()
+    let bbinds = array_empty()
+    let mut fi = 0
+    while fi < nf {
+      Array::push(abinds, PBind(String::concat("__a", idx_str(fi))))
+      Array::push(bbinds, PBind(String::concat("__b", idx_str(fi))))
+      fi = fi + 1
+    }
+    let mut body = EBool(true)
+    let mut bi = nf - 1
+    while bi >= 0 {
+      let cmp = eq_for_typed(Array::get(ftypes, bi), EIdent(String::concat("__a", idx_str(bi)), -1), EIdent(String::concat("__b", idx_str(bi)), -1), known_types)
+      body = EBinOp("&&", cmp, body, -1)
+      bi = bi - 1
+    }
+    let inner_arms = Array::slice([
+      (PCtor(vname, bbinds), body),
+      (PWild, EBool(false))
+    ], 0, 2)
+    let inner = EMatch(EIdent("b", -1), inner_arms)
+    Array::push(outer_arms, (PCtor(vname, abinds), inner))
+    vi = vi + 1
+  }
+  let inst = TyApp(head, args)
+  let ps = Array::slice([("a", Some(inst)), ("b", Some(inst))], 0, 2)
+  let stmt = SLet(false, false, generic_eq_name(head, args), None, EFn(array_empty(), array_empty(), ps, Some(TyName("Bool")), None, EMatch(EIdent("a", -1), outer_arms)))
+  Array::truncate(dtd_eq_specialization_stack, Array::length(dtd_eq_specialization_stack) - 1)
+  stmt
+}
+
 fn emit_recorded_generic_eq(stmts: Array[Stmt]) -> Unit {
   let known = collect_decl_type_names(stmts)
   let mut i = 0
@@ -13905,6 +14083,27 @@ fn emit_recorded_generic_eq(stmts: Array[Stmt]) -> Unit {
             ()
           }
           j = j + 1
+        }
+        // #2467: a generic ENUM's instantiation, recorded by
+        // eq_for_typed_nonstandard_enum, is emitted the same way.
+        let mut k = 0
+        while k < Array::length(dtd_eq_enum_decls) {
+          let edecl = Array::get(dtd_eq_enum_decls, k)
+          if edecl.0 == head && Array::length(edecl.1) > 0 && !top_level_fn_exists(stmts, generic_eq_name(head, args)) {
+            Array::truncate(dtd_eq_specialization_stack, 0)
+            if i < Array::length(dtd_eq_specialization_ancestries) {
+              for ancestor in Array::get(dtd_eq_specialization_ancestries, i) {
+                Array::push(dtd_eq_specialization_stack, ancestor)
+              }
+            } else {
+              ()
+            }
+            Array::push(stmts, gen_specialized_enum_eq_fn(head, args, edecl.1, edecl.2, known))
+            Array::truncate(dtd_eq_specialization_stack, 0)
+          } else {
+            ()
+          }
+          k = k + 1
         }
       },
       _ => ()
@@ -14603,7 +14802,11 @@ fn ty_needs_typed_eq(t: TypeExpr) -> Bool {
 fn ty_needs_typed_eq_expanded(t: TypeExpr) -> Bool {
   match t {
     TyName(n) => n == "Bytes" || n == "Double" || n == "Float",
-    TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(n, args) || generic_eq_struct_declared(n) {
+    TyApp(n, args) => if n == "Array" || n == "Map" || builtin_string_map_applied(n, args) || generic_eq_struct_declared(n) || (eq_generic_enum_declared(n) && Array::length(args) > 0) {
+      // #2467: a generic ENUM instantiation reached through a name takes
+      // its specialized comparator, as a generic struct's does; through the
+      // bare-name rung it called the derived `Wrap::equals`, whose erased
+      // `==` answered `true` for `W(64 << 32) == W(65 << 32)` (#2457 row 4).
       true
     } else {
       let mut i = 0
@@ -15100,7 +15303,7 @@ fn infer_static_eq_type_binop(l: Expr, r: Expr) -> Option[TypeExpr] {
 /// dispatch (which preserves the pre-#825 behavior).
 fn static_eq_dispatchable(t: TypeExpr) -> Bool {
   match t {
-    TyApp(n, args) => (n == "Option" && Array::length(args) == 1) || (n == "Result" && Array::length(args) == 2) || (n == "Array" && Array::length(args) == 1) || (generic_eq_struct_declared(n) && Array::length(args) > 0),
+    TyApp(n, args) => (n == "Option" && Array::length(args) == 1) || (n == "Result" && Array::length(args) == 2) || (n == "Array" && Array::length(args) == 1) || (generic_eq_struct_declared(n) && Array::length(args) > 0) || (eq_generic_enum_declared(n) && Array::length(args) > 0),
     TyTuple(_) => true,
     _ => false
   }

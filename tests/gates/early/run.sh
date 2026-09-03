@@ -2001,10 +2001,10 @@ echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map ke
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed (#1681/#2157)"
 eqtrapdir="_build/_gate_eq_untyped_empty"
 rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
-# `structural_eq_generic_enum_*_trap.vibe` joins the loop (Codex round 5 on
-# #2456): a source-owned generic ENUM compared directly, not through the
-# untyped-empty arm -- its derived comparator reads a formal-typed payload by
-# reference, so an aggregate argument must fail closed on that path too.
+# `structural_eq_generic_enum_*_trap.vibe` joins the loop: a source-owned
+# generic ENUM compared directly. Since #2467 a concrete instantiation answers
+# through a specialized comparator; what still fails closed here is a
+# non-regular recursion whose specializations never close.
 # `structural_eq_owned_scalar_*_trap.vibe` joins too (Codex round 4 on #2471):
 # a program that declares `struct Int` makes a literal-derived shape's `Int`
 # ambiguous with the struct, so the literal-shape rungs fail closed.
@@ -2042,7 +2042,11 @@ echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok 
 echo "[compiler-gate] untyped-empty equality answers through the typed channel (#2391)"
 eqtypeddir="_build/_gate_eq_untyped_empty_typed"
 rm -rf "$eqtypeddir"; mkdir -p "$eqtypeddir"
-for eqtyped_src in fixtures/structural_eq_untyped_empty_*_typed.vibe; do
+# `structural_eq_generic_enum_*_typed.vibe` joins (#2467): a source-owned
+# generic enum compared directly now answers through a comparator specialized
+# per instantiation, exact for an `Int` payload and by content for an
+# aggregate one.
+for eqtyped_src in fixtures/structural_eq_untyped_empty_*_typed.vibe fixtures/structural_eq_generic_enum_*_typed.vibe; do
   eqtyped_name="$(basename "${eqtyped_src%.vibe}")"
   eqtyped_wasm="$eqtypeddir/$eqtyped_name.wasm"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
