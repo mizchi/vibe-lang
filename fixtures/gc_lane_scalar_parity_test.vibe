@@ -230,6 +230,14 @@ test "#2422 a large Int survives every binding form" {
 /// stops mattering. Measured on the committed seed, both reads below render
 /// the EMPTY STRING on linear and on gc; on the current compiler both answer,
 /// on all three lanes this file runs.
+/// #2468: a Show wrapper -- a one-parameter `__to_string` pass-through. The
+/// prelude's `to_string` has exactly this body, and desugar_trait_dict
+/// recognizes the SHAPE, so a call here takes the same type-directed rewrite
+/// `__to_string` does.
+fn show_any[T](x: T) -> String {
+  __to_string(x)
+}
+
 test "#2423 a large Int survives a let mut captured by a closure" {
   let mut c = 64<<32
   let f = () -> Int {
@@ -364,6 +372,25 @@ test "#2423 a large Int survives a let mut captured by a closure" {
   inspect(eq(1, 2), content = "false")
   inspect(eq(2, 2), content = "true")
   inspect(not(eq(1, 2)), content = "true")
+  // #2468: the SAME render, spelled through a Show wrapper. `show_any` below
+  // has the shape desugar_trait_dict matches -- a one-parameter
+  // `__to_string` pass-through -- so it inlines at every call site and these
+  // two lines are ONE lowering with two spellings. Until the producer knew
+  // about the wrapper they disagreed: `__to_string(fb())` -> "true",
+  // `show_any(fb())` -> "1".
+  //
+  // Declared here rather than imported from the prelude on purpose: the
+  // prelude's `to_string` would test the same mechanism, but a locally
+  // declared wrapper also proves the wrapper is recognized by its SHAPE and
+  // not by the name `to_string`.
+  bl = 1 < 2
+  assert(__to_string(fb()) == "true")
+  assert(show_any(fb()) == "true")
+  // The Int and Double controls, so a wrapper row that classified every
+  // argument as Bool would be caught here rather than looking like a fix.
+  assert(show_any(7) == "7")
+  assert(show_any(1.5) == "1.5")
+  assert(show_any("hi") == "hi")
 }
 
 test "#2405 polymorphic arithmetic is not assumed to be Int" {
