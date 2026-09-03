@@ -62,6 +62,40 @@ test "to_string generic" {
   assert(to_string(true) == "true")
 }
 
+test "#2468: an IMPORTED to_string renders like __to_string" {
+  // `to_string` is a one-parameter `__to_string` pass-through, so these are
+  // one lowering with two spellings and must not disagree. The argument is
+  // the #2462 shape -- a lambda bound by a `let` INSIDE a function body,
+  // which `collect_fn_returns` (a statement walk) cannot see -- so no
+  // syntactic rule reaches it and the typed-lowering row is the whole
+  // mechanism.
+  //
+  // This is the IMPORTED wrapper, which is the normal way anyone writes it
+  // and the case the local-wrapper tests do not cover: the checker sees the
+  // call but not the callee's body, in another file. Measured with only the
+  // local shape scan:
+  //
+  //   __to_string(l()) -> "true"      to_string(l()) -> "1"
+  //
+  // The literal `to_string(true)` above cannot catch this -- every classifier
+  // already answers a Bool LITERAL.
+  let l = () -> Bool {
+    1 < 2
+  }
+  assert(__to_string(l()) == "true")
+  assert(to_string(l()) == "true")
+  // The controls, so a row that claimed every imported call's argument was a
+  // Bool would be caught here rather than look like a fix.
+  let n = () -> Int {
+    7
+  }
+  assert(to_string(n()) == "7")
+  let d = () -> Double {
+    1.5
+  }
+  assert(to_string(d()) == "1.5")
+}
+
 test "default trait bound generic" {
   assert(eq(default_require(42), 42))
   assert(default_require("ok") == "ok")
