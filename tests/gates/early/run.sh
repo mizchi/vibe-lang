@@ -1943,7 +1943,10 @@ rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
 # #2456): a source-owned generic ENUM compared directly, not through the
 # untyped-empty arm -- its derived comparator reads a formal-typed payload by
 # reference, so an aggregate argument must fail closed on that path too.
-for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe fixtures/structural_eq_generic_enum_*_trap.vibe; do
+# `structural_eq_owned_scalar_*_trap.vibe` joins too (Codex round 4 on #2471):
+# a program that declares `struct Int` makes a literal-derived shape's `Int`
+# ambiguous with the struct, so the literal-shape rungs fail closed.
+for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe fixtures/structural_eq_generic_enum_*_trap.vibe fixtures/structural_eq_owned_scalar_*_trap.vibe; do
   eqtrap_name="$(basename "${eqtrap_src%.vibe}")"
   eqtrap_wasm="$eqtrapdir/$eqtrap_name.wasm"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \

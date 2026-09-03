@@ -10815,7 +10815,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           }
         } else {
           match arr_elem {
-            Some(elem) => {
+            Some(elem) => if ty_mentions_owned_scalar(elem) {
+              // Codex round 4 on #2471: see ty_mentions_owned_scalar.
+              eq_fail_closed(op)
+            } else {
               // #1526: record before emitting -- this is one of the two sites
               // that can reference a `__arr_equals__<key>` helper, and the
               // recorded set is what generates them (see arr_eq_needed_record).
@@ -10834,10 +10837,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // elements), route through the fully-recursive `eq_for_typed` so
               // aggregate payloads (`Some([1,2])`, `Ok([1,2])`, `Some(Some(1))`,
               // `([1,2], 0)`) compare structurally instead of by word identity.
-              // `known_types` is empty: this inference only ever yields builtin
-              // shapes (never user struct/enum names), and unknown positions
-              // carry the `?EqUnknown` marker which `eq_for_typed` compares
-              // with raw `==` (status quo for that position).
+              // This inference yields builtin shapes and generic struct
+              // literals; unknown positions carry the `?EqUnknown` marker,
+              // which `eq_for_typed` compares with raw `==` (status quo for
+              // that position). A scalar spelling the source also declares is
+              // ambiguous here and fails closed (ty_mentions_owned_scalar).
               // #2457: the checker's row for this site, when the allow-list
               // admits it, is the COMPLETE operand type and wins over the
               // literal-syntax shape. `Some(64 << 32) == Some(65 << 32)` used
@@ -10860,7 +10864,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 None => None
               }
               match dty {
-                Some(dt) => {
+                Some(dt) => if ty_mentions_owned_scalar(dt) {
+                  // Codex round 4 on #2471: see ty_mentions_owned_scalar.
+                  eq_fail_closed(op)
+                } else {
                   let call = eq_for_typed(dt, rl, rr, dtd_eq_known_types)
                   if op == "==" {
                     call
@@ -10919,8 +10926,15 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                         // typed comparator compares that payload exactly;
                         // with no row, or a type the allow-list refuses, the
                         // match stays as it was.
+                        // Codex round 4 on #2471: a row spelling a scalar the
+                        // source also declares is ambiguous (see
+                        // ty_mentions_owned_scalar) and fails closed.
                         let eqm = match dtd_typed_eq_admitted_ty(boff) {
-                          Some(te) => eq_for_typed(te, rl, rr, dtd_eq_known_types),
+                          Some(te) => if ty_mentions_owned_scalar(te) {
+                            eq_fail_closed("==")
+                          } else {
+                            eq_for_typed(te, rl, rr, dtd_eq_known_types)
+                          },
                           None => opt_eq_match(rl, rr)
                         }
                         if op == "==" {
@@ -10930,7 +10944,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                         }
                       } else if t == "Result" {
                         let eqm = match dtd_typed_eq_admitted_ty(boff) {
-                          Some(te) => eq_for_typed(te, rl, rr, dtd_eq_known_types),
+                          Some(te) => if ty_mentions_owned_scalar(te) {
+                            eq_fail_closed("==")
+                          } else {
+                            eq_for_typed(te, rl, rr, dtd_eq_known_types)
+                          },
                           None => result_eq_match(rl, rr)
                         }
                         if op == "==" {
@@ -11688,6 +11706,62 @@ fn gen_show_fn(tname: String, fields: Array[(String, TypeExpr)], known_types: Ar
 /// through its generated `T::equals`.
 fn is_scalar_type_name(n: String) -> Bool {
   n == "Int" || n == "Double" || n == "Float" || n == "Bool" || n == "String" || n == "Char" || n == "Unit" || n == "Bytes"
+}
+
+/// Codex round 4 on #2471: a program may declare a struct whose spelling is a
+/// scalar's (`struct Int { value: String }`, #2456 round 17). A shape that
+/// reaches the static-shape rung or the array-literal rung then cannot say
+/// which `Int` it means -- the checker's row spells a literal's builtin `Int`
+/// and the declared struct the same way, and the syntactic inference names a
+/// literal `Int` too. Dispatching such a position through the declared
+/// comparator read two Int words as struct pointers (measured on the FS
+/// lane: `Some(1) == Some(2)` and `(1, "a") == (2, "a")` answered `true`,
+/// `[1] == [2]` answered `true` on main as well); the builtin arm would
+/// misjudge a struct payload the same way. Those rungs fail closed instead.
+/// A program that owns no scalar spelling never sees this test succeed.
+fn ty_mentions_owned_scalar(t: TypeExpr) -> Bool {
+  match t {
+    TyName(n) => is_scalar_type_name(n) && str_array_contains(dtd_eq_type_owners, n),
+    TyApp(h, args) => if is_scalar_type_name(h) && str_array_contains(dtd_eq_type_owners, h) {
+      true
+    } else {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(args) {
+        if ty_mentions_owned_scalar(Array::get(args, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    TyTuple(ts) => {
+      let mut hit = false
+      let mut i = 0
+      while i < Array::length(ts) {
+        if ty_mentions_owned_scalar(Array::get(ts, i)) {
+          hit = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      hit
+    },
+    _ => false
+  }
+}
+
+/// The fail-closed `==` result: trap, never a guessed answer.
+fn eq_fail_closed(op: String) -> Expr {
+  let trapped = ESeq(ECall(EIdent("assert_true", -1), [EBool(false)], -1), EBool(false))
+  if op == "==" {
+    trapped
+  } else {
+    ECall(EIdent("not", -1), [trapped], -1)
+  }
 }
 
 /// A stable, fn-name-safe key for a TypeExpr, used to name the monomorphic array
