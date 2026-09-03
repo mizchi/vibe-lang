@@ -256,6 +256,22 @@ fn empty_expr_array() -> Array[Expr] {
   array_empty()
 }
 
+/// `xs` minus every occurrence of `x`; a fresh array, `xs` untouched.
+fn str_array_without(xs: Array[String], x: String) -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(xs) {
+    let s = Array::get(xs, i)
+    if s != x {
+      Array::push(out, s)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn empty_str_array() -> Array[String] {
   array_empty()
 }
@@ -10847,9 +10863,26 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // equated the two words. With the row, `Option[Int]` compares
               // the payload exactly; a lane with no rows keeps the syntactic
               // shape, whose leaf inference now names such an expression too.
-              let sty = match dtd_typed_eq_admitted_ty(boff) {
-                Some(te) => Some(te),
-                None => infer_static_eq_type_binop(l, r)
+              // Codex round 2 on #2471: the syntactic shape carries the
+              // `__EqUnknown` marker in every position the literal inference
+              // cannot name, and a program may legally declare
+              // `struct __EqUnknown`; with that name among the declared ones
+              // such a position dispatched to `__EqUnknown::equals` over
+              // whatever word sits there (measured: the FS lane called it on
+              // two Int words, the flat lane failed to compile). The shape's
+              // name set therefore omits the marker, and only the marker --
+              // every other declared name still reaches its comparator, as
+              // before #2457. A ROW never contains the marker, so it keeps
+              // the full set. The copy is made only when there is something
+              // to remove: a copy per site cost 5.2 MB of selfcompile heap
+              // (measured, 1,615,494,632 -> 1,620,653,296 bytes).
+              let (sty, shape_known) = match dtd_typed_eq_admitted_ty(boff) {
+                Some(te) => (Some(te), dtd_eq_known_types),
+                None => (infer_static_eq_type_binop(l, r), if str_array_contains(dtd_eq_known_types, "__EqUnknown") {
+                  str_array_without(dtd_eq_known_types, "__EqUnknown")
+                } else {
+                  dtd_eq_known_types
+                })
               }
               let dty = match sty {
                 Some(t) => if static_eq_dispatchable(t) {
@@ -10861,7 +10894,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               }
               match dty {
                 Some(dt) => {
-                  let call = eq_for_typed(dt, rl, rr, dtd_eq_known_types)
+                  let call = eq_for_typed(dt, rl, rr, shape_known)
                   if op == "==" {
                     call
                   } else {
@@ -13092,6 +13125,20 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
   match fty {
     TyName(n) => if n == "__EqAliasCycle" {
       ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+    } else if n == "__EqUnknown" && !str_array_contains(known_types, n) {
+      // Codex round 2 on #2471: the syntactic-shape MARKER, not a declared
+      // name -- the #825 rung hands a shape a name set with the marker
+      // removed (`str_array_without`), so a `struct __EqUnknown` a program
+      // declares is absent here exactly when the position is unknown. The
+      // marker keeps the raw `==` it had before #2457; the declared struct,
+      // reached through a checker row, keeps the full set and takes its
+      // comparator below. Measured on the first stage2 of #2471 (FS lane,
+      // a generic `Some(x) == Some(y)`): with the struct declared the
+      // position dispatched to `__EqUnknown::equals` and answered
+      // `same_some(1, 2)` as `true`; with the name merely excluded from
+      // the set, the owner arm below failed closed and trapped a legal
+      // program (main trapped the same way).
+      EBinOp("==", lhs, rhs, -1)
     } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) {
       // Codex round 17 on #2456: a source-owned spelling takes its declared
       // comparator BEFORE any builtin arm below can claim it. Measured: with

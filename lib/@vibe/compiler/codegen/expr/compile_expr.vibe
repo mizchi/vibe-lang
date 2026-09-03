@@ -526,7 +526,16 @@ fn ctor_shape_field_exprs(shape: Expr, ct: CtorTable) -> Array[Expr] with Except
 /// is not statically an aggregate (scalar, or an opaque call-result / bound
 /// name we cannot see the literal shape of) keeps the old generic-`eq` leaf
 /// comparison — same residual as before, just one level shallower.
-fn emit_eq_shape_slots(buf: Bytes, shape: Expr, asl: Int, bsl: Int, local_names: Array[String], nl0: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+/// `live` (#2457, Codex round 1 on #2471): whether `shape` is the operand
+/// literal written AT this compare site. A shape recorded at an earlier
+/// `let` (CompileCtx.agg_local_exprs) carries identifiers from THAT scope;
+/// resolving one against `local_names` here would read whatever binding
+/// currently owns the name -- `let t = (s, 1); let s = 64 << 32; t == u`
+/// would classify the String field from the Int slot and compare two
+/// string words with `i64.eq`. So a saved shape classifies only a leaf
+/// that names nothing (a literal, an operator tree over literals); a live
+/// shape may consult the scope, which is the scope its names were written in.
+fn emit_eq_shape_slots(buf: Bytes, shape: Expr, live: Bool, asl: Int, bsl: Int, local_names: Array[String], nl0: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let (eq_fidx, _, _) = resolve_func(ctx.func_table, "eq")
   if is_etuple(shape) {
     let elems = get_etuple_elems(shape)
@@ -575,9 +584,9 @@ fn emit_eq_shape_slots(buf: Bytes, shape: Expr, asl: Int, bsl: Int, local_names:
         emit_i32_wrap_i64(buf)
         emit_i64_load(buf, 3, field_off + i * 8)
         emit_local_set(buf, nb)
-        nl = emit_eq_shape_slots(buf, el_shape, na, nb, local_names, nl + 2, ctx, ld, ce)
+        nl = emit_eq_shape_slots(buf, el_shape, live && !is_eident(el), na, nb, local_names, nl + 2, ctx, ld, ce)
         emit_i64_and(buf)
-      } else if expr_is_intish(el, local_names, ctx) {
+      } else if eq_leaf_is_intish(el, live, local_names, ctx) {
         // #2457: a leaf whose literal payload EXPRESSION is provably an
         // Int / Bool word (`64 << 32`, a `let`-bound int slot) compares with a
         // plain `i64.eq`. The generic `eq` builtin's string fall-back reads a
@@ -650,9 +659,9 @@ fn emit_eq_shape_slots(buf: Bytes, shape: Expr, asl: Int, bsl: Int, local_names:
         emit_i32_wrap_i64(buf)
         emit_i64_load(buf, 3, 8 + i * 8)
         emit_local_set(buf, nb)
-        nl = emit_eq_shape_slots(buf, el_shape, na, nb, local_names, nl + 2, ctx, ld, ce)
+        nl = emit_eq_shape_slots(buf, el_shape, live && !is_eident(el), na, nb, local_names, nl + 2, ctx, ld, ce)
         emit_i64_and(buf)
-      } else if expr_is_intish(el, local_names, ctx) {
+      } else if eq_leaf_is_intish(el, live, local_names, ctx) {
         // #2457: a leaf whose literal payload EXPRESSION is provably an
         // Int / Bool word (`64 << 32`, a `let`-bound int slot) compares with a
         // plain `i64.eq`. The generic `eq` builtin's string fall-back reads a
@@ -707,7 +716,7 @@ fn emit_eq_shape_slots(buf: Bytes, shape: Expr, asl: Int, bsl: Int, local_names:
 /// callers fall back to the old flat comparators when only a shallow kind+n
 /// is known (no literal in scope — e.g. a round-2 declared-return-type or
 /// dynamic-argc tracked binding), which is unchanged from before this change.
-fn emit_eq_shape_top(buf: Bytes, shape: Expr, lhs: Expr, rhs: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
+fn emit_eq_shape_top(buf: Bytes, shape: Expr, live: Bool, lhs: Expr, rhs: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
   Array::push(local_names, "__seqa")
   let bptr = next_local + 1
@@ -716,7 +725,31 @@ fn emit_eq_shape_top(buf: Bytes, shape: Expr, lhs: Expr, rhs: Expr, local_names:
   emit_local_set(buf, aptr)
   let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
   emit_local_set(buf, bptr)
-  emit_eq_shape_slots(buf, shape, aptr, bptr, local_names, nl2, ctx, ld, ce)
+  emit_eq_shape_slots(buf, shape, live, aptr, bptr, local_names, nl2, ctx, ld, ce)
+}
+
+/// #2457: may this leaf of a shape compare with a plain `i64.eq`? See
+/// emit_eq_shape_slots's `live`: a saved shape's leaf must name nothing.
+fn eq_leaf_is_intish(el: Expr, live: Bool, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if live || expr_names_nothing(el) {
+    expr_is_intish(el, local_names, ctx)
+  } else {
+    false
+  }
+}
+
+/// A literal, or an operator tree over literals: no identifier, no call, no
+/// projection -- nothing whose meaning depends on a scope.
+fn expr_names_nothing(e: Expr) -> Bool {
+  match e {
+    EInt(_) => true,
+    EBool(_) => true,
+    EString(_) => true,
+    EFloat(_) => true,
+    EBinOp(_, l, r, _) => expr_names_nothing(l) && expr_names_nothing(r),
+    EUnaryOp(_, inner) => expr_names_nothing(inner),
+    _ => false
+  }
 }
 
 /// #672: emit the equality test for `lhs == rhs`, leaving a raw i64 0/1 on the
@@ -740,7 +773,7 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     } else {
       rhs
     }
-    emit_eq_shape_top(buf, lit, lhs, rhs, local_names, next_local, ctx, ld, ce)
+    emit_eq_shape_top(buf, lit, true, lhs, rhs, local_names, next_local, ctx, ld, ce)
   } else if lhs_agg / 64 == 1 || rhs_agg / 64 == 1 {
     // Tracked tuple binding on at least one side; the checker guarantees the
     // other side is the same tuple type, so its arity matches. #672: when the
@@ -755,7 +788,7 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
       agg_expr_of_ident(ctx.agg_local_slots, ctx.agg_local_exprs, rhs, local_names)
     }
     if is_etuple(tshape) {
-      emit_eq_shape_top(buf, tshape, lhs, rhs, local_names, next_local, ctx, ld, ce)
+      emit_eq_shape_top(buf, tshape, false, lhs, rhs, local_names, next_local, ctx, ld, ce)
     } else {
       let tn = if lhs_agg / 64 == 1 {
         lhs_agg % 64
@@ -772,7 +805,7 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     } else {
       rhs
     }
-    emit_eq_shape_top(buf, clit, lhs, rhs, local_names, next_local, ctx, ld, ce)
+    emit_eq_shape_top(buf, clit, true, lhs, rhs, local_names, next_local, ctx, ld, ce)
   } else if lhs_agg / 64 == 2 || rhs_agg / 64 == 2 {
     // Tracked ctor/record binding: values carry [tag@0][argc@4][fields@8+],
     // so the tag-comparing structural walk applies. #672: recurse through the
@@ -789,7 +822,7 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
       agg_expr_of_ident(ctx.agg_local_slots, ctx.agg_local_exprs, rhs, local_names)
     }
     if is_agg_shape(cshape, ctx.ctor_table) {
-      emit_eq_shape_top(buf, cshape, lhs, rhs, local_names, next_local, ctx, ld, ce)
+      emit_eq_shape_top(buf, cshape, false, lhs, rhs, local_names, next_local, ctx, ld, ce)
     } else {
       let lfc = if lhs_agg / 64 == 2 {
         lhs_agg % 64
