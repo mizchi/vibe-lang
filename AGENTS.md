@@ -61,6 +61,14 @@ substitutes those arguments into its field types, so `Box[Double]`,
 structurally (#2195). A self-describing literal with an omitted argument, such
 as `Box::{ value: [1, 2] }`, recovers a single directly-used type parameter from
 the field value; anything more ambiguous remains unresolved and traps.
+A **generic enum** is specialized the same way since #2467: `enum Wrap[T] {
+W(T); Empty }` at `Wrap[Int]` gets a comparator with `Int` substituted into
+its payloads, so the payload is exact (`W(64 << 32) == W(65 << 32)` answered
+`true` through the derived comparator's erased `==` on main at 7018aca) and
+`Wrap[String]` / `Wrap[Array[Int]]` compare by content where they trapped;
+what still fails closed is an instantiation whose argument is a formal of an
+enclosing binder (unless no payload reads it) and a non-regular recursion
+(`Nest[T]` holding `Nest[Array[T]]`), whose specializations never close.
 A declared name is excluded when any field has no structural comparator,
 transitively and through type aliases. The field
 test is an **allow-list** — measured, a declared field of `Int` / `String` /

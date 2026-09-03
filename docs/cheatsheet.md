@@ -507,6 +507,17 @@ literal with an omitted argument, such as `Box::{ value: [1, 2] }`, recovers a
 single directly-used type parameter from the field value; anything more
 ambiguous remains unresolved and traps.
 
+A **generic enum** is specialized the same way (#2467): `enum Wrap[T] { W(T);
+Empty }` at `Wrap[Int]` gets `Wrap::equals__<key>` with `Int` substituted into
+every payload, so the payload compares exactly (through the derived comparator
+it went through the erased `==`, where `W(64 << 32) == W(65 << 32)` answered
+`true`), and `Wrap[String]` / `Wrap[Array[Int]]` compare by content where they
+used to trap — directly and through the untyped-empty arm alike. A program's
+own `Wrap::equals` still wins for exactly the instantiation its parameters
+name. What still fails closed: an instantiation whose argument is a formal of
+an enclosing binder (unless no payload reads it), and a non-regular recursion
+(`Nest[T]` holding `Nest[Array[T]]`), whose specializations never close.
+
 A declared name is excluded when any field has **no structural comparator**,
 transitively and through type aliases — the exclusion follows fields so a
 wrapper cannot smuggle an uncomparable head in one level down. Which field
@@ -522,7 +533,7 @@ types keep a struct usable is an allow-list, measured on a
 
 `derive` generates a type-directed comparison when the type is known where the
 comparison is emitted — since #2195 that includes a generic struct's concrete
-instantiations. `Map` was the one measured outlier until #2218 gave it a
+instantiations, and since #2467 a generic enum's. `Map` was the one measured outlier until #2218 gave it a
 comparator; any head nobody has measured still costs its owner a trap rather
 than the benefit of the doubt.
 

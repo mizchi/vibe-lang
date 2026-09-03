@@ -256,3 +256,101 @@ test "#2456 r7: phantom-parameter enum elements filled through a function" {
   inspect(left == right, content = "true")
   inspect(left == other, content = "false")
 }
+
+//# #2467: a generic enum's instantiation takes a specialized comparator
+
+// `enum Wrap[T] { W(T); Empty }` (spelled `EqUeWrap` / `Wv` / `Absent` below,
+// next to the round-7 enum) used to be decided at the declaration: a
+// payload typed by the formal made every instantiation fail closed through
+// the untyped-empty arm (Codex rounds 5-7 on #2456), and a direct compare
+// went through the derived `Wrap::equals`, whose erased `==` was not exact
+// for an `Int` payload (#2457 row 4: `W(64 << 32) == W(65 << 32)` answered
+// `true` on the stage2 from main at 7018aca). A concrete instantiation now
+// gets `Wrap::equals__<key>` with the arguments substituted into every
+// payload, the way a generic struct does (#2195): `Wrap[Int]` is exact,
+// `Wrap[String]` and `Wrap[Array[Int]]` compare by content, and a nested
+// or recursive instantiation recurses through its own specialization.
+
+enum EqUeWrap[T] {
+  Wv(T);
+  Absent
+}
+
+enum EqUeLoop[T] {
+  LNext(EqUeLoop[T], T);
+  LEnd
+}
+
+fn fill_wrap_int(xs: Array[EqUeWrap[Int]], v: Int) -> Unit {
+  Array::push(xs, Wv(v))
+}
+
+fn fill_wrap_str(xs: Array[EqUeWrap[String]], v: String) -> Unit {
+  Array::push(xs, Wv(String::concat(v, "!")))
+}
+
+fn fill_wrap_arr(xs: Array[EqUeWrap[Array[Int]]], v: Int) -> Unit {
+  Array::push(xs, Wv([v, v + 1]))
+}
+
+test "#2467: Wrap[Int] elements filled through a function are exact" {
+  let left = []
+  fill_wrap_int(left, 64<<32)
+  let right = []
+  fill_wrap_int(right, 64<<32)
+  let other = []
+  fill_wrap_int(other, 65<<32)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2467: Wrap[String] elements compare by content" {
+  let left = []
+  fill_wrap_str(left, "ab")
+  let right = []
+  fill_wrap_str(right, "ab")
+  let other = []
+  fill_wrap_str(other, "cd")
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2467: Wrap[Array[Int]] elements compare by content" {
+  let left = []
+  fill_wrap_arr(left, 1)
+  let right = []
+  fill_wrap_arr(right, 1)
+  let other = []
+  fill_wrap_arr(other, 2)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2467 (#2457 row 4): a direct Wrap[Int] compare is exact" {
+  let a: EqUeWrap[Int] = Wv(64<<32)
+  let b: EqUeWrap[Int] = Wv(65<<32)
+  let c: EqUeWrap[Int] = Wv(64<<32)
+  let e: EqUeWrap[Int] = Absent
+  inspect(a == b, content = "false")
+  inspect(a == c, content = "true")
+  inspect(a == e, content = "false")
+  inspect(e == e, content = "true")
+}
+
+test "#2467: a nested instantiation recurses through its own specialization" {
+  let a: EqUeWrap[EqUeWrap[Int]] = Wv(Wv(64<<32))
+  let b: EqUeWrap[EqUeWrap[Int]] = Wv(Wv(65<<32))
+  let c: EqUeWrap[EqUeWrap[Int]] = Wv(Wv(64<<32))
+  inspect(a == b, content = "false")
+  inspect(a == c, content = "true")
+}
+
+test "#2467: a regular recursive enum compares its spine by content" {
+  let a: EqUeLoop[Int] = LNext(LNext(LEnd, 2), 64<<32)
+  let b: EqUeLoop[Int] = LNext(LNext(LEnd, 2), 64<<32)
+  let c: EqUeLoop[Int] = LNext(LNext(LEnd, 2), 65<<32)
+  let d: EqUeLoop[Int] = LNext(LEnd, 64<<32)
+  inspect(a == b, content = "true")
+  inspect(a == c, content = "false")
+  inspect(a == d, content = "false")
+}
