@@ -63,15 +63,25 @@ fn common_analysis_fresh_string_array() -> Array[String] {
 /// #2479 was built with the set on the expression side only: every such
 /// literal -- `canonical_builtin_name`'s match arms and the same names in an
 /// array literal -- was emitted twice, shifting every later string's address.)
+/// The ONE insertion path of the string table: `out` keeps first-occurrence
+/// order, `seen` is its membership. Every collector arm that can put a text
+/// into the table (`EString`, `PString`, a nonempty interpolation segment, an
+/// `EMap` key) goes through here -- #2482 review: the segment and key arms
+/// used to push after their own scan of `out` without recording the text in
+/// `seen`, so a later `EString` of the same text was appended again.
+fn collect_strings_note(s: String, out: Array[String], seen: MutSet[String]) -> Unit {
+  if !MutSet::has(seen, s) {
+    MutSet::add(seen, s)
+    Array::push(out, s)
+  } else {
+    ()
+  }
+}
+
 fn collect_strings_pat(pat: Pat, out: Array[String], seen: MutSet[String]) -> Int {
   match pat {
     PString(s) => {
-      if !MutSet::has(seen, s) {
-        MutSet::add(seen, s)
-        Array::push(out, s)
-      } else {
-        ()
-      }
+      collect_strings_note(s, out, seen)
       0
     },
     PCtor(_, args) => {
@@ -115,12 +125,7 @@ fn collect_strings_pat(pat: Pat, out: Array[String], seen: MutSet[String]) -> In
 export fn collect_strings_expr(expr: Expr, out: Array[String], seen: MutSet[String]) -> Int {
   match expr {
     EString(s) => {
-      if !MutSet::has(seen, s) {
-        MutSet::add(seen, s)
-        Array::push(out, s)
-      } else {
-        ()
-      }
+      collect_strings_note(s, out, seen)
       0
     },
     EBinOp(_, lhs, rhs, _) => {
@@ -226,17 +231,9 @@ export fn collect_strings_expr(expr: Expr, out: Array[String], seen: MutSet[Stri
         if si_p % 2 == 0 {
           let part = Array::get(parts, si_p)
           if String::length(part) > 0 {
-            let mut found = false
-            let mut fi2 = 0
-            while fi2 < Array::length(out) {
-              if Array::get(out, fi2) == part {
-                found = true
-              }
-              fi2 = fi2 + 1
-            }
-            if !found {
-              Array::push(out, part)
-            }
+            collect_strings_note(part, out, seen)
+          } else {
+            ()
           }
         }
         si_p = si_p + 1
@@ -257,17 +254,7 @@ export fn collect_strings_expr(expr: Expr, out: Array[String], seen: MutSet[Stri
       let mut mi = 0
       while mi < Array::length(fields) {
         let (key, val) = Array::get(fields, mi)
-        let mut kf = false
-        let mut ki = 0
-        while ki < Array::length(out) {
-          if Array::get(out, ki) == key {
-            kf = true
-          }
-          ki = ki + 1
-        }
-        if !kf {
-          Array::push(out, key)
-        }
+        collect_strings_note(key, out, seen)
         collect_strings_expr(val, out, seen)
         mi = mi + 1
       }
