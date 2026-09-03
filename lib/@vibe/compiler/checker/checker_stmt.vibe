@@ -5715,7 +5715,73 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
       }
       i = i + 1
     }
-    Some((out, primary_calls, located_primary_calls))
+    // #2427 second pass: which of those candidate offsets is ALSO claimed by
+    // a primary call that is NOT a Double.
+    //
+    // Pass 1 above is byte-for-byte the original loop, so a program with no
+    // Double call result allocates nothing new and does no extra work -- the
+    // block below is skipped entirely. That property is the point: Codex
+    // round 1 on this PR replaced the dedup with a linear scan over a key
+    // list holding EVERY primary call, which was quadratic on the minified
+    // bundle and quadratic even with no Double present. The comment above
+    // records what a quadratic costs in this exact loop: 6.1s -> 77.5s on
+    // one file.
+    //
+    // Round 2 caught the sequel: the first repair sorted the non-Double
+    // offsets, and `irc_sorted_unique` is an INSERTION sort whose own comment
+    // says it is sized for a small candidate set. So the sorted side is the
+    // SMALL one -- one entry per distinct Double offset, already deduplicated
+    // by the same O(D^2) scan the original ran -- and the large side is
+    // scanned against it.
+    //
+    // The offset test comes FIRST and the type resolution second, for the
+    // same reason pass 1 orders them that way: a binary search is cheap and
+    // `subst_resolves_to_double` is not, so the resolution runs only for the
+    // occurrences that sit at a candidate offset. Nothing is accumulated in
+    // between -- an earlier cut collected every non-Double offset into an
+    // array, which the CI perf report priced at +0.20% selfcompile heap.
+    let kept = if Array::length(out) == 0 {
+      out
+    } else {
+      let sorted_doubles = irc_sorted_unique(out)
+      let poisoned: Array[Bool] = []
+      let mut d = 0
+      while d < Array::length(sorted_doubles) {
+        Array::push(poisoned, false)
+        d = d + 1
+      }
+      let mut p = 0
+      while p < Array::length(checked.typed_occurrences) {
+        let (poff, praw) = Array::get(checked.typed_occurrences, p)
+        if Array::get(capture.entries_flags, p) == 1 && poff >= 0 {
+          let idx = irc_index_of(sorted_doubles, poff)
+          if idx >= 0 && !subst_resolves_to_double(checked.final_subst, praw) {
+            Array::set(poisoned, idx, true)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        p = p + 1
+      }
+      // Emitted in `out`'s original first-seen order, not the sorted one: the
+      // sort exists for the lookup, and reordering the published table would
+      // be an unrelated behavioural change to everything downstream of it.
+      let keep: Array[Int] = []
+      let mut k = 0
+      while k < Array::length(out) {
+        let off = Array::get(out, k)
+        if !Array::get(poisoned, irc_index_of(sorted_doubles, off)) {
+          Array::push(keep, off)
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      keep
+    }
+    Some((kept, primary_calls, located_primary_calls))
   }
 }
 
@@ -6570,6 +6636,62 @@ export fn typed_lowering_enc_tag(enc: Int) -> Int {
 /// has no Double call results. A caller that cannot tell those apart wires the
 /// channel up green and inert; `check_program_double_call_result_located_observation`
 /// below is the caller-facing form that refuses the first case.
+///
+/// #2427: an offset claimed by MORE THAN ONE primary call result is kept only
+/// when every claimant resolves the same way, and POISONED otherwise -- the
+/// rule `string_binop_offsets_from_capture` below has carried since Codex
+/// round 1 on #2429, and the one this extraction was missing.
+///
+/// The difference is not academic. The consumer is keyed by OFFSET, so an
+/// offset in the table classifies EVERY call node anchored there. Filing an
+/// offset because one claimant is Double, while another claimant at the same
+/// offset is an `Int`, tells codegen the Int call returns a float; the first
+/// consumer that renders it hands `__rt_str_concat` a corrupt `(ptr|len)`.
+/// Measured by forcing the collision (two top-level `let`s whose call offsets
+/// are rewritten to one value, `fn fd() -> Double` and `fn fi() -> Int`):
+///
+///   distinct offsets   table [59]    -- correct
+///   both at 777        table [777]   -- the Int call is now "a Double call"
+///
+/// Deduplication was the old shape and it cannot express this: it asks "did I
+/// already push this offset", which is a question about the OUTPUT, when the
+/// question that matters is whether the claimants AGREE. Two claimants that
+/// agree still collapse to one row, exactly as before.
+///
+/// Poisoning does NOT make a mixed collision harmless. It is a SWAP: before
+/// it the Double claimant kept its row and the Int claimant was misclassified;
+/// after it neither is classified and both fall to the syntactic classifiers.
+/// Measured on the collision itself (Codex rounds 1 and 3 on this PR -- an
+/// earlier claim that the render path survives was measured BESIDE the
+/// collision, on an uncollided source, and was wrong):
+///
+///   natural    tag0=1  tag4=1
+///   collided   tag0=0  tag4=0
+///
+/// The tag-4 render row does not rescue the Double claimant, because
+/// `typed_lowering_float_key` keys a call-result argument on the call's OWN
+/// offset -- the colliding one -- and `irc_render_arg_offsets` drops a
+/// candidate whose occurrences disagree. (That producer answers 0 there
+/// without this change too; its agreement rule is older.)
+///
+/// The reason to prefer the swap is not that it hurts less. It is that an
+/// offset whose claimants disagree has no single true answer, and this
+/// channel's contract is "absent, never wrong": filing the offset asserts
+/// Double for EVERY node anchored there, which is knowably false for one of
+/// them. Every sibling channel already fails closed the same way -- tags 3, 4
+/// and 5 emit an offset only when every occurrence there agrees, and the
+/// String binops poison a disagreeing anchor. Tag 0 was the only one asserting
+/// an answer it could not know, which is exactly what
+/// `typed_lowering_float_key`'s own comment says when it explains why the
+/// FLOAT key needs a restriction the Int key does not.
+///
+/// The residue is real and is pinned in the test: a mixed collision leaves the
+/// Double claimant unclassified. Node identity in the key is the fix, and an
+/// offset-keyed consumer cannot express it -- #2427's remaining step.
+///
+/// No colliding pair was found in today's bundle while writing this, and a
+/// curried `f()()` -- the obvious candidate -- anchors its two calls four
+/// bytes apart. The rule closes the hole whether or not an instance is live.
 fn check_program_double_call_result_observation_impl(stmts: Array[Stmt]) -> Option[(CheckedProgram, Array[Int], Int, Int, Array[Int], Array[String])] with Exception {
   let capture = reset_double_call_capture()
   let checked = check_program_type_defs_observation_impl(stmts, None, Some(capture)).checked_program
