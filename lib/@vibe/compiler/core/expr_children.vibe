@@ -68,7 +68,33 @@ export fn typed_lowering_float_key(expr: Expr) -> Int {
   }
 }
 
+/// #2479: the child list is READ-ONLY for every caller (measured: no call
+/// site mutates it), so a leaf answers one shared empty array and a node
+/// whose children ARE an array it already holds (`ETuple`, `EArray`,
+/// `EContinue`) answers that array. The rest still build a fresh list.
+/// Before this, every node of every walk allocated -- 104 ms of
+/// `__rt_arr_new` under `expr_children` on a warm compiler-closure compile,
+/// most of it for leaves.
+let expr_children_none: Array[Expr] = []
+
 export fn expr_children(expr: Expr) -> Array[Expr] {
+  match expr {
+    EInt(_) => expr_children_none,
+    EFloat(_) => expr_children_none,
+    EString(_) => expr_children_none,
+    EBool(_) => expr_children_none,
+    EIdent(_, _) => expr_children_none,
+    EStringInterp(_) => expr_children_none,
+    EUnit => expr_children_none,
+    EBreak(None) => expr_children_none,
+    ETuple(elems) => elems,
+    EArray(elems) => elems,
+    EContinue(args) => args,
+    _ => expr_children_built(expr)
+  }
+}
+
+fn expr_children_built(expr: Expr) -> Array[Expr] {
   let children = array_empty()
   match expr {
     ETuple(elems) => append_exprs(children, elems),

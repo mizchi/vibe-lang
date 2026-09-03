@@ -58,26 +58,26 @@ fn common_analysis_fresh_string_array() -> Array[String] {
 /// constructor / tuple / or / struct sub-patterns. #603: codegen now tests a
 /// `PString` sub-pattern of a `PCtor`, so its literal must be registered in the
 /// string table (previously only top-level `PString` arms were collected).
-fn collect_strings_pat(pat: Pat, out: Array[String]) -> Int {
+/// `seen` is shared with `collect_strings_expr`: a literal first met as a
+/// pattern and again as an expression is ONE table entry. (Measured while
+/// #2479 was built with the set on the expression side only: every such
+/// literal -- `canonical_builtin_name`'s match arms and the same names in an
+/// array literal -- was emitted twice, shifting every later string's address.)
+fn collect_strings_pat(pat: Pat, out: Array[String], seen: MutSet[String]) -> Int {
   match pat {
     PString(s) => {
-      let mut pf = false
-      let mut pi = 0
-      while pi < Array::length(out) {
-        if Array::get(out, pi) == s {
-          pf = true
-        }
-        pi = pi + 1
-      }
-      if !pf {
+      if !MutSet::has(seen, s) {
+        MutSet::add(seen, s)
         Array::push(out, s)
+      } else {
+        ()
       }
       0
     },
     PCtor(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        let _ = collect_strings_pat(Array::get(args, i), out)
+        let _ = collect_strings_pat(Array::get(args, i), out, seen)
         i = i + 1
       }
       0
@@ -85,21 +85,21 @@ fn collect_strings_pat(pat: Pat, out: Array[String]) -> Int {
     PTuple(pats) => {
       let mut i = 0
       while i < Array::length(pats) {
-        let _ = collect_strings_pat(Array::get(pats, i), out)
+        let _ = collect_strings_pat(Array::get(pats, i), out, seen)
         i = i + 1
       }
       0
     },
     POr(l, r) => {
-      let _ = collect_strings_pat(l, out)
-      let _ = collect_strings_pat(r, out)
+      let _ = collect_strings_pat(l, out, seen)
+      let _ = collect_strings_pat(r, out, seen)
       0
     },
     PStruct(_, fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, fp) = Array::get(fields, i)
-        let _ = collect_strings_pat(fp, out)
+        let _ = collect_strings_pat(fp, out, seen)
         i = i + 1
       }
       0
@@ -108,34 +108,33 @@ fn collect_strings_pat(pat: Pat, out: Array[String]) -> Int {
   }
 }
 
-export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
+/// #2479: `seen` is the membership side of `out` -- `out` keeps the first-
+/// occurrence order the string table is laid out in, the set answers "is it
+/// there" in O(1). The old form scanned `out` for every `EString`, O(literals²)
+/// over a compiler-sized program (162 ms of a 5.77 s warm compile).
+export fn collect_strings_expr(expr: Expr, out: Array[String], seen: MutSet[String]) -> Int {
   match expr {
     EString(s) => {
-      let mut found = false
-      let mut i = 0
-      while i < Array::length(out) {
-        if Array::get(out, i) == s {
-          found = true
-        }
-        i = i + 1
-      }
-      if !found {
+      if !MutSet::has(seen, s) {
+        MutSet::add(seen, s)
         Array::push(out, s)
+      } else {
+        ()
       }
       0
     },
     EBinOp(_, lhs, rhs, _) => {
-      collect_strings_expr(lhs, out)
-      collect_strings_expr(rhs, out)
+      collect_strings_expr(lhs, out, seen)
+      collect_strings_expr(rhs, out, seen)
     },
-    EUnaryOp(_, operand) => collect_strings_expr(operand, out),
+    EUnaryOp(_, operand) => collect_strings_expr(operand, out, seen),
     EIf(cond, then_e, else_e) => {
-      collect_strings_expr(cond, out)
-      collect_strings_expr(then_e, out)
-      collect_strings_expr(else_e, out)
+      collect_strings_expr(cond, out, seen)
+      collect_strings_expr(then_e, out, seen)
+      collect_strings_expr(else_e, out, seen)
     },
     ECall(callee, args, _) => {
-      collect_strings_expr(callee, out)
+      collect_strings_expr(callee, out, seen)
       // #784: the bool→string codegen path (compile_call.vibe) synthesizes
       // `if b { "true" } else { "false" }` for a statically-boolean `__to_string`
       // arg. Those EString nodes are created during codegen — AFTER this
@@ -146,8 +145,8 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
       // strings.
       match callee {
         EIdent(nm, _) => if nm == "__to_string" {
-          collect_strings_expr(EString("true"), out)
-          collect_strings_expr(EString("false"), out)
+          collect_strings_expr(EString("true"), out, seen)
+          collect_strings_expr(EString("false"), out, seen)
         } else {
           0
         },
@@ -155,47 +154,47 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
       }
       let mut i = 0
       while i < Array::length(args) {
-        collect_strings_expr(Array::get(args, i), out)
+        collect_strings_expr(Array::get(args, i), out, seen)
         i = i + 1
       }
       0
     },
     ELet(_, value, body, _) => {
-      collect_strings_expr(value, out)
-      collect_strings_expr(body, out)
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
     },
     ELetRec(_, value, body) => {
-      collect_strings_expr(value, out)
-      collect_strings_expr(body, out)
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
     },
     ELetMut(_, value, body, _) => {
-      collect_strings_expr(value, out)
-      collect_strings_expr(body, out)
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
     },
     EAssign(_, value, body) => {
-      collect_strings_expr(value, out)
-      collect_strings_expr(body, out)
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
     },
     EAssignOp(_, _, value, body) => {
-      collect_strings_expr(value, out)
-      collect_strings_expr(body, out)
+      collect_strings_expr(value, out, seen)
+      collect_strings_expr(body, out, seen)
     },
     ESeq(first, second) => {
-      collect_strings_expr(first, out)
-      collect_strings_expr(second, out)
+      collect_strings_expr(first, out, seen)
+      collect_strings_expr(second, out, seen)
     },
     EWhile(cond, body) => {
-      collect_strings_expr(cond, out)
-      collect_strings_expr(body, out)
+      collect_strings_expr(cond, out, seen)
+      collect_strings_expr(body, out, seen)
     },
     EForIn(_, _, iter_e, body) => {
-      collect_strings_expr(iter_e, out)
-      collect_strings_expr(body, out)
+      collect_strings_expr(iter_e, out, seen)
+      collect_strings_expr(body, out, seen)
     },
     ETuple(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        collect_strings_expr(Array::get(elems, i), out)
+        collect_strings_expr(Array::get(elems, i), out, seen)
         i = i + 1
       }
       0
@@ -203,24 +202,24 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
     EArray(elems) => {
       let mut i = 0
       while i < Array::length(elems) {
-        collect_strings_expr(Array::get(elems, i), out)
+        collect_strings_expr(Array::get(elems, i), out, seen)
         i = i + 1
       }
       0
     },
     EMatch(scrutinee, arms) => {
-      collect_strings_expr(scrutinee, out)
+      collect_strings_expr(scrutinee, out, seen)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, arm_expr) = Array::get(arms, i)
-        let _ = collect_strings_pat(pat, out)
-        collect_strings_expr(arm_expr, out)
+        let _ = collect_strings_pat(pat, out, seen)
+        collect_strings_expr(arm_expr, out, seen)
         i = i + 1
       }
       0
     },
-    EFn(_, _, _, _, _, body) => collect_strings_expr(body, out),
-    EReturn(msg) => collect_strings_expr(msg, out),
+    EFn(_, _, _, _, _, body) => collect_strings_expr(body, out, seen),
+    EReturn(msg) => collect_strings_expr(msg, out, seen),
     EStringInterp(parts) => {
       let mut si_p = 0
       while si_p < Array::length(parts) {
@@ -245,11 +244,11 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
       0
     },
     EHandle(body, arms) => {
-      collect_strings_expr(body, out)
+      collect_strings_expr(body, out, seen)
       let mut hi = 0
       while hi < Array::length(arms) {
         let (_, arm_expr) = Array::get(arms, hi)
-        collect_strings_expr(arm_expr, out)
+        collect_strings_expr(arm_expr, out, seen)
         hi = hi + 1
       }
       0
@@ -269,7 +268,7 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
         if !kf {
           Array::push(out, key)
         }
-        collect_strings_expr(val, out)
+        collect_strings_expr(val, out, seen)
         mi = mi + 1
       }
       0
@@ -278,13 +277,13 @@ export fn collect_strings_expr(expr: Expr, out: Array[String]) -> Int {
       let mut ri = 0
       while ri < Array::length(fields) {
         let (_, fval) = Array::get(fields, ri)
-        collect_strings_expr(fval, out)
+        collect_strings_expr(fval, out, seen)
         ri = ri + 1
       }
       0
     },
-    EDot(obj, _, _, _) => collect_strings_expr(obj, out),
-    ELabeledArg(_, _, val) => collect_strings_expr(val, out),
+    EDot(obj, _, _, _) => collect_strings_expr(obj, out, seen),
+    ELabeledArg(_, _, val) => collect_strings_expr(val, out, seen),
     _ => 0
   }
 }
@@ -538,10 +537,11 @@ export fn stmts_contain_exceptions(stmts: Array[Stmt]) -> Bool {
 
 export fn collect_strings_stmts(stmts: Array[Stmt]) -> Array[String] {
   let out = common_analysis_fresh_string_array()
+  let seen: MutSet[String] = MutSet::new_string()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, expr) => collect_strings_expr(expr, out),
+      SLet(_, _, _, _, expr) => collect_strings_expr(expr, out, seen),
       _ => 0
     }
     i = i + 1
@@ -1643,10 +1643,13 @@ export fn mut_needs_ref_cell(body: Expr, name: String) -> Bool {
 
 /// Builtins whose arg0 is BORROWED (read in place, not consumed/dropped). Kept
 /// in sync with is_borrow_arg0_call in perceus/index.vibe.
+/// Kept as a compare chain on purpose (#2479 measured the alternative): a
+/// module-level `MutSet` lookup hashes the whole callee name per call site,
+/// while `__rt_str_eq` length-gates almost every mismatch, and the set form
+/// measured SLOWER (0.09 s -> 0.14 s warm inclusive).
 export fn md_is_borrow_arg0_call(f: String) -> Bool {
   f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::iter_get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
-
 fn md_max(a: Int, b: Int) -> Int {
   if a > b {
     a
