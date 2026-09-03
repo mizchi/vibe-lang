@@ -546,7 +546,13 @@ fn gc_is_ctor_expr(e: Expr, ctx: CompileCtxGc) -> Bool {
 /// Structural equality for two tuples (gc layout: raw even ptr, element i at
 /// ptr+i*8, no header). Ported from the linear emit_tuple_struct_eq; leaves a
 /// raw i64 0/1. `cefn` is compile_expr_gc, threaded to avoid a forward ref.
-fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
+/// `field_exprs` (#2457): the literal operand's element expressions when a
+/// literal is in scope (empty otherwise). An element that is provably an Int
+/// / Bool word by SHAPE (`gc_expr_is_intish`) compares with a plain `i64.eq`
+/// instead of the generic `eq`, whose string fall-back equated
+/// `(64 << 32, 1)` and `(65 << 32, 1)`; a leaf the shape test cannot classify
+/// keeps the generic compare.
+fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, field_exprs: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
   Array::push(local_names, "[gc-temp]__gceqa")
   let bptr = next_local + 1
@@ -565,7 +571,12 @@ fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_nam
     emit_local_get(buf, bptr)
     emit_i32_wrap_i64(buf)
     emit_i64_load(buf, 3, i * 8)
-    emit_call(buf, eq_fidx)
+    if i < Array::length(field_exprs) && gc_expr_is_intish(Array::get(field_exprs, i)) {
+      emit_i64_eq(buf)
+      emit_i64_extend_i32_s(buf)
+    } else {
+      emit_call(buf, eq_fidx)
+    }
     emit_i64_and(buf)
     i = i + 1
   }
@@ -577,7 +588,9 @@ fn emit_gc_tuple_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, num: Int, local_nam
 /// by content there). The generic `eq` builtin compares ctor POINTERS — fresh
 /// allocations are never bit-equal, which made the gc-compiled checker's
 /// `Some(av) == rb` effect-row comparison (unify_effects) always false.
-fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
+/// `field_exprs` (#2457): as for emit_gc_tuple_struct_eq -- the ctor literal's
+/// argument expressions when one is in scope, empty otherwise.
+fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, field_exprs: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtxGc, ld: Int, cefn: (Bytes, Expr, Array[String], Int, CompileCtxGc, Int) -> Int with Exception) -> Int with Exception {
   let aptr = next_local
   Array::push(local_names, "[gc-temp]__gcceqa")
   let bptr = next_local + 1
@@ -665,7 +678,12 @@ fn emit_gc_ctor_struct_eq(buf: Bytes, lhs: Expr, rhs: Expr, fc: Int, local_names
       emit_local_get(buf, bptr)
       emit_i32_wrap_i64(buf)
       emit_i64_load(buf, 3, 8 + i * 8)
-      emit_call(buf, eq_fidx)
+      if i < Array::length(field_exprs) && gc_expr_is_intish(Array::get(field_exprs, i)) {
+        emit_i64_eq(buf)
+        emit_i64_extend_i32_s(buf)
+      } else {
+        emit_call(buf, eq_fidx)
+      }
       emit_i64_and(buf)
       i = i + 1
     }
@@ -708,25 +726,33 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
         _ => 0
       }
     }
-    emit_gc_tuple_struct_eq(buf, lhs, rhs, num, local_names, next_local, ctx, ld, cefn)
+    let elems = match lhs {
+      ETuple(les) => les,
+      _ => match rhs {
+        ETuple(res) => res,
+        _ => array_empty()
+      }
+    }
+    emit_gc_tuple_struct_eq(buf, lhs, rhs, num, elems, local_names, next_local, ctx, ld, cefn)
   } else if lhs_agg / 64 == 1 || rhs_agg / 64 == 1 {
     let tn = if lhs_agg / 64 == 1 {
       lhs_agg % 64
     } else {
       rhs_agg % 64
     }
-    emit_gc_tuple_struct_eq(buf, lhs, rhs, tn, local_names, next_local, ctx, ld, cefn)
+    emit_gc_tuple_struct_eq(buf, lhs, rhs, tn, array_empty(), local_names, next_local, ctx, ld, cefn)
   } else if gc_is_ctor_expr(lhs, ctx) || gc_is_ctor_expr(rhs, ctx) {
     let clit = if gc_is_ctor_expr(lhs, ctx) {
       lhs
     } else {
       rhs
     }
-    let cfc = match clit {
-      ECall(_, cargs, _) => Array::length(cargs),
-      _ => 0
+    let cargs_lit = match clit {
+      ECall(_, cargs, _) => cargs,
+      _ => array_empty()
     }
-    emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, cefn)
+    let cfc = Array::length(cargs_lit)
+    emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, cargs_lit, local_names, next_local, ctx, ld, cefn)
   } else if lhs_agg / 64 == 2 || rhs_agg / 64 == 2 {
     // Tag comparison short-circuits unequal variants before any field read,
     // so walking the larger tracked field count is safe (see the linear
@@ -746,7 +772,7 @@ fn emit_gc_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String]
     } else {
       rfc
     }
-    emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, local_names, next_local, ctx, ld, cefn)
+    emit_gc_ctor_struct_eq(buf, lhs, rhs, cfc, array_empty(), local_names, next_local, ctx, ld, cefn)
   } else if gc_expr_is_floatish(lhs, local_names, ctx) || gc_expr_is_floatish(rhs, local_names, ctx) {
     // #2426: Double equality, which reached no float comparison at all before.
     // Both arms below answer on the RAW BITS -- `gc_expr_is_intish` claims

@@ -1,0 +1,99 @@
+//# Functions
+
+// #2457: an `Int` payload compared through a literal shape or a bare
+// `Option` / `Result` binding must be an exact i64 equality. The generic
+// `eq` builtin's string fall-back reads a word whose low 32 bits are zero
+// as a zero-length string when the high half is a plausible pointer, so two
+// distinct values of the form `k << 32` compared EQUAL through a ctor
+// literal, a tuple literal, and a call result.
+//
+// Measured on the stage2 built from main at 7018aca (2026-09-03), linear and
+// gc lanes alike: every `==` below that must be `false` answered `true`.
+//
+// Three paths, all pinned here:
+// - codegen's literal-shape walk (linear `emit_eq_shape_slots`, gc
+//   `emit_gc_{tuple,ctor}_struct_eq`): a leaf whose literal payload
+//   expression is intish compares with `i64.eq`;
+// - the desugar's bare-`Option` / `Result` rung: with a checker row for the
+//   site (the FS lane `vibe test` takes), the typed comparator compares the
+//   payload exactly (`(x + 0) == (y + 0)`, the round-6 marker of #2456);
+// - the equal-values cases, so the exact compare is a compare and not a
+//   constant.
+
+fn mk(v: Int) -> Option[Int] {
+  Some(v)
+}
+
+// `Result` is always a declared enum (#1324); this is the standard shape the
+// desugar's `Ok` / `Err` arm recognises.
+enum Result[T, E] {
+  Ok(T);
+  Err(E)
+}
+
+fn mk_res(v: Int) -> Result[Int, String] {
+  Ok(v)
+}
+
+fn big() -> Int {
+  64 << 32
+}
+
+fn other() -> Int {
+  65 << 32
+}
+
+test "#2457: Some(64 << 32) == Some(65 << 32) is false" {
+  inspect(Some(64 << 32) == Some(65 << 32), content = "false")
+  inspect(Some(64 << 32) != Some(65 << 32), content = "true")
+  inspect(Some(64 << 32) == Some(64 << 32), content = "true")
+}
+
+test "#2457: tuple literals with a bound Int element" {
+  let b = 64 << 32
+  let o = 65 << 32
+  inspect((b, 1) == (o, 1), content = "false")
+  inspect((b, 1) == (b, 1), content = "true")
+  inspect((64 << 32, "x") == (65 << 32, "x"), content = "false")
+  inspect((64 << 32, "x") == (64 << 32, "x"), content = "true")
+}
+
+test "#2457: nested ctor in a tuple literal" {
+  inspect((Some(64 << 32), 1) == (Some(65 << 32), 1), content = "false")
+  inspect((Some(64 << 32), 1) == (Some(64 << 32), 1), content = "true")
+}
+
+test "#2457: Option[Int] call results (bare binding rung)" {
+  let a = mk(big())
+  let b = mk(other())
+  let c = mk(big())
+  inspect(a == b, content = "false")
+  inspect(a != b, content = "true")
+  inspect(a == c, content = "true")
+  inspect(mk(7) == mk(7), content = "true")
+  inspect(mk(7) == mk(8), content = "false")
+}
+
+test "#2457: Result[Int, String] call results (bare binding rung)" {
+  let a = mk_res(big())
+  let b = mk_res(other())
+  let c = mk_res(big())
+  inspect(a == b, content = "false")
+  inspect(a == c, content = "true")
+}
+
+test "#2457: annotated tracked ctor literal" {
+  let a: Option[Int] = Some(64 << 32)
+  let b: Option[Int] = Some(65 << 32)
+  let c: Option[Int] = Some(64 << 32)
+  inspect(a == b, content = "false")
+  inspect(a == c, content = "true")
+}
+
+test "#2457: small payloads keep answering" {
+  inspect(Some(1) == Some(1), content = "true")
+  inspect(Some(1) == Some(2), content = "false")
+  inspect((1, "a") == (1, "a"), content = "true")
+  inspect((1, "a") == (2, "a"), content = "false")
+  inspect(Some("s") == Some("s"), content = "true")
+}

@@ -577,6 +577,24 @@ fn emit_eq_shape_slots(buf: Bytes, shape: Expr, asl: Int, bsl: Int, local_names:
         emit_local_set(buf, nb)
         nl = emit_eq_shape_slots(buf, el_shape, na, nb, local_names, nl + 2, ctx, ld, ce)
         emit_i64_and(buf)
+      } else if expr_is_intish(el, local_names, ctx) {
+        // #2457: a leaf whose literal payload EXPRESSION is provably an
+        // Int / Bool word (`64 << 32`, a `let`-bound int slot) compares with a
+        // plain `i64.eq`. The generic `eq` builtin's string fall-back reads a
+        // word with a zero low half as a zero-length string when the high
+        // half is a plausible pointer, so `Some(64 << 32) == Some(65 << 32)`
+        // and `(big, 1) == (other, 1)` answered `true`. Same test the
+        // top-level `==` arm applies (expr_is_intish); a leaf it cannot
+        // classify keeps the generic compare below.
+        emit_local_get(buf, ap)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, field_off + i * 8)
+        emit_local_get(buf, bp)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, field_off + i * 8)
+        emit_i64_eq(buf)
+        emit_i64_extend_i32_s(buf)
+        emit_i64_and(buf)
       } else {
         emit_local_get(buf, ap)
         emit_i32_wrap_i64(buf)
@@ -633,6 +651,24 @@ fn emit_eq_shape_slots(buf: Bytes, shape: Expr, asl: Int, bsl: Int, local_names:
         emit_i64_load(buf, 3, 8 + i * 8)
         emit_local_set(buf, nb)
         nl = emit_eq_shape_slots(buf, el_shape, na, nb, local_names, nl + 2, ctx, ld, ce)
+        emit_i64_and(buf)
+      } else if expr_is_intish(el, local_names, ctx) {
+        // #2457: a leaf whose literal payload EXPRESSION is provably an
+        // Int / Bool word (`64 << 32`, a `let`-bound int slot) compares with a
+        // plain `i64.eq`. The generic `eq` builtin's string fall-back reads a
+        // word with a zero low half as a zero-length string when the high
+        // half is a plausible pointer, so `Some(64 << 32) == Some(65 << 32)`
+        // and `(big, 1) == (other, 1)` answered `true`. Same test the
+        // top-level `==` arm applies (expr_is_intish); a leaf it cannot
+        // classify keeps the generic compare below.
+        emit_local_get(buf, ap)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + i * 8)
+        emit_local_get(buf, bp)
+        emit_i32_wrap_i64(buf)
+        emit_i64_load(buf, 3, 8 + i * 8)
+        emit_i64_eq(buf)
+        emit_i64_extend_i32_s(buf)
         emit_i64_and(buf)
       } else {
         emit_local_get(buf, ap)

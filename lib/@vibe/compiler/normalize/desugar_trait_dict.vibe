@@ -10838,7 +10838,19 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // shapes (never user struct/enum names), and unknown positions
               // carry the `__EqUnknown` marker which `eq_for_typed` compares
               // with raw `==` (status quo for that position).
-              let sty = infer_static_eq_type_binop(l, r)
+              // #2457: the checker's row for this site, when the allow-list
+              // admits it, is the COMPLETE operand type and wins over the
+              // literal-syntax shape. `Some(64 << 32) == Some(65 << 32)` used
+              // to infer `Option[__EqUnknown]` (a shift is not a literal this
+              // inference named), and the unknown payload position compared
+              // with the raw `==` -- the generic `eq`, whose string fall-back
+              // equated the two words. With the row, `Option[Int]` compares
+              // the payload exactly; a lane with no rows keeps the syntactic
+              // shape, whose leaf inference now names such an expression too.
+              let sty = match dtd_typed_eq_admitted_ty(boff) {
+                Some(te) => Some(te),
+                None => infer_static_eq_type_binop(l, r)
+              }
               let dty = match sty {
                 Some(t) => if static_eq_dispatchable(t) {
                   Some(t)
@@ -10849,7 +10861,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               }
               match dty {
                 Some(dt) => {
-                  let call = eq_for_typed(dt, rl, rr, empty_str_array())
+                  let call = eq_for_typed(dt, rl, rr, dtd_eq_known_types)
                   if op == "==" {
                     call
                   } else {
@@ -10898,14 +10910,29 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                         // compare with `==` — correct for scalar payloads (the common
                         // case); an aggregate-payload bare-Option variable is a #695
                         // residual (route it through a struct field for full recursion).
-                        let eqm = opt_eq_match(rl, rr)
+                        // #2457: the structural match compares each payload
+                        // with a raw `==`, which codegen cannot classify (a
+                        // match binder), so an `Int` payload went through the
+                        // generic `eq` and `mk(64 << 32) == mk(65 << 32)`
+                        // answered `true`. When the checker's row for this
+                        // site names an admitted type (`Option[Int]`), the
+                        // typed comparator compares that payload exactly;
+                        // with no row, or a type the allow-list refuses, the
+                        // match stays as it was.
+                        let eqm = match dtd_typed_eq_admitted_ty(boff) {
+                          Some(te) => eq_for_typed(te, rl, rr, dtd_eq_known_types),
+                          None => opt_eq_match(rl, rr)
+                        }
                         if op == "==" {
                           eqm
                         } else {
                           ECall(EIdent("not", -1), [eqm], -1)
                         }
                       } else if t == "Result" {
-                        let eqm = result_eq_match(rl, rr)
+                        let eqm = match dtd_typed_eq_admitted_ty(boff) {
+                          Some(te) => eq_for_typed(te, rl, rr, dtd_eq_known_types),
+                          None => result_eq_match(rl, rr)
+                        }
                         if op == "==" {
                           eqm
                         } else {
@@ -14804,6 +14831,41 @@ fn infer_static_eq_type(e: Expr) -> Option[TypeExpr] {
     EString(_) => Some(TyName("String")),
     EFloat(_) => Some(TyName("Double")),
     EUnit => Some(TyUnit),
+    // #2457: an operator expression whose result is an Int / Bool word by
+    // construction. A shift or bitwise operator admits only Int operands; a
+    // comparison or logical operator yields Bool; `~` is Int (#2344) and `!`
+    // is Bool. Arithmetic is named Int only when BOTH operands are named Int
+    // here -- `1.5 + x` must not become an Int leaf (a Double compares
+    // through `Double::to_float`, never a word compare). Anything else stays
+    // unnamed, exactly as before: an unknown leaf keeps the raw compare, a
+    // guessed one would be the worse bug.
+    EBinOp(bop, bl, br, _) => if bop == "<<" || bop == ">>" || bop == "&" || bop == "|" || bop == "^" || bop == "%" {
+      Some(TyName("Int"))
+    } else if bop == "<" || bop == ">" || bop == "<=" || bop == ">=" || bop == "==" || bop == "!=" || bop == "&&" || bop == "||" {
+      Some(TyName("Bool"))
+    } else if bop == "+" || bop == "-" || bop == "*" || bop == "/" {
+      let both_int = match infer_static_eq_type(bl) {
+        Some(TyName(ln)) => ln == "Int" && (match infer_static_eq_type(br) {
+          Some(TyName(rn)) => rn == "Int",
+          _ => false
+        }),
+        _ => false
+      }
+      if both_int {
+        Some(TyName("Int"))
+      } else {
+        None
+      }
+    } else {
+      None
+    },
+    EUnaryOp(uop, _) => if uop == "~" {
+      Some(TyName("Int"))
+    } else if uop == "!" {
+      Some(TyName("Bool"))
+    } else {
+      None
+    },
     ERecord(name, fields, targs) => if generic_eq_struct_declared(name) && Array::length(targs) > 0 {
       Some(TyApp(name, targs))
     } else if generic_eq_struct_declared(name) {
