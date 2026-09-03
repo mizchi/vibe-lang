@@ -1634,7 +1634,18 @@ echo "[compiler-gate] coverage instrumentation regression ok"
 #      build does. The coverage entry parsed with plain `lex`/`parse_program`,
 #      which leaves every node at offset -1, so the checker's offset-keyed
 #      typed-lowering tables came out empty BY CONSTRUCTION and only the
-#      syntactic classifiers answered. The program below is the #2462 shape --
+#      syntactic classifiers answered.
+#
+#      NO `VIBE_FS_COMPILE=1` here, and that is the whole reason this step can
+#      fail: the entries #2469 fixes are the DIRECT-SOURCE ones
+#      (`compile_source_wasi_only_coverage_impl` /
+#      `_rc_shadow_impl`, reached from cli_adapter's non-FS_COMPILE branch).
+#      With FS_COMPILE set, the compile takes the module lane instead and this
+#      probe answers 4116 on a compiler that has none of the fix -- measured
+#      against origin/main, which is how the first cut of this step passed
+#      while proving nothing.
+#
+#      The program below is the #2462 shape --
 #      a lambda bound by a `let` INSIDE a function body, which
 #      `collect_fn_returns` (a STATEMENT walk) cannot see -- so nothing
 #      syntactic classifies it and the table is the whole mechanism.
@@ -1653,7 +1664,7 @@ export let _start: () -> Int = () -> {
   String::length(s) * 1000 + String::char_code_at(s, 0)
 }
 EOF
-VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_COVERAGE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tldir/bool_render.vibe" "$tldir/cov.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tldir/cov.wasm" ]; then
@@ -1669,7 +1680,7 @@ if [ "$tl_cov_out" != "4116" ]; then
 fi
 # The control: the SAME program through the ordinary entry. Both must agree --
 # that agreement, not the constant, is what #2469 is about.
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tldir/bool_render.vibe" "$tldir/plain.wasm" _start >/dev/null 2>&1 || true
 tl_plain_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \

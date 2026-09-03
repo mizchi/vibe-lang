@@ -458,7 +458,16 @@ echo "[compiler-gate] RC shadow-liveness regression guard ok (25297489)"
 #        thing being debugged. The shadow entry parsed with plain
 #        `lex`/`parse_program`, leaving every node at offset -1, so the
 #        checker's offset-keyed typed-lowering tables were empty by
-#        construction. The probe is the #2462 shape (a lambda bound by a `let`
+#        construction.
+#
+#        NO `VIBE_FS_COMPILE=1`, and that is the whole reason this step can
+#        fail: the entry #2469 fixes is the DIRECT-SOURCE
+#        `compile_source_wasi_only_rc_shadow_impl`, reached from
+#        cli_adapter's non-FS_COMPILE branch. With FS_COMPILE set the compile
+#        takes the module lane and this probe answers 4116 on a compiler that
+#        has none of the fix -- measured against origin/main.
+#
+#        The probe is the #2462 shape (a lambda bound by a `let`
 #        INSIDE a function body), which no syntactic rule reaches -- the table
 #        is the whole mechanism. "true" -> 4*1000 + 't'(116) = 4116;
 #        "1" -> 1*1000 + '1'(49) = 1049 is the pre-fix answer.
@@ -472,7 +481,7 @@ export let _start: () -> Int = () -> {
   String::length(s) * 1000 + String::char_code_at(s, 0)
 }
 EOF
-VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$tlsdir/bool_render.vibe" "$tlsdir/shadow.wasm" _start >/dev/null 2>&1 || true
 if [ ! -s "$tlsdir/shadow.wasm" ]; then
