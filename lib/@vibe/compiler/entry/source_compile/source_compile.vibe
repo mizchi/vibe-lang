@@ -4,11 +4,7 @@ import @vibe/compiler/syntax {
   lex, lex_with_offsets, parse_program, parse_program_located
 }
 import @vibe/compiler/checker {
-  check_program,
-  check_program_double_call_result_located_observation,
-  checked_bool_render_offsets,
-  checked_int_render_offsets,
-  validate_user_source_stmts
+  check_program, check_program_double_call_result_located_observation, checked_int_and_bool_render_offsets, validate_user_source_stmts
 }
 
 import @vibe/compiler/codegen {
@@ -42,9 +38,10 @@ export fn compile_source(source: String) -> Bytes with Exception {
 }
 
 /// #2437, #2462/#2464: the Double call-result table and the Int and Bool
-/// render / `eq` tables from ONE check. `checked_int_render_offsets` and
-/// `checked_bool_render_offsets` are pure functions of the CheckedProgram the
-/// observation already returns, so all three cost one check between them.
+/// render / `eq` tables from ONE check, and the Int and Bool halves from ONE
+/// walk (`checked_int_and_bool_render_offsets`) -- they share a candidate set
+/// exactly, so asking separately re-derived it. All of it is a pure function of
+/// the CheckedProgram the observation already returns.
 ///
 /// `None` is the observation refusing an unlocated AST, and empty tables are
 /// the fail-closed answer: they classify nothing, leaving the syntactic answer
@@ -55,7 +52,10 @@ fn module_typed_offsets(stmts: Array[Stmt]) -> (Array[Int], Array[Int], Array[In
     // compile_module path this lane feeds has no typed-eq threading yet --
     // dropping them keeps today's behavior (the syntactic classifiers),
     // never a wrong comparator.
-    Some((checked, offsets, _, _)) => (offsets, checked_int_render_offsets(checked), checked_bool_render_offsets(checked)),
+    Some((checked, offsets, _, _)) => {
+      let (int_renders, bool_renders) = checked_int_and_bool_render_offsets(checked)
+      (offsets, int_renders, bool_renders)
+    },
     None => ([], [], [])
   }
 }

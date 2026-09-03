@@ -6052,14 +6052,123 @@ fn irc_resolves_to_scalar(s: Subst, ty: Type, want_bool: Bool) -> Bool {
   result
 }
 
-/// The builtins whose argument codegen must know is an `Int`: the renderer
+/// The builtins whose argument codegen must know the type of: the renderer
 /// (both spellings) and the untyped equality. `\{...}` interpolation is
 /// already `__to_string` HERE -- the parser builds the call
 /// (`parser_expr_primary.vibe`), so a per-module check sees it, which is what
 /// makes this walk usable on the FS lane where interpolation is otherwise
 /// expanded only on the merged program.
-fn irc_is_render_callee(n: String) -> Bool {
-  n == "__to_string" || n == "Int::to_string" || n == "eq"
+///
+/// #2468: `shims` carries the program's generic **Show wrapper**s. The lowering
+/// treats a call to one exactly like `__to_string` (`is_show_shim_call`,
+/// normalize/desugar_trait_dict.vibe), so an argument reaching the renderer
+/// through `to_string(x)` needs the same row as one reaching it directly.
+/// Without them, measured on `lib/@vibe/builtin/builtin_traits_test.vibe`, the
+/// two spellings of one render disagreed:
+///
+///   __to_string(l())  ->  "true"      to_string(l())  ->  "1"
+fn irc_is_render_callee(n: String, shims: Array[String]) -> Bool {
+  n == "__to_string" || n == "Int::to_string" || n == "eq" || irc_names_contain(shims, n)
+}
+
+/// `Array::contains` over `String`. Spelled out rather than imported: the
+/// `str_array_contains` twin is private to `normalize/desugar_trait_dict.vibe`,
+/// and the generic `==` on a `String` element still depends on the lowering
+/// knowing the element type -- which is the very thing this file computes.
+fn irc_names_contain(names: Array[String], n: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    let cur: String = Array::get(names, i)
+    if cur == n {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Is `body` exactly `__to_string(<pname>)`? The shim's whole body.
+///
+/// Mirrors `is_bare_to_string_of` (normalize/desugar_trait_dict.vibe) rather
+/// than importing it: the checker runs BEFORE that pass and cannot read the
+/// `dtd_show_shims` it fills, so the producer has to answer the same question
+/// for itself. The two are one edit apart, which is the cost of the phase
+/// order; the shape is small enough to keep them honest.
+fn irc_is_bare_to_string_of(body: Expr, pname: String) -> Bool {
+  match body {
+    ECall(bc, ba, _) => if Array::length(ba) == 1 {
+      match bc {
+        EIdent(cn, _) => if cn == "__to_string" {
+          match Array::get(ba, 0) {
+            EIdent(an, _) => an == pname,
+            _ => false
+          }
+        } else {
+          false
+        },
+        _ => false
+      }
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// A one-parameter function whose body is just `__to_string` of that parameter.
+fn irc_is_show_shim_value(v: Expr) -> Bool {
+  match v {
+    EFn(_, _, ps, _, _, body) => if Array::length(ps) == 1 {
+      let (pn, _) = Array::get(ps, 0)
+      irc_is_bare_to_string_of(body, pn)
+    } else {
+      false
+    },
+    _ => false
+  }
+}
+
+/// #2468: the program's Show-wrapper names, from its top-level declarations.
+///
+/// Only the TOP level, and both statement spellings. `parse_program` and
+/// `parse_program_located` lower `SFnDecl` to the `SLet` shape before anything
+/// checks the program, so the `SFnDecl` arm is inert on every path that reaches
+/// the checker today -- it is here so the walk does not depend on that
+/// ordering, the same reason `irc_collect_stmts` keeps its `SExample` arm.
+/// `collect_show_shims` (normalize) is the SLet arm alone for the same reason.
+///
+/// A shim declared inside a nested `module` is not collected. That is an
+/// under-approximation, and the fail-closed direction: the call keeps the
+/// syntactic answer it has today rather than getting a wrong one.
+///
+/// The normalize-pass twin also excludes a name shadowed by a local binder.
+/// This one does not, and the omission is safe HERE for a reason that does not
+/// hold there: these rows are TYPE facts, not render facts. An offset is
+/// emitted only when every typed occurrence at it resolves to the wanted type,
+/// so a row filed for an argument of some unrelated call is still a true
+/// statement about that expression's type -- it can be inert, never wrong. The
+/// rewrite pass has no such margin, because it REPLACES the call.
+fn irc_show_shim_names(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) => if irc_is_show_shim_value(value) {
+        Array::push(out, name)
+      } else {
+        ()
+      },
+      SFnDecl(_, fname, body, _, _) => if irc_is_show_shim_value(body) {
+        Array::push(out, fname)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// `want` is the typed-lowering TAG being collected (3 = Int, 4 = Double,
@@ -6071,10 +6180,10 @@ fn irc_is_render_callee(n: String) -> Bool {
 /// argument. Collecting under the key the consumer reads is the point: a
 /// candidate filed under a key nobody looks up is not a wrong answer, it is
 /// silence.
-fn irc_collect_expr(e: Expr, out: Array[Int], want: Int) -> Unit {
+fn irc_collect_expr(e: Expr, out: Array[Int], want: Int, shims: Array[String]) -> Unit {
   match e {
     ECall(callee, args, _) => match callee {
-      EIdent(cn, _) => if irc_is_render_callee(cn) {
+      EIdent(cn, _) => if irc_is_render_callee(cn, shims) {
         let mut ai = 0
         while ai < Array::length(args) {
           let arg = Array::get(args, ai)
@@ -6100,33 +6209,33 @@ fn irc_collect_expr(e: Expr, out: Array[Int], want: Int) -> Unit {
   let kids = expr_children(e)
   let mut i = 0
   while i < Array::length(kids) {
-    irc_collect_expr(Array::get(kids, i), out, want)
+    irc_collect_expr(Array::get(kids, i), out, want, shims)
     i = i + 1
   }
 }
 
-fn irc_collect_stmts(stmts: Array[Stmt], out: Array[Int], want: Int) -> Unit {
+fn irc_collect_stmts(stmts: Array[Stmt], out: Array[Int], want: Int, shims: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(_, _, _, _, e) => irc_collect_expr(e, out, want),
-      SLetMut(_, _, e) => irc_collect_expr(e, out, want),
-      SLetPat(_, e) => irc_collect_expr(e, out, want),
-      SExpr(e) => irc_collect_expr(e, out, want),
-      STest(_, e) => irc_collect_expr(e, out, want),
-      SBench(_, e) => irc_collect_expr(e, out, want),
+      SLet(_, _, _, _, e) => irc_collect_expr(e, out, want, shims),
+      SLetMut(_, _, e) => irc_collect_expr(e, out, want, shims),
+      SLetPat(_, e) => irc_collect_expr(e, out, want, shims),
+      SExpr(e) => irc_collect_expr(e, out, want, shims),
+      STest(_, e) => irc_collect_expr(e, out, want, shims),
+      SBench(_, e) => irc_collect_expr(e, out, want, shims),
       // `parse_program` lowers `SExample` to `STest` before anything checks
       // the program, so this arm is inert on every compile path today
       // (measured: a render of an `Array::get` result inside an `example`
       // block already answers correctly). It is here so the walk does not
       // depend on that ordering -- `parse_program_preserving` keeps the
       // variant, and an executable block form must not be silently skipped.
-      SExample(_, e) => irc_collect_expr(e, out, want),
+      SExample(_, e) => irc_collect_expr(e, out, want, shims),
       // A render inside a nested module is checked with the rest of the
       // program and its occurrences are in the same table, so skipping the
       // body would leave that code with no classification at all (Codex
       // review on #2434). `count_typed_lowering_offsets_stmts` recurses the same way.
-      SModule(_, _, inner) => irc_collect_stmts(inner, out, want),
+      SModule(_, _, inner) => irc_collect_stmts(inner, out, want, shims),
       _ => ()
     }
     i = i + 1
@@ -6211,23 +6320,48 @@ fn irc_index_of(sorted: Array[Int], v: Int) -> Int {
 /// typed-lowering tag (3 = Int, 4 = Double, 5 = Bool) and picks which type head
 /// an offset must resolve to; everything else -- the candidate walk, the
 /// fail-closed agreement rule, the binary search -- is the same question asked
-/// three times, so it is written once. Reading a candidate set under one rule
-/// and a type under another is how a producer and a consumer drift into
-/// silence.
+/// per tag, so it is written once. Reading a candidate set under one rule and a
+/// type under another is how a producer and a consumer drift into silence.
 fn irc_render_arg_offsets(checked: CheckedProgram, want: Int) -> Array[Int] {
+  let (only, _) = irc_render_arg_offsets_pair(checked, want, 0 - 1)
+  only
+}
+
+/// #2462/#2464 perf: tags 3 (Int) and 5 (Bool) answered from ONE walk.
+///
+/// The two share a KEY (`typed_lowering_arg_offset`), so they share a candidate
+/// set exactly -- the same expressions, found by the same walk, looked up in
+/// the same sorted array. Only the type test differs, and that is one line per
+/// occurrence. Running the walk twice re-derived an identical `cands` and
+/// re-scanned `typed_occurrences` to ask a second question about rows it had
+/// already visited.
+///
+/// Measured when tag 5 landed as its own walk: selfcompile heap 1.49 -> 1.50
+/// GiB, +0.86% on the perf report's deterministic section. Tag 4 stays separate
+/// because its key is `typed_lowering_float_key`, a genuinely different
+/// candidate set -- folding it in would mean collecting under one key and
+/// reading under another, which is the silence this file keeps warning about.
+///
+/// `want_b` of -1 asks for `want_a` alone. The two OUTPUT arrays stay separate:
+/// sharing the walk is a cost decision, sharing the answers would put a Bool
+/// offset where `ts_known_int` reads and render `true` as a number.
+fn irc_render_arg_offsets_pair(checked: CheckedProgram, want_a: Int, want_b: Int) -> (Array[Int], Array[Int]) {
   let raw: Array[Int] = []
-  irc_collect_stmts(checked.checked_stmts, raw, want)
+  let shims = irc_show_shim_names(checked.checked_stmts)
+  irc_collect_stmts(checked.checked_stmts, raw, want_a, shims)
   let cands = irc_sorted_unique(raw)
   let n = Array::length(cands)
   if n == 0 {
-    []
+    ([], [])
   } else {
     let seen_any: Array[Int] = []
-    let all_wanted: Array[Int] = []
+    let all_a: Array[Int] = []
+    let all_b: Array[Int] = []
     let mut k = 0
     while k < n {
       Array::push(seen_any, 0)
-      Array::push(all_wanted, 1)
+      Array::push(all_a, 1)
+      Array::push(all_b, 1)
       k = k + 1
     }
     let mut oi = 0
@@ -6237,15 +6371,15 @@ fn irc_render_arg_offsets(checked: CheckedProgram, want: Int) -> Array[Int] {
         let idx = irc_index_of(cands, ooff)
         if idx >= 0 {
           Array::set(seen_any, idx, 1)
-          let wanted = if want == 4 {
-            subst_resolves_to_double(checked.final_subst, oty)
-          } else {
-            irc_resolves_to_scalar(checked.final_subst, oty, want == 5)
-          }
-          if wanted {
+          if irc_occurrence_wants(checked, oty, want_a) {
             ()
           } else {
-            Array::set(all_wanted, idx, 0)
+            Array::set(all_a, idx, 0)
+          }
+          if want_b < 0 || irc_occurrence_wants(checked, oty, want_b) {
+            ()
+          } else {
+            Array::set(all_b, idx, 0)
           }
         } else {
           ()
@@ -6255,18 +6389,44 @@ fn irc_render_arg_offsets(checked: CheckedProgram, want: Int) -> Array[Int] {
       }
       oi = oi + 1
     }
-    let out: Array[Int] = []
+    let out_a: Array[Int] = []
+    let out_b: Array[Int] = []
     let mut m = 0
     while m < n {
-      if Array::get(seen_any, m) == 1 && Array::get(all_wanted, m) == 1 {
-        Array::push(out, Array::get(cands, m))
+      if Array::get(seen_any, m) == 1 {
+        if Array::get(all_a, m) == 1 {
+          Array::push(out_a, Array::get(cands, m))
+        } else {
+          ()
+        }
+        if want_b >= 0 && Array::get(all_b, m) == 1 {
+          Array::push(out_b, Array::get(cands, m))
+        } else {
+          ()
+        }
       } else {
         ()
       }
       m = m + 1
     }
-    out
+    (out_a, out_b)
   }
+}
+
+/// Does this occurrence's type resolve to the head tag `want` asks for?
+fn irc_occurrence_wants(checked: CheckedProgram, oty: Type, want: Int) -> Bool {
+  if want == 4 {
+    subst_resolves_to_double(checked.final_subst, oty)
+  } else {
+    irc_resolves_to_scalar(checked.final_subst, oty, want == 5)
+  }
+}
+
+/// #2424 tag 3 and #2462/#2464 tag 5, from ONE walk. The lanes that want both
+/// -- which is every lane that wants either -- should call this rather than the
+/// two singles, so the shared candidate set is computed once.
+export fn checked_int_and_bool_render_offsets(checked: CheckedProgram) -> (Array[Int], Array[Int]) {
+  irc_render_arg_offsets_pair(checked, 3, 5)
 }
 
 /// #2424 tag 3: render/eq argument offsets the checker typed as `Int`.
@@ -6492,7 +6652,7 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       // than a second one is the whole point of the slice-2 encoding: the
       // memo, the sidecar, the per-file rebase and the reuse arms are already
       // built and already require the sidecar before skipping a check.
-      let int_renders = checked_int_render_offsets(checked)
+      let (int_renders, bool_renders) = checked_int_and_bool_render_offsets(checked)
       let mut ii = 0
       while ii < Array::length(int_renders) {
         Array::push(enc, typed_lowering_enc(Array::get(int_renders, ii), 3))
@@ -6515,7 +6675,6 @@ fn typed_lowering_located_observation_impl(stmts: Array[Stmt], initial_env: Type
       // (`*_expr_is_boolish` rather than `ts_known_int`), and an offset that
       // classified as both would make each one re-derive which half it was
       // looking at.
-      let bool_renders = checked_bool_render_offsets(checked)
       let mut bi = 0
       while bi < Array::length(bool_renders) {
         Array::push(enc, typed_lowering_enc(Array::get(bool_renders, bi), 5))
