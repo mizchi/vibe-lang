@@ -4670,11 +4670,32 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // rather than against whatever the entry handed the checker. Empty in, empty
   // out, without a walk.
   let float_call_offsets = unique_typed_lowering_offsets_in_stmts(stmts, checker_float_call_offsets)
-  // #2424: the Int render-argument table needs no uniqueness filter of its
-  // own. The checker already refuses an offset whose typed occurrences
-  // disagree, and #2429's per-file rebase (`+ base * 8` on the encoded value)
-  // keeps the merged offset spaces disjoint, so what arrives here is already
-  // the fail-closed set.
+  // #2424: the Int (tag 3) and Bool (tag 5) render-argument tables are
+  // installed RAW, and the filter above must not be extended to them.
+  //
+  // What makes the raw install honest is the checker's agreement rule: an
+  // offset is filed only when EVERY typed occurrence there resolves to the
+  // wanted type, so a call offset shared with the `CtFn` occurrence of its
+  // callee is dropped on disagreement.
+  //
+  // The reason NOT to filter is stronger than "it is unnecessary" -- the
+  // filter and these tables disagree about what a key is, so applying it
+  // deletes rows (#2427). `count_typed_lowering_offsets_expr` counts `ECall`
+  // and `EDot` and deliberately not `EIdent`, since a call's own offset IS its
+  // callee identifier's offset. But tags 3 and 5 key an argument by
+  // `typed_lowering_arg_offset`, which DOES answer for `EIdent`, and a bare
+  // name is the commonest render argument there is. Measured, one row each:
+  //
+  //   inspect(v, ..)    name        1 -> 0   dropped
+  //   inspect(n(), ..)  call        1 -> 1   kept
+  //   inspect(s.a, ..)  projection  1 -> 1   kept
+  //
+  // `inspect(<name>, ..)` is the repo's preferred assertion idiom, so the
+  // symmetric-looking hardening would delete most of the channel at its most
+  // common site and restore the syntactic classifier tags 3 and 5 exist to
+  // replace (#2462, #2464). The Double table is immune because
+  // `typed_lowering_float_key` answers -1 for `EIdent` and never files a
+  // name-keyed row. Pinned by tests/typed_lowering_filter_key_space_test.vibe.
   let int_render_offsets = checker_int_render_offsets
   let bool_render_offsets = checker_bool_render_offsets
   let fn_param_counts = lc_fresh_int_array()

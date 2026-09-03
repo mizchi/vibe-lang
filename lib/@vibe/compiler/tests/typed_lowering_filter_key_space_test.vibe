@@ -1,0 +1,118 @@
+//# #2427: why the Int/Bool render tables are installed WITHOUT the uniqueness
+//# filter the Double table gets, and what breaks if someone "fixes" that.
+//
+// `linked_compile` narrows the Double table with
+// `unique_typed_lowering_offsets_in_stmts` and installs the Int (tag 3) and
+// Bool (tag 5) tables raw. That asymmetry reads like an oversight, and the
+// obvious hardening -- route all three through the same filter -- is a silent
+// REGRESSION, because the filter and those tables do not agree on what a key
+// is.
+//
+// `count_typed_lowering_offsets_expr` counts `ECall` (own offset) and `EDot`
+// (field-name offset) and deliberately NOT `EIdent`: a call's own offset IS
+// its callee identifier's offset, so counting both would score every ordinary
+// `f(x)` as 2 and drop every call-result row. But tags 3 and 5 key an
+// argument by `typed_lowering_arg_offset`, which DOES answer for `EIdent` --
+// and a bare name is the commonest render argument there is. Such a row scores
+// 0, not 1, so the filter drops it.
+//
+// Measured, one row each through the three key kinds (`int before -> after`):
+//
+//   inspect(v, ..)    name       1 -> 0    dropped
+//   inspect(n(), ..)  call       1 -> 1    kept
+//   inspect(s.a, ..)  projection 1 -> 1    kept
+//
+// `inspect(<name>, ..)` is the repo's preferred assertion idiom, so applying
+// the filter would delete most of the channel at its most common site and put
+// back the syntactic classifier the tag-3/5 rows exist to replace (#2462,
+// #2464). The Double table is unaffected because
+// `typed_lowering_float_key` answers -1 for `EIdent` -- it never files a
+// name-keyed row in the first place.
+//
+// What keeps the raw install honest is NOT that the merge rebase makes offset
+// spaces disjoint. It is the checker's own agreement rule: an offset is filed
+// only when EVERY typed occurrence there resolves to the wanted type, so a
+// call offset shared with a `CtFn` occurrence for its callee is dropped on
+// disagreement.
+//
+// This test is a tripwire, not a specification of desirable behaviour. If it
+// fails because the counter learned about `EIdent`, that is progress: check
+// that a name-keyed row now scores 1 (not 2, via its enclosing call), then
+// delete this file and filter all three tables in `linked_compile`.
+
+//# Imports
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+import @vibe/compiler/checker {
+  check_program_double_call_result_located_observation, checked_bool_render_offsets, checked_int_render_offsets
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  unique_typed_lowering_offsets_in_stmts
+}
+
+import @vibe/compiler/codegen/wasi {
+  effect_lowering_prelude
+}
+
+//# Helpers
+
+/// (int rows the checker filed, int rows that survive the filter, same for
+/// Bool), measured in the real lane's order: the prelude rewrites `stmts`
+/// first, and only then is uniqueness asked of the program codegen walks.
+fn render_rows_before_and_after_filter(src: String) -> (Int, Int, Int, Int) with Exception {
+  let (tokens, starts, _) = lex_with_offsets(src)
+  let stmts = parse_program_located(tokens, starts, src)
+  match check_program_double_call_result_located_observation(stmts) {
+    None => throw("the observation refused this program; it must be located and checkable"),
+    Some((checked, _, eq_offsets, eq_keys)) => {
+      let ints = checked_int_render_offsets(checked)
+      let bools = checked_bool_render_offsets(checked)
+      let int_before = Array::length(ints)
+      let bool_before = Array::length(bools)
+      let linked_imports: Array[(String, String, Int, Int)] = []
+      let inline_wasm_names: Array[String] = []
+      let inline_wasm_wats: Array[String] = []
+      let errors = effect_lowering_prelude(stmts, "main", linked_imports, inline_wasm_names, inline_wasm_wats, eq_offsets, eq_keys)
+      if Array::length(errors) > 0 {
+        throw("the prelude reported errors, so the measurement would be of a program codegen never sees")
+      } else {
+        ()
+      }
+      (int_before, Array::length(unique_typed_lowering_offsets_in_stmts(stmts, ints)), bool_before, Array::length(unique_typed_lowering_offsets_in_stmts(stmts, bools)))
+    }
+  }
+}
+
+//# Tests
+
+test "#2427: the Double filter drops a NAME-keyed Int render row" {
+  let (int_before, int_after, _, _) = render_rows_before_and_after_filter("test \"t\" {\n  let v = 1\n  inspect(v, \"1\")\n}\n")
+  // The checker files the row, and the filter cannot see the node it names.
+  assert_eq(int_before, 1)
+  assert_eq(int_after, 0)
+}
+
+test "#2427: the same filter keeps a CALL-keyed Int render row" {
+  let (int_before, int_after, _, _) = render_rows_before_and_after_filter("fn n() -> Int {\n  1\n}\ntest \"t\" {\n  inspect(n(), \"1\")\n}\n")
+  assert_eq(int_before, 1)
+  assert_eq(int_after, 1)
+}
+
+test "#2427: and a PROJECTION-keyed Int render row" {
+  let (int_before, int_after, _, _) = render_rows_before_and_after_filter("struct S {\n  a: Int\n}\ntest \"t\" {\n  let s = S::{ a: 1 }\n  inspect(s.a, \"1\")\n}\n")
+  assert_eq(int_before, 1)
+  assert_eq(int_after, 1)
+}
+
+test "#2427: the Bool table loses a name-keyed row the same way" {
+  // Tag 5 shares tag 3's key (`typed_lowering_arg_offset`), so it shares the
+  // incompatibility. Pinned separately because the two are produced by one
+  // folded walk and a future split could diverge.
+  let (_, _, bool_before, bool_after) = render_rows_before_and_after_filter("test \"t\" {\n  let v = true\n  inspect(v, \"true\")\n}\n")
+  assert_eq(bool_before, 1)
+  assert_eq(bool_after, 0)
+}
