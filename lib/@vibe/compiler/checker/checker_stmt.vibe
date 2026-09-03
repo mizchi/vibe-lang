@@ -6164,6 +6164,41 @@ fn irc_show_shim_names(stmts: Array[Stmt]) -> Array[String] {
       } else {
         ()
       },
+      // #2468 (Codex P1 on this PR): a wrapper the module IMPORTS -- the
+      // prelude's `to_string` above all -- has its body in another file, which
+      // this check cannot see. Measured before this arm, on the FS lane:
+      //
+      //   import ./builtin_traits.vibe { to_string }
+      //   let l = () -> Bool { 1 < 2 }
+      //   __to_string(l()) -> "true"      to_string(l()) -> "1"
+      //
+      // So every imported local name joins the set, without a shape test. That
+      // is an OVER-approximation, and it is safe for the reason stated above:
+      // a row is a TYPE fact, not a render fact. It says "the expression at
+      // this offset resolved to Bool", which the agreement rule verified, and
+      // codegen reads the table ONLY when it is lowering a render argument
+      // (`bool_offset_says_bool` inside `cc_expr_is_boolish`, and its two
+      // twins). A row filed for an ordinary imported call is therefore inert:
+      // nothing looks it up. It can never be a wrong classification, because
+      // there is no way for a true statement about an expression's type to
+      // become one.
+      //
+      // The alternative -- resolving each imported name to its definition and
+      // shape-testing it -- means carrying wrapper metadata across the module
+      // boundary, and doing it in a way that survives a cache hit that skips
+      // the dependency's check. Getting that wrong renders the same program
+      // differently warm and cold, which is worse than an inert row. #2471.
+      SImport(_, items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          let item = Array::get(items, j)
+          match item.alias {
+            Some(alias) => Array::push(out, alias),
+            None => Array::push(out, item.name)
+          }
+          j = j + 1
+        }
+      },
       _ => ()
     }
     i = i + 1
