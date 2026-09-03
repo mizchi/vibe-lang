@@ -105,8 +105,10 @@ of each item is [spec/syntax.md](syntax.md) and the
   currently-trapping comparison later becoming a structural answer is a
   compatible change (the typed lane, #2158); an existing answer changing is
   breaking. The full contract is the cheatsheet's "`==` on `Array` / `Bytes`
-  (#1526)" section, pinned by `fixtures/structural_eq_contexts_test.vibe` and
-  the `structural_eq_untyped_empty_*_trap` fixtures.
+  (#1526)" section, pinned by `fixtures/structural_eq_contexts_test.vibe`, the
+  `structural_eq_untyped_empty_*_typed` fixtures (answers the checker's typed
+  `==` rows supply on the `vibe test` / `vibe run` lane, #2391) and the
+  `structural_eq_untyped_empty_*_trap` fixtures (the fail-closed side).
 
 ### 2.2 Bindings and mutability
 - `let` (immutable), `let rec` (recursive), `let mut` (block-scoped mutable,

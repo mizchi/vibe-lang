@@ -1929,15 +1929,21 @@ echo "[compiler-gate] extended derive (enum Ord/Show, Default, Eq, Hash + Map ke
 # its element type from the `Array::push` calls in its own scope, so the
 # ordinary `let xs = []` / `let mut xs = []` spellings now ANSWER after a push
 # (pinned in fixtures/structural_eq_contexts_test.vibe, which the unit lane
-# runs). What is left here is the residual: an array whose pushes all happen
-# inside a function it is merely passed to, where no element comparator can be
-# selected. Once BOTH sides are non-empty that must fail closed at runtime
-# rather than silently falling back to reference or length equality. Pin both
-# spellings: `!=` is lowered through the same guarded equality and negated.
+# runs). What is left here is the residual: an element type the syntactic scan
+# cannot read (a pushed NAME, or pushes that all happen inside a function the
+# array is merely passed to) AND that the typed-`==` channel (#2391, after
+# #2447) does not admit -- a declared element whose field allow-list fails
+# (a closure field, an opaque nominal field). Once BOTH sides are non-empty
+# that must fail closed at runtime rather than silently falling back to
+# reference or length equality.
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed (#1681/#2157)"
 eqtrapdir="_build/_gate_eq_untyped_empty"
 rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
-for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe; do
+# `structural_eq_generic_enum_*_trap.vibe` joins the loop (Codex round 5 on
+# #2456): a source-owned generic ENUM compared directly, not through the
+# untyped-empty arm -- its derived comparator reads a formal-typed payload by
+# reference, so an aggregate argument must fail closed on that path too.
+for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe fixtures/structural_eq_generic_enum_*_trap.vibe; do
   eqtrap_name="$(basename "${eqtrap_src%.vibe}")"
   eqtrap_wasm="$eqtrapdir/$eqtrap_name.wasm"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -1956,6 +1962,40 @@ for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe; do
 done
 rm -rf "$eqtrapdir"
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok (== + !=)"
+
+# #2391 (after #2447): the other side of the same residual. The three shapes
+# that used to sit in the loop above as traps -- a pushed NAME, pushes made
+# inside a function the array is passed to, and the `!=` / `let mut` spelling
+# of that -- now ANSWER on this lane: the checker types the binding (an empty
+# literal carries a real element slot since #2447), the per-module carrier
+# records the `==` site's operand type, and the untyped-empty arm dispatches
+# through it where the declared-field allow-list admits the element. Each
+# fixture asserts a content answer against a distinct allocation (identity
+# would say false) and against a same-length different-content array (a
+# length-only answer would say true), so a wrong answer traps and a regression
+# to the old trap fails the same way.
+echo "[compiler-gate] untyped-empty equality answers through the typed channel (#2391)"
+eqtypeddir="_build/_gate_eq_untyped_empty_typed"
+rm -rf "$eqtypeddir"; mkdir -p "$eqtypeddir"
+for eqtyped_src in fixtures/structural_eq_untyped_empty_*_typed.vibe; do
+  eqtyped_name="$(basename "${eqtyped_src%.vibe}")"
+  eqtyped_wasm="$eqtypeddir/$eqtyped_name.wasm"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$eqtyped_src" "$eqtyped_wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$eqtyped_wasm" ]; then
+    echo "[compiler-gate] FAIL: $eqtyped_src did not compile" >&2
+    cat "$eqtyped_wasm.diag" 2>/dev/null >&2
+    exit 1
+  fi
+  if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke _start "$eqtyped_wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: $eqtyped_src trapped or answered wrongly; expected a content answer through the typed channel (#2391)" >&2
+    exit 1
+  fi
+done
+rm -rf "$eqtypeddir"
+echo "[compiler-gate] untyped-empty equality answers through the typed channel ok"
 
 # #2447: one mutable binding used at two element types must be REJECTED at
 # check time ON THIS LANE. The single-source lane's builtin `Array::push` arm

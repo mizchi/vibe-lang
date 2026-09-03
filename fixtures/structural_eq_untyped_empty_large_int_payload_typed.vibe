@@ -1,0 +1,54 @@
+//# Codex round 6 on #2456: an `Int` slot reached through a generated
+//# comparator (an `Option` payload, a tuple element, an array element, a
+//# generic struct's field) used to be compared with the raw word `==`, which
+//# takes the generic `eq` builtin -- whose string fallback reads a word with
+//# a zero low half as a zero-length string. Measured on the stage2 at
+//# 67f7512: `Some(64 << 32) == Some(65 << 32)` answered `true`, and so did
+//# `Box[Int]` and `Array[Option[Int]]` filled through a function. Every
+//# `Int` slot now compares as a plain i64 equality of the tagged words.
+
+struct Box[T] {
+  v: T
+} derive (Eq)
+
+fn fill_opt(xs: Array[Option[Int]], v: Int) -> Unit {
+  Array::push(xs, Some(v))
+}
+
+fn fill_box(xs: Array[Box[Int]], v: Int) -> Unit {
+  Array::push(xs, Box::{ v: v })
+}
+
+fn fill_pair(xs: Array[(Int, String)], v: Int) -> Unit {
+  Array::push(xs, (v, "x"))
+}
+
+export fn _start() -> Int {
+  let big = 64 << 32
+  let other_big = 65 << 32
+  let ol = []
+  fill_opt(ol, big)
+  let or = []
+  fill_opt(or, big)
+  let oo = []
+  fill_opt(oo, other_big)
+  assert(ol == or)
+  assert(ol != oo)
+  let bl = []
+  fill_box(bl, big)
+  let br = []
+  fill_box(br, big)
+  let bo = []
+  fill_box(bo, other_big)
+  assert(bl == br)
+  assert(bl != bo)
+  let pl = []
+  fill_pair(pl, big)
+  let pr = []
+  fill_pair(pr, big)
+  let po = []
+  fill_pair(po, other_big)
+  assert(pl == pr)
+  assert(pl != po)
+  0
+}

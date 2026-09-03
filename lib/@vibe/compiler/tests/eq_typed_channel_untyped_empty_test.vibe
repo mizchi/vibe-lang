@@ -1,0 +1,258 @@
+//# Functions
+
+// #2391 (after #2447): the typed-`==` channel reaches the untyped-empty arm
+// of the `==` desugar ladder on the FS lane -- the lane `vibe test` and
+// `vibe run` take by default.
+//
+// An unannotated `let xs = []` takes its element type from the
+// `Array::push(xs, v)` calls in its own scope, read from `v`'s own syntax
+// only (#2157/#2192). A pushed NAME or a push that happens inside a function
+// the array is merely passed to leaves the `[__EqEmpty]` sentinel, and once
+// both sides were non-empty the comparison trapped (fail-closed, never
+// identity, never length-only).
+//
+// Since #2447 an empty literal carries a real element slot, so the checker
+// types these bindings, and the per-module carrier (#2443) records each
+// `==`/`!=` site's operand type. The untyped-empty arm now consults that row
+// before trapping, gated by the same declared-field allow-list the push scan
+// applies (`adoptable_eq_ty`): a type it admits dispatches through
+// `eq_for_typed`; anything else still traps, and a lane with no typed rows
+// (rc_query, the flat single-source lane) is unchanged.
+//
+// Measured on the stage2 at ed1089a (2026-09-01), before this slice: every
+// `==` below trapped once both sides were non-empty.
+
+fn fill(xs: Array[Int], v: Int) -> Unit {
+  Array::push(xs, v)
+}
+
+fn fill_pairs(xs: Array[(Int, String)], v: Int) -> Unit {
+  Array::push(xs, (v, "x"))
+}
+
+struct EqUePt {
+  x: Int;
+  y: Int
+} derive (Eq)
+
+fn fill_pt(xs: Array[EqUePt], v: Int) -> Unit {
+  Array::push(xs, EqUePt::{ x: v, y: v })
+}
+
+//# Tests
+
+test "#2391: arrays filled through a function compare by content" {
+  let left = []
+  fill(left, 1)
+  let right = []
+  fill(right, 1)
+  inspect(left == right, content = "true")
+}
+
+test "#2391: same length, different content answers false" {
+  let left = []
+  fill(left, 1)
+  let right = []
+  fill(right, 2)
+  inspect(left == right, content = "false")
+}
+
+test "#2391: != through the same typed dispatch" {
+  let mut left = []
+  fill(left, 1)
+  let mut right = []
+  fill(right, 2)
+  inspect(left != right, content = "true")
+  let mut same = []
+  fill(same, 1)
+  inspect(left != same, content = "false")
+}
+
+test "#2391: a pushed name resolves through the checker's type" {
+  let v = [1, 2]
+  let w = [1, 3]
+  let left = []
+  Array::push(left, v)
+  let right = []
+  Array::push(right, v)
+  let other = []
+  Array::push(other, w)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2391: tuple elements filled through a function" {
+  let left = []
+  fill_pairs(left, 3)
+  let right = []
+  fill_pairs(right, 3)
+  inspect(left == right, content = "true")
+}
+
+test "#2391: derive(Eq) struct elements filled through a function" {
+  let left = []
+  fill_pt(left, 4)
+  let right = []
+  fill_pt(right, 4)
+  let other = []
+  fill_pt(other, 5)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2391: one side still empty keeps the length answer" {
+  let left = []
+  fill(left, 1)
+  let right = []
+  inspect(left == right, content = "false")
+  inspect(right == left, content = "false")
+}
+
+//# Codex P2 on #2456: containers the declared-field allow-list admits
+
+fn fill_opt(xs: Array[Option[Int]], v: Option[Int]) -> Unit {
+  Array::push(xs, v)
+}
+
+fn fill_map(xs: Array[Map[String, Int]], v: Int) -> Unit {
+  Array::push(xs, Map::from_pairs([("k", v)]))
+}
+
+test "#2456: Option elements filled through a function" {
+  let left = []
+  fill_opt(left, Some(1))
+  let right = []
+  fill_opt(right, Some(1))
+  let other = []
+  fill_opt(other, None)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2456: Map elements filled through a function" {
+  let left = []
+  fill_map(left, 1)
+  let right = []
+  fill_map(right, 1)
+  let other = []
+  fill_map(other, 2)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+//# Codex round 2 on #2456: a source declaration owns the `Map` spelling
+
+// `fixtures/typecheck/map_local_shadow_ok.vibe` (#2263): a program may declare
+// its own generic `Map`. The typed channel must then dispatch to the DECLARED
+// comparator (the per-instantiation `Map[String, Int]` one), never to the
+// builtin `__map_equals__`, which reads a struct as a map and trapped with
+// `memory access out of bounds` on this PR's first stage2.
+
+struct Map[K, V] {
+  k: K;
+  v: V
+} derive (Eq)
+
+fn fill_owned_map(xs: Array[Map[String, Int]], v: Int) -> Unit {
+  Array::push(xs, Map::{ k: "k", v: v })
+}
+
+struct HoldsOwnedMap {
+  m: Map[String, Int]
+} derive (Eq)
+
+test "#2456 r2: source-owned Map elements filled through a function" {
+  let left = []
+  fill_owned_map(left, 1)
+  let right = []
+  fill_owned_map(right, 1)
+  let other = []
+  fill_owned_map(other, 2)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}
+
+test "#2456 r2: source-owned Map as a declared field" {
+  let a = HoldsOwnedMap::{ m: Map::{ k: "k", v: 1 } }
+  let b = HoldsOwnedMap::{ m: Map::{ k: "k", v: 1 } }
+  let c = HoldsOwnedMap::{ m: Map::{ k: "k", v: 2 } }
+  inspect(a == b, content = "true")
+  inspect(a == c, content = "false")
+}
+
+//# Codex round 6 on #2456: an `Int` slot inside a generated comparator
+
+// A comparator `eq_for_typed` generates (an `Option` payload binder, an
+// array element, a generic struct's field) compared an `Int` slot with the
+// raw word `==`, which takes the generic `eq` builtin: its string fallback
+// reads a word with a zero low half as a zero-length string, so `64 << 32`
+// and `65 << 32` compared EQUAL. Measured on the stage2 at 67f7512: every
+// `false` below answered `true`. Every such slot now compares as a plain
+// i64 equality of the tagged words.
+//
+// Out of this file's reach: a ctor or tuple LITERAL compared directly
+// (`Some(big) == Some(other)`, `(big, 1) == (other, 1)`) never reaches
+// `eq_for_typed` -- codegen's own literal-shape walk (`emit_eq_shape_top`)
+// compares those payloads, with the same generic `eq`, and still answers
+// `true` (measured on the same stage2). Tracked as its own issue.
+
+struct EqUeBox[T] {
+  v: T
+} derive (Eq)
+
+fn fill_big_opt(xs: Array[Option[Int]], v: Int) -> Unit {
+  Array::push(xs, Some(v))
+}
+
+test "#2456 r6: a generic struct's Int field is exact" {
+  let a: EqUeBox[Int] = EqUeBox::{ v: 64<<32 }
+  let b: EqUeBox[Int] = EqUeBox::{ v: 65<<32 }
+  let c: EqUeBox[Int] = EqUeBox::{ v: 64<<32 }
+  inspect(a == b, content = "false")
+  inspect(a == c, content = "true")
+}
+
+test "#2456 r6: array Int elements are exact" {
+  let big = 64<<32
+  let other = 65<<32
+  inspect([big] == [other], content = "false")
+  inspect([big] == [big], content = "true")
+}
+
+test "#2456 r6: Option[Int] elements filled through a function are exact" {
+  let left = []
+  fill_big_opt(left, 64<<32)
+  let right = []
+  fill_big_opt(right, 65<<32)
+  let same = []
+  fill_big_opt(same, 64<<32)
+  inspect(left == right, content = "false")
+  inspect(left == same, content = "true")
+}
+
+//# Codex round 7 on #2456: a generic enum whose payloads do not use its formals
+
+// `enum Marker[T] { Mark(Int); Empty }`: the derived `Marker::equals` is
+// fully structural because every payload is a concrete type, so the
+// generic-enum fail-closed rule does not apply. Measured on the stage2 at
+// a51fdad: both comparisons below trapped.
+
+enum EqUeMarker[T] {
+  Mark(Int);
+  Empty
+}
+
+fn fill_marker(xs: Array[EqUeMarker[String]], v: Int) -> Unit {
+  Array::push(xs, Mark(v))
+}
+
+test "#2456 r7: phantom-parameter enum elements filled through a function" {
+  let left = []
+  fill_marker(left, 64<<32)
+  let right = []
+  fill_marker(right, 64<<32)
+  let other = []
+  fill_marker(other, 65<<32)
+  inspect(left == right, content = "true")
+  inspect(left == other, content = "false")
+}

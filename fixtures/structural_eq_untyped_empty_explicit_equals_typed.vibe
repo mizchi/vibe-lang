@@ -1,0 +1,51 @@
+//# Codex round 11 on #2456: the program may write its own comparator for a
+//# generic enum in the `Type::method` spelling. `desugar_derives` skips a
+//# name that already exists, so this `Wrap::equals` is the author's contract
+//# and is dispatched to -- the payload-safety gate applies only to the
+//# DERIVED comparator (a formal-typed payload through the erased `==`).
+//# Measured on the stage2 at bd25e23: this program trapped; on the baseline
+//# stage2 the untyped-empty arm trapped too, while a direct compare called
+//# the explicit comparator -- both lanes must call it now.
+
+enum Wrap[T] {
+  W(T);
+  Empty
+}
+
+fn Wrap::equals(a: Wrap[Array[Int]], b: Wrap[Array[Int]]) -> Bool {
+  match a {
+    W(x) => match b {
+      W(y) => x == y,
+      _ => false
+    },
+    Empty => match b {
+      Empty => true,
+      _ => false
+    }
+  }
+}
+
+fn fill(xs: Array[Wrap[Array[Int]]], v: Int) -> Unit {
+  Array::push(xs, W([v, v + 1]))
+}
+
+fn mk(v: Int) -> Wrap[Array[Int]] {
+  W([v, v + 1])
+}
+
+export fn _start() -> Int {
+  let left = []
+  fill(left, 1)
+  let right = []
+  fill(right, 1)
+  let other = []
+  fill(other, 2)
+  assert(left == right)
+  assert(left != other)
+  let a = mk(1)
+  let b = mk(1)
+  let c = mk(2)
+  assert(a == b)
+  assert(a != c)
+  0
+}
