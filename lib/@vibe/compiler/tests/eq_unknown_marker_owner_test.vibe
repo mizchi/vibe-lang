@@ -1,18 +1,20 @@
 //# Functions
 
-// Codex round 2 on #2471 (#2457): the `==` desugar's syntactic-shape rung
-// writes the marker `__EqUnknown` into every position the literal inference
-// cannot name -- a generic payload `Some(x)` with `x: T`, a tuple element
-// bound to a formal. A program may legally declare `struct __EqUnknown`, and
-// with that name among the declared comparators the marker position
-// dispatched to `__EqUnknown::equals` over whatever word sat there.
+// Codex rounds 2-3 on #2471 (#2457): the `==` desugar's syntactic-shape rung
+// writes an unknown-position marker into every position the literal
+// inference cannot name -- a generic payload `Some(x)` with `x: T`, a tuple
+// element bound to a formal. That marker used to be spelled `__EqUnknown`,
+// which a program may legally declare; with such a struct declared, every
+// unknown position dispatched to `__EqUnknown::equals` over whatever word sat
+// there. Measured on the FS lane (the one `vibe test` takes), where a site
+// inside a generic function has no checker row: the stage2 built from main
+// at 7018aca trapped (`unreachable` in `same_some`); the first stage2 of
+// #2471 answered `same_some(1, 2)` as `true`.
 //
-// Measured on the FS lane (the one `vibe test` takes), where a site inside a
-// generic function has no checker row and so takes the syntactic shape:
-// the stage2 built from main at 7018aca trapped (`unreachable` in
-// `same_some`); the first stage2 of #2471 answered `same_some(1, 2)` as
-// `true`. The shape's name set now omits the marker, and only the marker,
-// so such a position keeps the raw `==` it had before #2457.
+// The marker is now spelled `?EqUnknown`, which no identifier can start with,
+// so a declared `__EqUnknown` is an ordinary struct: it takes its own
+// comparator where a row names it, and the generic sites below answer
+// exactly as they do for any other payload type.
 
 struct __EqUnknown {
   value: Int
@@ -28,17 +30,17 @@ fn same_pair[T](x: T, y: T) -> Bool {
 
 //# Tests
 
-test "#2471 r2: a generic Option payload ignores a declared __EqUnknown" {
+test "#2471 r2-3: a generic Option payload ignores a declared __EqUnknown" {
   inspect(same_some(1, 1), content = "true")
   inspect(same_some(1, 2), content = "false")
 }
 
-test "#2471 r2: a generic tuple element ignores a declared __EqUnknown" {
+test "#2471 r2-3: a generic tuple element ignores a declared __EqUnknown" {
   inspect(same_pair("a", "a"), content = "true")
   inspect(same_pair(1, 2), content = "false")
 }
 
-test "#2471 r2: the declared struct keeps its own comparator" {
+test "#2471 r2-3: the declared struct keeps its own comparator" {
   let a = __EqUnknown::{ value: 1 }
   let b = __EqUnknown::{ value: 1 }
   let c = __EqUnknown::{ value: 2 }

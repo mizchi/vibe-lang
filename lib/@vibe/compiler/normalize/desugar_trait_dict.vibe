@@ -256,22 +256,6 @@ fn empty_expr_array() -> Array[Expr] {
   array_empty()
 }
 
-/// `xs` minus every occurrence of `x`; a fresh array, `xs` untouched.
-fn str_array_without(xs: Array[String], x: String) -> Array[String] {
-  let out = empty_str_array()
-  let mut i = 0
-  while i < Array::length(xs) {
-    let s = Array::get(xs, i)
-    if s != x {
-      Array::push(out, s)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  out
-}
-
 fn empty_str_array() -> Array[String] {
   array_empty()
 }
@@ -6239,7 +6223,7 @@ fn pushed_empty_elem_shape(name: String, body: Expr, struct_sets: Array[(String,
 /// A declared name is admitted because `desugar_derives` generates a `::equals`
 /// for EVERY declared struct/enum, not only `derive(Eq)` ones -- which is the
 /// same fact `dtd_eq_known_types` records for the shape dispatch below.
-/// `Option` / `Result` shapes are left out: their `__EqUnknown` positions would
+/// `Option` / `Result` shapes are left out: their `?EqUnknown` positions would
 /// re-introduce exactly that raw `==`.
 fn adoptable_pushed_elem_shape(sh: String) -> Bool {
   if shape_is_composite(sh) {
@@ -10852,37 +10836,20 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               // `([1,2], 0)`) compare structurally instead of by word identity.
               // `known_types` is empty: this inference only ever yields builtin
               // shapes (never user struct/enum names), and unknown positions
-              // carry the `__EqUnknown` marker which `eq_for_typed` compares
+              // carry the `?EqUnknown` marker which `eq_for_typed` compares
               // with raw `==` (status quo for that position).
               // #2457: the checker's row for this site, when the allow-list
               // admits it, is the COMPLETE operand type and wins over the
               // literal-syntax shape. `Some(64 << 32) == Some(65 << 32)` used
-              // to infer `Option[__EqUnknown]` (a shift is not a literal this
+              // to infer `Option[?EqUnknown]` (a shift is not a literal this
               // inference named), and the unknown payload position compared
               // with the raw `==` -- the generic `eq`, whose string fall-back
               // equated the two words. With the row, `Option[Int]` compares
               // the payload exactly; a lane with no rows keeps the syntactic
               // shape, whose leaf inference now names such an expression too.
-              // Codex round 2 on #2471: the syntactic shape carries the
-              // `__EqUnknown` marker in every position the literal inference
-              // cannot name, and a program may legally declare
-              // `struct __EqUnknown`; with that name among the declared ones
-              // such a position dispatched to `__EqUnknown::equals` over
-              // whatever word sits there (measured: the FS lane called it on
-              // two Int words, the flat lane failed to compile). The shape's
-              // name set therefore omits the marker, and only the marker --
-              // every other declared name still reaches its comparator, as
-              // before #2457. A ROW never contains the marker, so it keeps
-              // the full set. The copy is made only when there is something
-              // to remove: a copy per site cost 5.2 MB of selfcompile heap
-              // (measured, 1,615,494,632 -> 1,620,653,296 bytes).
-              let (sty, shape_known) = match dtd_typed_eq_admitted_ty(boff) {
-                Some(te) => (Some(te), dtd_eq_known_types),
-                None => (infer_static_eq_type_binop(l, r), if str_array_contains(dtd_eq_known_types, "__EqUnknown") {
-                  str_array_without(dtd_eq_known_types, "__EqUnknown")
-                } else {
-                  dtd_eq_known_types
-                })
+              let sty = match dtd_typed_eq_admitted_ty(boff) {
+                Some(te) => Some(te),
+                None => infer_static_eq_type_binop(l, r)
               }
               let dty = match sty {
                 Some(t) => if static_eq_dispatchable(t) {
@@ -10894,7 +10861,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               }
               match dty {
                 Some(dt) => {
-                  let call = eq_for_typed(dt, rl, rr, shape_known)
+                  let call = eq_for_typed(dt, rl, rr, dtd_eq_known_types)
                   if op == "==" {
                     call
                   } else {
@@ -13125,20 +13092,6 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
   match fty {
     TyName(n) => if n == "__EqAliasCycle" {
       ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
-    } else if n == "__EqUnknown" && !str_array_contains(known_types, n) {
-      // Codex round 2 on #2471: the syntactic-shape MARKER, not a declared
-      // name -- the #825 rung hands a shape a name set with the marker
-      // removed (`str_array_without`), so a `struct __EqUnknown` a program
-      // declares is absent here exactly when the position is unknown. The
-      // marker keeps the raw `==` it had before #2457; the declared struct,
-      // reached through a checker row, keeps the full set and takes its
-      // comparator below. Measured on the first stage2 of #2471 (FS lane,
-      // a generic `Some(x) == Some(y)`): with the struct declared the
-      // position dispatched to `__EqUnknown::equals` and answered
-      // `same_some(1, 2)` as `true`; with the name merely excluded from
-      // the set, the owner arm below failed closed and trapped a legal
-      // program (main trapped the same way).
-      EBinOp("==", lhs, rhs, -1)
     } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) {
       // Codex round 17 on #2456: a source-owned spelling takes its declared
       // comparator BEFORE any builtin arm below can claim it. Measured: with
@@ -14448,7 +14401,7 @@ fn ty_to_eq_shape_expanded(t: TypeExpr) -> String {
 
 /// A constructor argument inside `{g:Head,...}`. Bare `Array`/`Map`/`Tuple`
 /// here are type constructors (`KBox[Array, Int]`), not complete values, so
-/// they must round-trip as `TyName` rather than the `__EqUnknown` marker
+/// they must round-trip as `TyName` rather than the `?EqUnknown` marker
 /// `shape_to_eq_ty` uses for an element-free array binding.
 fn shape_to_eq_ctor_arg(sh: String) -> TypeExpr {
   if sh == "Array" || sh == "Map" || sh == "Tuple" {
@@ -14459,14 +14412,14 @@ fn shape_to_eq_ctor_arg(sh: String) -> TypeExpr {
 }
 
 /// A shape string back into the TypeExpr `eq_for_typed` dispatches on. An
-/// unknown position becomes the `__EqUnknown` marker (raw `==`, the status
+/// unknown position becomes the `?EqUnknown` marker (raw `==`, the status
 /// quo for that position). A bare "Option"/"Result" head keeps its
 /// structural match with unknown payloads — the same upgrade the bare-`==`
 /// name path applies via `opt_eq_match` — while a bare "Array"/"Tuple"/"Map"
 /// head carries nothing to dispatch on and stays unknown.
 fn shape_to_eq_ty(sh: String) -> TypeExpr {
   if String::length(sh) == 0 {
-    TyName("__EqUnknown")
+    TyName("?EqUnknown")
   } else if sh == "{u}" {
     TyUnit
   } else if String::starts_with(sh, "(") {
@@ -14492,7 +14445,7 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
         shape_to_eq_ty(Array::get(parts, 1))
       ], 0, 2))
     } else {
-      TyName("__EqUnknown")
+      TyName("?EqUnknown")
     }
   } else if String::starts_with(sh, "{r:") {
     let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
@@ -14502,7 +14455,7 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
         shape_to_eq_ty(Array::get(parts, 1))
       ], 0, 2))
     } else {
-      TyName("__EqUnknown")
+      TyName("?EqUnknown")
     }
   } else if String::starts_with(sh, "{g:") {
     let parts = shape_split(String::substring(sh, 3, String::length(sh) - 1))
@@ -14515,14 +14468,14 @@ fn shape_to_eq_ty(sh: String) -> TypeExpr {
       }
       TyApp(Array::get(parts, 0), args)
     } else {
-      TyName("__EqUnknown")
+      TyName("?EqUnknown")
     }
   } else if sh == "Option" {
-    TyApp("Option", Array::slice([TyName("__EqUnknown")], 0, 1))
+    TyApp("Option", Array::slice([TyName("?EqUnknown")], 0, 1))
   } else if sh == "Result" {
-    TyApp("Result", Array::slice([TyName("__EqUnknown"), TyName("__EqUnknown")], 0, 2))
+    TyApp("Result", Array::slice([TyName("?EqUnknown"), TyName("?EqUnknown")], 0, 2))
   } else if sh == "Array" || sh == "Tuple" || sh == "Map" {
-    TyName("__EqUnknown")
+    TyName("?EqUnknown")
   } else {
     TyName(sh)
   }
@@ -14601,7 +14554,7 @@ fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_type
     // #2431: a tuple LITERAL keeps its element types here. Without this arm it
     // fell to the `_` arm, whose `infer_shape` has no scalar cases at all --
     // every element came back "" and `let x = (0.0, 1)` recorded the shape
-    // `(,)`. That reads back as `(__EqUnknown, __EqUnknown)`, which
+    // `(,)`. That reads back as `(?EqUnknown, ?EqUnknown)`, which
     // `eq_operand_shape_ty` refuses, so the comparison dropped to the codegen
     // walk and compared each field with the generic `eq` builtin: raw bits on
     // bump and gc (so `0.0 == -0.0` was false and `nan == nan` true), and box
@@ -14613,7 +14566,7 @@ fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_type
     // The elements recurse through this same function, so a nested tuple, an
     // array element, a constructor payload and a scalar literal all resolve
     // exactly as they do at the top level. An element this classifier cannot
-    // name stays "" and becomes `__EqUnknown`, which keeps the whole shape out
+    // name stays "" and becomes `?EqUnknown`, which keeps the whole shape out
     // of the typed dispatch -- today's behaviour for that tuple, never a
     // guessed leaf type. Guessing one would be worse than the bug: a leaf
     // wrongly called Double routes an Int field through `Double::to_float`.
@@ -14671,9 +14624,9 @@ fn infer_eq_shape(e: Expr, struct_sets: Array[(String, Array[String])], var_type
     ECall(EIdent(fname, _), args, _) => if (fname == "Some" || fname == "Option::Some") && Array::length(args) == 1 {
       String::concat("{o:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
     } else if (fname == "Ok" || fname == "Result::Ok") && Array::length(args) == 1 {
-      String::concat("{r:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), ",__EqUnknown}"))
+      String::concat("{r:", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), ",?EqUnknown}"))
     } else if (fname == "Err" || fname == "Result::Err") && Array::length(args) == 1 {
-      String::concat("{r:__EqUnknown,", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
+      String::concat("{r:?EqUnknown,", String::concat(infer_eq_shape(Array::get(args, 0), struct_sets, var_types, fn_returns), "}"))
     } else {
       let local_shape = lookup_var_type(var_types, eq_shape_key(fname))
       match local_shape {
@@ -14714,7 +14667,7 @@ fn eq_operand_shape_ty(e: Expr, struct_sets: Array[(String, Array[String])], var
     let t = shape_to_eq_ty(sh)
     // A partial operand must not win merely because its container head is
     // dispatchable. In particular `{m:String,}` becomes
-    // `Map[String, __EqUnknown]`; accepting it here hides a complete shape on
+    // `Map[String, ?EqUnknown]`; accepting it here hides a complete shape on
     // the other operand and makes aggregate values fall back to identity.
     if ty_needs_typed_eq(t) && !ty_contains_eq_unknown(t) {
       Some(t)
@@ -14778,12 +14731,21 @@ fn infer_earray_elem_type(arr: Expr) -> Option[TypeExpr] {
   }
 }
 
-/// #825: does `t` contain the `__EqUnknown` marker anywhere? Used to keep the
+/// The unknown-position marker. Its spelling starts with `?`, which cannot
+/// begin an identifier, so no source declaration can produce the same
+/// `TyName` (Codex rounds 2-3 on #2471: spelled `__EqUnknown` it collided
+/// with a legal `struct __EqUnknown`, and every position the literal
+/// inference could not name dispatched to that struct's comparator over
+/// whatever word sat there). It never reaches generated source --
+/// `derive_array_helper_tparams_test.vibe` pins that -- and a leak would now
+/// fail to parse rather than name a user type.
+///
+/// #825: does `t` contain the `?EqUnknown` marker anywhere? Used to keep the
 /// marker out of generated `__arr_equals__<key>` helper names/annotations (an
 /// Array element type must be fully concrete to be usable).
 fn ty_contains_eq_unknown(t: TypeExpr) -> Bool {
   match t {
-    TyName(n) => n == "__EqUnknown",
+    TyName(n) => n == "?EqUnknown",
     TyApp(_, args) => {
       let mut i = 0
       let mut found = false
@@ -14865,7 +14827,7 @@ fn infer_generic_record_static(name: String, fields: Array[(String, Expr)], i: I
 /// `Some(Some(1)) == Some(Some(1))` / `([1,2], 0) == ([1,2], 0)` route through
 /// the fully-recursive `eq_for_typed` instead of identity-comparing aggregate
 /// payloads. A position whose type is not statically obvious yields the marker
-/// `TyName("__EqUnknown")` — never a scalar or declared type, so `eq_for_typed`
+/// `TyName("?EqUnknown")` — never a scalar or declared type, so `eq_for_typed`
 /// falls back to raw `==` there (exactly the status-quo behavior for that
 /// position). An Array element type must be marker-free (else the whole array
 /// is uninferable): the element type names the generated `__arr_equals__<key>`
@@ -14938,14 +14900,14 @@ fn infer_static_eq_type(e: Expr) -> Option[TypeExpr] {
       while i < Array::length(es) {
         match infer_static_eq_type(Array::get(es, i)) {
           Some(t) => Array::push(ts, t),
-          None => Array::push(ts, TyName("__EqUnknown"))
+          None => Array::push(ts, TyName("?EqUnknown"))
         }
         i = i + 1
       }
       Some(TyTuple(ts))
     },
     EIdent(n, _) => if n == "None" {
-      Some(TyApp("Option", Array::slice([TyName("__EqUnknown")], 0, 1)))
+      Some(TyApp("Option", Array::slice([TyName("?EqUnknown")], 0, 1)))
     } else {
       None
     },
@@ -14957,7 +14919,7 @@ fn infer_static_eq_type(e: Expr) -> Option[TypeExpr] {
       EIdent("Option::Some", _) => if Array::length(args) == 1 {
         let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
-          None => TyName("__EqUnknown")
+          None => TyName("?EqUnknown")
         }
         Some(TyApp("Option", Array::slice([pt], 0, 1)))
       } else {
@@ -14966,25 +14928,25 @@ fn infer_static_eq_type(e: Expr) -> Option[TypeExpr] {
       EIdent("Result::Ok", _) => if Array::length(args) == 1 {
         let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
-          None => TyName("__EqUnknown")
+          None => TyName("?EqUnknown")
         }
-        Some(TyApp("Result", Array::slice([pt, TyName("__EqUnknown")], 0, 2)))
+        Some(TyApp("Result", Array::slice([pt, TyName("?EqUnknown")], 0, 2)))
       } else {
         None
       },
       EIdent("Result::Err", _) => if Array::length(args) == 1 {
         let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
-          None => TyName("__EqUnknown")
+          None => TyName("?EqUnknown")
         }
-        Some(TyApp("Result", Array::slice([TyName("__EqUnknown"), pt], 0, 2)))
+        Some(TyApp("Result", Array::slice([TyName("?EqUnknown"), pt], 0, 2)))
       } else {
         None
       },
       EIdent("Some", _) => if Array::length(args) == 1 {
         let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
-          None => TyName("__EqUnknown")
+          None => TyName("?EqUnknown")
         }
         Some(TyApp("Option", Array::slice([pt], 0, 1)))
       } else {
@@ -14993,18 +14955,18 @@ fn infer_static_eq_type(e: Expr) -> Option[TypeExpr] {
       EIdent("Ok", _) => if Array::length(args) == 1 {
         let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
-          None => TyName("__EqUnknown")
+          None => TyName("?EqUnknown")
         }
-        Some(TyApp("Result", Array::slice([pt, TyName("__EqUnknown")], 0, 2)))
+        Some(TyApp("Result", Array::slice([pt, TyName("?EqUnknown")], 0, 2)))
       } else {
         None
       },
       EIdent("Err", _) => if Array::length(args) == 1 {
         let pt = match infer_static_eq_type(Array::get(args, 0)) {
           Some(t) => t,
-          None => TyName("__EqUnknown")
+          None => TyName("?EqUnknown")
         }
-        Some(TyApp("Result", Array::slice([TyName("__EqUnknown"), pt], 0, 2)))
+        Some(TyApp("Result", Array::slice([TyName("?EqUnknown"), pt], 0, 2)))
       } else {
         None
       },
@@ -15017,7 +14979,7 @@ fn infer_static_eq_type(e: Expr) -> Option[TypeExpr] {
 /// #825 review follow-up: pick the static shape for `l == r` from whichever
 /// side is MORE concrete. A left-first choice masked a fully concrete right
 /// shape — `let xs = [1, 2]; Some(xs) == Some([1, 2])` inferred the left as
-/// `Option[__EqUnknown]` and the payload fell back to raw word `==`. Prefer a
+/// `Option[?EqUnknown]` and the payload fell back to raw word `==`. Prefer a
 /// marker-free shape; between two partial shapes keep the left one.
 fn infer_static_eq_type_binop(l: Expr, r: Expr) -> Option[TypeExpr] {
   let lt = infer_static_eq_type(l)
@@ -19909,7 +19871,7 @@ fn dtd_typed_eq_residual(op: String, rl: Expr, rr: Expr, boff: Int) -> Expr {
 /// itself (`eq_ty_field_is_content_comparable`, the one `dtd_eq_unsafe_types`
 /// is built from) rather than the push scan's `adoptable_pushed_elem_shape`:
 /// the scan leaves `Option` / `Result` out because a SHAPE string carries
-/// `__EqUnknown` positions, while a checker-typed TypeExpr has none, and
+/// `?EqUnknown` positions, while a checker-typed TypeExpr has none, and
 /// `eq_for_typed` has a structural arm for every head the field test admits
 /// (Codex P2 on #2456 -- `Array[Option[Int]]` filled through a function
 /// trapped under the scan's test although the documented allow-list admits
