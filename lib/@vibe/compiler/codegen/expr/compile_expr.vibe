@@ -224,7 +224,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  compile_call
+  cc_expr_is_stringish, compile_call
 }
 
 import ./compile_expr_tail.vibe {
@@ -859,16 +859,27 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     emit_i64_eq(buf)
     emit_i64_extend_i32_s(buf)
     nl2
-  } else if (is_estring(lhs) || is_estring(rhs)) && func_table_builtin_index_of(ctx.func_table, "String::equals", ctx.num_user_funcs) >= 0 {
-    // #2483: a string-LITERAL operand is the string twin of the intish case.
-    // The checker guarantees the other side is a String, so both operands
-    // are genuine fat pointers and `eq`'s answer for them is exactly
-    // `str_eq`'s -- `eq` only reaches `str_eq` after an i64 compare and two
-    // looks-like-a-string range checks, per call. The compiler's own name
-    // ladders (`f == "Array::get" || f == ...`, ~7,000 literal compares in
-    // its sources) paid that every time: `__rt_eq` was 6.5% of a warm
+  } else if ((is_estring(lhs) && cc_expr_is_stringish(rhs, local_names, ctx)) || (is_estring(rhs) && cc_expr_is_stringish(lhs, local_names, ctx))) && func_table_builtin_index_of(ctx.func_table, "String::equals", ctx.num_user_funcs) >= 0 {
+    // #2483: a string-LITERAL operand against a VERIFIED String operand is
+    // the string twin of the intish case: both are genuine fat pointers, so
+    // `eq`'s answer is exactly `str_eq`'s -- `eq` only reaches `str_eq`
+    // after an i64 compare and two looks-like-a-string range checks, per
+    // call. The compiler's own name ladders (`f == "Array::get" || f ==
+    // ...`, ~7,000 literal compares in its sources, `f` a String-annotated
+    // param) paid that every time: `__rt_eq` was 6.5% of a warm
     // compiler-closure compile, and its top callers were all such ladders.
     // Same operand compilation, same 0/1 i64 result, a different callee.
+    //
+    // "Verified" is cc_expr_is_stringish's answer (a literal, a kind-2
+    // slot -- String-annotated param or `let`-bound stringish value -- a
+    // `: String` ascription, a String-returning builtin), NOT the mere
+    // presence of the literal: infer_binop_type tolerates a failed equality
+    // unification while either side is still a rigid named type parameter
+    // (#829, `checker.vibe`), so a generic callee's result compared with a
+    // literal type-checks and may be an Int at runtime. That operand must
+    // keep the generic path, whose looks-like-a-string guard is what makes
+    // the compare a plain "not equal" instead of a read through the Int's
+    // bits (Codex on #2484).
     //
     // The callee is the BUILTIN entry, found positionally (#2309): the
     // prelude defines a program-level `String::equals`, and a lookup by
