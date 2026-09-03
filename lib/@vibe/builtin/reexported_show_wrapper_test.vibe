@@ -1,0 +1,47 @@
+//# #2468: a Show wrapper reached through a RE-EXPORT.
+//
+// `export <path> { name }` binds `name` locally as well as re-publishing it,
+// which is why `collect_import_value_renames`
+// (core/import_alias_rewrite.vibe) handles `SReExport` alongside `SImport`.
+// The typed-lowering producer's wrapper scan did not, so this module could
+// call `to_string` while filing no row for the argument -- and the merged
+// normalize pass still rewrote the call to `__to_string`, leaving the
+// consumer to look up an offset that was never published.
+//
+// Codex P1 on the PR that added the `SImport` arm. Measured before the
+// `SReExport` one:
+//
+//   __to_string(l()) -> "true"      to_string(l()) -> "1"
+//
+// The file is its own fixture: it must both re-export the wrapper and call
+// it, which is the shape the bug needs and the reason it does not live in
+// builtin_traits_test.vibe (that file imports).
+
+//# Imports
+
+export ./builtin_traits.vibe {
+  to_string
+}
+
+//# Misc
+
+test "#2468: a re-exported to_string renders like __to_string" {
+  // The #2462 shape: a lambda bound by a `let` INSIDE the block, which
+  // `collect_fn_returns` (a statement walk) cannot see. Nothing syntactic
+  // classifies it, so the typed-lowering row is the whole mechanism.
+  let l = () -> Bool {
+    1 < 2
+  }
+  assert(__to_string(l()) == "true")
+  assert(to_string(l()) == "true")
+  // Controls: a row that claimed every re-exported call's argument was a
+  // Bool would be caught here rather than look like a fix.
+  let n = () -> Int {
+    7
+  }
+  assert(to_string(n()) == "7")
+  let d = () -> Double {
+    1.5
+  }
+  assert(to_string(d()) == "1.5")
+}
