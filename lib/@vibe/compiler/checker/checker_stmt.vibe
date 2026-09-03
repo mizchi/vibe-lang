@@ -5728,17 +5728,45 @@ fn double_call_result_offsets_from_capture(checked: CheckedProgram, capture: Typ
       }
       i = i + 1
     }
-    // Nothing to check when no offset was claimed as Double: the sort is the
-    // only super-linear step here and this is the common case.
+    // Sort the SMALL side and scan the large one against it (Codex round 2 on
+    // this PR). `irc_sorted_unique` is an insertion sort -- its own comment
+    // says it is sized for a small candidate set -- so sorting `others`, which
+    // holds every non-Double primary call, would have been quadratic on a
+    // compiler-sized input: the very cost the two-pass shape was meant to
+    // remove. `out` is one entry per DISTINCT Double offset, and it was
+    // already deduplicated by the same O(D^2) scan the original code ran, so
+    // sorting it adds no order this function did not already pay.
+    //
+    // Nothing to check when no offset was claimed as Double, which is the
+    // common case and stays fully linear.
     let kept = if Array::length(out) == 0 {
       out
     } else {
-      let sorted_others = irc_sorted_unique(others)
+      let sorted_doubles = irc_sorted_unique(out)
+      let poisoned: Array[Bool] = []
+      let mut d = 0
+      while d < Array::length(sorted_doubles) {
+        Array::push(poisoned, false)
+        d = d + 1
+      }
+      let mut o = 0
+      while o < Array::length(others) {
+        let idx = irc_index_of(sorted_doubles, Array::get(others, o))
+        if idx >= 0 {
+          Array::set(poisoned, idx, true)
+        } else {
+          ()
+        }
+        o = o + 1
+      }
+      // Emitted in `out`'s original first-seen order, not the sorted one:
+      // the sort exists for the lookup, and changing the table's order would
+      // be an unrelated behavioural change to everything downstream of it.
       let keep: Array[Int] = []
       let mut k = 0
       while k < Array::length(out) {
         let off = Array::get(out, k)
-        if irc_index_of(sorted_others, off) < 0 {
+        if !Array::get(poisoned, irc_index_of(sorted_doubles, off)) {
           Array::push(keep, off)
         } else {
           ()
