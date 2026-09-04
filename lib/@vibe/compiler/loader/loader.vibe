@@ -5,7 +5,7 @@ import @vibe/compiler/syntax {
 }
 
 import @vibe/core {
-  array_empty, hex_decode, hex_encode
+  array_empty, hex_decode, hex_encode, struct MutMap
 }
 
 import @vibe/compiler/core {
@@ -91,16 +91,101 @@ import @vibe/compiler/contract {
 /// an unresolved export instead of unbounded recursion; every visited source
 /// is fingerprinted so the contract-facade cache observes changes at any
 /// depth of the chain.
+/// #2386: the answer for one source, per path for the process, stamped with
+/// the stat token of every file the recursion read. `desugar_contract_source_fs`
+/// asks for the kinds behind a re-export once per MEMBER unit of the
+/// contract, and each ask read, lexed and parsed the re-export's target
+/// (and its own re-export chain) again -- on a cold compiler-closure compile
+/// every re-exported source parsed once per member re-exporting it. A hit
+/// re-stats every recorded file and replays the same `dep_paths` /
+/// `dep_fingerprints` pushes the parse made, so the facade cache row observes
+/// the same dependency set either way; a changed token re-reads. An answer
+/// is recorded only when the recursion beneath it met no `visiting` cycle,
+/// so a recorded answer never depends on the caller's `visiting` stack.
+/// Same blind spot as the persistent facade row it feeds: a change in path
+/// RESOLUTION with no file read changing (a new sibling shadowing a
+/// directory import) is not observed. One entry per path, replaced on a
+/// token change, so a resident compiler holds one answer per source.
+let exported_type_params_memo: MutMap[String, (Array[(String, Int)], Array[String], Array[(String, Array[String])])] = MutMap::new_string()
+
+let exported_type_params_read_log: Array[(String, Int)] = []
+
+let exported_type_params_cycle_hits: Array[Int] = [0]
+
 fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
-  let out = array_empty()
   if contains_path(visiting, path) {
-    return out
+    Array::set(exported_type_params_cycle_hits, 0, Array::get(exported_type_params_cycle_hits, 0) + 1)
+    return array_empty()
   } else {
     ()
   }
+  if Array::length(visiting) == 0 {
+    Array::truncate(exported_type_params_read_log, 0)
+  } else {
+    ()
+  }
+  let fresh = match MutMap::get(exported_type_params_memo, path) {
+    Some(entry) => {
+      let (reads, _, _) = entry
+      let mut same = true
+      let mut ri = 0
+      while ri < Array::length(reads) && same {
+        let (read_path, token) = Array::get(reads, ri)
+        if Fs::stat_token(read_path) != token {
+          same = false
+        } else {
+          ()
+        }
+        ri = ri + 1
+      }
+      if same {
+        Some(entry)
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+  match fresh {
+    Some(entry) => {
+      let (reads, fps, out) = entry
+      let mut ri = 0
+      while ri < Array::length(reads) {
+        let (read_path, token) = Array::get(reads, ri)
+        Array::push(dep_paths, read_path)
+        Array::push(dep_fingerprints, Array::get(fps, ri))
+        Array::push(exported_type_params_read_log, (read_path, token))
+        ri = ri + 1
+      }
+      out
+    },
+    None => {
+      let log_mark = Array::length(exported_type_params_read_log)
+      let dep_mark = Array::length(dep_fingerprints)
+      let hits_before = Array::get(exported_type_params_cycle_hits, 0)
+      let out = exported_type_params_uncached_fs(path, dep_paths, dep_fingerprints, visiting)
+      let reads = Array::slice(exported_type_params_read_log, log_mark, Array::length(exported_type_params_read_log))
+      let fps = Array::slice(dep_fingerprints, dep_mark, Array::length(dep_fingerprints))
+      if Array::get(exported_type_params_cycle_hits, 0) == hits_before && Array::length(reads) == Array::length(fps) {
+        MutMap::set(exported_type_params_memo, path, (reads, fps, out))
+      } else {
+        ()
+      }
+      out
+    }
+  }
+}
+
+fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
+  let out = array_empty()
   let visiting_mark = Array::length(visiting)
   Array::push(visiting, path)
+  // The token is taken BEFORE the read: a file rewritten between the two is
+  // parsed as its new body under the old token, so the next ask re-reads it;
+  // the other order would record the new token against the old parse.
+  let token = Fs::stat_token(path)
   let raw = Fs::read_file(path)
+  Array::push(exported_type_params_read_log, (path, token))
   Array::push(dep_paths, path)
   // Fingerprint the bytes that are parsed below. A second filesystem read
   // could observe a newer body and make stale metadata look current forever.

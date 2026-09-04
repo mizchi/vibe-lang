@@ -1,0 +1,88 @@
+//# #2386: the loader answers "what kinds does this source export" once per
+//# path per process instead of reading, lexing and parsing the re-export's
+//# target again for every member unit that re-exports it. What must not
+//# happen is an answer outliving a file: a target rewritten under the same
+//# path is read again (grown to a different kind, then restored), and the
+//# second member re-exporting one target is checked against the same answer
+//# as the first.
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_module_header_cache_path
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/loader {
+  ingest_source_text_fs
+}
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn remove_file_if_exists(path: String) -> Unit with Fs {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+fn write_cold(path: String, source: String) -> Unit with Exception + Fs {
+  Fs::write_bytes(path, string_to_bytes(source))
+  remove_file_if_exists(persistent_module_header_cache_path(path, compact_string_fingerprint(source)))
+}
+
+fn ingest_error(contract_path: String) -> String with Fs {
+  handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+}
+
+/// A parent package whose two members both re-export `Container` from one
+/// source package. The contract carries a per-run stamp so the persistent
+/// facade row of an earlier run cannot answer for the parse this test is
+/// about.
+fn setup(base_dir: String) -> String with Exception + Fs + Profiler {
+  let source_dir = String::concat(base_dir, "/source")
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(source_dir)
+  Fs::mkdir_p(parent_dir)
+  write_cold(String::concat(source_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
+  write_cold(String::concat(source_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
+  let stamp = __to_string(Profiler::now_us())
+  write_cold(String::concat(parent_dir, "/index.vpkg"), String::concat("// run ", String::concat(stamp, "\nopaque type Container[F[_]]\n")))
+  write_cold(String::concat(parent_dir, "/mid_a.vibe"), "export ../source { Container }\n")
+  write_cold(String::concat(parent_dir, "/mid_b.vibe"), "export ../source { Container }\n")
+  String::concat(parent_dir, "/index.vpkg")
+}
+
+test "two members re-exporting one source are checked against the same answer" {
+  let base_dir = "/tmp/vibe_compiler_exported_type_params_memo_two_members"
+  let contract_path = setup(base_dir)
+  // The second member's ask is answered from the first member's parse; the
+  // conformance check passes for both.
+  assert_eq(ingest_error(contract_path), "")
+}
+
+test "a re-export target rewritten under the same path is read again" {
+  let base_dir = "/tmp/vibe_compiler_exported_type_params_memo_rewrite"
+  let contract_path = setup(base_dir)
+  assert_eq(ingest_error(contract_path), "")
+  // The source contract changes the kind of `Container` under the same path.
+  write_cold(String::concat(base_dir, "/source/index.vpkg"), "opaque type Container[F]\n")
+  assert_true(String::contains(ingest_error(contract_path), "kind mismatch"))
+  // And changes back: the stale answer must not come back either.
+  write_cold(String::concat(base_dir, "/source/index.vpkg"), "opaque type Container[F[_]]\n")
+  assert_eq(ingest_error(contract_path), "")
+}
