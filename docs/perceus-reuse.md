@@ -508,7 +508,8 @@ Both "sites" are ASCII bytes of that program's own padding string.
 **Fixed in #2487.** The heap now starts ABOVE the table
 (`rc_shadow_heap_start()`), and the slot index is scaled: a vptr is 8-aligned,
 so `(vptr - heap_start) / 2` gives one naturally aligned 4-byte slot per
-granule, holding `(seq << 8) | 1` when freed and 0 when live. `rc_shadow_reserve()`
+granule, holding `seq + 1` when freed and 0 when live -- the flag costs no
+bits, so the whole 32-bit sequence survives. `rc_shadow_reserve()`
 is derived rather than chosen, so every vptr up to the top of the wasm32
 address space maps inside the table. Gate case 40f1a pins the fixture above;
 40f still pins the #715 shape corpus, so the marks are still marks.

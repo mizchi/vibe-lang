@@ -3257,9 +3257,16 @@ export fn rc_shadow_seq_addr() -> Int {
 }
 
 /// Consume an i32 vptr from the stack and leave the address of its 4-byte
-/// shadow slot. The slot is `(seq << 8) | 1` when freed and 0 when live, so
-/// the freed test is an `i32.load8_u` of the same address (little-endian) and
-/// the freeing sequence is `i32.load >> 8`.
+/// shadow slot. The slot holds `seq + 1` when freed and 0 when live, so the
+/// freed test is `i32.load` (nonzero) and the freeing sequence is
+/// `i32.load - 1`.
+///
+/// The flag costs no bits ON PURPOSE. Packing it as `(seq << 8) | 1` reads
+/// naturally and traps just as reliably -- the flag is exact either way -- but
+/// it silently truncates the sequence to 24 bits, and a compiler-sized shadow
+/// run passes 2^24 instrumented dup/drops easily. The trap would then fire
+/// correctly and name the WRONG freeing operation, which is the one thing this
+/// mode exists to get right (#2487 review).
 export fn emit_shadow_slot_from_vptr(buf: Bytes) -> Unit {
   emit_i32_const(buf, 1)
   // i32.shr_u (0x76) -- no emit helper exists
@@ -3290,27 +3297,28 @@ export fn emit_shadow_uaf_trap(buf: Bytes, push_vptr: () -> Unit, uaf_abort_idx:
     push_vptr()
     emit_shadow_slot_from_vptr(buf)
     emit_i32_load(buf, 2, 0)
-    emit_i32_const(buf, 8)
-    // i32.shr_u (0x76)
-    bytebuf_push(buf, 118)
-    emit_i64_extend_i32_s(buf)
+    emit_i32_const(buf, 1)
+    emit_i32_sub(buf)
+    // i64.extend_i32_u (0xAD) -- unsigned, because the counter is a raw i32
+    // and a long shadow run passes 2^31. wasm_emit exports only the signed
+    // form, and common_base cannot import common_analysis (which has the
+    // unsigned one) without a cycle.
+    bytebuf_push(buf, 173)
     emit_call(buf, uaf_abort_idx)
   }
 }
 
-/// Stamp `(seq << 8) | 1` into the block's slot: freed, at this sequence.
-/// One store, so the flag and the sequence can never disagree.
+/// Stamp `seq + 1` into the block's slot: freed, at this sequence. One store,
+/// so the flag and the sequence can never disagree, and the whole 32-bit
+/// counter survives. `emit_shadow_bump_seq` runs before any mark, so a freed
+/// block's slot is never 0.
 export fn emit_shadow_mark_freed(buf: Bytes, push_vptr: () -> Unit) -> Unit {
   push_vptr()
   emit_shadow_slot_from_vptr(buf)
   emit_i32_const(buf, rc_shadow_seq_addr())
   emit_i32_load(buf, 2, 0)
-  emit_i32_const(buf, 8)
-  // i32.shl (0x74)
-  bytebuf_push(buf, 116)
   emit_i32_const(buf, 1)
-  // i32.or (0x72)
-  bytebuf_push(buf, 114)
+  emit_i32_add(buf)
   emit_i32_store(buf, 2, 0)
 }
 
@@ -3445,7 +3453,7 @@ export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool, uaf_ab
     emit_i64_and(buf)
     emit_i32_wrap_i64(buf)
     emit_shadow_slot_from_vptr(buf)
-    emit_i32_load8_u(buf, 0, 0)
+    emit_i32_load(buf, 2, 0)
     emit_if_void(buf)
     emit_shadow_uaf_trap(buf, () -> {
       emit_local_get(buf, local_idx)
