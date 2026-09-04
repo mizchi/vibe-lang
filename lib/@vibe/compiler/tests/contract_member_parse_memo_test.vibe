@@ -1,0 +1,66 @@
+//# #2386: a contract member is parsed once. `desugar_contract_source_fs`
+//# parses every member for the conformance check and the facade, and the
+//# header pass later collects the same member as a source with the same
+//# ingested text; the member parse goes through the shared located memo so
+//# that second parse is a hit. What must not happen: the member's ingested
+//# text being parsed again by whoever asks next.
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_module_header_cache_path
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/loader {
+  ingest_source_text_fs, load_or_parse_module_header_fs, parse_program_located_shared, parse_program_located_shared_ran_parser
+}
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn remove_file_if_exists(path: String) -> Unit with Fs {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+fn write_cold(path: String, source: String) -> Unit with Exception + Fs {
+  Fs::write_bytes(path, string_to_bytes(source))
+  remove_file_if_exists(persistent_module_header_cache_path(path, compact_string_fingerprint(source)))
+}
+
+test "a contract member's parse serves its header pass" {
+  let base_dir = "/tmp/vibe_compiler_contract_member_parse_memo"
+  let pkg_dir = String::concat(base_dir, "/pkg")
+  Fs::mkdir_p(pkg_dir)
+  // A per-run stamp in the member keeps the persistent facade row of an
+  // earlier run from answering for the parse this test is about.
+  let stamp = __to_string(Profiler::now_us())
+  let member_path = String::concat(pkg_dir, "/impl.vibe")
+  let member_raw = String::concat("// run ", String::concat(stamp, "\nexport fn pub_fn(x: Int) -> Int {\n  x + 1\n}\n"))
+  write_cold(member_path, member_raw)
+  let contract_path = String::concat(pkg_dir, "/index.vpkg")
+  write_cold(contract_path, "version 0.0.1\n\nimport ./impl.vibe {}\n\nfn pub_fn(x: Int) -> Int\n")
+  // Ingesting the contract parses the member for conformance ...
+  let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+  // ... and the member's header, asked with the same ingested text the
+  // loader collects, answers from that parse.
+  let member_ingested = ingest_source_text_fs(member_path, member_raw)
+  let (_, exports, _) = load_or_parse_module_header_fs(member_path, member_ingested, 0)
+  assert_eq(Array::get(exports, 0), "pub_fn")
+  assert_true(!parse_program_located_shared_ran_parser())
+  let _ = parse_program_located_shared(member_path, member_ingested)
+  assert_true(!parse_program_located_shared_ran_parser())
+}
