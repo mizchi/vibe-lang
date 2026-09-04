@@ -3609,7 +3609,7 @@ fn mrv_is_fresh_name(fresh_names: MutMap[String, Int], tainted: MutMap[String, I
 /// Bindings are recorded flat (no scope popping): a name REBOUND to a
 /// non-fresh value taints itself, so collisions only ever push toward
 /// view -- the safe direction.
-fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, Int], bound: Array[String], gen: Int, user_fns_srt: Array[String], view_set: MutSet[String], ret_view: Array[Int]) -> Bool {
+fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, Int], bound: Array[String], gen: Int, user_fns_srt: Array[String], view_set: MutSet[String], ret_view: Array[Int], callees: Array[String]) -> Bool {
   match e {
     EInt(_) => true,
     EFloat(_) => true,
@@ -3621,7 +3621,7 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
         i = i + 1
       }
       true
@@ -3629,7 +3629,7 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(Array::get(items, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
         i = i + 1
       }
       true
@@ -3638,7 +3638,7 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
         i = i + 1
       }
       true
@@ -3647,62 +3647,62 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
       let mut i = 0
       while i < Array::length(fields) {
         let (_, v) = Array::get(fields, i)
-        let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
         i = i + 1
       }
       true
     },
     EIf(c, t, el) => {
-      let _ = mrv_fresh(c, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      let tf = mrv_fresh(t, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      let ef = mrv_fresh(el, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(c, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
+      let tf = mrv_fresh(t, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
+      let ef = mrv_fresh(el, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       tf && ef
     },
     ELet(n, v, b, _) => {
-      let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       Array::push(bound, n)
       if vf {
         MutMap::set(fresh_names, n, gen)
       } else {
         MutMap::set(tainted, n, gen)
       }
-      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
     },
     ELetMut(n, v, b, _) => {
-      let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       Array::push(bound, n)
       if vf {
         MutMap::set(fresh_names, n, gen)
       } else {
         MutMap::set(tainted, n, gen)
       }
-      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
     },
     ELetRec(n, v, b) => {
-      let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       Array::push(bound, n)
       MutMap::set(fresh_names, n, gen)
-      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
     },
     EAssign(n, v, b) => {
-      let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let vf = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       if vf {
         ()
       } else {
         MutMap::set(tainted, n, gen)
       }
-      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
     },
     EAssignOp(_, _, v, b) => {
-      let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
     },
     ESeq(a, b) => {
-      let _ = mrv_fresh(a, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(a, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
+      mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
     },
     EMatch(s, arms) => {
-      let _ = mrv_fresh(s, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(s, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       let mut all = true
       let mut i = 0
       while i < Array::length(arms) {
@@ -3710,7 +3710,7 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
         // Pattern payloads are interior views of the scrutinee: bound but
         // never fresh.
         let _ = collect_pattern_bindings(p, bound)
-        if mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view) {
+        if mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees) {
           ()
         } else {
           all = false
@@ -3720,13 +3720,13 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
       all
     },
     EHandle(s, arms) => {
-      let _ = mrv_fresh(s, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(s, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       let mut all = true
       let mut i = 0
       while i < Array::length(arms) {
         let (p, v) = Array::get(arms, i)
         let _ = collect_pattern_bindings(p, bound)
-        if mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view) {
+        if mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees) {
           ()
         } else {
           all = false
@@ -3736,37 +3736,37 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
       all
     },
     EWhile(c, b) => {
-      let _ = mrv_fresh(c, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(c, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
+      let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       true
     },
     ELoop(params, b) => {
       let mut i = 0
       while i < Array::length(params) {
         let (pn, pv) = Array::get(params, i)
-        let _ = mrv_fresh(pv, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(pv, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
         Array::push(bound, pn)
         i = i + 1
       }
-      let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       // A loop's value flows out of `break v` sites we do not track: view.
       false
     },
     EForIn(n1, n2, it, b) => {
-      let _ = mrv_fresh(it, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(it, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       Array::push(bound, n1)
       match n2 {
         Some(n2s) => Array::push(bound, n2s),
         None => ()
       }
-      let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(b, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       true
     },
     ECall(callee, args, _) => {
       let mut arg0_fresh = false
       let mut i = 0
       while i < Array::length(args) {
-        let af = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        let af = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
         if i == 0 {
           arg0_fresh = af
         } else {
@@ -3779,6 +3779,10 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
           // A locally-bound closure: its return is untrackable.
           false
         } else if bsearch_leftmost(user_fns_srt, f) >= 0 {
+          // #2386: the ONE cross-function dependency of this walk. Record
+          // it so the fixpoint driver re-walks this function only when `f`
+          // enters the view set later.
+          Array::push(callees, f)
           !MutSet::has(view_set, f)
         } else if borrow_ret_builtin_name(f) {
           false
@@ -3812,23 +3816,23 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
           if ident_ret {
             arg0_fresh
           } else {
-            let _ = mrv_fresh(callee, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+            let _ = mrv_fresh(callee, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
             false
           }
         },
         _ => {
-          let _ = mrv_fresh(callee, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+          let _ = mrv_fresh(callee, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
           false
         }
       }
     },
     EBinOp(_, l, r, _) => {
-      let _ = mrv_fresh(l, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
-      let _ = mrv_fresh(r, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(l, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
+      let _ = mrv_fresh(r, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       true
     },
     EUnaryOp(_, x) => {
-      let _ = mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       true
     },
     EFn(_, _, fps, _, _, body) => {
@@ -3842,16 +3846,16 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
         i = i + 1
       }
       let dummy_ret = [0]
-      let _ = mrv_fresh(body, fresh_names, tainted, bound, gen, user_fns_srt, view_set, dummy_ret)
+      let _ = mrv_fresh(body, fresh_names, tainted, bound, gen, user_fns_srt, view_set, dummy_ret, callees)
       true
     },
     EDot(x, _, _, _) => {
-      let _ = mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+      let _ = mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
       false
     },
-    ELabeledArg(_, _, v) => mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view),
+    ELabeledArg(_, _, v) => mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees),
     EReturn(x) => {
-      if mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view) {
+      if mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees) {
         ()
       } else {
         Array::set(ret_view, 0, 1)
@@ -3860,7 +3864,7 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
     },
     EBreak(opt) => {
       let _ = match opt {
-        Some(v) => mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view),
+        Some(v) => mrv_fresh(v, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees),
         None => true
       }
       true
@@ -3868,12 +3872,12 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
     EContinue(args) => {
       let mut i = 0
       while i < Array::length(args) {
-        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+        let _ = mrv_fresh(Array::get(args, i), fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
         i = i + 1
       }
       true
     },
-    ESpread(x) => mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view)
+    ESpread(x) => mrv_fresh(x, fresh_names, tainted, bound, gen, user_fns_srt, view_set, ret_view, callees)
   }
 }
 
@@ -3890,76 +3894,111 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
 /// (the codegen_heap_e2e_test over-release). Iterated to a fixpoint so a
 /// view propagates through wrapper functions whose tail is a call.
 export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
+  // #2386: a callee-edge worklist instead of whole-program rounds. The old
+  // driver re-walked EVERY not-yet-classified function body on each round
+  // until a round added nothing (0.32 s warm on the compiler closure, one
+  // full walk per round). A function's verdict depends on its own body and
+  // on which of its user-fn callees are in the view set (mrv_fresh's one
+  // cross-function read), so after its first walk it needs another only
+  // when one of its callees enters the set. The first walk records each
+  // function's callees; a reverse index turns "f entered the view set"
+  // into "re-walk f's callers". Same fixpoint, same set.
   let user_fns = array_empty()
+  let fn_bodies = array_empty()
+  let fn_params = array_empty()
   let mut ci = 0
   while ci < Array::length(stmts) {
     match Array::get(stmts, ci) {
       SLet(_, _, fname, _, fval) => match fval {
-        EFn(_, _, _, _, _, _) => Array::push(user_fns, fname),
+        EFn(_, _, fps, _, _, fbody) => {
+          Array::push(user_fns, fname)
+          Array::push(fn_params, fps)
+          Array::push(fn_bodies, fbody)
+        },
         _ => ()
       },
       _ => ()
     }
     ci = ci + 1
   }
-  // ADR-0092 / #1259 perf: `user_fns` holds EVERY user function in the
-  // program (~5000 when the compiler compiles itself) and never changes, but
-  // it was linearly scanned once per identifier CALL, inside a fixpoint loop
-  // that re-walks every body up to 10 times. That single lookup accounted for
-  // 2.0s of an 8.4s selfcompile profile. Sorted once here, binary-searched at
-  // the call site.
   let user_fns_srt = sorted_names_of(user_fns)
-  // The returned array keeps the discovery order; `view_seen` is a parallel
-  // membership index (the per-callee scan of the growing view set was the
-  // hottest single lookup of a selfcompile profile after the user_fns sort
-  // above -- #1259).
   let view_set = array_empty()
   let view_seen = MutSet::new_string()
   let fresh_names: MutMap[String, Int] = MutMap::new_string()
   let tainted: MutMap[String, Int] = MutMap::new_string()
-  // `bound` is a shared flat array reset per walk via truncate (the
-  // collect_free_vars push/truncate pattern): membership is only checked for
-  // call heads and stays function-local-small, while a per-walk table costs
-  // an allocation per binder insert -- the selfcompile heap KPI gate is
-  // tighter than that CPU win (#1259 follow-up).
   let bound = array_empty()
+  // callers_of[name] = indices (into user_fns) of the functions that call it;
+  // filled from the first walk of each function.
+  let callers_of: MutMap[String, Array[Int]] = MutMap::new_string()
+  let nfn = Array::length(user_fns)
+  // Every function is walked once, in declaration order (the same order the
+  // round-based driver used for its first round). `queued` marks a function
+  // that is on the worklist so it is never pushed twice.
+  let work = array_empty()
+  let queued = array_empty()
+  let mut wi0 = 0
+  while wi0 < nfn {
+    Array::push(work, wi0)
+    Array::push(queued, true)
+    wi0 = wi0 + 1
+  }
   let mut gen = 0
-  let mut changed = true
-  let mut rounds = 0
-  while changed && rounds < 10 {
-    changed = false
-    let mut si = 0
-    while si < Array::length(stmts) {
-      match Array::get(stmts, si) {
-        SLet(_, _, fname, _, fval) => match fval {
-          EFn(_, _, fps, _, _, fbody) => if MutSet::has(view_seen, fname) {
-            ()
-          } else {
-            gen = gen + 1
-            Array::truncate(bound, 0)
-            let mut pi = 0
-            while pi < Array::length(fps) {
-              let (pn, _) = Array::get(fps, pi)
-              Array::push(bound, pn)
-              pi = pi + 1
-            }
-            let ret_view = [0]
-            let tail_fresh = mrv_fresh(fbody, fresh_names, tainted, bound, gen, user_fns_srt, view_seen, ret_view)
-            if !tail_fresh || Array::get(ret_view, 0) == 1 {
-              Array::push(view_set, fname)
-              MutSet::add(view_seen, fname)
-              changed = true
-            } else {
-              ()
+  let mut wi = 0
+  while wi < Array::length(work) {
+    let fi = Array::get(work, wi)
+    Array::set(queued, fi, false)
+    let fname = Array::get(user_fns, fi)
+    if MutSet::has(view_seen, fname) {
+      ()
+    } else {
+      gen = gen + 1
+      Array::truncate(bound, 0)
+      let fps = Array::get(fn_params, fi)
+      let mut pi = 0
+      while pi < Array::length(fps) {
+        let (pn, _) = Array::get(fps, pi)
+        Array::push(bound, pn)
+        pi = pi + 1
+      }
+      let ret_view = [0]
+      let callees = array_empty()
+      let tail_fresh = mrv_fresh(Array::get(fn_bodies, fi), fresh_names, tainted, bound, gen, user_fns_srt, view_seen, ret_view, callees)
+      // Reverse edges from this walk (recorded once; later walks of the
+      // same body see the same callees, so re-recording would only add
+      // duplicate callers, which the `queued` mark absorbs anyway).
+      let mut ki = 0
+      while ki < Array::length(callees) {
+        let callee = Array::get(callees, ki)
+        match MutMap::get(callers_of, callee) {
+          Some(lst) => Array::push(lst, fi),
+          None => MutMap::set(callers_of, callee, [fi])
+        }
+        ki = ki + 1
+      }
+      if !tail_fresh || Array::get(ret_view, 0) == 1 {
+        Array::push(view_set, fname)
+        MutSet::add(view_seen, fname)
+        match MutMap::get(callers_of, fname) {
+          Some(lst) => {
+            let mut li = 0
+            while li < Array::length(lst) {
+              let cf = Array::get(lst, li)
+              if Array::get(queued, cf) || MutSet::has(view_seen, Array::get(user_fns, cf)) {
+                ()
+              } else {
+                Array::push(work, cf)
+                Array::set(queued, cf, true)
+              }
+              li = li + 1
             }
           },
-          _ => ()
-        },
-        _ => ()
+          None => ()
+        }
+      } else {
+        ()
       }
-      si = si + 1
     }
-    rounds = rounds + 1
+    wi = wi + 1
   }
   view_set
 }
