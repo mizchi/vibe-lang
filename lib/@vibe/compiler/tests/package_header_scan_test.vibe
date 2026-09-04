@@ -1,0 +1,80 @@
+//# The package-header scan's blanked text (#2386). `extract_require_pins`
+//# returns the source with every header directive line replaced by spaces
+//# of the same length and everything after the header verbatim. The scan
+//# returns the source itself when the header blanked nothing, and appends
+//# the tail in one piece otherwise; every expectation below is the text
+//# the line-by-line copy produced.
+
+import @vibe/compiler/contract {
+  extract_require_pins
+}
+
+fn spaces(n: Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(sb, " ")
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+test "a source with no header is its own blanked text" {
+  let src = "fn main() -> Int {\n  1\n}\n"
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 0)
+  assert_eq(blanked, src)
+}
+
+test "leading comments and blank lines are kept verbatim, no trailing newline" {
+  let src = "// c\n\nfn main() -> Int {\n  1\n}"
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 0)
+  assert_eq(blanked, src)
+}
+
+test "a require line is blanked to its length and the body follows verbatim" {
+  let src = "require @a/b 1.2.3\nfn main() -> Int {\n  1\n}\n"
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 1)
+  let (rname, rver, rpin) = Array::get(pins, 0)
+  assert_eq(rname, "@a/b")
+  assert_eq(rver, "1.2.3")
+  assert_eq(rpin, "")
+  assert_eq(blanked, String::concat(spaces(18), "\nfn main() -> Int {\n  1\n}\n"))
+}
+
+test "header lines between directives stay, the tail keeps its newlines" {
+  let src = "version = 0.1.0\n// x\nrequire @a/b 1.2.3\n\nfn f() -> Int {\n  2\n}\n"
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 1)
+  assert_eq(blanked, String::concat(spaces(15), String::concat("\n// x\n", String::concat(spaces(18), "\n\nfn f() -> Int {\n  2\n}\n"))))
+}
+
+test "a header-only source is blanked line by line" {
+  let src = "name = @a/b\nversion = 0.0.1\n"
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 0)
+  assert_eq(blanked, String::concat(spaces(11), String::concat("\n", String::concat(spaces(15), "\n"))))
+}
+
+test "a directive after the first code line is not a header line" {
+  let src = "fn main() -> Int {\n  1\n}\nrequire @a/b 1.2.3\n"
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 0)
+  assert_eq(blanked, src)
+}
+
+test "a directive after a blanked header line, past code, stays verbatim" {
+  let src = "require @a/b 1.2.3\nfn main() -> Int {\n  1\n}\nversion = 9.9.9\n"
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 1)
+  assert_eq(blanked, String::concat(spaces(18), "\nfn main() -> Int {\n  1\n}\nversion = 9.9.9\n"))
+}
+
+test "the last header line without a trailing newline" {
+  let src = "require @a/b 1.2.3"
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 1)
+  assert_eq(blanked, spaces(18))
+}
