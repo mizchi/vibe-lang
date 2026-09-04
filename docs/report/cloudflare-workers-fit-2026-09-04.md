@@ -253,12 +253,18 @@ per-module argument needs. Concurrent units count against the same 128 MB.
 Without a shared memory and a reset, the per-module estimate does not bound
 the isolate at all.
 
-Budget check for that design: 1,354 MB over about 260 k closure lines is
-about 5.2 KB of heap per source line. A unit of work the size of
-`desugar_trait_dict.vibe` (20 k lines) would therefore need about 100 MB on
-its own, before its dependencies' interfaces. **Splitting the 21 files over
-3,000 lines (largest 20,482) below about 8 k lines is a prerequisite for a
-128 MB per-module compiler, not a style preference.**
+Budget check for that design, as an order of magnitude only: 1,354 MB over
+about 260 k closure lines is about 5.2 KB of heap per source line on average,
+so a unit of work the size of `desugar_trait_dict.vibe` (20 k lines) lands
+near 100 MB on its own before its dependencies' interfaces, within a factor
+of the whole budget. The average is not a threshold: the closures measured
+above range from 7.5 to 17 KB of pages per line depending on structure and
+imports, and splitting a file adds interface overhead of its own. So the
+largest files are a memory concern for the per-module design, and the actual
+cutoff (which module sizes fit a 128 MB shared-memory unit) is a measurement
+to take on that unit once it exists (#2509), not a number to extrapolate.
+Until then the file-split work (#1849) is motivated by this estimate and its
+target size is set by the measurement, not by this paragraph.
 
 ## 3. Build units and dynamic linking
 
