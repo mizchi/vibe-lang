@@ -1,0 +1,85 @@
+//# #2386: the loader answers "what does this contract export" once per
+//# (path, stat token) per process instead of reading, lexing and parsing the
+//# contract again for every importer. What must not happen is an answer
+//# outliving the file: a contract rewritten under the same path is read
+//# again, and a second importer of the same contract is validated against
+//# the same list as the first.
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_module_header_cache_path
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/loader {
+  load_or_parse_module_header_fs
+}
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn remove_file_if_exists(path: String) -> Unit with Fs {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+fn write_cold(path: String, source: String) -> Unit with Exception + Fs {
+  Fs::write_bytes(path, string_to_bytes(source))
+  remove_file_if_exists(persistent_module_header_cache_path(path, compact_string_fingerprint(source)))
+}
+
+fn setup_pkg(base_dir: String, contract: String) -> Unit with Exception + Fs {
+  let pkg_dir = String::concat(base_dir, "/pkg")
+  Fs::mkdir_p(pkg_dir)
+  write_cold(String::concat(pkg_dir, "/index.vpkg"), contract)
+  write_cold(String::concat(pkg_dir, "/impl.vibe"), "export fn pub_fn(x: Int) -> Int {\n  x + 1\n}\n\nexport fn later_fn(x: Int) -> Int {\n  x + 2\n}\n")
+}
+
+fn header_error_for(main_path: String, main_source: String) -> String with Fs {
+  handle {
+    let _ = load_or_parse_module_header_fs(main_path, main_source, 0)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn check_main(base_dir: String, file: String, source: String) -> String with Exception + Fs {
+  let main_path = String::concat(base_dir, String::concat("/", file))
+  write_cold(main_path, source)
+  header_error_for(main_path, source)
+}
+
+test "two importers of one contract are validated against the same export list" {
+  let base_dir = "/tmp/vibe_compiler_export_names_memo_two_importers"
+  setup_pkg(base_dir, "version 0.0.1\n\nimport ./impl.vibe {}\n\nfn pub_fn(x: Int) -> Int\n")
+  assert_eq(check_main(base_dir, "a.vibe", "import ./pkg { pub_fn }\nexport fn run() -> Int {\n  pub_fn(1)\n}\n"), "")
+  let msg = check_main(base_dir, "b.vibe", "import ./pkg { later_fn }\nexport fn run() -> Int {\n  later_fn(1)\n}\n")
+  assert_true(String::contains(msg, "\"later_fn\" is not exported by"))
+  assert_eq(check_main(base_dir, "c.vibe", "import ./pkg { pub_fn }\nexport fn run() -> Int {\n  pub_fn(2)\n}\n"), "")
+}
+
+test "a contract rewritten under the same path is read again" {
+  let base_dir = "/tmp/vibe_compiler_export_names_memo_rewrite"
+  setup_pkg(base_dir, "version 0.0.1\n\nimport ./impl.vibe {}\n\nfn pub_fn(x: Int) -> Int\n")
+  let before = check_main(base_dir, "main.vibe", "import ./pkg { later_fn }\nexport fn run() -> Int {\n  later_fn(1)\n}\n")
+  assert_true(String::contains(before, "\"later_fn\" is not exported by"))
+  // The contract grows a declaration (and changes length) under the same path.
+  write_cold(String::concat(base_dir, "/pkg/index.vpkg"), "version 0.0.1\n\nimport ./impl.vibe {}\n\nfn pub_fn(x: Int) -> Int\nfn later_fn(x: Int) -> Int\n")
+  assert_eq(check_main(base_dir, "main2.vibe", "import ./pkg { later_fn }\nexport fn run() -> Int {\n  later_fn(1)\n}\n"), "")
+  // And shrinks back: the old answer must not come back either.
+  write_cold(String::concat(base_dir, "/pkg/index.vpkg"), "version 0.0.1\n\nimport ./impl.vibe {}\n\nfn pub_fn(x: Int) -> Int\n")
+  let after = check_main(base_dir, "main3.vibe", "import ./pkg { later_fn }\nexport fn run() -> Int {\n  later_fn(1)\n}\n")
+  assert_true(String::contains(after, "\"later_fn\" is not exported by"))
+}
