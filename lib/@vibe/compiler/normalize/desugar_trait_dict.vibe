@@ -4249,14 +4249,12 @@ fn infer_impl_target_key(arg: Expr, struct_sets: Array[(String, Array[String])],
   }
 }
 
-fn bind_impl_target_key(var_types: Array[(String, String)], name: String, value: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  match infer_impl_target_key(value, struct_sets, var_types, fn_returns) {
-    Some(key) => {
-      let out = clone_var_types(var_types)
-      Array::push(out, (impl_target_var_key(name), key))
-      out
-    },
-    None => var_types
+/// In-place form of `bind_impl_target_key` for `bind_let_env`: `out` is the
+/// environment the binding extends, already cloned by the caller.
+fn bind_impl_target_key_into(out: Array[(String, String)], name: String, value: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  match infer_impl_target_key(value, struct_sets, out, fn_returns) {
+    Some(key) => Array::push(out, (impl_target_var_key(name), key)),
+    None => ()
   }
 }
 
@@ -5251,14 +5249,10 @@ fn array_elem_type_of(var_types: Array[(String, String)], name: String) -> Optio
 ///
 /// Only writes when there IS a live entry to mask, so the common binding pays
 /// nothing.
-fn mask_stale_array_elem(var_types: Array[(String, String)], name: String) -> Array[(String, String)] {
-  match array_elem_type_of(var_types, name) {
-    Some(_) => {
-      let out = clone_var_types(var_types)
-      Array::push(out, (array_elem_key(name), ""))
-      out
-    },
-    None => var_types
+fn mask_stale_array_elem_into(out: Array[(String, String)], name: String) -> Unit {
+  match array_elem_type_of(out, name) {
+    Some(_) => Array::push(out, (array_elem_key(name), "")),
+    None => ()
   }
 }
 
@@ -5338,19 +5332,15 @@ fn dtd_array_elem_of_ann(ty: TypeExpr) -> Option[String] {
   }
 }
 
-fn array_elem_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+fn array_elem_bind_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   // #1880: an explicit `Array[T]` annotation is the most reliable element type
   // there is, so it is consulted before the value's shape. `array_elem_key` is
-  // the older sentinel -- `shape_bind` runs after this and its record wins for
-  // rendering -- but this one is read by call-site dict synthesis (#1199), so
-  // an annotated binding has to reach it too.
+  // the older sentinel -- `shape_bind_into` runs after this and its record wins
+  // for rendering -- but this one is read by call-site dict synthesis (#1199),
+  // so an annotated binding has to reach it too.
   match dtd_array_elem_of_ann_opt(dtd_ascribed_type(val)) {
-    Some(elem) => {
-      let out = clone_var_types(var_types)
-      Array::push(out, (array_elem_key(name), elem))
-      out
-    },
-    None => array_elem_bind_by_shape(var_types, name, val, struct_sets, fn_returns)
+    Some(elem) => Array::push(out, (array_elem_key(name), elem)),
+    None => array_elem_bind_by_shape_into(out, name, val, struct_sets, fn_returns)
   }
 }
 
@@ -5361,26 +5351,17 @@ fn dtd_array_elem_of_ann_opt(ann: Option[TypeExpr]) -> Option[String] {
   }
 }
 
-fn array_elem_bind_by_shape(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+fn array_elem_bind_by_shape_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   match val {
     EArray(elems) => if Array::length(elems) > 0 {
-      match infer_arg_type_name(Array::get(elems, 0), struct_sets, var_types, fn_returns) {
-        Some(elemty) => {
-          let out = array_empty()
-          let mut i = 0
-          while i < Array::length(var_types) {
-            Array::push(out, Array::get(var_types, i))
-            i = i + 1
-          }
-          Array::push(out, (array_elem_key(name), elemty))
-          out
-        },
-        None => mask_stale_array_elem(var_types, name)
+      match infer_arg_type_name(Array::get(elems, 0), struct_sets, out, fn_returns) {
+        Some(elemty) => Array::push(out, (array_elem_key(name), elemty)),
+        None => mask_stale_array_elem_into(out, name)
       }
     } else {
-      mask_stale_array_elem(var_types, name)
+      mask_stale_array_elem_into(out, name)
     },
-    _ => mask_stale_array_elem(var_types, name)
+    _ => mask_stale_array_elem_into(out, name)
   }
 }
 
@@ -5538,56 +5519,48 @@ fn dtd_tuple_elem_names_of_array_get(val: Expr, var_types: Array[(String, String
 /// #1445: record a let-bound TUPLE literal's shape. Sibling of
 /// `array_elem_bind` -- same "only a bare literal RHS" scope, for the same
 /// reason (this is a syntax-directed pass, not type inference).
-fn tuple_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+fn tuple_shape_bind_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   // #2128: an explicit `(A, B)` annotation is the most reliable element list
-  // there is -- the same reason `array_elem_bind` consults one first (#1880).
-  // A local `let t: (String, String) = (..)` is NOT annotation-free: the
-  // parser rewrites it to `((__asc: T) -> __asc)(v)`, which also hides the
+  // there is -- the same reason `array_elem_bind_into` consults one first
+  // (#1880). A local `let t: (String, String) = (..)` is NOT annotation-free:
+  // the parser rewrites it to `((__asc: T) -> __asc)(v)`, which also hides the
   // `ETuple` from the match below, so before this an annotated tuple recorded
   // NOTHING and `t.0 < t.1` stayed an address comparison.
   match dtd_tuple_elem_names_of_ann(dtd_ascribed_type(val)) {
-    Some(sentinel) => {
-      let out = clone_var_types(var_types)
-      Array::push(out, (tuple_shape_key(name), sentinel))
-      return out
-    },
-    None => ()
-  }
-  // #2128: `let p = Array::get(ps, i)` where `ps` is an array OF tuples.
-  // `infer_shape` does not project an array element, so `shape_bind` records a
-  // non-composite shape for `p` and `p.0` had nothing to read. The element
-  // types are in the ARRAY's own `__shape$` record.
-  let from_elem = dtd_tuple_elem_names_of_array_get(val, var_types)
-  if String::length(from_elem) > 0 {
-    let out = clone_var_types(var_types)
-    Array::push(out, (tuple_shape_key(name), from_elem))
-    return out
-  } else {
-    ()
-  }
-  match val {
-    ETuple(items) => if Array::length(items) > 0 {
-      let mut acc = ""
-      let mut i = 0
-      while i < Array::length(items) {
-        let tn = match infer_arg_type_name(Array::get(items, i), struct_sets, var_types, fn_returns) {
-          Some(t) => t,
-          None => ""
+    Some(sentinel) => Array::push(out, (tuple_shape_key(name), sentinel)),
+    None => {
+      // #2128: `let p = Array::get(ps, i)` where `ps` is an array OF tuples.
+      // `infer_shape` does not project an array element, so `shape_bind_into`
+      // records a non-composite shape for `p` and `p.0` had nothing to read.
+      // The element types are in the ARRAY's own `__shape$` record.
+      let from_elem = dtd_tuple_elem_names_of_array_get(val, out)
+      if String::length(from_elem) > 0 {
+        Array::push(out, (tuple_shape_key(name), from_elem))
+      } else {
+        match val {
+          ETuple(items) => if Array::length(items) > 0 {
+            let mut acc = ""
+            let mut i = 0
+            while i < Array::length(items) {
+              let tn = match infer_arg_type_name(Array::get(items, i), struct_sets, out, fn_returns) {
+                Some(t) => t,
+                None => ""
+              }
+              acc = if i == 0 {
+                tn
+              } else {
+                String::concat(acc, String::concat(",", tn))
+              }
+              i = i + 1
+            }
+            Array::push(out, (tuple_shape_key(name), acc))
+          } else {
+            ()
+          },
+          _ => ()
         }
-        acc = if i == 0 {
-          tn
-        } else {
-          String::concat(acc, String::concat(",", tn))
-        }
-        i = i + 1
       }
-      let out = clone_var_types(var_types)
-      Array::push(out, (tuple_shape_key(name), acc))
-      out
-    } else {
-      var_types
-    },
-    _ => var_types
+    }
   }
 }
 
@@ -5595,15 +5568,22 @@ fn tuple_shape_bind(var_types: Array[(String, String)], name: String, val: Expr,
 /// a later `match` on that variable can type its binder. The parameter-side
 /// counterpart lives in `seed_var_types`, which has a real `TypeExpr`
 /// (`Option[P]`) to read the payload off.
-fn ctor_payload_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+fn ctor_payload_bind_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   match val {
     ECall(callee, cargs, _) => match callee {
       EIdent(cn, _) => if Array::length(cargs) >= 1 && starts_upper(cn) {
-        let out = clone_var_types(var_types)
+        // Every payload shape is read off the environment BEFORE any payload
+        // key is appended, exactly as the chained form read them off its
+        // input, so a later slot cannot observe an earlier slot's record.
+        let shapes = empty_str_array()
         let mut i = 0
-        let mut wrote = false
         while i < Array::length(cargs) {
-          let sh = infer_shape(Array::get(cargs, i), struct_sets, var_types, fn_returns)
+          Array::push(shapes, infer_shape(Array::get(cargs, i), struct_sets, out, fn_returns))
+          i = i + 1
+        }
+        i = 0
+        while i < Array::length(cargs) {
+          let sh = Array::get(shapes, i)
           if String::length(sh) == 0 {
             ()
           } else {
@@ -5616,21 +5596,15 @@ fn ctor_payload_bind(var_types: Array[(String, String)], name: String, val: Expr
               ctor_payload_idx_key(name, cn, i)
             }
             Array::push(out, (key, sh))
-            wrote = true
           }
           i = i + 1
         }
-        if wrote {
-          out
-        } else {
-          var_types
-        }
       } else {
-        var_types
+        ()
       },
-      _ => var_types
+      _ => ()
     },
-    _ => var_types
+    _ => ()
   }
 }
 
@@ -6072,9 +6046,8 @@ fn infer_shape_by_syntax(e: Expr, struct_sets: Array[(String, Array[String])], v
 /// Record a binding's recursive shape, when there is one worth recording. A
 /// plain name adds nothing the existing entries do not already carry, so only
 /// composites are stored.
-fn shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let sh = infer_shape(val, struct_sets, var_types, fn_returns)
-  let out = clone_var_types(var_types)
+fn shape_bind_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  let sh = infer_shape(val, struct_sets, out, fn_returns)
   // ALWAYS record, even for a non-composite binding (recording ""). Skipping
   // those would leave a SHADOWED name's old shape as the live answer:
   // `extend_var_types` appends and `lookup_var_type` returns the LAST match
@@ -6090,18 +6063,45 @@ fn shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struc
   // call-site dict synthesis too, so appending empties there would change
   // #1199's behaviour).
   Array::push(out, (shape_key(name), sh))
-  out
 }
 
 /// #1445: every binding-site shape record, applied in one place so `ELet` and
 /// `ELetMut` cannot drift apart.
 fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let a = array_elem_bind(var_types, name, val, struct_sets, fn_returns)
-  let b = tuple_shape_bind(a, name, val, struct_sets, fn_returns)
-  let c = ctor_payload_bind(b, name, val, struct_sets, fn_returns)
+  let out = clone_var_types(var_types)
+  bind_shapes_into(out, name, val, struct_sets, fn_returns)
+  out
+}
+
+/// The four records appended in place. `out` is a private copy of the
+/// environment the binding extends; each stage reads `out` as it stands, which
+/// is exactly the environment the previous stage returned when every stage
+/// cloned for itself (#2386: those copies were up to six per `let`, all but
+/// the first redundant).
+fn bind_shapes_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  array_elem_bind_into(out, name, val, struct_sets, fn_returns)
+  tuple_shape_bind_into(out, name, val, struct_sets, fn_returns)
+  ctor_payload_bind_into(out, name, val, struct_sets, fn_returns)
   // LAST: infer_shape reads the sentinels the three above just wrote, so a
   // binding whose elements are themselves named bindings resolves in one pass.
-  shape_bind(c, name, val, struct_sets, fn_returns)
+  shape_bind_into(out, name, val, struct_sets, fn_returns)
+}
+
+/// The whole binding-site environment of a `let` / `let mut` / the equality
+/// walk's `bound_var_types`, built on ONE copy of `var_types`: the inferred
+/// head type when there is one (what `extend_var_types` records), the
+/// impl-target key, the four shape records, then the equality shape. Same
+/// entries in the same order as the former chain of per-stage clones.
+fn bind_let_env(var_types: Array[(String, String)], name: String, val: Expr, inferred: Option[String], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let out = clone_var_types(var_types)
+  match inferred {
+    Some(tname) => Array::push(out, (name, tname)),
+    None => ()
+  }
+  bind_impl_target_key_into(out, name, val, struct_sets, fn_returns)
+  bind_shapes_into(out, name, val, struct_sets, fn_returns)
+  eq_shape_bind_into(out, name, val, struct_sets, fn_returns)
+  out
 }
 
 /// Equality keeps a deeper type shape than the general rendering/type-head
@@ -6110,7 +6110,7 @@ fn bind_shapes(var_types: Array[(String, String)], name: String, val: Expr, stru
 /// shape for both `let` and `let mut`; their contents may still mutate, so
 /// comparison has a runtime fail-closed guard below. Empty entries are answers
 /// too: they mask an outer binding's equality/call-result shape on shadowing.
-fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+fn eq_shape_bind_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   // #2218: read a LOCAL annotation directly. `let m: Map[String, Int] = mk()`
   // is parsed as `((__asc: Map[String, Int]) -> __asc)(mk())`, so the type is
   // in the AST -- but the arms below see the ascription WRAPPER, not the call,
@@ -6142,24 +6142,22 @@ fn eq_shape_bind(var_types: Array[(String, String)], name: String, val: Expr, st
         None => if Array::length(tparams) > 0 {
           ""
         } else {
-          infer_shape(fn_body_tail_expr(fbody), struct_sets, var_types, fn_returns)
+          infer_shape(fn_body_tail_expr(fbody), struct_sets, out, fn_returns)
         }
       },
       EArray(items) => if Array::length(items) == 0 {
         "[__EqEmpty]"
       } else {
-        infer_eq_shape(val, struct_sets, var_types, fn_returns)
+        infer_eq_shape(val, struct_sets, out, fn_returns)
       },
-      _ => infer_eq_shape(val, struct_sets, var_types, fn_returns)
+      _ => infer_eq_shape(val, struct_sets, out, fn_returns)
     }
   }
-  let out = clone_var_types(var_types)
   Array::push(out, (eq_shape_key(name), if shape_is_composite(sh) {
     sh
   } else {
     ""
   }))
-  out
 }
 
 // ---- #2157: an unannotated `let xs = []` gets its element type from a push ----
@@ -6631,9 +6629,7 @@ fn self_describing_fallback(v: Expr, struct_sets: Array[(String, Array[String])]
 /// The same binding-site records `rewrite_expr` makes at an `ELet`/`ELetMut`,
 /// so the walk above reads names the way the comparison site will.
 fn bound_var_types(var_types: Array[(String, String)], n: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
-  let inferred = extend_var_types(var_types, n, anon_or_infer(val, struct_sets, var_types, fn_returns))
-  let base = bind_impl_target_key(inferred, n, val, struct_sets, fn_returns)
-  eq_shape_bind(bind_shapes(base, n, val, struct_sets, fn_returns), n, val, struct_sets, fn_returns)
+  bind_let_env(var_types, n, val, anon_or_infer(val, struct_sets, var_types, fn_returns), struct_sets, fn_returns)
 }
 
 /// The value `e` pushes onto the array bound to `name`. Only the qualified
@@ -10593,14 +10589,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       } else {
         anon_or_infer(val, struct_sets, var_types, fn_returns)
       }
-      let inferred_vars = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
-        constructor_rewrite_var_types(var_types, name, inferred)
+      let body_vars2 = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
+        bind_let_env(constructor_rewrite_var_types(var_types, name, inferred), name, val, None, struct_sets, fn_returns)
       } else {
-        extend_var_types(var_types, name, inferred)
+        bind_let_env(var_types, name, val, inferred, struct_sets, fn_returns)
       }
-      let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
-      let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
-      let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
       // #2157: an unannotated `let xs = []` reads its element type off the
       // pushes in its own body, so it compares like the annotated form.
       let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
@@ -10622,14 +10615,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       } else {
         anon_or_infer(val, struct_sets, var_types, fn_returns)
       }
-      let inferred_vars = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
-        constructor_rewrite_var_types(var_types, name, inferred)
+      let body_vars2 = if Array::get(dtd_constructor_tracking, 0) && inferred == None && constructor_binding_has_evidence(var_types, name) {
+        bind_let_env(constructor_rewrite_var_types(var_types, name, inferred), name, val, None, struct_sets, fn_returns)
       } else {
-        extend_var_types(var_types, name, inferred)
+        bind_let_env(var_types, name, val, inferred, struct_sets, fn_returns)
       }
-      let body_vars0 = bind_impl_target_key(inferred_vars, name, val, struct_sets, fn_returns)
-      let body_vars1 = bind_shapes(body_vars0, name, val, struct_sets, fn_returns)
-      let body_vars2 = eq_shape_bind(body_vars1, name, val, struct_sets, fn_returns)
       let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
       let body_vars = extend_local_fn_return(body_vars3, name, val)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
@@ -17031,13 +17021,6 @@ fn optional_flags_for_call(fname: String, shadows: Array[String]) -> Option[Arra
   }
 }
 
-fn stmts_have_optional_fn(_stmts: Array[Stmt]) -> Bool {
-  // Nested `let o = (a, b?) ->` leaves no top-level table entry. Walking
-  // every statement is cheap next to typecheck and is what makes #1952
-  // work in a file that has no top-level optional fn.
-  true
-}
-
 /// #1899/#1952: the labels and optional flags of lambdas bound by a `let`
 /// INSIDE a block, which the two top-level tables above cannot see.
 ///
@@ -18657,6 +18640,34 @@ fn relabel_stmt_paired(stmt: Stmt, tbl: Array[(String, Array[String])], node: Bi
 /// relabel_stmt rebuild per top-level statement,
 /// since collect_fn_param_labels now indexes EVERY top-level function and the
 /// old `tbl empty -> skip` fast path no longer fires for ordinary programs.
+/// #2386: the walk_all replacement -- see dinsp_scan mode 6. Only meaningful
+/// after optional_param_tbl_set has published the program's table.
+fn stmt_calls_optional_fn(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, body) => dinsp_scan(body, 6, ""),
+    SFnDecl(_, _, body, _, _) => dinsp_scan(body, 6, ""),
+    SLetMut(_, _, body) => dinsp_scan(body, 6, ""),
+    STest(_, body) => dinsp_scan(body, 6, ""),
+    SBench(_, body) => dinsp_scan(body, 6, ""),
+    SExpr(e) => dinsp_scan(e, 6, ""),
+    SLetPat(_, e) => dinsp_scan(e, 6, ""),
+    SModule(_, _, ms) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(ms) {
+        if found {
+          i = Array::length(ms)
+        } else {
+          found = stmt_calls_optional_fn(Array::get(ms, i))
+          i = i + 1
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
 fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, _, _, body) => dinsp_scan(body, 3, ""),
@@ -18756,8 +18767,9 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
     // declares an optional parameter is the other (#1952). Without the second,
     // a statement whose only feature is a block-local `(a: Int, b?: Int)` was
     // skipped outright, and the omitted argument reached the checker as an
-    // arity error. The top-level equivalent is handled by `walk_all`, which is
-    // computed from collect_optional_param_fns and so cannot see this one.
+    // arity error. The top-level equivalent is mode 6 (a call to a top-level
+    // optional-parameter fn by name), consulted by desugar_labeled_args when
+    // collect_optional_param_fns found any.
     match expr {
       ELabeledArg(_, _, _) => true,
       EFn(_, _, params, _, _, _) => dinsp_params_optional(params),
@@ -18768,6 +18780,25 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EIdent(n, _) => n == name,
       EAssign(n, _, _) => n == name,
       EAssignOp(n, _, _, _) => n == name,
+      _ => false
+    }
+  } else if mode == 6 {
+    // #2386: "does this statement call a TOP-LEVEL optional-parameter fn by
+    // name?" -- the third and last reason the relabel walk can change a
+    // statement (an omitted optional leaves no syntactic trace at the call,
+    // but the callee's NAME is one; relabel_expr's ECall arm fills only
+    // calls whose callee is an ident it can resolve). Reads the same table
+    // the walk reads (optional_param_tbl_set runs before the scan). Used
+    // with mode 3, it replaces the `walk_all` that rebuilt EVERY statement
+    // of a program declaring any optional parameter.
+    match expr {
+      ECall(callee, _, _) => match callee {
+        EIdent(n, _) => match optional_param_flags(n) {
+          Some(_) => true,
+          None => false
+        },
+        _ => false
+      },
       _ => false
     }
   } else {
@@ -19550,7 +19581,15 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   // stmt_has_labeled_arg finds.
   let opt_tbl = collect_optional_param_fns(stmts)
   optional_param_tbl_set(opt_tbl)
-  let walk_all = Array::length(opt_tbl) > 0 || stmts_have_optional_fn(stmts)
+  // #2386: `walk_all` used to be true for every program that declared an
+  // optional parameter anywhere (the compiler's own closure does), so every
+  // statement was rebuilt on every compile (0.23 s of a warm compiler-closure
+  // compile). The two syntactic reasons the walk can change a statement are
+  // already scanned by stmt_has_labeled_arg (a labeled argument, a lambda
+  // with an optional parameter); the third -- a call to a top-level
+  // optional-parameter fn -- is stmt_calls_optional_fn, consulted only when
+  // the table is non-empty.
+  let has_opt_tbl = Array::length(opt_tbl) > 0
   // No `if Array::length(tbl) == 0` early-out. It was an optimisation that had
   // become a correctness hole once local lambdas got labels of their own
   // (#1899/#1952): collect_fn_param_labels indexes `SLet`s, so a file whose
@@ -19561,7 +19600,7 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   // where nothing needs relabelling.
   let mut i = 0
   while i < Array::length(stmts) {
-    if walk_all || stmt_has_labeled_arg(Array::get(stmts, i)) {
+    if stmt_has_labeled_arg(Array::get(stmts, i)) || (has_opt_tbl && stmt_calls_optional_fn(Array::get(stmts, i))) {
       Array::set(stmts, i, relabel_stmt(Array::get(stmts, i), tbl))
     } else {
       ()
