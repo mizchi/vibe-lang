@@ -144,7 +144,6 @@ function check(stage2, project, cache, gate, name, allowFailure = false, extraEn
       VIBE_HOME: join(project, ".home"),
       VIBE_PREOPEN_DIR: project,
       VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: gate ? "" : "1",
-      VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "",
       ...extraEnv,
     },
   });
@@ -173,7 +172,6 @@ function compile(stage2, project, cache, enabled, name, allowFailure = false, ex
       VIBE_HOME: join(project, ".home"),
       VIBE_PREOPEN_DIR: project,
       VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: enabled ? "" : "1",
-      VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "",
       ...extraEnv,
     },
   });
@@ -325,31 +323,6 @@ function referencedAppTargetEnv(stage2, cache, target) {
   return path;
 }
 
-function expectTraceLaneRejected(stage2, project, cache) {
-  const out = "trace-rejected.out";
-  const trace = "trace-rejected.json";
-  const result = spawnSync("bash", [join(root, "scripts/run_wasm_vibe_host_runner.sh"), "--invoke", "cli_main", stage2, "app.vibe", out], {
-    cwd: project,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      VIBE_BUILD_CACHE_DIR: cache,
-      VIBE_CHECK_ONLY: "1",
-      VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "",
-      VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "1",
-      VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: trace,
-      VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "trace-lane-rejection",
-      VIBE_IMPORT_ABI: "raw",
-      VIBE_HOME: join(project, ".home-trace-rejected"),
-      VIBE_PREOPEN_DIR: project,
-    },
-  });
-  if (result.status === 0) fail("trace lane unexpectedly accepted explicit legacy reuse");
-  const diagPath = join(project, `${out}.diag`);
-  const diagnostic = `${result.stderr || ""}\n${result.stdout || ""}\n${existsSync(diagPath) ? readFileSync(diagPath, "utf8") : ""}`;
-  if (!diagnostic.includes("does not support VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")) fail("trace lane rejection diagnostic changed");
-}
-
 function traceForcedOff(stage2, project, cache) {
   const beforeAliases = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_v9").length;
   const beforeWitnesses = bindingFiles(cache, "selfhost_typing_dependency_env_reuse_eligibility_v9").length;
@@ -376,7 +349,6 @@ function expectInvalidEnvRejected(stage2, project, cache, variable, value) {
       VIBE_BUILD_CACHE_DIR: cache,
       VIBE_CHECK_ONLY: "1",
       VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "",
-      VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "",
       VIBE_IMPORT_ABI: "raw",
       VIBE_HOME: join(project, ".home-invalid-env"),
       VIBE_PREOPEN_DIR: project,
@@ -456,10 +428,6 @@ function run(stage2) {
     expectCounts("unchecked after checked mode isolation", uncheckedAfterChecked.telemetry, 2, 0);
     const modeSeeds = bindingFiles(uncheckedFirstCache, "selfhost_typing_dependency_env_reuse_v9").map((path) => parseLogicalInput(parseBinding(readFileSync(path, "utf8"), "TDRE9A").input).typingSemantics);
     if (!modeSeeds.includes("checked") || !modeSeeds.includes("unchecked")) fail("TDRE9 aliases did not retain disjoint typing semantics seeds");
-    const legacyCompat = check(stage2, onProject, onCache, true, "legacy-compat", false, {
-      VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "1",
-    });
-    expectCounts("legacy 1 compatibility no-op", legacyCompat.telemetry, 0, 2);
     commentEdit(onProject);
     const commentOn = check(stage2, onProject, onCache, true, "comment-on");
     expectCounts("comment-only consumer reuse", commentOn.telemetry, 1, 1, 2, 1);
@@ -508,9 +476,7 @@ function run(stage2) {
     const traceForcedOffTelemetry = traceForcedOff(stage2, onProject, onCache);
     const postTraceDefault = check(stage2, onProject, onCache, true, "post-trace-default");
     expectCounts("normal check after trace resets default policy", postTraceDefault.telemetry, 0, 2);
-    expectTraceLaneRejected(stage2, onProject, onCache);
     expectInvalidEnvRejected(stage2, onProject, onCache, "VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE", "true");
-    expectInvalidEnvRejected(stage2, onProject, onCache, "VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE", "0");
     const v22Isolation = expectV22Isolation(stage2, work);
 
     const malformedProject = join(work, "malformed-target-project");
@@ -748,7 +714,6 @@ function run(stage2) {
       default_policy: {
         cold: coldOn.telemetry,
         warm: warmOn.telemetry,
-        legacy_compatibility: legacyCompat.telemetry,
         explicit_disable_control: coldOff.telemetry,
         trace_forced_off: traceForcedOffTelemetry,
         post_trace_default: postTraceDefault.telemetry,

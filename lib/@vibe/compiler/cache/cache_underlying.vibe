@@ -218,11 +218,6 @@ let ingestion_telemetry_enabled_cell = []
 
 let ingestion_telemetry_counters = []
 
-// Environment is immutable for a compiler process. Cache the experimental
-// switch so the default path pays one Env lookup, not one per fingerprint
-// helper call (selfbuild invokes this helper more than a thousand times).
-let ingestion_stamp_enabled_cell = []
-
 fn ingestion_telemetry_enabled() -> Bool {
   Array::length(ingestion_telemetry_enabled_cell) > 0 && Array::get(ingestion_telemetry_enabled_cell, 0)
 }
@@ -232,7 +227,7 @@ export fn cache_set_ingestion_fingerprint_telemetry_enabled(enabled: Bool) -> Un
   Array::push(ingestion_telemetry_enabled_cell, enabled)
   Array::truncate(ingestion_telemetry_counters, 0)
   let mut i = 0
-  while i < 10 {
+  while i < 4 {
     Array::push(ingestion_telemetry_counters, 0)
     i = i + 1
   }
@@ -254,111 +249,6 @@ fn ingestion_telemetry_counter(index: Int) -> Int {
   }
 }
 
-fn decimal_string_is_nonnegative(s: String) -> Bool {
-  let n = String::length(s)
-  if n == 0 {
-    false
-  } else {
-    let mut i = 0
-    let mut ok = true
-    while i < n {
-      let c = String::char_code_at(s, i)
-      if c < 48 || c > 57 {
-        ok = false
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    ok
-  }
-}
-
-/// The compact fingerprint has exactly three nonnegative decimal components.
-/// This is intentionally syntax validation only: converting an untrusted huge
-/// decimal to Int could overflow and turn cache corruption into a compiler
-/// failure instead of a cache miss.
-export fn cache_ingestion_compact_fingerprint_is_valid(fingerprint: String) -> Bool {
-  let parts = String::split(fingerprint, ":")
-  Array::length(parts) == 3
-  && decimal_string_is_nonnegative(Array::get(parts, 0))
-  && decimal_string_is_nonnegative(Array::get(parts, 1))
-  && decimal_string_is_nonnegative(Array::get(parts, 2))
-}
-
-/// Strict metadata-only v1 payload. The stat token is length delimited, so no
-/// delimiter or control character in future token text can change field
-/// boundaries. The remaining payload is only the compact fingerprint; source
-/// text, transformed source, and source prefixes are never serialized here.
-export fn cache_ingestion_stamp_v1_text(stat_token_text: String, fingerprint: String) -> String {
-  String::concat("v1\t", String::concat(__to_string(String::length(stat_token_text)), String::concat("\t", String::concat(__to_string(String::length(fingerprint)), String::concat("\t", String::concat(stat_token_text, fingerprint))))))
-}
-
-fn parse_bounded_decimal(text: String, start: Int, end: Int, bound: Int) -> Option[Int] {
-  if start >= end {
-    None
-  } else {
-    let mut i = start
-    let mut value = 0
-    let mut ok = true
-    while i < end {
-      let c = String::char_code_at(text, i)
-      if c < 48 || c > 57 || value > (bound - (c - 48)) / 10 {
-        ok = false
-      } else {
-        value = value * 10 + (c - 48)
-      }
-      i = i + 1
-    }
-    if ok {
-      Some(value)
-    } else {
-      None
-    }
-  }
-}
-
-/// Parse only a complete v1 stamp. Every malformed, truncated, extra-version,
-/// or invalid-fingerprint payload returns None so callers fail closed.
-export fn cache_parse_ingestion_stamp_v1_text(text: String) -> Option[(String, String)] {
-  let n = String::length(text)
-  if n < 7 || text[0: 3] != "v1\t" {
-    None
-  } else {
-    let mut token_len_end = 3
-    while token_len_end < n && String::char_code_at(text, token_len_end) != 9 {
-      token_len_end = token_len_end + 1
-    }
-    let mut fingerprint_len_end = token_len_end + 1
-    while fingerprint_len_end < n && String::char_code_at(text, fingerprint_len_end) != 9 {
-      fingerprint_len_end = fingerprint_len_end + 1
-    }
-    if token_len_end >= n || fingerprint_len_end >= n {
-      None
-    } else {
-      let payload_start = fingerprint_len_end + 1
-      match (parse_bounded_decimal(text, 3, token_len_end, n - payload_start), parse_bounded_decimal(text, token_len_end + 1, fingerprint_len_end, n - payload_start)) {
-        (Some(token_len), Some(fingerprint_len)) => {
-          let fingerprint_start = payload_start + token_len
-          let payload_end = fingerprint_start + fingerprint_len
-          if token_len == 0 || fingerprint_len == 0 || fingerprint_start > n || payload_end != n {
-            None
-          } else {
-            let token = text[payload_start: fingerprint_start]
-            let fingerprint = text[fingerprint_start: payload_end]
-            if cache_ingestion_compact_fingerprint_is_valid(fingerprint) {
-              Some((token, fingerprint))
-            } else {
-              None
-            }
-          }
-        },
-        _ => None
-      }
-    }
-  }
-}
-
 fn fingerprint_source(path: String) -> String with Fs {
   let source = Fs::read_file(path)
   ingestion_telemetry_add(0, 1)
@@ -366,93 +256,6 @@ fn fingerprint_source(path: String) -> String with Fs {
   let fingerprint = compact_string_fingerprint(source)
   ingestion_telemetry_add(2, 1)
   ingestion_telemetry_add(3, String::length(source))
-  fingerprint
-}
-
-fn try_load_ingestion_stamp(stamp_path: String, stat_token_text: String) -> Option[String] with Fs {
-  ingestion_telemetry_add(4, 1)
-  if !Fs::exists(stamp_path) {
-    ingestion_telemetry_add(6, 1)
-    None
-  } else {
-    let text = Fs::read_file(stamp_path)
-    ingestion_telemetry_add(8, String::length(text))
-    match cache_parse_ingestion_stamp_v1_text(text) {
-      None => {
-        ingestion_telemetry_add(7, 1)
-        None
-      },
-      Some((stored_token, fingerprint)) => {
-        if stored_token == stat_token_text {
-          ingestion_telemetry_add(5, 1)
-          Some(fingerprint)
-        } else {
-          ingestion_telemetry_add(6, 1)
-          None
-        }
-      }
-    }
-  }
-}
-
-fn publish_ingestion_stamp(stamp_path: String, stat_token_text: String, fingerprint: String) -> Unit with Fs {
-  // Official Rust and Node runners implement Fs::write_file as atomic
-  // publication. Fs's language contract does not promise that universally;
-  // non-official runners therefore get only an optimization and malformed or
-  // torn observations fail closed at the strict decoder above.
-  Fs::write_file(stamp_path, cache_ingestion_stamp_v1_text(stat_token_text, fingerprint))
-  ingestion_telemetry_add(9, 1)
-}
-
-/// This preserves #1308's process memo and semantic identity. Only an explicit
-/// experimental gate lets a process-memo miss consult metadata; it never
-/// supplies source text, so all ordinary loader reads/typechecking/codegen stay
-/// authoritative. The stamp is valid only for the exact current stat-token
-/// TEXT, not an integer re-encoding.
-export fn cache_ingestion_stamp_enabled() -> Bool {
-  if Array::length(ingestion_stamp_enabled_cell) == 0 {
-    Array::push(ingestion_stamp_enabled_cell, read_env_discharged("VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP") == "1")
-  } else {
-    ()
-  }
-  Array::get(ingestion_stamp_enabled_cell, 0)
-}
-
-export fn cache_fingerprint_file_fs_with_ingestion_stamp(path: String, stamp_path: String) -> String with Fs {
-  let token = Fs::stat_token(path)
-  let token_text = __to_string(token)
-  match MutMap::get(fingerprint_file_memo_index, path) {
-    Some(i) => {
-      if Array::get(fingerprint_file_memo_tokens, i) == token {
-        return Array::get(fingerprint_file_memo_fps, i)
-      } else {
-        let fingerprint = match try_load_ingestion_stamp(stamp_path, token_text) {
-          Some(hit) => hit,
-          None => {
-            let fresh = fingerprint_source(path)
-            publish_ingestion_stamp(stamp_path, token_text, fresh)
-            fresh
-          }
-        }
-        Array::set(fingerprint_file_memo_tokens, i, token)
-        Array::set(fingerprint_file_memo_fps, i, fingerprint)
-        return fingerprint
-      }
-    },
-    None => ()
-  }
-  let fingerprint = match try_load_ingestion_stamp(stamp_path, token_text) {
-    Some(hit) => hit,
-    None => {
-      let fresh = fingerprint_source(path)
-      publish_ingestion_stamp(stamp_path, token_text, fresh)
-      fresh
-    }
-  }
-  MutMap::set(fingerprint_file_memo_index, path, Array::length(fingerprint_file_memo_paths))
-  Array::push(fingerprint_file_memo_paths, path)
-  Array::push(fingerprint_file_memo_tokens, token)
-  Array::push(fingerprint_file_memo_fps, fingerprint)
   fingerprint
 }
 
@@ -524,13 +327,14 @@ fn json_escape_string(value: String) -> String {
   StringBuilder::freeze(out)
 }
 
-/// schema v1 invariants: all counters are nonnegative; probes equal hits plus
-/// misses plus malformed; source/hash calls and input string_units rise only
-/// when this helper reads and hashes disk source. String units are language
-/// String::length units, explicitly not raw bytes.
+/// schema v2 invariants: all counters are nonnegative; source/hash calls and
+/// input string_units rise only when this helper reads and hashes disk source.
+/// String units are language String::length units, explicitly not raw bytes.
+/// (v1 also carried the metadata-stamp counters of the retired opt-in
+/// ingestion-stamp lane; every one of them was pinned to zero.)
 export fn cache_ingestion_fingerprint_telemetry_json(nonce: String) -> String {
   let out = StringBuilder::new()
-  StringBuilder::push(out, "{\"schema\":\"ingestion_fingerprint\",\"version\":1,\"nonce\":\"")
+  StringBuilder::push(out, "{\"schema\":\"ingestion_fingerprint\",\"version\":2,\"nonce\":\"")
   StringBuilder::push(out, json_escape_string(nonce))
   StringBuilder::push(out, "\",\"source_read_calls\":")
   StringBuilder::push(out, __to_string(ingestion_telemetry_counter(0)))
@@ -540,18 +344,6 @@ export fn cache_ingestion_fingerprint_telemetry_json(nonce: String) -> String {
   StringBuilder::push(out, __to_string(ingestion_telemetry_counter(2)))
   StringBuilder::push(out, ",\"hash_input_string_units\":")
   StringBuilder::push(out, __to_string(ingestion_telemetry_counter(3)))
-  StringBuilder::push(out, ",\"stamp_probes\":")
-  StringBuilder::push(out, __to_string(ingestion_telemetry_counter(4)))
-  StringBuilder::push(out, ",\"stamp_hits\":")
-  StringBuilder::push(out, __to_string(ingestion_telemetry_counter(5)))
-  StringBuilder::push(out, ",\"stamp_misses\":")
-  StringBuilder::push(out, __to_string(ingestion_telemetry_counter(6)))
-  StringBuilder::push(out, ",\"stamp_malformed\":")
-  StringBuilder::push(out, __to_string(ingestion_telemetry_counter(7)))
-  StringBuilder::push(out, ",\"stamp_text_units_read\":")
-  StringBuilder::push(out, __to_string(ingestion_telemetry_counter(8)))
-  StringBuilder::push(out, ",\"stamp_publications\":")
-  StringBuilder::push(out, __to_string(ingestion_telemetry_counter(9)))
   StringBuilder::push(out, "}")
   StringBuilder::freeze(out)
 }

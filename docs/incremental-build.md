@@ -173,10 +173,9 @@ one-shot `vibe check` path for cold, exact warm/no-op, comment-only, private-bod
 and public-interface edits. It requests a disabled-by-default compiler sidecar
 for deterministic `db_typecheck_fs` work counters: modules planned, rechecked,
 reused, and parse operations. The qualified outer record (`schema:
-"edit_cycle_kpi"`, `version: 2`) pins and records persistent ingestion stamps
-off, production-default typing dependency environment reuse
-on, invalidation tracing off, and check-only compilation; inherited environment
-variables cannot silently change those modes. Each record also has a scoped
+"edit_cycle_kpi"`, `version: 3`) pins and records production-default typing
+dependency environment reuse on, invalidation tracing off, and check-only
+compilation; inherited environment variables cannot silently change those modes. Each record also has a scoped
 `work_summary` and matching `work_scopes`:
 
 - `read_bytes`: all bytes returned by `fs_read_file` plus `fs_read_bytes` host
@@ -193,10 +192,9 @@ machine-readable before/after summary. It validates all nested telemetry and
 fails before computing deltas if the outer schema, benchmark, fixture, runner,
 endpoint, process mode, complete case-by-run topology, mode authority, or metric
 scopes differ. Each case has fixed `edit_kind` and `cache_state` metadata.
-Malformed/unsafe counts, ingestion read/hash unit disagreement, stamp activity
-while stamps are pinned off, nondeterministic repetitions, and nonzero codegen
-are also rejected. Version 2 additionally records a separate compiler-owned
-`ingestion_pipeline` v1 sidecar. Its execution counters distinguish source-list
+Malformed/unsafe counts, ingestion read/hash unit disagreement,
+nondeterministic repetitions, and nonzero codegen are also rejected. The record
+also carries a separate compiler-owned `ingestion_pipeline` v1 sidecar. Its execution counters distinguish source-list
 and source-group cache probes/hits/misses, list-to-group reconstruction,
 cold collection, module-header probes and parse scans, entry/final/linked/warning
 parses. Probe partitions and the reconstruction partition are exact; final
@@ -328,20 +326,6 @@ authority. Reconsideration requires a separately authenticated host API that
 proves both clean classification and exact equality to the byte/text stream the
 compiler consumes. No commit timestamp or author/modified date may substitute.
 
-The opt-in persistent ingestion-stamp oracle similarly uses isolated gate-off
-and gate-on cache histories for a copied package. It proves only that unchanged
-and metadata-token-miss successful checks have equal observed invalidation
-traces (apart from the freshness nonce) and equal check output bytes/text. It
-retains malformed and content-token fallback checks. It also performs a
-same-size in-place content mutation and restores the prior mtime: when the host
-filesystem reproduces the exact inode/size/mtime token inputs, the oracle
-requires the changed bytes to produce a stamp hit with no fingerprint-boundary
-read or hash. Platforms that cannot reproduce the exact token report an
-explicit capability skip. This adversarial evidence means metadata-token
-equality is not a content identity and the stamp is unsafe as production
-authority; it remains default-off and opt-in only. The oracle still does not
-prove artifact equivalence.
-
 ## Trait generic provenance (bounded Phase 3)
 
 The in-memory parser and checker retain bare trait-header parameter names and
@@ -363,13 +347,9 @@ conservative pending a compact exact-publication design: publishing the current
 exact TDRE9A/TDRE9W texts on a fresh selfcompile exceeds the signed 2 GiB guest
 heap boundary, while the conservative compile lane remains near 1.11 GB.
 `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` is the strict emergency opt-out for
-check-only reuse;
-any other nonempty value is rejected. The legacy
-`VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE` spelling accepts only empty or
-`1` and is otherwise a compatibility no-op. An ordinary incremental
+check-only reuse; any other nonempty value is rejected. An incremental
 invalidation trace automatically forces reuse off so the trace stays
-observation-only. For compatibility, explicitly combining legacy `1` with an
-invalidation trace remains rejected.
+observation-only.
 
 TDRE9 aliases the exact logical
 `ModuleJob` checker input to a previously checked TypeEnv: canonical owner path,
