@@ -11,7 +11,7 @@ import ./parser.vibe {
   parse_program_spans, set_cfg_ambient_flags
 }
 
-let src: String = "#cfg_enable(dev)\n#cfg(dev)\nlet a = 1\n#cfg(release)\nlet b = 2\n#deprecated(\"use c2\")\nlet c = 3\n#cfg(release)\nimpl Show for Foo {\n  fn show(self) -> String {\n    \"x\"\n  }\n}\nlet d = 4\n"
+let src: String = "#cfg_enable(dev)\n#cfg(dev)\nlet a = 1\n#cfg(release)\nlet b = 2\n#deprecated(\"use c2\")\nlet c = 3\n#cfg(release)\nimpl Show for Foo {\n  show(self) -> String {\n    \"x\"\n  }\n}\nlet d = 4\n"
 
 fn slices(source: String) -> Array[String] with Exception {
   let (tokens, starts, ends) = lex_with_offsets(source)
@@ -43,7 +43,7 @@ test "ambient flags select too, including a guarded impl" {
   assert_eq(Array::get(got, 0), "let a = 1")
   assert_eq(Array::get(got, 1), "let b = 2")
   assert_eq(Array::get(got, 2), "let c = 3")
-  assert_eq(Array::get(got, 3), "impl Show for Foo {\n  fn show(self) -> String {\n    \"x\"\n  }\n}")
+  assert_eq(Array::get(got, 3), "impl Show for Foo {\n  show(self) -> String {\n    \"x\"\n  }\n}")
   assert_eq(Array::get(got, 4), "let d = 4")
 }
 
@@ -51,6 +51,28 @@ test "an inactive guarded statement must still parse" {
   set_cfg_ambient_flags([])
   let bad = "#cfg(never)\nlet = \nlet d = 4\n"
   let (tokens, starts, ends) = lex_with_offsets(bad)
+  let failed = handle {
+    let _ = parse_program_spans(tokens, starts, ends)
+    false
+  } with { Exception::Throw(_) => true }
+  assert(failed)
+}
+
+test "an inactive guarded impl must still parse its methods" {
+  set_cfg_ambient_flags([])
+  let bad_method = "#cfg(never)\nimpl Show for Foo {\n  show(self -> String {\n    \"x\"\n  }\n}\nlet d = 4\n"
+  let (tokens, starts, ends) = lex_with_offsets(bad_method)
+  let failed = handle {
+    let _ = parse_program_spans(tokens, starts, ends)
+    false
+  } with { Exception::Throw(_) => true }
+  assert(failed)
+}
+
+test "an unterminated inactive guarded impl is a diagnostic, not a hang" {
+  set_cfg_ambient_flags([])
+  let unterminated = "#cfg(never)\nimpl Show for Foo {\n  show(self) -> String {\n    \"x\"\n  }\n"
+  let (tokens, starts, ends) = lex_with_offsets(unterminated)
   let failed = handle {
     let _ = parse_program_spans(tokens, starts, ends)
     false
