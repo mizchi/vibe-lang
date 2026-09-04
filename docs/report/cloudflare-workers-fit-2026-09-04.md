@@ -157,9 +157,9 @@ The row is what becomes possible once they are build-time `#cfg` flags.
 | input | closure | wall | heap_ptr | linear memory |
 |---|---|---:|---:|---:|
 | `bench/binary_size/hello_world.vibe` | 1 file | 0.28 s | 1.95 MB | 4 MB (64 pages, the minimum) |
-| `lib/@vibe/json/json_test.vibe` | json + core | 0.65 s | 18.0 MB | 21 MB |
-| `lib/@vibe/optimizer/wasm_opt_test.vibe` | 5.7 k lines | 1.07 s | 54.9 MB | 72 MB |
-| `lib/@vibe/parser/parser_smoke_test.vibe` | parser + core, about 19 k lines | 2.18 s | 127 MB | 161 MB |
+| `lib/@vibe/json/json_test.vibe` | 8 files, 1.2 k lines | 0.65 s | 18.0 MB | 21 MB |
+| `lib/@vibe/optimizer/wasm_opt_test.vibe` | 2 files, 9.6 k lines | 1.07 s | 54.9 MB | 72 MB |
+| `lib/@vibe/parser/parser_smoke_test.vibe` | 17 files, 13.7 k lines | 2.18 s | 127 MB | 161 MB |
 | `lib/@vibe/compiler/tests/codegen_lexer_test.vibe` | full compiler closure | 8.70 s | 1,354 MB | 1,835 MB |
 | `lib/@vibe/lsp/lsp_diagnostics_test.vibe` (seed) | lsp + compiler | 24.4 s | 2,774 MB | 2,802 MB |
 
@@ -169,10 +169,17 @@ Warm (persistent cache populated, same input, seed compiler): full closure
 
 ### Verdict on target 2
 
-**Met for programs up to roughly 10 k lines of closure.** hello world through
-the 5.7 k-line optimizer fit with room for the JS heap. The parser closure at
-about 19 k lines already reserves 161 MB of linear memory, so "small" is
-bounded near the size of one vibe package, not one application. Wall time is
+**Met for the measured closures up to 9.6 k lines; not met at 13.7 k.** The
+closure column is the loader's own import closure (`vibe deps`), so the rows
+are comparable: hello world through the 9.6 k-line optimizer closure reserve
+at most 72 MB of linear memory and leave room for the JavaScript heap; the
+13.7 k-line parser closure reserves 161 MB and does not fit. The boundary
+between those two is unmeasured, and line count is only a proxy: the json
+closure costs about 17 KB of pages per line and the optimizer about 7.5 KB,
+because imported interfaces and source structure decide the allocation, not
+length. So the honest statement is "closures the size of the optimizer fit,
+closures the size of the parser do not", with one vibe package, not one
+application, as the unit that fits. Wall time is
 inside the paid CPU budget for every row and outside the free 10 ms one for
 every row, hello world included: its 0.28 s is the wall time of a node process
 that also starts the runtime and instantiates a 2.7 MB module, and no CPU-time
@@ -372,12 +379,16 @@ DCE root. What lets the tooling units of section 3 exist is a build-time
 boundary: separate executable-shaped artifacts, `#cfg` selection of the
 handlers, or a build that exports exactly one entry.
 
-**(b) Run-time lane switches, 12.** These are the ones that block DCE, because
+**(b) Run-time lane switches, 11.** These are the ones that block DCE, because
 the branch they guard is decided after the wasm is built: `VIBE_RC` (`0` / `1`
 / `shadow`), `VIBE_BACKEND` (`gc`), `VIBE_DEBUG`, `VIBE_DEBUG_BREAK`,
-`VIBE_CODEGEN_BODY_CACHE`, `VIBE_UNSTABLE`, `VIBE_FS_COMPILE`, `VIBE_CFG`,
+`VIBE_CODEGEN_BODY_CACHE`, `VIBE_UNSTABLE`, `VIBE_FS_COMPILE`,
 `VIBE_INTERNAL_TRUSTED_SOURCE`, `VIBE_WASM_NAMES`, `VIBE_WASM_KEEP_EXPORTS`,
-`VIBE_DEP_ORDER_SEED`. The gc backend (140 KB), component/serve codegen
+`VIBE_DEP_ORDER_SEED`. `VIBE_CFG` is deliberately not on this list: it is the
+`#cfg` set of the program being compiled, a per-compilation input a Worker
+receives with the request (`docs/cheatsheet.md` documents callers choosing
+it), and it stays a run-time input; what moves to build time is the
+compiler's own feature set, not its users'. The gc backend (140 KB), component/serve codegen
 (88 KB), the RC shadow lane, the debug-break and trace codegen (9 KB) and the
 body cache all stay in every artifact because of them. The mechanism to fix
 this already exists: `apply_cfg_env` turns `VIBE_CFG=a,b` into `#cfg_enable`
