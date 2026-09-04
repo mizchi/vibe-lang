@@ -3913,8 +3913,15 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
   // per-parameter table, which switches call-site row unification off and
   // restores the pre-#1485 exemption. Callers of this entry are unit-test and
   // non-stmts paths that have no call-graph parameter types to offer anyway.
+  check_perform_effects_expr_tx_indexed(root, root_declared, root_in_handle, fn_names, fn_effs, program_fn_index(fn_names), root_ov_names, root_ov_effs)
+}
+
+/// The same entry with the program table's index supplied by the caller
+/// (#2386 review): the cacheability walks below run it once per test block
+/// of a file, and an index rebuilt per block is `blocks x table` of memory
+/// the bump lane never frees.
+fn check_perform_effects_expr_tx_indexed(root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], root_ov_names: Array[String], root_ov_effs: Array[Array[String]]) -> Array[EffectError] {
   set_entry_user_effect_operations(array_empty())
-  let fn_index = program_fn_index(fn_names)
   check_perform_effects_expr_tx_in("", root, root_declared, root_in_handle, fn_names, fn_effs, fn_index, no_param_effs(), root_ov_names, root_ov_effs, no_kind_binds())
 }
 
@@ -5514,6 +5521,7 @@ export fn file_tests_cacheable(stmts: Array[Stmt]) -> Bool {
     m = m + 1
   }
   let empty_decl = array_empty()
+  let fn_index = program_fn_index(fn_names)
   let mut any_test = false
   let mut all_ok = true
   let mut i = 0
@@ -5521,7 +5529,7 @@ export fn file_tests_cacheable(stmts: Array[Stmt]) -> Bool {
     match Array::get(stmts, i) {
       STest(_, body) => {
         any_test = true
-        let errs = check_perform_effects_expr_tx(body, empty_decl, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
+        let errs = check_perform_effects_expr_tx_indexed(body, empty_decl, false, fn_names, fn_effs, fn_index, no_str_labels(), no_ov_effs())
         if Array::length(errs) != 0 {
           all_ok = false
         } else {
@@ -5630,7 +5638,7 @@ export fn file_entry_cacheable(stmts: Array[Stmt], entry_name: String) -> Bool {
           EFn(_, _, _, _, _, fn_body) => fn_body,
           _ => body
         }
-        let errs = check_perform_effects_expr_tx(exec_body, cache_safe_row, false, fn_names, fn_effs, no_str_labels(), no_ov_effs())
+        let errs = check_perform_effects_expr_tx_indexed(exec_body, cache_safe_row, false, fn_names, fn_effs, program_fn_index(fn_names), no_str_labels(), no_ov_effs())
         Array::length(errs) == 0
       }
     }
