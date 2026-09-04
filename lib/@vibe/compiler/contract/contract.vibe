@@ -2413,6 +2413,13 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
   let mut seen_description = false
   let mut seen_deps = false
   let mut seen_hash = false
+  // #2386: whether any directive line was blanked. Once the header ends the
+  // rest of the file is verbatim, so a source whose header blanked nothing
+  // IS its own blanked text, and one that did gets its tail in one piece --
+  // the line-by-line copy of every source (one substring and one push per
+  // line, per call, and this is called per file from a dozen sites) was
+  // 0.1 s and the copies of every compiler source on a warm compile.
+  let mut blanked_any = false
   while pos < len {
     let mut nl = pos
     while nl < len && String::char_code_at(source, nl) != 10 {
@@ -2434,6 +2441,7 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       version = v
       seen_version = true
       StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
     } else if String::starts_with(trimmed, "version ") {
       // Legacy bare `version x.y.z` (ADR-0065/#754), pre-#1128. Still
       // accepted, NOT an error: the compiler's own `lib/@vibe/compiler/**`
@@ -2460,6 +2468,7 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       version = v
       seen_version = true
       StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
     } else if String::starts_with(trimmed, "name =") {
       if seen_name {
         throw("duplicate name directive: \{trimmed}")
@@ -2471,6 +2480,7 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       name = n
       seen_name = true
       StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
     } else if String::starts_with(trimmed, "main =") {
       if seen_main {
         throw("duplicate main directive: \{trimmed}")
@@ -2485,6 +2495,7 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       }
       seen_main = true
       StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
     } else if String::starts_with(trimmed, "generated_hash =") {
       if seen_hash {
         throw("duplicate generated_hash directive: \{trimmed}")
@@ -2496,11 +2507,13 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       generated_hash = gh
       seen_hash = true
       StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
     } else if trimmed == "description =" {
       if seen_description {
         throw("duplicate description directive: \{trimmed}")
       } else ()
       StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
       let (dtext, dpos, dblanked) = consume_description_block(source, len, nl + 1)
       description = dtext
       seen_description = true
@@ -2512,11 +2525,13 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       } else ()
       seen_deps = true
       StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
     } else if trimmed == "deps = {" {
       if seen_deps {
         throw("duplicate deps directive: \{trimmed}")
       } else ()
       StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
       let (dentries, dpos, dblanked) = consume_deps_block(source, len, nl + 1)
       deps_extend(deps, dentries)
       seen_deps = true
@@ -2556,13 +2571,23 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       }
       Array::push(pins, (rname, rver, pin_hash))
       StringBuilder::push(sb, blank_of(line))
+      blanked_any = true
     } else if String::length(trimmed) == 0 || String::starts_with(trimmed, "//") {
       StringBuilder::push(sb, line)
     } else {
       scanning = false
-      StringBuilder::push(sb, line)
+      if !blanked_any {
+        // Nothing to blank: every line so far went in verbatim, and so does
+        // everything from here.
+        return (pins, name, version, main, description, deps, generated_hash, source)
+      } else {
+        ()
+      }
+      // The verbatim tail, newlines included, in one piece.
+      StringBuilder::push(sb, String::substring(source, pos, len))
+      next_pos = len
     }
-    if nl < len {
+    if scanning && nl < len {
       StringBuilder::push(sb, "\n")
     } else ()
     pos = next_pos
