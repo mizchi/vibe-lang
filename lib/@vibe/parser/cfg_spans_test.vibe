@@ -1,0 +1,59 @@
+//# `parse_program_spans` resolves `#cfg` / `#cfg_enable` / `#deprecated`
+// (#2497 step 0). Module-source emission and the span tools go through this
+// entry, so an active guarded statement gets its own span (directive
+// excluded) and an inactive one gets none.
+
+import ./lexer.vibe {
+  lex_with_offsets
+}
+
+import ./parser.vibe {
+  parse_program_spans, set_cfg_ambient_flags
+}
+
+let src: String = "#cfg_enable(dev)\n#cfg(dev)\nlet a = 1\n#cfg(release)\nlet b = 2\n#deprecated(\"use c2\")\nlet c = 3\n#cfg(release)\nimpl Show for Foo {\n  fn show(self) -> String {\n    \"x\"\n  }\n}\nlet d = 4\n"
+
+fn slices(source: String) -> Array[String] with Exception {
+  let (tokens, starts, ends) = lex_with_offsets(source)
+  let (stmts, span_start, span_end) = parse_program_spans(tokens, starts, ends)
+  assert_eq(Array::length(stmts), Array::length(span_start))
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(out, String::substring(source, Array::get(span_start, i), Array::get(span_end, i)))
+    i = i + 1
+  }
+  out
+}
+
+test "file-level #cfg_enable selects; inactive #cfg gets no span; #deprecated is consumed" {
+  set_cfg_ambient_flags([])
+  let got = slices(src)
+  assert_eq(Array::length(got), 3)
+  assert_eq(Array::get(got, 0), "let a = 1")
+  assert_eq(Array::get(got, 1), "let c = 3")
+  assert_eq(Array::get(got, 2), "let d = 4")
+}
+
+test "ambient flags select too, including a guarded impl" {
+  set_cfg_ambient_flags(["release"])
+  let got = slices(src)
+  set_cfg_ambient_flags([])
+  assert_eq(Array::length(got), 5)
+  assert_eq(Array::get(got, 0), "let a = 1")
+  assert_eq(Array::get(got, 1), "let b = 2")
+  assert_eq(Array::get(got, 2), "let c = 3")
+  assert_eq(Array::get(got, 3), "impl Show for Foo {\n  fn show(self) -> String {\n    \"x\"\n  }\n}")
+  assert_eq(Array::get(got, 4), "let d = 4")
+}
+
+test "an inactive guarded statement must still parse" {
+  set_cfg_ambient_flags([])
+  let bad = "#cfg(never)\nlet = \nlet d = 4\n"
+  let (tokens, starts, ends) = lex_with_offsets(bad)
+  let failed = handle {
+    let _ = parse_program_spans(tokens, starts, ends)
+    false
+  } with { Exception::Throw(_) => true }
+  assert(failed)
+}

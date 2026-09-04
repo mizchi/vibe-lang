@@ -743,10 +743,11 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Opti
 // key (persistent_cache_version_tag folds it in), or a module parsed under
 // one flag set is replayed under another.
 //
-// NOTE: the compiler's own sources still must not use `#cfg`: the flattened
-// self-build and the span-based tools go through `parse_program_spans`, which
-// refuses every `#` directive except `#zero_alloc` (see the THash arm there).
-// Lifting that is the first step of #2497.
+// NOTE: the compiler's own sources still must not use `#cfg` until the next
+// bootstrap bump: `scripts/generate_bundle.sh` flattens the self-build with
+// the COMMITTED SEED's module-source emission, and the seed's
+// `parse_program_spans` refuses every `#` directive except `#zero_alloc`.
+// This checkout's `parse_program_spans` resolves them (#2497 step 0).
 
 let cfg_ambient_flags: Array[String] = []
 
@@ -1355,6 +1356,7 @@ export fn parse_program_recovering(tokens: Array[Token], starts: Array[Int], sou
 /// `lex_with_offsets`. start = first token's start offset; end = last token's
 /// end offset. The three returned arrays are parallel (one entry per stmt).
 export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int]) with Exception {
+  let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let span_start = ArrayBuilder::new()
   let span_end = ArrayBuilder::new()
@@ -1372,7 +1374,7 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
         // `#zero_alloc` is part of the following declaration's source span.
         // Module-source emission therefore preserves the directive without
         // adding a synthetic statement that would desynchronise span arrays.
-        let (dname, _, dnext) = parse_cfg_directive(tokens, pos + 1)
+        let (dname, flag, dnext) = parse_cfg_directive(tokens, pos + 1)
         if dname == "zero_alloc" {
           require_zero_alloc_target(tokens, dnext)
           let st = Array::get(starts, pos)
@@ -1381,10 +1383,30 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
           ArrayBuilder::push(span_start, st)
           ArrayBuilder::push(span_end, Array::get(ends, next - 1))
           pos = next
+        } else if dname == "deprecated" || dname == "cfg_enable" || cfg_flag_active(cfg_active, flag) {
+          // Resolved at this parse, the same way `parse_program` resolves
+          // them: the directive itself owns no span, and the statement an
+          // active `#cfg` / `#deprecated` guards is emitted by the next
+          // iteration as itself. Module-source emission therefore produces a
+          // directive-free flat source for the active set it was given
+          // (#2497), and the span tools see exactly the statements the
+          // checker sees.
+          pos = dnext
         } else {
-          // Other directives can alter which statement exists; keep refusing
-          // until module-source emission models those semantics explicitly.
-          throw("# directives are not supported in module-source emission")
+          // Inactive `#cfg`: the guarded statement must still parse, and gets
+          // no span, so it is absent from the emitted source rather than
+          // emitted under a directive the next compile would have to resolve
+          // again.
+          match peek(tokens, dnext) {
+            TImpl => {
+              let (_simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
+              pos = skip_braced_body(tokens, hp_d)
+            },
+            _ => {
+              let (_dropped, dn) = parse_stmt(tokens, starts, dnext)
+              pos = dn
+            }
+          }
         }
       },
       TImpl => {
