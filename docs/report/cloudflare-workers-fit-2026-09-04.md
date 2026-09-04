@@ -179,7 +179,7 @@ that also starts the runtime and instantiates a 2.7 MB module, and no CPU-time
 measurement was taken, so nothing here shows any compile fitting the free
 budget.
 
-### The allocator is not the lever
+### The shipped allocator is not the lever
 
 The compiler self-build is pinned to the bump allocator (`VIBE_RC=0` in
 `scripts/generations.sh`), which never frees. The obvious hypothesis is that
@@ -195,14 +195,26 @@ names, against 3.36 MB for the bump build) and run on the same inputs.
 | full closure | 1,354 MB | 1,526 MB | 8.7 s | 22.2 s |
 
 The RC compiler uses **more** memory and 2 to 2.5× the wall time on every
-input. The compiler's working set is genuinely live: the merged program AST,
-the type environments and the per-pass rewritten trees are all reachable until
-codegen ends, so there is nothing for the allocator to reclaim, and RC adds
-headers and dup/drop traffic on top. (`heap_ptr` is the arena frontier under
-both lanes; a free-list that reused blocks would keep the frontier lower, and
-it did not.) The consequence for the 128 MB question: **only bounding the live
-set per unit of work can get there**, which means processing one module at a
-time with the rest of the program present only as interfaces.
+input. What this does and does not show needs care. It shows that the RC lane
+as shipped does not reduce the compiler's memory: RC adds headers and dup/drop
+traffic, and the frontier did not come down. It does **not** prove that the
+1.35 GB is all live. `heap_ptr` is the arena frontier under both lanes, and
+the RC allocator's free-list walk is bounded to the first 16 nodes, bumping
+on a deeper miss (`gen_rc_alloc_body` in
+`lib/@vibe/compiler/codegen/builtin_bodies/bodies_core_a1a2.vibe`; the bound
+was added because the unbounded walk cost 44 % of a self-compile), so on a
+mixed-size workload a rising frontier can be bounded-search fragmentation as
+much as reachability. Settling that needs a peak-live-bytes instrument (bytes
+in reachable RC blocks at each phase boundary) or an allocator that reliably
+reuses freed blocks; neither exists yet, and #2494 carries the measurement.
+The structural facts still hold either way: the merged AST, the type
+environments and the per-pass rewritten trees are all reachable until codegen
+ends, so a freeing allocator cannot return them before then. The consequence
+for the 128 MB question: **bounding the live set per unit of work is the lever
+that works regardless of how that measurement comes out**, which means
+processing one module at a time with the rest of the program present only as
+interfaces, and the live-bytes number decides how much an allocator can add on
+top.
 
 ### Verdict on target 3
 
@@ -462,9 +474,12 @@ Ordered by bytes recovered per decision, with the line counts that go with them.
   bytes of the stripped stage2 code section, and after `wasm-opt -Oz` with the
   explicit feature list, ratcheted like `bench/perf/size_baseline.txt`.
 - A memory KPI for a mid-size closure. The full-closure KPI cannot see the
-  128 MB question; the parser closure (127 MB today) is the right probe for
-  "does one package compile in an isolate", and its budget is the number
-  section 2 says must fall.
+  128 MB question; the parser closure is the right probe for "does one package
+  compile in an isolate". The gated number is the reserved linear memory
+  (`memory.buffer.byteLength`, 161 MB today for that closure), not `heap_ptr`
+  (127 MB): the isolate limit counts pages, a `heap_ptr` gate would read as
+  within budget while the memory is already 33 MB over it, and the JavaScript
+  heap still has to fit beside it.
 - The generation build should produce the named stage2 as a by-product when
   asked (`VIBE_WASM_NAMES=1 bash scripts/generations.sh build --out-dir <dir>`
   works today but takes six minutes), so attribution tables like the ones above
