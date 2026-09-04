@@ -269,24 +269,39 @@ fn string_array_contains_hc(items: Array[String], target: String) -> Bool {
 /// (contract-)parses `resolved` exactly once instead, mirroring the same
 /// decls/opaques/collect_exports combination the contract-header branch above
 /// already uses for its own `exports` result.
-/// #2386: the export names of a contract, per (path, stat token), for the
-/// process. `validate_import_names_fs` asks for a dependency's export list
-/// once per IMPORTER of that dependency, and each ask read, lexed and parsed
-/// the contract again -- on a cold compiler-closure compile that was every
+/// #2386: the export names of a contract, one entry per path for the
+/// process, each stamped with the stat token it was read under.
+/// `validate_import_names_fs` asks for a dependency's export list once per
+/// IMPORTER of that dependency, and each ask read, lexed and parsed the
+/// contract again -- on a cold compiler-closure compile that was every
 /// package contract parsed once per member of every package importing it.
 /// The token is what every persistent cache on this lane keys freshness on,
 /// so an edited contract is re-read on the next compile that sees the new
-/// token. The list is handed out shared and never mutated by its reader
-/// (`string_array_contains_hc` only scans it).
-let export_names_memo: MutMap[String, Array[String]] = MutMap::new_string()
+/// token, and (review on #2512) the new reading REPLACES the path's entry
+/// rather than sitting next to it: a resident compiler holds one list per
+/// contract, however often the contract is edited. The list is handed out
+/// shared and never mutated by its reader (`string_array_contains_hc` only
+/// scans it).
+let export_names_memo: MutMap[String, (Int, Array[String])] = MutMap::new_string()
 
 fn resolved_export_names_fs(resolved: String) -> Array[String] with Exception + Fs {
-  let memo_key = String::concat(__to_string(Fs::stat_token(resolved)), String::concat("\n", resolved))
-  match MutMap::get(export_names_memo, memo_key) {
-    Some(hit) => hit,
+  let token = Fs::stat_token(resolved)
+  let fresh = match MutMap::get(export_names_memo, resolved) {
+    Some(entry) => {
+      let (seen_token, names) = entry
+      if seen_token == token {
+        Some(names)
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+  match fresh {
+    Some(names) => names,
     None => {
       let computed = resolved_export_names_uncached_fs(resolved)
-      MutMap::set(export_names_memo, memo_key, computed)
+      MutMap::set(export_names_memo, resolved, (token, computed))
       computed
     }
   }
