@@ -372,12 +372,12 @@ Ordered by bytes recovered per decision, with the line counts that go with them.
    is visible, so the question "is this feature worth 26 KB of compiler" can
    be asked per feature. `dlh_` (lambda hoisting) is an optimization, not a
    desugar, and belongs with the optimizer.
-4. **Decide the gc backend's status** (140 KB, 13 k lines in `codegen/gc`).
-   Pillar 2 wants wasm-gc for the reference lane; today the backend is
-   compiled into every artifact and selected by an env var at run time. Either
-   it becomes a `#cfg` unit built only where wanted, or it is retired to a
-   branch until the continuation design needs it. Keeping it as run-time
-   reachable code is the one option that costs every user and helps none.
+4. **The gc backend becomes a `#cfg` build unit** (140 KB, 13 k lines in
+   `codegen/gc`). The wasm-gc lane stays: it is pillar 2's reference lane and
+   the owner's decision is to keep it. What changes is that today it is
+   compiled into every artifact and selected by an env var at run time; as a
+   `#cfg(gc)` unit it stays in the CLI build and is absent from the
+   compile-only artifact, at no cost to the lane itself.
 5. **Tables as data**: `registry_typed_rows`, the inline-wat tables, the
    stdin surface wrappers, the async sleep boundary, and the float algorithms
    (about 150 KB as instructions). Emitting them as data segments or
@@ -388,9 +388,10 @@ Ordered by bytes recovered per decision, with the line counts that go with them.
    lines). Same treatment as the gc backend: a `#cfg` unit.
 7. **`checker/artifacts`** (9.6 k lines, shadow-only per #1958). The DCE
    already drops most of it (7 KB survives), so it is a line-count and
-   comprehension cost rather than a byte cost. The design docs say it is not a
-   production input; either it becomes the checked-module artifact of section
-   3 or it goes.
+   comprehension cost rather than a byte cost. The incremental-build line is
+   to be completed, so this lane is promoted rather than deleted: it becomes
+   the checked-module artifact of section 3, which makes it production code
+   with the coverage and validation obligations that come with that.
 
 ## 6. Suggested gates
 
