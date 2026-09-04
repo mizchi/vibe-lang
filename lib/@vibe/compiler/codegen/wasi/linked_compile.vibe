@@ -5140,6 +5140,17 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   if !array_contains_str(str_strs, "\n") {
     Array::push(str_strs, "\n")
   }
+  // #2474: the `eq` block guard's two fragments. Seeded unconditionally --
+  // the guard itself is gated on `enable_rc` at the push, but the string
+  // table is built before that decision is in hand here, and an unused
+  // fragment costs a few bytes of data section where a missing one is a
+  // "string not in table" build failure (measured).
+  if !array_contains_str(str_strs, "`==` cannot compare these two values by content: their type is not known where this comparison is lowered (typically an erased type parameter inside a generic body), so the raw compare would answer by reference identity. Compare at a concrete type, or take an explicit `(T, T) -> Bool`. left=") {
+    Array::push(str_strs, "`==` cannot compare these two values by content: their type is not known where this comparison is lowered (typically an erased type parameter inside a generic body), so the raw compare would answer by reference identity. Compare at a concrete type, or take an explicit `(T, T) -> Bool`. left=")
+  }
+  if !array_contains_str(str_strs, " right=") {
+    Array::push(str_strs, " right=")
+  }
   if rc_shadow {
     if !array_contains_str(str_strs, "dup of freed value at site ") {
       Array::push(str_strs, "dup of freed value at site ")
@@ -6190,6 +6201,23 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   } else {
     -1
   }
+  // #2474: the `?EqUnknown` marker-position comparison. Registered
+  // UNCONDITIONALLY and after every conditional builtin above, so it is always
+  // the last one and `max_builtin_func_idx` below is simply this.
+  // #2474: the `eq` block guard's abort. Its own, for the same reason
+  // #2427's is: the shared oob_abort_idx bakes in " out of bounds for
+  // length " as its middle fragment, which reads as nonsense between two
+  // compared operands. Registered UNCONDITIONALLY and after every
+  // conditional builtin above, so it is always the last one and
+  // max_builtin_func_idx below is simply this. `eq` itself sits far earlier
+  // and calls FORWARD to it, which module-wide function indices allow.
+  let eq_block_abort_idx = (if need_region_arena {
+    region_bytes_new_idx
+  } else if rc_shadow {
+    str_operand_abort_idx
+  } else {
+    bytes_compare_idx
+  }) + 1
   let env_get_idx = if env_get_import_idx >= 0 {
     env_get_import_idx
   } else {
@@ -6526,20 +6554,11 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // from THIS constant, not from Array::length(bodies), so adding builtins
   // without updating this stale-by-construction line silently shifts every
   // user-function call target in the module by the number of builtins added).
-  let max_builtin_func_idx = if need_region_arena {
-    region_bytes_new_idx
-  } else if rc_shadow {
-    // #2427: the str-operand abort is registered after the UAF abort, so it,
-    // not shadow_uaf_abort_idx, is the last builtin on the shadow lane.
-    str_operand_abort_idx
-  } else {
-    // #2344: the bit primitives are the last UNCONDITIONAL builtins, so this
-    // is int_clz_idx, not oob_abort_idx. Leaving it stale made num_generated
-    // 3 short and shifted every user-function call target by 3 -- stage1
-    // trapped with `unreachable` while compiling a sample, exactly as the
-    // comment above says it would.
-    bytes_compare_idx
-  }
+  // #2474: the eq block guard's abort is registered unconditionally and last,
+  // after the shadow aborts (#2427) and the region arena bodies (ADR-0090),
+  // so it is the final builtin on EVERY lane. The per-lane branches this
+  // replaced are folded into eq_block_abort_idx's own definition.
+  let max_builtin_func_idx = eq_block_abort_idx
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
   // #2388 step 3: record the layout facts this compile's bodies are emitted
@@ -7003,6 +7022,11 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   let oob_ccat_fat = oob_fat_of("String::byte_at: index ")
   let oob_mid_fat = oob_fat_of(" out of bounds for length ")
   let oob_nl_fat = oob_fat_of("\n")
+  // #2474: the message the `eq` block guard aborts with. Names the edit that
+  // fixes it, not the internals -- what the reader can do is compare at a
+  // concrete type or pass a comparison function; "the typed-`==` row was
+  // dropped for mentioning a scope formal" is true and useless at a trap.
+  let eq_block_abort_fat = oob_fat_of("`==` cannot compare these two values by content: their type is not known where this comparison is lowered (typically an erased type parameter inside a generic body), so the raw compare would answer by reference identity. Compare at a concrete type, or take an explicit `(T, T) -> Bool`. left=")
   if enable_rc {
     push_builtin(gen_arr_new_body(true, rc_alloc_idx), 1, 0, 5)
     push_builtin(gen_arr_len_body(true), 0, 0, 3)
@@ -7054,7 +7078,15 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   push_builtin(static_fs_stub_body(), 0, 0, 4)
   push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
   push_builtin(static_fs_write_bytes_stub_body(), 0, 0, 6)
-  push_builtin(gen_eq_body(str_eq_idx), 0, 0, 4)
+  push_builtin(gen_eq_body(str_eq_idx, if enable_rc {
+    eq_block_abort_idx
+  } else {
+    0 - 1
+  }, if enable_rc {
+    eq_block_abort_fat
+  } else {
+    0
+  }), 0, 0, 4)
   push_builtin(gen_string_ends_with_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 2, 1, 4)
   push_builtin(gen_string_last_index_of_body(enable_rc, str_len_idx, str_substring_idx, str_eq_idx), 3, 1, 4)
   if enable_rc {
@@ -7153,15 +7185,19 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   } else {
     ()
   }
-  // ADR-0090 (#1262): must stay LAST, in this order -- max_builtin_func_idx
-  // above names region_bytes_new_idx (= region_arr_new_idx + 1) as the final
-  // builtin, and num_generated/func_offset are derived from it.
+  // ADR-0090 (#1262): the region arena bodies are the last CONDITIONAL
+  // builtins, in this order -- eq_unknown_idx's definition names
+  // region_bytes_new_idx (= region_arr_new_idx + 1) as the builtin it follows
+  // when a region is present.
   if need_region_arena {
     push_builtin(gen_region_arr_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
     push_builtin(gen_region_bytes_new_body(region_ptr_addr, region_data_base, region_limit), 2, 0, 5)
   } else {
     ()
   }
+  // #2474: must stay LAST on every lane -- max_builtin_func_idx is
+  // eq_unknown_idx, and num_generated/func_offset are derived from it.
+  push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(" right="), oob_nl_fat), 0, 0, 7)
   // #708: one counter cell shared across every function's lift pass, so each
   // lift site gets a distinct `__m_scrut_N` name (see lift_match_scrutinees).
   let m_scrut_counter = [0]
