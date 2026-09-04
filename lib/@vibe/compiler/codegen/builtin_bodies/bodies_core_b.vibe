@@ -511,12 +511,33 @@ export fn gen_arr_concat_body() -> Bytes {
 /// Trap unless `ptr_local`/`len_local` describe a live string. Reports the
 /// pair, so the caller sees the operand rather than a memory fault.
 ///
-/// All three tests are UNSIGNED, because these are addresses: a decoded `ptr`
-/// can exceed 2^31 once the heap passes 2 GiB, and a "negative" length is just
-/// a large unsigned one. The separate `len > frontier` test is what catches a
-/// length so large that `ptr + len` wraps back into range.
+/// `(ptr=0, len=0)` is EXEMPT: that is the legal packed empty-string
+/// encoding `compile_call`'s `__to_string` arm names explicitly, and
+/// concatenating it copies zero bytes. Measured, I could NOT get it to reach
+/// this builtin from in-language code -- `String::join([], sep)` (the case
+/// that comment cites), the `"[\{...}]"` interpolation it gives as the
+/// example, and concat with an empty operand on either side all pass the
+/// unexempted guard, on both lanes. The exemption is kept because the
+/// encoding is legal by that comment's own statement and a zero-byte copy is
+/// correct, and because a boundary path -- a component trampoline forwarding
+/// a canonical `(ptr, len)` from a host -- is not reachable from a fixture
+/// here. It is a correctness argument, not a reproduction (#2489 review).
+///
+/// All tests are UNSIGNED, because these are addresses: a decoded `ptr` can
+/// exceed 2^31 once the heap passes 2 GiB, and a "negative" length is just a
+/// large unsigned one.
+///
+/// The end-of-range test is `ptr >u frontier - len`, NOT `ptr + len >u
+/// frontier`: the sum is i32 and WRAPS. With a 2.5 GiB frontier, `ptr` and
+/// `len` both 2.3 GiB pass the first two tests and their sum wraps to 0.6 GiB,
+/// passing the third -- so the bad operand sails through and `memory.copy`
+/// produces the anonymous trap this guard exists to replace (#2489 review).
+/// The subtraction cannot underflow where its result matters: when
+/// `len >u frontier` the second term has already made the disjunction true,
+/// and the wrapped difference only ever makes this term false.
 fn emit_str_operand_guard(b: Bytes, ptr_local: Int, len_local: Int, abort_idx: Int, prefix_fat: Int) -> Unit {
-  // bad = 64 >u ptr || len >u frontier || ptr + len >u frontier
+  // bad = (64 >u ptr || len >u frontier || ptr >u frontier - len)
+  //       && !(ptr | len == 0)
   emit_i32_const(b, 64)
   emit_local_get(b, ptr_local)
   emit_i32_gt_u(b)
@@ -526,12 +547,21 @@ fn emit_str_operand_guard(b: Bytes, ptr_local: Int, len_local: Int, abort_idx: I
   // i32.or (0x72)
   bytebuf_push(b, 114)
   emit_local_get(b, ptr_local)
-  emit_local_get(b, len_local)
-  emit_i32_add(b)
   emit_global_get(b, 0)
+  emit_local_get(b, len_local)
+  emit_i32_sub(b)
   emit_i32_gt_u(b)
   // i32.or (0x72)
   bytebuf_push(b, 114)
+  // !(the packed empty string)
+  emit_local_get(b, ptr_local)
+  emit_local_get(b, len_local)
+  // i32.or (0x72)
+  bytebuf_push(b, 114)
+  emit_i32_eqz(b)
+  emit_i32_eqz(b)
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
   emit_if_void(b)
   emit_i64_const(b, prefix_fat)
   emit_local_get(b, ptr_local)
