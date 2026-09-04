@@ -5156,6 +5156,22 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
     } else {
       ()
     }
+    // #2427: `__rt_str_concat` decodes `ptr = v >> 32` / `len = v & 0xFFFFFFFF`
+    // from whatever i64 it is handed, so a value that is not a string at all
+    // -- a tagged `Int`, a pointer, a stale word out of a re-issued block --
+    // decodes into a wild ptr/len and traps inside `memory.copy` with a bare
+    // "memory access out of bounds" naming nothing. These two fragments let
+    // the shadow lane print the operand instead.
+    if !array_contains_str(str_strs, "String::concat operand is not a live string: ptr=") {
+      Array::push(str_strs, "String::concat operand is not a live string: ptr=")
+    } else {
+      ()
+    }
+    if !array_contains_str(str_strs, ", len=") {
+      Array::push(str_strs, ", len=")
+    } else {
+      ()
+    }
   } else {
     ()
   }
@@ -6149,12 +6165,20 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   } else {
     0 - 1
   }
+  // #2427: shadow-only "this operand is not a string" abort. Same
+  // gen_oob_abort_body with its own middle fragment, registered right after
+  // the UAF abort so a non-shadow build's indices are untouched.
+  let str_operand_abort_idx = if rc_shadow {
+    shadow_uaf_abort_idx + 1
+  } else {
+    0 - 1
+  }
   // ADR-0090 (#1262) region arena bodies. Registered LAST and only when the
   // module has a region, so a module without one is byte-identical to what it
   // was before the arena existed (and max_builtin_func_idx below follows).
   let region_arr_new_idx = if need_region_arena {
     (if rc_shadow {
-      shadow_uaf_abort_idx
+      str_operand_abort_idx
     } else {
       bytes_compare_idx
     }) + 1
@@ -6505,7 +6529,9 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   let max_builtin_func_idx = if need_region_arena {
     region_bytes_new_idx
   } else if rc_shadow {
-    shadow_uaf_abort_idx
+    // #2427: the str-operand abort is registered after the UAF abort, so it,
+    // not shadow_uaf_abort_idx, is the last builtin on the shadow lane.
+    str_operand_abort_idx
   } else {
     // #2344: the bit primitives are the last UNCONDITIONAL builtins, so this
     // is int_clz_idx, not oob_abort_idx. Leaving it stale made num_generated
@@ -6953,15 +6979,23 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   }, 0, 0, 3)
   // #748: SIMD chunk compare needs the extra chunk_limit local (meta_i32 6).
   push_builtin(gen_str_eq_body(), 6, 0, 4)
-  push_builtin(gen_str_concat_body(), 6, 0, 4)
   // #2199: raw (ptr<<32)|len string-table constants for the OOB abort
   // message fragments, exactly the shape __rt_print_str's parameter takes
   // (no RC tag on either lane). The strings were seeded above, so the
   // lookups cannot miss.
+  //
+  // Defined before the str_concat push (#2427) because its shadow-lane
+  // operand guard needs one of these fragments; moving the PUSH instead
+  // would reorder the builtins and shift every function index.
   let oob_fat_of: (String) -> Int = (frag) -> {
     let fi = str_table_lookup(str_strs, frag)
     (Array::get(str_offsets, fi)<<32)|Array::get(str_lengths, fi)
   }
+  push_builtin(gen_str_concat_body(rc_shadow, str_operand_abort_idx, if rc_shadow {
+    oob_fat_of("String::concat operand is not a live string: ptr=")
+  } else {
+    0
+  }), 6, 0, 4)
   let oob_arr_get_fat = oob_fat_of("Array::get: index ")
   let oob_arr_set_fat = oob_fat_of("Array::set: index ")
   let oob_bytes_get_fat = oob_fat_of("Bytes::get: index ")
@@ -7112,6 +7146,10 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   push_builtin(gen_bytes_compare_body(enable_rc), 2, 4, 4)
   if rc_shadow {
     push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of("; freed at site "), oob_nl_fat), 0, 0, 7)
+    // #2427: same body, ", len=" as the middle fragment -- see
+    // str_operand_abort_idx. Registered immediately after the UAF abort so
+    // max_builtin_func_idx stays the last push.
+    push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of(", len="), oob_nl_fat), 0, 0, 7)
   } else {
     ()
   }
