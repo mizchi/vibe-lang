@@ -1,0 +1,84 @@
+//# #2386: the perceus pass's pinned borrow tables.
+//#
+//# `perceus_pin_tables` installs the four whole-program tables once and hands
+//# back a token; `build_perceus_plan_pinned` presents it so the per-function
+//# call skips the element-by-element compare of all four tables. The token
+//# may only ever skip work: every plan below must equal the one the unpinned
+//# entry gives for the tables the call presents, including after another
+//# caller has replaced the cached tables.
+
+import @vibe/compiler/perceus {
+  PerceusAction, build_perceus_plan_pinned, build_perceus_plan_with_params, pa_is_drop, perceus_pin_tables
+}
+
+import @vibe/compiler/core {
+  Expr
+}
+
+fn count_drops(plan: Array[PerceusAction], name: String) -> Int {
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(plan) {
+    let a = Array::get(plan, i)
+    if pa_is_drop(a) && a.name == name {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+/// `let result = Map::iter_get(1, 0); ()` -- `result` is dropped once when
+/// the callee returns an owned value and not at all when the tables say the
+/// callee returns a borrow. The two table sets below disagree on exactly that.
+fn iter_get_body() -> Expr {
+  let call = ECall(EIdent("Map::iter_get", -1), [EInt(1), EInt(0)], -1)
+  ELet("result", call, EUnit, -1)
+}
+
+test "a pinned plan equals the unpinned plan for the same tables" {
+  let body = iter_get_body()
+  let masks: Array[Int] = []
+  let borrowed = build_perceus_plan_with_params([], body, ["Map::iter_get"], [], masks, [
+  ])
+  let tok = perceus_pin_tables(["Map::iter_get"], [], masks, [])
+  let pinned = build_perceus_plan_pinned(tok, [], body, ["Map::iter_get"], [], masks, [
+  ])
+  assert(tok > 0)
+  assert(count_drops(borrowed, "result") == 0)
+  assert(count_drops(pinned, "result") == count_drops(borrowed, "result"))
+  assert(Array::length(pinned) == Array::length(borrowed))
+}
+
+test "a stale token answers for the tables the call presents, not the cached ones" {
+  let body = iter_get_body()
+  let masks: Array[Int] = []
+  let tok = perceus_pin_tables(["Map::iter_get"], [], masks, [])
+  // An unpinned call with different tables replaces the cache and clears
+  // the pin; `result` is owned under these tables.
+  let owned = build_perceus_plan_with_params([], body, [], [], masks, [])
+  assert(count_drops(owned, "result") == 1)
+  // The stale token must fall back to the compare and answer for the
+  // borrowed tables it presents -- reading the cached (owned) tables here
+  // would be the silently-wrong answer.
+  let pinned = build_perceus_plan_pinned(tok, [], body, ["Map::iter_get"], [], masks, [
+  ])
+  assert(count_drops(pinned, "result") == 0)
+}
+
+test "token 0 is the unpinned path" {
+  let body = iter_get_body()
+  let masks: Array[Int] = []
+  let plan = build_perceus_plan_pinned(0, [], body, ["Map::iter_get"], [], masks, [
+  ])
+  assert(count_drops(plan, "result") == 0)
+  let plan2 = build_perceus_plan_pinned(0, [], body, [], [], masks, [])
+  assert(count_drops(plan2, "result") == 1)
+}
+
+test "tokens are never reused" {
+  let masks: Array[Int] = []
+  let t1 = perceus_pin_tables(["Map::iter_get"], [], masks, [])
+  let t2 = perceus_pin_tables(["Map::iter_get"], [], masks, [])
+  assert(t2 > t1)
+}
