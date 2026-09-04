@@ -1,0 +1,42 @@
+//# #2386: the return-provenance lookup answers from an index instead of a
+//# scan of the whole type table. What it protects (the fixture
+//# `err_region_escape_early_return.vibe`, pinned by the late gate through
+//# the CLI): a callback's capture provenance handed back through an explicit
+//# `return` inside the function still reaches the call site, so a region
+//# value escaping through that path is rejected. Here the same program goes
+//# through the checker library directly, so the answer comes from the
+//# worktree's sources.
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
+}
+
+import @vibe/compiler/checker {
+  set_error_row_checked
+}
+
+fn diags(src: String) -> Array[String] with Exception {
+  set_error_row_checked(true)
+  collect_all_diagnostics(src)
+}
+
+fn escape_program(return_path: Bool) -> String {
+  let head = if return_path {
+    "fn maybe_return(callback: () -> Array[Int]) -> () -> Array[Int] {\n  if true {\n    return () -> Array[Int] {\n      callback()\n    }\n  }\n  () -> Array[Int] {\n    []\n  }\n}\n\n"
+  } else {
+    "fn maybe_return(callback: () -> Array[Int]) -> () -> Array[Int] {\n  () -> Array[Int] {\n    callback()\n  }\n}\n\n"
+  }
+  String::concat(head, "fn use_it() -> Int {\n  let escaped = region r {\n    let values = MutList::empty(r)\n    maybe_return(() -> Array[Int] {\n      MutList::to_array(values)\n    })\n  }\n  let _ = escaped()\n  0\n}\n")
+}
+
+test "a region value escaping through an explicit-return callback is rejected" {
+  // Without the provenance row for the `return` path the region check sees a
+  // plain `() -> Array[Int]` and accepts the escape -- silently wrong.
+  let d = diags(escape_program(true))
+  assert_true(String::contains(String::join(d, " | "), "region escapes its scope"))
+}
+
+test "the tail-expression form is rejected the same way" {
+  let d = diags(escape_program(false))
+  assert_true(String::contains(String::join(d, " | "), "region escapes its scope"))
+}
