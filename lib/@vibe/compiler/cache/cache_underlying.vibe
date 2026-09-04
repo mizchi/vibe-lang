@@ -11,6 +11,10 @@
 // determinism_test failure). Real wrapper functions survive the strip: their
 // bodies call the @vibe/cache definitions by their own exported names, which
 // the merge resolves. Keep this file alias-free.
+import @vibe/core {
+  struct MutMap
+}
+
 import @vibe/cache {
   compact_string_fingerprint,
   load_artifact_envelope_at,
@@ -155,6 +159,57 @@ let fingerprint_file_memo_paths = []
 let fingerprint_file_memo_tokens = []
 
 let fingerprint_file_memo_fps = []
+
+/// #2386: index over fingerprint_file_memo_paths -- the memo used to find a
+/// path by scanning the parallel arrays, one string compare per memoized
+/// file per lookup.
+let fingerprint_file_memo_index: MutMap[String, Int] = MutMap::new_string()
+
+/// #2386: per-run memo of compact_string_fingerprint over a module's SOURCE
+/// TEXT, keyed by path and verified by text equality. Four callers hashed
+/// the same text of every module once each per compile (the leaf
+/// fingerprint, the dep-list cache path twice, the merge's per-file table:
+/// ~150 ms of a warm compiler-closure compile), each with only the path
+/// and the text in hand. A hit compares the stored text to the offered one
+/// (a byte compare, cheaper than the hash it replaces) so a path whose text
+/// changed between calls -- an in-process test lane compiling many programs
+/// -- can never answer a stale fingerprint. Reset at the start of each
+/// compile's typing walk so the memo spans one compile.
+let source_fingerprint_memo_src: MutMap[String, String] = MutMap::new_string()
+
+let source_fingerprint_memo_fp: MutMap[String, String] = MutMap::new_string()
+
+export fn compact_source_fingerprint_memo(path: String, source: String) -> String {
+  match MutMap::get(source_fingerprint_memo_src, path) {
+    Some(stored) => if String::equals(stored, source) {
+      match MutMap::get(source_fingerprint_memo_fp, path) {
+        Some(fp) => fp,
+        None => compact_string_fingerprint(source)
+      }
+    } else {
+      let fp = compact_string_fingerprint(source)
+      MutMap::set(source_fingerprint_memo_src, path, source)
+      MutMap::set(source_fingerprint_memo_fp, path, fp)
+      fp
+    },
+    None => {
+      let fp = compact_string_fingerprint(source)
+      MutMap::set(source_fingerprint_memo_src, path, source)
+      MutMap::set(source_fingerprint_memo_fp, path, fp)
+      fp
+    }
+  }
+}
+
+export fn compact_source_fingerprint_memo_reset() -> Unit {
+  let keys = MutMap::keys(source_fingerprint_memo_src)
+  let mut i = 0
+  while i < Array::length(keys) {
+    let _ = MutMap::delete(source_fingerprint_memo_src, Array::get(keys, i))
+    let _ = MutMap::delete(source_fingerprint_memo_fp, Array::get(keys, i))
+    i = i + 1
+  }
+}
 
 // #1379: opt-in, compiler-owned observations for the fingerprint helper.
 // They deliberately do not overlap runner-owned host_fs_scope: these counters
@@ -366,10 +421,8 @@ export fn cache_ingestion_stamp_enabled() -> Bool {
 export fn cache_fingerprint_file_fs_with_ingestion_stamp(path: String, stamp_path: String) -> String with Fs {
   let token = Fs::stat_token(path)
   let token_text = __to_string(token)
-  let n = Array::length(fingerprint_file_memo_paths)
-  let mut i = 0
-  while i < n {
-    if Array::get(fingerprint_file_memo_paths, i) == path {
+  match MutMap::get(fingerprint_file_memo_index, path) {
+    Some(i) => {
       if Array::get(fingerprint_file_memo_tokens, i) == token {
         return Array::get(fingerprint_file_memo_fps, i)
       } else {
@@ -385,10 +438,8 @@ export fn cache_fingerprint_file_fs_with_ingestion_stamp(path: String, stamp_pat
         Array::set(fingerprint_file_memo_fps, i, fingerprint)
         return fingerprint
       }
-    } else {
-      ()
-    }
-    i = i + 1
+    },
+    None => ()
   }
   let fingerprint = match try_load_ingestion_stamp(stamp_path, token_text) {
     Some(hit) => hit,
@@ -398,6 +449,7 @@ export fn cache_fingerprint_file_fs_with_ingestion_stamp(path: String, stamp_pat
       fresh
     }
   }
+  MutMap::set(fingerprint_file_memo_index, path, Array::length(fingerprint_file_memo_paths))
   Array::push(fingerprint_file_memo_paths, path)
   Array::push(fingerprint_file_memo_tokens, token)
   Array::push(fingerprint_file_memo_fps, fingerprint)
