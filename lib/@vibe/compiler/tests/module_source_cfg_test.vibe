@@ -1,0 +1,33 @@
+//# Module-source emission resolves `#cfg` (#2497 step 0): the flat source
+// carries the active statements as themselves and no directive at all, so
+// the compile that consumes it needs no flag set.
+
+import @vibe/compiler/runtime {
+  build_module_source_from_source
+}
+
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+let src: String = "#cfg_enable(dev)\n#cfg(dev)\nlet a = () -> Int { 1 }\n#cfg(release)\nlet b = () -> Int { 2 }\nlet main = () -> Int { a() }\n"
+
+test "active statements are emitted as themselves, inactive ones are absent" {
+  set_cfg_ambient_flags([])
+  let flat = build_module_source_from_source(src, "main")
+  assert_eq(flat, "let a = () -> Int { 1 }\nlet main = () -> Int { a() }\n")
+}
+
+test "the ambient set drives the selection" {
+  set_cfg_ambient_flags(["release"])
+  let flat = build_module_source_from_source("#cfg(release)\nlet b = () -> Int { 2 }\nlet main = () -> Int { b() }\n", "main")
+  set_cfg_ambient_flags([])
+  assert_eq(flat, "let b = () -> Int { 2 }\nlet main = () -> Int { b() }\n")
+}
+
+test "a helper referenced only from an impl method survives emission" {
+  set_cfg_ambient_flags([])
+  let src2 = "let helper = () -> String { \"h\" }\nlet unused = () -> Int { 0 }\nimpl Show for Foo {\n  show(self) -> String {\n    helper()\n  }\n}\nlet main = () -> Int { 1 }\n"
+  let flat = build_module_source_from_source(src2, "main")
+  assert_eq(flat, "let helper = () -> String { \"h\" }\nimpl Show for Foo {\n  show(self) -> String {\n    helper()\n  }\n}\nlet main = () -> Int { 1 }\n")
+}

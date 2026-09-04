@@ -2174,7 +2174,7 @@ let run_mode = () -> Int { run() }
 - A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
 - `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
-- **Not usable inside the compiler's own sources yet.** The seed understands `#cfg` and the flag set reaches every module (#2513), but the flattened self-build (`scripts/generate_bundle.sh`, module-source emission) and the span-based tools (`vibe escapes` / `vibe grep` / `vibe type-at`) parse with `parse_program_spans`, which refuses every `#` directive except `#zero_alloc` (`# directives are not supported in module-source emission`). Teaching that path to select and preserve `#cfg` statements is the first step of #2497.
+- **Not usable inside the compiler's own sources until the next bootstrap bump.** Module-source emission and the span-based tools (`vibe escapes` / `vibe grep` / `vibe type-at`) resolve `#cfg` against the active set (#2497): the flat source carries the active statements as themselves and no directive. But `scripts/generate_bundle.sh` flattens the self-build with the **committed seed's** emission, and the seed still refuses every `#` directive except `#zero_alloc` there, so a `#cfg` under `lib/@vibe/compiler` breaks bundle generation until a seed that carries this lands (docs/bootstrap.md).
 
 ## Allocation contract (`#zero_alloc`)
 

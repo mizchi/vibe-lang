@@ -593,11 +593,52 @@ fn dce_keep_stmt(stmt: Stmt, reachable_seen: MutSet[String]) -> Bool {
 /// spans without relying on statement identity/equality. Result length equals
 /// `Array::length(stmts)`.
 export fn dce_keep_flags(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Bool] {
+  dce_keep_flags_via(stmts, stmts, entry_names)
+}
+
+/// `dce_keep_flags` with reachability computed over `reach_stmts` instead of
+/// `stmts`. Module-source emission needs this split (#2516): its statement
+/// list comes from `parse_program_spans`, which carries one bodyless `SImpl`
+/// per impl so that the impl text is emitted once, and reachability walked
+/// over that list cannot see a call made from an impl method. `reach_stmts`
+/// is the full parse of the same program, whose impl method bindings are
+/// the statements `stmts` lacks. Every impl is emitted whole (an `SImpl` is
+/// structural and always kept), so each of those method bindings is a root:
+/// whatever a method calls must survive, or the flat source does not
+/// compile. The flags still index `stmts`.
+export fn dce_keep_flags_via(stmts: Array[Stmt], reach_stmts: Array[Stmt], entry_names: Array[String]) -> Array[Bool] {
   let flags = array_empty()
   if Array::length(stmts) == 0 {
     flags
   } else {
-    let reachable = dce_reachable_names(stmts, entry_names)
+    let span_names = MutSet::new_string()
+    let mut sn = 0
+    while sn < Array::length(stmts) {
+      match stmt_name(Array::get(stmts, sn)) {
+        Some(name) => MutSet::add(span_names, name),
+        None => ()
+      }
+      sn = sn + 1
+    }
+    let roots = array_empty()
+    let mut en = 0
+    while en < Array::length(entry_names) {
+      Array::push(roots, Array::get(entry_names, en))
+      en = en + 1
+    }
+    let mut rn = 0
+    while rn < Array::length(reach_stmts) {
+      match stmt_name(Array::get(reach_stmts, rn)) {
+        Some(name) => if MutSet::has(span_names, name) {
+          ()
+        } else {
+          Array::push(roots, name)
+        },
+        None => ()
+      }
+      rn = rn + 1
+    }
+    let reachable = dce_reachable_names(reach_stmts, roots)
     let reachable_seen = MutSet::new_string()
     let mut rsi = 0
     while rsi < Array::length(reachable) {
