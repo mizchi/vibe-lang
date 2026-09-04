@@ -2170,11 +2170,11 @@ let run_mode = () -> Int { debug_dump(run()) }
 let run_mode = () -> Int { run() }
 ```
 
-- Activate flags at compile time: `VIBE_CFG=dev vibe build app.vibe` (comma-separated for multiple).
+- Activate flags at compile time: `VIBE_CFG=dev vibe build app.vibe` (comma-separated for multiple). The set applies to **every module of the program**, imports included, and is part of the build-cache key, so switching flags between two builds is a cache miss, never a replay (#2513).
 - A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
 - `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
-- Not usable inside the compiler's own source until the seed compiler understands it (see docs/bootstrap.md).
+- The compiler's own sources may use it: the committed seed understands `#cfg`, and the flat self-build passes its flag set the same way.
 
 ## Allocation contract (`#zero_alloc`)
 

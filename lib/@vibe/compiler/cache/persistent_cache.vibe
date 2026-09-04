@@ -100,6 +100,28 @@ export ../../../../lib/@vibe/cache {
 ///    the bundle. So any codegen-source change automatically changes the key and
 ///    invalidates stale artifacts; no manual bump needed (#630). `vNN` is still a
 ///    manual knob for pure cache-FORMAT changes that don't change the source hash.
+/// The active `#cfg` flag set as a cache-key segment (#2513). A module parsed
+/// under one flag set keeps different statements than under another, so every
+/// persistent entry derived from a parse -- headers, source groups, typing
+/// environments, artifacts, codegen bodies -- lives in a namespace of its own
+/// per flag set. Set once per CLI invocation next to the parser's ambient set;
+/// empty (the default) leaves the tag exactly as before, so the no-flag lane
+/// keeps its cache.
+let persistent_cache_cfg_flags_cell: Array[String] = []
+
+export fn set_persistent_cache_cfg_flags(flags_csv: String) -> Unit {
+  Array::truncate(persistent_cache_cfg_flags_cell, 0)
+  Array::push(persistent_cache_cfg_flags_cell, flags_csv)
+}
+
+fn persistent_cache_cfg_segment() -> String {
+  if Array::length(persistent_cache_cfg_flags_cell) == 0 || Array::get(persistent_cache_cfg_flags_cell, 0) == "" {
+    ""
+  } else {
+    String::concat("|cfg=", Array::get(persistent_cache_cfg_flags_cell, 0))
+  }
+}
+
 fn persistent_cache_version_tag() -> String {
   // v23: TypeEnv v9 and TDRE9 preserve binding provenance across publication
   // and persistent cache hops. Every v22 entry cold-misses rather than losing
@@ -132,7 +154,7 @@ fn persistent_cache_version_tag() -> String {
   // (`.bin`, via Fs::write_bytes / Fs::read_bytes) — a cache FORMAT change, so
   // the manual `vNN` knob is bumped. Old `.hex` entries are now unreferenced
   // (different key + suffix) and reclaimable via `pkf run cache-clean` (#631).
-  String::concat("v23|cg-", codegen_fingerprint())
+  String::concat("v23|cg-", String::concat(codegen_fingerprint(), persistent_cache_cfg_segment()))
 }
 
 /// Read-only trace evidence for the exact existing persistent cache identity.

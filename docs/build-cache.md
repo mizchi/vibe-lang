@@ -41,6 +41,10 @@ v10 | cg-<codegen_fingerprint()>
   emitted wasm / runtime ABI changes the compiler source, hence this segment,
   hence the key — so a codegen change automatically invalidates stale artifacts
   with no manual bump (#630).
+- `cfg=<flags>` — present only when `VIBE_CFG` is set: the active `#cfg` flag
+  set, in the caller's spelling. A module parsed under one flag set keeps
+  different statements than under another, so each flag set is its own cache
+  universe; a build with no flags keeps the tag it always had (#2513).
 
 ## GC policy (#631)
 
