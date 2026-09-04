@@ -70,7 +70,7 @@ import ./builtins.vibe {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 import ./checker_exhaustive.vibe {
@@ -3854,16 +3854,30 @@ fn return_provenance_key(id: Int) -> Int {
   0 - id - 1000000000
 }
 
+/// #2386: the return-provenance keys written to the type table of the check
+/// in progress. `return_provenance_was_written` scanned the WHOLE table --
+/// one row per recorded expression of the module -- once per function body
+/// checked, with no early exit; the only writer of such a key is
+/// `append_legacy_typed_occurrence` at its one ReturnProvenance site, and
+/// every program check starts from a fresh table, so the set is reset where
+/// the table is (`reset_return_provenance_index`, the three creation sites
+/// in checker_stmt.vibe) and marked where the row is pushed.
+let return_provenance_index: Array[MutMap[String, Int]] = [MutMap::new_string()]
+
+export fn reset_return_provenance_index() -> Unit {
+  Array::set(return_provenance_index, 0, MutMap::new_string())
+}
+
+fn mark_return_provenance_written(id: Int) -> Unit {
+  MutMap::set(Array::get(return_provenance_index, 0), __to_string(return_provenance_key(id)), 1)
+}
+
+/// True iff a ReturnProvenance row for `id` was pushed to the type table of
+/// the check in progress (the table itself is the authority the index
+/// mirrors; it is kept as the parameter for that reason).
 fn return_provenance_was_written(tytab: Array[(Int, Type)], id: Int) -> Bool {
-  let wanted = return_provenance_key(id)
-  let mut found = false
-  for entry in tytab {
-    let (off, _) = entry
-    if off == wanted {
-      found = true
-    }
-  }
-  found
+  let _ = tytab
+  MutMap::has(Array::get(return_provenance_index, 0), __to_string(return_provenance_key(id)))
 }
 
 fn is_enum_ctor_name(name: String, defs: Array[TypeDef]) -> Bool {
@@ -12442,6 +12456,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let s2 = match env_lookup(env, "__return_provenance__") {
         Some(CtVar(id)) => {
+          mark_return_provenance_written(id)
           append_legacy_typed_occurrence(tytab, return_provenance_key(id), CtUnit, capture, "ReturnProvenance", "SyntheticRewrite")
           let previous = subst_apply(s1, CtVar(id))
           let merged = match previous {
