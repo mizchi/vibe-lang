@@ -33,12 +33,18 @@ function makeRecord(caseName, overrides = {}) {
   };
   const ingestion = {
     schema: "ingestion_fingerprint",
-    version: 2,
+    version: 1,
     nonce: `nonce-${caseName}`,
     source_read_calls: 2,
     source_read_string_units: 20,
     hash_calls: 2,
     hash_input_string_units: 20,
+    stamp_probes: 0,
+    stamp_hits: 0,
+    stamp_misses: 0,
+    stamp_malformed: 0,
+    stamp_text_units_read: 0,
+    stamp_publications: 0,
   };
   const pipeline = {
     schema: "ingestion_pipeline",
@@ -203,10 +209,15 @@ test("phase summary rejects mislabeled case metadata", () => {
   }
 });
 
-test("phase summary rejects ingestion unit mismatch", () => {
+test("phase summary rejects ingestion unit mismatch and disabled stamp activity", () => {
   const unitMismatch = makeRecord("cold");
   unitMismatch.ingestion_fingerprint.hash_input_string_units += 1;
   assert.throws(() => parseEditCycleRecord(unitMismatch), /hash_input_string_units must equal/);
+
+  const stampActivity = makeRecord("cold");
+  stampActivity.ingestion_fingerprint.stamp_probes = 1;
+  stampActivity.ingestion_fingerprint.stamp_hits = 1;
+  assert.throws(() => parseEditCycleRecord(stampActivity), /must be 0 when ingestion stamps are disabled/);
 });
 
 test("phase summary rejects the obsolete hashed_files field", () => {

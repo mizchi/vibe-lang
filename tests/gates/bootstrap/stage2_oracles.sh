@@ -51,4 +51,5 @@ mkdir -p _build/ci-artifacts
 VIBE_RC=0 \
   VIBE_SHADOW_DECISION_DIFF_OUT="$ROOT_DIR/_build/ci-artifacts/incremental-shadow-decision-diff.json" \
   node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
+node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"

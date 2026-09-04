@@ -1,0 +1,45 @@
+//# #1379 metadata-only persistent ingestion stamp codec regression tests.
+
+import @vibe/compiler/cache {
+  ingestion_compact_fingerprint_is_valid_for_test,
+  ingestion_stamp_v1_text_for_test,
+  parse_ingestion_stamp_v1_text_for_test,
+  persistent_ingestion_stamp_cache_path
+}
+
+test "ingestion stamp v1 round-trips exact token text and compact fingerprint" {
+  let payload = ingestion_stamp_v1_text_for_test("42:with\tseparator", "12:34:56")
+  match parse_ingestion_stamp_v1_text_for_test(payload) {
+    Some((token, fingerprint)) => {
+      assert(token == "42:with\tseparator")
+      assert(fingerprint == "12:34:56")
+    },
+    None => assert(false)
+  }
+}
+
+test "ingestion stamp v1 rejects wrong version truncated extra and malformed fingerprints" {
+  match parse_ingestion_stamp_v1_text_for_test("v2\t1\t8\t012:34:56") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match parse_ingestion_stamp_v1_text_for_test("v1\t3\t8\t12") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  match parse_ingestion_stamp_v1_text_for_test("v1\t1\t8\t012:34:56trailing") {
+    Some(_) => assert(false),
+    None => assert(true)
+  }
+  assert(!ingestion_compact_fingerprint_is_valid_for_test("12:34"))
+  assert(!ingestion_compact_fingerprint_is_valid_for_test("12:-34:56"))
+  assert(!ingestion_compact_fingerprint_is_valid_for_test("12:34:56\t"))
+}
+
+test "ingestion stamp cache paths distinguish length-delimited control logical paths" {
+  let newline_path = persistent_ingestion_stamp_cache_path("a\nb")
+  let tab_path = persistent_ingestion_stamp_cache_path("a\tb")
+  let joined_path = persistent_ingestion_stamp_cache_path("a:1:b")
+  assert(newline_path != tab_path)
+  assert(tab_path != joined_path)
+}

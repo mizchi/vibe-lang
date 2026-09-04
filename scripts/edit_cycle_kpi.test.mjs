@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assertDisabledIngestionStamps,
   buildEditCycleWorkSummary,
   editCycleModes,
   parseEditCycleRunCount,
@@ -27,12 +28,18 @@ const validSidecar = JSON.stringify({
 
 const validIngestionFingerprint = {
   schema: "ingestion_fingerprint",
-  version: 2,
+  version: 1,
   nonce: "run-123",
   source_read_calls: 2,
   source_read_string_units: 7,
   hash_calls: 2,
   hash_input_string_units: 7,
+  stamp_probes: 3,
+  stamp_hits: 1,
+  stamp_misses: 1,
+  stamp_malformed: 1,
+  stamp_text_units_read: 11,
+  stamp_publications: 2,
 };
 
 export const validIngestionPipeline = {
@@ -120,8 +127,12 @@ test("edit-cycle KPI fails closed on invalid ingestion fingerprint sidecars", ()
     /nonce mismatch/,
   );
   assert.throws(
+    () => parseIngestionFingerprintTelemetry(JSON.stringify({ ...validIngestionFingerprint, stamp_probes: 2 }), "run-123"),
+    /stamp_probes must equal/,
+  );
+  assert.throws(
     () => parseIngestionFingerprintTelemetry(JSON.stringify({ ...validIngestionFingerprint, extra: 1 }), "run-123"),
-    /exactly the ingestion_fingerprint v2 fields/,
+    /exactly the ingestion_fingerprint v1 fields/,
   );
 });
 
@@ -166,17 +177,20 @@ test("edit-cycle KPI accepts a complete host_fs_scope sidecar", () => {
 test("edit-cycle KPI pins authority modes after ambient environment", () => {
   const env = pinEditCycleModes({
     KEEP: "yes",
+    VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP: "1",
     VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "1",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: "/tmp/ambient",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "ambient",
   });
   assert.equal(env.KEEP, "yes");
   for (const key of [
+    "VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP",
     "VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE",
     "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT",
     "VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE",
   ]) assert.equal(env[key], "");
   assert.deepEqual(editCycleModes, {
+    persistent_ingestion_stamp: "disabled",
     typing_dependency_env_reuse: "default-on",
     invalidation_trace: "disabled",
     compilation: "check-only",
@@ -192,13 +206,26 @@ test("edit-cycle KPI parses only whole positive safe-integer run counts", () => 
   }
 });
 
-test("edit-cycle KPI enforces the ingestion unit invariant", () => {
+test("edit-cycle KPI enforces ingestion unit and disabled-stamp invariants", () => {
   assert.throws(
     () => parseIngestionFingerprintTelemetry(
       JSON.stringify({ ...validIngestionFingerprint, hash_input_string_units: 8 }),
       "run-123",
     ),
     /hash_input_string_units must equal source_read_string_units/,
+  );
+  assert.doesNotThrow(() => assertDisabledIngestionStamps({
+    ...validIngestionFingerprint,
+    stamp_probes: 0,
+    stamp_hits: 0,
+    stamp_misses: 0,
+    stamp_malformed: 0,
+    stamp_text_units_read: 0,
+    stamp_publications: 0,
+  }));
+  assert.throws(
+    () => assertDisabledIngestionStamps(validIngestionFingerprint),
+    /must be 0 when ingestion stamps are disabled/,
   );
 });
 

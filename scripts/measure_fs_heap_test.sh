@@ -30,7 +30,7 @@ sleep_pid=""
 trap '[ -z "$sleep_pid" ] || kill "$sleep_pid" 2>/dev/null || true; [ -z "$sleep_pid" ] || wait "$sleep_pid" 2>/dev/null || true; printf "terminated\\n" >> "$FAKE_RUN_LOG"; exit 143' TERM
 printf 'runner_pid=%s\n' "$$" >> "$FAKE_RUN_LOG"
 printf 'base=%s\n' "$3" >> "$FAKE_RUN_LOG"
-printf 'marks=%s rc=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_testmeta=%s testmeta=%s rc_heap_start=%s wasm_names=%s import_abi=%s coverage=%s\n' \
+printf 'marks=%s rc=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_testmeta=%s testmeta=%s rc_heap_start=%s wasm_names=%s ingestion_stamp=%s import_abi=%s coverage=%s\n' \
   "${VIBE_PROFILE_MEMORY_MARKS:-unset}" \
   "${VIBE_RC:-unset}" \
   "${VIBE_BUILD_CACHE_DIR:-unset}" \
@@ -41,6 +41,7 @@ printf 'marks=%s rc=%s cache=%s pre_grow=%s host_alloc=%s host_guard=%s entry_te
   "${VIBE_TESTMETA_OUT:-unset}" \
   "${VIBE_RC_HEAP_START:-unset}" \
   "${VIBE_WASM_NAMES:-unset}" \
+  "${VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP:-unset}" \
   "${VIBE_IMPORT_ABI:-unset}" \
   "${VIBE_COVERAGE:-unset}" >> "$FAKE_RUN_LOG"
 mkdir -p "$(dirname "$out")"
@@ -95,12 +96,13 @@ VIBE_WASM_NAMES=1 \
 VIBE_ENTRY_TESTMETA_OUT="$TMP_DIR/ambient-entry-meta" \
 VIBE_TESTMETA_OUT="$TMP_DIR/ambient-test-meta" \
 VIBE_RC_HEAP_START=123456 \
+VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP=1 \
   bash "$SCRIPT" --cold --base "$BASE" --verify-parity > "$TMP_DIR/ok.stdout"
 
 grep -q '^\[fs-heap\] comparison=unpaired parity=ok mode=cold backend=rc$' "$TMP_DIR/ok.stdout"
 grep -q '^\[fs-heap\] comparison=unpaired mode=cold backend=rc boundary=fs_compile_complete ' "$TMP_DIR/ok.stdout"
-grep -Eq "^marks=1 rc=1 cache=$TMP_DIR/out/run\.[^/]*/cache_marked_rc pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset import_abi=raw coverage=0$" "$RUN_LOG"
-grep -Eq "^marks=0 rc=1 cache=$TMP_DIR/out/run\.[^/]*/cache_unmarked_rc pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset import_abi=raw coverage=0$" "$RUN_LOG"
+grep -Eq "^marks=1 rc=1 cache=$TMP_DIR/out/run\.[^/]*/cache_marked_rc pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
+grep -Eq "^marks=0 rc=1 cache=$TMP_DIR/out/run\.[^/]*/cache_unmarked_rc pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
 
 # The marked bump twin must pin VIBE_RC=0, require its distinct codegen mark,
 # and compare only against the independently cold unmarked bump lane.
@@ -110,8 +112,8 @@ VIBE_FS_HEAP_OUT_DIR="$TMP_DIR/bump" \
   bash "$SCRIPT" --cold --backend bump --base "$BASE" --verify-parity > "$TMP_DIR/bump.stdout"
 grep -q '^\[fs-heap\] comparison=unpaired parity=ok mode=cold backend=bump$' "$TMP_DIR/bump.stdout"
 grep -q '^\[fs-heap\] comparison=unpaired mode=cold backend=bump boundary=codegen_bump ' "$TMP_DIR/bump.stdout"
-grep -Eq "^marks=1 rc=0 cache=$TMP_DIR/bump/run\.[^/]*/cache_marked_bump pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset import_abi=raw coverage=0$" "$RUN_LOG"
-grep -Eq "^marks=0 rc=0 cache=$TMP_DIR/bump/run\.[^/]*/cache_unmarked_bump pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset import_abi=raw coverage=0$" "$RUN_LOG"
+grep -Eq "^marks=1 rc=0 cache=$TMP_DIR/bump/run\.[^/]*/cache_marked_bump pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
+grep -Eq "^marks=0 rc=0 cache=$TMP_DIR/bump/run\.[^/]*/cache_unmarked_bump pre_grow=unset host_alloc=unset host_guard=unset entry_testmeta=unset testmeta=unset rc_heap_start=unset wasm_names=unset ingestion_stamp=unset import_abi=raw coverage=0$" "$RUN_LOG"
 if grep -q 'ambient-cache-must-not-be-used' "$RUN_LOG"; then
   echo "measure_fs_heap test: ambient cache leaked into measurement" >&2
   exit 1

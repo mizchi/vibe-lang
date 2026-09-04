@@ -64,13 +64,33 @@ full rebuild simply repopulates the cache. Because the key already version-tags
 on every codegen change, a clean is never *required* for correctness — only to
 reclaim disk.
 
-## Ingestion fingerprint telemetry
+## Experimental ingestion fingerprint stamp (#1379)
+
+`VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP=1` enables a narrow, metadata-only
+optimization at the compiler's `fingerprint_file_fs` helper. On a fresh process
+memo miss, it may reuse a compact build fingerprint only when the current
+`Fs::stat_token(path)` **text** exactly equals the stamped token. The v1 payload
+contains only that token and `len:h1:h2`; it never stores raw source, a
+transformed facade, or a source prefix. The key is compiler-version and
+resolution-seed scoped, length-delimits the logical path, uses a dedicated
+namespace, and honors `VIBE_BUILD_CACHE_DIR` rebasing.
+
+This is an explicitly opt-in performance hint, not a source cache and not a
+semantic identity change. Stat tokens are a trusted-stat limitation: an
+out-of-band modification that preserves a runner's token can reuse a stale
+fingerprint. In particular, direct loader/source reconstruction reads still
+occur and are authoritative; a stamp does **not** mean all host source reads
+disappear. Missing, malformed, truncated, wrong-version, token-mismatched, or
+torn stamps fail closed to the usual disk read and hash. Official Rust and Node
+runners implement the `Fs::write_file` publication atomically; the language Fs
+contract does not universally promise this, so non-official runner corruption is
+also treated only as a miss.
 
 For check-only measurement, request the separate compiler-owned sidecar with
 both `VIBE_INGESTION_TELEMETRY_OUT` and a non-empty control-free
 `VIBE_INGESTION_TELEMETRY_NONCE`. It reports `String::length` **string units**
-at this helper (`source_read_string_units`, `hash_input_string_units`), not raw
-bytes. Runner `host_fs_scope` remains a separate aggregate
+at this helper (`source_read_string_units`, `hash_input_string_units`, and stamp
+text units), not raw bytes. Runner `host_fs_scope` remains a separate aggregate
 raw-byte boundary observation. The sidecar is rejected outside
 `VIBE_CHECK_ONLY=1`, stale requested output is removed before CLI early returns,
 and publication after a successful check is required before the final `ok`.

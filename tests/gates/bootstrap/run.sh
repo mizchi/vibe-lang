@@ -117,6 +117,13 @@ VIBE_RC=0 \
   VIBE_SHADOW_DECISION_DIFF_OUT="$ROOT_DIR/_build/ci-artifacts/incremental-shadow-decision-diff.json" \
   node scripts/incremental_invalidation_oracle.mjs "$stage2_wasm"
 
+# 3ab. #1379 opt-in metadata-only ingestion stamp: isolated equivalent cache
+# histories prove observed successful-check invalidation/output equivalence and
+# an exact-token same-size mutation demonstrates the trusted-stat limitation
+# where the filesystem supports it, while retaining fallback coverage.
+echo "[compiler-gate] 3ab/3 persistent ingestion stamp observed-check equivalence oracle"
+node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
+
 # 3ac. Experimental production typing reuse: only the persistent value-binding
 # transport environment can authorize this sidecar alias; trace interfaces are
 # explicitly excluded. The isolated oracle proves cold/warm, private/public,

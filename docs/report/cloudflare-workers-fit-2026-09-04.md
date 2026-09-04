@@ -173,8 +173,11 @@ Warm (persistent cache populated, same input, seed compiler): full closure
 the 5.7 k-line optimizer fit with room for the JS heap. The parser closure at
 about 19 k lines already reserves 161 MB of linear memory, so "small" is
 bounded near the size of one vibe package, not one application. Wall time is
-well inside the paid CPU budget and outside the free 10 ms one for anything
-but hello world.
+inside the paid CPU budget for every row and outside the free 10 ms one for
+every row, hello world included: its 0.28 s is the wall time of a node process
+that also starts the runtime and instantiates a 2.7 MB module, and no CPU-time
+measurement was taken, so nothing here shows any compile fitting the free
+budget.
 
 ### The allocator is not the lever
 
@@ -213,8 +216,13 @@ comment already describes (persisted parse per file, prelude analyses keyed per
 function, desugars scoped to changed modules), plus one more constraint that
 follows from the RC measurement: **the unit of work must run in an instance
 whose memory is discarded afterwards.** `scripts/minify_wasm.sh` already uses
-that shape (one pass per process because the optimizer never frees); a Worker
-gives it for free (one request, one instance).
+that shape (one pass per process because the optimizer never frees). A Worker
+does **not** give it for free: the platform reuses an isolate and its global
+scope across requests, so a compiler instance kept in module scope carries its
+bump heap and `__heap_ptr` into the next compile. The deployment has to
+instantiate per request and drop the instance afterwards, and count concurrent
+instances against the same 128 MB, or the per-module estimate does not bound
+the isolate at all.
 
 Budget check for that design: 1,354 MB over about 260 k closure lines is
 about 5.2 KB of heap per source line. A unit of work the size of
@@ -242,8 +250,11 @@ Seams that already exist and could carry a split:
 - `vibec` (`docs/vibec-component.md`, `scripts/build_vibec.sh`) is a
   component with a `compile(source, request)` world and a `vibec-hosted` world
   whose imports are `read-file` / `exists` / `read-dir` / `stat-token`. That
-  hosted world is the exact shape a Worker needs: sources come from a KV or R2
-  callback, not a filesystem.
+  hosted world is the shape a Worker needs, with one caveat: its imports are
+  synchronous WIT functions, and KV / R2 reads are promises that a synchronous
+  wasm import cannot await. The host therefore prefetches the module's source
+  closure into an in-memory VFS before entering the wasm (or the boundary
+  becomes asynchronous through JSPI), and the callbacks answer from memory.
 
 A split along these seams gives four build units plus tooling:
 
@@ -271,12 +282,19 @@ restated per unit, and the seed becomes several artifacts. That is a bootstrap
 procedure change (`docs/bootstrap.md`), not a language change.
 
 What a Workers deployment would actually look like, given the above: one
-Worker holding the frontend + checker + codegen + link executable (target: the
-1.7 MB figure from section 1, or lower after section 5), receiving one module
-per request through the `vibec-hosted` callbacks, reading dependency interfaces
-and writing bodies to KV/R2, with the link step as a separate request. The 128
-MB isolate then bounds one module compile, which is the same bound the
-per-module design needs on every host.
+Worker holding the frontend, checker, codegen and link units (target: the
+1.7 MB figure from section 1, or lower after section 5). A request names one
+module; the host fetches that module's source closure and its dependencies'
+interfaces from KV / R2 into an in-memory VFS first, then instantiates one
+phase at a time, feeds it through the synchronous `vibec-hosted` callbacks,
+serializes the phase's artifact, and drops the instance before instantiating
+the next phase; the link step is a separate request. Separate linear memories
+do not make the isolate peak equal to the largest phase: every live instance's
+reserved pages plus the serialization buffers count toward the same 128 MB,
+and a bump-allocated phase keeps everything it allocated until its instance is
+destroyed. The budget is therefore the largest phase plus the buffers in
+flight, measured as an aggregate rather than inferred from the per-phase
+numbers. That is the same bound the per-module design needs on every host.
 
 ## 4. Environment flags
 
@@ -302,8 +320,12 @@ stdout variant, `VIBE_TESTMETA_OUT` / `VIBE_ENTRY_TESTMETA_OUT`,
 `VIBE_MODULE_PLAN` / `VIBE_MODULE_JOB_DIR`, `VIBE_PUBLISH_ENV_CACHE`,
 `VIBE_EMIT_MERGED_SOURCE` / `VIBE_EMIT_MODULE_SOURCE`, `VIBE_BATCH_TSV`. None
 of these hurts optimization (each is one compare in `cli_main`, 11 KB total),
-but the protocol forces every tool into one binary. An argv protocol, or one
-entry export per tool, is what lets the tooling units of section 3 exist.
+but the protocol forces every tool into one binary. Changing the protocol to
+argv does not by itself remove any of it: a run-time branch in `cli_main`
+keeps every handler reachable, and exporting every handler makes each export a
+DCE root. What lets the tooling units of section 3 exist is a build-time
+boundary: separate executable-shaped artifacts, `#cfg` selection of the
+handlers, or a build that exports exactly one entry.
 
 **(b) Run-time lane switches, 12.** These are the ones that block DCE, because
 the branch they guard is decided after the wasm is built: `VIBE_RC` (`0` / `1`
@@ -319,15 +341,23 @@ in the output. Moving class (b) from `Env::get` to `#cfg` is the change that
 makes the 17 % drop in section 1 real, and it is the compiler applying pillar 3
 (capabilities fixed at build time drive DCE) to itself.
 
-**(c) Experiment toggles whose experiment is over, 4.**
+**(c) Experiment toggles, 4, of which one is over.**
 `VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE` (the code calls it `legacy`;
-typing reuse is on by default) and `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE`,
-`VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP` (a metadata-only hint,
-`docs/build-cache.md`), `VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE`. Each keeps
-both arms of a decision compiled and tested. Delete the flag, keep the winning
-arm. `VIBE_MODULE_PLAN` / `VIBE_MODULE_JOB_DIR` (the `--jobs` pre-warm, "dev
-checkout only" per the launcher) belong here too once #2388's per-module
-scoping supersedes them.
+typing reuse is on by default) kept both arms of a decided question compiled
+and tested; it is deleted in #2496, and `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1`
+stays as the emergency opt-out the on/off oracle depends on.
+`VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP` (a metadata-only fingerprint
+hint, `docs/build-cache.md`) is **kept for now**, by decision: it belongs to
+the incremental-build line, which is to be completed rather than trimmed, and
+whether the trusted-stat shortcut has a place in that line is that line's
+call; the record is on #2496. `VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE` was
+misread as an experiment in the first draft of this report: `scripts/generations.sh`
+defaults it to `1` for bootstrap builds and `lib/@vibe/cli/dispatch.vibe` uses
+it to force the uncached path around the unstable-opt-in cache hole, so it is
+an operational safety control and stays until the cache identity carries the
+unstable verdict. `VIBE_MODULE_PLAN` / `VIBE_MODULE_JOB_DIR` (the `--jobs`
+pre-warm, "dev checkout only" per the launcher) become deletable once #2388's
+per-module scoping supersedes them.
 
 **(d) Telemetry and trace sinks, 16.** `VIBE_INCREMENTAL_TELEMETRY_OUT`,
 `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT` / `_NONCE`,

@@ -7,6 +7,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertDisabledIngestionStamps,
   buildEditCycleWorkSummary,
   editCycleCaseDefinitions,
   editCycleCases,
@@ -137,6 +138,7 @@ export function parseEditCycleRecord(value, source = "edit-cycle record") {
     value.ingestion_fingerprint?.nonce,
     `${source}: ingestion_fingerprint`,
   );
+  assertDisabledIngestionStamps(ingestion, `${source}: ingestion_fingerprint`);
   const pipeline = parseIngestionPipelineTelemetry(
     JSON.stringify(value.ingestion_pipeline),
     value.ingestion_pipeline?.nonce,

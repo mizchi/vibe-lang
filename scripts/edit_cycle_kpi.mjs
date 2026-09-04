@@ -55,6 +55,12 @@ const ingestionFingerprintKeys = [
   "source_read_string_units",
   "hash_calls",
   "hash_input_string_units",
+  "stamp_probes",
+  "stamp_hits",
+  "stamp_misses",
+  "stamp_malformed",
+  "stamp_text_units_read",
+  "stamp_publications",
 ];
 const ingestionFingerprintCounterKeys = ingestionFingerprintKeys.slice(3);
 export const ingestionPipelineCounterKeys = Object.freeze([
@@ -80,7 +86,7 @@ export const ingestionPipelineCounterKeys = Object.freeze([
 const ingestionPipelineKeys = ["schema", "version", "nonce", ...ingestionPipelineCounterKeys];
 
 export const editCycleRecordSchema = "edit_cycle_kpi";
-export const editCycleRecordVersion = 3;
+export const editCycleRecordVersion = 2;
 export const editCycleCaseDefinitions = Object.freeze({
   cold: Object.freeze({ edit_kind: "none", cache_state: "empty" }),
   exact_noop: Object.freeze({ edit_kind: "none", cache_state: "preserved" }),
@@ -90,6 +96,7 @@ export const editCycleCaseDefinitions = Object.freeze({
 });
 export const editCycleCases = Object.freeze(Object.keys(editCycleCaseDefinitions));
 export const editCycleModes = Object.freeze({
+  persistent_ingestion_stamp: "disabled",
   typing_dependency_env_reuse: "default-on",
   invalidation_trace: "disabled",
   compilation: "check-only",
@@ -108,6 +115,7 @@ export const editCycleWorkScopes = Object.freeze({
 export function pinEditCycleModes(env) {
   return {
     ...env,
+    VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP: "",
     VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: "",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "",
@@ -124,6 +132,19 @@ export function parseEditCycleRunCount(rawValue) {
     throw new Error(`VIBE_EDIT_CYCLE_RUNS must be a positive decimal safe integer, got ${rawValue}`);
   }
   return runs;
+}
+
+export function assertDisabledIngestionStamps(telemetry, source = "ingestion fingerprint telemetry") {
+  for (const key of [
+    "stamp_probes",
+    "stamp_hits",
+    "stamp_misses",
+    "stamp_malformed",
+    "stamp_text_units_read",
+    "stamp_publications",
+  ]) {
+    if (telemetry[key] !== 0) throw new Error(`${source}: ${key} must be 0 when ingestion stamps are disabled`);
+  }
 }
 
 export function buildEditCycleWorkSummary(incrementalTypecheck, ingestionFingerprint, hostFsScope) {
@@ -201,9 +222,9 @@ export function parseIngestionFingerprintTelemetry(text, expectedNonce, source =
   const actualKeys = Object.keys(telemetry).sort();
   const expectedKeys = [...ingestionFingerprintKeys].sort();
   if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, index) => key !== expectedKeys[index])) {
-    throw new Error(`${source}: expected exactly the ingestion_fingerprint v2 fields`);
+    throw new Error(`${source}: expected exactly the ingestion_fingerprint v1 fields`);
   }
-  if (telemetry.schema !== "ingestion_fingerprint" || telemetry.version !== 2) {
+  if (telemetry.schema !== "ingestion_fingerprint" || telemetry.version !== 1) {
     throw new Error(`${source}: unsupported ingestion_fingerprint schema/version`);
   }
   if (typeof telemetry.nonce !== "string" || telemetry.nonce.length === 0 || /\p{Cc}/u.test(telemetry.nonce)) {
@@ -214,6 +235,9 @@ export function parseIngestionFingerprintTelemetry(text, expectedNonce, source =
     if (!Number.isSafeInteger(telemetry[key]) || telemetry[key] < 0) {
       throw new Error(`${source}: ${key} must be a non-negative safe integer`);
     }
+  }
+  if (telemetry.stamp_probes !== telemetry.stamp_hits + telemetry.stamp_misses + telemetry.stamp_malformed) {
+    throw new Error(`${source}: stamp_probes must equal stamp_hits + stamp_misses + stamp_malformed`);
   }
   if (telemetry.hash_calls !== telemetry.source_read_calls) {
     throw new Error(`${source}: hash_calls must equal source_read_calls`);
@@ -398,6 +422,10 @@ function main() {
     const ingestionFingerprint = parseIngestionFingerprintTelemetry(
       readFileSync(ingestionTelemetryPath, "utf8"),
       ingestionTelemetryNonce,
+      `edit-cycle-kpi: ${caseName} ingestion fingerprint telemetry`,
+    );
+    assertDisabledIngestionStamps(
+      ingestionFingerprint,
       `edit-cycle-kpi: ${caseName} ingestion fingerprint telemetry`,
     );
     if (!existsSync(ingestionPipelinePath)) {
