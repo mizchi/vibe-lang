@@ -1361,6 +1361,13 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
   let span_end = ArrayBuilder::new()
   let mut pos = 0
   let mut done = false
+  // Set by an inactive `#cfg`: the next statement is parsed by the ordinary
+  // arm below (syntax must stay valid) and then not recorded. Routing it
+  // through the same arm instead of a second `parse_stmt` call site matters:
+  // measured on the selfcompile KPI, one extra `parse_stmt(...)` call in this
+  // function costs the compiler +48 MB of heap and +10k pages to compile
+  // parser.vibe (#2516).
+  let mut drop_next = false
   while !done {
     match peek(tokens, pos) {
       TEof => {
@@ -1392,21 +1399,19 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
           // checker sees.
           pos = dnext
         } else {
-          // Inactive `#cfg`: the guarded statement must still parse, and gets
-          // no span, so it is absent from the emitted source rather than
-          // emitted under a directive the next compile would have to resolve
-          // again. An impl is parsed through its methods, as the other
-          // program parsers do for the inactive arm: brace balancing would
-          // accept malformed method syntax and never terminate at EOF.
+          // Inactive `#cfg`: the guarded statement must still parse (the
+          // TImpl / ordinary arms below do that, an impl through its
+          // methods), and gets no span, so it is absent from the emitted
+          // source rather than emitted under a directive the next compile
+          // would have to resolve again. `parse_program` hands the position
+          // after the directive to `parse_stmt`, which rejects a directive or
+          // EOF there; say the same.
           match peek(tokens, dnext) {
-            TImpl => {
-              let (simpl_d, hp_d) = parse_impl_stmt_dispatch(tokens, dnext + 1)
-              let (_dropped_impl, dn) = parse_impl_methods(tokens, hp_d, simpl_d, None)
-              pos = dn
-            },
+            THash => throw("#cfg must be followed by a statement"),
+            TEof => throw("#cfg must be followed by a statement"),
             _ => {
-              let (_dropped, dn) = parse_stmt(tokens, starts, dnext)
-              pos = dn
+              drop_next = true
+              pos = dnext
             }
           }
         }
@@ -1419,17 +1424,25 @@ export fn parse_program_spans(tokens: Array[Token], starts: Array[Int], ends: Ar
         let st = Array::get(starts, pos)
         let (simpl, hp) = parse_impl_stmt_dispatch(tokens, pos + 1)
         let (_impl_stmts, next) = parse_impl_methods(tokens, hp, simpl, None)
-        ArrayBuilder::push(b, simpl)
-        ArrayBuilder::push(span_start, st)
-        ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+        if drop_next {
+          drop_next = false
+        } else {
+          ArrayBuilder::push(b, simpl)
+          ArrayBuilder::push(span_start, st)
+          ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+        }
         pos = next
       },
       _ => {
         let st = Array::get(starts, pos)
         let (stmt, next) = parse_stmt(tokens, starts, pos)
-        ArrayBuilder::push(b, stmt)
-        ArrayBuilder::push(span_start, st)
-        ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+        if drop_next {
+          drop_next = false
+        } else {
+          ArrayBuilder::push(b, stmt)
+          ArrayBuilder::push(span_start, st)
+          ArrayBuilder::push(span_end, Array::get(ends, next - 1))
+        }
         pos = next
       }
     }
