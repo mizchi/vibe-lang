@@ -102,15 +102,53 @@ import @vibe/compiler/contract {
 /// the same dependency set either way; a changed token re-reads. An answer
 /// is recorded only when the recursion beneath it met no `visiting` cycle,
 /// so a recorded answer never depends on the caller's `visiting` stack.
-/// Same blind spot as the persistent facade row it feeds: a change in path
-/// RESOLUTION with no file read changing (a new sibling shadowing a
-/// directory import) is not observed. One entry per path, replaced on a
-/// token change, so a resident compiler holds one answer per source.
-let exported_type_params_memo: MutMap[String, (Array[(String, Int)], Array[String], Array[(String, Array[String])])] = MutMap::new_string()
+/// A hit also re-runs every path resolution the recursion made (a nested
+/// `export ./target { T }` probing `target.vibe` before `target/index.vpkg`)
+/// and compares the answer, so a new file that now wins a resolution is
+/// observed even though no file that was read changed (Codex review on
+/// #2520). One entry per path, replaced on a token or resolution change, so
+/// a resident compiler holds one answer per source.
+let exported_type_params_memo: MutMap[String, (Array[(String, Int)], Array[String], Array[(String, Array[String])], Array[(String, String, String)])] = MutMap::new_string()
 
 let exported_type_params_read_log: Array[(String, Int)] = []
 
+let exported_type_params_resolve_log: Array[(String, String, String)] = []
+
 let exported_type_params_cycle_hits: Array[Int] = [0]
+
+/// A recorded answer is fresh when every file it read has the stat token it
+/// was read under and every path resolution it made answers the same. A plain
+/// function, not the match arm: `resolve_path_fs` discharges the Source
+/// effect with a handler, and that call chain inside an Option match arm is
+/// the #708 trap shape (it trapped here, `unreachable`, on the first hit
+/// with a recorded resolution).
+fn exported_type_params_entry_fresh(reads: Array[(String, Int)], resolves: Array[(String, String, String)]) -> Bool with Fs {
+  let mut same = true
+  let mut ri = 0
+  while ri < Array::length(reads) && same {
+    let (read_path, token) = Array::get(reads, ri)
+    // A file the answer read can be gone by now (a `target.vibe` that won a
+    // resolution, then deleted): absent is stale, and `Fs::stat_token` on a
+    // missing path traps rather than answering.
+    if !Fs::exists(read_path) || Fs::stat_token(read_path) != token {
+      same = false
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+  let mut si = 0
+  while si < Array::length(resolves) && same {
+    let (base_dir, raw_path, resolved) = Array::get(resolves, si)
+    if resolve_path_fs(base_dir, raw_path) != resolved {
+      same = false
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  same
+}
 
 fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
   if contains_path(visiting, path) {
@@ -121,24 +159,14 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
   }
   if Array::length(visiting) == 0 {
     Array::truncate(exported_type_params_read_log, 0)
+    Array::truncate(exported_type_params_resolve_log, 0)
   } else {
     ()
   }
   let fresh = match MutMap::get(exported_type_params_memo, path) {
     Some(entry) => {
-      let (reads, _, _) = entry
-      let mut same = true
-      let mut ri = 0
-      while ri < Array::length(reads) && same {
-        let (read_path, token) = Array::get(reads, ri)
-        if Fs::stat_token(read_path) != token {
-          same = false
-        } else {
-          ()
-        }
-        ri = ri + 1
-      }
-      if same {
+      let (reads, _, _, resolves) = entry
+      if exported_type_params_entry_fresh(reads, resolves) {
         Some(entry)
       } else {
         None
@@ -148,7 +176,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
   }
   match fresh {
     Some(entry) => {
-      let (reads, fps, out) = entry
+      let (reads, fps, out, resolves) = entry
       let mut ri = 0
       while ri < Array::length(reads) {
         let (read_path, token) = Array::get(reads, ri)
@@ -157,17 +185,24 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
         Array::push(exported_type_params_read_log, (read_path, token))
         ri = ri + 1
       }
+      let mut si = 0
+      while si < Array::length(resolves) {
+        Array::push(exported_type_params_resolve_log, Array::get(resolves, si))
+        si = si + 1
+      }
       out
     },
     None => {
       let log_mark = Array::length(exported_type_params_read_log)
+      let resolve_mark = Array::length(exported_type_params_resolve_log)
       let dep_mark = Array::length(dep_fingerprints)
       let hits_before = Array::get(exported_type_params_cycle_hits, 0)
       let out = exported_type_params_uncached_fs(path, dep_paths, dep_fingerprints, visiting)
       let reads = Array::slice(exported_type_params_read_log, log_mark, Array::length(exported_type_params_read_log))
       let fps = Array::slice(dep_fingerprints, dep_mark, Array::length(dep_fingerprints))
+      let resolves = Array::slice(exported_type_params_resolve_log, resolve_mark, Array::length(exported_type_params_resolve_log))
       if Array::get(exported_type_params_cycle_hits, 0) == hits_before && Array::length(reads) == Array::length(fps) {
-        MutMap::set(exported_type_params_memo, path, (reads, fps, out))
+        MutMap::set(exported_type_params_memo, path, (reads, fps, out, resolves))
       } else {
         ()
       }
@@ -239,6 +274,7 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
       match Array::get(stmts, si) {
         SReExport(raw_path, items) => {
           let resolved = resolve_path_fs(dir_of_path(path), raw_path)
+          Array::push(exported_type_params_resolve_log, (dir_of_path(path), raw_path, resolved))
           let source_types = exported_type_params_fs(resolved, dep_paths, dep_fingerprints, visiting)
           let mut ii = 0
           while ii < Array::length(items) {

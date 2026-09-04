@@ -2,9 +2,10 @@
 //# path per process instead of reading, lexing and parsing the re-export's
 //# target again for every member unit that re-exports it. What must not
 //# happen is an answer outliving a file: a target rewritten under the same
-//# path is read again (grown to a different kind, then restored), and the
+//# path is read again (grown to a different kind, then restored), the
 //# second member re-exporting one target is checked against the same answer
-//# as the first.
+//# as the first, and a new file that now wins a resolution made inside the
+//# re-export chain is observed even though no file that was read changed.
 
 import @vibe/compiler/cache {
   compact_string_fingerprint, persistent_module_header_cache_path
@@ -85,4 +86,61 @@ test "a re-export target rewritten under the same path is read again" {
   // And changes back: the stale answer must not come back either.
   write_cold(String::concat(base_dir, "/source/index.vpkg"), "opaque type Container[F[_]]\n")
   assert_eq(ingest_error(contract_path), "")
+}
+
+/// A parent whose member re-exports through a facade directory, so the
+/// resolution of `../source` happens INSIDE the memoized recursion (the
+/// facade's own re-export), not at the member. The contract carries a
+/// per-run stamp for the same reason as `setup`.
+fn setup_chain(base_dir: String, stamp: String) -> String with Exception + Fs {
+  let source_dir = String::concat(base_dir, "/source")
+  let facade_dir = String::concat(base_dir, "/facade")
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(source_dir)
+  Fs::mkdir_p(facade_dir)
+  Fs::mkdir_p(parent_dir)
+  write_cold(String::concat(source_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
+  write_cold(String::concat(source_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
+  write_cold(String::concat(facade_dir, "/index.vibe"), "export ../source { Container }\n")
+  write_cold(String::concat(parent_dir, "/index.vpkg"), String::concat("// run ", String::concat(stamp, "\nopaque type Container[F[_]]\n")))
+  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../facade { Container }\n")
+  String::concat(parent_dir, "/index.vpkg")
+}
+
+/// Only the parent contract is rewritten: every file the first answer read
+/// keeps its stat token, which is what makes the stale answer possible.
+fn restamp_parent(base_dir: String, stamp: String) -> Unit with Exception + Fs {
+  write_cold(String::concat(base_dir, "/parent/index.vpkg"), String::concat("// run ", String::concat(stamp, "\nopaque type Container[F[_]]\n")))
+}
+
+let resolution_base_dir: String = "/tmp/vibe_compiler_exported_type_params_memo_resolution"
+
+let resolution_stamp: Array[String] = []
+
+fn resolution_shadow() -> String {
+  String::concat(resolution_base_dir, "/source.vibe")
+}
+
+test "resolution 1: the chain answers clean and its facade answer is recorded" {
+  remove_file_if_exists(resolution_shadow())
+  let stamp = __to_string(Profiler::now_us())
+  Array::push(resolution_stamp, stamp)
+  let contract_path = setup_chain(resolution_base_dir, stamp)
+  assert_eq(ingest_error(contract_path), "")
+}
+
+test "resolution 2: a new file that wins a resolution inside the chain is observed" {
+  // `source.vibe` now wins `../source` over `source/index.vpkg`; nothing the
+  // first answer READ has changed. The parent contract is re-stamped so the
+  // persistent facade row does not answer either.
+  write_cold(resolution_shadow(), "export type Container[F] = F\n")
+  restamp_parent(resolution_base_dir, String::concat(Array::get(resolution_stamp, 0), "-b"))
+  let msg = ingest_error(String::concat(resolution_base_dir, "/parent/index.vpkg"))
+  assert_true(String::contains(msg, "kind mismatch"))
+}
+
+test "resolution 3: the directory wins again once the file is gone" {
+  remove_file_if_exists(resolution_shadow())
+  restamp_parent(resolution_base_dir, String::concat(Array::get(resolution_stamp, 0), "-c"))
+  assert_eq(ingest_error(String::concat(resolution_base_dir, "/parent/index.vpkg")), "")
 }
