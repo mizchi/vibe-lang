@@ -338,7 +338,38 @@ export fn check_stdin_provider_direct_calls_stmts(stmts: Array[Stmt]) -> Array[E
 /// A name bound in `env` (a user/prelude function) is intentionally NOT treated
 /// as a primitive even if its type is `with Async`, except the four exact
 /// compiler-owned stdin provider names imported from their public contract.
+/// #2386: `is_async_primitive`'s answers for the walk in progress. The walk
+/// hands every call site the same env (nothing in it extends `env`; locals go
+/// through `afe_bind_*`), and the answer for a name is a full env miss for
+/// every user callee -- a chain walk per call site. Each exported entry
+/// clears it, so an entry with another env never reads a previous walk's
+/// answer. Values: 1 = async primitive, 0 = not.
+let afe_async_primitive_memo: Array[MutMap[String, Int]] = [
+  MutMap::new_string()
+]
+
+fn afe_reset_entry_memos() -> Unit {
+  Array::set(afe_async_primitive_memo, 0, MutMap::new_string())
+  Array::set(afe_builtin_async_iter_cell, 0, -1)
+}
+
 fn is_async_primitive(name: String, env: TypeEnv) -> Bool {
+  let memo = Array::get(afe_async_primitive_memo, 0)
+  match MutMap::get(memo, name) {
+    Some(v) => v == 1,
+    None => {
+      let answer = is_async_primitive_uncached(name, env)
+      MutMap::set(memo, name, if answer {
+        1
+      } else {
+        0
+      })
+      answer
+    }
+  }
+}
+
+fn is_async_primitive_uncached(name: String, env: TypeEnv) -> Bool {
   if is_stdin_provider_surface(name) {
     // Imported package contracts bind these exact public names in env, but
     // they remain compiler-owned primitives after canonical import rewriting.
@@ -747,10 +778,27 @@ fn afe_expand_constructor_alias(t: Type, env: TypeEnv, fuel: Int) -> Type {
   }
 }
 
+/// #2386: the `AsyncIter` provenance answer for the walk in progress
+/// (-1 = not asked yet, else 0 / 1); the env is constant across a walk and
+/// this was asked once per binding and per call head. Cleared per entry with
+/// the memo above.
+let afe_builtin_async_iter_cell: Array[Int] = [-1]
+
 fn afe_type_binding_is_builtin_async_iter(env: TypeEnv) -> Bool {
-  match env_lookup_binding(env, "AsyncIter") {
-    Some(binding) => afe_origin_is_builtin_async_iter(binding.origin),
-    None => false
+  let cached = Array::get(afe_builtin_async_iter_cell, 0)
+  if cached >= 0 {
+    cached == 1
+  } else {
+    let answer = match env_lookup_binding(env, "AsyncIter") {
+      Some(binding) => afe_origin_is_builtin_async_iter(binding.origin),
+      None => false
+    }
+    Array::set(afe_builtin_async_iter_cell, 0, if answer {
+      1
+    } else {
+      0
+    })
+    answer
   }
 }
 
@@ -1797,6 +1845,7 @@ fn afe_contains_for(expr: Expr) -> Bool {
 }
 
 export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> Array[EffectError] {
+  afe_reset_entry_memos()
   Array::truncate(afe_callable_bodies, 0)
   Array::truncate(afe_payload_call_stack, 0)
   Array::truncate(afe_reachability_keys, 0)
@@ -1919,6 +1968,7 @@ fn check_async_effects_stmt_lo(stmt: Stmt, env: TypeEnv) -> Array[EffectError] {
 }
 
 export fn check_async_effects_stmt(stmt: Stmt, env: TypeEnv) -> Array[EffectError] {
+  afe_reset_entry_memos()
   Array::truncate(afe_callable_bodies, 0)
   Array::truncate(afe_payload_call_stack, 0)
   Array::truncate(afe_reachability_keys, 0)
@@ -1937,6 +1987,7 @@ export fn check_async_effects_stmts(stmts: Array[Stmt], env: TypeEnv) -> Array[E
   afe_set_field_types(stmts, env)
   Array::truncate(afe_builtin_async_iter_import_names, 0)
   afe_record_builtin_async_iter_imports(stmts)
+  afe_reset_entry_memos()
   Array::truncate(afe_callable_bodies, 0)
   Array::truncate(afe_payload_call_stack, 0)
   Array::truncate(afe_reachability_keys, 0)
@@ -2270,6 +2321,12 @@ fn type_kind_name(t: Type) -> String {
 /// `throw(NotFound("x"))` wants the RESULT type of the constructor it applies.
 let throw_kind_cell: Array[(String, String, String)] = array_empty()
 
+/// #2386: name -> first slot of `throw_kind_cell`, rebuilt with the table.
+/// `throw_kind_lookup` scanned the table -- every kinded binding of the env
+/// -- per throw site; the first pushed entry (the innermost binding) wins,
+/// which is what the scan answered.
+let throw_kind_index: Array[MutMap[String, Int]] = [MutMap::new_string()]
+
 fn throw_kind_push(name: String, ty: Type) -> Unit {
   let fnty = match ty {
     CtForAll(_, _, body) => body,
@@ -2281,6 +2338,12 @@ fn throw_kind_push(name: String, ty: Type) -> Unit {
     _ => ""
   }
   if String::length(value_kind) > 0 || String::length(result_kind) > 0 {
+    let index = Array::get(throw_kind_index, 0)
+    if MutMap::has(index, name) {
+      ()
+    } else {
+      MutMap::set(index, name, Array::length(throw_kind_cell))
+    }
     Array::push(throw_kind_cell, (name, value_kind, result_kind))
   } else {
     ()
@@ -2293,6 +2356,7 @@ fn throw_kind_push(name: String, ty: Type) -> Unit {
 /// misclassify a same-named binding there.
 fn set_throw_kind_table(env: TypeEnv) -> Unit {
   Array::truncate(throw_kind_cell, 0)
+  Array::set(throw_kind_index, 0, MutMap::new_string())
   let mut cur = env
   let mut looping = true
   while looping {
@@ -2351,24 +2415,17 @@ fn set_throw_kind_table(env: TypeEnv) -> Unit {
 /// rather than its own. First match wins, matching the env's own innermost-
 /// first order.
 fn throw_kind_lookup(name: String, want_result: Bool) -> String {
-  let mut i = 0
-  let mut out = ""
-  let mut found = false
-  while i < Array::length(throw_kind_cell) && !found {
-    let (n, value_kind, result_kind) = Array::get(throw_kind_cell, i)
-    if n == name {
-      out = if want_result {
+  match MutMap::get(Array::get(throw_kind_index, 0), name) {
+    Some(i) => {
+      let (_, value_kind, result_kind) = Array::get(throw_kind_cell, i)
+      if want_result {
         result_kind
       } else {
         value_kind
       }
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
+    },
+    None => ""
   }
-  out
 }
 
 /// The LOCAL exception-kind scope: `(name, kind)` innermost-first, first match

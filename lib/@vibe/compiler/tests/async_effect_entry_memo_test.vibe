@@ -1,0 +1,90 @@
+//# #2386: the async-effect walk answers "is this callee an async primitive"
+//# and "does `AsyncIter` carry builtin provenance here" once per entry
+//# instead of once per call site and per binding -- the env is the same
+//# for the whole walk. What must not happen is an answer outliving its
+//# entry: each exported entry clears both memos, so the same program checked
+//# against two envs back to back, in either order, answers as it did when
+//# every question went to the env.
+
+import @vibe/compiler/core {
+  BindingOrigin, Expr, Stmt, Type, TypeDef, TypeEnv, TypeExpr, env_bind, env_preserve_type_definition_origins, env_value_binding_with_origin
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/checker {
+  EffectError, check_async_effects_expr, check_async_effects_stmt, check_async_effects_stmts
+}
+
+fn sleep_call() -> Expr {
+  ECall(EIdent("sleep", -1), [EInt(10)], -1)
+}
+
+fn sleep_fn() -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), None, None, sleep_call())
+}
+
+fn user_sleep_env() -> TypeEnv {
+  env_bind(EnvEmpty, "sleep", CtFn([CtInt], CtInt, None))
+}
+
+fn for_over(iterand: Expr) -> Expr {
+  EForIn("x", None, iterand, EIdent("x", -1))
+}
+
+fn holder_body() -> Expr {
+  EFn(array_empty(), array_empty(), [("holder", Some(TyName("Holder")))], None, None, for_over(EDot(EIdent("holder", -1), "stream", -1, -1)))
+}
+
+fn holder_defs(rest: TypeEnv) -> TypeEnv {
+  EnvTypeDefs([
+    TDStruct("Holder", [("stream", CtNamed("AsyncIter", [CtInt]))], [], []),
+    TDStruct("AsyncIter", [], [], ["T"])
+  ], ["Holder"], rest)
+}
+
+fn builtin_async_iter_env() -> TypeEnv {
+  let origin = BindingOriginModuleExport("/workspace/lib/@vibe/builtin/index.vpkg", "AsyncIter")
+  let source = EnvBind("AsyncIter", env_value_binding_with_origin(CtUnknown, origin), EnvEmpty)
+  env_preserve_type_definition_origins(holder_defs(EnvEmpty), source)
+}
+
+fn count(errors: Array[EffectError]) -> Int {
+  Array::length(errors)
+}
+
+test "an async-primitive answer does not outlive its entry (statements)" {
+  let stmts = [STest("t", sleep_call())]
+  assert_eq(count(check_async_effects_stmts(stmts, user_sleep_env())), 0)
+  assert_true(count(check_async_effects_stmts(stmts, EnvEmpty)) > 0)
+  assert_eq(count(check_async_effects_stmts(stmts, user_sleep_env())), 0)
+}
+
+test "an async-primitive answer does not outlive its entry (expression and statement entries)" {
+  assert_true(count(check_async_effects_expr(sleep_call(), EnvEmpty, false)) > 0)
+  assert_eq(count(check_async_effects_expr(sleep_call(), user_sleep_env(), false)), 0)
+  assert_true(count(check_async_effects_expr(sleep_call(), EnvEmpty, false)) > 0)
+  let stmt = SLet(false, false, "f", None, sleep_fn())
+  assert_eq(count(check_async_effects_stmt(stmt, user_sleep_env())), 0)
+  assert_true(count(check_async_effects_stmt(stmt, EnvEmpty)) > 0)
+  assert_eq(count(check_async_effects_stmt(stmt, user_sleep_env())), 0)
+}
+
+test "the same name is asked once per entry, not once per site" {
+  // Two sites of one name in one walk: the first answer is reused for the
+  // second, and both agree with the per-site answer.
+  let two = EFn(array_empty(), array_empty(), array_empty(), None, None, ELet("a", sleep_call(), sleep_call(), -1))
+  let stmts = [STest("t", two)]
+  assert_eq(count(check_async_effects_stmts(stmts, user_sleep_env())), 0)
+  assert_true(count(check_async_effects_stmts(stmts, EnvEmpty)) >= 2)
+}
+
+test "the AsyncIter provenance answer does not outlive its entry" {
+  let stmts = [STest("projected field", holder_body())]
+  assert_true(count(check_async_effects_stmts(stmts, builtin_async_iter_env())) > 0)
+  assert_eq(count(check_async_effects_stmts(stmts, holder_defs(EnvEmpty))), 0)
+  assert_true(count(check_async_effects_stmts(stmts, builtin_async_iter_env())) > 0)
+  assert_eq(count(check_async_effects_stmts(stmts, holder_defs(EnvEmpty))), 0)
+}
