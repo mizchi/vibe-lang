@@ -506,6 +506,186 @@ export fn merge_impl_raws_dedupe(explicit: Array[String], discovered: Array[Stri
   out
 }
 
+/// #2386: one located parse per (path, exact source text) for the process,
+/// shared by the header pass above (a persisted-header MISS lexes and parses
+/// the whole file to find its imports and exports) and the typecheck walk's
+/// module check (`parse_program_with_path` in runtime/typecheck_fs.vibe),
+/// which used to keep its own memo and parse every module a second time on
+/// a cold compile. The two sites ran the identical `lex_with_offsets` +
+/// `parse_program_located` pair under the identical `<path>: <msg>` error
+/// wrapping, so one answer serves both.
+///
+/// Keyed by path, and each path keeps every source text it was asked with:
+/// a same-path re-ingest with different text is a real shape (#897's vpkg
+/// shared-import prefix marker), and the text is compared in full -- a
+/// compare is far cheaper than the parse it guards, and a fingerprint would
+/// make a collision a silent misparse.
+///
+/// The memo hands out a SHALLOW COPY of the top-level statement array, never
+/// the stored one: check_program mutates its argument in place at the top
+/// level (inject_trait_method_generics / desugar_railway_binds /
+/// desugar_labeled_args each `Array::set(stmts, i, ..)`), so the pristine
+/// array must not be shared. The Stmt values themselves are immutable.
+///
+/// A throwing parse is NOT memoized: a second caller re-parses and re-throws
+/// identically. The memo is bounded: `vibe --daemon` serves many compiles
+/// from one process and every edited source is a new (path, text) pair, so
+/// past 1024 texts the whole memo is dropped (one compile's worth of
+/// re-parsing, far above a self-compile's module count).
+/// `parse_program_located_shared_ran_parser` says whether the most recent
+/// call ran the parser; the typecheck walk's telemetry uses the
+/// first-semantic-use pair below instead (see `located_parse_memo_consumed`). Parallel arrays and a
+/// cell rather than tuples: the tuple-returning first draft trapped
+/// (`unreachable`) on the RC lane inside the first test that parsed.
+let located_parse_memo_sources: Array[MutMap[String, Array[String]]] = [
+  MutMap::new_string()
+]
+
+let located_parse_memo_stmts: Array[MutMap[String, Array[Array[Stmt]]]] = [
+  MutMap::new_string()
+]
+
+let located_parse_memo_size: Array[Int] = [0]
+
+let located_parse_memo_ran_parser: Array[Bool] = [false]
+
+/// Per version: whether a module check has consumed this parse yet. The
+/// typecheck walk's `current_source_parse_executions` counts the first
+/// semantic use of a (path, text) in the process -- the observable it had
+/// when the walk kept its own memo and always parsed on that first use --
+/// whether the parser ran in the check or, now, in the planning header
+/// pass. A version's flag lives beside it in `located_parse_memo_consumed`.
+let located_parse_memo_consumed: Array[MutMap[String, Array[Bool]]] = [
+  MutMap::new_string()
+]
+
+fn located_parse_consumed_versions(memo: MutMap[String, Array[Bool]], path: String) -> Array[Bool] {
+  match MutMap::get(memo, path) {
+    Some(found) => found,
+    None => array_empty()
+  }
+}
+
+/// True iff no module check has consumed the parse of (path, source) yet.
+/// Does not mark: a check marks with `parse_program_located_shared_mark_semantic`
+/// once its parse succeeded, so a throwing parse is asked about again.
+export fn parse_program_located_shared_semantic_pending(path: String, source: String) -> Bool {
+  let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
+  let hit = located_parse_version_index(seen_sources, source)
+  if hit < 0 {
+    true
+  } else {
+    let flags = located_parse_consumed_versions(Array::get(located_parse_memo_consumed, 0), path)
+    if hit < Array::length(flags) {
+      !Array::get(flags, hit)
+    } else {
+      true
+    }
+  }
+}
+
+export fn parse_program_located_shared_mark_semantic(path: String, source: String) -> Unit {
+  let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
+  let hit = located_parse_version_index(seen_sources, source)
+  if hit >= 0 {
+    let flags = located_parse_consumed_versions(Array::get(located_parse_memo_consumed, 0), path)
+    if hit < Array::length(flags) {
+      Array::set(flags, hit, true)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+/// True iff the most recent `parse_program_located_shared` call ran the
+/// parser (a miss); false when it answered from the memo.
+export fn parse_program_located_shared_ran_parser() -> Bool {
+  Array::get(located_parse_memo_ran_parser, 0)
+}
+
+fn located_parse_versions(memo: MutMap[String, Array[String]], path: String) -> Array[String] {
+  match MutMap::get(memo, path) {
+    Some(found) => found,
+    None => array_empty()
+  }
+}
+
+fn located_parse_stmt_versions(memo: MutMap[String, Array[Array[Stmt]]], path: String) -> Array[Array[Stmt]] {
+  match MutMap::get(memo, path) {
+    Some(found) => found,
+    None => array_empty()
+  }
+}
+
+fn located_parse_version_index(seen_sources: Array[String], source: String) -> Int {
+  let mut hit = -1
+  let mut vi = 0
+  while vi < Array::length(seen_sources) && hit < 0 {
+    if Array::get(seen_sources, vi) == source {
+      hit = vi
+    } else {
+      ()
+    }
+    vi = vi + 1
+  }
+  hit
+}
+
+/// The parser call chain lives in its own function with no `match` in it:
+/// #708 (the RC-lane `unreachable` in `tk_name`) reproduces when
+/// lex_with_offsets/parse_program_located are compiled next to an Option
+/// match in the same function.
+fn located_parse_uncached(path: String, source: String) -> Array[Stmt] with Exception {
+  handle {
+    let (tokens, starts, _ends) = lex_with_offsets(source)
+    parse_program_located(tokens, starts, source)
+  } with { Exception::Throw(msg) => throw(String::concat(String::concat(path, ": "), msg)) }
+}
+
+fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Unit {
+  if Array::get(located_parse_memo_size, 0) >= 1024 {
+    Array::set(located_parse_memo_sources, 0, MutMap::new_string())
+    Array::set(located_parse_memo_stmts, 0, MutMap::new_string())
+    Array::set(located_parse_memo_consumed, 0, MutMap::new_string())
+    Array::set(located_parse_memo_size, 0, 0)
+  } else {
+    ()
+  }
+  let sources_now = Array::get(located_parse_memo_sources, 0)
+  let stmts_now = Array::get(located_parse_memo_stmts, 0)
+  let consumed_now = Array::get(located_parse_memo_consumed, 0)
+  if MutMap::has(sources_now, path) {
+    ()
+  } else {
+    MutMap::set(sources_now, path, array_empty())
+    MutMap::set(stmts_now, path, array_empty())
+    MutMap::set(consumed_now, path, array_empty())
+  }
+  Array::push(located_parse_versions(sources_now, path), source)
+  Array::push(located_parse_stmt_versions(stmts_now, path), parsed)
+  Array::push(located_parse_consumed_versions(consumed_now, path), false)
+  Array::set(located_parse_memo_size, 0, Array::get(located_parse_memo_size, 0) + 1)
+}
+
+export fn parse_program_located_shared(path: String, source: String) -> Array[Stmt] with Exception {
+  let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
+  let hit = located_parse_version_index(seen_sources, source)
+  if hit >= 0 {
+    Array::set(located_parse_memo_ran_parser, 0, false)
+    let cached = Array::get(located_parse_stmt_versions(Array::get(located_parse_memo_stmts, 0), path), hit)
+    Array::slice(cached, 0, Array::length(cached))
+  } else {
+    // Set before the parse: a throwing parse ran the parser too, and the
+    // exception leaves this function before anything after the call.
+    Array::set(located_parse_memo_ran_parser, 0, true)
+    let parsed = located_parse_uncached(path, source)
+    located_parse_record(path, source, parsed)
+    Array::slice(parsed, 0, Array::length(parsed))
+  }
+}
+
 export fn load_or_parse_module_header_fs_impl(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Exception + Fs {
   ingestion_pipeline_telemetry_add(10, 1)
   let cache_path = persistent_module_header_cache_path(path, compact_string_fingerprint(source))
@@ -637,10 +817,12 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
         None => (array_empty(), array_empty(), parse_count)
       }
     } else {
-      let (tokens, starts, _ends) = lex_with_offsets(source)
-      let stmts = handle {
-        parse_program_located(tokens, starts, source)
-      } with { Exception::Throw(msg) => throw(String::concat(path, String::concat(": ", msg))) }
+      // #2386: the located parse is shared with the typecheck walk (see
+      // parse_program_located_shared), so a source parsed here for its
+      // header is not parsed again for its check. `parse_count` still counts
+      // headers computed from source -- the number its callers report as
+      // header parse scans -- whether the memo answered or not.
+      let stmts = parse_program_located_shared(path, source)
       (collect_import_deps_from_stmts(stmts, dir_of_path(path), path, source), collect_exports(stmts), parse_count + 1)
     }
     let deps = header_result.0
