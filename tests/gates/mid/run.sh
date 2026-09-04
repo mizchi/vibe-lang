@@ -590,8 +590,42 @@ if [ "$cf_dev" != "102" ] || [ "$cf_rel" != "2" ]; then
   echo "[compiler-gate] FAIL: #cfg selection wrong (dev='$cf_dev' want 102, release='$cf_rel' want 2)" >&2
   exit 1
 fi
+# FS lane (#2513): the flag set must reach IMPORTED modules too (the flags used
+# to be appended to the entry source only, so a `#cfg` in a dependency was
+# dropped whatever VIBE_CFG said), and a warm compile after switching the flag
+# must be a cache miss, never a replay of the other flag's artifacts -- the
+# third compile below reuses the cache directory the first two filled.
+cat > "$cfdir/dep.vibe" <<'VIBE'
+#cfg(dev)
+export fn f(x: Int) -> Int { x + 100 }
+
+#cfg(release)
+export fn f(x: Int) -> Int { x + 1 }
+VIBE
+cat > "$cfdir/main.vibe" <<'VIBE'
+import ./dep.vibe { f }
+
+fn main() -> Int { f(1) }
+VIBE
+cf_fs_got=""
+for cf_flag in dev release dev; do
+  rm -f "$cfdir/fs.wasm" "$cfdir/fs.wasm.diag"
+  VIBE_CFG="$cf_flag" VIBE_FS_COMPILE=1 VIBE_BUILD_CACHE_DIR="$cfdir/cache" \
+    VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$cfdir/main.vibe" "$cfdir/fs.wasm" main >/dev/null 2>&1 || true
+  if [ -s "$cfdir/fs.wasm" ]; then
+    cf_fs_got="$cf_fs_got $(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfdir/fs.wasm" 2>&1 | tail -1)"
+  else
+    cf_fs_got="$cf_fs_got nocompile($(tr '\n' ' ' < "$cfdir/fs.wasm.diag" 2>/dev/null | cut -c1-80))"
+  fi
+done
+if [ "$cf_fs_got" != " 101 2 101" ]; then
+  echo "[compiler-gate] FAIL: #cfg on the FS lane (dev, release, warm dev) answered '$cf_fs_got', want ' 101 2 101' (#2513)" >&2
+  exit 1
+fi
 rm -rf "$cfdir"
-echo "[compiler-gate] #cfg conditional compilation ok (dev=102 release=2)"
+echo "[compiler-gate] #cfg conditional compilation ok (dev=102 release=2; FS lane + warm switch ok)"
 
 # 40h. wasm-gc backend smoke: the VIBE_BACKEND=gc lane (selfhost port of the
 #      gc backend, wired through the adapter) must compile and run the

@@ -732,8 +732,35 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Opti
 // at the END keeps every source offset -- and thus diagnostics -- unchanged).
 // A pre-scan collects the active set so `#cfg_enable` position is irrelevant.
 //
-// NOTE: `#cfg` must not be used in the compiler's own source until the seed
-// compiler understands it (docs/selfhost-bootstrap.md bump procedure).
+// The active set is the union of two sources: the `#cfg_enable` directives in
+// the file itself, and the AMBIENT set below, which the CLI fills once per
+// process from `VIBE_CFG` (#2513). Before the ambient set existed the flags
+// reached only the entry file: the CLI appended `#cfg_enable` to the entry
+// source, and every imported module scanned its own token stream, saw no
+// directive, and dropped all of its `#cfg` statements whatever `VIBE_CFG`
+// said. A dependency that spells `#cfg(dev) export fn f` could therefore
+// never be imported. The same set has to be part of every persistent cache
+// key (persistent_cache_version_tag folds it in), or a module parsed under
+// one flag set is replayed under another.
+//
+// NOTE: the compiler's own sources still must not use `#cfg`: the flattened
+// self-build and the span-based tools go through `parse_program_spans`, which
+// refuses every `#` directive except `#zero_alloc` (see the THash arm there).
+// Lifting that is the first step of #2497.
+
+let cfg_ambient_flags: Array[String] = []
+
+/// Replace the process-wide ambient `#cfg` flag set. Called once per CLI
+/// invocation from the environment; every subsequent parse of any module
+/// treats these flags as active in addition to the file's own `#cfg_enable`.
+export fn set_cfg_ambient_flags(flags: Array[String]) -> Unit {
+  Array::truncate(cfg_ambient_flags, 0)
+  let mut i = 0
+  while i < Array::length(flags) {
+    Array::push(cfg_ambient_flags, Array::get(flags, i))
+    i = i + 1
+  }
+}
 
 /// Parse the directive after a THash: `cfg(name)`, `cfg_enable(name)`,
 /// `zero_alloc`, or `deprecated` (#1262 ADR-0101 migration marker; optional
@@ -787,10 +814,16 @@ fn parse_cfg_directive(tokens: Array[Token], pos: Int) -> (String, String, Int) 
 }
 
 /// Pre-scan the whole token stream for `#cfg_enable(name)` directives and
-/// return the active flag set. O(tokens), with one fresh result allocation;
-/// the result does not grow unless a THash enables a flag.
+/// return the active flag set: the ambient set first, then the file's own
+/// directives. O(tokens), with one fresh result allocation; the result does
+/// not grow unless a THash enables a flag or the ambient set is non-empty.
 fn cfg_scan_enabled(tokens: Array[Token]) -> Array[String] with Exception {
   let out = ArrayBuilder::freeze(ArrayBuilder::new())
+  let mut a = 0
+  while a < Array::length(cfg_ambient_flags) {
+    Array::push(out, Array::get(cfg_ambient_flags, a))
+    a = a + 1
+  }
   let mut i = 0
   let n = Array::length(tokens)
   while i < n {

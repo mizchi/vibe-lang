@@ -118,6 +118,7 @@ import ./cli_support.vibe {
   check_redundant_import_warnings_from_source_groups,
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
+  configure_cfg_flags,
   strip_executable_wasm_env,
   unstable_closure_reset,
   unstable_surface_diagnostics,
@@ -607,11 +608,12 @@ fn profile_memory_mark(enabled: Bool) -> Unit with Env {
   }
 }
 
-/// #cfg activation: VIBE_CFG=flag1,flag2 appends `#cfg_enable(flag)` directive
-/// lines to the source (appending at the END keeps every original byte offset,
-/// so diagnostics/spans are unaffected). parse_program pre-scans for these and
-/// keeps the matching `#cfg(flag)` statements; with VIBE_CFG unset, every
-/// #cfg-guarded statement is parsed-and-dropped -- zero bytes in the output.
+/// #cfg activation on the single-file lane, kept for the byte-offset property:
+/// VIBE_CFG=flag1,flag2 appends `#cfg_enable(flag)` directive lines to the
+/// source (appending at the END keeps every original byte offset, so
+/// diagnostics/spans are unaffected). The ambient set configured by
+/// configure_cfg_flags already activates the same flags for every parse; this
+/// stays so the single-file source itself records what it was built with.
 fn apply_cfg_env(source: String, cfg_csv: String) -> String {
   if cfg_csv == "" {
     source
@@ -866,6 +868,10 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
   // build/codegen lanes stay conservative, and a prior check in a long-lived
   // instance cannot leak its policy into a later invocation.
   set_experimental_typing_dependency_env_reuse_enabled(false)
+  // #2513: the `#cfg` flag set, for every module this invocation parses and
+  // for every cache key it touches. Set before ANY lane runs, like the
+  // switches below.
+  configure_cfg_flags()
   // #944 (ADR-0073 stage B): checked-Error row discipline is ON by
   // default -- `Exception::Throw` propagates to the caller's row like any
   // other effect, dischargeable via `handle .. with Exception`.

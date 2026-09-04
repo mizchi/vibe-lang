@@ -7509,6 +7509,59 @@ SCEOF
   echo "[compiler-gate] the split CLI refuses an unstable dependency cold AND warm, and still builds clean programs ok (#2305)"
 fi
 
+# 127/127 (#2513). The #cfg flag set reaches IMPORTED modules through the split
+# CLI. This dispatcher (lib/@vibe/cli/dispatch.vibe) never passes through
+# cli_adapter's cli_main, so the process-wide flag configuration has to be made
+# in both entries: gate 40g (mid lane) covers the adapter, this covers the
+# dispatcher, on the split CLI core section 114 just built or was handed.
+# Three builds on one cache directory -- dev, release, dev -- the third proving
+# that a flag switch is a cache miss, not a replay; then a no-flag build must be
+# refused (the guarded `f` is then in neither arm), so the section also fails
+# if something starts enabling every flag.
+echo "[compiler-gate] 127/127 #cfg flags reach imported modules through the split CLI (#2513)"
+cfsdir="_build/_gate_split_cli_cfg"
+rm -rf "$cfsdir"; mkdir -p "$cfsdir"
+cat > "$cfsdir/dep.vibe" <<'SCEOF'
+#cfg(dev)
+export fn f(x: Int) -> Int { x + 100 }
+
+#cfg(release)
+export fn f(x: Int) -> Int { x + 1 }
+SCEOF
+cat > "$cfsdir/main.vibex" <<'SCEOF'
+import ./dep.vibe { f }
+
+fn main() -> Unit with Stdout {
+  println(Int::to_string(f(1)))
+}
+SCEOF
+cfs_got=""
+for cfs_flag in dev release dev; do
+  rm -f "$cfsdir/b.wasm"
+  env VIBE_CFG="$cfs_flag" VIBE_BUILD_CACHE_DIR="$cfsdir/cache" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
+    build "$cfsdir/main.vibex" -o "$cfsdir/b.wasm" >/dev/null 2>&1 || true
+  if [ -s "$cfsdir/b.wasm" ]; then
+    cfs_got="$cfs_got $(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfsdir/b.wasm" 2>&1 | tail -1)"
+  else
+    cfs_got="$cfs_got nocompile"
+  fi
+done
+if [ "$cfs_got" != " 101 2 101" ]; then
+  echo "[compiler-gate] FAIL: #cfg through the split CLI (dev, release, warm dev) answered '$cfs_got', want ' 101 2 101' (#2513)" >&2
+  exit 1
+fi
+rm -f "$cfsdir/b.wasm"
+env -u VIBE_CFG VIBE_BUILD_CACHE_DIR="$cfsdir/cache" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
+  build "$cfsdir/main.vibex" -o "$cfsdir/b.wasm" >/dev/null 2>&1 || true
+if [ -s "$cfsdir/b.wasm" ]; then
+  echo "[compiler-gate] FAIL: with no VIBE_CFG the split CLI built a program whose only f is #cfg-guarded (#2513)" >&2
+  exit 1
+fi
+rm -rf "$cfsdir"
+echo "[compiler-gate] #cfg flags reach imported modules through the split CLI, and a flag switch is a cache miss ok (#2513)"
+
 # 115/115. `vibe lsp` publishDiagnostics carries the ADR-0068 opt-in (#2297).
 # Section 108 covers the boundary on `vibe check --single-file`, in both its
 # text and its `--json` form -- but the JSON form only reports it because the
