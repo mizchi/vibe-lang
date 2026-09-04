@@ -296,6 +296,20 @@ destroyed. The budget is therefore the largest phase plus the buffers in
 flight, measured as an aggregate rather than inferred from the per-phase
 numbers. That is the same bound the per-module design needs on every host.
 
+The link unit is the exception to "one module at a time", and the per-module
+argument does not bound it. Monoify instantiation, comparator emission,
+capability DCE, index assignment and assembly are whole-program by definition
+(`docs/incremental-build.md` keeps them as barriers), so running link as its
+own request resets the earlier phases' memory but leaves the linker's own
+working set at program size. Today that working set is the merged AST (the
+1.35 GB figure); nothing here measures what it becomes once link consumes
+pre-encoded bodies and interface summaries instead of trees. The design target
+is a linker whose live set is output-sized (the compiler's own output is 4 MB
+of bodies plus index tables) and whose whole-program decisions read summaries,
+not bodies; whether that fits 128 MB for the compiler itself is an open
+measurement, listed on #2507, and until it exists the 128 MB claim covers the
+per-module phases only.
+
 ## 4. Environment flags
 
 The compiler sources read **101 distinct `VIBE_*` variables**; 99 of the
