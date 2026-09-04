@@ -3201,8 +3201,22 @@ export fn rc_shadow_base() -> Int {
 
 /// Size of the shadow table. One 4-byte slot per 8-byte heap granule, so a
 /// reserve of R covers 2R of heap.
+///
+/// Derived, not chosen: the table must hold a slot for EVERY vptr the heap can
+/// reach, and the heap starts at `rc_shadow_base() + R`, so a bigger table also
+/// pushes the top vptr up. The binding case is the last 8-aligned block in the
+/// wasm32 space, `0xFFFFFFF8`, whose slot must end at or below the table's end:
+///
+///   rc_shadow_base() + 8 + (0xFFFFFFF8 - (rc_shadow_base() + R)) / 2 + 4
+///     <= rc_shadow_base() + R
+///
+/// which is `R >= (0xFFFFFFF8 - rc_shadow_base() + 24) / 3`. Rounded up to 16
+/// so the table and the heap start stay 16-aligned. Picking a round number
+/// instead put that last block's slot 4 bytes past the table, over the first
+/// heap block's RC header -- silent corruption from the tool that exists to
+/// catch it (#2487 review).
 export fn rc_shadow_reserve() -> Int {
-  1342177280
+  (((4294967288 - rc_shadow_base() + 24) / 3 + 15) / 16) * 16
 }
 
 /// #2427: where the bump pointer starts under `VIBE_RC=shadow`.
@@ -3222,9 +3236,10 @@ export fn rc_shadow_reserve() -> Int {
 ///
 /// So the heap starts ABOVE the table, and the slot index is scaled: a vptr is
 /// 8-aligned, so `(vptr - rc_shadow_heap_start()) / 2` gives one naturally
-/// aligned 4-byte slot per granule. With base 256 MiB and a 1.25 GiB reserve
-/// the table covers vptrs up to 4 GiB -- the whole wasm32 address space, so
-/// there is no in-range check to get wrong and no way to fall off the end.
+/// aligned 4-byte slot per granule. The reserve is sized (see
+/// `rc_shadow_reserve`) so that every vptr up to the top of the wasm32 address
+/// space maps inside the table, which is why there is no in-range check here
+/// to get wrong and no way to fall off the end.
 export fn rc_shadow_heap_start() -> Int {
   rc_shadow_base() + rc_shadow_reserve()
 }
