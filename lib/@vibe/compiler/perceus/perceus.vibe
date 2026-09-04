@@ -5,7 +5,7 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutSet
 }
 
 import @vibe/compiler/core {
@@ -49,6 +49,11 @@ export enum PerceusActionKind {
 struct PCtx {
   mut next_id: Int;
   mut seq_id: Int;
+  // #2386: the token `perceus_pin_tables` handed out when it installed the
+  // four tables below, 0 when the cache holds tables nobody pinned. A caller
+  // presenting this token skips the four whole-table compares
+  // (`pctx_cache_matches`) that otherwise ran once per function.
+  mut pinned: Int;
   // The four table fields are `mut` for one reason only: on a pctx_cache
   // mismatch the cached PCtx is refilled in place by field assignment, which
   // drops the previous tables -- replacing the whole PCtx through Array::set
@@ -183,6 +188,7 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
   PCtx::{
     next_id: 0,
     seq_id: 0,
+    pinned: 0,
     pctx_names: Array::slice(borrow_ret_names, 0, Array::length(borrow_ret_names)),
     borrow_param_user: Array::slice(borrow_param_fns, 0, Array::length(borrow_param_fns)),
     borrow_param_mask: Array::slice(borrow_param_masks, 0, Array::length(borrow_param_masks)),
@@ -208,6 +214,9 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
 /// never depends on a set/reset discipline; a stale or half-built cache entry
 /// can only cause a miss, never a wrong table.
 let pctx_cache: Array[PCtx] = []
+
+/// #2386: the last token `perceus_pin_tables` issued (see PCtx.pinned).
+let pctx_pin_counter: Array[Int] = [0]
 
 fn same_str_table(a: Array[String], b: Array[String]) -> Bool {
   let la = Array::length(a)
@@ -646,7 +655,7 @@ fn collect_spine_let_vals(e0: Expr, names: Array[String], vals: Array[Expr], exc
 /// is peeled first so an annotated binding classifies as its value. Callee
 /// matching is one step at a time, and both loops are iterative -- see the
 /// shape workarounds documented on tail_is_borrow_ret_safe.
-fn spine_ident_returns_owned(known: Array[String], names: Array[String], vals: Array[Expr], excluded: Array[String], nm0: String) -> Bool {
+fn spine_ident_returns_owned(known: MutSet[String], names: Array[String], vals: Array[Expr], excluded: Array[String], nm0: String) -> Bool {
   let mut nm = nm0
   let mut hops = 0
   let mut owned = false
@@ -718,7 +727,7 @@ fn spine_ident_returns_owned(known: Array[String], names: Array[String], vals: A
           },
           ECall(c2, _, _) =>
           match c2 {
-            EIdent(f, _) => if f == "perform" || array_contains_str_pctx(known, f) {
+            EIdent(f, _) => if f == "perform" || MutSet::has(known, f) {
               done = true
             } else {
               owned = true
@@ -741,7 +750,7 @@ fn spine_ident_returns_owned(known: Array[String], names: Array[String], vals: A
   owned
 }
 
-fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr, spine_names: Array[String], spine_vals: Array[Expr], spine_excluded: Array[String]) -> Bool {
+fn tail_is_borrow_ret_safe(known: MutSet[String], e0: Expr, spine_names: Array[String], spine_vals: Array[Expr], spine_excluded: Array[String]) -> Bool {
   // ADR-0090 / #1770: the worklist grows while being consumed in-place and
   // only the Bool verdict escapes, so its growth garbage goes to the region
   // arena (MutList) instead of the main heap. Bump lane only; under RC the
@@ -836,12 +845,12 @@ fn tail_is_borrow_ret_safe(known: Array[String], e0: Expr, spine_names: Array[St
             }
             if op_is_throw {
               ()
-            } else if !array_contains_str_pctx(known, callee) {
+            } else if !MutSet::has(known, callee) {
               all_safe = false
             } else {
               ()
             }
-          } else if !array_contains_str_pctx(known, callee) {
+          } else if !MutSet::has(known, callee) {
             all_safe = false
           } else {
             ()
@@ -943,12 +952,17 @@ export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
   // actually return a borrowed view.
   let builtin_names = borrow_ret_builtin_names()
   let known: Array[String] = []
+  // #2386: `known` is queried per statement per round and per callee inside
+  // `tail_is_borrow_ret_safe`; the set answers those, the array keeps the
+  // insertion order the result is read in.
+  let known_set = MutSet::new_string()
   let source_owned_mask = source_owned_shadowable_borrow_mask(stmts)
   let mut seed_i = 0
   while seed_i < Array::length(builtin_names) {
     let builtin_name = Array::get(builtin_names, seed_i)
     if !source_owns_shadowable_borrow_builtin(source_owned_mask, builtin_name) {
       Array::push(known, builtin_name)
+      MutSet::add(known_set, builtin_name)
     } else {
       ()
     }
@@ -961,7 +975,7 @@ export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
         SLet(_, _, name, _, value) =>
-        if !array_contains_str_pctx(known, name) {
+        if !MutSet::has(known_set, name) {
           match value {
             EFn(_, _, _, _, _, body) => {
               // A function is borrow-returning only if its (wrapper-stripped)
@@ -987,8 +1001,9 @@ export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
                 let sp_vals: Array[Expr] = []
                 let sp_excluded: Array[String] = []
                 let _ = collect_spine_let_vals(body, sp_names, sp_vals, sp_excluded)
-                if tail_is_borrow_ret_safe(known, top, sp_names, sp_vals, sp_excluded) {
+                if tail_is_borrow_ret_safe(known_set, top, sp_names, sp_vals, sp_excluded) {
                   Array::push(known, name)
+                  MutSet::add(known_set, name)
                   changed = true
                 } else {
                   ()
@@ -3051,7 +3066,10 @@ fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction], borrow_param_fns:
 /// machinery emits a PaDrop for a borrowed-only/unused heap param and a PaDup for
 /// one used in multiple owning positions. Heap-ness comes from the param's type
 /// annotation (scalar params get scalar=true so they are never dropped).
-export fn build_perceus_plan_with_params_split(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
+/// The cached `PCtx` holding exactly these four tables, reset for a new
+/// function: installed fresh, kept when the tables compare equal, replaced
+/// (and unpinned) otherwise.
+fn pctx_cache_select(borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> PCtx {
   // Reuse the cached PCtx when the caller's four whole-program tables are
   // content-identical to the cached copies (the per-program common case: one
   // plan per function/lambda, all against the same tables); otherwise build a
@@ -3068,12 +3086,54 @@ export fn build_perceus_plan_with_params_split(params: Array[(String, Option[Typ
     // releasing the replaced element.
     let stale = Array::get(pctx_cache, 0)
     pctx_reset(stale)
+    stale.pinned = 0
     stale.pctx_names = Array::slice(borrow_ret_names, 0, Array::length(borrow_ret_names))
     stale.borrow_param_user = Array::slice(borrow_param_fns, 0, Array::length(borrow_param_fns))
     stale.borrow_param_mask = Array::slice(borrow_param_masks, 0, Array::length(borrow_param_masks))
     stale.view_ret_user = Array::slice(view_ret_fns, 0, Array::length(view_ret_fns))
   }
-  let ctx = Array::get(pctx_cache, 0)
+  Array::get(pctx_cache, 0)
+}
+
+/// #2386: install the four tables once per compile and hand back a token the
+/// per-function calls present (`build_perceus_plan_pinned*`). A token is
+/// valid exactly while the cache still holds the tables it was issued for:
+/// an unpinned call that replaces them clears it, and a pinned call whose
+/// token no longer matches falls back to the table compare, so the token can
+/// only skip work, never change an answer. Tokens are never reused.
+export fn perceus_pin_tables(borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Int {
+  let ctx = pctx_cache_select(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
+  let tok = Array::get(pctx_pin_counter, 0) + 1
+  Array::set(pctx_pin_counter, 0, tok)
+  ctx.pinned = tok
+  tok
+}
+
+export fn build_perceus_plan_with_params_split(params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
+  let ctx = pctx_cache_select(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
+  build_perceus_plan_in_ctx(ctx, params, body, out_param_drop_start)
+}
+
+/// `build_perceus_plan_with_params_split` for a caller holding a
+/// `perceus_pin_tables` token: the same tables, the compare skipped while the
+/// token is current.
+export fn build_perceus_plan_pinned_split(token: Int, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String], out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
+  let ctx = if token > 0 && Array::length(pctx_cache) > 0 && Array::get(pctx_cache, 0).pinned == token {
+    let c = Array::get(pctx_cache, 0)
+    pctx_reset(c)
+    c
+  } else {
+    pctx_cache_select(borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns)
+  }
+  build_perceus_plan_in_ctx(ctx, params, body, out_param_drop_start)
+}
+
+export fn build_perceus_plan_pinned(token: Int, params: Array[(String, Option[TypeExpr])], body: Expr, borrow_ret_names: Array[String], borrow_param_fns: Array[String], borrow_param_masks: Array[Int], view_ret_fns: Array[String]) -> Array[PerceusAction] {
+  let ignored = array_empty()
+  build_perceus_plan_pinned_split(token, params, body, borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns, ignored)
+}
+
+fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])], body: Expr, out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
   let mut scope: Map[String, Int] = Map::new()
   let mut pi = 0
   while pi < Array::length(params) {
@@ -3115,7 +3175,7 @@ export fn build_perceus_plan_with_params_split(params: Array[(String, Option[Typ
   // param-drop suffix -- out_param_drop_start's "drops from here on are the
   // params' own" contract only speaks about drops, and reuse rows are
   // neither drops nor dups, so every existing consumer skips them.
-  plan_reuse_pairs(body, ctx.actions, borrow_param_fns, borrow_param_masks)
+  plan_reuse_pairs(body, ctx.actions, ctx.borrow_param_user, ctx.borrow_param_mask)
   // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later
   // resets) its own actions array, while callers hold the returned plan
   // across subsequent plan builds.
