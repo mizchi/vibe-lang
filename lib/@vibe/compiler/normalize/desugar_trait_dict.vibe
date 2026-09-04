@@ -17031,13 +17031,6 @@ fn optional_flags_for_call(fname: String, shadows: Array[String]) -> Option[Arra
   }
 }
 
-fn stmts_have_optional_fn(_stmts: Array[Stmt]) -> Bool {
-  // Nested `let o = (a, b?) ->` leaves no top-level table entry. Walking
-  // every statement is cheap next to typecheck and is what makes #1952
-  // work in a file that has no top-level optional fn.
-  true
-}
-
 /// #1899/#1952: the labels and optional flags of lambdas bound by a `let`
 /// INSIDE a block, which the two top-level tables above cannot see.
 ///
@@ -18657,6 +18650,34 @@ fn relabel_stmt_paired(stmt: Stmt, tbl: Array[(String, Array[String])], node: Bi
 /// relabel_stmt rebuild per top-level statement,
 /// since collect_fn_param_labels now indexes EVERY top-level function and the
 /// old `tbl empty -> skip` fast path no longer fires for ordinary programs.
+/// #2386: the walk_all replacement -- see dinsp_scan mode 6. Only meaningful
+/// after optional_param_tbl_set has published the program's table.
+fn stmt_calls_optional_fn(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, body) => dinsp_scan(body, 6, ""),
+    SFnDecl(_, _, body, _, _) => dinsp_scan(body, 6, ""),
+    SLetMut(_, _, body) => dinsp_scan(body, 6, ""),
+    STest(_, body) => dinsp_scan(body, 6, ""),
+    SBench(_, body) => dinsp_scan(body, 6, ""),
+    SExpr(e) => dinsp_scan(e, 6, ""),
+    SLetPat(_, e) => dinsp_scan(e, 6, ""),
+    SModule(_, _, ms) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(ms) {
+        if found {
+          i = Array::length(ms)
+        } else {
+          found = stmt_calls_optional_fn(Array::get(ms, i))
+          i = i + 1
+        }
+      }
+      found
+    },
+    _ => false
+  }
+}
+
 fn stmt_has_labeled_arg(stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, _, _, body) => dinsp_scan(body, 3, ""),
@@ -18756,8 +18777,9 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
     // declares an optional parameter is the other (#1952). Without the second,
     // a statement whose only feature is a block-local `(a: Int, b?: Int)` was
     // skipped outright, and the omitted argument reached the checker as an
-    // arity error. The top-level equivalent is handled by `walk_all`, which is
-    // computed from collect_optional_param_fns and so cannot see this one.
+    // arity error. The top-level equivalent is mode 6 (a call to a top-level
+    // optional-parameter fn by name), consulted by desugar_labeled_args when
+    // collect_optional_param_fns found any.
     match expr {
       ELabeledArg(_, _, _) => true,
       EFn(_, _, params, _, _, _) => dinsp_params_optional(params),
@@ -18768,6 +18790,25 @@ fn dinsp_scan(expr: Expr, mode: Int, name: String) -> Bool {
       EIdent(n, _) => n == name,
       EAssign(n, _, _) => n == name,
       EAssignOp(n, _, _, _) => n == name,
+      _ => false
+    }
+  } else if mode == 6 {
+    // #2386: "does this statement call a TOP-LEVEL optional-parameter fn by
+    // name?" -- the third and last reason the relabel walk can change a
+    // statement (an omitted optional leaves no syntactic trace at the call,
+    // but the callee's NAME is one; relabel_expr's ECall arm fills only
+    // calls whose callee is an ident it can resolve). Reads the same table
+    // the walk reads (optional_param_tbl_set runs before the scan). Used
+    // with mode 3, it replaces the `walk_all` that rebuilt EVERY statement
+    // of a program declaring any optional parameter.
+    match expr {
+      ECall(callee, _, _) => match callee {
+        EIdent(n, _) => match optional_param_flags(n) {
+          Some(_) => true,
+          None => false
+        },
+        _ => false
+      },
       _ => false
     }
   } else {
@@ -19550,7 +19591,15 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   // stmt_has_labeled_arg finds.
   let opt_tbl = collect_optional_param_fns(stmts)
   optional_param_tbl_set(opt_tbl)
-  let walk_all = Array::length(opt_tbl) > 0 || stmts_have_optional_fn(stmts)
+  // #2386: `walk_all` used to be true for every program that declared an
+  // optional parameter anywhere (the compiler's own closure does), so every
+  // statement was rebuilt on every compile (0.23 s of a warm compiler-closure
+  // compile). The two syntactic reasons the walk can change a statement are
+  // already scanned by stmt_has_labeled_arg (a labeled argument, a lambda
+  // with an optional parameter); the third -- a call to a top-level
+  // optional-parameter fn -- is stmt_calls_optional_fn, consulted only when
+  // the table is non-empty.
+  let has_opt_tbl = Array::length(opt_tbl) > 0
   // No `if Array::length(tbl) == 0` early-out. It was an optimisation that had
   // become a correctness hole once local lambdas got labels of their own
   // (#1899/#1952): collect_fn_param_labels indexes `SLet`s, so a file whose
@@ -19561,7 +19610,7 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   // where nothing needs relabelling.
   let mut i = 0
   while i < Array::length(stmts) {
-    if walk_all || stmt_has_labeled_arg(Array::get(stmts, i)) {
+    if stmt_has_labeled_arg(Array::get(stmts, i)) || (has_opt_tbl && stmt_calls_optional_fn(Array::get(stmts, i))) {
       Array::set(stmts, i, relabel_stmt(Array::get(stmts, i), tbl))
     } else {
       ()
