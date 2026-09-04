@@ -2173,8 +2173,8 @@ let run_mode = () -> Int { run() }
 - Activate flags at compile time: `VIBE_CFG=dev vibe build app.vibe` (comma-separated for multiple). The set applies to **every module of the program**, imports included, and is part of the build-cache key, so switching flags between two builds is a cache miss, never a replay (#2513).
 - A `#cfg(flag)` statement whose flag is inactive is parsed (syntax must stay valid, like Rust's `cfg`) and **dropped before checking/codegen** — zero bytes in the output binary.
 - Top-level statements only (`let` / `enum` / `struct` / `impl` / ...).
-- `vibe fmt` / normalize refuses `#cfg` sources (formatting would delete disabled code).
-- **Not usable inside the compiler's own sources until the next bootstrap bump.** Module-source emission and the span-based tools (`vibe escapes` / `vibe grep` / `vibe type-at`) resolve `#cfg` against the active set (#2497): the flat source carries the active statements as themselves and no directive. But `scripts/generate_bundle.sh` flattens the self-build with the **committed seed's** emission, and the seed still refuses every `#` directive except `#zero_alloc` there, so a `#cfg` under `lib/@vibe/compiler` breaks bundle generation until a seed that carries this lands (docs/bootstrap.md).
+- `vibe normalize` refuses a `#cfg` source (it prints the parsed program, and an inactive statement is no longer in it). `vibe fmt` is token-based and keeps every directive and both arms, so `#cfg` sources format and pass `check_vibe_fmt.sh` (measured on `fixtures/cfg_flag_test.vibe`).
+- The compiler's own sources may use it: the committed seed (seed/cfg-spans-emission-2026-09-04 and later) resolves `#cfg` in module-source emission, so the flattened self-build carries the active statements as themselves. Module-source emission and the span-based tools (`vibe escapes` / `vibe grep` / `vibe type-at`) all resolve against the same active set (#2497 step 0, #2516).
 
 ## Allocation contract (`#zero_alloc`)
 
