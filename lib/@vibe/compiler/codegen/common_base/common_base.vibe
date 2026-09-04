@@ -3290,19 +3290,24 @@ export fn emit_shadow_uaf_trap(buf: Bytes, push_vptr: () -> Unit, uaf_abort_idx:
   if uaf_abort_idx < 0 {
     bytebuf_push(buf, 0)
   } else {
+    // Both sequences are extended UNSIGNED. They are raw i32 counters and a
+    // long shadow run passes 2^31, where a signed extension prints the
+    // faulting site as negative next to a positive freeing site -- two
+    // numbers the reader cannot compare, which is the whole point of printing
+    // them together (#2487 review). wasm_emit exports only the signed form,
+    // and common_base cannot import common_analysis (which has the unsigned
+    // one) without a cycle, so the opcode is spelled out.
     emit_i64_const(buf, prefix_fat)
     emit_i32_const(buf, rc_shadow_seq_addr())
     emit_i32_load(buf, 2, 0)
-    emit_i64_extend_i32_s(buf)
+    // i64.extend_i32_u (0xAD)
+    bytebuf_push(buf, 173)
     push_vptr()
     emit_shadow_slot_from_vptr(buf)
     emit_i32_load(buf, 2, 0)
     emit_i32_const(buf, 1)
     emit_i32_sub(buf)
-    // i64.extend_i32_u (0xAD) -- unsigned, because the counter is a raw i32
-    // and a long shadow run passes 2^31. wasm_emit exports only the signed
-    // form, and common_base cannot import common_analysis (which has the
-    // unsigned one) without a cycle.
+    // i64.extend_i32_u (0xAD)
     bytebuf_push(buf, 173)
     emit_call(buf, uaf_abort_idx)
   }
