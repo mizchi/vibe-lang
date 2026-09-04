@@ -385,25 +385,31 @@ DCE root. What lets the tooling units of section 3 exist is a build-time
 boundary: separate executable-shaped artifacts, `#cfg` selection of the
 handlers, or a build that exports exactly one entry.
 
-**(b) Run-time lane switches, 10.** These are the ones that block DCE, because
+**(b) Run-time lane switches, 9.** These are the ones that block DCE, because
 the branch they guard is decided after the wasm is built: `VIBE_RC` (`0` / `1`
 / `shadow`), `VIBE_BACKEND` (`gc`), `VIBE_DEBUG`, `VIBE_DEBUG_BREAK`,
-`VIBE_CODEGEN_BODY_CACHE`, `VIBE_FS_COMPILE`, `VIBE_INTERNAL_TRUSTED_SOURCE`,
-`VIBE_WASM_NAMES`, `VIBE_WASM_KEEP_EXPORTS`, `VIBE_DEP_ORDER_SEED`. Most of
+`VIBE_CODEGEN_BODY_CACHE`, `VIBE_FS_COMPILE`, `VIBE_WASM_NAMES`,
+`VIBE_WASM_KEEP_EXPORTS`, `VIBE_DEP_ORDER_SEED`. Most of
 them choose the shape of the *output* (which allocator lane, which backend,
 instrumented or not, stripped or not), so they are per-deployment choices, not
 per-request ones: a compile service that offers only "linear, RC off,
 stripped" builds an artifact with exactly those lanes, and one that offers
-more ships more than one artifact. Two reads that look similar are
+more ships more than one artifact. Three reads that look similar are
 deliberately **not** on this list, because they are per-compilation inputs
-that arrive with the request and have to stay run-time: `VIBE_CFG`, the
-`#cfg` set of the program being compiled (`docs/cheatsheet.md` documents
-callers choosing it), and `VIBE_UNSTABLE`, the ADR-0068 authorization that
-lets one compilation import `@vibe/concurrent` while the next one is refused
-(`cli_adapter.vibe` reads it per compilation; fixing it at build time would
-either refuse every caller or grant every caller). What moves to build time
-is the compiler's own feature set, never its users' program inputs or their
-authority. The gc backend (140 KB), component/serve codegen
+or authority that arrive with the request and cannot be fixed for a whole
+deployment: `VIBE_CFG`, the `#cfg` set of the program being compiled
+(`docs/cheatsheet.md` documents callers choosing it); `VIBE_UNSTABLE`, the
+ADR-0068 authorization that lets one compilation import `@vibe/concurrent`
+while the next one is refused (`cli_adapter.vibe` reads it per compilation;
+fixing it at build time would either refuse every caller or grant every
+caller); and `VIBE_INTERNAL_TRUSTED_SOURCE`, which lets the generated
+flattened self-build sources bypass the user-source validation
+(`validate_user_source_stmts`). Fixing that one to true would let any request
+claim trusted provenance for the reserved Iterator boundary, and fixing it to
+false would reject the self-build input, so it stays behind an authenticated
+per-compilation boundary, or the self-build gets its own internal-only
+artifact. What moves to build time is the compiler's own feature set, never
+its users' program inputs or anyone's authority. The gc backend (140 KB), component/serve codegen
 (88 KB), the RC shadow lane, the debug-break and trace codegen (9 KB) and the
 body cache all stay in every artifact because of them. The mechanism to fix
 this already exists: `apply_cfg_env` turns `VIBE_CFG=a,b` into `#cfg_enable`
