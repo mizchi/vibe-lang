@@ -88,3 +88,56 @@ test "the AsyncIter provenance answer does not outlive its entry" {
   assert_true(count(check_async_effects_stmts(stmts, builtin_async_iter_env())) > 0)
   assert_eq(count(check_async_effects_stmts(stmts, holder_defs(EnvEmpty))), 0)
 }
+
+// #2495 review: the field-type table is built at the very start of an entry,
+// before the memos of the previous entry are cleared -- so the clear must
+// come first. These shapes route a projected `AsyncIter` field through the
+// table (a struct declared in the program itself, a call result, a `let`),
+// checked right after an entry whose env carried builtin provenance.
+
+fn call_body() -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), None, None, for_over(EDot(ECall(EIdent("mk", -1), [
+  ], -1), "stream", -1, -1)))
+}
+
+fn let_body() -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), None, None, ELet("h", ECall(EIdent("mk", -1), [
+  ], -1), for_over(EDot(EIdent("h", -1), "stream", -1, -1)), -1))
+}
+
+fn holder_stmts() -> Array[Stmt] {
+  [
+    SStruct(false, "AsyncIter", [], [], [], ["T"]),
+    SStruct(false, "Holder", [("stream", TyApp("AsyncIter", [TyName("Int")]))], [
+    ], [], []),
+    STest("projected field", holder_body())
+  ]
+}
+
+fn mk_env(rest: TypeEnv) -> TypeEnv {
+  env_bind(rest, "mk", CtFn([], CtNamed("Holder", []), None))
+}
+
+fn builtin_mk_env() -> TypeEnv {
+  let origin = BindingOriginModuleExport("/workspace/lib/@vibe/builtin/index.vpkg", "AsyncIter")
+  let source = EnvBind("AsyncIter", env_value_binding_with_origin(CtUnknown, origin), EnvEmpty)
+  env_preserve_type_definition_origins(mk_env(holder_defs(EnvEmpty)), source)
+}
+
+test "a program declaring its own AsyncIter is synchronous right after a builtin-provenance entry" {
+  assert_true(count(check_async_effects_stmts([
+    STest("projected field", holder_body())
+  ], builtin_async_iter_env())) > 0)
+  assert_eq(count(check_async_effects_stmts(holder_stmts(), EnvEmpty)), 0)
+  assert_eq(count(check_async_effects_stmts(holder_stmts(), EnvEmpty)), 0)
+  assert_true(count(check_async_effects_stmts([
+    STest("projected field", holder_body())
+  ], builtin_async_iter_env())) > 0)
+}
+
+test "a call-result or let-bound projection is classified by its own entry's env" {
+  assert_true(count(check_async_effects_stmts([STest("call", call_body())], builtin_mk_env())) > 0)
+  assert_eq(count(check_async_effects_stmts([STest("call", call_body())], mk_env(holder_defs(EnvEmpty)))), 0)
+  assert_true(count(check_async_effects_stmts([STest("let", let_body())], builtin_mk_env())) > 0)
+  assert_eq(count(check_async_effects_stmts([STest("let", let_body())], mk_env(holder_defs(EnvEmpty)))), 0)
+}
