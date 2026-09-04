@@ -11,7 +11,7 @@ import @vibe/compiler/cache {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 import ./ingestion_pipeline_telemetry.vibe {
@@ -269,7 +269,30 @@ fn string_array_contains_hc(items: Array[String], target: String) -> Bool {
 /// (contract-)parses `resolved` exactly once instead, mirroring the same
 /// decls/opaques/collect_exports combination the contract-header branch above
 /// already uses for its own `exports` result.
+/// #2386: the export names of a contract, per (path, stat token), for the
+/// process. `validate_import_names_fs` asks for a dependency's export list
+/// once per IMPORTER of that dependency, and each ask read, lexed and parsed
+/// the contract again -- on a cold compiler-closure compile that was every
+/// package contract parsed once per member of every package importing it.
+/// The token is what every persistent cache on this lane keys freshness on,
+/// so an edited contract is re-read on the next compile that sees the new
+/// token. The list is handed out shared and never mutated by its reader
+/// (`string_array_contains_hc` only scans it).
+let export_names_memo: MutMap[String, Array[String]] = MutMap::new_string()
+
 fn resolved_export_names_fs(resolved: String) -> Array[String] with Exception + Fs {
+  let memo_key = String::concat(__to_string(Fs::stat_token(resolved)), String::concat("\n", resolved))
+  match MutMap::get(export_names_memo, memo_key) {
+    Some(hit) => hit,
+    None => {
+      let computed = resolved_export_names_uncached_fs(resolved)
+      MutMap::set(export_names_memo, memo_key, computed)
+      computed
+    }
+  }
+}
+
+fn resolved_export_names_uncached_fs(resolved: String) -> Array[String] with Exception + Fs {
   let source = Fs::read_file(resolved)
   if is_contract_ext(resolved) && !String::starts_with(source, contract_facade_marker) {
     let (_, pin_blanked) = extract_require_pins(source)
