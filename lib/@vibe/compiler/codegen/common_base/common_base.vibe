@@ -3193,18 +3193,64 @@ export fn emit_region_try_epilogue(buf: Bytes, region_ptr_addr: Int, catch_tag: 
   emit_region_exit(buf, region_ptr_addr)
 }
 
+/// #2427: start of the shadow table. The HEAP MUST START ABOVE
+/// `rc_shadow_heap_start()` -- see the layout note there.
 export fn rc_shadow_base() -> Int {
   268435456
 }
 
+/// Size of the shadow table. One 4-byte slot per 8-byte heap granule, so a
+/// reserve of R covers 2R of heap.
 export fn rc_shadow_reserve() -> Int {
-  536870912
+  1342177280
 }
 
-/// Sequence counter at the start of the byte table. Heap vptrs begin at
-/// `heap_start` (>= 64 KiB), so bytes 0..3 are unused as a mark.
+/// #2427: where the bump pointer starts under `VIBE_RC=shadow`.
+///
+/// The table used to sit at a FIXED 256 MiB while the heap started just above
+/// the static data and grew upward, so any program whose heap reached 256 MiB
+/// grew INTO the table: heap writes overwrote the freed-marks, and marks
+/// overwrote live heap data. Both directions are silent. Measured before the
+/// fix, a 30-line program with no RC bug at all (allocate ~400 MB of strings,
+/// then do ordinary concat traffic) answered `418804` under `VIBE_RC=1` and
+/// aborted under `VIBE_RC=shadow` with
+/// `drop of freed value at site 1650538809; freed at site 1717920867` -- both
+/// "sites" are ASCII bytes of the program's own padding string, read back out
+/// of the heap as if they were shadow state. That made the one tool for
+/// diagnosing an RC use-after-free useless on exactly the workloads that have
+/// one (`fixtures/rc_shadow_large_heap.vibe` is the pin).
+///
+/// So the heap starts ABOVE the table, and the slot index is scaled: a vptr is
+/// 8-aligned, so `(vptr - rc_shadow_heap_start()) / 2` gives one naturally
+/// aligned 4-byte slot per granule. With base 256 MiB and a 1.25 GiB reserve
+/// the table covers vptrs up to 4 GiB -- the whole wasm32 address space, so
+/// there is no in-range check to get wrong and no way to fall off the end.
+export fn rc_shadow_heap_start() -> Int {
+  rc_shadow_base() + rc_shadow_reserve()
+}
+
+/// Constant folded into the slot address: `slot = (vptr >> 1) + bias`.
+/// The first two words of the table hold the sequence counter, so slots start
+/// at `rc_shadow_base() + 8`.
+export fn rc_shadow_slot_bias() -> Int {
+  rc_shadow_base() + 8 - rc_shadow_heap_start() / 2
+}
+
+/// Sequence counter in the first word of the table; slots start 8 bytes in.
 export fn rc_shadow_seq_addr() -> Int {
   rc_shadow_base()
+}
+
+/// Consume an i32 vptr from the stack and leave the address of its 4-byte
+/// shadow slot. The slot is `(seq << 8) | 1` when freed and 0 when live, so
+/// the freed test is an `i32.load8_u` of the same address (little-endian) and
+/// the freeing sequence is `i32.load >> 8`.
+export fn emit_shadow_slot_from_vptr(buf: Bytes) -> Unit {
+  emit_i32_const(buf, 1)
+  // i32.shr_u (0x76) -- no emit helper exists
+  bytebuf_push(buf, 118)
+  emit_i32_const(buf, rc_shadow_slot_bias())
+  emit_i32_add(buf)
 }
 
 export fn emit_shadow_bump_seq(buf: Bytes) -> Unit {
@@ -3227,31 +3273,30 @@ export fn emit_shadow_uaf_trap(buf: Bytes, push_vptr: () -> Unit, uaf_abort_idx:
     emit_i32_load(buf, 2, 0)
     emit_i64_extend_i32_s(buf)
     push_vptr()
-    emit_i32_const(buf, 4)
-    emit_i32_add(buf)
-    emit_i32_const(buf, rc_shadow_base())
-    emit_i32_add(buf)
+    emit_shadow_slot_from_vptr(buf)
     emit_i32_load(buf, 2, 0)
+    emit_i32_const(buf, 8)
+    // i32.shr_u (0x76)
+    bytebuf_push(buf, 118)
     emit_i64_extend_i32_s(buf)
     emit_call(buf, uaf_abort_idx)
   }
 }
 
+/// Stamp `(seq << 8) | 1` into the block's slot: freed, at this sequence.
+/// One store, so the flag and the sequence can never disagree.
 export fn emit_shadow_mark_freed(buf: Bytes, push_vptr: () -> Unit) -> Unit {
-  // vptrs are 8-aligned, so +4 sits between this mark byte and the next.
   push_vptr()
-  emit_i32_const(buf, 4)
-  emit_i32_add(buf)
-  emit_i32_const(buf, rc_shadow_base())
-  emit_i32_add(buf)
+  emit_shadow_slot_from_vptr(buf)
   emit_i32_const(buf, rc_shadow_seq_addr())
   emit_i32_load(buf, 2, 0)
-  emit_i32_store(buf, 2, 0)
-  push_vptr()
-  emit_i32_const(buf, rc_shadow_base())
-  emit_i32_add(buf)
+  emit_i32_const(buf, 8)
+  // i32.shl (0x74)
+  bytebuf_push(buf, 116)
   emit_i32_const(buf, 1)
-  emit_i32_store8(buf, 0, 0)
+  // i32.or (0x72)
+  bytebuf_push(buf, 114)
+  emit_i32_store(buf, 2, 0)
 }
 
 /// #720: the rc field is the LOW 24 BITS of the rc word (the class id lives in
@@ -3384,8 +3429,7 @@ export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool, uaf_ab
     emit_i64_const(buf, -2)
     emit_i64_and(buf)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, rc_shadow_base())
-    emit_i32_add(buf)
+    emit_shadow_slot_from_vptr(buf)
     emit_i32_load8_u(buf, 0, 0)
     emit_if_void(buf)
     emit_shadow_uaf_trap(buf, () -> {

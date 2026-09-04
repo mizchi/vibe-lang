@@ -221,7 +221,7 @@ import @vibe/compiler/codegen/common_base {
   lookup_ctor,
   lower_optional_performs,
   optional_perform_artifact_resolution,
-  rc_shadow_reserve,
+  rc_shadow_heap_start,
   region_exn_tag_linear,
   region_max_depth,
   region_saves_base_of,
@@ -9273,11 +9273,16 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   if total_table_entries > 0 {
     emit_table_section_funcref(out, total_table_entries)
   }
-  emit_memory_section(out, wasi_memory_min_pages_for_heap(heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + region_reserve + (if rc_shadow {
-    rc_shadow_reserve()
+  // #2427: under `VIBE_RC=shadow` the bump pointer starts ABOVE the shadow
+  // table (`rc_shadow_heap_start()`), so the minimum memory has to cover the
+  // table AND everything below it. Adding the reserve to the ordinary heap
+  // base -- what this did before -- sized the memory correctly but left the
+  // heap growing straight into the table.
+  emit_memory_section(out, wasi_memory_min_pages_for_heap(if rc_shadow {
+    rc_shadow_heap_start()
   } else {
-    0
-  })))
+    heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + region_reserve
+  }))
   // #721: emit the tag section only when something can reference a tag --
   // EThrow (`throw 2`), EHandle (try_table over tags 0-3), or a declared
   // effect (per-effect tags at index 4+). Pure-compute modules then carry no
@@ -9310,7 +9315,14 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   }
   bytebuf_push(global_content, 127)
   bytebuf_push(global_content, 1)
-  emit_i32_const(global_content, heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + region_reserve)
+  // #2427: global 0 is the bump pointer. Under shadow RC it starts above the
+  // shadow table so the two regions cannot overlap; the fixed regions below
+  // (static strings, rc bins, region arena) keep their computed addresses.
+  emit_i32_const(global_content, if rc_shadow {
+    rc_shadow_heap_start()
+  } else {
+    heap_start + eff_reserve + cov_reserve + cov_branch_reserve + trace_reserve + dbgargs_reserve + rc_bins_reserve + region_reserve
+  })
   emit_end(global_content)
   bytebuf_push(global_content, 126)
   bytebuf_push(global_content, 1)

@@ -452,6 +452,39 @@ fi
 rm -rf "$shdir"
 echo "[compiler-gate] RC shadow-liveness regression guard ok (25297489)"
 
+# 40f1a. #2427: the shadow table must not overlap the heap it describes.
+#        40f above proves the marks catch a real dup/drop-of-freed; this
+#        proves they are marks at all. The table sat at a FIXED 256 MiB while
+#        the bump pointer started just above the static data, so any program
+#        whose heap reached 256 MiB grew into it -- and the tool then answered
+#        from the program's own bytes. Red-proven: against the compiler before
+#        the fix this fixture aborts with
+#        `drop of freed value at site 1650538809; freed at site 1717920867`,
+#        both "sites" being ASCII of its padding string, while VIBE_RC=1
+#        answers 418804. The fixture has no RC bug, so the two lanes must
+#        agree. It is not named `*_test.vibe` on purpose: it allocates ~400 MB
+#        to cross the old table address and belongs in this gate, not in every
+#        unit run.
+echo "[compiler-gate] 40f1a/40 RC shadow table / heap overlap (#2427)"
+lhdir="_build/_gate_rc_shadow_large_heap"
+rm -rf "$lhdir"; mkdir -p "$lhdir"
+VIBE_RC=shadow VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_shadow_large_heap.vibe" "$lhdir/shadow.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$lhdir/shadow.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_large_heap did not compile under VIBE_RC=shadow (#2427)" >&2
+  cat "$lhdir/shadow.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+lh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_WASM_PRE_GROW_PAGES=40000 \
+  bash scripts/run_wasm_vibe_host_runner.sh "$lhdir/shadow.wasm" 2>&1 | tail -1)"
+if [ "$lh_out" != "418804" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_large_heap got '$lh_out' (want 418804). This fixture has no RC bug: a shadow abort here means the shadow table and the heap overlap again, so VIBE_RC=shadow is reporting the program's own bytes as freed-marks -- see rc_shadow_heap_start in codegen/common_base and #2427." >&2
+  exit 1
+fi
+rm -rf "$lhdir"
+echo "[compiler-gate] RC shadow table / heap overlap ok (418804)"
+
 # 40f1b. #2469: the shadow build must lower a render the way the RC build does.
 #        A shadow build exists to REPRODUCE an RC bug, so a program that
 #        lowers differently under it is a debugging tool that changes the
