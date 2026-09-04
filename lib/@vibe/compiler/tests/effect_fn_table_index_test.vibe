@@ -1,0 +1,122 @@
+//# #2386: the perform-effect pass's program table (every top-level binding of
+//# the module, then every effectful binding of the env) is consulted through
+//# a name -> first-slot index instead of a front-to-back scan per call site
+//# and per binder. Each answer below is the one the scan gave: the FIRST
+//# occurrence of a name wins, a module binding wins over an env binding of
+//# the same name, a local binder or parameter of a table name shadows it,
+//# and a callee the table does not hold takes the builtin path.
+
+import @vibe/compiler/core {
+  EnvEmpty, Expr, Stmt, Type, TypeEnv, TypeExpr, env_bind
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/checker {
+  EffectError,
+  check_perform_effects_stmt,
+  check_perform_effects_stmts,
+  check_perform_effects_stmts_env,
+  effect_error_to_string,
+  file_entry_cacheable,
+  file_tests_cacheable
+}
+
+fn fn_with(effect: Option[String], body: Expr) -> Expr {
+  EFn(array_empty(), array_empty(), array_empty(), None, effect, body)
+}
+
+fn fn_with_params(effect: Option[String], params: Array[(String, Option[TypeExpr])], body: Expr) -> Expr {
+  EFn(array_empty(), array_empty(), params, None, effect, body)
+}
+
+fn call0(name: String) -> Expr {
+  ECall(EIdent(name, -1), [EInt(0)], -1)
+}
+
+fn top(name: String, body: Expr) -> Stmt {
+  SLet(false, false, name, None, body)
+}
+
+fn first_msg(errors: Array[EffectError]) -> String {
+  if Array::length(errors) == 0 {
+    ""
+  } else {
+    effect_error_to_string(Array::get(errors, 0))
+  }
+}
+
+test "a duplicated top-level name resolves to its first row" {
+  let effectful = top("helper", fn_with(Some("Fs"), EInt(1)))
+  let pure = top("helper", fn_with(None, EInt(2)))
+  let caller = top("wrap", fn_with(None, call0("helper")))
+  let msg = first_msg(check_perform_effects_stmts([effectful, pure, caller]))
+  assert_true(String::contains(msg, "effect row mismatch for 'wrap': missing { Fs }"))
+  // The other order: the pure row is first, and the call is clean.
+  assert_eq(first_msg(check_perform_effects_stmts([pure, effectful, caller])), "")
+}
+
+test "a module binding wins over an env binding of the same name" {
+  let env = env_bind(EnvEmpty, "helper", CtFn([CtInt], CtInt, Some("Fs")))
+  let pure = top("helper", fn_with(None, EInt(2)))
+  let caller = top("wrap", fn_with(None, call0("helper")))
+  assert_eq(first_msg(check_perform_effects_stmts_env([pure, caller], env)), "")
+  // Without the module binding the env's row is the callee's row.
+  let msg = first_msg(check_perform_effects_stmts_env([caller], env))
+  assert_true(String::contains(msg, "effect row mismatch for 'wrap': missing { Fs }"))
+}
+
+test "an env binding is found behind the module's own bindings" {
+  let env = env_bind(env_bind(EnvEmpty, "other", CtFn([CtInt], CtInt, Some("Env"))), "helper", CtFn([
+    CtInt
+  ], CtInt, Some("Fs")))
+  let unrelated = top("unrelated", fn_with(None, EInt(2)))
+  let caller = top("wrap", fn_with(None, call0("helper")))
+  let msg = first_msg(check_perform_effects_stmts_env([unrelated, caller], env))
+  assert_true(String::contains(msg, "effect row mismatch for 'wrap': missing { Fs }"))
+}
+
+test "a callee the table does not hold takes the builtin path" {
+  let caller = top("wrap", fn_with(None, call0("nobody_defines_this")))
+  assert_eq(first_msg(check_perform_effects_stmts([caller])), "")
+}
+
+test "a local binder of a table name shadows the table's row" {
+  let effectful = top("helper", fn_with(Some("Fs"), EInt(1)))
+  let shadowing = ELet("helper", fn_with(None, EInt(3)), call0("helper"), -1)
+  let caller = top("wrap", fn_with(None, shadowing))
+  assert_eq(first_msg(check_perform_effects_stmts([effectful, caller])), "")
+  // The same body without the shadowing binder reports the table's row.
+  let direct = top("wrap", fn_with(None, call0("helper")))
+  let msg = first_msg(check_perform_effects_stmts([effectful, direct]))
+  assert_true(String::contains(msg, "effect row mismatch for 'wrap': missing { Fs }"))
+}
+
+test "a parameter named like a table entry shadows it" {
+  let effectful = top("helper", fn_with(Some("Fs"), EInt(1)))
+  let caller = top("wrap", fn_with_params(None, [("helper", None)], call0("helper")))
+  assert_eq(first_msg(check_perform_effects_stmts([effectful, caller])), "")
+}
+
+test "the one-statement entry checks a body against its own row" {
+  let stmt = top("load", fn_with(None, ECall(EIdent("perform", -1), [
+    ECall(EIdent("Fs::ReadFile", -1), [EString("p")], -1)
+  ], -1)))
+  let msg = first_msg(check_perform_effects_stmt(stmt))
+  assert_true(String::contains(msg, "effect row mismatch for 'load': missing { Fs::ReadFile }"))
+}
+
+test "the test and entry cacheability walks see the table through their own index" {
+  let effectful = top("helper", fn_with(Some("Fs"), EInt(1)))
+  let pure = top("pure", fn_with(None, EInt(2)))
+  let effectful_test = STest("t", call0("helper"))
+  let pure_test = STest("t", call0("pure"))
+  assert_true(!file_tests_cacheable([effectful, pure, effectful_test]))
+  assert_true(file_tests_cacheable([effectful, pure, pure_test]))
+  let main_effectful = top("main", fn_with(None, call0("helper")))
+  let main_pure = top("main", fn_with(None, call0("pure")))
+  assert_true(!file_entry_cacheable([effectful, pure, main_effectful], "main"))
+  assert_true(file_entry_cacheable([effectful, pure, main_pure], "main"))
+}
