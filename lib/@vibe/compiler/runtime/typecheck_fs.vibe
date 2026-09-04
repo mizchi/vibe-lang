@@ -7252,6 +7252,11 @@ fn collect_all_diagnostics_on(input_path: String, source: String, pkg_version: S
 
 export fn checked_warning_stmts(input_path: String, source: String) -> Option[Array[Stmt]] with Exception {
   let (tokens, starts, _ends) = lex_with_offsets(source)
+  checked_warning_stmts_lexed(input_path, source, tokens, starts)
+}
+
+/// `checked_warning_stmts` over tokens the caller already has for `source`.
+fn checked_warning_stmts_lexed(input_path: String, source: String, tokens: Array[Token], starts: Array[Int]) -> Option[Array[Stmt]] with Exception {
   if is_contract_ext(input_path) {
     handle {
       let (_, _, stmts) = parse_contract_program(tokens)
@@ -7468,6 +7473,35 @@ fn unstable_count_pkg_stmts(stmts: Array[Stmt], pkg: String) -> Int {
 /// deficit would be off by one and a physical import would be reported as
 /// inherited, silently. Sharing the matcher makes that impossible instead of
 /// unlikely.
+/// Do the tokens carry `import` of ANY unstable package? The same
+/// `TImport` / `TIdent(pkg)` shape `unstable_import_offset` matches, with
+/// the package test `unstable_collect_pkgs` applies to a parsed import, so
+/// the three cannot disagree about what counts.
+fn unstable_tokens_import_any(tokens: Array[Token], starts: Array[Int]) -> Bool {
+  let n = Array::length(starts)
+  let mut i = 0
+  let mut found = false
+  while !found && i + 1 < n {
+    if token_to_string(Array::get(tokens, i)) == "TImport" {
+      let next = token_to_string(Array::get(tokens, i + 1))
+      if String::starts_with(next, "TIdent(") && String::ends_with(next, ")") {
+        let name = String::substring(next, 7, String::length(next) - 1)
+        if unstable_package_note(name) != "" {
+          found = true
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn unstable_count_pkg_tokens(tokens: Array[Token], starts: Array[Int], pkg: String) -> Int {
   let probe = [0]
   let mut count = 0
@@ -7554,7 +7588,26 @@ fn unstable_stmt_diagnostics(stmts: Array[Stmt], source: String, tokens: Array[T
 export fn unstable_import_diagnostics(input_path: String, detected: String, located: String) -> Array[String] with Exception {
   let out = array_empty()
   let (tokens, starts, _ends) = lex_with_offsets(located)
-  match checked_warning_stmts(input_path, detected) {
+  // #2386: when the ingested text IS the physical text, the statements the
+  // parse would yield come from exactly these tokens, so a physical token
+  // scan that finds no `import` of an unstable package proves the parse
+  // would report nothing -- and the compiler's own sources reach here by
+  // MENTIONING the package in comments (2.4 MB of them, each lexed twice and
+  // parsed per compile before this). The same tokens also serve the parse
+  // when it is needed, instead of lexing the same text a second time. A
+  // text that ingestion changed (an inherited import, a contract facade)
+  // keeps the full path: its statements are not the physical tokens.
+  let same_text = detected == located
+  let stmts_opt = if same_text {
+    if unstable_tokens_import_any(tokens, starts) {
+      checked_warning_stmts_lexed(input_path, detected, tokens, starts)
+    } else {
+      None
+    }
+  } else {
+    checked_warning_stmts(input_path, detected)
+  }
+  match stmts_opt {
     Some(stmts) => {
       // #2289: count before walking. The deficit per package is
       // (imports in the INGESTED statements) - (imports in the PHYSICAL

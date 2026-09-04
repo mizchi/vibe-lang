@@ -1451,7 +1451,26 @@ export fn unstable_candidates() -> Array[(String, String)] {
 
 fn record_unstable_candidate(path: String, ingested: String) -> Unit {
   if text_mentions_unstable_package(ingested) {
-    Array::push(unstable_candidate_cell, (path, ingested))
+    // #2386: the loader ingests a module more than once per compile (header
+    // cache, source-group collection), and every record was lexed and
+    // parsed by the closure scan on its own. The same (path, text) yields
+    // the same reports, which the scan already collapses, so it is recorded
+    // once; a path whose ingested text changed is still recorded again.
+    let mut i = 0
+    let mut dup = false
+    while !dup && i < Array::length(unstable_candidate_cell) {
+      let (p, t) = Array::get(unstable_candidate_cell, i)
+      if p == path && t == ingested {
+        dup = true
+      } else {
+        i = i + 1
+      }
+    }
+    if dup {
+      ()
+    } else {
+      Array::push(unstable_candidate_cell, (path, ingested))
+    }
   } else {
     ()
   }

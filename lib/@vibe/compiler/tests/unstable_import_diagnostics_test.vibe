@@ -1,0 +1,67 @@
+//# ADR-0068 unstable-surface scan, the closure lane's per-candidate entry
+//# (#2386). When the ingested text is the physical text, the scan lexes it
+//# once and parses only when the physical tokens carry an `import` of an
+//# unstable package; a text ingestion changed keeps the full path. Every
+//# answer below is what the lex-twice-and-always-parse form gave.
+
+import @vibe/compiler/runtime {
+  unstable_import_diagnostics
+}
+
+fn count_mentions(diags: Array[String], needle: String) -> Int {
+  let mut n = 0
+  let mut i = 0
+  while i < Array::length(diags) {
+    if String::index_of(Array::get(diags, i), needle) >= 0 {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+test "a comment mentioning the package reports nothing" {
+  let src = "// see @vibe/concurrent for the design\nfn main() -> Int {\n  1\n}\n"
+  let diags = unstable_import_diagnostics("main.vibe", src, src)
+  assert_eq(Array::length(diags), 0)
+}
+
+test "a string literal spelling the import reports nothing" {
+  let src = "fn main() -> String {\n  \"import @vibe/concurrent { Task }\"\n}\n"
+  let diags = unstable_import_diagnostics("main.vibe", src, src)
+  assert_eq(Array::length(diags), 0)
+}
+
+test "a physical import is reported at its line" {
+  let src = "// header\nimport @vibe/concurrent { Task }\nfn main() -> Int {\n  1\n}\n"
+  let diags = unstable_import_diagnostics("main.vibe", src, src)
+  assert_eq(Array::length(diags), 1)
+  assert_eq(count_mentions(diags, "line 2:1:"), 1)
+}
+
+test "an import written with a tab and leading spaces is reported (#2277)" {
+  let src = "  import\t@vibe/concurrent { Task }\nfn main() -> Int {\n  1\n}\n"
+  let diags = unstable_import_diagnostics("main.vibe", src, src)
+  assert_eq(Array::length(diags), 1)
+  assert_eq(count_mentions(diags, "line 1:3:"), 1)
+}
+
+test "an import of a sub-path of the package is reported" {
+  let src = "import @vibe/concurrent/channel { Sender }\nfn main() -> Int {\n  1\n}\n"
+  let diags = unstable_import_diagnostics("main.vibe", src, src)
+  assert_eq(Array::length(diags), 1)
+}
+
+test "an import only in the ingested text is reported as inherited" {
+  let located = "fn main() -> Int {\n  1\n}\n"
+  let detected = String::concat("import @vibe/concurrent { Task }\n", located)
+  let diags = unstable_import_diagnostics("main.vibe", detected, located)
+  assert_eq(Array::length(diags), 1)
+  assert_eq(count_mentions(diags, "index.vpkg"), 1)
+}
+
+test "a source that does not parse reports nothing" {
+  let src = "import @vibe/concurrent { Task }\nfn main( -> Int {\n"
+  let diags = unstable_import_diagnostics("main.vibe", src, src)
+  assert_eq(Array::length(diags), 0)
+}
