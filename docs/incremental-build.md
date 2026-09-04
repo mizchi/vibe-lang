@@ -363,13 +363,9 @@ conservative pending a compact exact-publication design: publishing the current
 exact TDRE9A/TDRE9W texts on a fresh selfcompile exceeds the signed 2 GiB guest
 heap boundary, while the conservative compile lane remains near 1.11 GB.
 `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` is the strict emergency opt-out for
-check-only reuse;
-any other nonempty value is rejected. The legacy
-`VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE` spelling accepts only empty or
-`1` and is otherwise a compatibility no-op. An ordinary incremental
+check-only reuse; any other nonempty value is rejected. An incremental
 invalidation trace automatically forces reuse off so the trace stays
-observation-only. For compatibility, explicitly combining legacy `1` with an
-invalidation trace remains rejected.
+observation-only.
 
 TDRE9 aliases the exact logical
 `ModuleJob` checker input to a previously checked TypeEnv: canonical owner path,

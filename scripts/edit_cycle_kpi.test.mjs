@@ -179,7 +179,6 @@ test("edit-cycle KPI pins authority modes after ambient environment", () => {
     KEEP: "yes",
     VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP: "1",
     VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "1",
-    VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE: "1",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: "/tmp/ambient",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "ambient",
   });
@@ -187,7 +186,6 @@ test("edit-cycle KPI pins authority modes after ambient environment", () => {
   for (const key of [
     "VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP",
     "VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE",
-    "VIBE_EXPERIMENTAL_TYPING_DEPENDENCY_ENV_REUSE",
     "VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT",
     "VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE",
   ]) assert.equal(env[key], "");
