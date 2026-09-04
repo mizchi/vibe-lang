@@ -478,26 +478,46 @@ out-line ではなく **bl_half2 構成がビルドされ、通ってしまう**
 source を機械的に書き換える harness を使うときは、commit 前に必ず
 `pkf run test` か最低でも `ensure_generated.sh` を通すこと。**
 
-### `VIBE_RC=shadow` は selfcompile 規模では使えない (heap と shadow 表が重なる)
+### `VIBE_RC=shadow` and the heap used to overlap (fixed, #2427)
 
-#715 recurrence guard は「1 heap address = 1 byte」の liveness 表を
-`rc_shadow_base()` = **256 MB** 固定に置く。`rc_shadow_reserve()` は
-memory section の最小ページ数を増やすだけで、**heap の開始位置も上限も
-動かさない**。heap は 0 付近から上へ伸びるので、**heap が 256 MB を超えた
-瞬間から bump pointer が shadow 表そのものを踏む**。
+The #715 recurrence guard keeps a liveness table indexed by heap address. It
+used to sit at a FIXED `rc_shadow_base()` = 256 MiB, while `rc_shadow_reserve()`
+only raised the memory section's minimum page count and moved neither the
+heap's start nor its limit. The heap grows upward from just above the static
+data, so **the moment it passed 256 MiB the bump pointer was writing into the
+table** -- and the table's marks were writing into live heap data.
 
-selfcompile の heap は実測 924 MB (通る側の probe) まで伸びるので、
-shadow モードは必ずこの状態に入る。実際 shadow 実行のクラッシュは
-`heap_ptr=268501644 (0x1001028c)` — `rc_shadow_base()` = `0x10000000` の
-**66 KB 先**で、落ちる場所も checker の `expr_children` (guard ではない
-普通の関数) だった。これは「設定で場所が変わる = ヒープ破壊の典型」では
-なく、**shadow 機構自身がヒープを壊していた**。
+A selfcompile heap reaches ~924 MB, so shadow mode always entered that state.
+The crash seen while debugging this was at `heap_ptr=268501644 (0x1001028c)`,
+66 KB past `rc_shadow_base()` = `0x10000000`, in `expr_children` -- an ordinary
+function, not a guard. It was not "the location moves with the configuration,
+the signature of heap corruption"; the shadow mechanism was itself corrupting
+the heap.
 
-したがって #715 guard は今回の diagnosis に使えない。代替として、block
-header の `alloc_size` word の **bit 30** を free-list 在籍マークに使う
-poison 方式を入れた (サイズは 2^30 に遠く届かないので追加メモリ 0):
-free push で立て、alloc の払い出しで落とし、`__rt_rc_drop` の入口で
-立っていたら `unreachable`。bin 払い出し時に `size == 要求 sz` も検査する。
+Reduced to a program with no RC bug at all
+(`fixtures/rc_shadow_large_heap.vibe`: allocate ~400 MB of strings, then do
+ordinary concat traffic), the two lanes disagreed:
+
+| lane | result |
+|---|---|
+| `VIBE_RC=1` | `418804` |
+| `VIBE_RC=shadow` | `drop of freed value at site 1650538809; freed at site 1717920867` |
+
+Both "sites" are ASCII bytes of that program's own padding string.
+
+**Fixed in #2487.** The heap now starts ABOVE the table
+(`rc_shadow_heap_start()`), and the slot index is scaled: a vptr is 8-aligned,
+so `(vptr - heap_start) / 2` gives one naturally aligned 4-byte slot per
+granule, holding `seq + 1` when freed and 0 when live -- the flag costs no
+bits, so the whole 32-bit sequence survives. `rc_shadow_reserve()`
+is derived rather than chosen, so every vptr up to the top of the wasm32
+address space maps inside the table. Gate case 40f1a pins the fixture above;
+40f still pins the #715 shape corpus, so the marks are still marks.
+
+The consequence for debugging: shadow mode IS usable at selfcompile scale now,
+and a shadow abort on a compiler-sized workload is evidence again. The
+`alloc_size` bit-30 poison scheme used as a stand-in while this was broken was
+a temporary harness and is not in the tree.
 
 ### 落とし穴: **source 側の runtime 計装は crash する binary に入らない**
 

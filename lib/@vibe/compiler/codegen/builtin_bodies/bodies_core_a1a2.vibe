@@ -38,6 +38,7 @@ import @vibe/compiler/codegen/common_base {
   emit_rc_dup_inline,
   emit_shadow_bump_seq,
   emit_shadow_mark_freed,
+  emit_shadow_slot_from_vptr,
   emit_shadow_uaf_trap,
   emit_str_ref,
   expr_tag,
@@ -65,7 +66,6 @@ import @vibe/compiler/codegen/common_base {
   is_pwild,
   is_slet,
   lookup_ctor,
-  rc_shadow_base,
   resolve_func,
   resolve_local
 }
@@ -718,9 +718,8 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
   if rc_shadow {
     emit_shadow_bump_seq(b)
     emit_local_get(b, 1)
-    emit_i32_const(b, rc_shadow_base())
-    emit_i32_add(b)
-    emit_i32_load8_u(b, 0, 0)
+    emit_shadow_slot_from_vptr(b)
+    emit_i32_load(b, 2, 0)
     emit_if_void(b)
     emit_shadow_uaf_trap(b, () -> {
       emit_local_get(b, 1)
@@ -856,13 +855,11 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
   // #715 recurrence guard (VIBE_RC=shadow): double-free check for the
   // grown buffer -- a second free-list push of the same buffer makes two
   // later allocations return overlapping memory (type confusion), which
-  // plain marking cannot catch. Works under quarantine too (marks are
-  // permanent).
+  // plain marking cannot catch.
   if rc_shadow {
     emit_local_get(b, 5)
-    emit_i32_const(b, rc_shadow_base())
-    emit_i32_add(b)
-    emit_i32_load8_u(b, 0, 0)
+    emit_shadow_slot_from_vptr(b)
+    emit_i32_load(b, 2, 0)
     emit_if_void(b)
     emit_shadow_uaf_trap(b, () -> {
       emit_local_get(b, 5)
@@ -1082,10 +1079,9 @@ export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   emit_i32_store(b, 2, 0)
   if rc_shadow {
     emit_local_get(b, 4)
-    emit_i32_const(b, rc_shadow_base())
-    emit_i32_add(b)
+    emit_shadow_slot_from_vptr(b)
     emit_i32_const(b, 0)
-    emit_i32_store8(b, 0, 0)
+    emit_i32_store(b, 2, 0)
   } else {
     ()
   }
@@ -1149,10 +1145,9 @@ export fn gen_rc_alloc_body(rc_shadow: Bool, bins_base: Int) -> Bytes {
   // its freed-marker byte so later dups/drops of the reused block are legal.
   if rc_shadow {
     emit_local_get(b, 1)
-    emit_i32_const(b, rc_shadow_base())
-    emit_i32_add(b)
+    emit_shadow_slot_from_vptr(b)
     emit_i32_const(b, 0)
-    emit_i32_store8(b, 0, 0)
+    emit_i32_store(b, 2, 0)
   } else {
     ()
   }

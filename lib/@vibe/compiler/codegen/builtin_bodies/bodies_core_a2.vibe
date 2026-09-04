@@ -36,6 +36,8 @@ import @vibe/compiler/codegen/common_base {
   emit_i64_load,
   emit_i64_store,
   emit_rc_word_inc_saturating,
+  emit_shadow_mark_freed,
+  emit_shadow_slot_from_vptr,
   emit_str_ref,
   expr_tag,
   get_arm_body,
@@ -62,7 +64,6 @@ import @vibe/compiler/codegen/common_base {
   is_pwild,
   is_slet,
   lookup_ctor,
-  rc_shadow_base,
   resolve_func,
   resolve_local
 }
@@ -482,9 +483,8 @@ export fn gen_arr_slice_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool
       emit_i64_const(b, -2)
       emit_i64_and(b)
       emit_i32_wrap_i64(b)
-      emit_i32_const(b, rc_shadow_base())
-      emit_i32_add(b)
-      emit_i32_load8_u(b, 0, 0)
+      emit_shadow_slot_from_vptr(b)
+      emit_i32_load(b, 2, 0)
       emit_if_void(b)
       bytebuf_push(b, 0)
       emit_end(b)
@@ -1615,13 +1615,11 @@ export fn gen_arr_push_all_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: B
     // #715 recurrence guard (VIBE_RC=shadow): double-free check for the
     // grown buffer -- a second free-list push of the same buffer makes two
     // later allocations return overlapping memory (type confusion), which
-    // plain marking cannot catch. Works under quarantine too (marks are
-    // permanent).
+    // plain marking cannot catch.
     if rc_shadow {
       emit_local_get(b, 6)
-      emit_i32_const(b, rc_shadow_base())
-      emit_i32_add(b)
-      emit_i32_load8_u(b, 0, 0)
+      emit_shadow_slot_from_vptr(b)
+      emit_i32_load(b, 2, 0)
       emit_if_void(b)
       bytebuf_push(b, 0)
       emit_end(b)
@@ -1630,11 +1628,9 @@ export fn gen_arr_push_all_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: B
     }
     // #715 recurrence guard (VIBE_RC=shadow): mark the old grown buffer freed.
     if rc_shadow {
-      emit_local_get(b, 6)
-      emit_i32_const(b, rc_shadow_base())
-      emit_i32_add(b)
-      emit_i32_const(b, 1)
-      emit_i32_store8(b, 0, 0)
+      emit_shadow_mark_freed(b, () -> {
+        emit_local_get(b, 6)
+      })
     } else {
       ()
     }
@@ -1709,9 +1705,8 @@ export fn gen_arr_push_all_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: B
       emit_i64_const(b, -2)
       emit_i64_and(b)
       emit_i32_wrap_i64(b)
-      emit_i32_const(b, rc_shadow_base())
-      emit_i32_add(b)
-      emit_i32_load8_u(b, 0, 0)
+      emit_shadow_slot_from_vptr(b)
+      emit_i32_load(b, 2, 0)
       emit_if_void(b)
       bytebuf_push(b, 0)
       emit_end(b)

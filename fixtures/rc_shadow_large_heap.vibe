@@ -1,0 +1,46 @@
+//# #2427: the shadow table must not overlap the heap it describes.
+//
+// `VIBE_RC=shadow` marks freed blocks in a side table so the FIRST
+// dup-of-freed or drop-of-freed traps at the faulting operation. The table
+// used to sit at a FIXED 256 MiB while the bump pointer started just above
+// the static data, so a program whose heap reached 256 MiB grew straight into
+// it: heap writes cleared and set freed-marks, and marks overwrote live heap
+// data. Both directions are silent, and the tool answered from whatever the
+// program had most recently stored there.
+//
+// This program has no RC bug. It allocates ~400 MB of strings so the heap
+// crosses the old table address, then does ordinary concat traffic. Measured
+// against the compiler before the fix:
+//
+//   VIBE_RC=1       418804
+//   VIBE_RC=shadow  drop of freed value at site 1650538809; freed at site 1717920867
+//
+// Both "sites" are ASCII bytes of this file's own padding string, read back
+// out of the heap as if they were shadow state. The two lanes must agree.
+
+export let main: () -> Int = () -> {
+  let unit = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let mut chunk = unit
+  let mut k = 0
+  while k < 4 {
+    chunk = String::concat(chunk, chunk)
+    k = k + 1
+  }
+  // chunk is 1024 bytes; 400k of them puts the heap past 256 MiB.
+  let keep: Array[String] = []
+  let mut i = 0
+  while i < 400000 {
+    Array::push(keep, String::concat(chunk, Int::to_string(i)))
+    i = i + 1
+  }
+  // Ordinary dup/drop traffic, now that every vptr is above the old table.
+  let mut total = 0
+  let mut j = 0
+  while j < 2000 {
+    let s = String::concat("x", Int::to_string(j))
+    let t = String::concat(s, s)
+    total = total + String::length(t)
+    j = j + 1
+  }
+  total + Array::length(keep) + String::length(chunk)
+}

@@ -3198,18 +3198,86 @@ export fn emit_region_try_epilogue(buf: Bytes, region_ptr_addr: Int, catch_tag: 
   emit_region_exit(buf, region_ptr_addr)
 }
 
+/// #2427: start of the shadow table. The HEAP MUST START ABOVE
+/// `rc_shadow_heap_start()` -- see the layout note there.
 export fn rc_shadow_base() -> Int {
   268435456
 }
 
+/// Size of the shadow table. One 4-byte slot per 8-byte heap granule, so a
+/// reserve of R covers 2R of heap.
+///
+/// Derived, not chosen: the table must hold a slot for EVERY vptr the heap can
+/// reach, and the heap starts at `rc_shadow_base() + R`, so a bigger table also
+/// pushes the top vptr up. The binding case is the last 8-aligned block in the
+/// wasm32 space, `0xFFFFFFF8`, whose slot must end at or below the table's end:
+///
+///   rc_shadow_base() + 8 + (0xFFFFFFF8 - (rc_shadow_base() + R)) / 2 + 4
+///     <= rc_shadow_base() + R
+///
+/// which is `R >= (0xFFFFFFF8 - rc_shadow_base() + 24) / 3`. Rounded up to 16
+/// so the table and the heap start stay 16-aligned. Picking a round number
+/// instead put that last block's slot 4 bytes past the table, over the first
+/// heap block's RC header -- silent corruption from the tool that exists to
+/// catch it (#2487 review).
 export fn rc_shadow_reserve() -> Int {
-  536870912
+  (((4294967288 - rc_shadow_base() + 24) / 3 + 15) / 16) * 16
 }
 
-/// Sequence counter at the start of the byte table. Heap vptrs begin at
-/// `heap_start` (>= 64 KiB), so bytes 0..3 are unused as a mark.
+/// #2427: where the bump pointer starts under `VIBE_RC=shadow`.
+///
+/// The table used to sit at a FIXED 256 MiB while the heap started just above
+/// the static data and grew upward, so any program whose heap reached 256 MiB
+/// grew INTO the table: heap writes overwrote the freed-marks, and marks
+/// overwrote live heap data. Both directions are silent. Measured before the
+/// fix, a 30-line program with no RC bug at all (allocate ~400 MB of strings,
+/// then do ordinary concat traffic) answered `418804` under `VIBE_RC=1` and
+/// aborted under `VIBE_RC=shadow` with
+/// `drop of freed value at site 1650538809; freed at site 1717920867` -- both
+/// "sites" are ASCII bytes of the program's own padding string, read back out
+/// of the heap as if they were shadow state. That made the one tool for
+/// diagnosing an RC use-after-free useless on exactly the workloads that have
+/// one (`fixtures/rc_shadow_large_heap.vibe` is the pin).
+///
+/// So the heap starts ABOVE the table, and the slot index is scaled: a vptr is
+/// 8-aligned, so `(vptr - rc_shadow_heap_start()) / 2` gives one naturally
+/// aligned 4-byte slot per granule. The reserve is sized (see
+/// `rc_shadow_reserve`) so that every vptr up to the top of the wasm32 address
+/// space maps inside the table, which is why there is no in-range check here
+/// to get wrong and no way to fall off the end.
+export fn rc_shadow_heap_start() -> Int {
+  rc_shadow_base() + rc_shadow_reserve()
+}
+
+/// Constant folded into the slot address: `slot = (vptr >> 1) + bias`.
+/// The first two words of the table hold the sequence counter, so slots start
+/// at `rc_shadow_base() + 8`.
+export fn rc_shadow_slot_bias() -> Int {
+  rc_shadow_base() + 8 - rc_shadow_heap_start() / 2
+}
+
+/// Sequence counter in the first word of the table; slots start 8 bytes in.
 export fn rc_shadow_seq_addr() -> Int {
   rc_shadow_base()
+}
+
+/// Consume an i32 vptr from the stack and leave the address of its 4-byte
+/// shadow slot. The slot holds `seq + 1` when freed and 0 when live, so the
+/// freed test is `i32.load` (nonzero) and the freeing sequence is
+/// `i32.load - 1`.
+///
+/// The flag costs no bits ON PURPOSE. Packing it as `(seq << 8) | 1` reads
+/// naturally and traps just as reliably -- the flag is exact either way -- but
+/// it silently truncates the sequence to 24 bits, and a compiler-sized shadow
+/// run passes 2^24 instrumented dup/drops easily. The trap would then fire
+/// correctly and name the WRONG freeing operation, which is the one thing this
+/// mode exists to get right (#2487 review).
+export fn emit_shadow_slot_from_vptr(buf: Bytes) -> Unit {
+  emit_i32_const(buf, 1)
+  // i32.shr_u (0x76) -- no emit helper exists
+  bytebuf_push(buf, 118)
+  emit_i32_const(buf, rc_shadow_slot_bias())
+  emit_i32_add(buf)
 }
 
 export fn emit_shadow_bump_seq(buf: Bytes) -> Unit {
@@ -3227,36 +3295,61 @@ export fn emit_shadow_uaf_trap(buf: Bytes, push_vptr: () -> Unit, uaf_abort_idx:
   if uaf_abort_idx < 0 {
     bytebuf_push(buf, 0)
   } else {
+    // Both sequences are extended UNSIGNED. They are raw i32 counters and a
+    // long shadow run passes 2^31, where a signed extension prints the
+    // faulting site as negative next to a positive freeing site -- two
+    // numbers the reader cannot compare, which is the whole point of printing
+    // them together (#2487 review). wasm_emit exports only the signed form,
+    // and common_base cannot import common_analysis (which has the unsigned
+    // one) without a cycle, so the opcode is spelled out.
     emit_i64_const(buf, prefix_fat)
     emit_i32_const(buf, rc_shadow_seq_addr())
     emit_i32_load(buf, 2, 0)
-    emit_i64_extend_i32_s(buf)
+    // i64.extend_i32_u (0xAD)
+    bytebuf_push(buf, 173)
     push_vptr()
-    emit_i32_const(buf, 4)
-    emit_i32_add(buf)
-    emit_i32_const(buf, rc_shadow_base())
-    emit_i32_add(buf)
+    emit_shadow_slot_from_vptr(buf)
     emit_i32_load(buf, 2, 0)
-    emit_i64_extend_i32_s(buf)
+    emit_i32_const(buf, 1)
+    emit_i32_sub(buf)
+    // i64.extend_i32_u (0xAD)
+    bytebuf_push(buf, 173)
     emit_call(buf, uaf_abort_idx)
   }
 }
 
+/// Stamp `seq + 1` into the block's slot: freed, at this sequence. One store,
+/// so the flag and the sequence can never disagree, and the whole 32-bit
+/// counter survives.
+///
+/// The stored value must never be 0, because 0 is the live sentinel and a
+/// freed block reading live is a MISSED detection -- silent, and in the one
+/// direction this mode exists to rule out. `emit_shadow_bump_seq` runs before
+/// any mark, so `seq >= 1` and `seq + 1 >= 2` for every ordinary run; the
+/// single hole is the counter wrapping at 2^32, where `seq + 1` is 0. A
+/// `select` substitutes 1 there, costing one compare on the mark path rather
+/// than on every dup/drop guard (marks are rarer). The only loss is that the
+/// wrap's freeing sequence reports as 0 instead of 0xFFFFFFFF (#2487 review).
 export fn emit_shadow_mark_freed(buf: Bytes, push_vptr: () -> Unit) -> Unit {
-  // vptrs are 8-aligned, so +4 sits between this mark byte and the next.
   push_vptr()
-  emit_i32_const(buf, 4)
-  emit_i32_add(buf)
-  emit_i32_const(buf, rc_shadow_base())
-  emit_i32_add(buf)
+  emit_shadow_slot_from_vptr(buf)
+  // select(a=1, b=seq+1, c=(seq+1 == 0)) -- `seq + 1` is recomputed for the
+  // condition rather than spilled to a local, because this helper is emitted
+  // into bodies whose local layout it does not own.
+  emit_i32_const(buf, 1)
+  emit_shadow_seq_plus_one(buf)
+  emit_shadow_seq_plus_one(buf)
+  emit_i32_eqz(buf)
+  // select (0x1B)
+  bytebuf_push(buf, 27)
+  emit_i32_store(buf, 2, 0)
+}
+
+fn emit_shadow_seq_plus_one(buf: Bytes) -> Unit {
   emit_i32_const(buf, rc_shadow_seq_addr())
   emit_i32_load(buf, 2, 0)
-  emit_i32_store(buf, 2, 0)
-  push_vptr()
-  emit_i32_const(buf, rc_shadow_base())
-  emit_i32_add(buf)
   emit_i32_const(buf, 1)
-  emit_i32_store8(buf, 0, 0)
+  emit_i32_add(buf)
 }
 
 /// #720: the rc field is the LOW 24 BITS of the rc word (the class id lives in
@@ -3389,9 +3482,8 @@ export fn emit_rc_dup_inline(buf: Bytes, local_idx: Int, rc_shadow: Bool, uaf_ab
     emit_i64_const(buf, -2)
     emit_i64_and(buf)
     emit_i32_wrap_i64(buf)
-    emit_i32_const(buf, rc_shadow_base())
-    emit_i32_add(buf)
-    emit_i32_load8_u(buf, 0, 0)
+    emit_shadow_slot_from_vptr(buf)
+    emit_i32_load(buf, 2, 0)
     emit_if_void(buf)
     emit_shadow_uaf_trap(buf, () -> {
       emit_local_get(buf, local_idx)
