@@ -222,14 +222,17 @@ scope across requests, so a compiler instance kept in module scope carries its
 bump heap and `__heap_ptr` into the next compile. Dropping the JavaScript
 reference is not a release either: `WebAssembly.Instance` and
 `WebAssembly.Memory` have no disposal operation, so the pages stay live until
-V8 collects them, on its schedule. The deployment therefore needs one of two
-things: an explicit arena reset exported by the compiler (the bump allocator
-makes this cheap: `__heap_ptr` back to the static-data end plus
-re-initialization of the module-level cells, after which the same instance
-compiles the next unit) or an execution boundary with guaranteed teardown (a
-separate request, or a separate Worker). Concurrent units count against the
-same 128 MB either way. Without one of the two, the per-module estimate does
-not bound the isolate at all.
+V8 collects them, on its schedule, and a request boundary inside a reused
+isolate does not force that collection either. The only reclamation the
+deployment can count on is therefore inside **one** linear memory that every
+phase shares: the compiler exports an arena reset (the bump allocator makes
+this cheap: `__heap_ptr` back to the static-data end plus re-initialization of
+the module-level cells), and the same instance runs the next unit in the same
+pages. Linear memory never shrinks, so the isolate then holds the maximum
+arena high-water over the phases, not their sum, which is the bound the
+per-module argument needs. Concurrent units count against the same 128 MB.
+Without a shared memory and a reset, the per-module estimate does not bound
+the isolate at all.
 
 Budget check for that design: 1,354 MB over about 260 k closure lines is
 about 5.2 KB of heap per source line. A unit of work the size of
@@ -296,17 +299,20 @@ interfaces from KV / R2 into an in-memory VFS first, then instantiates one
 phase at a time, feeds it through the synchronous `vibec-hosted` callbacks,
 serializes the phase's artifact, and reclaims the phase's memory before the
 next phase starts; the link step is a separate request. "Reclaims" has to be
-deterministic: dropping the instance reference leaves the linear memory to
-V8's garbage collector, so near the limit the peak can still be the sum of
-several phases. The reclamation is either an explicit arena reset inside one
-long-lived instance (each phase's arena is reset, not garbage-collected) or a
-request boundary per phase. Separate linear memories do not make the isolate
-peak equal to the largest phase: every live instance's reserved pages plus the
-serialization buffers count toward the same 128 MB, and a bump-allocated phase
-keeps everything it allocated until its arena is reset or its instance is
-actually torn down. The budget is therefore the largest phase plus the buffers
-in flight, under deterministic reclamation, measured as an aggregate rather
-than inferred from the per-phase numbers. That is the same bound the
+deterministic, and that rules out two tempting shapes. Dropping an instance
+reference leaves its linear memory to V8's garbage collector, and a request
+boundary in a reused isolate does not force collection, so with one component
+per phase, each holding its own `WebAssembly.Memory`, the previous phase's
+pages can still be resident while the next phase grows: resetting an arena
+pointer inside a finished component shrinks nothing and hands nothing to the
+next one. The deployed artifact is therefore a **single core module with one
+linear memory** that all phases share, and the arena reset between phases
+happens in that memory; the per-phase components of section 3 are the build
+and test shape, and the Worker artifact is their single-memory link. Linear
+memory never shrinks, so the isolate holds the maximum arena high-water over
+the phases plus the serialization buffers in flight, not the sum of the
+phases. That bound is measured as an aggregate on the shared-memory build,
+never inferred from the per-phase numbers, and it is the same bound the
 per-module design needs on every host.
 
 The link unit is the exception to "one module at a time", and the per-module
