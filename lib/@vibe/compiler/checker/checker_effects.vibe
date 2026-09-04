@@ -37,7 +37,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 // #897 (ADR-0070 Phase 3): this file was moved from
@@ -2518,10 +2518,10 @@ fn builtin_call_op_label(name: String, eff: String) -> String {
 /// of the same name unreachable at this call site? A lexical binding (closure
 /// parameter, `let`) or a top-level function both shadow it, the same way
 /// codegen resolves a source definition ahead of its builtin lowering.
-fn source_definition_shadows_builtin(name: String, lexical_callee: Option[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]]) -> Bool {
+fn source_definition_shadows_builtin(name: String, lexical_callee: Option[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Bool {
   match lexical_callee {
     Some(_) => true,
-    None => match lookup_fn_effs(fn_names, fn_effs, name) {
+    None => match lookup_program_fn_effs(fn_index, fn_effs, name) {
       Some(_) => true,
       None => false
     }
@@ -3400,25 +3400,6 @@ fn no_param_row() -> Array[Array[String]] {
   array_empty()
 }
 
-/// Positional lookup companion to `lookup_fn_effs` -- same parallel-array
-/// discipline (see that function's note on why this is a linear scan).
-fn lookup_fn_param_effs(names: Array[String], param_effs: Array[Array[Array[String]]], name: String) -> Option[Array[Array[String]]] {
-  let mut i = 0
-  let mut found = None
-  while i < Array::length(names) && i < Array::length(param_effs) {
-    match found {
-      None => if Array::get(names, i) == name {
-        found = Some(Array::get(param_effs, i))
-      } else {
-        ()
-      },
-      Some(_) => ()
-    }
-    i = i + 1
-  }
-  found
-}
-
 /// #1485: what a callee's row VARIABLE is instantiated to at ONE call site.
 ///
 /// `row_var` is a row-variable label from the callee's declared row (e.g. `"e"` of
@@ -3437,7 +3418,7 @@ fn lookup_fn_param_effs(names: Array[String], param_effs: Array[Array[Array[Stri
 /// guesses, so it cannot produce the false positives that sank the naive fix
 /// (`generic_effect_matrix_ok_passthrough_pure`, where `apply(inc, 41)` passes
 /// a PURE function and must keep requiring nothing).
-fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array[String]], args: Array[Expr], fn_names: Array[String], fn_effs: Array[Array[String]], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Option[Array[String]] {
+fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array[String]], args: Array[Expr], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Option[Array[String]] {
   let out = no_str_labels()
   let mut i = 0
   let mut bailed = false
@@ -3469,7 +3450,7 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
                   k = k + 1
                 }
               },
-              None => match lookup_fn_effs(fn_names, fn_effs, argname) {
+              None => match lookup_program_fn_effs(fn_index, fn_effs, argname) {
                 Some(argeffs2) => {
                   let mut k2 = 0
                   while k2 < Array::length(argeffs2) {
@@ -3543,6 +3524,56 @@ fn resolve_row_var_instantiation(row_var: String, callee_param_effs: Array[Array
 /// arrays (names[i] <-> effs[i]). A `Map` here allocates per lookup and, across
 /// the compiler's tens of thousands of call sites, exhausts the GC-less bump heap
 /// (#626 OOM); the linear scan allocates nothing.
+/// #2386: the program table's name -> first slot index. `fn_names` holds every
+/// top-level binding of the module and every effectful binding of the env, in
+/// that order, and used to be scanned front to back once per call site and
+/// once per binder of the walk (`lookup_fn_effs` / `effect_name_exists`) --
+/// about a second of a cold compiler-closure check. The index answers the
+/// same slot: the first occurrence wins, exactly as the scan did. Built once
+/// per entry, after the table is final; the small per-scope overlays keep the
+/// scan.
+fn program_fn_index(fn_names: Array[String]) -> MutMap[String, Int] {
+  let index = MutMap::with_capacity_string(Array::length(fn_names) * 2 + 16)
+  let mut i = 0
+  while i < Array::length(fn_names) {
+    let name = Array::get(fn_names, i)
+    if MutMap::has(index, name) {
+      ()
+    } else {
+      MutMap::set(index, name, i)
+    }
+    i = i + 1
+  }
+  index
+}
+
+/// `lookup_fn_effs` over the program table, through its index.
+fn lookup_program_fn_effs(fn_index: MutMap[String, Int], effs: Array[Array[String]], name: String) -> Option[Array[String]] {
+  match MutMap::get(fn_index, name) {
+    Some(i) => Some(Array::get(effs, i)),
+    None => None
+  }
+}
+
+/// `effect_name_exists` over the program table, through its index.
+fn program_fn_exists(fn_index: MutMap[String, Int], name: String) -> Bool {
+  MutMap::has(fn_index, name)
+}
+
+/// `lookup_fn_param_effs` over the program table, through its index. The
+/// scan stopped at the shorter of the two aligned arrays; the index slot is
+/// checked against `param_effs` the same way.
+fn lookup_program_fn_param_effs(fn_index: MutMap[String, Int], param_effs: Array[Array[Array[String]]], name: String) -> Option[Array[Array[String]]] {
+  match MutMap::get(fn_index, name) {
+    Some(i) => if i < Array::length(param_effs) {
+      Some(Array::get(param_effs, i))
+    } else {
+      None
+    },
+    None => None
+  }
+}
+
 fn lookup_fn_effs(names: Array[String], effs: Array[Array[String]], name: String) -> Option[Array[String]] {
   let mut i = 0
   let mut found = None
@@ -3601,25 +3632,12 @@ fn shadow_overlay(names: Array[String], effs: Array[Array[String]], name: String
   (out_names, out_effs)
 }
 
-/// Add lexical bindings that carry no effect row. These empty entries are
-/// semantically meaningful: they stop lookup from falling through to a
-/// same-named top-level function (#1723).
-fn effect_name_exists(names: Array[String], name: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(names) && !found {
-    found = Array::get(names, i) == name
-    i = i + 1
-  }
-  found
-}
-
-fn overlay_bind_empty(names: Array[String], effs: Array[Array[String]], name: String, fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
+fn overlay_bind_empty(names: Array[String], effs: Array[Array[String]], name: String, fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
   let (sn, se) = shadow_overlay(names, effs, name)
   // Most locals cannot fall through to a top-level function, so retaining an
   // empty marker for every binding only lengthens every descendant snapshot.
   // The marker is needed exactly when the fallback table contains this name.
-  if !effect_name_exists(fn_names, name) {
+  if !program_fn_exists(fn_index, name) {
     return (sn, se)
   }
   let out_names = [name]
@@ -3633,12 +3651,12 @@ fn overlay_bind_empty(names: Array[String], effs: Array[Array[String]], name: St
   (out_names, out_effs)
 }
 
-fn overlay_bind_empty_names(names: Array[String], effs: Array[Array[String]], bound: Array[String], fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
+fn overlay_bind_empty_names(names: Array[String], effs: Array[Array[String]], bound: Array[String], fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
   let mut cur_names = names
   let mut cur_effs = effs
   let mut i = 0
   while i < Array::length(bound) {
-    let next = overlay_bind_empty(cur_names, cur_effs, Array::get(bound, i), fn_names)
+    let next = overlay_bind_empty(cur_names, cur_effs, Array::get(bound, i), fn_names, fn_index)
     cur_names = next.0
     cur_effs = next.1
     i = i + 1
@@ -3646,10 +3664,10 @@ fn overlay_bind_empty_names(names: Array[String], effs: Array[Array[String]], bo
   (cur_names, cur_effs)
 }
 
-fn overlay_bind_empty_pat(names: Array[String], effs: Array[Array[String]], pat: Pat, fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
+fn overlay_bind_empty_pat(names: Array[String], effs: Array[Array[String]], pat: Pat, fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
   let bound = array_empty()
   collect_pat_binds_into(pat, bound)
-  overlay_bind_empty_names(names, effs, bound, fn_names)
+  overlay_bind_empty_names(names, effs, bound, fn_names, fn_index)
 }
 
 /// #885 (split off from #838, originally scoped out at #626): a function-typed
@@ -3715,20 +3733,20 @@ fn overlay_bind_empty_pat(names: Array[String], effs: Array[Array[String]], pat:
 /// while the direct `eff("boom")` and the parameter form were both correctly
 /// rejected. Resolution order matches `lookup_fn_effs`'s own: the OVERLAY first
 /// (an inner binding shadows an outer one), then the top-level call-graph map.
-fn alias_fn_overlay_labels(name: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[String] {
+fn alias_fn_overlay_labels(name: String, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
   match lookup_fn_effs(ov_names, ov_effs, name) {
     Some(labels) => labels,
-    None => match lookup_fn_effs(fn_names, fn_effs, name) {
+    None => match lookup_program_fn_effs(fn_index, fn_effs, name) {
       Some(labels) => labels,
       None => no_str_labels()
     }
   }
 }
 
-fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[String] {
+fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Array[String]], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[String] {
   match val {
     EFn(_, _, _, _, eff, _) => effect_row_labels(effect_row_parse(eff)),
-    EIdent(n, _) => alias_fn_overlay_labels(n, ov_names, ov_effs, fn_names, fn_effs),
+    EIdent(n, _) => alias_fn_overlay_labels(n, ov_names, ov_effs, fn_names, fn_effs, fn_index),
     _ => no_str_labels()
   }
 }
@@ -3737,16 +3755,16 @@ fn local_fn_overlay_labels(val: Expr, ov_names: Array[String], ov_effs: Array[Ar
 /// outer entry of the same name), then re-register it when its value is a
 /// row-declaring closure. The new entry goes FIRST so `lookup_fn_effs`'s
 /// first-match scan finds it.
-fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: String, val: Expr, fn_names: Array[String], fn_effs: Array[Array[String]]) -> (Array[String], Array[Array[String]]) {
+fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: String, val: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
   let shadowed = shadow_overlay(names, effs, name)
   // #1515: resolve an ALIAS against the pre-shadow overlay -- `let f = f`
   // rebinds to the OUTER `f`, so the lookup must see the entry the shadow is
   // about to remove.
-  let labels = local_fn_overlay_labels(val, names, effs, fn_names, fn_effs)
+  let labels = local_fn_overlay_labels(val, names, effs, fn_names, fn_effs, fn_index)
   // #1723: an empty row is still a lexical binding. Keeping an explicit
   // empty entry is what distinguishes "a pure local shadows this name" from
   // "no local binding; consult the top-level function table".
-  if Array::length(labels) == 0 && !effect_name_exists(fn_names, name) {
+  if Array::length(labels) == 0 && !program_fn_exists(fn_index, name) {
     return shadowed
   }
   let out_names = [name]
@@ -3761,7 +3779,7 @@ fn overlay_bind_local(names: Array[String], effs: Array[Array[String]], name: St
   (out_names, out_effs)
 }
 
-fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
+fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
   let names = array_empty()
   let effs = array_empty()
   let mut i = 0
@@ -3774,7 +3792,7 @@ fn build_param_overlay(params: Array[(String, Option[TypeExpr])], fn_names: Arra
     // #1723: all parameters are lexical bindings. A pure callback (or even a
     // non-function parameter later rejected by typing) must mask a same-named
     // top-level function during this independent effect walk.
-    if Array::length(labels) > 0 || effect_name_exists(fn_names, pname) {
+    if Array::length(labels) > 0 || program_fn_exists(fn_index, pname) {
       Array::push(names, pname)
       Array::push(effs, labels)
     } else {
@@ -3839,14 +3857,15 @@ export fn check_perform_effects_expr_tx(root: Expr, root_declared: Array[String]
   // restores the pre-#1485 exemption. Callers of this entry are unit-test and
   // non-stmts paths that have no call-graph parameter types to offer anyway.
   set_entry_user_effect_operations(array_empty())
-  check_perform_effects_expr_tx_in("", root, root_declared, root_in_handle, fn_names, fn_effs, no_param_effs(), root_ov_names, root_ov_effs, no_kind_binds())
+  let fn_index = program_fn_index(fn_names)
+  check_perform_effects_expr_tx_in("", root, root_declared, root_in_handle, fn_names, fn_effs, fn_index, no_param_effs(), root_ov_names, root_ov_effs, no_kind_binds())
 }
 
 /// #639: the same walk with the enclosing top-level binding's NAME threaded in
 /// so row-mismatch diagnostics can blame the caller's declaration in the fix-it
 /// hint. The name is constant per walk (lambdas are anonymous), so it rides as
 /// a plain parameter, not on the work stack.
-fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: Array[(String, String)]) -> Array[EffectError] {
+fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: Array[String], root_in_handle: Bool, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]], root_ov_names: Array[String], root_ov_effs: Array[Array[String]], root_kinds: Array[(String, String)]) -> Array[EffectError] {
   let errors = array_empty()
   let stack = Array::slice([
     (root, root_declared, root_in_handle, root_ov_names, root_ov_effs, root_kinds)
@@ -3867,7 +3886,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
               match perform_question_op_name(Array::get(args, 0)) {
                 Some(op_name) => {
                   let lexical_operation = lookup_fn_effs(ov_names, ov_effs, op_name)
-                  if source_definition_shadows_builtin(op_name, lexical_operation, fn_names, fn_effs) {
+                  if source_definition_shadows_builtin(op_name, lexical_operation, fn_names, fn_effs, fn_index) {
                     Array::push(errors, EEPerformQuestionSourceShadow(op_name, call_off))
                   } else if decl_authorizes_optional_op(declared, op_name) {
                     ()
@@ -3947,7 +3966,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 },
                 _ => ()
               }
-            } else if source_definition_shadows_builtin(name, lexical_callee, fn_names, fn_effs) {
+            } else if source_definition_shadows_builtin(name, lexical_callee, fn_names, fn_effs, fn_index) {
               // #2107: a source definition of this name wins, so the builtin's
               // row is not the one to require -- the callee's OWN declared row
               // is, and the transitive check below reads it. Codegen has the
@@ -3998,7 +4017,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
             // false positives (see `generic_effect_matrix_ok_passthrough_pure`).
             let top_level_callee = match lexical_callee {
               Some(_) => None,
-              None => lookup_fn_effs(fn_names, fn_effs, name)
+              None => lookup_program_fn_effs(fn_index, fn_effs, name)
             }
             match top_level_callee {
               Some(callee_effs) => {
@@ -4026,11 +4045,11 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // labels it turns out to denote are required like any
                     // other. Unresolvable instantiations still fall through to
                     // the old exemption (see resolve_row_var_instantiation).
-                    let callee_param_effs = match lookup_fn_param_effs(fn_names, fn_param_effs, name) {
+                    let callee_param_effs = match lookup_program_fn_param_effs(fn_index, fn_param_effs, name) {
                       Some(pe) => pe,
                       None => no_param_row()
                     }
-                    match resolve_row_var_instantiation(teff, callee_param_effs, args, fn_names, fn_effs, ov_names, ov_effs) {
+                    match resolve_row_var_instantiation(teff, callee_param_effs, args, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
                       Some(inst) => {
                         let mut ii = 0
                         while ii < Array::length(inst) {
@@ -4156,7 +4175,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // effect row.
         let shadowed = shadow_overlay_names(ov_names, ov_effs, params)
         let (shadowed_ov_names, shadowed_ov_effs) = shadowed
-        let (local_names, local_effs) = build_param_overlay(params, fn_names)
+        let (local_names, local_effs) = build_param_overlay(params, fn_names, fn_index)
         let body_ov_names = if Array::length(local_names) == 0 {
           shadowed_ov_names
         } else {
@@ -4206,7 +4225,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let mut ai = 0
         while ai < Array::length(arms) {
           let (arm_pat, arm_body) = Array::get(arms, ai)
-          let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names)
+          let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names, fn_index)
           Array::push(stack, (arm_body, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
           ai = ai + 1
         }
@@ -4216,7 +4235,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // non-recursive), so only the body's overlay needs the new binding
         // shadowed out. #1361: the same place registers a local closure's own
         // declared row, so calling it from the body leaks that row.
-        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
         // #1344 follow-up: the local's payload kind is its initializer's, read
         // in the OUTER scope for the same non-recursive reason.
         let body_kinds = throw_kind_bind(kinds, name, throw_payload_kind(val, kinds))
@@ -4228,7 +4247,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         // reference `name` (self-recursion), so both val and body need the
         // shadow applied -- and, since #1361, the local closure's own row, so a
         // recursive effectful closure is checked against it on both sides.
-        let (rec_ov_names, rec_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
+        let (rec_ov_names, rec_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
         // A `let rec` value is a function; there is no payload kind to read off
         // it, so the name binds unresolvable on both sides (which is also what
         // stops it resolving through a same-named top-level binding).
@@ -4238,7 +4257,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
       },
       ELetMut(name, val, body, _) => {
         // #885 review (Codex): same as ELet -- non-recursive, only body shadows.
-        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
+        let (body_ov_names, body_ov_effs) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
         // A `mut` binding keeps one type for its whole life (an assignment of a
         // different type is a type error), so its initializer's kind holds for
         // the body just as ELet's does.
@@ -4260,7 +4279,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
         let mut ai = 0
         while ai < Array::length(arms) {
           let (arm_pat, arm_body) = Array::get(arms, ai)
-          let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names)
+          let (arm_ov_names, arm_ov_effs) = overlay_bind_empty_pat(ov_names, ov_effs, arm_pat, fn_names, fn_index)
           Array::push(stack, (arm_body, declared, in_handle, arm_ov_names, arm_ov_effs, throw_kind_bind_pat(kinds, arm_pat)))
           ai = ai + 1
         }
@@ -4282,7 +4301,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           Array::push(loop_names, pname)
           i = i + 1
         }
-        let (body_ov_names, body_ov_effs) = overlay_bind_empty_names(ov_names, ov_effs, loop_names, fn_names)
+        let (body_ov_names, body_ov_effs) = overlay_bind_empty_names(ov_names, ov_effs, loop_names, fn_names, fn_index)
         Array::push(stack, (body, declared, in_handle, body_ov_names, body_ov_effs, body_kinds))
       },
       EForIn(value_name, index_name, iter, body) => {
@@ -4295,9 +4314,9 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
           None => throw_kind_bind(kinds, value_name, "")
         }
         Array::push(stack, (iter, declared, in_handle, ov_names, ov_effs, kinds))
-        let (value_ov_names, value_ov_effs) = overlay_bind_empty(ov_names, ov_effs, value_name, fn_names)
+        let (value_ov_names, value_ov_effs) = overlay_bind_empty(ov_names, ov_effs, value_name, fn_names, fn_index)
         let for_overlay = match index_name {
-          Some(iname) => overlay_bind_empty(value_ov_names, value_ov_effs, iname, fn_names),
+          Some(iname) => overlay_bind_empty(value_ov_names, value_ov_effs, iname, fn_names, fn_index),
           None => (value_ov_names, value_ov_effs)
         }
         Array::push(stack, (body, declared, in_handle, for_overlay.0, for_overlay.1, for_kinds))
@@ -4631,7 +4650,7 @@ fn lowered_test_ambient_effects(fn_name: String) -> Array[String] {
   }
 }
 
-fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
+fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   let sig_labels = sig_type_effect_labels(ty)
   set_entry_allows_authority(is_program_entry_name(fn_name) && String::length(effect_row_allows_text(raw_fn_effect_string(ty, body))) > 0)
   match body {
@@ -4651,14 +4670,14 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
       // frame -- the walk never re-descends through this EFn to pick the
       // parameters up on its own.
       let merged_params = merge_param_types_with_sig(ty, params)
-      let (ov_names, ov_effs) = build_param_overlay(merged_params, fn_names)
-      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff)))), false, fn_names, fn_effs, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
+      let (ov_names, ov_effs) = build_param_overlay(merged_params, fn_names, fn_index)
+      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff)))), false, fn_names, fn_effs, fn_index, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
     },
     _ => {
       // #1451: a non-EFn binding declares no arrow of its own; clear the cell so
       // the PREVIOUS binding's return-type rows cannot leak into this walk.
       set_ret_fn_rows(ret_fn_rows_from_sig(ty))
-      check_perform_effects_expr_tx_in(fn_name, body, sig_labels, false, fn_names, fn_effs, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
+      check_perform_effects_expr_tx_in(fn_name, body, sig_labels, false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
     }
   }
 }
@@ -4799,13 +4818,13 @@ fn test_ambient_effects(name: String) -> Array[String] {
   base
 }
 
-fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: Array[Array[String]], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
+fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   match stmt {
-    SLet(_, _, name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_param_effs),
-    SLetMut(name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_param_effs),
-    STest(tname, body) => check_perform_effects_expr_tx_in("", body, test_ambient_effects(tname), false, fn_names, fn_effs, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
-    SBench(bname, body) => check_perform_effects_expr_tx_in("", body, test_ambient_effects(bname), false, fn_names, fn_effs, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
-    SExpr(e) => check_perform_effects_expr_tx_in("", e, effect_row_labels(effect_row_parse(None)), false, fn_names, fn_effs, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
+    SLet(_, _, name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_index, fn_param_effs),
+    SLetMut(name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_index, fn_param_effs),
+    STest(tname, body) => check_perform_effects_expr_tx_in("", body, test_ambient_effects(tname), false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
+    SBench(bname, body) => check_perform_effects_expr_tx_in("", body, test_ambient_effects(bname), false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
+    SExpr(e) => check_perform_effects_expr_tx_in("", e, effect_row_labels(effect_row_parse(None)), false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
     _ => array_empty()
   }
 }
@@ -4816,7 +4835,7 @@ export fn check_perform_effects_stmt(stmt: Stmt) -> Array[EffectError] {
   // previous module's bindings decide this one's throw kinds (#1344).
   set_throw_kind_table(EnvEmpty)
   set_entry_user_effect_operations(Array::slice([stmt], 0, 1))
-  check_perform_effects_stmt_tx(stmt, no_str_labels(), no_ov_effs(), no_param_effs())
+  check_perform_effects_stmt_tx(stmt, no_str_labels(), no_ov_effs(), program_fn_index(no_str_labels()), no_param_effs())
 }
 
 /// #812: seed the transitive call-graph map with the checker ENV's bindings.
@@ -4936,6 +4955,7 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
   let fn_param_effs = no_param_effs()
   build_perform_fn_effs(stmts, fn_names, fn_effs, fn_param_effs)
   seed_env_fn_effs(env, fn_names, fn_effs, fn_param_effs)
+  let fn_index = program_fn_index(fn_names)
   // #1451: struct FIELD rows, for closure literals stored into a field whose
   // declared type carries one (see build_struct_field_rows).
   build_struct_field_rows(stmts)
@@ -4956,14 +4976,14 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
       SLetMut(name, ty, body) => append_eff_errs(errors, check_entry_declared_effects(name, ty, body)),
       _ => ()
     }
-    append_eff_errs(errors, check_perform_effects_stmt_tx(stmt, fn_names, fn_effs, fn_param_effs))
+    append_eff_errs(errors, check_perform_effects_stmt_tx(stmt, fn_names, fn_effs, fn_index, fn_param_effs))
     i = i + 1
   }
   // #1347: only once the rows themselves check out — on a program with real
   // row errors every reachability answer is suspect, and a second diagnostic
   // per handle would bury the first.
   if Array::length(errors) == 0 {
-    append_eff_errs(errors, check_dead_handles_stmts(stmts, fn_names, fn_effs))
+    append_eff_errs(errors, check_dead_handles_stmts(stmts, fn_names, fn_effs, fn_index))
   } else {
     ()
   }
@@ -5143,7 +5163,7 @@ fn dh_params_may_be(params: Array[(String, Option[TypeExpr])], ename: String) ->
 /// Can this expression statically reach a `perform` of `ename`? Conservative
 /// in the "yes" direction: anything unresolved answers true, so a false here
 /// really does mean the handler is dead.
-fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
+fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]]) -> Bool {
   if dh_perform_effect(expr) == ename {
     true
   } else {
@@ -5154,7 +5174,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // PARAMETERS and row-declaring local closures in scope. The overlay is
       // what spares `TaskGroup::spawn_suspend`, whose handled body's only
       // callee is its own `f: () -> T with Async + Exception` parameter.
-      ECall(EIdent(nm, _), _, _) => match lookup_fn_effs(fn_names, fn_effs, nm) {
+      ECall(EIdent(nm, _), _, _) => match lookup_program_fn_effs(fn_index, fn_effs, nm) {
         Some(effs) => dh_labels_may_be(effs, ename),
         None => match lookup_fn_effs(ov_names, ov_effs, nm) {
           Some(effs) => dh_labels_may_be(effs, ename),
@@ -5184,16 +5204,16 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       // was answering with a false "can never fire" (measured on the committed
       // seed too, so the false positive predates the row fix -- it was just
       // unreachable while the row was never required).
-      ELet(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs) {
-        (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, bn, be)
+      ELet(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
+        (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, bn, be)
       },
-      ELetMut(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs) {
-        (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, bn, be)
+      ELetMut(lname, lval, lbody, _) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
+        (bn, be) => dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, bn, be)
       },
       // `let rec` may reference itself, so both sides see the rebound overlay
       // (same asymmetry the transitive walk's ELetRec arm keeps).
-      ELetRec(lname, lval, lbody) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs) {
-        (rn, re) => dh_may_reach(lval, ename, fn_names, fn_effs, rn, re) || dh_may_reach(lbody, ename, fn_names, fn_effs, rn, re)
+      ELetRec(lname, lval, lbody) => match overlay_bind_local(ov_names, ov_effs, lname, lval, fn_names, fn_effs, fn_index) {
+        (rn, re) => dh_may_reach(lval, ename, fn_names, fn_effs, fn_index, rn, re) || dh_may_reach(lbody, ename, fn_names, fn_effs, fn_index, rn, re)
       },
       _ => false
     }
@@ -5204,7 +5224,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
       let mut i = 0
       let mut found = false
       while i < Array::length(children) {
-        if !found && dh_may_reach(Array::get(children, i), ename, fn_names, fn_effs, ov_names, ov_effs) {
+        if !found && dh_may_reach(Array::get(children, i), ename, fn_names, fn_effs, fn_index, ov_names, ov_effs) {
           found = true
         } else {
           ()
@@ -5222,7 +5242,7 @@ fn dh_may_reach(expr: Expr, ename: String, fn_names: Array[String], fn_effs: Arr
 /// (`Fs::read_file`, `T::method`) are resolvable and never count; so does any
 /// non-`EIdent` callee, deliberately -- narrowing to this one shape is what
 /// keeps the rule free of false positives on ordinary code.
-fn dh_callee_is_opaque(nm: String, fn_names: Array[String]) -> Bool {
+fn dh_callee_is_opaque(nm: String, fn_names: Array[String], fn_index: MutMap[String, Int]) -> Bool {
   if String::length(nm) == 0 || nm == "perform" || nm == "resume" {
     false
   } else if String::index_of(nm, "::") >= 0 {
@@ -5231,7 +5251,7 @@ fn dh_callee_is_opaque(nm: String, fn_names: Array[String]) -> Bool {
     let c = String::char_code_at(nm, 0)
     if c >= 65 && c <= 90 {
       false
-    } else if effect_row_has_label(Some(fn_names), nm) {
+    } else if program_fn_exists(fn_index, nm) {
       false
     } else {
       match lookup_builtin(canonical_builtin_name(nm)) {
@@ -5242,9 +5262,9 @@ fn dh_callee_is_opaque(nm: String, fn_names: Array[String]) -> Bool {
   }
 }
 
-fn dh_has_opaque_call(expr: Expr, fn_names: Array[String]) -> Bool {
+fn dh_has_opaque_call(expr: Expr, fn_names: Array[String], fn_index: MutMap[String, Int]) -> Bool {
   let direct = match expr {
-    ECall(EIdent(nm, _), _, _) => dh_callee_is_opaque(nm, fn_names),
+    ECall(EIdent(nm, _), _, _) => dh_callee_is_opaque(nm, fn_names, fn_index),
     _ => false
   }
   if direct {
@@ -5254,7 +5274,7 @@ fn dh_has_opaque_call(expr: Expr, fn_names: Array[String]) -> Bool {
     let mut i = 0
     let mut found = false
     while i < Array::length(children) {
-      if !found && dh_has_opaque_call(Array::get(children, i), fn_names) {
+      if !found && dh_has_opaque_call(Array::get(children, i), fn_names, fn_index) {
         found = true
       } else {
         ()
@@ -5269,52 +5289,52 @@ fn dh_has_opaque_call(expr: Expr, fn_names: Array[String]) -> Bool {
 /// parameters and row-declaring local closures is rebuilt exactly as the
 /// transitive walk above rebuilds it, so a handle site is judged against the
 /// same notion of "this callee's declared row" the row checker itself uses.
-fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], ov_names: Array[String], ov_effs: Array[Array[String]], errors: Array[EffectError]) -> Unit {
+fn dh_check_expr(expr: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], ov_names: Array[String], ov_effs: Array[Array[String]], errors: Array[EffectError]) -> Unit {
   match expr {
     EHandle(body, arms) => {
       let handled = collect_handle_effects(arms)
       let mut i = 0
       while i < Array::length(handled) {
         let eff = Array::get(handled, i)
-        if effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff) && !dh_may_reach(body, eff, fn_names, fn_effs, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names) {
+        if effect_row_has_label(Some(declared), eff) && effect_row_has_label(Some(performed), eff) && !dh_may_reach(body, eff, fn_names, fn_effs, fn_index, ov_names, ov_effs) && dh_has_opaque_call(body, fn_names, fn_index) {
           Array::push(errors, EEHandleNeverFires(eff))
         } else {
           ()
         }
         i = i + 1
       }
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (_, arm_body) = Array::get(arms, ai)
-        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
+        dh_check_expr(arm_body, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
         ai = ai + 1
       }
     },
     EFn(_, _, params, _, _, body) => {
-      let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params, fn_names)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, bn, be, errors)
+      let (bn, be) = dh_overlay_with_params(ov_names, ov_effs, params, fn_names, fn_index)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, errors)
     },
     ELet(name, val, body, _) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
-      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, bn, be, errors)
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, errors)
     },
     ELetMut(name, val, body, _) => {
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
-      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, bn, be, errors)
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
+      let (bn, be) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, bn, be, errors)
     },
     ELetRec(name, val, body) => {
-      let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs)
-      dh_check_expr(val, declared, performed, fn_names, fn_effs, rn, re, errors)
-      dh_check_expr(body, declared, performed, fn_names, fn_effs, rn, re, errors)
+      let (rn, re) = overlay_bind_local(ov_names, ov_effs, name, val, fn_names, fn_effs, fn_index)
+      dh_check_expr(val, declared, performed, fn_names, fn_effs, fn_index, rn, re, errors)
+      dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, rn, re, errors)
     },
     _ => {
       let children = expr_children(expr)
       let mut c = 0
       while c < Array::length(children) {
-        dh_check_expr(Array::get(children, c), declared, performed, fn_names, fn_effs, ov_names, ov_effs, errors)
+        dh_check_expr(Array::get(children, c), declared, performed, fn_names, fn_effs, fn_index, ov_names, ov_effs, errors)
         c = c + 1
       }
     }
@@ -5340,9 +5360,9 @@ fn dh_param_base_name(n: String) -> String {
   }
 }
 
-fn dh_overlay_with_params(ov_names: Array[String], ov_effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])], fn_names: Array[String]) -> (Array[String], Array[Array[String]]) {
+fn dh_overlay_with_params(ov_names: Array[String], ov_effs: Array[Array[String]], params: Array[(String, Option[TypeExpr])], fn_names: Array[String], fn_index: MutMap[String, Int]) -> (Array[String], Array[Array[String]]) {
   let (sn, se) = shadow_overlay_names(ov_names, ov_effs, params)
-  let (raw_ln, le) = build_param_overlay(params, fn_names)
+  let (raw_ln, le) = build_param_overlay(params, fn_names, fn_index)
   let ln = for n in raw_ln {
     dh_param_base_name(n)
   }
@@ -5361,21 +5381,21 @@ fn dh_overlay_with_params(ov_names: Array[String], ov_effs: Array[Array[String]]
   }
 }
 
-fn dh_check_binding(ty: Option[TypeExpr], body: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], errors: Array[EffectError]) -> Unit {
+fn dh_check_binding(ty: Option[TypeExpr], body: Expr, declared: Array[String], performed: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], errors: Array[EffectError]) -> Unit {
   match body {
     // Seed the overlay from THIS binding's own parameters, exactly as
     // check_perform_effects_binding_tx does -- descending straight into
     // `fbody` would otherwise lose them (the top-level annotation, not the
     // EFn node, is where a separately-typed signature keeps its rows).
     EFn(_, _, params, _, _, fbody) => {
-      let (n, e) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), merge_param_types_with_sig(ty, params), fn_names)
-      dh_check_expr(fbody, declared, performed, fn_names, fn_effs, n, e, errors)
+      let (n, e) = dh_overlay_with_params(no_str_labels(), no_ov_effs(), merge_param_types_with_sig(ty, params), fn_names, fn_index)
+      dh_check_expr(fbody, declared, performed, fn_names, fn_effs, fn_index, n, e, errors)
     },
-    _ => dh_check_expr(body, declared, performed, fn_names, fn_effs, no_str_labels(), no_ov_effs(), errors)
+    _ => dh_check_expr(body, declared, performed, fn_names, fn_effs, fn_index, no_str_labels(), no_ov_effs(), errors)
   }
 }
 
-fn check_dead_handles_stmts(stmts: Array[Stmt], fn_names: Array[String], fn_effs: Array[Array[String]]) -> Array[EffectError] {
+fn check_dead_handles_stmts(stmts: Array[Stmt], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int]) -> Array[EffectError] {
   let errors = array_empty()
   let declared = dh_declared_effects(stmts)
   if Array::length(declared) == 0 {
@@ -5385,11 +5405,11 @@ fn check_dead_handles_stmts(stmts: Array[Stmt], fn_names: Array[String], fn_effs
     let mut i = 0
     while i < Array::length(stmts) {
       match Array::get(stmts, i) {
-        SLet(_, _, _, ty, body) => dh_check_binding(ty, body, declared, performed, fn_names, fn_effs, errors),
-        SLetMut(_, ty, body) => dh_check_binding(ty, body, declared, performed, fn_names, fn_effs, errors),
-        SExpr(e) => dh_check_binding(None, e, declared, performed, fn_names, fn_effs, errors),
-        STest(_, body) => dh_check_binding(None, body, declared, performed, fn_names, fn_effs, errors),
-        SBench(_, body) => dh_check_binding(None, body, declared, performed, fn_names, fn_effs, errors),
+        SLet(_, _, _, ty, body) => dh_check_binding(ty, body, declared, performed, fn_names, fn_effs, fn_index, errors),
+        SLetMut(_, ty, body) => dh_check_binding(ty, body, declared, performed, fn_names, fn_effs, fn_index, errors),
+        SExpr(e) => dh_check_binding(None, e, declared, performed, fn_names, fn_effs, fn_index, errors),
+        STest(_, body) => dh_check_binding(None, body, declared, performed, fn_names, fn_effs, fn_index, errors),
+        SBench(_, body) => dh_check_binding(None, body, declared, performed, fn_names, fn_effs, fn_index, errors),
         _ => ()
       }
       i = i + 1
