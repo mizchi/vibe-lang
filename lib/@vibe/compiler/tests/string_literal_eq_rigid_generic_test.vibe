@@ -1,0 +1,57 @@
+//# Functions
+
+// #2483 review (Codex P1): the literal-compare fast path (emit_eq_value)
+// fires only when the OTHER operand is a verified String -- a literal, a
+// String-annotated param or `let`-bound stringish value (a kind-2 slot), a
+// `: String` ascription, a String-returning builtin. The checker's
+// infer_binop_type tolerates a failed equality unification while either
+// side is still a rigid named type parameter (#829), and such an operand
+// may be an Int at runtime; it has no kind-2 verdict, so it keeps the
+// generic `eq` path, whose looks-like-a-string guard makes the compare a
+// plain "not equal". Measured 2026-09-03: no source shape reached that
+// tolerance through this compiler -- `fn f[T: Eq](x: T) { x == "a" }`, a
+// generic struct field `b.v == "a"`, a generic effect operation's result,
+// and the #829 `Array::get(ArrayView::to_array(v), 0)` form are all
+// grounded (or rejected) by the checker before codegen -- so this file
+// pins the verified side and the guard stays defensive.
+
+fn tag_of(s: String) -> Int {
+  if s == "one" {
+    1
+  } else if s == "two" {
+    2
+  } else {
+    0
+  }
+}
+
+fn generic_eq[T: Eq](a: T, b: T) -> Bool {
+  a == b
+}
+
+fn ascribed(x: Int) -> Bool {
+  let s: String = __to_string(x)
+  s == "42"
+}
+
+//# Tests
+
+test "#2483: String-annotated params and let-bound strings against literals" {
+  assert(tag_of("one") == 1)
+  assert(tag_of("two") == 2)
+  assert(tag_of("three") == 0)
+  let s = "abc"
+  assert(s == "abc")
+  assert(s != "abd")
+  assert("lit" == "lit")
+  assert(not("lit" == "lot"))
+}
+
+test "#2483: an erased generic compare and an ascribed String keep answering" {
+  assert(generic_eq("a", "a"))
+  assert(not(generic_eq("a", "b")))
+  assert(generic_eq(1, 1))
+  assert(not(generic_eq(4294967296 + 7, 4294967296 + 8)))
+  assert(ascribed(42))
+  assert(not(ascribed(43)))
+}

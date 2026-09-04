@@ -54,6 +54,7 @@ import @vibe/compiler/codegen/common_base {
   emit_unbox_float,
   expr_tag,
   float_log_reset_above,
+  func_table_builtin_index_of,
   func_table_index_of,
   get_arm_body,
   get_arm_pat,
@@ -223,7 +224,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  compile_call
+  cc_expr_is_stringish, compile_call
 }
 
 import ./compile_expr_tail.vibe {
@@ -752,6 +753,13 @@ fn expr_names_nothing(e: Expr) -> Bool {
   }
 }
 
+fn is_estring(e: Expr) -> Bool {
+  match e {
+    EString(_) => true,
+    _ => false
+  }
+}
+
 /// #672: emit the equality test for `lhs == rhs`, leaving a raw i64 0/1 on the
 /// stack (1 = equal). Routes through the structural comparators when an operand
 /// is a tuple / ctor literal (non-rc), else the generic runtime `eq`. Every `==`
@@ -850,6 +858,37 @@ fn emit_eq_value(buf: Bytes, lhs: Expr, rhs: Expr, local_names: Array[String], n
     let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
     emit_i64_eq(buf)
     emit_i64_extend_i32_s(buf)
+    nl2
+  } else if ((is_estring(lhs) && cc_expr_is_stringish(rhs, local_names, ctx)) || (is_estring(rhs) && cc_expr_is_stringish(lhs, local_names, ctx))) && func_table_builtin_index_of(ctx.func_table, "String::equals", ctx.num_user_funcs) >= 0 {
+    // #2483: a string-LITERAL operand against a VERIFIED String operand is
+    // the string twin of the intish case: both are genuine fat pointers, so
+    // `eq`'s answer is exactly `str_eq`'s -- `eq` only reaches `str_eq`
+    // after an i64 compare and two looks-like-a-string range checks, per
+    // call. The compiler's own name ladders (`f == "Array::get" || f ==
+    // ...`, ~7,000 literal compares in its sources, `f` a String-annotated
+    // param) paid that every time: `__rt_eq` was 6.5% of a warm
+    // compiler-closure compile, and its top callers were all such ladders.
+    // Same operand compilation, same 0/1 i64 result, a different callee.
+    //
+    // "Verified" is cc_expr_is_stringish's answer (a literal, a kind-2
+    // slot -- String-annotated param or `let`-bound stringish value -- a
+    // `: String` ascription, a String-returning builtin), NOT the mere
+    // presence of the literal: infer_binop_type tolerates a failed equality
+    // unification while either side is still a rigid named type parameter
+    // (#829, `checker.vibe`), so a generic callee's result compared with a
+    // literal type-checks and may be an Int at runtime. That operand must
+    // keep the generic path, whose looks-like-a-string guard is what makes
+    // the compare a plain "not equal" instead of a read through the Int's
+    // bits (Codex on #2484).
+    //
+    // The callee is the BUILTIN entry, found positionally (#2309): the
+    // prelude defines a program-level `String::equals`, and a lookup by
+    // name in a closure that carries it answered that function -- three
+    // parameters on the linked lane -- so the emitted two-argument call
+    // failed to validate. `==` never meant the program's function.
+    let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)
+    let nl2 = ce(buf, rhs, local_names, nl1, ctx, ld)
+    emit_call(buf, func_table_builtin_index_of(ctx.func_table, "String::equals", ctx.num_user_funcs))
     nl2
   } else {
     let nl1 = ce(buf, lhs, local_names, next_local, ctx, ld)

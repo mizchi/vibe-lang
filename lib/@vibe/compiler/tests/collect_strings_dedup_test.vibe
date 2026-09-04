@@ -38,3 +38,24 @@ test "#2479: an expression literal then the same pattern is one entry" {
 test "#2479: literals across functions dedup" {
   inspect(table("fn g() -> String { \"Map::has\" }\nfn h() -> Array[String] { [\"Map::has\", \"Map::set\"] }"), content = "Map::has|Map::set")
 }
+
+// #2482 review: the `EMap` key arm (a `Map::from_pairs` literal with string
+// keys) is a string-table insertion too. It used to push after its own scan
+// of `out` without recording the key in `seen`, so a later `EString` of the
+// same text was appended again (measured `a|a` and `k|k` on the first build
+// of #2482). Every insertion goes through one path now. The interpolation-
+// segment arm had the same shape, but the parser desugars `\{..}` before
+// the collector runs (the `__to_string` it introduces is what seeds `true`
+// / `false` below), so that case pins the desugared program.
+
+test "#2482: a map key and a value literal of the same text are one entry" {
+  inspect(table("let m = Map::from_pairs([(\"a\", \"a\")])"), content = "a")
+}
+
+test "#2482: a map key then the same expression literal is one entry" {
+  inspect(table("let m = Map::from_pairs([(\"k\", 1)])\nlet t = [\"k\"]"), content = "k")
+}
+
+test "#2482: interpolation segments then the same expression literals are one entry each" {
+  inspect(table("let n = 1\nlet s = \"pre\\{n}post\"\nlet t = [\"pre\", \"post\"]"), content = "pre|true|false|post")
+}
