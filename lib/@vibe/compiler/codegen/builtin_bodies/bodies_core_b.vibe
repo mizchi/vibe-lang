@@ -508,7 +508,98 @@ export fn gen_arr_concat_body() -> Bytes {
   b
 }
 
-export fn gen_str_concat_body() -> Bytes {
+/// Trap unless `ptr_local`/`len_local` describe a live string. Reports the
+/// pair, so the caller sees the operand rather than a memory fault.
+///
+/// Three tests, and each one is load-bearing for a different case:
+///
+///   - `ptr <u 64` -- #973's bound, established for exactly this situation
+///     (concatenating a value that might be an int): every ordinary small
+///     `Int` implies a `ptr` of 0..63, while a real string's address is >= 64.
+///   - `len >u frontier` -- a string cannot be longer than the guest heap it
+///     was built in. This is the test that catches #2427, whose operand was a
+///     tagged `Int` decoding to a 3.04 GiB "length".
+///   - `ptr + len > memory.size` in **i64** -- the #664 out-of-bounds guard,
+///     spelled as `emit_looks_like_string` spells it. i64 because the i32 form
+///     WRAPS: with a 2.5 GiB frontier, `ptr` and `len` both 2.3 GiB sum to
+///     644 MB in i32 and sail through (#2489 review).
+///
+/// The end-range test deliberately bounds by MEMORY, not by the frontier.
+/// Under `VIBE_WASM_HOST_ALLOC_MODE=arena` the runner allocates host-returned
+/// strings at `__heap_ptr + guard` and advances only its own private pointer,
+/// never `global 0` -- so a perfectly good `Fs::read_file` result lives ABOVE
+/// the frontier, and a frontier-bounded test would reject every one of them
+/// (#2489 review). Bounding by memory accepts them and still rejects anything
+/// unaddressable.
+///
+/// `(ptr=0, len=0)` is EXEMPT: the legal packed empty-string encoding
+/// `compile_call`'s `__to_string` arm names, which copies zero bytes.
+/// Measured, I could not get it to reach this builtin from in-language code --
+/// `String::join([], sep)`, the `"[\{...}]"` interpolation that comment gives
+/// as its example, and concat with an empty operand on either side all pass
+/// the unexempted guard on both lanes. It is kept as a correctness argument,
+/// not a reproduction.
+fn emit_str_operand_guard(b: Bytes, ptr_local: Int, len_local: Int, abort_idx: Int, prefix_fat: Int) -> Unit {
+  // 64 >u ptr
+  emit_i32_const(b, 64)
+  emit_local_get(b, ptr_local)
+  emit_i32_gt_u(b)
+  // || len >u frontier
+  emit_local_get(b, len_local)
+  emit_global_get(b, 0)
+  emit_i32_gt_u(b)
+  // i32.or (0x72)
+  bytebuf_push(b, 114)
+  // || (i64)ptr + (i64)len > memory.size * 65536
+  emit_local_get(b, ptr_local)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, len_local)
+  emit_i64_extend_i32_u(b)
+  emit_i64_add(b)
+  // memory.size (0x3F 0x00) in bytes, as emit_mem_size_bytes does
+  bytebuf_push(b, 63)
+  bytebuf_push(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 65536)
+  emit_i64_mul(b)
+  emit_i64_gt_s(b)
+  // i32.or (0x72)
+  bytebuf_push(b, 114)
+  // && !(the packed empty string)
+  emit_local_get(b, ptr_local)
+  emit_local_get(b, len_local)
+  // i32.or (0x72)
+  bytebuf_push(b, 114)
+  emit_i32_eqz(b)
+  emit_i32_eqz(b)
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
+  emit_if_void(b)
+  emit_i64_const(b, prefix_fat)
+  emit_local_get(b, ptr_local)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, len_local)
+  emit_i64_extend_i32_u(b)
+  emit_call(b, abort_idx)
+  emit_end(b)
+}
+
+/// #2427: `rc_shadow` adds a plausibility check on both operands.
+///
+/// This body decodes `ptr = v >> 32` and `len = v & 0xFFFFFFFF` from whatever
+/// i64 it is handed. A value that is not a string at all -- a tagged `Int`
+/// (`n << 1`), a pointer, a stale word read out of a block that was freed and
+/// re-issued -- decodes into a wild ptr/len and traps inside `memory.copy`
+/// with a bare "memory access out of bounds" that names nothing. Under shadow
+/// the operand is printed instead, and its bits say what it really was.
+///
+/// A live string satisfies `ptr >= 64` (static string data starts at 64),
+/// `len <= global 0` (the bump frontier), and `ptr + len <= memory.size` --
+/// see `emit_str_operand_guard` for why the end is bounded by memory rather
+/// than by the frontier. String buffers carry no header and are never freed,
+/// so there is no shadow slot to consult here -- this is a range check, not a
+/// mark check, which is why it is a separate abort from the UAF one.
+export fn gen_str_concat_body(rc_shadow: Bool, str_operand_abort_idx: Int, bad_operand_fat: Int) -> Bytes {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_i64_const(b, 4294967295)
@@ -530,6 +621,12 @@ export fn gen_str_concat_body() -> Bytes {
   emit_i64_shr_s(b)
   emit_i32_wrap_i64(b)
   emit_local_set(b, 5)
+  if rc_shadow {
+    emit_str_operand_guard(b, 4, 2, str_operand_abort_idx, bad_operand_fat)
+    emit_str_operand_guard(b, 5, 3, str_operand_abort_idx, bad_operand_fat)
+  } else {
+    ()
+  }
   emit_local_get(b, 2)
   emit_local_get(b, 3)
   emit_i32_add(b)
