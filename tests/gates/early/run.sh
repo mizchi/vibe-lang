@@ -2008,13 +2008,7 @@ rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
 # `structural_eq_owned_scalar_*_trap.vibe` joins too (Codex round 4 on #2471):
 # a program that declares `struct Int` makes a literal-derived shape's `Int`
 # ambiguous with the struct, so the literal-shape rungs fail closed.
-# `structural_eq_generic_body_*_trap.vibe` joins (#2474): inside a generic body
-# the operand type is an erased formal, the typed-`==` row is dropped for
-# mentioning a scope formal, and the raw compare answered `false` for equal
-# aggregates. A generic body is lowered exactly once, so no per-instantiation
-# comparator is reachable and the only honest answer is to fail closed. Red
-# before the guard: both returned 0 rather than trapping.
-for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe fixtures/structural_eq_generic_enum_*_trap.vibe fixtures/structural_eq_owned_scalar_*_trap.vibe fixtures/structural_eq_generic_body_*_trap.vibe; do
+for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe fixtures/structural_eq_generic_enum_*_trap.vibe fixtures/structural_eq_owned_scalar_*_trap.vibe; do
   eqtrap_name="$(basename "${eqtrap_src%.vibe}")"
   eqtrap_wasm="$eqtrapdir/$eqtrap_name.wasm"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -2033,6 +2027,39 @@ for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe fixtures/stru
 done
 rm -rf "$eqtrapdir"
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok (== + !=)"
+
+# #2474: the generic-body fail-closed contract, on the RC lane ONLY. The guard
+# classifies an RC block by ADR-0055's tagging (odd, high 32 bits zero); the
+# bump lane leaves an Int untagged, where that test would read an odd integer
+# as a block, so `gen_eq_body` takes the guard only under `enable_rc`. The loop
+# above runs at the `VIBE_RC=0` that `tests/gates/lib.sh` pins for every lane,
+# so these fixtures returned normally there -- measured, this exact wiring
+# failed the gate before it was split out. RC is selected inline in the
+# command, per the #2248 rule that a selector is never routed through a
+# variable.
+echo "[compiler-gate] generic-body equality fail-closed on the RC lane (#2474)"
+eqgbdir="_build/_gate_eq_generic_body"
+rm -rf "$eqgbdir"; mkdir -p "$eqgbdir"
+for eqgb_src in fixtures/structural_eq_generic_body_*_trap.vibe; do
+  [ -f "$eqgb_src" ] || { echo "[compiler-gate] FAIL: no generic-body trap fixtures matched (#2474)" >&2; exit 1; }
+  eqgb_name="$(basename "${eqgb_src%.vibe}")"
+  eqgb_wasm="$eqgbdir/$eqgb_name.wasm"
+  VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$eqgb_src" "$eqgb_wasm" _start >/dev/null 2>&1 || true
+  if [ ! -s "$eqgb_wasm" ]; then
+    echo "[compiler-gate] FAIL: $eqgb_src did not compile on the RC lane (#2474)" >&2
+    cat "$eqgb_wasm.diag" 2>/dev/null >&2
+    exit 1
+  fi
+  if VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
+      --invoke _start "$eqgb_wasm" >/dev/null 2>&1; then
+    echo "[compiler-gate] FAIL: $eqgb_src returned normally on the RC lane; expected fail-closed trap (#2474)" >&2
+    exit 1
+  fi
+done
+rm -rf "$eqgbdir"
+echo "[compiler-gate] generic-body equality fail-closed on the RC lane ok (#2474)"
 
 # #2391 (after #2447): the other side of the same residual. The three shapes
 # that used to sit in the loop above as traps -- a pushed NAME, pushes made
