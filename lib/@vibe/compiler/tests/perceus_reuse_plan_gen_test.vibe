@@ -1,0 +1,40 @@
+//# Imports
+
+// #2386: the reuse planner dedups a function's drop / alias names through
+// process-wide maps stamped with a per-plan generation. Every function
+// planned in the same process must still see its own names -- the second
+// function that drops `n` pairs exactly like the first.
+
+import @vibe/compiler/runtime {
+  rc_plan_source
+}
+
+//# Functions
+
+fn plan_of(source: String) -> String with Exception {
+  rc_plan_source(source, "")
+}
+
+test "two functions that drop the same name both keep their reuse pairs" {
+  // `first` and `second` are the same rebuild shape over a scrutinee
+  // named `n`. The planner dedups names through a map that outlives one
+  // plan; if the generation stamp were not advanced per plan, `second`
+  // would find `n` "already listed", push nothing, and plan no reuse rows
+  // at all -- a silent loss of the optimization, not a wrong answer, but
+  // one the plan query has to show.
+  let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec first: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = first(a)\n      let b2 = first(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nlet rec second: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = second(a)\n      let b2 = second(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 2)\n  }\n}\nlet main: () -> Int = () -> {\n  match second(first(Pair(Leaf(1), Leaf(2)))) {\n    Pair(_, _) => 1,\n    Leaf(_) => 0\n  }\n}"
+  let plan = plan_of(src)
+  assert(String::contains(plan, "first n reuse_token:2 1"))
+  assert(String::contains(plan, "first n reuse_alloc:2 1"))
+  assert(String::contains(plan, "second n reuse_token:2 1"))
+  assert(String::contains(plan, "second n reuse_alloc:2 1"))
+}
+
+test "a repeated drop of one name is listed once and still pairs" {
+  // Two arms over the same scrutinee drop `n` twice; the dedup keeps one
+  // entry and the arity-keyed rows come out once per arm.
+  let src = "enum Node {\n  Uno(Node);\n  Duo(Node, Node);\n  Z(Int)\n}\nlet rec walk: (Node) -> Node = (n) -> {\n  match n {\n    Uno(x) => {\n      let x2 = walk(x)\n      Uno(x2)\n    },\n    Duo(a, b) => {\n      let a2 = walk(a)\n      let b2 = walk(b)\n      Duo(a2, b2)\n    },\n    _ => Z(0)\n  }\n}\nlet main: () -> Int = () -> {\n  match walk(Duo(Z(1), Z(2))) {\n    _ => 0\n  }\n}"
+  let plan = plan_of(src)
+  assert(String::contains(plan, "walk n reuse_token:1 1"))
+  assert(String::contains(plan, "walk n reuse_token:2 1"))
+}

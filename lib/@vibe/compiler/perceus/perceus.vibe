@@ -3036,19 +3036,69 @@ fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], alias_names: Array[
   }
 }
 
+// #2386: the drop / alias name lists of a function are deduped through the
+// action's binding id -- dense per function, 0-based (`ctx.next_id`) -- so
+// a check is one read of a stamp table indexed by id instead of a scan of
+// every name collected so far (the compiler's larger bodies carry hundreds
+// of drop rows; `name_in` was 60 ms of a warm compile). The tables are two
+// process-wide `Array[Int]` cells stamped with a generation per plan: a
+// function allocates nothing for its dedup and the tables never grow past
+// the largest function's binding count. The generation is what keeps plans
+// apart: the previous plan's stamps have to count as absent for this one,
+// or the second function that drops `n` (the same id 0) would find it
+// "already listed", push nothing and silently lose its reuse rows. Two
+// bindings that share a name (shadowing) list the name twice; both lists
+// are read by membership only. A reuse row carries id -1 and is neither
+// kind, but an id below 0 takes the linear membership test anyway.
+let pr_drop_stamp: Array[Int] = []
+
+let pr_alias_stamp: Array[Int] = []
+
+let pr_seen_gen: Array[Int] = [0]
+
+fn pr_seen_begin() -> Unit {
+  Array::set(pr_seen_gen, 0, Array::get(pr_seen_gen, 0) + 1)
+}
+
+/// Push `name` onto `names` unless this plan already listed binding `id`:
+/// true iff pushed.
+fn pr_push_once(stamps: Array[Int], names: Array[String], id: Int, name: String) -> Bool {
+  if id < 0 {
+    if name_in(names, name) {
+      false
+    } else {
+      Array::push(names, name)
+      true
+    }
+  } else {
+    let gen = Array::get(pr_seen_gen, 0)
+    while Array::length(stamps) <= id {
+      Array::push(stamps, 0)
+    }
+    if Array::get(stamps, id) == gen {
+      false
+    } else {
+      Array::set(stamps, id, gen)
+      Array::push(names, name)
+      true
+    }
+  }
+}
+
 fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction], borrow_param_fns: Array[String], borrow_param_masks: Array[Int]) -> Unit {
   let drop_names: Array[String] = []
   let alias_names: Array[String] = []
+  pr_seen_begin()
   let mut i = 0
   while i < Array::length(actions) {
     let a = Array::get(actions, i)
-    if pa_is_drop(a) && !name_in(drop_names, a.name) {
-      Array::push(drop_names, a.name)
+    if pa_is_drop(a) {
+      let _ = pr_push_once(pr_drop_stamp, drop_names, a.binding_id, a.name)
     } else {
       ()
     }
-    if pa_is_alias_dup(a) && !name_in(alias_names, a.name) {
-      Array::push(alias_names, a.name)
+    if pa_is_alias_dup(a) {
+      let _ = pr_push_once(pr_alias_stamp, alias_names, a.binding_id, a.name)
     } else {
       ()
     }
