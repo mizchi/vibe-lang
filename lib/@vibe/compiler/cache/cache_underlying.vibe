@@ -185,8 +185,6 @@ let source_fingerprint_memo_hashes: Array[Int] = [0]
 
 fn compact_source_fingerprint_counted(source: String) -> String {
   Array::set(source_fingerprint_memo_hashes, 0, Array::get(source_fingerprint_memo_hashes, 0) + 1)
-  ingestion_telemetry_add(2, 1)
-  ingestion_telemetry_add(3, String::length(source))
   compact_string_fingerprint(source)
 }
 
@@ -384,9 +382,14 @@ fn fingerprint_source(path: String) -> String with Fs {
   let source = Fs::read_file(path)
   ingestion_telemetry_add(0, 1)
   ingestion_telemetry_add(1, String::length(source))
-  // The hash-call telemetry is counted where the hash happens (the memo's
-  // miss path), so a text the compile already fingerprinted is not counted
-  // as hashed again.
+  // The hash-call telemetry stays paired with the read: it counts the
+  // fingerprint requests this filesystem boundary makes, and its consumers
+  // (scripts/edit_cycle_kpi.mjs, scripts/ingestion_stamp_oracle.mjs) check
+  // exactly that pairing. Since #2386 the per-compile memo below may answer
+  // a request from a text the compile already hashed; that is the memo's
+  // own hash counter's business, not this boundary's contract.
+  ingestion_telemetry_add(2, 1)
+  ingestion_telemetry_add(3, String::length(source))
   compact_source_fingerprint_memo(path, source)
 }
 
