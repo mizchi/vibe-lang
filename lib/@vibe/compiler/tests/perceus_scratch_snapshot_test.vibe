@@ -1,0 +1,40 @@
+// #2386: the perceus planner's branch snapshots of the per-binding tables
+// (`uses` / `borrows` in the count pass, `remaining` in the emit pass) live
+// on one scratch stack instead of a fresh array per `if` / `match` /
+// `handle`. The plan must not change: nested constructs that consume an
+// outer binding on one path only are the shape that reads every snapshot
+// slot (the per-arm restore, the max/min merge across arms, and the swap
+// the `if` arms share), so their plan is pinned here as `vibe rc-plan`
+// prints it.
+import @vibe/compiler/runtime {
+  rc_plan_source
+}
+
+fn plan_of(source: String) -> String with Exception {
+  rc_plan_source(source, "")
+}
+
+fn one_line(s: String) -> String {
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < String::length(s) {
+    let c = String::char_code_at(s, i)
+    if c == '\n' {
+      StringBuilder::push(out, " ; ")
+    } else {
+      StringBuilder::push(out, String::substring(s, i, i + 1))
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+test "an outer binding consumed in one arm of nested if / match keeps its plan" {
+  let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\n\nfn own(n: Node) -> Int {\n  match n {\n    Leaf(v) => v,\n    Pair(_, _) => 0\n  }\n}\n\nfn shape(n: Node, m: Node, flag: Bool) -> Int {\n  let k = Pair(n, m)\n  let r = if flag {\n    match k {\n      Pair(a, b) => if flag {\n        own(a)\n      } else {\n        own(b) + own(a)\n      },\n      Leaf(v) => v\n    }\n  } else {\n    own(k)\n  }\n  r + own(m)\n}\n"
+  inspect(one_line(plan_of(src)), content = "own n drop 1 ; shape m dup 1 ; shape a drop 1 ; shape b drop 1 ; shape k drop 1 ; shape m drop 1 ; Node::equals __shadow_1___b0 drop 1 ; Node::equals __b1 drop 1 ; Node::equals __shadow_0___a0 drop 1 ; Node::equals __a1 drop 1 ; Node::equals a drop 1 ; Node::equals b drop 1")
+}
+
+test "a handle whose body and arm consume different outer bindings keeps its plan" {
+  let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\n\nfn own(n: Node) -> Int {\n  match n {\n    Leaf(v) => v,\n    Pair(_, _) => 0\n  }\n}\n\nfn guarded(n: Node, m: Node) -> Int with Exception {\n  let k = Pair(n, m)\n  let r = handle {\n    own(k)\n  } with {\n    Exception::Throw(_) => own(m)\n  }\n  r + own(m)\n}\n"
+  inspect(one_line(plan_of(src)), content = "own n drop 1 ; guarded m dup 1 ; guarded k drop 1 ; guarded m drop 1 ; Node::equals __shadow_1___b0 drop 1 ; Node::equals __b1 drop 1 ; Node::equals __shadow_0___a0 drop 1 ; Node::equals __a1 drop 1 ; Node::equals a drop 1 ; Node::equals b drop 1")
+}
