@@ -6412,12 +6412,20 @@ fn direct_builtin_return(name: String) -> Option[Type] {
 }
 
 fn direct_call_return(env: TypeEnv, name: String) -> Option[Type] {
-  match env_lookup(env, name) {
-    Some(_) => None,
-    None => if env_has_reexport_surface_binding(env, name) {
-      None
-    } else {
-      direct_builtin_return(canonical_builtin_name(name))
+  // #2386: the builtin table answers first. A callee it does not know
+  // returns None whatever the environment says, so the two chain walks
+  // (the lookup, and on a miss the surface-binding probe, which reads the
+  // whole chain) run only for the names that can be shadowed builtins.
+  // Every user-defined callee used to pay both per call site.
+  match direct_builtin_return(canonical_builtin_name(name)) {
+    None => None,
+    Some(ret) => match env_lookup(env, name) {
+      Some(_) => None,
+      None => if env_has_reexport_surface_binding(env, name) {
+        None
+      } else {
+        Some(ret)
+      }
     }
   }
 }
@@ -7793,7 +7801,11 @@ fn retaining_write_argument_mask(source_name: String) -> Int {
 /// Check every stored argument against the same region lifetime rule as
 /// `EAssign`; skip the duplicate type walk entirely outside a region.
 fn retaining_write_region_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
-  if env_has_active_region(env) && Array::length(args) > 0 {
+  // #2386: the name test is a compare ladder; the region test is a chain
+  // lookup. Asking the ladder first keeps the lookup off every call site
+  // whose callee retains nothing -- nearly all of them -- and the check
+  // itself does nothing for those either way.
+  if Array::length(args) > 0 && retaining_write_argument_mask(name) != 0 && env_has_active_region(env) {
     let retained = retaining_write_argument_mask(name)
     let mut value_index = 1
     while value_index <= 2 {

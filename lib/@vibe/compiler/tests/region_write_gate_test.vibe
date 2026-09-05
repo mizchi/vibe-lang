@@ -1,0 +1,23 @@
+import ./checker_parity_test_support.vibe {
+  check_source_error_message, check_source_ok
+}
+
+// #2386: retaining_write_region_check asks whether the callee retains an
+// argument before it asks the environment for the active region, and
+// direct_call_return asks the builtin table before it walks the chain.
+// Both are pure reorders; these pin the answers they must keep giving.
+
+test "a container write that stores a region-capturing closure into an outer binding is still reported" {
+  let src = "fn build() -> Int {\n  let sink: Array[() -> Int] = []\n  region r {\n    let cell = MutList::empty(r)\n    Array::push(sink, () -> Int {\n      MutList::length(cell)\n    })\n  }\n  0\n}"
+  inspect(check_source_error_message(src), content = "region escapes its scope: a container write stores a value that captures this region into an outer binding")
+}
+
+test "the same write outside a region, and a non-retaining call inside one, are fine" {
+  assert(check_source_ok("fn build() -> Int {\n  let sink: Array[Int] = []\n  Array::push(sink, 1)\n  Array::length(sink)\n}"))
+  assert(check_source_ok("fn build() -> Int {\n  region r {\n    let cell = MutList::empty(r)\n    MutList::length(cell)\n  }\n}"))
+}
+
+test "a builtin's direct return type still answers, and a user fn of a builtin's name still shadows it" {
+  assert(check_source_ok("fn f() -> Int {\n  let n: Int = String::length(\"abc\")\n  n\n}"))
+  inspect(check_source_error_message("fn String::length(s: String) -> String {\n  s\n}\nfn f() -> Int {\n  let n: Int = String::length(\"abc\")\n  n\n}"), content = "binding type mismatch for a local let: expected Int, got String [@fn=n]")
+}
