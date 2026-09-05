@@ -16,7 +16,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty, struct MutSet
+  array_empty, struct MutMap, struct MutSet
 }
 
 //# Functions
@@ -2961,38 +2961,283 @@ fn edp_ar_expr(expr: Expr, seed: Array[String], env_names: Array[String], env_re
 /// so post-rename a prefixed name is compiler-generated iff the walk ran and
 /// the name is NOT in `user_prefixed` (Codex review, PR #1594: culprit
 /// diagnostics must not strip a prefix the user spelled themselves).
+/// #2386: the shadow census behind edp_alpha_rename_shadowed. One walk over
+/// the top-level bodies marks which of the asked names is bound ANYWHERE,
+/// under exactly the rules edp_expr_binds_name (RQEdpBindsName through
+/// edp_rq_fold) answers with: a let / let mut / let rec binder, a for-in
+/// name and its index, an fn parameter without its `~`, a loop parameter, a
+/// match or handle pattern binder; an interpolation is opaque, everything
+/// else is walked. The pass used to walk the whole program once per needing
+/// name of every effect. `asked` maps a name to its slot in `marked`, which
+/// holds 1 after the walk when the name is bound somewhere.
+fn edp_bc_mark(name: String, asked: MutMap[String, Int], marked: Array[Int]) -> Unit {
+  match MutMap::get(asked, name) {
+    Some(slot) => Array::set(marked, slot, 1),
+    None => ()
+  }
+}
+
+/// Mirrors scps_pat_binds_name: every binder of the pattern is marked.
+fn edp_bc_pat(p: Pat, asked: MutMap[String, Int], marked: Array[Int]) -> Unit {
+  match p {
+    PBind(n) => edp_bc_mark(n, asked, marked),
+    PCtor(_, ps) => edp_bc_pats(ps, asked, marked),
+    PTuple(ps) => edp_bc_pats(ps, asked, marked),
+    POr(a, b) => {
+      edp_bc_pat(a, asked, marked)
+      edp_bc_pat(b, asked, marked)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        edp_bc_pat(fp, asked, marked)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn edp_bc_pats(ps: Array[Pat], asked: MutMap[String, Int], marked: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(ps) {
+    edp_bc_pat(Array::get(ps, i), asked, marked)
+    i = i + 1
+  }
+}
+
+fn edp_bc_exprs(es: Array[Expr], asked: MutMap[String, Int], marked: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(es) {
+    edp_bc_expr(Array::get(es, i), asked, marked)
+    i = i + 1
+  }
+}
+
+/// `names_bind` as in edp_rq_pairs: loop parameters bind, record and map
+/// fields do not.
+fn edp_bc_pairs(pairs: Array[(String, Expr)], names_bind: Bool, asked: MutMap[String, Int], marked: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (name, value) = Array::get(pairs, i)
+    if names_bind {
+      edp_bc_mark(name, asked, marked)
+    } else {
+      ()
+    }
+    edp_bc_expr(value, asked, marked)
+    i = i + 1
+  }
+}
+
+fn edp_bc_arms(arms: Array[(Pat, Expr)], asked: MutMap[String, Int], marked: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, body) = Array::get(arms, i)
+    edp_bc_pat(pat, asked, marked)
+    edp_bc_expr(body, asked, marked)
+    i = i + 1
+  }
+}
+
+/// Enumerated like edp_rq_fold (no `_ =>` for the recursive shapes): a new
+/// `Expr` variant is a compile error here, not a silently unscanned subtree.
+fn edp_bc_expr(e: Expr, asked: MutMap[String, Int], marked: Array[Int]) -> Unit {
+  match e {
+    EInt(_) => (),
+    EFloat(_) => (),
+    EString(_) => (),
+    EBool(_) => (),
+    EIdent(_, _) => (),
+    EStringInterp(_) => (),
+    EUnit => (),
+    ETuple(items) => edp_bc_exprs(items, asked, marked),
+    EArray(items) => edp_bc_exprs(items, asked, marked),
+    ERecord(_, fields, _) => edp_bc_pairs(fields, false, asked, marked),
+    EMap(fields) => edp_bc_pairs(fields, false, asked, marked),
+    EIf(c, t, other) => {
+      edp_bc_expr(c, asked, marked)
+      edp_bc_expr(t, asked, marked)
+      edp_bc_expr(other, asked, marked)
+    },
+    ELet(name, value, body, _) => {
+      edp_bc_mark(name, asked, marked)
+      edp_bc_expr(value, asked, marked)
+      edp_bc_expr(body, asked, marked)
+    },
+    ELetRec(name, value, body) => {
+      edp_bc_mark(name, asked, marked)
+      edp_bc_expr(value, asked, marked)
+      edp_bc_expr(body, asked, marked)
+    },
+    ELetMut(name, value, body, _) => {
+      edp_bc_mark(name, asked, marked)
+      edp_bc_expr(value, asked, marked)
+      edp_bc_expr(body, asked, marked)
+    },
+    EAssign(_, value, body) => {
+      edp_bc_expr(value, asked, marked)
+      edp_bc_expr(body, asked, marked)
+    },
+    EAssignOp(_, _, value, body) => {
+      edp_bc_expr(value, asked, marked)
+      edp_bc_expr(body, asked, marked)
+    },
+    ESeq(a, b) => {
+      edp_bc_expr(a, asked, marked)
+      edp_bc_expr(b, asked, marked)
+    },
+    EMatch(subject, arms) => {
+      edp_bc_expr(subject, asked, marked)
+      edp_bc_arms(arms, asked, marked)
+    },
+    EHandle(body, arms) => {
+      edp_bc_expr(body, asked, marked)
+      edp_bc_arms(arms, asked, marked)
+    },
+    EWhile(cond, body) => {
+      edp_bc_expr(cond, asked, marked)
+      edp_bc_expr(body, asked, marked)
+    },
+    ELoop(pairs, body) => {
+      edp_bc_pairs(pairs, true, asked, marked)
+      edp_bc_expr(body, asked, marked)
+    },
+    EForIn(name, index, iter, body) => {
+      edp_bc_mark(name, asked, marked)
+      match index {
+        Some(i) => edp_bc_mark(i, asked, marked),
+        None => ()
+      }
+      edp_bc_expr(iter, asked, marked)
+      edp_bc_expr(body, asked, marked)
+    },
+    ECall(callee, args, _) => {
+      edp_bc_expr(callee, asked, marked)
+      edp_bc_exprs(args, asked, marked)
+    },
+    EBinOp(_, left, right, _) => {
+      edp_bc_expr(left, asked, marked)
+      edp_bc_expr(right, asked, marked)
+    },
+    EUnaryOp(_, value) => edp_bc_expr(value, asked, marked),
+    EFn(_, _, params, _, _, body) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (pn, _) = Array::get(params, i)
+        edp_bc_mark(edp_strip_tilde(pn), asked, marked)
+        i = i + 1
+      }
+      edp_bc_expr(body, asked, marked)
+    },
+    EDot(owner, _, _, _) => edp_bc_expr(owner, asked, marked),
+    ELabeledArg(_, _, value) => edp_bc_expr(value, asked, marked),
+    EReturn(value) => edp_bc_expr(value, asked, marked),
+    EBreak(value) => match value {
+      Some(v) => edp_bc_expr(v, asked, marked),
+      None => ()
+    },
+    EContinue(args) => edp_bc_exprs(args, asked, marked),
+    ESpread(value) => edp_bc_expr(value, asked, marked)
+  }
+}
+
+/// The statement kinds edp_alpha_rename_shadowed and edp_drop_shadowed_needing
+/// scan: the values of let / let mut / expression / test / bench statements.
+fn edp_bc_stmts(stmts: Array[Stmt], asked: MutMap[String, Int], marked: Array[Int]) -> Unit {
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, _, _, sv) => edp_bc_expr(sv, asked, marked),
+      SLetMut(_, _, sv) => edp_bc_expr(sv, asked, marked),
+      SExpr(sv) => edp_bc_expr(sv, asked, marked),
+      STest(_, sv) => edp_bc_expr(sv, asked, marked),
+      SBench(_, sv) => edp_bc_expr(sv, asked, marked),
+      _ => ()
+    }
+    si = si + 1
+  }
+}
+
+/// For every name, whether some scanned top-level body binds it: the census
+/// as a table, one entry per name in the order given (a repeated name answers
+/// the same each time). Exported for the test; the pass reads the census
+/// through the slot map directly.
+export fn edp_bind_census(stmts: Array[Stmt], names: Array[String]) -> Array[Bool] {
+  let asked: MutMap[String, Int] = MutMap::new_string()
+  let marked: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(names) {
+    let nm = Array::get(names, i)
+    if MutMap::has(asked, nm) {
+      ()
+    } else {
+      MutMap::set(asked, nm, Array::length(marked))
+      Array::push(marked, 0)
+    }
+    i = i + 1
+  }
+  if Array::length(marked) > 0 {
+    edp_bc_stmts(stmts, asked, marked)
+  } else {
+    ()
+  }
+  let out: Array[Bool] = []
+  i = 0
+  while i < Array::length(names) {
+    Array::push(out, match MutMap::get(asked, Array::get(names, i)) {
+      Some(slot) => Array::get(marked, slot) == 1,
+      None => false
+    })
+    i = i + 1
+  }
+  out
+}
+
 fn edp_alpha_rename_shadowed(stmts: Array[Stmt], effect_defs: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], user_prefixed: Array[String], row_labels: Array[Array[String]]) -> Bool {
   let seed = empty_str_array()
+  // #2386: one shadow census (edp_bc_stmts) for every needing name of every
+  // effect, then the seed is read off it in the same (effect, needing) order
+  // the per-name program walks pushed it in.
+  let needing_tabs: Array[Array[String]] = []
+  let asked: MutMap[String, Int] = MutMap::new_string()
+  let marked: Array[Int] = []
   let mut ei = 0
   while ei < Array::length(effect_defs) {
     let (ename, _) = Array::get(effect_defs, ei)
     let needing = edp_needing_names_tab(fn_defs, row_labels, ename)
+    Array::push(needing_tabs, needing)
+    let mut ni = 0
+    while ni < Array::length(needing) {
+      let nm = Array::get(needing, ni)
+      if MutMap::has(asked, nm) {
+        ()
+      } else {
+        MutMap::set(asked, nm, Array::length(marked))
+        Array::push(marked, 0)
+      }
+      ni = ni + 1
+    }
+    ei = ei + 1
+  }
+  if Array::length(marked) > 0 {
+    edp_bc_stmts(stmts, asked, marked)
+  } else {
+    ()
+  }
+  ei = 0
+  while ei < Array::length(needing_tabs) {
+    let needing = Array::get(needing_tabs, ei)
     let mut ni = 0
     while ni < Array::length(needing) {
       let nm = Array::get(needing, ni)
       if edp_str_array_contains(seed, nm) {
         ()
       } else {
-        let mut shadowed = false
-        let mut si = 0
-        while si < Array::length(stmts) && !shadowed {
-          let sv_opt = match Array::get(stmts, si) {
-            SLet(_, _, _, _, sv) => Some(sv),
-            SLetMut(_, _, sv) => Some(sv),
-            SExpr(sv) => Some(sv),
-            STest(_, sv) => Some(sv),
-            SBench(_, sv) => Some(sv),
-            _ => None
-          }
-          match sv_opt {
-            Some(sv) => if edp_expr_binds_name(sv, nm) {
-              shadowed = true
-            } else {
-              ()
-            },
-            None => ()
-          }
-          si = si + 1
+        let shadowed = match MutMap::get(asked, nm) {
+          Some(slot) => Array::get(marked, slot) == 1,
+          None => false
         }
         if shadowed {
           Array::push(seed, nm)
