@@ -3881,8 +3881,15 @@ export fn reset_return_provenance_index() -> Unit {
 /// the counter, so a stale row would alias a fresh variable.
 let eq_formal_vars: Array[(Int, String)] = []
 
+/// Parallel to `eq_formal_vars`: the binder's arity (`F[_]` records 1, a
+/// plain `T` records 0), so the suggested bound keeps the binder's kind --
+/// `[F[_]: Eq]`, not `[F: Eq]`, which would re-declare `F` at kind `Type`
+/// and invalidate every `F[A]` annotation (Codex on #2529).
+let eq_formal_arity: Array[Int] = []
+
 export fn reset_eq_formal_vars() -> Unit {
   Array::truncate(eq_formal_vars, 0)
+  Array::truncate(eq_formal_arity, 0)
 }
 
 /// A `__Vfp_`-spelled formal is the desugar's re-spelling of a user formal
@@ -3895,11 +3902,44 @@ export fn reset_eq_formal_vars() -> Unit {
 /// synthesized copy is not recorded. The spelling is sound as the signal
 /// because the parser refuses a user-written `__Vfp_` type parameter
 /// (parse_type_param_kind) -- only AST the compiler built can carry it.
-fn record_eq_formal_var(vid: Int, name: String) -> Unit {
+fn record_eq_formal_var(vid: Int, name: String, arity: Int) -> Unit {
   if String::starts_with(name, "__Vfp_") {
     ()
   } else {
     Array::push(eq_formal_vars, (vid, name))
+    Array::push(eq_formal_arity, arity)
+  }
+}
+
+/// The arity the most recent binder spelled `name` was recorded with (0 when
+/// none was): the rigid `#hktformal.` spelling carries the name only.
+fn eq_formal_arity_of(name: String) -> Int {
+  let mut i = Array::length(eq_formal_vars) - 1
+  let mut found = 0
+  while i >= 0 {
+    let (_, n) = Array::get(eq_formal_vars, i)
+    if n == name {
+      found = Array::get(eq_formal_arity, i)
+      i = 0 - 1
+    } else {
+      i = i - 1
+    }
+  }
+  found
+}
+
+/// `F[_]` for arity 1, `F[_, _]` for arity 2, bare `T` for arity 0.
+fn eq_formal_binder_spelling(name: String, arity: Int) -> String {
+  if arity <= 0 {
+    name
+  } else {
+    let mut out = String::concat(name, "[_")
+    let mut i = 1
+    while i < arity {
+      out = String::concat(out, ", _")
+      i = i + 1
+    }
+    String::concat(out, "]")
   }
 }
 
@@ -4144,7 +4184,7 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
     fi = fi + 1
   }
   let bound_spelling = joined_names(for n in names {
-    String::concat(n, ": Eq")
+    String::concat(eq_formal_binder_spelling(n, eq_formal_arity_of(n)), ": Eq")
   }, ", ")
   let params = if Array::length(names) == 1 {
     if shadowed {
@@ -12042,7 +12082,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           (tv, nc) => {
             let vid = nc - 1
             Array::push(tparam_ids, vid)
-            record_eq_formal_var(vid, tpname)
+            record_eq_formal_var(vid, tpname, type_param_arity(tpkey))
             let tblen = Array::length(tbounds)
             let mut bounds = array_empty()
             let mut tbi = 0
