@@ -1,0 +1,46 @@
+// #2386: `check_assignable_for` builds the mismatch message only when a
+// mismatch is reported, from a (head, subject) pair its callers hand over
+// instead of a string they concatenated first. The wording must not move:
+// the argument, binding and struct-field reports are pinned here as the
+// checker renders them. (The impl-target key case pins `impl_encode_name`'s
+// byte-code spelling: a StringBuilder rewrite of it was measured and dropped,
+// +1 MB cold / +2.4 MB warm of heap for no wall change.)
+import @vibe/compiler/core {
+  TypeExpr
+}
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/ast {
+  impl_target_key
+}
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "argument mismatch keeps its subject and wording" {
+  inspect(first_check_error("fn f(x: Int) -> Int {\n  x\n}\n\nfn g() -> Int {\n  f(\"s\")\n}\n"), content = "argument type mismatch for f: expected Int, got String")
+}
+
+test "binding mismatch keeps its subject and wording" {
+  inspect(first_check_error("fn g() -> Int {\n  let n: Int = \"s\"\n  n\n}\n"), content = "binding type mismatch for a local let: expected Int, got String [@fn=n]")
+}
+
+test "struct field mismatch keeps its subject and wording" {
+  inspect(first_check_error("struct P { x: Int }\n\nfn g() -> P {\n  P::{ x: \"s\" }\n}\n"), content = "struct field type mismatch for x: expected Int, got String")
+}
+
+test "impl target keys keep the byte-code spelling" {
+  inspect(impl_target_key(TyName("Foo")), content = "N70_111_111_Z")
+  inspect(impl_target_key(TyApp("Box", [TyName("Int")])), content = "A66_111_120_LN73_110_116_ZR")
+}

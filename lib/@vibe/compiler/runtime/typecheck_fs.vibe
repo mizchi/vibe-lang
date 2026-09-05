@@ -7333,15 +7333,23 @@ fn checked_warning_stmts_lexed(input_path: String, source: String, tokens: Array
 /// appear in that same order, so nothing a later statement needs sits behind
 /// the cursor.
 fn unstable_import_offset(tokens: Array[Token], starts: Array[Int], pkg: String, cursor: Array[Int]) -> Int {
-  let want = String::concat("TIdent(", String::concat(pkg, ")"))
   let n = Array::length(starts)
   let mut i = Array::get(cursor, 0)
   while i + 1 < n {
-    if token_to_string(Array::get(tokens, i)) == "TImport" && token_to_string(Array::get(tokens, i + 1)) == want {
-      Array::set(cursor, 0, i + 1)
-      return Array::get(starts, i)
-    } else {
-      ()
+    // #2386: match the token constructors; rendering every token to a
+    // string and comparing the text allocated once per token of every
+    // file on the checker lane.
+    match Array::get(tokens, i) {
+      TImport => match Array::get(tokens, i + 1) {
+        TIdent(name) => if name == pkg {
+          Array::set(cursor, 0, i + 1)
+          return Array::get(starts, i)
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
     }
     i = i + 1
   }
@@ -7502,20 +7510,16 @@ fn unstable_tokens_import_any(tokens: Array[Token], starts: Array[Int]) -> Bool 
   let mut i = 0
   let mut found = false
   while !found && i + 1 < n {
-    if token_to_string(Array::get(tokens, i)) == "TImport" {
-      let next = token_to_string(Array::get(tokens, i + 1))
-      if String::starts_with(next, "TIdent(") && String::ends_with(next, ")") {
-        let name = String::substring(next, 7, String::length(next) - 1)
-        if unstable_package_note(name) != "" {
+    match Array::get(tokens, i) {
+      TImport => match Array::get(tokens, i + 1) {
+        TIdent(name) => if unstable_package_note(name) != "" {
           found = true
         } else {
           ()
-        }
-      } else {
-        ()
-      }
-    } else {
-      ()
+        },
+        _ => ()
+      },
+      _ => ()
     }
     i = i + 1
   }
