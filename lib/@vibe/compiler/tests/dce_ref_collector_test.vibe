@@ -1,0 +1,65 @@
+//# #2386: the DCE reference collector keeps the binders in scope on one
+//# stack (pushed and truncated around each scope) and dedups a definition's
+//# references through a generation-stamped map instead of a fresh copy of
+//# the scope per binder and a scan of the references so far per identifier.
+//# What must not happen: a binder outliving its scope (a later reference to
+//# a same-named global would be taken for the local and the global pruned),
+//# an arm's binder leaking into the next arm, and a generation that is not
+//# advanced between definitions (a name referenced by an earlier definition
+//# would be missing from a later one's references).
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/compiler/core {
+  Stmt, dce_keep_flags
+}
+
+fn keeps(src: String, entry: String, name: String) -> Bool with Exception {
+  let stmts: Array[Stmt] = parse_program(lex(src))
+  let flags = dce_keep_flags(stmts, [entry])
+  let mut kept = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SFnDecl(_, n, _, _, _) => if n == name && Array::get(flags, i) {
+        kept = true
+      } else {
+        ()
+      },
+      SLet(_, _, n, _, _) => if n == name && Array::get(flags, i) {
+        kept = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  kept
+}
+
+test "a local binder does not outlive its scope: the same-named global stays reachable" {
+  // The `let` sits in an `if` branch: nothing but the `let` itself ends its
+  // scope before the global is referenced after the `if`.
+  let src = "fn target() -> Int {\n  1\n}\n\nfn unrelated() -> Int {\n  2\n}\n\nfn main() -> Int {\n  let x = if true {\n    let target = 3\n    target\n  } else {\n    0\n  }\n  x + target()\n}\n"
+  assert_true(keeps(src, "main", "target"))
+  assert_true(!keeps(src, "main", "unrelated"))
+}
+
+test "a match arm's binder does not leak into the next arm" {
+  let src = "fn target() -> Int {\n  1\n}\n\nfn main() -> Int {\n  match Some(2) {\n    Some(target) => target,\n    None => target()\n  }\n}\n"
+  assert_true(keeps(src, "main", "target"))
+}
+
+test "a name referenced by an earlier definition is still a reference of a later one" {
+  let src = "fn helper() -> Int {\n  1\n}\n\nfn a() -> Int {\n  helper()\n}\n\nfn b() -> Int {\n  helper()\n}\n"
+  assert_true(keeps(src, "b", "helper"))
+  assert_true(!keeps(src, "b", "a"))
+}
+
+test "a lambda's parameter shadows only inside the lambda" {
+  let src = "fn target() -> Int {\n  1\n}\n\nfn main() -> Int {\n  let g = (target: Int) -> Int {\n    target\n  }\n  g(1) + target()\n}\n"
+  assert_true(keeps(src, "main", "target"))
+}

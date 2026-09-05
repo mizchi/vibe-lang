@@ -14,10 +14,6 @@ import @vibe/core {
 
 //# Functions
 
-fn clone_arr(arr: Array[String]) -> Array[String] {
-  Array::slice(arr, 0, Array::length(arr))
-}
-
 fn stmt_name(stmt: Stmt) -> Option[String] {
   match stmt {
     SLet(_, _, name, _, _) => Some(name),
@@ -43,16 +39,51 @@ fn dce_array_contains_str(arr: Array[String], s: String) -> Bool {
   search(0)
 }
 
-// `out` and `bound` are deduped/checked by linear scan on purpose: both stay
-// small (refs per def, binders per scope), and a per-def set would cost an
-// allocation per def -- the selfcompile heap KPI gate is tighter than the CPU
-// win. The quadratic scans #1259 removed were the per-queue-item def/reachable
-// lookups below, which are indexed via `def_idx` / `reachable_seen`.
+// #2386: `out` is deduped through ONE process-wide map stamped with a
+// generation per collection (`dce_refs_begin`), so a definition's refs cost
+// no allocation of their own -- the per-def set that #1259 rejected on the
+// selfcompile heap KPI -- and each identifier is one hash probe instead of a
+// scan of every name the definition referenced so far (the compiler's larger
+// bodies reference hundreds). `bound` stays a linear scan: it is the binders
+// in scope, a handful, and since #2386 it is one stack pushed and truncated
+// around each scope rather than a fresh copy per binder (the copy was the
+// allocation, per `let` / arm / lambda of every definition). The quadratic
+// scans #1259 removed were the per-queue-item def/reachable lookups below,
+// which are indexed via `def_idx` / `reachable_seen`.
+let dce_refs_seen: Array[MutMap[String, Int]] = [MutMap::new_string()]
+
+let dce_refs_gen: Array[Int] = [0]
+
+/// Start a new reference collection: names seen under an earlier generation
+/// are pushed again. Bounded for a resident compiler: the map holds every
+/// distinct name ever referenced, so past 65536 it is dropped.
+fn dce_refs_begin() -> Unit {
+  if MutMap::size(Array::get(dce_refs_seen, 0)) > 65536 {
+    Array::set(dce_refs_seen, 0, MutMap::new_string())
+  } else {
+    ()
+  }
+  Array::set(dce_refs_gen, 0, Array::get(dce_refs_gen, 0) + 1)
+}
+
+fn dce_refs_push_once(out: Array[String], name: String) -> Unit {
+  let seen = Array::get(dce_refs_seen, 0)
+  let gen = Array::get(dce_refs_gen, 0)
+  let already = match MutMap::get(seen, name) {
+    Some(stamp) => stamp == gen,
+    None => false
+  }
+  if already {
+    ()
+  } else {
+    MutMap::set(seen, name, gen)
+    Array::push(out, name)
+  }
+}
+
 fn add_ref(out: Array[String], bound: Array[String], name: String) -> Int {
   if not(dce_array_contains_str(bound, name)) {
-    if not(dce_array_contains_str(out, name)) {
-      Array::push(out, name)
-    }
+    dce_refs_push_once(out, name)
   }
   0
 }
@@ -109,10 +140,7 @@ fn collect_wat_callee_refs(callee: Expr, args: Array[Expr], bound: Array[String]
             // $helper))"` calls the fn and reads the param, and the assembler
             // already keeps those apart -- filtering by `bound` here dropped
             // the call edge and DCE then pruned the live helper.
-            let name = Array::get(names, i)
-            if not(dce_array_contains_str(out, name)) {
-              Array::push(out, name)
-            }
+            dce_refs_push_once(out, Array::get(names, i))
             i = i + 1
           }
           0
@@ -192,23 +220,26 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
     },
     ELet(name, val, body, _) => {
       collect_refs_into(val, bound, out)
-      let bound2 = clone_arr(bound)
-      Array::push(bound2, name)
-      collect_refs_into(body, bound2, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_refs_into(body, bound, out)
+      Array::truncate(bound, mark)
       0
     },
     ELetRec(name, val, body) => {
-      let bound2 = clone_arr(bound)
-      Array::push(bound2, name)
-      collect_refs_into(val, bound2, out)
-      collect_refs_into(body, bound2, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_refs_into(val, bound, out)
+      collect_refs_into(body, bound, out)
+      Array::truncate(bound, mark)
       0
     },
     ELetMut(name, val, body, _) => {
       collect_refs_into(val, bound, out)
-      let bound2 = clone_arr(bound)
-      Array::push(bound2, name)
-      collect_refs_into(body, bound2, out)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
+      collect_refs_into(body, bound, out)
+      Array::truncate(bound, mark)
       0
     },
     EAssign(_, val, body) => {
@@ -231,9 +262,10 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, body) = Array::get(arms, i)
-        let bound2 = clone_arr(bound)
-        collect_pat_bindings(pat, bound2)
-        collect_refs_into(body, bound2, out)
+        let mark = Array::length(bound)
+        collect_pat_bindings(pat, bound)
+        collect_refs_into(body, bound, out)
+        Array::truncate(bound, mark)
         i = i + 1
       }
       0
@@ -243,9 +275,10 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, i)
-        let bound2 = clone_arr(bound)
-        collect_pat_bindings(pat, bound2)
-        collect_refs_into(arm_body, bound2, out)
+        let mark = Array::length(bound)
+        collect_pat_bindings(pat, bound)
+        collect_refs_into(arm_body, bound, out)
+        Array::truncate(bound, mark)
         i = i + 1
       }
       0
@@ -256,37 +289,40 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
       0
     },
     ELoop(params, body) => {
-      let bound2 = clone_arr(bound)
+      let mark = Array::length(bound)
       let mut i = 0
       while i < Array::length(params) {
         let (name, init) = Array::get(params, i)
-        collect_refs_into(init, bound2, out)
-        Array::push(bound2, name)
+        collect_refs_into(init, bound, out)
+        Array::push(bound, name)
         i = i + 1
       }
-      collect_refs_into(body, bound2, out)
+      collect_refs_into(body, bound, out)
+      Array::truncate(bound, mark)
       0
     },
     EForIn(name, index_name, iter, body) => {
       collect_refs_into(iter, bound, out)
-      let bound2 = clone_arr(bound)
-      Array::push(bound2, name)
+      let mark = Array::length(bound)
+      Array::push(bound, name)
       match index_name {
-        Some(index_name) => Array::push(bound2, index_name),
+        Some(index_name) => Array::push(bound, index_name),
         None => ()
       }
-      collect_refs_into(body, bound2, out)
+      collect_refs_into(body, bound, out)
+      Array::truncate(bound, mark)
       0
     },
     EFn(_, _, params, _, _, body) => {
-      let bound2 = clone_arr(bound)
+      let mark = Array::length(bound)
       let mut i = 0
       while i < Array::length(params) {
         let (pname, _) = Array::get(params, i)
-        Array::push(bound2, pname)
+        Array::push(bound, pname)
         i = i + 1
       }
-      collect_refs_into(body, bound2, out)
+      collect_refs_into(body, bound, out)
+      Array::truncate(bound, mark)
       0
     },
     EDot(obj, _, _, _) => {
@@ -315,6 +351,7 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
 }
 
 fn collect_refs(expr: Expr, bound: Array[String]) -> Array[String] {
+  dce_refs_begin()
   let out = array_empty()
   collect_refs_into(expr, bound, out)
   out
@@ -398,6 +435,7 @@ export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stm
             // condition refs (requires/ensures execute inside the function
             // after lowering, so helpers they call must stay live).
             SFnDecl(_, _, fn_value, reqs, enss) => {
+              dce_refs_begin()
               let out = array_empty()
               let _ = collect_refs_into(fn_value, empty_bound, out)
               let mut cri = 0
@@ -508,6 +546,7 @@ fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[
           // condition refs (requires/ensures execute inside the function
           // after lowering, so helpers they call must stay live).
           SFnDecl(_, _, fn_value, reqs, enss) => {
+            dce_refs_begin()
             let out = array_empty()
             let _ = collect_refs_into(fn_value, empty_bound, out)
             let mut cri = 0
