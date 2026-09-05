@@ -2113,6 +2113,196 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> I
   }
 }
 
+/// The `md_consume_count(e, n) == 0` question for every name of a body in ONE
+/// walk. `hits[i]` becomes 1 when `names[i]` has any counted consume in `e`
+/// under exactly md_cc_go's rules: a bare callee is invoked, a bare ident at
+/// a borrowed argument position or as a match/handle scrutinee is read, an
+/// interpolation is opaque, everything else is walked. A slot that is 1 on
+/// entry is never queried, so a caller pre-marks the positions it will not
+/// ask about, and the walk stops as soon as no slot is pending. #2386: the
+/// borrow-param inference asks this per parameter of every top-level fn;
+/// one walk per body replaces one per parameter, and the callee mask lookup
+/// (md_borrow_mask_of, most of md_cc_go's cost) runs once per call site
+/// instead of once per parameter. The exact count stays with md_cc_go, whose
+/// callers emit one dup per consume.
+export fn md_consumed_any(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  md_ca_go(e, names, bfns, bmasks, hits)
+}
+
+fn md_ca_pending(hits: Array[Int]) -> Bool {
+  let mut i = 0
+  let mut pending = false
+  while !pending && i < Array::length(hits) {
+    if Array::get(hits, i) == 0 {
+      pending = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  pending
+}
+
+fn md_ca_ident(n: String, names: Array[String], hits: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(names) {
+    if Array::get(hits, i) == 0 && Array::get(names, i) == n {
+      Array::set(hits, i, 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+fn md_ca_list(items: Array[Expr], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    md_ca_go(Array::get(items, i), names, bfns, bmasks, hits)
+    i = i + 1
+  }
+}
+
+fn md_ca_fields(fields: Array[(String, Expr)], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    md_ca_go(v, names, bfns, bmasks, hits)
+    i = i + 1
+  }
+}
+
+fn md_ca_arms(arms: Array[(Pat, Expr)], names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, v) = Array::get(arms, i)
+    md_ca_go(v, names, bfns, bmasks, hits)
+    i = i + 1
+  }
+}
+
+/// Enumerated like md_cc_go (no `_ =>` for the recursive shapes): a new
+/// `Expr` variant is a compile error here, not a silently unscanned subtree.
+fn md_ca_go(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[Int], hits: Array[Int]) -> Unit {
+  if !md_ca_pending(hits) {
+    ()
+  } else {
+    match e {
+      EInt(_) => (),
+      EFloat(_) => (),
+      EString(_) => (),
+      EBool(_) => (),
+      EUnit => (),
+      EStringInterp(_) => (),
+      EIdent(n, _) => md_ca_ident(n, names, hits),
+      ETuple(items) => md_ca_list(items, names, bfns, bmasks, hits),
+      EArray(items) => md_ca_list(items, names, bfns, bmasks, hits),
+      ERecord(_, fields, _) => md_ca_fields(fields, names, bfns, bmasks, hits),
+      EMap(fields) => {
+        let mut i = 0
+        while i < Array::length(fields) {
+          let (_, v) = Array::get(fields, i)
+          md_ca_go(v, names, bfns, bmasks, hits)
+          i = i + 1
+        }
+      },
+      EIf(c, t, el) => {
+        md_ca_go(c, names, bfns, bmasks, hits)
+        md_ca_go(t, names, bfns, bmasks, hits)
+        md_ca_go(el, names, bfns, bmasks, hits)
+      },
+      ELet(_, v, b, _) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ELetRec(_, v, b) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ELetMut(_, v, b, _) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      EAssign(_, v, b) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      EAssignOp(_, _, v, b) => {
+        md_ca_go(v, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ESeq(a, b) => {
+        md_ca_go(a, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      EMatch(s, arms) => {
+        md_ca_arms(arms, names, bfns, bmasks, hits)
+        match s {
+          EIdent(_, _) => (),
+          _ => md_ca_go(s, names, bfns, bmasks, hits)
+        }
+      },
+      EHandle(s, arms) => {
+        md_ca_arms(arms, names, bfns, bmasks, hits)
+        match s {
+          EIdent(_, _) => (),
+          _ => md_ca_go(s, names, bfns, bmasks, hits)
+        }
+      },
+      EWhile(c, b) => {
+        md_ca_go(c, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ELoop(params, b) => {
+        md_ca_go(b, names, bfns, bmasks, hits)
+        md_ca_fields(params, names, bfns, bmasks, hits)
+      },
+      EForIn(_, _, it, b) => {
+        md_ca_go(it, names, bfns, bmasks, hits)
+        md_ca_go(b, names, bfns, bmasks, hits)
+      },
+      ECall(callee, args, _) => {
+        let bmask = match callee {
+          EIdent(f, _) => md_borrow_mask_of(f, bfns, bmasks),
+          _ => 0
+        }
+        match callee {
+          EIdent(_, _) => (),
+          _ => md_ca_go(callee, names, bfns, bmasks, hits)
+        }
+        let mut ri = 0
+        while ri < Array::length(args) {
+          let a = Array::get(args, ri)
+          if bmask_has(bmask, ri) {
+            match a {
+              EIdent(_, _) => (),
+              _ => md_ca_go(a, names, bfns, bmasks, hits)
+            }
+          } else {
+            md_ca_go(a, names, bfns, bmasks, hits)
+          }
+          ri = ri + 1
+        }
+      },
+      EBinOp(_, l, r, _) => {
+        md_ca_go(l, names, bfns, bmasks, hits)
+        md_ca_go(r, names, bfns, bmasks, hits)
+      },
+      EUnaryOp(_, x) => md_ca_go(x, names, bfns, bmasks, hits),
+      EFn(_, _, _, _, _, body) => md_ca_go(body, names, bfns, bmasks, hits),
+      EDot(x, _, _, _) => md_ca_go(x, names, bfns, bmasks, hits),
+      ELabeledArg(_, _, v) => md_ca_go(v, names, bfns, bmasks, hits),
+      EReturn(x) => md_ca_go(x, names, bfns, bmasks, hits),
+      EBreak(opt) => match opt {
+        Some(v) => md_ca_go(v, names, bfns, bmasks, hits),
+        None => ()
+      },
+      EContinue(args) => md_ca_list(args, names, bfns, bmasks, hits),
+      ESpread(x) => md_ca_go(x, names, bfns, bmasks, hits)
+    }
+  }
+}
+
 //# ADR-0091 zero_alloc (Phase 1)
 
 /// Builtins allowed inside a `#zero_alloc` fn. Allocation classification is
@@ -3422,6 +3612,15 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
   }
   let names = array_empty()
   let masks: MutMap[String, Int] = MutMap::new_string()
+  // #2386: both rounds ask "is this parameter consumed anywhere in the
+  // body?" through ONE md_consumed_any walk per body instead of one
+  // md_consume_count walk per parameter. The rows are reused across bodies;
+  // a position a round will not ask about is pre-marked 1 so the walk never
+  // queries it and stops once every asked position has answered.
+  let bp_names: Array[String] = []
+  let bp_hits: Array[Int] = []
+  let bp_no_fns: Array[String] = []
+  let bp_no_masks: Array[Int] = []
   // Source-owned compiler intrinsics need an authoritative entry even when
   // their inferred mask is zero. Keep this as two scalar bits and collect it
   // during the analysis' existing statement pass: no extra compiler-sized
@@ -3457,10 +3656,23 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
           } else {
             bmask_max_param()
           }
+          Array::truncate(bp_names, 0)
+          Array::truncate(bp_hits, 0)
           while pi < lim {
             let (praw, _) = Array::get(fps, pi)
             let pn = bp_param_base_name(praw)
-            if pn != "" && !bmask_has(owned_bits, pi) && md_consume_count(fbody, pn) == 0 && !is_mut_captured_in(fbody, pn) {
+            Array::push(bp_names, pn)
+            Array::push(bp_hits, if pn != "" && !bmask_has(owned_bits, pi) {
+              0
+            } else {
+              1
+            })
+            pi = pi + 1
+          }
+          md_consumed_any(fbody, bp_names, bp_no_fns, bp_no_masks, bp_hits)
+          pi = 0
+          while pi < lim {
+            if Array::get(bp_hits, pi) == 0 && !is_mut_captured_in(fbody, Array::get(bp_names, pi)) {
               mask = mask|(1<<pi)
             } else {
               ()
@@ -3517,10 +3729,23 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
           } else {
             bmask_max_param()
           }
+          Array::truncate(bp_names, 0)
+          Array::truncate(bp_hits, 0)
           while pi < lim {
             let (praw, _) = Array::get(fps, pi)
             let pn = bp_param_base_name(praw)
-            if !bmask_has(mask, pi) && pn != "" && !bmask_has(owned_bits, pi) && md_consume_count_pre(fbody, pn, round0_names, body_masks) == 0 && !is_mut_captured_in(fbody, pn) {
+            Array::push(bp_names, pn)
+            Array::push(bp_hits, if !bmask_has(mask, pi) && pn != "" && !bmask_has(owned_bits, pi) {
+              0
+            } else {
+              1
+            })
+            pi = pi + 1
+          }
+          md_consumed_any(fbody, bp_names, round0_names, body_masks, bp_hits)
+          pi = 0
+          while pi < lim {
+            if Array::get(bp_hits, pi) == 0 && !is_mut_captured_in(fbody, Array::get(bp_names, pi)) {
               mask = mask|(1<<pi)
             } else {
               ()
