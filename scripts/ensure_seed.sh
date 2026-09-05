@@ -13,21 +13,22 @@ set -euo pipefail
 # used correctly when a custom manifest points elsewhere (e.g.
 # scripts/generations.sh build --manifest <alternate>).
 #
-# If the release is not there (a bootstrap bump PR before its
-# `seed-release` run has published the tag), the pinned seed is REBUILT
-# instead of fetched: the manifest's `seed.source_commit` is checked out
-# into a worktree, whose own manifest pins the PREVIOUS published seed, and
-# `scripts/generations.sh build` in that worktree reproduces the candidate
-# (that is the same deterministic stage0 -> stage1 -> stage2 the
-# seed-release workflow performs). The result must match the pinned sha256
-# byte for byte, so this never installs an unpinned or stale artifact; it
-# only removes the window in which every bump gate is red for a missing
-# release (docs/bootstrap.md "Bootstrap bump procedure"). Set
-# VIBE_ENSURE_SEED_NO_REBUILD=1 to keep the fail-fast behavior instead.
-# Any other fetch failure (offline) still fails fast: the rebuild's first
-# step is fetching the previous seed, which fails the same way. CI callers
-# should put an actions/cache step keyed on the seed sha256 ahead of this
-# so a warm runner never needs the network at all.
+# If the release does not exist yet (HTTP 404 on its manifest asset: a
+# bootstrap bump PR before its `seed-release` run has published the tag),
+# the pinned seed is REBUILT instead of fetched: the manifest's
+# `seed.source_commit` is checked out into a worktree, whose own manifest
+# pins the PREVIOUS published seed, and `scripts/generations.sh build` in
+# that worktree reproduces the candidate (the same deterministic stage0 ->
+# stage1 -> stage2 the seed-release workflow performs). The result must
+# match the pinned sha256 byte for byte, so this never installs an unpinned
+# or stale artifact; it only removes the window in which every bump gate is
+# red for a missing release (docs/bootstrap.md "Bootstrap bump procedure").
+# Only that 404 is rebuilt: a release that exists but cannot be fetched or
+# verified (bad manifest, missing asset, sha mismatch) stays fatal, and so
+# does being offline (the probe cannot answer 404). Set
+# VIBE_ENSURE_SEED_NO_REBUILD=1 to keep the fail-fast behavior for the 404
+# too. CI callers should put an actions/cache step keyed on the seed sha256
+# ahead of this so a warm runner never needs the network at all.
 #
 # Usage: scripts/ensure_seed.sh [--manifest PATH]
 # Exits 0 (silently, after printing a one-line "already present" note)
@@ -139,10 +140,13 @@ rebuild_from_source_commit() {
     die "source_commit $short pins '$prior_tag' itself; a rebuild needs a source commit whose manifest pins the previous published seed (publish release $SEED_TAG, or fix seed.source_commit)"
   fi
   # The worktree's own ensure_seed fetches $prior_tag; never recurse into a
-  # second rebuild from there. --skip-run-validation: the per-stage sample
-  # run needs wasmtime, which CI jobs install after this step (or never); the
-  # sha256 pin below is the validation of the rebuilt artifact.
-  if ! (cd "$wt" && VIBE_ENSURE_SEED_NO_REBUILD=1 bash scripts/generations.sh build --skip-run-validation --out-dir "$gen" >&2); then
+  # second rebuild from there. VIBE_PROJECT_ROOT must name the worktree: an
+  # exported root (the synthetic/policy runners set one) would otherwise make
+  # generations.sh build this checkout, whose manifest pins the missing seed.
+  # --skip-run-validation: the per-stage sample run needs wasmtime, which CI
+  # jobs install after this step (or never); the sha256 pin below is the
+  # validation of the rebuilt artifact.
+  if ! (cd "$wt" && VIBE_PROJECT_ROOT="$wt" VIBE_ENSURE_SEED_NO_REBUILD=1 bash scripts/generations.sh build --skip-run-validation --out-dir "$gen" >&2); then
     die "rebuilding seed $SEED_TAG from source_commit $short failed (log above)"
   fi
   [ -f "$gen/stage2.wasm" ] || die "rebuild of seed $SEED_TAG produced no stage2.wasm in $gen"
@@ -157,17 +161,31 @@ cleanup_rebuild_dir() {
   fi
 }
 
+# HTTP status of the release's manifest asset (fetch_compiler.sh's first
+# download, same default URL), probed with a one-byte GET range (HEAD on the
+# redirected asset answers 401 even when it exists; measured 2026-09-05:
+# published tag 206, missing tag 404). 404 = the release does not exist;
+# anything else (206/200, 401, 000 offline) is not a reason to rebuild.
+release_manifest_status() {
+  local base="https://github.com/mizchi/vibe-lang/releases/download/$SEED_TAG"
+  curl -sL --max-time 30 -r 0-0 -o /dev/null -w '%{http_code}' "$base/release-manifest.json" 2>/dev/null || printf '000'
+}
+
 fetch_out="$(mktemp -d)"
 trap 'rm -rf "$fetch_out"; cleanup_rebuild_dir' EXIT
-if bash "$SCRIPT_DIR/fetch_compiler.sh" "$SEED_TAG" --out-dir "$fetch_out" --no-module-source; then
+release_status="$(release_manifest_status)"
+if [ "$release_status" = "404" ]; then
+  if [ "${VIBE_ENSURE_SEED_NO_REBUILD:-0}" = "1" ]; then
+    die "release $SEED_TAG does not exist (HTTP 404) and VIBE_ENSURE_SEED_NO_REBUILD=1 forbids rebuilding it from seed.source_commit"
+  fi
+  rebuild_from_source_commit
+else
+  bash "$SCRIPT_DIR/fetch_compiler.sh" "$SEED_TAG" --out-dir "$fetch_out" --no-module-source || \
+    die "fetching release $SEED_TAG failed (manifest probe: HTTP $release_status); only a release that does not exist (404) is rebuilt from source, a published one that cannot be fetched or verified is fatal"
   fetched_wasm="$(find "$fetch_out" -maxdepth 1 -name '*.wasm' | head -1)"
   [ -n "$fetched_wasm" ] || die "fetch_compiler.sh did not produce a .wasm asset for tag $SEED_TAG"
   mkdir -p "$(dirname "$SEED_ARTIFACT_PATH")"
   cp "$fetched_wasm" "$SEED_ARTIFACT_PATH"
-elif [ "${VIBE_ENSURE_SEED_NO_REBUILD:-0}" = "1" ]; then
-  die "release $SEED_TAG could not be fetched and VIBE_ENSURE_SEED_NO_REBUILD=1 forbids rebuilding it from seed.source_commit"
-else
-  rebuild_from_source_commit
 fi
 
 actual="$(sha256_file "$SEED_ARTIFACT_PATH")"
