@@ -4156,34 +4156,28 @@ fn joined_names(names: Array[String], sep: String) -> String {
 
 /// Is the recorded formal `vid`, spelled `name`, hidden at this site by an
 /// inner binder of the same spelling? The environment's binding for `name`
-/// is the innermost one; if it does not resolve to `vid`'s variable, the
-/// offending formal is an enclosing declaration's, and the edit the message
-/// names must go there (Codex on #2529: bounding the visible inner `T` would
-/// change nothing).
-fn eq_formal_is_shadowed(vid: Int, name: String, s: Subst, env: TypeEnv) -> Bool {
-  if vid < 0 {
-    // A rigid HKT formal: hidden when the visible binder of that name is no
-    // longer its own `#hktformal.` spelling (an inner `[F]` over an outer
-    // `[F[_]]`).
-    match env_lookup(env, name) {
-      Some(t) => match subst_apply(s, t) {
-        CtNamed(n, _) => n != String::concat("#hktformal.", name),
-        _ => true
+/// is the innermost binder's OWN variable (the `EFn` header binds the
+/// spelling to the fresh variable it allocated), so ownership is decided by
+/// comparing that variable's id with `vid` -- never through the current
+/// substitution: a bare `x == y` across an outer `T` and an inner `T` has
+/// already unified the two, and their shared representative would make both
+/// binders look like the visible one (Codex on #2530). If the offending
+/// formal is not the visible binder, it belongs to an enclosing declaration,
+/// and the edit the message names must go there.
+fn eq_formal_is_shadowed(vid: Int, name: String, env: TypeEnv) -> Bool {
+  match env_lookup(env, name) {
+    Some(t) => match t {
+      CtVar(id_env) => id_env != vid,
+      // The visible binder is the rigid HKT spelling: it IS the formal when
+      // `vid` is the rigid entry (-1), and hides any variable-bound one.
+      CtNamed(n, _) => if vid < 0 {
+        n != String::concat("#hktformal.", name)
+      } else {
+        true
       },
-      None => false
-    }
-  } else {
-    let own = match subst_apply(s, CtVar(vid)) {
-      CtVar(r) => r,
-      _ => 0 - 1
-    }
-    match env_lookup(env, name) {
-      Some(t) => match subst_apply(s, t) {
-        CtVar(r) => r != own && r != vid,
-        _ => true
-      },
-      None => false
-    }
+      _ => true
+    },
+    None => false
   }
 }
 
@@ -4228,7 +4222,7 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
     } else {
       eq_formal_arity_for_vid(vid)
     }
-    let shadowed = eq_formal_is_shadowed(vid, name, s, env)
+    let shadowed = eq_formal_is_shadowed(vid, name, env)
     let dup = eq_formals_name_count(formals, name) > 1
     let qual = if shadowed {
       " on the enclosing declaration"
@@ -4259,7 +4253,7 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
   }
   let params = if n == 1 {
     let (vid0, name0) = Array::get(formals, 0)
-    if eq_formal_is_shadowed(vid0, name0, s, env) {
+    if eq_formal_is_shadowed(vid0, name0, env) {
       String::concat("the type parameter `", String::concat(name0, String::concat("` of an enclosing declaration has no `Eq` bound (an inner binder also spelled `", String::concat(name0, "` shadows it here, so the bound belongs on the outer one)"))))
     } else {
       String::concat("the type parameter `", String::concat(name0, "` has no `Eq` bound"))
