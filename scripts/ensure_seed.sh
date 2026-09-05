@@ -136,8 +136,10 @@ rebuild_from_source_commit() {
     die "source_commit $short pins '$prior_tag' itself; a rebuild needs a source commit whose manifest pins the previous published seed (publish release $SEED_TAG, or fix seed.source_commit)"
   fi
   # The worktree's own ensure_seed fetches $prior_tag; never recurse into a
-  # second rebuild from there.
-  if ! (cd "$wt" && VIBE_ENSURE_SEED_NO_REBUILD=1 bash scripts/generations.sh build --out-dir "$gen" >&2); then
+  # second rebuild from there. --skip-run-validation: the per-stage sample
+  # run needs wasmtime, which CI jobs install after this step (or never); the
+  # sha256 pin below is the validation of the rebuilt artifact.
+  if ! (cd "$wt" && VIBE_ENSURE_SEED_NO_REBUILD=1 bash scripts/generations.sh build --skip-run-validation --out-dir "$gen" >&2); then
     git -C "$PROJECT_ROOT" worktree remove --force "$wt" || true
     die "rebuilding seed $SEED_TAG from source_commit $short failed (log above)"
   fi
