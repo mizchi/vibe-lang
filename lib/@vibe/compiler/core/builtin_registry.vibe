@@ -15,6 +15,10 @@ import @vibe/core {
   array_empty
 }
 
+import ./sorted_index.vibe {
+  bsearch_leftmost, sort_perm_by_names
+}
+
 //# Functions
 
 // #415: the central declarative registry of func-table builtins across
@@ -730,17 +734,52 @@ export fn registry_builtin_param_type(name: String, i: Int) -> Option[Type] {
 /// B-2: the checker-facing lookup, consulted FIRST by
 /// checker/builtins.vibe::lookup_builtin. Only checker_visible rows resolve;
 /// codegen-internal names stay invisible to user code.
-export fn lookup_registry_builtin(name: String) -> Option[Type] {
-  let rows = builtin_registry_typed()
-  let mut i = 0
-  let mut found = None
-  while i < Array::length(rows) {
-    let (rname, ty, _, _, visible) = Array::get(rows, i)
-    if rname == name && visible {
-      found = Some(ty)
-      i = Array::length(rows)
-    } else {
+// #2386: a sorted view of the registry's names with the row each slot came
+// from, built once per process next to the erased rows (the registry is a
+// constant). lookup_registry_builtin used to scan every row per query --
+// the checker, the contract engine and the evidence pass ask it per call
+// site or per declaration -- and now binary-searches the view. The sort is
+// stable and the search leftmost, so the first visible row of a name wins
+// exactly as the scan answered.
+let registry_typed_sorted: Array[String] = []
+
+let registry_typed_sorted_pos: Array[Int] = []
+
+fn registry_typed_index() -> Unit {
+  if Array::length(registry_typed_sorted) == 0 {
+    let rows = builtin_registry_typed()
+    let names = array_empty()
+    let mut i = 0
+    while i < Array::length(rows) {
+      let (rname, _, _, _, _) = Array::get(rows, i)
+      Array::push(names, rname)
       i = i + 1
+    }
+    let perm = sort_perm_by_names(names)
+    i = 0
+    while i < Array::length(perm) {
+      let row = Array::get(perm, i)
+      Array::push(registry_typed_sorted, Array::get(names, row))
+      Array::push(registry_typed_sorted_pos, row)
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+export fn lookup_registry_builtin(name: String) -> Option[Type] {
+  registry_typed_index()
+  let rows = builtin_registry_typed()
+  let mut slot = bsearch_leftmost(registry_typed_sorted, name)
+  let mut found = None
+  while slot >= 0 && slot < Array::length(registry_typed_sorted) && Array::get(registry_typed_sorted, slot) == name {
+    let (_, ty, _, _, visible) = Array::get(rows, Array::get(registry_typed_sorted_pos, slot))
+    if visible {
+      found = Some(ty)
+      slot = -1
+    } else {
+      slot = slot + 1
     }
   }
   found

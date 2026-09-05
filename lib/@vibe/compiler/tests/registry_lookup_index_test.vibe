@@ -1,0 +1,54 @@
+import @vibe/compiler/core {
+  Type, builtin_registry_typed, lookup_registry_builtin, type_to_string
+}
+
+// #2386: lookup_registry_builtin answers from a sorted view of the registry
+// instead of scanning every row. It must give the scan's answer for every
+// registered name (the first VISIBLE row of that name) and None for a name
+// the registry does not hold.
+
+fn scan_reference(name: String) -> Option[Type] {
+  let rows = builtin_registry_typed()
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(rows) {
+    let (rname, ty, _, _, visible) = Array::get(rows, i)
+    if rname == name && visible {
+      found = Some(ty)
+      i = Array::length(rows)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn render(answer: Option[Type]) -> String {
+  match answer {
+    Some(ty) => type_to_string(ty),
+    None => "<none>"
+  }
+}
+
+test "every registered name answers exactly like the scan" {
+  let rows = builtin_registry_typed()
+  let mut i = 0
+  let mut disagreements: Array[String] = []
+  while i < Array::length(rows) {
+    let (rname, _, _, _, _) = Array::get(rows, i)
+    if render(lookup_registry_builtin(rname)) != render(scan_reference(rname)) {
+      Array::push(disagreements, rname)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(disagreements, content = "[]")
+  inspect(Array::length(rows) > 100, content = "true")
+}
+
+test "a known builtin answers and an unknown name does not" {
+  inspect(render(lookup_registry_builtin("Array::length")), content = "(Array[?]) -> Int")
+  inspect(render(lookup_registry_builtin("no::such_builtin")), content = "<none>")
+  inspect(render(lookup_registry_builtin("")), content = "<none>")
+}
