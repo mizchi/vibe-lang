@@ -36,7 +36,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import @vibe/compiler/syntax {
-  lex, lex_with_offsets, offset_to_line_col, parse_program, parse_program_located
+  cfg_ambient_flags_csv, lex, lex_with_offsets, offset_to_line_col, parse_program, parse_program_located
 }
 import @vibe/compiler/contract {
   classify_contract_stmts, contract_facade_marker, extract_package_version, extract_require_pins, parse_contract_program
@@ -515,7 +515,8 @@ export fn merge_impl_raws_dedupe(explicit: Array[String], discovered: Array[Stri
 /// `parse_program_located` pair under the identical `<path>: <msg>` error
 /// wrapping, so one answer serves both.
 ///
-/// Keyed by path, and each path keeps every source text it was asked with:
+/// Keyed by path, and each path keeps every (source text, ambient `#cfg`
+/// set) it was asked with:
 /// a same-path re-ingest with different text is a real shape (#897's vpkg
 /// shared-import prefix marker), and the text is compared in full -- a
 /// compare is far cheaper than the parse it guards, and a fingerprint would
@@ -545,6 +546,13 @@ let located_parse_memo_stmts: Array[MutMap[String, Array[Array[Stmt]]]] = [
   MutMap::new_string()
 ]
 
+/// Per version: the ambient `#cfg` set the text was parsed under. The parser
+/// keeps or drops `#cfg`-gated statements by that set, so the same text under
+/// another set is another parse (Codex review on #2520).
+let located_parse_memo_cfgs: Array[MutMap[String, Array[String]]] = [
+  MutMap::new_string()
+]
+
 let located_parse_memo_size: Array[Int] = [0]
 
 let located_parse_memo_ran_parser: Array[Bool] = [false]
@@ -571,7 +579,8 @@ fn located_parse_consumed_versions(memo: MutMap[String, Array[Bool]], path: Stri
 /// once its parse succeeded, so a throwing parse is asked about again.
 export fn parse_program_located_shared_semantic_pending(path: String, source: String) -> Bool {
   let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
-  let hit = located_parse_version_index(seen_sources, source)
+  let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
+  let hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv())
   if hit < 0 {
     true
   } else {
@@ -586,7 +595,8 @@ export fn parse_program_located_shared_semantic_pending(path: String, source: St
 
 export fn parse_program_located_shared_mark_semantic(path: String, source: String) -> Unit {
   let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
-  let hit = located_parse_version_index(seen_sources, source)
+  let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
+  let hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv())
   if hit >= 0 {
     let flags = located_parse_consumed_versions(Array::get(located_parse_memo_consumed, 0), path)
     if hit < Array::length(flags) {
@@ -619,11 +629,11 @@ fn located_parse_stmt_versions(memo: MutMap[String, Array[Array[Stmt]]], path: S
   }
 }
 
-fn located_parse_version_index(seen_sources: Array[String], source: String) -> Int {
+fn located_parse_version_index(seen_sources: Array[String], seen_cfgs: Array[String], source: String, cfg: String) -> Int {
   let mut hit = -1
   let mut vi = 0
   while vi < Array::length(seen_sources) && hit < 0 {
-    if Array::get(seen_sources, vi) == source {
+    if Array::get(seen_sources, vi) == source && vi < Array::length(seen_cfgs) && Array::get(seen_cfgs, vi) == cfg {
       hit = vi
     } else {
       ()
@@ -647,6 +657,7 @@ fn located_parse_uncached(path: String, source: String) -> Array[Stmt] with Exce
 fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Unit {
   if Array::get(located_parse_memo_size, 0) >= 1024 {
     Array::set(located_parse_memo_sources, 0, MutMap::new_string())
+    Array::set(located_parse_memo_cfgs, 0, MutMap::new_string())
     Array::set(located_parse_memo_stmts, 0, MutMap::new_string())
     Array::set(located_parse_memo_consumed, 0, MutMap::new_string())
     Array::set(located_parse_memo_size, 0, 0)
@@ -654,16 +665,19 @@ fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Un
     ()
   }
   let sources_now = Array::get(located_parse_memo_sources, 0)
+  let cfgs_now = Array::get(located_parse_memo_cfgs, 0)
   let stmts_now = Array::get(located_parse_memo_stmts, 0)
   let consumed_now = Array::get(located_parse_memo_consumed, 0)
   if MutMap::has(sources_now, path) {
     ()
   } else {
     MutMap::set(sources_now, path, array_empty())
+    MutMap::set(cfgs_now, path, array_empty())
     MutMap::set(stmts_now, path, array_empty())
     MutMap::set(consumed_now, path, array_empty())
   }
   Array::push(located_parse_versions(sources_now, path), source)
+  Array::push(located_parse_versions(cfgs_now, path), cfg_ambient_flags_csv())
   Array::push(located_parse_stmt_versions(stmts_now, path), parsed)
   Array::push(located_parse_consumed_versions(consumed_now, path), false)
   Array::set(located_parse_memo_size, 0, Array::get(located_parse_memo_size, 0) + 1)
@@ -671,7 +685,8 @@ fn located_parse_record(path: String, source: String, parsed: Array[Stmt]) -> Un
 
 export fn parse_program_located_shared(path: String, source: String) -> Array[Stmt] with Exception {
   let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
-  let hit = located_parse_version_index(seen_sources, source)
+  let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
+  let hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv())
   if hit >= 0 {
     Array::set(located_parse_memo_ran_parser, 0, false)
     let cached = Array::get(located_parse_stmt_versions(Array::get(located_parse_memo_stmts, 0), path), hit)

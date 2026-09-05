@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, lex_with_offsets, parse_program, parse_program_preserving
+  cfg_ambient_flags_csv, lex, lex_with_offsets, parse_program, parse_program_preserving
 }
 
 import @vibe/core {
@@ -112,9 +112,21 @@ let exported_type_params_memo: MutMap[String, (Array[(String, Int)], Array[Strin
 
 let exported_type_params_read_log: Array[(String, Int)] = []
 
+/// The ambient `#cfg` set each recorded answer was parsed under: the parsers
+/// keep or drop `#cfg`-gated declarations by that set, so an answer is only
+/// fresh under the set it was made with (Codex review on #2520).
+let exported_type_params_memo_cfg: MutMap[String, String] = MutMap::new_string()
+
 let exported_type_params_resolve_log: Array[(String, String, String)] = []
 
 let exported_type_params_cycle_hits: Array[Int] = [0]
+
+fn exported_type_params_entry_cfg_matches(path: String, cfg: String) -> Bool {
+  match MutMap::get(exported_type_params_memo_cfg, path) {
+    Some(recorded) => recorded == cfg,
+    None => false
+  }
+}
 
 /// A recorded answer is fresh when every file it read has the stat token it
 /// was read under and every path resolution it made answers the same. A plain
@@ -166,7 +178,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
   let fresh = match MutMap::get(exported_type_params_memo, path) {
     Some(entry) => {
       let (reads, _, _, resolves) = entry
-      if exported_type_params_entry_fresh(reads, resolves) {
+      if exported_type_params_entry_cfg_matches(path, cfg_ambient_flags_csv()) && exported_type_params_entry_fresh(reads, resolves) {
         Some(entry)
       } else {
         None
@@ -203,6 +215,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
       let resolves = Array::slice(exported_type_params_resolve_log, resolve_mark, Array::length(exported_type_params_resolve_log))
       if Array::get(exported_type_params_cycle_hits, 0) == hits_before && Array::length(reads) == Array::length(fps) {
         MutMap::set(exported_type_params_memo, path, (reads, fps, out, resolves))
+        MutMap::set(exported_type_params_memo_cfg, path, cfg_ambient_flags_csv())
       } else {
         ()
       }

@@ -26,6 +26,10 @@ import @vibe/compiler/runtime {
   parse_program_with_path
 }
 
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
 fn string_to_bytes(s: String) -> Bytes {
   let out = array_empty()
   let len = String::length(s)
@@ -110,4 +114,23 @@ test "the header pass and the module parse share one parse" {
   let stmts: Array[Stmt] = parse_program_with_path(path, source)
   assert_eq(Array::length(stmts), 1)
   assert_true(!parse_program_located_shared_ran_parser())
+}
+
+test "the same text under another ambient #cfg set is another parse" {
+  let path = "/tmp/vibe_compiler_located_parse_memo/cfg.vibe"
+  let source = "export let a: Int = 1\n#cfg(dev)\nexport let b: Int = 2\n"
+  set_cfg_ambient_flags([])
+  assert_eq(Array::length(parse_program_located_shared(path, source)), 1)
+  // The set changes: the gated statement is kept, and it is a fresh parse.
+  set_cfg_ambient_flags(["dev"])
+  assert_eq(Array::length(parse_program_located_shared(path, source)), 2)
+  assert_true(parse_program_located_shared_ran_parser())
+  // Each set keeps its own answer.
+  set_cfg_ambient_flags([])
+  assert_eq(Array::length(parse_program_located_shared(path, source)), 1)
+  assert_true(!parse_program_located_shared_ran_parser())
+  set_cfg_ambient_flags(["dev"])
+  assert_eq(Array::length(parse_program_located_shared(path, source)), 2)
+  assert_true(!parse_program_located_shared_ran_parser())
+  set_cfg_ambient_flags([])
 }

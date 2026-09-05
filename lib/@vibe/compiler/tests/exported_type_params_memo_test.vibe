@@ -8,7 +8,11 @@
 //# re-export chain is observed even though no file that was read changed.
 
 import @vibe/compiler/cache {
-  compact_string_fingerprint, persistent_module_header_cache_path
+  compact_string_fingerprint, persistent_module_header_cache_path, set_persistent_cache_cfg_flags
+}
+
+import @vibe/parser {
+  set_cfg_ambient_flags
 }
 
 import @vibe/core {
@@ -143,4 +147,35 @@ test "resolution 3: the directory wins again once the file is gone" {
   remove_file_if_exists(resolution_shadow())
   restamp_parent(resolution_base_dir, String::concat(Array::get(resolution_stamp, 0), "-c"))
   assert_eq(ingest_error(String::concat(resolution_base_dir, "/parent/index.vpkg")), "")
+}
+
+/// What `configure_cfg_flags` does per CLI invocation: the parser's ambient
+/// set and the persistent caches' namespace move together.
+fn switch_cfg(flags: Array[String]) -> Unit {
+  set_cfg_ambient_flags(flags)
+  set_persistent_cache_cfg_flags(String::join(flags, ","))
+}
+
+test "an answer made under one ambient #cfg set does not serve another" {
+  let base_dir = "/tmp/vibe_compiler_exported_type_params_memo_cfg"
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(parent_dir)
+  // A plain re-export target (a contract file refuses `#cfg`) that declares
+  // `Container` only under `dev`.
+  write_cold(String::concat(base_dir, "/types.vibe"), "#cfg(dev)\nexport type Container[F[_]] = F[Int]\n")
+  let stamp = __to_string(Profiler::now_us())
+  write_cold(String::concat(parent_dir, "/index.vpkg"), String::concat("// run ", String::concat(stamp, "\nopaque type Container[F[_]]\n")))
+  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../types.vibe { Container }\n")
+  let contract_path = String::concat(parent_dir, "/index.vpkg")
+  switch_cfg(["dev"])
+  let under_dev = ingest_error(contract_path)
+  // Without `dev` the re-export finds no `Container`; the answer recorded
+  // under `dev` must not say otherwise. The parent is re-stamped so the
+  // persistent facade row (namespaced by the set anyway) does not answer.
+  switch_cfg([])
+  restamp_parent(base_dir, String::concat(stamp, "-b"))
+  let without_dev = ingest_error(contract_path)
+  switch_cfg([])
+  assert_eq(under_dev, "")
+  assert_true(String::contains(without_dev, "has no implementation"))
 }
