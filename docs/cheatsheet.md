@@ -469,6 +469,29 @@ return, an `Option[Array[T]]` payload, a nested array reached through a name
 and `Array[Float]` all get the same structural comparison. An erased type
 variable (`[T: Eq]`) uses the `Eq` witness it was handed.
 
+**The bound is required** (#2474). A generic body is lowered once for every
+instantiation, so `==` / `!=` on an operand whose type mentions a type
+parameter with no `Eq` bound — bare `T`, `Option[T]`, `(T, Int)`,
+`Array[T]` — has no comparator to reach and used to answer by reference
+identity for an aggregate (`same_some(Pt::{ v: 1 }, Pt::{ v: 1 })` was
+`false` while `same_some(1, 1)` was `true`). The checker now rejects the
+site and names the edit; `Ord` alone is not an `Eq` bound:
+
+```vibe skip
+// rejected: `==` compares two values of type `Option[T]`, but the type
+// parameter `T` has no `Eq` bound, so they cannot be compared by content
+// here; declare the bound (`[T: Eq]`) or compare at a concrete type
+fn same_some[T](x: T, y: T) -> Bool {
+  Some(x) == Some(y)
+}
+```
+
+```vibe
+fn same_some[T: Eq](x: T, y: T) -> Bool {
+  Some(x) == Some(y)
+}
+```
+
 An unannotated `let xs = []` is structural too **when the pushed value
 describes itself** (#2157, narrowed by #2192). The element type comes from the
 `Array::push(xs, v)` calls in the binding's own scope, and `v` is read from its

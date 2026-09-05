@@ -3868,6 +3868,178 @@ export fn reset_return_provenance_index() -> Unit {
   Array::set(return_provenance_index, 0, MutMap::new_string())
 }
 
+/// #2474 (a): the type-parameter variables bound so far in this check --
+/// `(var id, formal name)` for every `[T]` an `EFn` header introduced. A plain
+/// formal is a unification variable inside its body (#2130), so at a `==`
+/// site nothing else distinguishes "the erased `T` of this function" from an
+/// ordinary not-yet-solved inference variable (`[] == []`). The former is what
+/// `==` cannot compare by content once lowered (one lowering serves every
+/// instantiation, so the raw compare answers by reference identity for an
+/// aggregate -- #2474); the latter is the untyped-empty channel's business.
+/// Reset per check with the other per-run tables; variable ids restart with
+/// the counter, so a stale row would alias a fresh variable.
+let eq_formal_vars: Array[(Int, String)] = []
+
+export fn reset_eq_formal_vars() -> Unit {
+  Array::truncate(eq_formal_vars, 0)
+}
+
+/// A `__Vfp_`-spelled formal is the desugar's re-spelling of a user formal
+/// inside a synthesized helper (`scope_formal_mark_prefix`,
+/// normalize/desugar_trait_dict.vibe -- the `__arr_equals__` helper a generic
+/// `Array[T]` comparison or a derived `equals` expands to). Those helpers
+/// compare elements with a raw `==` by construction, and on the lane that
+/// desugars before it checks (the single-source compile) the checker sees
+/// them; the user's own site was already judged where it was written, so the
+/// synthesized copy is not recorded and cannot be reported.
+fn record_eq_formal_var(vid: Int, name: String) -> Unit {
+  if String::starts_with(name, "__Vfp_") {
+    ()
+  } else {
+    Array::push(eq_formal_vars, (vid, name))
+  }
+}
+
+fn bounds_include_eq(bounds: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bounds) {
+    if trait_ref_name(Array::get(bounds, i)) == "Eq" {
+      found = true
+      i = Array::length(bounds)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The recorded formals that `id` stands for under `s` -- `id` itself, or a
+/// formal whose variable unify has since bound to `id` (unify picks a
+/// representative in either direction, so `fn f[T](x: T) { let y = g(); y == x }`
+/// may leave `y`'s variable as the survivor with `T` pointing at it). The
+/// `Eq` bound is read off both the formal's own variable and the survivor:
+/// `[T: Eq]` records its bound on `T`'s id, and `rigid_trait_bound_binop`
+/// (order / `+`) may have transferred one onto the survivor.
+fn eq_formal_names_for_var(id: Int, s: Subst, out: Array[String]) -> Unit {
+  let rep_bounded = bounds_include_eq(subst_bounds_for(s, id))
+  let mut i = 0
+  while i < Array::length(eq_formal_vars) {
+    let (vid, name) = Array::get(eq_formal_vars, i)
+    let stands_for = if vid == id {
+      true
+    } else {
+      match subst_apply(s, CtVar(vid)) {
+        CtVar(rid) => rid == id,
+        _ => false
+      }
+    }
+    if stands_for && !rep_bounded && !bounds_include_eq(subst_bounds_for(s, vid)) && !string_array_has(out, name) {
+      Array::push(out, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// Collect (by name) every type parameter `ty` mentions that carries no `Eq`
+/// bound, walking the shapes a comparator would have to descend: containers,
+/// tuples, applied heads, and the rigid `#hktformal.` spelling an HKT-related
+/// formal takes. A function type never compares, so it is not descended.
+fn eq_unbounded_formals_in(ty: Type, s: Subst, out: Array[String]) -> Unit {
+  match ty {
+    CtVar(id) => eq_formal_names_for_var(id, s, out),
+    CtNamed(n, args) => {
+      if String::starts_with(n, "#hktformal.") {
+        let fname = String::substring(n, 11, String::length(n))
+        if !string_array_has(out, fname) {
+          Array::push(out, fname)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      let mut i = 0
+      while i < Array::length(args) {
+        eq_unbounded_formals_in(Array::get(args, i), s, out)
+        i = i + 1
+      }
+    },
+    CtArray(e) => eq_unbounded_formals_in(e, s, out),
+    CtOption(e) => eq_unbounded_formals_in(e, s, out),
+    CtTuple(items) => {
+      let mut i = 0
+      while i < Array::length(items) {
+        eq_unbounded_formals_in(Array::get(items, i), s, out)
+        i = i + 1
+      }
+    },
+    CtApplied(head, args) => {
+      eq_unbounded_formals_in(head, s, out)
+      let mut i = 0
+      while i < Array::length(args) {
+        eq_unbounded_formals_in(Array::get(args, i), s, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Render `ty` with every still-unsolved recorded formal spelled by its source
+/// name (`Option[T]`, not `Option[?t4]`). Only unsolved formals are rebound:
+/// one that a local annotation already instantiated must keep printing as
+/// what it became.
+fn eq_formal_display_type(ty: Type, s: Subst) -> String {
+  let mut ds = s
+  let mut i = 0
+  while i < Array::length(eq_formal_vars) {
+    let (vid, name) = Array::get(eq_formal_vars, i)
+    match subst_apply(s, CtVar(vid)) {
+      CtVar(rid) => {
+        ds = SubstBind(rid, CtNamed(name, array_empty()), ds)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  type_to_string(subst_apply(ds, ty))
+}
+
+fn joined_names(names: Array[String], sep: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(names) {
+    out = if i == 0 {
+      Array::get(names, i)
+    } else {
+      String::concat(out, String::concat(sep, Array::get(names, i)))
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2474 (a): the diagnostic for `==` / `!=` on an operand type that mentions
+/// a type parameter with no `Eq` bound. Leads with the edit: the bound, or a
+/// concrete type. Measured before this check existed, every aggregate
+/// instantiation of such a site (`Double`, `Array`, tuple, struct, enum,
+/// `Option`, `Bytes`) answered `false` for equal values while `Int` / `String`
+/// answered correctly -- a silent wrong answer that depended on the caller.
+fn eq_unbounded_formal_msg(op: String, resolved: Type, names: Array[String], s: Subst, off: Int) -> String {
+  let bound_spelling = joined_names(for n in names {
+    String::concat(n, ": Eq")
+  }, ", ")
+  let params = if Array::length(names) == 1 {
+    String::concat("the type parameter `", String::concat(Array::get(names, 0), "` has no `Eq` bound"))
+  } else {
+    String::concat("the type parameters `", String::concat(joined_names(names, "`, `"), "` have no `Eq` bound"))
+  }
+  String::concat("`", String::concat(op, String::concat("` compares two values of type `", String::concat(eq_formal_display_type(resolved, s), String::concat("`, but ", String::concat(params, String::concat(", so they cannot be compared by content here; declare the bound (`[", String::concat(bound_spelling, String::concat("]`) or compare at a concrete type", off_marker(off))))))))))
+}
+
 fn mark_return_provenance_written(id: Int) -> Unit {
   MutMap::set(Array::get(return_provenance_index, 0), __to_string(return_provenance_key(id)), 1)
 }
@@ -6638,7 +6810,21 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
   }
   else if is_equality_binop(op) {
     match unify(left_ty, right_ty, s) {
-      Some(s1) => (CtBool, s1),
+      Some(s1) => {
+        // #2474 (a): a formal with no `Eq` bound cannot be compared by
+        // content once the body is lowered (one lowering serves every
+        // instantiation), so refuse it here rather than answer by reference
+        // identity for an aggregate at run time.
+        let eq_resolved = subst_apply(s1, left_ty)
+        let unbounded = array_empty()
+        eq_unbounded_formals_in(eq_resolved, s1, unbounded)
+        if Array::length(unbounded) > 0 {
+          Array::push(errors, eq_unbounded_formal_msg(op, eq_resolved, unbounded, s1, off))
+        } else {
+          ()
+        }
+        (CtBool, s1)
+      },
       None => {
         // Tolerate unresolved NOMINAL operands: a generic `[T]` callee's
         // result reaches here as a rigid CtNamed type param when call-site
@@ -11736,6 +11922,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           (tv, nc) => {
             let vid = nc - 1
             Array::push(tparam_ids, vid)
+            record_eq_formal_var(vid, tpname)
             let tblen = Array::length(tbounds)
             let mut bounds = array_empty()
             let mut tbi = 0

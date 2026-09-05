@@ -305,10 +305,10 @@ marker-trait impl on a container therefore **is declarable but is not
 honoured as a bound** — passing an `Array` to a `[T: Eq]` parameter is
 rejected at check time, with a diagnostic that says the impl exists and why
 it was refused (`` no impl `Eq` for `Array[Int]` ``). An UNBOUNDED formal
-(`fn f[T](x: Array[T], y: Array[T]) { x == y }`) has no witness either way;
-measured (2026-08-24), it never answers by identity — a comparison it cannot
-resolve structurally traps at run time, and a length/element difference
-answers `false`. Give the trait a method and use a generic impl
+(`fn f[T](x: Array[T], y: Array[T]) { x == y }`) has no witness either way,
+so the checker rejects the comparison (#2474): `` `==` compares two values of
+type `Array[T]`, but the type parameter `T` has no `Eq` bound `` — declare
+`[T: Eq]` or compare at a concrete type. Give the trait a method and use a generic impl
 (`impl [T] M for Array[T]`) so it resolves through the witness dictionary.
 Concrete applied targets are retained and matched exactly (#2335), so
 `impl M for Array[Int]` does not widen to `Array[String]`. Multiple distinct

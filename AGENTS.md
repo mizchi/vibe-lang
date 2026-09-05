@@ -97,7 +97,13 @@ types that have `Eq` (`Int`, `String`, a `derive(Eq)` struct) and is
 == b }` applied to `Array[Int]` gives ``no impl `Eq` for `Array[Int]` ``).
 That is a diagnostic, not silent-wrong, and it is the deliberate gate that
 stays until ADR-0097 is done. `fixtures/structural_eq_contexts_test.vibe`
-holds the regression. The cheatsheet's "`==` on `Array` / `Bytes` (#1526)" is
+holds the regression. **The bound itself is required** (#2474): `==` / `!=`
+on an operand whose type mentions a formal with no `Eq` bound (bare `T`,
+`Option[T]`, `(T, Int)`, `Array[T]`) is rejected by the checker, because the
+one lowering a generic body gets would otherwise compare an aggregate
+instantiation by reference identity. Measured before the check, all of
+`lib/` had four such sites, every one a compiler test
+(`lib/@vibe/compiler/tests/eq_unbounded_formal_test.vibe` pins both sides). The cheatsheet's "`==` on `Array` / `Bytes` (#1526)" is
 the full contract), pipeline combinators over `F[_]` (ADR-0110) with eager
 Array plus pull `AsyncIter` as two execution layers (ADR-0099, #1559), and
 `Exception` as the truth with `Error`
