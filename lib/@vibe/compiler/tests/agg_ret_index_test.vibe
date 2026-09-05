@@ -1,0 +1,37 @@
+//# Imports
+
+// #2386: the codegen's (fn name -> declared aggregate return shape) table is
+// read through a sorted view built once per compile. It has to answer exactly
+// like the linear scan it replaces, including on a table that lists a name
+// twice (the scan takes the FIRST row; the sort is stable, so the leftmost
+// slot carries the smallest position).
+
+import @vibe/compiler/codegen/common_base {
+  agg_ret_lookup, agg_ret_lookup_indexed, ctor_sorted_index
+}
+
+//# Functions
+
+test "the index answers like the scan, first row winning on a repeated name" {
+  let names = ["h", "g", "f", "g", "a"]
+  let infos = [65, 131, 130, 132, 129]
+  let (sorted, pos) = ctor_sorted_index(names)
+  inspect(agg_ret_lookup_indexed(sorted, pos, infos, "g"), content = "131")
+  inspect(agg_ret_lookup(names, infos, "g"), content = "131")
+  inspect(agg_ret_lookup_indexed(sorted, pos, infos, "f"), content = "130")
+  inspect(agg_ret_lookup_indexed(sorted, pos, infos, "h"), content = "65")
+  inspect(agg_ret_lookup_indexed(sorted, pos, infos, "a"), content = "129")
+  inspect(agg_ret_lookup(names, infos, "a"), content = "129")
+}
+
+test "a name the table does not list is -1 on both spellings" {
+  let names = ["f"]
+  let infos = [130]
+  let (sorted, pos) = ctor_sorted_index(names)
+  inspect(agg_ret_lookup_indexed(sorted, pos, infos, "zz"), content = "-1")
+  inspect(agg_ret_lookup(names, infos, "zz"), content = "-1")
+  let empty_names: Array[String] = []
+  let empty_infos: Array[Int] = []
+  let (empty_sorted, empty_pos) = ctor_sorted_index(empty_names)
+  inspect(agg_ret_lookup_indexed(empty_sorted, empty_pos, empty_infos, "f"), content = "-1")
+}
