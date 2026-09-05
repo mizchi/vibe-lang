@@ -1,0 +1,72 @@
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  Type, TypeEnv, TypeExpr, env_trait_def_names, env_trait_def_names_into, env_value_binding, trait_defined
+}
+
+// #2386: env_trait_def_names is the one-walk form of trait_defined. The
+// import projection builds a set from it once per edge instead of walking
+// the whole chain once per name.
+
+fn trait_node(name: String, rest: TypeEnv) -> TypeEnv {
+  let no_supers: Array[String] = []
+  let no_methods: Array[(String, Array[TypeExpr], TypeExpr)] = []
+  EnvTraitDef(name, no_supers, false, no_methods, rest, array_empty(), array_empty())
+}
+
+fn names_contain(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn sample_env() -> TypeEnv {
+  let inner = trait_node("Eq", EnvTraitImpl("Eq", CtInt, EnvEmpty))
+  let bound = EnvBind("x", env_value_binding(CtInt), inner)
+  EnvCached(array_empty(), array_empty(), trait_node("Show", bound))
+}
+
+test "every EnvTraitDef of the chain is listed, innermost first, through binds, impls and a cache node" {
+  inspect(env_trait_def_names(sample_env()), content = "[Show, Eq]")
+}
+
+test "the list answers exactly like trait_defined" {
+  let env = sample_env()
+  let names = env_trait_def_names(env)
+  let asked = ["Show", "Eq", "Ord", "x"]
+  let via_walk: Array[Bool] = []
+  let via_list: Array[Bool] = []
+  let mut i = 0
+  while i < Array::length(asked) {
+    Array::push(via_walk, trait_defined(env, Array::get(asked, i)))
+    Array::push(via_list, names_contain(names, Array::get(asked, i)))
+    i = i + 1
+  }
+  inspect(via_walk, content = "[true, true, false, false]")
+  inspect(via_list, content = "[true, true, false, false]")
+}
+
+test "an EnvFlat is terminal for both" {
+  let flat: Array[(String, EnvValueBinding)] = []
+  let env = trait_node("A", EnvFlat(flat))
+  inspect(env_trait_def_names(env), content = "[A]")
+  inspect(env_trait_def_names(EnvFlat(flat)), content = "[]")
+}
+
+test "the row form empties a reused row before refilling it" {
+  let row = ["stale", "rows"]
+  env_trait_def_names_into(sample_env(), row)
+  inspect(row, content = "[Show, Eq]")
+  env_trait_def_names_into(EnvEmpty, row)
+  inspect(row, content = "[]")
+}

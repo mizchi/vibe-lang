@@ -2177,6 +2177,58 @@ export fn trait_defined(env: TypeEnv, name: String) -> Bool {
   }
 }
 
+/// Every trait name the chain defines, innermost first, in one walk. The
+/// answer to `trait_defined(env, n)` for any `n` is whether this list holds
+/// `trait_ref_name(n)`; a caller with many names to ask (the import
+/// projection asks per imported name, per bound label and per supertrait)
+/// walks the chain once and probes the list instead of walking it per name
+/// (#2386). Stops where trait_defined stops: an EnvFlat is terminal.
+export fn env_trait_def_names(env: TypeEnv) -> Array[String] {
+  let out = array_empty()
+  env_trait_def_names_into(env, out)
+  out
+}
+
+/// env_trait_def_names into a caller-owned row: `out` is emptied and refilled,
+/// so a caller that asks per edge can reuse one row and allocate nothing.
+export fn env_trait_def_names_into(env: TypeEnv, out: Array[String]) -> Unit {
+  Array::truncate(out, 0)
+  let mut cur = env
+  let mut done = false
+  while !done {
+    match cur {
+      EnvEmpty => {
+        done = true
+      },
+      EnvBind(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitDef(tname, _, _, _, rest, _, _) => {
+        Array::push(out, tname)
+        cur = rest
+      },
+      EnvTraitImpl(_, _, rest) => {
+        cur = rest
+      },
+      EnvMutCell(_, _, rest) => {
+        cur = rest
+      },
+      EnvTraitImplGen(_, _, _, _, rest) => {
+        cur = rest
+      },
+      EnvTypeDefs(_, _, rest) => {
+        cur = rest
+      },
+      EnvFlat(_) => {
+        done = true
+      },
+      EnvCached(_, _, rest) => {
+        cur = rest
+      }
+    }
+  }
+}
+
 export fn trait_decl_params(env: TypeEnv, name: String) -> Option[Array[String]] {
   match env {
     EnvEmpty => None,
