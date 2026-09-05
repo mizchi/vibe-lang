@@ -2008,7 +2008,13 @@ rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
 # `structural_eq_owned_scalar_*_trap.vibe` joins too (Codex round 4 on #2471):
 # a program that declares `struct Int` makes a literal-derived shape's `Int`
 # ambiguous with the struct, so the literal-shape rungs fail closed.
-for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe fixtures/structural_eq_generic_enum_*_trap.vibe fixtures/structural_eq_owned_scalar_*_trap.vibe; do
+# `structural_eq_generic_body_*_trap.vibe` joins (#2474): inside a generic body
+# the operand type is an erased formal, the typed-`==` row is dropped for
+# mentioning a scope formal, and the raw compare answered `false` for equal
+# aggregates. A generic body is lowered exactly once, so no per-instantiation
+# comparator is reachable and the only honest answer is to fail closed. Red
+# before the guard: both returned 0 rather than trapping.
+for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe fixtures/structural_eq_generic_enum_*_trap.vibe fixtures/structural_eq_owned_scalar_*_trap.vibe fixtures/structural_eq_generic_body_*_trap.vibe; do
   eqtrap_name="$(basename "${eqtrap_src%.vibe}")"
   eqtrap_wasm="$eqtrapdir/$eqtrap_name.wasm"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
