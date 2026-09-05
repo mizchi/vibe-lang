@@ -2028,6 +2028,34 @@ done
 rm -rf "$eqtrapdir"
 echo "[compiler-gate] structural equality untyped-empty mutation fail-closed ok (== + !=)"
 
+# #2474 (a): the lexical-formal spelling of the same scenario is refused one
+# phase earlier. `fn same[T]` comparing two untyped-empty arrays filled with
+# `T` values has no comparator its single lowering could reach, so the checker
+# rejects the `==` and names the `Eq` bound as the edit -- before codegen,
+# on both lanes. This used to be the `_lexical_formal_trap` fixture in the
+# loop above; a compile-time refusal is the same fail-closed contract, so the
+# gate asserts the refusal AND its message (an unrelated compile failure must
+# not pass as this one).
+echo "[compiler-gate] untyped-empty equality on an unbounded formal is rejected at check time (#2474)"
+eqrejdir="_build/_gate_eq_unbounded_formal"
+rm -rf "$eqrejdir"; mkdir -p "$eqrejdir"
+eqrej_src="fixtures/structural_eq_untyped_empty_lexical_formal_rejected.vibe"
+eqrej_wasm="$eqrejdir/lexical_formal_rejected.wasm"
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$eqrej_src" "$eqrej_wasm" _start >/dev/null 2>&1 || true
+if [ -s "$eqrej_wasm" ]; then
+  echo "[compiler-gate] FAIL: $eqrej_src compiled; expected the checker to reject == on an unbounded formal (#2474)" >&2
+  exit 1
+fi
+if ! grep -qF 'compares two values of type `Array[T]`, but the type parameter `T` has no `Eq` bound' "$eqrej_wasm.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: $eqrej_src was refused for another reason than the missing Eq bound (#2474)" >&2
+  cat "$eqrej_wasm.diag" 2>/dev/null >&2
+  exit 1
+fi
+rm -rf "$eqrejdir"
+echo "[compiler-gate] untyped-empty equality on an unbounded formal is rejected at check time ok (#2474)"
+
 # #2391 (after #2447): the other side of the same residual. The three shapes
 # that used to sit in the loop above as traps -- a pushed NAME, pushes made
 # inside a function the array is passed to, and the `!=` / `let mut` spelling
