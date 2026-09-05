@@ -323,8 +323,8 @@ an existing, published seed to use as stage0.
    `bootstrap/seed.json`, copies the artifact to `bootstrap/seed/compiler.wasm`,
    and records its sha256 and tag. The tag must have the `seed/` prefix.
 3. Commit the `bootstrap/seed.json` update separately, but do not merge the PR
-   yet. Fresh CI runners fetch the seed from the new tag; while that release
-   does not exist, `scripts/ensure_seed.sh` rebuilds the pinned seed instead:
+   yet. Fresh CI runners fetch the seed from the new tag; while that tag does
+   not exist on the remote, `scripts/ensure_seed.sh` rebuilds the pinned seed instead:
    it checks out `seed.source_commit` (whose own manifest pins the previous
    published seed) and runs `generations.sh build` there, then installs the
    stage2 only if it matches the pinned sha256. So the bump PR's gates are
