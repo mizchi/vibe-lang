@@ -292,14 +292,13 @@ export fn gen_eq_body(str_eq_idx: Int, block_abort_idx: Int, block_prefix_fat: I
   // makes `str_eq`'s byte loop read out of bounds (the #664 class of bug, here
   // surfacing for `==`/`!=` on Int >= 2^32). Gate the fallback on both operands
   // looking like real strings; otherwise the values are simply not equal.
-  emit_looks_like_string(b, 0)
-  emit_looks_like_string(b, 1)
-  bytebuf_push(b, 113)
-  emit_if_i64(b)
-  emit_local_get(b, 0)
-  emit_local_get(b, 1)
-  emit_call(b, str_eq_idx)
-  emit_else(b)
+  // #2474: the block test must come BEFORE the string test, not after it.
+  // `emit_looks_like_string` here is the PERMISSIVE one (see its doc): a
+  // tagged heap pointer decodes as ptr = v >> 32 = 0 and len = the address,
+  // and `ptr(0) + len <= memory.size` is trivially true -- so two struct
+  // pointers both "look like strings", take the `str_eq` branch, and answer
+  // `false` off a length comparison of two zero-based non-strings. Measured:
+  // with the guard placed in the final `else` instead, it never fired.
   if block_abort_idx >= 0 {
     emit_is_rc_block(b, 0)
     emit_is_rc_block(b, 1)
@@ -314,6 +313,14 @@ export fn gen_eq_body(str_eq_idx: Int, block_abort_idx: Int, block_prefix_fat: I
   } else {
     ()
   }
+  emit_looks_like_string(b, 0)
+  emit_looks_like_string(b, 1)
+  bytebuf_push(b, 113)
+  emit_if_i64(b)
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
+  emit_call(b, str_eq_idx)
+  emit_else(b)
   emit_i64_const(b, 0)
   emit_end(b)
   emit_end(b)
