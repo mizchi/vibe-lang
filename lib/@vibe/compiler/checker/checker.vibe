@@ -5165,6 +5165,15 @@ fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
 }
 
 export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
+  check_assignable_for(expected, actual, s, errors, what, "", off)
+}
+
+/// #2386: `check_assignable` with the report's subject split in two so the
+/// message is built only when a mismatch is reported. Every call site with a
+/// per-call subject (`"argument type mismatch for " ++ label`) used to build
+/// the string first: ~25 ms of `__rt_str_concat` under `unify_call_args` in a
+/// cold self-compile, for calls that almost always agree.
+export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
   match unify(expected, actual, s) {
     Some(su) => su,
     None => {
@@ -5218,7 +5227,7 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
       // stays on the historical tolerate path.
       let named_vs_scalar = (type_fully_concrete(expected) && is_fully_concrete_named(expected_zonked) && is_builtin_scalar(actual_zonked)) || (is_builtin_scalar(expected_zonked) && is_fully_concrete_named(actual_zonked))
       if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || (named_vs_scalar && !structural) {
-        Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
+        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
         s
       } else if structural {
         // #939: the structural retry tolerated EVERY effect-only difference,
@@ -5230,7 +5239,7 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
         // stay tolerated (see effect_row_dropped).
         match effect_row_dropped(subst_apply(s, expected), subst_apply(s, actual)) {
           Some(lbl) => {
-            Array::push(errors, String::concat(what, String::concat(": effect row mismatch: a value of type ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", off_marker(off))))))))))
+            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", off_marker(off))))))))))
             s
           },
           None => s
@@ -5259,12 +5268,12 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
         // calls. A monomorphic signature (the #981 hole) is concrete without
         // any substitution, so the genuine cases all keep reporting.
         if type_fully_concrete(expected) {
-          detect_narrowed_generic_mismatch(expected, actual, s, errors, what, off)
+          detect_narrowed_generic_mismatch_for(expected, actual, s, errors, what_head, what_tail, off)
         } else {
           s
         }
       } else {
-        Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
+        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
         s
       }
     }
@@ -5521,6 +5530,10 @@ fn is_fully_concrete_named(t: Type) -> Bool {
 /// flagged -- only a same-name mismatch where both sides are already fully
 /// resolved concrete types.
 export fn detect_narrowed_generic_mismatch(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
+  detect_narrowed_generic_mismatch_for(expected, actual, s, errors, what, "", off)
+}
+
+fn detect_narrowed_generic_mismatch_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
   let e2 = subst_apply(s, expected)
   let a2 = subst_apply(s, actual)
   match e2 {
@@ -5529,7 +5542,7 @@ export fn detect_narrowed_generic_mismatch(expected: Type, actual: Type, s: Subs
         match unify(e2, a2, s) {
           Some(_) => s,
           None => {
-            Array::push(errors, String::concat(what, String::concat(": expected ", String::concat(type_to_string(e2), String::concat(", got ", String::concat(type_to_string(a2), off_marker(off)))))))
+            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(e2), String::concat(", got ", String::concat(type_to_string(a2), off_marker(off)))))))
             s
           }
         }
@@ -5812,7 +5825,7 @@ fn check_record_fields(defs: Array[TypeDef], actual: Array[(String, Type)], s: S
       let (fname, declared_ty) = Array::get(matched_fields, i)
       match lookup_actual_field_ty(actual, fname) {
         Some(actual_ty) => {
-          out = check_assignable(declared_ty, subst_apply(out, actual_ty), out, errors, String::concat("struct field type mismatch for ", fname), 0 - 1)
+          out = check_assignable_for(declared_ty, subst_apply(out, actual_ty), out, errors, "struct field type mismatch for ", fname, 0 - 1)
         },
         None => ()
       }
@@ -5913,7 +5926,7 @@ fn unify_call_args(param_tys: Array[Type], arg_tys: Array[Type], s: Subst, error
         None => out
       }
     } else {
-      check_assignable(pty, aty, out, errors, String::concat("argument type mismatch for ", label), off)
+      check_assignable_for(pty, aty, out, errors, "argument type mismatch for ", label, off)
     }
     ui = ui + 1
   }
@@ -9484,7 +9497,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                         } else {
                           let mut vi = 0
                           while vi < oalen {
-                            s1 = check_assignable(subst_apply(s1, Array::get(sig_params, vi)), subst_apply(s1, Array::get(oparg_tys, vi)), s1, errors, String::concat("perform argument type mismatch for ", op_qname), op_off)
+                            s1 = check_assignable_for(subst_apply(s1, Array::get(sig_params, vi)), subst_apply(s1, Array::get(oparg_tys, vi)), s1, errors, "perform argument type mismatch for ", op_qname, op_off)
                             vi = vi + 1
                           }
                         }
@@ -10096,11 +10109,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // checked against Int, same #985 discipline as FixedArray::get above.
           let (fa_ty, s1, c1) = check_expr_capture(Array::get(args, 0), env, defs, s, c, errors, tytab, capture, lane)
           let (idx_ty2, s2, c2) = check_expr_capture(Array::get(args, 1), env, defs, s1, c1, errors, tytab, capture, lane)
-          let s2b = check_assignable(CtInt, subst_apply(s2, idx_ty2), s2, errors, String::concat("index must be Int for ", name), call_off)
+          let s2b = check_assignable_for(CtInt, subst_apply(s2, idx_ty2), s2, errors, "index must be Int for ", name, call_off)
           let (v_ty, s3, c3) = check_expr_capture(Array::get(args, 2), env, defs, s2b, c2, errors, tytab, capture, lane)
           let s4 = match subst_apply(s3, fa_ty) {
             CtNamed(fan2, faargs2) => if fan2 == "FixedArray" && Array::length(faargs2) == 1 {
-              check_assignable(subst_apply(s3, Array::get(faargs2, 0)), subst_apply(s3, v_ty), s3, errors, String::concat("value type mismatch for ", name), call_off)
+              check_assignable_for(subst_apply(s3, Array::get(faargs2, 0)), subst_apply(s3, v_ty), s3, errors, "value type mismatch for ", name, call_off)
             } else {
               s3
             },
@@ -11365,7 +11378,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       // The assigned value must be assignable to the variable's type
       // (previously unchecked — `y = "s"` for `let mut y = 1` was accepted).
       let s1b = match env_lookup(env, name) {
-        Some(var_ty) => check_assignable(var_ty, subst_apply(s1, vt), s1, errors, String::concat("assignment type mismatch for ", name), tail_expr_off(val)),
+        Some(var_ty) => check_assignable_for(var_ty, subst_apply(s1, vt), s1, errors, "assignment type mismatch for ", name, tail_expr_off(val)),
         None => s1
       }
       check_expr_capture(body, env, defs, s1b, c1, errors, tytab, capture, lane)
@@ -12933,7 +12946,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 match lookup_actual_field_ty(field_tys, dn) {
                   Some(aty) => {
                     // Value type check (ground-gated like check_record_fields).
-                    s1 = check_assignable(dty, subst_apply(s1, aty), s1, errors, String::concat("struct field type mismatch for ", dn), lookup_field_expr_off(fields, dn))
+                    s1 = check_assignable_for(dty, subst_apply(s1, aty), s1, errors, "struct field type mismatch for ", dn, lookup_field_expr_off(fields, dn))
                   },
                   None => Array::push(errors, String::concat("missing field `", String::concat(dn, String::concat("` in construction of struct ", rn))))
                 }
