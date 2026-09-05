@@ -4004,22 +4004,66 @@ fn eq_formal_row_of(vid: Int) -> Int {
   found
 }
 
-/// The rows a rigid `#hktformal.` mention can stand for: every RIGID binder
-/// spelled `name` whose declaration is still open. Two such binders share one
-/// spelling in the types (the rigid form carries the name only), so the
-/// mention cannot be attributed to one of them; each is reported, and
-/// bounding both is what makes the site check.
-fn eq_formal_rigid_rows(name: String, out: Array[Int]) -> Unit {
+/// The row a rigid `#hktformal.` mention stands for: the INNERMOST open rigid
+/// binder spelled `name` -- the one the spelling denotes where the site is
+/// written. The types carry the spelling only, so a value captured from an
+/// enclosing declaration whose own rigid `F[_]` shares it cannot be told
+/// apart; that case is named by `eq_formal_rigid_outer_exists` and surfaced
+/// as a hint rather than as an edit on a declaration the site may not use.
+fn eq_formal_rigid_row(name: String) -> Int {
   let mut i = 0
+  let mut best = 0 - 1
+  let mut best_d = 0 - 1
   while i < Array::length(eq_formal_vars) {
     let (_, n) = Array::get(eq_formal_vars, i)
-    if n == name && Array::get(eq_formal_rigid, i) && eq_group_is_open(Array::get(eq_formal_group, i)) && !int_array_has(out, i) {
-      Array::push(out, i)
+    if n == name && Array::get(eq_formal_rigid, i) && eq_group_is_open(Array::get(eq_formal_group, i)) {
+      let d = eq_group_distance(Array::get(eq_formal_group, i))
+      if best < 0 || d < best_d {
+        best = i
+        best_d = d
+      } else {
+        ()
+      }
     } else {
       ()
     }
     i = i + 1
   }
+  best
+}
+
+/// Whether an enclosing declaration also has an open rigid binder spelled
+/// `name` (other than row `chosen`).
+fn eq_formal_rigid_outer_exists(name: String, chosen: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(eq_formal_vars) {
+    let (_, n) = Array::get(eq_formal_vars, i)
+    if i != chosen && n == name && Array::get(eq_formal_rigid, i) && eq_group_is_open(Array::get(eq_formal_group, i)) {
+      found = true
+      i = Array::length(eq_formal_vars)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Whether a binder spelled `name` sits in an open declaration NEARER the
+/// site than distance `d` -- i.e. the spelling is genuinely shadowed there.
+fn eq_formal_name_shadowed_within(name: String, d: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(eq_formal_vars) {
+    let (_, n) = Array::get(eq_formal_vars, i)
+    if n == name && eq_group_is_open(Array::get(eq_formal_group, i)) && eq_group_distance(Array::get(eq_formal_group, i)) < d {
+      found = true
+      i = Array::length(eq_formal_vars)
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 fn int_array_has(items: Array[Int], wanted: Int) -> Bool {
@@ -4281,11 +4325,22 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
   // 1. entries -> table rows (a rigid mention fans out to every open
   //    higher-kinded binder of that spelling), in table order.
   let rows: Array[Int] = []
+  let rigid_hints: Array[String] = []
   let mut fi = 0
   while fi < Array::length(formals) {
     let (vid, name) = Array::get(formals, fi)
     if vid < 0 {
-      eq_formal_rigid_rows(name, rows)
+      let r = eq_formal_rigid_row(name)
+      if r >= 0 && !int_array_has(rows, r) {
+        Array::push(rows, r)
+        if eq_formal_rigid_outer_exists(name, r) && !string_array_has(rigid_hints, name) {
+          Array::push(rigid_hints, name)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
     } else {
       let r = eq_formal_row_of(vid)
       if r >= 0 && !int_array_has(rows, r) {
@@ -4319,6 +4374,7 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
     gi = gi + 1
   }
   let multi = Array::length(groups) > 1
+  let single_enclosing = Array::length(sorted) == 1 && eq_group_distance(Array::get(eq_formal_group, Array::get(sorted, 0))) > 0
   // 3. mentions and per-declaration brackets.
   let mentions: Array[String] = []
   let mut mi = 0
@@ -4350,7 +4406,7 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
       ri = ri + 1
     }
     let bracket = String::concat("`[", String::concat(joined_names(spelled, ", "), "]`"))
-    Array::push(brackets, if multi {
+    Array::push(brackets, if multi || single_enclosing {
       String::concat(bracket, String::concat(" on ", eq_group_place(eq_group_distance(g))))
     } else {
       bracket
@@ -4362,8 +4418,11 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
   let params = if Array::length(sorted) == 1 {
     let r0 = Array::get(sorted, 0)
     let (_, name0) = Array::get(eq_formal_vars, r0)
-    if eq_group_distance(Array::get(eq_formal_group, r0)) > 0 {
+    let d0 = eq_group_distance(Array::get(eq_formal_group, r0))
+    if d0 > 0 && eq_formal_name_shadowed_within(name0, d0) {
       String::concat("the type parameter `", String::concat(name0, String::concat("` of an enclosing declaration has no `Eq` bound (an inner binder also spelled `", String::concat(name0, "` shadows it here, so the bound belongs on the outer one)"))))
+    } else if d0 > 0 {
+      String::concat("the type parameter `", String::concat(name0, "` of an enclosing declaration has no `Eq` bound"))
     } else {
       String::concat("the type parameter `", String::concat(name0, "` has no `Eq` bound"))
     }
@@ -4374,10 +4433,15 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
   } else {
     String::concat("the type parameters ", String::concat(joined_names(mentions, ", "), " have no `Eq` bound"))
   }
-  let bound_clause = if Array::length(brackets) == 0 {
-    "declare the `Eq` bound"
+  let hint = if Array::length(rigid_hints) > 0 {
+    String::concat("; an enclosing declaration also spells `", String::concat(joined_names(rigid_hints, "`, `"), "` as a higher-kinded binder, so a compared value captured from there needs the bound on that declaration instead"))
   } else {
-    String::concat("declare the bound (", String::concat(joined_names(brackets, ", "), ")"))
+    ""
+  }
+  let bound_clause = if Array::length(brackets) == 0 {
+    String::concat("declare the `Eq` bound", hint)
+  } else {
+    String::concat("declare the bound (", String::concat(joined_names(brackets, ", "), String::concat(")", hint)))
   }
   String::concat("`", String::concat(op, String::concat("` compares two values of type `", String::concat(eq_formal_display_type(resolved, s), String::concat("`, but ", String::concat(params, String::concat(", so they cannot be compared by content here; ", String::concat(bound_clause, String::concat(" or compare at a concrete type", off_marker(off))))))))))
 }
