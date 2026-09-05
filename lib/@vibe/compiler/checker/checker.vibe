@@ -7851,6 +7851,12 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
   let mut s1 = s
   let mut c1 = c
   let start_frame_depth = typed_occurrence_capture_frame_depth(capture)
+  // #2386: expression_aliases_outer_binding can only answer true inside a
+  // region block (its roots are the `#active_region` binder and the alias
+  // markers this spine writes when it answered true), and a spine's lets
+  // never open one -- a region body is checked in its own environment -- so
+  // the region state is asked once here, not two chain walks per let.
+  let spine_region_active = env_has_active_region(env)
   let mut done = false
   let mut result = (CtUnit, s, c)
   while !done {
@@ -7886,7 +7892,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // binding's to quantify. See let_generalize for why those are two
         // rules and not one.
         let gen = let_generalize(val, vt, cenv, ns, None)
-        let aliases_outer = expression_aliases_outer_binding(val, cenv)
+        let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
         if aliases_outer {
