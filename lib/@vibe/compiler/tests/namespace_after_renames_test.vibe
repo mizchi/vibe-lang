@@ -1,0 +1,65 @@
+import @vibe/compiler/core {
+  apply_export_renames_stmts, namespace_private_value_stmts, namespace_private_value_stmts_after_renames
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_program
+}
+
+// #2386: the merge lane rewrites a non-entry file with the export plan's
+// renames and then namespaces its private values. The fused entry point must
+// print exactly what the two passes print, whether it fuses them (the maps
+// compose) or falls back to the pair (a private name the export map also
+// touches).
+
+fn sequential(path: String, source: String, renames: Array[(String, String)]) -> String with Exception {
+  one_line(print_program(namespace_private_value_stmts(path, apply_export_renames_stmts(parse_program(lex(source)), renames))))
+}
+
+fn fused(path: String, source: String, renames: Array[(String, String)]) -> String with Exception {
+  one_line(print_program(namespace_private_value_stmts_after_renames(path, parse_program(lex(source)), renames)))
+}
+
+// The printed program on one line, so a snapshot reads as a row.
+fn one_line(s: String) -> String {
+  let parts = String::split(s, "\n")
+  let mut acc = ""
+  let mut i = 0
+  while i < Array::length(parts) {
+    if Array::get(parts, i) != "" {
+      acc = String::concat(String::concat(acc, Array::get(parts, i)), " | ")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  acc
+}
+
+let program: String = "fn helper(x: Int) -> Int { x + 1 }\nlet mut counter = 0\nexport fn caller(x: Int) -> Int { helper(x) + counter }\nexport fn again(x: Int) -> Int { caller(helper(x)) }\n"
+
+test "an export rename and the private namespace land in one rebuild" {
+  let renames = [("caller", "caller_exp_dep")]
+  let out = fused("dep.vibe", program, renames)
+  inspect(out == sequential("dep.vibe", program, renames), content = "true")
+  inspect(out, content = "let rec helper_dep_dep_vibe = (x: Int) -> Int { (x + 1) } | let mut counter_dep_dep_vibe = 0 | export let rec caller_exp_dep = (x: Int) -> Int { (helper_dep_dep_vibe(x) + counter_dep_dep_vibe) } | export let rec again = (x: Int) -> Int { caller_exp_dep(helper_dep_dep_vibe(x)) } | ")
+}
+
+test "an export rename of a private name is renamed twice, through the two passes" {
+  let renames = [("helper", "helper_exp_dep")]
+  let out = fused("dep.vibe", program, renames)
+  inspect(out == sequential("dep.vibe", program, renames), content = "true")
+  inspect(out, content = "let rec helper_exp_dep_dep_dep_vibe = (x: Int) -> Int { (x + 1) } | let mut counter_dep_dep_vibe = 0 | export let rec caller = (x: Int) -> Int { (helper_exp_dep_dep_dep_vibe(x) + counter_dep_dep_vibe) } | export let rec again = (x: Int) -> Int { caller(helper_exp_dep_dep_dep_vibe(x)) } | ")
+}
+
+test "an export value spelled like a private definition takes the two passes" {
+  let renames = [("caller", "helper")]
+  let out = fused("dep.vibe", program, renames)
+  inspect(out == sequential("dep.vibe", program, renames), content = "true")
+  inspect(out, content = "let rec helper = (x: Int) -> Int { (x + 1) } | let mut counter_dep_dep_vibe = 0 | export let rec helper = (x: Int) -> Int { (helper(x) + counter_dep_dep_vibe) } | export let rec again = (x: Int) -> Int { helper(helper(x)) } | ")
+}
+
+test "no export renames is the private namespace alone" {
+  let out = fused("dep.vibe", program, [])
+  inspect(out == one_line(print_program(namespace_private_value_stmts("dep.vibe", parse_program(lex(program))))), content = "true")
+}

@@ -2282,126 +2282,6 @@ fn collect_private_ctor_renames(path: String, stmts: Array[Stmt], type_renames: 
 }
 
 export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Array[Stmt] {
-  let namespace_private_type_ctor_stmt_local: (Stmt, Array[(String, String)], Array[(String, String)]) -> Stmt = (stmt, type_renames, ctor_renames) -> {
-    match stmt {
-      SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, name, rewrite_private_type_opt(ty, type_renames), rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_name(ctor_renames, name))),
-      SLetMut(name, ty, body) => SLetMut(name, rewrite_private_type_opt(ty, type_renames), rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_name(ctor_renames, name))),
-      SEnum(exported, name, params, ctors, derives) => {
-        let next_name = if exported {
-          name
-        } else {
-          match lookup_alias(type_renames, name) {
-            Some(renamed) => renamed,
-            None => name
-          }
-        }
-        SEnum(exported, next_name, params, for ctor in ctors {
-          let (ctor_name, args) = ctor
-          let next_ctor = if exported {
-            ctor_name
-          } else {
-            match lookup_alias(ctor_renames, ctor_name) {
-              Some(renamed) => renamed,
-              None => ctor_name
-            }
-          }
-          (next_ctor, for arg in args {
-            rewrite_private_type_expr(arg, type_renames)
-          })
-        }, derives)
-      },
-      SSuberror(exported, name, ctors) => {
-        let next_name = if exported {
-          name
-        } else {
-          match lookup_alias(type_renames, name) {
-            Some(renamed) => renamed,
-            None => name
-          }
-        }
-        SSuberror(exported, next_name, for ctor in ctors {
-          let (ctor_name, args) = ctor
-          let next_ctor = if exported {
-            ctor_name
-          } else {
-            match lookup_alias(ctor_renames, ctor_name) {
-              Some(renamed) => renamed,
-              None => ctor_name
-            }
-          }
-          (next_ctor, for arg in args {
-            rewrite_private_type_expr(arg, type_renames)
-          })
-        })
-      },
-      SStruct(exported, name, fields, derives, mut_fields, tparams) => {
-        let next_name = if exported {
-          name
-        } else {
-          match lookup_alias(type_renames, name) {
-            Some(renamed) => renamed,
-            None => name
-          }
-        }
-        SStruct(exported, next_name, for field in fields {
-          let (field_name, field_ty) = field
-          (field_name, rewrite_private_type_expr(field_ty, type_renames))
-        }, derives, mut_fields, tparams)
-      },
-      STypeAlias(exported, name, params, target) => {
-        let next_name = if exported {
-          name
-        } else {
-          match lookup_alias(type_renames, name) {
-            Some(renamed) => renamed,
-            None => name
-          }
-        }
-        STypeAlias(exported, next_name, params, rewrite_private_type_expr(target, type_renames))
-      },
-      SImpl(tparams, bounds, trait_name, target) => SImpl(tparams, bounds, trait_name, rewrite_private_type_expr(target, alias_map_without_names(type_renames, tparams))),
-      SExternLet(name, ty) => SExternLet(name, rewrite_private_type_expr(ty, type_renames)),
-      STest(name, body) => STest(name, rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
-      SBench(name, body) => SBench(name, rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
-      SExpr(body) => SExpr(rewrite_private_type_ctor_expr(body, type_renames, ctor_renames)),
-      SLetPat(pat, body) => {
-        let next_pat = rewrite_private_type_ctor_pat(pat, type_renames, ctor_renames)
-        SLetPat(next_pat, rewrite_private_type_ctor_expr(body, type_renames, alias_map_without_pat(ctor_renames, next_pat)))
-      },
-      SModule(exported, name, body_stmts) => SModule(exported, name, namespace_private_value_stmts(name, body_stmts)),
-      SEffectDef(exported, name, params, ops) => SEffectDef(exported, name, params, for op in ops {
-        let (op_name, op_params, ret_ty) = op
-        (op_name, for param in op_params {
-          rewrite_private_type_expr(param, type_renames)
-        }, rewrite_private_type_expr(ret_ty, type_renames))
-      }),
-      _ => stmt
-    }
-  }
-  let namespace_private_stmt_local: (Stmt, AliasIdx) -> Stmt = (stmt, ram) -> {
-    match stmt {
-      SLet(exported, is_rec, name, ty, body) => {
-        let next_name = match MutMap::get(ram.idx, name) {
-          Some(renamed) => renamed,
-          None => name
-        }
-        SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, ram))
-      },
-      SLetMut(name, ty, body) => {
-        let next_name = match MutMap::get(ram.idx, name) {
-          Some(renamed) => renamed,
-          None => name
-        }
-        SLetMut(next_name, ty, rewrite_alias_expr_ix(body, ram))
-      },
-      STest(name, body) => STest(name, rewrite_alias_expr_ix(body, ram)),
-      SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, ram)),
-      SExpr(body) => SExpr(rewrite_alias_expr_ix(body, ram)),
-      SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, ram)),
-      SModule(exported, name, body_stmts) => SModule(exported, name, namespace_private_value_stmts(name, body_stmts)),
-      _ => stmt
-    }
-  }
   let namespace_suffix_box = [""]
   let exported = collect_exported_value_names(stmts)
   let renames = collect_private_value_renames(path, stmts, namespace_suffix_box, exported)
@@ -2410,9 +2290,174 @@ export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Arr
   } else {
     let ram = aliasidx_build(renames)
     for stmt in stmts {
-      namespace_private_stmt_local(stmt, ram)
+      namespace_private_stmt(stmt, ram)
     }
   }
+  namespace_private_type_ctor_stage(path, value_renamed, namespace_suffix_box, exported)
+}
+
+/// #2386: `namespace_private_value_stmts` applied to the statements the export
+/// pass (`apply_export_renames_stmts` with `export_renames`) would have
+/// produced -- the merge lane's pair for every non-entry file -- in ONE
+/// rebuild of the tree instead of two when the two rename maps compose as a
+/// single lookup, and through the two passes otherwise.
+///
+/// Both passes are the same walker over the same value positions, so their
+/// composition is one lookup exactly when no name can answer in both maps or
+/// be renamed twice: a private-rename key is neither a key nor a value of the
+/// export map, a qualified private key does not carry an export-renamed head,
+/// and a qualified export value does not carry a private-renamed head
+/// (`alias_renames_compose`). The private renames are collected from the
+/// statement heads as the export pass leaves them (a definition's name and an
+/// export list are the only spellings the collectors read), so they are the
+/// renames the second pass would have computed. Where the export pass and the
+/// private stage visit different statement kinds, the fused walker keeps each
+/// kind's own map (`namespace_private_stmt_after_renames`).
+export fn namespace_private_value_stmts_after_renames(path: String, stmts: Array[Stmt], export_renames: Array[(String, String)]) -> Array[Stmt] {
+  if Array::length(export_renames) == 0 {
+    namespace_private_value_stmts(path, stmts)
+  } else {
+    let exports = aliasidx_build(export_renames)
+    let heads = for stmt in stmts {
+      export_renamed_head(stmt, exports)
+    }
+    let namespace_suffix_box = [""]
+    let exported = collect_exported_value_names(heads)
+    let renames = collect_private_value_renames(path, heads, namespace_suffix_box, exported)
+    if !alias_renames_compose(exports, renames) {
+      namespace_private_value_stmts(path, apply_export_renames_stmts(stmts, export_renames))
+    } else {
+      let value_renamed = if Array::length(renames) == 0 {
+        apply_export_renames_stmts(stmts, export_renames)
+      } else {
+        let privates = aliasidx_build(renames)
+        let both = aliasidx_build(alias_entries_concat(export_renames, renames))
+        for stmt in stmts {
+          namespace_private_stmt_after_renames(stmt, exports, privates, both)
+        }
+      }
+      namespace_private_type_ctor_stage(path, value_renamed, namespace_suffix_box, exported)
+    }
+  }
+}
+
+/// The statement as `apply_export_renames_stmts` leaves its head: the
+/// definition name or export items renamed, the body shared.
+fn export_renamed_head(stmt: Stmt, exports: AliasIdx) -> Stmt {
+  match stmt {
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, aliasidx_rename(exports, name), ty, body),
+    SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, aliasidx_rename(exports, name), body, requires, ensures),
+    SExport(items) => SExport(for item in items {
+      aliasidx_rename(exports, item)
+    }),
+    _ => stmt
+  }
+}
+
+fn aliasidx_rename(am: AliasIdx, name: String) -> String {
+  match MutMap::get(am.idx, name) {
+    Some(renamed) => renamed,
+    None => name
+  }
+}
+
+fn alias_entries_concat(first: Array[(String, String)], later: Array[(String, String)]) -> Array[(String, String)] {
+  let out = empty_aliases()
+  let mut i = 0
+  while i < Array::length(first) {
+    Array::push(out, Array::get(first, i))
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(later) {
+    Array::push(out, Array::get(later, i))
+    i = i + 1
+  }
+  out
+}
+
+fn qualified_head_of(name: String) -> String {
+  let qi = String::index_of(name, "::")
+  if qi < 0 {
+    ""
+  } else {
+    String::substring(name, 0, qi)
+  }
+}
+
+/// Whether rewriting with `first` and then with `later` answers every name
+/// exactly like one rewrite with their union (see
+/// `namespace_private_value_stmts_after_renames`). Every check is by the
+/// spellings the walker consults: a whole identifier against the keys, and
+/// the head of a qualified identifier against the keys (a trait-namespace
+/// marker key would change that head rule, so no key may be one).
+fn alias_renames_compose(first: AliasIdx, later: Array[(String, String)]) -> Bool {
+  let first_values = MutSet::new_string()
+  let later_keys = MutSet::new_string()
+  let mut ok = true
+  let mut i = 0
+  while ok && i < Array::length(first.entries) {
+    let (key, value) = Array::get(first.entries, i)
+    MutSet::add(first_values, value)
+    if String::contains(key, "::__vibe_trait_namespace_alias") {
+      ok = false
+    } else {
+      i = i + 1
+    }
+  }
+  i = 0
+  while ok && i < Array::length(later) {
+    let (key, _) = Array::get(later, i)
+    MutSet::add(later_keys, key)
+    let head = qualified_head_of(key)
+    if MutMap::has(first.idx, key) || MutSet::has(first_values, key) || String::contains(key, "::__vibe_trait_namespace_alias") || (head != "" && (MutMap::has(first.idx, head) || MutSet::has(first_values, head))) {
+      ok = false
+    } else {
+      i = i + 1
+    }
+  }
+  i = 0
+  while ok && i < Array::length(first.entries) {
+    let (_, value) = Array::get(first.entries, i)
+    let head = qualified_head_of(value)
+    if head != "" && MutSet::has(later_keys, head) {
+      ok = false
+    } else {
+      i = i + 1
+    }
+  }
+  ok
+}
+
+/// One statement through the export pass and the private stage at once.
+/// `both` is the union map for the positions both passes rewrite; a `let mut`
+/// name is renamed by the private stage only, and a bodyless declaration or
+/// an export list is visited by the export pass only -- each keeps its own
+/// map so the fused walk answers exactly like the pair.
+fn namespace_private_stmt_after_renames(stmt: Stmt, exports: AliasIdx, privates: AliasIdx, both: AliasIdx) -> Stmt {
+  match stmt {
+    SLet(exported, is_rec, name, ty, body) => SLet(exported, is_rec, aliasidx_rename(both, name), ty, rewrite_alias_expr_ix(body, both)),
+    SLetMut(name, ty, body) => SLetMut(aliasidx_rename(privates, name), ty, rewrite_alias_expr_ix(body, both)),
+    SFnDecl(exported, name, body, requires, ensures) => SFnDecl(exported, aliasidx_rename(exports, name), rewrite_alias_expr_ix(body, exports), for requirement in requires {
+      rewrite_alias_expr_ix(requirement, exports)
+    }, for guarantee in ensures {
+      rewrite_alias_expr_ix(guarantee, exports)
+    }),
+    SExport(items) => SExport(for item in items {
+      aliasidx_rename(exports, item)
+    }),
+    STest(name, body) => STest(name, rewrite_alias_expr_ix(body, both)),
+    SBench(name, body) => SBench(name, rewrite_alias_expr_ix(body, both)),
+    SExpr(body) => SExpr(rewrite_alias_expr_ix(body, both)),
+    SLetPat(pat, body) => SLetPat(pat, rewrite_alias_expr_ix(body, both)),
+    SModule(exported, name, stmts) => SModule(exported, name, namespace_private_value_stmts(name, stmts)),
+    _ => stmt
+  }
+}
+
+/// The type and constructor stage of `namespace_private_value_stmts`, over
+/// statements whose private values are already renamed.
+fn namespace_private_type_ctor_stage(path: String, value_renamed: Array[Stmt], namespace_suffix_box: Array[String], exported: Array[String]) -> Array[Stmt] {
   let type_renames = collect_private_type_renames(path, value_renamed, namespace_suffix_box, exported)
   let ctor_renames = collect_private_ctor_renames(path, value_renamed, type_renames, namespace_suffix_box, exported)
   if Array::length(type_renames) == 0 && Array::length(ctor_renames) == 0 {
@@ -2423,7 +2468,7 @@ export fn namespace_private_value_stmts(path: String, stmts: Array[Stmt]) -> Arr
       rewrite_impl_method_binding(stmt, owner_aliases)
     }
     for stmt in owner_renamed {
-      namespace_private_type_ctor_stmt_local(stmt, type_renames, ctor_renames)
+      namespace_private_type_ctor_stmt(stmt, type_renames, ctor_renames)
     }
   }
 }
