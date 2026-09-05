@@ -959,7 +959,17 @@ export struct CtorTable {
   // (same length); ctor_table_index_of falls back to the linear scan when a
   // hand-built table skips them.
   names_sorted: Array[String];
-  names_sorted_pos: Array[Int]
+  names_sorted_pos: Array[Int];
+  // #2386: the same sorted view + original-position payload over
+  // `struct_names`, and a sorted view of `type_names` (membership only), so
+  // agg_info_of_type_name binary-searches both instead of scanning the
+  // program's struct and constructor-type lists per annotated parameter and
+  // per aggregate-returning function. Same contract as names_sorted: keep in
+  // sync with the array each mirrors; a hand-built table that leaves them
+  // empty falls back to the linear scan.
+  struct_names_sorted: Array[String];
+  struct_names_sorted_pos: Array[Int];
+  type_names_sorted: Array[String]
 }
 
 /// #cov branch coverage state, threaded via CompileCtx. Linear-backend only;
@@ -1240,6 +1250,14 @@ export struct CompileCtx {
   // NOT per-function like agg_local_slots.
   agg_ret_names: Array[String];
   agg_ret_infos: Array[Int];
+  // #2386: sorted view of agg_ret_names + original-position payload
+  // (ctor_sorted_index, the same shape as CtorTable.names_sorted), built once
+  // per compile right after compute_agg_returning fills the arrays, so a
+  // `let a = f(..)` classification is one binary search instead of a scan of
+  // every aggregate-returning function in the program. Shared across
+  // functions like the arrays it mirrors.
+  agg_ret_names_sorted: Array[String];
+  agg_ret_names_sorted_pos: Array[Int];
   // #791: program-wide (fn name) set for top-level functions whose DECLARED
   // return type is heap (see compute_heap_returning / type_expr_is_heap).
   // Consulted by classify_let_value_heap so `let mut s = Set::new()` reads
@@ -1685,6 +1703,9 @@ export struct CompileCtxGc {
   // #724 round 2: gc twins of agg_ret_names/agg_ret_infos.
   gc_agg_ret_names: Array[String];
   gc_agg_ret_infos: Array[Int];
+  // #2386: gc twins of CompileCtx.agg_ret_names_sorted / _pos.
+  gc_agg_ret_names_sorted: Array[String];
+  gc_agg_ret_names_sorted_pos: Array[Int];
   // #1109 gc parity: gc twin of CompileCtx.table_slots_used (see that
   // field's doc comment for the full rationale) -- append-only recorder of
   // every funcref-table slot the gc lane's own closure codegen
@@ -1980,30 +2001,62 @@ export fn agg_expr_lookup(arr: Array[Int], exprs: Array[Expr], slot: Int) -> Exp
 /// encoding; n = 63 is the "dynamic field count" sentinel: enum-typed values
 /// have a variant-dependent argc, so the comparator reads argc@4 from the
 /// value at runtime instead of unrolling a static count.
-export fn agg_info_of_type_name(ct: CtorTable, tname: String) -> Int {
-  let mut si = 0
-  let mut out = 0
-  while si < Array::length(ct.struct_names) {
-    if Array::get(ct.struct_names, si) == tname {
-      out = 128 + Array::length(Array::get(ct.struct_field_names, si))
-      si = Array::length(ct.struct_names)
-    } else {
-      si = si + 1
+/// The struct index of `tname` in `ct.struct_names`, -1 when absent: through
+/// the sorted view when it is in sync with the array, else the linear scan.
+fn struct_table_index_of(ct: CtorTable, tname: String) -> Int {
+  if Array::length(ct.struct_names_sorted) != Array::length(ct.struct_names) {
+    let mut si = 0
+    let mut out = 0 - 1
+    while si < Array::length(ct.struct_names) {
+      if Array::get(ct.struct_names, si) == tname {
+        out = si
+        si = Array::length(ct.struct_names)
+      } else {
+        si = si + 1
+      }
     }
-  }
-  if out > 0 {
     out
   } else {
+    let slot = bsearch_leftmost(ct.struct_names_sorted, tname)
+    if slot < 0 {
+      0 - 1
+    } else {
+      Array::get(ct.struct_names_sorted_pos, slot)
+    }
+  }
+}
+
+/// Does some constructor in `ct` declare `tname` as its type? Through the
+/// sorted view when in sync, else the linear scan.
+fn ctor_type_names_contain(ct: CtorTable, tname: String) -> Bool {
+  if Array::length(ct.type_names_sorted) != Array::length(ct.type_names) {
     let mut ti = 0
-    let mut is_enum = false
+    let mut found = false
     while ti < Array::length(ct.type_names) {
       if Array::get(ct.type_names, ti) == tname {
-        is_enum = true
+        found = true
         ti = Array::length(ct.type_names)
       } else {
         ti = ti + 1
       }
     }
+    found
+  } else {
+    bsearch_leftmost(ct.type_names_sorted, tname) >= 0
+  }
+}
+
+export fn agg_info_of_type_name(ct: CtorTable, tname: String) -> Int {
+  let si = struct_table_index_of(ct, tname)
+  let out = if si >= 0 {
+    128 + Array::length(Array::get(ct.struct_field_names, si))
+  } else {
+    0
+  }
+  if out > 0 {
+    out
+  } else {
+    let is_enum = ctor_type_names_contain(ct, tname)
     if is_enum {
       128 + 63
     } else {
@@ -2106,6 +2159,20 @@ export fn agg_ret_lookup(names: Array[String], infos: Array[Int], fname: String)
     }
   }
   out
+}
+
+/// #2386: agg_ret_lookup through the sorted view ctor_sorted_index built over
+/// the same `names` (`sorted` + `pos`); -1 for a function the table does not
+/// list. The FIRST row of a name wins, exactly as agg_ret_lookup's scan
+/// answers: the sort is stable, so the leftmost slot of a repeated name
+/// carries its smallest position.
+export fn agg_ret_lookup_indexed(sorted: Array[String], pos: Array[Int], infos: Array[Int], fname: String) -> Int {
+  let slot = bsearch_leftmost(sorted, fname)
+  if slot < 0 {
+    0 - 1
+  } else {
+    Array::get(infos, Array::get(pos, slot))
+  }
 }
 
 /// #724: non-throwing last-match local lookup (resolve_local throws on a

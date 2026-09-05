@@ -1,0 +1,67 @@
+//# #2386: agg_info_of_type_name answers through sorted views of the struct
+//# and constructor-type name lists when a table carries them, and through
+//# the linear scan when it does not (a hand-built table). Both spellings of
+//# one table must agree on a struct (128 + its field count), an enum type
+//# (128 + 63), and an unknown name (0).
+
+//# Imports
+
+import @vibe/compiler/codegen/common_base {
+  CtorTable, agg_info_of_type_name, ctor_sorted_index
+}
+
+//# Functions
+
+/// A table whose struct names are NOT in sorted order, so a sorted slot and
+/// an original position differ (Zed sorts after Alpha but is struct 0).
+fn table(with_views: Bool) -> CtorTable {
+  let names = ["Zed", "Alpha", "Leaf", "Pair"]
+  let type_names = ["Zed", "Alpha", "Node", "Node"]
+  let struct_names = ["Zed", "Alpha"]
+  let (ss, sp) = if with_views {
+    ctor_sorted_index(struct_names)
+  } else {
+    ([], [])
+  }
+  let (ts, _) = if with_views {
+    ctor_sorted_index(type_names)
+  } else {
+    ([], [])
+  }
+  CtorTable::{
+    names: names,
+    tags: [0, 1, 2, 3],
+    field_counts: [3, 1, 1, 2],
+    type_names: type_names,
+    struct_names: struct_names,
+    struct_field_names: [["a", "b", "c"], ["x"]],
+    struct_field_is_ref: [[false, false, false], [false]],
+    names_sorted: [],
+    names_sorted_pos: [],
+    struct_names_sorted: ss,
+    struct_names_sorted_pos: sp,
+    type_names_sorted: ts
+  }
+}
+
+//# Tests
+
+test "a struct's info is 128 + its own field count through the sorted view" {
+  let ct = table(true)
+  inspect(agg_info_of_type_name(ct, "Zed"), content = "131")
+  inspect(agg_info_of_type_name(ct, "Alpha"), content = "129")
+}
+
+test "an enum type is 191 and an unknown name 0 through the sorted view" {
+  let ct = table(true)
+  inspect(agg_info_of_type_name(ct, "Node"), content = "191")
+  inspect(agg_info_of_type_name(ct, "Nope"), content = "0")
+}
+
+test "a table without the views answers the same through the scan" {
+  let ct = table(false)
+  inspect(agg_info_of_type_name(ct, "Zed"), content = "131")
+  inspect(agg_info_of_type_name(ct, "Alpha"), content = "129")
+  inspect(agg_info_of_type_name(ct, "Node"), content = "191")
+  inspect(agg_info_of_type_name(ct, "Nope"), content = "0")
+}
