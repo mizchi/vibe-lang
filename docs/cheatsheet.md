@@ -475,7 +475,8 @@ parameter with no `Eq` bound — bare `T`, `Option[T]`, `(T, Int)`,
 `Array[T]` — has no comparator to reach and used to answer by reference
 identity for an aggregate (`same_some(Pt::{ v: 1 }, Pt::{ v: 1 })` was
 `false` while `same_some(1, 1)` was `true`). The checker now rejects the
-site and names the edit; `Ord` alone is not an `Eq` bound:
+site and names the edit. A bound counts when it is `Eq` or has `Eq` among
+its supertraits (`Ord: Eq` does; a user `trait Key: Eq` does):
 
 ```vibe skip
 // rejected: `==` compares two values of type `Option[T]`, but the type

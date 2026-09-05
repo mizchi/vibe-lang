@@ -50,6 +50,7 @@ import @vibe/compiler/core {
   subst_lookup,
   trait_decl_params,
   trait_method_sig_binders_deep,
+  trait_supers,
   type_constructor_name,
   type_implements_trait,
   type_name_has_iterator_impl,
@@ -3891,7 +3892,9 @@ export fn reset_eq_formal_vars() -> Unit {
 /// compare elements with a raw `==` by construction, and on the lane that
 /// desugars before it checks (the single-source compile) the checker sees
 /// them; the user's own site was already judged where it was written, so the
-/// synthesized copy is not recorded and cannot be reported.
+/// synthesized copy is not recorded. The spelling is sound as the signal
+/// because the parser refuses a user-written `__Vfp_` type parameter
+/// (parse_type_param_kind) -- only AST the compiler built can carry it.
 fn record_eq_formal_var(vid: Int, name: String) -> Unit {
   if String::starts_with(name, "__Vfp_") {
     ()
@@ -3900,11 +3903,38 @@ fn record_eq_formal_var(vid: Int, name: String) -> Unit {
   }
 }
 
-fn bounds_include_eq(bounds: Array[String]) -> Bool {
+/// Does `bound` entail `Eq` -- by name, or through its declared supertraits
+/// (`trait Ord: Eq` in the builtin registry, a user `trait Key: Eq`)? Walks
+/// `trait_supers` with a visited set, so a cyclic declaration terminates.
+fn bound_entails_eq(env: TypeEnv, bound: String) -> Bool {
+  let pending: Array[String] = [trait_ref_name(bound)]
+  let seen: Array[String] = []
+  let mut found = false
+  while !found && Array::length(pending) > 0 {
+    let cur = Array::get(pending, Array::length(pending) - 1)
+    Array::truncate(pending, Array::length(pending) - 1)
+    if cur == "Eq" {
+      found = true
+    } else if string_array_has(seen, cur) {
+      ()
+    } else {
+      Array::push(seen, cur)
+      let supers = trait_supers(env, cur)
+      let mut i = 0
+      while i < Array::length(supers) {
+        Array::push(pending, trait_ref_name(Array::get(supers, i)))
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
+fn bounds_entail_eq(env: TypeEnv, bounds: Array[String]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(bounds) {
-    if trait_ref_name(Array::get(bounds, i)) == "Eq" {
+    if bound_entails_eq(env, Array::get(bounds, i)) {
       found = true
       i = Array::length(bounds)
     } else {
@@ -3920,9 +3950,11 @@ fn bounds_include_eq(bounds: Array[String]) -> Bool {
 /// may leave `y`'s variable as the survivor with `T` pointing at it). The
 /// `Eq` bound is read off both the formal's own variable and the survivor:
 /// `[T: Eq]` records its bound on `T`'s id, and `rigid_trait_bound_binop`
-/// (order / `+`) may have transferred one onto the survivor.
-fn eq_formal_names_for_var(id: Int, s: Subst, out: Array[String]) -> Unit {
-  let rep_bounded = bounds_include_eq(subst_bounds_for(s, id))
+/// (order / `+`) may have transferred one onto the survivor. Collected as
+/// `(var id, name)` and deduplicated by id, so two binders that share a
+/// spelling stay two entries (the message tells them apart).
+fn eq_formal_names_for_var(id: Int, s: Subst, env: TypeEnv, out: Array[(Int, String)]) -> Unit {
+  let rep_bounded = bounds_entail_eq(env, subst_bounds_for(s, id))
   let mut i = 0
   while i < Array::length(eq_formal_vars) {
     let (vid, name) = Array::get(eq_formal_vars, i)
@@ -3934,8 +3966,8 @@ fn eq_formal_names_for_var(id: Int, s: Subst, out: Array[String]) -> Unit {
         _ => false
       }
     }
-    if stands_for && !rep_bounded && !bounds_include_eq(subst_bounds_for(s, vid)) && !string_array_has(out, name) {
-      Array::push(out, name)
+    if stands_for && !rep_bounded && !bounds_entail_eq(env, subst_bounds_for(s, vid)) && !eq_formals_has_vid(out, vid) {
+      Array::push(out, (vid, name))
     } else {
       ()
     }
@@ -3943,18 +3975,51 @@ fn eq_formal_names_for_var(id: Int, s: Subst, out: Array[String]) -> Unit {
   }
 }
 
+fn eq_formals_has_vid(items: Array[(Int, String)], vid: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    let (v, _) = Array::get(items, i)
+    if v == vid {
+      found = true
+      i = Array::length(items)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn eq_formals_has_name(items: Array[(Int, String)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) {
+    let (_, n) = Array::get(items, i)
+    if n == name {
+      found = true
+      i = Array::length(items)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
 /// Collect (by name) every type parameter `ty` mentions that carries no `Eq`
 /// bound, walking the shapes a comparator would have to descend: containers,
-/// tuples, applied heads, and the rigid `#hktformal.` spelling an HKT-related
-/// formal takes. A function type never compares, so it is not descended.
-fn eq_unbounded_formals_in(ty: Type, s: Subst, out: Array[String]) -> Unit {
+/// tuples, anonymous records, applied heads, and the rigid `#hktformal.`
+/// spelling an HKT-related formal takes. A function type never compares, so
+/// it is not descended.
+fn eq_unbounded_formals_in(ty: Type, s: Subst, env: TypeEnv, out: Array[(Int, String)]) -> Unit {
   match ty {
-    CtVar(id) => eq_formal_names_for_var(id, s, out),
+    CtVar(id) => eq_formal_names_for_var(id, s, env, out),
     CtNamed(n, args) => {
       if String::starts_with(n, "#hktformal.") {
+        // A rigid HKT formal has no variable id; -1 keeps it distinct from
+        // every recorded binder and dedups by spelling.
         let fname = String::substring(n, 11, String::length(n))
-        if !string_array_has(out, fname) {
-          Array::push(out, fname)
+        if !eq_formals_has_name(out, fname) {
+          Array::push(out, (0 - 1, fname))
         } else {
           ()
         }
@@ -3963,24 +4028,32 @@ fn eq_unbounded_formals_in(ty: Type, s: Subst, out: Array[String]) -> Unit {
       }
       let mut i = 0
       while i < Array::length(args) {
-        eq_unbounded_formals_in(Array::get(args, i), s, out)
+        eq_unbounded_formals_in(Array::get(args, i), s, env, out)
         i = i + 1
       }
     },
-    CtArray(e) => eq_unbounded_formals_in(e, s, out),
-    CtOption(e) => eq_unbounded_formals_in(e, s, out),
+    CtArray(e) => eq_unbounded_formals_in(e, s, env, out),
+    CtOption(e) => eq_unbounded_formals_in(e, s, env, out),
     CtTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        eq_unbounded_formals_in(Array::get(items, i), s, out)
+        eq_unbounded_formals_in(Array::get(items, i), s, env, out)
+        i = i + 1
+      }
+    },
+    CtRecord(rfields) => {
+      let mut i = 0
+      while i < Array::length(rfields) {
+        let (_, fty) = Array::get(rfields, i)
+        eq_unbounded_formals_in(fty, s, env, out)
         i = i + 1
       }
     },
     CtApplied(head, args) => {
-      eq_unbounded_formals_in(head, s, out)
+      eq_unbounded_formals_in(head, s, env, out)
       let mut i = 0
       while i < Array::length(args) {
-        eq_unbounded_formals_in(Array::get(args, i), s, out)
+        eq_unbounded_formals_in(Array::get(args, i), s, env, out)
         i = i + 1
       }
     },
@@ -4022,18 +4095,65 @@ fn joined_names(names: Array[String], sep: String) -> String {
   out
 }
 
+/// Is the recorded formal `vid`, spelled `name`, hidden at this site by an
+/// inner binder of the same spelling? The environment's binding for `name`
+/// is the innermost one; if it does not resolve to `vid`'s variable, the
+/// offending formal is an enclosing declaration's, and the edit the message
+/// names must go there (Codex on #2529: bounding the visible inner `T` would
+/// change nothing).
+fn eq_formal_is_shadowed(vid: Int, name: String, s: Subst, env: TypeEnv) -> Bool {
+  if vid < 0 {
+    false
+  } else {
+    let own = match subst_apply(s, CtVar(vid)) {
+      CtVar(r) => r,
+      _ => 0 - 1
+    }
+    match env_lookup(env, name) {
+      Some(t) => match subst_apply(s, t) {
+        CtVar(r) => r != own && r != vid,
+        _ => true
+      },
+      None => false
+    }
+  }
+}
+
 /// #2474 (a): the diagnostic for `==` / `!=` on an operand type that mentions
 /// a type parameter with no `Eq` bound. Leads with the edit: the bound, or a
 /// concrete type. Measured before this check existed, every aggregate
 /// instantiation of such a site (`Double`, `Array`, tuple, struct, enum,
 /// `Option`, `Bytes`) answered `false` for equal values while `Int` / `String`
 /// answered correctly -- a silent wrong answer that depended on the caller.
-fn eq_unbounded_formal_msg(op: String, resolved: Type, names: Array[String], s: Subst, off: Int) -> String {
+fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, String)], s: Subst, env: TypeEnv, off: Int) -> String {
+  let names: Array[String] = []
+  let mut shadowed = false
+  let mut fi = 0
+  while fi < Array::length(formals) {
+    let (vid, name) = Array::get(formals, fi)
+    if !string_array_has(names, name) {
+      Array::push(names, name)
+    } else {
+      ()
+    }
+    if eq_formal_is_shadowed(vid, name, s, env) {
+      shadowed = true
+    } else {
+      ()
+    }
+    fi = fi + 1
+  }
   let bound_spelling = joined_names(for n in names {
     String::concat(n, ": Eq")
   }, ", ")
   let params = if Array::length(names) == 1 {
-    String::concat("the type parameter `", String::concat(Array::get(names, 0), "` has no `Eq` bound"))
+    if shadowed {
+      String::concat("the type parameter `", String::concat(Array::get(names, 0), String::concat("` of an enclosing declaration has no `Eq` bound (an inner binder also spelled `", String::concat(Array::get(names, 0), "` shadows it here, so the bound belongs on the outer one)"))))
+    } else {
+      String::concat("the type parameter `", String::concat(Array::get(names, 0), "` has no `Eq` bound"))
+    }
+  } else if shadowed {
+    String::concat("the type parameters `", String::concat(joined_names(names, "`, `"), "` have no `Eq` bound (at least one is an enclosing declaration's, shadowed here by an inner binder of the same spelling, so the bound belongs on the outer one)"))
   } else {
     String::concat("the type parameters `", String::concat(joined_names(names, "`, `"), "` have no `Eq` bound"))
   }
@@ -6816,10 +6936,10 @@ fn infer_binop_type(op: String, left_ty: Type, right_ty: Type, env: TypeEnv, s: 
         // instantiation), so refuse it here rather than answer by reference
         // identity for an aggregate at run time.
         let eq_resolved = subst_apply(s1, left_ty)
-        let unbounded = array_empty()
-        eq_unbounded_formals_in(eq_resolved, s1, unbounded)
+        let unbounded: Array[(Int, String)] = []
+        eq_unbounded_formals_in(eq_resolved, s1, env, unbounded)
         if Array::length(unbounded) > 0 {
-          Array::push(errors, eq_unbounded_formal_msg(op, eq_resolved, unbounded, s1, off))
+          Array::push(errors, eq_unbounded_formal_msg(op, eq_resolved, unbounded, s1, env, off))
         } else {
           ()
         }
@@ -12763,6 +12883,11 @@ fn check_expr_capture_discarded_root(expr: Expr, env: TypeEnv, defs: Array[TypeD
 }
 
 export fn check_expr(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)]) -> (Type, Subst, Int) {
+  // A standalone expression check starts its own variable numbering (callers
+  // pass `c = 0`), so a formal recorded by an earlier standalone check would
+  // alias a fresh variable here. Not an internal entry: the checker recurses
+  // through check_expr_capture.
+  reset_eq_formal_vars()
   check_expr_capture_impl(expr, env, defs, s, c, errors, tytab, None, "Primary", false)
 }
 

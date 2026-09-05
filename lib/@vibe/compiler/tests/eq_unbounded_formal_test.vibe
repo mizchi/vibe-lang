@@ -65,11 +65,28 @@ test "#2474: a lambda inside the generic body sees the same formal" {
   inspect(first_check_error(src), content = "`==` compares two values of type `T`, but the type parameter `T` has no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]`) or compare at a concrete type")
 }
 
-test "#2474: an `Ord` bound is not an `Eq` bound" {
-  // `Ord` carries no `Eq` supertrait in vibe; the comparator witness is `Eq`
-  // and only `Eq`, one concept with one spelling.
-  let src = "fn same[T: Ord](x: T, y: T) -> Bool {\n  x == y\n}\n"
-  inspect(first_check_error(src), content = "`==` compares two values of type `T`, but the type parameter `T` has no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]`) or compare at a concrete type")
+test "#2474: an anonymous record wrapping the formal is rejected" {
+  let src = "fn same[T](x: T, y: T) -> Bool {\n  record { value: x } == record { value: y }\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `record { value: T }`, but the type parameter `T` has no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]`) or compare at a concrete type")
+}
+
+test "#2474: a user cannot borrow the desugar's `__Vfp_` spelling to skip the rule" {
+  // `__Vfp_T` is how normalize/desugar_trait_dict re-spells a formal inside
+  // a synthesized `__arr_equals__` helper, and the checker exempts that
+  // spelling because the helper's raw element `==` is the compiler's. The
+  // parser therefore refuses the spelling in user source (every type-parameter
+  // collector goes through parse_type_param_kind), so the exemption cannot be
+  // reached from a program an author wrote.
+  inspect(first_check_error("fn h[__Vfp_T](a: __Vfp_T, b: __Vfp_T) -> Bool {\n  a == b\n}\n"), content = "type parameter `__Vfp_T` uses the reserved `__Vfp_` prefix (compiler-generated type-variable spellings) -- rename it (#2141)")
+}
+
+test "#2474: a shadowed outer formal is named as the one to bound" {
+  // The inner `[T: Eq]` is the visible `T`; the unbounded operand is the
+  // OUTER `T` captured by the lambda. Telling the reader to write `[T: Eq]`
+  // on the binder they can see would change nothing, so the message says
+  // which binder the edit belongs to.
+  let src = "fn outer[T](x: T) -> Bool {\n  let f = [T: Eq](y: T) -> Bool {\n    (x, y) == (x, y)\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `(T, T)`, but the type parameter `T` of an enclosing declaration has no `Eq` bound (an inner binder also spelled `T` shadows it here, so the bound belongs on the outer one), so they cannot be compared by content here; declare the bound (`[T: Eq]`) or compare at a concrete type")
 }
 
 //# Accepted
@@ -85,6 +102,18 @@ test "#2474: `Eq` among several bounds counts" {
   inspect(first_check_error("fn same[T: Ord + Eq](x: T, y: T) -> Bool {\n  x == y\n}\n"), content = "")
 }
 
+test "#2474: a bound entails `Eq` through its supertraits" {
+  // The builtin registry declares `trait Ord: Eq`; a user trait declared with
+  // `Eq` as a supertrait, directly or through another trait, counts the same.
+  inspect(first_check_error("fn same[T: Ord](x: T, y: T) -> Bool {\n  x == y\n}\n"), content = "")
+  inspect(first_check_error("trait Key: Eq\n\nfn same[T: Key](x: T, y: T) -> Bool {\n  x == y\n}\n"), content = "")
+  inspect(first_check_error("trait Key: Eq\n\ntrait SortKey: Key\n\nfn same[T: SortKey](x: T, y: T) -> Bool {\n  x == y\n}\n"), content = "")
+}
+
+test "#2474: a bound with no `Eq` anywhere above it does not count" {
+  inspect(first_check_error("trait Named\n\nfn same[T: Named](x: T, y: T) -> Bool {\n  x == y\n}\n"), content = "`==` compares two values of type `T`, but the type parameter `T` has no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]`) or compare at a concrete type")
+}
+
 test "#2474: a comparison at a concrete type inside a generic body is untouched" {
   inspect(first_check_error("fn f[T](x: T, n: Int) -> Bool {\n  n == 1\n}\n"), content = "")
   inspect(first_check_error("fn g[T](x: T, s: String) -> Bool {\n  s == \"a\"\n}\n"), content = "")
@@ -98,12 +127,4 @@ test "#2474: an ordinary unsolved inference variable is not a formal" {
 
 test "#2474: a generic function that never compares its formal is untouched" {
   inspect(first_check_error("fn ident[T](x: T) -> T {\n  x\n}\n\nfn omax[T: Ord](a: T, b: T) -> T {\n  if a < b {\n    b\n  } else {\n    a\n  }\n}\n"), content = "")
-}
-
-test "#2474: a desugar-spelled `__Vfp_` formal is the compiler's, not the user's" {
-  // `__Vfp_T` is how normalize/desugar_trait_dict re-spells a formal inside a
-  // synthesized `__arr_equals__` helper; the single-source lane checks after
-  // desugaring, so the helper's raw element `==` must not be reported -- the
-  // user's own site already was.
-  inspect(first_check_error("fn h[__Vfp_T](a: __Vfp_T, b: __Vfp_T) -> Bool {\n  a == b\n}\n"), content = "")
 }

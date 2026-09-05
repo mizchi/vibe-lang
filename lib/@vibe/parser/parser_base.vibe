@@ -28,6 +28,19 @@ export fn peek(tokens: Array[Token], pos: Int) -> Token {
 /// Type, `F[_]` has kind Type -> Type, and each additional underscore adds one
 /// input. The returned String is the AST contract key, not source spelling.
 export fn parse_type_param_kind(tokens: Array[Token], pos: Int, name: String) -> (String, Int) with Exception {
+  // #2141 / #2474: `__Vfp_` is how normalize/desugar_trait_dict re-spells a
+  // formal inside a synthesized `__arr_equals__` helper, and the checker's
+  // `==`-needs-`Eq` rule exempts exactly that spelling because the helper's
+  // raw element compare is the compiler's, not the author's. Synthesized
+  // helpers are built as AST and never pass through here, so this is the one
+  // place a USER binder could borrow the spelling and slip past that rule.
+  // Every type-parameter collector (struct / enum / fn / lambda / impl) goes
+  // through this function.
+  if String::starts_with(name, "__Vfp_") {
+    throw(String::concat("type parameter `", String::concat(name, "` uses the reserved `__Vfp_` prefix (compiler-generated type-variable spellings) -- rename it (#2141)")))
+  } else {
+    ()
+  }
   match peek(tokens, pos) {
     TLBracket => {
       let mut p = pos + 1
