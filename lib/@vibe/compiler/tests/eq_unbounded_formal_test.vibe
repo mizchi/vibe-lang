@@ -86,7 +86,7 @@ test "#2474: a shadowed outer formal is named as the one to bound" {
   // on the binder they can see would change nothing, so the message says
   // which binder the edit belongs to.
   let src = "fn outer[T](x: T) -> Bool {\n  let f = [T: Eq](y: T) -> Bool {\n    (x, y) == (x, y)\n  }\n  true\n}\n"
-  inspect(first_check_error(src), content = "`==` compares two values of type `(T, T)`, but the type parameter `T` of an enclosing declaration has no `Eq` bound (an inner binder also spelled `T` shadows it here, so the bound belongs on the outer one), so they cannot be compared by content here; declare the bound (`[T: Eq]`) or compare at a concrete type")
+  inspect(first_check_error(src), content = "`==` compares two values of type `(T, T)`, but the type parameter `T` of an enclosing declaration has no `Eq` bound (an inner binder also spelled `T` shadows it here, so the bound belongs on the outer one), so they cannot be compared by content here; declare the bound (`[T: Eq]` on the enclosing declaration) or compare at a concrete type")
 }
 
 test "#2474: a higher-kinded binder keeps its kind in the suggested bound" {
@@ -94,6 +94,95 @@ test "#2474: a higher-kinded binder keeps its kind in the suggested bound" {
   // annotation; the edit that works is `[F[_]: Eq]`.
   let src = "fn same[F[_], A](x: F[A], y: F[A]) -> Bool {\n  x == y\n}\n"
   inspect(first_check_error(src), content = "`==` compares two values of type `F[A]`, but the type parameters `F`, `A` have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[F[_]: Eq, A: Eq]`) or compare at a concrete type")
+}
+
+test "#2474: two binders spelled alike are two edits, each on its own declaration" {
+  // The outer `T` (captured `x`) and the inner lambda's `T` (`y`) are both
+  // unbounded; one `[T: Eq]` on the outer declaration would leave the inner
+  // binder as it was, so each is named with the declaration it belongs on.
+  let src = "fn outer[T](x: T) -> Bool {\n  let f = [T](y: T) -> Bool {\n    (x, y) == (x, y)\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `(T, T)`, but the type parameters `T` (an enclosing declaration's), `T` (the inner binder's) have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]` on the enclosing declaration, `[T: Eq]` on the inner binder) or compare at a concrete type")
+}
+
+test "#2474: a shadowed higher-kinded binder keeps its kind, the shadowing one keeps its own" {
+  // The outer `F[_]` is rigid in the body; the inner plain `F` is a
+  // different binder of kind `Type`. Neither may borrow the other's kind in
+  // the suggested edit.
+  let src = "fn outer[F[_], A](x: F[A]) -> Bool {\n  let g = [F](y: F) -> Bool {\n    (x, y) == (x, y)\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `(F[A], F)`, but the type parameters `F` (an enclosing declaration's), `A` (an enclosing declaration's), `F` (the inner binder's) have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[F[_]: Eq, A: Eq]` on the enclosing declaration, `[F: Eq]` on the inner binder) or compare at a concrete type")
+}
+
+test "#2474: a bare compare that unifies the two binders still tells them apart" {
+  // `x == y` unifies the outer `T` with the inner `T`, so under the final
+  // substitution both binders share one representative. Ownership is read
+  // off the binders' own variables, so the outer one is still reported as the
+  // enclosing declaration's and the inner one as the inner binder's.
+  let src = "fn outer[T](x: T) -> Bool {\n  let f = [T](y: T) -> Bool {\n    x == y\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `T`, but the type parameters `T` (an enclosing declaration's), `T` (the inner binder's) have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]` on the enclosing declaration, `[T: Eq]` on the inner binder) or compare at a concrete type")
+}
+
+test "#2474: three nested binders of one spelling are told apart by depth" {
+  // The innermost `T` (`z`) is not compared; the two outer ones are. One
+  // "enclosing declaration" label for both would leave the reader unable to
+  // tell the outermost from the immediately enclosing binder.
+  let src = "fn outer[T](x: T) -> Bool {\n  let g = [T](y: T) -> Bool {\n    let h = [T](z: T) -> Bool {\n      (x, y) == (x, y)\n    }\n    true\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `(T, T)`, but the type parameters `T` (the declaration 2 binders out's), `T` (an enclosing declaration's) have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]` on the declaration 2 binders out, `[T: Eq]` on the enclosing declaration) or compare at a concrete type")
+}
+
+test "#2474: differently named binders of different declarations are separate edits" {
+  // Neither `T` nor `U` shadows the other, yet no single declaration owns
+  // both: one `[T: Eq, U: Eq]` bracket would leave one of them unbounded or
+  // declare a new shadowing formal wherever it was pasted.
+  let src = "fn outer[T](x: T) -> Bool {\n  let f = [U](y: U) -> Bool {\n    (x, y) == (x, y)\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `(T, U)`, but the type parameters `T` (an enclosing declaration's), `U` (the inner binder's) have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]` on the enclosing declaration, `[U: Eq]` on the inner binder) or compare at a concrete type")
+}
+
+test "#2474: a value binding spelled like a formal is not a type binder" {
+  // A parameter named `T` next to the type parameter `T` is legal
+  // (fixtures/typecheck/formal_application_value_shadow_ok.vibe); it must not
+  // count as a binder when the edits are placed.
+  let src = "fn outer[T](x: T) -> Bool {\n  let f = [T](T: T) -> Bool {\n    x == T\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `T`, but the type parameters `T` (an enclosing declaration's), `T` (the inner binder's) have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]` on the enclosing declaration, `[T: Eq]` on the inner binder) or compare at a concrete type")
+}
+
+test "#2474: a rigid higher-kinded mention is the innermost binder of that spelling" {
+  // The types carry the spelling only, so `F[A]` from the outer value and
+  // `F[A]` from the inner parameter read alike; the mention is attributed to
+  // the binder the spelling denotes here (the inner one), and the message
+  // says an enclosing declaration shares the spelling in case the compared
+  // value was captured from it.
+  let src = "fn outer[F[_], A](x: F[A]) -> Bool {\n  let g = [F[_]](y: F[A]) -> Bool {\n    (x, y) == (x, y)\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `(F[A], F[A])`, but the type parameters `A` (an enclosing declaration's), `F` (the inner binder's) have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[A: Eq]` on the enclosing declaration, `[F[_]: Eq]` on the inner binder); an enclosing declaration also spells `F` as a higher-kinded binder, and a compared value captured from there needs the bound on that declaration as well or compare at a concrete type")
+}
+
+test "#2474: an inner rigid binder used alone does not drag in the outer one" {
+  // Only the inner `F[_]` and `B` are compared; `[F[_]: Eq, B: Eq]` on the
+  // inner declaration is the whole edit, and the outer API is not constrained.
+  let src = "fn outer[F[_], A](x: F[A]) -> Bool {\n  let g = [F[_], B](y: F[B]) -> Bool {\n    y == y\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `F[B]`, but the type parameters `F`, `B` have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[F[_]: Eq, B: Eq]`); an enclosing declaration also spells `F` as a higher-kinded binder, and a compared value captured from there needs the bound on that declaration as well or compare at a concrete type")
+}
+
+test "#2474: an enclosing binder that nothing shadows is placed without a shadowing claim" {
+  // The inner declaration binds `U`, not `T`: the outer `T` is not shadowed,
+  // it is simply not the site's own declaration.
+  let src = "fn outer[T](x: T) -> Bool {\n  let f = [U](y: U) -> Bool {\n    x == x\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `T`, but the type parameter `T` of an enclosing declaration has no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]` on the enclosing declaration) or compare at a concrete type")
+}
+
+test "#2474: several formals of one enclosing declaration are placed there together" {
+  // Both unbounded formals belong to the outer declaration; the inner `[V]`
+  // is the site's own. One bracket, placed on the declaration that owns it.
+  let src = "fn outer[T, U](x: T, y: U) -> Bool {\n  let f = [V](z: V) -> Bool {\n    (x, y) == (x, y)\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `(T, U)`, but the type parameters `T`, `U` of an enclosing declaration have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq, U: Eq]` on the enclosing declaration) or compare at a concrete type")
+}
+
+test "#2474: a re-checked handler arm does not place a sibling's binder as enclosing" {
+  // `check_resume_values` re-checks each `resume(..)` value with the same
+  // variable counter, so the two sibling lambdas can share a variable id. The
+  // second (unbounded) one must be reported as its own declaration, not as
+  // the closed first sibling's, and there is no enclosing generic here.
+  let src = "effect Ask {\n  Get() -> Int\n}\n\nfn ask() -> Int with Ask {\n  perform Ask::Get()\n}\n\nfn run(flag: Bool) -> Int {\n  handle { ask() } with {\n    Ask::Get() => if flag {\n      resume(if ([T: Eq](a: T, b: T) -> Bool { a == b })(1, 1) { 1 } else { 0 })\n    } else {\n      resume(if ([T](a: T, b: T) -> Bool { a == b })(2, 2) { 1 } else { 0 })\n    }\n  }\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `T`, but the type parameter `T` has no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]`) or compare at a concrete type")
 }
 
 //# Accepted
