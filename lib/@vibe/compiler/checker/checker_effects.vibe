@@ -275,26 +275,31 @@ fn is_stdin_provider_surface(name: String) -> Bool {
 /// attempting the generic effect-flow propagation deliberately deferred by
 /// #1536. An explicitly effectful user wrapper remains an ordinary function.
 fn check_stdin_provider_direct_calls_expr(expr: Expr) -> Array[EffectError] {
-  let errors = array_empty()
+  let out = array_empty()
+  check_stdin_provider_direct_calls_expr_into(expr, out)
+  out
+}
+
+fn check_stdin_provider_direct_calls_expr_into(expr: Expr, out: Array[EffectError]) -> Unit {
   match expr {
     ECall(EIdent(name, _), args, _) => {
       if is_stdin_provider_surface(name) {
         let mut ai = 0
         while ai < Array::length(args) {
-          append_eff_errs(errors, check_stdin_provider_direct_calls_expr(Array::get(args, ai)))
+          check_stdin_provider_direct_calls_expr_into(Array::get(args, ai), out)
           ai = ai + 1
         }
       } else {
         let children = expr_children(expr)
         let mut i = 0
         while i < Array::length(children) {
-          append_eff_errs(errors, check_stdin_provider_direct_calls_expr(Array::get(children, i)))
+          check_stdin_provider_direct_calls_expr_into(Array::get(children, i), out)
           i = i + 1
         }
       }
     },
     EIdent(name, _) => if is_stdin_provider_surface(name) {
-      Array::push(errors, EEStdinProviderValueReference(name))
+      Array::push(out, EEStdinProviderValueReference(name))
     } else {
       ()
     },
@@ -302,12 +307,11 @@ fn check_stdin_provider_direct_calls_expr(expr: Expr) -> Array[EffectError] {
       let children = expr_children(expr)
       let mut i = 0
       while i < Array::length(children) {
-        append_eff_errs(errors, check_stdin_provider_direct_calls_expr(Array::get(children, i)))
+        check_stdin_provider_direct_calls_expr_into(Array::get(children, i), out)
         i = i + 1
       }
     }
   }
-  errors
 }
 
 fn check_stdin_provider_direct_calls_stmt(stmt: Stmt) -> Array[EffectError] {
@@ -1862,18 +1866,23 @@ export fn check_async_effects_expr(expr: Expr, env: TypeEnv, in_async: Bool) -> 
 /// in scope, so an async `for` can be recognised through an ordinary local
 /// (`let it = Array::iter(xs); for x in it`) and through a typed parameter.
 fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals: Array[(String, String)]) -> Array[EffectError] {
-  let errors = array_empty()
+  let out = array_empty()
+  check_async_effects_expr_lo_into(expr, env, in_async, locals, out)
+  out
+}
+
+fn check_async_effects_expr_lo_into(expr: Expr, env: TypeEnv, in_async: Bool, locals: Array[(String, String)], out: Array[EffectError]) -> Unit {
   // Preserve the legacy preorder diagnostic order: inspect a call before its
   // structural children, then delegate their enumeration to expr_children.
   match expr {
     ECall(EIdent(name, _), _, _) => if !in_async && is_async_primitive(name, env) {
-      Array::push(errors, EEEffectfulCallOutsideEffect(name))
+      Array::push(out, EEEffectfulCallOutsideEffect(name))
     } else {
       ()
     },
     EForIn(_, _, iter, _) => match afe_async_iterand(iter, env, locals) {
       Some(tn) => if !in_async {
-        Array::push(errors, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with Async` or wrap the loop in a handler for it)")))
+        Array::push(out, EEEffectfulCallOutsideEffect(String::concat(tn, "::next (a `for` over an async iterator awaits every step -- add `with Async` or wrap the loop in a handler for it)")))
       } else {
         ()
       },
@@ -1885,11 +1894,11 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
     // Scope boundary: a lambda's explicit row replaces its enclosing Async
     // context. All other expression forms retain the context unchanged.
     EFn(_, _, params, _, effect, body) => {
-      append_eff_errs(errors, check_async_effects_expr_lo(body, env, effect_opt_is_async(effect), afe_bind_params(locals, params, env)))
+      check_async_effects_expr_lo_into(body, env, effect_opt_is_async(effect), afe_bind_params(locals, params, env), out)
     },
     EHandle(body, arms) => {
       let discharges_async = handle_arms_handle_async(arms)
-      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async || discharges_async, locals))
+      check_async_effects_expr_lo_into(body, env, in_async || discharges_async, locals, out)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, ai)
@@ -1898,7 +1907,7 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
         } else {
           locals
         }
-        append_eff_errs(errors, check_async_effects_expr_lo(arm_body, env, in_async, arm_locals))
+        check_async_effects_expr_lo_into(arm_body, env, in_async, arm_locals, out)
         ai = ai + 1
       }
     },
@@ -1906,38 +1915,37 @@ fn check_async_effects_expr_lo(expr: Expr, env: TypeEnv, in_async: Bool, locals:
     // and only the body sees the new binding. ELetRec's value may reference
     // itself, so both sides see it.
     ELet(name, val, body, _) => {
-      append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, locals))
-      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_value(locals, name, val, env)))
+      check_async_effects_expr_lo_into(val, env, in_async, locals, out)
+      check_async_effects_expr_lo_into(body, env, in_async, afe_bind_value(locals, name, val, env), out)
     },
     ELetMut(name, val, body, _) => {
-      append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, locals))
-      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, afe_bind_value(locals, name, val, env)))
+      check_async_effects_expr_lo_into(val, env, in_async, locals, out)
+      check_async_effects_expr_lo_into(body, env, in_async, afe_bind_value(locals, name, val, env), out)
     },
     ELetRec(name, val, body) => {
       let rec_locals = afe_bind_value(locals, name, val, env)
-      append_eff_errs(errors, check_async_effects_expr_lo(val, env, in_async, rec_locals))
-      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, rec_locals))
+      check_async_effects_expr_lo_into(val, env, in_async, rec_locals, out)
+      check_async_effects_expr_lo_into(body, env, in_async, rec_locals, out)
     },
     EForIn(name, index_name, iter, body) => {
-      append_eff_errs(errors, check_async_effects_expr_lo(iter, env, in_async, locals))
+      check_async_effects_expr_lo_into(iter, env, in_async, locals, out)
       // The loop variables are ELEMENTS, never the iterator itself: bind them
       // to nothing so they shadow any same-named outer entry.
       let body_locals = match index_name {
         Some(idx) => afe_bind_local(afe_bind_local(locals, name, None), idx, None),
         None => afe_bind_local(locals, name, None)
       }
-      append_eff_errs(errors, check_async_effects_expr_lo(body, env, in_async, body_locals))
+      check_async_effects_expr_lo_into(body, env, in_async, body_locals, out)
     },
     _ => {
       let children = expr_children(expr)
       let mut i = 0
       while i < Array::length(children) {
-        append_eff_errs(errors, check_async_effects_expr_lo(Array::get(children, i), env, in_async, locals))
+        check_async_effects_expr_lo_into(Array::get(children, i), env, in_async, locals, out)
         i = i + 1
       }
     }
   }
-  errors
 }
 
 /// A function body runs in an `{Async}` context if EITHER the lambda's inline
@@ -5773,146 +5781,151 @@ fn mut_with_params(base: Array[String], params: Array[(String, Option[TypeExpr])
 }
 
 export fn check_mutability_expr(expr: Expr, mutable: Array[String]) -> Array[EffectError] {
-  let errors = array_empty()
+  let out = array_empty()
+  check_mutability_expr_into(expr, mutable, out)
+  out
+}
+
+fn check_mutability_expr_into(expr: Expr, mutable: Array[String], out: Array[EffectError]) -> Unit {
   match expr {
     ECall(callee, args, _) => {
-      append_eff_errs(errors, check_mutability_expr(callee, mutable))
+      check_mutability_expr_into(callee, mutable, out)
       let mut ai = 0
       while ai < Array::length(args) {
-        append_eff_errs(errors, check_mutability_expr(Array::get(args, ai), mutable))
+        check_mutability_expr_into(Array::get(args, ai), mutable, out)
         ai = ai + 1
       }
-      errors
+      ()
     },
     EFn(_, _, params, _, _, body) => {
-      append_eff_errs(errors, check_mutability_expr(body, mut_with_params(mutable, params)))
-      errors
+      check_mutability_expr_into(body, mut_with_params(mutable, params), out)
+      ()
     },
     EHandle(body, arms) => {
-      append_eff_errs(errors, check_mutability_expr(body, mutable))
+      check_mutability_expr_into(body, mutable, out)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_mutability_expr(arm_body, mut_with_pat(mutable, pat)))
+        check_mutability_expr_into(arm_body, mut_with_pat(mutable, pat), out)
         ai = ai + 1
       }
-      errors
+      ()
     },
     ELet(_, val, body, _) => {
-      append_eff_errs(errors, check_mutability_expr(val, mutable))
-      append_eff_errs(errors, check_mutability_expr(body, mutable))
-      errors
+      check_mutability_expr_into(val, mutable, out)
+      check_mutability_expr_into(body, mutable, out)
+      ()
     },
     ELetRec(_, val, body) => {
-      append_eff_errs(errors, check_mutability_expr(val, mutable))
-      append_eff_errs(errors, check_mutability_expr(body, mutable))
-      errors
+      check_mutability_expr_into(val, mutable, out)
+      check_mutability_expr_into(body, mutable, out)
+      ()
     },
     ELetMut(name, val, body, _) => {
-      append_eff_errs(errors, check_mutability_expr(val, mutable))
-      append_eff_errs(errors, check_mutability_expr(body, mut_with(mutable, name)))
-      errors
+      check_mutability_expr_into(val, mutable, out)
+      check_mutability_expr_into(body, mut_with(mutable, name), out)
+      ()
     },
     ESeq(a, b) => {
-      append_eff_errs(errors, check_mutability_expr(a, mutable))
-      append_eff_errs(errors, check_mutability_expr(b, mutable))
-      errors
+      check_mutability_expr_into(a, mutable, out)
+      check_mutability_expr_into(b, mutable, out)
+      ()
     },
     EIf(cond, then_e, else_e) => {
-      append_eff_errs(errors, check_mutability_expr(cond, mutable))
-      append_eff_errs(errors, check_mutability_expr(then_e, mutable))
-      append_eff_errs(errors, check_mutability_expr(else_e, mutable))
-      errors
+      check_mutability_expr_into(cond, mutable, out)
+      check_mutability_expr_into(then_e, mutable, out)
+      check_mutability_expr_into(else_e, mutable, out)
+      ()
     },
     EMatch(scrutinee, arms) => {
-      append_eff_errs(errors, check_mutability_expr(scrutinee, mutable))
+      check_mutability_expr_into(scrutinee, mutable, out)
       let mut ai = 0
       while ai < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, ai)
-        append_eff_errs(errors, check_mutability_expr(arm_body, mut_with_pat(mutable, pat)))
+        check_mutability_expr_into(arm_body, mut_with_pat(mutable, pat), out)
         ai = ai + 1
       }
-      errors
+      ()
     },
     EWhile(cond, body) => {
-      append_eff_errs(errors, check_mutability_expr(cond, mutable))
-      append_eff_errs(errors, check_mutability_expr(body, mutable))
-      errors
+      check_mutability_expr_into(cond, mutable, out)
+      check_mutability_expr_into(body, mutable, out)
+      ()
     },
     ELoop(params, body) => {
       let loopmut = Array::slice(mutable, 0, Array::length(mutable))
       let mut i = 0
       while i < Array::length(params) {
         let (pname, init) = Array::get(params, i)
-        append_eff_errs(errors, check_mutability_expr(init, mutable))
+        check_mutability_expr_into(init, mutable, out)
         Array::push(loopmut, pname)
         i = i + 1
       }
-      append_eff_errs(errors, check_mutability_expr(body, loopmut))
-      errors
+      check_mutability_expr_into(body, loopmut, out)
+      ()
     },
     EForIn(name, index_name, iter, body) => {
-      append_eff_errs(errors, check_mutability_expr(iter, mutable))
+      check_mutability_expr_into(iter, mutable, out)
       let base = mut_with(mutable, name)
       let formut = match index_name {
         Some(idx) => mut_with(base, idx),
         None => base
       }
-      append_eff_errs(errors, check_mutability_expr(body, formut))
-      errors
+      check_mutability_expr_into(body, formut, out)
+      ()
     },
     EBinOp(_, left, right, _) => {
-      append_eff_errs(errors, check_mutability_expr(left, mutable))
-      append_eff_errs(errors, check_mutability_expr(right, mutable))
-      errors
+      check_mutability_expr_into(left, mutable, out)
+      check_mutability_expr_into(right, mutable, out)
+      ()
     },
-    EReturn(e) => check_mutability_expr(e, mutable),
-    EUnaryOp(_, operand) => check_mutability_expr(operand, mutable),
+    EReturn(e) => check_mutability_expr_into(e, mutable, out),
+    EUnaryOp(_, operand) => check_mutability_expr_into(operand, mutable, out),
     EAssign(name, val, cont) => {
       if !mut_has(mutable, name) {
-        Array::push(errors, EEAssignImmutable(name))
+        Array::push(out, EEAssignImmutable(name))
       } else {
         ()
       }
-      append_eff_errs(errors, check_mutability_expr(val, mutable))
-      append_eff_errs(errors, check_mutability_expr(cont, mutable))
-      errors
+      check_mutability_expr_into(val, mutable, out)
+      check_mutability_expr_into(cont, mutable, out)
+      ()
     },
     EAssignOp(name, _, val, cont) => {
       if !mut_has(mutable, name) {
-        Array::push(errors, EEAssignImmutable(name))
+        Array::push(out, EEAssignImmutable(name))
       } else {
         ()
       }
-      append_eff_errs(errors, check_mutability_expr(val, mutable))
-      append_eff_errs(errors, check_mutability_expr(cont, mutable))
-      errors
+      check_mutability_expr_into(val, mutable, out)
+      check_mutability_expr_into(cont, mutable, out)
+      ()
     },
-    EDot(obj, _, _, _) => check_mutability_expr(obj, mutable),
+    EDot(obj, _, _, _) => check_mutability_expr_into(obj, mutable, out),
     ETuple(elems) => {
       let mut ei = 0
       while ei < Array::length(elems) {
-        append_eff_errs(errors, check_mutability_expr(Array::get(elems, ei), mutable))
+        check_mutability_expr_into(Array::get(elems, ei), mutable, out)
         ei = ei + 1
       }
-      errors
+      ()
     },
     EArray(elems) => {
       let mut ei = 0
       while ei < Array::length(elems) {
-        append_eff_errs(errors, check_mutability_expr(Array::get(elems, ei), mutable))
+        check_mutability_expr_into(Array::get(elems, ei), mutable, out)
         ei = ei + 1
       }
-      errors
+      ()
     },
     ERecord(_, fields, _) => {
       let mut fi = 0
       while fi < Array::length(fields) {
         let (_, fval) = Array::get(fields, fi)
-        append_eff_errs(errors, check_mutability_expr(fval, mutable))
+        check_mutability_expr_into(fval, mutable, out)
         fi = fi + 1
       }
-      errors
+      ()
     },
     // #629 step 3-2: forms previously dropped to `_ => errors`, so an illegal
     // reassignment (`x = e` where x is an immutable `let`) sitting inside a map
@@ -5924,24 +5937,24 @@ export fn check_mutability_expr(expr: Expr, mutable: Array[String]) -> Array[Eff
       let mut mi = 0
       while mi < Array::length(entries) {
         let (_, mval) = Array::get(entries, mi)
-        append_eff_errs(errors, check_mutability_expr(mval, mutable))
+        check_mutability_expr_into(mval, mutable, out)
         mi = mi + 1
       }
-      errors
+      ()
     },
-    ELabeledArg(_, _, inner) => check_mutability_expr(inner, mutable),
-    ESpread(inner) => check_mutability_expr(inner, mutable),
+    ELabeledArg(_, _, inner) => check_mutability_expr_into(inner, mutable, out),
+    ESpread(inner) => check_mutability_expr_into(inner, mutable, out),
     EBreak(opt) => match opt {
-      Some(e) => check_mutability_expr(e, mutable),
-      None => errors
+      Some(e) => check_mutability_expr_into(e, mutable, out),
+      None => ()
     },
     EContinue(cargs) => {
       let mut ci = 0
       while ci < Array::length(cargs) {
-        append_eff_errs(errors, check_mutability_expr(Array::get(cargs, ci), mutable))
+        check_mutability_expr_into(Array::get(cargs, ci), mutable, out)
         ci = ci + 1
       }
-      errors
+      ()
     },
     // New structural forms keep the same binding context; scoped forms above
     // intentionally remain explicit so their boundary semantics are visible.
@@ -5949,10 +5962,10 @@ export fn check_mutability_expr(expr: Expr, mutable: Array[String]) -> Array[Eff
       let children = expr_children(expr)
       let mut i = 0
       while i < Array::length(children) {
-        append_eff_errs(errors, check_mutability_expr(Array::get(children, i), mutable))
+        check_mutability_expr_into(Array::get(children, i), mutable, out)
         i = i + 1
       }
-      errors
+      ()
     }
   }
 }
