@@ -412,7 +412,7 @@ prepare_flat_cli_source() {
   [ -f "$generator" ] || die "selfhost bundle generator not found: $generator"
   local bundle_tmp="$out_dir/.selfhost_bundle"
   local bundle_log="$out_dir/selfhost_bundle_generation.log"
-  mkdir -p "$bundle_tmp"
+  mkdir -p "$bundle_tmp" "$out_dir"
   echo "[selfhost-gen] prepare flat selfhost compiler source" >&2
   # Both step-0 traces put roughly half the wall clock outside every stage
   # compile (docs/tracing-design.md §5.6 48%, §5.7 65%). This generator call is

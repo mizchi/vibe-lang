@@ -175,6 +175,16 @@ merge し、`seed-release` workflow が使えるようになってから最初�
   済むようにする。取得に失敗した場合は **即座に fail** する — 古い/誤った
   seed を黙って使うより安全なため。エラーメッセージが tag/URL と
   `--from-dir` (air-gapped ミラー用) の使い方を案内する。
+- **例外は 1 つ**: pin された tag が release リポジトリ (`mizchi/vibe-lang`、
+  `git ls-remote` で確認、`VIBE_ENSURE_SEED_GIT_REMOTE` で差し替え可) に
+  **まだ存在しない**場合 — bootstrap bump PR の `seed-release` 実行前の窓 — は
+  fetch ではなく **再ビルド**する: `seed.source_commit` を worktree に checkout
+  し (その commit の manifest は 1 つ前の公開 seed を pin している)、そこで
+  `generations.sh build` を回し、stage2 が pin の sha256 と一致したときだけ
+  設置する。tag が存在するのに取得・検証に失敗する場合 (asset 欠落・manifest
+  不正・sha 不一致) とオフラインは従来どおり即 fail。
+  `VIBE_ENSURE_SEED_NO_REBUILD=1` でこの例外も無効化できる。詳細は下の
+  "Bootstrap bump procedure" step 3。
 
 ### Release タグ体系
 
@@ -323,8 +333,17 @@ an existing, published seed to use as stage0.
    `bootstrap/seed.json`, copies the artifact to `bootstrap/seed/compiler.wasm`,
    and records its sha256 and tag. The tag must have the `seed/` prefix.
 3. Commit the `bootstrap/seed.json` update separately, but do not merge the PR
-   yet. Fresh CI runners fetch the seed from the new tag, so every bootstrap
-   bump gate returns 404 until that release exists.
+   yet. Fresh CI runners fetch the seed from the new tag; while that tag does
+   not exist in the release repository, `scripts/ensure_seed.sh` rebuilds the pinned seed instead:
+   it checks out `seed.source_commit` (whose own manifest pins the previous
+   published seed) and runs `generations.sh build` there, then installs the
+   stage2 only if it matches the pinned sha256. So the bump PR's gates are
+   green before the release exists, at the cost of one stage0 -> stage2 build
+   per cold job (`actions/cache` keyed on the manifest shares it afterwards).
+   The release is still required before merging: after the merge every fresh
+   clone of main would otherwise pay that rebuild. `VIBE_ENSURE_SEED_NO_REBUILD=1`
+   restores the fail-fast; `scripts/ensure_seed_test.sh` pins the fallback's
+   contract (matching rebuild installs, mismatching rebuild is refused).
 4. Dispatch the GitHub Actions `seed-release` workflow with that commit as
    `source_ref`:
    - `tag`: the `seed/<name>` chosen in step 2.
@@ -340,8 +359,9 @@ an existing, published seed to use as stage0.
    - CI detects which case applies, acquires the prior artifact, rebuilds
      deterministically through stage3, adopts the candidate in its workspace,
      and publishes the assets.
-5. Verify that the released compiler sha256 matches `bootstrap/seed.json`, then
-   create or rerun the PR and merge only after CI is Green.
+5. Verify that the released compiler sha256 matches `bootstrap/seed.json`
+   (the rebuild in step 3 proves the same equality from the other side), then
+   merge only after CI is Green.
 6. The published release appears as a **prerelease**. All CI and local callers
    that read the pin can then fetch it through `scripts/ensure_seed.sh`.
    Because immutable releases are enabled, the workflow first creates a draft,

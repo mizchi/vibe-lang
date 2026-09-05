@@ -536,10 +536,12 @@ completion / signature help を提供する。詳細は
   outermost renorm runs, values unchanged). Each lane previously
   wrapped at its own 62/63/64-bit boundary and silently disagreed. Test:
   `lib/@vibe/compiler/tests/int_overflow_wrap_test.vibe`; per-PR parity
-  guard: `bench/exec/int_wrap.vibe`. NOTE until the next bootstrap bump:
-  the committed seed still enforces the old 2^61-1 literal bound and
-  seed-driven tooling (vibe fmt) lexes all of `lib/**`, so spell large
-  constants there by arithmetic (`(2305843009213693951 << 1) | 1`)
+  guard: `bench/exec/int_wrap.vibe`. The committed seed accepts the full
+  bound (measured 2026-09-04: `4611686018427387903` compiles on
+  seed/applied-trait-impl-2026-08-28 and later), so large constants in
+  `lib/**` no longer need the arithmetic spelling
+  (`(2305843009213693951 << 1) | 1`) that predates it; the existing ones
+  are harmless.
 - **Hex literals**: `0xFF`, `0X1A2B` — the prefix and the digits are both
   case-insensitive.
 - **`>>` is an ARITHMETIC shift** (it sign-extends). For a logical right shift,
