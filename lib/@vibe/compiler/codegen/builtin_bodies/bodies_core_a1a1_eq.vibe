@@ -233,7 +233,51 @@ fn emit_looks_like_string(b: Bytes, slot: Int) -> Unit {
   emit_i64_le_s(b)
 }
 
-export fn gen_eq_body(str_eq_idx: Int) -> Bytes {
+/// #2474: is `local` an RC block -- a struct, an enum payload, an array, a
+/// tuple, a boxed `Double`, a `Some(..)` -- rather than a value `eq` can read?
+///
+/// The test is `rc_drop`'s, verbatim: odd (a heap pointer, since an `Int` is
+/// `n << 1` by ADR-0055) AND high 32 bits zero (a fat pointer keeps its data
+/// offset there, so `(v >> 32) != 0` is a string/bytes leaf, not a block).
+fn emit_is_rc_block(b: Bytes, local: Int) -> Unit {
+  // (v & 1) != 0
+  emit_local_get(b, local)
+  emit_i64_const(b, 1)
+  emit_i64_and(b)
+  emit_i64_eqz(b)
+  emit_i32_eqz(b)
+  // && (v >> 32) == 0
+  emit_local_get(b, local)
+  emit_i64_const(b, 32)
+  emit_i64_shr_s(b)
+  emit_i64_eqz(b)
+  // i32.and (0x71)
+  bytebuf_push(b, 113)
+}
+
+/// #2474: `block_abort_idx >= 0` adds the fail-closed arm below. The raw
+/// builtin is right for exactly the values it can read -- a tagged scalar
+/// (`Int` / `Bool` / `Unit`) by word, a string/bytes fat pointer by content --
+/// and falls through to `0` for an RC block, which is reference identity
+/// wearing the answer `false`. Measured inside a generic body, where the
+/// operand type is an erased formal and no typed comparator is chosen:
+/// `Int` / `Bool` / `String` / `Unit` answered correctly; `Double`, `Array`,
+/// tuple, struct, enum, `Option` and `Bytes` all answered `false` for equal
+/// values.
+///
+/// A generic body is lowered exactly ONCE (`checker_stmt.vibe`'s eq-row
+/// producer says so), so one lowering serves `T = Int` and `T = Pt` alike and
+/// no per-instantiation comparator is reachable. The guard therefore does not
+/// make the block case CORRECT -- it makes it loud, which by the triage order
+/// (P0 silent-wrong above P1 crash) is the trade to take until `Eq` carries a
+/// real method and can dispatch through a witness (that root cause is its own
+/// issue).
+///
+/// It fires only when BOTH operands are blocks and the words differ: an
+/// aggregate compared with ITSELF is bit-equal and still answers `true`, and a
+/// block against a scalar (`None` against `Some(1)`) is genuinely unequal, so
+/// `false` stays the answer there rather than a trap.
+export fn gen_eq_body(str_eq_idx: Int, block_abort_idx: Int, block_prefix_fat: Int) -> Bytes {
   let b = bytebuf_new()
   emit_local_get(b, 0)
   emit_local_get(b, 1)
@@ -248,6 +292,27 @@ export fn gen_eq_body(str_eq_idx: Int) -> Bytes {
   // makes `str_eq`'s byte loop read out of bounds (the #664 class of bug, here
   // surfacing for `==`/`!=` on Int >= 2^32). Gate the fallback on both operands
   // looking like real strings; otherwise the values are simply not equal.
+  // #2474: the block test must come BEFORE the string test, not after it.
+  // `emit_looks_like_string` here is the PERMISSIVE one (see its doc): a
+  // tagged heap pointer decodes as ptr = v >> 32 = 0 and len = the address,
+  // and `ptr(0) + len <= memory.size` is trivially true -- so two struct
+  // pointers both "look like strings", take the `str_eq` branch, and answer
+  // `false` off a length comparison of two zero-based non-strings. Measured:
+  // with the guard placed in the final `else` instead, it never fired.
+  if block_abort_idx >= 0 {
+    emit_is_rc_block(b, 0)
+    emit_is_rc_block(b, 1)
+    // i32.and (0x71)
+    bytebuf_push(b, 113)
+    emit_if_void(b)
+    emit_i64_const(b, block_prefix_fat)
+    emit_local_get(b, 0)
+    emit_local_get(b, 1)
+    emit_call(b, block_abort_idx)
+    emit_end(b)
+  } else {
+    ()
+  }
   emit_looks_like_string(b, 0)
   emit_looks_like_string(b, 1)
   bytebuf_push(b, 113)
