@@ -179,21 +179,42 @@ let source_fingerprint_memo_src: MutMap[String, String] = MutMap::new_string()
 
 let source_fingerprint_memo_fp: MutMap[String, String] = MutMap::new_string()
 
+// #2386: how many times the memo has hashed a text (a miss or a changed
+// text); the routing tests read it to prove a caller took the memo.
+let source_fingerprint_memo_hashes: Array[Int] = [0]
+
+fn compact_source_fingerprint_counted(source: String) -> String {
+  Array::set(source_fingerprint_memo_hashes, 0, Array::get(source_fingerprint_memo_hashes, 0) + 1)
+  ingestion_telemetry_add(2, 1)
+  ingestion_telemetry_add(3, String::length(source))
+  compact_string_fingerprint(source)
+}
+
+export fn compact_source_fingerprint_memo_hash_count() -> Int {
+  Array::get(source_fingerprint_memo_hashes, 0)
+}
+
+/// The fingerprint of `source` as the text of `path`, hashed once per
+/// (path, text) for the span of a compile. #2386: the header pass, the
+/// ingestion fingerprint, the export-metadata walk and the typing artifacts
+/// all fingerprint the same ingested text of a file; each used to hash it
+/// again. A stored text is matched by a byte compare, so a changed text can
+/// never answer a stale fingerprint.
 export fn compact_source_fingerprint_memo(path: String, source: String) -> String {
   match MutMap::get(source_fingerprint_memo_src, path) {
     Some(stored) => if String::equals(stored, source) {
       match MutMap::get(source_fingerprint_memo_fp, path) {
         Some(fp) => fp,
-        None => compact_string_fingerprint(source)
+        None => compact_source_fingerprint_counted(source)
       }
     } else {
-      let fp = compact_string_fingerprint(source)
+      let fp = compact_source_fingerprint_counted(source)
       MutMap::set(source_fingerprint_memo_src, path, source)
       MutMap::set(source_fingerprint_memo_fp, path, fp)
       fp
     },
     None => {
-      let fp = compact_string_fingerprint(source)
+      let fp = compact_source_fingerprint_counted(source)
       MutMap::set(source_fingerprint_memo_src, path, source)
       MutMap::set(source_fingerprint_memo_fp, path, fp)
       fp
@@ -363,10 +384,10 @@ fn fingerprint_source(path: String) -> String with Fs {
   let source = Fs::read_file(path)
   ingestion_telemetry_add(0, 1)
   ingestion_telemetry_add(1, String::length(source))
-  let fingerprint = compact_string_fingerprint(source)
-  ingestion_telemetry_add(2, 1)
-  ingestion_telemetry_add(3, String::length(source))
-  fingerprint
+  // The hash-call telemetry is counted where the hash happens (the memo's
+  // miss path), so a text the compile already fingerprinted is not counted
+  // as hashed again.
+  compact_source_fingerprint_memo(path, source)
 }
 
 fn try_load_ingestion_stamp(stamp_path: String, stat_token_text: String) -> Option[String] with Fs {
