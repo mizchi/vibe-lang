@@ -1,0 +1,61 @@
+//# #2386: the render-argument walk's Show-wrapper stamps.
+//
+// `irc_show_shim_names` lists the module's generic Show wrappers plus every
+// imported local name, and the walk asks that list for each call site's
+// callee. The names are stamped into one process-wide map with a per-walk
+// generation now, instead of a scan with no early exit; this file pins that
+// an argument reaching the renderer THROUGH a wrapper still files its row,
+// on both wrapper spellings the collector recognizes, and that a name
+// stamped for an EARLIER program does not count as a wrapper of a later one
+// checked in the same process. The producer is pinned directly, as
+// bool_render_channel_test does: an inert stamp would render `show_it(l())`
+// as "1" and nothing behavioural in this file would notice.
+
+//# Imports
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+import @vibe/compiler/checker {
+  check_program_result, checked_bool_render_offsets
+}
+
+//# Functions
+
+fn bool_rows(src: String) -> Int {
+  handle {
+    let (toks, starts, _) = lex_with_offsets(src)
+    let checked = check_program_result(parse_program_located(toks, starts, src))
+    Array::length(checked_bool_render_offsets(checked))
+  } with { Exception::Throw(_) => 0 - 1 }
+}
+
+//# Tests
+
+test "a let-bound Show wrapper's Bool argument is a tag-5 row" {
+  // Two rows: the wrapper's own `__to_string(x)` files its Bool parameter,
+  // and the call `show_it(l())` files the argument. An inert set keeps only
+  // the first.
+  let src = "let show_it: (Bool) -> String = (x) -> __to_string(x)\nfn main() -> Unit { let l = () -> Bool { 1 < 2 }\nlet s = show_it(l())\n() }"
+  inspect(bool_rows(src), content = "2")
+}
+
+test "an fn-declared Show wrapper's Bool argument is a tag-5 row" {
+  let src = "fn show_it(x: Bool) -> String { __to_string(x) }\nfn main() -> Unit { let l = () -> Bool { 1 < 2 }\nlet s = show_it(l())\n() }"
+  inspect(bool_rows(src), content = "2")
+}
+
+test "a call to a function that is not a wrapper files no row" {
+  let src = "fn keep(x: Bool) -> Bool { x }\nfn main() -> Unit { let l = () -> Bool { 1 < 2 }\nlet s = keep(l())\n() }"
+  inspect(bool_rows(src), content = "0")
+}
+
+test "a name stamped for an earlier program is not a wrapper of a later one" {
+  // The first case above stamped `show_it` as a wrapper. Here `show_it` is
+  // a plain Bool function of the next program checked in this process, so
+  // its call files no row: the walk's generation, not the map's memory,
+  // decides.
+  let src = "fn show_it(x: Bool) -> Bool { x }\nfn main() -> Unit { let l = () -> Bool { 1 < 2 }\nlet s = show_it(l())\n() }"
+  inspect(bool_rows(src), content = "0")
+}
