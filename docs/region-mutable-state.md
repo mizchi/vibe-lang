@@ -282,5 +282,5 @@ region 束縛の**可変バイトバッファ**。op は `MutBytes::empty(r)` / 
   wasm-gc 非対応・RC レーンでは arena 無効 (plain Bytes への fallback、値は
   同一)。ただし Bytes ブロックは RC ヘッダを持たないため、RC レーンでの
   arena 有効化は Array より先に成立しうる (未検証、要 free-list 非干渉の確認)。
-- The committed seed carries `MutBytes` (seed/applied-trait-impl-2026-08-28
-  and later), so compiler sources may use it as well as fixtures and user code.
+- committed seed (seed/applied-trait-impl-2026-08-28 以降) は `MutBytes` を
+  含むので、fixtures とユーザコードだけでなく compiler source 自身でも使える。

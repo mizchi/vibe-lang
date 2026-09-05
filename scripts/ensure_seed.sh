@@ -23,8 +23,10 @@ set -euo pipefail
 # match the pinned sha256 byte for byte, so this never installs an unpinned
 # or stale artifact; it only removes the window in which every bump gate is
 # red for a missing release (docs/bootstrap.md "Bootstrap bump procedure").
-# Only a missing tag is rebuilt (`git ls-remote` against
-# VIBE_ENSURE_SEED_GIT_REMOTE, default `origin`, exit 2): a release whose
+# Only a missing tag is rebuilt (`git ls-remote` against the canonical
+# release repository, the same one fetch_compiler.sh downloads from, so a
+# fork whose `origin` lacks an upstream tag still fetches; override with
+# VIBE_ENSURE_SEED_GIT_REMOTE for mirrors and tests; exit 2): a release whose
 # tag exists but that cannot be fetched or verified (missing asset, bad
 # manifest, sha mismatch) stays fatal, and so does being offline (the probe
 # errors instead of answering "absent"). Set VIBE_ENSURE_SEED_NO_REBUILD=1
@@ -165,13 +167,15 @@ cleanup_rebuild_dir() {
 }
 
 # Does the release exist? A seed release is published under its tag, so ask
-# the remote for the tag (no HTTP rate limit, same credentials as the
-# checkout). Exit 2 = absent (the pre-publication window of a bootstrap
-# bump); 0 = present; anything else = cannot tell (offline, no remote).
-# An asset-level probe is not enough here: a published release missing
-# only its manifest asset also answers 404 and must stay fatal.
+# the repository that serves the releases for the tag (the same upstream
+# fetch_compiler.sh downloads from, not `origin`: a fork's origin may lack a
+# newer upstream tag and must still fetch, not rebuild; no HTTP rate limit).
+# Exit 2 = absent (the pre-publication window of a bootstrap bump); 0 =
+# present; anything else = cannot tell (offline). An asset-level probe is
+# not enough here: a published release missing only its manifest asset also
+# answers 404 and must stay fatal.
 seed_tag_state() {
-  local remote="${VIBE_ENSURE_SEED_GIT_REMOTE:-origin}"
+  local remote="${VIBE_ENSURE_SEED_GIT_REMOTE:-https://github.com/mizchi/vibe-lang}"
   if git -C "$PROJECT_ROOT" ls-remote --exit-code --tags "$remote" "refs/tags/$SEED_TAG" >/dev/null 2>&1; then
     printf 'present'
   elif [ $? -eq 2 ]; then

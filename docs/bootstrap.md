@@ -175,6 +175,16 @@ merge し、`seed-release` workflow が使えるようになってから最初�
   済むようにする。取得に失敗した場合は **即座に fail** する — 古い/誤った
   seed を黙って使うより安全なため。エラーメッセージが tag/URL と
   `--from-dir` (air-gapped ミラー用) の使い方を案内する。
+- **例外は 1 つ**: pin された tag が release リポジトリ (`mizchi/vibe-lang`、
+  `git ls-remote` で確認、`VIBE_ENSURE_SEED_GIT_REMOTE` で差し替え可) に
+  **まだ存在しない**場合 — bootstrap bump PR の `seed-release` 実行前の窓 — は
+  fetch ではなく **再ビルド**する: `seed.source_commit` を worktree に checkout
+  し (その commit の manifest は 1 つ前の公開 seed を pin している)、そこで
+  `generations.sh build` を回し、stage2 が pin の sha256 と一致したときだけ
+  設置する。tag が存在するのに取得・検証に失敗する場合 (asset 欠落・manifest
+  不正・sha 不一致) とオフラインは従来どおり即 fail。
+  `VIBE_ENSURE_SEED_NO_REBUILD=1` でこの例外も無効化できる。詳細は下の
+  "Bootstrap bump procedure" step 3。
 
 ### Release タグ体系
 
@@ -324,7 +334,7 @@ an existing, published seed to use as stage0.
    and records its sha256 and tag. The tag must have the `seed/` prefix.
 3. Commit the `bootstrap/seed.json` update separately, but do not merge the PR
    yet. Fresh CI runners fetch the seed from the new tag; while that tag does
-   not exist on the remote, `scripts/ensure_seed.sh` rebuilds the pinned seed instead:
+   not exist in the release repository, `scripts/ensure_seed.sh` rebuilds the pinned seed instead:
    it checks out `seed.source_commit` (whose own manifest pins the previous
    published seed) and runs `generations.sh build` there, then installs the
    stage2 only if it matches the pinned sha256. So the bump PR's gates are
