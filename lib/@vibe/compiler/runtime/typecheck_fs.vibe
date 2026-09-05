@@ -70,6 +70,7 @@ import @vibe/compiler/core {
   env_lookup_flat,
   env_preserve_type_definition_origins,
   env_selectable_type_defs,
+  env_trait_def_names_into,
   env_type_defs,
   env_value_binding,
   has_standard_effect_policy,
@@ -84,7 +85,6 @@ import @vibe/compiler/core {
   resolve_import_path,
   resolve_import_path_candidates,
   str_lt,
-  trait_defined,
   unstable_package_note
 }
 
@@ -217,6 +217,19 @@ fn valid_persistent_leaf_fingerprint(path: String, source: String) -> Option[Str
 // the sidecar yet, so a worker-checked module is re-checked by the next
 // in-driver compile rather than silently losing its offsets.
 
+// #2386: scratch rows for the import projection. Each row belongs to ONE
+// non-recursive function (bi_ = bind_import_names_from_cache_collecting,
+// pra_ = prepend_reexport_alias_declarations, ipt_ =
+// interface_public_trait_names), is refilled at that function's start and
+// read only inside it, so an edge allocates nothing for its trait-name list
+// and its uppercase binding slots. The three owners never run inside one
+// another: the import binder is driven by a loop over a module's import
+// statements, and the interface projection runs after a module is checked.
+let bi_trait_names: Array[String] = []
+let bi_upper_slots: Array[Int] = []
+let pra_trait_names: Array[String] = []
+let pra_upper_slots: Array[Int] = []
+let ipt_trait_names: Array[String] = []
 let module_typed_lowering_memo_paths: Array[String] = []
 
 let module_typed_lowering_memo_fps: Array[String] = []
@@ -1225,6 +1238,52 @@ fn trait_projection_claim_mappings(claims: Array[(String, String, Bool, String)]
   }
 }
 
+/// `trait_defined(env, name)` against the row env_trait_def_names_into
+/// filled from `env` (#2386): the import projection asks it for every
+/// imported name, every bound label and every supertrait of an edge, and
+/// each answer used to walk the whole chain. The row holds a module's trait
+/// names -- tens at most -- so a scan is the cheapest probe. An empty row
+/// answers before normalizing the name: trait_ref_name allocates its parsed
+/// reference, and most dependencies define no trait at all (the walk never
+/// reached a compare there; measured +0.8 MB of cold heap when this
+/// normalized unconditionally).
+fn trait_in_list(traits: Array[String], name: String) -> Bool {
+  if Array::length(traits) == 0 {
+    false
+  } else {
+    let base = trait_ref_name(name)
+    let mut i = 0
+    let mut found = false
+    while !found && i < Array::length(traits) {
+      if Array::get(traits, i) == base {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// Slots of `bindings` whose name starts uppercase, into a caller-owned row:
+/// the companions and types the projection's per-name candidate scan can
+/// ever select. Filled once per edge so the scan per imported name skips
+/// the lowercase majority.
+fn uppercase_binding_slots_into(bindings: Array[(String, Type)], out: Array[Int]) -> Unit {
+  Array::truncate(out, 0)
+  let mut i = 0
+  while i < Array::length(bindings) {
+    let (name, _) = Array::get(bindings, i)
+    if starts_with_upper(name) {
+      Array::push(out, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 fn trait_projection_supers(env: TypeEnv, name: String) -> Array[String] {
   match env {
     EnvEmpty => array_empty(),
@@ -1243,13 +1302,13 @@ fn trait_projection_supers(env: TypeEnv, name: String) -> Array[String] {
   }
 }
 
-fn trait_projection_collect_generic_impl_bounds(dep_env: TypeEnv, trait_name: String, mappings: Array[(String, String)]) -> Unit {
+fn trait_projection_collect_generic_impl_bounds(dep_env: TypeEnv, trait_name: String, mappings: Array[(String, String)], traits: Array[String]) -> Unit {
   match dep_env {
     EnvEmpty => (),
-    EnvBind(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
-    EnvTraitDef(_, _, _, _, rest, _, _) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
-    EnvTraitImpl(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
-    EnvMutCell(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
+    EnvBind(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
+    EnvTraitDef(_, _, _, _, rest, _, _) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
+    EnvTraitImpl(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
+    EnvMutCell(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
     EnvTraitImplGen(candidate, _, bounds, _, rest) => {
       if trait_ref_name(candidate) == trait_ref_name(trait_name) {
         let mut i = 0
@@ -1259,7 +1318,7 @@ fn trait_projection_collect_generic_impl_bounds(dep_env: TypeEnv, trait_name: St
           while j < Array::length(labels) {
             let label = Array::get(labels, j)
             let base = trait_ref_name(label)
-            if trait_defined(dep_env, label) {
+            if trait_in_list(traits, label) {
               trait_projection_add_mapping(mappings, base, base)
             } else {
               ()
@@ -1271,15 +1330,15 @@ fn trait_projection_collect_generic_impl_bounds(dep_env: TypeEnv, trait_name: St
       } else {
         ()
       }
-      trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings)
+      trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits)
     },
-    EnvTypeDefs(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings),
+    EnvTypeDefs(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits),
     EnvFlat(_) => (),
-    EnvCached(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings)
+    EnvCached(_, _, rest) => trait_projection_collect_generic_impl_bounds(rest, trait_name, mappings, traits)
   }
 }
 
-fn trait_projection_collect_type_bounds(ty: Type, mappings: Array[(String, String)], dep_env: TypeEnv) -> Unit {
+fn trait_projection_collect_type_bounds(ty: Type, mappings: Array[(String, String)], traits: Array[String]) -> Unit {
   match ty {
     CtForAll(_, bounds, body) => {
       let mut i = 0
@@ -1289,7 +1348,7 @@ fn trait_projection_collect_type_bounds(ty: Type, mappings: Array[(String, Strin
         while j < Array::length(labels) {
           let label = Array::get(labels, j)
           let base = trait_ref_name(label)
-          if trait_defined(dep_env, label) {
+          if trait_in_list(traits, label) {
             trait_projection_add_mapping(mappings, base, base)
           } else {
             ()
@@ -1298,29 +1357,29 @@ fn trait_projection_collect_type_bounds(ty: Type, mappings: Array[(String, Strin
         }
         i = i + 1
       }
-      trait_projection_collect_type_bounds(body, mappings, dep_env)
+      trait_projection_collect_type_bounds(body, mappings, traits)
     },
     CtFn(args, ret, _) => {
       let mut i = 0
       while i < Array::length(args) {
-        trait_projection_collect_type_bounds(Array::get(args, i), mappings, dep_env)
+        trait_projection_collect_type_bounds(Array::get(args, i), mappings, traits)
         i = i + 1
       }
-      trait_projection_collect_type_bounds(ret, mappings, dep_env)
+      trait_projection_collect_type_bounds(ret, mappings, traits)
     },
     CtTuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        trait_projection_collect_type_bounds(Array::get(items, i), mappings, dep_env)
+        trait_projection_collect_type_bounds(Array::get(items, i), mappings, traits)
         i = i + 1
       }
     },
-    CtArray(item) => trait_projection_collect_type_bounds(item, mappings, dep_env),
-    CtOption(item) => trait_projection_collect_type_bounds(item, mappings, dep_env),
+    CtArray(item) => trait_projection_collect_type_bounds(item, mappings, traits),
+    CtOption(item) => trait_projection_collect_type_bounds(item, mappings, traits),
     CtNamed(_, args) => {
       let mut i = 0
       while i < Array::length(args) {
-        trait_projection_collect_type_bounds(Array::get(args, i), mappings, dep_env)
+        trait_projection_collect_type_bounds(Array::get(args, i), mappings, traits)
         i = i + 1
       }
     },
@@ -1372,7 +1431,7 @@ fn trait_projection_map_type_bounds(ty: Type, mappings: Array[(String, String)])
 /// values. A second pass then imports only traits required by selected value
 /// schemes. Conflicting aliases fail closed instead of making import order an
 /// unobservable authority choice.
-fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(String, Type)], names: Array[ImportItem], unresolved: Array[String]) -> Array[(String, String)] {
+fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(String, Type)], dep_traits: Array[String], upper_slots: Array[Int], names: Array[ImportItem], unresolved: Array[String]) -> Array[(String, String)] {
   let mappings = array_empty()
   let mut i = 0
   // Pass one: reserve explicit trait aliases before inspecting value bounds.
@@ -1380,7 +1439,7 @@ fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(S
     let item = Array::get(names, i)
     let name = item.name
     let alias = item.alias
-    if trait_defined(dep_env, name) {
+    if trait_in_list(dep_traits, name) {
       let local_name = match alias {
         Some(value) => value,
         None => name
@@ -1408,24 +1467,24 @@ fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(S
   i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i).name
-    if !trait_defined(dep_env, name) {
+    if !trait_in_list(dep_traits, name) {
       match env_lookup_flat(dep_bindings, name) {
-        Some(ty) => trait_projection_collect_type_bounds(ty, mappings, dep_env),
+        Some(ty) => trait_projection_collect_type_bounds(ty, mappings, dep_traits),
         None => ()
       }
       // Companions (`Set::add`) carry `[T: Hash]` even when the type `Set`
       // itself does not. Walk them the same way bind_enum_constructor_companions
       // selects them, or importing `{ Set }` drops `impl Hash for Int`.
       let qual_prefix = String::concat(name, "::")
-      let mut bi = 0
-      while bi < Array::length(dep_bindings) {
-        let (candidate_name, candidate_ty) = Array::get(dep_bindings, bi)
-        if candidate_name != name && starts_with_upper(candidate_name) && (String::starts_with(candidate_name, qual_prefix) || type_returns_name(candidate_ty, name)) {
-          trait_projection_collect_type_bounds(candidate_ty, mappings, dep_env)
+      let mut ui = 0
+      while ui < Array::length(upper_slots) {
+        let (candidate_name, candidate_ty) = Array::get(dep_bindings, Array::get(upper_slots, ui))
+        if candidate_name != name && (String::starts_with(candidate_name, qual_prefix) || type_returns_name(candidate_ty, name)) {
+          trait_projection_collect_type_bounds(candidate_ty, mappings, dep_traits)
         } else {
           ()
         }
-        bi = bi + 1
+        ui = ui + 1
       }
     } else {
       ()
@@ -1438,11 +1497,11 @@ fn dependency_trait_projection_mappings(dep_env: TypeEnv, dep_bindings: Array[(S
   while cursor < Array::length(mappings) {
     let (canonical, _) = Array::get(mappings, cursor)
     let supers = trait_projection_supers(dep_env, canonical)
-    trait_projection_collect_generic_impl_bounds(dep_env, canonical, mappings)
+    trait_projection_collect_generic_impl_bounds(dep_env, canonical, mappings, dep_traits)
     let mut j = 0
     while j < Array::length(supers) {
       let super_name = Array::get(supers, j)
-      if trait_defined(dep_env, super_name) {
+      if trait_in_list(dep_traits, super_name) {
         let super_base = trait_ref_name(super_name)
         trait_projection_add_mapping(mappings, super_base, super_base)
       } else {
@@ -1799,6 +1858,8 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
     None => EnvEmpty
   }
   let dep_bindings = env_flat_bindings(dep_env)
+  env_trait_def_names_into(dep_env, bi_trait_names)
+  uppercase_binding_slots_into(dep_bindings, bi_upper_slots)
   let dep_selectable_type_defs = env_selectable_type_defs(dep_env)
   // Kind advice is useful only for names the module actually publishes. A
   // private declaration may remain in the TypeDef closure solely to describe
@@ -1807,7 +1868,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   let mut kii = 0
   while kii < Array::length(names) {
     let item = Array::get(names, kii)
-    if contains_str(dep_selectable_type_defs, item.name) || trait_defined(dep_env, item.name) || env_lookup_flat(dep_bindings, item.name) != None {
+    if contains_str(dep_selectable_type_defs, item.name) || trait_in_list(bi_trait_names, item.name) || env_lookup_flat(dep_bindings, item.name) != None {
       Array::push(kind_items, item)
     } else {
       ()
@@ -1822,7 +1883,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
   }
   // Explicit trait aliases must be known before values are bound: a selected
   // value can mention the trait before its `trait X as Local` row appears.
-  let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, names, unresolved)
+  let trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, names, unresolved)
   trait_projection_claim_mappings(trait_claims, resolved, dep_env, trait_mappings, unresolved)
   // Whether the dependency was CHECKED, not whether it happens to bind any
   // values. A module that exports only types or only traits is checked and
@@ -1859,7 +1920,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
           // Declaration authority travels explicitly in EnvTypeDefs, so
           // uppercase is never evidence that an import is valid. Effects and
           // effectsets use the same selected declaration channel.
-          if dep_known && !contains_str(dep_selectable_type_defs, name) && !trait_defined(dep_env, name) {
+          if dep_known && !contains_str(dep_selectable_type_defs, name) && !trait_in_list(bi_trait_names, name) {
             Array::push(unresolved, String::concat(String::concat(String::concat("imported name '", name), "' is not exported by '"), String::concat(raw_path, "'")))
           } else {
             ()
@@ -1869,7 +1930,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       }
       let with_name = match imported_ty {
         Some(_) => env_bind_with_origin(nacc, bound_name, ty, binding_origin),
-        None => if contains_str(dep_selectable_type_defs, name) || trait_defined(dep_env, name) {
+        None => if contains_str(dep_selectable_type_defs, name) || trait_in_list(bi_trait_names, name) {
           // Declaration aliases travel in the separate publication projection
           // below. Retain the declaration's origin on its existing unknown
           // value-space marker so semantic checks can distinguish a projected
@@ -1890,7 +1951,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
       bind_names(j + 1, with_companions)
     }
   }
-  let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, declaration_names, array_empty())
+  let declaration_trait_mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, bi_trait_names, bi_upper_slots, declaration_names, array_empty())
   bind_names(0, prepend_dependency_trait_nodes(dep_env, declaration_trait_mappings, prepend_dependency_type_defs(dep_env, declaration_names, acc)))
 }
 
@@ -1920,8 +1981,10 @@ fn prepend_reexport_alias_declarations(acc: TypeEnv, resolved: String, names: Ar
     None => EnvEmpty
   }
   let dep_bindings = env_flat_bindings(dep_env)
+  env_trait_def_names_into(dep_env, pra_trait_names)
+  uppercase_binding_slots_into(dep_bindings, pra_upper_slots)
   let ignored = array_empty()
-  let mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, names, ignored)
+  let mappings = dependency_trait_projection_mappings(dep_env, dep_bindings, pra_trait_names, pra_upper_slots, names, ignored)
   prepend_dependency_trait_nodes(dep_env, mappings, prepend_dependency_type_defs(dep_env, names, acc))
 }
 
@@ -3071,6 +3134,7 @@ fn interface_public_value_names(stmts: Array[Stmt]) -> Array[String] {
 /// typedef or effect transport.
 fn interface_public_trait_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Array[String] {
   let mappings = array_empty()
+  env_trait_def_names_into(checked_env, ipt_trait_names)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
@@ -3079,7 +3143,7 @@ fn interface_public_trait_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arr
         let mut j = 0
         while j < Array::length(items) {
           let name = Array::get(items, j)
-          if trait_defined(checked_env, name) {
+          if trait_in_list(ipt_trait_names, name) {
             trait_projection_add_mapping(mappings, name, name)
           } else {
             ()
@@ -3097,7 +3161,7 @@ fn interface_public_trait_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arr
             Some(value) => value,
             None => source_name
           }
-          if trait_defined(checked_env, local_name) {
+          if trait_in_list(ipt_trait_names, local_name) {
             trait_projection_add_mapping(mappings, local_name, local_name)
           } else {
             ()
@@ -3113,7 +3177,7 @@ fn interface_public_trait_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arr
   i = 0
   while i < Array::length(values) {
     match env_lookup(checked_env, Array::get(values, i)) {
-      Some(ty) => trait_projection_collect_type_bounds(ty, mappings, checked_env),
+      Some(ty) => trait_projection_collect_type_bounds(ty, mappings, ipt_trait_names),
       None => ()
     }
     i = i + 1
@@ -3122,11 +3186,11 @@ fn interface_public_trait_names(stmts: Array[Stmt], checked_env: TypeEnv) -> Arr
   while cursor < Array::length(mappings) {
     let (name, _) = Array::get(mappings, cursor)
     let supers = trait_projection_supers(checked_env, name)
-    trait_projection_collect_generic_impl_bounds(checked_env, name, mappings)
+    trait_projection_collect_generic_impl_bounds(checked_env, name, mappings, ipt_trait_names)
     let mut j = 0
     while j < Array::length(supers) {
       let super_name = Array::get(supers, j)
-      if trait_defined(checked_env, super_name) {
+      if trait_in_list(ipt_trait_names, super_name) {
         trait_projection_add_mapping(mappings, super_name, super_name)
       } else {
         ()
