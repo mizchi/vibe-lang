@@ -1,0 +1,99 @@
+//# expr_children_push / expr_child_at / expr_children_pop: the walkers' scratch stack (#2386)
+//
+// A walker reads its children from the window `[mark, top)` the push
+// answers; nested pushes land above it and are popped before the walker
+// reads its next slot. The snapshots pin the visiting order (the same as
+// `expr_children`), the node counts through a nested walk, and that the
+// stack is balanced afterwards.
+
+import @vibe/ast {
+  Expr, Pat
+}
+import @vibe/compiler/core {
+  expr_child_at, expr_children, expr_children_into, expr_children_pop, expr_children_push, expr_children_top
+}
+
+fn count_nodes(e: Expr) -> Int {
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut total = 1
+  let mut i = mark
+  while i < end {
+    total = total + count_nodes(expr_child_at(i))
+    i = i + 1
+  }
+  expr_children_pop(mark)
+  total
+}
+
+/// Calls another walker on every child from INSIDE its own loop (a nested
+/// push over the window), then recurses: the sum of every subtree's size.
+fn nested_sizes(e: Expr) -> Int {
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut total = count_nodes(e)
+  let mut i = mark
+  while i < end {
+    let child = expr_child_at(i)
+    total = total + nested_sizes(child)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+  total
+}
+
+fn ident_names(kids: Array[Expr]) -> String {
+  let names: Array[String] = []
+  let mut i = 0
+  while i < Array::length(kids) {
+    match Array::get(kids, i) {
+      EIdent(n, _) => Array::push(names, n),
+      _ => Array::push(names, "?")
+    }
+    i = i + 1
+  }
+  String::join(names, ",")
+}
+
+fn sample() -> Expr {
+  ECall(EIdent("f", 0), [EInt(1), ECall(EIdent("g", 1), [EInt(2), EInt(3)], 1)], 0)
+}
+
+test "a walker over the scratch stack counts every node and leaves the stack balanced" {
+  let before = expr_children_top()
+  inspect(count_nodes(sample()), content = "7")
+  inspect(expr_children_top() == before, content = "true")
+}
+
+test "a nested walker inside the loop does not disturb the outer window" {
+  let before = expr_children_top()
+  inspect(nested_sizes(sample()), content = "16")
+  inspect(expr_children_top() == before, content = "true")
+}
+
+test "expr_children_into lists the children in expr_children's order" {
+  let e = EIf(EIdent("c", 0), EIdent("t", 1), EIdent("e", 2))
+  let l = ELet("x", EIdent("v", 0), EIdent("b", 1), 0)
+  let m = EMatch(EIdent("s", 0), [
+    (PBind("p"), EIdent("a1", 1)),
+    (PWild, EIdent("a2", 2))
+  ])
+  let via_into: Array[Expr] = []
+  expr_children_into(e, via_into)
+  expr_children_into(l, via_into)
+  expr_children_into(m, via_into)
+  let via_list: Array[Expr] = []
+  let mut k = 0
+  let shapes = [e, l, m]
+  while k < Array::length(shapes) {
+    let kids = expr_children(Array::get(shapes, k))
+    let mut i = 0
+    while i < Array::length(kids) {
+      Array::push(via_list, Array::get(kids, i))
+      i = i + 1
+    }
+    k = k + 1
+  }
+  inspect(ident_names(via_into), content = "c,t,e,v,b,s,a1,a2")
+  inspect(ident_names(via_into) == ident_names(via_list), content = "true")
+}

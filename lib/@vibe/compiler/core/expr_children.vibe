@@ -96,6 +96,49 @@ export fn expr_children(expr: Expr) -> Array[Expr] {
 
 fn expr_children_built(expr: Expr) -> Array[Expr] {
   let children = array_empty()
+  expr_children_into(expr, children)
+  children
+}
+
+/// #2386: the walkers' scratch stack. A walker that only VISITS children
+/// used to take `expr_children` -- a fresh array per interior node, filled
+/// by pushes -- and read it once: some 250 ms of `__rt_arr_new` /
+/// `__rt_arr_push` in a cold compiler-closure compile across a dozen
+/// walkers, on both lanes. Its children now go onto this one stack instead:
+/// `expr_children_push` appends them and answers the MARK of the first;
+/// they sit in `[mark, expr_children_top())`, read by `expr_child_at`, and
+/// `expr_children_pop(mark)` truncates back when the walker is done with
+/// them. Nested pushes (a walker recursing on a child, or calling another
+/// walker) land ABOVE the window and are popped before the walker reads its
+/// next slot, so the window stays valid; the discipline is LIFO, the same
+/// as the perceus planner's snapshot stack.
+let expr_child_scratch: Array[Expr] = []
+
+/// Push `expr`'s children onto the scratch stack; the mark of the first.
+export fn expr_children_push(expr: Expr) -> Int {
+  let mark = Array::length(expr_child_scratch)
+  expr_children_into(expr, expr_child_scratch)
+  mark
+}
+
+/// One past the last slot the latest push filled.
+export fn expr_children_top() -> Int {
+  Array::length(expr_child_scratch)
+}
+
+export fn expr_child_at(i: Int) -> Expr {
+  Array::get(expr_child_scratch, i)
+}
+
+/// Release every slot from `mark` up.
+export fn expr_children_pop(mark: Int) -> Unit {
+  Array::truncate(expr_child_scratch, mark)
+}
+
+/// Append `expr`'s immediate children to `out`, in the order
+/// `expr_children` lists them.
+export fn expr_children_into(expr: Expr, out: Array[Expr]) -> Unit {
+  let children = out
   match expr {
     ETuple(elems) => append_exprs(children, elems),
     EArray(elems) => append_exprs(children, elems),
@@ -153,7 +196,6 @@ fn expr_children_built(expr: Expr) -> Array[Expr] {
     EStringInterp(_) => (),
     EUnit => ()
   }
-  children
 }
 
 fn append_pair(dst: Array[Expr], first: Expr, second: Expr) -> Unit {
