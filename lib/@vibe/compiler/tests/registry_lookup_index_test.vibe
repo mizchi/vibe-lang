@@ -1,5 +1,13 @@
 import @vibe/compiler/core {
-  Type, builtin_registry_typed, lookup_registry_builtin, type_to_string
+  Type,
+  builtin_registry_typed,
+  builtin_value_form_arity,
+  canonical_builtin_name,
+  lookup_registry_builtin,
+  registry_builtin_arity,
+  registry_builtin_param_type,
+  registry_builtin_pure_arity,
+  type_to_string
 }
 
 // #2386: lookup_registry_builtin answers from a sorted view of the registry
@@ -51,4 +59,63 @@ test "a known builtin answers and an unknown name does not" {
   inspect(render(lookup_registry_builtin("Array::length")), content = "(Array[?]) -> Int")
   inspect(render(lookup_registry_builtin("no::such_builtin")), content = "<none>")
   inspect(render(lookup_registry_builtin("")), content = "<none>")
+}
+
+// #2386 (second slice): the arity and parameter-type readers take the same
+// first-visible-row lookup; each must agree with a scan of the rows.
+
+fn arity_reference(name: String) -> Int {
+  match scan_reference(name) {
+    Some(ty) => match ty {
+      CtFn(params, _, _) => Array::length(params),
+      _ => 0 - 1
+    },
+    None => 0 - 1
+  }
+}
+
+fn param_reference(name: String, i: Int) -> String {
+  match scan_reference(name) {
+    Some(ty) => match ty {
+      CtFn(params, _, _) => if i >= 0 && i < Array::length(params) {
+        type_to_string(Array::get(params, i))
+      } else {
+        "<none>"
+      },
+      _ => "<none>"
+    },
+    None => "<none>"
+  }
+}
+
+test "every registered name's arity and first parameter answer exactly like the scan" {
+  let rows = builtin_registry_typed()
+  let mut i = 0
+  let mut disagreements: Array[String] = []
+  while i < Array::length(rows) {
+    let (rname, _, _, _, _) = Array::get(rows, i)
+    if registry_builtin_arity(rname) != arity_reference(rname) || render(registry_builtin_param_type(rname, 0)) != param_reference(rname, 0) {
+      Array::push(disagreements, rname)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(disagreements, content = "[]")
+}
+
+test "the pure arity is the parameter count of an effect-free row without unknowns" {
+  inspect(registry_builtin_pure_arity("String::substring"), content = "3")
+  inspect(registry_builtin_pure_arity("String::length"), content = "1")
+  inspect(registry_builtin_pure_arity("Fs::read_file"), content = "-1")
+  inspect(registry_builtin_pure_arity("no::such_builtin"), content = "-1")
+}
+
+test "a bare name has no value form and a legacy spelling answers like its canonical one" {
+  inspect(builtin_value_form_arity("substring"), content = "-1")
+  inspect(builtin_value_form_arity("String::byte_at") == builtin_value_form_arity("String::char_code_at"), content = "true")
+  inspect(builtin_value_form_arity("String::byte_at"), content = "2")
+  inspect(canonical_builtin_name("Fs::ReadFile"), content = "Fs::read_file")
+  inspect(canonical_builtin_name("Array::get"), content = "Array::get")
+  inspect(canonical_builtin_name(""), content = "")
 }

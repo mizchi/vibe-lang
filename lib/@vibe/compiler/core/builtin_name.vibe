@@ -7,6 +7,22 @@ import ./builtin_registry.vibe {
 //# Functions
 
 export fn canonical_builtin_name(name: String) -> String {
+  // #2386: every legacy spelling below starts with `F`, `E`, `P` or `S`, so
+  // any other first byte (a bare user name, `Array::`, `MutMap::`, ...) is
+  // its own canonical spelling without the 25 compares of the ladder.
+  let first = if String::length(name) == 0 {
+    0
+  } else {
+    String::char_code_at(name, 0)
+  }
+  if first != 'F' && first != 'E' && first != 'P' && first != 'S' {
+    name
+  } else {
+    canonical_builtin_name_ladder(name)
+  }
+}
+
+fn canonical_builtin_name_ladder(name: String) -> String {
   match name {
     "Fs::ReadFile" => "Fs::read_file",
     "Fs::WriteFile" => "Fs::write_file",
@@ -113,11 +129,13 @@ export fn canonical_builtin_name(name: String) -> String {
 /// mention no unknown and reach the same property every other row does. The
 /// annotated spelling still compiles; the unannotated one is now rejected.
 export fn builtin_value_form_arity(name: String) -> Int {
-  let n = canonical_builtin_name(name)
-  if !String::contains(n, "::") {
+  // #2386: canonicalization maps qualified spellings to qualified spellings,
+  // so a bare name is answered before the ladder; the lambda-site count asks
+  // this for every identifier of the program.
+  if !String::contains(name, "::") {
     0 - 1
   } else {
-    registry_builtin_pure_arity(n)
+    registry_builtin_pure_arity(canonical_builtin_name(name))
   }
 }
 
