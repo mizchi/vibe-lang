@@ -1,0 +1,65 @@
+import @vibe/compiler/cache {
+  cache_fingerprint_file_fs,
+  cache_ingestion_fingerprint_telemetry_json,
+  cache_persistent_artifact_cache_path,
+  cache_set_ingestion_fingerprint_telemetry_enabled,
+  cache_store_persistent_artifact,
+  compact_source_fingerprint_memo,
+  compact_source_fingerprint_memo_hash_count,
+  compact_source_fingerprint_memo_reset,
+  compact_string_fingerprint
+}
+
+// #2386: the ingested text of a file is fingerprinted by several callers
+// (the header pass, the ingestion fingerprint, the export-metadata walk, the
+// typing artifacts). They share one memo keyed by path and matched by text,
+// so a text is hashed once per compile; the memo's hash counter is the
+// witness that a caller took the memo instead of hashing on its own.
+
+test "the memo hashes once per (path, text) and again when the text changes" {
+  compact_source_fingerprint_memo_reset()
+  let c0 = compact_source_fingerprint_memo_hash_count()
+  let a = compact_source_fingerprint_memo("m.vibe", "let a = 1")
+  let b = compact_source_fingerprint_memo("m.vibe", "let a = 1")
+  inspect(compact_source_fingerprint_memo_hash_count() - c0, content = "1")
+  inspect(a == b, content = "true")
+  inspect(a == compact_string_fingerprint("let a = 1"), content = "true")
+  let c = compact_source_fingerprint_memo("m.vibe", "let a = 2")
+  inspect(compact_source_fingerprint_memo_hash_count() - c0, content = "2")
+  inspect(a == c, content = "false")
+  inspect(c == compact_string_fingerprint("let a = 2"), content = "true")
+}
+
+test "a file whose text the compile already fingerprinted is not hashed again by the ingestion fingerprint" {
+  let bytes = Bytes::new()
+  Bytes::push(bytes, 108)
+  Bytes::push(bytes, 101)
+  Bytes::push(bytes, 116)
+  cache_store_persistent_artifact("v1", "fingerprint_memo_route", "seed-a", "", bytes)
+  let path = cache_persistent_artifact_cache_path("v1", "fingerprint_memo_route", "seed-a", "")
+  let text = Fs::read_file(path)
+  compact_source_fingerprint_memo_reset()
+  let memoized = compact_source_fingerprint_memo(path, text)
+  let before = compact_source_fingerprint_memo_hash_count()
+  inspect(cache_fingerprint_file_fs(path) == memoized, content = "true")
+  inspect(compact_source_fingerprint_memo_hash_count() - before, content = "0")
+  inspect(memoized == compact_string_fingerprint(text), content = "true")
+}
+
+test "the ingestion telemetry keeps a hash call paired with every boundary read, memo hit or not" {
+  let bytes = Bytes::new()
+  Bytes::push(bytes, 108)
+  Bytes::push(bytes, 101)
+  Bytes::push(bytes, 116)
+  cache_store_persistent_artifact("v1", "fingerprint_memo_telemetry", "seed-b", "", bytes)
+  let path = cache_persistent_artifact_cache_path("v1", "fingerprint_memo_telemetry", "seed-b", "")
+  let text = Fs::read_file(path)
+  compact_source_fingerprint_memo_reset()
+  let _ = compact_source_fingerprint_memo(path, text)
+  cache_set_ingestion_fingerprint_telemetry_enabled(true)
+  let _ = cache_fingerprint_file_fs(path)
+  let json = cache_ingestion_fingerprint_telemetry_json("n")
+  cache_set_ingestion_fingerprint_telemetry_enabled(false)
+  inspect(String::contains(json, "\"source_read_calls\":1,"), content = "true")
+  inspect(String::contains(json, "\"hash_calls\":1,"), content = "true")
+}
