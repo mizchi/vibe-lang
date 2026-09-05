@@ -4374,7 +4374,12 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
     gi = gi + 1
   }
   let multi = Array::length(groups) > 1
-  let single_enclosing = Array::length(sorted) == 1 && eq_group_distance(Array::get(eq_formal_group, Array::get(sorted, 0))) > 0
+  // One owning declaration that is not the site's own: every edit goes there,
+  // however many formals it has (Codex on #2530: `[T, U]` outside, `[V]`
+  // inside, `(x, y) == (x, y)` -- an unplaced `[T: Eq, U: Eq]` would be read
+  // as an edit on the visible inner binder, which only declares two new
+  // shadowing formals).
+  let sole_group_enclosing = Array::length(groups) == 1 && eq_group_distance(Array::get(groups, 0)) > 0
   // 3. mentions and per-declaration brackets.
   let mentions: Array[String] = []
   let mut mi = 0
@@ -4406,7 +4411,7 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
       ri = ri + 1
     }
     let bracket = String::concat("`[", String::concat(joined_names(spelled, ", "), "]`"))
-    Array::push(brackets, if multi || single_enclosing {
+    Array::push(brackets, if multi || sole_group_enclosing {
       String::concat(bracket, String::concat(" on ", eq_group_place(eq_group_distance(g))))
     } else {
       bracket
@@ -4430,11 +4435,13 @@ fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, Stri
     // Every mention resolved to no open binder (cannot happen for a recorded
     // formal; kept so the message never indexes an empty table).
     "a type parameter has no `Eq` bound"
+  } else if sole_group_enclosing {
+    String::concat("the type parameters ", String::concat(joined_names(mentions, ", "), " of an enclosing declaration have no `Eq` bound"))
   } else {
     String::concat("the type parameters ", String::concat(joined_names(mentions, ", "), " have no `Eq` bound"))
   }
   let hint = if Array::length(rigid_hints) > 0 {
-    String::concat("; an enclosing declaration also spells `", String::concat(joined_names(rigid_hints, "`, `"), "` as a higher-kinded binder, so a compared value captured from there needs the bound on that declaration instead"))
+    String::concat("; an enclosing declaration also spells `", String::concat(joined_names(rigid_hints, "`, `"), "` as a higher-kinded binder, and a compared value captured from there needs the bound on that declaration as well"))
   } else {
     ""
   }
