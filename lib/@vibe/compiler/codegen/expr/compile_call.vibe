@@ -23,6 +23,7 @@ import @vibe/compiler/core {
   leb128_encode_s64,
   leb128_encode_u32,
   namespace_exported_name,
+  sorted_names_of,
   typed_lowering_arg_offset,
   typed_lowering_float_key
 }
@@ -424,6 +425,177 @@ fn cc_raw_abi_shim_applies(ft: FuncTable, func_offset: Int, fname: String) -> Bo
   } else {
     false
   }
+}
+
+/// Every callee name the special-case ladder of `compile_call_core` tests:
+/// each `fname == "..."` arm, the raw-ABI shim names `cc_raw_abi_shim_applies`
+/// tests, and the namespace-exported `to_string` wrapper (#1015). Sorted once
+/// per process for a leftmost binary search. A callee outside the set can
+/// fire none of the arms, so `compile_call_core` sends it to the resolved-call
+/// fallback without walking the ~150 string compares (#2386).
+/// `codegen_call_ladder_names_test.vibe` proves the list complete against the
+/// source text of this file.
+let cc_ladder_names_sorted: Array[String] = []
+
+fn cc_ladder_names() -> Array[String] {
+  if Array::length(cc_ladder_names_sorted) == 0 {
+    let names = [
+      "Array::all",
+      "Array::any",
+      "Array::concat",
+      "Array::filter",
+      "Array::find",
+      "Array::fold",
+      "Array::iter_eager",
+      "Array::map",
+      "Array::reverse",
+      "ByteStream::to_string",
+      "Bytes::blit",
+      "Bytes::fill",
+      "Bytes::new",
+      "Char::from_int",
+      "Char::to_int",
+      "Console::read_stream",
+      "Console::write_char",
+      "Console::write_err_char",
+      "Double::abs",
+      "Double::ceil",
+      "Double::floor",
+      "Double::from_i64_bits",
+      "Double::max",
+      "Double::min",
+      "Double::parse",
+      "Double::to_float",
+      "Double::to_i64_bits_hi",
+      "Double::to_i64_bits_lo",
+      "Double::to_int",
+      "Double::to_string",
+      "Env::args_get",
+      "Env::args_len",
+      "FixedArray::blit",
+      "FixedArray::get",
+      "FixedArray::length",
+      "FixedArray::make",
+      "FixedArray::set",
+      "FixedArray::unsafe_set",
+      "Float::to_double",
+      "Float::to_int",
+      "Float::to_string",
+      "Fs::exists",
+      "Fs::is_dir",
+      "Fs::is_file",
+      "Fs::readdir",
+      "Fs::stat_token",
+      "Future::pending",
+      "Future::ready",
+      "Future::resolve",
+      "Int64Array::get",
+      "Int64Array::length",
+      "Int64Array::make",
+      "Int64Array::set",
+      "Int::parse",
+      "Int::to_double",
+      "Int::to_float",
+      "Int::to_string",
+      "Map::__iter_get_unchecked",
+      "Map::delete",
+      "Map::get",
+      "Map::has",
+      "Map::has_key",
+      "Map::keys",
+      "Map::remove",
+      "Map::set",
+      "Map::size",
+      "Map::values",
+      "MapBuilder::freeze",
+      "MapBuilder::get",
+      "MapBuilder::has_key",
+      "MapBuilder::new",
+      "MapBuilder::set",
+      "Path::is_absolute",
+      "Path::ref",
+      "Path::resolve",
+      "Path::to_string",
+      "Profiler::HeapBytes",
+      "Profiler::NowUs",
+      "Profiler::heap_bytes",
+      "Profiler::now_us",
+      "Stderr::write_char",
+      "Stdin::read_char",
+      "Stdin::read_stream",
+      "Stdout::write_char",
+      "String::ends_with",
+      "String::last_index_of",
+      "String::to_bytes",
+      "StringBuilder::freeze",
+      "StringBuilder::new",
+      "StringBuilder::push",
+      "__float_bits",
+      "__index",
+      "__len",
+      "__loop_tail_retain",
+      "__rec_field",
+      "__set_field",
+      "__slice",
+      "__to_string",
+      "add",
+      "assert",
+      "assert_eq",
+      "assert_true",
+      "await",
+      "eq",
+      "host_future_get",
+      "host_future_named",
+      "host_stream_close",
+      "host_stream_named",
+      "host_stream_next",
+      "lt",
+      "map",
+      "mul",
+      "not",
+      "path",
+      "perform",
+      "print",
+      "println",
+      "resume",
+      "sh_lines",
+      "simd_skip_ws",
+      "sleep",
+      "sub",
+      "vibe_fs_stat_token_raw",
+      "vibe_http_close_raw",
+      "vibe_http_request_raw",
+      "vibe_http_response_body_raw",
+      "vibe_http_response_header_raw",
+      "vibe_http_response_status_raw",
+      "vibe_process_exit_raw",
+      "vibe_sh_capture_close_raw",
+      "vibe_sh_capture_exit_code_raw",
+      "vibe_sh_capture_raw",
+      "vibe_sh_capture_stderr_raw",
+      "vibe_sh_capture_stdout_raw",
+      "vibe_stdin_provider_read_raw",
+      "vibe_tcp_close_raw",
+      "vibe_tcp_connect_raw",
+      "vibe_tcp_read_raw",
+      "vibe_tcp_write_raw"
+    ]
+    Array::push(names, namespace_exported_name("lib/@vibe/builtin/builtin_traits.vibe", "to_string"))
+    let sorted = sorted_names_of(names)
+    let mut i = 0
+    while i < Array::length(sorted) {
+      Array::push(cc_ladder_names_sorted, Array::get(sorted, i))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+  cc_ladder_names_sorted
+}
+
+/// Does an arm of `compile_call_core`'s ladder test `name`?
+export fn cc_ladder_tests_name(name: String) -> Bool {
+  bsearch_leftmost(cc_ladder_names(), name) >= 0
 }
 
 fn cc_is_projection(e: Expr) -> Bool {
@@ -1637,6 +1809,136 @@ fn http_client_surface_to_raw(name: String) -> String {
   }
 }
 
+/// The call shape a callee takes once no special-case arm of
+/// `compile_call_core` applies: a direct call when the name resolves to a
+/// func_table entry that no in-scope local shadows (#875), else a closure
+/// call through the local. Split out of the ladder so the name-set gate at
+/// the top of the ladder reaches it without walking the arms.
+fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception, fn_idx_in_list: Int, local_idx_hint: Int) -> Int with Exception {
+  // #875: a name that is BOTH a func_table entry (some unrelated
+  // top-level/entry-file function reachable in this merged program) AND a
+  // properly in-scope LOCAL binding (e.g. a nested `let rec NAME = ...`
+  // closure) must resolve to the LOCAL — lexical scoping always wins.
+  // Before this guard, `fn_idx_in_list >= 0` alone gated the direct-call
+  // path below, so a local closure whose bare name happened to collide
+  // with some other reachable function (most commonly the compile
+  // entry file's own top-level helpers, which build_export_rename_plan
+  // deliberately leaves unqualified) was miscompiled into a direct call
+  // to that unrelated function instead of a closure_resolve/call_indirect
+  // to the actual in-scope value — a wasm-validation-time arity mismatch
+  // with no compile-time diagnostic. See #875.
+  if fn_idx_in_list >= 0 && local_idx_hint < 0 {
+    let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
+    let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
+    let needs_env = Array::get(ctx.func_table.needs_env, fn_idx_in_list)
+    let mut nl = next_local
+    // Hoisted: one bsearch per CALL instead of one per argument.
+    let cc_bmask = cc_borrow_mask(ctx, fname)
+    let mut ci = 0
+    while ci < Array::length(args) {
+      let carg = Array::get(args, ci)
+      nl = ce(buf, carg, local_names, nl, ctx, ld)
+      // Retain a heap projection passed to an OWNING parameter (the callee
+      // drops its params). Skip arg0 of a borrow-arg0 builtin (Array::get /
+      // length / push / set, etc.): it does NOT drop that argument, so a dup
+      // there would never be matched and would leak one reference per call
+      // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
+      // ADR-0092 borrow-inference: a user fn's borrowed parameter gets
+      // the same call-site treatment as the builtin arg0 list, at ANY
+      // position -- the callee does not drop that argument, so the
+      // caller must not dup it.
+      let borrows_this = cc_bmask_has(cc_bmask, ci)
+      let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
+        // #706 leak follow-up: this dup's matching consume is INSIDE the loop
+        // (the callee drops its own copy each iteration) and never touches
+        // the binding's own slot-held reference, so the function epilogue
+        // must emit one extra compensating drop for it. Log only the
+        // loop-borrow trigger — the projection/borrow-ret-call cases already
+        // have correct accounting via the existing rc_drops mechanism.
+        if is_loop_borrow1 {
+          Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+        } else {
+          ()
+        }
+        Array::push(local_names, "__argdup")
+        emit_local_tee(buf, nl)
+        emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        nl = nl + 1
+      } else {
+        ()
+      }
+      ci = ci + 1
+    }
+    if needs_env {
+      emit_i64_const(buf, 0)
+    }
+    emit_call(buf, fidx)
+    if has_ret == 0 {
+      emit_i64_const(buf, 0)
+    }
+    nl
+  } else {
+    let local_idx2 = if local_idx_hint >= 0 {
+      local_idx_hint
+    } else {
+      resolve_local(local_names, fname, "call")
+    }
+    let num_args = Array::length(args)
+    let fn_val_local = next_local
+    let slot_local = next_local + 1
+    let env_local = next_local + 2
+    let mut nl = next_local + 3
+    Array::push(local_names, "__fn_val")
+    Array::push(local_names, "__slot")
+    Array::push(local_names, "__env")
+    emit_local_get(buf, local_idx2)
+    // #2012: a captured `let mut` local holds a cell address, not the
+    // function value. Load the i64 in the cell before closure_resolve
+    // or the cell pointer is used as a table index.
+    if array_contains_str(ctx.ref_cell_names, fname) {
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 0)
+    } else {
+      ()
+    }
+    emit_local_set(buf, fn_val_local)
+    emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
+    let mut ci = 0
+    while ci < num_args {
+      let carg = Array::get(args, ci)
+      nl = ce(buf, carg, local_names, nl, ctx, ld)
+      // #706: a closure consumes its args; dup a loop-borrowed owning arg so
+      // it survives the back-edge (mirrors the direct-call path above).
+      // #708: also retain a projection / borrow-returning-call arg here, same
+      // as the direct-call path (line ~2607) already does -- a closure param
+      // is dropped by the callee's own exit epilogue exactly like a direct
+      // call's owning param, so a bare borrowed view passed through (e.g. the
+      // recursive-descent parser's `parse_recur(tokens, ...)` family calling
+      // through a `let rec`-captured closure value) was double-freed the same
+      // way #704/#706's direct-call cases were, just one call-shape over.
+      let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+      if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
+        // #706 leak follow-up: log so the epilogue compensates (see above).
+        if is_loop_borrow2 {
+          Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+        } else {
+          ()
+        }
+        Array::push(local_names, "__argdup")
+        emit_local_tee(buf, nl)
+        emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        nl = nl + 1
+      } else {
+        ()
+      }
+      ci = ci + 1
+    }
+    emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
+    nl
+  }
+}
+
 fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   if is_eident(callee) {
     let source_name = get_eident_name(callee)
@@ -1677,7 +1979,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     // in particular the two exits COPY (mutlist_exit_copy) instead of
     // aliasing, so these freeze rows are only a fallback for a call that got
     // past the checker with the wrong arity.
-    let fname = if fname0 == "MutList::push" {
+    let fname: String = if !String::starts_with(fname0, "Mut") {
+      fname0
+    } else if fname0 == "MutList::push" {
       "ArrayBuilder::push"
     } else if fname0 == "MutList::freeze" {
       "ArrayBuilder::freeze"
@@ -1894,6 +2198,12 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         emit_i64_or(buf)
         nl_c
       }
+    }
+    else if !cc_ladder_tests_name(fname) {
+      // #2386: no arm below tests this callee (cc_ladder_names holds every
+      // name they compare against), so only the resolved-call fallback can
+      // apply; take it without the ~150 compares.
+      cc_compile_resolved_call(buf, fname, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
     }
     else if fname == "eq" && Array::length(args) == 2 && local_idx_hint < 0 && (cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || cc_expr_is_floatish(Array::get(args, 1), local_names, ctx)) && func_table_user_index_of(ctx.func_table, fname, ctx.num_user_funcs) < 0 {
       // #745: under RC floats are BOXED — the scalar i64.eq below would
@@ -5486,128 +5796,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       ce(buf, sized_bytes_new_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else {
-      // #875: a name that is BOTH a func_table entry (some unrelated
-      // top-level/entry-file function reachable in this merged program) AND a
-      // properly in-scope LOCAL binding (e.g. a nested `let rec NAME = ...`
-      // closure) must resolve to the LOCAL — lexical scoping always wins.
-      // Before this guard, `fn_idx_in_list >= 0` alone gated the direct-call
-      // path below, so a local closure whose bare name happened to collide
-      // with some other reachable function (most commonly the compile
-      // entry file's own top-level helpers, which build_export_rename_plan
-      // deliberately leaves unqualified) was miscompiled into a direct call
-      // to that unrelated function instead of a closure_resolve/call_indirect
-      // to the actual in-scope value — a wasm-validation-time arity mismatch
-      // with no compile-time diagnostic. See #875.
-      if fn_idx_in_list >= 0 && local_idx_hint < 0 {
-        let fidx = Array::get(ctx.func_table.indices, fn_idx_in_list)
-        let has_ret = Array::get(ctx.func_table.returns, fn_idx_in_list)
-        let needs_env = Array::get(ctx.func_table.needs_env, fn_idx_in_list)
-        let mut nl = next_local
-        // Hoisted: one bsearch per CALL instead of one per argument.
-        let cc_bmask = cc_borrow_mask(ctx, fname)
-        let mut ci = 0
-        while ci < Array::length(args) {
-          let carg = Array::get(args, ci)
-          nl = ce(buf, carg, local_names, nl, ctx, ld)
-          // Retain a heap projection passed to an OWNING parameter (the callee
-          // drops its params). Skip arg0 of a borrow-arg0 builtin (Array::get /
-          // length / push / set, etc.): it does NOT drop that argument, so a dup
-          // there would never be matched and would leak one reference per call
-          // (#704). Mirrors `is_borrow_arg0_call` in perceus/index.vibe.
-          // ADR-0092 borrow-inference: a user fn's borrowed parameter gets
-          // the same call-site treatment as the builtin arg0 list, at ANY
-          // position -- the callee does not drop that argument, so the
-          // caller must not dup it.
-          let borrows_this = cc_bmask_has(cc_bmask, ci)
-          let is_loop_borrow1 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx) && !borrows_this
-          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow1) && !borrows_this {
-            // #706 leak follow-up: this dup's matching consume is INSIDE the loop
-            // (the callee drops its own copy each iteration) and never touches
-            // the binding's own slot-held reference, so the function epilogue
-            // must emit one extra compensating drop for it. Log only the
-            // loop-borrow trigger — the projection/borrow-ret-call cases already
-            // have correct accounting via the existing rc_drops mechanism.
-            if is_loop_borrow1 {
-              Array::push(ctx.loop_consumed_names, get_eident_name(carg))
-            } else {
-              ()
-            }
-            Array::push(local_names, "__argdup")
-            emit_local_tee(buf, nl)
-            emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
-            nl = nl + 1
-          } else {
-            ()
-          }
-          ci = ci + 1
-        }
-        if needs_env {
-          emit_i64_const(buf, 0)
-        }
-        emit_call(buf, fidx)
-        if has_ret == 0 {
-          emit_i64_const(buf, 0)
-        }
-        nl
-      } else {
-        let local_idx2 = if local_idx_hint >= 0 {
-          local_idx_hint
-        } else {
-          resolve_local(local_names, fname, "call")
-        }
-        let num_args = Array::length(args)
-        let fn_val_local = next_local
-        let slot_local = next_local + 1
-        let env_local = next_local + 2
-        let mut nl = next_local + 3
-        Array::push(local_names, "__fn_val")
-        Array::push(local_names, "__slot")
-        Array::push(local_names, "__env")
-        emit_local_get(buf, local_idx2)
-        // #2012: a captured `let mut` local holds a cell address, not the
-        // function value. Load the i64 in the cell before closure_resolve
-        // or the cell pointer is used as a table index.
-        if array_contains_str(ctx.ref_cell_names, fname) {
-          emit_i32_wrap_i64(buf)
-          emit_i64_load(buf, 3, 0)
-        } else {
-          ()
-        }
-        emit_local_set(buf, fn_val_local)
-        emit_closure_resolve(buf, fn_val_local, slot_local, env_local)
-        let mut ci = 0
-        while ci < num_args {
-          let carg = Array::get(args, ci)
-          nl = ce(buf, carg, local_names, nl, ctx, ld)
-          // #706: a closure consumes its args; dup a loop-borrowed owning arg so
-          // it survives the back-edge (mirrors the direct-call path above).
-          // #708: also retain a projection / borrow-returning-call arg here, same
-          // as the direct-call path (line ~2607) already does -- a closure param
-          // is dropped by the callee's own exit epilogue exactly like a direct
-          // call's owning param, so a bare borrowed view passed through (e.g. the
-          // recursive-descent parser's `parse_recur(tokens, ...)` family calling
-          // through a `let rec`-captured closure value) was double-freed the same
-          // way #704/#706's direct-call cases were, just one call-shape over.
-          let is_loop_borrow2 = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
-          if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow2) {
-            // #706 leak follow-up: log so the epilogue compensates (see above).
-            if is_loop_borrow2 {
-              Array::push(ctx.loop_consumed_names, get_eident_name(carg))
-            } else {
-              ()
-            }
-            Array::push(local_names, "__argdup")
-            emit_local_tee(buf, nl)
-            emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
-            nl = nl + 1
-          } else {
-            ()
-          }
-          ci = ci + 1
-        }
-        emit_closure_call_tail(buf, env_local, slot_local, 9, num_args)
-        nl
-      }
+      cc_compile_resolved_call(buf, fname, args, local_names, next_local, ctx, ld, ce, fn_idx_in_list, local_idx_hint)
     }
   } else {
     let num_args = Array::length(args)

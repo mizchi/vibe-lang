@@ -1,0 +1,85 @@
+// #2386: `compile_call_core` sends a callee its special-case ladder never
+// tests straight to the resolved-call fallback, skipping the ~150 arms. That
+// is sound only while `cc_ladder_names` lists every literal an arm compares
+// `fname` against, so this test reads the lowering's own source text and
+// checks each such literal against the gate: a new arm whose name is missing
+// from the list fails here instead of silently lowering as a user call.
+import @vibe/compiler/codegen/expr {
+  cc_ladder_tests_name
+}
+
+import @vibe/compiler/core {
+  namespace_exported_name
+}
+
+fn ladder_source() -> String with Fs {
+  Fs::read_file("lib/@vibe/compiler/codegen/expr/compile_call.vibe")
+}
+
+/// Every `fname == "<literal>"` in `src` outside a `//` comment line, in
+/// order of appearance, duplicates kept. The literals are plain callee
+/// spellings, so the first `"` after the opening one closes it.
+fn fname_literals(src: String) -> Array[String] {
+  let out: Array[String] = []
+  let needle = "fname == \""
+  let nlen = String::length(needle)
+  let len = String::length(src)
+  let mut i = 0
+  let mut comment_line = line_is_comment(src, 0)
+  while i + nlen <= len {
+    let c = String::char_code_at(src, i)
+    if c == '\n' {
+      comment_line = line_is_comment(src, i + 1)
+      i = i + 1
+    } else if !comment_line && c == 'f' && String::substring(src, i, i + nlen) == needle {
+      let mut j = i + nlen
+      while j < len && String::char_code_at(src, j) != '"' {
+        j = j + 1
+      }
+      Array::push(out, String::substring(src, i + nlen, j))
+      i = j
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// Does the line starting at `pos` begin (after indentation) with `//`?
+fn line_is_comment(src: String, pos: Int) -> Bool {
+  let len = String::length(src)
+  let mut k = pos
+  while k < len && String::char_code_at(src, k) == ' ' {
+    k = k + 1
+  }
+  k + 1 < len && String::char_code_at(src, k) == '/' && String::char_code_at(src, k + 1) == '/'
+}
+
+/// The literals the gate does not know, `;`-joined (empty = the set is complete).
+fn missing_names(lits: Array[String]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(lits) {
+    let l = Array::get(lits, i)
+    if !cc_ladder_tests_name(l) {
+      out = String::concat(String::concat(out, l), ";")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+test "every callee literal the call ladder compares against is in the gate set" {
+  let lits = fname_literals(ladder_source())
+  inspect(Array::length(lits) > 140, content = "true")
+  inspect(missing_names(lits), content = "")
+}
+
+test "the computed to_string name, a ladder name, a user callee, an empty name" {
+  inspect(cc_ladder_tests_name(namespace_exported_name("lib/@vibe/builtin/builtin_traits.vibe", "to_string")), content = "true")
+  inspect(cc_ladder_tests_name("Map::get"), content = "true")
+  inspect(cc_ladder_tests_name("my_helper"), content = "false")
+  inspect(cc_ladder_tests_name(""), content = "false")
+}
