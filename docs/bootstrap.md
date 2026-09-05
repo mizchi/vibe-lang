@@ -323,8 +323,17 @@ an existing, published seed to use as stage0.
    `bootstrap/seed.json`, copies the artifact to `bootstrap/seed/compiler.wasm`,
    and records its sha256 and tag. The tag must have the `seed/` prefix.
 3. Commit the `bootstrap/seed.json` update separately, but do not merge the PR
-   yet. Fresh CI runners fetch the seed from the new tag, so every bootstrap
-   bump gate returns 404 until that release exists.
+   yet. Fresh CI runners fetch the seed from the new tag; while that release
+   does not exist, `scripts/ensure_seed.sh` rebuilds the pinned seed instead:
+   it checks out `seed.source_commit` (whose own manifest pins the previous
+   published seed) and runs `generations.sh build` there, then installs the
+   stage2 only if it matches the pinned sha256. So the bump PR's gates are
+   green before the release exists, at the cost of one stage0 -> stage2 build
+   per cold job (`actions/cache` keyed on the manifest shares it afterwards).
+   The release is still required before merging: after the merge every fresh
+   clone of main would otherwise pay that rebuild. `VIBE_ENSURE_SEED_NO_REBUILD=1`
+   restores the fail-fast; `scripts/ensure_seed_test.sh` pins the fallback's
+   contract (matching rebuild installs, mismatching rebuild is refused).
 4. Dispatch the GitHub Actions `seed-release` workflow with that commit as
    `source_ref`:
    - `tag`: the `seed/<name>` chosen in step 2.
@@ -340,8 +349,9 @@ an existing, published seed to use as stage0.
    - CI detects which case applies, acquires the prior artifact, rebuilds
      deterministically through stage3, adopts the candidate in its workspace,
      and publishes the assets.
-5. Verify that the released compiler sha256 matches `bootstrap/seed.json`, then
-   create or rerun the PR and merge only after CI is Green.
+5. Verify that the released compiler sha256 matches `bootstrap/seed.json`
+   (the rebuild in step 3 proves the same equality from the other side), then
+   merge only after CI is Green.
 6. The published release appears as a **prerelease**. All CI and local callers
    that read the pin can then fetch it through `scripts/ensure_seed.sh`.
    Because immutable releases are enabled, the workflow first creates a draft,
