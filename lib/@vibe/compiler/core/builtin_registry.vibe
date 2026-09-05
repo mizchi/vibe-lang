@@ -531,24 +531,19 @@ export fn builtin_registry_typed() -> Array[(String, Type, Bool, Bool, Bool)] {
 /// same message the direct call gives, instead of checking clean and printing
 /// garbage.
 export fn registry_builtin_scheme(name: String) -> Option[Type] {
-  let mut i = 0
-  let mut found: Option[Type] = None
-  while i < Array::length(registry_typed_rows) {
-    let (rname, ty, _, _, visible) = Array::get(registry_typed_rows, i)
-    if rname == name && visible {
-      let vars: Array[Int] = []
-      collect_type_var_ids(ty, vars)
-      found = if Array::length(vars) == 0 {
-        Some(ty)
-      } else {
-        Some(CtForAll(vars, empty_registry_var_bounds(), ty))
-      }
-      i = Array::length(registry_typed_rows)
+  let row = registry_first_visible_row(name)
+  if row < 0 {
+    None
+  } else {
+    let (_, ty, _, _, _) = Array::get(registry_typed_rows, row)
+    let vars: Array[Int] = []
+    collect_type_var_ids(ty, vars)
+    if Array::length(vars) == 0 {
+      Some(ty)
     } else {
-      i = i + 1
+      Some(CtForAll(vars, empty_registry_var_bounds(), ty))
     }
   }
-  found
 }
 
 /// A registry row's variables carry no trait bounds: the rows describe wasm
@@ -605,22 +600,16 @@ export fn builtin_registry() -> Array[(String, Int, Int, Bool, Bool)] {
 /// stack for fallthru`, no source position). Which builtins got checked was the
 /// maintenance state of that list, not a rule of the language.
 export fn registry_builtin_arity(name: String) -> Int {
-  let rows = builtin_registry_typed()
-  let mut i = 0
-  let mut found = 0 - 1
-  while i < Array::length(rows) {
-    let (rname, ty, _, _, visible) = Array::get(rows, i)
-    if rname == name && visible {
-      found = match ty {
-        CtFn(params, _, _) => Array::length(params),
-        _ => 0 - 1
-      }
-      i = Array::length(rows)
-    } else {
-      i = i + 1
+  let row = registry_first_visible_row(name)
+  if row < 0 {
+    0 - 1
+  } else {
+    let (_, ty, _, _, _) = Array::get(builtin_registry_typed(), row)
+    match ty {
+      CtFn(params, _, _) => Array::length(params),
+      _ => 0 - 1
     }
   }
-  found
 }
 
 /// #2442: the parameter count of a checker-visible registry row whose type is
@@ -658,29 +647,23 @@ export fn registry_builtin_pure_arity(name: String) -> Int {
   // #2451: the UN-erased rows. A row spelled with `reg_var` mentions no
   // unknown, so it passes the test below and gains a value form; the erased
   // view would put `CtUnknown` back and refuse every one of them.
-  let rows = registry_typed_rows
-  let mut i = 0
-  let mut found = 0 - 1
-  while i < Array::length(rows) {
-    let (rname, ty, _, _, visible) = Array::get(rows, i)
-    if rname == name && visible {
-      found = match ty {
-        CtFn(params, ret, eff) => match eff {
-          Some(_) => 0 - 1,
-          None => if types_mention_unknown(params) || type_has_unknown(ret) {
-            0 - 1
-          } else {
-            Array::length(params)
-          }
-        },
-        _ => 0 - 1
-      }
-      i = Array::length(rows)
-    } else {
-      i = i + 1
+  let row = registry_first_visible_row(name)
+  if row < 0 {
+    0 - 1
+  } else {
+    let (_, ty, _, _, _) = Array::get(registry_typed_rows, row)
+    match ty {
+      CtFn(params, ret, eff) => match eff {
+        Some(_) => 0 - 1,
+        None => if types_mention_unknown(params) || type_has_unknown(ret) {
+          0 - 1
+        } else {
+          Array::length(params)
+        }
+      },
+      _ => 0 - 1
     }
   }
-  found
 }
 
 fn types_mention_unknown(ts: Array[Type]) -> Bool {
@@ -709,26 +692,20 @@ fn types_mention_unknown(ts: Array[Type]) -> Bool {
 /// tolerate-on-unknown rule) in the checker, which is the only place that knows
 /// what an "unchecked" head means.
 export fn registry_builtin_param_type(name: String, i: Int) -> Option[Type] {
-  let rows = builtin_registry_typed()
-  let mut ri = 0
-  let mut found = None
-  while ri < Array::length(rows) {
-    let (rname, ty, _, _, visible) = Array::get(rows, ri)
-    if rname == name && visible {
-      found = match ty {
-        CtFn(params, _, _) => if i >= 0 && i < Array::length(params) {
-          Some(Array::get(params, i))
-        } else {
-          None
-        },
-        _ => None
-      }
-      ri = Array::length(rows)
-    } else {
-      ri = ri + 1
+  let row = registry_first_visible_row(name)
+  if row < 0 {
+    None
+  } else {
+    let (_, ty, _, _, _) = Array::get(builtin_registry_typed(), row)
+    match ty {
+      CtFn(params, _, _) => if i >= 0 && i < Array::length(params) {
+        Some(Array::get(params, i))
+      } else {
+        None
+      },
+      _ => None
     }
   }
-  found
 }
 
 /// B-2: the checker-facing lookup, consulted FIRST by
@@ -768,21 +745,39 @@ fn registry_typed_index() -> Unit {
   }
 }
 
-export fn lookup_registry_builtin(name: String) -> Option[Type] {
+/// The index of the first checker-visible row named `name`, or -1: one
+/// leftmost binary search of the sorted view and a forward read of the equal
+/// run. The erased rows are built one-to-one from the un-erased rows in the
+/// same order, so the index reads either table. #2386: every "first visible
+/// row" scan (lookup, arity, pure arity, parameter type, scheme) goes through
+/// it; `registry_builtin_pure_arity` alone was asked per identifier by the
+/// lambda-site count.
+fn registry_first_visible_row(name: String) -> Int {
   registry_typed_index()
   let rows = builtin_registry_typed()
   let mut slot = bsearch_leftmost(registry_typed_sorted, name)
-  let mut found = None
+  let mut found = 0 - 1
   while slot >= 0 && slot < Array::length(registry_typed_sorted) && Array::get(registry_typed_sorted, slot) == name {
-    let (_, ty, _, _, visible) = Array::get(rows, Array::get(registry_typed_sorted_pos, slot))
+    let row = Array::get(registry_typed_sorted_pos, slot)
+    let (_, _, _, _, visible) = Array::get(rows, row)
     if visible {
-      found = Some(ty)
+      found = row
       slot = -1
     } else {
       slot = slot + 1
     }
   }
   found
+}
+
+export fn lookup_registry_builtin(name: String) -> Option[Type] {
+  let row = registry_first_visible_row(name)
+  if row < 0 {
+    None
+  } else {
+    let (_, ty, _, _, _) = Array::get(builtin_registry_typed(), row)
+    Some(ty)
+  }
 }
 
 /// Every registry effect label must have standard provider or entry-execution
