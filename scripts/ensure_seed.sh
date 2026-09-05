@@ -117,22 +117,25 @@ rebuild_from_source_commit() {
     return 0
   fi
   short="$(printf '%s' "$source_commit" | cut -c1-12)"
-  wt="$PROJECT_ROOT/_build/seed_rebuild/src-$short"
-  gen="$PROJECT_ROOT/_build/seed_rebuild/gen-$short"
+  # Per-invocation directories: two ensure_seed runs on the same manifest
+  # (a test battery started while the seed is missing) must not wipe each
+  # other's build; each installs the same pinned bytes or fails its own check.
+  mkdir -p "$PROJECT_ROOT/_build/seed_rebuild"
+  REBUILD_DIR="$(mktemp -d "$PROJECT_ROOT/_build/seed_rebuild/$short.XXXXXX")"
+  wt="$REBUILD_DIR/src"
+  gen="$REBUILD_DIR/gen"
+  mkdir -p "$gen"
   echo "[ensure-seed] release $SEED_TAG not available; rebuilding the pinned seed from source_commit $short with the seed that commit pins (deterministic; the result must match sha256 $SEED_ARTIFACT_SHA)" >&2
   if ! git -C "$PROJECT_ROOT" cat-file -e "$source_commit^{commit}" 2>/dev/null; then
     git -C "$PROJECT_ROOT" fetch --depth 1 origin "$source_commit" || \
       die "cannot fetch source_commit $source_commit to rebuild seed $SEED_TAG"
   fi
-  rm -rf "$wt" "$gen"
-  mkdir -p "$gen"
   git -C "$PROJECT_ROOT" worktree prune
-  git -C "$PROJECT_ROOT" worktree add --detach --force "$wt" "$source_commit" >&2 || \
+  git -C "$PROJECT_ROOT" worktree add --detach "$wt" "$source_commit" >&2 || \
     die "cannot check out source_commit $source_commit to rebuild seed $SEED_TAG"
   local prior_tag
   prior_tag="$(MANIFEST="$wt/bootstrap/seed.json" read_manifest seed.tag || true)"
   if [ "$prior_tag" = "$SEED_TAG" ] || [ -z "$prior_tag" ]; then
-    git -C "$PROJECT_ROOT" worktree remove --force "$wt" || true
     die "source_commit $short pins '$prior_tag' itself; a rebuild needs a source commit whose manifest pins the previous published seed (publish release $SEED_TAG, or fix seed.source_commit)"
   fi
   # The worktree's own ensure_seed fetches $prior_tag; never recurse into a
@@ -140,17 +143,22 @@ rebuild_from_source_commit() {
   # run needs wasmtime, which CI jobs install after this step (or never); the
   # sha256 pin below is the validation of the rebuilt artifact.
   if ! (cd "$wt" && VIBE_ENSURE_SEED_NO_REBUILD=1 bash scripts/generations.sh build --skip-run-validation --out-dir "$gen" >&2); then
-    git -C "$PROJECT_ROOT" worktree remove --force "$wt" || true
     die "rebuilding seed $SEED_TAG from source_commit $short failed (log above)"
   fi
   [ -f "$gen/stage2.wasm" ] || die "rebuild of seed $SEED_TAG produced no stage2.wasm in $gen"
   cp "$gen/stage2.wasm" "$SEED_ARTIFACT_PATH"
-  git -C "$PROJECT_ROOT" worktree remove --force "$wt" || true
-  rm -rf "$gen"
+}
+
+REBUILD_DIR=""
+cleanup_rebuild_dir() {
+  if [ -n "$REBUILD_DIR" ]; then
+    git -C "$PROJECT_ROOT" worktree remove --force "$REBUILD_DIR/src" >/dev/null 2>&1 || true
+    rm -rf "$REBUILD_DIR"
+  fi
 }
 
 fetch_out="$(mktemp -d)"
-trap 'rm -rf "$fetch_out"' EXIT
+trap 'rm -rf "$fetch_out"; cleanup_rebuild_dir' EXIT
 if bash "$SCRIPT_DIR/fetch_compiler.sh" "$SEED_TAG" --out-dir "$fetch_out" --no-module-source; then
   fetched_wasm="$(find "$fetch_out" -maxdepth 1 -name '*.wasm' | head -1)"
   [ -n "$fetched_wasm" ] || die "fetch_compiler.sh did not produce a .wasm asset for tag $SEED_TAG"
