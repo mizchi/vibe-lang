@@ -23,11 +23,16 @@ sha256_of() {
 }
 
 # Fake curl: every download attempt fails like an unreachable asset (exit 22).
+# Fake sleep: fetch_compiler.sh backs off 2+4+8 s between its four attempts,
+# which is the behavior under test in cases 4 and 5 but not worth 28 idle
+# seconds in every release-check; the retry count is still exercised.
 mkdir -p "$work/bin"
 printf '#!/usr/bin/env bash\nexit 22\n' > "$work/bin/curl"
-chmod +x "$work/bin/curl"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$work/bin/sleep"
+chmod +x "$work/bin/curl" "$work/bin/sleep"
 export PATH="$work/bin:$PATH"
 command -v curl | grep -q "$work/bin/curl" || fail "fake curl is not first on PATH"
+command -v sleep | grep -q "$work/bin/sleep" || fail "fake sleep is not first on PATH"
 
 missing_tag="seed/does-not-exist-ensure-seed-test"
 # Two local "remotes": one without the tag (release not published) and one
