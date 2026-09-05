@@ -3911,14 +3911,33 @@ fn record_eq_formal_var(vid: Int, name: String, arity: Int) -> Unit {
   }
 }
 
-/// The arity the most recent binder spelled `name` was recorded with (0 when
-/// none was): the rigid `#hktformal.` spelling carries the name only.
-fn eq_formal_arity_of(name: String) -> Int {
+/// The arity binder `vid` was recorded with (0 when it is not in the table).
+fn eq_formal_arity_for_vid(vid: Int) -> Int {
+  let mut i = 0
+  let mut found = 0
+  while i < Array::length(eq_formal_vars) {
+    let (v, _) = Array::get(eq_formal_vars, i)
+    if v == vid {
+      found = Array::get(eq_formal_arity, i)
+      i = Array::length(eq_formal_vars)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The arity of the most recent HIGHER-KINDED binder spelled `name`: the
+/// rigid `#hktformal.` spelling carries the name only, and only an
+/// unbounded binder of arity > 0 takes that spelling, so a same-named plain
+/// binder recorded later (an inner `[F]` shadowing an outer `[F[_]]`) must
+/// not answer for it.
+fn eq_formal_arity_of_rigid(name: String) -> Int {
   let mut i = Array::length(eq_formal_vars) - 1
   let mut found = 0
   while i >= 0 {
     let (_, n) = Array::get(eq_formal_vars, i)
-    if n == name {
+    if n == name && Array::get(eq_formal_arity, i) > 0 {
       found = Array::get(eq_formal_arity, i)
       i = 0 - 1
     } else {
@@ -4143,7 +4162,16 @@ fn joined_names(names: Array[String], sep: String) -> String {
 /// change nothing).
 fn eq_formal_is_shadowed(vid: Int, name: String, s: Subst, env: TypeEnv) -> Bool {
   if vid < 0 {
-    false
+    // A rigid HKT formal: hidden when the visible binder of that name is no
+    // longer its own `#hktformal.` spelling (an inner `[F]` over an outer
+    // `[F[_]]`).
+    match env_lookup(env, name) {
+      Some(t) => match subst_apply(s, t) {
+        CtNamed(n, _) => n != String::concat("#hktformal.", name),
+        _ => true
+      },
+      None => false
+    }
   } else {
     let own = match subst_apply(s, CtVar(vid)) {
       CtVar(r) => r,
@@ -4159,45 +4187,92 @@ fn eq_formal_is_shadowed(vid: Int, name: String, s: Subst, env: TypeEnv) -> Bool
   }
 }
 
+fn eq_formals_name_count(formals: Array[(Int, String)], name: String) -> Int {
+  let mut i = 0
+  let mut n = 0
+  while i < Array::length(formals) {
+    let (_, fname) = Array::get(formals, i)
+    if fname == name {
+      n = n + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  n
+}
+
 /// #2474 (a): the diagnostic for `==` / `!=` on an operand type that mentions
 /// a type parameter with no `Eq` bound. Leads with the edit: the bound, or a
 /// concrete type. Measured before this check existed, every aggregate
 /// instantiation of such a site (`Double`, `Array`, tuple, struct, enum,
 /// `Option`, `Bytes`) answered `false` for equal values while `Int` / `String`
 /// answered correctly -- a silent wrong answer that depended on the caller.
+///
+/// Rendered PER BINDER, not per spelling (Codex on #2529): two binders both
+/// spelled `T` -- an enclosing declaration's and an inner lambda's -- are two
+/// edits, each spelled at its own kind, and the message says which
+/// declaration each belongs on. When every binder is distinct and visible the
+/// edits collapse into one bracket (`[T: Eq, U: Eq]`).
 fn eq_unbounded_formal_msg(op: String, resolved: Type, formals: Array[(Int, String)], s: Subst, env: TypeEnv, off: Int) -> String {
-  let names: Array[String] = []
-  let mut shadowed = false
+  let n = Array::length(formals)
+  let mentions: Array[String] = []
+  let edits: Array[String] = []
+  let plain_edits: Array[String] = []
+  let mut qualified = false
   let mut fi = 0
-  while fi < Array::length(formals) {
+  while fi < n {
     let (vid, name) = Array::get(formals, fi)
-    if !string_array_has(names, name) {
-      Array::push(names, name)
+    let arity = if vid < 0 {
+      eq_formal_arity_of_rigid(name)
+    } else {
+      eq_formal_arity_for_vid(vid)
+    }
+    let shadowed = eq_formal_is_shadowed(vid, name, s, env)
+    let dup = eq_formals_name_count(formals, name) > 1
+    let qual = if shadowed {
+      " on the enclosing declaration"
+    } else if dup {
+      " on the inner binder"
+    } else {
+      ""
+    }
+    if String::length(qual) > 0 {
+      qualified = true
     } else {
       ()
     }
-    if eq_formal_is_shadowed(vid, name, s, env) {
-      shadowed = true
+    let mention_qual = if dup {
+      if shadowed {
+        " (an enclosing declaration's)"
+      } else {
+        " (the inner binder's)"
+      }
     } else {
-      ()
+      ""
     }
+    Array::push(mentions, String::concat("`", String::concat(name, String::concat("`", mention_qual))))
+    let spelled = String::concat(eq_formal_binder_spelling(name, arity), ": Eq")
+    Array::push(plain_edits, spelled)
+    Array::push(edits, String::concat("`[", String::concat(spelled, String::concat("]`", qual))))
     fi = fi + 1
   }
-  let bound_spelling = joined_names(for n in names {
-    String::concat(eq_formal_binder_spelling(n, eq_formal_arity_of(n)), ": Eq")
-  }, ", ")
-  let params = if Array::length(names) == 1 {
-    if shadowed {
-      String::concat("the type parameter `", String::concat(Array::get(names, 0), String::concat("` of an enclosing declaration has no `Eq` bound (an inner binder also spelled `", String::concat(Array::get(names, 0), "` shadows it here, so the bound belongs on the outer one)"))))
+  let params = if n == 1 {
+    let (vid0, name0) = Array::get(formals, 0)
+    if eq_formal_is_shadowed(vid0, name0, s, env) {
+      String::concat("the type parameter `", String::concat(name0, String::concat("` of an enclosing declaration has no `Eq` bound (an inner binder also spelled `", String::concat(name0, "` shadows it here, so the bound belongs on the outer one)"))))
     } else {
-      String::concat("the type parameter `", String::concat(Array::get(names, 0), "` has no `Eq` bound"))
+      String::concat("the type parameter `", String::concat(name0, "` has no `Eq` bound"))
     }
-  } else if shadowed {
-    String::concat("the type parameters `", String::concat(joined_names(names, "`, `"), "` have no `Eq` bound (at least one is an enclosing declaration's, shadowed here by an inner binder of the same spelling, so the bound belongs on the outer one)"))
   } else {
-    String::concat("the type parameters `", String::concat(joined_names(names, "`, `"), "` have no `Eq` bound"))
+    String::concat("the type parameters ", String::concat(joined_names(mentions, ", "), " have no `Eq` bound"))
   }
-  String::concat("`", String::concat(op, String::concat("` compares two values of type `", String::concat(eq_formal_display_type(resolved, s), String::concat("`, but ", String::concat(params, String::concat(", so they cannot be compared by content here; declare the bound (`[", String::concat(bound_spelling, String::concat("]`) or compare at a concrete type", off_marker(off))))))))))
+  let bound_clause = if qualified && n > 1 {
+    String::concat("declare the bound (", String::concat(joined_names(edits, ", "), ")"))
+  } else {
+    String::concat("declare the bound (`[", String::concat(joined_names(plain_edits, ", "), "]`)"))
+  }
+  String::concat("`", String::concat(op, String::concat("` compares two values of type `", String::concat(eq_formal_display_type(resolved, s), String::concat("`, but ", String::concat(params, String::concat(", so they cannot be compared by content here; ", String::concat(bound_clause, String::concat(" or compare at a concrete type", off_marker(off))))))))))
 }
 
 fn mark_return_provenance_written(id: Int) -> Unit {

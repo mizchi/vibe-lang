@@ -96,6 +96,22 @@ test "#2474: a higher-kinded binder keeps its kind in the suggested bound" {
   inspect(first_check_error(src), content = "`==` compares two values of type `F[A]`, but the type parameters `F`, `A` have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[F[_]: Eq, A: Eq]`) or compare at a concrete type")
 }
 
+test "#2474: two binders spelled alike are two edits, each on its own declaration" {
+  // The outer `T` (captured `x`) and the inner lambda's `T` (`y`) are both
+  // unbounded; one `[T: Eq]` on the outer declaration would leave the inner
+  // binder as it was, so each is named with the declaration it belongs on.
+  let src = "fn outer[T](x: T) -> Bool {\n  let f = [T](y: T) -> Bool {\n    (x, y) == (x, y)\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `(T, T)`, but the type parameters `T` (an enclosing declaration's), `T` (the inner binder's) have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[T: Eq]` on the enclosing declaration, `[T: Eq]` on the inner binder) or compare at a concrete type")
+}
+
+test "#2474: a shadowed higher-kinded binder keeps its kind, the shadowing one keeps its own" {
+  // The outer `F[_]` is rigid in the body; the inner plain `F` is a
+  // different binder of kind `Type`. Neither may borrow the other's kind in
+  // the suggested edit.
+  let src = "fn outer[F[_], A](x: F[A]) -> Bool {\n  let g = [F](y: F) -> Bool {\n    (x, y) == (x, y)\n  }\n  true\n}\n"
+  inspect(first_check_error(src), content = "`==` compares two values of type `(F[A], F)`, but the type parameters `F` (an enclosing declaration's), `A`, `F` (the inner binder's) have no `Eq` bound, so they cannot be compared by content here; declare the bound (`[F[_]: Eq]` on the enclosing declaration, `[A: Eq]`, `[F: Eq]` on the inner binder) or compare at a concrete type")
+}
+
 //# Accepted
 
 test "#2474: the bound is the edit -- bare, Option, tuple, Array" {
