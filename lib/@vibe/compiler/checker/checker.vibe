@@ -3988,18 +3988,31 @@ fn record_eq_formal_var(vid: Int, name: String, arity: Int, gid: Int, rigid: Boo
   }
 }
 
-/// The table row recording binder `vid`, or -1.
+/// The table row recording binder `vid`, or -1. Scanned from the most recent
+/// row backwards and preferring a row whose declaration is still open: an
+/// auxiliary re-check (`check_resume_values` re-checks each `resume(..)`
+/// value of a handler arm with the same counter) can allocate one variable
+/// id to two sibling binders, and the closed sibling's row must not answer
+/// for the open one (Codex on #2530).
 fn eq_formal_row_of(vid: Int) -> Int {
-  let mut i = 0
+  let mut i = Array::length(eq_formal_vars) - 1
   let mut found = 0 - 1
-  while i < Array::length(eq_formal_vars) {
+  let mut found_open = false
+  while i >= 0 && !found_open {
     let (v, _) = Array::get(eq_formal_vars, i)
     if v == vid {
-      found = i
-      i = Array::length(eq_formal_vars)
+      if eq_group_is_open(Array::get(eq_formal_group, i)) {
+        found = i
+        found_open = true
+      } else if found < 0 {
+        found = i
+      } else {
+        ()
+      }
     } else {
-      i = i + 1
+      ()
     }
+    i = i - 1
   }
   found
 }
