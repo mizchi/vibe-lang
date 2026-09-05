@@ -1,0 +1,41 @@
+// #2386: the mutability, async-effect and stdin-provider passes walk an
+// expression with ONE error accumulator instead of returning a fresh array
+// per node and copying it upward. What must not change is the report itself:
+// every site is reported once, in preorder, through nested scopes -- pinned
+// here on a rendered join of the whole report.
+import @vibe/compiler/core {
+  TypeEnv
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/compiler/checker {
+  EffectError, check_async_effects_stmts, check_mutability_stmts, check_stdin_provider_direct_calls_stmts, effect_error_to_string
+}
+
+fn rendered(errs: Array[EffectError]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(errs) {
+    out = String::concat(String::concat(out, effect_error_to_string(Array::get(errs, i))), " | ")
+    i = i + 1
+  }
+  out
+}
+
+test "mutability: one report per site, in preorder, through nested scopes" {
+  let src = "fn f() -> Int {\n  let a = 1\n  let c = 2\n  let d = 3\n  let e = 4\n  a = 10\n  let mut b = 0\n  b = 3\n  if true {\n    c = 11\n  } else {\n    b = 5\n  }\n  while false {\n    d = 12\n  }\n  let g = () -> Int {\n    e = 13\n    1\n  }\n  b\n}\n"
+  inspect(rendered(check_mutability_stmts(parse_program(lex(src)))), content = "cannot assign to immutable binding `a` (declare it with `let mut`) | cannot assign to immutable binding `c` (declare it with `let mut`) | cannot assign to immutable binding `d` (declare it with `let mut`) | cannot assign to immutable binding `e` (declare it with `let mut`) | ")
+}
+
+test "stdin provider: value references reported in preorder, direct calls checked argument by argument" {
+  let src = "fn s() -> Int {\n  let r = Stdin::read_via_stream\n  let t = [StdinStream::next]\n  StdinStream::read_chunk(StdinStream::close)\n  1\n}\n"
+  inspect(rendered(check_stdin_provider_direct_calls_stmts(parse_program(lex(src)))), content = "stdin provider operations are direct-call-only; wrap `Stdin::read_via_stream` in an explicitly effectful function | stdin provider operations are direct-call-only; wrap `StdinStream::next` in an explicitly effectful function | stdin provider operations are direct-call-only; wrap `StdinStream::close` in an explicitly effectful function | ")
+}
+
+test "async: every primitive call outside an Async row is reported, in preorder" {
+  let src = "fn h() -> Int {\n  let x = await(1)\n  if true {\n    await(2)\n  } else {\n    3\n  }\n}\n"
+  inspect(rendered(check_async_effects_stmts(parse_program(lex(src)), EnvEmpty)), content = "effectful call outside effectful context: await | effectful call outside effectful context: await | ")
+}
