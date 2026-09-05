@@ -1,0 +1,181 @@
+//# #2386: the loader answers "what kinds does this source export" once per
+//# path per process instead of reading, lexing and parsing the re-export's
+//# target again for every member unit that re-exports it. What must not
+//# happen is an answer outliving a file: a target rewritten under the same
+//# path is read again (grown to a different kind, then restored), the
+//# second member re-exporting one target is checked against the same answer
+//# as the first, and a new file that now wins a resolution made inside the
+//# re-export chain is observed even though no file that was read changed.
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_module_header_cache_path, set_persistent_cache_cfg_flags
+}
+
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/loader {
+  ingest_source_text_fs
+}
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn remove_file_if_exists(path: String) -> Unit with Fs {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+fn write_cold(path: String, source: String) -> Unit with Exception + Fs {
+  Fs::write_bytes(path, string_to_bytes(source))
+  remove_file_if_exists(persistent_module_header_cache_path(path, compact_string_fingerprint(source)))
+}
+
+fn ingest_error(contract_path: String) -> String with Fs {
+  handle {
+    let _ = ingest_source_text_fs(contract_path, Fs::read_file(contract_path))
+    ""
+  } with { Exception::Throw(error) => error }
+}
+
+/// A parent package whose two members both re-export `Container` from one
+/// source package. The contract carries a per-run stamp so the persistent
+/// facade row of an earlier run cannot answer for the parse this test is
+/// about.
+fn setup(base_dir: String) -> String with Exception + Fs + Profiler {
+  let source_dir = String::concat(base_dir, "/source")
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(source_dir)
+  Fs::mkdir_p(parent_dir)
+  write_cold(String::concat(source_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
+  write_cold(String::concat(source_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
+  let stamp = __to_string(Profiler::now_us())
+  write_cold(String::concat(parent_dir, "/index.vpkg"), String::concat("// run ", String::concat(stamp, "\nopaque type Container[F[_]]\n")))
+  write_cold(String::concat(parent_dir, "/mid_a.vibe"), "export ../source { Container }\n")
+  write_cold(String::concat(parent_dir, "/mid_b.vibe"), "export ../source { Container }\n")
+  String::concat(parent_dir, "/index.vpkg")
+}
+
+test "two members re-exporting one source are checked against the same answer" {
+  let base_dir = "/tmp/vibe_compiler_exported_type_params_memo_two_members"
+  let contract_path = setup(base_dir)
+  // The second member's ask is answered from the first member's parse; the
+  // conformance check passes for both.
+  assert_eq(ingest_error(contract_path), "")
+}
+
+test "a re-export target rewritten under the same path is read again" {
+  let base_dir = "/tmp/vibe_compiler_exported_type_params_memo_rewrite"
+  let contract_path = setup(base_dir)
+  assert_eq(ingest_error(contract_path), "")
+  // The source contract changes the kind of `Container` under the same path.
+  write_cold(String::concat(base_dir, "/source/index.vpkg"), "opaque type Container[F]\n")
+  assert_true(String::contains(ingest_error(contract_path), "kind mismatch"))
+  // And changes back: the stale answer must not come back either.
+  write_cold(String::concat(base_dir, "/source/index.vpkg"), "opaque type Container[F[_]]\n")
+  assert_eq(ingest_error(contract_path), "")
+}
+
+/// A parent whose member re-exports through a facade directory, so the
+/// resolution of `../source` happens INSIDE the memoized recursion (the
+/// facade's own re-export), not at the member. The contract carries a
+/// per-run stamp for the same reason as `setup`.
+fn setup_chain(base_dir: String, stamp: String) -> String with Exception + Fs {
+  let source_dir = String::concat(base_dir, "/source")
+  let facade_dir = String::concat(base_dir, "/facade")
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(source_dir)
+  Fs::mkdir_p(facade_dir)
+  Fs::mkdir_p(parent_dir)
+  write_cold(String::concat(source_dir, "/index.vpkg"), "opaque type Container[F[_]]\n")
+  write_cold(String::concat(source_dir, "/impl.vibe"), "export type Container[F[_]] = F[Int]\n")
+  write_cold(String::concat(facade_dir, "/index.vibe"), "export ../source { Container }\n")
+  write_cold(String::concat(parent_dir, "/index.vpkg"), String::concat("// run ", String::concat(stamp, "\nopaque type Container[F[_]]\n")))
+  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../facade { Container }\n")
+  String::concat(parent_dir, "/index.vpkg")
+}
+
+/// Only the parent contract is rewritten: every file the first answer read
+/// keeps its stat token, which is what makes the stale answer possible.
+fn restamp_parent(base_dir: String, stamp: String) -> Unit with Exception + Fs {
+  write_cold(String::concat(base_dir, "/parent/index.vpkg"), String::concat("// run ", String::concat(stamp, "\nopaque type Container[F[_]]\n")))
+}
+
+let resolution_base_dir: String = "/tmp/vibe_compiler_exported_type_params_memo_resolution"
+
+let resolution_stamp: Array[String] = []
+
+fn resolution_shadow() -> String {
+  String::concat(resolution_base_dir, "/source.vibe")
+}
+
+test "resolution 1: the chain answers clean and its facade answer is recorded" {
+  remove_file_if_exists(resolution_shadow())
+  let stamp = __to_string(Profiler::now_us())
+  Array::push(resolution_stamp, stamp)
+  let contract_path = setup_chain(resolution_base_dir, stamp)
+  assert_eq(ingest_error(contract_path), "")
+}
+
+test "resolution 2: a new file that wins a resolution inside the chain is observed" {
+  // `source.vibe` now wins `../source` over `source/index.vpkg`; nothing the
+  // first answer READ has changed. The parent contract is re-stamped so the
+  // persistent facade row does not answer either.
+  write_cold(resolution_shadow(), "export type Container[F] = F\n")
+  restamp_parent(resolution_base_dir, String::concat(Array::get(resolution_stamp, 0), "-b"))
+  let msg = ingest_error(String::concat(resolution_base_dir, "/parent/index.vpkg"))
+  assert_true(String::contains(msg, "kind mismatch"))
+}
+
+test "resolution 3: the directory wins again once the file is gone" {
+  remove_file_if_exists(resolution_shadow())
+  restamp_parent(resolution_base_dir, String::concat(Array::get(resolution_stamp, 0), "-c"))
+  assert_eq(ingest_error(String::concat(resolution_base_dir, "/parent/index.vpkg")), "")
+}
+
+/// What `configure_cfg_flags` does per CLI invocation: the parser's ambient
+/// set and the persistent caches' namespace move together.
+fn switch_cfg(flags: Array[String]) -> Unit {
+  set_cfg_ambient_flags(flags)
+  set_persistent_cache_cfg_flags(String::join(flags, ","))
+}
+
+test "an answer made under one ambient #cfg set does not serve another" {
+  let base_dir = "/tmp/vibe_compiler_exported_type_params_memo_cfg"
+  let parent_dir = String::concat(base_dir, "/parent")
+  Fs::mkdir_p(parent_dir)
+  // A plain re-export target (a contract file refuses `#cfg`) that declares
+  // `Container` only under `dev`.
+  write_cold(String::concat(base_dir, "/types.vibe"), "#cfg(dev)\nexport type Container[F[_]] = F[Int]\n")
+  let stamp = __to_string(Profiler::now_us())
+  write_cold(String::concat(parent_dir, "/index.vpkg"), String::concat("// run ", String::concat(stamp, "\nopaque type Container[F[_]]\n")))
+  write_cold(String::concat(parent_dir, "/mid.vibe"), "export ../types.vibe { Container }\n")
+  let contract_path = String::concat(parent_dir, "/index.vpkg")
+  switch_cfg(["dev"])
+  let under_dev = ingest_error(contract_path)
+  // Without `dev` the re-export finds no `Container`; the answer recorded
+  // under `dev` must not say otherwise. The parent is re-stamped so the
+  // persistent facade row (namespaced by the set anyway) does not answer.
+  switch_cfg([])
+  restamp_parent(base_dir, String::concat(stamp, "-b"))
+  let without_dev = ingest_error(contract_path)
+  switch_cfg([])
+  assert_eq(under_dev, "")
+  assert_true(String::contains(without_dev, "has no implementation"))
+}

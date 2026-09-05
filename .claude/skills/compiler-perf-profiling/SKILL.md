@@ -56,6 +56,14 @@ Protocol for ANY before/after comparison on this lane:
   Both lanes matter: cold is CI / first build, warm is the dev inner loop.
 - **N≥3 runs per configuration** — single-run wall deltas under ~5% are
   noise on a shared machine.
+- **Alternate the order inside each interleaved pair (ABBA).** Measured
+  2026-09-04 on the export-kinds memo: with the baseline first in every
+  pair the candidate was slower in every pair (+3.7%); with the candidate
+  first it was faster in every pair. The second run of a pair pays ~0.3 s
+  on this machine, so a fixed order turns position into a result. Pool the
+  rounds and report the median next to the profile delta; a slice whose
+  whole cost is ~0.2 s sits at the wall noise floor and is judged on the
+  profile and the deterministic heap_ptr, not on wall.
 - `scripts/profile_compile.sh` does NOT isolate the cache; wrap it with
   `VIBE_BUILD_CACHE_DIR` yourself before trusting its wall/heap output.
 - Cross-check against the PR perf-report's deterministic rows (selfcompile

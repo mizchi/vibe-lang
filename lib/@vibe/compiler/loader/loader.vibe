@@ -1,11 +1,11 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, lex_with_offsets, parse_program, parse_program_preserving
+  cfg_ambient_flags_csv, lex, lex_with_offsets, parse_program, parse_program_preserving
 }
 
 import @vibe/core {
-  array_empty, hex_decode, hex_encode
+  array_empty, hex_decode, hex_encode, struct MutMap
 }
 
 import @vibe/compiler/core {
@@ -50,7 +50,7 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 import ./header_cache.vibe {
-  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe
+  contract_sibling_impl_raws, load_or_parse_module_header_fs_impl, merge_impl_raws_dedupe, parse_program_located_shared
 }
 
 import @vibe/compiler/contract {
@@ -91,16 +91,149 @@ import @vibe/compiler/contract {
 /// an unresolved export instead of unbounded recursion; every visited source
 /// is fingerprinted so the contract-facade cache observes changes at any
 /// depth of the chain.
+/// #2386: the answer for one source, per path for the process, stamped with
+/// the stat token of every file the recursion read. `desugar_contract_source_fs`
+/// asks for the kinds behind a re-export once per MEMBER unit of the
+/// contract, and each ask read, lexed and parsed the re-export's target
+/// (and its own re-export chain) again -- on a cold compiler-closure compile
+/// every re-exported source parsed once per member re-exporting it. A hit
+/// re-stats every recorded file and replays the same `dep_paths` /
+/// `dep_fingerprints` pushes the parse made, so the facade cache row observes
+/// the same dependency set either way; a changed token re-reads. An answer
+/// is recorded only when the recursion beneath it met no `visiting` cycle,
+/// so a recorded answer never depends on the caller's `visiting` stack.
+/// A hit also re-runs every path resolution the recursion made (a nested
+/// `export ./target { T }` probing `target.vibe` before `target/index.vpkg`)
+/// and compares the answer, so a new file that now wins a resolution is
+/// observed even though no file that was read changed (Codex review on
+/// #2520). One entry per path, replaced on a token or resolution change, so
+/// a resident compiler holds one answer per source.
+let exported_type_params_memo: MutMap[String, (Array[(String, Int)], Array[String], Array[(String, Array[String])], Array[(String, String, String)])] = MutMap::new_string()
+
+let exported_type_params_read_log: Array[(String, Int)] = []
+
+/// The ambient `#cfg` set each recorded answer was parsed under: the parsers
+/// keep or drop `#cfg`-gated declarations by that set, so an answer is only
+/// fresh under the set it was made with (Codex review on #2520).
+let exported_type_params_memo_cfg: MutMap[String, String] = MutMap::new_string()
+
+let exported_type_params_resolve_log: Array[(String, String, String)] = []
+
+let exported_type_params_cycle_hits: Array[Int] = [0]
+
+fn exported_type_params_entry_cfg_matches(path: String, cfg: String) -> Bool {
+  match MutMap::get(exported_type_params_memo_cfg, path) {
+    Some(recorded) => recorded == cfg,
+    None => false
+  }
+}
+
+/// A recorded answer is fresh when every file it read has the stat token it
+/// was read under and every path resolution it made answers the same. A plain
+/// function, not the match arm: `resolve_path_fs` discharges the Source
+/// effect with a handler, and that call chain inside an Option match arm is
+/// the #708 trap shape (it trapped here, `unreachable`, on the first hit
+/// with a recorded resolution).
+fn exported_type_params_entry_fresh(reads: Array[(String, Int)], resolves: Array[(String, String, String)]) -> Bool with Fs {
+  let mut same = true
+  let mut ri = 0
+  while ri < Array::length(reads) && same {
+    let (read_path, token) = Array::get(reads, ri)
+    // A file the answer read can be gone by now (a `target.vibe` that won a
+    // resolution, then deleted): absent is stale, and `Fs::stat_token` on a
+    // missing path traps rather than answering.
+    if !Fs::exists(read_path) || Fs::stat_token(read_path) != token {
+      same = false
+    } else {
+      ()
+    }
+    ri = ri + 1
+  }
+  let mut si = 0
+  while si < Array::length(resolves) && same {
+    let (base_dir, raw_path, resolved) = Array::get(resolves, si)
+    if resolve_path_fs(base_dir, raw_path) != resolved {
+      same = false
+    } else {
+      ()
+    }
+    si = si + 1
+  }
+  same
+}
+
 fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
-  let out = array_empty()
   if contains_path(visiting, path) {
-    return out
+    Array::set(exported_type_params_cycle_hits, 0, Array::get(exported_type_params_cycle_hits, 0) + 1)
+    return array_empty()
   } else {
     ()
   }
+  if Array::length(visiting) == 0 {
+    Array::truncate(exported_type_params_read_log, 0)
+    Array::truncate(exported_type_params_resolve_log, 0)
+  } else {
+    ()
+  }
+  let fresh = match MutMap::get(exported_type_params_memo, path) {
+    Some(entry) => {
+      let (reads, _, _, resolves) = entry
+      if exported_type_params_entry_cfg_matches(path, cfg_ambient_flags_csv()) && exported_type_params_entry_fresh(reads, resolves) {
+        Some(entry)
+      } else {
+        None
+      }
+    },
+    None => None
+  }
+  match fresh {
+    Some(entry) => {
+      let (reads, fps, out, resolves) = entry
+      let mut ri = 0
+      while ri < Array::length(reads) {
+        let (read_path, token) = Array::get(reads, ri)
+        Array::push(dep_paths, read_path)
+        Array::push(dep_fingerprints, Array::get(fps, ri))
+        Array::push(exported_type_params_read_log, (read_path, token))
+        ri = ri + 1
+      }
+      let mut si = 0
+      while si < Array::length(resolves) {
+        Array::push(exported_type_params_resolve_log, Array::get(resolves, si))
+        si = si + 1
+      }
+      out
+    },
+    None => {
+      let log_mark = Array::length(exported_type_params_read_log)
+      let resolve_mark = Array::length(exported_type_params_resolve_log)
+      let dep_mark = Array::length(dep_fingerprints)
+      let hits_before = Array::get(exported_type_params_cycle_hits, 0)
+      let out = exported_type_params_uncached_fs(path, dep_paths, dep_fingerprints, visiting)
+      let reads = Array::slice(exported_type_params_read_log, log_mark, Array::length(exported_type_params_read_log))
+      let fps = Array::slice(dep_fingerprints, dep_mark, Array::length(dep_fingerprints))
+      let resolves = Array::slice(exported_type_params_resolve_log, resolve_mark, Array::length(exported_type_params_resolve_log))
+      if Array::get(exported_type_params_cycle_hits, 0) == hits_before && Array::length(reads) == Array::length(fps) {
+        MutMap::set(exported_type_params_memo, path, (reads, fps, out, resolves))
+        MutMap::set(exported_type_params_memo_cfg, path, cfg_ambient_flags_csv())
+      } else {
+        ()
+      }
+      out
+    }
+  }
+}
+
+fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_fingerprints: Array[String], visiting: Array[String]) -> Array[(String, Array[String])] with Exception + Fs {
+  let out = array_empty()
   let visiting_mark = Array::length(visiting)
   Array::push(visiting, path)
+  // The token is taken BEFORE the read: a file rewritten between the two is
+  // parsed as its new body under the old token, so the next ask re-reads it;
+  // the other order would record the new token against the old parse.
+  let token = Fs::stat_token(path)
   let raw = Fs::read_file(path)
+  Array::push(exported_type_params_read_log, (path, token))
   Array::push(dep_paths, path)
   // Fingerprint the bytes that are parsed below. A second filesystem read
   // could observe a newer body and make stale metadata look current forever.
@@ -154,6 +287,7 @@ fn exported_type_params_fs(path: String, dep_paths: Array[String], dep_fingerpri
       match Array::get(stmts, si) {
         SReExport(raw_path, items) => {
           let resolved = resolve_path_fs(dir_of_path(path), raw_path)
+          Array::push(exported_type_params_resolve_log, (dir_of_path(path), raw_path, resolved))
           let source_types = exported_type_params_fs(resolved, dep_paths, dep_fingerprints, visiting)
           let mut ii = 0
           while ii < Array::length(items) {
@@ -2245,7 +2379,10 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
     // `.vibei` target is recursively desugared to its facade text instead of
     // being handed to parse_program as raw (bodyless) contract grammar.
     let impl_ingested = ingest_source_text_fs(resolved, resolved_content)
-    let impl_stmts = parse_program(lex(impl_ingested))
+    // #2386: the member is parsed through the shared located memo, so the
+    // header pass that later collects this member as a source (the same
+    // ingested text) answers from this parse instead of parsing it again.
+    let impl_stmts = parse_program_located_shared(resolved, impl_ingested)
     Array::push(impl_units, (raw, impl_stmts))
     // #847: a raw resolving to ANOTHER package's own index.vibei/index.vibe
     // (a cross-package or nested-boundary reference, e.g. `import ../pkgb

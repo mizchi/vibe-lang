@@ -1,0 +1,136 @@
+//# #2386: one located parse per (path, exact source text) for the process,
+//# shared by the loader's header pass and the typecheck walk's module parse.
+//# What must not happen: an answer outliving its text (the same path asked
+//# with different text is parsed again, and the earlier text still answers
+//# as itself), a hand-out that aliases the stored array (a caller's top-level
+//# rewrite must not reach the next caller), and a throwing parse being
+//# remembered.
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_module_header_cache_path
+}
+
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/loader {
+  load_or_parse_module_header_fs, parse_program_located_shared, parse_program_located_shared_ran_parser
+}
+
+import @vibe/compiler/runtime {
+  parse_program_with_path
+}
+
+import @vibe/parser {
+  set_cfg_ambient_flags
+}
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = array_empty()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Array::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  Bytes::from_array(out)
+}
+
+fn remove_file_if_exists(path: String) -> Unit with Fs {
+  if Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+fn parse_error(path: String, source: String) -> String {
+  handle {
+    let _ = parse_program_located_shared(path, source)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "the same path asked with different text is parsed again, and each text keeps its own answer" {
+  let path = "/tmp/vibe_compiler_located_parse_memo/versions.vibe"
+  let one = "export let a: Int = 1\n"
+  let two = "export let a: Int = 1\nexport let b: Int = 2\n"
+  assert_eq(Array::length(parse_program_located_shared(path, one)), 1)
+  assert_true(parse_program_located_shared_ran_parser())
+  assert_eq(Array::length(parse_program_located_shared(path, two)), 2)
+  assert_true(parse_program_located_shared_ran_parser())
+  // Both texts answer from the memo now, each as itself.
+  assert_eq(Array::length(parse_program_located_shared(path, one)), 1)
+  assert_true(!parse_program_located_shared_ran_parser())
+  assert_eq(Array::length(parse_program_located_shared(path, two)), 2)
+  assert_true(!parse_program_located_shared_ran_parser())
+}
+
+test "a hand-out is a copy of the top-level array" {
+  let path = "/tmp/vibe_compiler_located_parse_memo/copy.vibe"
+  let source = "export let a: Int = 1\nexport let b: Int = 2\n"
+  let first = parse_program_located_shared(path, source)
+  assert_eq(Array::length(first), 2)
+  // A caller rewriting its array at the top level (what check_program does)
+  // must not be visible to the next caller.
+  Array::truncate(first, 1)
+  let second = parse_program_located_shared(path, source)
+  assert_eq(Array::length(second), 2)
+  assert_true(!parse_program_located_shared_ran_parser())
+  // The same for an answer that came from the memo.
+  Array::truncate(second, 1)
+  let third = parse_program_located_shared(path, source)
+  assert_eq(Array::length(third), 2)
+}
+
+test "a throwing parse is not remembered" {
+  let path = "/tmp/vibe_compiler_located_parse_memo/broken.vibe"
+  let source = "export let a: Int = \n"
+  let first = parse_error(path, source)
+  assert_true(String::starts_with(first, path))
+  let second = parse_error(path, source)
+  assert_eq(first, second)
+  assert_true(parse_program_located_shared_ran_parser())
+}
+
+test "the header pass and the module parse share one parse" {
+  let base_dir = "/tmp/vibe_compiler_located_parse_memo_shared"
+  let path = String::concat(base_dir, "/main.vibe")
+  let source = String::concat("export let _start: () -> Int = () -> { ", String::concat(__to_string(Profiler::now_us()), " }\n"))
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(path, string_to_bytes(source))
+  remove_file_if_exists(persistent_module_header_cache_path(path, compact_string_fingerprint(source)))
+  // A persisted-header miss: the header pass parses the file ...
+  let (_, exports, parse_count) = load_or_parse_module_header_fs(path, source, 0)
+  assert_eq(parse_count, 1)
+  assert_eq(Array::get(exports, 0), "_start")
+  assert_true(parse_program_located_shared_ran_parser())
+  // ... and the module parse of the same text answers from that parse.
+  let stmts: Array[Stmt] = parse_program_with_path(path, source)
+  assert_eq(Array::length(stmts), 1)
+  assert_true(!parse_program_located_shared_ran_parser())
+}
+
+test "the same text under another ambient #cfg set is another parse" {
+  let path = "/tmp/vibe_compiler_located_parse_memo/cfg.vibe"
+  let source = "export let a: Int = 1\n#cfg(dev)\nexport let b: Int = 2\n"
+  set_cfg_ambient_flags([])
+  assert_eq(Array::length(parse_program_located_shared(path, source)), 1)
+  // The set changes: the gated statement is kept, and it is a fresh parse.
+  set_cfg_ambient_flags(["dev"])
+  assert_eq(Array::length(parse_program_located_shared(path, source)), 2)
+  assert_true(parse_program_located_shared_ran_parser())
+  // Each set keeps its own answer.
+  set_cfg_ambient_flags([])
+  assert_eq(Array::length(parse_program_located_shared(path, source)), 1)
+  assert_true(!parse_program_located_shared_ran_parser())
+  set_cfg_ambient_flags(["dev"])
+  assert_eq(Array::length(parse_program_located_shared(path, source)), 2)
+  assert_true(!parse_program_located_shared_ran_parser())
+  set_cfg_ambient_flags([])
+}
