@@ -10,7 +10,8 @@ import @vibe/compiler/cache {
   persistent_module_typed_lowering_offsets_cache_path,
   persistent_type_env_cache_path,
   persistent_typing_dependency_env_reuse_eligibility_path,
-  persistent_typing_dependency_env_reuse_sidecar_path
+  persistent_typing_dependency_env_reuse_sidecar_path,
+  typing_module_fingerprint
 }
 
 import @vibe/core {
@@ -2307,18 +2308,13 @@ export fn projected_import_env_for_test(source: String, path: String, deps: Arra
   build_import_env(parse_program_with_path(path, source), dir_of_path(path), dep_envs)
 }
 
-fn build_fingerprint(source: String, dep_fps: Array[(String, String)], semantics_seed: String) -> String {
-  let mut acc = compact_string_fingerprint(String::concat("typing-semantics:", String::concat(semantics_seed, String::concat("|source:", source))))
-  let mut i = 0
-  while i < Array::length(dep_fps) {
-    let dep_pair = Array::get(dep_fps, i)
-    let dep_path = dep_pair.0
-    let dep_fp = dep_pair.1
-    let next = String::concat(acc, String::concat("|", String::concat(dep_path, String::concat("=", dep_fp))))
-    acc = compact_string_fingerprint(next)
-    i = i + 1
-  }
-  acc
+/// The module's typing fingerprint (typing_module_fingerprint, the one
+/// spelling of the formula) over the per-compile memo of its source
+/// fingerprint: the leaf-fingerprint probe already asked the memo for this
+/// path and text, so the text is hashed once per compile, not once more
+/// behind a prefix here.
+fn build_fingerprint(path: String, source: String, dep_fps: Array[(String, String)], semantics_seed: String) -> String {
+  typing_module_fingerprint(compact_source_fingerprint_memo(path, source), dep_fps, semantics_seed)
 }
 
 fn copy_string_array(items: Array[String]) -> Array[String] {
@@ -4963,7 +4959,7 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
   // handed to it -- could publish a checked environment that the serial
   // driver would never look up, which would make a parallel pre-check pass
   // silently do nothing.
-  let fingerprint = build_fingerprint(job.source, job.dep_fps, typing_semantics_seed())
+  let fingerprint = build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
   if Array::length(unresolved_imports) > 0 {
     Diagnosed(job.path, for msg in unresolved_imports {
       String::concat(String::concat(job.path, ": "), msg)
@@ -5614,9 +5610,9 @@ fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)]
       incremental_typecheck_telemetry_add(7, 1)
       (leaf_fingerprint, next_db, env_cache, next_dep_source_cache, parse_count)
     } else {
-      finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), empty_dep_fps(), build_fingerprint(source, empty_dep_fps(), typing_semantics_seed()))
+      finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), empty_dep_fps(), build_fingerprint(path, source, empty_dep_fps(), typing_semantics_seed()))
     },
-    None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), empty_dep_fps(), build_fingerprint(source, empty_dep_fps(), typing_semantics_seed()))
+    None => finish_typecheck_fs_impl(rdb, env_cache, dep_source_cache, parse_count, path, source, empty_stack(), empty_dep_fps(), build_fingerprint(path, source, empty_dep_fps(), typing_semantics_seed()))
   }
 }
 /// One module's step, once its dependency list is known and every dependency
@@ -5639,7 +5635,7 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
     }
     i = i + 1
   }
-  let fingerprint = build_fingerprint(source, dep_fps, typing_semantics_seed())
+  let fingerprint = build_fingerprint(path, source, dep_fps, typing_semantics_seed())
   match ripple_get_fingerprint(rdb, path) {
     Some(cached_fp) =>
     if cached_fp == fingerprint {

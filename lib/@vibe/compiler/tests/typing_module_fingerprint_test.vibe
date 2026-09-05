@@ -1,0 +1,39 @@
+//# typing_module_fingerprint: the one spelling of a module's typing key (#2386)
+//
+// The typing walk, the cache CLI, the selfbuild probes and the tests that
+// locate a module's cache entries all call this function; the snapshots below
+// pin the value so a change to the formula is a visible diff here, and the
+// existing cache tests (persistent_cache_test, type_db_vpkg_types_stub_test)
+// pin that the typing walk publishes under the same key.
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, typing_module_fingerprint
+}
+
+fn no_deps() -> Array[(String, String)] {
+  let out: Array[(String, String)] = []
+  out
+}
+
+test "a module with no dependencies folds the seed and its source fingerprint" {
+  let fp = typing_module_fingerprint(compact_string_fingerprint("let x = 1\n"), no_deps(), "unchecked")
+  inspect(fp, content = "60:941290031:854514164")
+}
+
+test "the typing-semantics seed is part of the key" {
+  let src = compact_string_fingerprint("let x = 1\n")
+  inspect(typing_module_fingerprint(src, no_deps(), "checked") != typing_module_fingerprint(src, no_deps(), "unchecked"), content = "true")
+}
+
+test "dependencies fold in declaration order, path and fingerprint alike" {
+  let src = compact_string_fingerprint("import ./a.vibe { f }\n")
+  let a = ("./a.vibe", compact_string_fingerprint("export fn f() -> Int { 1 }\n"))
+  let b = ("./b.vibe", compact_string_fingerprint("export fn g() -> Int { 2 }\n"))
+  let a2 = ("./a.vibe", compact_string_fingerprint("export fn f() -> Int { 2 }\n"))
+  let ab = typing_module_fingerprint(src, [a, b], "unchecked")
+  let ba = typing_module_fingerprint(src, [b, a], "unchecked")
+  let ab2 = typing_module_fingerprint(src, [a2, b], "unchecked")
+  inspect(ab, content = "55:1502483249:280458484")
+  inspect(ab != ba, content = "true")
+  inspect(ab != ab2, content = "true")
+}
