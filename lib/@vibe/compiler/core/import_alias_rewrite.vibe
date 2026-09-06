@@ -945,6 +945,125 @@ fn aliasidx_build(entries: Array[(String, String)]) -> AliasIdx {
   }
 }
 
+/// #2386: the alias rewrites share every subtree they leave unchanged. This
+/// counts the renames the leaf lookups have made: an arm rewrites its
+/// children, and constructs a new node only when the count moved while it
+/// did -- otherwise it hands back the node it was given, exactly as the
+/// empty-map case always did (AST nodes are immutable; the located-parse
+/// memo already hands every consumer the same deep nodes). Every rename this
+/// file makes goes through `aliasidx_get`, which is what makes the count
+/// exact: a rename anywhere below an arm moves it, and a lookup that hits
+/// without changing a node only costs that arm a rebuild. Keep it that way --
+/// a rename that bypasses `aliasidx_get` would be dropped by its parents.
+let alias_rewrite_marks: Array[Int] = [0]
+
+fn alias_marks() -> Int {
+  Array::get(alias_rewrite_marks, 0)
+}
+
+/// The alias map's answer for `name`, counted when it renames.
+fn aliasidx_get(am: AliasIdx, name: String) -> Option[String] {
+  match MutMap::get(am.idx, name) {
+    Some(original) => {
+      Array::set(alias_rewrite_marks, 0, Array::get(alias_rewrite_marks, 0) + 1)
+      Some(original)
+    },
+    None => None
+  }
+}
+
+/// `items` rewritten under `am`: the same array when no item changed, else
+/// a copy that shares every unchanged item.
+fn rewrite_alias_exprs_ix(items: Array[Expr], am: AliasIdx) -> Array[Expr] {
+  let mut out = items
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(items) {
+    let m = alias_marks()
+    let r = rewrite_alias_expr_ix(Array::get(items, i), am)
+    if copied {
+      Array::push(out, r)
+    } else if alias_marks() != m {
+      out = Array::slice(items, 0, i)
+      Array::push(out, r)
+      copied = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Named fields (`ERecord`, `EMap`), same sharing as `rewrite_alias_exprs_ix`.
+fn rewrite_alias_named_exprs_ix(fields: Array[(String, Expr)], am: AliasIdx) -> Array[(String, Expr)] {
+  let mut out = fields
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(fields) {
+    let (name, value) = Array::get(fields, i)
+    let m = alias_marks()
+    let r = rewrite_alias_expr_ix(value, am)
+    if copied {
+      Array::push(out, (name, r))
+    } else if alias_marks() != m {
+      out = Array::slice(fields, 0, i)
+      Array::push(out, (name, r))
+      copied = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `match` / `handle` arms, each body under the map minus its pattern's
+/// binders, same sharing as `rewrite_alias_exprs_ix`.
+fn rewrite_alias_arms_ix(arms: Array[(Pat, Expr)], am: AliasIdx) -> Array[(Pat, Expr)] {
+  let mut out = arms
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, body) = Array::get(arms, i)
+    let m = alias_marks()
+    let r = rewrite_alias_expr_ix(body, aliasidx_without_pat(am, pat))
+    if copied {
+      Array::push(out, (pat, r))
+    } else if alias_marks() != m {
+      out = Array::slice(arms, 0, i)
+      Array::push(out, (pat, r))
+      copied = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Type arguments (`TyApp`, `TyTuple`, `TyFn` params), same sharing.
+fn rewrite_alias_types_ix(items: Array[TypeExpr], am: AliasIdx) -> Array[TypeExpr] {
+  let mut out = items
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(items) {
+    let m = alias_marks()
+    let r = rewrite_alias_type_expr(Array::get(items, i), am)
+    if copied {
+      Array::push(out, r)
+    } else if alias_marks() != m {
+      out = Array::slice(items, 0, i)
+      Array::push(out, r)
+      copied = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// alias_map_has_name, O(1): does binding `name` shadow any alias?
 fn aliasidx_shadows(am: AliasIdx, name: String) -> Bool {
   MutSet::has(am.shadow_keys, name)
@@ -1087,7 +1206,7 @@ fn rewrite_alias_qualified_head(expr: Expr, name: String, am: AliasIdx) -> Expr 
       // separately declared `Provider::method`.
       expr
     } else {
-      match MutMap::get(am.idx, head) {
+      match aliasidx_get(am, head) {
         Some(original) => EIdent(String::concat(original, String::substring(name, qi, String::length(name))), -1),
         None => expr
       }
@@ -1105,7 +1224,7 @@ fn rewrite_alias_type_opt(ty: Option[TypeExpr], am: AliasIdx) -> Option[TypeExpr
 fn rewrite_alias_trait_ref(trait_ref: String, am: AliasIdx) -> String {
   match trait_ref_from_key(trait_ref) {
     Some(applied) => trait_ref_key(rewrite_alias_type_expr(applied, am)),
-    None => match MutMap::get(am.idx, trait_ref) {
+    None => match aliasidx_get(am, trait_ref) {
       Some(original) => original,
       None => trait_ref
     }
@@ -1163,7 +1282,7 @@ fn rewrite_wat_marker_args(args: Array[Expr], am: AliasIdx) -> Array[Expr] {
       let mut i = 0
       while i < Array::length(names) {
         let name = Array::get(names, i)
-        match MutMap::get(am.idx, name) {
+        match aliasidx_get(am, name) {
           Some(renamed) => {
             Array::push(from, name)
             Array::push(to, renamed)
@@ -1183,12 +1302,14 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
   // still rebuilt EVERY node of the tree. Alias maps only shrink on the way
   // down (without_*), so an empty map stays empty for the whole subtree --
   // return the shared node instead of an allocated copy (AST nodes are
-  // immutable; `None => expr` below already shares subtrees).
+  // immutable; `None => expr` below already shares subtrees). #2386: with a
+  // map, an arm rewrites its children first and constructs a node only when
+  // `alias_marks` moved while it did -- see the counter's note above.
   if Array::length(am.entries) == 0 {
     expr
   } else {
     match expr {
-      EIdent(name, _) => match MutMap::get(am.idx, name) {
+      EIdent(name, _) => match aliasidx_get(am, name) {
         Some(original) => EIdent(original, -1),
         // #1502: a qualified constructor reference carries the alias in its
         // HEAD (`import { Hue as H }` then `H::Crimson`), and the whole string
@@ -1199,40 +1320,136 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         // the same `Hue::Crimson` an unaliased import would have produced.
         None => rewrite_alias_qualified_head(expr, name, am)
       },
-      ETuple(items) => ETuple(for item in items {
-        rewrite_alias_expr_ix(item, am)
-      }),
-      EArray(items) => EArray(for item in items {
-        rewrite_alias_expr_ix(item, am)
-      }),
-      ERecord(rn, fields, targs) => ERecord(rn, for field in fields {
-        let (name, value) = field
-        (name, rewrite_alias_expr_ix(value, am))
-      }, targs),
-      EIf(cond, then_expr, else_expr) => EIf(rewrite_alias_expr_ix(cond, am), rewrite_alias_expr_ix(then_expr, am), rewrite_alias_expr_ix(else_expr, am)),
-      ELet(name, value, body, soff) => ELet(name, rewrite_alias_expr_ix(value, am), rewrite_alias_expr_ix(body, aliasidx_without_name(am, name)), soff),
+      ETuple(items) => {
+        let m = alias_marks()
+        let out = rewrite_alias_exprs_ix(items, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          ETuple(out)
+        }
+      },
+      EArray(items) => {
+        let m = alias_marks()
+        let out = rewrite_alias_exprs_ix(items, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EArray(out)
+        }
+      },
+      ERecord(rn, fields, targs) => {
+        let m = alias_marks()
+        let out = rewrite_alias_named_exprs_ix(fields, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          ERecord(rn, out, targs)
+        }
+      },
+      EIf(cond, then_expr, else_expr) => {
+        let m = alias_marks()
+        let c2 = rewrite_alias_expr_ix(cond, am)
+        let t2 = rewrite_alias_expr_ix(then_expr, am)
+        let e2 = rewrite_alias_expr_ix(else_expr, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EIf(c2, t2, e2)
+        }
+      },
+      ELet(name, value, body, soff) => {
+        let m = alias_marks()
+        let v2 = rewrite_alias_expr_ix(value, am)
+        let b2 = rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))
+        if alias_marks() == m {
+          expr
+        } else {
+          ELet(name, v2, b2, soff)
+        }
+      },
       ELetRec(name, value, body) => {
         let body_aliases = aliasidx_without_name(am, name)
-        ELetRec(name, rewrite_alias_expr_ix(value, body_aliases), rewrite_alias_expr_ix(body, body_aliases))
-      },
-      ELetMut(name, value, body, soff) => ELetMut(name, rewrite_alias_expr_ix(value, am), rewrite_alias_expr_ix(body, aliasidx_without_name(am, name)), soff),
-      EAssign(name, value, body) => EAssign(name, rewrite_alias_expr_ix(value, am), rewrite_alias_expr_ix(body, am)),
-      EAssignOp(name, op, value, body) => EAssignOp(name, op, rewrite_alias_expr_ix(value, am), rewrite_alias_expr_ix(body, am)),
-      ESeq(left, right) => ESeq(rewrite_alias_expr_ix(left, am), rewrite_alias_expr_ix(right, am)),
-      EMatch(scrutinee, arms) => EMatch(rewrite_alias_expr_ix(scrutinee, am), for arm in arms {
-        let (pat, body) = arm
-        (pat, rewrite_alias_expr_ix(body, aliasidx_without_pat(am, pat)))
-      }),
-      EHandle(body, arms) => EHandle(rewrite_alias_expr_ix(body, am), for arm in arms {
-        let (pat, arm_body) = arm
-        (pat, rewrite_alias_expr_ix(arm_body, aliasidx_without_pat(am, pat)))
-      }),
-      EWhile(cond, body) => EWhile(rewrite_alias_expr_ix(cond, am), rewrite_alias_expr_ix(body, am)),
-      ELoop(params, body) => {
-        let out_params = for param in params {
-          let (name, init) = param
-          (name, rewrite_alias_expr_ix(init, am))
+        let m = alias_marks()
+        let v2 = rewrite_alias_expr_ix(value, body_aliases)
+        let b2 = rewrite_alias_expr_ix(body, body_aliases)
+        if alias_marks() == m {
+          expr
+        } else {
+          ELetRec(name, v2, b2)
         }
+      },
+      ELetMut(name, value, body, soff) => {
+        let m = alias_marks()
+        let v2 = rewrite_alias_expr_ix(value, am)
+        let b2 = rewrite_alias_expr_ix(body, aliasidx_without_name(am, name))
+        if alias_marks() == m {
+          expr
+        } else {
+          ELetMut(name, v2, b2, soff)
+        }
+      },
+      EAssign(name, value, body) => {
+        let m = alias_marks()
+        let v2 = rewrite_alias_expr_ix(value, am)
+        let b2 = rewrite_alias_expr_ix(body, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EAssign(name, v2, b2)
+        }
+      },
+      EAssignOp(name, op, value, body) => {
+        let m = alias_marks()
+        let v2 = rewrite_alias_expr_ix(value, am)
+        let b2 = rewrite_alias_expr_ix(body, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EAssignOp(name, op, v2, b2)
+        }
+      },
+      ESeq(left, right) => {
+        let m = alias_marks()
+        let l2 = rewrite_alias_expr_ix(left, am)
+        let r2 = rewrite_alias_expr_ix(right, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          ESeq(l2, r2)
+        }
+      },
+      EMatch(scrutinee, arms) => {
+        let m = alias_marks()
+        let s2 = rewrite_alias_expr_ix(scrutinee, am)
+        let arms2 = rewrite_alias_arms_ix(arms, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EMatch(s2, arms2)
+        }
+      },
+      EHandle(body, arms) => {
+        let m = alias_marks()
+        let b2 = rewrite_alias_expr_ix(body, am)
+        let arms2 = rewrite_alias_arms_ix(arms, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EHandle(b2, arms2)
+        }
+      },
+      EWhile(cond, body) => {
+        let m = alias_marks()
+        let c2 = rewrite_alias_expr_ix(cond, am)
+        let b2 = rewrite_alias_expr_ix(body, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EWhile(c2, b2)
+        }
+      },
+      ELoop(params, body) => {
         let mut body_aliases = am
         let mut i = 0
         while i < Array::length(params) {
@@ -1240,14 +1457,28 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
           body_aliases = aliasidx_without_name(body_aliases, name)
           i = i + 1
         }
-        ELoop(out_params, rewrite_alias_expr_ix(body, body_aliases))
+        let m = alias_marks()
+        let out_params = rewrite_alias_named_exprs_ix(params, am)
+        let b2 = rewrite_alias_expr_ix(body, body_aliases)
+        if alias_marks() == m {
+          expr
+        } else {
+          ELoop(out_params, b2)
+        }
       },
       EForIn(name, index_name, iter, body) => {
         let body_aliases = match index_name {
           Some(index_name) => aliasidx_without_name(aliasidx_without_name(am, name), index_name),
           None => aliasidx_without_name(am, name)
         }
-        EForIn(name, index_name, rewrite_alias_expr_ix(iter, am), rewrite_alias_expr_ix(body, body_aliases))
+        let m = alias_marks()
+        let i2 = rewrite_alias_expr_ix(iter, am)
+        let b2 = rewrite_alias_expr_ix(body, body_aliases)
+        if alias_marks() == m {
+          expr
+        } else {
+          EForIn(name, index_name, i2, b2)
+        }
       },
       // #2348: an inline-wasm body is `%wasm("<WAT text>")`, and a
       // `(call $helper ...)` inside that text names a fn of this module. The
@@ -1255,14 +1486,43 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       // private helper's DEFINITION was renamed by the merge while the
       // `$helper` token was left pointing at a name that no longer existed.
       ECall(callee, args, off) => if is_inline_wasm_marker(callee, args) {
-        ECall(rewrite_alias_expr_ix(callee, am), rewrite_wat_marker_args(args, am), off)
+        let m = alias_marks()
+        let c2 = rewrite_alias_expr_ix(callee, am)
+        let a2 = rewrite_wat_marker_args(args, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          ECall(c2, a2, off)
+        }
       } else {
-        ECall(rewrite_alias_expr_ix(callee, am), for arg in args {
-          rewrite_alias_expr_ix(arg, am)
-        }, off)
+        let m = alias_marks()
+        let c2 = rewrite_alias_expr_ix(callee, am)
+        let a2 = rewrite_alias_exprs_ix(args, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          ECall(c2, a2, off)
+        }
       },
-      EBinOp(op, left, right, boff) => EBinOp(op, rewrite_alias_expr_ix(left, am), rewrite_alias_expr_ix(right, am), boff),
-      EUnaryOp(op, value) => EUnaryOp(op, rewrite_alias_expr_ix(value, am)),
+      EBinOp(op, left, right, boff) => {
+        let m = alias_marks()
+        let l2 = rewrite_alias_expr_ix(left, am)
+        let r2 = rewrite_alias_expr_ix(right, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EBinOp(op, l2, r2, boff)
+        }
+      },
+      EUnaryOp(op, value) => {
+        let m = alias_marks()
+        let v2 = rewrite_alias_expr_ix(value, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EUnaryOp(op, v2)
+        }
+      },
       EFn(type_params, bounds, params, ret_ty, effect, body) => {
         // Type formals shadow imported TYPE aliases, independently of value
         // parameters shadowing imported VALUE aliases. Preserve both
@@ -1280,7 +1540,16 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
         } else {
           aliasidx_without_params(am, params)
         }
-        EFn(type_params, rewrite_alias_bounds(bounds, type_am), rewrite_alias_param_types(params, type_am), rewrite_alias_type_opt(ret_ty, type_am), effect, rewrite_alias_expr_ix(body, body_am))
+        let m = alias_marks()
+        let bounds2 = rewrite_alias_bounds(bounds, type_am)
+        let params2 = rewrite_alias_param_types(params, type_am)
+        let ret2 = rewrite_alias_type_opt(ret_ty, type_am)
+        let b2 = rewrite_alias_expr_ix(body, body_am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EFn(type_params, bounds2, params2, ret2, effect, b2)
+        }
       },
       // #897: `mod.x` written against a qualified-import namespace (`import
       // ... as mod only { x }`) is encoded as the alias key "mod.x" -- see
@@ -1288,27 +1557,81 @@ fn rewrite_alias_expr_ix(expr: Expr, am: AliasIdx) -> Expr {
       // identifier can never contain '.', so this lookup only ever hits for
       // that desugaring; anything else falls through to the ordinary EDot
       // rewrite (ordinary struct/record field access).
-      EDot(obj, field, off, fdoff) => match obj {
-        EIdent(ns, _) => match MutMap::get(am.idx, String::concat(ns, String::concat(".", field))) {
+      EDot(obj, field, off, fdoff) => {
+        let namespaced = match obj {
+          EIdent(ns, _) => aliasidx_get(am, String::concat(ns, String::concat(".", field))),
+          _ => None
+        }
+        match namespaced {
           Some(original) => EIdent(original, -1),
-          None => EDot(rewrite_alias_expr_ix(obj, am), field, off, fdoff)
-        },
-        _ => EDot(rewrite_alias_expr_ix(obj, am), field, off, fdoff)
+          None => {
+            let m = alias_marks()
+            let o2 = rewrite_alias_expr_ix(obj, am)
+            if alias_marks() == m {
+              expr
+            } else {
+              EDot(o2, field, off, fdoff)
+            }
+          }
+        }
       },
-      ELabeledArg(label, name, body) => ELabeledArg(label, name, rewrite_alias_expr_ix(body, am)),
-      EReturn(value) => EReturn(rewrite_alias_expr_ix(value, am)),
+      ELabeledArg(label, name, body) => {
+        let m = alias_marks()
+        let b2 = rewrite_alias_expr_ix(body, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          ELabeledArg(label, name, b2)
+        }
+      },
+      EReturn(value) => {
+        let m = alias_marks()
+        let v2 = rewrite_alias_expr_ix(value, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EReturn(v2)
+        }
+      },
       EBreak(value) => match value {
-        Some(value) => EBreak(Some(rewrite_alias_expr_ix(value, am))),
+        Some(value) => {
+          let m = alias_marks()
+          let v2 = rewrite_alias_expr_ix(value, am)
+          if alias_marks() == m {
+            expr
+          } else {
+            EBreak(Some(v2))
+          }
+        },
         None => expr
       },
-      EContinue(values) => EContinue(for value in values {
-        rewrite_alias_expr_ix(value, am)
-      }),
-      EMap(fields) => EMap(for field in fields {
-        let (name, value) = field
-        (name, rewrite_alias_expr_ix(value, am))
-      }),
-      ESpread(value) => ESpread(rewrite_alias_expr_ix(value, am)),
+      EContinue(values) => {
+        let m = alias_marks()
+        let out = rewrite_alias_exprs_ix(values, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EContinue(out)
+        }
+      },
+      EMap(fields) => {
+        let m = alias_marks()
+        let out = rewrite_alias_named_exprs_ix(fields, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          EMap(out)
+        }
+      },
+      ESpread(value) => {
+        let m = alias_marks()
+        let v2 = rewrite_alias_expr_ix(value, am)
+        if alias_marks() == m {
+          expr
+        } else {
+          ESpread(v2)
+        }
+      },
       _ => expr
     }
   }
@@ -1694,25 +2017,42 @@ fn rewrite_alias_stmt_ix(stmt: Stmt, am: AliasIdx) -> Stmt {
 /// that names an import alias with the name it aliases (#1502).
 fn rewrite_alias_type_expr(te: TypeExpr, am: AliasIdx) -> TypeExpr {
   match te {
-    TyName(n) => match MutMap::get(am.idx, n) {
+    TyName(n) => match aliasidx_get(am, n) {
       Some(original) => TyName(original),
       None => te
     },
     TyApp(n, args) => {
-      let next_name = match MutMap::get(am.idx, n) {
+      let m = alias_marks()
+      let next_name = match aliasidx_get(am, n) {
         Some(original) => original,
         None => n
       }
-      TyApp(next_name, for arg in args {
-        rewrite_alias_type_expr(arg, am)
-      })
+      let args2 = rewrite_alias_types_ix(args, am)
+      if alias_marks() == m {
+        te
+      } else {
+        TyApp(next_name, args2)
+      }
     },
-    TyTuple(items) => TyTuple(for item in items {
-      rewrite_alias_type_expr(item, am)
-    }),
-    TyFn(ps, ret, eff) => TyFn(for p in ps {
-      rewrite_alias_type_expr(p, am)
-    }, rewrite_alias_type_expr(ret, am), eff),
+    TyTuple(items) => {
+      let m = alias_marks()
+      let items2 = rewrite_alias_types_ix(items, am)
+      if alias_marks() == m {
+        te
+      } else {
+        TyTuple(items2)
+      }
+    },
+    TyFn(ps, ret, eff) => {
+      let m = alias_marks()
+      let ps2 = rewrite_alias_types_ix(ps, am)
+      let ret2 = rewrite_alias_type_expr(ret, am)
+      if alias_marks() == m {
+        te
+      } else {
+        TyFn(ps2, ret2, eff)
+      }
+    },
     _ => te
   }
 }
@@ -2355,7 +2695,7 @@ fn export_renamed_head(stmt: Stmt, exports: AliasIdx) -> Stmt {
 }
 
 fn aliasidx_rename(am: AliasIdx, name: String) -> String {
-  match MutMap::get(am.idx, name) {
+  match aliasidx_get(am, name) {
     Some(renamed) => renamed,
     None => name
   }
@@ -2573,14 +2913,14 @@ fn namespace_private_type_ctor_stmt(stmt: Stmt, type_renames: Array[(String, Str
 fn namespace_private_stmt(stmt: Stmt, ram: AliasIdx) -> Stmt {
   match stmt {
     SLet(exported, is_rec, name, ty, body) => {
-      let next_name = match MutMap::get(ram.idx, name) {
+      let next_name = match aliasidx_get(ram, name) {
         Some(renamed) => renamed,
         None => name
       }
       SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, ram))
     },
     SLetMut(name, ty, body) => {
-      let next_name = match MutMap::get(ram.idx, name) {
+      let next_name = match aliasidx_get(ram, name) {
         Some(renamed) => renamed,
         None => name
       }
@@ -3372,14 +3712,14 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
     for stmt in stmts {
       match stmt {
         SLet(exported, is_rec, name, ty, body) => {
-          let next_name = match MutMap::get(am.idx, name) {
+          let next_name = match aliasidx_get(am, name) {
             Some(renamed) => renamed,
             None => name
           }
           SLet(exported, is_rec, next_name, ty, rewrite_alias_expr_ix(body, am))
         },
         SFnDecl(exported, name, body, requires, ensures) => {
-          let next_name = match MutMap::get(am.idx, name) {
+          let next_name = match aliasidx_get(am, name) {
             Some(renamed) => renamed,
             None => name
           }
@@ -3391,7 +3731,7 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
         },
         SLetMut(name, ty, body) => SLetMut(name, ty, rewrite_alias_expr_ix(body, am)),
         SExport(items) => SExport(for item in items {
-          match MutMap::get(am.idx, item) {
+          match aliasidx_get(am, item) {
             Some(renamed) => renamed,
             None => item
           }

@@ -1,0 +1,109 @@
+import @vibe/ast {
+  Expr, Pat, TypeExpr
+}
+import @vibe/compiler/core {
+  expr_child_at, expr_children_pop, expr_children_push, expr_children_top, rewrite_import_alias_expr
+}
+
+// #2386: the alias rewrite constructs a node only where a rename happened
+// below it and hands back the node it was given elsewhere. The renames
+// themselves are what these cases pin: an alias in every position the
+// rewrite reaches -- a bare name, a qualified constructor head, a
+// namespace-qualified member, a lambda's parameter and return annotations, a
+// trait bound, a `match` arm, a record field, a call argument, an inline-wasm
+// marker's callee text -- is rewritten, and a binder that shadows the alias
+// still protects its scope.
+
+fn idents_of(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    EIdent(n, _) => Array::push(out, n),
+    EString(s) => Array::push(out, s),
+    _ => ()
+  }
+  match e {
+    EFn(_, bounds, params, ret, _, _) => {
+      let mut bi = 0
+      while bi < Array::length(bounds) {
+        let (_, traits) = Array::get(bounds, bi)
+        Array::push(out, String::join(traits, "+"))
+        bi = bi + 1
+      }
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (_, ty) = Array::get(params, pi)
+        match ty {
+          Some(TyName(tn)) => Array::push(out, tn),
+          Some(TyApp(tn, _)) => Array::push(out, tn),
+          _ => ()
+        }
+        pi = pi + 1
+      }
+      match ret {
+        Some(TyApp(tn, args)) => {
+          Array::push(out, tn)
+          let mut ai = 0
+          while ai < Array::length(args) {
+            match Array::get(args, ai) {
+              TyName(an) => Array::push(out, an),
+              _ => ()
+            }
+            ai = ai + 1
+          }
+        },
+        _ => ()
+      }
+    },
+    _ => ()
+  }
+  let mark = expr_children_push(e)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    idents_of(expr_child_at(i), out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn rendered(e: Expr) -> String {
+  let out = []
+  idents_of(e, out)
+  String::join(out, " ")
+}
+
+test "an alias is rewritten in every position the walk reaches" {
+  let aliases = [
+    ("H", "Hue"),
+    ("f", "dep_f"),
+    ("S", "Stream"),
+    ("Sh", "Show"),
+    ("mod.x", "dep_x"),
+    ("helper", "dep_helper")
+  ]
+  let arm: (Pat, Expr) = (PWild, ECall(EIdent("f", 0), [EIdent("H::Crimson", 0)], 0))
+  let lambda = EFn([], [("T", ["Sh"])], [("s", Some(TyName("S")))], Some(TyApp("S", [
+    TyName("H")
+  ])), None, EIdent("f", 0))
+  let e = ETuple([
+    EIdent("H::Crimson", 0),
+    EDot(EIdent("mod", 0), "x", 0, 0),
+    EMatch(EIdent("f", 0), [arm]),
+    ERecord("R", [("a", EIdent("f", 0))], []),
+    lambda,
+    ECall(EIdent("%wasm", 0), [EString("(call $helper)")], 0)
+  ])
+  inspect(rendered(rewrite_import_alias_expr(e, aliases)), content = "Hue::Crimson dep_x dep_f dep_f Hue::Crimson dep_f Show Stream Stream Hue dep_f %wasm (call $dep_helper)")
+}
+
+test "a binder that shadows the alias protects its scope, and the rest is still rewritten" {
+  let aliases = [("f", "dep_f")]
+  let e = ESeq(ELet("f", EInt(1), ECall(EIdent("f", 0), [EIdent("f", 0)], 0), 0), EIdent("f", 0))
+  inspect(rendered(rewrite_import_alias_expr(e, aliases)), content = "f f dep_f")
+}
+
+test "a tree with nothing to rename renders the same" {
+  let e = EIf(EIdent("a", 0), ETuple([EIdent("b", 0), EInt(2)]), EArray([
+    EIdent("c", 0)
+  ]))
+  inspect(rendered(rewrite_import_alias_expr(e, [("zzz", "yyy")])), content = "a b c")
+}
