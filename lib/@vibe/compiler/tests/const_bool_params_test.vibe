@@ -382,11 +382,16 @@ fn function_count(m: Bytes) -> Int {
 }
 
 /// Compile `src` through the entry-rooted linked lane with late DCE on --
-/// the flags `compile_file_wasi_linked_artifacts` passes.
-fn linked_functions(src: String) -> Int with Exception {
+/// the flags `compile_file_wasi_linked_artifacts` passes -- with `coverage`
+/// as given.
+fn linked_functions_cov(src: String, coverage: Bool) -> Int with Exception {
   let stmts = parse_program(lex(src))
-  let wasm = compile_wasi_module_linked_impl(stmts, "main", array_empty(), array_empty(), false, false, false, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+  let wasm = compile_wasi_module_linked_impl(stmts, "main", array_empty(), array_empty(), false, false, coverage, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
   function_count(wasm)
+}
+
+fn linked_functions(src: String) -> Int with Exception {
+  linked_functions_cov(src, false)
 }
 
 test "the linked lane drops a helper only the folded arm called" {
@@ -399,4 +404,15 @@ test "the linked lane drops a helper only the folded arm called" {
   let folded = linked_functions(String::concat(shared, "fn main() -> Int { work(false) }\n"))
   assert(control > 0)
   assert(eq(folded, control - 1))
+}
+
+test "a coverage build keeps the arm: branch sites are counted from the source as written" {
+  // Same two programs under `coverage = true`. Folding here would remove a
+  // branch site and report a higher branch rate for the same program, so
+  // the pass stays off and `helper` keeps its call site in both.
+  let shared = "fn helper() -> Int { 7 }\nfn work(flag: Bool) -> Int { if flag { helper() } else { 1 } }\n"
+  let control = linked_functions_cov(String::concat(shared, "fn main() -> Int { work(false) + work(true) }\n"), true)
+  let same_literal = linked_functions_cov(String::concat(shared, "fn main() -> Int { work(false) }\n"), true)
+  assert(control > 0)
+  assert(eq(same_literal, control))
 }

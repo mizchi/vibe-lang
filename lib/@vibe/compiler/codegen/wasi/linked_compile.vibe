@@ -4536,9 +4536,16 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // prune: the pass reasons about EVERY call site, so it needs the
   // whole-program, entry-rooted compile, and a library (`library_mode`)
   // exports every function, so no parameter of one is constant. The
-  // inline-wasm texts go along because the prelude has already replaced the
-  // `%wasm` marker bodies with a neutral literal, so a `(call $f ..)` in one
-  // of them is invisible to the pass's own scan.
+  // instrumented lanes are excluded the same way `lc_pf_prune_module` is
+  // (Codex review on #2569): coverage counts branch sites from the source
+  // `if`s, so folding one away would shrink the denominator and report a
+  // higher branch rate for the same program; a debug-break build maps
+  // interior lines onto the statements it emits, and a folded arm has
+  // none. Those builds are about observing the program as written, so
+  // they get it as written. The inline-wasm texts go along because the
+  // prelude has already replaced the `%wasm` marker bodies with a neutral
+  // literal, so a `(call $f ..)` in one of them is invisible to the pass's
+  // own scan.
   //
   // A folded body no longer matches its source text, so a fold counts as a
   // prune for the body-cache guards below (`late_dce_pruned`): a replayed
@@ -4548,7 +4555,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   let mut late_dce_pruned = false
   if enable_late_dce && late_dce_has_entry {
     let late_dce_pre_len = Array::length(stmts)
-    let folded_param_reads = if library_mode {
+    let folded_param_reads = if library_mode || coverage || debug_trace || debug_break || rc_shadow {
       0
     } else {
       fold_const_bool_params(stmts, [entry_name], iw_wats)
