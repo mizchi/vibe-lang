@@ -1,0 +1,62 @@
+//# The DCE collector's binder scope: a name is bound only while its scope is open (#2386)
+//
+// `collect_refs` keeps the binders in scope on a stack and asks a count map
+// whether an identifier names one of them. The snapshots pin the three
+// answers that matter: a reference under a shadowing `let` is the local's,
+// a reference after that scope ends is the global's again, and a match arm's
+// binder is popped with its arm.
+
+import @vibe/ast {
+  Expr, Pat
+}
+import @vibe/compiler/core {
+  Stmt, TypeExpr, dce_keep_flags
+}
+
+fn no_ty() -> Option[TypeExpr] {
+  None
+}
+
+fn render(flags: Array[Bool]) -> String {
+  let parts: Array[String] = []
+  let mut i = 0
+  while i < Array::length(flags) {
+    Array::push(parts, if Array::get(flags, i) {
+      "keep"
+    } else {
+      "drop"
+    })
+    i = i + 1
+  }
+  String::join(parts, ",")
+}
+
+fn program(main_body: Expr) -> Array[Stmt] {
+  [
+    SLet(false, false, "helper", no_ty(), EInt(1)),
+    SLet(false, false, "main", no_ty(), main_body)
+  ]
+}
+
+test "a reference under a shadowing let is the local's, not the global's" {
+  let body = ELet("helper", EInt(2), EIdent("helper", -1), -1)
+  inspect(render(dce_keep_flags(program(body), ["main"])), content = "drop,keep")
+}
+
+test "a reference after the shadowing scope ends is the global's again" {
+  let body = ESeq(ELet("helper", EInt(2), EIdent("helper", -1), -1), EIdent("helper", -1))
+  inspect(render(dce_keep_flags(program(body), ["main"])), content = "keep,keep")
+}
+
+test "a match arm's binder is popped with its arm" {
+  let body = EMatch(EInt(1), [
+    (PBind("helper"), EIdent("helper", -1)),
+    (PWild, EIdent("helper", -1))
+  ])
+  inspect(render(dce_keep_flags(program(body), ["main"])), content = "keep,keep")
+  let shadowed_only = EMatch(EInt(1), [
+    (PBind("helper"), EIdent("helper", -1)),
+    (PWild, EInt(0))
+  ])
+  inspect(render(dce_keep_flags(program(shadowed_only), ["main"])), content = "drop,keep")
+}
