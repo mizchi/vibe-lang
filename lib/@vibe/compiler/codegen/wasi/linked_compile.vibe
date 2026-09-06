@@ -3595,6 +3595,271 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
   errs
 }
 
+// #2388 measurement: is each pre-codegen pass sound to run on one module at
+// a time? For every pass of the prelude (and the heap-parameter elaboration
+// in front of it) the oracle runs the pass twice from the same state: once
+// on the whole merged program, once on each source file's statements alone
+// (the entry name reaches only the entry file), then renders both results
+// statement by statement. A pass whose per-file result renders identically
+// to its whole-program result is per-module-sound on this corpus; the first
+// differing statement is reported so the reason can be classified.
+// Provenance survives a pass that inserts statements by re-aligning the
+// per-statement file ids on stable statement keys (a declaration's kind and
+// name): an inserted statement belongs to the file of the statement before
+// it, which is also where a per-module run would put it.
+fn oracle_stmt_key(s: Stmt) -> String {
+  match s {
+    SLet(_, _, n, _, _) => String::concat("let:", n),
+    SLetMut(n, _, _) => String::concat("letmut:", n),
+    SEnum(_, n, _, _, _) => String::concat("enum:", n),
+    SSuberror(_, n, _) => String::concat("suberror:", n),
+    SStruct(_, n, _, _, _, _) => String::concat("struct:", n),
+    STypeAlias(_, n, _, _) => String::concat("alias:", n),
+    STrait(_, n, _, _, _, _) => String::concat("trait:", n),
+    SImpl(_, _, n, _) => String::concat("impl:", n),
+    SExternLet(n, _) => String::concat("extern:", n),
+    SImport(p, _) => String::concat("import:", p),
+    STest(n, _) => String::concat("test:", n),
+    SBench(n, _) => String::concat("bench:", n),
+    SExample(n, _) => String::concat("example:", n),
+    SExpr(_) => "expr",
+    SExport(_) => "export",
+    SReExport(p, _) => String::concat("reexport:", p),
+    SAliasDecl(a, _) => String::concat("aliasdecl:", a),
+    SReExportSourceBoundary(_, _) => "reexport_boundary",
+    SQualifiedPatternRefs(_) => "qualified_pattern_refs",
+    STestEffectRows(_) => "test_effect_rows",
+    SLetPat(_, _) => "letpat",
+    SModule(_, n, _) => String::concat("module:", n),
+    SEffectDef(_, n, _, _) => String::concat("effect:", n),
+    SEffectSet(_, n, _) => String::concat("effectset:", n),
+    SResource(n, _) => String::concat("resource:", n),
+    SFnDecl(_, n, _, _, _) => String::concat("fndecl:", n)
+  }
+}
+
+fn oracle_realign(old_keys: Array[String], old_file: Array[Int], new_stmts: Array[Stmt]) -> Array[Int] {
+  let out: Array[Int] = []
+  let n_old = Array::length(old_keys)
+  let mut i = 0
+  let mut j = 0
+  let mut last_file = 0
+  while j < Array::length(new_stmts) {
+    let k = oracle_stmt_key(Array::get(new_stmts, j))
+    if i < n_old && Array::get(old_keys, i) == k {
+      last_file = Array::get(old_file, i)
+      Array::push(out, last_file)
+      i = i + 1
+      j = j + 1
+    } else if i + 1 < n_old && Array::get(old_keys, i + 1) == k {
+      i = i + 1
+    } else {
+      Array::push(out, last_file)
+      j = j + 1
+    }
+  }
+  out
+}
+
+fn oracle_pass_name(k: Int) -> String {
+  match k {
+    0 => "elaborate_heap_params",
+    1 => "desugar_inspect_calls",
+    2 => "lower_optional_performs",
+    3 => "erase_railway_origin_markers",
+    4 => "desugar_trait_dicts_with_typed_eq",
+    5 => "unbox_tuple_loop_params",
+    6 => "rewrite_top_level_fn_alias_refs",
+    7 => "lc_inject_stdin_surface_wrappers",
+    8 => "lc_extract_inline_wasm",
+    9 => "await_poll_pass",
+    10 => "rewrite_self_tail_calls",
+    11 => "wrap_entry_exception_boundary",
+    12 => "lc_inject_async_sleep_boundary",
+    13 => "suspend_cps_pass",
+    14 => "inline_direct_performs",
+    15 => "evidence_dict_pass",
+    _ => "forin_discard_pass"
+  }
+}
+
+fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Unit with Exception {
+  match k {
+    0 => {
+      // elaborate_heap_params returns a fresh array; the oracle keeps every
+      // program in place, so its result is copied back into `stmts`.
+      let out = elaborate_heap_params(stmts)
+      Array::truncate(stmts, 0)
+      let mut oi = 0
+      while oi < Array::length(out) {
+        Array::push(stmts, Array::get(out, oi))
+        oi = oi + 1
+      }
+    },
+    1 => desugar_inspect_calls(stmts),
+    2 => {
+      let res = optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
+      lower_optional_performs(stmts, res)
+    },
+    3 => erase_railway_origin_markers(stmts),
+    4 => desugar_trait_dicts_with_typed_eq(stmts, checker_eq_offsets, checker_eq_type_keys),
+    5 => unbox_tuple_loop_params(stmts),
+    6 => rewrite_top_level_fn_alias_refs(stmts),
+    7 => {
+      let _ = lc_inject_stdin_surface_wrappers(stmts)
+      ()
+    },
+    8 => lc_extract_inline_wasm(stmts, lc_fresh_string_array(), lc_fresh_string_array()),
+    9 => await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, array_empty())),
+    10 => rewrite_self_tail_calls(stmts),
+    11 => wrap_entry_exception_boundary(stmts, entry_name),
+    12 => {
+      let _ = lc_inject_async_sleep_boundary(stmts, entry_name)
+      ()
+    },
+    13 => {
+      let _ = suspend_cps_pass(stmts)
+      ()
+    },
+    14 => inline_direct_performs(stmts),
+    15 => {
+      let _ = evidence_dict_pass(stmts, entry_name)
+      ()
+    },
+    _ => forin_discard_pass(stmts)
+  }
+}
+
+fn oracle_head(s: String) -> String {
+  let n = String::length(s)
+  if n > 160 {
+    String::substring(s, 0, 160)
+  } else {
+    s
+  }
+}
+
+/// One step of the oracle: pass `k`. `a` is the whole-program state after
+/// passes 0..k-1 (advanced in place here by pass k); `c` is a FRESH merge of
+/// the same program with its per-statement file ids, brought to the same
+/// pre-pass state here and then split by file for the trial. The two never
+/// share a node: a pass may drop what it replaces, and a trial that shared
+/// nodes with `a` corrupted the whole-program rendering (measured 2026-09-06).
+/// Returns one grep-able line, `PASS <name> stmts=<whole> split=<trial>
+/// diff=<count> first=<index> file=<id> status=same|differs`, followed on a
+/// difference by the two renderings' heads. `render` is the AST printer (this
+/// package cannot reach @vibe/compiler/syntax; the caller passes it).
+export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
+  let entry_fid = file_count - 1
+  let mut file_of = c_file_id
+  let mut j = 0
+  while j < k {
+    let old_keys: Array[String] = []
+    let mut qi = 0
+    while qi < Array::length(c) {
+      Array::push(old_keys, oracle_stmt_key(Array::get(c, qi)))
+      qi = qi + 1
+    }
+    oracle_apply_pass(j, c, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    file_of = oracle_realign(old_keys, file_of, c)
+    j = j + 1
+  }
+  let n = Array::length(c)
+  let parts: Array[Array[Stmt]] = []
+  let mut fi = 0
+  while fi < file_count {
+    Array::push(parts, array_empty())
+    fi = fi + 1
+  }
+  let mut si = 0
+  while si < n {
+    let part = Array::get(parts, Array::get(file_of, si))
+    Array::push(part, Array::get(c, si))
+    si = si + 1
+  }
+  let trial: Array[Stmt] = []
+  let trial_file: Array[Int] = []
+  fi = 0
+  while fi < file_count {
+    let part_entry = if fi == entry_fid {
+      entry_name
+    } else {
+      ""
+    }
+    let part = Array::get(parts, fi)
+    oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+    let mut oi = 0
+    while oi < Array::length(part) {
+      Array::push(trial, Array::get(part, oi))
+      Array::push(trial_file, fi)
+      oi = oi + 1
+    }
+    fi = fi + 1
+  }
+  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+  let nn = Array::length(a)
+  let nt = Array::length(trial)
+  let lim = if nn < nt {
+    nn
+  } else {
+    nt
+  }
+  let mut diffs = 0
+  let mut first = 0 - 1
+  let mut first_whole = ""
+  let mut first_split = ""
+  let mut ci = 0
+  while ci < lim {
+    // Structural `==` on Stmt (ADR-0097): no allocation. The printer is
+    // used only to show the first difference -- rendering every statement
+    // through String::concat pushed the bump high-water to 3.6 GB on this
+    // corpus (measured 2026-09-06) and tripped the 4 GB ceiling.
+    if Array::get(a, ci) == Array::get(trial, ci) {
+      ()
+    } else {
+      diffs = diffs + 1
+      if first < 0 {
+        first = ci
+        first_whole = oracle_head(render(Array::get(a, ci)))
+        first_split = oracle_head(render(Array::get(trial, ci)))
+      } else {
+        ()
+      }
+    }
+    ci = ci + 1
+  }
+  if nn != nt {
+    diffs = diffs + (if nn > nt {
+      nn - nt
+    } else {
+      nt - nn
+    })
+    if first < 0 {
+      first = lim
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  let first_file = if first >= 0 && first < Array::length(trial_file) {
+    Array::get(trial_file, first)
+  } else {
+    0 - 1
+  }
+  let status = if diffs == 0 {
+    "same"
+  } else {
+    "differs"
+  }
+  let line = String::concat("PASS ", String::concat(oracle_pass_name(k), String::concat(" stmts=", String::concat(Int::to_string(nn), String::concat(" split=", String::concat(Int::to_string(nt), String::concat(" diff=", String::concat(Int::to_string(diffs), String::concat(" first=", String::concat(Int::to_string(first), String::concat(" file=", String::concat(Int::to_string(first_file), String::concat(" status=", String::concat(status, "\n"))))))))))))))
+  if diffs > 0 {
+    String::concat(line, String::concat("  whole: ", String::concat(first_whole, String::concat("\n  split: ", String::concat(first_split, "\n")))))
+  } else {
+    line
+  }
+}
+
 /// #1666: does `name` name a top-level definition in this program?
 ///
 /// Mirrors `stmt_name` in core/dce.vibe -- the same three statement shapes DCE
