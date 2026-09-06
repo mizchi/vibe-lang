@@ -126,13 +126,17 @@ misdiagnosis and is closed), **#2219** (its "after the next bootstrap bump"
 precondition has fired — the committed seed emits the assert marker, so the
 legacy block recognizer can go).
 
-Two open issues **conflict** and want a decision before either is started:
-**#2498** puts the compiler's telemetry and trace sinks behind `#cfg(telemetry)`
-and is done when the signatures carrying them get shorter, while **#1953** puts
-the same sinks behind a `Log` effect whose handler is a parameter. Landing
-either first invalidates the other's plan. #1953's Config half — the
-one-element mutable configuration cells and their implicit setter order — does
-not overlap and stands on its own.
+Sequencing worth knowing: **#1953 comes after #2497 and #2498**, not beside
+them. The two issues used to conflict — both moved the compiler's trace and
+telemetry sinks, one behind `#cfg(telemetry)` and one behind a `Log` effect
+whose handler is a parameter, so landing either invalidated the other's plan.
+Settled 2026-09-06 in favour of `#cfg`: the sinks are #2498's, which absorbed
+the three sharper acceptance criteria, and #1953 is now the configuration half
+alone. That half gets *sharper* once the #2492 subtree lands, because what is
+left in the configuration cells is then exactly the per-compilation set #2497
+deliberately excludes from `#cfg` (`VIBE_CFG`, `VIBE_UNSTABLE`,
+`VIBE_INTERNAL_TRUSTED_SOURCE`) — two of which carry authority, so a `Config`
+row over them is a least-authority row in the literal sense.
 
 ## How to use sub-issues
 
