@@ -230,6 +230,30 @@ export fn compact_source_fingerprint_memo_reset() -> Unit {
   }
 }
 
+/// #2386: the typing fingerprint of one module -- the key its checked
+/// environment, dep list and typed-lowering offsets are published under.
+/// Folds the module's SOURCE FINGERPRINT behind the typing-semantics seed,
+/// then each dependency's `(path, fingerprint)` in declaration order (a
+/// sequence, not a set: permuting the dependencies changes the key).
+///
+/// The formula used to be spelled in seven places -- the typing walk, the
+/// cache CLI, two selfbuild probes and three tests that locate a module's
+/// cache entries -- and every one of them concatenated the WHOLE source text
+/// behind the prefix and hashed the copy, once per module, although the
+/// text's own fingerprint is memoized per compile
+/// (compact_source_fingerprint_memo). Folding that fingerprint instead
+/// hashes a short string; the source text is hashed once per compile.
+export fn typing_module_fingerprint(source_fingerprint: String, dep_fps: Array[(String, String)], typing_semantics_seed: String) -> String {
+  let mut acc = compact_string_fingerprint(String::concat("typing-semantics:", String::concat(typing_semantics_seed, String::concat("|source-fp:", source_fingerprint))))
+  let mut i = 0
+  while i < Array::length(dep_fps) {
+    let (dep_path, dep_fp) = Array::get(dep_fps, i)
+    acc = compact_string_fingerprint(String::concat(acc, String::concat("|", String::concat(dep_path, String::concat("=", dep_fp)))))
+    i = i + 1
+  }
+  acc
+}
+
 // #1379: opt-in, compiler-owned observations for the fingerprint helper.
 // They deliberately do not overlap runner-owned host_fs_scope: these counters
 // describe String work at this one cache boundary, not host-import raw bytes.
