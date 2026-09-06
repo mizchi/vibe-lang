@@ -21,7 +21,7 @@ import @vibe/ast {
 }
 
 import @vibe/core {
-  array_empty
+  MutMap, array_empty
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -104,7 +104,75 @@ export struct FuncTable {
 export struct StrTable {
   strs: Array[String];
   offsets: Array[Int];
-  lengths: Array[Int]
+  lengths: Array[Int];
+  // #2386: string -> its FIRST slot in `strs`, built once per compile by
+  // str_table_new. str_table_index_of answers through it instead of scanning
+  // `strs` per string literal, map key and match-arm string (the scan was
+  // ~35 ms of a compiler-closure compile on either lane). A table built by
+  // str_table_lite leaves it empty and keeps the scan.
+  index: MutMap[String, Int]
+}
+
+/// A string table with its lookup index: `index` maps every string to the
+/// first slot that holds it, so a repeated string answers as the forward
+/// scan did. Build it ONCE per compile, after the last push to `strs`.
+export fn str_table_new(strs: Array[String], offsets: Array[Int], lengths: Array[Int]) -> StrTable {
+  let index = MutMap::with_capacity_string(Array::length(strs) * 2 + 16)
+  let mut i = 0
+  while i < Array::length(strs) {
+    let s = Array::get(strs, i)
+    if MutMap::has(index, s) {
+      ()
+    } else {
+      MutMap::set(index, s, i)
+    }
+    i = i + 1
+  }
+  StrTable::{
+    strs: strs,
+    offsets: offsets,
+    lengths: lengths,
+    index: index
+  }
+}
+
+/// A string table without an index: str_table_index_of scans `strs`. For
+/// the tables built per function (the gc lane) and the lite module path.
+export fn str_table_lite(strs: Array[String], offsets: Array[Int], lengths: Array[Int]) -> StrTable {
+  StrTable::{
+    strs: strs,
+    offsets: offsets,
+    lengths: lengths,
+    index: MutMap::new_string()
+  }
+}
+
+/// The slot of `s` in `st` -- the first one that holds it -- or a thrown
+/// "string not in table" (the message str_table_lookup throws).
+export fn str_table_index_of(st: StrTable, s: String) -> Int with Exception {
+  if MutMap::size(st.index) > 0 {
+    match MutMap::get(st.index, s) {
+      Some(i) => i,
+      None => throw(String::concat("string not in table: ", s))
+    }
+  } else {
+    let strs = st.strs
+    let len = Array::length(strs)
+    let mut i = 0
+    let mut found = -1
+    while i < len {
+      if String::equals(Array::get(strs, i), s) {
+        found = i
+        i = len
+      } else {
+        i = i + 1
+      }
+    }
+    if found < 0 {
+      throw(String::concat("string not in table: ", s))
+    }
+    found
+  }
 }
 
 export struct LambdaTable {
