@@ -3907,6 +3907,7 @@ fn lc_pf_remap_name_section(payload: Bytes, newidx: Array[Int], cell: Array[Int]
       }
       if q != sub_end {
         Array::set(failed, 0, true)
+        Array::set(lc_pf_refusal_cell, 0, 3909)
       } else {
         ()
       }
@@ -3932,6 +3933,31 @@ export fn late_dce_prune_module(mod_bytes: Bytes) -> Bytes {
   lc_pf_prune_module(mod_bytes, "", false)
 }
 
+/// Why the last `lc_pf_prune_module` run left its input alone, for the
+/// probes in tests: 0 = it pruned, -1 = nothing was unreachable, otherwise
+/// the source line of the refusal (`lc_pf_refuse`) or a small code for the
+/// early exits (1 = too short, 2 = section walk, 3 = no code section /
+/// layout mismatch, 4 = a body did not decode). The pass itself stays
+/// silent on purpose (the safe answer is the unpruned module); this only
+/// makes that silence inspectable.
+let lc_pf_refusal_cell: Array[Int] = [0]
+
+fn lc_pf_refuse(failed: Array[Bool], site: Int) -> Unit {
+  Array::set(failed, 0, true)
+  Array::set(lc_pf_refusal_cell, 0, 3945)
+  Array::set(lc_pf_refusal_cell, 0, site)
+}
+
+export fn late_dce_prune_refusal() -> Int {
+  Array::get(lc_pf_refusal_cell, 0)
+}
+
+/// Test entry with the strip decision spelled out: `exports_stripped` roots
+/// only the exports `executable_export_kept_bytes` keeps for `entry_name`.
+export fn late_dce_prune_module_for(mod_bytes: Bytes, entry_name: String, exports_stripped: Bool) -> Bytes {
+  lc_pf_prune_module(mod_bytes, entry_name, exports_stripped)
+}
+
 /// #2359: drop every function the module cannot reach and renumber what is
 /// left. Roots are the exported functions plus every funcref-table entry (a
 /// `call_indirect` target is only known dynamically, so a table slot is a
@@ -3949,8 +3975,10 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
   Array::push(cell, 0)
   let failed = lc_fresh_bool_array()
   Array::push(failed, false)
+  Array::set(lc_pf_refusal_cell, 0, 0)
   let total = Bytes::length(mod_bytes)
   if total < 8 {
+    Array::set(lc_pf_refusal_cell, 0, 1)
     mod_bytes
   } else {
     // --- section table -------------------------------------------------
@@ -3965,6 +3993,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
       let body = Array::get(cell, 0)
       if body + n > total {
         walk_ok = false
+        Array::set(lc_pf_refusal_cell, 0, 2)
       } else {
         Array::push(sec_id, sid)
         Array::push(sec_start, body)
@@ -4051,6 +4080,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
             gq = gq + 2
             if gq >= send {
               Array::set(failed, 0, true)
+              Array::set(lc_pf_refusal_cell, 0, 4077)
             } else {
               let iop = Bytes::get(mod_bytes, gq)
               gq = gq + 1
@@ -4064,12 +4094,14 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
                 gq = gq + 1
               } else {
                 Array::set(failed, 0, true)
+                Array::set(lc_pf_refusal_cell, 0, 4090)
               }
               if !Array::get(failed, 0) {
                 if gq < send && Bytes::get(mod_bytes, gq) == 11 {
                   gq = gq + 1
                 } else {
                   Array::set(failed, 0, true)
+                  Array::set(lc_pf_refusal_cell, 0, 4096)
                 }
               } else {
                 ()
@@ -4079,6 +4111,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
           }
           if !Array::get(failed, 0) && gq != send {
             Array::set(failed, 0, true)
+            Array::set(lc_pf_refusal_cell, 0, 4105)
           } else {
             ()
           }
@@ -4111,6 +4144,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
             if flag != 0 {
               // Only the active-table-0 form is emitted today.
               Array::set(failed, 0, true)
+              Array::set(lc_pf_refusal_cell, 0, 4137)
             } else {
               while q < send && Bytes::get(mod_bytes, q) != 11 {
                 let iop = Bytes::get(mod_bytes, q)
@@ -4137,6 +4171,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
         } else if sid == 8 {
           // A start function would be another root; none is emitted today.
           Array::set(failed, 0, true)
+          Array::set(lc_pf_refusal_cell, 0, 4163)
         } else if sid == 10 {
           code_i = si
           let c = lc_pf_leb(mod_bytes, sstart, cell)
@@ -4198,6 +4233,7 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
     bi = bi + 1
   }
   if !all_ok {
+    Array::set(lc_pf_refusal_cell, 0, 4)
     mod_bytes
   } else {
     // --- reachability -----------------------------------------------------
@@ -4277,6 +4313,7 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
       // numbers from the barely-dead inputs that motivate it. What is settled
       // is the direction: skipping never saves output bytes, so the only free
       // case is nothing to drop at all, which is the test above.
+      Array::set(lc_pf_refusal_cell, 0, 0 - 1)
       mod_bytes
     } else {
       // --- rebuilt code + function sections --------------------------------
@@ -4299,6 +4336,7 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
             // A kept body calls something the walk pruned: the reachability
             // closure and the rewrite disagree, so trust neither.
             Array::set(failed, 0, true)
+            Array::set(lc_pf_refusal_cell, 0, 4325)
           } else {
             leb128_encode_u32(nb, Array::get(newidx, target))
           }
@@ -4335,33 +4373,45 @@ fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id:
     } else if sid == 10 {
       bytebuf_push_section(out, 10, code_content)
     } else if sid == 7 {
-      let ec = bytebuf_new()
+      // #2497 unit 2: an export of a PRUNED function is dropped, not refused.
+      // A function export is a root unless the CLI announced the strip and
+      // the name is outside its keep list, so a pruned export is exactly one
+      // the strip is about to remove; keeping the entry would name a
+      // function that no longer exists, and refusing kept the whole module
+      // unpruned (measured: the compile-only artifact came out 23 KB
+      // larger than its own post-strip prune).
+      let ec_entries = bytebuf_new()
+      let mut ec_count = 0
       let c = lc_pf_leb(mod_bytes, sstart, cell)
       let mut q = Array::get(cell, 0)
-      bytebuf_push_vec_header(ec, c)
       let mut ei = 0
       while ei < c && q < send {
         let nl = lc_pf_leb(mod_bytes, q, cell)
         let nstart = Array::get(cell, 0)
-        leb128_encode_u32(ec, nl)
-        lc_pf_copy_range(ec, mod_bytes, nstart, nstart + nl)
         q = nstart + nl
         let kind = Bytes::get(mod_bytes, q)
-        bytebuf_push(ec, kind)
         q = q + 1
         let idx = lc_pf_leb(mod_bytes, q, cell)
         q = Array::get(cell, 0)
-        if kind == 0 {
-          if Array::get(newidx, idx) < 0 {
-            Array::set(failed, 0, true)
-          } else {
-            leb128_encode_u32(ec, Array::get(newidx, idx))
-          }
+        let dropped = kind == 0 && Array::get(newidx, idx) < 0
+        if dropped {
+          ()
         } else {
-          leb128_encode_u32(ec, idx)
+          leb128_encode_u32(ec_entries, nl)
+          lc_pf_copy_range(ec_entries, mod_bytes, nstart, nstart + nl)
+          bytebuf_push(ec_entries, kind)
+          if kind == 0 {
+            leb128_encode_u32(ec_entries, Array::get(newidx, idx))
+          } else {
+            leb128_encode_u32(ec_entries, idx)
+          }
+          ec_count = ec_count + 1
         }
         ei = ei + 1
       }
+      let ec = bytebuf_new()
+      bytebuf_push_vec_header(ec, ec_count)
+      bytebuf_push_buf(ec, ec_entries)
       bytebuf_push_section(out, 7, ec)
     } else if sid == 9 {
       let el = bytebuf_new()
@@ -4394,6 +4444,7 @@ fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id:
           q = Array::get(cell, 0)
           if Array::get(newidx, f) < 0 {
             Array::set(failed, 0, true)
+            Array::set(lc_pf_refusal_cell, 0, 4420)
           } else {
             leb128_encode_u32(el, Array::get(newidx, f))
           }
