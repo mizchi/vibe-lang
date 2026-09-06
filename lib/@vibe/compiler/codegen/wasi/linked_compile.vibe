@@ -3740,12 +3740,15 @@ fn lc_pf_skip_blocktype(b: Bytes, p: Int) -> Int {
   }
 }
 
-/// Decode one function body's instructions, recording the byte range and
-/// target of every `call` / `return_call` / `ref.func` immediate into the
-/// three parallel sink arrays. Returns true only when the walk lands EXACTLY
-/// on `body_end` -- see the header note: that equality is what makes an
+/// Decode one function body's instructions, recording every `call` /
+/// `return_call` / `ref.func` immediate into `sink` as one packed Int:
+/// `(byte offset of the immediate) << 32 | (function index)`. The immediate's
+/// byte length is not stored -- the re-emit skips the LEB again at that
+/// offset, which is cheaper than a third parallel array over ~170k sites (the
+/// compiler closure). Returns true only when the walk lands EXACTLY on
+/// `body_end` -- see the header note: that equality is what makes an
 /// incomplete opcode table refuse rather than corrupt.
-fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int], sink_pos: Array[Int], sink_end: Array[Int], sink_val: Array[Int]) -> Bool {
+fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int], sink: Array[Int]) -> Bool {
   let mut p = instr_start
   let mut ok = true
   while ok && p < body_end {
@@ -3756,9 +3759,12 @@ fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int]
       let ipos = p
       let v = lc_pf_leb(b, p, cell)
       p = Array::get(cell, 0)
-      Array::push(sink_pos, ipos)
-      Array::push(sink_end, p)
-      Array::push(sink_val, v)
+      if v > 4294967295 {
+        // Not a u32: the LEB reader admits 35 bits, a function index does not.
+        ok = false
+      } else {
+        Array::push(sink, (ipos<<32)|v)
+      }
     } else if op == 2 || op == 3 || op == 4 || op == 6 {
       p = lc_pf_skip_blocktype(b, p)
     } else if op == 31 {
@@ -3850,76 +3856,240 @@ fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int]
   ok && p == body_end
 }
 
-/// Copy `[from, to)` of `src` onto `dst`.
-fn lc_pf_copy_range(dst: Bytes, src: Bytes, from: Int, to: Int) -> Unit {
-  let mut i = from
-  while i < to {
-    bytebuf_push(dst, Bytes::get(src, i))
-    i = i + 1
+/// Byte length of `leb128_encode_u32(v)` for `0 <= v < 2^32`. The re-emit
+/// below writes every section straight into the output buffer, and a
+/// section's length prefix comes BEFORE its content, so each rewritten
+/// section is sized by the same walk that later writes it (the `write`
+/// flag of the `lc_pf_emit_*` helpers) and this answers what the encoder
+/// will take.
+fn lc_pf_leb_len(v: Int) -> Int {
+  if v < 128 {
+    1
+  } else if v < 16384 {
+    2
+  } else if v < 2097152 {
+    3
+  } else if v < 268435456 {
+    4
+  } else {
+    5
   }
 }
 
-/// Rewrite the "name" custom section's function-name subsection (id 1) through
-/// `newidx`, dropping entries for pruned functions. Other subsections are
-/// copied verbatim. Returns the rebuilt payload, or an empty buffer when the
-/// layout is not the one this understands (caller then abandons the prune --
-/// a name section left pointing at old indices would mislabel every frame in
-/// a backtrace, which is worse than not shrinking).
-fn lc_pf_remap_name_section(payload: Bytes, newidx: Array[Int], cell: Array[Int], failed: Array[Bool]) -> Bytes {
-  let out = bytebuf_new()
-  let len = Bytes::length(payload)
-  // section name ("name"), copied as-is
-  let nlen = lc_pf_leb(payload, 0, cell)
-  let mut p = Array::get(cell, 0)
-  lc_pf_copy_range(out, payload, 0, p + nlen)
-  p = p + nlen
-  while p < len {
-    let sub_id = Bytes::get(payload, p)
-    p = p + 1
-    let sub_len = lc_pf_leb(payload, p, cell)
-    let sub_body = Array::get(cell, 0)
-    let sub_end = sub_body + sub_len
-    if sub_id == 1 {
-      let names = bytebuf_new()
-      let cnt = lc_pf_leb(payload, sub_body, cell)
-      let mut q = Array::get(cell, 0)
-      let kept = bytebuf_new()
-      let mut kept_n = 0
-      let mut ni = 0
-      while ni < cnt && q < sub_end {
-        let idx = lc_pf_leb(payload, q, cell)
-        q = Array::get(cell, 0)
-        let slen = lc_pf_leb(payload, q, cell)
-        let sstart = Array::get(cell, 0)
-        q = sstart + slen
-        if idx < Array::length(newidx) && Array::get(newidx, idx) >= 0 {
-          leb128_encode_u32(kept, Array::get(newidx, idx))
-          leb128_encode_u32(kept, slen)
-          lc_pf_copy_range(kept, payload, sstart, sstart + slen)
-          kept_n = kept_n + 1
-        } else {
-          ()
-        }
-        ni = ni + 1
-      }
-      if q != sub_end {
+/// Export section content through `newidx`: every `func` export is renumbered,
+/// the others copied. Sizes when `write` is false, writes when true; returns
+/// the content length either way. A kept export naming a pruned function
+/// fails the prune (the roots came from this very section, so it cannot
+/// happen unless the two walks disagree).
+fn lc_pf_emit_exports(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let c = lc_pf_leb(mod_bytes, sstart, cell)
+  let mut q = Array::get(cell, 0)
+  let mut n = lc_pf_leb_len(c)
+  if write {
+    bytebuf_push_vec_header(dst, c)
+  } else {
+    ()
+  }
+  let mut ei = 0
+  while ei < c && q < send {
+    let nl = lc_pf_leb(mod_bytes, q, cell)
+    let nstart = Array::get(cell, 0)
+    q = nstart + nl
+    let kind = Bytes::get(mod_bytes, q)
+    q = q + 1
+    let idx = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    let mut out_idx = idx
+    if kind == 0 {
+      if idx < Array::length(newidx) && Array::get(newidx, idx) >= 0 {
+        out_idx = Array::get(newidx, idx)
+      } else {
         Array::set(failed, 0, true)
+      }
+    } else {
+      ()
+    }
+    n = n + lc_pf_leb_len(nl) + nl + 1 + lc_pf_leb_len(out_idx)
+    if write {
+      leb128_encode_u32(dst, nl)
+      Bytes::blit(dst, mod_bytes, nstart, nstart + nl)
+      bytebuf_push(dst, kind)
+      leb128_encode_u32(dst, out_idx)
+    } else {
+      ()
+    }
+    ei = ei + 1
+  }
+  n
+}
+
+/// Element section content through `newidx` (active table-0 segments only --
+/// the section walk already refused any other flag). Same size / write
+/// contract as lc_pf_emit_exports.
+fn lc_pf_emit_elements(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let c = lc_pf_leb(mod_bytes, sstart, cell)
+  let mut q = Array::get(cell, 0)
+  let mut n = lc_pf_leb_len(c)
+  if write {
+    bytebuf_push_vec_header(dst, c)
+  } else {
+    ()
+  }
+  let mut gi = 0
+  while gi < c && q < send && !Array::get(failed, 0) {
+    let flag = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    n = n + lc_pf_leb_len(flag)
+    if write {
+      leb128_encode_u32(dst, flag)
+    } else {
+      ()
+    }
+    let expr_from = q
+    while q < send && Bytes::get(mod_bytes, q) != 11 {
+      let iop = Bytes::get(mod_bytes, q)
+      q = q + 1
+      if iop == 65 || iop == 35 {
+        q = lc_pf_skip_leb(mod_bytes, q)
       } else {
         ()
       }
-      bytebuf_push_vec_header(names, kept_n)
-      bytebuf_push_buf(names, kept)
-      bytebuf_push(out, 1)
-      leb128_encode_u32(out, bytebuf_length(names))
-      bytebuf_push_buf(out, names)
+    }
+    q = q + 1
+    n = n + (q - expr_from)
+    if write {
+      Bytes::blit(dst, mod_bytes, expr_from, q)
     } else {
-      bytebuf_push(out, sub_id)
-      leb128_encode_u32(out, sub_len)
-      lc_pf_copy_range(out, payload, sub_body, sub_end)
+      ()
+    }
+    let nf = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    n = n + lc_pf_leb_len(nf)
+    if write {
+      leb128_encode_u32(dst, nf)
+    } else {
+      ()
+    }
+    let mut fi = 0
+    while fi < nf {
+      let f = lc_pf_leb(mod_bytes, q, cell)
+      q = Array::get(cell, 0)
+      if f < Array::length(newidx) && Array::get(newidx, f) >= 0 {
+        n = n + lc_pf_leb_len(Array::get(newidx, f))
+        if write {
+          leb128_encode_u32(dst, Array::get(newidx, f))
+        } else {
+          ()
+        }
+      } else {
+        Array::set(failed, 0, true)
+      }
+      fi = fi + 1
+    }
+    gi = gi + 1
+  }
+  n
+}
+
+/// The function-name subsection (id 1) of the "name" custom section through
+/// `newidx`: entries of pruned functions are dropped, the rest renumbered.
+/// Returns the subsection's content length; writes it when `write` is true.
+fn lc_pf_emit_name_funcs(mod_bytes: Bytes, sub_body: Int, sub_end: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let cnt = lc_pf_leb(mod_bytes, sub_body, cell)
+  let mut q = Array::get(cell, 0)
+  let mut kept_n = 0
+  let mut kept_bytes = 0
+  let mut ni = 0
+  while ni < cnt && q < sub_end {
+    let idx = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    let slen = lc_pf_leb(mod_bytes, q, cell)
+    let sstart = Array::get(cell, 0)
+    q = sstart + slen
+    if idx < Array::length(newidx) && Array::get(newidx, idx) >= 0 {
+      kept_n = kept_n + 1
+      kept_bytes = kept_bytes + lc_pf_leb_len(Array::get(newidx, idx)) + lc_pf_leb_len(slen) + slen
+    } else {
+      ()
+    }
+    ni = ni + 1
+  }
+  if q != sub_end {
+    Array::set(failed, 0, true)
+  } else {
+    ()
+  }
+  if write {
+    bytebuf_push_vec_header(dst, kept_n)
+    let _cnt2 = lc_pf_leb(mod_bytes, sub_body, cell)
+    let mut q2 = Array::get(cell, 0)
+    let mut wi = 0
+    while wi < cnt && q2 < sub_end {
+      let idx = lc_pf_leb(mod_bytes, q2, cell)
+      q2 = Array::get(cell, 0)
+      let slen = lc_pf_leb(mod_bytes, q2, cell)
+      let sstart = Array::get(cell, 0)
+      q2 = sstart + slen
+      if idx < Array::length(newidx) && Array::get(newidx, idx) >= 0 {
+        leb128_encode_u32(dst, Array::get(newidx, idx))
+        leb128_encode_u32(dst, slen)
+        Bytes::blit(dst, mod_bytes, sstart, sstart + slen)
+      } else {
+        ()
+      }
+      wi = wi + 1
+    }
+  } else {
+    ()
+  }
+  lc_pf_leb_len(kept_n) + kept_bytes
+}
+
+/// The "name" custom section's content (`[sstart, send)` of `mod_bytes`,
+/// starting at the section-name string) with its function-name subsection
+/// remapped through `newidx` and every other subsection copied verbatim. A
+/// name section left pointing at old indices would mislabel every frame in a
+/// backtrace, which is worse than not shrinking, so a layout this does not
+/// understand fails the prune. Same size / write contract as the other
+/// `lc_pf_emit_*` helpers.
+fn lc_pf_emit_name_section(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let nlen = lc_pf_leb(mod_bytes, sstart, cell)
+  let mut p = Array::get(cell, 0) + nlen
+  let mut n = p - sstart
+  if write {
+    Bytes::blit(dst, mod_bytes, sstart, p)
+  } else {
+    ()
+  }
+  while p < send {
+    let sub_id = Bytes::get(mod_bytes, p)
+    p = p + 1
+    let sub_len = lc_pf_leb(mod_bytes, p, cell)
+    let sub_body = Array::get(cell, 0)
+    let sub_end = sub_body + sub_len
+    if sub_id == 1 {
+      let names_len = lc_pf_emit_name_funcs(mod_bytes, sub_body, sub_end, cell, newidx, failed, dst, false)
+      n = n + 1 + lc_pf_leb_len(names_len) + names_len
+      if write {
+        bytebuf_push(dst, 1)
+        leb128_encode_u32(dst, names_len)
+        lc_pf_emit_name_funcs(mod_bytes, sub_body, sub_end, cell, newidx, failed, dst, true)
+      } else {
+        ()
+      }
+    } else {
+      n = n + 1 + lc_pf_leb_len(sub_len) + sub_len
+      if write {
+        bytebuf_push(dst, sub_id)
+        leb128_encode_u32(dst, sub_len)
+        Bytes::blit(dst, mod_bytes, sub_body, sub_end)
+      } else {
+        ()
+      }
     }
     p = sub_end
   }
-  out
+  n
 }
 
 /// Test entry for the #2359 pruner: the same pass the linked lane runs on
@@ -3940,7 +4110,9 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
   let failed = lc_fresh_bool_array()
   Array::push(failed, false)
   let total = Bytes::length(mod_bytes)
-  if total < 8 {
+  if total < 8 || total >= 1073741824 {
+    // Below 8 bytes there is no header; at 1 GiB and above a byte offset no
+    // longer fits the packed site record (lc_pf_decode_body).
     mod_bytes
   } else {
     // --- section table -------------------------------------------------
@@ -4167,57 +4339,78 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
 /// Second half of lc_pf_prune_module: decode every body, close reachability
 /// over the call graph, then re-emit the module with the survivors renumbered.
 /// Split out only because the section walk above already fills a screen.
+///
+/// Allocation is the cost to watch here, not time: this runs once per compile
+/// on the finished module, and the selfcompile KPI (heap_ptr, the bump
+/// high-water) counts every byte it touches. Measured on the compiler closure
+/// (3.9 MB module, 4597 bodies, ~170k call sites) the first version spent
+/// 46.7 MB: three parallel site arrays (12.6 MB), a fresh buffer per
+/// rewritten body plus a code-section buffer appended into the output
+/// (19.6 MB), and a copy of every other section on its way through (the
+/// name section alone 3.3 MB). Now the sites are one packed array, every
+/// section is written straight into the output buffer behind a length
+/// computed by the same walk (`lc_pf_leb_len`, the `write` flag of the
+/// `lc_pf_emit_*` helpers), and the reachability stack holds each function
+/// once. What remains is the site array and the output buffer's own growth.
 fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], num_imported: Int, ftypes: Array[Int], body_start: Array[Int], body_instr: Array[Int], body_end: Array[Int], roots: Array[Int], code_i: Int) -> Bytes {
   let nbodies = Array::length(body_end)
   // --- decode every body once; remember each call immediate ---------------
-  // Sites are stored flat with a per-body [begin, end) window into them, so
-  // the whole pass allocates a fixed number of arrays regardless of module
-  // size.
-  let site_pos = lc_fresh_int_array()
-  let site_end = lc_fresh_int_array()
-  let site_val = lc_fresh_int_array()
+  // Sites are stored flat (packed offset << 32 | target, lc_pf_decode_body)
+  // with a per-body [begin, end) window into them, so the whole pass
+  // allocates a fixed number of arrays regardless of module size.
+  let site = lc_fresh_int_array()
   let site_from = lc_fresh_int_array()
-  let site_to = lc_fresh_int_array()
   let mut bi = 0
   let mut all_ok = true
   while bi < nbodies && all_ok {
-    Array::push(site_from, Array::length(site_pos))
-    all_ok = lc_pf_decode_body(mod_bytes, Array::get(body_instr, bi), Array::get(body_end, bi), cell, site_pos, site_end, site_val)
-    Array::push(site_to, Array::length(site_pos))
+    Array::push(site_from, Array::length(site))
+    all_ok = lc_pf_decode_body(mod_bytes, Array::get(body_instr, bi), Array::get(body_end, bi), cell, site)
     bi = bi + 1
   }
+  Array::push(site_from, Array::length(site))
   if !all_ok {
     mod_bytes
   } else {
     // --- reachability -----------------------------------------------------
+    // A function goes onto the stack once, when first seen; a target already
+    // marked is not pushed again (the ~170k call edges of the compiler
+    // closure would otherwise each cost a stack slot).
+    let nfuncs = num_imported + nbodies
     let seen = lc_fresh_bool_array()
     let mut szi = 0
-    while szi < num_imported + nbodies {
+    while szi < nfuncs {
       Array::push(seen, false)
       szi = szi + 1
     }
     let stack = lc_fresh_int_array()
     let mut ri = 0
     while ri < Array::length(roots) {
-      Array::push(stack, Array::get(roots, ri))
+      let r = Array::get(roots, ri)
+      if r >= 0 && r < nfuncs && !Array::get(seen, r) {
+        Array::set(seen, r, true)
+        Array::push(stack, r)
+      } else {
+        ()
+      }
       ri = ri + 1
     }
     let mut sp = 0
     while sp < Array::length(stack) {
       let f = Array::get(stack, sp)
       sp = sp + 1
-      if f >= 0 && f < Array::length(seen) && !Array::get(seen, f) {
-        Array::set(seen, f, true)
-        if f >= num_imported {
-          let fb = f - num_imported
-          let mut k = Array::get(site_from, fb)
-          let kend = Array::get(site_to, fb)
-          while k < kend {
-            Array::push(stack, Array::get(site_val, k))
-            k = k + 1
+      if f >= num_imported {
+        let fb = f - num_imported
+        let mut k = Array::get(site_from, fb)
+        let kend = Array::get(site_from, fb + 1)
+        while k < kend {
+          let t = Array::get(site, k)&4294967295
+          if t < nfuncs && !Array::get(seen, t) {
+            Array::set(seen, t, true)
+            Array::push(stack, t)
+          } else {
+            ()
           }
-        } else {
-          ()
+          k = k + 1
         }
       } else {
         ()
@@ -4251,162 +4444,181 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
       // only the dead bodies' bytes, so skipping a barely-dead module looks
       // free. It is not free: skipping always buys transient compile heap
       // with permanent OUTPUT size, which is backwards for a pass whose
-      // purpose is output size. At the selfcompile KPI input -- 2.3% dead,
-      // 180 of 4305 bodies, 89752 B of 3.85 MB -- the rate is 29848504 heap
-      // bytes saved for 104420 output bytes added, and not worth taking
-      // while the heap gate still allows 14.8% of growth (its ceiling is
-      // the committed baseline + 10%, ci.yml).
+      // purpose is output size. At the selfcompile KPI input -- 4.4% dead,
+      // 203 of 4597 bodies, 93630 B of 3.99 MB -- the whole pass now costs
+      // 13275388 heap bytes, and not worth taking while the
+      // heap gate still allows growth (its ceiling is the committed baseline
+      // + 10%, ci.yml).
       //
       // That rate is not constant, so do not extrapolate this one point. The
       // re-emit's cost tracks module size while the saving tracks
       // dead_fraction * module size, so skipping gets relatively cheaper as
-      // the dead fraction falls: the compiler's own module (0.4% dead) costs
-      // 10374 output bytes to skip, a tenth of the KPI's. A threshold is
-      // therefore unmeasured here, not refuted -- justifying one needs heap
-      // numbers from the barely-dead inputs that motivate it. What is settled
-      // is the direction: skipping never saves output bytes, so the only free
-      // case is nothing to drop at all, which is the test above.
+      // the dead fraction falls. A threshold is therefore unmeasured here,
+      // not refuted -- justifying one needs heap numbers from the barely-dead
+      // inputs that motivate it. What is settled is the direction: skipping
+      // never saves output bytes, so the only free case is nothing to drop
+      // at all, which is the test above.
       mod_bytes
     } else {
-      // --- rebuilt code + function sections --------------------------------
-      let code_content = bytebuf_new()
-      bytebuf_push_vec_header(code_content, Array::length(keep))
-      let func_content = bytebuf_new()
-      bytebuf_push_vec_header(func_content, Array::length(keep))
-      let mut kj = 0
-      while kj < Array::length(keep) && !Array::get(failed, 0) {
-        let b = Array::get(keep, kj)
-        leb128_encode_u32(func_content, Array::get(ftypes, b))
-        let nb = bytebuf_new()
-        let mut prev = Array::get(body_start, b)
-        let mut k = Array::get(site_from, b)
-        let kend = Array::get(site_to, b)
-        while k < kend {
-          lc_pf_copy_range(nb, mod_bytes, prev, Array::get(site_pos, k))
-          let target = Array::get(site_val, k)
-          if target < 0 || target >= Array::length(newidx) || Array::get(newidx, target) < 0 {
-            // A kept body calls something the walk pruned: the reachability
-            // closure and the rewrite disagree, so trust neither.
-            Array::set(failed, 0, true)
-          } else {
-            leb128_encode_u32(nb, Array::get(newidx, target))
-          }
-          prev = Array::get(site_end, k)
-          k = k + 1
-        }
-        lc_pf_copy_range(nb, mod_bytes, prev, Array::get(body_end, b))
-        leb128_encode_u32(code_content, bytebuf_length(nb))
-        bytebuf_push_buf(code_content, nb)
-        kj = kj + 1
-      }
-      if Array::get(failed, 0) {
-        mod_bytes
-      } else {
-        lc_pf_reemit(mod_bytes, cell, failed, sec_id, sec_start, sec_len, newidx, func_content, code_content)
-      }
+      lc_pf_reemit(mod_bytes, cell, failed, sec_id, sec_start, sec_len, newidx, ftypes, keep, body_start, body_end, site, site_from)
     }
+  }
+}
+
+/// Code-section content for the kept bodies: sizes when `write` is false,
+/// writes when true, returns the content length either way. A kept body
+/// calling something the walk pruned means the reachability closure and the
+/// rewrite disagree, so neither is trusted (fails the prune).
+fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_start: Array[Int], body_end: Array[Int], site: Array[Int], site_from: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let nkeep = Array::length(keep)
+  let mut n = lc_pf_leb_len(nkeep)
+  if write {
+    bytebuf_push_vec_header(dst, nkeep)
+  } else {
+    ()
+  }
+  let mut kj = 0
+  while kj < nkeep && !Array::get(failed, 0) {
+    let b = Array::get(keep, kj)
+    // The body's size after renumbering: each immediate is replaced by the
+    // LEB of its new index.
+    let mut sz = Array::get(body_end, b) - Array::get(body_start, b)
+    let kfrom = Array::get(site_from, b)
+    let kend = Array::get(site_from, b + 1)
+    let mut k = kfrom
+    while k < kend {
+      let pk = Array::get(site, k)
+      let pos = pk>>32
+      let target = pk&4294967295
+      if target >= Array::length(newidx) || Array::get(newidx, target) < 0 {
+        Array::set(failed, 0, true)
+      } else {
+        sz = sz - (lc_pf_skip_leb(mod_bytes, pos) - pos) + lc_pf_leb_len(Array::get(newidx, target))
+      }
+      k = k + 1
+    }
+    n = n + lc_pf_leb_len(sz) + sz
+    if write && !Array::get(failed, 0) {
+      leb128_encode_u32(dst, sz)
+      let mut prev = Array::get(body_start, b)
+      let mut w = kfrom
+      while w < kend {
+        let pk = Array::get(site, w)
+        let pos = pk>>32
+        Bytes::blit(dst, mod_bytes, prev, pos)
+        leb128_encode_u32(dst, Array::get(newidx, pk&4294967295))
+        prev = lc_pf_skip_leb(mod_bytes, pos)
+        w = w + 1
+      }
+      Bytes::blit(dst, mod_bytes, prev, Array::get(body_end, b))
+    } else {
+      ()
+    }
+    kj = kj + 1
+  }
+  n
+}
+
+/// Write one section into `out`: id, the content length the sizing walk
+/// computed, then the content through the same walk in write mode. The
+/// writer landing on any other length than it announced would be a corrupt
+/// module, so that is checked and fails the prune.
+fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: Array[Bool]) -> Unit {
+  if bytebuf_length(out) - content_start != announced {
+    Array::set(failed, 0, true)
+  } else {
+    ()
   }
 }
 
 /// Final step: write the module back out, substituting the rebuilt function
 /// and code sections and remapping every function index the other sections
-/// carry (exports, element segments, the name section).
-fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], newidx: Array[Int], func_content: Bytes, code_content: Bytes) -> Bytes {
+/// carry (exports, element segments, the name section). Every section goes
+/// straight into `out`: its content length is computed first by the sizing
+/// mode of the same helper that then writes it.
+fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], newidx: Array[Int], ftypes: Array[Int], keep: Array[Int], body_start: Array[Int], body_end: Array[Int], site: Array[Int], site_from: Array[Int]) -> Bytes {
   let out = bytebuf_new()
-  lc_pf_copy_range(out, mod_bytes, 0, 8)
+  Bytes::blit(out, mod_bytes, 0, 8)
+  let nkeep = Array::length(keep)
   let mut si = 0
   while si < Array::length(sec_id) && !Array::get(failed, 0) {
     let sid = Array::get(sec_id, si)
     let sstart = Array::get(sec_start, si)
     let send = sstart + Array::get(sec_len, si)
     if sid == 3 {
-      bytebuf_push_section(out, 3, func_content)
+      let mut flen = lc_pf_leb_len(nkeep)
+      let mut fi = 0
+      while fi < nkeep {
+        flen = flen + lc_pf_leb_len(Array::get(ftypes, Array::get(keep, fi)))
+        fi = fi + 1
+      }
+      bytebuf_push(out, 3)
+      leb128_encode_u32(out, flen)
+      let cstart = bytebuf_length(out)
+      bytebuf_push_vec_header(out, nkeep)
+      let mut fw = 0
+      while fw < nkeep {
+        leb128_encode_u32(out, Array::get(ftypes, Array::get(keep, fw)))
+        fw = fw + 1
+      }
+      lc_pf_check_written(out, cstart, flen, failed)
     } else if sid == 10 {
-      bytebuf_push_section(out, 10, code_content)
+      let clen = lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, false)
+      if !Array::get(failed, 0) {
+        bytebuf_push(out, 10)
+        leb128_encode_u32(out, clen)
+        let cstart = bytebuf_length(out)
+        lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, true)
+        lc_pf_check_written(out, cstart, clen, failed)
+      } else {
+        ()
+      }
     } else if sid == 7 {
-      let ec = bytebuf_new()
-      let c = lc_pf_leb(mod_bytes, sstart, cell)
-      let mut q = Array::get(cell, 0)
-      bytebuf_push_vec_header(ec, c)
-      let mut ei = 0
-      while ei < c && q < send {
-        let nl = lc_pf_leb(mod_bytes, q, cell)
-        let nstart = Array::get(cell, 0)
-        leb128_encode_u32(ec, nl)
-        lc_pf_copy_range(ec, mod_bytes, nstart, nstart + nl)
-        q = nstart + nl
-        let kind = Bytes::get(mod_bytes, q)
-        bytebuf_push(ec, kind)
-        q = q + 1
-        let idx = lc_pf_leb(mod_bytes, q, cell)
-        q = Array::get(cell, 0)
-        if kind == 0 {
-          if Array::get(newidx, idx) < 0 {
-            Array::set(failed, 0, true)
-          } else {
-            leb128_encode_u32(ec, Array::get(newidx, idx))
-          }
-        } else {
-          leb128_encode_u32(ec, idx)
-        }
-        ei = ei + 1
+      let elen = lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, false)
+      if !Array::get(failed, 0) {
+        bytebuf_push(out, 7)
+        leb128_encode_u32(out, elen)
+        let cstart = bytebuf_length(out)
+        lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+        lc_pf_check_written(out, cstart, elen, failed)
+      } else {
+        ()
       }
-      bytebuf_push_section(out, 7, ec)
     } else if sid == 9 {
-      let el = bytebuf_new()
-      let c = lc_pf_leb(mod_bytes, sstart, cell)
-      let mut q = Array::get(cell, 0)
-      bytebuf_push_vec_header(el, c)
-      let mut gi = 0
-      while gi < c && q < send && !Array::get(failed, 0) {
-        let flag = lc_pf_leb(mod_bytes, q, cell)
-        q = Array::get(cell, 0)
-        leb128_encode_u32(el, flag)
-        let expr_from = q
-        while q < send && Bytes::get(mod_bytes, q) != 11 {
-          let iop = Bytes::get(mod_bytes, q)
-          q = q + 1
-          if iop == 65 || iop == 35 {
-            q = lc_pf_skip_leb(mod_bytes, q)
-          } else {
-            ()
-          }
-        }
-        q = q + 1
-        lc_pf_copy_range(el, mod_bytes, expr_from, q)
-        let nf = lc_pf_leb(mod_bytes, q, cell)
-        q = Array::get(cell, 0)
-        leb128_encode_u32(el, nf)
-        let mut fi = 0
-        while fi < nf {
-          let f = lc_pf_leb(mod_bytes, q, cell)
-          q = Array::get(cell, 0)
-          if Array::get(newidx, f) < 0 {
-            Array::set(failed, 0, true)
-          } else {
-            leb128_encode_u32(el, Array::get(newidx, f))
-          }
-          fi = fi + 1
-        }
-        gi = gi + 1
+      let slen = lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, false)
+      if !Array::get(failed, 0) {
+        bytebuf_push(out, 9)
+        leb128_encode_u32(out, slen)
+        let cstart = bytebuf_length(out)
+        lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+        lc_pf_check_written(out, cstart, slen, failed)
+      } else {
+        ()
       }
-      bytebuf_push_section(out, 9, el)
     } else if sid == 0 {
-      let payload = bytebuf_new()
-      lc_pf_copy_range(payload, mod_bytes, sstart, send)
       let nlen = lc_pf_leb(mod_bytes, sstart, cell)
       let nstart = Array::get(cell, 0)
       let is_name = nlen == 4 && Bytes::get(mod_bytes, nstart) == 110 && Bytes::get(mod_bytes, nstart + 1) == 97 && Bytes::get(mod_bytes, nstart + 2) == 109 && Bytes::get(mod_bytes, nstart + 3) == 101
       if is_name {
-        let remapped = lc_pf_remap_name_section(bytebuf_to_bytes(payload), newidx, cell, failed)
-        bytebuf_push_section(out, 0, remapped)
+        let mlen = lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, false)
+        if !Array::get(failed, 0) {
+          bytebuf_push(out, 0)
+          leb128_encode_u32(out, mlen)
+          let cstart = bytebuf_length(out)
+          lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+          lc_pf_check_written(out, cstart, mlen, failed)
+        } else {
+          ()
+        }
       } else {
-        bytebuf_push_section(out, 0, payload)
+        bytebuf_push(out, 0)
+        leb128_encode_u32(out, send - sstart)
+        Bytes::blit(out, mod_bytes, sstart, send)
       }
     } else {
-      let raw = bytebuf_new()
-      lc_pf_copy_range(raw, mod_bytes, sstart, send)
-      bytebuf_push_section(out, sid, raw)
+      bytebuf_push(out, sid)
+      leb128_encode_u32(out, send - sstart)
+      Bytes::blit(out, mod_bytes, sstart, send)
     }
     si = si + 1
   }
