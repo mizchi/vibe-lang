@@ -1,0 +1,607 @@
+//# Constant Bool parameters (#2497 unit 2)
+//
+// A whole-program pass for the entry-rooted linked lane. When EVERY call of a
+// top-level function passes the same Bool literal for one of its `Bool`
+// parameters, that parameter is a constant: the pass rewrites each read of it
+// in the body to the literal and folds the `if` / `&&` / `||` / `!` shapes the
+// literal now decides, so the untaken arms vanish from the body and whatever
+// only they called loses its last call site (the wasm-level pruner in
+// codegen/wasi then drops those functions).
+//
+// Why this exists: `compile_wasi_module_linked_impl` takes its lanes
+// (`coverage`, `debug_trace`, `debug_break`, `rc_shadow`) as Bool parameters,
+// and the compile-only artifact's production lane tables pass `false` for
+// every one of them. Reachability alone cannot see that -- the arms sit
+// inside one function -- so the lane code stayed in the artifact. A
+// `#cfg(not(lane))` form would express it at the source, but flags are
+// positive-only today and a compiler-source `#cfg` needs a seed bump; this
+// pass needs neither and applies to any program.
+//
+// The pass refuses, per function, whenever it cannot see every call:
+//
+//   - the name is external (the entry, an `export fn`, a name handed in by
+//     the caller), so a host may call it with any argument;
+//   - the name is referenced as a VALUE anywhere (`let g = f`, a lane
+//     table, a callback) -- that call goes through a function reference
+//     the scan cannot follow;
+//   - a WAT body (`%wasm("...")`) names it -- the caller passes those texts
+//     because the prelude has already replaced the marker bodies with a
+//     neutral literal by the time this runs;
+//   - a call site is a method-style call (`x.f(..)`), uses a labeled or
+//     spread argument, or has a different arity: positional matching would
+//     be a guess;
+//   - the function is generic (its type formals are erased elsewhere);
+//   - two top-level statements share the name.
+//
+// And per parameter: the parameter must be annotated exactly `Bool`, every
+// call must pass `EBool(true)` or every call `EBool(false)`, and the body must
+// not rebind or assign the name (a `let` / pattern / lambda parameter / loop
+// variable of the same name would make the plain substitution reach the wrong
+// binding). Parameters that fail any of these keep their reads untouched, so
+// the output for them is byte-identical to before.
+//
+// Runs to a fixpoint: a wrapper that forwards its own parameter becomes a
+// literal-passing caller once its parameter is folded, which then decides
+// the callee's parameter in the next round.
+
+//# Imports
+
+import ./ast.vibe {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./inline_wasm_marker.vibe {
+  inline_wasm_marker_name, wat_callee_names
+}
+
+import ./expr_children.vibe {
+  expr_child_at, expr_children_pop, expr_children_push, expr_children_top
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+//# Candidate table
+
+// Per-parameter observation, flat across all candidates (`base + i`):
+//   -1 the parameter is not `Bool` (never folded)
+//    0 no call seen yet
+//    1 every call so far passed `true`
+//    2 every call so far passed `false`
+//    3 a call passed something else, or the literals disagree
+struct CbfTable {
+  names: Array[String];
+  stmt_idx: Array[Int];
+  arity: Array[Int];
+  base: Array[Int];
+  bad: Array[Bool];
+  state: Array[Int];
+  idx: MutMap[String, Int];
+  dot_methods: MutMap[String, Int]
+}
+
+fn cbf_table_new() -> CbfTable {
+  CbfTable::{
+    names: array_empty(),
+    stmt_idx: array_empty(),
+    arity: array_empty(),
+    base: array_empty(),
+    bad: array_empty(),
+    state: array_empty(),
+    idx: MutMap::new_string(),
+    dot_methods: MutMap::new_string()
+  }
+}
+
+fn cbf_is_bool_param(param: (String, Option[TypeExpr])) -> Bool {
+  let (_, ty) = param
+  match ty {
+    Some(TyName(n)) => n == "Bool",
+    _ => false
+  }
+}
+
+fn cbf_mark_bad(t: CbfTable, name: String) -> Unit {
+  match MutMap::get(t.idx, name) {
+    Some(ci) => Array::set(t.bad, ci, true),
+    None => ()
+  }
+}
+
+fn cbf_str_array_has(arr: Array[String], s: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) && !found {
+    if Array::get(arr, i) == s {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Index every top-level `fn` the pass may fold. A name that is external,
+/// generic, or declared twice is entered as `bad` (or not at all) so a call
+/// scan can never promote it.
+fn cbf_collect_candidates(stmts: Array[Stmt], external_names: Array[String]) -> CbfTable {
+  let t = cbf_table_new()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, value) => match value {
+        EFn(tparams, _, params, _, _, _) => {
+          match MutMap::get(t.idx, name) {
+            Some(prev) => Array::set(t.bad, prev, true),
+            None => {
+              let ci = Array::length(t.names)
+              MutMap::set(t.idx, name, ci)
+              Array::push(t.names, name)
+              Array::push(t.stmt_idx, i)
+              Array::push(t.arity, Array::length(params))
+              Array::push(t.base, Array::length(t.state))
+              Array::push(t.bad, exported || Array::length(tparams) > 0 || cbf_str_array_has(external_names, name))
+              let mut pi = 0
+              while pi < Array::length(params) {
+                Array::push(t.state, if cbf_is_bool_param(Array::get(params, pi)) {
+                  0
+                } else {
+                  0 - 1
+                })
+                pi = pi + 1
+              }
+            }
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  t
+}
+
+//# Reference scan
+
+fn cbf_observe_arg(t: CbfTable, slot: Int, arg: Expr) -> Unit {
+  let cur = Array::get(t.state, slot)
+  if cur < 0 || cur == 3 {
+    ()
+  } else {
+    let next = match arg {
+      EBool(true) => if cur == 2 {
+        3
+      } else {
+        1
+      },
+      EBool(false) => if cur == 1 {
+        3
+      } else {
+        2
+      },
+      _ => 3
+    }
+    Array::set(t.state, slot, next)
+  }
+}
+
+fn cbf_note_call(t: CbfTable, name: String, args: Array[Expr]) -> Unit {
+  match MutMap::get(t.idx, name) {
+    Some(ci) => if Array::length(args) != Array::get(t.arity, ci) {
+      Array::set(t.bad, ci, true)
+    } else {
+      let base = Array::get(t.base, ci)
+      let mut ai = 0
+      while ai < Array::length(args) {
+        let arg = Array::get(args, ai)
+        match arg {
+          ELabeledArg(_, _, _) => Array::set(t.bad, ci, true),
+          ESpread(_) => Array::set(t.bad, ci, true),
+          _ => cbf_observe_arg(t, base + ai, arg)
+        }
+        ai = ai + 1
+      }
+    },
+    None => ()
+  }
+}
+
+fn cbf_note_wat(t: CbfTable, wat: String) -> Unit {
+  let names = wat_callee_names(wat)
+  let mut i = 0
+  while i < Array::length(names) {
+    cbf_mark_bad(t, Array::get(names, i))
+    i = i + 1
+  }
+}
+
+/// Every identifier is a VALUE reference unless it is the callee of a call,
+/// and a callee is a call site of that name. Binders are irrelevant here: a
+/// local that shadows a top-level name only adds an observation, and an
+/// extra observation can only refuse a fold, never grant one.
+fn cbf_scan(t: CbfTable, expr: Expr) -> Unit {
+  match expr {
+    EIdent(name, _) => cbf_mark_bad(t, name),
+    ECall(callee, args, _) => {
+      match callee {
+        EIdent(cname, _) => {
+          if cname == inline_wasm_marker_name() && Array::length(args) == 1 {
+            match Array::get(args, 0) {
+              EString(wat) => cbf_note_wat(t, wat),
+              _ => ()
+            }
+          } else {
+            ()
+          }
+          cbf_note_call(t, cname, args)
+        },
+        EDot(obj, method, _, _) => {
+          MutMap::set(t.dot_methods, method, 1)
+          cbf_scan(t, obj)
+        },
+        _ => cbf_scan(t, callee)
+      }
+      let mut ai = 0
+      while ai < Array::length(args) {
+        cbf_scan(t, Array::get(args, ai))
+        ai = ai + 1
+      }
+    },
+    _ => {
+      let mark = expr_children_push(expr)
+      let top = expr_children_top()
+      let mut ci = mark
+      while ci < top {
+        cbf_scan(t, expr_child_at(ci))
+        ci = ci + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+}
+
+fn cbf_scan_stmt(t: CbfTable, stmt: Stmt) -> Unit {
+  match stmt {
+    SLet(_, _, _, _, e) => cbf_scan(t, e),
+    SLetMut(_, _, e) => cbf_scan(t, e),
+    SLetPat(_, e) => cbf_scan(t, e),
+    STest(_, e) => cbf_scan(t, e),
+    SBench(_, e) => cbf_scan(t, e),
+    SExample(_, e) => cbf_scan(t, e),
+    SExpr(e) => cbf_scan(t, e),
+    SFnDecl(_, _, e, reqs, enss) => {
+      cbf_scan(t, e)
+      let mut ri = 0
+      while ri < Array::length(reqs) {
+        cbf_scan(t, Array::get(reqs, ri))
+        ri = ri + 1
+      }
+      let mut ei = 0
+      while ei < Array::length(enss) {
+        cbf_scan(t, Array::get(enss, ei))
+        ei = ei + 1
+      }
+    },
+    SModule(_, _, body) => {
+      let mut bi = 0
+      while bi < Array::length(body) {
+        cbf_scan_stmt(t, Array::get(body, bi))
+        bi = bi + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+//# Binder check
+
+fn cbf_pat_binds(pat: Pat, name: String) -> Bool {
+  match pat {
+    PBind(n) => n == name,
+    PCtor(_, pats) => cbf_pats_bind(pats, name),
+    PTuple(pats) => cbf_pats_bind(pats, name),
+    POr(a, b) => cbf_pat_binds(a, name) || cbf_pat_binds(b, name),
+    PStruct(_, fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, p) = Array::get(fields, i)
+        found = cbf_pat_binds(p, name)
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn cbf_pats_bind(pats: Array[Pat], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pats) && !found {
+    found = cbf_pat_binds(Array::get(pats, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn cbf_arms_bind(arms: Array[(Pat, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) && !found {
+    let (p, body) = Array::get(arms, i)
+    found = cbf_pat_binds(p, name) || cbf_binds(body, name)
+    i = i + 1
+  }
+  found
+}
+
+fn cbf_children_bind(expr: Expr, name: String) -> Bool {
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut ci = mark
+  let mut found = false
+  while ci < top && !found {
+    found = cbf_binds(expr_child_at(ci), name)
+    ci = ci + 1
+  }
+  expr_children_pop(mark)
+  found
+}
+
+/// Does `expr` bind or assign `name` anywhere (any depth, lambdas included)?
+/// True refuses the substitution: the parameter's reads could then belong to
+/// an inner binding of the same spelling.
+fn cbf_binds(expr: Expr, name: String) -> Bool {
+  match expr {
+    ELet(n, _, _, _) => n == name || cbf_children_bind(expr, name),
+    ELetRec(n, _, _) => n == name || cbf_children_bind(expr, name),
+    ELetMut(n, _, _, _) => n == name || cbf_children_bind(expr, name),
+    EAssign(n, _, _) => n == name || cbf_children_bind(expr, name),
+    EAssignOp(n, _, _, _) => n == name || cbf_children_bind(expr, name),
+    EMatch(scr, arms) => cbf_binds(scr, name) || cbf_arms_bind(arms, name),
+    EHandle(body, arms) => cbf_binds(body, name) || cbf_arms_bind(arms, name),
+    ELoop(params, body) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (n, init) = Array::get(params, i)
+        found = n == name || cbf_binds(init, name)
+        i = i + 1
+      }
+      found || cbf_binds(body, name)
+    },
+    EForIn(n, idx, iter, body) => n == name || (match idx {
+      Some(ix) => ix == name,
+      None => false
+    }) || cbf_binds(iter, name) || cbf_binds(body, name),
+    EFn(_, _, params, _, _, body) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(params) && !found {
+        let (pn, _) = Array::get(params, i)
+        found = pn == name
+        i = i + 1
+      }
+      found || cbf_binds(body, name)
+    },
+    _ => cbf_children_bind(expr, name)
+  }
+}
+
+//# Substitution and folding
+
+/// Rewrite every read of `name` to `EBool(value)` and fold what the literal
+/// decides. `count` (a one-cell array) is bumped once per read replaced, so
+/// the caller knows whether the body changed at all. Only the shapes below
+/// fold; everything else is rebuilt with folded children, so a body with no
+/// read of `name` comes back structurally identical.
+fn cbf_subst(expr: Expr, name: String, value: Bool, count: Array[Int]) -> Expr {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EStringInterp(_) => expr,
+    EIdent(n, _) => if n == name {
+      Array::set(count, 0, Array::get(count, 0) + 1)
+      EBool(value)
+    } else {
+      expr
+    },
+    ETuple(items) => ETuple(for it in items {
+      cbf_subst(it, name, value, count)
+    }),
+    EArray(items) => EArray(for it in items {
+      cbf_subst(it, name, value, count)
+    }),
+    ERecord(rn, fields, targs) => ERecord(rn, for f in fields {
+      let (fname, v) = f
+      (fname, cbf_subst(v, name, value, count))
+    }, targs),
+    EIf(c, t, e) => {
+      let c2 = cbf_subst(c, name, value, count)
+      let t2 = cbf_subst(t, name, value, count)
+      let e2 = cbf_subst(e, name, value, count)
+      match c2 {
+        EBool(true) => t2,
+        EBool(false) => e2,
+        _ => EIf(c2, t2, e2)
+      }
+    },
+    ELet(n, v, b, soff) => ELet(n, cbf_subst(v, name, value, count), cbf_subst(b, name, value, count), soff),
+    ELetRec(n, v, b) => ELetRec(n, cbf_subst(v, name, value, count), cbf_subst(b, name, value, count)),
+    ELetMut(n, v, b, soff) => ELetMut(n, cbf_subst(v, name, value, count), cbf_subst(b, name, value, count), soff),
+    EAssign(n, v, b) => EAssign(n, cbf_subst(v, name, value, count), cbf_subst(b, name, value, count)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, cbf_subst(v, name, value, count), cbf_subst(b, name, value, count)),
+    ESeq(a, b) => ESeq(cbf_subst(a, name, value, count), cbf_subst(b, name, value, count)),
+    EMatch(s, arms) => EMatch(cbf_subst(s, name, value, count), for a in arms {
+      let (p, e) = a
+      (p, cbf_subst(e, name, value, count))
+    }),
+    EHandle(s, arms) => EHandle(cbf_subst(s, name, value, count), for a in arms {
+      let (p, e) = a
+      (p, cbf_subst(e, name, value, count))
+    }),
+    EWhile(c, b) => EWhile(cbf_subst(c, name, value, count), cbf_subst(b, name, value, count)),
+    ELoop(params, b) => ELoop(for pr in params {
+      let (n, init) = pr
+      (n, cbf_subst(init, name, value, count))
+    }, cbf_subst(b, name, value, count)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, cbf_subst(it, name, value, count), cbf_subst(b, name, value, count)),
+    ECall(callee, args, off) => ECall(cbf_subst(callee, name, value, count), for a in args {
+      cbf_subst(a, name, value, count)
+    }, off),
+    EBinOp(op, l, r, boff) => {
+      let l2 = cbf_subst(l, name, value, count)
+      let r2 = cbf_subst(r, name, value, count)
+      if op == "&&" {
+        match l2 {
+          EBool(true) => r2,
+          EBool(false) => EBool(false),
+          _ => match r2 {
+            EBool(true) => l2,
+            _ => EBinOp(op, l2, r2, boff)
+          }
+        }
+      } else if op == "||" {
+        match l2 {
+          EBool(true) => EBool(true),
+          EBool(false) => r2,
+          _ => match r2 {
+            EBool(false) => l2,
+            _ => EBinOp(op, l2, r2, boff)
+          }
+        }
+      } else {
+        EBinOp(op, l2, r2, boff)
+      }
+    },
+    EUnaryOp(op, e) => {
+      let e2 = cbf_subst(e, name, value, count)
+      if op == "!" {
+        match e2 {
+          EBool(b) => EBool(!b),
+          _ => EUnaryOp(op, e2)
+        }
+      } else {
+        EUnaryOp(op, e2)
+      }
+    },
+    EFn(tp, bounds, params, ret, eff, body) => EFn(tp, bounds, params, ret, eff, cbf_subst(body, name, value, count)),
+    EDot(e, field, off, fdoff) => EDot(cbf_subst(e, name, value, count), field, off, fdoff),
+    ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, cbf_subst(v, name, value, count)),
+    EReturn(e) => EReturn(cbf_subst(e, name, value, count)),
+    EBreak(opt) => match opt {
+      Some(v) => EBreak(Some(cbf_subst(v, name, value, count))),
+      None => EBreak(None)
+    },
+    EContinue(args) => EContinue(for a in args {
+      cbf_subst(a, name, value, count)
+    }),
+    EMap(fields) => EMap(for f in fields {
+      let (k, v) = f
+      (k, cbf_subst(v, name, value, count))
+    }),
+    ESpread(e) => ESpread(cbf_subst(e, name, value, count))
+  }
+}
+
+//# Driver
+
+fn cbf_method_named(t: CbfTable, name: String) -> Bool {
+  let mut hit = match MutMap::get(t.dot_methods, name) {
+    Some(_) => true,
+    None => false
+  }
+  if hit {
+    true
+  } else {
+    // A method binding `Type::m` is called as `x.m(..)`: refuse when its
+    // last segment was seen as a dot-call method.
+    let sep = String::last_index_of(name, "::")
+    if sep >= 0 {
+      let tail = String::substring(name, sep + 2, String::length(name))
+      match MutMap::get(t.dot_methods, tail) {
+        Some(_) => true,
+        None => false
+      }
+    } else {
+      false
+    }
+  }
+}
+
+/// One round: index, scan, substitute. The number of parameter reads
+/// replaced (0 = the program is at its fixpoint).
+fn cbf_round(stmts: Array[Stmt], external_names: Array[String], wat_texts: Array[String]) -> Int {
+  let t = cbf_collect_candidates(stmts, external_names)
+  let mut wi = 0
+  while wi < Array::length(wat_texts) {
+    cbf_note_wat(t, Array::get(wat_texts, wi))
+    wi = wi + 1
+  }
+  let mut si = 0
+  while si < Array::length(stmts) {
+    cbf_scan_stmt(t, Array::get(stmts, si))
+    si = si + 1
+  }
+  let count = [0]
+  let mut ci = 0
+  while ci < Array::length(t.names) {
+    if Array::get(t.bad, ci) || cbf_method_named(t, Array::get(t.names, ci)) {
+      ()
+    } else {
+      let base = Array::get(t.base, ci)
+      let arity = Array::get(t.arity, ci)
+      let si2 = Array::get(t.stmt_idx, ci)
+      match Array::get(stmts, si2) {
+        SLet(exported, is_rec, fname, ann, value) => match value {
+          EFn(tp, bounds, params, ret, eff, body) => {
+            let mut body2 = body
+            let mut pi = 0
+            while pi < arity {
+              let st = Array::get(t.state, base + pi)
+              if st == 1 || st == 2 {
+                let (pname, _) = Array::get(params, pi)
+                if cbf_binds(body2, pname) {
+                  ()
+                } else {
+                  body2 = cbf_subst(body2, pname, st == 1, count)
+                }
+              } else {
+                ()
+              }
+              pi = pi + 1
+            }
+            Array::set(stmts, si2, SLet(exported, is_rec, fname, ann, EFn(tp, bounds, params, ret, eff, body2)))
+          },
+          _ => ()
+        },
+        _ => ()
+      }
+    }
+    ci = ci + 1
+  }
+  Array::get(count, 0)
+}
+
+/// Fold the constant Bool parameters of `stmts` in place (see the header).
+/// `external_names` are callable from outside the program (the entry);
+/// `wat_texts` are the inline-wasm bodies the prelude extracted. Returns the
+/// total number of parameter reads replaced; 0 means nothing changed.
+export fn fold_const_bool_params(stmts: Array[Stmt], external_names: Array[String], wat_texts: Array[String]) -> Int {
+  let mut total = 0
+  let mut rounds = 0
+  let mut again = true
+  while again && rounds < 16 {
+    let n = cbf_round(stmts, external_names, wat_texts)
+    total = total + n
+    again = n > 0
+    rounds = rounds + 1
+  }
+  total
+}

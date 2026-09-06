@@ -1,0 +1,418 @@
+//# #2497 unit 2: constant Bool parameters
+//
+// `fold_const_bool_params` rewrites the reads of a top-level function's Bool
+// parameter to the literal when every call in the program passes that same
+// literal, and folds the `if` it decided. Each refusal below is a hole a
+// caller could fall through; every one is pinned on its own so a widened
+// refusal or a lost one shows up as a named failure, not as a size delta.
+
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr, fold_const_bool_params
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/compiler/codegen/wasi {
+  compile_wasi_module_linked_impl
+}
+
+import @vibe/compiler/codegen/common_base {
+  codegen_body_cache_new, empty_dbg_prov
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# AST builders
+
+fn bool_ty() -> Option[TypeExpr] {
+  Some(TyName("Bool"))
+}
+
+fn int_ty() -> Option[TypeExpr] {
+  Some(TyName("Int"))
+}
+
+fn no_ty() -> Option[TypeExpr] {
+  None
+}
+
+fn call0(name: String) -> Expr {
+  ECall(EIdent(name, -1), array_empty(), -1)
+}
+
+fn call1(name: String, arg: Expr) -> Expr {
+  ECall(EIdent(name, -1), [arg], -1)
+}
+
+/// `fn <name>(<params>) { <body> }` as codegen sees it (the parser lowers a
+/// declaration to `SLet(exported, true, name, None, EFn(..))`).
+fn fn_stmt(exported: Bool, name: String, params: Array[(String, Option[TypeExpr])], body: Expr) -> Stmt {
+  let tps: Array[String] = []
+  let bounds: Array[(String, Array[String])] = []
+  SLet(exported, true, name, no_ty(), EFn(tps, bounds, params, no_ty(), None, body))
+}
+
+/// `fn work(flag: Bool) -> Int { if flag { helper() } else { 1 } }`
+fn work_stmt(exported: Bool) -> Stmt {
+  fn_stmt(exported, "work", [("flag", bool_ty())], EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+}
+
+fn helper_stmt() -> Stmt {
+  fn_stmt(false, "helper", array_empty(), EInt(7))
+}
+
+fn main_stmt(body: Expr) -> Stmt {
+  fn_stmt(false, "main", array_empty(), body)
+}
+
+fn no_wat() -> Array[String] {
+  array_empty()
+}
+
+/// The body of the top-level `fn <name>` in `stmts`, or `EUnit` when absent.
+fn body_of(stmts: Array[Stmt], name: String) -> Expr {
+  let mut found = EUnit
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, body)) => if n == name {
+        found = body
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn is_int_one(e: Expr) -> Bool {
+  match e {
+    EInt(1) => true,
+    _ => false
+  }
+}
+
+fn is_if_on_flag(e: Expr) -> Bool {
+  match e {
+    EIf(EIdent("flag", _), _, _) => true,
+    _ => false
+  }
+}
+
+//# Folding
+
+test "every call passes false: the read becomes the literal and the if folds to the else arm" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(call1("work", EBool(false)))
+  ]
+  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  assert(eq(n, 1))
+  assert(is_int_one(body_of(stmts, "work")))
+}
+
+test "every call passes true: the if folds to the then arm" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(call1("work", EBool(true)))
+  ]
+  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  assert(eq(n, 1))
+  match body_of(stmts, "work") {
+    ECall(EIdent("helper", _), _, _) => (),
+    _ => assert(false)
+  }
+}
+
+test "a wrapper that forwards its parameter is folded first, then its callee: fixpoint" {
+  // outer(flag) = inner(flag); main = outer(false). Round 1 fixes outer's
+  // flag (main passes false); round 2 sees inner(false) and fixes inner's.
+  let inner = fn_stmt(false, "inner", [("flag", bool_ty())], EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let outer = fn_stmt(false, "outer", [("flag", bool_ty())], call1("inner", EIdent("flag", -1)))
+  let stmts = [
+    helper_stmt(),
+    inner,
+    outer,
+    main_stmt(call1("outer", EBool(false)))
+  ]
+  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  assert(eq(n, 2))
+  assert(is_int_one(body_of(stmts, "inner")))
+  match body_of(stmts, "outer") {
+    ECall(EIdent("inner", _), args, _) => match Array::get(args, 0) {
+      EBool(false) => (),
+      _ => assert(false)
+    },
+    _ => assert(false)
+  }
+}
+
+test "`!flag && other` with flag = false leaves exactly `other` as the condition" {
+  let body = EIf(EBinOp("&&", EUnaryOp("!", EIdent("flag", -1)), EIdent("other", -1), -1), call0("helper"), EInt(1))
+  let work = fn_stmt(false, "work", [("flag", bool_ty()), ("other", bool_ty())], body)
+  let stmts = [
+    helper_stmt(),
+    work,
+    main_stmt(ECall(EIdent("work", -1), [EBool(false), call0("read_other")], -1))
+  ]
+  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  assert(eq(n, 1))
+  match body_of(stmts, "work") {
+    EIf(EIdent("other", _), ECall(_, _, _), EInt(1)) => (),
+    _ => assert(false)
+  }
+}
+
+test "`flag || other` with flag = true folds the whole condition to true" {
+  let body = EIf(EBinOp("||", EIdent("flag", -1), call0("side_effect"), -1), call0("helper"), EInt(1))
+  let work = fn_stmt(false, "work", [("flag", bool_ty())], body)
+  let stmts = [helper_stmt(), work, main_stmt(call1("work", EBool(true)))]
+  let _ = fold_const_bool_params(stmts, ["main"], no_wat())
+  match body_of(stmts, "work") {
+    ECall(EIdent("helper", _), _, _) => (),
+    _ => assert(false)
+  }
+}
+
+test "a literal on the RIGHT of && keeps the left operand: it may have effects" {
+  let body = EIf(EBinOp("&&", call0("probe"), EIdent("flag", -1), -1), call0("helper"), EInt(1))
+  let work = fn_stmt(false, "work", [("flag", bool_ty())], body)
+  let stmts = [helper_stmt(), work, main_stmt(call1("work", EBool(false)))]
+  let _ = fold_const_bool_params(stmts, ["main"], no_wat())
+  // `probe() && false` is not folded to `false`: probe() must still run.
+  match body_of(stmts, "work") {
+    EIf(EBinOp("&&", ECall(EIdent("probe", _), _, _), EBool(false), _), _, _) => (),
+    _ => assert(false)
+  }
+}
+
+//# Refusals
+
+test "calls that disagree on the literal leave the body untouched" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(EBinOp("+", call1("work", EBool(false)), call1("work", EBool(true)), -1))
+  ]
+  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  assert(eq(n, 0))
+  assert(is_if_on_flag(body_of(stmts, "work")))
+}
+
+test "a call passing a non-literal refuses" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(call1("work", call0("read_flag")))
+  ]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(is_if_on_flag(body_of(stmts, "work")))
+}
+
+test "a function referenced as a value refuses: that call is not visible" {
+  // main = { let g = work; g(true) } -- the literal here must not count.
+  let body = ELet("g", EIdent("work", -1), call1("g", EBool(true)), -1)
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(ESeq(call1("work", EBool(false)), body))
+  ]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(is_if_on_flag(body_of(stmts, "work")))
+}
+
+test "an exported function refuses: a host may call it with anything" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(true),
+    main_stmt(call1("work", EBool(false)))
+  ]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(is_if_on_flag(body_of(stmts, "work")))
+}
+
+test "a name the caller lists as external refuses" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(call1("work", EBool(false)))
+  ]
+  assert(eq(fold_const_bool_params(stmts, ["main", "work"], no_wat()), 0))
+  assert(is_if_on_flag(body_of(stmts, "work")))
+}
+
+test "a body that rebinds the parameter's name refuses" {
+  // work(flag) = { let flag = read(); if flag { helper() } else { 1 } }
+  let body = ELet("flag", call0("read_flag"), EIf(EIdent("flag", -1), call0("helper"), EInt(1)), -1)
+  let work = fn_stmt(false, "work", [("flag", bool_ty())], body)
+  let stmts = [helper_stmt(), work, main_stmt(call1("work", EBool(false)))]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  match body_of(stmts, "work") {
+    ELet("flag", _, EIf(EIdent("flag", _), _, _), _) => (),
+    _ => assert(false)
+  }
+}
+
+test "a lambda parameter of the same name refuses" {
+  let lam = EFn(array_empty(), array_empty(), [("flag", bool_ty())], no_ty(), None, EIdent("flag", -1))
+  let body = ESeq(ELet("f", lam, EUnit, -1), EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let work = fn_stmt(false, "work", [("flag", bool_ty())], body)
+  let stmts = [helper_stmt(), work, main_stmt(call1("work", EBool(false)))]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+}
+
+test "a WAT body that names the function refuses" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(call1("work", EBool(false)))
+  ]
+  assert(eq(fold_const_bool_params(stmts, ["main"], [
+    "(call $work (i64.const 0))"
+  ]), 0))
+  assert(is_if_on_flag(body_of(stmts, "work")))
+}
+
+test "a non-Bool parameter is never folded, even when every call agrees" {
+  let work = fn_stmt(false, "work", [("n", int_ty())], EIf(EBinOp("==", EIdent("n", -1), EInt(1), -1), call0("helper"), EInt(1)))
+  let stmts = [helper_stmt(), work, main_stmt(call1("work", EInt(1)))]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+}
+
+test "an arity mismatch or a labeled argument refuses" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(ESeq(call1("work", EBool(false)), ECall(EIdent("work", -1), array_empty(), -1)))
+  ]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  let labeled = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(call1("work", ELabeledArg("flag", "", EBool(false))))
+  ]
+  assert(eq(fold_const_bool_params(labeled, ["main"], no_wat()), 0))
+}
+
+test "a method-style call site refuses the same-named function" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(ESeq(call1("work", EBool(false)), ECall(EDot(call0("recv"), "work", -1, -1), [
+      EBool(true)
+    ], -1)))
+  ]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+}
+
+test "a generic function refuses" {
+  let params = [("flag", bool_ty())]
+  let generic = SLet(false, true, "work", no_ty(), EFn(["T"], array_empty(), params, no_ty(), None, EIf(EIdent("flag", -1), call0("helper"), EInt(1))))
+  let stmts = [helper_stmt(), generic, main_stmt(call1("work", EBool(false)))]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+}
+
+test "a name declared twice refuses both" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    work_stmt(false),
+    main_stmt(call1("work", EBool(false)))
+  ]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+}
+
+test "running the pass again on its own output changes nothing" {
+  let stmts = [
+    helper_stmt(),
+    work_stmt(false),
+    main_stmt(call1("work", EBool(false)))
+  ]
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 1))
+  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+}
+
+//# End to end: the linked lane
+
+fn leb_at(b: Bytes, p: Int) -> (Int, Int) {
+  let mut r = 0
+  let mut shift = 0
+  let mut q = p
+  let mut done = false
+  while !done {
+    let x = Bytes::get(b, q)
+    q = q + 1
+    r = r|((x&127)<<shift)
+    shift = shift + 7
+    if x < 128 {
+      done = true
+    } else {
+      ()
+    }
+  }
+  (r, q)
+}
+
+/// Entry count of the function section (id 3), or -1 without one.
+fn function_count(m: Bytes) -> Int {
+  let mut p = 8
+  let mut found = 0 - 1
+  while found < 0 && p < Bytes::length(m) {
+    let sid = Bytes::get(m, p)
+    let (n, body) = leb_at(m, p + 1)
+    if sid == 3 {
+      let (c, _) = leb_at(m, body)
+      found = c
+    } else {
+      ()
+    }
+    p = body + n
+  }
+  found
+}
+
+/// Compile `src` through the entry-rooted linked lane with late DCE on --
+/// the flags `compile_file_wasi_linked_artifacts` passes -- with `coverage`
+/// as given.
+fn linked_functions_cov(src: String, coverage: Bool) -> Int with Exception {
+  let stmts = parse_program(lex(src))
+  let wasm = compile_wasi_module_linked_impl(stmts, "main", array_empty(), array_empty(), false, false, coverage, false, false, false, true, empty_dbg_prov(), codegen_body_cache_new(), codegen_body_cache_new(), 0, 0 - 1)
+  function_count(wasm)
+}
+
+fn linked_functions(src: String) -> Int with Exception {
+  linked_functions_cov(src, false)
+}
+
+test "the linked lane drops a helper only the folded arm called" {
+  let shared = "fn helper() -> Int { 7 }\nfn work(flag: Bool) -> Int { if flag { helper() } else { 1 } }\n"
+  // Control: the two literals disagree, so `work` keeps its `if` and
+  // `helper` keeps its call site.
+  let control = linked_functions(String::concat(shared, "fn main() -> Int { work(false) + work(true) }\n"))
+  // Folded: every call passes `false`; the then arm and, with it, the only
+  // call of `helper` are gone, and the module pruner drops the function.
+  let folded = linked_functions(String::concat(shared, "fn main() -> Int { work(false) }\n"))
+  assert(control > 0)
+  assert(eq(folded, control - 1))
+}
+
+test "a coverage build keeps the arm: branch sites are counted from the source as written" {
+  // Same two programs under `coverage = true`. Folding here would remove a
+  // branch site and report a higher branch rate for the same program, so
+  // the pass stays off and `helper` keeps its call site in both.
+  let shared = "fn helper() -> Int { 7 }\nfn work(flag: Bool) -> Int { if flag { helper() } else { 1 } }\n"
+  let control = linked_functions_cov(String::concat(shared, "fn main() -> Int { work(false) + work(true) }\n"), true)
+  let same_literal = linked_functions_cov(String::concat(shared, "fn main() -> Int { work(false) }\n"), true)
+  assert(control > 0)
+  assert(eq(same_literal, control))
+}

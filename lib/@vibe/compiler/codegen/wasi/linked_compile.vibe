@@ -20,6 +20,7 @@ import @vibe/compiler/core {
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  fold_const_bool_params,
   is_exception_effect_name,
   leb128_encode_s64,
   leb128_encode_u32,
@@ -5252,9 +5253,40 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // compile therefore neither records cross-compile guards nor consumes a
   // persisted cache. The `vibe test` lane (`__no_entry__`) never prunes and
   // keeps full reuse.
+  //
+  // #2497 unit 2: before pruning, fold the Bool parameters every call in the
+  // program fixes to one literal (`fold_const_bool_params`, core). The lane
+  // switches of this very function are the motivating case: the compile-only
+  // artifact passes `false` for every instrumented lane, so their arms fold
+  // away here and the helpers only they called lose their last call site,
+  // which `lc_pf_prune_module` below then removes. Gated exactly like the
+  // prune: the pass reasons about EVERY call site, so it needs the
+  // whole-program, entry-rooted compile, and a library (`library_mode`)
+  // exports every function, so no parameter of one is constant. The
+  // instrumented lanes are excluded the same way `lc_pf_prune_module` is
+  // (Codex review on #2569): coverage counts branch sites from the source
+  // `if`s, so folding one away would shrink the denominator and report a
+  // higher branch rate for the same program; a debug-break build maps
+  // interior lines onto the statements it emits, and a folded arm has
+  // none. Those builds are about observing the program as written, so
+  // they get it as written. The inline-wasm texts go along because the
+  // prelude has already replaced the `%wasm` marker bodies with a neutral
+  // literal, so a `(call $f ..)` in one of them is invisible to the pass's
+  // own scan.
+  //
+  // A folded body no longer matches its source text, so a fold counts as a
+  // prune for the body-cache guards below (`late_dce_pruned`): a replayed
+  // body from a compile whose other call sites passed a different literal
+  // would be silently wrong, and refusing the cache for that compile is the
+  // honest answer.
   let mut late_dce_pruned = false
   if enable_late_dce && late_dce_has_entry {
     let late_dce_pre_len = Array::length(stmts)
+    let folded_param_reads = if library_mode || coverage || debug_trace || debug_break || rc_shadow {
+      0
+    } else {
+      fold_const_bool_params(stmts, [entry_name], iw_wats)
+    }
     let dce_pruned = dce_stmts(stmts, late_dce_roots)
     // `stmts` is threaded onward by reference, so the pruned program has to
     // replace its contents rather than rebind the name. `dce_stmts` builds a
@@ -5265,7 +5297,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
       Array::push(stmts, Array::get(dce_pruned, dce_i))
       dce_i = dce_i + 1
     }
-    late_dce_pruned = Array::length(stmts) != late_dce_pre_len
+    late_dce_pruned = Array::length(stmts) != late_dce_pre_len || folded_param_reads > 0
   } else {
     ()
   }
