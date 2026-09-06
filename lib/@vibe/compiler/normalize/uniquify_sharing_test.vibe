@@ -1,0 +1,110 @@
+import @vibe/compiler/core {
+  Expr, Pat
+}
+
+import ./normalize.vibe {
+  uniquify_shadowed_bindings_fresh
+}
+
+// #2386: the walk constructs a node only where a rename happened below it and
+// hands back the node it was given elsewhere; the renames themselves are
+// unchanged. These pin the rename in every position the walk reaches (a bare
+// reference, a call argument, a binary operand, a match scrutinee, an arm's
+// binder and body, a lambda body), and a tree with nothing to rename.
+
+fn fresh_counter() -> Array[Int] {
+  [0]
+}
+
+fn ident_name(e: Expr) -> String {
+  match e {
+    EIdent(n, _) => n,
+    _ => "?"
+  }
+}
+
+test "a shadowed name is renamed in every position under the shadowing let" {
+  let arms: Array[(Pat, Expr)] = [(PBind("x"), EIdent("x", 0))]
+  let uses = ETuple([
+    EIdent("x", 0),
+    ECall(EIdent("f", 0), [EIdent("x", 0)], 0),
+    EBinOp("+", EIdent("x", 0), EIdent("y", 0), 0),
+    EMatch(EIdent("x", 0), arms),
+    EFn([], [], [("z", None)], None, None, EIdent("x", 0))
+  ])
+  let expr = ELet("x", EInt(1), ELet("x", EInt(2), uses, 0), 0)
+  match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+    ELet(outer, _, ELet(inner, _, ETuple(items), _), _) => {
+      inspect(outer, content = "x")
+      inspect(inner, content = "__shadow_0_x")
+      let names = []
+      Array::push(names, ident_name(Array::get(items, 0)))
+      match Array::get(items, 1) {
+        ECall(callee, args, _) => {
+          Array::push(names, ident_name(callee))
+          Array::push(names, ident_name(Array::get(args, 0)))
+        },
+        _ => Array::push(names, "?")
+      }
+      match Array::get(items, 2) {
+        EBinOp(_, l, r, _) => {
+          Array::push(names, ident_name(l))
+          Array::push(names, ident_name(r))
+        },
+        _ => Array::push(names, "?")
+      }
+      match Array::get(items, 3) {
+        EMatch(s, rarms) => {
+          Array::push(names, ident_name(s))
+          let (p, e) = Array::get(rarms, 0)
+          match p {
+            PBind(pn) => Array::push(names, pn),
+            _ => Array::push(names, "?")
+          }
+          Array::push(names, ident_name(e))
+        },
+        _ => Array::push(names, "?")
+      }
+      match Array::get(items, 4) {
+        EFn(_, _, params, _, _, body) => {
+          let (pn, _) = Array::get(params, 0)
+          Array::push(names, pn)
+          Array::push(names, ident_name(body))
+        },
+        _ => Array::push(names, "?")
+      }
+      inspect(String::join(names, " "), content = "__shadow_0_x f __shadow_0_x __shadow_0_x y __shadow_0_x __shadow_1_x __shadow_1_x z __shadow_0_x")
+    },
+    _ => inspect("shape", content = "let x; let x; tuple")
+  }
+}
+
+test "a tree with nothing to rename keeps every name" {
+  let expr = ELet("a", EInt(1), ECall(EIdent("g", 0), [
+    EIdent("a", 0),
+    EIdent("b", 0)
+  ], 0), 0)
+  match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+    ELet(n, _, ECall(callee, args, _), _) => {
+      inspect(String::join([
+        n,
+        ident_name(callee),
+        ident_name(Array::get(args, 0)),
+        ident_name(Array::get(args, 1))
+      ], " "), content = "a g a b")
+    },
+    _ => inspect("shape", content = "let a; call")
+  }
+}
+
+test "a shadowing binder with no reference is still renamed" {
+  // The binder is the only rename here: nothing below it reads the name, so
+  // the let node must be rebuilt on the binder's own account.
+  let expr = ELet("x", EInt(1), ELet("x", EInt(2), EInt(0), 0), 0)
+  match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+    ELet(outer, _, ELet(inner, _, _, _), _) => {
+      inspect(String::join([outer, inner], " "), content = "x __shadow_0_x")
+    },
+    _ => inspect("shape", content = "let x; let x; 0")
+  }
+}
