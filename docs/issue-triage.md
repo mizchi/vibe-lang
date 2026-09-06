@@ -107,8 +107,8 @@ first, then take the leftover.
 | #2492 | build-time configuration, `VIBE_*` → `#cfg` → #2497, #2498, #2499 |
 | #2493 | a compile-only artifact at or under 1.0 MB → #2500 (blocker), #2501 – #2506 |
 | #2494 | compiler memory, 128 MB per unit of work → #2509 (blocker), #2507, #2508, #2510 |
-| #2340 | SIMD-first data structures → #2347, #2348 |
-| #2002 | documentation by audience |
+| #2340 | SIMD-first data structures → #2347 (#2348 closed: both inline-wasm halves landed in #2399 / #2420) |
+| #2002 | documentation by audience — **no sub-issues**, so nothing here is startable; Phases 0-1 already landed as `docs/README.md` without being tracked |
 | #2001 | retire the scripts layer |
 
 ### Everything else
@@ -122,7 +122,17 @@ typed-lowering tables empty; both end at the same statement-merge shape, so do
 them together), **#2442** (bare-name builtin value forms, blocked only on
 teaching the lambda-site planner scope), **#2555** (delete the sidecar codec's
 hand-rolled renderer and unary counts — the bug they route around was a
-misdiagnosis and is closed).
+misdiagnosis and is closed), **#2219** (its "after the next bootstrap bump"
+precondition has fired — the committed seed emits the assert marker, so the
+legacy block recognizer can go).
+
+Two open issues **conflict** and want a decision before either is started:
+**#2498** puts the compiler's telemetry and trace sinks behind `#cfg(telemetry)`
+and is done when the signatures carrying them get shorter, while **#1953** puts
+the same sinks behind a `Log` effect whose handler is a parameter. Landing
+either first invalidates the other's plan. #1953's Config half — the
+one-element mutable configuration cells and their implicit setter order — does
+not overlap and stands on its own.
 
 ## How to use sub-issues
 
