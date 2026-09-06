@@ -89,4 +89,9 @@ if [ "$vibe_caller_set_stack" -eq 0 ] && [ "${VIBE_NODE_STACK_SIZE}" -gt 1200 ] 
   node_flags+=("--stack-size=${VIBE_NODE_STACK_SIZE}")
 fi
 
-exec node "${node_flags[@]}" "$PROJECT_ROOT/scripts/wasm_vibe_host_runner.js" "$@"
+# VIBE_NODE_EXTRA_FLAGS is appended verbatim (no probe, no cache): flags a
+# caller knows its node accepts, such as --cpu-prof for scripts/profile_compile.sh,
+# which needs the perf flags above on the profiled process too -- a direct
+# `node --cpu-prof` skips them and profiles a compiler V8 never inlines.
+# shellcheck disable=SC2086
+exec node "${node_flags[@]}" ${VIBE_NODE_EXTRA_FLAGS:-} "$PROJECT_ROOT/scripts/wasm_vibe_host_runner.js" "$@"

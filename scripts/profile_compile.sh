@@ -50,10 +50,18 @@ echo "[profile-compile] input=$INPUT"
 echo "[profile-compile] out_dir=$OUT_DIR"
 
 start_ns=$(date +%s%N)
+# Through the runner wrapper, not a bare `node`: the wrapper adds the wasm
+# perf flags every other lane runs with (--experimental-wasm-inlining above
+# all -- V8 leaves its wasm-to-wasm inliner OFF for MVP modules unless asked).
+# Profiled without it, the small runtime helpers show up as calls V8 would
+# have inlined: measured 2026-09-06 on the same cold compile, __rt_arr_get
+# 415 -> 156 ms self, __rt_eq 291 -> 114 ms, __rt_arr_len 148 -> 0 ms,
+# wall 7.14 -> 6.55 s. Those rows were the profile's artifact, not the
+# compiler's cost.
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_WASM_MEMORY_STATS=1 \
-  node --cpu-prof --cpu-prof-dir="$OUT_DIR" --cpu-prof-name="$PROFILE_NAME" \
-  scripts/wasm_vibe_host_runner.js --invoke cli_main "$STAGE2" \
+  VIBE_NODE_EXTRA_FLAGS="--cpu-prof --cpu-prof-dir=$OUT_DIR --cpu-prof-name=$PROFILE_NAME" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
   "$INPUT" "$OUT_WASM" __no_entry__
 end_ns=$(date +%s%N)
 echo "[profile-compile] wall_ms=$(( (end_ns - start_ns) / 1000000 ))"
