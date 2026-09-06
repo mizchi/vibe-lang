@@ -34,11 +34,16 @@ import @vibe/ast {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 import @vibe/compiler/normalize {
-  desugar_inspect_calls, desugar_trait_dicts_with_typed_eq, lift_match_scrutinees, unbox_tuple_loop_params, uniquify_shadowed_bindings_fresh
+  desugar_inspect_calls,
+  desugar_trait_dicts_module,
+  desugar_trait_dicts_with_typed_eq,
+  lift_match_scrutinees,
+  unbox_tuple_loop_params,
+  uniquify_shadowed_bindings_fresh
 }
 
 import @vibe/compiler/perceus {
@@ -3739,6 +3744,179 @@ fn oracle_head(s: String) -> String {
   }
 }
 
+/// #2388: a module's dependency interface as the per-module pass sees it --
+/// what another file contributes without its bodies being compiled here: type,
+/// trait and suberror declarations, bounded-generic function definitions
+/// (their signature drives witness threading at a call site) and explicit
+/// `T::op` definitions (their presence suppresses a derive).
+fn oracle_is_interface_stmt(s: Stmt) -> Bool {
+  match s {
+    SEnum(_, _, _, _, _) => true,
+    SStruct(_, _, _, _, _, _) => true,
+    STypeAlias(_, _, _, _) => true,
+    SSuberror(_, _, _) => true,
+    STrait(_, _, _, _, _, _) => true,
+    SImpl(_, _, _, _) => true,
+    SLet(_, _, n, _, v) => if String::index_of(n, "::") >= 0 {
+      true
+    } else {
+      match v {
+        EFn(_, bounds, _, _, _, _) => Array::length(bounds) > 0,
+        _ => false
+      }
+    },
+    _ => false
+  }
+}
+
+/// Whether two renderings differ only at a generated fresh-name counter
+/// (`__teq_l12_0` vs `__teq_l2_0`, `__me_ks22`, `_exn_payload100` vs
+/// `_exn_payload10`): the first differing byte is a digit on both sides, or
+/// one side's digit run ended, right after a `__`- or `_exn_payload`-prefixed
+/// name. Anything else is a real content difference.
+fn oracle_rename_only(rw: String, rs: String) -> Bool {
+  let lim = if String::length(rw) < String::length(rs) {
+    String::length(rw)
+  } else {
+    String::length(rs)
+  }
+  let mut p = 0
+  while p < lim && String::char_code_at(rw, p) == String::char_code_at(rs, p) {
+    p = p + 1
+  }
+  if p == String::length(rw) && p == String::length(rs) {
+    true
+  } else {
+    let from = if p > 14 {
+      p - 14
+    } else {
+      0
+    }
+    let window = String::substring(rw, from, p)
+    let cw = if p < String::length(rw) {
+      String::char_code_at(rw, p)
+    } else {
+      0
+    }
+    let cs = if p < String::length(rs) {
+      String::char_code_at(rs, p)
+    } else {
+      0
+    }
+    let dw = cw >= 48 && cw <= 57
+    let dsd = cs >= 48 && cs <= 57
+    let prev_digit = p > 0 && String::char_code_at(rw, p - 1) >= 48 && String::char_code_at(rw, p - 1) <= 57
+    (dw || dsd) && (dw || prev_digit) && (dsd || prev_digit) && (String::index_of(window, "__") >= 0 || String::index_of(window, "_exn_payload") >= 0)
+  }
+}
+
+/// Compare the whole-program result `a` and the per-module result `trial` by
+/// declaration key rather than by position: per-module synthesis lands at each
+/// module's position and may repeat a helper per module, which a link-time
+/// dedup by name folds, so position and count are not the verdict. Keys that
+/// repeat within `a` are skipped (a repeated key cannot be matched). Returns
+/// `keyed missing=<in a only> extra=<in trial only> copies=<repeats in trial>
+/// content=<same key, different content, not a fresh-name rename>
+/// renames=<same key, fresh-name renames only>` plus the first missing key and
+/// the first content-differing key.
+fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> String) -> String {
+  let wmap: MutMap[String, Int] = MutMap::new_string()
+  let mut ki = 0
+  while ki < Array::length(a) {
+    let key = oracle_stmt_key(Array::get(a, ki))
+    if MutMap::has(wmap, key) {
+      MutMap::set(wmap, key, 0 - 1)
+    } else {
+      MutMap::set(wmap, key, ki)
+    }
+    ki = ki + 1
+  }
+  let seen: MutMap[String, Int] = MutMap::new_string()
+  let mut extra = 0
+  let mut copies = 0
+  let mut content = 0
+  let mut renames = 0
+  let mut first_content = ""
+  let mut ti = 0
+  while ti < Array::length(trial) {
+    let st = Array::get(trial, ti)
+    let key = oracle_stmt_key(st)
+    match MutMap::get(wmap, key) {
+      Some(widx) => {
+        if MutMap::has(seen, key) {
+          copies = copies + 1
+        } else {
+          MutMap::set(seen, key, 1)
+        }
+        if widx < 0 || Array::get(a, widx) == st {
+          ()
+        } else if oracle_rename_only(render(Array::get(a, widx)), render(st)) {
+          // Includes an identical rendering: the nodes then differ only in
+          // fields the printer does not show, i.e. synthetic offsets (the
+          // namespace operations derive theirs from the trait's statement
+          // index, which is module-local in a per-module run).
+          renames = renames + 1
+        } else {
+          content = content + 1
+          if content <= 3 {
+            let rw = render(Array::get(a, widx))
+            let rs = render(st)
+            let lim = if String::length(rw) < String::length(rs) {
+              String::length(rw)
+            } else {
+              String::length(rs)
+            }
+            let mut p = 0
+            while p < lim && String::char_code_at(rw, p) == String::char_code_at(rs, p) {
+              p = p + 1
+            }
+            let from = if p > 100 {
+              p - 100
+            } else {
+              0
+            }
+            let wto = if p + 100 < String::length(rw) {
+              p + 100
+            } else {
+              String::length(rw)
+            }
+            let sto = if p + 100 < String::length(rs) {
+              p + 100
+            } else {
+              String::length(rs)
+            }
+            first_content = String::concat(first_content, String::concat("\n    ", String::concat(key, String::concat(" at=", String::concat(Int::to_string(p), String::concat("\n    whole<", String::concat(String::substring(rw, from, wto), String::concat(">\n    split<", String::concat(String::substring(rs, from, sto), ">")))))))))
+          } else {
+            ()
+          }
+        }
+      },
+      None => {
+        extra = extra + 1
+      }
+    }
+    ti = ti + 1
+  }
+  let mut missing = 0
+  let mut first_missing = ""
+  ki = 0
+  while ki < Array::length(a) {
+    let key = oracle_stmt_key(Array::get(a, ki))
+    if MutMap::has(seen, key) {
+      ()
+    } else {
+      missing = missing + 1
+      if String::length(first_missing) == 0 {
+        first_missing = key
+      } else {
+        ()
+      }
+    }
+    ki = ki + 1
+  }
+  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))
+}
+
 /// One step of the oracle: pass `k`. `a` is the whole-program state after
 /// passes 0..k-1 (advanced in place here by pass k); `c` is a FRESH merge of
 /// the same program with its per-statement file ids, brought to the same
@@ -3777,6 +3955,39 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
     Array::push(part, Array::get(c, si))
     si = si + 1
   }
+  // The whole program goes first: for the per-module entry the context is
+  // the other files' POST-pass interface (a dependency is compiled before
+  // its dependents, so a dependent sees its threaded signatures), taken
+  // from `a` and limited to keys that existed before the pass (a
+  // synthesized statement belongs to its own module's output, not to a
+  // sibling's context).
+  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+  let pre_keys: MutMap[String, Int] = MutMap::new_string()
+  let mut pk = 0
+  while pk < Array::length(c) {
+    MutMap::set(pre_keys, oracle_stmt_key(Array::get(c, pk)), 1)
+    pk = pk + 1
+  }
+  // Each file's interface, taken BEFORE any module run: a module run rewrites
+  // its own part in place (a threaded signature is skipped by `build_gens` as
+  // already done), and a dependent must see the pre-pass, contract form.
+  let ifaces: Array[Array[Stmt]] = []
+  let mut pf = 0
+  while pf < file_count {
+    let src = Array::get(parts, pf)
+    let dst: Array[Stmt] = []
+    let mut ps = 0
+    while ps < Array::length(src) {
+      if oracle_is_interface_stmt(Array::get(src, ps)) {
+        Array::push(dst, Array::get(src, ps))
+      } else {
+        ()
+      }
+      ps = ps + 1
+    }
+    Array::push(ifaces, dst)
+    pf = pf + 1
+  }
   let trial: Array[Stmt] = []
   let trial_file: Array[Int] = []
   fi = 0
@@ -3787,7 +3998,49 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
       ""
     }
     let part = Array::get(parts, fi)
-    oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+    if k == 4 {
+      // The one pass with a per-module entry: the module's statements plus the
+      // other files' interface, synthesized program-level statements appended
+      // after the module's own.
+      let own_keys: MutMap[String, Int] = MutMap::new_string()
+      let mut ok = 0
+      while ok < Array::length(part) {
+        MutMap::set(own_keys, oracle_stmt_key(Array::get(part, ok)), 1)
+        ok = ok + 1
+      }
+      // The other files' PRE-pass interface: `build_gens` registers a bounded
+      // generic only from its unthreaded signature (a threaded one is
+      // skipped as already done), which is also the form a `.vpkg` contract
+      // carries.
+      let ctx: Array[Stmt] = []
+      let mut cj = 0
+      while cj < file_count {
+        if cj == fi {
+          ()
+        } else {
+          let other = Array::get(ifaces, cj)
+          let mut ci = 0
+          while ci < Array::length(other) {
+            let cs = Array::get(other, ci)
+            if MutMap::has(own_keys, oracle_stmt_key(cs)) {
+              ()
+            } else {
+              Array::push(ctx, cs)
+            }
+            ci = ci + 1
+          }
+        }
+        cj = cj + 1
+      }
+      let synthesized = desugar_trait_dicts_module(part, ctx, checker_eq_offsets, checker_eq_type_keys)
+      let mut sy = 0
+      while sy < Array::length(synthesized) {
+        Array::push(part, Array::get(synthesized, sy))
+        sy = sy + 1
+      }
+    } else {
+      oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+    }
     let mut oi = 0
     while oi < Array::length(part) {
       Array::push(trial, Array::get(part, oi))
@@ -3796,7 +4049,6 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
     }
     fi = fi + 1
   }
-  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
   let nn = Array::length(a)
   let nt = Array::length(trial)
   let lim = if nn < nt {
@@ -3853,10 +4105,15 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
     "differs"
   }
   let line = String::concat("PASS ", String::concat(oracle_pass_name(k), String::concat(" stmts=", String::concat(Int::to_string(nn), String::concat(" split=", String::concat(Int::to_string(nt), String::concat(" diff=", String::concat(Int::to_string(diffs), String::concat(" first=", String::concat(Int::to_string(first), String::concat(" file=", String::concat(Int::to_string(first_file), String::concat(" status=", String::concat(status, "\n"))))))))))))))
-  if diffs > 0 {
-    String::concat(line, String::concat("  whole: ", String::concat(first_whole, String::concat("\n  split: ", String::concat(first_split, "\n")))))
+  let line2 = if k == 4 {
+    String::concat(line, oracle_keyed_line(a, trial, render))
   } else {
     line
+  }
+  if diffs > 0 {
+    String::concat(line2, String::concat("  whole: ", String::concat(first_whole, String::concat("\n  split: ", String::concat(first_split, "\n")))))
+  } else {
+    line2
   }
 }
 
