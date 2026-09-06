@@ -1,6 +1,8 @@
 //# Imports
 
 import @vibe/compiler/cache {
+  cache_read_source_fs,
+  cache_source_text_memo_reset,
   compact_source_fingerprint_memo,
   compact_source_fingerprint_memo_reset,
   compact_string_fingerprint,
@@ -2271,7 +2273,7 @@ fn load_planned_module_source(rdb: RippleDb, path: String) -> (RippleDb, Option[
     Some(source) => (rdb, Some(source)),
     None =>
     if is_vpkg_types_stub_path(path) && Fs::exists(path) {
-      let source = ingest_source_text_fs(path, Fs::read_file(path))
+      let source = ingest_source_text_fs(path, cache_read_source_fs(path))
       (ripple_set_source(rdb, path, source), Some(source))
     } else {
       (rdb, None)
@@ -5193,7 +5195,9 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
   // another with no walk around them, so it resets the memo per job: the
   // job's key is built through the memo like the walk's, and the memo holds
   // this job's source, not every source the worker has ever been handed.
+  // The source-text memo (#2386) is reset per job for the same reason.
   compact_source_fingerprint_memo_reset()
+  cache_source_text_memo_reset()
   let (path, deps, dep_fps) = parse_job_rows(Fs::read_file(job_dir_path(dir, "job.txt")))
   let source = Fs::read_file(job_dir_path(dir, "source.vibe"))
   let dep_envs = array_empty()
@@ -5801,7 +5805,7 @@ fn module_plan_data_fs(entry_path: String) -> (Array[String], Array[Int], Array[
     } else {
       ()
     }
-    let ingested = ingest_source_text_fs(p, Fs::read_file(p))
+    let ingested = ingest_source_text_fs(p, cache_read_source_fs(p))
     let (deps, _exports, _parse_count) = load_or_parse_module_header_fs(p, ingested, 0)
     Array::push(sources, ingested)
     Array::push(deps_of, deps)

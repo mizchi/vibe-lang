@@ -17,7 +17,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/cache {
-  set_persistent_cache_cfg_flags
+  cache_read_source_fs, set_persistent_cache_cfg_flags
 }
 
 import @vibe/parser {
@@ -420,7 +420,7 @@ export fn check_linked_file_source_groups(input_path: String) -> Array[(String, 
   // (`apply_vpkg_directory_shared_imports_fs`) can PREPEND import lines to an
   // ordinary `.vibe` file, which would shift every offset below and mislocate
   // the diagnostics this pre-parse exists to locate exactly.
-  let raw_entry_source = Fs::read_file(input_path)
+  let raw_entry_source = cache_read_source_fs(input_path)
   let entry_source = if is_contract_ext(input_path) {
     ingest_source_text_fs(input_path, raw_entry_source)
   } else {
@@ -602,7 +602,7 @@ export fn check_deprecated_warnings(input_path: String) -> Array[String] with Ex
 /// already accepted the file before this runs; this is a non-fatal `vibe check`
 /// hygiene report with an actionable removal.
 export fn check_redundant_import_warnings(input_path: String) -> Array[String] with Exception + Fs {
-  let source = Fs::read_file(input_path)
+  let source = cache_read_source_fs(input_path)
   check_redundant_import_warnings_from_source_groups(input_path, [
     ("entry", [(input_path, source)])
   ])
@@ -620,7 +620,7 @@ export fn check_redundant_import_warnings(input_path: String) -> Array[String] w
 fn owner_locating_source(path: String, source: String) -> Option[String] with Exception + Fs {
   if String::starts_with(source, vpkg_shared_import_marker) || String::starts_with(source, contract_facade_marker) {
     if Fs::exists(path) {
-      let physical = Fs::read_file(path)
+      let physical = cache_read_source_fs(path)
       if source == ingest_source_text_fs(path, physical) {
         Some(physical)
       } else {
@@ -662,7 +662,7 @@ fn checked_entry_source(input_path: String, source_groups: Array[(String, Array[
         // current bytes and require the complete synthetic snapshot to match;
         // a suffix comparison would accept a file whose leading bytes changed.
         if Fs::exists(input_path) {
-          let physical = Fs::read_file(input_path)
+          let physical = cache_read_source_fs(input_path)
           if source == ingest_source_text_fs(input_path, physical) {
             Some(physical)
           } else {
@@ -868,7 +868,7 @@ fn append_raw_vpkg_dep_sources(input_path: String, groups: Array[(String, Array[
     while mi < Array::length(members) {
       let (path, _source) = Array::get(members, mi)
       if path != input_path && String::ends_with(path, ".vpkg") && Fs::exists(path) {
-        Array::push(out, Fs::read_file(path))
+        Array::push(out, cache_read_source_fs(path))
       } else {
         ()
       }

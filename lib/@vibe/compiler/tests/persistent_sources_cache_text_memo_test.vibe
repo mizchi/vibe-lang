@@ -1,0 +1,34 @@
+import @vibe/compiler/loader {
+  build_persistent_sources_cache_text
+}
+
+import @vibe/compiler/cache {
+  cache_persistent_artifact_cache_path,
+  compact_source_fingerprint_memo_hash_count,
+  compact_source_fingerprint_memo_reset,
+  compact_string_fingerprint
+}
+
+// #2386: the persistent source-list and source-group cache texts fingerprint
+// every source row through the per-compile source-fingerprint memo, the same
+// memo the header pass and the ingestion fingerprint already filled for that
+// text, instead of hashing each source again on their own. The memo's hash
+// counter is the witness: a row's text is hashed once, and a second build of
+// the same rows hashes nothing.
+
+test "a source row's fingerprint comes from the memo, hashed once per text" {
+  let path = cache_persistent_artifact_cache_path("v1", "sources_cache_text_memo", "seed-a", "")
+  Fs::write_file(path, "let a = 1")
+  compact_source_fingerprint_memo_reset()
+  let c0 = compact_source_fingerprint_memo_hash_count()
+  let text = build_persistent_sources_cache_text(path, None, [
+    (path, "let a = 1")
+  ])
+  inspect(compact_source_fingerprint_memo_hash_count() - c0, content = "1")
+  let again = build_persistent_sources_cache_text(path, None, [
+    (path, "let a = 1")
+  ])
+  inspect(compact_source_fingerprint_memo_hash_count() - c0, content = "1")
+  inspect(again == text, content = "true")
+  inspect(String::ends_with(text, String::concat(compact_string_fingerprint("let a = 1"), "\n")), content = "true")
+}

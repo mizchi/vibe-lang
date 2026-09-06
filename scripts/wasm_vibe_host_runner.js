@@ -2597,17 +2597,26 @@ async function main() {
       },
       fs_stat_token(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
-        if (policyStatTokenConfig) {
-          return encodeHostInt(contentStatToken(filePath));
+        // A stat failure (a missing path, an unreadable directory) is a
+        // guest-visible host error, the same conversion fs_read_file makes:
+        // the compiler stats a source before reading it (#2386), so a path
+        // that used to fail at the read must fail the same way one call
+        // earlier, not escape the wasm boundary as a raw host exception.
+        try {
+          if (policyStatTokenConfig) {
+            return encodeHostInt(contentStatToken(filePath));
+          }
+          // Module/package loading reserves -1 as a stable non-regular-source
+          // witness. lstat is required here: stat would follow the link and make
+          // a symlink indistinguishable from its target.
+          if (fs.lstatSync(filePath).isSymbolicLink()) {
+            return encodeHostInt(-1n);
+          }
+          const { lower, upper } = buildFsMetadataHashParts(filePath);
+          return encodeHostInt(BigInt.asUintN(61, lower ^ upper));
+        } catch (e) {
+          throwVibeHostError(`fs_stat_token failed for '${filePath}': ${e.message}`);
         }
-        // Module/package loading reserves -1 as a stable non-regular-source
-        // witness. lstat is required here: stat would follow the link and make
-        // a symlink indistinguishable from its target.
-        if (fs.lstatSync(filePath).isSymbolicLink()) {
-          return encodeHostInt(-1n);
-        }
-        const { lower, upper } = buildFsMetadataHashParts(filePath);
-        return encodeHostInt(BigInt.asUintN(61, lower ^ upper));
       },
       fs_write_file(pathTagged, contentTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
