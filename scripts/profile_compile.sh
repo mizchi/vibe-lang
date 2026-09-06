@@ -58,9 +58,12 @@ start_ns=$(date +%s%N)
 # 415 -> 156 ms self, __rt_eq 291 -> 114 ms, __rt_arr_len 148 -> 0 ms,
 # wall 7.14 -> 6.55 s. Those rows were the profile's artifact, not the
 # compiler's cost.
+# One flag per line: the wrapper splits VIBE_NODE_EXTRA_FLAGS on newlines, so
+# an output directory with a space in its name stays one argument.
+extra_flags="$(printf '%s\n' --cpu-prof "--cpu-prof-dir=$OUT_DIR" "--cpu-prof-name=$PROFILE_NAME")"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_WASM_MEMORY_STATS=1 \
-  VIBE_NODE_EXTRA_FLAGS="--cpu-prof --cpu-prof-dir=$OUT_DIR --cpu-prof-name=$PROFILE_NAME" \
+  VIBE_NODE_EXTRA_FLAGS="$extra_flags" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
   "$INPUT" "$OUT_WASM" __no_entry__
 end_ns=$(date +%s%N)

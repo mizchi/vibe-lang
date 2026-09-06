@@ -93,5 +93,17 @@ fi
 # caller knows its node accepts, such as --cpu-prof for scripts/profile_compile.sh,
 # which needs the perf flags above on the profiled process too -- a direct
 # `node --cpu-prof` skips them and profiles a compiler V8 never inlines.
-# shellcheck disable=SC2086
-exec node "${node_flags[@]}" ${VIBE_NODE_EXTRA_FLAGS:-} "$PROJECT_ROOT/scripts/wasm_vibe_host_runner.js" "$@"
+# One flag per LINE, so a value may contain spaces (`--cpu-prof-dir=/a dir`
+# stays one argument); a newline cannot be part of a flag.
+extra_flags=()
+if [ -n "${VIBE_NODE_EXTRA_FLAGS:-}" ]; then
+  while IFS= read -r vibe_extra_line || [ -n "$vibe_extra_line" ]; do
+    if [ -n "$vibe_extra_line" ]; then
+      extra_flags+=("$vibe_extra_line")
+    fi
+  done <<VIBE_EXTRA_EOF
+$VIBE_NODE_EXTRA_FLAGS
+VIBE_EXTRA_EOF
+fi
+
+exec node "${node_flags[@]}" ${extra_flags[@]+"${extra_flags[@]}"} "$PROJECT_ROOT/scripts/wasm_vibe_host_runner.js" "$@"
