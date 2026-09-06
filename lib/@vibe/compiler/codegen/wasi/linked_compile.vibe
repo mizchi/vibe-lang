@@ -3745,10 +3745,13 @@ fn oracle_head(s: String) -> String {
 }
 
 /// #2388: a module's dependency interface as the per-module pass sees it --
-/// what another file contributes without its bodies being compiled here: type,
-/// trait and suberror declarations, bounded-generic function definitions
-/// (their signature drives witness threading at a call site) and explicit
-/// `T::op` definitions (their presence suppresses a derive).
+/// what another file contributes without its bodies being compiled here:
+/// type, trait, suberror and impl declarations, and every top-level
+/// definition (a function's signature drives witness threading at a call
+/// site and the exception kind of a throw whose payload it returns; an
+/// explicit `T::op` suppresses a derive). Bodies ride along unread: the
+/// module entry never rewrites or emits a context statement, which is the
+/// bodyless form a `.vpkg` contract carries.
 fn oracle_is_interface_stmt(s: Stmt) -> Bool {
   match s {
     SEnum(_, _, _, _, _) => true,
@@ -3757,57 +3760,47 @@ fn oracle_is_interface_stmt(s: Stmt) -> Bool {
     SSuberror(_, _, _) => true,
     STrait(_, _, _, _, _, _) => true,
     SImpl(_, _, _, _) => true,
-    SLet(_, _, n, _, v) => if String::index_of(n, "::") >= 0 {
-      true
-    } else {
-      match v {
-        EFn(_, bounds, _, _, _, _) => Array::length(bounds) > 0,
-        _ => false
-      }
-    },
+    SLet(_, _, _, _, _) => true,
+    SLetMut(_, _, _) => true,
     _ => false
   }
 }
 
-/// Whether two renderings differ only at a generated fresh-name counter
+/// Whether two renderings differ only at generated fresh-name counters
 /// (`__teq_l12_0` vs `__teq_l2_0`, `__me_ks22`, `_exn_payload100` vs
-/// `_exn_payload10`): the first differing byte is a digit on both sides, or
-/// one side's digit run ended, right after a `__`- or `_exn_payload`-prefixed
-/// name. Anything else is a real content difference.
+/// `_exn_payload10`). Anything else is a real content difference.
 fn oracle_rename_only(rw: String, rs: String) -> Bool {
-  let lim = if String::length(rw) < String::length(rs) {
-    String::length(rw)
-  } else {
-    String::length(rs)
-  }
-  let mut p = 0
-  while p < lim && String::char_code_at(rw, p) == String::char_code_at(rs, p) {
-    p = p + 1
-  }
-  if p == String::length(rw) && p == String::length(rs) {
-    true
-  } else {
-    let from = if p > 14 {
-      p - 14
+  oracle_strip_counters(rw) == oracle_strip_counters(rs)
+}
+
+/// The rendering with every generated counter removed: a digit run right
+/// after `__teq_l` / `__teq_r` / `__me_` / `__ae_` / `__be_` / `_exn_payload`
+/// (the names the pass mints from program-wide counters). Comparing the
+/// stripped renderings sees a real difference AFTER a renamed binder, which
+/// a first-difference test does not.
+fn oracle_strip_counters(s: String) -> String {
+  let out = StringBuilder::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(out, String::substring(s, i, i + 1))
+    i = i + 1
+    // After the '_' that ends one of the prefixes, skip a digit run.
+    let tail_from = if i > 12 {
+      i - 12
     } else {
       0
     }
-    let window = String::substring(rw, from, p)
-    let cw = if p < String::length(rw) {
-      String::char_code_at(rw, p)
+    let tail = String::substring(s, tail_from, i)
+    if String::ends_with(tail, "__teq_l") || String::ends_with(tail, "__teq_r") || String::ends_with(tail, "__me_k") || String::ends_with(tail, "__me_ks") || String::ends_with(tail, "__me_i") || String::ends_with(tail, "__me_ok") || String::ends_with(tail, "__ae_i") || String::ends_with(tail, "__ae_ok") || String::ends_with(tail, "__be_i") || String::ends_with(tail, "__be_ok") || String::ends_with(tail, "_exn_payload") {
+      while i < n && String::char_code_at(s, i) >= 48 && String::char_code_at(s, i) <= 57 {
+        i = i + 1
+      }
     } else {
-      0
+      ()
     }
-    let cs = if p < String::length(rs) {
-      String::char_code_at(rs, p)
-    } else {
-      0
-    }
-    let dw = cw >= 48 && cw <= 57
-    let dsd = cs >= 48 && cs <= 57
-    let prev_digit = p > 0 && String::char_code_at(rw, p - 1) >= 48 && String::char_code_at(rw, p - 1) <= 57
-    (dw || dsd) && (dw || prev_digit) && (dsd || prev_digit) && (String::index_of(window, "__") >= 0 || String::index_of(window, "_exn_payload") >= 0)
   }
+  StringBuilder::freeze(out)
 }
 
 /// Compare the whole-program result `a` and the per-module result `trial` by

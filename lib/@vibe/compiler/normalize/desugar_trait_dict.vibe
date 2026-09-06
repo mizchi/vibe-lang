@@ -738,7 +738,7 @@ fn annotate_params_from_sig(params: Array[(String, Option[TypeExpr])], ptypes: A
 fn inject_method_generics_reporting_change(stmts: Array[Stmt], impl_map: Array[(String, String)], gen_table: Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Bool {
   let mut changed = false
   let mut i = 0
-  while i < Array::length(stmts) {
+  while i < dtd_own_end(stmts) {
     match Array::get(stmts, i) {
       SLet(exp, isrec, qname, ann, body) => match body {
         EFn(tparams, bounds, params, ret, eff, fbody) => if Array::length(tparams) == 0 {
@@ -11942,6 +11942,7 @@ fn emit_recorded_arr_equals(stmts: Array[Stmt]) -> Unit {
     if top_level_fn_exists(stmts, arr_equals_name(et)) {
       ()
     } else {
+      dtd_fresh_reset_for_decl()
       Array::push(stmts, gen_arr_equals_fn(et, known_types))
     }
     i = i + 1
@@ -11965,6 +11966,18 @@ let dtd_eq_tuple_uid = [0]
 
 fn eq_tuple_uid_reset() -> Unit {
   Array::set(dtd_eq_tuple_uid, 0, 0)
+}
+
+/// #2388: fresh names are minted per declaration, not per program. The tuple
+/// / map comparator binders (`__teq_l<n>_<k>`, `__me_ks<n>`) and the throw
+/// payload lets (`__exn_payload<n>`) are local to the statement or helper
+/// they appear in, so their counters restart at every top-level statement
+/// the rewrite loop visits and at every generated helper: a module's output
+/// then does not depend on what was compiled before it, and a per-module run
+/// mints the same names as the whole-program run (the oracle's `renames`).
+fn dtd_fresh_reset_for_decl() -> Unit {
+  eq_tuple_uid_reset()
+  Array::set(dtd_exn_kind_state, 2, 0)
 }
 
 fn eq_tuple_uid_next() -> Int {
@@ -12030,6 +12043,7 @@ fn emit_recorded_map_equals(stmts: Array[Stmt]) -> Unit {
         if top_level_fn_exists(stmts, map_equals_name(k_ty, v_ty)) {
           ()
         } else {
+          dtd_fresh_reset_for_decl()
           Array::push(stmts, gen_map_equals_fn(k_ty, v_ty, known_types))
         }
       } else {
@@ -14106,6 +14120,7 @@ fn emit_recorded_generic_eq(stmts: Array[Stmt]) -> Unit {
             } else {
               ()
             }
+            dtd_fresh_reset_for_decl()
             Array::push(stmts, gen_specialized_eq_fn(head, args, decl.1, decl.2, known))
             Array::truncate(dtd_eq_specialization_stack, 0)
           } else {
@@ -14127,6 +14142,7 @@ fn emit_recorded_generic_eq(stmts: Array[Stmt]) -> Unit {
             } else {
               ()
             }
+            dtd_fresh_reset_for_decl()
             Array::push(stmts, gen_specialized_enum_eq_fn(head, args, edecl.1, edecl.2, known))
             Array::truncate(dtd_eq_specialization_stack, 0)
           } else {
@@ -15536,6 +15552,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // stable Map-key string is its structural representation (#638), so
         // generate `to_string` for Show OR Hash.
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_show_fn(name, fields, known_types))
           derived_renderer_record(name)
         } else {
@@ -15545,6 +15562,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // the recursive `to_string`), so the method-bearing `Hash` witness at a
         // `get_by(m, T::{..})` call site resolves to a stable structural key.
         if str_array_contains(derives, "Hash") && !top_level_fn_exists(stmts, qualified_name(name, "hash_key")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_hash_key_fn(name))
         } else {
           ()
@@ -15560,11 +15578,13 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
           ()
         }
         if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(name, "compare")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_compare_fn(name, fields))
         } else {
           ()
         }
         if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(name, "default")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_default_fn(name, fields, known_types))
         } else {
           ()
@@ -15574,6 +15594,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // sensible default for any struct, and a struct never relied on the old
         // pointer-identity `==` (which was silently always-false).
         if !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_eq_fn(name, fields, known_types))
         } else {
           ()
@@ -15583,12 +15604,14 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // #2141: same re-spelling as the SStruct arm, for payload types.
         let variants = subst_variant_formals(variants0, decl_tparams)
         if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(ename, "to_string")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_show_fn(ename, variants, known_types))
           derived_renderer_record(ename)
         } else {
           ()
         }
         if str_array_contains(derives, "Hash") && !top_level_fn_exists(stmts, qualified_name(ename, "hash_key")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_hash_key_fn(ename))
         } else {
           ()
@@ -15608,11 +15631,13 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
           ()
         }
         if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(ename, "compare")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_compare_fn(ename, variants, known_types))
         } else {
           ()
         }
         if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(ename, "default")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_default_fn(ename, variants, known_types))
         } else {
           ()
@@ -15620,6 +15645,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // Generate `E::equals` for every enum (same rationale as structs), so
         // the `==` dispatch resolves enum operands too.
         if !top_level_fn_exists(stmts, qualified_name(ename, "equals")) {
+          dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
         } else {
           ()
@@ -15686,6 +15712,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   while ei < Array::length(elem_types) {
     let et = Array::get(elem_types, ei)
     if !top_level_fn_exists(stmts, arr_equals_name(et)) {
+      dtd_fresh_reset_for_decl()
       Array::push(gen, gen_arr_equals_fn(et, known_types))
     } else {
       ()
@@ -15704,6 +15731,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   while ei2 < Array::length(arr_elems) {
     let et2 = Array::get(arr_elems, ei2)
     if !top_level_fn_exists(stmts, arr_to_string_name(et2)) {
+      dtd_fresh_reset_for_decl()
       Array::push(gen, gen_arr_to_string_fn(et2, known_types))
     } else {
       ()
@@ -19640,7 +19668,7 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   // dropping the early-out costs one scalar scan per statement in the case
   // where nothing needs relabelling.
   let mut i = 0
-  while i < Array::length(stmts) {
+  while i < dtd_own_end(stmts) {
     if stmt_has_labeled_arg(Array::get(stmts, i)) || (has_opt_tbl && stmt_calls_optional_fn(Array::get(stmts, i))) {
       Array::set(stmts, i, relabel_stmt(Array::get(stmts, i), tbl))
     } else {
@@ -19675,7 +19703,7 @@ fn desugar_labeled_args_paired(stmts: Array[Stmt], roots: Array[BinderAuthorityN
     children: []
   }
   let mut i = 0
-  while i < Array::length(stmts) {
+  while i < dtd_own_end(stmts) {
     let root = if i < Array::length(roots) {
       Array::get(roots, i)
     } else {
@@ -19857,7 +19885,8 @@ fn das_stmt(stmt: Stmt) -> Stmt {
 
 /// In-place lowering of array-literal spreads across the whole program (#790).
 export fn desugar_array_spread(stmts: Array[Stmt]) -> Unit {
-  let n = Array::length(stmts)
+  // #2388: a per-module run rewrites the module's own statements only.
+  let n = dtd_own_end(stmts)
   let mut i = 0
   while i < n {
     Array::set(stmts, i, das_stmt(Array::get(stmts, i)))
@@ -20174,8 +20203,9 @@ fn dtpw_inline_trivial_wrappers(stmts: Array[Stmt]) -> Unit {
   if Array::length(wrappers) == 0 {
     ()
   } else {
+    let own_end = dtd_own_end(stmts)
     let mut i = 0
-    while i < Array::length(stmts) {
+    while i < own_end {
       match Array::get(stmts, i) {
         SLet(exported, is_rec, name, ty, expr) => Array::set(stmts, i, SLet(exported, is_rec, name, ty, dtpw_inline_expr(expr, wrappers))),
         _ => ()
@@ -20580,6 +20610,7 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
     if !dtd_is_own_index(i) {
       ()
     } else {
+      dtd_fresh_reset_for_decl()
       match merged_source_boundary_local_names(stmt) {
         Some(local_names) => {
           user_assert_eq_set_merged_source(stmts, i + 1, local_names)

@@ -21,11 +21,11 @@ import @vibe/compiler/syntax {
 // struct), while the program-level helpers land in the synthesized set.
 
 fn dep_src() -> String {
-  "export trait Hash {\n  hash_key(Self) -> String\n}\n\nimpl Hash for String {\n  hash_key(self) -> String {\n    self\n  }\n}\n\nexport fn map_key_to_string[K: Hash](key: K) -> String {\n  K::hash_key(key)\n}\n"
+  "export trait Hash {\n  hash_key(Self) -> String\n}\n\nimpl Hash for String {\n  hash_key(self) -> String {\n    self\n  }\n}\n\nexport fn map_key_to_string[K: Hash](key: K) -> String {\n  K::hash_key(key)\n}\n\nstruct Key {\n  k: (Int, String)\n}\n\nexport fn fail_dep(msg: String) -> Int with Exception {\n  throw(msg)\n}\n"
 }
 
 fn own_src() -> String {
-  "struct Set[T] {\n  entries: Map[String, T]\n}\n\nexport fn contains[T: Hash](s: Set[T], value: T) -> Bool {\n  Map::has_key(s.entries, map_key_to_string(value))\n}\n"
+  "struct Set[T] {\n  entries: Map[String, T]\n}\n\nexport fn contains[T: Hash](s: Set[T], value: T) -> Bool {\n  Map::has_key(s.entries, map_key_to_string(value))\n}\n\nstruct Pair {\n  p: (Int, String)\n}\n\nexport fn fail_own(msg: String) -> Int with Exception {\n  throw(msg)\n}\n"
 }
 
 fn render_named(stmts: Array[Stmt], name: String) -> String {
@@ -66,31 +66,31 @@ fn stmt_names(stmts: Array[Stmt]) -> String {
   out
 }
 
-fn whole_contains() -> String with Exception {
+fn whole_named(name: String) -> String with Exception {
   let stmts = parse_program(lex(String::concat(dep_src(), own_src())))
   desugar_trait_dicts(stmts)
-  render_named(stmts, "contains")
+  render_named(stmts, name)
 }
 
 test "the module entry threads the witness into a call of the context's bounded generic" {
   let ctx = parse_program(lex(dep_src()))
   let own = parse_program(lex(own_src()))
   let synth = desugar_trait_dicts_module(own, ctx, [], [])
-  inspect(render_named(own, "contains") == whole_contains(), content = "true")
+  inspect(render_named(own, "contains") == whole_named("contains"), content = "true")
   inspect(render_named(own, "contains"), content = "export let rec contains = [T: Hash](__dict_Hash_T: HashDict[T], s: Set[T], value: T) -> Bool { Map::has_key(s.entries, map_key_to_string(__dict_Hash_T, value)) }")
   // The context is read, never rewritten or extended: its trait gets no
   // operation and no dict struct from this module's run. What the pass
   // appends -- the module's own derived comparator and the program-level
   // helper it needs -- comes back as the synthesized set.
-  inspect(stmt_names(ctx), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string")
-  inspect(stmt_names(own), content = "struct Set, contains")
-  inspect(stmt_names(synth), content = "Set::equals, __map_equals__N6_String__N7___Vfp_T")
+  inspect(stmt_names(ctx), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, struct Key, fail_dep")
+  inspect(stmt_names(own), content = "struct Set, contains, struct Pair, fail_own")
+  inspect(stmt_names(synth), content = "Set::equals, Pair::equals, __map_equals__N6_String__N7___Vfp_T, __exn_kind_cell")
 }
 
 test "the whole-program entry is the module entry with no context and everything own" {
   let stmts = parse_program(lex(String::concat(dep_src(), own_src())))
   desugar_trait_dicts(stmts)
-  inspect(stmt_names(stmts), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key, struct Set, contains, Set::equals, __map_equals__N6_String__N7___Vfp_T, struct HashDict")
+  inspect(stmt_names(stmts), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key, struct Key, fail_dep, struct Set, contains, struct Pair, fail_own, Key::equals, Set::equals, Pair::equals, __map_equals__N6_String__N7___Vfp_T, __exn_kind_cell, struct HashDict")
 }
 
 test "the dependency's own run places its trait operation inside the module and its dict struct in the synthesized set" {
@@ -98,9 +98,21 @@ test "the dependency's own run places its trait operation inside the module and 
   let ctx = parse_program(lex(own_src()))
   let synth = desugar_trait_dicts_module(own, ctx, [], [])
   // The namespace operation is inserted after the trait's impls and the
-  // lets that follow them, growing the module's own region; the context's
-  // struct is not derived for here.
-  inspect(stmt_names(own), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key")
-  inspect(stmt_names(synth), content = "struct HashDict")
-  inspect(stmt_names(ctx), content = "struct Set, contains")
+  // lets that immediately follow them, growing the module's own region; the
+  // context's structs are not derived for here.
+  inspect(stmt_names(own), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key, struct Key, fail_dep")
+  inspect(stmt_names(synth), content = "Key::equals, __exn_kind_cell, struct HashDict")
+  inspect(stmt_names(ctx), content = "struct Set, contains, struct Pair, fail_own")
+}
+
+test "generated local names restart at every declaration, so a module compiled after the dependency gets the names it gets alone" {
+  let ctx = parse_program(lex(dep_src()))
+  let own = parse_program(lex(own_src()))
+  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  // Whole-program, the dependency's `Key::equals` and `fail_dep` would have
+  // consumed the tuple-binder and payload counters first.
+  inspect(render_named(synth, "Pair::equals"), content = "let Pair::equals = (a: Pair, b: Pair) -> Bool { (match a.p { (__teq_l0_0, __teq_l0_1) => match b.p { (__teq_r0_0, __teq_r0_1) => (((__teq_l0_0 + 0) == (__teq_r0_0 + 0)) && ((__teq_l0_1 == __teq_r0_1) && true)) } } && true) }")
+  inspect(render_named(own, "fail_own"), content = "export let rec fail_own = (msg: String) -> Int with Exception { { let __exn_payload0 = msg; { Array::set(__exn_kind_cell, 0, \"String\"); { Array::set(__exn_kind_cell, 1, \"\"); throw(__exn_payload0) } } } }")
+  inspect(render_named(synth, "Pair::equals") == whole_named("Pair::equals"), content = "true")
+  inspect(render_named(own, "fail_own") == whole_named("fail_own"), content = "true")
 }
