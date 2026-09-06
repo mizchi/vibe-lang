@@ -16,7 +16,10 @@ import @vibe/compiler/core {
   bytebuf_to_bytes,
   dce_stmts,
   exception_effect_labels_equal,
-  expr_children,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
   is_exception_effect_name,
   leb128_encode_s64,
   leb128_encode_u32,
@@ -162,7 +165,6 @@ import @vibe/compiler/codegen/common_base {
   FuncTable,
   LambdaTable,
   LineMapState,
-  StrTable,
   agg_info_of_type_expr,
   append_hidden_attempt_constructors,
   await_poll_pass,
@@ -231,6 +233,8 @@ import @vibe/compiler/codegen/common_base {
   resolve_local,
   rewrite_self_tail_calls,
   source_declares_constructor,
+  str_table_index_of,
+  str_table_new,
   suspend_cps_pass,
   ty_head_names_formal,
   wrap_entry_exception_boundary
@@ -286,8 +290,7 @@ import @vibe/compiler/codegen/common_extractors {
   get_pint_value,
   get_pstring_value,
   get_ptuple_pats,
-  get_slet_export,
-  str_table_lookup
+  get_slet_export
 }
 
 import @vibe/compiler/codegen/expr {
@@ -889,13 +892,15 @@ fn lc_validate_stdin_provider_expr(expr: Expr) -> String {
       }
       err
     } else {
-      let children = expr_children(expr)
-      let mut i = 0
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
       let mut err = ""
-      while i < Array::length(children) && err == "" {
-        err = lc_validate_stdin_provider_expr(Array::get(children, i))
+      while i < end && err == "" {
+        err = lc_validate_stdin_provider_expr(expr_child_at(i))
         i = i + 1
       }
+      expr_children_pop(mark)
       err
     },
     EIdent(name, _) => if lc_is_stdin_provider_surface(name) {
@@ -904,13 +909,15 @@ fn lc_validate_stdin_provider_expr(expr: Expr) -> String {
       ""
     },
     _ => {
-      let children = expr_children(expr)
-      let mut i = 0
+      let mark = expr_children_push(expr)
+      let end = expr_children_top()
+      let mut i = mark
       let mut err = ""
-      while i < Array::length(children) && err == "" {
-        err = lc_validate_stdin_provider_expr(Array::get(children, i))
+      while i < end && err == "" {
+        err = lc_validate_stdin_provider_expr(expr_child_at(i))
         i = i + 1
       }
+      expr_children_pop(mark)
       err
     }
   }
@@ -5207,6 +5214,9 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
     si = si + 1
   }
   let heap_start = ((str_pos + 7) / 8) * 8
+  // #2386: the string table and its index, built once here after the last
+  // push to str_strs and shared by every per-function CompileCtx below.
+  let str_table_shared = str_table_new(str_strs, str_offsets, str_lengths)
   let effect_names_list = lc_fresh_string_array()
   let effect_op_keys_list = lc_fresh_string_array()
   let effect_op_arities_list = array_empty()
@@ -6996,7 +7006,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // operand guard needs one of these fragments; moving the PUSH instead
   // would reorder the builtins and shift every function index.
   let oob_fat_of: (String) -> Int = (frag) -> {
-    let fi = str_table_lookup(str_strs, frag)
+    let fi = str_table_index_of(str_table_shared, frag)
     (Array::get(str_offsets, fi)<<32)|Array::get(str_lengths, fi)
   }
   push_builtin(gen_str_concat_body(rc_shadow, str_operand_abort_idx, if rc_shadow {
@@ -7675,11 +7685,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
             names_sorted: all_fn_names_sorted,
             names_sorted_pos: all_fn_names_sorted_pos
           },
-          str_table: StrTable::{
-            strs: str_strs,
-            offsets: str_offsets,
-            lengths: str_lengths
-          },
+          str_table: str_table_shared,
           lambda_table: lt_w,
           num_user_funcs: num_user_funcs,
           lambda_slot_base: lambda_slot_base,
