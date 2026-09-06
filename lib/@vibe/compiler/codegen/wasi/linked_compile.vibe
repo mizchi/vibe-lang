@@ -3922,6 +3922,13 @@ fn lc_pf_remap_name_section(payload: Bytes, newidx: Array[Int], cell: Array[Int]
   out
 }
 
+/// Test entry for the #2359 pruner: the same pass the linked lane runs on
+/// its finished module bytes. Returns the input unchanged wherever the pass
+/// refuses (see lc_pf_prune_module).
+export fn late_dce_prune_module(mod_bytes: Bytes) -> Bytes {
+  lc_pf_prune_module(mod_bytes)
+}
+
 /// #2359: drop every function the module cannot reach and renumber what is
 /// left. Roots are the exported functions plus every funcref-table entry (a
 /// `call_indirect` target is only known dynamically, so a table slot is a
@@ -4021,14 +4028,49 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
         } else if sid == 6 {
           // A `ref.func` in a global initializer would be an extra root this
           // pass does not model. None is emitted today; refuse if that changes.
-          let mut gi = sstart
-          while gi < send {
-            if Bytes::get(mod_bytes, gi) == 210 {
+          // #2552: decode each initializer -- the byte 0xD2 is also a valid
+          // LEB128 byte inside an `i32.const` / `i64.const` immediate (the
+          // compiler closure's `i32.const 59768` encodes as `f8 d2 03`), and
+          // scanning for it refused whole modules that had no `ref.func` at
+          // all, silently skipping the late DCE for them.
+          let gcount = lc_pf_leb(mod_bytes, sstart, cell)
+          let mut gq = Array::get(cell, 0)
+          let mut gk = 0
+          while gk < gcount && !Array::get(failed, 0) {
+            // valtype, mutability, then one constant instruction and `end`.
+            gq = gq + 2
+            if gq >= send {
               Array::set(failed, 0, true)
             } else {
-              ()
+              let iop = Bytes::get(mod_bytes, gq)
+              gq = gq + 1
+              if iop == 65 || iop == 66 || iop == 35 {
+                gq = lc_pf_skip_leb(mod_bytes, gq)
+              } else if iop == 67 {
+                gq = gq + 4
+              } else if iop == 68 {
+                gq = gq + 8
+              } else if iop == 208 {
+                gq = gq + 1
+              } else {
+                Array::set(failed, 0, true)
+              }
+              if !Array::get(failed, 0) {
+                if gq < send && Bytes::get(mod_bytes, gq) == 11 {
+                  gq = gq + 1
+                } else {
+                  Array::set(failed, 0, true)
+                }
+              } else {
+                ()
+              }
             }
-            gi = gi + 1
+            gk = gk + 1
+          }
+          if !Array::get(failed, 0) && gq != send {
+            Array::set(failed, 0, true)
+          } else {
+            ()
           }
         } else if sid == 7 {
           let c = lc_pf_leb(mod_bytes, sstart, cell)
