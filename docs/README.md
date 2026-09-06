@@ -60,7 +60,6 @@ the repo; not the user manual.
 | [adding-modules.md](adding-modules.md) | `internal/project/` | How to add/fix a library module in this repo |
 | [issue-triage.md](issue-triage.md) | `internal/project/` | |
 | [release-roadmap.md](release-roadmap.md) | `internal/project/` | |
-| [known-issues.md](known-issues.md) | `internal/project/` | Resolved CI seed-fallback postmortem. Delete candidate |
 
 ### Operations / gates / bootstrap
 
@@ -191,7 +190,7 @@ Top-level names from `ls docs/` at the parent commit, excluding this router:
 `effect-wit-mapping.md`, `effectset.md`, `error-effect-policy.md`,
 `exception-effect.md`, `guide`, `host-runtime-contract.md`,
 `http_server_contract.md`, `incremental-build.md`, `install.md`,
-`issue-triage.md`, `known-issues.md`, `module-system-oracle.md`,
+`issue-triage.md`, `module-system-oracle.md`,
 `module-system-v2.md`, `mutability-control-review.md`,
 `naming-convention-migration.md`, `operation-gate.md`, `perceus-reuse.md`,
 `perf-snapshot-2026-08-07.md`, `pkfire-pkspec.md`, `pl-survey-2026-07.md`,
