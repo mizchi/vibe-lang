@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Stmt
+  Expr, Stmt
 }
 
 import @vibe/compiler/normalize {
@@ -159,4 +159,44 @@ test "a trivial wrapper defined in the dependency is not inlined by a per-module
   // must not pretend to by reading the body it happens to be handed.
   inspect(render_named(own, "via_apply"), content = "export let rec via_apply = () -> Int { apply(forty_two) }")
   inspect(whole2_named("via_apply"), content = "export let rec via_apply = () -> Int { forty_two() }")
+}
+
+/// The offset the printer does not show: the call node of a synthesized
+/// `Trait::op` wrapper's body.
+fn wrapper_call_off(stmts: Array[Stmt], name: String) -> Int {
+  let mut out = 0 - 99
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, body)) => if n == name {
+        out = match body {
+          ECall(_, _, off) => off,
+          _ => 0 - 98
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+test "a trait namespace operation carries the same synthetic offset whether its trait is compiled alone or after other files" {
+  // The module declaring `trait Hash` is compiled alone (its trait is
+  // statement 0) and as the tail of a program where three statements
+  // precede it. The wrapper's nodes are synthesized, not read from a
+  // source position, so both runs give them the wrapper's synthetic offset
+  // (-2: negative like the parser's own synthesized nodes, so it is in no
+  // offset-keyed table, and distinct from their -1, so a source binding can
+  // never pass for a generated one) rather than a value derived from the
+  // trait's statement index.
+  let own = parse_program(lex(dep_src()))
+  let ctx = parse_program(lex(own2_src()))
+  let _ = desugar_trait_dicts_module(own, ctx, [], [])
+  let whole = parse_program(lex(String::concat(own2_src(), dep_src())))
+  desugar_trait_dicts(whole)
+  inspect(wrapper_call_off(own, "Hash::hash_key"), content = "-2")
+  inspect(wrapper_call_off(whole, "Hash::hash_key"), content = "-2")
 }
