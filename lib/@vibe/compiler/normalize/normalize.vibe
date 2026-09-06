@@ -663,6 +663,21 @@ fn uq_env_restore(env: UqEnv, mark: Int) -> Unit {
   Array::truncate(env.values, mark)
 }
 
+// #2386: how many renames the walk has made so far -- a reference or a binder
+// that left the walk under a different name. An arm rebuilds its node only
+// when the count moved while its children were walked, and hands back the node
+// it was given otherwise (AST nodes are immutable). The count only grows, so a
+// rename anywhere below an arm is seen by every arm above it.
+let uq_marks: Array[Int] = [0]
+
+fn uq_mark() -> Unit {
+  Array::set(uq_marks, 0, Array::get(uq_marks, 0) + 1)
+}
+
+fn uq_marks_now() -> Int {
+  Array::get(uq_marks, 0)
+}
+
 /// Renamed reference for `name` under `env`, or `name` unchanged if it is not a
 /// tracked (shadowed-or-not) binding -- i.e. a free variable / global / builtin.
 fn uq_lookup(env: UqEnv, name: String) -> String {
@@ -677,6 +692,11 @@ fn uq_lookup(env: UqEnv, name: String) -> String {
       ()
     }
     i = i - 1
+  }
+  if String::equals(found, name) {
+    ()
+  } else {
+    uq_mark()
   }
   found
 }
@@ -729,7 +749,8 @@ fn uq_seen_contains(seen: Array[String], name: String) -> Bool {
 ///
 /// Otherwise this is the first binder for `name` in this function; keep it
 /// as-is but still record the identity mapping, so a DEEPER shadow of the same
-/// name is detected against this occurrence.
+/// name is detected against this occurrence. Both cases are one question to
+/// the seen index: a name bound by an enclosing scope is in it too (#2386).
 fn uq_bind_name(name: String, env: UqEnv, counter: Array[Int], seen: Array[String]) -> String {
   // A labeled/optional param (`a~`/`a?`) is declared with its suffix but its
   // body references use the STRIPPED name. Keep the declaration spelling, but
@@ -756,6 +777,7 @@ fn uq_bind_name(name: String, env: UqEnv, counter: Array[Int], seen: Array[Strin
     let fresh = fresh_shadow_name(counter, name)
     Array::push(env.names, name)
     Array::push(env.values, fresh)
+    uq_mark()
     fresh
   } else {
     Array::push(seen, name)
@@ -799,20 +821,112 @@ fn uq_pat_names(pat: Pat, out: Array[String]) -> Unit {
   }
 }
 
+/// The patterns of `pats` rewritten under `env`; the given array when no
+/// pattern changed (#2386), a copy that shares the unchanged ones otherwise.
+fn uq_pats_rewrite(pats: Array[Pat], env: UqEnv) -> Array[Pat] {
+  let mut out = pats
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(pats) {
+    let before = uq_marks_now()
+    let p2 = uq_pat_rewrite(Array::get(pats, i), env)
+    if uq_marks_now() == before {
+      if copied {
+        Array::push(out, Array::get(pats, i))
+      } else {
+        ()
+      }
+    } else {
+      if copied {
+        ()
+      } else {
+        out = Array::slice(pats, 0, i)
+        copied = true
+      }
+      Array::push(out, p2)
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn uq_pat_fields_rewrite(fields: Array[(String, Pat)], env: UqEnv) -> Array[(String, Pat)] {
+  let mut out = fields
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(fields) {
+    let f = Array::get(fields, i)
+    let (fname, fp) = f
+    let before = uq_marks_now()
+    let fp2 = uq_pat_rewrite(fp, env)
+    if uq_marks_now() == before {
+      if copied {
+        Array::push(out, f)
+      } else {
+        ()
+      }
+    } else {
+      if copied {
+        ()
+      } else {
+        out = Array::slice(fields, 0, i)
+        copied = true
+      }
+      Array::push(out, (fname, fp2))
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn uq_pat_rewrite(pat: Pat, env: UqEnv) -> Pat {
   match pat {
-    PBind(name) => PBind(uq_lookup(env, name)),
-    PCtor(name, args) => PCtor(name, for a in args {
-      uq_pat_rewrite(a, env)
-    }),
-    PTuple(pats) => PTuple(for a in pats {
-      uq_pat_rewrite(a, env)
-    }),
-    POr(l, r) => POr(uq_pat_rewrite(l, env), uq_pat_rewrite(r, env)),
-    PStruct(name, fields) => PStruct(name, for f in fields {
-      let (fname, fp) = f
-      (fname, uq_pat_rewrite(fp, env))
-    }),
+    PBind(name) => {
+      let before = uq_marks_now()
+      let n2 = uq_lookup(env, name)
+      if uq_marks_now() == before {
+        pat
+      } else {
+        PBind(n2)
+      }
+    },
+    PCtor(name, args) => {
+      let before = uq_marks_now()
+      let args2 = uq_pats_rewrite(args, env)
+      if uq_marks_now() == before {
+        pat
+      } else {
+        PCtor(name, args2)
+      }
+    },
+    PTuple(pats) => {
+      let before = uq_marks_now()
+      let pats2 = uq_pats_rewrite(pats, env)
+      if uq_marks_now() == before {
+        pat
+      } else {
+        PTuple(pats2)
+      }
+    },
+    POr(l, r) => {
+      let before = uq_marks_now()
+      let l2 = uq_pat_rewrite(l, env)
+      let r2 = uq_pat_rewrite(r, env)
+      if uq_marks_now() == before {
+        pat
+      } else {
+        POr(l2, r2)
+      }
+    },
+    PStruct(name, fields) => {
+      let before = uq_marks_now()
+      let fields2 = uq_pat_fields_rewrite(fields, env)
+      if uq_marks_now() == before {
+        pat
+      } else {
+        PStruct(name, fields2)
+      }
+    },
     _ => pat
   }
 }
@@ -831,71 +945,251 @@ fn uq_bind_pat(pat: Pat, env: UqEnv, counter: Array[Int], seen: Array[String]) -
   uq_pat_rewrite(pat, env)
 }
 
+/// `items` walked in order; the given array when no item changed (#2386), a
+/// copy that shares the unchanged items otherwise.
+fn uq_exprs(items: Array[Expr], env: UqEnv, counter: Array[Int], seen: Array[String]) -> Array[Expr] {
+  let mut out = items
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(items) {
+    let before = uq_marks_now()
+    let it2 = uniquify_shadowed_bindings(Array::get(items, i), env, counter, seen)
+    if uq_marks_now() == before {
+      if copied {
+        Array::push(out, Array::get(items, i))
+      } else {
+        ()
+      }
+    } else {
+      if copied {
+        ()
+      } else {
+        out = Array::slice(items, 0, i)
+        copied = true
+      }
+      Array::push(out, it2)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The `(pattern, body)` arms of a match or handle, each bound and walked in
+/// its own scope as before; the given array when no arm changed.
+fn uq_arms(arms: Array[(Pat, Expr)], env: UqEnv, counter: Array[Int], seen: Array[String]) -> Array[(Pat, Expr)] {
+  let mut out = arms
+  let mut copied = false
+  let mut i = 0
+  while i < Array::length(arms) {
+    let a = Array::get(arms, i)
+    let (p, e) = a
+    let before = uq_marks_now()
+    let mark = Array::length(env.names)
+    let p2 = uq_bind_pat(p, env, counter, seen)
+    let e2 = uniquify_shadowed_bindings(e, env, counter, seen)
+    uq_env_restore(env, mark)
+    if uq_marks_now() == before {
+      if copied {
+        Array::push(out, a)
+      } else {
+        ()
+      }
+    } else {
+      if copied {
+        ()
+      } else {
+        out = Array::slice(arms, 0, i)
+        copied = true
+      }
+      Array::push(out, (p2, e2))
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen: Array[String]) -> Expr {
   match expr {
     EInt(_) => expr,
     EFloat(_) => expr,
     EString(_) => expr,
     EBool(_) => expr,
-    EIdent(name, off) => EIdent(uq_lookup(env, name), off),
+    EIdent(name, off) => {
+      let before = uq_marks_now()
+      let n2 = uq_lookup(env, name)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EIdent(n2, off)
+      }
+    },
     EUnit => expr,
     EStringInterp(_) => expr,
-    ETuple(items) => ETuple(for it in items {
-      uniquify_shadowed_bindings(it, env, counter, seen)
-    }),
-    EArray(items) => EArray(for it in items {
-      uniquify_shadowed_bindings(it, env, counter, seen)
-    }),
-    ERecord(rn, fields, targs) => ERecord(rn, for f in fields {
-      let (n, v) = f
-      (n, uniquify_shadowed_bindings(v, env, counter, seen))
-    }, targs),
-    EIf(c, t, e) => EIf(uniquify_shadowed_bindings(c, env, counter, seen), uniquify_shadowed_bindings(t, env, counter, seen), uniquify_shadowed_bindings(e, env, counter, seen)),
+    ETuple(items) => {
+      let before = uq_marks_now()
+      let items2 = uq_exprs(items, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ETuple(items2)
+      }
+    },
+    EArray(items) => {
+      let before = uq_marks_now()
+      let items2 = uq_exprs(items, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EArray(items2)
+      }
+    },
+    ERecord(rn, fields, targs) => {
+      let before = uq_marks_now()
+      let mut out = fields
+      let mut copied = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let f = Array::get(fields, i)
+        let (n, v) = f
+        let fb = uq_marks_now()
+        let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
+        if uq_marks_now() == fb {
+          if copied {
+            Array::push(out, f)
+          } else {
+            ()
+          }
+        } else {
+          if copied {
+            ()
+          } else {
+            out = Array::slice(fields, 0, i)
+            copied = true
+          }
+          Array::push(out, (n, v2))
+        }
+        i = i + 1
+      }
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ERecord(rn, out, targs)
+      }
+    },
+    EIf(c, t, e) => {
+      let before = uq_marks_now()
+      let c2 = uniquify_shadowed_bindings(c, env, counter, seen)
+      let t2 = uniquify_shadowed_bindings(t, env, counter, seen)
+      let e2 = uniquify_shadowed_bindings(e, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EIf(c2, t2, e2)
+      }
+    },
     ELet(n, v, b, soff) => {
+      let before = uq_marks_now()
       let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
       let mark = Array::length(env.names)
       let n2 = uq_bind_name(n, env, counter, seen)
       let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
       uq_env_restore(env, mark)
-      ELet(n2, v2, b2, soff)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ELet(n2, v2, b2, soff)
+      }
     },
     ELetRec(n, v, b) => {
+      let before = uq_marks_now()
       let mark = Array::length(env.names)
       let n2 = uq_bind_name(n, env, counter, seen)
       let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
       let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
       uq_env_restore(env, mark)
-      ELetRec(n2, v2, b2)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ELetRec(n2, v2, b2)
+      }
     },
     ELetMut(n, v, b, soff) => {
+      let before = uq_marks_now()
       let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
       let mark = Array::length(env.names)
       let n2 = uq_bind_name(n, env, counter, seen)
       let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
       uq_env_restore(env, mark)
-      ELetMut(n2, v2, b2, soff)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ELetMut(n2, v2, b2, soff)
+      }
     },
-    EAssign(n, v, b) => EAssign(uq_lookup(env, n), uniquify_shadowed_bindings(v, env, counter, seen), uniquify_shadowed_bindings(b, env, counter, seen)),
-    EAssignOp(n, op, v, b) => EAssignOp(uq_lookup(env, n), op, uniquify_shadowed_bindings(v, env, counter, seen), uniquify_shadowed_bindings(b, env, counter, seen)),
-    ESeq(a, b) => ESeq(uniquify_shadowed_bindings(a, env, counter, seen), uniquify_shadowed_bindings(b, env, counter, seen)),
-    EMatch(s, arms) => EMatch(uniquify_shadowed_bindings(s, env, counter, seen), for a in arms {
-      let (p, e) = a
-      let mark = Array::length(env.names)
-      let p2 = uq_bind_pat(p, env, counter, seen)
-      let e2 = uniquify_shadowed_bindings(e, env, counter, seen)
-      uq_env_restore(env, mark)
-      (p2, e2)
-    }),
-    EHandle(s, arms) => EHandle(uniquify_shadowed_bindings(s, env, counter, seen), for a in arms {
-      let (p, e) = a
-      let mark = Array::length(env.names)
-      let p2 = uq_bind_pat(p, env, counter, seen)
-      let e2 = uniquify_shadowed_bindings(e, env, counter, seen)
-      uq_env_restore(env, mark)
-      (p2, e2)
-    }),
-    EWhile(c, b) => EWhile(uniquify_shadowed_bindings(c, env, counter, seen), uniquify_shadowed_bindings(b, env, counter, seen)),
+    EAssign(n, v, b) => {
+      let before = uq_marks_now()
+      let n2 = uq_lookup(env, n)
+      let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
+      let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EAssign(n2, v2, b2)
+      }
+    },
+    EAssignOp(n, op, v, b) => {
+      let before = uq_marks_now()
+      let n2 = uq_lookup(env, n)
+      let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
+      let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EAssignOp(n2, op, v2, b2)
+      }
+    },
+    ESeq(a, b) => {
+      let before = uq_marks_now()
+      let a2 = uniquify_shadowed_bindings(a, env, counter, seen)
+      let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ESeq(a2, b2)
+      }
+    },
+    EMatch(s, arms) => {
+      let before = uq_marks_now()
+      let s2 = uniquify_shadowed_bindings(s, env, counter, seen)
+      let arms2 = uq_arms(arms, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EMatch(s2, arms2)
+      }
+    },
+    EHandle(s, arms) => {
+      let before = uq_marks_now()
+      let s2 = uniquify_shadowed_bindings(s, env, counter, seen)
+      let arms2 = uq_arms(arms, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EHandle(s2, arms2)
+      }
+    },
+    EWhile(c, b) => {
+      let before = uq_marks_now()
+      let c2 = uniquify_shadowed_bindings(c, env, counter, seen)
+      let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EWhile(c2, b2)
+      }
+    },
     ELoop(params, b) => {
+      let before = uq_marks_now()
       let mark = Array::length(env.names)
       let initialized: Array[(String, Expr)] = []
       let mut pi = 0
@@ -915,9 +1209,14 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
       }
       let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
       uq_env_restore(env, mark)
-      ELoop(zipped, b2)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ELoop(zipped, b2)
+      }
     },
     EForIn(n, idx, it, b) => {
+      let before = uq_marks_now()
       let it2 = uniquify_shadowed_bindings(it, env, counter, seen)
       let mark = Array::length(env.names)
       let n2 = uq_bind_name(n, env, counter, seen)
@@ -929,14 +1228,43 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
       }
       let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
       uq_env_restore(env, mark)
-      EForIn(n2, idx2, it2, b2)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EForIn(n2, idx2, it2, b2)
+      }
     },
-    ECall(callee, args, off) => ECall(uniquify_shadowed_bindings(callee, env, counter, seen), for a in args {
-      uniquify_shadowed_bindings(a, env, counter, seen)
-    }, off),
-    EBinOp(op, l, r, boff) => EBinOp(op, uniquify_shadowed_bindings(l, env, counter, seen), uniquify_shadowed_bindings(r, env, counter, seen), boff),
-    EUnaryOp(op, e) => EUnaryOp(op, uniquify_shadowed_bindings(e, env, counter, seen)),
+    ECall(callee, args, off) => {
+      let before = uq_marks_now()
+      let callee2 = uniquify_shadowed_bindings(callee, env, counter, seen)
+      let args2 = uq_exprs(args, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ECall(callee2, args2, off)
+      }
+    },
+    EBinOp(op, l, r, boff) => {
+      let before = uq_marks_now()
+      let l2 = uniquify_shadowed_bindings(l, env, counter, seen)
+      let r2 = uniquify_shadowed_bindings(r, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EBinOp(op, l2, r2, boff)
+      }
+    },
+    EUnaryOp(op, e) => {
+      let before = uq_marks_now()
+      let e2 = uniquify_shadowed_bindings(e, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EUnaryOp(op, e2)
+      }
+    },
     EFn(tp, bounds, params, ret, eff, body) => {
+      let before = uq_marks_now()
       let mark = Array::length(env.names)
       let params2: Array[(String, Option[TypeExpr])] = []
       let mut fi = 0
@@ -948,23 +1276,102 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
       }
       let body2 = uniquify_shadowed_bindings(body, env, counter, seen)
       uq_env_restore(env, mark)
-      EFn(tp, bounds, params2, ret, eff, body2)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EFn(tp, bounds, params2, ret, eff, body2)
+      }
     },
-    EDot(e, field, off, fdoff) => EDot(uniquify_shadowed_bindings(e, env, counter, seen), field, off, fdoff),
-    ELabeledArg(label, modifier, v) => ELabeledArg(label, modifier, uniquify_shadowed_bindings(v, env, counter, seen)),
-    EReturn(e) => EReturn(uniquify_shadowed_bindings(e, env, counter, seen)),
+    EDot(e, field, off, fdoff) => {
+      let before = uq_marks_now()
+      let e2 = uniquify_shadowed_bindings(e, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EDot(e2, field, off, fdoff)
+      }
+    },
+    ELabeledArg(label, modifier, v) => {
+      let before = uq_marks_now()
+      let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ELabeledArg(label, modifier, v2)
+      }
+    },
+    EReturn(e) => {
+      let before = uq_marks_now()
+      let e2 = uniquify_shadowed_bindings(e, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EReturn(e2)
+      }
+    },
     EBreak(opt) => match opt {
-      Some(v) => EBreak(Some(uniquify_shadowed_bindings(v, env, counter, seen))),
-      None => EBreak(None)
+      Some(v) => {
+        let before = uq_marks_now()
+        let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
+        if uq_marks_now() == before {
+          expr
+        } else {
+          EBreak(Some(v2))
+        }
+      },
+      None => expr
     },
-    EContinue(args) => EContinue(for a in args {
-      uniquify_shadowed_bindings(a, env, counter, seen)
-    }),
-    EMap(fields) => EMap(for f in fields {
-      let (k, v) = f
-      (k, uniquify_shadowed_bindings(v, env, counter, seen))
-    }),
-    ESpread(e) => ESpread(uniquify_shadowed_bindings(e, env, counter, seen))
+    EContinue(args) => {
+      let before = uq_marks_now()
+      let args2 = uq_exprs(args, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EContinue(args2)
+      }
+    },
+    EMap(fields) => {
+      let before = uq_marks_now()
+      let mut out = fields
+      let mut copied = false
+      let mut i = 0
+      while i < Array::length(fields) {
+        let f = Array::get(fields, i)
+        let (k, v) = f
+        let fb = uq_marks_now()
+        let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
+        if uq_marks_now() == fb {
+          if copied {
+            Array::push(out, f)
+          } else {
+            ()
+          }
+        } else {
+          if copied {
+            ()
+          } else {
+            out = Array::slice(fields, 0, i)
+            copied = true
+          }
+          Array::push(out, (k, v2))
+        }
+        i = i + 1
+      }
+      if uq_marks_now() == before {
+        expr
+      } else {
+        EMap(out)
+      }
+    },
+    ESpread(e) => {
+      let before = uq_marks_now()
+      let e2 = uniquify_shadowed_bindings(e, env, counter, seen)
+      if uq_marks_now() == before {
+        expr
+      } else {
+        ESpread(e2)
+      }
+    }
   }
 }
 
