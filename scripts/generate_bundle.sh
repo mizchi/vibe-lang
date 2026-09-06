@@ -1162,6 +1162,29 @@ if [ -n "$ADAPTER_MODULE_SOURCE_OUT" ]; then
   cp "$ADAPTER_MODULE_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_OUT_TMP"
   mv "$ADAPTER_MODULE_SOURCE_OUT_TMP" "$ADAPTER_MODULE_SOURCE_OUT"
 fi
+# #2497: the compile-only artifact is the SAME merged program DCE-rooted at
+# `main_compile_only` (cli_adapter.vibe) instead of `main`. Its lane tables
+# name only the production compiles, so the gc backend, the instrumentation
+# compiles and the rc-shadow lane fall out of the reachability walk here, at
+# emission -- the wasm never contains them (scripts/check_compile_only_lanes.sh
+# is the proof). Opt-in and NOT one of the five ensured artifacts: only
+# scripts/build_compile_only.sh asks for it, so the ordinary generation pays
+# nothing. No seed validation compile either -- the consumer compiles it
+# immediately, which is the same check.
+COMPILE_ONLY_MODULE_SOURCE_OUT="${VIBE_COMPILE_ONLY_MODULE_SOURCE_OUT:-}"
+if [ -n "$COMPILE_ONLY_MODULE_SOURCE_OUT" ]; then
+  trace_begin "compile-only module source"; _t="$TRACE_TOKEN"
+  mkdir -p "$(dirname "$COMPILE_ONLY_MODULE_SOURCE_OUT")" "$PROJECT_ROOT/_build"
+  COMPILE_ONLY_MODULE_SOURCE_TMP="$(mktemp "$PROJECT_ROOT/_build/cli_compile_only_module_source.XXXXXX")"
+  run_host_vibe_cmd emit-module-source "$ADAPTER_MERGED_SOURCE_FILE" "$COMPILE_ONLY_MODULE_SOURCE_TMP" "main_compile_only" >/dev/null
+  if [ ! -s "$COMPILE_ONLY_MODULE_SOURCE_TMP" ]; then
+    echo "generate_bundle: compile-only module source (root main_compile_only) was not produced" >&2
+    cat "$COMPILE_ONLY_MODULE_SOURCE_TMP.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  mv "$COMPILE_ONLY_MODULE_SOURCE_TMP" "$COMPILE_ONLY_MODULE_SOURCE_OUT"
+  trace_end "$_t" 0
+fi
 trace_begin "adapter bundle (pass 2)"; _t="$TRACE_TOKEN"
 write_adapter_bundle "$ADAPTER_MERGED_SOURCE_FILE" "$ADAPTER_MODULE_SOURCE_FILE"
 trace_end "$_t" 0
