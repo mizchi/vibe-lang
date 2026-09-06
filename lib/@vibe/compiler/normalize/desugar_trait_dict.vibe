@@ -1383,7 +1383,10 @@ fn trait_operation_param_name(ty: TypeExpr, index: Int, dispatch: String) -> Str
 /// Derive public `Trait::operation` wrappers without introducing bare names.
 export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
   let additions = array_empty()
-  let original_len = Array::length(stmts)
+  // #2388: only the module's own traits get operations; the context (if any)
+  // sits after `original_len` and is carried through the reorder untouched.
+  let original_len = dtd_own_end(stmts)
+  let total = Array::length(stmts)
   let traits_raw = collect_namespace_traits(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)
@@ -1516,9 +1519,20 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
   } else {
     ()
   }
+  let mut ti = original_len
+  while ti < total {
+    Array::push(ordered, Array::get(stmts, ti))
+    ti = ti + 1
+  }
+  Array::set(dtd_own_growth, 0, Array::get(dtd_own_growth, 0) + Array::length(additions))
+  if Array::get(dtd_own_limit, 0) >= 0 {
+    Array::set(dtd_own_limit, 0, Array::get(dtd_own_limit, 0) + Array::length(additions))
+  } else {
+    ()
+  }
   let mut oi = 0
   while oi < Array::length(ordered) {
-    if oi < original_len {
+    if oi < total {
       Array::set(stmts, oi, Array::get(ordered, oi))
     } else {
       Array::push(stmts, Array::get(ordered, oi))
@@ -15499,6 +15513,7 @@ fn collect_decl_type_names(stmts: Array[Stmt]) -> Array[String] {
 
 export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let gen = empty_stmt_list()
+  let own_end = dtd_own_end(stmts)
   let known_types = collect_decl_type_names(stmts)
   // #2136: the type variables a generated `Array[e]` helper has to bind. Filled
   // here because this is the first pass that generates one, and read again by
@@ -15511,7 +15526,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let arr_elems = empty_type_exprs()
   let arr_keys = empty_str_array()
   let mut i = 0
-  while i < Array::length(stmts) {
+  while i < own_end {
     match Array::get(stmts, i) {
       SStruct(_, name, fields0, derives, _, decl_tparams) => {
         // #2141: the declaration's tparams scope its field types -- re-spell
@@ -15623,7 +15638,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
   let elem_types = empty_type_exprs()
   let elem_keys = empty_str_array()
   let mut si = 0
-  while si < Array::length(stmts) {
+  while si < own_end {
     match Array::get(stmts, si) {
       // #2141: read the fields/payloads through the same decl-tparams
       // re-spelling the generator arms use, or this walk predicts an
@@ -16818,7 +16833,7 @@ fn dlh_hoist_stmt(stmt: Stmt, hoisted: Array[Stmt], ctr: Array[Int]) -> Stmt {
 export fn desugar_hoist_local_lambdas(stmts: Array[Stmt]) -> Unit {
   let hoisted = array_empty()
   let ctr = [0]
-  let n = Array::length(stmts)
+  let n = dtd_own_end(stmts)
   let mut i = 0
   while i < n {
     Array::set(stmts, i, dlh_hoist_stmt(Array::get(stmts, i), hoisted, ctr))
@@ -20187,6 +20202,59 @@ export fn desugar_trait_dicts(stmts: Array[Stmt]) -> Unit with Exception {
 /// before any rewrite reads it.
 let dtd_typed_eq_offs: Array[Int] = []
 
+/// #2388: the "declared here" boundary of a per-module run. The module entry
+/// (`desugar_trait_dicts_module`) lays the module's own statements first and
+/// its dependency interface after them, and records both lengths here, so the
+/// synthesis sites (derives, namespace operations, lambda hoisting, the rewrite
+/// loop, dict structs) work on the module's statements only and read the
+/// context for lookups. -1 (the whole-program entry) means everything is own.
+let dtd_own_limit: Array[Int] = [0 - 1]
+
+let dtd_ctx_len: Array[Int] = [0]
+
+/// Statements a stage inserted INSIDE the module's own region (the trait
+/// namespace operations land right after their trait, not at the end), so
+/// the module entry knows where its own region ends after the run.
+let dtd_own_growth: Array[Int] = [0]
+
+/// End (exclusive) of the module's own statements; the whole array when no
+/// module boundary is set.
+fn dtd_own_end(stmts: Array[Stmt]) -> Int {
+  let lim = Array::get(dtd_own_limit, 0)
+  if lim < 0 || lim > Array::length(stmts) {
+    Array::length(stmts)
+  } else {
+    lim
+  }
+}
+
+/// Whether index `i` is a module-owned statement: everything before the
+/// boundary, plus everything appended after the context block (the pass's
+/// own synthesized statements).
+fn dtd_is_own_index(i: Int) -> Bool {
+  let lim = Array::get(dtd_own_limit, 0)
+  lim < 0 || i < lim || i >= lim + Array::get(dtd_ctx_len, 0)
+}
+
+/// Whether `trait_name` is declared among the module's own statements.
+fn dtd_trait_declared_here(stmts: Array[Stmt], trait_name: String) -> Bool {
+  let own_end = dtd_own_end(stmts)
+  let mut i = 0
+  let mut found = false
+  while i < own_end && !found {
+    match Array::get(stmts, i) {
+      STrait(_, n, _, _, _, _) => if n == trait_name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 let dtd_typed_eq_keys: Array[String] = []
 
 fn dtd_typed_eq_key_for(boff: Int) -> String {
@@ -20314,6 +20382,62 @@ fn eq_ty_mentions_scope_formal(t: TypeExpr) -> Bool {
 }
 
 export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
+  Array::set(dtd_own_limit, 0, 0 - 1)
+  Array::set(dtd_ctx_len, 0, 0)
+  dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+}
+
+/// #2388: the per-module entry. `own` is the module's statements, rewritten in
+/// place; `ctx` is its dependency interface -- the type / trait declarations,
+/// bounded-generic function definitions and explicit `T::op` definitions it
+/// can see through its imports, in their pre-pass (contract) form -- read for
+/// lookups and never emitted. Returns the statements the pass appended: the
+/// derived operations of the module's own types (`T::equals`, …) and the
+/// program-level helpers they and the module's `==` sites need
+/// (`__arr_equals__*`, `__map_equals__*`, the exn-kind cell). A caller links
+/// them once per name across modules; a `T::op` for a type this module
+/// declares is this module's definition. Only the trait namespace operations
+/// are placed inside `own` (right after their trait, as the whole-program
+/// entry does), which is why the entry tracks how much the own region grew.
+export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Array[Stmt] with Exception {
+  let stmts: Array[Stmt] = []
+  let mut i = 0
+  while i < Array::length(own) {
+    Array::push(stmts, Array::get(own, i))
+    i = i + 1
+  }
+  let mut ci = 0
+  while ci < Array::length(ctx) {
+    Array::push(stmts, Array::get(ctx, ci))
+    ci = ci + 1
+  }
+  Array::set(dtd_own_limit, 0, Array::length(own))
+  Array::set(dtd_ctx_len, 0, Array::length(ctx))
+  Array::set(dtd_own_growth, 0, 0)
+  dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  let own_n = Array::length(own)
+  let own_end = own_n + Array::get(dtd_own_growth, 0)
+  let mut wi = 0
+  while wi < own_end {
+    if wi < own_n {
+      Array::set(own, wi, Array::get(stmts, wi))
+    } else {
+      Array::push(own, Array::get(stmts, wi))
+    }
+    wi = wi + 1
+  }
+  let synthesized: Array[Stmt] = []
+  let mut si = own_end + Array::length(ctx)
+  while si < Array::length(stmts) {
+    Array::push(synthesized, Array::get(stmts, si))
+    si = si + 1
+  }
+  Array::set(dtd_own_limit, 0, 0 - 1)
+  Array::set(dtd_ctx_len, 0, 0)
+  synthesized
+}
+
+fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
   // #2441: (re)populate the typed-`==` table for THIS program before any
   // rewrite can read it.
   Array::truncate(dtd_typed_eq_offs, 0)
@@ -20453,12 +20577,16 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
-    match merged_source_boundary_local_names(stmt) {
-      Some(local_names) => {
-        user_assert_eq_set_merged_source(stmts, i + 1, local_names)
-        dtd_builtin_iterator_set_boundary(local_names)
-      },
-      None => Array::set(stmts, i, rewrite_stmt(stmt, gens, traits, struct_sets, fn_returns, toplevel_vars))
+    if !dtd_is_own_index(i) {
+      ()
+    } else {
+      match merged_source_boundary_local_names(stmt) {
+        Some(local_names) => {
+          user_assert_eq_set_merged_source(stmts, i + 1, local_names)
+          dtd_builtin_iterator_set_boundary(local_names)
+        },
+        None => Array::set(stmts, i, rewrite_stmt(stmt, gens, traits, struct_sets, fn_returns, toplevel_vars))
+      }
     }
     i = i + 1
   }
@@ -20485,7 +20613,7 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
     let mut ti = 0
     while ti < Array::length(traits) {
       let (trait_name, sigs) = Array::get(traits, ti)
-      if struct_decl_exists(stmts, dict_struct_name(trait_name)) {
+      if struct_decl_exists(stmts, dict_struct_name(trait_name)) || !dtd_trait_declared_here(stmts, trait_name) {
         ()
       } else {
         // #2286: record the provenance at the ONE point a dict struct is

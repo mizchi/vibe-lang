@@ -1,0 +1,106 @@
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts, desugar_trait_dicts_module
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+// #2388: the per-module entry of the trait-dictionary pass. A dependency file
+// declares a trait, an impl and a bounded-generic function; the module file
+// declares a struct and a bounded-generic function that calls the
+// dependency's. Run whole-program (both files in one array) and per-module
+// (the module's statements plus the dependency's statements as a read-only
+// context), the module's function must come out the same -- the witness
+// threaded into the call -- and the context must not pick up definitions
+// that belong to its own module (its trait's namespace operation and dict
+// struct), while the program-level helpers land in the synthesized set.
+
+fn dep_src() -> String {
+  "export trait Hash {\n  hash_key(Self) -> String\n}\n\nimpl Hash for String {\n  hash_key(self) -> String {\n    self\n  }\n}\n\nexport fn map_key_to_string[K: Hash](key: K) -> String {\n  K::hash_key(key)\n}\n"
+}
+
+fn own_src() -> String {
+  "struct Set[T] {\n  entries: Map[String, T]\n}\n\nexport fn contains[T: Hash](s: Set[T], value: T) -> Bool {\n  Map::has_key(s.entries, map_key_to_string(value))\n}\n"
+}
+
+fn render_named(stmts: Array[Stmt], name: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => if n == name {
+        out = print_stmt(Array::get(stmts, i))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn stmt_names(stmts: Array[Stmt]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let n = match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => n,
+      SStruct(_, n, _, _, _, _) => String::concat("struct ", n),
+      STrait(_, n, _, _, _, _) => String::concat("trait ", n),
+      SImpl(_, _, n, _) => String::concat("impl ", n),
+      _ => "?"
+    }
+    out = String::concat(out, String::concat(if i == 0 {
+      ""
+    } else {
+      ", "
+    }, n))
+    i = i + 1
+  }
+  out
+}
+
+fn whole_contains() -> String with Exception {
+  let stmts = parse_program(lex(String::concat(dep_src(), own_src())))
+  desugar_trait_dicts(stmts)
+  render_named(stmts, "contains")
+}
+
+test "the module entry threads the witness into a call of the context's bounded generic" {
+  let ctx = parse_program(lex(dep_src()))
+  let own = parse_program(lex(own_src()))
+  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  inspect(render_named(own, "contains") == whole_contains(), content = "true")
+  inspect(render_named(own, "contains"), content = "export let rec contains = [T: Hash](__dict_Hash_T: HashDict[T], s: Set[T], value: T) -> Bool { Map::has_key(s.entries, map_key_to_string(__dict_Hash_T, value)) }")
+  // The context is read, never rewritten or extended: its trait gets no
+  // operation and no dict struct from this module's run. What the pass
+  // appends -- the module's own derived comparator and the program-level
+  // helper it needs -- comes back as the synthesized set.
+  inspect(stmt_names(ctx), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string")
+  inspect(stmt_names(own), content = "struct Set, contains")
+  inspect(stmt_names(synth), content = "Set::equals, __map_equals__N6_String__N7___Vfp_T")
+}
+
+test "the whole-program entry is the module entry with no context and everything own" {
+  let stmts = parse_program(lex(String::concat(dep_src(), own_src())))
+  desugar_trait_dicts(stmts)
+  inspect(stmt_names(stmts), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key, struct Set, contains, Set::equals, __map_equals__N6_String__N7___Vfp_T, struct HashDict")
+}
+
+test "the dependency's own run places its trait operation inside the module and its dict struct in the synthesized set" {
+  let own = parse_program(lex(dep_src()))
+  let ctx = parse_program(lex(own_src()))
+  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  // The namespace operation is inserted after the trait's impls and the
+  // lets that follow them, growing the module's own region; the context's
+  // struct is not derived for here.
+  inspect(stmt_names(own), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key")
+  inspect(stmt_names(synth), content = "struct HashDict")
+  inspect(stmt_names(ctx), content = "struct Set, contains")
+}
