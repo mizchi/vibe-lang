@@ -71,23 +71,23 @@ first, then take the leftover.
 |---|---|---|
 | `gen_eq_body` (codegen, RC lane) | [#2522](https://github.com/mizchi/vibe-lang/pull/2522) | #2474's runtime guard. **Decide before merging**: #2529 rejects that case at check time, so what is left for the guard is the flat single-source lane, at +312 B per emitted module |
 
-### P0 — silently wrong (5)
+### P0 — silently wrong (4)
 
 | # | what |
 |---|---|
 | #2523 | `Eq` is a marker trait, so `[T: Eq]` compares a user aggregate by reference identity — and `derive (Eq)` does not even satisfy the bound. Giving `Eq` a real `equals` method is the fix, and it is an ADR-level change to a builtin trait |
 | #2475 | untyped-empty array pushes under a source-owned `struct Int` cannot tell a literal from the struct |
-| #2427 | the CLI-core build traps in `__rt_str_concat` with a corrupt `(ptr\|len)`; cross-cutting (parser anchors, checker offsets, RC shadow table have each been narrowed on it) |
 | #2381 | `vibe symbols` silently ignores extra arguments, and has no batch mode |
 | #2378 | a library `fn` silently replaces a same-named builtin program-wide |
 
-### P1 — crashes, or cannot be written (4)
+### P1 — crashes, or cannot be written (5)
 
 | # | what |
 |---|---|
 | #2535 | a module-level `let` initialized with two or more Bool literals (`[false, false]`) makes the next top-level item "unexpected token" |
 | #2527 | defining a `fn` named `id` or `call` that returns `Expr` makes an unrelated file fail with "cannot interpolate a value of type `Expr`" |
 | #2444 | `try { } with { }` says a handler arm must be fully qualified while the arm already is exactly that |
+| #2349 | `mapfile` (bash 4) keeps six gate scripts from running on macOS stock bash, so local sign-off is impossible there |
 | #2199 | OOB aborts name operation / index / length but carry no source provenance (rides #1987) |
 
 ### P2 carrying `blocker` — the entrance to a subtree
@@ -117,11 +117,12 @@ The rest of the open set is P2 outside a subtree — `gh issue list --state open
 --label P2` is the list, and nothing in it blocks anything else. Small ones with
 a stated, bounded scope, if you want one to start on: **#2538** (a test that is
 red on main and wired into no gate, so nothing has been protecting it),
-**#2349** (`mapfile` keeps the formatter gates from running on macOS stock
-bash), **#2437** and **#2449** (the module and inline lanes still compile with
-their typed-lowering tables empty; both end at the same statement-merge shape,
-so do them together), **#2442** (bare-name builtin value forms, blocked only on
-teaching the lambda-site planner scope).
+**#2437** and **#2449** (the module and inline lanes still compile with their
+typed-lowering tables empty; both end at the same statement-merge shape, so do
+them together), **#2442** (bare-name builtin value forms, blocked only on
+teaching the lambda-site planner scope), **#2555** (delete the sidecar codec's
+hand-rolled renderer and unary counts — the bug they route around was a
+misdiagnosis and is closed).
 
 ## How to use sub-issues
 
@@ -156,12 +157,12 @@ serially. Running across lanes is free.**
 |---|---|---|---|
 | **A. eq dispatch** | `checker/checker_stmt.vibe`, `normalize/desugar_trait_dict.vibe` | #2523 (P0), then #2475 (P0), then #2501 | one lane, not two: the eq-row producer and its consumer are in these two files, and #2501 splits the second one, so it has to follow rather than run beside them |
 | **B. parser** | `lib/@vibe/parser/**` | #2535 (P1), #2527 (P1) | |
-| **C. loader / module lane** | `runtime/runtime.vibe`, `runtime/typecheck_fs.vibe`, `entry/compiler/**` | #2437 → #2449, #2521 | #2437 and #2449 end at the same statement-merge shape; doing them apart means writing it twice |
+| **C. loader / module lane** | `runtime/runtime.vibe`, `runtime/typecheck_fs.vibe`, `entry/compiler/**` | #2437 → #2449, #2521, #2555 | #2437 and #2449 end at the same statement-merge shape; doing them apart means writing it twice |
 | **D. incremental / cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1959 → #1960, #2388, #2510 | **same files as lane C**, so C and D serialize with each other |
-| **E. codegen / RC** | `codegen/**` | #2427 (P0, cross-cutting), #2389, #1980, #1934 | |
+| **E. codegen / RC** | `codegen/**` | #2389, #1980, #1934 | |
 | **F. runtime / host** | `runtime/viberun`, abort provenance | #2199 (rides #1987), #2397 | |
 | **G. CLI / editor queries** | `lib/@vibe/cli/**`, `entry/cli_cache` | #2381 (P0), #2378 (P0), #1943, #2499 | |
-| **H. scripts / gates** | `scripts/**`, `tests/gates/**` | #2538, #2349, #2001 | |
+| **H. scripts / gates** | `scripts/**`, `tests/gates/**` | #2349 (P1), #2538, #2001 | |
 | **I. docs** | `docs/**`, `book/**` | #2002, #2146, #1346 | conflicts only on the cheatsheet |
 
 The #2386 perf subtree deliberately touches every lane — its slices land as many
