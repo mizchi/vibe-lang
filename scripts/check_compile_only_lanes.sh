@@ -95,9 +95,18 @@ if [ -z "$ARTIFACT" ]; then
 fi
 [ -s "$ARTIFACT" ] || fail "artifact not found: $ARTIFACT"
 
-WORK="$ROOT_DIR/_build/_compile_only_lanes"
-rm -rf "$WORK"; mkdir -p "$WORK"
+# Private scratch: the gate and its self-test may run side by side.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/compile_only_lanes.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+# Clear every CLI selector the launcher knows before each probe compile, so an
+# inherited one (`VIBE_CHECK_ONLY=1` in the caller's environment) cannot turn
+# the compile into another verb. Same source as scripts/build_compile_only.sh:
+# runtime/vibe's VIBE_SELECTOR_ORDER, kept in sync with cli_adapter.vibe by
+# scripts/check_selector_precedence.sh.
+SELECTOR_ORDER="$(sed -n '/^VIBE_SELECTOR_ORDER="/,/"$/p' "$ROOT_DIR/runtime/vibe" | tr -d '"' | sed 's/^VIBE_SELECTOR_ORDER=//')"
+[ -n "$SELECTOR_ORDER" ] || fail "runtime/vibe has no VIBE_SELECTOR_ORDER"
+CLEAR_ARGS=""
+for s in $SELECTOR_ORDER; do CLEAR_ARGS="$CLEAR_ARGS -u $s"; done
 # Allocating, so the RC and bump lanes have something to differ on.
 cat > "$WORK/probe.vibe" <<'VIBE'
 fn main() -> Int {
@@ -112,7 +121,7 @@ compile_probe() { # <label> <env assignments...>; sets PROBE_OUT / PROBE_DIAG
   PROBE_OUT="$WORK/$label.wasm"
   PROBE_DIAG=""
   rm -f "$PROBE_OUT" "$PROBE_OUT.diag"
-  env "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  env $CLEAR_ARGS -u VIBE_RC -u VIBE_CODEGEN_BODY_CACHE "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke "$ENTRY" "$ARTIFACT" \
     "$WORK/probe.vibe" "$PROBE_OUT" main >"$WORK/$label.log" 2>&1 || true
   if [ -f "$PROBE_OUT.diag" ]; then
@@ -121,11 +130,11 @@ compile_probe() { # <label> <env assignments...>; sets PROBE_OUT / PROBE_DIAG
   return 0
 }
 
-# 2. refusal, one switch at a time, each on top of an otherwise clean env
-# (`env -u` so a caller's exported VIBE_RC / VIBE_BACKEND cannot leak in).
+# 2. refusal, one switch at a time, each on top of the cleared env above (so
+# a caller's exported VIBE_RC / VIBE_BACKEND cannot leak in either).
 refuse() { # <switch NAME=VALUE>
   local switch="$1"
-  compile_probe "refuse_${switch%%=*}" -u VIBE_RC -u VIBE_BACKEND -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_COVERAGE -u VIBE_CODEGEN_BODY_CACHE "$switch"
+  compile_probe "refuse_${switch%%=*}" "$switch"
   if [ -s "$PROBE_OUT" ]; then
     fail "$switch was ACCEPTED by $ARTIFACT (invoke $ENTRY): it compiled the probe instead of refusing the lane"
   fi
@@ -141,10 +150,10 @@ echo "compile-only-lanes: refusal ok (6 switches refused by name)"
 
 # 3. acceptance: the default (RC) lane and the bump lane compile; they differ;
 # the default output runs.
-compile_probe default -u VIBE_RC -u VIBE_BACKEND -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_COVERAGE -u VIBE_CODEGEN_BODY_CACHE
+compile_probe default
 [ -s "$PROBE_OUT" ] || fail "the default lane did not compile the probe: ${PROBE_DIAG:-<no diag>}"
 DEFAULT_OUT="$PROBE_OUT"
-compile_probe bump -u VIBE_BACKEND -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_COVERAGE -u VIBE_CODEGEN_BODY_CACHE VIBE_RC=0
+compile_probe bump VIBE_RC=0
 [ -s "$PROBE_OUT" ] || fail "the bump lane (VIBE_RC=0) did not compile the probe: ${PROBE_DIAG:-<no diag>}"
 cmp -s "$DEFAULT_OUT" "$PROBE_OUT" && fail "the default and VIBE_RC=0 outputs are identical, so the probe cannot tell the two lanes apart"
 got="$(bash scripts/run_wasm_vibe_host_runner.sh "$DEFAULT_OUT" 2>/dev/null | tail -1 | tr -d '[:space:]')"

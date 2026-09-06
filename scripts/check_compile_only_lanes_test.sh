@@ -14,7 +14,10 @@
 #
 # Fixture: the named compile-only artifact the gate builds
 # (_build/compile_only/vibe_compile_only.names.wasm); built here when absent.
-# COMPILE_ONLY_STAGE2 overrides the compiler, as for the gate.
+# In release-check this task depends on check-compile-only-lanes, so the gate
+# has finished writing it before this reads it; the gate's own scratch is a
+# private mktemp directory, so the two never share a path even when run side
+# by side. COMPILE_ONLY_STAGE2 overrides the compiler, as for the gate.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -93,7 +96,8 @@ LEAK_SRC="$TMP/leak.vibe"
   printf '  acc\n}\n'
 } > "$LEAK_SRC"
 LEAK="$TMP/leak.wasm"
-env -u VIBE_RC -u VIBE_BACKEND VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+env $(sed -n '/^VIBE_SELECTOR_ORDER="/,/"$/p' "$ROOT_DIR/runtime/vibe" | tr -d '"' | sed 's/^VIBE_SELECTOR_ORDER=//' | sed 's/\(VIBE_[A-Z_]*\)/-u \1/g') \
+  -u VIBE_RC VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$LEAK_SRC" "$LEAK" main >"$TMP/leak.build.log" 2>&1 || true
 [ -s "$LEAK" ] || { echo "check_compile_only_lanes_test: FAIL (leak): probe did not compile" >&2; cat "$LEAK.diag" 2>/dev/null >&2; exit 1; }
 node scripts/wasm_func_sizes.mjs "$LEAK" --top 1000000 | grep -q 'compile_file_fs_mode_gc' \
