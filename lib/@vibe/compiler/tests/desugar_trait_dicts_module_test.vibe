@@ -28,6 +28,18 @@ fn own_src() -> String {
   "struct Set[T] {\n  entries: Map[String, T]\n}\n\nexport fn contains[T: Hash](s: Set[T], value: T) -> Bool {\n  Map::has_key(s.entries, map_key_to_string(value))\n}\n\nstruct Pair {\n  p: (Int, String)\n}\n\nexport fn fail_own(msg: String) -> Int with Exception {\n  throw(msg)\n}\n"
 }
 
+// #2563 review: a dependency with a labeled-parameter function and a trivial
+// pass-through wrapper, and a module that calls both -- the wrapper directly,
+// the labeled function from a non-capturing effectful local lambda, which
+// `desugar_hoist_local_lambdas` promotes to a top-level function.
+fn dep2_src() -> String {
+  "export fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nexport fn apply(f: () -> Int) -> Int {\n  f()\n}\n"
+}
+
+fn own2_src() -> String {
+  "fn forty_two() -> Int {\n  42\n}\n\nexport fn via_apply() -> Int {\n  apply(forty_two)\n}\n\nexport fn use_local() -> Int with Log {\n  let f = (a: Int) -> Int with Log {\n    perform Log::Emit(\"x\")\n    let g = (b: Int, c?: Int) -> Int {\n      b\n    }\n    g(a)\n  }\n  f(2)\n}\n"
+}
+
 fn render_named(stmts: Array[Stmt], name: String) -> String {
   let mut out = ""
   let mut i = 0
@@ -115,4 +127,36 @@ test "generated local names restart at every declaration, so a module compiled a
   inspect(render_named(own, "fail_own"), content = "export let rec fail_own = (msg: String) -> Int with Exception { { let __exn_payload0 = msg; { Array::set(__exn_kind_cell, 0, \"String\"); { Array::set(__exn_kind_cell, 1, \"\"); throw(__exn_payload0) } } } }")
   inspect(render_named(synth, "Pair::equals") == whole_named("Pair::equals"), content = "true")
   inspect(render_named(own, "fail_own") == whole_named("fail_own"), content = "true")
+}
+
+fn whole2_named(name: String) -> String with Exception {
+  let stmts = parse_program(lex(String::concat(dep2_src(), own2_src())))
+  desugar_trait_dicts(stmts)
+  render_named(stmts, name)
+}
+
+test "a hoisted local lambda's labeled call is reordered in a per-module run" {
+  let ctx = parse_program(lex(dep2_src()))
+  let own = parse_program(lex(own2_src()))
+  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  // The hoisted function is appended after the context block, so it comes
+  // back with the synthesized set; the labeled-argument stage must still
+  // visit it -- the call to the dependency's `sub` binds by position after
+  // this pass, and a call left labeled here would bind `y = a` to `x`.
+  inspect(stmt_names(synth), content = "__hoisted_lam_0_f")
+  inspect(render_named(synth, "__hoisted_lam_0_f"), content = "let __hoisted_lam_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
+  inspect(whole2_named("__hoisted_lam_0_f"), content = "let __hoisted_lam_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
+  inspect(render_named(synth, "__hoisted_lam_0_f") == whole2_named("__hoisted_lam_0_f"), content = "true")
+  inspect(render_named(own, "use_local") == whole2_named("use_local"), content = "true")
+}
+
+test "a trivial wrapper defined in the dependency is not inlined by a per-module run" {
+  let ctx = parse_program(lex(dep2_src()))
+  let own = parse_program(lex(own2_src()))
+  let _ = desugar_trait_dicts_module(own, ctx, [], [])
+  // The whole-program run reads `apply`'s body and inlines the call; a
+  // dependency interface carries no body, so a per-module run cannot, and
+  // must not pretend to by reading the body it happens to be handed.
+  inspect(render_named(own, "via_apply"), content = "export let rec via_apply = () -> Int { apply(forty_two) }")
+  inspect(whole2_named("via_apply"), content = "export let rec via_apply = () -> Int { forty_two() }")
 }
