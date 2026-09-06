@@ -76,10 +76,22 @@ Protocol for ANY before/after comparison on this lane:
 ```bash
 S2=<stage2.wasm>   # current stage2 (a scripts/generations.sh build artifact)
 VIBE_PREOPEN_DIR="$PWD" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  node --cpu-prof --cpu-prof-dir=/tmp --cpu-prof-name=compile.cpuprofile \
-  scripts/wasm_vibe_host_runner.js --invoke cli_main "$S2" \
+  VIBE_NODE_EXTRA_FLAGS="$(printf '%s\n' --cpu-prof --cpu-prof-dir=/tmp --cpu-prof-name=compile.cpuprofile)" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$S2" \
   lib/@vibe/compiler/tests/codegen_lexer_test.vibe /tmp/out.wasm __no_entry__
 ```
+
+**Go through the runner wrapper, never a bare `node --cpu-prof`.**
+`VIBE_NODE_EXTRA_FLAGS` takes one flag per line (a value may contain
+spaces; the `printf` above puts each flag on its own line). The
+wrapper adds `--experimental-wasm-inlining` (V8 keeps its wasm-to-wasm
+inliner off for MVP modules unless asked; `vibe test` / `vibe run` and every
+gate run with it). A bare `node` profiles a compiler V8 never inlines, and
+the small runtime helpers then show up as calls: measured 2026-09-06 on one
+cold compile, `__rt_arr_get` 415 → 156 ms self, `__rt_eq` 291 → 114 ms,
+`__rt_arr_len` 148 → 0 ms, wall 7.14 → 6.55 s once the flag was on. The
+rows that survive inlining (`__rt_arr_push`, `__rt_str_eq`, `__rt_arr_new`)
+are the real intrinsic costs; the rest was the profile's artifact.
 
 Pick a heavyweight test that compiles the whole compiler closure
 (codegen_*_test / cli_test / selfhost_s5_*). Aggregating self time:
