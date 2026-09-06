@@ -395,6 +395,7 @@ compiler wasm を作る canonical な入口は 1 つ:
 | artifact | builder | 出力先 | 役割 |
 |---|---|---|---|
 | stage2 | `scripts/generations.sh build` | `_build/selfhost/generations/<ts>/stage2.wasm` | pinned seed から self-reproduce した candidate。bootstrap bump / release の元。 |
+| compile-only | `scripts/build_compile_only.sh` | `_build/compile_only/vibe_compile_only.wasm` | The same env-mode CLI as stage2, DCE-rooted at `main_compile_only` (cli_adapter.vibe): only the two production allocator lanes; the gc backend, the coverage / trace / break instrumentation, rc-shadow and the cache / telemetry twins are absent from the wasm, and their switches are refused by name (#2497, gate `scripts/check_compile_only_lanes.sh`). Invoke it as `cli_main_compile_only`. |
 
 配布物 (release asset の `vibe-compiler-<tag>.wasm`) は adopt された seed
 (= 過去の stage2) そのもので、`scripts/build_release_assets.sh` /

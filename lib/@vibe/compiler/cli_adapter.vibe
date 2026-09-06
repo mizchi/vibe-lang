@@ -634,33 +634,6 @@ fn apply_cfg_env(source: String, cfg_csv: String) -> String {
   }
 }
 
-fn compile_source_for_rc_flag(source: String, entry_name: String, rc_flag: String, trusted_generated: Bool) -> Bytes with Exception {
-  // ADR-0055 #493 cutover: the Perceus RC codegen (memory-reclaiming linear
-  // backend) is the DEFAULT; set VIBE_RC=0 to opt back into the legacy bump
-  // path. The compiler self-build, bootstrap, and bump-baseline gates pin
-  // VIBE_RC=0 (see scripts/*.sh) so they stay byte-identical on bump.
-  if rc_flag == "shadow" {
-    // #715 recurrence guard: RC codegen + shadow-liveness traps (debug builds).
-    if trusted_generated {
-      compile_generated_source_wasi_only_rc_shadow(source, entry_name)
-    } else {
-      compile_source_wasi_only_rc_shadow(source, entry_name)
-    }
-  } else if rc_flag != "0" {
-    if trusted_generated {
-      compile_generated_source_wasi_only_rc(source, entry_name)
-    } else {
-      compile_source_wasi_only_rc(source, entry_name)
-    }
-  } else {
-    if trusted_generated {
-      compile_generated_source_wasi_only(source, entry_name)
-    } else {
-      compile_source_wasi_only(source, entry_name)
-    }
-  }
-}
-
 /// Remove a ` [@off=...]` side-channel marker WITHOUT resolving it. The marker
 /// is internal transport for a source offset (#1514); a lane that does not know
 /// which source text the offset indexes (the FS-compile lane compiles MERGED
@@ -862,7 +835,12 @@ fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
   }
 }
 
-export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
+/// The env-mode CLI body, parameterized by its lane tables (#2497). `cli_main`
+/// installs the full tables; `cli_main_compile_only` the production ones. The
+/// tables are the ONLY difference between the two artifacts, so every other
+/// switch (command selectors, VIBE_CFG, VIBE_UNSTABLE, the trusted-source
+/// boundary) behaves identically on both.
+fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) with Exception + Fs + Env, ss_lanes: (SsLane, String, String, Bool) -> Bytes with Exception) -> Int with Exception + Fs + Env + Stdin + Stdout {
   // Reset the process-wide TDRE8 cell before every invocation. Only the
   // check-only branch may enable it after strict policy validation below;
   // build/codegen lanes stay conservative, and a prior check in a long-lived
@@ -1419,86 +1397,24 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // the unit-test batch runs many compiles in one daemon.
       unstable_closure_reset()
       let artifact_input_trace_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE")
-      // debugger trace (DAP P1 groundwork): `vibe run --trace` sets VIBE_DEBUG=1
-      // so the user file (and its imports) is compiled with function-call
-      // execution-trace instrumentation; running the produced wasm fills the
-      // in-memory trace log that the runner dumps via VIBE_TRACE_OUT.
-      // The special compile MODES (coverage / debugger break / trace) are
-      // checked first; they are mutually exclusive instrumentation builds and
-      // are unaffected by the RC cutover. The normal compile then defaults to
-      // the Perceus RC backend (#493 cutover, #705 parity) unless VIBE_RC=0
-      // selects the legacy bump path (which carries the #634 testmeta variant).
-      let fs_backend = Env::get("VIBE_BACKEND")
-      let fs_coverage_selected = Env::get("VIBE_COVERAGE") == "1"
-      let fs_debug_break_selected = !fs_coverage_selected && Env::get("VIBE_DEBUG_BREAK") == "1"
-      let fs_debug_trace_selected = !fs_coverage_selected && !fs_debug_break_selected && Env::get("VIBE_DEBUG") == "1"
-      // Instrumentation selectors have higher precedence than VIBE_BACKEND.
+      let fs_lane = fs_lane_request(mark_memory, artifact_input_trace_out, artifact_input_trace_nonce, artifact_input_trace_checked_error_row_mode, artifact_input_trace_diagnostics_mode, artifact_input_trace_dep_order_seed)
       // Record the lane that will actually produce `bytes`; raw Env presence
       // is not an artifact property when selectors are combined.
-      let fs_gc_selected = !fs_coverage_selected && !fs_debug_break_selected && !fs_debug_trace_selected && fs_backend == "gc"
-      let (bytes, artifact_input_trace) = if fs_coverage_selected {
-        (compile_file_fs_mode_coverage(input_path, entry_name), "")
-      } else if fs_gc_selected {
-        (compile_file_fs_mode_gc(input_path, entry_name), "")
-      } else if fs_debug_break_selected {
-        // debugger breakpoint (DAP P1): `vibe run --break` sets VIBE_DEBUG_BREAK=1
-        // so the user file is compiled with `vibe::dbg_break` host-hook calls at
-        // each user function entry; the runner pauses on the named breakpoints.
-        (compile_file_fs_mode_break(input_path, entry_name), "")
-      } else if fs_debug_trace_selected {
-        (compile_file_fs_mode_trace(input_path, entry_name), "")
-      } else if Env::get("VIBE_RC") == "shadow" {
-        // #715/#768: shadow-liveness double-free traps for import-resolving
-        // builds (previously only the single-source path honored "shadow";
-        // this path silently compiled plain RC).
-        (compile_file_fs_mode_rc_shadow(input_path, entry_name), "")
-      } else if Env::get("VIBE_RC") != "0" {
-        // ADR-0055 #493 cutover DEFAULT: RC reclaims memory each iteration; the
-        // legacy bump path leaks until exit. Opt back into bump with VIBE_RC=0.
-        // #1553: under VIBE_PROFILE_MEMORY_MARKS=1 take the heap-marked twin
-        // (same pipeline, named memory mark per phase); production runs keep
-        // the exact unmarked lane.
-        if mark_memory {
-          (compile_file_fs_mode_rc_heap_marked(input_path, entry_name), "")
-        } else {
-          // #2388 step 3: opt-in cross-compile codegen body cache. "verify"
-          // double-compiles and byte-compares (trust building); "on" replays
-          // persisted bodies. Env is read here, keeping file_compile Env-free
-          // (#634). Any other value keeps the exact production lane.
-          let body_cache_mode = Env::get("VIBE_CODEGEN_BODY_CACHE")
-          if body_cache_mode == "verify" || body_cache_mode == "on" {
-            (compile_file_fs_mode_rc_body_cached(input_path, entry_name, body_cache_mode), "")
-          } else {
-            (compile_file_fs_mode_rc(input_path, entry_name), "")
-          }
-        }
-      } else {
-        // Legacy bump path (VIBE_RC=0). #634 (ADR-0026): only when `vibe test`
-        // requests the pure-test cache verdict (VIBE_TESTMETA_OUT set) do we
-        // route through the variant that ALSO emits the `.testmeta` sidecar
-        // (riding the merged stmts this compile already builds — no extra
-        // parse). Env is read here (this layer has it), keeping the file_compile
-        // layer Env-free.
-        let testmeta_out = Env::get("VIBE_TESTMETA_OUT")
-        if artifact_input_trace_out != "" {
-          compile_file_fs_mode_cached_artifact_input_trace(input_path, entry_name, "no-dce", artifact_input_trace_nonce, artifact_input_trace_checked_error_row_mode, artifact_input_trace_diagnostics_mode, artifact_input_trace_dep_order_seed)
-        } else if testmeta_out != "" {
-          (compile_file_fs_mode_testmeta(input_path, entry_name, "no-dce", testmeta_out), "")
-        } else if mark_memory {
-          // #1553: bump attribution twin. As with its RC sibling, this is
-          // selected only for explicit heap observation; ordinary VIBE_RC=0
-          // compiles retain the Env-free production helper above.
-          (compile_file_fs_mode_bump_heap_marked(input_path, entry_name), "")
-        } else {
-          (compile_file_fs_mode(input_path, entry_name, "no-dce"), "")
-        }
+      let fs_coverage_selected = match fs_lane {
+        FsLaneCoverage => true,
+        _ => false
       }
+      let fs_gc_selected = match fs_lane {
+        FsLaneGc => true,
+        _ => false
+      }
+      let (bytes, artifact_input_trace) = fs_lanes(fs_lane, input_path, entry_name)
       // Binary-size (#1100): release executables ship without the name
       // section / module-linking exports. Instrumented builds (coverage /
       // trace / break / rc-shadow) are debug artifacts whose tooling reads
       // both, so they stay untouched; so do `__no_entry__` test/bench builds
       // (gated inside strip_executable_wasm_env).
-      let fs_instrumented = fs_coverage_selected || fs_gc_selected || fs_debug_break_selected || fs_debug_trace_selected || Env::get("VIBE_RC") == "shadow"
+      let fs_instrumented = fs_lane_is_instrumented(fs_lane)
       let core_bytes = if fs_instrumented {
         bytes
       } else {
@@ -2005,14 +1921,11 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
     profile_memory_mark(mark_memory)
     0
   } else {
-    // ADR-0055 #493 cutover toggle. This comment used to say "Env::get returns
-    // "" when unset, so default stays the bump path" -- that is BACKWARDS after
-    // the cutover, and it sat three lines above the code that decides:
-    // compile_source_for_rc_flag takes the RC path on `rc_flag != "0"`, so
-    // UNSET selects RC and only an explicit VIBE_RC=0 selects the legacy bump
-    // path. Measured on the same input through the seed: unset and VIBE_RC=1
-    // both produce 2,814,912 bytes, VIBE_RC=0 produces 1,969,067.
-    // The FS_COMPILE branch above states it correctly.
+    // ADR-0055 #493 cutover toggle: `ss_lane_request` takes the RC path on
+    // `rc_flag != "0"`, so UNSET selects RC and only an explicit VIBE_RC=0
+    // selects the legacy bump path. Measured on the same input through the
+    // seed: unset and VIBE_RC=1 both produce 2,814,912 bytes, VIBE_RC=0
+    // produces 1,969,067.
     // #1514: bound OUTSIDE the handle so the `Throw` arm -- a sibling scope, not
     // the handled body -- can name it when resolving a diagnostic's offset.
     let source_cfg = apply_cfg_env(source, Env::get("VIBE_CFG"))
@@ -2022,33 +1935,15 @@ export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
       // statements. Trust is out-of-band: ordinary source bytes can never
       // opt themselves into this lane.
       let trusted_generated = Env::get("VIBE_INTERNAL_TRUSTED_SOURCE") == "1"
-      // #cov: function-level coverage build (same source pipeline, instrumented
-      // codegen). Running the produced wasm records which compiler functions ran.
-      let bytes = if Env::get("VIBE_COVERAGE") == "1" {
-        if trusted_generated {
-          compile_generated_source_wasi_only_coverage(source_cfg, entry_name)
-        } else {
-          compile_source_wasi_only_coverage(source_cfg, entry_name)
-        }
-      } else if Env::get("VIBE_BACKEND") == "gc" {
-        // wasm-gc backend lane (parity checks / #415). Direct source compile
-        // only; FS-import mode and the special instrumentation modes stay
-        // linear-backend-only.
-        if trusted_generated {
-          compile_generated_source_gc_only(source_cfg, entry_name)
-        } else {
-          compile_source_gc_only(source_cfg, entry_name)
-        }
-      } else {
-        compile_source_for_rc_flag(source_cfg, entry_name, rc_flag, trusted_generated)
-      }
+      let ss_lane = ss_lane_request(rc_flag)
+      let bytes = ss_lanes(ss_lane, source_cfg, entry_name, trusted_generated)
       profile_memory_mark(mark_memory)
       // Binary-size (#1100): same release strip as the FS-compile lane above.
       // This single-source lane builds the compiler's own stage wasm
       // (generations.sh), so the dist CLI sheds its name section and the
       // 700+ `*_exp_lib__*` module-linking exports here. gc / coverage /
       // rc-shadow lanes stay untouched (parity and debug tooling).
-      let ss_instrumented = Env::get("VIBE_COVERAGE") == "1" || Env::get("VIBE_BACKEND") == "gc" || rc_flag == "shadow"
+      let ss_instrumented = ss_lane_is_instrumented(ss_lane)
       let ss_out_bytes = if ss_instrumented {
         bytes
       } else {
@@ -2100,5 +1995,310 @@ export fn main() -> Unit with Exception + Fs + Env + Stdin + Stdout + Process {
     vibe_process_exit_raw(code)
   } else {
     ()
+  }
+}
+
+/// The full env-mode CLI: every lane table entry.
+export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
+  cli_main_with_lanes(fs_lane_compile_full, ss_lane_compile_full)
+}
+
+/// #2497: the compile-only artifact's entry. Same CLI, production lane tables
+/// only; a request for any other lane is refused by name. Built by
+/// scripts/build_compile_only.sh from the module source that
+/// scripts/generate_bundle.sh emits rooted at `main_compile_only`, so the gc
+/// backend, the instrumentation compiles and the rc-shadow lane are not merely
+/// unreachable at run time but absent from the wasm (pinned by
+/// scripts/check_compile_only_lanes.sh). Declared in this file for the same
+/// reason `main` is: only the entry file's own exports keep their public
+/// names through the flatten.
+export fn cli_main_compile_only() -> Int with Exception + Fs + Env + Stdin + Stdout {
+  cli_main_with_lanes(fs_lane_compile_production, ss_lane_compile_production)
+}
+
+export fn main_compile_only() -> Unit with Exception + Fs + Env + Stdin + Stdout + Process {
+  let code = cli_main_compile_only()
+  if code != 0 {
+    vibe_process_exit_raw(code)
+  } else {
+    ()
+  }
+}
+
+// The lane tables sit AFTER the CLI body on purpose: scripts/check_selector_precedence.sh
+// derives the adapter's selector precedence from the SOURCE ORDER of
+// `Env::get("VIBE_*") == ..` tests, and the lane requests re-read switches
+// (VIBE_COVERAGE, VIBE_DEBUG_BREAK, VIBE_DEBUG, VIBE_BACKEND) that
+// `cli_main_with_lanes` already tests earlier, in the order the launcher
+// embeds. Defined before it, these reads would move those selectors to the
+// front of the derived order and desynchronize every launcher arm's clears.
+
+/// #2497: which compile the env-mode request asked for on the FS lane, read
+/// from the environment once, in the same precedence the arms had when they
+/// were inline: the instrumentation modes (coverage / break / trace) first,
+/// then the gc backend, then the allocator lanes. The TABLE that turns a lane
+/// into a compile is a parameter of `cli_main_with_lanes`. The full CLI
+/// installs `fs_lane_compile_full`; the compile-only artifact
+/// (`main_compile_only`, scripts/build_compile_only.sh) installs
+/// `fs_lane_compile_production`, which knows the two allocator lanes and
+/// refuses every other request by the switch that asked for it. Nothing else
+/// names the instrumentation, gc and shadow compiles, so the module-source
+/// DCE rooted at `main_compile_only` leaves their bodies out of that artifact
+/// (pillar 3: a capability fixed at build time drives DCE); a refused request
+/// is a diagnostic, never a silent fall-through to a lane it did not ask for.
+enum FsLane {
+  FsLaneCoverage;
+  FsLaneGc;
+  FsLaneBreak;
+  FsLaneTrace;
+  FsLaneRcShadow;
+  FsLaneRcHeapMarked;
+  FsLaneRcBodyCached(String);
+  FsLaneRc;
+  FsLaneBumpArtifactInputTrace(String, String, String, String);
+  FsLaneBumpTestmeta(String);
+  FsLaneBumpHeapMarked;
+  FsLaneBump
+}
+
+/// The switch that selected the lane, as the user spelled it -- the diagnostic
+/// for a refused lane names the edit that fixes it.
+fn fs_lane_switch(lane: FsLane) -> String {
+  match lane {
+    FsLaneCoverage => "VIBE_COVERAGE=1",
+    FsLaneGc => "VIBE_BACKEND=gc",
+    FsLaneBreak => "VIBE_DEBUG_BREAK=1",
+    FsLaneTrace => "VIBE_DEBUG=1",
+    FsLaneRcShadow => "VIBE_RC=shadow",
+    FsLaneRcHeapMarked => "VIBE_PROFILE_MEMORY_MARKS=1",
+    FsLaneRcBodyCached(mode) => String::concat("VIBE_CODEGEN_BODY_CACHE=", mode),
+    FsLaneRc => "the RC lane",
+    FsLaneBumpArtifactInputTrace(_, _, _, _) => "VIBE_ARTIFACT_INPUT_TRACE_OUT",
+    FsLaneBumpTestmeta(_) => "VIBE_TESTMETA_OUT",
+    FsLaneBumpHeapMarked => "VIBE_PROFILE_MEMORY_MARKS=1",
+    FsLaneBump => "the bump lane (VIBE_RC=0)"
+  }
+}
+
+/// Instrumented builds (coverage / trace / break / gc / rc-shadow) are debug
+/// artifacts whose tooling reads the name section and the module-linking
+/// exports, so the release strip leaves them untouched.
+fn fs_lane_is_instrumented(lane: FsLane) -> Bool {
+  match lane {
+    FsLaneCoverage => true,
+    FsLaneGc => true,
+    FsLaneBreak => true,
+    FsLaneTrace => true,
+    FsLaneRcShadow => true,
+    _ => false
+  }
+}
+
+fn fs_lane_request(mark_memory: Bool, artifact_input_trace_out: String, artifact_input_trace_nonce: String, artifact_input_trace_checked_error_row_mode: String, artifact_input_trace_diagnostics_mode: String, artifact_input_trace_dep_order_seed: String) -> FsLane with Env {
+  // The special compile MODES (coverage / debugger break / trace) are checked
+  // first; they are mutually exclusive instrumentation builds and are
+  // unaffected by the RC cutover. Instrumentation selectors have higher
+  // precedence than VIBE_BACKEND. The normal compile then defaults to the
+  // Perceus RC backend (#493 cutover, #705 parity) unless VIBE_RC=0 selects
+  // the legacy bump path (which carries the #634 testmeta variant).
+  let coverage_selected = Env::get("VIBE_COVERAGE") == "1"
+  let debug_break_selected = !coverage_selected && Env::get("VIBE_DEBUG_BREAK") == "1"
+  let debug_trace_selected = !coverage_selected && !debug_break_selected && Env::get("VIBE_DEBUG") == "1"
+  let gc_selected = !coverage_selected && !debug_break_selected && !debug_trace_selected && Env::get("VIBE_BACKEND") == "gc"
+  if coverage_selected {
+    FsLaneCoverage
+  } else if gc_selected {
+    FsLaneGc
+  } else if debug_break_selected {
+    // debugger breakpoint (DAP P1): `vibe run --break` sets VIBE_DEBUG_BREAK=1
+    // so the user file is compiled with `vibe::dbg_break` host-hook calls at
+    // each user function entry; the runner pauses on the named breakpoints.
+    FsLaneBreak
+  } else if debug_trace_selected {
+    // debugger trace (DAP P1 groundwork): `vibe run --trace` sets VIBE_DEBUG=1
+    // so the user file (and its imports) is compiled with function-call
+    // execution-trace instrumentation; running the produced wasm fills the
+    // in-memory trace log that the runner dumps via VIBE_TRACE_OUT.
+    FsLaneTrace
+  } else if Env::get("VIBE_RC") == "shadow" {
+    // #715/#768: shadow-liveness double-free traps for import-resolving
+    // builds (previously only the single-source path honored "shadow";
+    // this path silently compiled plain RC).
+    FsLaneRcShadow
+  } else if Env::get("VIBE_RC") != "0" {
+    // ADR-0055 #493 cutover DEFAULT: RC reclaims memory each iteration; the
+    // legacy bump path leaks until exit. Opt back into bump with VIBE_RC=0.
+    // #1553: under VIBE_PROFILE_MEMORY_MARKS=1 take the heap-marked twin
+    // (same pipeline, named memory mark per phase); production runs keep
+    // the exact unmarked lane.
+    if mark_memory {
+      FsLaneRcHeapMarked
+    } else {
+      // #2388 step 3: opt-in cross-compile codegen body cache. "verify"
+      // double-compiles and byte-compares (trust building); "on" replays
+      // persisted bodies. Env is read here, keeping file_compile Env-free
+      // (#634). Any other value keeps the exact production lane.
+      let body_cache_mode = Env::get("VIBE_CODEGEN_BODY_CACHE")
+      if body_cache_mode == "verify" || body_cache_mode == "on" {
+        FsLaneRcBodyCached(body_cache_mode)
+      } else {
+        FsLaneRc
+      }
+    }
+  } else {
+    // Legacy bump path (VIBE_RC=0). #634 (ADR-0026): only when `vibe test`
+    // requests the pure-test cache verdict (VIBE_TESTMETA_OUT set) do we
+    // route through the variant that ALSO emits the `.testmeta` sidecar
+    // (riding the merged stmts this compile already builds -- no extra
+    // parse). Env is read here (this layer has it), keeping the file_compile
+    // layer Env-free.
+    let testmeta_out = Env::get("VIBE_TESTMETA_OUT")
+    if artifact_input_trace_out != "" {
+      FsLaneBumpArtifactInputTrace(artifact_input_trace_nonce, artifact_input_trace_checked_error_row_mode, artifact_input_trace_diagnostics_mode, artifact_input_trace_dep_order_seed)
+    } else if testmeta_out != "" {
+      FsLaneBumpTestmeta(testmeta_out)
+    } else if mark_memory {
+      // #1553: bump attribution twin. As with its RC sibling, this is
+      // selected only for explicit heap observation; ordinary VIBE_RC=0
+      // compiles retain the Env-free production helper above.
+      FsLaneBumpHeapMarked
+    } else {
+      FsLaneBump
+    }
+  }
+}
+
+/// Every FS lane the full CLI serves. Returns the compiled bytes and the
+/// artifact-input trace (empty for every lane but the trace twin).
+fn fs_lane_compile_full(lane: FsLane, input_path: String, entry_name: String) -> (Bytes, String) with Exception + Fs + Env {
+  match lane {
+    FsLaneCoverage => (compile_file_fs_mode_coverage(input_path, entry_name), ""),
+    FsLaneGc => (compile_file_fs_mode_gc(input_path, entry_name), ""),
+    FsLaneBreak => (compile_file_fs_mode_break(input_path, entry_name), ""),
+    FsLaneTrace => (compile_file_fs_mode_trace(input_path, entry_name), ""),
+    FsLaneRcShadow => (compile_file_fs_mode_rc_shadow(input_path, entry_name), ""),
+    FsLaneRcHeapMarked => (compile_file_fs_mode_rc_heap_marked(input_path, entry_name), ""),
+    FsLaneRcBodyCached(mode) => (compile_file_fs_mode_rc_body_cached(input_path, entry_name, mode), ""),
+    FsLaneRc => (compile_file_fs_mode_rc(input_path, entry_name), ""),
+    FsLaneBumpArtifactInputTrace(nonce, checked_error_row_mode, diagnostics_mode, dep_order_seed) => compile_file_fs_mode_cached_artifact_input_trace(input_path, entry_name, "no-dce", nonce, checked_error_row_mode, diagnostics_mode, dep_order_seed),
+    FsLaneBumpTestmeta(testmeta_out) => (compile_file_fs_mode_testmeta(input_path, entry_name, "no-dce", testmeta_out), ""),
+    FsLaneBumpHeapMarked => (compile_file_fs_mode_bump_heap_marked(input_path, entry_name), ""),
+    FsLaneBump => (compile_file_fs_mode(input_path, entry_name, "no-dce"), "")
+  }
+}
+
+/// The compile-only artifact's FS lanes: the two allocator lanes, exactly as
+/// the full CLI compiles them. Every other switch is refused by name.
+fn fs_lane_compile_production(lane: FsLane, input_path: String, entry_name: String) -> (Bytes, String) with Exception + Fs + Env {
+  match lane {
+    FsLaneRc => (compile_file_fs_mode_rc(input_path, entry_name), ""),
+    FsLaneBump => (compile_file_fs_mode(input_path, entry_name, "no-dce"), ""),
+    _ => throw(lane_not_in_this_build(fs_lane_switch(lane)))
+  }
+}
+
+fn lane_not_in_this_build(switch: String) -> String {
+  String::concat("this compiler is the compile-only build and has no lane for ", String::concat(switch, "; unset it, or run the same command with the full CLI build (stage2.wasm from scripts/generations.sh)"))
+}
+
+/// The single-source lane's request (the flat self-build path), same shape.
+enum SsLane {
+  SsLaneCoverage;
+  SsLaneGc;
+  SsLaneRcShadow;
+  SsLaneRc;
+  SsLaneBump
+}
+
+fn ss_lane_switch(lane: SsLane) -> String {
+  match lane {
+    SsLaneCoverage => "VIBE_COVERAGE=1",
+    SsLaneGc => "VIBE_BACKEND=gc",
+    SsLaneRcShadow => "VIBE_RC=shadow",
+    SsLaneRc => "the RC lane",
+    SsLaneBump => "the bump lane (VIBE_RC=0)"
+  }
+}
+
+fn ss_lane_is_instrumented(lane: SsLane) -> Bool {
+  match lane {
+    SsLaneCoverage => true,
+    SsLaneGc => true,
+    SsLaneRcShadow => true,
+    _ => false
+  }
+}
+
+fn ss_lane_request(rc_flag: String) -> SsLane with Env {
+  // ADR-0055 #493 cutover: the Perceus RC codegen (memory-reclaiming linear
+  // backend) is the DEFAULT; set VIBE_RC=0 to opt back into the legacy bump
+  // path. The compiler self-build, bootstrap, and bump-baseline gates pin
+  // VIBE_RC=0 (see scripts/*.sh) so they stay byte-identical on bump.
+  if Env::get("VIBE_COVERAGE") == "1" {
+    // #cov: function-level coverage build (same source pipeline, instrumented
+    // codegen). Running the produced wasm records which compiler functions ran.
+    SsLaneCoverage
+  } else if Env::get("VIBE_BACKEND") == "gc" {
+    // wasm-gc backend lane (parity checks / #415). Direct source compile
+    // only; FS-import mode and the special instrumentation modes stay
+    // linear-backend-only.
+    SsLaneGc
+  } else if rc_flag == "shadow" {
+    // #715 recurrence guard: RC codegen + shadow-liveness traps (debug builds).
+    SsLaneRcShadow
+  } else if rc_flag != "0" {
+    SsLaneRc
+  } else {
+    SsLaneBump
+  }
+}
+
+/// `trusted_generated`: compiler-generated flat/module source carries reserved
+/// provenance statements. Trust is out-of-band (VIBE_INTERNAL_TRUSTED_SOURCE):
+/// ordinary source bytes can never opt themselves into that lane, and it stays
+/// a per-compilation input on every artifact (#2497).
+fn ss_lane_compile_full(lane: SsLane, source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
+  match lane {
+    SsLaneCoverage => if trusted_generated {
+      compile_generated_source_wasi_only_coverage(source, entry_name)
+    } else {
+      compile_source_wasi_only_coverage(source, entry_name)
+    },
+    SsLaneGc => if trusted_generated {
+      compile_generated_source_gc_only(source, entry_name)
+    } else {
+      compile_source_gc_only(source, entry_name)
+    },
+    SsLaneRcShadow => if trusted_generated {
+      compile_generated_source_wasi_only_rc_shadow(source, entry_name)
+    } else {
+      compile_source_wasi_only_rc_shadow(source, entry_name)
+    },
+    SsLaneRc => if trusted_generated {
+      compile_generated_source_wasi_only_rc(source, entry_name)
+    } else {
+      compile_source_wasi_only_rc(source, entry_name)
+    },
+    SsLaneBump => if trusted_generated {
+      compile_generated_source_wasi_only(source, entry_name)
+    } else {
+      compile_source_wasi_only(source, entry_name)
+    }
+  }
+}
+
+fn ss_lane_compile_production(lane: SsLane, source: String, entry_name: String, trusted_generated: Bool) -> Bytes with Exception {
+  match lane {
+    SsLaneRc => if trusted_generated {
+      compile_generated_source_wasi_only_rc(source, entry_name)
+    } else {
+      compile_source_wasi_only_rc(source, entry_name)
+    },
+    SsLaneBump => if trusted_generated {
+      compile_generated_source_wasi_only(source, entry_name)
+    } else {
+      compile_source_wasi_only(source, entry_name)
+    },
+    _ => throw(lane_not_in_this_build(ss_lane_switch(lane)))
   }
 }
