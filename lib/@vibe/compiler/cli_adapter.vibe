@@ -119,10 +119,15 @@ import ./cli_support.vibe {
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
   configure_cfg_flags,
+  executable_exports_stripped,
   strip_executable_wasm_env,
   unstable_closure_reset,
   unstable_surface_diagnostics,
   verify_culprit_off_marker_fs_fail_closed
+}
+
+import @vibe/compiler/core {
+  set_fold_exports_stripped
 }
 
 import @vibe/lsp {
@@ -1408,6 +1413,10 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
         FsLaneGc => true,
         _ => false
       }
+      // #2497 unit 2: tell the constant-Bool fold which exports will still be
+      // exports once this executable is stripped below (an instrumented lane
+      // is never stripped, and never folded either).
+      set_fold_exports_stripped(!fs_lane_is_instrumented(fs_lane) && executable_exports_stripped(entry_name))
       let (bytes, artifact_input_trace) = fs_lanes(fs_lane, input_path, entry_name)
       // Binary-size (#1100): release executables ship without the name
       // section / module-linking exports. Instrumented builds (coverage /
@@ -1936,6 +1945,10 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       // opt themselves into this lane.
       let trusted_generated = Env::get("VIBE_INTERNAL_TRUSTED_SOURCE") == "1"
       let ss_lane = ss_lane_request(rc_flag)
+      // Same announcement as the FS lane: the stage self-build and the
+      // compile-only artifact are this lane's flat module sources, in which
+      // every function is spelled `export`.
+      set_fold_exports_stripped(!ss_lane_is_instrumented(ss_lane) && executable_exports_stripped(entry_name))
       let bytes = ss_lanes(ss_lane, source_cfg, entry_name, trusted_generated)
       profile_memory_mark(mark_memory)
       // Binary-size (#1100): same release strip as the FS-compile lane above.

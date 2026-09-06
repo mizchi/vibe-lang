@@ -19,8 +19,16 @@
 //
 // The pass refuses, per function, whenever it cannot see every call:
 //
-//   - the name is external (the entry, an `export fn`, a name handed in by
-//     the caller), so a host may call it with any argument;
+//   - the name is external -- the entry, a name handed in by the caller, or
+//     an `export fn` that will still be an export of the finished module --
+//     so a host may call it with any argument. Which exports survive is the
+//     CLI's decision (`strip_executable_wasm` keeps the entry, `_start`,
+//     `cli_main` and the `__test_*` / `__bench_*` blocks and drops the rest
+//     of an executable's exports; a flat module source marks every function
+//     `export`, so without this every function would be external and the
+//     pass would fold nothing there). The CLI announces that decision with
+//     `set_fold_exports_stripped` before it compiles; the default, for every
+//     other caller, is that an export stays callable;
 //   - the name is referenced as a VALUE anywhere (`let g = f`, a lane
 //     table, a callback) -- that call goes through a function reference
 //     the scan cannot follow;
@@ -60,6 +68,29 @@ import ./expr_children.vibe {
 
 import @vibe/core {
   array_empty, struct MutMap
+}
+
+//# Exports that survive the executable strip
+
+/// Process-wide: does the caller strip an executable's exports down to the
+/// set `strip_executable_wasm` keeps? `false` (the default) treats every
+/// `export fn` as callable from outside, which refuses the fold for all of
+/// them. The CLI sets it per compile from `executable_exports_stripped`.
+let cbf_exports_stripped_cell: Array[Bool] = [false]
+
+export fn set_fold_exports_stripped(stripped: Bool) -> Unit {
+  Array::set(cbf_exports_stripped_cell, 0, stripped)
+}
+
+/// Is the exported `name` still an export after the strip? Mirrors the keep
+/// list of `strip_executable_wasm` (cli_support): the entry is handled by
+/// `external_names`; `_start` is synthesized, never a source function.
+fn cbf_export_is_external(name: String) -> Bool {
+  if Array::get(cbf_exports_stripped_cell, 0) {
+    name == "cli_main" || String::starts_with(name, "__test_") || String::starts_with(name, "__bench_")
+  } else {
+    true
+  }
 }
 
 //# Candidate table
@@ -141,7 +172,7 @@ fn cbf_collect_candidates(stmts: Array[Stmt], external_names: Array[String]) -> 
               Array::push(t.stmt_idx, i)
               Array::push(t.arity, Array::length(params))
               Array::push(t.base, Array::length(t.state))
-              Array::push(t.bad, exported || Array::length(tparams) > 0 || cbf_str_array_has(external_names, name))
+              Array::push(t.bad, (exported && cbf_export_is_external(name)) || Array::length(tparams) > 0 || cbf_str_array_has(external_names, name))
               let mut pi = 0
               while pi < Array::length(params) {
                 Array::push(t.state, if cbf_is_bool_param(Array::get(params, pi)) {

@@ -9,7 +9,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, fold_const_bool_params
+  Expr, Stmt, TypeExpr, fold_const_bool_params, set_fold_exports_stripped
 }
 
 import @vibe/compiler/syntax {
@@ -239,6 +239,41 @@ test "an exported function refuses: a host may call it with anything" {
   ]
   assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
   assert(is_if_on_flag(body_of(stmts, "work")))
+}
+
+test "with the executable strip announced, an export the strip drops folds like any function" {
+  // A flat module source spells every function `export`; the CLI strips all
+  // but the keep list before writing the executable, so those exports are
+  // not callers anyone outside can reach.
+  set_fold_exports_stripped(true)
+  let stmts = [
+    helper_stmt(),
+    work_stmt(true),
+    main_stmt(call1("work", EBool(false)))
+  ]
+  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  set_fold_exports_stripped(false)
+  assert(eq(n, 1))
+  assert(is_int_one(body_of(stmts, "work")))
+}
+
+test "with the strip announced, the exports the strip keeps still refuse" {
+  // `cli_main` and the per-block `__test_*` / `__bench_*` exports survive
+  // `strip_executable_wasm`, so a host can still call them.
+  set_fold_exports_stripped(true)
+  let cli = fn_stmt(true, "cli_main", [("flag", bool_ty())], EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let blk = fn_stmt(true, "__test_x", [("flag", bool_ty())], EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
+  let stmts = [
+    helper_stmt(),
+    cli,
+    blk,
+    main_stmt(ESeq(call1("cli_main", EBool(false)), call1("__test_x", EBool(false))))
+  ]
+  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  set_fold_exports_stripped(false)
+  assert(eq(n, 0))
+  assert(is_if_on_flag(body_of(stmts, "cli_main")))
+  assert(is_if_on_flag(body_of(stmts, "__test_x")))
 }
 
 test "a name the caller lists as external refuses" {
