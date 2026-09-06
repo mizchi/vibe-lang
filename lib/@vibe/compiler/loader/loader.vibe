@@ -1872,7 +1872,7 @@ export fn load_persistent_source_group_fingerprint_if_valid(entry_path: String) 
 /// ~3s (peak RSS 3.6GB measured) and memory.grow's ignored failure surfaced as
 /// a "memory access out of bounds" inside String::concat's memory.copy. Same
 /// fix and issue class as stable_cache_path's #366 note (lib/@vibe/cache).
-fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> String with Exception + Fs {
+export fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option[String], sources: Array[(String, String)]) -> String with Exception + Fs {
   let sb = StringBuilder::new()
   StringBuilder::push(sb, "version\t4\n")
   StringBuilder::push(sb, "resctx\t")
@@ -1907,7 +1907,7 @@ fn build_persistent_sources_cache_text(entry_path: String, manifest_path: Option
       StringBuilder::push(sb, "\t")
       StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
       StringBuilder::push(sb, "\t")
-      StringBuilder::push(sb, compact_string_fingerprint(source))
+      StringBuilder::push(sb, compact_source_fingerprint_memo(path, source))
       StringBuilder::push(sb, "\n")
     }
     i = i + 1
@@ -1952,7 +1952,7 @@ fn build_persistent_source_groups_cache_text(entry_path: String, manifest_path: 
         StringBuilder::push(sb, "\t")
         StringBuilder::push(sb, __to_string(Fs::stat_token(path)))
         StringBuilder::push(sb, "\t")
-        StringBuilder::push(sb, compact_string_fingerprint(source))
+        StringBuilder::push(sb, compact_source_fingerprint_memo(path, source))
         StringBuilder::push(sb, "\n")
       }
       si = si + 1
@@ -2359,7 +2359,10 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   // actually read (same row format as the probe key) and publish the cache
   // entry under THAT key: in the no-race case the two keys are equal, and
   // under a mid-compile rewrite the entry lands under a key no stale probe
-  // can hit. Costs one extra rolling hash per member on cache MISSES only.
+  // can hit. The rebuilt row's fingerprint comes from the source-fingerprint
+  // memo, which verifies the text it answers for (#2386): a member whose body
+  // is the one the probe fingerprinted costs no second hash, and a rewritten
+  // body is hashed afresh.
   let fresh_fp_sb = StringBuilder::new()
   StringBuilder::push(fresh_fp_sb, contract_fp)
   let impl_units = array_empty()
@@ -2375,7 +2378,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
     StringBuilder::push(fresh_fp_sb, "|")
     StringBuilder::push(fresh_fp_sb, resolved)
     StringBuilder::push(fresh_fp_sb, ":")
-    StringBuilder::push(fresh_fp_sb, compact_string_fingerprint(resolved_content))
+    StringBuilder::push(fresh_fp_sb, compact_source_fingerprint_memo(resolved, resolved_content))
     // #842: an impl raw may itself resolve to ANOTHER package's contract
     // (a cross-package `import ../pkg { ... }`, not just this package's own
     // sibling impl files) — route it through the same ingestion transform
