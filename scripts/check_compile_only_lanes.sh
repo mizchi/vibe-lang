@@ -51,7 +51,15 @@ fail() { echo "compile-only-lanes: FAIL: $*" >&2; exit 1; }
 # (the flatten keeps it as a prefix of the mangled wasm name) or a module path
 # fragment (`<file>_vibe` suffixes carry the module). Measured on the CLI
 # stage2 they match 190 functions / 158 KB; on the compile-only artifact, 0.
-ABSENT_PATTERNS='codegen_gc_backend|source_compile_gc_only|compile_file_fs_mode_gc|compile_file_fs_mode_break|compile_file_fs_mode_trace|compile_file_fs_mode_coverage|compile_file_fs_mode_rc_shadow|compile_file_fs_mode_rc_body_cached|compile_file_fs_mode_testmeta|heap_marked|artifact_input_trace|sources_coverage_impl|sources_trace_impl|sources_break_impl|rc_shadow_impl|gc_only_impl|wasi_only_coverage|wasi_only_rc_shadow'
+#
+# The last two are #2497 unit 2's witnesses: `emit_shadow_mark_freed` and
+# `emit_str_operand_guard` are called only from the `rc_shadow` arms of the
+# builtin body generators (`gen_rc_drop_body`, `gen_str_concat_body`), whose
+# `rc_shadow` parameter every remaining caller passes as `false`, so the fold
+# (`fold_const_bool_params`) removes the arms and the pruner the helpers. They
+# were present in the unit-1 artifact, which dropped lanes by reachability
+# only.
+ABSENT_PATTERNS='emit_shadow_mark_freed|emit_str_operand_guard|codegen_gc_backend|source_compile_gc_only|compile_file_fs_mode_gc|compile_file_fs_mode_break|compile_file_fs_mode_trace|compile_file_fs_mode_coverage|compile_file_fs_mode_rc_shadow|compile_file_fs_mode_rc_body_cached|compile_file_fs_mode_testmeta|heap_marked|artifact_input_trace|sources_coverage_impl|sources_trace_impl|sources_break_impl|rc_shadow_impl|gc_only_impl|wasi_only_coverage|wasi_only_rc_shadow'
 
 scan_names() { # <wasm>
   local wasm="$1" listing
