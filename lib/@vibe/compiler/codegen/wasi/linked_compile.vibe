@@ -16,6 +16,8 @@ import @vibe/compiler/core {
   bytebuf_to_bytes,
   dce_stmts,
   exception_effect_labels_equal,
+  executable_export_kept_bytes,
+  executable_exports_stripped,
   expr_child_at,
   expr_children_pop,
   expr_children_push,
@@ -3927,7 +3929,7 @@ fn lc_pf_remap_name_section(payload: Bytes, newidx: Array[Int], cell: Array[Int]
 /// its finished module bytes. Returns the input unchanged wherever the pass
 /// refuses (see lc_pf_prune_module).
 export fn late_dce_prune_module(mod_bytes: Bytes) -> Bytes {
-  lc_pf_prune_module(mod_bytes)
+  lc_pf_prune_module(mod_bytes, "", false)
 }
 
 /// #2359: drop every function the module cannot reach and renumber what is
@@ -3935,7 +3937,14 @@ export fn late_dce_prune_module(mod_bytes: Bytes) -> Bytes {
 /// `call_indirect` target is only known dynamically, so a table slot is a
 /// root, not an edge). Returns `mod_bytes` unchanged whenever anything is not
 /// understood -- see the header note on why refusing is the safe answer.
-fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
+///
+/// #2497 unit 2: with `exports_stripped`, only the exports that outlive the
+/// CLI's executable strip are roots (`executable_export_kept_bytes`, core).
+/// A flat module source exports every function, so rooting them all made
+/// the pass a no-op on exactly the builds it was meant for: measured on the
+/// compile-only artifact, re-running the pruner after the strip removed
+/// 23 KB the in-compile run had kept.
+fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bool) -> Bytes {
   let cell = lc_fresh_int_array()
   Array::push(cell, 0)
   let failed = lc_fresh_bool_array()
@@ -4079,12 +4088,13 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
           let mut ei = 0
           while ei < c && q < send {
             let nl = lc_pf_leb(mod_bytes, q, cell)
-            q = Array::get(cell, 0) + nl
+            let name_start = Array::get(cell, 0)
+            q = name_start + nl
             let kind = Bytes::get(mod_bytes, q)
             q = q + 1
             let idx = lc_pf_leb(mod_bytes, q, cell)
             q = Array::get(cell, 0)
-            if kind == 0 {
+            if kind == 0 && (!exports_stripped || executable_export_kept_bytes(mod_bytes, name_start, nl, entry_name)) {
               Array::push(roots, idx)
             } else {
               ()
@@ -4558,7 +4568,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
     let folded_param_reads = if library_mode || coverage || debug_trace || debug_break || rc_shadow {
       0
     } else {
-      fold_const_bool_params(stmts, [entry_name], iw_wats)
+      fold_const_bool_params(stmts, entry_name, iw_wats)
     }
     let dce_pruned = dce_stmts(stmts, late_dce_roots)
     // `stmts` is threaded onward by reference, so the pruned program has to
@@ -9998,7 +10008,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // body-stubbing pass above (instrumented builds must see unmodified
   // bodies), plus `enable_late_dce` so the no-DCE lane keeps its contract.
   if enable_late_dce && !coverage && !debug_trace && !debug_break && !rc_shadow {
-    lc_pf_prune_module(bytebuf_to_bytes(out))
+    lc_pf_prune_module(bytebuf_to_bytes(out), entry_name, executable_exports_stripped())
   } else {
     bytebuf_to_bytes(out)
   }

@@ -9,7 +9,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr, fold_const_bool_params, set_fold_exports_stripped
+  Expr, Stmt, TypeExpr, fold_const_bool_params, set_executable_exports_stripped
 }
 
 import @vibe/compiler/syntax {
@@ -115,7 +115,7 @@ test "every call passes false: the read becomes the literal and the if folds to 
     work_stmt(false),
     main_stmt(call1("work", EBool(false)))
   ]
-  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  let n = fold_const_bool_params(stmts, "main", no_wat())
   assert(eq(n, 1))
   assert(is_int_one(body_of(stmts, "work")))
 }
@@ -126,7 +126,7 @@ test "every call passes true: the if folds to the then arm" {
     work_stmt(false),
     main_stmt(call1("work", EBool(true)))
   ]
-  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  let n = fold_const_bool_params(stmts, "main", no_wat())
   assert(eq(n, 1))
   match body_of(stmts, "work") {
     ECall(EIdent("helper", _), _, _) => (),
@@ -145,7 +145,7 @@ test "a wrapper that forwards its parameter is folded first, then its callee: fi
     outer,
     main_stmt(call1("outer", EBool(false)))
   ]
-  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  let n = fold_const_bool_params(stmts, "main", no_wat())
   assert(eq(n, 2))
   assert(is_int_one(body_of(stmts, "inner")))
   match body_of(stmts, "outer") {
@@ -165,7 +165,7 @@ test "`!flag && other` with flag = false leaves exactly `other` as the condition
     work,
     main_stmt(ECall(EIdent("work", -1), [EBool(false), call0("read_other")], -1))
   ]
-  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  let n = fold_const_bool_params(stmts, "main", no_wat())
   assert(eq(n, 1))
   match body_of(stmts, "work") {
     EIf(EIdent("other", _), ECall(_, _, _), EInt(1)) => (),
@@ -177,7 +177,7 @@ test "`flag || other` with flag = true folds the whole condition to true" {
   let body = EIf(EBinOp("||", EIdent("flag", -1), call0("side_effect"), -1), call0("helper"), EInt(1))
   let work = fn_stmt(false, "work", [("flag", bool_ty())], body)
   let stmts = [helper_stmt(), work, main_stmt(call1("work", EBool(true)))]
-  let _ = fold_const_bool_params(stmts, ["main"], no_wat())
+  let _ = fold_const_bool_params(stmts, "main", no_wat())
   match body_of(stmts, "work") {
     ECall(EIdent("helper", _), _, _) => (),
     _ => assert(false)
@@ -188,7 +188,7 @@ test "a literal on the RIGHT of && keeps the left operand: it may have effects" 
   let body = EIf(EBinOp("&&", call0("probe"), EIdent("flag", -1), -1), call0("helper"), EInt(1))
   let work = fn_stmt(false, "work", [("flag", bool_ty())], body)
   let stmts = [helper_stmt(), work, main_stmt(call1("work", EBool(false)))]
-  let _ = fold_const_bool_params(stmts, ["main"], no_wat())
+  let _ = fold_const_bool_params(stmts, "main", no_wat())
   // `probe() && false` is not folded to `false`: probe() must still run.
   match body_of(stmts, "work") {
     EIf(EBinOp("&&", ECall(EIdent("probe", _), _, _), EBool(false), _), _, _) => (),
@@ -204,7 +204,7 @@ test "calls that disagree on the literal leave the body untouched" {
     work_stmt(false),
     main_stmt(EBinOp("+", call1("work", EBool(false)), call1("work", EBool(true)), -1))
   ]
-  let n = fold_const_bool_params(stmts, ["main"], no_wat())
+  let n = fold_const_bool_params(stmts, "main", no_wat())
   assert(eq(n, 0))
   assert(is_if_on_flag(body_of(stmts, "work")))
 }
@@ -215,7 +215,7 @@ test "a call passing a non-literal refuses" {
     work_stmt(false),
     main_stmt(call1("work", call0("read_flag")))
   ]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
   assert(is_if_on_flag(body_of(stmts, "work")))
 }
 
@@ -227,7 +227,7 @@ test "a function referenced as a value refuses: that call is not visible" {
     work_stmt(false),
     main_stmt(ESeq(call1("work", EBool(false)), body))
   ]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
   assert(is_if_on_flag(body_of(stmts, "work")))
 }
 
@@ -237,7 +237,7 @@ test "an exported function refuses: a host may call it with anything" {
     work_stmt(true),
     main_stmt(call1("work", EBool(false)))
   ]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
   assert(is_if_on_flag(body_of(stmts, "work")))
 }
 
@@ -245,14 +245,14 @@ test "with the executable strip announced, an export the strip drops folds like 
   // A flat module source spells every function `export`; the CLI strips all
   // but the keep list before writing the executable, so those exports are
   // not callers anyone outside can reach.
-  set_fold_exports_stripped(true)
+  set_executable_exports_stripped(true)
   let stmts = [
     helper_stmt(),
     work_stmt(true),
     main_stmt(call1("work", EBool(false)))
   ]
-  let n = fold_const_bool_params(stmts, ["main"], no_wat())
-  set_fold_exports_stripped(false)
+  let n = fold_const_bool_params(stmts, "main", no_wat())
+  set_executable_exports_stripped(false)
   assert(eq(n, 1))
   assert(is_int_one(body_of(stmts, "work")))
 }
@@ -260,7 +260,7 @@ test "with the executable strip announced, an export the strip drops folds like 
 test "with the strip announced, the exports the strip keeps still refuse" {
   // `cli_main` and the per-block `__test_*` / `__bench_*` exports survive
   // `strip_executable_wasm`, so a host can still call them.
-  set_fold_exports_stripped(true)
+  set_executable_exports_stripped(true)
   let cli = fn_stmt(true, "cli_main", [("flag", bool_ty())], EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
   let blk = fn_stmt(true, "__test_x", [("flag", bool_ty())], EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
   let stmts = [
@@ -269,20 +269,20 @@ test "with the strip announced, the exports the strip keeps still refuse" {
     blk,
     main_stmt(ESeq(call1("cli_main", EBool(false)), call1("__test_x", EBool(false))))
   ]
-  let n = fold_const_bool_params(stmts, ["main"], no_wat())
-  set_fold_exports_stripped(false)
+  let n = fold_const_bool_params(stmts, "main", no_wat())
+  set_executable_exports_stripped(false)
   assert(eq(n, 0))
   assert(is_if_on_flag(body_of(stmts, "cli_main")))
   assert(is_if_on_flag(body_of(stmts, "__test_x")))
 }
 
-test "a name the caller lists as external refuses" {
+test "the entry itself refuses even when unexported: the host calls it" {
   let stmts = [
     helper_stmt(),
     work_stmt(false),
     main_stmt(call1("work", EBool(false)))
   ]
-  assert(eq(fold_const_bool_params(stmts, ["main", "work"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "work", no_wat()), 0))
   assert(is_if_on_flag(body_of(stmts, "work")))
 }
 
@@ -291,7 +291,7 @@ test "a body that rebinds the parameter's name refuses" {
   let body = ELet("flag", call0("read_flag"), EIf(EIdent("flag", -1), call0("helper"), EInt(1)), -1)
   let work = fn_stmt(false, "work", [("flag", bool_ty())], body)
   let stmts = [helper_stmt(), work, main_stmt(call1("work", EBool(false)))]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
   match body_of(stmts, "work") {
     ELet("flag", _, EIf(EIdent("flag", _), _, _), _) => (),
     _ => assert(false)
@@ -303,7 +303,7 @@ test "a lambda parameter of the same name refuses" {
   let body = ESeq(ELet("f", lam, EUnit, -1), EIf(EIdent("flag", -1), call0("helper"), EInt(1)))
   let work = fn_stmt(false, "work", [("flag", bool_ty())], body)
   let stmts = [helper_stmt(), work, main_stmt(call1("work", EBool(false)))]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
 }
 
 test "a WAT body that names the function refuses" {
@@ -312,16 +312,14 @@ test "a WAT body that names the function refuses" {
     work_stmt(false),
     main_stmt(call1("work", EBool(false)))
   ]
-  assert(eq(fold_const_bool_params(stmts, ["main"], [
-    "(call $work (i64.const 0))"
-  ]), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", ["(call $work (i64.const 0))"]), 0))
   assert(is_if_on_flag(body_of(stmts, "work")))
 }
 
 test "a non-Bool parameter is never folded, even when every call agrees" {
   let work = fn_stmt(false, "work", [("n", int_ty())], EIf(EBinOp("==", EIdent("n", -1), EInt(1), -1), call0("helper"), EInt(1)))
   let stmts = [helper_stmt(), work, main_stmt(call1("work", EInt(1)))]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
 }
 
 test "an arity mismatch or a labeled argument refuses" {
@@ -330,13 +328,13 @@ test "an arity mismatch or a labeled argument refuses" {
     work_stmt(false),
     main_stmt(ESeq(call1("work", EBool(false)), ECall(EIdent("work", -1), array_empty(), -1)))
   ]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
   let labeled = [
     helper_stmt(),
     work_stmt(false),
     main_stmt(call1("work", ELabeledArg("flag", "", EBool(false))))
   ]
-  assert(eq(fold_const_bool_params(labeled, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(labeled, "main", no_wat()), 0))
 }
 
 test "a method-style call site refuses the same-named function" {
@@ -347,14 +345,14 @@ test "a method-style call site refuses the same-named function" {
       EBool(true)
     ], -1)))
   ]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
 }
 
 test "a generic function refuses" {
   let params = [("flag", bool_ty())]
   let generic = SLet(false, true, "work", no_ty(), EFn(["T"], array_empty(), params, no_ty(), None, EIf(EIdent("flag", -1), call0("helper"), EInt(1))))
   let stmts = [helper_stmt(), generic, main_stmt(call1("work", EBool(false)))]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
 }
 
 test "a name declared twice refuses both" {
@@ -364,7 +362,7 @@ test "a name declared twice refuses both" {
     work_stmt(false),
     main_stmt(call1("work", EBool(false)))
   ]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
 }
 
 test "running the pass again on its own output changes nothing" {
@@ -373,8 +371,8 @@ test "running the pass again on its own output changes nothing" {
     work_stmt(false),
     main_stmt(call1("work", EBool(false)))
   ]
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 1))
-  assert(eq(fold_const_bool_params(stmts, ["main"], no_wat()), 0))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 1))
+  assert(eq(fold_const_bool_params(stmts, "main", no_wat()), 0))
 }
 
 //# End to end: the linked lane

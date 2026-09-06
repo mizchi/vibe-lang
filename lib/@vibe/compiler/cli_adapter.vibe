@@ -127,7 +127,7 @@ import ./cli_support.vibe {
 }
 
 import @vibe/compiler/core {
-  set_fold_exports_stripped
+  set_executable_exports_stripped
 }
 
 import @vibe/lsp {
@@ -1413,11 +1413,13 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
         FsLaneGc => true,
         _ => false
       }
-      // #2497 unit 2: tell the constant-Bool fold which exports will still be
-      // exports once this executable is stripped below (an instrumented lane
-      // is never stripped, and never folded either).
-      set_fold_exports_stripped(!fs_lane_is_instrumented(fs_lane) && executable_exports_stripped(entry_name))
+      // #2497 unit 2: tell codegen (the constant-Bool fold and the module
+      // pruner) which exports will still be exports once this executable is
+      // stripped below; an instrumented lane is never stripped, never folded
+      // and never pruned.
+      set_executable_exports_stripped(!fs_lane_is_instrumented(fs_lane) && executable_exports_stripped(entry_name))
       let (bytes, artifact_input_trace) = fs_lanes(fs_lane, input_path, entry_name)
+      set_executable_exports_stripped(false)
       // Binary-size (#1100): release executables ship without the name
       // section / module-linking exports. Instrumented builds (coverage /
       // trace / break / rc-shadow) are debug artifacts whose tooling reads
@@ -1948,8 +1950,9 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       // Same announcement as the FS lane: the stage self-build and the
       // compile-only artifact are this lane's flat module sources, in which
       // every function is spelled `export`.
-      set_fold_exports_stripped(!ss_lane_is_instrumented(ss_lane) && executable_exports_stripped(entry_name))
+      set_executable_exports_stripped(!ss_lane_is_instrumented(ss_lane) && executable_exports_stripped(entry_name))
       let bytes = ss_lanes(ss_lane, source_cfg, entry_name, trusted_generated)
+      set_executable_exports_stripped(false)
       profile_memory_mark(mark_memory)
       // Binary-size (#1100): same release strip as the FS-compile lane above.
       // This single-source lane builds the compiler's own stage wasm

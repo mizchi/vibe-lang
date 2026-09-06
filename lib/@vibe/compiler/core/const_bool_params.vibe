@@ -27,8 +27,9 @@
 //     of an executable's exports; a flat module source marks every function
 //     `export`, so without this every function would be external and the
 //     pass would fold nothing there). The CLI announces that decision with
-//     `set_fold_exports_stripped` before it compiles; the default, for every
-//     other caller, is that an export stays callable;
+//     `set_executable_exports_stripped` (core/executable_exports.vibe, the
+//     one spelling of the keep list) before it compiles; the default, for
+//     every other caller, is that an export stays callable;
 //   - the name is referenced as a VALUE anywhere (`let g = f`, a lane
 //     table, a callback) -- that call goes through a function reference
 //     the scan cannot follow;
@@ -66,31 +67,12 @@ import ./expr_children.vibe {
   expr_child_at, expr_children_pop, expr_children_push, expr_children_top
 }
 
+import ./executable_exports.vibe {
+  executable_export_kept, executable_exports_stripped
+}
+
 import @vibe/core {
   array_empty, struct MutMap
-}
-
-//# Exports that survive the executable strip
-
-/// Process-wide: does the caller strip an executable's exports down to the
-/// set `strip_executable_wasm` keeps? `false` (the default) treats every
-/// `export fn` as callable from outside, which refuses the fold for all of
-/// them. The CLI sets it per compile from `executable_exports_stripped`.
-let cbf_exports_stripped_cell: Array[Bool] = [false]
-
-export fn set_fold_exports_stripped(stripped: Bool) -> Unit {
-  Array::set(cbf_exports_stripped_cell, 0, stripped)
-}
-
-/// Is the exported `name` still an export after the strip? Mirrors the keep
-/// list of `strip_executable_wasm` (cli_support): the entry is handled by
-/// `external_names`; `_start` is synthesized, never a source function.
-fn cbf_export_is_external(name: String) -> Bool {
-  if Array::get(cbf_exports_stripped_cell, 0) {
-    name == "cli_main" || String::starts_with(name, "__test_") || String::starts_with(name, "__bench_")
-  } else {
-    true
-  }
 }
 
 //# Candidate table
@@ -140,23 +122,18 @@ fn cbf_mark_bad(t: CbfTable, name: String) -> Unit {
   }
 }
 
-fn cbf_str_array_has(arr: Array[String], s: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(arr) && !found {
-    if Array::get(arr, i) == s {
-      found = true
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
 /// Index every top-level `fn` the pass may fold. A name that is external,
 /// generic, or declared twice is entered as `bad` (or not at all) so a call
 /// scan can never promote it.
-fn cbf_collect_candidates(stmts: Array[Stmt], external_names: Array[String]) -> CbfTable {
+fn cbf_export_is_external(name: String, entry_name: String) -> Bool {
+  if executable_exports_stripped() {
+    executable_export_kept(name, entry_name)
+  } else {
+    true
+  }
+}
+
+fn cbf_collect_candidates(stmts: Array[Stmt], entry_name: String) -> CbfTable {
   let t = cbf_table_new()
   let mut i = 0
   while i < Array::length(stmts) {
@@ -172,7 +149,7 @@ fn cbf_collect_candidates(stmts: Array[Stmt], external_names: Array[String]) -> 
               Array::push(t.stmt_idx, i)
               Array::push(t.arity, Array::length(params))
               Array::push(t.base, Array::length(t.state))
-              Array::push(t.bad, (exported && cbf_export_is_external(name)) || Array::length(tparams) > 0 || cbf_str_array_has(external_names, name))
+              Array::push(t.bad, name == entry_name || (exported && cbf_export_is_external(name, entry_name)) || Array::length(tparams) > 0)
               let mut pi = 0
               while pi < Array::length(params) {
                 Array::push(t.state, if cbf_is_bool_param(Array::get(params, pi)) {
@@ -568,8 +545,8 @@ fn cbf_method_named(t: CbfTable, name: String) -> Bool {
 
 /// One round: index, scan, substitute. The number of parameter reads
 /// replaced (0 = the program is at its fixpoint).
-fn cbf_round(stmts: Array[Stmt], external_names: Array[String], wat_texts: Array[String]) -> Int {
-  let t = cbf_collect_candidates(stmts, external_names)
+fn cbf_round(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String]) -> Int {
+  let t = cbf_collect_candidates(stmts, entry_name)
   let mut wi = 0
   while wi < Array::length(wat_texts) {
     cbf_note_wat(t, Array::get(wat_texts, wi))
@@ -621,15 +598,16 @@ fn cbf_round(stmts: Array[Stmt], external_names: Array[String], wat_texts: Array
 }
 
 /// Fold the constant Bool parameters of `stmts` in place (see the header).
-/// `external_names` are callable from outside the program (the entry);
-/// `wat_texts` are the inline-wasm bodies the prelude extracted. Returns the
-/// total number of parameter reads replaced; 0 means nothing changed.
-export fn fold_const_bool_params(stmts: Array[Stmt], external_names: Array[String], wat_texts: Array[String]) -> Int {
+/// `entry_name` is callable from outside the program, as is every export
+/// that outlives the strip; `wat_texts` are the inline-wasm bodies the
+/// prelude extracted. Returns the total number of parameter reads replaced;
+/// 0 means nothing changed.
+export fn fold_const_bool_params(stmts: Array[Stmt], entry_name: String, wat_texts: Array[String]) -> Int {
   let mut total = 0
   let mut rounds = 0
   let mut again = true
   while again && rounds < 16 {
-    let n = cbf_round(stmts, external_names, wat_texts)
+    let n = cbf_round(stmts, entry_name, wat_texts)
     total = total + n
     again = n > 0
     rounds = rounds + 1
