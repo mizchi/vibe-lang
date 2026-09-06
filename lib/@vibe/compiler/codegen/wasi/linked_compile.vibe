@@ -3766,6 +3766,20 @@ fn oracle_is_interface_stmt(s: Stmt) -> Bool {
   }
 }
 
+/// The interface form of a context statement: a function whose return type
+/// is spelled loses its body (`EUnit`), the shape a `.vpkg` contract carries,
+/// so no body-reading collector (the trivial-wrapper inliner above all) can
+/// see through the interface. A function with no return annotation keeps its
+/// body: the contract would carry the checker's elaborated return type, which
+/// the pass reads off the body's tail expression (`fn_return_head_of`,
+/// `collect_fn_eq_return_shape`), and the oracle has no other spelling of it.
+fn oracle_interface_form(s: Stmt) -> Stmt {
+  match s {
+    SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, Some(ret), eff, _)) => SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, Some(ret), eff, EUnit)),
+    _ => s
+  }
+}
+
 /// Whether two renderings differ only at generated fresh-name counters
 /// (`__teq_l12_0` vs `__teq_l2_0`, `__me_ks22`, `_exn_payload100` vs
 /// `_exn_payload10`). Anything else is a real content difference.
@@ -3972,7 +3986,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
     let mut ps = 0
     while ps < Array::length(src) {
       if oracle_is_interface_stmt(Array::get(src, ps)) {
-        Array::push(dst, Array::get(src, ps))
+        Array::push(dst, oracle_interface_form(Array::get(src, ps)))
       } else {
         ()
       }

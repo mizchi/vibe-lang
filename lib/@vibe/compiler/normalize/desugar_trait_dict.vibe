@@ -19667,9 +19667,15 @@ export fn desugar_labeled_args(stmts: Array[Stmt]) -> Unit {
   // those tests. stmt_has_labeled_arg already gates each statement, so
   // dropping the early-out costs one scalar scan per statement in the case
   // where nothing needs relabelling.
+  // #2388: every module-owned statement, the functions
+  // `desugar_hoist_local_lambdas` appended after the context block included
+  // (a hoisted lambda's labeled call is reordered here or nowhere), never a
+  // context statement.
   let mut i = 0
-  while i < dtd_own_end(stmts) {
-    if stmt_has_labeled_arg(Array::get(stmts, i)) || (has_opt_tbl && stmt_calls_optional_fn(Array::get(stmts, i))) {
+  while i < Array::length(stmts) {
+    if !dtd_is_own_index(i) {
+      ()
+    } else if stmt_has_labeled_arg(Array::get(stmts, i)) || (has_opt_tbl && stmt_calls_optional_fn(Array::get(stmts, i))) {
       Array::set(stmts, i, relabel_stmt(Array::get(stmts, i), tbl))
     } else {
       ()
@@ -19703,13 +19709,17 @@ fn desugar_labeled_args_paired(stmts: Array[Stmt], roots: Array[BinderAuthorityN
     children: []
   }
   let mut i = 0
-  while i < dtd_own_end(stmts) {
-    let root = if i < Array::length(roots) {
-      Array::get(roots, i)
+  while i < Array::length(stmts) {
+    if dtd_is_own_index(i) {
+      let root = if i < Array::length(roots) {
+        Array::get(roots, i)
+      } else {
+        sentinel
+      }
+      Array::set(stmts, i, relabel_stmt_paired(Array::get(stmts, i), tbl, root, poisoned))
     } else {
-      sentinel
+      ()
     }
-    Array::set(stmts, i, relabel_stmt_paired(Array::get(stmts, i), tbl, root, poisoned))
     i = i + 1
   }
   optional_param_tbl_set(array_empty())
@@ -20059,10 +20069,16 @@ fn dtpw_expr_binds_name(expr: Expr, name: String) -> Bool {
 /// acceptable trade for guaranteed correctness, matching this file's
 /// established "bail out entirely when it can't be proven safe" pattern
 /// (see dlh_marker_only_called_directly's own doc comment).
+/// The trivial pass-through wrappers this run may inline. #2388: a
+/// per-module run reads the module's own definitions only -- a dependency
+/// interface carries signatures, not bodies, so a wrapper defined in another
+/// module is not inlinable there and must not be inlined here either; the
+/// shadowing scan below is bounded the same way for the same reason.
 fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
+  let own_end = dtd_own_end(stmts)
   let mut i = 0
-  while i < Array::length(stmts) {
+  while i < own_end {
     match Array::get(stmts, i) {
       SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if Array::length(params) == 1 {
         let (pname, _) = Array::get(params, 0)
@@ -20091,7 +20107,7 @@ fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
     let wn = Array::get(out, j)
     let mut shadowed = false
     let mut k = 0
-    while k < Array::length(stmts) && !shadowed {
+    while k < own_end && !shadowed {
       match Array::get(stmts, k) {
         SLet(_, _, _, _, sv) => if dtpw_expr_binds_name(sv, wn) {
           shadowed = true
