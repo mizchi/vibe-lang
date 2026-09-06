@@ -1024,8 +1024,22 @@ fn trait_operation_desugared_forwarding_bound(bounds: Array[(String, Array[Strin
   found
 }
 
+/// The offset every node of a synthesized `Trait::op` wrapper carries.
+/// Negative, so every offset-keyed table filters it out like the parser's
+/// own synthesized nodes, and distinct from the parser's -1 (interpolation,
+/// indexing, `assert`, and a call in a `fn` declaration's body), so a
+/// binding read from source can never pass for a generated one (#2357's
+/// masquerade checks). Before #2388 slice 2b the wrapper's nodes carried
+/// `2000000000 - i * 1000 - mi * 10`, which made a module's wrapper depend
+/// on the trait's statement index.
+fn trait_operation_synthetic_off() -> Int {
+  0 - 2
+}
+
+/// Whether a `Trait::op` binding's call node was synthesized by
+/// `derive_trait_namespace_operations` (see trait_operation_synthetic_off).
 fn trait_operation_has_generated_offset(offset: Int) -> Bool {
-  offset >= 1900000000
+  offset == trait_operation_synthetic_off()
 }
 
 fn trait_operation_type_option_equal(left: Option[TypeExpr], right: Option[TypeExpr]) -> Bool {
@@ -1436,7 +1450,15 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
               hi = hi + 1
             }
             if dispatch != "" {
-              let synthetic_off = 2000000000 - i * 1000 - mi * 10
+              // The wrapper's nodes are synthesized, not read from a source
+              // position: they carry trait_operation_synthetic_off, which
+              // every offset-keyed table filters out (negative). #2388: a
+              // value derived from the trait's statement index made a
+              // module's wrapper depend on its position in the program (and
+              // on the lane: the checker derives per module, codegen on the
+              // merged program), and the checker lane's Double call row at
+              // that offset could alias a different merged wrapper's call.
+              let synthetic_off = trait_operation_synthetic_off()
               let extra_params = if uses_self {
                 [self_param]
               } else {
@@ -1455,7 +1477,7 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
                 let param_ty = trait_operation_substitute_self(Array::get(raw_params, pi), dispatch)
                 let param_name = trait_operation_param_name(param_ty, pi, dispatch)
                 Array::push(value_params, (param_name, Some(param_ty)))
-                Array::push(call_args, EIdent(param_name, synthetic_off + pi + 1))
+                Array::push(call_args, EIdent(param_name, synthetic_off))
                 pi = pi + 1
               }
               let ret = trait_operation_substitute_self(raw_ret, dispatch)
