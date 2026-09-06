@@ -108,7 +108,7 @@ first, then take the leftover.
 | #2493 | a compile-only artifact at or under 1.0 MB → #2500 (blocker), #2501 – #2506 |
 | #2494 | compiler memory, 128 MB per unit of work → #2509 (blocker), #2507, #2508, #2510 |
 | #2340 | SIMD-first data structures → #2347 (#2348 closed: both inline-wasm halves landed in #2399 / #2420) |
-| #2002 | documentation by audience — **no sub-issues**, so nothing here is startable; Phases 0-1 already landed as `docs/README.md` without being tracked |
+| #2002 | documentation by audience → #2562 (blocker), #2564, #2565, #2566, #2567. Phases 0-1 already landed as `docs/README.md`; the gate is missing and the router has drifted three ways |
 | #2001 | retire the scripts layer |
 
 ### Everything else
