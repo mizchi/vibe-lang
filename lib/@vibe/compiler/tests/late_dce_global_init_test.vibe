@@ -1,0 +1,158 @@
+import @vibe/compiler/codegen/wasi {
+  late_dce_prune_module
+}
+
+//# Functions
+
+fn leb_at(b: Bytes, p: Int) -> (Int, Int) {
+  let mut r = 0
+  let mut shift = 0
+  let mut q = p
+  let mut done = false
+  while !done {
+    let x = Bytes::get(b, q)
+    q = q + 1
+    r = r|((x&127)<<shift)
+    shift = shift + 7
+    if x < 128 {
+      done = true
+    } else {
+      ()
+    }
+  }
+  (r, q)
+}
+
+/// Entry count of the function section (id 3), or -1 without one.
+fn function_count(m: Bytes) -> Int {
+  let mut p = 8
+  let mut found = 0 - 1
+  while found < 0 && p < Bytes::length(m) {
+    let sid = Bytes::get(m, p)
+    let (n, body) = leb_at(m, p + 1)
+    if sid == 3 {
+      let (c, _) = leb_at(m, body)
+      found = c
+    } else {
+      ()
+    }
+    p = body + n
+  }
+  found
+}
+
+// #2552: a hand-built module -- one exported function and one unreachable
+// function -- whose only global is `i32.const 59768`. That constant's LEB128
+// encoding is `f8 d2 03`: the 0xD2 byte is the `ref.func` opcode, and the
+// pruner used to scan the global section for that byte and refuse the whole
+// module, keeping the dead function. Decoding the initializer keeps the
+// refusal for an actual `ref.func` and prunes this one.
+test "the late-DCE pruner decodes global initializers instead of scanning their bytes" {
+  let wasm = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    4,
+    1,
+    96,
+    0,
+    0,
+    3,
+    3,
+    2,
+    0,
+    0,
+    6,
+    8,
+    1,
+    127,
+    0,
+    65,
+    248,
+    210,
+    3,
+    11,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    7,
+    2,
+    2,
+    0,
+    11,
+    2,
+    0,
+    11
+  ])
+  inspect(function_count(wasm), content = "2")
+  let pruned = late_dce_prune_module(wasm)
+  inspect(function_count(pruned), content = "1")
+}
+
+test "a real ref.func initializer still refuses" {
+  // Same module with the global replaced by `ref.func 0` (funcref, 0xD2 0x00).
+  let wasm = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    4,
+    1,
+    96,
+    0,
+    0,
+    3,
+    3,
+    2,
+    0,
+    0,
+    6,
+    6,
+    1,
+    112,
+    0,
+    210,
+    0,
+    11,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    7,
+    2,
+    2,
+    0,
+    11,
+    2,
+    0,
+    11
+  ])
+  let pruned = late_dce_prune_module(wasm)
+  inspect(function_count(pruned), content = "2")
+}
