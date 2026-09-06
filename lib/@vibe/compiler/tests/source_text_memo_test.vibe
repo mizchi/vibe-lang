@@ -1,0 +1,78 @@
+import @vibe/compiler/cache {
+  cache_fingerprint_file_fs,
+  cache_ingestion_fingerprint_telemetry_json,
+  cache_persistent_artifact_cache_path,
+  cache_read_source_fs,
+  cache_read_source_with_token_fs,
+  cache_set_ingestion_fingerprint_telemetry_enabled,
+  cache_source_text_memo_read_count,
+  cache_source_text_memo_reset
+}
+
+// #2386: the loader, the header pass and the ingestion fingerprint each read
+// a source file for themselves. They share one memo keyed by path and
+// validated by the file's stat token, so an unchanged file is read once per
+// process; the memo's read counter is the witness that a repeat took the
+// memo instead of the host.
+
+fn json_field(text: String, key: String) -> String {
+  let needle = String::concat("\"", String::concat(key, "\":"))
+  let at = String::index_of(text, needle)
+  if at < 0 {
+    ""
+  } else {
+    let start = at + String::length(needle)
+    let mut end = start
+    while end < String::length(text) && String::char_code_at(text, end) != 44 && String::char_code_at(text, end) != 125 {
+      end = end + 1
+    }
+    text[start: end]
+  }
+}
+
+test "a repeat ask for an unchanged file is answered without a host read" {
+  let path = cache_persistent_artifact_cache_path("v1", "source_text_memo", "seed-a", "")
+  Fs::write_file(path, "let a = 1")
+  cache_source_text_memo_reset()
+  let r0 = cache_source_text_memo_read_count()
+  let first = cache_read_source_fs(path)
+  let again = cache_read_source_fs(path)
+  inspect(first, content = "let a = 1")
+  inspect(again == first, content = "true")
+  inspect(cache_source_text_memo_read_count() - r0, content = "1")
+  let by_token = cache_read_source_with_token_fs(path, Fs::stat_token(path))
+  inspect(by_token == first, content = "true")
+  inspect(cache_source_text_memo_read_count() - r0, content = "1")
+}
+
+test "a rewritten file is read again, and a reset forgets it" {
+  let path = cache_persistent_artifact_cache_path("v1", "source_text_memo", "seed-b", "")
+  Fs::write_file(path, "let b = 1")
+  cache_source_text_memo_reset()
+  let r0 = cache_source_text_memo_read_count()
+  inspect(cache_read_source_fs(path), content = "let b = 1")
+  Fs::write_file(path, "let b = 12")
+  inspect(cache_read_source_fs(path), content = "let b = 12")
+  inspect(cache_source_text_memo_read_count() - r0, content = "2")
+  inspect(cache_read_source_fs(path), content = "let b = 12")
+  inspect(cache_source_text_memo_read_count() - r0, content = "2")
+  cache_source_text_memo_reset()
+  inspect(cache_read_source_fs(path), content = "let b = 12")
+  inspect(cache_source_text_memo_read_count() - r0, content = "3")
+}
+
+test "the ingestion fingerprint takes the memo and still counts its boundary read" {
+  let path = cache_persistent_artifact_cache_path("v1", "source_text_memo", "seed-c", "")
+  Fs::write_file(path, "let c = 1")
+  cache_source_text_memo_reset()
+  let _ = cache_read_source_fs(path)
+  let r0 = cache_source_text_memo_read_count()
+  cache_set_ingestion_fingerprint_telemetry_enabled(true)
+  let fp = cache_fingerprint_file_fs(path)
+  let telemetry = cache_ingestion_fingerprint_telemetry_json("memo")
+  cache_set_ingestion_fingerprint_telemetry_enabled(false)
+  inspect(cache_source_text_memo_read_count() - r0, content = "0")
+  inspect(String::length(fp) > 0, content = "true")
+  inspect(json_field(telemetry, "source_read_calls"), content = "1")
+  inspect(json_field(telemetry, "hash_calls"), content = "1")
+}

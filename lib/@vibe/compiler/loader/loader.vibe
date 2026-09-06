@@ -232,7 +232,7 @@ fn exported_type_params_uncached_fs(path: String, dep_paths: Array[String], dep_
   // parsed as its new body under the old token, so the next ask re-reads it;
   // the other order would record the new token against the old parse.
   let token = Fs::stat_token(path)
-  let raw = Fs::read_file(path)
+  let raw = cache_read_source_with_token_fs(path, token)
   Array::push(exported_type_params_read_log, (path, token))
   Array::push(dep_paths, path)
   // Fingerprint the bytes that are parsed below. A second filesystem read
@@ -400,6 +400,8 @@ export ./manifest_sources.vibe {
 
 import @vibe/compiler/cache {
   build_source_groups_fingerprint_from_compact_fingerprints,
+  cache_read_source_fs,
+  cache_read_source_with_token_fs,
   compact_source_fingerprint_memo,
   compact_string_fingerprint,
   fingerprint_file_fs,
@@ -1168,10 +1170,11 @@ fn load_source_if_cached_file_spec_matches(path: String, stat_token_text: String
   } else {
     let has_stat_token = String::length(stat_token_text) > 0
     if has_stat_token {
-      if __to_string(Fs::stat_token(path)) == stat_token_text {
-        Some(Fs::read_file(path))
+      let token = Fs::stat_token(path)
+      if __to_string(token) == stat_token_text {
+        Some(cache_read_source_with_token_fs(path, token))
       } else if String::length(source_fingerprint) > 0 {
-        let source = Fs::read_file(path)
+        let source = cache_read_source_with_token_fs(path, token)
         if compact_source_fingerprint_memo(path, source) == source_fingerprint {
           Some(source)
         } else {
@@ -1181,7 +1184,7 @@ fn load_source_if_cached_file_spec_matches(path: String, stat_token_text: String
         None
       }
     } else if String::length(source_fingerprint) > 0 {
-      let source = Fs::read_file(path)
+      let source = cache_read_source_fs(path)
       if compact_source_fingerprint_memo(path, source) == source_fingerprint {
         Some(source)
       } else {
@@ -1513,7 +1516,7 @@ fn vpkg_directory_shared_import_prefix_fs(path: String) -> String with Exception
       if cached_hit != "" || String::starts_with(cached_prefix, "v3\n\n") {
         cached_hit
       } else {
-        let vpkg_raw = Fs::read_file(vpkg_path)
+        let vpkg_raw = cache_read_source_fs(vpkg_path)
         let (_, vpkg_pin_blanked) = extract_require_pins(vpkg_raw)
         let (vpkg_tokens, vpkg_starts, _ve) = lex_with_offsets(vpkg_pin_blanked)
         let (_, vpkg_opaques, vpkg_extra, vpkg_stmt_at, _vd) = parse_contract_program_spans(vpkg_tokens)
@@ -2368,7 +2371,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
   while ri < Array::length(member_raws) {
     let raw = Array::get(member_raws, ri)
     let resolved = Array::get(member_paths, ri)
-    let resolved_content = Fs::read_file(resolved)
+    let resolved_content = cache_read_source_fs(resolved)
     StringBuilder::push(fresh_fp_sb, "|")
     StringBuilder::push(fresh_fp_sb, resolved)
     StringBuilder::push(fresh_fp_sb, ":")
@@ -2473,7 +2476,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
 /// verification of an installed copy.
 export fn contract_package_hashes_fs(path: String) -> (String, String) with Exception + Fs {
   validate_index_layout_fs(path)
-  let raw = Fs::read_file(path)
+  let raw = cache_read_source_fs(path)
   let (_, blanked) = extract_require_pins(raw)
   let (decls, opaques, extra) = parse_contract_program(lex(blanked))
   let (impl_raws0, type_defs) = classify_contract_stmts(extra)
@@ -2527,7 +2530,7 @@ export fn contract_package_hashes_fs(path: String) -> (String, String) with Exce
       let iraw = Array::get(impl_raws, ri)
       let resolved = resolve_path_fs(dir, iraw)
       ensure_regular_source_fs(resolved)
-      let itext = Fs::read_file(resolved)
+      let itext = cache_read_source_fs(resolved)
       Array::push(sources, (iraw, itext))
       ri = ri + 1
     }
@@ -2918,7 +2921,7 @@ fn collect_package_hash_source_closure_fs(package_contract: String, package_dir:
   } else {
     path_set_add(visited, source_path)
     validate_index_layout_fs(source_path)
-    let source = Fs::read_file(source_path)
+    let source = cache_read_source_fs(source_path)
     Array::push(sources, (package_relative_hash_key(package_dir, source_path), source))
     let (deps, _, _) = load_or_parse_module_header_fs(source_path, source, 0)
     let mut i = 0
@@ -2958,7 +2961,7 @@ fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: 
       throw("cannot resolve module: \{path} does not exist")
     } else ()
     validate_index_layout_fs(path)
-    let raw_source = Fs::read_file(path)
+    let raw_source = cache_read_source_fs(path)
     // #730 (D-2): require pin lines are a leading directive, extracted and
     // blanked (offset-preserving) before anything parses the source.
     let (pins, pin_blanked) = extract_require_pins(raw_source)
@@ -3367,7 +3370,7 @@ fn package_deps_missing(dir: String) -> Array[String] with Exception + Fs {
   if !Fs::exists(vpkg_path) {
     array_empty()
   } else {
-    let raw = Fs::read_file(vpkg_path)
+    let raw = cache_read_source_fs(vpkg_path)
     let name = extract_package_name(raw)
     if name == "" {
       array_empty()
@@ -3381,7 +3384,7 @@ fn package_deps_missing(dir: String) -> Array[String] with Exception + Fs {
       let mut i = 0
       while i < Array::length(impl_raws) {
         let resolved = resolve_path_fs(dir, Array::get(impl_raws, i))
-        Array::push(impl_sources, Fs::read_file(resolved))
+        Array::push(impl_sources, cache_read_source_fs(resolved))
         i = i + 1
       }
       let missing = deps_missing_for_imports(deps, impl_sources)

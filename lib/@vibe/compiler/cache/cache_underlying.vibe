@@ -165,6 +165,87 @@ let fingerprint_file_memo_fps = []
 /// file per lookup.
 let fingerprint_file_memo_index: MutMap[String, Int] = MutMap::new_string()
 
+/// #2386: process-wide memo of a source file's raw text, keyed by path and
+/// validated by Fs::stat_token on every hit, the way the fingerprint memo
+/// above validates its fingerprints (#1308). A cold compile of the
+/// compiler's own closure read each implementation file three to four
+/// times -- the contract desugar reads a package's members, the source walk
+/// reads each member again as a source, the package-deps check reads them
+/// once more, and the ingestion fingerprint reads every file to hash it:
+/// ~150 ms of host reads and utf8 decodes, and a fresh copy of every text
+/// per read. A repeat is now one stat_token probe and the text already in
+/// memory. The token is taken BEFORE the read (the caller's own token, or
+/// one this memo takes), so a file rewritten between the two is stored
+/// under the old token and re-read on the next ask; the other order would
+/// record the new token against the old text. The window that remains --
+/// an in-place rewrite of the same size inside one timestamp tick on the
+/// same inode -- is the one the persistent cache's source rows already
+/// trust the token over. A path whose token is the non-regular witness
+/// (-1, a symlink) is never memoized: that token cannot change with the
+/// file. One entry per path, replaced in place when the token changes, so
+/// the memo holds at most one text per file the process has read; a
+/// worker resets it per job (run_module_job_dir), as it does the
+/// fingerprint memo. Callers ask only about paths they have resolved to
+/// existing files, as they do before every stat_token today.
+let source_text_memo: MutMap[String, (Int, String)] = MutMap::new_string()
+
+// #2386: how many host reads the memo has made (a miss, a changed token or
+// an unmemoized path); the routing test reads it to prove a repeat took the
+// memo.
+let source_text_memo_reads: Array[Int] = [0]
+
+fn source_text_memo_read_counted(path: String) -> String with Fs {
+  Array::set(source_text_memo_reads, 0, Array::get(source_text_memo_reads, 0) + 1)
+  Fs::read_file(path)
+}
+
+export fn cache_source_text_memo_read_count() -> Int {
+  Array::get(source_text_memo_reads, 0)
+}
+
+/// The text of `path` as of `token`, its current Fs::stat_token taken by
+/// the caller before this ask. Answers from the memo when the stored token
+/// is `token`; otherwise reads the file and stores its text under `token`.
+export fn cache_read_source_with_token_fs(path: String, token: Int) -> String with Fs {
+  if token == -1 {
+    source_text_memo_read_counted(path)
+  } else {
+    let stored = match MutMap::get(source_text_memo, path) {
+      Some(entry) => {
+        let (stored_token, text) = entry
+        if stored_token == token {
+          Some(text)
+        } else {
+          None
+        }
+      },
+      None => None
+    }
+    match stored {
+      Some(text) => text,
+      None => {
+        let fresh = source_text_memo_read_counted(path)
+        MutMap::set(source_text_memo, path, (token, fresh))
+        fresh
+      }
+    }
+  }
+}
+
+/// The text of `path`: one stat_token probe, then the memo above.
+export fn cache_read_source_fs(path: String) -> String with Fs {
+  cache_read_source_with_token_fs(path, Fs::stat_token(path))
+}
+
+export fn cache_source_text_memo_reset() -> Unit {
+  let keys = MutMap::keys(source_text_memo)
+  let mut i = 0
+  while i < Array::length(keys) {
+    let _ = MutMap::delete(source_text_memo, Array::get(keys, i))
+    i = i + 1
+  }
+}
+
 /// #2386: per-run memo of compact_string_fingerprint over a module's SOURCE
 /// TEXT, keyed by path and verified by text equality. Four callers hashed
 /// the same text of every module once each per compile (the leaf
@@ -402,16 +483,17 @@ export fn cache_parse_ingestion_stamp_v1_text(text: String) -> Option[(String, S
   }
 }
 
-fn fingerprint_source(path: String) -> String with Fs {
-  let source = Fs::read_file(path)
+fn fingerprint_source(path: String, token: Int) -> String with Fs {
+  let source = cache_read_source_with_token_fs(path, token)
+  // Both telemetry pairs count the requests this filesystem boundary makes
+  // for a source's text and its fingerprint, and their consumers
+  // (scripts/edit_cycle_kpi.mjs, scripts/ingestion_stamp_oracle.mjs) check
+  // exactly that pairing. Since #2386 the text may come from the source-text
+  // memo above and the fingerprint from the per-compile memo below, each of
+  // which the compile already paid for once; the memos' own counters record
+  // that, not this boundary's contract.
   ingestion_telemetry_add(0, 1)
   ingestion_telemetry_add(1, String::length(source))
-  // The hash-call telemetry stays paired with the read: it counts the
-  // fingerprint requests this filesystem boundary makes, and its consumers
-  // (scripts/edit_cycle_kpi.mjs, scripts/ingestion_stamp_oracle.mjs) check
-  // exactly that pairing. Since #2386 the per-compile memo below may answer
-  // a request from a text the compile already hashed; that is the memo's
-  // own hash counter's business, not this boundary's contract.
   ingestion_telemetry_add(2, 1)
   ingestion_telemetry_add(3, String::length(source))
   compact_source_fingerprint_memo(path, source)
@@ -477,7 +559,7 @@ export fn cache_fingerprint_file_fs_with_ingestion_stamp(path: String, stamp_pat
         let fingerprint = match try_load_ingestion_stamp(stamp_path, token_text) {
           Some(hit) => hit,
           None => {
-            let fresh = fingerprint_source(path)
+            let fresh = fingerprint_source(path, token)
             publish_ingestion_stamp(stamp_path, token_text, fresh)
             fresh
           }
@@ -492,7 +574,7 @@ export fn cache_fingerprint_file_fs_with_ingestion_stamp(path: String, stamp_pat
   let fingerprint = match try_load_ingestion_stamp(stamp_path, token_text) {
     Some(hit) => hit,
     None => {
-      let fresh = fingerprint_source(path)
+      let fresh = fingerprint_source(path, token)
       publish_ingestion_stamp(stamp_path, token_text, fresh)
       fresh
     }
@@ -516,7 +598,7 @@ export fn cache_fingerprint_file_fs(path: String) -> String with Fs {
       if Array::get(fingerprint_file_memo_tokens, i) == token {
         return Array::get(fingerprint_file_memo_fps, i)
       } else {
-        let fingerprint = fingerprint_source(path)
+        let fingerprint = fingerprint_source(path, token)
         Array::set(fingerprint_file_memo_tokens, i, token)
         Array::set(fingerprint_file_memo_fps, i, fingerprint)
         return fingerprint
@@ -526,7 +608,7 @@ export fn cache_fingerprint_file_fs(path: String) -> String with Fs {
     }
     i = i + 1
   }
-  let fingerprint = fingerprint_source(path)
+  let fingerprint = fingerprint_source(path, token)
   Array::push(fingerprint_file_memo_paths, path)
   Array::push(fingerprint_file_memo_tokens, token)
   Array::push(fingerprint_file_memo_fps, fingerprint)
@@ -574,7 +656,7 @@ fn json_escape_string(value: String) -> String {
 
 /// schema v1 invariants: all counters are nonnegative; probes equal hits plus
 /// misses plus malformed; source/hash calls and input string_units rise only
-/// when this helper reads and hashes disk source. String units are language
+/// when this helper asks for a disk source's text and its fingerprint. String units are language
 /// String::length units, explicitly not raw bytes.
 export fn cache_ingestion_fingerprint_telemetry_json(nonce: String) -> String {
   let out = StringBuilder::new()

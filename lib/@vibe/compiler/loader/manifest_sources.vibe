@@ -9,7 +9,11 @@ import @vibe/core {
 }
 
 import @vibe/compiler/cache {
-  compact_string_fingerprint, fingerprint_file_fs, normalize_persistent_cache_text, persistent_manifest_header_cache_path
+  cache_read_source_fs,
+  compact_string_fingerprint,
+  fingerprint_file_fs,
+  normalize_persistent_cache_text,
+  persistent_manifest_header_cache_path
 }
 
 import @vibe/compiler/core {
@@ -705,7 +709,7 @@ export fn load_manifest_full_sources(base_dir: String, rows: Array[(String, Stri
   while i < Array::length(rows) {
     let (_, rel_path) = Array::get(rows, i)
     let path = join_path(base_dir, rel_path)
-    Array::push(full_sources, (path, Fs::read_file(path)))
+    Array::push(full_sources, (path, cache_read_source_fs(path)))
     i = i + 1
   }
   full_sources
@@ -718,7 +722,7 @@ fn load_manifest_sources_by_path_index(base_dir: String, rows: Array[(String, St
     let (_, rel_path) = Array::get(rows, i)
     let path = join_path(base_dir, rel_path)
     if Map::has_key(needed_path_index, path) {
-      Array::push(sources, (path, Fs::read_file(path)))
+      Array::push(sources, (path, cache_read_source_fs(path)))
     }
     i = i + 1
   }
@@ -736,9 +740,9 @@ fn load_manifest_source_groups_by_path_index(base_dir: String, rows: Array[(Stri
     let path = join_path(base_dir, rel_path)
     if Map::has_key(needed_path_index, path) {
       if has_last_group && last_group_name == group_name {
-        Array::push(last_group_sources, (path, Fs::read_file(path)))
+        Array::push(last_group_sources, (path, cache_read_source_fs(path)))
       } else {
-        let ensured = ensure_grouped_source_bucket_seeded(groups, group_name, path, Fs::read_file(path))
+        let ensured = ensure_grouped_source_bucket_seeded(groups, group_name, path, cache_read_source_fs(path))
         last_group_name = group_name
         last_group_sources = ensured
         has_last_group = true
@@ -980,7 +984,7 @@ fn collect_needed_paths_from_manifest_headers(path: String, manifest_path_index:
     let deps = match manifest_header_deps_lookup(rows, current) {
       Some(found) => found,
       None => {
-        let source = Fs::read_file(current)
+        let source = cache_read_source_fs(current)
         if Map::has_key(manifest_path_index, current) {
           collect_manifest_header_deps_from_source_with_context(current, source, manifest_path_index)
         } else {
@@ -1019,7 +1023,7 @@ fn collect_needed_paths_and_manifest_headers(path: String, manifest_path_index: 
     }
     let current = Array::get(worklist, work_i)
     Array::push(visited, current)
-    let source = Fs::read_file(current)
+    let source = cache_read_source_fs(current)
     let deps = match manifest_header_deps_lookup(rows, current) {
       Some(found) => found,
       None => {
@@ -1062,7 +1066,7 @@ fn collect_needed_paths_from_manifest_scan(path: String, manifest_path_index: Ma
     }
     let current = Array::get(worklist, work_i)
     Array::push(visited, current)
-    let source = Fs::read_file(current)
+    let source = cache_read_source_fs(current)
     let deps = if Map::has_key(manifest_path_index, current) {
       collect_manifest_header_deps_from_source_with_context(current, source, manifest_path_index)
     } else {
