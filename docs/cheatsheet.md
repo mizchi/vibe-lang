@@ -467,9 +467,12 @@ ADR-0097's contract does not depend on the spelling or on the route a value
 took. An annotated `Array[T]` parameter, a function's return value, a tuple
 return, an `Option[Array[T]]` payload, a nested array reached through a name
 and `Array[Float]` all get the same structural comparison. An erased type
-variable (`[T: Eq]`) uses the `Eq` witness it was handed.
+variable (`[T: Eq]`) is the one place it does not hold — see "the bound is
+required, and it is not yet enough" below.
 
-**The bound is required** (#2474). A generic body is lowered once for every
+#### The bound is required, and it is not yet enough
+
+**Required** (#2474). A generic body is lowered once for every
 instantiation, so `==` / `!=` on an operand whose type mentions a type
 parameter with no `Eq` bound — bare `T`, `Option[T]`, `(T, Int)`,
 `Array[T]` — has no comparator to reach and used to answer by reference
@@ -492,6 +495,25 @@ fn same_some[T: Eq](x: T, y: T) -> Bool {
   Some(x) == Some(y)
 }
 ```
+
+**Not yet enough** (#2523, open P0). The bound above buys a content answer for
+the five scalar types `Eq` is registered for — `Int`, `Double`, `Bool`, `Char`,
+`String` — and nothing else, because `Eq` is a **marker trait**
+(`lib/@vibe/builtin/builtin_traits.vibe` declares a bare `export trait Eq` with
+no methods). There is no dictionary to dispatch through, so a user aggregate
+under `[T: Eq]` is compared by reference identity, bare or as a payload. Both
+routes into it end badly, measured:
+
+| what you write | what happens |
+|---|---|
+| `struct Pt { v: Int } derive (Eq)`, then `same_some(p1, p2)` | rejected: ``no impl `Eq` for `Pt` `` — `derive (Eq)` does not satisfy the bound |
+| add `impl Eq for Pt`, then `bare[T: Eq](p1, p2)` where the two are equal but distinct | **`false`** — reference identity, no diagnostic |
+| the same, same object | `true` |
+| `p1 == p2` at a concrete site, or `Pt::equals(p1, p2)` | `true` — the comparator exists, it is simply never reached |
+
+So `[T: Eq]` is safe today for scalars. For an aggregate, compare at a concrete
+type or call the derived `T::equals` directly until #2523 gives `Eq` a real
+method.
 
 An unannotated `let xs = []` is structural too **when the pushed value
 describes itself** (#2157, narrowed by #2192). The element type comes from the

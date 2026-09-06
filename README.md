@@ -160,7 +160,6 @@ Reference index:
 - [docs/registry-design.md](docs/registry-design.md) — package registry design
 - [docs/release-roadmap.md](docs/release-roadmap.md) — roadmap and release themes
 - [docs/adr.md](docs/adr.md) — architecture decision records
-- [docs/known-issues.md](docs/known-issues.md) — known issues and workarounds
 
 ## Contributing
 

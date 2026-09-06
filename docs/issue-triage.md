@@ -1,7 +1,7 @@
 # Issue triage — deciding kind and priority mechanically
 
-Last updated: 2026-08-25 (applied state rewritten against the open set;
-the 2026-08-07 P0/P1 lists are closed).
+Last updated: 2026-09-06 (applied state and lanes rewritten against the open
+set; the 2026-08-25 lists named merged PRs and closed issues).
 
 So that "what do I do next" does not have to be re-derived every time, **each
 label means exactly one thing**. Every issue is labelled independently on three
@@ -53,44 +53,76 @@ the same shelf as a real bug.
 An `epic` is an index, so it is never itself the thing to work on (look at its
 sub-issues).
 
-## Applied state as of 2026-08-25
+## Applied state as of 2026-09-06
 
-Open PRs occupy files. **Do not start a new branch on a file an open PR already
-edits.** Merge or land that PR first, then take the leftover.
+**Rewrite this section; never append to it.** It is a snapshot of the open set,
+and a snapshot that has drifted is worse than none — the 2026-08-25 edition sat
+here for two weeks naming three merged PRs and five closed issues as the things
+to do next, which is exactly the failure `AGENTS.md` describes for documents
+that rot. If the tables below disagree with `gh issue list --state open`, the
+tables are wrong. Regenerate them.
+
+### Open PRs occupy files
+
+**Do not start a new branch on a file an open PR already edits.** Land that PR
+first, then take the leftover.
 
 | occupied files | PR | what it is holding |
 |---|---|---|
-| `checker/checker_stmt.vibe` | [#2294](https://github.com/mizchi/vibe-lang/pull/2294) | #2290 / #2292. After merge: #2293 |
-| `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_adapter.vibe`, `cli_support.vibe`, `lsp/lsp_server.vibe`, `entry/source_compile/wasi_only/merge_sources.vibe`, fmt scripts | [#2296](https://github.com/mizchi/vibe-lang/pull/2296) | #2283, ADR-0068 opt-in, `vibe fmt` self-blame. After merge: #2284 / #2285 / #2287 / #2297 / #2280 |
-| `ty_to_eq_shape` in `desugar_trait_dict.vibe` | [#2299](https://github.com/mizchi/vibe-lang/pull/2299) | P0 #2281. Does not conflict with #2296 (different region of the same file) |
+| `gen_eq_body` (codegen, RC lane) | [#2522](https://github.com/mizchi/vibe-lang/pull/2522) | #2474's runtime guard. **Decide before merging**: #2529 rejects that case at check time, so what is left for the guard is the flat single-source lane, at +312 B per emitted module |
 
-### P0 — silently wrong (1)
+### P0 — silently wrong (4)
 
-| # | wait for | what |
-|---|---|---|
-| #2281 | in [#2299](https://github.com/mizchi/vibe-lang/pull/2299) | a parameterized alias wrapping a structural container (`type AL[V] = Array[V]`) loses structural `==` and answers by identity |
-
-### P1 — crashes, or cannot be written (7)
-
-| # | wait for | what |
-|---|---|---|
-| #2283 | in #2296 | a user-defined `assert_eq/2` is claimed by the builtin lowering |
-| #2284 | after #2296 | ADR-0068 opt-in scans only the entry; a sibling import bypasses it |
-| #2287 | after #2296 (`merge_sources.vibe`) | `export ./dep.vibe { cmp as compare }` dies at codegen |
-| #2280 | after #2296 (`cli_adapter`) | `vibe check` cannot parse a `.vpkg` |
-| #2293 | after #2294 | two imports binding the same local name still last-win |
-| #2164 | after #2294 if it touches checker type names | contract transparent types have no provenance for typos |
-| #2199 | rides #1987 | OOB abort names operation/index/length; source provenance and the `[crash debug]` dump remain |
-
-### P2 carrying blocker (the entrance to a subtree)
-
-| # | what it is holding up |
+| # | what |
 |---|---|
-| #1959 | persist semantic module / SCC reuse (#1960) |
+| #2523 | `Eq` is a marker trait, so `[T: Eq]` compares a user aggregate by reference identity — and `derive (Eq)` does not even satisfy the bound. Giving `Eq` a real `equals` method is the fix, and it is an ADR-level change to a builtin trait |
+| #2475 | untyped-empty array pushes under a source-owned `struct Int` cannot tell a literal from the struct |
+| #2381 | `vibe symbols` silently ignores extra arguments, and has no batch mode |
+| #2378 | a library `fn` silently replaces a same-named builtin program-wide |
 
-### epics (indexes, not things to work on)
+### P1 — crashes, or cannot be written (5)
 
-#2002 docs audience / #2001 scripts layer / #2269 HKT / #1379 incremental
+| # | what |
+|---|---|
+| #2535 | a module-level `let` initialized with two or more Bool literals (`[false, false]`) makes the next top-level item "unexpected token" |
+| #2527 | defining a `fn` named `id` or `call` that returns `Expr` makes an unrelated file fail with "cannot interpolate a value of type `Expr`" |
+| #2444 | `try { } with { }` says a handler arm must be fully qualified while the arm already is exactly that |
+| #2349 | `mapfile` (bash 4) keeps six gate scripts from running on macOS stock bash, so local sign-off is impossible there |
+| #2199 | OOB aborts name operation / index / length but carry no source provenance (rides #1987) |
+
+### P2 carrying `blocker` — the entrance to a subtree
+
+| # | subtree it opens |
+|---|---|
+| #2509 | #2494 compiler memory. Every later change in that subtree needs this number to show it moved |
+| #2500 | #2493 binary size. One effect lowering, not five (ADR-0076) |
+| #2387 | #2386 design-level performance. Symbol interning |
+| #1959 | the incremental planner; #1960 waits on it |
+
+### epics — indexes, never the thing to work on
+
+| # | subtree |
+|---|---|
+| #2386 | design-level performance → #2387 (blocker), #2388, #2389, #2390, #2391, #2392 |
+| #2492 | build-time configuration, `VIBE_*` → `#cfg` → #2497, #2498, #2499 |
+| #2493 | a compile-only artifact at or under 1.0 MB → #2500 (blocker), #2501 – #2506 |
+| #2494 | compiler memory, 128 MB per unit of work → #2509 (blocker), #2507, #2508, #2510 |
+| #2340 | SIMD-first data structures → #2347, #2348 |
+| #2002 | documentation by audience |
+| #2001 | retire the scripts layer |
+
+### Everything else
+
+The rest of the open set is P2 outside a subtree — `gh issue list --state open
+--label P2` is the list, and nothing in it blocks anything else. Small ones with
+a stated, bounded scope, if you want one to start on: **#2538** (a test that is
+red on main and wired into no gate, so nothing has been protecting it),
+**#2437** and **#2449** (the module and inline lanes still compile with their
+typed-lowering tables empty; both end at the same statement-merge shape, so do
+them together), **#2442** (bare-name builtin value forms, blocked only on
+teaching the lambda-site planner scope), **#2555** (delete the sidecar codec's
+hand-rolled renderer and unary counts — the bug they route around was a
+misdiagnosis and is closed).
 
 ## How to use sub-issues
 
@@ -98,14 +130,11 @@ Build the tree with GitHub sub-issues. **The parent is an index; the children
 are the units of work.**
 
 ```text
-#1230 async umbrella
-├── #1536 closure param in the suspend CPS   ← blocker
-├── #1537 M-conc-2 CPS lowering
-├── #1341 ADR-0089 D3 (itself an index)
-│   ├── #1538 retire the eager Stream
-│   ├── #1539 wire ByteStream to p3
-│   └── #1540 unify serve / host-stream composition
-└── #1342 generalize host async imports
+#2494 compiler memory: bound the live set to one module
+├── #2509 mid-size memory KPI on reserved pages   ← blocker
+├── #2507 four build units along the existing seams
+├── #2508 restate the self-build fixpoint per build unit
+└── #2510 per-module prelude
 ```
 
 A parent issue's body holds **only where things stand and an index of its
@@ -126,10 +155,19 @@ serially. Running across lanes is free.**
 
 | lane | file area | issues | notes |
 |---|---|---|---|
-| **A. checker type-env** | `checker/checker_stmt.vibe` | #2294, then #2293 / #2164 | serialize on `checker_stmt` |
-| **B. eq-shape / call / cli / merge** | `normalize/desugar_trait_dict.vibe`, `codegen/expr/compile_call.vibe`, `cli_*.vibe`, `merge_sources.vibe` | #2299 (#2281, `ty_to_eq_shape`) and #2296 (assert_eq / opt-in / merge). Then #2284 / #2285 / #2287 / #2297 / #2280 | same file, different regions; merge-tree is clean |
-| **D. incremental/cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1959 → #1960 | |
-| **F. runtime/host** | `runtime/viberun`, abort provenance | #2199 (rides #1987) | |
+| **A. eq dispatch** | `checker/checker_stmt.vibe`, `normalize/desugar_trait_dict.vibe` | #2523 (P0), then #2475 (P0), then #2501 | one lane, not two: the eq-row producer and its consumer are in these two files, and #2501 splits the second one, so it has to follow rather than run beside them |
+| **B. parser** | `lib/@vibe/parser/**` | #2535 (P1), #2527 (P1) | |
+| **C. loader / module lane** | `runtime/runtime.vibe`, `runtime/typecheck_fs.vibe`, `entry/compiler/**` | #2437 → #2449, #2521, #2555 | #2437 and #2449 end at the same statement-merge shape; doing them apart means writing it twice |
+| **D. incremental / cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1959 → #1960, #2388, #2510 | **same files as lane C**, so C and D serialize with each other |
+| **E. codegen / RC** | `codegen/**` | #2389, #1980, #1934 | |
+| **F. runtime / host** | `runtime/viberun`, abort provenance | #2199 (rides #1987), #2397 | |
+| **G. CLI / editor queries** | `lib/@vibe/cli/**`, `entry/cli_cache` | #2381 (P0), #2378 (P0), #1943, #2499 | |
+| **H. scripts / gates** | `scripts/**`, `tests/gates/**` | #2349 (P1), #2538, #2001 | |
+| **I. docs** | `docs/**`, `book/**` | #2002, #2146, #1346 | conflicts only on the cheatsheet |
+
+The #2386 perf subtree deliberately touches every lane — its slices land as many
+small independent PRs, which is why `git log` on a file is worth a look before
+starting on it even when no lane claims it.
 
 Within a lane the order is blocker first, then by priority. An entry added to a
 gate script must always be **appended at the end** — inserting into the middle of
@@ -140,9 +178,15 @@ a list conflicts with the neighbouring lane.
 - The `blocker` edges are only the dependencies the issue bodies state
   explicitly. Implicit ones are not captured.
 - Filing a new issue includes putting all three axes on it.
-- Close only after confirming the fix commit is on main. (Verified 2026-08-07:
-  #1500 = `36e7869`, #1503 = `d9a50f6` + `7585b74`, #1525 = `ab031d2`.
-  #1508 / #1520 / #1514 landed only partly, so they stayed open.)
+- Close only after confirming the fix is on main **and in the tree**, not
+  because a PR body said "Fixes #N". The 2026-09-06 sweep found four issues
+  (#2404 / #2405 / #2407 / #2451) whose fixes had been on main for a week with
+  the issues still open, and one (#2437) whose scope had been rewritten three
+  times in comments while the body still described the original ask. A merged
+  PR does not close an issue; a person does.
+- **Restate a body when its comments have overtaken it.** A reader who has to
+  reconstruct the current ask from a comment thread pays that cost every time.
+  The body holds where things stand; the thread holds how it got there.
 
 ## `tutorial-breakage`
 
