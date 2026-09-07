@@ -182,6 +182,17 @@ boundary_scan_lines() { # <file>
           prev = (i > 1) ? substr(line, i - 1, 1) : " "
           if (prev !~ /[A-Za-z0-9_]/) { i += 2; continue }
         }
+        # `perform?` is a DIFFERENT token from `perform` (ADR-0088; the parser
+        # builds EIdent("perform?") at parser_expr_primary.vibe:803), but it
+        # invokes the same capability, so it is the same thing to this gate.
+        # The native-call pattern spelled only `perform`, so `perform?
+        # Fs::read_file(path)` passed the required check outright. Normalizing
+        # the suffix here, rather than adding `\\??` to one regex, is what
+        # keeps the next consumer of this text from having to know that two
+        # spellings exist -- the same reason the raw-identifier prefix is
+        # dropped above.
+        if (c == "?" && i > 7 && substr(line, i - 7, 7) == "perform" \
+            && substr(line, i - 8, 1) !~ /[A-Za-z0-9_]/) { i++; continue }
         if (c == "\"") { sp++; mode[sp] = "str"; i++; continue }
         if (c == "#" && substr(line, i + 1, 1) == "|") { break }   # raw string to EOL
         if (c == "/" && substr(line, i + 1, 1) == "/") { break }   # comment to EOL

@@ -1230,8 +1230,61 @@ else
 fi
 restore
 
+# --- cases 72-74: `perform?` invokes the same capability --------------------
+#
+# Round 33, a MISS and the sharpest one in this review: the native-call pattern
+# spelled only `perform`, so `perform? Fs::read_file(path)` in the entry file
+# passed the required gate outright. `perform?` is a different TOKEN (ADR-0088;
+# the parser builds EIdent("perform?") at parser_expr_primary.vibe:803, and
+# lib/@vibe/compiler/tests/perform_question_lowering_test.vibe pins its
+# lowering) but it reaches the same capability, which is the only thing this
+# gate is asking about.
+#
+# The suffix is normalized in the lexical pass rather than by adding `\??` to
+# one regex, so the next reader of this text does not have to know that two
+# spellings exist -- the same reason the raw-identifier prefix is dropped.
+printf '\nfn probe_perform_q(path: String) -> Int with () allows Fs::read_file? {\n  let _ = perform? Fs::read_file(path)\n  0\n}\n' >> "$entry"
+if grep -qF -- 'perform? Fs::read_file(path)' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an optional perform of a native capability passed the gate"
+  else
+    pass "case: perform? reaches the same capability and is rejected"
+  fi
+else
+  fail "case: the perform? mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# The normalization is lexical, so it must not reach inside a string. Same
+# pairing as case 32 for the plain spelling.
+printf '\nfn probe_perform_q_str() -> String {\n  "do not generate perform? Fs::read_file here"\n}\n' >> "$entry"
+if grep -qF -- 'do not generate perform? Fs::read_file here' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: perform? inside a string literal is still inert"
+  else
+    fail "case: a string mentioning perform? was read as a native call"
+  fi
+else
+  fail "case: the perform?-in-string mutation did not land -- it proves nothing"
+fi
+restore
+
+# And a `?` that is NOT the perform suffix keeps its meaning: an optional
+# parameter is ordinary code, not a capability call.
+printf '\nfn probe_opt_param(x?: Int) -> Int {\n  0\n}\n' >> "$entry"
+if grep -qF -- 'fn probe_opt_param(x?: Int) -> Int {' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an optional parameter is not touched by the perform? rule"
+  else
+    fail "case: an optional parameter was rejected"
+  fi
+else
+  fail "case: the optional-parameter mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 71 cases)"
+echo "portable-boundary-test: ok (control + 74 cases)"
