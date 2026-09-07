@@ -4424,7 +4424,7 @@ fn lc_pf_kept_export_count(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array
     q = q + 1
     let idx = lc_pf_leb(mod_bytes, q, cell)
     q = Array::get(cell, 0)
-    if kind == 0 && (idx >= Array::length(newidx) || Array::get(newidx, idx) < 0) {
+    if kind == 0 && idx < Array::length(newidx) && Array::get(newidx, idx) < 0 {
       ()
     } else {
       kept = kept + 1
@@ -4449,8 +4449,12 @@ fn lc_pf_kept_export_count(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array
 /// 23 KB on the compile-only artifact.
 fn lc_pf_emit_exports(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
   let c = lc_pf_leb(mod_bytes, sstart, cell)
-  let kept = lc_pf_kept_export_count(mod_bytes, sstart, send, cell, newidx)
+  // Read the entry position BEFORE counting: `cell` is shared scratch, and
+  // `lc_pf_kept_export_count` walks the whole section through it, so calling
+  // it first leaves `cell[0]` at the section END. Doing that emitted a header
+  // claiming `kept` entries followed by none, and the module failed to parse.
   let mut q = Array::get(cell, 0)
+  let kept = lc_pf_kept_export_count(mod_bytes, sstart, send, cell, newidx)
   let mut n = lc_pf_leb_len(kept)
   if write {
     bytebuf_push_vec_header(dst, kept)
@@ -4466,8 +4470,20 @@ fn lc_pf_emit_exports(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int]
     q = q + 1
     let idx = lc_pf_leb(mod_bytes, q, cell)
     q = Array::get(cell, 0)
-    let dropped = kind == 0 && (idx >= Array::length(newidx) || Array::get(newidx, idx) < 0)
-    if dropped {
+    // Two different things used to share one refusal here. A `func` export
+    // whose function was PRUNED is dropped (#2497 unit 2). An index outside
+    // `newidx` is a malformed module -- nothing pruned it, the section simply
+    // does not describe this program -- and that still refuses, because the
+    // safe answer to "I do not understand this module" is to leave it alone.
+    let out_of_range = kind == 0 && idx >= Array::length(newidx)
+    let dropped = kind == 0 && !out_of_range && Array::get(newidx, idx) < 0
+    if out_of_range {
+      Array::set(failed, 0, true)
+      Array::set(lc_pf_refusal_cell, 0, 5)
+    } else {
+      ()
+    }
+    if dropped || out_of_range {
       ()
     } else {
       let mut out_idx = idx
@@ -4809,7 +4825,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
             gq = gq + 2
             if gq >= send {
               Array::set(failed, 0, true)
-              Array::set(lc_pf_refusal_cell, 0, 4812)
+              Array::set(lc_pf_refusal_cell, 0, 4828)
             } else {
               let iop = Bytes::get(mod_bytes, gq)
               gq = gq + 1
@@ -4823,14 +4839,14 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
                 gq = gq + 1
               } else {
                 Array::set(failed, 0, true)
-                Array::set(lc_pf_refusal_cell, 0, 4826)
+                Array::set(lc_pf_refusal_cell, 0, 4842)
               }
               if !Array::get(failed, 0) {
                 if gq < send && Bytes::get(mod_bytes, gq) == 11 {
                   gq = gq + 1
                 } else {
                   Array::set(failed, 0, true)
-                  Array::set(lc_pf_refusal_cell, 0, 4833)
+                  Array::set(lc_pf_refusal_cell, 0, 4849)
                 }
               } else {
                 ()
@@ -4840,7 +4856,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
           }
           if !Array::get(failed, 0) && gq != send {
             Array::set(failed, 0, true)
-            Array::set(lc_pf_refusal_cell, 0, 4843)
+            Array::set(lc_pf_refusal_cell, 0, 4859)
           } else {
             ()
           }
@@ -4873,7 +4889,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
             if flag != 0 {
               // Only the active-table-0 form is emitted today.
               Array::set(failed, 0, true)
-              Array::set(lc_pf_refusal_cell, 0, 4876)
+              Array::set(lc_pf_refusal_cell, 0, 4892)
             } else {
               while q < send && Bytes::get(mod_bytes, q) != 11 {
                 let iop = Bytes::get(mod_bytes, q)
@@ -4900,7 +4916,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
         } else if sid == 8 {
           // A start function would be another root; none is emitted today.
           Array::set(failed, 0, true)
-          Array::set(lc_pf_refusal_cell, 0, 4903)
+          Array::set(lc_pf_refusal_cell, 0, 4919)
         } else if sid == 10 {
           code_i = si
           let c = lc_pf_leb(mod_bytes, sstart, cell)
@@ -5069,6 +5085,7 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
       // inputs that motivate it. What is settled is the direction: skipping
       // never saves output bytes, so the only free case is nothing to drop
       // at all, which is the test above.
+      Array::set(lc_pf_refusal_cell, 0, 0 - 1)
       mod_bytes
     } else {
       lc_pf_reemit(mod_bytes, cell, failed, sec_id, sec_start, sec_len, newidx, ftypes, keep, body_start, body_end, site, site_from)
@@ -5103,7 +5120,7 @@ fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_
       let target = pk&4294967295
       if target >= Array::length(newidx) || Array::get(newidx, target) < 0 {
         Array::set(failed, 0, true)
-        Array::set(lc_pf_refusal_cell, 0, 5106)
+        Array::set(lc_pf_refusal_cell, 0, 5123)
       } else {
         sz = sz - (lc_pf_skip_leb(mod_bytes, pos) - pos) + lc_pf_leb_len(Array::get(newidx, target))
       }
@@ -5138,7 +5155,7 @@ fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_
 fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: Array[Bool]) -> Unit {
   if bytebuf_length(out) - content_start != announced {
     Array::set(failed, 0, true)
-    Array::set(lc_pf_refusal_cell, 0, 5141)
+    Array::set(lc_pf_refusal_cell, 0, 5158)
   } else {
     ()
   }
