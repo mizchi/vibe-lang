@@ -168,6 +168,20 @@ boundary_scan_lines() { # <file>
             continue
           }
         }
+        # A RAW IDENTIFIER is the same name. `lex_ident` in
+        # lib/@vibe/parser/lexer.vibe turns `r#Exception` into
+        # TIdent("Exception") -- the exact token the plain spelling gives -- so
+        # the two are one name to the compiler and must be one name here.
+        # Splitting the source text instead produced `r` AND `Exception`, which
+        # rejected a portable boundary as `effect: r`, and in the other
+        # direction `perform r#Fs::ReadFile(p)` matched no native pattern at
+        # all and passed. Dropping the prefix once, in the lexical pass, is
+        # what makes every check downstream see what the compiler sees.
+        # `r` must be the whole identifier, as in the raw-string branch above.
+        if (c == "r" && substr(line, i + 1, 1) == "#" && substr(line, i + 2, 1) ~ /[A-Za-z0-9_]/) {
+          prev = (i > 1) ? substr(line, i - 1, 1) : " "
+          if (prev !~ /[A-Za-z0-9_]/) { i += 2; continue }
+        }
         if (c == "\"") { sp++; mode[sp] = "str"; i++; continue }
         if (c == "#" && substr(line, i + 1, 1) == "|") { break }   # raw string to EOL
         if (c == "/" && substr(line, i + 1, 1) == "/") { break }   # comment to EOL

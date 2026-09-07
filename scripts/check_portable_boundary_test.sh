@@ -1083,8 +1083,56 @@ else
 fi
 restore
 
+# --- cases 64-66: a raw identifier is the same name -------------------------
+#
+# Round 31. `lex_ident` (lib/@vibe/parser/lexer.vibe) turns `r#Exception` into
+# TIdent("Exception") -- the exact token the plain spelling produces -- so the
+# two ARE one name. Splitting the source text instead produced `r` and
+# `Exception` as separate tokens and rejected a portable boundary as
+# `effect: r`.
+#
+# The prefix is dropped once, in the lexical pass, so the fix is not confined
+# to the direction that was reported: measured before it, `perform
+# r#Fs::ReadFile(path)` in the entry file matched no native pattern and passed
+# the gate outright (case 66). One spelling, one answer, every check.
+printf '\nexport fn probe_raw_allowed() -> Unit with r#Exception {\n  ()\n}\n' >> "$impl"
+if grep -qF -- '-> Unit with r#Exception {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a raw identifier spelling of an allowed effect is accepted"
+  else
+    fail "case: a raw identifier was split, most likely rejected as effect: r"
+  fi
+else
+  fail "case: the raw-identifier mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_raw_native() -> Unit with r#Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF -- '-> Unit with r#Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a native effect spelled raw passed the allow-list"
+  else
+    pass "case: a raw identifier does not hide a native effect"
+  fi
+else
+  fail "case: the raw-native mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nfn probe_raw_call() -> Unit {\n  perform r#Fs::ReadFile(path)\n}\n' >> "$entry"
+if grep -qF -- 'perform r#Fs::ReadFile(path)' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a native call spelled raw evaded the native-pattern scan"
+  else
+    pass "case: a raw identifier does not hide a native call either"
+  fi
+else
+  fail "case: the raw-call mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 63 cases)"
+echo "portable-boundary-test: ok (control + 66 cases)"
