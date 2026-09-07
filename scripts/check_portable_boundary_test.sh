@@ -1720,8 +1720,45 @@ else
 fi
 restore
 
+# --- cases 101-102: a handler pattern nests -----------------------------
+#
+# Round 43. The arm-head exemption matched the argument list with `[^)]*`,
+# which stops at the FIRST `)`. `Fs::ReadFile((_path)) =>` is a legal grouping
+# -- parse_handle_arm delegates to the recursive pattern parser -- so the head
+# survived the strip and the pure helper was rejected again.
+#
+# Parentheses are counted now instead of approximated, so the answer does not
+# depend on the depth. The probe uses TWO levels deliberately: a fix that only
+# allowed one more level than the reported counterexample would pass a
+# one-level case and fail here.
+printf '\nfn probe_nested_arm(f: () -> String with Fs) -> String with Exception {\n  handle {\n    f()\n  } with { Fs::ReadFile(((_p))) => resume("ok"); Fs::WriteFile(_a, _b) => resume(0); Fs::Exists(_p) => resume(true); Fs::Mkdir(_p) => resume(0) }\n}\n' >> "$impl"
+if grep -qF -- 'Fs::ReadFile(((_p))) => resume("ok")' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a nested handler pattern is still an arm head"
+  else
+    fail "case: a nested handler pattern was read as a capability call"
+  fi
+else
+  fail "case: the nested-pattern mutation did not land -- it proves nothing"
+fi
+restore
+
+# And the body after a nested head is still scanned -- the strip must consume
+# the head only, however deep its pattern goes.
+printf '\nfn probe_nested_arm_body(f: () -> Unit with Console) -> Unit {\n  handle {\n    f()\n  } with { Console::Write((_s)) => {\n    Console::write_stream("leaked")\n    resume(())\n  } }\n}\n' >> "$entry"
+if grep -qF -- 'Console::write_stream("leaked")' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a call after a nested arm head passed the gate"
+  else
+    pass "case: the body after a nested arm head is still scanned"
+  fi
+else
+  fail "case: the nested-arm-body mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 100 cases)"
+echo "portable-boundary-test: ok (control + 102 cases)"

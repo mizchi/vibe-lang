@@ -39,9 +39,50 @@ require_line() {
 # result cannot be a pattern -- and the arm BODY is left untouched, so a real
 # capability call inside one is still a leak.
 strip_handler_arm_heads() {
-  sed -E \
-    -e 's/[A-Za-z_][A-Za-z0-9_]*::[A-Za-z0-9_]*[[:space:]]*\([^)]*\)[[:space:]]*=>/ /g' \
-    -e 's/[A-Za-z_][A-Za-z0-9_]*::[A-Za-z0-9_]*[[:space:]]*=>/ /g'
+  # The argument list is BALANCED, not `[^)]*`. `Fs::ReadFile((_path)) =>` is a
+  # legal grouping -- parse_handle_arm delegates to the recursive pattern
+  # parser -- and a regex that stopped at the first `)` left the head in place,
+  # so a pure helper was rejected again. Parentheses are counted here rather
+  # than approximated, which holds at any depth instead of one more than the
+  # last counterexample.
+  awk '{
+    s = $0; n = length(s); out = ""; i = 1
+    while (i <= n) {
+      c = substr(s, i, 1)
+      if (c ~ /[A-Za-z_]/ && (i == 1 || substr(s, i - 1, 1) !~ /[A-Za-z0-9_]/)) {
+        j = i
+        while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_]/) { j++ }
+        if (substr(s, j, 2) == "::") {
+          k = j + 2
+          while (k <= n && substr(s, k, 1) ~ /[A-Za-z0-9_]/) { k++ }
+          if (k > j + 2) {
+            m = k
+            while (m <= n && substr(s, m, 1) == " ") { m++ }
+            if (substr(s, m, 1) == "(") {
+              d = 0
+              while (m <= n) {
+                cc = substr(s, m, 1)
+                if (cc == "(") { d++ }
+                else if (cc == ")") { d--; if (d == 0) { m++; break } }
+                m++
+              }
+            }
+            while (m <= n && substr(s, m, 1) == " ") { m++ }
+            if (substr(s, m, 2) == "=>") {
+              # A handler arm head: the operation is DISCHARGED here, not
+              # called. Blank the head and leave the arrow, so the arm body
+              # after it is still scanned.
+              out = out " "
+              i = m; continue
+            }
+          }
+        }
+        out = out substr(s, i, j - i); i = j; continue
+      }
+      out = out c; i++
+    }
+    print out
+  }'
 }
 forbid_pattern() {
   local file="$1"
