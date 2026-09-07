@@ -138,6 +138,22 @@ boundary_scan_lines() { # <file>
     while (i <= n) {
       c = substr(line, i, 1)
       if (mode[sp] == "code") {
+        if (c == "r" && substr(line, i + 1, 1) == "\"") {
+          # Raw quoted string. lib/@vibe/parser/lexer.vibe scans to the next
+          # quote with NO escape processing, so `r"trailing\"` ENDS at that
+          # quote. Treating it as an ordinary string consumed the backslash and
+          # quote together, stayed in string mode, and discarded every
+          # declaration after it. `r` must be the whole identifier, matching the
+          # lexer, so `var"` is not one.
+          prev = (i > 1) ? substr(line, i - 1, 1) : " "
+          if (prev !~ /[A-Za-z0-9_]/) {
+            j = i + 2
+            while (j <= n && substr(line, j, 1) != "\"") { j++ }
+            out = out " "
+            if (j <= n) { i = j + 1 } else { sp++; mode[sp] = "raw"; i = j }
+            continue
+          }
+        }
         if (c == "\"") { sp++; mode[sp] = "str"; i++; continue }
         if (c == "#" && substr(line, i + 1, 1) == "|") { break }   # raw string to EOL
         if (c == "/" && substr(line, i + 1, 1) == "/") { break }   # comment to EOL
@@ -161,6 +177,11 @@ boundary_scan_lines() { # <file>
           i++; continue
         }
         out = out c; i++; continue
+      }
+      # a raw string carries to the next quote, across lines, with no escapes
+      if (mode[sp] == "raw") {
+        if (c == "\"") { sp--; }
+        i++; continue
       }
       # inside a string literal: the text is inert, the interpolations are not
       if (c == "\\") {

@@ -660,8 +660,39 @@ else
 fi
 restore
 
+# --- cases 40-41: a raw quoted string has no escapes ------------------------
+#
+# `r"..."` scans to the next quote with NO escape processing
+# (lib/@vibe/parser/lexer.vibe), so `r"trailing\"` ENDS at that quote. Treating
+# it as an ordinary string consumed the backslash and quote together, stayed in
+# string mode, and discarded every declaration after it -- the unbounded shape
+# of miss again, from a different construct.
+printf '\nexport fn raw_probe() -> String with Exception {\n  r"trailing\\\\"\n}\n\nexport fn native_after_raw() -> Unit with Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF 'export fn native_after_raw() -> Unit with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a raw string ending in a backslash disabled the scan after it"
+  else
+    pass "case: a raw quoted string ends at its quote, not at an escape"
+  fi
+else
+  fail "case: the raw-string mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport fn raw_inert() -> String with Exception {\n  r"perform Fs::read_file is inert"\n}\n' >> "$impl"
+if grep -qF 'r"perform Fs::read_file is inert"' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: raw string content is inert"
+  else
+    fail "case: the content of a raw string was scanned as code"
+  fi
+else
+  fail "case: the raw-inert mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 39 cases)"
+echo "portable-boundary-test: ok (control + 41 cases)"
