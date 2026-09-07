@@ -648,8 +648,9 @@ boundary_effect_rows() { # reads normalized text on stdin
 #
 #   fn probe() -> String with Exception +
 #     Fs { ... }
-forbid_foreign_effect_rows() { # <file> <label>
+forbid_foreign_effect_rows() { # <file> <label> [allow-list]
   local file="$1" label="$2" bad
+  local allowed="${3:-$PORTABLE_ALLOWED_EFFECTS}"
   # This deliberately does NOT model the row grammar. Six review rounds went
   # into a regex that tried to, and each round found another form it did not
   # know: a row split after `+`, an item with type arguments
@@ -682,7 +683,7 @@ forbid_foreign_effect_rows() { # <file> <label>
     | sed 's/\[[^]]*\]//g' \
     | sed -E 's/[[:space:]]*::[[:space:]]*[A-Za-z0-9_]*//g' \
     | grep -oE '[A-Za-z_][A-Za-z0-9_]*' \
-    | grep -vE "^($PORTABLE_ALLOWED_EFFECTS)$" \
+    | grep -vE "^($allowed)$" \
     | sort -u)" || true
   if [ -n "$bad" ]; then
     echo "selfhost-portable-boundary: non-portable effect row in $label ($file)" >&2
@@ -862,6 +863,27 @@ forbid_capability_authority \
 forbid_capability_authority \
   "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
   "wasi source compile API"
+
+# The entry file gets the row check too, with ITS contract as the allow-list.
+#
+# It was exempt because it legitimately carries `with Exception + Fs` / `with
+# Fs`, and a shared allow-list would have failed the gate on correct code. That
+# was the right call about the shared list and the wrong call about the check:
+# an allow-list of what this boundary IS entitled to costs nothing and closes
+# the one class no call pattern can -- an UNQUALIFIED capability builtin.
+# `println` has no namespace token to match, so no regex over the call reaches
+# it, but the checker requires `with Stdout` on the declaration, and the row is
+# a name the scanner can read. Measured: `fn f() -> Unit with Stdout {
+# println("leaked") }` passed every call pattern and is caught here.
+#
+# The three effects are what the file declares today: Exception, Fs (both
+# measured from its own rows), and Async for consistency with the shared list.
+# Widening this is a deliberate act, exactly like adding to
+# PORTABLE_ALLOWED_EFFECTS.
+forbid_foreign_effect_rows \
+  "lib/@vibe/compiler/cli_direct_component_entry.vibe" \
+  "direct component entry" \
+  "$PORTABLE_ALLOWED_EFFECTS|Fs"
 
 forbid_foreign_effect_rows \
   "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \

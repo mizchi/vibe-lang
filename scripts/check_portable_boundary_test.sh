@@ -2043,8 +2043,65 @@ else
 fi
 rm -f "$gate_tmp"
 
+# --- cases 122-125: the entry file gets the row check, with its contract -----
+#
+# Round 51, and the class I told the reviewer one round earlier was impossible
+# here. That was true of the CALL and I stopped there: `println` has no
+# namespace token, so no regex over the call reaches it. But the checker
+# REQUIRES `with Stdout` on the declaration -- measured, `fn f() -> Unit {
+# println("x") }` is rejected with "missing { Stdout }" -- and a row is a name
+# the scanner can already read. The handle was one layer over from where I was
+# looking.
+#
+# So the entry file gets the row check too, with an allow-list of what it IS
+# entitled to (Exception, Fs, Async). It was exempt because a SHARED allow-list
+# would have failed it on its own legitimate `with Exception + Fs`; that was
+# right about the shared list and wrong about the check.
+printf '\nfn probe_println_row() -> Unit with Stdout {\n  println("leaked")\n}\n' >> "$entry"
+if grep -qF -- 'println("leaked")' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an unqualified capability builtin passed the entry gate"
+  else
+    pass "case: an unqualified builtin is caught by its declared row"
+  fi
+else
+  fail "case: the println mutation did not land -- it proves nothing"
+fi
+restore
+
+# The three effects it actually declares must keep building. This is the
+# direction that kept the row check off this file for so long, so all three
+# are pinned rather than sampled.
+for row in 'Fs' 'Exception' 'Exception + Fs'; do
+  printf '\nfn probe_entry_contract(p: String) -> Int with %s {\n  Fs::stat_token(p)\n}\n' "$row" >> "$entry"
+  if grep -qF "with $row {" "$entry"; then
+    if bash "$gate" >/dev/null 2>&1; then
+      pass "case: the entry file may declare 'with $row'"
+    else
+      fail "case: the entry file own contract 'with $row' was rejected"
+    fi
+  else
+    fail "case: the '$row' mutation did not land -- the assertion proves nothing"
+  fi
+  restore
+done
+
+# And a capability it is NOT entitled to is now caught by the row, whatever the
+# call looks like -- no namespace token needed.
+printf '\nfn probe_entry_stdin_row() -> Unit with Stdin {\n  ()\n}\n' >> "$entry"
+if grep -qF -- 'fn probe_entry_stdin_row() -> Unit with Stdin {' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an excluded capability row passed the entry gate"
+  else
+    pass "case: an excluded capability is caught by the row alone"
+  fi
+else
+  fail "case: the Stdin-row mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 121 cases)"
+echo "portable-boundary-test: ok (control + 126 cases)"
