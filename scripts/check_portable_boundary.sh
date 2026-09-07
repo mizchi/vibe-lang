@@ -126,9 +126,14 @@ PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 # matters: the grammar attempts kept missing forms nobody had enumerated, while
 # string nesting is closed by construction here.
 boundary_scan_lines() { # <file>
-  awk '{
+  awk 'BEGIN { sp = 0; mode[0] = "code"; bdepth[0] = 0 }
+  {
     line = $0; n = length(line); out = ""
-    sp = 0; mode[0] = "code"; bdepth[0] = 0
+    # State is initialized ONCE, not per line: a string literal may span
+    # physical lines (measured -- it compiles), so resetting to code mode at
+    # each record scanned the continuation as executable and reported inert
+    # text as a leak. Comments and raw strings still end at EOL, which the
+    # `break` below gives for free without carrying any state.
     i = 1
     while (i <= n) {
       c = substr(line, i, 1)

@@ -629,8 +629,39 @@ else
 fi
 restore
 
+# --- cases 38-39: a string literal may span physical lines ------------------
+#
+# Measured: a multi-line string compiles. Resetting lexical state at each awk
+# record scanned the continuation as executable code and reported inert text as
+# a leak. State is carried across records now -- and the second case is what
+# keeps that from becoming a way to swallow the rest of the file: a real effect
+# row AFTER a multi-line string must still be caught.
+printf '\nexport fn probe_ml() -> String with Exception {\n  "line one\n  perform Fs::read_file continues here"\n}\n' >> "$impl"
+if grep -qF 'continues here' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a multi-line string continuation is inert"
+  else
+    fail "case: the continuation of a multi-line string was scanned as code"
+  fi
+else
+  fail "case: the multi-line mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_ml2() -> String with Exception {\n  "line one\n  ends here"\n}\n\nexport fn probe_after_ml() -> Unit with Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF 'export fn probe_after_ml() -> Unit with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a multi-line string swallowed everything after it"
+  else
+    pass "case: a declaration after a multi-line string is still scanned"
+  fi
+else
+  fail "case: the after-multiline mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 37 cases)"
+echo "portable-boundary-test: ok (control + 39 cases)"
