@@ -30,17 +30,21 @@ cd "$repo_root"
 gate="scripts/check_portable_boundary.sh"
 impl="lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe"
 contract="lib/@vibe/compiler/entry/source_compile/index.vpkg"
+# The entry file is scanned too, and is deliberately outside the effect-row
+# allow-list -- forbid_pattern is its only protection, which is what the
+# native-call cases at the end exercise.
+entry="lib/@vibe/compiler/cli_direct_component_entry.vibe"
 
 # Refuse to run against a dirty tree: the restore below would discard the
-# author's uncommitted work in these two files.
-if ! git diff --quiet -- "$impl" "$contract"; then
-  echo "portable-boundary-test: $impl or $contract has uncommitted changes." >&2
+# author's uncommitted work in these files.
+if ! git diff --quiet -- "$impl" "$contract" "$entry"; then
+  echo "portable-boundary-test: $impl, $contract or $entry has uncommitted changes." >&2
   echo "  This test mutates and restores them with 'git checkout'. Commit or" >&2
   echo "  stash first, so a restore cannot discard your work." >&2
   exit 2
 fi
 
-restore() { git checkout -q -- "$impl" "$contract" 2>/dev/null || true; }
+restore() { git checkout -q -- "$impl" "$contract" "$entry" 2>/dev/null || true; }
 trap restore EXIT
 
 fails=0
@@ -793,8 +797,55 @@ else
 fi
 restore
 
+# --- cases 48-50: whitespace in a native call -------------------------------
+#
+# `perform  Fs::ReadFile` (two spaces), a tab, and a newline separator all
+# compile, and all bypassed a pattern matching exactly one literal space. The
+# newline case additionally needs the FLATTENED view: a line-oriented grep
+# cannot see a match that spans lines, so forbid_pattern now checks both.
+#
+# These run against the entry file rather than "$impl": cli_direct_component_entry
+# is deliberately outside the effect-row allow-list, so forbid_pattern is its
+# ONLY protection, which is what makes this class of miss matter there.
+printf '\nexport fn probe_sp2(p: String) -> String with Fs {\n  perform  Fs::ReadFile(p)\n}\n' >> "$entry"
+if grep -qF 'perform  Fs::ReadFile(p)' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a native call with two spaces passed the gate"
+  else
+    pass "case: repeated whitespace in a native call is still a leak"
+  fi
+else
+  fail "case: the two-space mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_spnl(p: String) -> String with Fs {\n  perform\n    Fs::ReadFile(p)\n}\n' >> "$entry"
+if grep -qE '^  perform$' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a native call split across lines passed the gate"
+  else
+    pass "case: a native call split across lines is still a leak"
+  fi
+else
+  fail "case: the newline mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# And the converse, so widening the separator does not start flagging prose.
+printf '\nexport fn probe_sp_str() -> String with Exception {\n  "do not perform  Fs::ReadFile here"\n}\n' >> "$entry"
+if grep -qF 'do not perform  Fs::ReadFile here' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: the same text inside a string is still not a leak"
+  else
+    fail "case: an inert string with a spaced native call failed the gate"
+  fi
+else
+  fail "case: the string mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 47 cases)"
+echo "portable-boundary-test: ok (control + 50 cases)"

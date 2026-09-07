@@ -36,16 +36,30 @@ forbid_pattern() {
   # It used to drop only whole comment LINES, so an inert diagnostic such as
   # "do not generate perform Fs::read_file here" was reported as a leak, which
   # is a required gate rejecting an ordinary message.
-  if boundary_scan_lines "$file" \
-    | grep -En "$pattern" >/tmp/vibe_portable_boundary_hits.$$; then
-    cat /tmp/vibe_portable_boundary_hits.$$ >&2
+  # Checked on BOTH views. The line-preserving one gives line numbers for the
+  # report; the flattened one catches a separator that spans lines, which a
+  # line-oriented grep cannot see (`perform` and `Fs::ReadFile` on two lines
+  # compiles). Either matching is a failure -- reporting is best-effort, the
+  # verdict is not.
+  boundary_scan_lines "$file" | grep -En "$pattern" >/tmp/vibe_portable_boundary_hits.$$ || true
+  flat_hit=0
+  if boundary_scan_text "$file" | grep -Eq "$pattern"; then flat_hit=1; fi
+  if [ -s /tmp/vibe_portable_boundary_hits.$$ ] || [ "$flat_hit" -eq 1 ]; then
+    if [ -s /tmp/vibe_portable_boundary_hits.$$ ]; then
+      cat /tmp/vibe_portable_boundary_hits.$$ >&2
+    else
+      echo "  (match spans lines; no single line to cite)" >&2
+    fi
     rm -f /tmp/vibe_portable_boundary_hits.$$
     fail "native capability leaked into portable boundary: $label ($file)"
   fi
   rm -f /tmp/vibe_portable_boundary_hits.$$
 }
 
-native_effect_pattern='with \{[^}]*(Fs|Process|Socket|Net)|perform (Fs|Process|Socket|Http)::|compile_file_fs|session-http|daemon'
+# Separators are `[[:space:]]+`, not one literal space. `perform  Fs::ReadFile`
+# with two spaces, or a tab or newline after `perform`, all compile and all
+# bypassed a pattern that matched exactly one space.
+native_effect_pattern='with[[:space:]]*\{[^}]*(Fs|Process|Socket|Net)|perform[[:space:]]+(Fs|Process|Socket|Http)::|compile_file_fs|session-http|daemon'
 
 # The `with \{...\}` alternative above matches the HANDLER syntax
 # (`try ... with { Exception::Throw(e) => ... }`), which is a different
