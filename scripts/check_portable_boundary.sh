@@ -256,6 +256,16 @@ boundary_effect_rows() { # reads normalized text on stdin
       c = substr(s, i, 1)
       if (c == "(") { depth++; i++; continue }
       if (c == ")") { if (depth > 0) depth--; i++; continue }
+      if (depth == 0 && brace == 0 && substr(s, i, 3) == "fn ") {
+        # Anchor the arrow count to THIS declaration. Resetting only on `{`
+        # meant a bodyless declaration carrying an arrow -- `type Cb = (Int) ->
+        # Int` -- left the count at 1, so the arrow of the NEXT function made 2
+        # and its row was skipped as ambiguous. An unrelated type alias
+        # silently disabled the check for the declaration after it.
+        prev = (i > 1) ? substr(s, i - 1, 1) : " "
+        if (prev !~ /[A-Za-z0-9_]/) { arrows = 0 }
+        i += 3; continue
+      }
       if (c == "-" && substr(s, i + 1, 1) == ">" && depth == 0 && brace == 0) {
         arrows++; i++; continue
       }
@@ -273,6 +283,9 @@ boundary_effect_rows() { # reads normalized text on stdin
           if (cc == "(") { d2++ }
           else if (cc == ")") { if (d2 > 0) { d2-- } else { break } }
           else if (d2 == 0 && (cc == "{" || cc == ";")) { break }
+          # a `where` contract follows the row and is not part of it:
+          # `fn f(x: Int) -> Int with Exception where { requires: x >= 0 }`
+          else if (d2 == 0 && substr(s, j, 6) == "where " && substr(row, length(row), 1) ~ /[ \t]/) { break }
           row = row cc; j++
         }
         print row

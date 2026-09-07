@@ -731,8 +731,70 @@ else
 fi
 restore
 
+# --- cases 44-45: arrow count belongs to ONE declaration --------------------
+#
+# The ambiguity guard reset only on `{`, so a bodyless declaration carrying an
+# arrow (`type Cb = (Int) -> Int`) left the count at 1; the next function's own
+# arrow made 2 and its row was skipped. An unrelated type alias silently
+# disabled the check for the declaration after it. The count is anchored to
+# `fn` now. Both directions, since the anchor could equally over-reset.
+printf '\ntype Cb = (Int) -> Int\n\nexport fn rn_native() -> Unit with Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'type Cb = (Int) -> Int' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a type alias with an arrow disabled the check for the next declaration"
+  else
+    pass "case: an arrow in a bodyless declaration does not leak into the next"
+  fi
+else
+  fail "case: the alias mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\ntype Cb2 = (Int) -> Int\n\nexport fn rn_pure() -> Unit with Exception {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'type Cb2 = (Int) -> Int' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an allowed row after a bodyless arrow declaration is still accepted"
+  else
+    fail "case: the arrow anchor made an allowed row reject"
+  fi
+else
+  fail "case: the alias mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# --- cases 46-47: a `where` contract follows the row ------------------------
+#
+# `fn f(x: Int) -> Int with Exception where { requires: x >= 0 }` -- the row
+# ends at `where`, not at the contract's brace. Including it reported
+# `effect: where` and rejected a legitimate design-by-contract declaration.
+printf '\nexport fn checked(x: Int) -> Int with Exception where { requires: x >= 0 } {\n  x\n}\n' >> "$impl"
+if grep -qF 'with Exception where { requires:' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a where contract is not part of the effect row"
+  else
+    fail "case: a declaration with a where contract was rejected"
+  fi
+else
+  fail "case: the where mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
+# The row before a `where` must still be checked, or stopping early becomes a
+# way to hide one.
+printf '\nexport fn checked_bad(x: Int) -> Int with Fs where { requires: x >= 0 } {\n  x\n}\n' >> "$impl"
+if grep -qF 'with Fs where { requires:' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a native row before a where contract was skipped"
+  else
+    pass "case: the row before a where contract is still checked"
+  fi
+else
+  fail "case: the where mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 43 cases)"
+echo "portable-boundary-test: ok (control + 47 cases)"
