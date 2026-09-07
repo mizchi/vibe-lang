@@ -353,14 +353,19 @@ boundary_effect_rows() { # reads normalized text on stdin
       # `export let`, turning a false positive into a miss one declaration
       # later. A declaration with no keyword at all keeps being checked --
       # this suppresses `type` and nothing else.
+      # A declaration keyword starts at any token boundary, not only after a
+      # space: `;type Cb = () -> Unit with R` is legal, and requiring a space
+      # missed it, so the aliases row was attributed to the boundary. The dot
+      # stays excluded so a field access spelled `x.type` is not read as a
+      # declaration.
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 5) == "type ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev == " ") { arrows = 0; rown = 0; authn = 0; decl = "type" }
+        if (prev !~ /[A-Za-z0-9_.]/) { arrows = 0; rown = 0; authn = 0; decl = "type" }
         i += 5; continue
       }
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 4) == "let ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev == " ") { arrows = 0; rown = 0; authn = 0; decl = "let" }
+        if (prev !~ /[A-Za-z0-9_.]/) { arrows = 0; rown = 0; authn = 0; decl = "let" }
         i += 4; continue
       }
       if (c == "-" && substr(s, i + 1, 1) == ">" && depth == 0 && brack == 0 && brace == 0) {
@@ -471,7 +476,14 @@ boundary_effect_rows() { # reads normalized text on stdin
     # wrong: two rows does not mean one of them is the declarations.
     if (decl != "type") {
       if (rown >= arrows && rown >= 1) { print "row:" rowbuf[rown] }
-      for (k = 1; k <= authn; k++) { print "auth:" authbuf[k] }
+      # Authority binds to an arrow layer exactly as a row does. `fn make() ->
+      # () -> Unit with () allows Fs::read_file` grants the authority to the
+      # RETURNED function type, not to make, which performs nothing; emitting
+      # every clause rejected that pure helper. The clause the declaration owns
+      # is the last, and only when there are more clauses than layers to absorb
+      # them -- the same arithmetic as the row above, and with one arrow there
+      # is only one function type at depth 0 for a clause to attach to.
+      if (authn >= arrows && authn >= 1) { print "auth:" authbuf[authn] }
     }
     rown = 0; authn = 0
   }'

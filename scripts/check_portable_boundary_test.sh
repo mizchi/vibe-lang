@@ -1359,8 +1359,75 @@ else
 fi
 restore
 
+# --- cases 79-80: a declaration keyword follows any token boundary ----------
+#
+# Round 36. The `type` and `let` handlers required a preceding SPACE, chosen
+# over the `fn ` handler's looser test so that a field access spelled `x.type`
+# could not be read as a declaration. A semicolon is a legal separator, so
+# `;type Cb = () -> Unit with ReviewAsk` was not recognised as an alias and its
+# row was charged to the boundary -- measured, rejected as `effect: ReviewAsk`.
+# The dot alone is excluded now.
+printf '\n;type SemiAlias = () -> Unit with ReviewAsk\n' >> "$impl"
+if grep -qF -- ';type SemiAlias = () -> Unit with ReviewAsk' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an alias after a top-level semicolon is still an alias"
+  else
+    fail "case: an alias introduced after a semicolon was charged to the boundary"
+  fi
+else
+  fail "case: the semicolon-alias mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\n;type SemiAlias2 = () -> Unit with ReviewAsk\n\nexport fn probe_after_semi_alias() -> Unit with Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'export fn probe_after_semi_alias() -> Unit with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: the alias after a semicolon swallowed the next declaration row"
+  else
+    pass "case: a declaration after a semicolon alias keeps its own row"
+  fi
+else
+  fail "case: the semicolon-alias-then-native mutation did not land -- it proves nothing"
+fi
+restore
+
+# --- cases 81-82: authority binds to an arrow layer, like a row -------------
+#
+# Round 37, and the other half of round 32: authority was collected per
+# declaration but emitted regardless of the return-type arrows, so a pure
+# helper that hands OUT an authorised closure was rejected as though it held
+# the authority itself. `parse_type_impl` attaches the clause to the returned
+# TyFn; the arithmetic is now the same as the row above (authn >= arrows).
+printf '\nexport fn probe_returns_authorised() -> () -> Unit with () allows Fs::read_file {\n  () -> {\n    ()\n  }\n}\n' >> "$impl"
+if grep -qF -- '-> () -> Unit with () allows Fs::read_file {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: authority on a returned closure type is not the declaration own"
+  else
+    fail "case: a pure helper returning an authorised closure was rejected"
+  fi
+else
+  fail "case: the returned-authority mutation did not land -- it proves nothing"
+fi
+restore
+
+# The direction that must not regress with it: a HIGHER-ORDER declaration that
+# really does hold the authority is still reported. The parameter's arrow is
+# inside parentheses, so it is not a return-type layer and cannot absorb the
+# clause.
+printf '\nexport fn probe_ho_authority(g: () -> Unit) -> Unit with Exception allows Fs::read_file {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'export fn probe_ho_authority(g: () -> Unit) -> Unit with Exception allows Fs::read_file {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a higher-order declaration hid its own authority clause"
+  else
+    pass "case: a parameter arrow does not absorb the declaration authority"
+  fi
+else
+  fail "case: the higher-order-authority mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 78 cases)"
+echo "portable-boundary-test: ok (control + 82 cases)"
