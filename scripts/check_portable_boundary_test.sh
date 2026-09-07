@@ -45,7 +45,12 @@ if ! git diff --quiet -- "$impl" "$contract" "$entry"; then
 fi
 
 restore() { git checkout -q -- "$impl" "$contract" "$entry" 2>/dev/null || true; }
-trap restore EXIT
+# The EXIT trap also sweeps the gate copies a case may leave behind. `set -e`
+# can end the run between writing one and removing it, and a stray
+# `scripts/.portable_boundary_*.sh` is then an untracked file that other gates
+# scan -- a failure with nothing to do with what broke.
+cleanup() { restore; rm -f scripts/.portable_boundary_*probe*.sh; }
+trap cleanup EXIT
 
 fails=0
 pass() { printf 'portable-boundary-test: ok: %s\n' "$1"; }
@@ -2154,8 +2159,107 @@ else
 fi
 restore
 
+# --- cases 129-132: an `effectset` alias resolves to its members -------------
+#
+# Round 53. `effectset PortableEffects = { Exception, Async }` (ADR-0071) plus
+# `with PortableEffects` was rejected as `effect: PortableEffects` -- a false
+# positive on a boundary whose every member is allow-listed.
+#
+# The tempting fix is to add the alias to PORTABLE_ALLOWED_EFFECTS, and it is
+# the dangerous one: the list would then admit the NAME, so a later edit adding
+# `Fs` to that set passes unseen. The members are read from the declaration
+# instead. Cases 130 and 131 are that danger, pinned in both the direct and the
+# transitive shape; 132 is the fail-closed direction for an alias the scanned
+# file cannot see.
+for probe in \
+  'effectset PortableEffects = { Exception, Async };PortableEffects;accept' \
+  'effectset SneakyEffects = { Exception, Fs };SneakyEffects;reject' \
+  'effectset Inner = { Fs } effectset Outer = { Inner, Async };Outer;reject' \
+  ';ImportedElsewhere;reject'
+do
+  decls="${probe%%;*}"; rest="${probe#*;}"
+  row="${rest%%;*}"; want="${rest##*;}"
+  printf '\n%s\n\nexport fn probe_set(x: Int) -> Int with %s {\n  x + 1\n}\n' "$decls" "$row" >> "$impl"
+  if grep -qF "with $row {" "$impl"; then
+    if bash "$gate" >/dev/null 2>&1; then
+      if [ "$want" = "accept" ]; then
+        pass "case: an effectset of allowed members is expanded, not rejected"
+      else
+        fail "case: '$row' hid a capability behind an effectset alias"
+      fi
+    else
+      if [ "$want" = "reject" ]; then
+        pass "case: '$row' is reported rather than taken at its name"
+      else
+        fail "case: a portable effectset alias was rejected"
+      fi
+    fi
+  else
+    fail "case: the '$row' mutation did not land -- it proves nothing"
+  fi
+  restore
+done
+
+# --- case 133: `where` must start at a token boundary ------------------------
+#
+# Found while measuring round 53, and worse than the finding that led to it.
+# The `where` break in the row scanner was unanchored, so it matched INSIDE an
+# effect name: `with Asyncwhere + Fs` broke at character 6, kept the row as
+# `Async` -- which is allow-listed -- and dropped `+ Fs` entirely. Measured on
+# c89c47367, with a boundary body that calls `Fs::stat_token`: the gate printed
+# `ok`, EXIT=0. A silent miss, and the cheapest kind to introduce, since any
+# effect whose name ends in `where` hides the rest of its own row.
+#
+# The three sibling breaks (`fn ` / `type ` / `let `) already made the token
+# test; `where` was the one that did not. Cases 46-47 above keep the real
+# contract form working.
+printf '\neffect Asyncwhere {\n  Ping() -> Unit\n}\n\nexport fn probe_hidden(x: Int) -> Int with Asyncwhere + Fs {\n  Fs::stat_token("x") + x\n}\n' >> "$impl"
+if grep -qF 'with Asyncwhere + Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an effect name ending in 'where' hid the rest of the row"
+  else
+    pass "case: 'where' inside an effect name does not end the row"
+  fi
+else
+  fail "case: the Asyncwhere mutation did not land -- it proves nothing"
+fi
+restore
+
+# --- case 134: expansion happens BEFORE the allow-list ----------------------
+#
+# Cases 130-131 above pass on a gate with no expansion at all -- there the
+# alias is rejected under its own name, for the wrong reason. So they do not
+# actually prove the dangerous fix was avoided. This one does: it allow-lists
+# the alias NAME, exactly what round 53 warned against, and asserts `Fs` is
+# still reported. That can only hold if the members are resolved first.
+#
+# The gate is copied INSIDE scripts/ rather than to a temp dir: ROOT_DIR comes
+# from BASH_SOURCE, so a copy under /tmp resolves the repository wrongly and
+# fails for a reason that has nothing to do with the property (that mistake
+# made an earlier probe "pass" while proving nothing).
+probe_gate="scripts/.portable_boundary_allowlist_probe.$$.sh"
+sed "s/^PORTABLE_ALLOWED_EFFECTS='Exception|Async'\$/PORTABLE_ALLOWED_EFFECTS='Exception|Async|SneakyEffects'/" \
+  "$gate" > "$probe_gate"
+if grep -qF "PORTABLE_ALLOWED_EFFECTS='Exception|Async|SneakyEffects'" "$probe_gate"; then
+  printf '\neffectset SneakyEffects = { Exception, Fs }\n\nexport fn probe_set(x: Int) -> Int with SneakyEffects {\n  x + 1\n}\n' >> "$impl"
+  # Capture, then grep. Piping the gate straight into grep looks equivalent
+  # and is not: this harness runs under `set -o pipefail`, so the gate's own
+  # exit 1 -- the whole point of the case -- makes the pipeline non-zero even
+  # when grep matches, and the case reports the property ABSENT while it holds.
+  probe_out="$(bash "$probe_gate" 2>&1 || true)"
+  if printf '%s\n' "$probe_out" | grep -qE '^  effect: Fs$'; then
+    pass "case: an allow-listed alias still reports the Fs inside it"
+  else
+    fail "case: allow-listing the alias name hid a capability member"
+  fi
+  restore
+else
+  fail "case: the allow-list mutation did not land -- it proves nothing"
+fi
+rm -f "$probe_gate"
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 128 cases)"
+echo "portable-boundary-test: ok (control + 134 cases)"

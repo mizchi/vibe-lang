@@ -561,7 +561,16 @@ boundary_effect_rows() { # reads normalized text on stdin
           if (cc == "(") { d2++ }
           else if (cc == ")") { if (d2 > 0) { d2-- } else { break } }
           else if (d2 == 0 && (cc == "{" || cc == ";")) { break }
-          else if (d2 == 0 && substr(s, j, 6) == "where " ) { break }
+          # ...and `where` must start at a TOKEN boundary, the same test the
+          # `fn` / `type` / `let` breaks below already make. Unanchored, it
+          # matched inside an effect NAME: `with Asyncwhere + Fs` broke at
+          # character 6, kept the row as `Async` -- allow-listed -- and dropped
+          # `+ Fs` entirely. Measured on c89c47367 with a boundary that calls
+          # `Fs::stat_token`: the gate printed `ok`, EXIT=0. A silent miss, and
+          # the cheapest possible one to introduce: any effect whose name ends
+          # in `where` hides everything after it in the row.
+          else if (d2 == 0 && substr(s, j, 6) == "where " \
+                   && substr(row, length(row), 1) ~ /[ ]/) { break }
           # a following `with` starts a NEW row rather than continuing this
           # one: `-> (String) -> Unit with Exception with Fs` is two rows, and
           # collecting them as one made the count 1, which took the
@@ -668,6 +677,84 @@ boundary_effect_rows() { # reads normalized text on stdin
 #
 #   fn probe() -> String with Exception +
 #     Fs { ... }
+# `effectset Name = { A, B }` (ADR-0071) declares a SET of effects, and a
+# declaration then says `with Name`. Tokenizing the row yields the ALIAS, so a
+# portable boundary using one was rejected as `effect: PortableEffects` even
+# though every member is allow-listed.
+#
+# Adding the alias to PORTABLE_ALLOWED_EFFECTS would be the wrong fix and an
+# actively dangerous one: the allow-list would then admit the NAME, and a later
+# edit adding `Fs` to that set would pass unseen. So the members are read from
+# the declaration itself -- the same move as deriving the capability list from
+# `capability_effect_name_list` instead of restating it. What the gate checks
+# stays "no capability name appears in this row", with the alias resolved to
+# what it actually stands for.
+#
+# Only an UNQUALIFIED effectset declared in the scanned file itself is
+# expanded. An imported one, and the qualified `effectset Effect::Name = ...`
+# form, are not visible here and stay unexpanded -- which means they are
+# reported, which is the safe direction. Do not "fix" that by allow-listing the
+# name; move the declaration into the file, or spell the row out.
+boundary_effectset_defs() { # <file> -- emits `NAME MEMBER`, one pair per line
+  boundary_scan_text "$1" \
+    | grep -oE 'effectset[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*\{[^{}]*\}' \
+    | awk '{
+        s = $0
+        sub(/^effectset[[:space:]]+/, "", s)
+        eq = index(s, "=")
+        if (eq == 0) { next }
+        name = substr(s, 1, eq - 1)
+        gsub(/[[:space:]]/, "", name)
+        ob = index(s, "{"); cb = index(s, "}")
+        if (ob == 0 || cb <= ob) { next }
+        body = substr(s, ob + 1, cb - ob - 1)
+        n = split(body, parts, ",")
+        for (i = 1; i <= n; i++) {
+          m = parts[i]
+          gsub(/[[:space:]]/, "", m)
+          gsub(/\[[^]]*\]/, "", m)
+          sub(/::.*$/, "", m)
+          if (m != "") { print name " " m }
+        }
+      }' || true
+}
+
+boundary_expand_effectsets() { # <file> -- expands aliases in the tokens on stdin
+  local defs
+  defs="$(boundary_effectset_defs "$1")" || true
+  awk -v defs="$defs" '
+    BEGIN {
+      n = split(defs, lines, "\n")
+      for (i = 1; i <= n; i++) {
+        if (lines[i] == "") { continue }
+        split(lines[i], kv, " ")
+        members[kv[1]] = members[kv[1]] " " kv[2]
+      }
+    }
+    {
+      # Transitive: `effectset A = { B }` over `effectset B = { Exception }`
+      # has to reach Exception. Bounded, because a scanner must terminate on
+      # input it did not validate -- a cyclic set is not legal vibe, and after
+      # the bound its alias is still in the stream, so it is REPORTED rather
+      # than silently dropped.
+      out = $0
+      for (round = 0; round < 8; round++) {
+        changed = 0; nxt = ""
+        k = split(out, toks, " ")
+        for (j = 1; j <= k; j++) {
+          t = toks[j]
+          if (t == "") { continue }
+          if (t in members) { nxt = nxt members[t]; changed = 1 }
+          else { nxt = nxt " " t }
+        }
+        out = nxt
+        if (changed == 0) { break }
+      }
+      k = split(out, toks, " ")
+      for (j = 1; j <= k; j++) { if (toks[j] != "") { print toks[j] } }
+    }'
+}
+
 forbid_foreign_effect_rows() { # <file> <label> [allow-list]
   local file="$1" label="$2" bad
   local allowed="${3:-$PORTABLE_ALLOWED_EFFECTS}"
@@ -703,6 +790,7 @@ forbid_foreign_effect_rows() { # <file> <label> [allow-list]
     | sed 's/\[[^]]*\]//g' \
     | sed -E 's/[[:space:]]*::[[:space:]]*[A-Za-z0-9_]*//g' \
     | grep -oE '[A-Za-z_][A-Za-z0-9_]*' \
+    | boundary_expand_effectsets "$file" \
     | grep -vE "^($allowed)$" \
     | sort -u)" || true
   if [ -n "$bad" ]; then
