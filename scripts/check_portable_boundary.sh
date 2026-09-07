@@ -315,6 +315,20 @@ boundary_effect_rows() { # reads normalized text on stdin
       }
       if (c == "}") { if (brace > 0) brace--; i++; continue }
       if (c == ";" && depth == 0 && brack == 0 && brace == 0) { flush(); arrows = 0; rown = 0; decl = ""; i++; continue }
+      # `=` ends the TYPE of a binding and starts its value. Without this,
+      # `export let f: (Int) -> Unit with Exception = (x) -> { () }` ran the
+      # row on to the initializer body and reported `effect: x` on a portable
+      # file. The initializer arrow also inflated the layer count, so simply
+      # stopping the row there would have skipped the declaration instead;
+      # flushing at `=` reports the row and leaves the value to be scanned as
+      # what it is. `decl` is NOT cleared -- `type Cb = () -> Unit with R` has
+      # its row AFTER the `=`, and clearing it would re-open the alias false
+      # positive one character later. A comparison operator is not a binding.
+      if (c == "=" && depth == 0 && brack == 0 && brace == 0 \
+          && substr(s, i + 1, 1) != "=" \
+          && ((i > 1) ? substr(s, i - 1, 1) : " ") !~ /[=<>!+\-*\/%]/) {
+        flush(); arrows = 0; rown = 0; i++; continue
+      }
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 5) == "with ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
         if (prev ~ /[A-Za-z0-9_]/) { i++; continue }
@@ -337,6 +351,7 @@ boundary_effect_rows() { # reads normalized text on stdin
           # lives -- the next declaration was then read as part of the alias
           # and its native row went unreported. No effect item contains these
           # keywords, so breaking on them costs nothing.
+          else if (d2 == 0 && cc == "=" && substr(s, j + 1, 1) != "=" && substr(s, j - 1, 1) !~ /[=<>!+\-*\/%]/) { break }
           else if (d2 == 0 && substr(s, j, 3) == "fn " && substr(row, length(row), 1) ~ /[ ]/) { break }
           else if (d2 == 0 && substr(s, j, 5) == "type " && substr(row, length(row), 1) ~ /[ ]/) { break }
           else if (d2 == 0 && substr(s, j, 4) == "let " && substr(row, length(row), 1) ~ /[ ]/) { break }

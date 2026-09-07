@@ -1030,8 +1030,61 @@ else
 fi
 restore
 
+# --- cases 61-63: a binding's initializer is not part of its row ------------
+#
+# Round 29, another false positive. `export let f: (Int) -> Unit with Exception
+# = (x) -> { () }` ran the row scan past the type and into the value, so the
+# lambda's parameter was reported as `effect: x` on a portable file.
+#
+# `=` ends the type and starts the value. Stopping the row there is not enough
+# on its own: the initializer's arrow would still count as a return-type layer
+# and push rows below arrows, skipping the declaration instead of reporting
+# it. So `=` FLUSHES -- the row is attributed, then the value is scanned as
+# what it is. `decl` survives the flush, because a type alias keeps its row
+# after the `=`.
+printf '\nexport let probe_bind_ok: (Int) -> Unit with Exception = (x) -> {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'export let probe_bind_ok: (Int) -> Unit with Exception = (x) -> {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a binding initializer is not read as part of the effect row"
+  else
+    fail "case: a portable function binding was rejected, most likely as effect: x"
+  fi
+else
+  fail "case: the binding mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# The direction that matters more: flushing at `=` must not cost the row. A
+# binding IS a boundary declaration -- unlike a type alias, it is a value a
+# caller can reach -- so its native row is still reported.
+printf '\nexport let probe_bind_native: (Int) -> Unit with Fs = (x) -> {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'export let probe_bind_native: (Int) -> Unit with Fs = (x) -> {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a native row on a function binding went unreported"
+  else
+    pass "case: a function binding native row is still the boundary own"
+  fi
+else
+  fail "case: the native-binding mutation did not land -- it proves nothing"
+fi
+restore
+
+# And the declaration after a binding is still its own, the same property
+# case 58 pins for an alias.
+printf '\nexport let probe_bind_then: (Int) -> Unit with Exception = (x) -> {\n  ()\n}\n\nexport fn probe_after_bind() -> Unit with Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'export fn probe_after_bind() -> Unit with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a binding swallowed the next declaration native row"
+  else
+    pass "case: a declaration after a binding keeps its own row"
+  fi
+else
+  fail "case: the binding-then-native mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 60 cases)"
+echo "portable-boundary-test: ok (control + 63 cases)"
