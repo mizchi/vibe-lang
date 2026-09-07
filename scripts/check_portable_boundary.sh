@@ -76,10 +76,17 @@ PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 #     Fs { ... }
 forbid_foreign_effect_rows() { # <file> <label>
   local file="$1" label="$2" bad
+  # An effect item may carry type arguments -- `parse_effect_item`
+  # (lib/@vibe/parser/parser_base.vibe) accepts `Exception[String] + Fs`, and it
+  # compiles. Matching bare identifiers stopped at the `[`, recorded the allowed
+  # `Exception`, and never saw the `Fs`. The argument is dropped BEFORE the row
+  # is split on `+`, so an argument that itself contains `+` cannot fragment
+  # into pieces that match nothing and read as leaks.
   bad="$(sed 's://.*::' "$ROOT_DIR/$file" \
     | tr '\n' ' ' \
-    | grep -oE 'with +[A-Z][A-Za-z0-9_]*( *\+ *[A-Z][A-Za-z0-9_]*)*' \
+    | grep -oE 'with +[A-Z][A-Za-z0-9_]*(\[[^]]*\])?( *\+ *[A-Z][A-Za-z0-9_]*(\[[^]]*\])?)*' \
     | sed 's/^with  *//' \
+    | sed 's/\[[^]]*\]//g' \
     | tr '+' '\n' \
     | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
     | grep -vE "^($PORTABLE_ALLOWED_EFFECTS)$" \

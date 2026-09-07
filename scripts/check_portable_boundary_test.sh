@@ -310,8 +310,39 @@ else
 fi
 restore
 
+# --- cases 18-19: an effect item with type arguments ------------------------
+#
+# `parse_effect_item` accepts a generic item, and `with Exception[String] + Fs`
+# compiles -- verified with `vibe test`. Matching bare identifiers stopped at
+# the `[`, recorded the allowed `Exception`, and never saw the `Fs`. Both
+# directions again: the generic form must not hide a capability, and must not
+# start rejecting an allowed row either.
+printf '\nexport fn probe_gen() -> Unit with Exception[String] + Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF 'with Exception[String] + Fs' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a generic effect item hid the capability after it"
+  else
+    pass "case: a capability after a generic effect item is rejected"
+  fi
+else
+  fail "case: the generic-item mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_gen_ok() -> Unit with Exception[String] + Async {\n  ()\n}\n' >> "$impl"
+if grep -qF 'with Exception[String] + Async' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a generic item in an otherwise allowed row is accepted"
+  else
+    fail "case: 'with Exception[String] + Async' was rejected -- the type argument leaked into the name"
+  fi
+else
+  fail "case: the generic-item mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 17 cases)"
+echo "portable-boundary-test: ok (control + 19 cases)"
