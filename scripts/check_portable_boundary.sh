@@ -265,49 +265,69 @@ boundary_scan_text() { # <file>
 # one of them is recoverable.
 boundary_effect_rows() { # reads normalized text on stdin
   awk '{
-    s = $0; n = length(s); depth = 0; brace = 0; arrows = 0; i = 1
+    s = $0; n = length(s); depth = 0; brace = 0; arrows = 0; rown = 0; i = 1
     while (i <= n) {
       c = substr(s, i, 1)
       if (c == "(") { depth++; i++; continue }
       if (c == ")") { if (depth > 0) depth--; i++; continue }
       if (depth == 0 && brace == 0 && substr(s, i, 3) == "fn ") {
-        # Anchor the arrow count to THIS declaration. Resetting only on `{`
-        # meant a bodyless declaration carrying an arrow -- `type Cb = (Int) ->
-        # Int` -- left the count at 1, so the arrow of the NEXT function made 2
-        # and its row was skipped as ambiguous. An unrelated type alias
-        # silently disabled the check for the declaration after it.
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev !~ /[A-Za-z0-9_]/) { arrows = 0 }
+        if (prev !~ /[A-Za-z0-9_]/) { arrows = 0; rown = 0 }
         i += 3; continue
       }
       if (c == "-" && substr(s, i + 1, 1) == ">" && depth == 0 && brace == 0) {
         arrows++; i++; continue
       }
-      if (c == "{") { if (brace == 0) { arrows = 0 }; brace++; i++; continue }
+      if (c == "{") {
+        if (brace == 0) { flush(); arrows = 0; rown = 0 }
+        brace++; i++; continue
+      }
       if (c == "}") { if (brace > 0) brace--; i++; continue }
+      if (c == ";" && depth == 0 && brace == 0) { flush(); arrows = 0; rown = 0; i++; continue }
       if (depth == 0 && brace == 0 && substr(s, i, 5) == "with ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
         if (prev ~ /[A-Za-z0-9_]/) { i++; continue }
-        # more than one depth-0 arrow: the row may belong to a returned
-        # function type, so leave it unclassified rather than guess
-        if (arrows > 1) { i++; continue }
         j = i + 5; row = ""; d2 = 0
         while (j <= n) {
           cc = substr(s, j, 1)
           if (cc == "(") { d2++ }
           else if (cc == ")") { if (d2 > 0) { d2-- } else { break } }
           else if (d2 == 0 && (cc == "{" || cc == ";")) { break }
-          # a `where` contract follows the row and is not part of it:
-          # `fn f(x: Int) -> Int with Exception where { requires: x >= 0 }`
-          else if (d2 == 0 && substr(s, j, 6) == "where " && substr(row, length(row), 1) ~ /[ \t]/) { break }
+          else if (d2 == 0 && substr(s, j, 6) == "where " ) { break }
+          # a following `with` starts a NEW row rather than continuing this
+          # one: `-> (String) -> Unit with Exception with Fs` is two rows, and
+          # collecting them as one made the count 1, which took the
+          # single-row skip path and let Fs through
+          else if (d2 == 0 && substr(s, j, 5) == "with " && substr(row, length(row), 1) ~ /[ ]/) { break }
           row = row cc; j++
         }
-        print row
+        rowbuf[++rown] = row
         i = j
         continue
       }
       i++
     }
+    flush()
+  }
+  function flush(  k) {
+    # Which of the rows collected for this declaration are the DECLARATIONS own?
+    #
+    # One depth-0 arrow: the signature is `fn f(...) -> T with R`, so every row
+    # found belongs to f.
+    #
+    # More than one: the return type is itself a function type, and a row may
+    # belong to it instead. With exactly one row -- `fn make() -> (String) ->
+    # Unit with Log::Emit` -- it is the returned closures and f is pure, so it
+    # is skipped. With two or more -- `fn f() -> (String) -> Unit with Exception
+    # with Fs` -- the earlier ones bind to the inner function types and the LAST
+    # one is f own row, so that one is checked. Skipping all of them, as this
+    # did before, let a boundary carry Fs unnoticed.
+    if (arrows <= 1) {
+      for (k = 1; k <= rown; k++) { print rowbuf[k] }
+    } else if (rown >= 2) {
+      print rowbuf[rown]
+    }
+    rown = 0
   }'
 }
 

@@ -716,7 +716,11 @@ restore
 # --- case 43: THE COST OF CASE 42, pinned so it is visible ------------------
 #
 # Skipping the ambiguous multi-arrow shape means a boundary that returns an
-# Fs-carrying closure is NOT checked. This case asserts that miss deliberately.
+# Fs-carrying closure is NOT checked, WHEN that is the only row in the
+# signature. If the signature carries a second row, the last one is the
+# declarations own and IS checked (cases 51-52) -- that narrowing came from
+# review round 25, where skipping every row let a real leak through.
+# This case asserts the remaining miss deliberately.
 # It is not an endorsement: telling it from case 42 needs the type grammar, and
 # grammar is what this scan stopped modelling. #2581 answers it from the AST.
 #
@@ -844,8 +848,42 @@ else
 fi
 restore
 
+# --- cases 51-52: a multi-arrow signature may still carry its OWN row -------
+#
+# The ambiguity skip added at review round 21 dropped EVERY row in a
+# multi-arrow signature. But `fn f() -> (String) -> Unit with Exception with Fs`
+# has two: the first binds to the returned function type, the LAST is f own row.
+# Skipping both let a boundary carry Fs unnoticed -- a miss in exactly what this
+# gate is for, introduced by the guard meant to prevent a false positive.
+#
+# The rule now: one row in a multi-arrow signature is the closures (skip, case
+# 42); two or more means the last is the declarations (check).
+printf '\nexport fn probe_two_rows() -> (String) -> Unit with Exception with Fs {\n  (s) -> {\n    ()\n  }\n}\n' >> "$impl"
+if grep -qF 'with Exception with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a multi-arrow signature hid the function own native row"
+  else
+    pass "case: the last row of a multi-arrow signature is the declaration own"
+  fi
+else
+  fail "case: the two-row mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_two_ok() -> (String) -> Unit with Exception with Async {\n  (s) -> {\n    ()\n  }\n}\n' >> "$impl"
+if grep -qF 'with Exception with Async {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a multi-arrow signature whose own row is allowed is accepted"
+  else
+    fail "case: an allowed last row in a multi-arrow signature was rejected"
+  fi
+else
+  fail "case: the two-row mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 50 cases)"
+echo "portable-boundary-test: ok (control + 52 cases)"
