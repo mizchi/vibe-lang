@@ -1465,8 +1465,105 @@ else
 fi
 restore
 
+# --- cases 85-89: the entry file had only the `perform` ban ------------------
+#
+# Round 39, a P1 miss. `cli_direct_component_entry.vibe` is the one scanned
+# file whose row allow-list is deliberately OFF -- it does file IO and says so,
+# carrying `with Exception + Fs` -- so forbid_pattern was its only protection,
+# and that banned `perform` spellings alone. A capability builtin is called as
+# an ORDINARY FUNCTION (ADR-0084), so no `perform` appears:
+#
+#   fn f() -> Unit with () allows Console::write_stream {
+#     Console::write_stream("boundary leaked")
+#   }
+#
+# passed the required gate outright. Measured, and the shape is the one
+# lib/@vibe/compiler/tests/checker_entry_effect_test.vibe accepts.
+#
+# Both halves are closed: the authority check now runs on this file too (it has
+# no `allows` clause today, so any is a leak), and the call pattern gains the
+# capability namespaces this boundary is not entitled to.
+printf '\nfn probe_entry_console() -> Unit with () allows Console::write_stream {\n  Console::write_stream("boundary leaked")\n}\n' >> "$entry"
+if grep -qF -- 'Console::write_stream("boundary leaked")' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: the entry file acquired console authority and passed the gate"
+  else
+    pass "case: console authority in the direct component entry is rejected"
+  fi
+else
+  fail "case: the entry-console mutation did not land -- it proves nothing"
+fi
+restore
+
+# The two halves separately, so neither is carried by the other.
+#
+# The authority probe grants `Fs::stat_token`, NOT Console, and that choice is
+# the whole point: `Fs::` is deliberately outside the call pattern (case 88),
+# so this is the only shape the authority check can be seen alone in. Written
+# with Console it passed for the wrong reason -- the call pattern matched the
+# capability name inside the clause -- and removing the authority check changed
+# nothing, which is a green case proving nothing (the round-32 mistake).
+#
+# It is also the right rule and not just a convenient probe: this entry may
+# CALL Fs under its declared `with Fs` row, and may not GRANT Fs authority
+# outward. Performing under a declared row and handing the capability to a
+# caller are different things.
+printf '\nfn probe_entry_auth_only(p: String) -> Int with () allows Fs::stat_token {\n  Fs::stat_token(p)\n}\n' >> "$entry"
+if grep -qF -- 'allows Fs::stat_token {' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an allows clause in the entry file passed the gate"
+  else
+    pass "case: an authority clause in the entry file is rejected on its own"
+  fi
+else
+  fail "case: the entry-authority mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\nfn probe_entry_call_only() -> Unit with Console {\n  Console::write_stream("leaked")\n}\n' >> "$entry"
+if grep -qF -- 'Console::write_stream("leaked")' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a plain capability call in the entry file passed the gate"
+  else
+    pass "case: a plain capability call in the entry file is rejected on its own"
+  fi
+else
+  fail "case: the entry-call mutation did not land -- it proves nothing"
+fi
+restore
+
+# --- cases 88-89: what the entry file IS entitled to -------------------------
+#
+# `Fs::` is deliberately absent from that list. This entry does file IO and
+# declares it, so a call inside its own contract must keep building -- it makes
+# exactly one today, `Fs::stat_token`. A ban that also caught this would be the
+# false positive the row allow-list was switched off to avoid.
+printf '\nfn probe_entry_fs(p: String) -> Int with Fs {\n  Fs::stat_token(p)\n}\n' >> "$entry"
+if grep -qF -- 'fn probe_entry_fs(p: String) -> Int with Fs {' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: the entry file own declared Fs contract still builds"
+  else
+    fail "case: the entry file declared Fs call was rejected"
+  fi
+else
+  fail "case: the entry-fs mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\nfn probe_entry_str() -> String {\n  "do not call Console::write_stream here"\n}\n' >> "$entry"
+if grep -qF -- 'do not call Console::write_stream here' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a capability name inside a string is still inert in the entry file"
+  else
+    fail "case: a string naming a capability was read as a call"
+  fi
+else
+  fail "case: the entry-string mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 84 cases)"
+echo "portable-boundary-test: ok (control + 89 cases)"

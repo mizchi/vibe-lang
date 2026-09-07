@@ -637,9 +637,20 @@ require_line \
   '^fn compile_with_closure_sources_wasi_mode_uncached\(main_source: String, main_path: String, sources: Array\[\(String, String\)\], entry_name: String, mode: String\) -> Bytes with Exception$' \
   "direct component closure compile stays in-memory"
 
+# The entry file gets one MORE alternative than the other two. Its row
+# allow-list is deliberately off (see below), so a capability call there is not
+# caught by the row -- and only `perform` spellings were banned, which left a
+# plain `Console::write_stream(...)` free. That is a capability builtin, called
+# as an ordinary function (ADR-0084), so no `perform` appears anywhere.
+#
+# `Fs::` is NOT in this list, on purpose: this entry is the one that does file
+# IO and says so, carrying `with Exception + Fs` / `with Fs`. Its contract is
+# exactly that row, so a call inside it is declared and the others are not. It
+# makes exactly one capability call today, `Fs::stat_token`.
+entry_native_pattern="$native_effect_pattern"'|(Console|Env|Process|Socket|Http|Net)::'
 forbid_pattern \
   "lib/@vibe/compiler/cli_direct_component_entry.vibe" \
-  "$native_effect_pattern" \
+  "$entry_native_pattern" \
   "direct component entry"
 forbid_pattern \
   "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \
@@ -662,6 +673,14 @@ forbid_pattern \
 # for a declaration whose actual problem is an authority grant. The specific
 # diagnostic has to win, and the self-test asserts the message names `allows`,
 # which is what caught this ordering.
+# The entry file too. Its row allow-list is off, but an `allows` clause is
+# authority rather than an effect, and this boundary is not entitled to any:
+# it has none today, and one appearing is a leak whatever its row says. Only
+# `perform` spellings were banned here, so `allows Console::write_stream`
+# passed the required gate outright.
+forbid_capability_authority \
+  "lib/@vibe/compiler/cli_direct_component_entry.vibe" \
+  "direct component entry"
 forbid_capability_authority \
   "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \
   "source compile API"
