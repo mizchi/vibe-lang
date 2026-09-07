@@ -470,8 +470,55 @@ else
 fi
 restore
 
+# --- case 28: a raw string is a string too ----------------------------------
+#
+# `#|` opens a RAW string running to end of line. Normalization removed only
+# double-quoted literals, so `#|compile with Fs when requested` was reported as
+# `effect: Fs`, `effect: when`, `effect: requested` -- a required gate
+# rejecting an ordinary message.
+printf '\nexport fn probe_raw() -> String with Exception {\n  #|compile with Fs when requested\n}\n' >> "$impl"
+if grep -qF '#|compile with Fs when requested' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a raw string is not read as an effect row"
+  else
+    fail "case: a '#|' raw string mentioning 'with Fs' failed the gate"
+  fi
+else
+  fail "case: the raw-string mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
+# --- cases 29-30: a tab is whitespace ---------------------------------------
+#
+# The lexer treats a tab as whitespace, so `with<TAB>Fs` is a legal row.
+# Matching the literal text "with " missed it and the gate exited 0. The same
+# hid a tab-separated `allows` clause, so both keywords are pinned.
+printf '\nexport fn probe_tab() -> Unit with\tFs {\n  ()\n}\n' >> "$impl"
+if grep -qF $'with\tFs' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a tab-separated effect row passed the gate"
+  else
+    pass "case: a tab after 'with' is still an effect row"
+  fi
+else
+  fail "case: the tab mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_tab_allows() -> String with Exception allows\tFs::read_file {\n  ""\n}\n' >> "$impl"
+if grep -qF $'allows\tFs::read_file' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a tab-separated 'allows' clause passed the gate"
+  else
+    pass "case: a tab after 'allows' is still a capability grant"
+  fi
+else
+  fail "case: the tab-allows mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 27 cases)"
+echo "portable-boundary-test: ok (control + 30 cases)"

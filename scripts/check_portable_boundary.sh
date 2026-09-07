@@ -86,10 +86,25 @@ PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 # ended the literal at the backslash-escaped quote inside
 # `"prefix \"with Fs\" suffix"` and left the inert text exposed, failing the
 # gate on a perfectly ordinary diagnostic string.
+#
+# Every string form the lexer knows has to go, not just the double-quoted one:
+# `#|` opens a RAW string that runs to end of line, and leaving it in made
+# `#|compile with Fs when requested` report `effect: Fs`, `effect: when`,
+# `effect: requested` -- a required gate rejecting an ordinary message.
+#
+# Whitespace is normalized for the same reason. The lexer treats a tab as
+# whitespace (lib/@vibe/parser/lexer.vibe), so `with<TAB>Fs` is a legal row;
+# matching the literal text "with " missed it entirely. Tabs, newlines and
+# carriage returns all become spaces here, once, so nothing downstream has to
+# remember that a separator might not be a space.
+#
+# Order: quoted strings, then raw strings, then comments. A `//` inside a raw
+# string is removed with the raw string rather than mistaken for a comment.
 boundary_scan_text() { # <file>
   sed -E 's/"([^"\\]|\\.)*"//g' "$ROOT_DIR/$1" \
+    | sed 's/#|.*$//' \
     | sed 's://.*::' \
-    | tr '\n' ' '
+    | tr '\n\t\r' '   '
 }
 
 # Every DECLARATION's own effect row, one per line.
