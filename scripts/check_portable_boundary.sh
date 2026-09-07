@@ -27,6 +27,22 @@ require_line() {
 # stripped tail would let `let x = 1 // perform Fs::read_file` hide a real call
 # on the same line if the two were ever reordered. A comment line is the one
 # shape that cannot execute.
+# The head of a handler arm NAMES an operation being discharged; it is not a
+# call of it. `handle { f() } with { Fs::ReadFile(_p) => resume("ok") }` is a
+# pure helper taking an Fs-effectful callback and handling it locally, and
+# nothing escapes -- yet the `with \{...\}` alternative saw `Fs` inside the
+# braces and the capability-namespace alternative added for the entry file saw
+# `Console::` in an arm head. Both rejected correct code.
+#
+# An arm head is decidable without parsing: a qualified name whose argument
+# list is immediately followed by `=>`. Nothing else puts `=>` there -- a call
+# result cannot be a pattern -- and the arm BODY is left untouched, so a real
+# capability call inside one is still a leak.
+strip_handler_arm_heads() {
+  sed -E \
+    -e 's/[A-Za-z_][A-Za-z0-9_]*::[A-Za-z0-9_]*[[:space:]]*\([^)]*\)[[:space:]]*=>/ /g' \
+    -e 's/[A-Za-z_][A-Za-z0-9_]*::[A-Za-z0-9_]*[[:space:]]*=>/ /g'
+}
 forbid_pattern() {
   local file="$1"
   local pattern="$2"
@@ -41,9 +57,9 @@ forbid_pattern() {
   # line-oriented grep cannot see (`perform` and `Fs::ReadFile` on two lines
   # compiles). Either matching is a failure -- reporting is best-effort, the
   # verdict is not.
-  boundary_scan_lines "$file" | grep -En "$pattern" >/tmp/vibe_portable_boundary_hits.$$ || true
+  boundary_scan_lines "$file" | strip_handler_arm_heads | grep -En "$pattern" >/tmp/vibe_portable_boundary_hits.$$ || true
   flat_hit=0
-  if boundary_scan_text "$file" | grep -Eq "$pattern"; then flat_hit=1; fi
+  if boundary_scan_text "$file" | strip_handler_arm_heads | grep -Eq "$pattern"; then flat_hit=1; fi
   if [ -s /tmp/vibe_portable_boundary_hits.$$ ] || [ "$flat_hit" -eq 1 ]; then
     if [ -s /tmp/vibe_portable_boundary_hits.$$ ]; then
       cat /tmp/vibe_portable_boundary_hits.$$ >&2
@@ -330,7 +346,7 @@ boundary_scan_text() { # <file>
 # one of them is recoverable.
 boundary_effect_rows() { # reads normalized text on stdin
   awk '{
-    s = $0; n = length(s); depth = 0; brack = 0; brace = 0; arrows = 0; rown = 0; authn = 0; decl = ""; i = 1
+    s = $0; n = length(s); depth = 0; brack = 0; brace = 0; implb = 0; impending = 0; arrows = 0; rown = 0; authn = 0; decl = ""; i = 1
     while (i <= n) {
       c = substr(s, i, 1)
       if (c == "(") { depth++; i++; continue }
@@ -341,9 +357,30 @@ boundary_effect_rows() { # reads normalized text on stdin
       # passed. A type argument is not a return-type layer.
       if (c == "[") { brack++; i++; continue }
       if (c == "]") { if (brack > 0) brack--; i++; continue }
+      # An `impl` block holds DECLARATIONS, not statements. Its methods sit one
+      # brace deep, so the brace == 0 guard below skipped every one of them and
+      # a method could carry `with Fs` unseen. The block is made transparent
+      # instead: its `{` does not open a body.
+      #
+      # `struct` / `enum` / `effect` bodies are NOT declarations in this sense
+      # and must stay opaque, so they clear the flag -- an `impl Eq for Int`
+      # with no block at all would otherwise hand its transparency to whatever
+      # brace came next.
+      if (depth == 0 && brack == 0 && brace == 0 && implb >= 0 && substr(s, i, 5) == "impl ") {
+        prev = (i > 1) ? substr(s, i - 1, 1) : " "
+        if (prev !~ /[A-Za-z0-9_.]/) { impending = 1 }
+        i += 5; continue
+      }
+      if (depth == 0 && brack == 0 && brace == 0 \
+          && (substr(s, i, 7) == "struct " || substr(s, i, 5) == "enum " \
+              || substr(s, i, 7) == "effect ")) {
+        prev = (i > 1) ? substr(s, i - 1, 1) : " "
+        if (prev !~ /[A-Za-z0-9_.]/) { impending = 0 }
+        i++; continue
+      }
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 3) == "fn ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev !~ /[A-Za-z0-9_]/) { arrows = 0; rown = 0; authn = 0; decl = "fn" }
+        if (prev !~ /[A-Za-z0-9_]/) { arrows = 0; rown = 0; authn = 0; decl = "fn"; impending = 0 }
         i += 3; continue
       }
       # Which KIND of declaration a row was collected under.
@@ -368,12 +405,12 @@ boundary_effect_rows() { # reads normalized text on stdin
       # declaration.
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 5) == "type ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev !~ /[A-Za-z0-9_.]/) { arrows = 0; rown = 0; authn = 0; decl = "type" }
+        if (prev !~ /[A-Za-z0-9_.]/) { arrows = 0; rown = 0; authn = 0; decl = "type"; impending = 0 }
         i += 5; continue
       }
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 4) == "let ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev !~ /[A-Za-z0-9_.]/) { arrows = 0; rown = 0; authn = 0; decl = "let" }
+        if (prev !~ /[A-Za-z0-9_.]/) { arrows = 0; rown = 0; authn = 0; decl = "let"; impending = 0 }
         i += 4; continue
       }
       if (c == "-" && substr(s, i + 1, 1) == ">" && depth == 0 && brack == 0 && brace == 0) {
@@ -381,9 +418,14 @@ boundary_effect_rows() { # reads normalized text on stdin
       }
       if (c == "{") {
         if (brace == 0) { flush(); arrows = 0; rown = 0; authn = 0; decl = "" }
+        if (brace == 0 && impending) { implb++; impending = 0; i++; continue }
         brace++; i++; continue
       }
-      if (c == "}") { if (brace > 0) brace--; i++; continue }
+      if (c == "}") {
+        if (brace > 0) { brace-- }
+        else if (implb > 0) { flush(); arrows = 0; rown = 0; authn = 0; decl = ""; implb-- }
+        i++; continue
+      }
       if (c == ";" && depth == 0 && brack == 0 && brace == 0) { flush(); arrows = 0; rown = 0; authn = 0; decl = ""; i++; continue }
       # `=` ends the TYPE of a binding and starts its value. Without this,
       # `export let f: (Int) -> Unit with Exception = (x) -> { () }` ran the

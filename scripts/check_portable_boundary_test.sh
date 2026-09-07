@@ -1601,8 +1601,127 @@ else
 fi
 restore
 
+# --- cases 94-95: a handler arm head names an operation, it does not call it -
+#
+# Round 42, a false positive. `handle { f() } with { Fs::ReadFile(_p) =>
+# resume("ok") }` is a pure helper taking an Fs-effectful callback and
+# discharging it locally -- nothing escapes -- yet the `with \{...\}`
+# alternative saw `Fs` between the braces and rejected it. The spelling is
+# pinned in lib/@vibe/fs/index_import_test.vibe.
+#
+# Measuring the neighbour found the SAME defect in the capability-namespace
+# alternative added for the entry file one round earlier: a `Console::Write`
+# arm head there was read as a call. Both are fixed by exempting the arm HEAD,
+# which is decidable without parsing -- a qualified name whose argument list is
+# immediately followed by `=>`.
+printf '\nfn probe_handled_fs(f: () -> String with Fs) -> String with Exception {\n  handle {\n    f()\n  } with { Fs::ReadFile(_path) => resume("ok"); Fs::WriteFile(_p, _c) => resume(0); Fs::Exists(_p) => resume(true); Fs::Mkdir(_p) => resume(0) }\n}\n' >> "$impl"
+if grep -qF -- 'Fs::ReadFile(_path) => resume("ok")' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an effect discharged by a local handler is not a leak"
+  else
+    fail "case: a helper handling Fs locally was rejected"
+  fi
+else
+  fail "case: the handled-effect mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\nfn probe_handled_console(f: () -> Unit with Console) -> Unit {\n  handle {\n    f()\n  } with { Console::Write(_s) => resume(()) }\n}\n' >> "$entry"
+if grep -qF -- 'Console::Write(_s) => resume(())' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a handler arm head in the entry file is not a capability call"
+  else
+    fail "case: a Console arm head in the entry file was read as a call"
+  fi
+else
+  fail "case: the entry handler mutation did not land -- it proves nothing"
+fi
+restore
+
+# --- case 96: the arm BODY is not exempt ------------------------------------
+#
+# The exemption is the head only. A real capability call inside an arm body is
+# still a leak, and without this the fix could have been "stop scanning
+# handlers".
+printf '\nfn probe_arm_body(f: () -> Unit with Console) -> Unit {\n  handle {\n    f()\n  } with { Console::Write(_s) => {\n    Console::write_stream("leaked")\n    resume(())\n  } }\n}\n' >> "$entry"
+if grep -qF -- 'Console::write_stream("leaked")' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a capability call inside a handler arm body passed the gate"
+  else
+    pass "case: a handler arm body is still scanned"
+  fi
+else
+  fail "case: the arm-body mutation did not land -- it proves nothing"
+fi
+restore
+
+# --- cases 97-99: an impl block holds declarations --------------------------
+#
+# Round 41, a P1 miss. An impl method sits one brace deep, and the row scan
+# guards everything on brace == 0, so a method could carry `with Fs` unseen --
+# measured, the gate printed ok. The block is transparent now: its `{` does not
+# open a body.
+#
+# `struct` / `enum` / `effect` bodies are NOT declarations in that sense and
+# stay opaque. Case 99 is why they have to clear the flag: a block-less `impl
+# Eq for Int` would otherwise hand its transparency to whatever brace came
+# next, and the native row after it would be read at the wrong depth.
+printf '\nexport trait ProbeReader {\n  read_it(Self, String) -> Int\n}\n\nexport struct ProbeR {\n  x: Int\n}\n\nimpl ProbeReader for ProbeR {\n  read_it(self, p) -> Int with Fs {\n    Fs::stat_token(p)\n  }\n}\n' >> "$impl"
+if grep -qF -- 'read_it(self, p) -> Int with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an impl method carrying a native row passed the gate"
+  else
+    pass "case: an impl method row is checked like any other declaration"
+  fi
+else
+  fail "case: the impl mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport trait ProbeReader2 {\n  read_it(Self, String) -> Int\n}\n\nexport struct ProbeR2 {\n  x: Int\n}\n\nimpl ProbeReader2 for ProbeR2 {\n  read_it(self, p) -> Int with Async {\n    0\n  }\n}\n' >> "$impl"
+if grep -qF -- 'read_it(self, p) -> Int with Async {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an impl method with an allowed row is accepted"
+  else
+    fail "case: an impl method with an allowed row was rejected"
+  fi
+else
+  fail "case: the impl-allowed mutation did not land -- it proves nothing"
+fi
+restore
+
+# The probe carries the row in a struct FIELD, not in a following function,
+# and that is the whole point. Written as a following function it rejected
+# either way -- the verdict came from the function, not from the struct -- so
+# removing the clear changed nothing and the case proved nothing. A struct body
+# is opaque, so a field row is invisible; the control below is the same struct
+# with no impl before it, and the two must agree.
+printf '\nexport trait ProbeMarker\n\nimpl ProbeMarker for Int\n\nexport struct HolderS {\n  f: () -> Unit with Fs\n}\n' >> "$impl"
+if grep -qF -- 'export struct HolderS {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a block-less impl does not make the next brace transparent"
+  else
+    fail "case: a block-less impl leaked transparency into a struct body"
+  fi
+else
+  fail "case: the block-less impl mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\nexport struct HolderS2 {\n  f: () -> Unit with Fs\n}\n' >> "$impl"
+if grep -qF -- 'export struct HolderS2 {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a struct field row is invisible, impl or no impl"
+  else
+    fail "case: a struct field row was read as the boundary own"
+  fi
+else
+  fail "case: the struct-control mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 93 cases)"
+echo "portable-boundary-test: ok (control + 100 cases)"
