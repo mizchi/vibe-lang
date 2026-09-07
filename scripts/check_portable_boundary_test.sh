@@ -1926,8 +1926,54 @@ else
 fi
 restore
 
+# --- cases 113-115: `impl` may be followed by `[` ---------------------------
+#
+# Round 49, and the third spacing variant in three rounds. `impl[T] Tr[T] for
+# S[T]` is the generic form: the lexer emits TImpl then TLBracket, with no
+# space required. Matching the literal `impl ` left that block opaque, so a
+# method inside it could carry `with Fs` unseen -- measured, the gate printed
+# ok. A keyword ends where the identifier characters end, not where a space
+# happens to be.
+printf '\nexport trait ProbeG[T] {\n  read_it(Self, String) -> Int\n}\n\nexport struct ProbeGS[T] {\n  x: T\n}\n\nimpl[T] ProbeG[T] for ProbeGS[T] {\n  read_it(self, p) -> Int with Fs {\n    Fs::stat_token(p)\n  }\n}\n' >> "$impl"
+if grep -qF -- 'impl[T] ProbeG[T] for ProbeGS[T] {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a generic impl block stayed opaque and hid a native row"
+  else
+    pass "case: a generic impl[T] block is transparent like a plain one"
+  fi
+else
+  fail "case: the generic-impl mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\nexport trait ProbeG2[T] {\n  read_it(Self, String) -> Int\n}\n\nexport struct ProbeGS2[T] {\n  x: T\n}\n\nimpl[T] ProbeG2[T] for ProbeGS2[T] {\n  read_it(self, p) -> Int with Async {\n    0\n  }\n}\n' >> "$impl"
+if grep -qF -- 'impl[T] ProbeG2[T] for ProbeGS2[T] {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an allowed row in a generic impl block is accepted"
+  else
+    fail "case: an allowed row in a generic impl block was rejected"
+  fi
+else
+  fail "case: the generic-impl-allowed mutation did not land -- it proves nothing"
+fi
+restore
+
+# Dropping the trailing space cannot make the keyword match a longer name:
+# `implicit_probe` starts with `impl` and is an ordinary function.
+printf '\nfn implicit_probe() -> Bool {\n  false\n}\n' >> "$impl"
+if grep -qF -- 'fn implicit_probe() -> Bool {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a name merely starting with impl is not an impl block"
+  else
+    fail "case: implicit_probe was read as an impl block"
+  fi
+else
+  fail "case: the implicit-name mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 112 cases)"
+echo "portable-boundary-test: ok (control + 115 cases)"

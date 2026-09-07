@@ -443,10 +443,17 @@ boundary_effect_rows() { # reads normalized text on stdin
       # and must stay opaque, so they clear the flag -- an `impl Eq for Int`
       # with no block at all would otherwise hand its transparency to whatever
       # brace came next.
-      if (depth == 0 && brack == 0 && brace == 0 && implb >= 0 && substr(s, i, 5) == "impl ") {
+      # `impl` may be followed by a space OR by `[` -- `impl[T] Tr[T] for S[T]`
+      # is the generic form and the lexer emits TImpl then TLBracket, with no
+      # space required. Matching the literal `impl ` left that block opaque, so
+      # a method inside it could carry `with Fs` unseen. A keyword ends where
+      # the identifier characters end, not where a space happens to be.
+      if (depth == 0 && brack == 0 && brace == 0 && implb >= 0 \
+          && substr(s, i, 4) == "impl" \
+          && (substr(s, i + 4, 1) == " " || substr(s, i + 4, 1) == "[")) {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
         if (prev !~ /[A-Za-z0-9_.]/) { impending = 1 }
-        i += 5; continue
+        i += 4; continue
       }
       if (depth == 0 && brack == 0 && brace == 0 \
           && (substr(s, i, 7) == "struct " || substr(s, i, 5) == "enum " \
