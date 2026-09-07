@@ -958,8 +958,80 @@ else
 fi
 restore
 
+# --- cases 57-60: a row belongs to a declaration KIND -----------------------
+#
+# Round 28, and a false positive: `type ReviewCallback = () -> Unit with
+# ReviewAsk` is one arrow and one row, which is the "the row is the
+# declaration's own" shape, so a harmless alias failed the required job on
+# correct code. Naming a type performs nothing -- the row belongs to the
+# aliased function type, the same reason the lone row of a returned closure is
+# skipped (case 42).
+printf '\ntype ReviewCallback = () -> Unit with ReviewAsk\n' >> "$impl"
+if grep -qF -- 'type ReviewCallback = () -> Unit with ReviewAsk' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an effectful type alias is not a boundary row"
+  else
+    fail "case: a type alias naming an effect failed the gate"
+  fi
+else
+  fail "case: the alias mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# The miss that suppressing `type` opened, and which the fix above had to close
+# in the same commit. Measured: with only the flush guard, this went from
+# REJECT to ACCEPT. The normalized text has no line breaks, so the alias's row
+# scan ran straight through the following `fn ` -- which is where the reset
+# lives -- and the whole native declaration was read as part of the alias. A
+# declaration keyword now ends a row.
+printf '\ntype ReviewCallback2 = () -> Unit with ReviewAsk\n\nexport fn probe_after_alias() -> Unit with Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'export fn probe_after_alias() -> Unit with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an effectful alias swallowed the next declaration native row"
+  else
+    pass "case: a declaration keyword ends the preceding row"
+  fi
+else
+  fail "case: the alias-then-native mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\ntype ReviewCallback3 = () -> Unit with ReviewAsk\n\nexport fn probe_after_alias_ok() -> Unit with Async {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'export fn probe_after_alias_ok() -> Unit with Async {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an allowed declaration after an effectful alias is accepted"
+  else
+    fail "case: an allowed declaration after an effectful alias was rejected"
+  fi
+else
+  fail "case: the alias-then-allowed mutation did not land -- it proves nothing"
+fi
+restore
+
+# --- case 60: THE COST OF CASE 57, pinned so it is visible -------------------
+#
+# `type FsCallback = () -> Unit with Fs` is now accepted. That is the price of
+# case 57 and it is the same trade as case 43: a type that names a native
+# effect is not itself a boundary, and no text scan can tell whether the
+# boundary ever hands one out. #2581 answers it from the AST, where the alias
+# can be followed to the declaration that uses it.
+#
+# When #2581 lands this case flips to a rejection. UPDATE THE CASE, do not
+# revert the fix -- accepting the alias is what keeps correct code building.
+printf '\ntype FsCallback = () -> Unit with Fs\n' >> "$impl"
+if grep -qF -- 'type FsCallback = () -> Unit with Fs' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: KNOWN MISS -- a native effect named only by an alias (#2581)"
+  else
+    fail "case: the alias miss closed; flip this case to a rejection"
+  fi
+else
+  fail "case: the alias-miss mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 56 cases)"
+echo "portable-boundary-test: ok (control + 60 cases)"

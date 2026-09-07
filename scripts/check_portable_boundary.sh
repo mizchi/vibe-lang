@@ -265,7 +265,7 @@ boundary_scan_text() { # <file>
 # one of them is recoverable.
 boundary_effect_rows() { # reads normalized text on stdin
   awk '{
-    s = $0; n = length(s); depth = 0; brack = 0; brace = 0; arrows = 0; rown = 0; i = 1
+    s = $0; n = length(s); depth = 0; brack = 0; brace = 0; arrows = 0; rown = 0; decl = ""; i = 1
     while (i <= n) {
       c = substr(s, i, 1)
       if (c == "(") { depth++; i++; continue }
@@ -278,18 +278,43 @@ boundary_effect_rows() { # reads normalized text on stdin
       if (c == "]") { if (brack > 0) brack--; i++; continue }
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 3) == "fn ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev !~ /[A-Za-z0-9_]/) { arrows = 0; rown = 0 }
+        if (prev !~ /[A-Za-z0-9_]/) { arrows = 0; rown = 0; decl = "fn" }
         i += 3; continue
+      }
+      # Which KIND of declaration a row was collected under.
+      #
+      # `type ReviewCallback = () -> Unit with ReviewAsk` is one arrow and one
+      # row, the shape that means "the row is the declarations own" -- so the
+      # alias was reported as a non-portable boundary and failed the required
+      # job on correct code. The row belongs to the aliased function TYPE.
+      # Naming a type performs nothing; the boundary is what a caller can
+      # reach, and that is the same reason the lone row of a RETURNED closure
+      # is skipped.
+      #
+      # `let ` resets alongside it, and must: without it an alias would
+      # suppress the row of the next declaration when that one is a bodyless
+      # `export let`, turning a false positive into a miss one declaration
+      # later. A declaration with no keyword at all keeps being checked --
+      # this suppresses `type` and nothing else.
+      if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 5) == "type ") {
+        prev = (i > 1) ? substr(s, i - 1, 1) : " "
+        if (prev == " ") { arrows = 0; rown = 0; decl = "type" }
+        i += 5; continue
+      }
+      if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 4) == "let ") {
+        prev = (i > 1) ? substr(s, i - 1, 1) : " "
+        if (prev == " ") { arrows = 0; rown = 0; decl = "let" }
+        i += 4; continue
       }
       if (c == "-" && substr(s, i + 1, 1) == ">" && depth == 0 && brack == 0 && brace == 0) {
         arrows++; i++; continue
       }
       if (c == "{") {
-        if (brace == 0) { flush(); arrows = 0; rown = 0 }
+        if (brace == 0) { flush(); arrows = 0; rown = 0; decl = "" }
         brace++; i++; continue
       }
       if (c == "}") { if (brace > 0) brace--; i++; continue }
-      if (c == ";" && depth == 0 && brack == 0 && brace == 0) { flush(); arrows = 0; rown = 0; i++; continue }
+      if (c == ";" && depth == 0 && brack == 0 && brace == 0) { flush(); arrows = 0; rown = 0; decl = ""; i++; continue }
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 5) == "with ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
         if (prev ~ /[A-Za-z0-9_]/) { i++; continue }
@@ -305,6 +330,16 @@ boundary_effect_rows() { # reads normalized text on stdin
           # collecting them as one made the count 1, which took the
           # single-row skip path and let Fs through
           else if (d2 == 0 && substr(s, j, 5) == "with " && substr(row, length(row), 1) ~ /[ ]/) { break }
+          # A new declaration ends the row as surely as a body does. The
+          # normalized text has no line breaks, so `type Cb = () -> Unit with
+          # ReviewAsk` followed by `export fn f() -> Unit with Fs {` ran the
+          # row scan straight through the `fn `, which is where the reset
+          # lives -- the next declaration was then read as part of the alias
+          # and its native row went unreported. No effect item contains these
+          # keywords, so breaking on them costs nothing.
+          else if (d2 == 0 && substr(s, j, 3) == "fn " && substr(row, length(row), 1) ~ /[ ]/) { break }
+          else if (d2 == 0 && substr(s, j, 5) == "type " && substr(row, length(row), 1) ~ /[ ]/) { break }
+          else if (d2 == 0 && substr(s, j, 4) == "let " && substr(row, length(row), 1) ~ /[ ]/) { break }
           row = row cc; j++
         }
         rowbuf[++rown] = row
@@ -340,7 +375,7 @@ boundary_effect_rows() { # reads normalized text on stdin
     #
     # Counting rows against a fixed threshold instead got the last of those
     # wrong: two rows does not mean one of them is the declarations.
-    if (rown >= arrows && rown >= 1) {
+    if (decl != "type" && rown >= arrows && rown >= 1) {
       print rowbuf[rown]
     }
     rown = 0
