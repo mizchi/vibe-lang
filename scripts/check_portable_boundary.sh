@@ -86,6 +86,36 @@ forbid_foreign_effect_rows() { # <file> <label>
   fi
 }
 
+# The effect row is not the only way to reach a capability. `allows` grants
+# capability AUTHORITY in the signature, separately from the row (ADR-0075/0084,
+# #1961), and the granted operation is then called plainly -- not through
+# `perform`:
+#
+#   fn main() -> String with () allows Fs::read_file { Fs::read_file("x") }
+#
+# so it matched neither the row allow-list nor `perform (Fs|...)::`, and the
+# gate exited 0. Measured on preprocess_compile.vibe before this check.
+#
+# Neither pure boundary uses `allows` at all, so the allowed set here is empty:
+# any capability authority is a leak by definition on a boundary whose contract
+# is "stays in-memory". A capability name is CamelCase, which is what separates
+# a real clause from English prose ("allows them to ..."); comment lines are
+# stripped first regardless.
+forbid_capability_authority() { # <file> <label>
+  local file="$1" label="$2"
+  if grep -vE '^[[:space:]]*(///?|//#)' "$ROOT_DIR/$file" \
+    | grep -nE '\ballows +[A-Z]' >/tmp/vibe_portable_authority_hits.$$; then
+    echo "selfhost-portable-boundary: capability authority granted in $label ($file)" >&2
+    sed 's/^/  /' /tmp/vibe_portable_authority_hits.$$ >&2
+    rm -f /tmp/vibe_portable_authority_hits.$$
+    echo '  An `allows` clause hands this boundary host authority, which is' >&2
+    echo "  what it must not have. Move the capability to a caller that is" >&2
+    echo "  allowed to hold it and pass the result in." >&2
+    exit 1
+  fi
+  rm -f /tmp/vibe_portable_authority_hits.$$
+}
+
 # The boundary is declared in the package CONTRACT (`index.vpkg`, ADR-0070),
 # not in an `index.vibe` facade -- and its effect row is spelled `with
 # Exception`, not `with { Error }` (ADR-0085). This gate asserted the older
@@ -137,6 +167,13 @@ forbid_foreign_effect_rows \
   "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \
   "source compile API"
 forbid_foreign_effect_rows \
+  "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
+  "wasi source compile API"
+
+forbid_capability_authority \
+  "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \
+  "source compile API"
+forbid_capability_authority \
   "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
   "wasi source compile API"
 

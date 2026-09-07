@@ -197,8 +197,56 @@ else
 fi
 restore
 
+# --- cases 11-12: capability authority via `allows` -------------------------
+#
+# `allows` grants authority in the signature, separately from the effect row,
+# and the operation is then called plainly rather than through `perform`. So it
+# matched neither the row allow-list nor `perform (Fs|...)::`: measured, the
+# gate exited 0 on a boundary that read a file.
+for grant in 'Fs::read_file' 'Console::write_stream'; do
+  printf '\nexport fn probe_allows() -> String with Exception allows %s {\n  ""\n}\n' "$grant" >> "$impl"
+  if grep -qF "allows $grant {" "$impl"; then
+    # Capture the diagnostic, not just the exit status. Checking only the
+    # status let a broken message through once already: a backtick inside a
+    # double-quoted echo ran `allows` as a command, so the gate printed
+    # "allows: command not found" and "An  clause ...", and this case stayed
+    # green. AGENTS.md requires the message name the edit that fixes it, so an
+    # unreadable one is a defect the self-test has to be able to see.
+    out="$(bash "$gate" 2>&1)" && rc=0 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      fail "case: a boundary granted 'allows $grant' passed the gate"
+    elif printf '%s' "$out" | grep -q 'command not found'; then
+      fail "case: the gate's own diagnostic is broken: $out"
+    elif printf '%s' "$out" | grep -qF 'allows'; then
+      pass "case: capability authority 'allows $grant' is rejected, with a readable message"
+    else
+      fail "case: rejected, but the message never says what was wrong: $out"
+    fi
+  else
+    fail "case: the 'allows $grant' mutation did not land -- the assertion proves nothing"
+  fi
+  restore
+done
+
+# --- case 13: English prose containing "allows" is still accepted -----------
+#
+# The clause is told from prose by the CamelCase capability name. Without this,
+# the obvious fix (matching the bare word `allows`) would reject every comment
+# that uses the English verb -- and the tree has several.
+printf '\n/// This entry point allows them to compile without touching the host.\n' >> "$impl"
+if grep -qF 'allows them to compile' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: prose using the word 'allows' is accepted"
+  else
+    fail "case: an English 'allows' in a comment was read as a capability grant"
+  fi
+else
+  fail "case: the prose mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 10 cases)"
+echo "portable-boundary-test: ok (control + 13 cases)"
