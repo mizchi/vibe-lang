@@ -105,8 +105,45 @@ else
 fi
 restore
 
+# --- case 4: an IMPLEMENTATION that declares a native effect row ------------
+#
+# The forbid_pattern half, which case 3 does NOT reach: case 3 edits the
+# contract line, so require_line fails first and the gate's rejection says
+# nothing about whether forbid_pattern recognizes the row syntax. It did not.
+# Measured before the fix: appending this exact declaration left the gate
+# printing `ok`, because native_effect_pattern only knew the braced
+# `with { ... }` spelling -- which is the HANDLER syntax, not an effect row.
+printf '\nexport fn probe_native() -> Unit with Fs {\n  ()\n}\n' >> "$impl"
+if grep -qE '^export fn probe_native\(\) -> Unit with Fs \{$' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case 4: an implementation declaring 'with Fs' passed the gate"
+  else
+    pass "case 4: a native effect row in an implementation is rejected"
+  fi
+else
+  fail "case 4: the mutation did not land -- the assertion below would prove nothing"
+fi
+restore
+
+# --- case 5: a non-native effect row is still accepted -----------------------
+#
+# Case 4 alone is also satisfied by a matcher that rejects every `with` row, so
+# this pins the other side: `with Exception` is what these boundaries are
+# REQUIRED to carry, and must not start reading as a leak.
+printf '\nexport fn probe_pure() -> Unit with Exception {\n  ()\n}\n' >> "$impl"
+if grep -qE '^export fn probe_pure\(\) -> Unit with Exception \{$' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case 5: a non-native effect row is accepted"
+  else
+    fail "case 5: 'with Exception' was rejected as a native leak"
+  fi
+else
+  fail "case 5: the mutation did not land -- the assertion above would prove nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 3 cases)"
+echo "portable-boundary-test: ok (control + 5 cases)"

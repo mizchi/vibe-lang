@@ -42,6 +42,23 @@ forbid_pattern() {
 
 native_effect_pattern='with \{[^}]*(Fs|Process|Socket|Net)|perform (Fs|Process|Socket|Http)::|compile_file_fs|session-http|daemon'
 
+# The `with \{...\}` alternative above matches the HANDLER syntax
+# (`try ... with { Exception::Throw(e) => ... }`), which is a different
+# construct from an effect row. An effect ROW is unbraced and `+`-separated:
+# `with Fs`, `with Exception + Fs`, `with Exception + Fs + Env`. Nothing
+# matched that, so a boundary implementation could declare `with Fs` outright
+# and this gate printed `ok` -- measured, not inferred: appending
+# `export fn probe_native() -> Unit with Fs` to preprocess_compile.vibe passed.
+#
+# Scoped to the two source_compile boundaries deliberately. Their contract is
+# "stays in-memory", so a native row there is the leak. The third scanned file,
+# cli_direct_component_entry.vibe, is the entry that DOES file IO and carries
+# `with Exception + Fs` / `with Fs` legitimately; banning the row there would
+# fail the gate on correct code. It keeps the pattern above, which forbids the
+# direct `perform Fs::` and the FS compile lane rather than the row.
+native_effect_row='with +([A-Za-z_][A-Za-z0-9_]* *\+ *)*(Fs|Process|Socket|Net|Http)\b'
+pure_boundary_pattern="$native_effect_pattern|$native_effect_row"
+
 # The boundary is declared in the package CONTRACT (`index.vpkg`, ADR-0070),
 # not in an `index.vibe` facade -- and its effect row is spelled `with
 # Exception`, not `with { Error }` (ADR-0085). This gate asserted the older
@@ -76,11 +93,11 @@ forbid_pattern \
   "direct component entry"
 forbid_pattern \
   "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \
-  "$native_effect_pattern" \
+  "$pure_boundary_pattern" \
   "source compile API"
 forbid_pattern \
   "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
-  "$native_effect_pattern" \
+  "$pure_boundary_pattern" \
   "wasi source compile API"
 
 echo "selfhost portable boundary: ok"
