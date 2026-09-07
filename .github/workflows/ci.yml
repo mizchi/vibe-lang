@@ -424,10 +424,22 @@ jobs:
           path: _build/_ci_shard_gen
           key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
       # No second wasmtime install: setup-vibe above runs with wasmtime: 'true',
-      # which installs the same pinned 47.0.2 (scripts/install_wasmtime_release.sh)
-      # and puts $HOME/.wasmtime/bin on PATH. generations.sh's stage validation
-      # shells out to that binary and finds it. A duplicate release download
-      # would only add a transient-failure mode to a required job.
+      # which installs the same pinned 47.0.2 (scripts/install_wasmtime_release.sh
+      # -> $HOME/.wasmtime/bin) and appends exactly that directory to PATH,
+      # unconditionally. generations.sh's stage validation shells out to that
+      # binary and finds it. A duplicate download would not even hedge the
+      # transient-failure risk it looks like it hedges: setup-vibe's own
+      # installer curls the same GitHub release, so a second one doubles the
+      # exposure of a required job rather than covering it.
+      #
+      # Known limit, stated rather than left to look proven: this is the only
+      # wasmtime-using job that relies on setup-vibe alone (every other one
+      # still carries the redundant install), and the cold path only runs on a
+      # stage2 cache MISS. A ci.yml-only commit does not move the generated
+      # fingerprint in the cache key, so the run that introduced this did not
+      # exercise it. The guarantee above is by construction -- install dir ==
+      # PATH entry, PATH step unconditional -- not by a cold CI run; the next
+      # compiler-source change moves the fingerprint and exercises it for real.
       - name: Build stage2 on cache miss
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |
