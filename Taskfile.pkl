@@ -440,6 +440,13 @@ local testLintTrackedExperimentNames =
 // same artifacts purely to diff them against the tracked copies.)
 local checkSelfhostPortableBoundary =
   scriptTask("check-portable-boundary", "scripts/check_portable_boundary.sh")
+// #2577: the gate had rotted to an `index.vibe` / `with { Error }` shape two
+// ADRs old and reported a missing boundary that was intact in the contract
+// beside it. The self-test pins that it can still fail -- and that a doc
+// comment naming a native entry point is not a leak, which is what the repair
+// had to distinguish.
+local testSelfhostPortableBoundary =
+  scriptTask("test-portable-boundary", "scripts/check_portable_boundary_test.sh")
 local checkHostRuntimeContract = new Task {
   name = "check-host-runtime-contract"
   description = "fail-closed conformance check for the documented vibe.* core host ABI"
@@ -1248,7 +1255,16 @@ local benchSelfhostCompileHotspots = new Task {
   name = "bench-compile-hotspots"
   cmd = "bash scripts/profile_compile.sh $@"
   acceptsArgs = true
-  inputs { ...vibeSources; ...scriptSources }
+  // `cache = false`, like every other measurement task that takes an argument
+  // (kpi-selfcompile, measure-fs-heap, kpi-edit-cycle). No input list can key
+  // this one correctly: the stage2 to profile arrives as an ARGUMENT, so two
+  // runs against different compilers would share a cache key and the second
+  // would replay the first's numbers -- the "which compiler answered" trap
+  // (AGENTS.md), in the one task whose entire output is a measurement. It ran
+  // with `inputs { ...vibeSources; ...scriptSources }`, which also omitted
+  // bootstrap/seed.json, and check_task_inputs.sh has been red on main since
+  // (#2577).
+  cache = false
 }
 
 local selfcompileKpi = new Task {
@@ -1874,6 +1890,7 @@ tasks {
   checkTreesitterWasmCorpus
   testCheckTreesitterWasmCorpus
   checkSelfhostPortableBoundary
+  testSelfhostPortableBoundary
   checkHostRuntimeContract
   checkVibeFmt
   checkTaskfileFmt

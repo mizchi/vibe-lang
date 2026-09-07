@@ -384,6 +384,118 @@ jobs:
           FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface_test.sh
           FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface.sh
 
+  compiler-contracts:
+    name: compiler-gate (contracts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-vibe
+        with:
+          node-version: 24
+          wasmtime: 'true'
+      # The fingerprint step below is not seed-free: compute_fingerprint hashes
+      # bootstrap/seed/compiler.wasm and runs ensure_seed.sh unconditionally to
+      # get it, deliberately, so the value does not depend on whether the seed
+      # happened to be fetched yet. Without this cache that download runs on
+      # every clean runner -- including when the generated artifacts and stage2
+      # are both cache HITS and nothing else in the job needs the seed -- which
+      # puts a required job behind a release fetch it does not otherwise need.
+      # Same pair every other generation job uses.
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - name: Generated compiler fingerprint
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      # The generated artifacts are needed by the GATES, not just by the stage2
+      # build -- check_offbuild_typecheck typechecks every off-manifest source,
+      # and several import `compiler_sources_bundle.vibe` /
+      # `cli_adapter_bundle.vibe` or implement `cache/index.vpkg`'s
+      # `codegen_fingerprint` declaration. Producing them only inside the
+      # cache-miss build below meant a stage2 cache HIT left them absent and the
+      # gate reported 20 real contract violations against a half-built tree.
+      # Cached and ensured unconditionally, exactly as compiler-gate-lanes does.
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
+      - name: Restore cached stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      # No second wasmtime install: setup-vibe above runs with wasmtime: 'true',
+      # which installs the same pinned 47.0.2 (scripts/install_wasmtime_release.sh
+      # -> $HOME/.wasmtime/bin) and appends exactly that directory to PATH,
+      # unconditionally. generations.sh's stage validation shells out to that
+      # binary and finds it. A duplicate download would not even hedge the
+      # transient-failure risk it looks like it hedges: setup-vibe's own
+      # installer curls the same GitHub release, so a second one doubles the
+      # exposure of a required job rather than covering it.
+      #
+      # Known limit, stated rather than left to look proven: this is the only
+      # wasmtime-using job that relies on setup-vibe alone (every other one
+      # still carries the redundant install), and the cold path only runs on a
+      # stage2 cache MISS. A ci.yml-only commit does not move the generated
+      # fingerprint in the cache key, so the run that introduced this did not
+      # exercise it. The guarantee above is by construction -- install dir ==
+      # PATH entry, PATH step unconditional -- not by a cold CI run; the next
+      # compiler-source change moves the fingerprint and exercises it for real.
+      - name: Build stage2 on cache miss
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/ensure_seed.sh
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      # Every gate below is handed the stage2 EXPLICITLY, by path. None of them
+      # discovers one for itself: left to their own devices they take the
+      # newest generation on disk, else the committed seed, and both answer
+      # confidently about a compiler that does not contain the change
+      # (AGENTS.md, "which compiler answered"). That is also why this job does
+      # not use the `ls -dt _build/selfhost/generations/*/ | head -1` idiom the
+      # older jobs share.
+      - name: Assert the stage2 exists
+        run: |
+          set -euo pipefail
+          test -s _build/_ci_shard_gen/stage2.wasm \
+            || { echo "::error::no stage2 to hand the contract gates"; exit 1; }
+      - name: RC-is-default gate
+        run: RC_DEFAULT_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_rc_default.sh
+      - name: Source-range contract gate
+        run: RANGE_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_source_range_contract.sh
+      - name: Cheatsheet-signatures gate
+        run: CHEATSHEET_SIG_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_cheatsheet_signatures.sh
+      - name: Package sibling-scope gate
+        run: SIBLING_SCOPE_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_package_sibling_scope.sh
+      - name: Declaration-scale gate
+        run: DECL_SCALE_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_declaration_scale.sh
+      - name: CLI line-termination gate
+        run: CLI_NL_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_cli_line_termination.sh
+      - name: Off-build typecheck gate
+        run: VIBE_OFFBUILD_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_offbuild_typecheck.sh
+      - name: Book skip-block gate
+        run: VIBE_SKIP_BLOCK_CLI_WASM="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_book_skip_blocks.sh
+      # No examples typecheck here: check_examples_typecheck.sh was ALREADY
+      # wired, via `pkf run ci-check-examples-typecheck` in compiler-examples,
+      # against this same stage2 path. It was the one entry my by-hand audit
+      # got wrong -- the reachability trace missed the task indirection. Nine
+      # of the ten gates in this job were genuinely unrun; this one was not.
+      - name: Compile-only lanes gate
+        run: COMPILE_ONLY_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_compile_only_lanes.sh
+
   compiler-playground:
     name: compiler-gate (playground)
     runs-on: ubuntu-latest
@@ -734,6 +846,36 @@ jobs:
         run: bash scripts/check_doc_classification_test.sh
       - name: doc classification lint
         run: bash scripts/check_doc_classification.sh
+      - name: task-inputs gate self-test
+        run: bash scripts/check_task_inputs_test.sh
+      - name: task-inputs gate
+        run: bash scripts/check_task_inputs.sh
+      - name: doc-commands gate
+        run: bash scripts/check_doc_commands.sh
+      - name: portable-boundary gate self-test
+        run: bash scripts/check_portable_boundary_test.sh
+      - name: portable-boundary gate
+        run: bash scripts/check_portable_boundary.sh
+      - name: tracked-experiment-names lint self-test
+        run: bash scripts/lint_tracked_experiment_names_test.sh
+      - name: tracked-experiment-names lint
+        run: bash scripts/lint_tracked_experiment_names.sh
+      # The self-test already runs above as "compiler-gate registry self-test";
+      # only the production check was missing from CI.
+      - name: gate-registry check
+        run: bash scripts/check_gate_registry.sh
+      - name: canonical-iterator-calls check self-test
+        run: bash scripts/check_canonical_iterator_calls_test.sh
+      - name: canonical-iterator-calls check
+        run: bash scripts/check_canonical_iterator_calls.sh
+      - name: lock-clean check self-test
+        run: bash scripts/check_lock_clean_test.sh
+      - name: lock-clean check
+        run: bash scripts/check_lock_clean.sh
+      - name: book-order check
+        run: bash scripts/check_book_order.sh
+      - name: inline-builtin-capture check
+        run: bash scripts/check_inline_builtin_capture.sh
       # The #1189 / ADR-0081 naming ratchet, reaching CI for the first time. It
       # is a release-check dep, but release-check has no CI job either, so its
       # one enforcement point was a local sign-off nobody re-runs on a green
@@ -1453,7 +1595,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
+    needs: [compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-contracts, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -1473,6 +1615,10 @@ jobs:
           fi
           if [ "${{ needs.compiler-docs.result }}" != "success" ]; then
             echo "::error::compiler-docs did not succeed (${{ needs.compiler-docs.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-contracts.result }}" != "success" ]; then
+            echo "::error::compiler-contracts did not succeed (${{ needs.compiler-contracts.result }})"
             exit 1
           fi
           if [ "${{ needs.compiler-playground.result }}" != "success" ]; then
