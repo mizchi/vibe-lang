@@ -882,8 +882,48 @@ else
 fi
 restore
 
+# --- cases 53-54: rows are matched against arrow LAYERS, not counted --------
+#
+# Round 25 used "two or more rows means the last is the declarations". Round 26
+# found the counterexample: `-> () -> () -> Unit with Exception with ReviewAsk`
+# has two rows and BOTH belong to the nested closures, so that rule rejected a
+# pure helper.
+#
+# The invariant instead: each arrow layer after the declarations own can carry
+# one row, so the returned function types absorb at most (arrows - 1). The
+# declaration owns a row only when rows >= arrows, and then it is the last.
+#
+#   arrows 1, rows 1 -> own      arrows 2, rows 1 -> none
+#   arrows 2, rows 2 -> own      arrows 3, rows 2 -> none
+#   arrows 3, rows 3 -> own
+printf '\nexport fn probe_nested_pure() -> () -> () -> Unit with Exception with ReviewAsk {\n  () -> {\n    () -> {\n      ()\n    }\n  }\n}\n' >> "$impl"
+if grep -qF 'with Exception with ReviewAsk {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: two rows absorbed by two closure layers leave the declaration pure"
+  else
+    fail "case: a pure helper returning nested effectful closures was rejected"
+  fi
+else
+  fail "case: the nested mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
+# And the converse at the same arrow depth, so the invariant is not just
+# "three arrows means never check".
+printf '\nexport fn probe_nested_own() -> () -> () -> Unit with Exception with Async with Fs {\n  () -> {\n    () -> {\n      ()\n    }\n  }\n}\n' >> "$impl"
+if grep -qF 'with Exception with Async with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a third row at three arrows is the declaration own and was skipped"
+  else
+    pass "case: rows beyond the closure layers are the declaration own"
+  fi
+else
+  fail "case: the nested-own mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 52 cases)"
+echo "portable-boundary-test: ok (control + 54 cases)"

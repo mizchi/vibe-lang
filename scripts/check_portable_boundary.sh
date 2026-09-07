@@ -322,9 +322,19 @@ boundary_effect_rows() { # reads normalized text on stdin
     # with Fs` -- the earlier ones bind to the inner function types and the LAST
     # one is f own row, so that one is checked. Skipping all of them, as this
     # did before, let a boundary carry Fs unnoticed.
-    if (arrows <= 1) {
-      for (k = 1; k <= rown; k++) { print rowbuf[k] }
-    } else if (rown >= 2) {
+    # Each arrow layer AFTER the declarations own can carry one row, so the
+    # returned function types hold at most (arrows - 1) of them. The
+    # declaration owns a row only when there are more rows than layers to
+    # absorb them, and then it is the last.
+    #
+    #   -> Unit with Fs                                arrows 1, rows 1 -> own
+    #   -> (String) -> Unit with Log                   arrows 2, rows 1 -> none
+    #   -> (String) -> Unit with Exception with Fs     arrows 2, rows 2 -> own
+    #   -> () -> () -> Unit with Exception with Ask    arrows 3, rows 2 -> none
+    #
+    # Counting rows against a fixed threshold instead got the last of those
+    # wrong: two rows does not mean one of them is the declarations.
+    if (rown >= arrows && rown >= 1) {
       print rowbuf[rown]
     }
     rown = 0
