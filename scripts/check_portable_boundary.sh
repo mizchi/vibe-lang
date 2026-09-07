@@ -82,10 +82,57 @@ PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 # was captured and reported as `effect: Fs`. A required gate that fails on
 # correct code is one that gets disabled (#2252), so a false positive here is
 # not the safe direction -- it is a different way to lose the gate.
+# The string pattern is escape-aware: `"([^"\\]|\\.)*"`. A plain `"[^"]*"`
+# ended the literal at the backslash-escaped quote inside
+# `"prefix \"with Fs\" suffix"` and left the inert text exposed, failing the
+# gate on a perfectly ordinary diagnostic string.
 boundary_scan_text() { # <file>
-  sed 's/"[^"]*"//g' "$ROOT_DIR/$1" \
+  sed -E 's/"([^"\\]|\\.)*"//g' "$ROOT_DIR/$1" \
     | sed 's://.*::' \
     | tr '\n' ' '
+}
+
+# Every DECLARATION's own effect row, one per line.
+#
+# "The text from `with` to the next `{`" was wrong, and wrong in the expensive
+# direction: a parameter carries its own row, so
+#
+#   fn probe(f: () -> Unit with Exception) -> Unit with Exception { f() }
+#
+# started at the PARAMETER's `with`, swallowed `) -> Unit`, and reported
+# `effect: Unit` -- rejecting a legitimate higher-order helper. A required gate
+# that blocks correct code is one that gets removed (#2252).
+#
+# The outer row is the one at parenthesis depth 0. That is a lexical property,
+# not a guess at the grammar: parameter rows are inside `(...)` by
+# construction, whatever shape they take. Everything up to the body brace is
+# then the row, so separators, type arguments and qualified items still need no
+# special handling.
+boundary_effect_rows() { # reads normalized text on stdin
+  awk '{
+    s = $0; n = length(s); depth = 0; i = 1
+    while (i <= n) {
+      c = substr(s, i, 1)
+      if (c == "(") { depth++; i++; continue }
+      if (c == ")") { if (depth > 0) depth--; i++; continue }
+      if (depth == 0 && substr(s, i, 5) == "with ") {
+        prev = (i > 1) ? substr(s, i - 1, 1) : " "
+        if (prev ~ /[A-Za-z0-9_]/) { i++; continue }
+        j = i + 5; row = ""; d2 = 0
+        while (j <= n) {
+          cc = substr(s, j, 1)
+          if (cc == "(") { d2++ }
+          else if (cc == ")") { if (d2 > 0) { d2-- } else { break } }
+          else if (d2 == 0 && (cc == "{" || cc == ";")) { break }
+          row = row cc; j++
+        }
+        print row
+        i = j
+        continue
+      }
+      i++
+    }
+  }'
 }
 
 # Reject any effect row on a pure boundary that names something outside the
@@ -113,12 +160,16 @@ forbid_foreign_effect_rows() { # <file> <label>
   # capability name in it. Separators are irrelevant -- `+`, newlines, or a
   # syntax `parse_effect_item` grows next week -- because nothing about the
   # row's shape is assumed. A name is either allow-listed or it is a leak.
+  # Tokens are matched in EITHER case. An effect-row variable is lowercase
+  # (`fn probe[e](f: () -> Unit with e) -> Unit with e`), and such a boundary
+  # runs whatever effect its caller instantiates -- including Fs. Only matching
+  # capitalized names silently dropped it. Unresolved is not portable, so the
+  # allow-list rejects it like any other name it does not know.
   bad="$(boundary_scan_text "$file" \
-    | grep -oE 'with +[^{;]*' \
-    | sed 's/^with  *//' \
+    | boundary_effect_rows \
     | sed 's/\[[^]]*\]//g' \
     | sed 's/::[A-Za-z0-9_]*//g' \
-    | grep -oE '[A-Z][A-Za-z0-9_]*' \
+    | grep -oE '[A-Za-z_][A-Za-z0-9_]*' \
     | grep -vE "^($PORTABLE_ALLOWED_EFFECTS)$" \
     | sort -u)" || true
   if [ -n "$bad" ]; then

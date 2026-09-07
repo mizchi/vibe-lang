@@ -419,8 +419,59 @@ else
 fi
 restore
 
+# --- case 25: an effect-row variable ----------------------------------------
+#
+# `fn probe[e](f: () -> Unit with e) -> Unit with e` runs whatever effect its
+# caller instantiates, Fs included, while naming no capability at all. Matching
+# only capitalized names dropped it silently. Unresolved is not portable, so
+# the allow-list rejects it like any other name it does not know.
+printf '\nexport fn probe_rv[e](f: () -> Unit with e) -> Unit with e {\n  f()\n}\n' >> "$impl"
+if grep -qF -- '-> Unit with e {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an effect-row variable passed the gate"
+  else
+    pass "case: an unresolved effect-row variable is rejected"
+  fi
+else
+  fail "case: the row-variable mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# --- case 26: a parameter carries its own row -------------------------------
+#
+# THE false positive. "From `with` to the next `{`" started at the PARAMETER's
+# row, swallowed `) -> Unit`, and reported `effect: Unit` on a legitimate
+# higher-order helper. The outer row is the one at parenthesis depth 0.
+printf '\nexport fn probe_cb(f: () -> Unit with Exception) -> Unit with Exception {\n  f()\n}\n' >> "$impl"
+if grep -qF '(f: () -> Unit with Exception)' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a parameter's own effect row is not read as the declaration's"
+  else
+    fail "case: a higher-order helper with an effectful callback was rejected"
+  fi
+else
+  fail "case: the callback mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
+# --- case 27: an escaped quote inside a string ------------------------------
+#
+# `"[^"]*"` ended the literal at the backslash-escaped quote and left the inert
+# text exposed, so an ordinary diagnostic string failed the gate.
+printf '\nexport fn probe_eq() -> String with Exception {\n  "prefix \\"with Fs\\" suffix"\n}\n' >> "$impl"
+if grep -qF 'prefix \"with Fs\" suffix' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an escaped quote inside a string does not expose its text"
+  else
+    fail "case: a string containing an escaped quote failed the gate"
+  fi
+else
+  fail "case: the escaped-quote mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 24 cases)"
+echo "portable-boundary-test: ok (control + 27 cases)"
