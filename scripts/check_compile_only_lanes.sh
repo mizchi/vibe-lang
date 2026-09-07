@@ -97,7 +97,7 @@ fi
 
 if [ -z "$ARTIFACT" ]; then
   ARTIFACT="$ROOT_DIR/_build/compile_only/vibe_compile_only.names.wasm"
-  COMPILE_ONLY_COMPILER="${COMPILE_ONLY_STAGE2:-}" \
+  COMPILE_ONLY_COMPILER="${COMPILE_ONLY_STAGE2:-${VIBE_STAGE2_WASM:-}}" \
     bash scripts/build_compile_only.sh --names --out "$ARTIFACT" >&2 \
     || fail "scripts/build_compile_only.sh failed"
 fi
