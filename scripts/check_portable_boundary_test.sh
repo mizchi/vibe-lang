@@ -373,8 +373,54 @@ else
 fi
 restore
 
+# --- cases 22-24: string literals are not effect rows -----------------------
+#
+# The converse direction, and the one that actually loses a gate: reading the
+# whole span from `with` to the body captured an inert message such as
+# "compile with Fs when requested" and reported `effect: Fs` on correct code.
+# A required gate that fails on code that is fine gets disabled (#2252), so a
+# false positive is not the safe side of this check -- it is a second way to
+# lose it. Same for a string that happens to contain the word `allows`.
+printf '\nexport fn probe_msg() -> String with Exception {\n  "compile with Fs when requested"\n}\n' >> "$impl"
+if grep -qF 'compile with Fs when requested' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a string literal naming an effect is not read as a row"
+  else
+    fail "case: an inert string mentioning 'with Fs' failed the gate"
+  fi
+else
+  fail "case: the string mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_msg2() -> String with Exception {\n  "this allows Fs::read_file to run"\n}\n' >> "$impl"
+if grep -qF 'this allows Fs::read_file to run' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a string literal naming an allows clause is not read as a grant"
+  else
+    fail "case: an inert string mentioning 'allows' failed the gate"
+  fi
+else
+  fail "case: the string mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
+# Stripping strings must not become a way to HIDE a real row: a declaration
+# that genuinely carries `with Fs` is still caught when a string sits beside it.
+printf '\nexport fn probe_both() -> String with Fs {\n  "a harmless with Exception message"\n}\n' >> "$impl"
+if grep -qF 'export fn probe_both() -> String with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a real 'with Fs' was hidden by the string strip"
+  else
+    pass "case: a real row is still caught when a string sits beside it"
+  fi
+else
+  fail "case: the mixed mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 21 cases)"
+echo "portable-boundary-test: ok (control + 24 cases)"

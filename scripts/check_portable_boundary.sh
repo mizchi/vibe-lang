@@ -64,6 +64,30 @@ native_effect_pattern='with \{[^}]*(Fs|Process|Socket|Net)|perform (Fs|Process|S
 # this list is a deliberate act; that is the property being enforced.
 PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 
+# The normalized view both boundary scanners read: string literals removed,
+# comments removed to end of line, newlines flattened.
+#
+# ONE function on purpose. The row scan and the authority scan ask the same
+# question of the same files, and when they each did their own normalization
+# they drifted: a fix for a capability split across lines went into one and not
+# the other, and the gap it left was a real bypass.
+#
+# Strings go first. A comment may contain a quote, but stripping it only eats
+# the rest of a line that is already a comment; stripping comments first would
+# truncate a string containing `//` (a URL). Neither scanned file has either
+# today -- this is about which order stays correct when one appears.
+#
+# Why strings must be removed at all: the row scan reads the whole span from
+# `with` to the body, so an inert message like "compile with Fs when requested"
+# was captured and reported as `effect: Fs`. A required gate that fails on
+# correct code is one that gets disabled (#2252), so a false positive here is
+# not the safe direction -- it is a different way to lose the gate.
+boundary_scan_text() { # <file>
+  sed 's/"[^"]*"//g' "$ROOT_DIR/$1" \
+    | sed 's://.*::' \
+    | tr '\n' ' '
+}
+
 # Reject any effect row on a pure boundary that names something outside the
 # allow-list. Comment lines are stripped first, as in forbid_pattern.
 #
@@ -89,8 +113,7 @@ forbid_foreign_effect_rows() { # <file> <label>
   # capability name in it. Separators are irrelevant -- `+`, newlines, or a
   # syntax `parse_effect_item` grows next week -- because nothing about the
   # row's shape is assumed. A name is either allow-listed or it is a leak.
-  bad="$(sed 's://.*::' "$ROOT_DIR/$file" \
-    | tr '\n' ' ' \
+  bad="$(boundary_scan_text "$file" \
     | grep -oE 'with +[^{;]*' \
     | sed 's/^with  *//' \
     | sed 's/\[[^]]*\]//g' \
@@ -141,8 +164,7 @@ forbid_foreign_effect_rows() { # <file> <label>
 # (`expected an effect name in the effect row after 'with'`).
 forbid_capability_authority() { # <file> <label>
   local file="$1" label="$2"
-  if sed 's://.*::' "$ROOT_DIR/$file" \
-    | tr '\n' ' ' \
+  if boundary_scan_text "$file" \
     | grep -oE '\ballows +[A-Z][A-Za-z0-9_:]*' >/tmp/vibe_portable_authority_hits.$$; then
     echo "selfhost-portable-boundary: capability authority granted in $label ($file)" >&2
     sed 's/^/  granted: /' /tmp/vibe_portable_authority_hits.$$ >&2
