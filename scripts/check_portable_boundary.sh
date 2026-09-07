@@ -101,13 +101,33 @@ forbid_foreign_effect_rows() { # <file> <label>
 # is "stays in-memory". A capability name is CamelCase, which is what separates
 # a real clause from English prose ("allows them to ..."); comment lines are
 # stripped first regardless.
+#
+# The capability need not be adjacent to the keyword. Both of these compile
+# (measured on a stage2 built from this checkout, `vibe test`):
+#
+#   fn probe() -> String with Exception allows
+#     Fs::read_file { ... }              # newline
+#   fn probe() -> String with Exception allows // note
+#     Fs::read_file { ... }              # trailing comment, then newline
+#
+# so requiring adjacency on one line missed both. Comments are removed to end
+# of line and the file is flattened to a single line before matching, which
+# makes the check insensitive to whitespace and to anything commented out
+# between the keyword and the capability. `/* ... */` needs no handling: vibe
+# has no block comments, and that spelling does not parse at all
+# (`expected an effect name in the effect row after 'with'`).
 forbid_capability_authority() { # <file> <label>
   local file="$1" label="$2"
-  if grep -vE '^[[:space:]]*(///?|//#)' "$ROOT_DIR/$file" \
-    | grep -nE '\ballows +[A-Z]' >/tmp/vibe_portable_authority_hits.$$; then
+  if sed 's://.*::' "$ROOT_DIR/$file" \
+    | tr '\n' ' ' \
+    | grep -oE '\ballows +[A-Z][A-Za-z0-9_:]*' >/tmp/vibe_portable_authority_hits.$$; then
     echo "selfhost-portable-boundary: capability authority granted in $label ($file)" >&2
-    sed 's/^/  /' /tmp/vibe_portable_authority_hits.$$ >&2
+    sed 's/^/  granted: /' /tmp/vibe_portable_authority_hits.$$ >&2
     rm -f /tmp/vibe_portable_authority_hits.$$
+    # Matching happens on the flattened file, so the match itself carries no
+    # position. Point at every line holding the keyword, which is where the
+    # edit goes.
+    grep -nE '\ballows\b' "$ROOT_DIR/$file" | sed 's/^/  at /' >&2 || true
     echo '  An `allows` clause hands this boundary host authority, which is' >&2
     echo "  what it must not have. Move the capability to a caller that is" >&2
     echo "  allowed to hold it and pass the result in." >&2

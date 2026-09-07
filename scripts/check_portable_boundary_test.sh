@@ -245,8 +245,41 @@ else
 fi
 restore
 
+# --- cases 14-15: the capability need not be adjacent to `allows` -----------
+#
+# Both of these COMPILE -- verified with `vibe test` on a stage2 built from this
+# checkout, not assumed -- and both slipped past the first version of the check,
+# which required the capability to follow the keyword on the same line.
+#
+# (`allows /* c */ Fs::read_file` needs no case: vibe has no block comments, so
+# it does not parse -- "expected an effect name in the effect row after 'with'".
+# A case for it would assert a rejection the language already guarantees.)
+printf '\nexport fn probe_nl() -> String with Exception allows\n  Fs::read_file {\n  ""\n}\n' >> "$impl"
+if grep -qE 'allows$' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: 'allows' with the capability on the NEXT LINE passed the gate"
+  else
+    pass "case: a capability on the next line is still rejected"
+  fi
+else
+  fail "case: the newline mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_tc() -> String with Exception allows // note\n  Fs::read_file {\n  ""\n}\n' >> "$impl"
+if grep -qF 'allows // note' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: 'allows' followed by a trailing comment passed the gate"
+  else
+    pass "case: a comment between the keyword and the capability is stripped"
+  fi
+else
+  fail "case: the trailing-comment mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 13 cases)"
+echo "portable-boundary-test: ok (control + 15 cases)"
