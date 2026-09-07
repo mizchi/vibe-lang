@@ -566,8 +566,39 @@ else
 fi
 restore
 
+# --- cases 34-35: an interpolation body executes ----------------------------
+#
+# `"\{ ... }"` is not inert: the body between `\{` and `}` is code and runs.
+# Stripping the whole quoted token discarded it, so a real capability call
+# inside one became invisible -- a hole the pre-PR gate did not have, since it
+# stripped no strings at all. The pair keeps both directions honest: the
+# executable body is scanned, the inert text around it is not.
+printf '\nexport fn probe_interp_exec() -> String with Exception {\n  "\\{perform Fs::read_file("x")}"\n}\n' >> "$impl"
+if grep -qF 'perform Fs::read_file' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a capability call inside an interpolation body was invisible"
+  else
+    pass "case: an interpolation body is scanned, not discarded with the string"
+  fi
+else
+  fail "case: the interpolation mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_interp_inert() -> String with Exception {\n  "\\{String::concat("perform Fs::read_file", " is inert")}"\n}\n' >> "$impl"
+if grep -qF 'is inert' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a string nested inside an interpolation is still inert"
+  else
+    fail "case: an inert literal nested in an interpolation failed the gate"
+  fi
+else
+  fail "case: the nested-literal mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 33 cases)"
+echo "portable-boundary-test: ok (control + 35 cases)"

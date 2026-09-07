@@ -105,27 +105,58 @@ PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 #
 # Order: quoted strings, then raw strings, then comments. A `//` inside a raw
 # string is removed with the raw string rather than mistaken for a comment.
-# KNOWN LIMIT, recorded rather than chased: a string literal nested inside an
-# interpolation -- `"\{String::concat("perform Fs::read_file", " is inert")}"` --
-# is not stripped. The quotes pair sequentially, so the inner text survives into
-# the scanned stream and forbid_pattern reports it as a leak.
+# Drop what does not execute, keep what does. Line-preserving, so a report can
+# still cite a line number.
 #
-# Not fixed here, deliberately. Stripping that correctly means tracking
-# interpolation nesting, which is lexing vibe, and this file has already been
-# through five rounds of "the scanner does not see what the lexer sees" -- each
-# fix correct, each followed by another form. #2581 is where that ends, by
-# asking the compiler; a sixth regex would only move the boundary again.
+# This replaced three `sed` passes, and the reason is a hole they created rather
+# than a form they missed. `"\{perform Fs::ReadFile(path)}"` is an interpolation:
+# the body between `\{` and `}` is CODE and runs. Removing the whole quoted
+# token discarded it, so a real capability call inside one became invisible --
+# and on cli_direct_component_entry.vibe, which is deliberately outside the
+# effect-row allow-list, forbid_pattern is the only thing watching for exactly
+# that. The regex made this gate weaker than it was before the change.
 #
-# Accepting it is defensible because it is strictly NARROWER than what this gate
-# did before: pre-PR it stripped whole comment lines only, so ANY string
-# containing `perform Fs::` was a false positive. Now only a nested one is.
-# Neither scanned file contains such a string today.
+# One pass with an explicit mode stack handles it, and closes the neighbouring
+# case for free: a string nested INSIDE an interpolation
+# (`"\{String::concat("perform Fs::read_file", " is inert")}"`) has its literal
+# text dropped while its own interpolations are kept.
 #
-# Line-preserving form, so a report can still cite a line number.
+# This is a scanner for one lexical construct with a decidable structure, not
+# another attempt to model the effect-row grammar in a pattern. The distinction
+# matters: the grammar attempts kept missing forms nobody had enumerated, while
+# string nesting is closed by construction here.
 boundary_scan_lines() { # <file>
-  sed -E 's/"([^"\\]|\\.)*"//g' "$ROOT_DIR/$1" \
-    | sed 's/#|.*$//' \
-    | sed 's://.*::'
+  awk '{
+    line = $0; n = length(line); out = ""
+    sp = 0; mode[0] = "code"; bdepth[0] = 0
+    i = 1
+    while (i <= n) {
+      c = substr(line, i, 1)
+      if (mode[sp] == "code") {
+        if (c == "\"") { sp++; mode[sp] = "str"; i++; continue }
+        if (c == "#" && substr(line, i + 1, 1) == "|") { break }   # raw string to EOL
+        if (c == "/" && substr(line, i + 1, 1) == "/") { break }   # comment to EOL
+        if (c == "{") { bdepth[sp]++; out = out c; i++; continue }
+        if (c == "}") {
+          if (bdepth[sp] > 0) { bdepth[sp]--; out = out c }
+          else if (sp > 0) { sp--; out = out " " }                 # end of interpolation
+          else { out = out c }
+          i++; continue
+        }
+        out = out c; i++; continue
+      }
+      # inside a string literal: the text is inert, the interpolations are not
+      if (c == "\\") {
+        if (substr(line, i + 1, 1) == "{") {
+          sp++; mode[sp] = "code"; bdepth[sp] = 0; out = out " "; i += 2; continue
+        }
+        i += 2; continue
+      }
+      if (c == "\"") { if (sp > 0) sp--; i++; continue }
+      i++
+    }
+    print out
+  }' "$ROOT_DIR/$1"
 }
 
 boundary_scan_text() { # <file>
