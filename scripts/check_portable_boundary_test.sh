@@ -691,8 +691,48 @@ else
 fi
 restore
 
+# --- case 42: a returned function type carries its own row ------------------
+#
+# `fn make() -> (String) -> Unit with Log::Emit` is PURE: the row belongs to
+# the returned closure (fixtures/typecheck/closure_row_return_position.vibe).
+# That `with` is at parenthesis depth 0 like any other, so it was reported as
+# the declaration's row and a legitimate helper was rejected.
+printf '\nexport fn make_logger() -> (String) -> Unit with Log::Emit {\n  (s) -> {\n    ()\n  }\n}\n' >> "$impl"
+if grep -qF -- '-> (String) -> Unit with Log::Emit {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a returned function type's row is not the declaration's"
+  else
+    fail "case: a pure helper returning an effectful closure was rejected"
+  fi
+else
+  fail "case: the closure-return mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# --- case 43: THE COST OF CASE 42, pinned so it is visible ------------------
+#
+# Skipping the ambiguous multi-arrow shape means a boundary that returns an
+# Fs-carrying closure is NOT checked. This case asserts that miss deliberately.
+# It is not an endorsement: telling it from case 42 needs the type grammar, and
+# grammar is what this scan stopped modelling. #2581 answers it from the AST.
+#
+# If a future change makes this REJECT, that is an improvement -- update this
+# case rather than reverting the change. The point is that the gap is written
+# down as a test, not left to be rediscovered.
+printf '\nexport fn make_reader() -> (String) -> Unit with Fs {\n  (s) -> {\n    ()\n  }\n}\n' >> "$impl"
+if grep -qF -- '-> (String) -> Unit with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: KNOWN MISS -- a returned Fs-carrying closure is not checked (#2581)"
+  else
+    fail "case: unexpected -- if this now rejects, update the case, do not revert"
+  fi
+else
+  fail "case: the known-miss mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 41 cases)"
+echo "portable-boundary-test: ok (control + 43 cases)"

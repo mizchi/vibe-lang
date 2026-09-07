@@ -228,18 +228,45 @@ boundary_scan_text() { # <file>
 # Consequence worth stating: an effect row on a nested function or lambda,
 # being inside a body, is not scanned. That is a miss rather than a false
 # positive -- the safe direction of the two -- and neither boundary has one.
+#
+# AMBIGUITY IS SKIPPED, NOT GUESSED. A return type may itself be a function
+# type, and then the row belongs to the RETURNED value, not to the declaration:
+#
+#   fn make() -> (String) -> Unit with Log::Emit    # make is PURE
+#
+# (pinned by fixtures/typecheck/closure_row_return_position.vibe). That `with`
+# is at parenthesis depth 0 like any other, so the scan reported `Log` and
+# rejected a legitimate helper.
+#
+# Telling those apart is a question about the TYPE grammar -- arrow
+# associativity -- not about lexical structure, and grammar is what this scan
+# stopped modelling at review round 7 after six straight misses. So when more
+# than one `->` appears at depth 0 before the `with`, the row is left
+# unclassified rather than attributed to the declaration.
+#
+# That is deliberately a MISS: a boundary returning an effectful closure is not
+# checked. The trade is explicit -- a miss is recorded in #2581, which will
+# answer this from the AST; a false positive fails CI on correct code and gets
+# the gate deleted (#2252). Between guessing wrong in the two directions, only
+# one of them is recoverable.
 boundary_effect_rows() { # reads normalized text on stdin
   awk '{
-    s = $0; n = length(s); depth = 0; brace = 0; i = 1
+    s = $0; n = length(s); depth = 0; brace = 0; arrows = 0; i = 1
     while (i <= n) {
       c = substr(s, i, 1)
       if (c == "(") { depth++; i++; continue }
       if (c == ")") { if (depth > 0) depth--; i++; continue }
-      if (c == "{") { brace++; i++; continue }
+      if (c == "-" && substr(s, i + 1, 1) == ">" && depth == 0 && brace == 0) {
+        arrows++; i++; continue
+      }
+      if (c == "{") { if (brace == 0) { arrows = 0 }; brace++; i++; continue }
       if (c == "}") { if (brace > 0) brace--; i++; continue }
       if (depth == 0 && brace == 0 && substr(s, i, 5) == "with ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
         if (prev ~ /[A-Za-z0-9_]/) { i++; continue }
+        # more than one depth-0 arrow: the row may belong to a returned
+        # function type, so leave it unclassified rather than guess
+        if (arrows > 1) { i++; continue }
         j = i + 5; row = ""; d2 = 0
         while (j <= n) {
           cc = substr(s, j, 1)
