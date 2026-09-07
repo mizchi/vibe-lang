@@ -614,6 +614,26 @@ boundary_effect_rows() { # reads normalized text on stdin
     #
     # Counting rows against a fixed threshold instead got the last of those
     # wrong: two rows does not mean one of them is the declarations.
+    #
+    # `type` is the ONLY suppressed keyword, and `let` deliberately is not.
+    # Round 52 asked for `let stored = (p: String) -> Int with Fs {
+    # Fs::stat_token(p) }` to be skipped too, on the argument that storing an
+    # effectful function is pure -- the distinction already made for aliases
+    # and for returned closure types. That is right about the type system and
+    # wrong about this gate: the subject here is the emitted wasm, so the
+    # question is what each shape IMPORTS. Measured, each as a whole program
+    # whose closure is never called, grepping the module for `fs_stat_token`:
+    #
+    #   type Cb = (String) -> Int with Fs                              absent
+    #   fn make(g: (String) -> Int with Fs) -> (String) -> Int ... {g} absent
+    #   let stored: (String) -> Int with Fs = g     (annotation only)  absent
+    #   let stored = (p: String) -> Int with Fs { Fs::stat_token(p) }  PRESENT
+    #
+    # The first three are type positions with no code behind them. A closure
+    # LITERAL is a body that gets emitted, and its host import lands in the
+    # module whether or not anything invokes it -- so "any caller must declare
+    # its own row" is true and not sufficient. Pinned by the last two cases in
+    # scripts/check_portable_boundary_test.sh.
     if (decl != "type") {
       # Which layer, if any, is the declarations own? Rows are absorbed by the
       # returned function types first, so the declaration owns the LAST row

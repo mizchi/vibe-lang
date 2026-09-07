@@ -2100,8 +2100,62 @@ else
 fi
 restore
 
+# --- cases 127-128: a closure LITERAL under `let` is code, not a type --------
+#
+# Round 52 asked for the row of `let stored = (p: String) -> Int with Fs {
+# Fs::stat_token(p) }` to be suppressed, on the argument that storing an
+# effectful function is pure, the same distinction already made for function
+# type aliases (case: `type Cb = ...`) and returned closure types. The premise
+# is right about the type system and wrong about this gate, and MEASUREMENT is
+# what settles it -- the subject here is the emitted wasm host imports, so the
+# question is what each shape imports, not what it evaluates.
+#
+# Compiled all four, each a whole program whose closure is NEVER CALLED, and
+# grepped the module for the `fs_stat_token` host import:
+#
+#   type Cb = (String) -> Int with Fs                                  absent
+#   fn make(g: (String) -> Int with Fs) -> (String) -> Int with Fs {g} absent
+#   let stored: (String) -> Int with Fs = g        (annotation only)   absent
+#   let stored = (p: String) -> Int with Fs { Fs::stat_token(p) }      PRESENT
+#
+# The first three are type positions with no code behind them. The fourth is a
+# closure literal -- a body that gets emitted, and its import lands in the
+# module whether or not anything invokes it. "Any function that invokes it must
+# declare its own row" is true and not sufficient: nothing invokes this one and
+# the boundary imports the filesystem anyway.
+#
+# So the row stays reported, and these cases pin it. If a later round makes
+# `let` suppress its value row like `type` does, case 127 fails -- and that is
+# the finding, not the fix.
+printf '\nexport let stored = (p: String) -> Int with Fs { Fs::stat_token(p) }\n' >> "$impl"
+if grep -qF -- 'export let stored = (p: String) -> Int with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a stored closure literal acquired Fs without being reported"
+  else
+    pass "case: a closure literal under 'let' is reported like any other body"
+  fi
+else
+  fail "case: the stored-closure mutation did not land -- it proves nothing"
+fi
+restore
+
+# The control for it: the same binding with a row the allow-list admits must
+# still build. Without this the case above would also pass on a gate that
+# rejected every `let`.
+printf '\nexport let stored = (p: String) -> Int with Exception { String::length(p) }\n' >> "$impl"
+if grep -qF -- 'export let stored = (p: String) -> Int with Exception {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a stored closure with an allowed row still builds"
+  else
+    fail "case: an allowed row on a stored closure was rejected"
+  fi
+else
+  fail "case: the allowed-row mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 126 cases)"
+echo "portable-boundary-test: ok (control + 128 cases)"
