@@ -23,7 +23,17 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/scripts/resolve_stage2.sh"
 GATE="scripts/check_compile_only_lanes.sh"
-STAGE2="$(resolve_stage2 compile-only-lanes-test "${COMPILE_ONLY_STAGE2:-}")" || exit 1
+# `VIBE_STAGE2_WASM` is the lane's own answer to "which compiler", set by
+# compiler-gate-lanes in CI and read the same way by check_freeze_surface.sh,
+# minify_gate.sh, build_vibe_opt.sh, build_vibec.sh and coverage_suite.sh.
+# Without it this gate fell through resolve_stage2 to the committed SEED --
+# and its control case asserts that #2497 unit 2's fold DROPPED
+# `emit_shadow_mark_freed` / `emit_str_operand_guard`, which is a property of
+# a compiler containing that change. The seed does not, so the gate failed
+# while reporting the artifact's contents accurately: the wrong-compiler trap
+# (AGENTS.md, "Which compiler answered?"), in a gate whose subject is what a
+# build dropped.
+STAGE2="$(resolve_stage2 compile-only-lanes-test "${COMPILE_ONLY_STAGE2:-${VIBE_STAGE2_WASM:-}}")" || exit 1
 ART="$ROOT_DIR/_build/compile_only/vibe_compile_only.names.wasm"
 if [ ! -s "$ART" ]; then
   bash scripts/build_compile_only.sh --names --out "$ART" --compiler "$STAGE2" >&2
