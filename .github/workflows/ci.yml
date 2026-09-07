@@ -423,18 +423,11 @@ jobs:
         with:
           path: _build/_ci_shard_gen
           key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      - name: Install wasmtime (cold stage2 build only)
-        # Same reason as compiler-gate (docs): generations.sh's stage validation
-        # shells out to a wasmtime BINARY, and every compiler-touching PR moves
-        # the fingerprint in this cache key, so the cold path is the common one.
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        env:
-          WASMTIME_VERSION: v47.0.2
-        run: |
-          set -euo pipefail
-          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
-          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
-          echo "$PWD/$dir" >> "$GITHUB_PATH"
+      # No second wasmtime install: setup-vibe above runs with wasmtime: 'true',
+      # which installs the same pinned 47.0.2 (scripts/install_wasmtime_release.sh)
+      # and puts $HOME/.wasmtime/bin on PATH. generations.sh's stage validation
+      # shells out to that binary and finds it. A duplicate release download
+      # would only add a transient-failure mode to a required job.
       - name: Build stage2 on cache miss
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |
@@ -468,8 +461,11 @@ jobs:
         run: VIBE_OFFBUILD_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_offbuild_typecheck.sh
       - name: Book skip-block gate
         run: VIBE_SKIP_BLOCK_CLI_WASM="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_book_skip_blocks.sh
-      - name: Examples typecheck gate
-        run: EXAMPLES_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_examples_typecheck.sh
+      # No examples typecheck here: check_examples_typecheck.sh was ALREADY
+      # wired, via `pkf run ci-check-examples-typecheck` in compiler-examples,
+      # against this same stage2 path. It was the one entry my by-hand audit
+      # got wrong -- the reachability trace missed the task indirection. Nine
+      # of the ten gates in this job were genuinely unrun; this one was not.
       - name: Compile-only lanes gate
         run: COMPILE_ONLY_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_compile_only_lanes.sh
 
@@ -837,8 +833,8 @@ jobs:
         run: bash scripts/lint_tracked_experiment_names_test.sh
       - name: tracked-experiment-names lint
         run: bash scripts/lint_tracked_experiment_names.sh
-      - name: gate-registry check self-test
-        run: bash scripts/check_gate_registry_test.sh
+      # The self-test already runs above as "compiler-gate registry self-test";
+      # only the production check was missing from CI.
       - name: gate-registry check
         run: bash scripts/check_gate_registry.sh
       - name: canonical-iterator-calls check self-test
