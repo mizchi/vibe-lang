@@ -396,6 +396,27 @@ jobs:
       - name: Generated compiler fingerprint
         id: genfp
         run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      # The generated artifacts are needed by the GATES, not just by the stage2
+      # build -- check_offbuild_typecheck typechecks every off-manifest source,
+      # and several import `compiler_sources_bundle.vibe` /
+      # `cli_adapter_bundle.vibe` or implement `cache/index.vpkg`'s
+      # `codegen_fingerprint` declaration. Producing them only inside the
+      # cache-miss build below meant a stage2 cache HIT left them absent and the
+      # gate reported 20 real contract violations against a half-built tree.
+      # Cached and ensured unconditionally, exactly as compiler-gate-lanes does.
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
       - name: Restore cached stage2
         id: stage2-cache
         uses: actions/cache@v4
@@ -418,7 +439,6 @@ jobs:
         if: steps.stage2-cache.outputs.cache-hit != 'true'
         run: |
           bash scripts/ensure_seed.sh
-          bash scripts/ensure_generated.sh
           VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
       # Every gate below is handed the stage2 EXPLICITLY, by path. None of them
       # discovers one for itself: left to their own devices they take the
