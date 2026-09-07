@@ -1838,8 +1838,49 @@ else
 fi
 restore
 
+# --- cases 108-109: the `daemon` lane named nothing --------------------------
+#
+# Round 47. Round 40 anchored the lane names to token boundaries, which stopped
+# `daemon` matching INSIDE `daemonless_probe` -- necessary, and not sufficient.
+# An exact identifier is still not a reference: `fn f(daemon: Int) -> Int {
+# daemon }` is an ordinary parameter, and matching the token rejected it.
+#
+# What settles it is that `daemon` names NOTHING in this tree: every occurrence
+# under lib/ is inside a comment, and comments are removed before the pattern
+# runs, so the alternative could only ever match a name someone chose. Same
+# wrong check as `session-http` in case 105, one round later and one level up.
+printf '\nfn probe_param_daemon(daemon: Int) -> Int {\n  daemon\n}\n' >> "$impl"
+if grep -qF -- 'fn probe_param_daemon(daemon: Int) -> Int {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an ordinary parameter named daemon is not a lane reference"
+  else
+    fail "case: a local named daemon was rejected as a native lane"
+  fi
+else
+  fail "case: the daemon-parameter mutation did not land -- it proves nothing"
+fi
+restore
+
+# `compile_file_fs` is the OPPOSITE case and stays unqualified: it is a real
+# exported function (entry/compiler/file_compile, fs_compile), so a bare
+# occurrence in a boundary file is a real reference -- including inside an
+# `import { compile_file_fs }` list, which has neither `(` nor `::` after it.
+# This pins the bare form, so a later "require a call shape" cannot pass by
+# only keeping case 93 (the call) green.
+printf '\nfn probe_lane_value() -> Bool {\n  let f = compile_file_fs\n  false\n}\n' >> "$impl"
+if grep -qF -- 'let f = compile_file_fs' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a bare reference to the compile_file_fs lane passed the gate"
+  else
+    pass "case: a bare reference to a real lane is still a reference"
+  fi
+else
+  fail "case: the lane-value mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 107 cases)"
+echo "portable-boundary-test: ok (control + 109 cases)"

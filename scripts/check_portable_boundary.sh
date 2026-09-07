@@ -122,8 +122,27 @@ forbid_pattern() {
 # Separators are `[[:space:]]+`, not one literal space. `perform  Fs::ReadFile`
 # with two spaces, or a tab or newline after `perform`, all compile and all
 # bypassed a pattern that matched exactly one space.
-native_effect_pattern='with[[:space:]]*\{[^}]*(Fs|Process|Socket|Net)|perform[[:space:]]+(Fs|Process|Socket|Http)[[:space:]]*::|\b(compile_file_fs|daemon)\b'
+native_effect_pattern='with[[:space:]]*\{[^}]*(Fs|Process|Socket|Net)|perform[[:space:]]+(Fs|Process|Socket|Http)[[:space:]]*::|\bcompile_file_fs\b'
 
+# `daemon` was dropped for the same reason as `session-http` below, one round
+# later and one level up. Anchoring it to token boundaries (round 40) stopped
+# it matching INSIDE a name, but an exact identifier is still not a reference:
+# `fn f(daemon: Int) -> Int { daemon }` is an ordinary parameter, and matching
+# the token rejected it -- an ordinary local name blocking a required job.
+#
+# What settles it is that `daemon` names nothing in this tree. Every occurrence
+# under lib/ is inside a comment, and comments are removed before this pattern
+# runs, so the alternative could only ever match a name someone chose. That is
+# the same wrong check as `session-http`, not a weaker one.
+#
+# `compile_file_fs` STAYS, and stays unqualified, because it is the opposite
+# case: a real exported function (entry/compiler/file_compile, fs_compile), so
+# a bare occurrence in a boundary file is a real reference -- including in an
+# `import { compile_file_fs }` list, which has neither `(` nor `::` after it.
+# Requiring a call shape here would have traded a false positive nobody will
+# write (a parameter named compile_file_fs) for a miss that is exactly how the
+# lane would be reached.
+#
 # `session-http` was dropped from the lane list. Strings and comments are
 # removed before this runs, so in the remaining text that spelling can only be
 # the subtraction `session - http` -- it is not one vibe identifier, and a
