@@ -180,7 +180,31 @@ boundary_scan_lines() { # <file>
         # `r` must be the whole identifier, as in the raw-string branch above.
         if (c == "r" && substr(line, i + 1, 1) == "#" && substr(line, i + 2, 1) ~ /[A-Za-z0-9_]/) {
           prev = (i > 1) ? substr(line, i - 1, 1) : " "
-          if (prev !~ /[A-Za-z0-9_]/) { i += 2; continue }
+          if (prev !~ /[A-Za-z0-9_]/) {
+            j = i + 2; nm = ""
+            while (j <= n && substr(line, j, 1) ~ /[A-Za-z0-9_]/) { nm = nm substr(line, j, 1); j++ }
+            # The WHOLE POINT of `r#` is that the name is a name and not the
+            # keyword it is spelled like, so emitting it bare hands the
+            # scanner its own syntax: `with Exception + r#where + Fs` became
+            # `... where ...`, the row stopped at the contract terminator, and
+            # the native Fs after it was never read. An underscore is appended
+            # to exactly the keywords the passes below react to. Every one of
+            # them requires a following space, so the suffix defeats the match
+            # while leaving an ordinary identifier behind.
+            #
+            # Nothing is lost by not restoring the true name: none of these
+            # keywords is an allow-listed effect or a native capability, so an
+            # effect really called `where` is rejected either way -- it is
+            # simply not `Exception` or `Async`. The suffix keeps the name
+            # readable in the diagnostic instead of dropping it.
+            if (nm == "fn" || nm == "let" || nm == "type" || nm == "with" \
+                || nm == "where" || nm == "allows" || nm == "perform") {
+              out = out nm "_"
+            } else {
+              out = out nm
+            }
+            i = j; continue
+          }
         }
         # `perform?` is a DIFFERENT token from `perform` (ADR-0088; the parser
         # builds EIdent("perform?") at parser_expr_primary.vibe:803), but it

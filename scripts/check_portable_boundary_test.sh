@@ -1283,8 +1283,48 @@ else
 fi
 restore
 
+# --- cases 75-76: a raw keyword must not become scanner syntax --------------
+#
+# Round 34, and this one was made by round 31: stripping `r#` handed the
+# scanner its own syntax. `r#where` is an identifier -- being an identifier is
+# the whole point of the `r#` spelling -- but emitted bare it read as the
+# contract keyword, so `with Exception + r#where + Fs` stopped at it and the
+# native Fs after it was never seen. Measured: ACCEPT.
+#
+# An underscore is now appended to exactly the keywords the passes below react
+# to. All of them require a following space, so the suffix defeats the match
+# and leaves an ordinary identifier. Nothing is lost by not restoring the true
+# name: no keyword is an allow-listed effect or a native capability, so an
+# effect genuinely called `where` is rejected either way -- it is simply not
+# `Exception` or `Async`.
+printf '\neffect r#where {\n  Tick() -> Unit\n}\n\nexport fn probe_raw_kw() -> Unit with Exception + r#where + Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'with Exception + r#where + Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a raw keyword truncated the row and hid the native effect"
+  else
+    pass "case: a raw keyword does not terminate the effect row"
+  fi
+else
+  fail "case: the raw-keyword mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# Without the native effect: the raw keyword is itself an unresolved name, and
+# unresolved is not portable -- the same rule as the row variable in case 25.
+printf '\neffect r#where {\n  Tick() -> Unit\n}\n\nexport fn probe_raw_kw_only() -> Unit with Exception + r#where {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'with Exception + r#where {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an effect named by a raw keyword passed the allow-list"
+  else
+    pass "case: an effect named by a raw keyword is not allow-listed"
+  fi
+else
+  fail "case: the raw-keyword-only mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 74 cases)"
+echo "portable-boundary-test: ok (control + 76 cases)"
