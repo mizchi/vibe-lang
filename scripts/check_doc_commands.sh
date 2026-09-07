@@ -82,7 +82,12 @@ tasks = set(re.findall(r'name\s*=\s*"(' + NAMECHARS + r')"', tf)) | set(re.finda
 SELF = os.path.normpath("scripts/check_doc_commands.sh")
 ENVPAT = re.compile(r'VIBE_[A-Z0-9_]+')
 read_env = set()
-for root in ("scripts", "lib", "tests", "eval", "install"):
+# `runtime` is here because the CLI RUNNER lives there. Leaving it out made
+# this gate's verdict depend on its environment (#2252): the only code read of
+# VIBE_BENCH_BACKEND is `runtime/vibe`, so the answer came from whether the
+# generated `cli_adapter_bundle.vibe` happened to be present -- green after
+# `ensure_generated.sh`, red in CI's structural-lint, same tree.
+for root in ("scripts", "lib", "tests", "eval", "install", "runtime"):
     for dp, _, fn in os.walk(root):
         for name in fn:
             # NOT .md (#2138 review). A document never READS a variable, it
@@ -100,10 +105,27 @@ for root in ("scripts", "lib", "tests", "eval", "install"):
             # its own regex literal. A gate must not be able to see itself.
             if os.path.normpath(os.path.join(dp, name)) == SELF:
                 continue
+            # Extension, OR a shebang. `runtime/vibe` is the CLI runner -- a
+            # tracked, load-bearing shell script with NO extension -- and it
+            # was invisible here. That made the gate's verdict depend on its
+            # ENVIRONMENT (#2252): the only code read of VIBE_BENCH_BACKEND is
+            # in that file, every other occurrence being a whole-line comment
+            # this scan correctly drops, so the answer came from whether the
+            # generated `cli_adapter_bundle.vibe` happened to exist. With
+            # `scripts/ensure_generated.sh` run it passed; in CI's
+            # structural-lint, which does not run it, the same tree failed.
+            # A shebang is the property ("this file is a script"); the
+            # extension was a proxy for it.
+            path = os.path.join(dp, name)
             if not name.endswith((".sh", ".mjs", ".js", ".vibe", ".vibex", ".pkl", ".ts", ".toml")):
-                continue
+                try:
+                    with open(path, "rb") as fh:
+                        if not fh.read(2) == b"#!":
+                            continue
+                except OSError:
+                    continue
             try:
-                body = open(os.path.join(dp, name), encoding="utf-8", errors="replace").read()
+                body = open(path, encoding="utf-8", errors="replace").read()
             except OSError:
                 continue
             # Drop WHOLE-LINE comments before harvesting names. A comment does
