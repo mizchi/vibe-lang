@@ -105,6 +105,22 @@ PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 #
 # Order: quoted strings, then raw strings, then comments. A `//` inside a raw
 # string is removed with the raw string rather than mistaken for a comment.
+# KNOWN LIMIT, recorded rather than chased: a string literal nested inside an
+# interpolation -- `"\{String::concat("perform Fs::read_file", " is inert")}"` --
+# is not stripped. The quotes pair sequentially, so the inner text survives into
+# the scanned stream and forbid_pattern reports it as a leak.
+#
+# Not fixed here, deliberately. Stripping that correctly means tracking
+# interpolation nesting, which is lexing vibe, and this file has already been
+# through five rounds of "the scanner does not see what the lexer sees" -- each
+# fix correct, each followed by another form. #2581 is where that ends, by
+# asking the compiler; a sixth regex would only move the boundary again.
+#
+# Accepting it is defensible because it is strictly NARROWER than what this gate
+# did before: pre-PR it stripped whole comment lines only, so ANY string
+# containing `perform Fs::` was a false positive. Now only a nested one is.
+# Neither scanned file contains such a string today.
+#
 # Line-preserving form, so a report can still cite a line number.
 boundary_scan_lines() { # <file>
   sed -E 's/"([^"\\]|\\.)*"//g' "$ROOT_DIR/$1" \
