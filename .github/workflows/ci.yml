@@ -384,6 +384,75 @@ jobs:
           FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface_test.sh
           FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface.sh
 
+  compiler-contracts:
+    name: compiler-gate (contracts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-vibe
+        with:
+          node-version: 24
+          wasmtime: 'true'
+      - name: Generated compiler fingerprint
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Restore cached stage2
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Install wasmtime (cold stage2 build only)
+        # Same reason as compiler-gate (docs): generations.sh's stage validation
+        # shells out to a wasmtime BINARY, and every compiler-touching PR moves
+        # the fingerprint in this cache key, so the cold path is the common one.
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        env:
+          WASMTIME_VERSION: v47.0.2
+        run: |
+          set -euo pipefail
+          dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
+          curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
+          echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Build stage2 on cache miss
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          bash scripts/ensure_seed.sh
+          bash scripts/ensure_generated.sh
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      # Every gate below is handed the stage2 EXPLICITLY, by path. None of them
+      # discovers one for itself: left to their own devices they take the
+      # newest generation on disk, else the committed seed, and both answer
+      # confidently about a compiler that does not contain the change
+      # (AGENTS.md, "which compiler answered"). That is also why this job does
+      # not use the `ls -dt _build/selfhost/generations/*/ | head -1` idiom the
+      # older jobs share.
+      - name: Assert the stage2 exists
+        run: |
+          set -euo pipefail
+          test -s _build/_ci_shard_gen/stage2.wasm \
+            || { echo "::error::no stage2 to hand the contract gates"; exit 1; }
+      - name: RC-is-default gate
+        run: RC_DEFAULT_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_rc_default.sh
+      - name: Source-range contract gate
+        run: RANGE_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_source_range_contract.sh
+      - name: Cheatsheet-signatures gate
+        run: CHEATSHEET_SIG_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_cheatsheet_signatures.sh
+      - name: Package sibling-scope gate
+        run: SIBLING_SCOPE_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_package_sibling_scope.sh
+      - name: Declaration-scale gate
+        run: DECL_SCALE_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_declaration_scale.sh
+      - name: CLI line-termination gate
+        run: CLI_NL_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_cli_line_termination.sh
+      - name: Off-build typecheck gate
+        run: VIBE_OFFBUILD_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_offbuild_typecheck.sh
+      - name: Book skip-block gate
+        run: VIBE_SKIP_BLOCK_CLI_WASM="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_book_skip_blocks.sh
+      - name: Examples typecheck gate
+        run: EXAMPLES_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_examples_typecheck.sh
+      - name: Compile-only lanes gate
+        run: COMPILE_ONLY_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_compile_only_lanes.sh
+
   compiler-playground:
     name: compiler-gate (playground)
     runs-on: ubuntu-latest
@@ -748,6 +817,22 @@ jobs:
         run: bash scripts/lint_tracked_experiment_names_test.sh
       - name: tracked-experiment-names lint
         run: bash scripts/lint_tracked_experiment_names.sh
+      - name: gate-registry check self-test
+        run: bash scripts/check_gate_registry_test.sh
+      - name: gate-registry check
+        run: bash scripts/check_gate_registry.sh
+      - name: canonical-iterator-calls check self-test
+        run: bash scripts/check_canonical_iterator_calls_test.sh
+      - name: canonical-iterator-calls check
+        run: bash scripts/check_canonical_iterator_calls.sh
+      - name: lock-clean check self-test
+        run: bash scripts/check_lock_clean_test.sh
+      - name: lock-clean check
+        run: bash scripts/check_lock_clean.sh
+      - name: book-order check
+        run: bash scripts/check_book_order.sh
+      - name: inline-builtin-capture check
+        run: bash scripts/check_inline_builtin_capture.sh
       # The #1189 / ADR-0081 naming ratchet, reaching CI for the first time. It
       # is a release-check dep, but release-check has no CI job either, so its
       # one enforcement point was a local sign-off nobody re-runs on a green
@@ -1467,7 +1552,7 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
+    needs: [compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-contracts, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -1487,6 +1572,10 @@ jobs:
           fi
           if [ "${{ needs.compiler-docs.result }}" != "success" ]; then
             echo "::error::compiler-docs did not succeed (${{ needs.compiler-docs.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.compiler-contracts.result }}" != "success" ]; then
+            echo "::error::compiler-contracts did not succeed (${{ needs.compiler-contracts.result }})"
             exit 1
           fi
           if [ "${{ needs.compiler-playground.result }}" != "success" ]; then
