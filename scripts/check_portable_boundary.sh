@@ -52,10 +52,14 @@ strip_handler_arm_heads() {
       if (c ~ /[A-Za-z_]/ && (i == 1 || substr(s, i - 1, 1) !~ /[A-Za-z0-9_]/)) {
         j = i
         while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_]/) { j++ }
-        if (substr(s, j, 2) == "::") {
-          k = j + 2
+        jj = j
+        while (jj <= n && substr(s, jj, 1) == " ") { jj++ }
+        if (substr(s, jj, 2) == "::") {
+          k = jj + 2
+          while (k <= n && substr(s, k, 1) == " ") { k++ }
+          ks = k
           while (k <= n && substr(s, k, 1) ~ /[A-Za-z0-9_]/) { k++ }
-          if (k > j + 2) {
+          if (k > ks) {
             m = k
             while (m <= n && substr(s, m, 1) == " ") { m++ }
             if (substr(s, m, 1) == "(") {
@@ -93,15 +97,17 @@ forbid_pattern() {
   # It used to drop only whole comment LINES, so an inert diagnostic such as
   # "do not generate perform Fs::read_file here" was reported as a leak, which
   # is a required gate rejecting an ordinary message.
-  # Checked on BOTH views. The line-preserving one gives line numbers for the
-  # report; the flattened one catches a separator that spans lines, which a
-  # line-oriented grep cannot see (`perform` and `Fs::ReadFile` on two lines
-  # compiles). Either matching is a failure -- reporting is best-effort, the
-  # verdict is not.
+  # The VERDICT comes from the flattened view alone; the line-preserving one is
+  # read only to cite a line. Both used to decide, and that was wrong in one
+  # direction: the flattened text is the line text with newlines turned into
+  # spaces, so anything a line-oriented grep can match it matches too -- but
+  # not the reverse. A handler arm head written across lines is stripped in the
+  # flat view and not in the per-line one, and the per-line leftovers were
+  # rejecting a pure helper. One authoritative view, one answer.
   boundary_scan_lines "$file" | strip_handler_arm_heads | grep -En "$pattern" >/tmp/vibe_portable_boundary_hits.$$ || true
   flat_hit=0
   if boundary_scan_text "$file" | strip_handler_arm_heads | grep -Eq "$pattern"; then flat_hit=1; fi
-  if [ -s /tmp/vibe_portable_boundary_hits.$$ ] || [ "$flat_hit" -eq 1 ]; then
+  if [ "$flat_hit" -eq 1 ]; then
     if [ -s /tmp/vibe_portable_boundary_hits.$$ ]; then
       cat /tmp/vibe_portable_boundary_hits.$$ >&2
     else
@@ -116,8 +122,19 @@ forbid_pattern() {
 # Separators are `[[:space:]]+`, not one literal space. `perform  Fs::ReadFile`
 # with two spaces, or a tab or newline after `perform`, all compile and all
 # bypassed a pattern that matched exactly one space.
-native_effect_pattern='with[[:space:]]*\{[^}]*(Fs|Process|Socket|Net)|perform[[:space:]]+(Fs|Process|Socket|Http)::|\b(compile_file_fs|session-http|daemon)\b'
+native_effect_pattern='with[[:space:]]*\{[^}]*(Fs|Process|Socket|Net)|perform[[:space:]]+(Fs|Process|Socket|Http)[[:space:]]*::|\b(compile_file_fs|daemon)\b'
 
+# `session-http` was dropped from the lane list. Strings and comments are
+# removed before this runs, so in the remaining text that spelling can only be
+# the subtraction `session - http` -- it is not one vibe identifier, and a
+# helper returning it was rejected as a lane leak. A pattern that can only ever
+# match something else is not a weaker check, it is a wrong one.
+#
+# Whitespace is allowed around `::`. The lexer permits it, so `Console ::
+# write_stream(...)` is the same call, and requiring adjacency left the entry
+# file -- where this pattern is the only check for a plain capability call --
+# open to it.
+#
 # The three lane names are anchored to token boundaries. Unanchored, `daemon`
 # matched inside `daemonless_probe` and `compile_file_fs` inside
 # `compile_file_fsx_probe`, so an ordinary helper whose name merely CONTAINS a
@@ -738,7 +755,7 @@ require_line \
 # IO and says so, carrying `with Exception + Fs` / `with Fs`. Its contract is
 # exactly that row, so a call inside it is declared and the others are not. It
 # makes exactly one capability call today, `Fs::stat_token`.
-entry_native_pattern="$native_effect_pattern"'|(Console|Env|Process|Socket|Http|Net)::'
+entry_native_pattern="$native_effect_pattern"'|(Console|Env|Process|Socket|Http|Net)[[:space:]]*::'
 forbid_pattern \
   "lib/@vibe/compiler/cli_direct_component_entry.vibe" \
   "$entry_native_pattern" \

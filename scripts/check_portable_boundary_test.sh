@@ -1757,8 +1757,89 @@ else
 fi
 restore
 
+# --- cases 103-107: one authoritative view, one lane list, spaced `::` ------
+#
+# Round 44-46, three findings on one head.
+#
+# 103. The arm-head strip runs per RECORD, so an arm written across lines was
+# stripped in the flattened view and not in the line-preserving one -- and both
+# views used to decide the verdict, so the per-line leftovers rejected a pure
+# helper. The flattened text is the line text with newlines turned into
+# spaces, so it matches everything a line-oriented grep can and more: the
+# verdict now comes from it alone, and the line view is read only to cite a
+# line. Case 104 is the reason both existed -- a separator that spans lines.
+printf '\nfn probe_split_arm(f: () -> Unit with Console) -> Unit {\n  handle {\n    f()\n  } with { Console::Write(\n    _s\n  ) => resume(()) }\n}\n' >> "$entry"
+if grep -qF -- 'with { Console::Write(' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a handler arm head written across lines is still an arm head"
+  else
+    fail "case: an arm head split across lines was read as a capability call"
+  fi
+else
+  fail "case: the split-arm mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\nfn probe_split_perform(p: String) -> Bool {\n  let _ = perform\n    Fs::ReadFile(p)\n  false\n}\n' >> "$impl"
+if grep -qF -- 'let _ = perform' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a native call split across lines passed after the view change"
+  else
+    pass "case: the flattened view still catches a separator spanning lines"
+  fi
+else
+  fail "case: the split-perform mutation did not land -- it proves nothing"
+fi
+restore
+
+# 105. `session-http` was dropped from the lane list. Strings and comments are
+# removed before the pattern runs, so in what remains that spelling can only be
+# the subtraction `session - http` -- it is not one vibe identifier. A pattern
+# that can only ever match something else is not a weaker check, it is a wrong
+# one, and it rejected a helper returning that expression.
+printf '\nfn probe_lane_sub(session: Int, http: Int) -> Int {\n  session-http\n}\n' >> "$impl"
+if grep -qF -- 'session-http' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a subtraction is not the session-http lane"
+  else
+    fail "case: session - http was rejected as a native lane"
+  fi
+else
+  fail "case: the lane-subtraction mutation did not land -- it proves nothing"
+fi
+restore
+
+# 106-107. The lexer allows whitespace around `::`, so `Console :: write_stream`
+# is the same call -- and in the entry file this pattern is the ONLY check for
+# a plain capability call. Requiring adjacency left it open. The arm-head strip
+# had to learn the same spacing, or fixing the pattern would have broken the
+# handler again.
+printf '\nfn probe_spaced_call() -> Unit with Console {\n  Console :: write_stream("leaked")\n}\n' >> "$entry"
+if grep -qF -- 'Console :: write_stream("leaked")' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a spaced :: capability call passed the entry gate"
+  else
+    pass "case: whitespace around :: does not hide a capability call"
+  fi
+else
+  fail "case: the spaced-call mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\nfn probe_spaced_arm(f: () -> Unit with Console) -> Unit {\n  handle {\n    f()\n  } with { Console :: Write(_s) => resume(()) }\n}\n' >> "$entry"
+if grep -qF -- 'Console :: Write(_s) => resume(())' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a spaced :: arm head is still an arm head"
+  else
+    fail "case: a spaced :: arm head was read as a capability call"
+  fi
+else
+  fail "case: the spaced-arm mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 102 cases)"
+echo "portable-boundary-test: ok (control + 107 cases)"
