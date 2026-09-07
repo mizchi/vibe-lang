@@ -47,17 +47,44 @@ native_effect_pattern='with \{[^}]*(Fs|Process|Socket|Net)|perform (Fs|Process|S
 # construct from an effect row. An effect ROW is unbraced and `+`-separated:
 # `with Fs`, `with Exception + Fs`, `with Exception + Fs + Env`. Nothing
 # matched that, so a boundary implementation could declare `with Fs` outright
-# and this gate printed `ok` -- measured, not inferred: appending
-# `export fn probe_native() -> Unit with Fs` to preprocess_compile.vibe passed.
+# and this gate printed `ok` -- measured, not inferred.
 #
-# Scoped to the two source_compile boundaries deliberately. Their contract is
-# "stays in-memory", so a native row there is the leak. The third scanned file,
-# cli_direct_component_entry.vibe, is the entry that DOES file IO and carries
-# `with Exception + Fs` / `with Fs` legitimately; banning the row there would
-# fail the gate on correct code. It keeps the pattern above, which forbids the
-# direct `perform Fs::` and the FS compile lane rather than the row.
-native_effect_row='with +([A-Za-z_][A-Za-z0-9_]* *\+ *)*(Fs|Process|Socket|Net|Http)\b'
-pure_boundary_pattern="$native_effect_pattern|$native_effect_row"
+# The row check below is an ALLOW-LIST, and that is the point. A deny-list of
+# capability names is a proxy for "is this effect native", and it failed twice
+# in a row: first it knew only the braced spelling (`with Fs` passed), then,
+# rewritten as `Fs|Process|Socket|Net|Http`, it still passed `with Env` and
+# `with Console` -- both capability builtins (AGENTS.md). Each fix closed the
+# hole someone happened to look at. Enumerating what these boundaries MAY carry
+# cannot silently miss a capability that does not exist yet: a new effect is
+# rejected until someone decides it belongs, which is the safe direction.
+#
+# Exception is what the contract requires. Async is admitted because it is
+# already used here (2 rows in preprocess_compile.vibe) and grants no host
+# access by itself -- it is a scheduling effect, not a capability. Adding to
+# this list is a deliberate act; that is the property being enforced.
+PORTABLE_ALLOWED_EFFECTS='Exception|Async'
+
+# Reject any effect row on a pure boundary that names something outside the
+# allow-list. Comment lines are stripped first, as in forbid_pattern.
+forbid_foreign_effect_rows() { # <file> <label>
+  local file="$1" label="$2" bad
+  bad="$(grep -vE '^[[:space:]]*(///?|//#)' "$ROOT_DIR/$file" \
+    | grep -oE 'with +[A-Z][A-Za-z0-9_]*( *\+ *[A-Z][A-Za-z0-9_]*)*' \
+    | sed 's/^with  *//' \
+    | tr '+' '\n' \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | grep -vE "^($PORTABLE_ALLOWED_EFFECTS)$" \
+    | sort -u)" || true
+  if [ -n "$bad" ]; then
+    echo "selfhost-portable-boundary: non-portable effect row in $label ($file)" >&2
+    echo "$bad" | sed 's/^/  effect: /' >&2
+    echo "  This boundary must stay in-memory. Drop the effect, or move the" >&2
+    echo "  work behind a caller that already carries it. If the effect is" >&2
+    echo "  genuinely portable, add it to PORTABLE_ALLOWED_EFFECTS with a" >&2
+    echo "  reason -- deliberately, not to make this message go away." >&2
+    exit 1
+  fi
+}
 
 # The boundary is declared in the package CONTRACT (`index.vpkg`, ADR-0070),
 # not in an `index.vibe` facade -- and its effect row is spelled `with
@@ -93,11 +120,24 @@ forbid_pattern \
   "direct component entry"
 forbid_pattern \
   "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \
-  "$pure_boundary_pattern" \
+  "$native_effect_pattern" \
   "source compile API"
 forbid_pattern \
   "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
-  "$pure_boundary_pattern" \
+  "$native_effect_pattern" \
+  "wasi source compile API"
+
+# The row allow-list, on the two boundaries whose contract is "stays
+# in-memory". Not applied to cli_direct_component_entry.vibe: that is the entry
+# that DOES file IO and carries `with Exception + Fs` / `with Fs` legitimately
+# at lines 304/322, so an allow-list there would fail the gate on correct code.
+# It keeps forbid_pattern above, which bans the direct `perform Fs::` and the
+# FS compile lane rather than the row.
+forbid_foreign_effect_rows \
+  "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \
+  "source compile API"
+forbid_foreign_effect_rows \
+  "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
   "wasi source compile API"
 
 echo "selfhost portable boundary: ok"

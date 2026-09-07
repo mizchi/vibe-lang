@@ -142,8 +142,63 @@ else
 fi
 restore
 
+# --- cases 6-8: the allow-list rejects every non-portable capability --------
+#
+# `Fs` alone (case 4) is satisfied by a deny-list, which is what this gate had
+# twice -- and both times it passed a capability nobody had thought to name.
+# `Env` and `Console` are capability builtins (AGENTS.md) and both passed the
+# Fs|Process|Socket|Net|Http matcher. `Nonsense` stands for the capability that
+# does not exist yet: an allow-list must reject it without being taught to.
+for eff in Env Console Nonsense; do
+  printf '\nexport fn probe_%s() -> Unit with %s {\n  ()\n}\n' "$eff" "$eff" >> "$impl"
+  if grep -qE "^export fn probe_$eff\(\) -> Unit with $eff \{$" "$impl"; then
+    if bash "$gate" >/dev/null 2>&1; then
+      fail "case: an implementation declaring 'with $eff' passed the gate"
+    else
+      pass "case: 'with $eff' is rejected by the allow-list"
+    fi
+  else
+    fail "case: the 'with $eff' mutation did not land -- the assertion proves nothing"
+  fi
+  restore
+done
+
+# --- case 9: an allowed effect in a COMPOUND row is still accepted -----------
+#
+# The row splitter has to handle `A + B`, not just a bare effect. If it did not,
+# every compound row would read as one unknown name and the gate would reject
+# code it must accept -- a gate that fails closed on correct input gets
+# disabled, which is the outcome #2252 describes.
+printf '\nexport fn probe_compound() -> Unit with Exception + Async {\n  ()\n}\n' >> "$impl"
+if grep -qE '^export fn probe_compound\(\) -> Unit with Exception \+ Async \{$' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a compound row of allowed effects is accepted"
+  else
+    fail "case: 'with Exception + Async' was rejected -- the row splitter is wrong"
+  fi
+else
+  fail "case: the compound-row mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# --- case 10: a native capability hidden in a compound row is caught ---------
+#
+# The converse of case 9, and the shape a real leak takes: the forbidden effect
+# is not the first name in the row.
+printf '\nexport fn probe_mixed() -> Unit with Exception + Fs {\n  ()\n}\n' >> "$impl"
+if grep -qE '^export fn probe_mixed\(\) -> Unit with Exception \+ Fs \{$' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: 'with Exception + Fs' passed -- only the first effect is checked"
+  else
+    pass "case: a native effect later in a compound row is rejected"
+  fi
+else
+  fail "case: the mixed-row mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 5 cases)"
+echo "portable-boundary-test: ok (control + 10 cases)"
