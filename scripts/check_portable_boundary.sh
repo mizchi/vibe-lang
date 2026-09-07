@@ -406,7 +406,13 @@ boundary_effect_rows() { # reads normalized text on stdin
           if (substr(s, j, 1) ~ /[A-Z]/) {
             name = ""
             while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_:]/) { name = name substr(s, j, 1); j++ }
-            authbuf[++authn] = name
+            # Remember WHICH row this clause follows. An `allows` belongs to
+            # the same function-type layer as the row it trails, so comparing
+            # independent counts got `-> () -> Unit with Exception with ()
+            # allows Fs::read_file` wrong: two arrows, two rows, one clause,
+            # and the clause is the outer declarations along with the second
+            # row. authn >= arrows was false and the authority went unreported.
+            authbuf[++authn] = name; authrow[authn] = rown
             i = j; continue
           }
           i += 7; continue
@@ -475,15 +481,24 @@ boundary_effect_rows() { # reads normalized text on stdin
     # Counting rows against a fixed threshold instead got the last of those
     # wrong: two rows does not mean one of them is the declarations.
     if (decl != "type") {
-      if (rown >= arrows && rown >= 1) { print "row:" rowbuf[rown] }
-      # Authority binds to an arrow layer exactly as a row does. `fn make() ->
-      # () -> Unit with () allows Fs::read_file` grants the authority to the
-      # RETURNED function type, not to make, which performs nothing; emitting
-      # every clause rejected that pure helper. The clause the declaration owns
-      # is the last, and only when there are more clauses than layers to absorb
-      # them -- the same arithmetic as the row above, and with one arrow there
-      # is only one function type at depth 0 for a clause to attach to.
-      if (authn >= arrows && authn >= 1) { print "auth:" authbuf[authn] }
+      # Which layer, if any, is the declarations own? Rows are absorbed by the
+      # returned function types first, so the declaration owns the LAST row
+      # only when there are at least as many rows as arrow layers. With no row
+      # at all it still owns the signature when there is a single layer -- an
+      # `allows` can trail a bare return type.
+      own = -1
+      if (rown >= arrows && rown >= 1) { print "row:" rowbuf[rown]; own = rown }
+      else if (rown == 0 && arrows <= 1) { own = 0 }
+      # Authority rides the row it trails, so the declarations clause is the
+      # one recorded against the declarations own layer. Emitting every clause
+      # rejected a pure helper that merely hands out an authorised closure;
+      # counting clauses against arrows instead missed the case where the
+      # closure took the first row and the declaration kept the second.
+      if (own >= 0) {
+        for (k = 1; k <= authn; k++) {
+          if (authrow[k] == own) { print "auth:" authbuf[k] }
+        }
+      }
     }
     rown = 0; authn = 0
   }'

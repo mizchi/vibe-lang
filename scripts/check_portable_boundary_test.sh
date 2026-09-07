@@ -1426,8 +1426,47 @@ else
 fi
 restore
 
+# --- cases 83-84: authority rides the row it trails -------------------------
+#
+# Round 38, and the other half of round 37: comparing independent counts
+# (authn >= arrows) was still wrong. `fn f() -> () -> Unit with Exception with
+# () allows Fs::read_file` has two arrows, two rows and one clause -- the
+# returned closure takes the first row, the declaration keeps the second AND
+# the authority trailing it -- so one clause against two arrows read as "the
+# closures", and the filesystem authority went unreported. Measured: ACCEPT.
+#
+# Each clause is now recorded against the row it follows, and the declaration
+# reports the clause on the layer it actually owns. Counting was the proxy;
+# the association is the property.
+printf '\nexport fn probe_auth_layer() -> () -> Unit with Exception with () allows Fs::read_file {\n  () -> {\n    ()\n  }\n}\n' >> "$impl"
+if grep -qF -- 'with Exception with () allows Fs::read_file {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: authority on the declaration own row layer went unreported"
+  else
+    pass "case: authority trailing the declaration own row is reported"
+  fi
+else
+  fail "case: the authority-layer mutation did not land -- it proves nothing"
+fi
+restore
+
+# Round 37 must survive it: the SAME arrow count with the clause on the
+# closure's layer stays accepted. These two differ only in which row the
+# clause trails, which is exactly what the counting rule could not see.
+printf '\nexport fn probe_auth_layer_closure() -> () -> Unit with () allows Fs::read_file {\n  () -> {\n    ()\n  }\n}\n' >> "$impl"
+if grep -qF -- '-> () -> Unit with () allows Fs::read_file {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: authority on a returned closure layer is still not the declaration own"
+  else
+    fail "case: a pure helper returning an authorised closure was rejected again"
+  fi
+else
+  fail "case: the closure-authority mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 82 cases)"
+echo "portable-boundary-test: ok (control + 84 cases)"
