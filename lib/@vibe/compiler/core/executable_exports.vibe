@@ -1,0 +1,75 @@
+//# Exports that outlive the executable strip
+//
+// An executable's export section is filtered right after the compile
+// (`strip_executable_wasm`, cli_support, #1100): a flat module source spells
+// every function `export`, and nothing outside can reasonably call the
+// `*_exp_lib__*` module-linking names it produces, so only the entry,
+// `_start`, `cli_main` and the per-block `__test_*` / `__bench_*` exports
+// stay. Two codegen passes need that answer while they still have the
+// program in hand -- `fold_const_bool_params` (is this exported function
+// callable from outside?) and the module pruner (is this export a root?)
+// -- so the keep list is spelled ONCE here, over an abstract byte reader,
+// and the strip reads it from the same place. The CLI announces whether the
+// strip will run with `set_executable_exports_stripped`; every other caller
+// gets the safe default, under which an export stays an export.
+
+//# The announcement
+
+let executable_exports_stripped_cell: Array[Bool] = [false]
+
+/// Process-wide: will the finished executable's exports be filtered down to
+/// the keep list? The CLI sets it before each lane compile (false for an
+/// instrumented lane, a `__no_entry__` build, or `VIBE_WASM_KEEP_EXPORTS=1`,
+/// the same inputs `strip_executable_wasm_env` decides by).
+export fn set_executable_exports_stripped(stripped: Bool) -> Unit {
+  Array::set(executable_exports_stripped_cell, 0, stripped)
+}
+
+export fn executable_exports_stripped() -> Bool {
+  Array::get(executable_exports_stripped_cell, 0)
+}
+
+//# The keep list
+
+fn export_name_eq(len: Int, at: (Int) -> Int, s: String) -> Bool {
+  if len != String::length(s) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < len {
+      if at(i) != String::char_code_at(s, i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+fn export_name_starts_with(len: Int, at: (Int) -> Int, prefix: String) -> Bool {
+  let plen = String::length(prefix)
+  if len < plen {
+    false
+  } else {
+    export_name_eq(plen, at, prefix)
+  }
+}
+
+/// The one spelling of what the strip keeps, over a name of `len` bytes read
+/// through `at`: the entry, `_start`, `cli_main` (the runners address it by
+/// name), and the per-block test / bench exports.
+fn executable_export_kept_by(len: Int, at: (Int) -> Int, entry_name: String) -> Bool {
+  export_name_eq(len, at, entry_name) || export_name_eq(len, at, "_start") || export_name_eq(len, at, "cli_main") || export_name_starts_with(len, at, "__bench_") || export_name_starts_with(len, at, "__test_")
+}
+
+/// Is the export named by `wasm[start .. start + n)` kept?
+export fn executable_export_kept_bytes(wasm: Bytes, start: Int, n: Int, entry_name: String) -> Bool {
+  executable_export_kept_by(n, (i) -> Bytes::get(wasm, start + i), entry_name)
+}
+
+/// Is the export `name` kept?
+export fn executable_export_kept(name: String, entry_name: String) -> Bool {
+  executable_export_kept_by(String::length(name), (i) -> String::char_code_at(name, i), entry_name)
+}

@@ -1,0 +1,193 @@
+//# #2497 unit 2: the module pruner and the executable strip
+//
+// A flat module source exports every function, so with every function
+// export a root the pruner had nothing to prune on the compiler's own builds.
+// With the strip announced (`exports_stripped`), only the exports the CLI
+// keeps (`executable_export_kept_bytes`: the entry, `_start`, `cli_main`,
+// `__test_*` / `__bench_*`) are roots, and an export of a pruned function is
+// dropped from the export section rather than refusing the whole module.
+
+import @vibe/compiler/codegen/wasi {
+  late_dce_prune_module, late_dce_prune_module_for, late_dce_prune_refusal
+}
+
+//# Functions
+
+fn leb_at(b: Bytes, p: Int) -> (Int, Int) {
+  let mut r = 0
+  let mut shift = 0
+  let mut q = p
+  let mut done = false
+  while !done {
+    let x = Bytes::get(b, q)
+    q = q + 1
+    r = r|((x&127)<<shift)
+    shift = shift + 7
+    if x < 128 {
+      done = true
+    } else {
+      ()
+    }
+  }
+  (r, q)
+}
+
+/// Entry count of section `sid` (3 = function, 7 = export), or -1 without one.
+fn section_count(m: Bytes, sid: Int) -> Int {
+  let mut p = 8
+  let mut found = 0 - 1
+  while found < 0 && p < Bytes::length(m) {
+    let id = Bytes::get(m, p)
+    let (n, body) = leb_at(m, p + 1)
+    if id == sid {
+      let (c, _) = leb_at(m, body)
+      found = c
+    } else {
+      ()
+    }
+    p = body + n
+  }
+  found
+}
+
+/// Two empty functions, both exported: `main` as function 0, `helper` as
+/// function 1. Neither calls the other.
+fn two_exports() -> Bytes {
+  Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    4,
+    1,
+    96,
+    0,
+    0,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    17,
+    2,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    6,
+    104,
+    101,
+    108,
+    112,
+    101,
+    114,
+    0,
+    1,
+    10,
+    7,
+    2,
+    2,
+    0,
+    11,
+    2,
+    0,
+    11
+  ])
+}
+
+//# Misc
+
+test "without the strip announced every function export is a root: nothing to prune" {
+  let wasm = two_exports()
+  inspect(section_count(wasm, 3), content = "2")
+  let pruned = late_dce_prune_module_for(wasm, "main", false)
+  inspect(section_count(pruned, 3), content = "2")
+  inspect(section_count(pruned, 7), content = "2")
+  inspect(late_dce_prune_refusal(), content = "-1")
+  // The plain test entry is the same call.
+  inspect(section_count(late_dce_prune_module(wasm), 3), content = "2")
+}
+
+test "with the strip announced, only the kept exports are roots and the other export is dropped" {
+  let wasm = two_exports()
+  let pruned = late_dce_prune_module_for(wasm, "main", true)
+  inspect(late_dce_prune_refusal(), content = "0")
+  inspect(section_count(pruned, 3), content = "1")
+  inspect(section_count(pruned, 7), content = "1")
+}
+
+test "the entry decides which export is kept" {
+  let wasm = two_exports()
+  let pruned = late_dce_prune_module_for(wasm, "helper", true)
+  inspect(late_dce_prune_refusal(), content = "0")
+  inspect(section_count(pruned, 3), content = "1")
+  inspect(section_count(pruned, 7), content = "1")
+}
+
+test "`cli_main` and the per-block exports are kept without being the entry" {
+  // Same shape with the second export named `__test_x`: a name the runner
+  // addresses by itself, so it stays a root under the strip.
+  let wasm = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    4,
+    1,
+    96,
+    0,
+    0,
+    3,
+    3,
+    2,
+    0,
+    0,
+    7,
+    19,
+    2,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    8,
+    95,
+    95,
+    116,
+    101,
+    115,
+    116,
+    95,
+    120,
+    0,
+    1,
+    10,
+    7,
+    2,
+    2,
+    0,
+    11,
+    2,
+    0,
+    11
+  ])
+  let pruned = late_dce_prune_module_for(wasm, "main", true)
+  inspect(late_dce_prune_refusal(), content = "-1")
+  inspect(section_count(pruned, 3), content = "2")
+}

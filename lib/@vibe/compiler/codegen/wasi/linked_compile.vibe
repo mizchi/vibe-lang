@@ -16,10 +16,13 @@ import @vibe/compiler/core {
   bytebuf_to_bytes,
   dce_stmts,
   exception_effect_labels_equal,
+  executable_export_kept_bytes,
+  executable_exports_stripped,
   expr_child_at,
   expr_children_pop,
   expr_children_push,
   expr_children_top,
+  fold_const_bool_params,
   is_exception_effect_name,
   leb128_encode_s64,
   leb128_encode_u32,
@@ -4405,17 +4408,56 @@ fn lc_pf_leb_len(v: Int) -> Int {
   }
 }
 
-/// Export section content through `newidx`: every `func` export is renumbered,
-/// the others copied. Sizes when `write` is false, writes when true; returns
-/// the content length either way. A kept export naming a pruned function
-/// fails the prune (the roots came from this very section, so it cannot
-/// happen unless the two walks disagree).
-fn lc_pf_emit_exports(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+/// How many entries `lc_pf_emit_exports` will emit: the section's count minus
+/// the `func` exports whose function was pruned. Split out because the vec
+/// header carries that number and is written BEFORE the entries, so both the
+/// size pass and the write pass need it up front.
+fn lc_pf_kept_export_count(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int]) -> Int {
   let c = lc_pf_leb(mod_bytes, sstart, cell)
   let mut q = Array::get(cell, 0)
-  let mut n = lc_pf_leb_len(c)
+  let mut kept = 0
+  let mut ei = 0
+  while ei < c && q < send {
+    let nl = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0) + nl
+    let kind = Bytes::get(mod_bytes, q)
+    q = q + 1
+    let idx = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    if kind == 0 && idx < Array::length(newidx) && Array::get(newidx, idx) < 0 {
+      ()
+    } else {
+      kept = kept + 1
+    }
+    ei = ei + 1
+  }
+  kept
+}
+
+/// Export section content through `newidx`: every `func` export is renumbered,
+/// the others copied. Sizes when `write` is false, writes when true; returns
+/// the content length either way.
+///
+/// #2497 unit 2: an export of a PRUNED function is DROPPED, not refused. This
+/// comment used to say such an export "cannot happen unless the two walks
+/// disagree", because the roots came from this very section -- and that
+/// premise is exactly what `exports_stripped` removes. With the strip
+/// announced, only the exports that outlive it are roots, so every other
+/// function export names something the pruner is entitled to remove and the
+/// strip is about to delete anyway. Keeping the entry would name a function
+/// that no longer exists; refusing left the whole module unpruned, measured at
+/// 23 KB on the compile-only artifact.
+fn lc_pf_emit_exports(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let c = lc_pf_leb(mod_bytes, sstart, cell)
+  // Read the entry position BEFORE counting: `cell` is shared scratch, and
+  // `lc_pf_kept_export_count` walks the whole section through it, so calling
+  // it first leaves `cell[0]` at the section END. Doing that emitted a header
+  // claiming `kept` entries followed by none, and the module failed to parse.
+  let mut q = Array::get(cell, 0)
+  let kept = lc_pf_kept_export_count(mod_bytes, sstart, send, cell, newidx)
+  let mut n = lc_pf_leb_len(kept)
   if write {
-    bytebuf_push_vec_header(dst, c)
+    bytebuf_push_vec_header(dst, kept)
   } else {
     ()
   }
@@ -4428,24 +4470,37 @@ fn lc_pf_emit_exports(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int]
     q = q + 1
     let idx = lc_pf_leb(mod_bytes, q, cell)
     q = Array::get(cell, 0)
-    let mut out_idx = idx
-    if kind == 0 {
-      if idx < Array::length(newidx) && Array::get(newidx, idx) >= 0 {
-        out_idx = Array::get(newidx, idx)
-      } else {
-        Array::set(failed, 0, true)
-      }
+    // Two different things used to share one refusal here. A `func` export
+    // whose function was PRUNED is dropped (#2497 unit 2). An index outside
+    // `newidx` is a malformed module -- nothing pruned it, the section simply
+    // does not describe this program -- and that still refuses, because the
+    // safe answer to "I do not understand this module" is to leave it alone.
+    let out_of_range = kind == 0 && idx >= Array::length(newidx)
+    let dropped = kind == 0 && !out_of_range && Array::get(newidx, idx) < 0
+    if out_of_range {
+      Array::set(failed, 0, true)
+      Array::set(lc_pf_refusal_cell, 0, 5)
     } else {
       ()
     }
-    n = n + lc_pf_leb_len(nl) + nl + 1 + lc_pf_leb_len(out_idx)
-    if write {
-      leb128_encode_u32(dst, nl)
-      Bytes::blit(dst, mod_bytes, nstart, nstart + nl)
-      bytebuf_push(dst, kind)
-      leb128_encode_u32(dst, out_idx)
-    } else {
+    if dropped || out_of_range {
       ()
+    } else {
+      let mut out_idx = idx
+      if kind == 0 {
+        out_idx = Array::get(newidx, idx)
+      } else {
+        ()
+      }
+      n = n + lc_pf_leb_len(nl) + nl + 1 + lc_pf_leb_len(out_idx)
+      if write {
+        leb128_encode_u32(dst, nl)
+        Bytes::blit(dst, mod_bytes, nstart, nstart + nl)
+        bytebuf_push(dst, kind)
+        leb128_encode_u32(dst, out_idx)
+      } else {
+        ()
+      }
     }
     ei = ei + 1
   }
@@ -4625,7 +4680,26 @@ fn lc_pf_emit_name_section(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array
 /// its finished module bytes. Returns the input unchanged wherever the pass
 /// refuses (see lc_pf_prune_module).
 export fn late_dce_prune_module(mod_bytes: Bytes) -> Bytes {
-  lc_pf_prune_module(mod_bytes)
+  lc_pf_prune_module(mod_bytes, "", false)
+}
+
+/// Why the last `lc_pf_prune_module` run left its input alone, for the
+/// probes in tests: 0 = it pruned, -1 = nothing was unreachable, otherwise
+/// the source line of the refusal or a small code for the early exits
+/// (1 = too short or too large, 2 = section walk, 3 = no code section /
+/// layout mismatch, 4 = a body did not decode, 5 = a section emitter
+/// refused). The pass itself stays silent on purpose (the safe answer is
+/// the unpruned module); this only makes that silence inspectable.
+let lc_pf_refusal_cell: Array[Int] = [0]
+
+export fn late_dce_prune_refusal() -> Int {
+  Array::get(lc_pf_refusal_cell, 0)
+}
+
+/// Test entry with the strip decision spelled out: `exports_stripped` roots
+/// only the exports `executable_export_kept_bytes` keeps for `entry_name`.
+export fn late_dce_prune_module_for(mod_bytes: Bytes, entry_name: String, exports_stripped: Bool) -> Bytes {
+  lc_pf_prune_module(mod_bytes, entry_name, exports_stripped)
 }
 
 /// #2359: drop every function the module cannot reach and renumber what is
@@ -4633,13 +4707,21 @@ export fn late_dce_prune_module(mod_bytes: Bytes) -> Bytes {
 /// `call_indirect` target is only known dynamically, so a table slot is a
 /// root, not an edge). Returns `mod_bytes` unchanged whenever anything is not
 /// understood -- see the header note on why refusing is the safe answer.
-fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
+/// #2497 unit 2: with `exports_stripped`, only the exports that outlive the
+/// CLI's executable strip are roots (`executable_export_kept_bytes`, core).
+/// A flat module source exports every function, so rooting them all made
+/// the pass a no-op on exactly the builds it was meant for: measured on the
+/// compile-only artifact, re-running the pruner after the strip removed
+/// 23 KB the in-compile run had kept.
+fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bool) -> Bytes {
   let cell = lc_fresh_int_array()
   Array::push(cell, 0)
   let failed = lc_fresh_bool_array()
   Array::push(failed, false)
+  Array::set(lc_pf_refusal_cell, 0, 0)
   let total = Bytes::length(mod_bytes)
   if total < 8 || total >= 1073741824 {
+    Array::set(lc_pf_refusal_cell, 0, 1)
     // Below 8 bytes there is no header; at 1 GiB and above a byte offset no
     // longer fits the packed site record (lc_pf_decode_body).
     mod_bytes
@@ -4656,6 +4738,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
       let body = Array::get(cell, 0)
       if body + n > total {
         walk_ok = false
+        Array::set(lc_pf_refusal_cell, 0, 2)
       } else {
         Array::push(sec_id, sid)
         Array::push(sec_start, body)
@@ -4742,6 +4825,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
             gq = gq + 2
             if gq >= send {
               Array::set(failed, 0, true)
+              Array::set(lc_pf_refusal_cell, 0, 4828)
             } else {
               let iop = Bytes::get(mod_bytes, gq)
               gq = gq + 1
@@ -4755,12 +4839,14 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
                 gq = gq + 1
               } else {
                 Array::set(failed, 0, true)
+                Array::set(lc_pf_refusal_cell, 0, 4842)
               }
               if !Array::get(failed, 0) {
                 if gq < send && Bytes::get(mod_bytes, gq) == 11 {
                   gq = gq + 1
                 } else {
                   Array::set(failed, 0, true)
+                  Array::set(lc_pf_refusal_cell, 0, 4849)
                 }
               } else {
                 ()
@@ -4770,6 +4856,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
           }
           if !Array::get(failed, 0) && gq != send {
             Array::set(failed, 0, true)
+            Array::set(lc_pf_refusal_cell, 0, 4859)
           } else {
             ()
           }
@@ -4779,12 +4866,13 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
           let mut ei = 0
           while ei < c && q < send {
             let nl = lc_pf_leb(mod_bytes, q, cell)
-            q = Array::get(cell, 0) + nl
+            let name_start = Array::get(cell, 0)
+            q = name_start + nl
             let kind = Bytes::get(mod_bytes, q)
             q = q + 1
             let idx = lc_pf_leb(mod_bytes, q, cell)
             q = Array::get(cell, 0)
-            if kind == 0 {
+            if kind == 0 && (!exports_stripped || executable_export_kept_bytes(mod_bytes, name_start, nl, entry_name)) {
               Array::push(roots, idx)
             } else {
               ()
@@ -4801,6 +4889,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
             if flag != 0 {
               // Only the active-table-0 form is emitted today.
               Array::set(failed, 0, true)
+              Array::set(lc_pf_refusal_cell, 0, 4892)
             } else {
               while q < send && Bytes::get(mod_bytes, q) != 11 {
                 let iop = Bytes::get(mod_bytes, q)
@@ -4827,6 +4916,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
         } else if sid == 8 {
           // A start function would be another root; none is emitted today.
           Array::set(failed, 0, true)
+          Array::set(lc_pf_refusal_cell, 0, 4919)
         } else if sid == 10 {
           code_i = si
           let c = lc_pf_leb(mod_bytes, sstart, cell)
@@ -4857,6 +4947,13 @@ fn lc_pf_prune_module(mod_bytes: Bytes) -> Bytes {
       }
       let nbodies = Array::length(body_end)
       if Array::get(failed, 0) || code_i < 0 || nbodies == 0 || Array::length(ftypes) != nbodies {
+        // Codex review on #2569: a layout mismatch is a refusal too, and the
+        // probes must not read the initial 0 ("pruned") for it.
+        if Array::get(failed, 0) {
+          ()
+        } else {
+          Array::set(lc_pf_refusal_cell, 0, 3)
+        }
         mod_bytes
       } else {
         lc_pf_prune_with_layout(mod_bytes, cell, failed, sec_id, sec_start, sec_len, num_imported, ftypes, body_start, body_instr, body_end, roots, code_i)
@@ -4898,6 +4995,7 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
   }
   Array::push(site_from, Array::length(site))
   if !all_ok {
+    Array::set(lc_pf_refusal_cell, 0, 4)
     mod_bytes
   } else {
     // --- reachability -----------------------------------------------------
@@ -4987,6 +5085,7 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
       // inputs that motivate it. What is settled is the direction: skipping
       // never saves output bytes, so the only free case is nothing to drop
       // at all, which is the test above.
+      Array::set(lc_pf_refusal_cell, 0, 0 - 1)
       mod_bytes
     } else {
       lc_pf_reemit(mod_bytes, cell, failed, sec_id, sec_start, sec_len, newidx, ftypes, keep, body_start, body_end, site, site_from)
@@ -5021,6 +5120,7 @@ fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_
       let target = pk&4294967295
       if target >= Array::length(newidx) || Array::get(newidx, target) < 0 {
         Array::set(failed, 0, true)
+        Array::set(lc_pf_refusal_cell, 0, 5123)
       } else {
         sz = sz - (lc_pf_skip_leb(mod_bytes, pos) - pos) + lc_pf_leb_len(Array::get(newidx, target))
       }
@@ -5055,6 +5155,7 @@ fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_
 fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: Array[Bool]) -> Unit {
   if bytebuf_length(out) - content_start != announced {
     Array::set(failed, 0, true)
+    Array::set(lc_pf_refusal_cell, 0, 5158)
   } else {
     ()
   }
@@ -5266,9 +5367,39 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // compile therefore neither records cross-compile guards nor consumes a
   // persisted cache. The `vibe test` lane (`__no_entry__`) never prunes and
   // keeps full reuse.
+  //
+  // #2497 unit 2: before pruning, fold the Bool parameters every call in the
+  // program fixes to one literal (`fold_const_bool_params`, core). The lane
+  // switches of this very function are the motivating case: the compile-only
+  // artifact passes `false` for every instrumented lane, so their arms fold
+  // away here and the helpers only they called lose their last call site,
+  // which `lc_pf_prune_module` below then removes. Gated exactly like the
+  // prune: the pass reasons about EVERY call site, so it needs the
+  // whole-program, entry-rooted compile, and a library (`library_mode`)
+  // exports every function, so no parameter of one is constant. The
+  // instrumented lanes are excluded the same way `lc_pf_prune_module` is
+  // (Codex review on #2569): coverage counts branch sites from the source
+  // `if`s, so folding one away would shrink the denominator and report a
+  // higher branch rate for the same program; a debug-break build maps
+  // interior lines onto the statements it emits, and a folded arm has none.
+  // Those builds are about observing the program as written, so they get it
+  // as written. The inline-wasm texts go along because the prelude has
+  // already replaced the `%wasm` marker bodies with a neutral literal, so a
+  // `(call $f ..)` in one of them is invisible to the pass's own scan.
+  //
+  // A folded body no longer matches its source text, so a fold counts as a
+  // prune for the body-cache guards below (`late_dce_pruned`): a replayed
+  // body from a compile whose other call sites passed a different literal
+  // would be silently wrong, and refusing the cache for that compile is the
+  // honest answer.
   let mut late_dce_pruned = false
   if enable_late_dce && late_dce_has_entry {
     let late_dce_pre_len = Array::length(stmts)
+    let folded_param_reads = if library_mode || coverage || debug_trace || debug_break || rc_shadow {
+      0
+    } else {
+      fold_const_bool_params(stmts, entry_name, iw_wats)
+    }
     let dce_pruned = dce_stmts(stmts, late_dce_roots)
     // `stmts` is threaded onward by reference, so the pruned program has to
     // replace its contents rather than rebind the name. `dce_stmts` builds a
@@ -5279,7 +5410,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
       Array::push(stmts, Array::get(dce_pruned, dce_i))
       dce_i = dce_i + 1
     }
-    late_dce_pruned = Array::length(stmts) != late_dce_pre_len
+    late_dce_pruned = Array::length(stmts) != late_dce_pre_len || folded_param_reads > 0
   } else {
     ()
   }
@@ -10707,7 +10838,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // body-stubbing pass above (instrumented builds must see unmodified
   // bodies), plus `enable_late_dce` so the no-DCE lane keeps its contract.
   if enable_late_dce && !coverage && !debug_trace && !debug_break && !rc_shadow {
-    lc_pf_prune_module(bytebuf_to_bytes(out))
+    lc_pf_prune_module(bytebuf_to_bytes(out), entry_name, executable_exports_stripped())
   } else {
     bytebuf_to_bytes(out)
   }
