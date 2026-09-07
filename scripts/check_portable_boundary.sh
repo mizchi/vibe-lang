@@ -652,7 +652,15 @@ forbid_foreign_effect_rows() { # <file> <label>
   # "no capability name appears in this boundary's effect row".
   #
   # So: take the whole span from `with` to the start of the body, drop type
-  # arguments and the `::op` suffix of a qualified item, and check EVERY
+  # arguments and the `::op` suffix of a qualified item -- whitespace around
+  # the `::` included, because parse_effect_item consumes the token regardless
+  # of spacing (parser_base.vibe), so `with Exception :: Throw` is the same row
+  # as `with Exception::Throw`. Stripping only the adjacent form left `Throw`
+  # to reach the allow-list as an effect of its own, and the row was rejected.
+  # This is the second place the same spacing assumption was wrong; the direct
+  # call pattern was the first.
+  #
+  # ...and check EVERY
   # capability name in it. Separators are irrelevant -- `+`, newlines, or a
   # syntax `parse_effect_item` grows next week -- because nothing about the
   # row's shape is assumed. A name is either allow-listed or it is a leak.
@@ -665,7 +673,7 @@ forbid_foreign_effect_rows() { # <file> <label>
     | boundary_effect_rows \
     | sed -n 's/^row://p' \
     | sed 's/\[[^]]*\]//g' \
-    | sed 's/::[A-Za-z0-9_]*//g' \
+    | sed -E 's/[[:space:]]*::[[:space:]]*[A-Za-z0-9_]*//g' \
     | grep -oE '[A-Za-z_][A-Za-z0-9_]*' \
     | grep -vE "^($PORTABLE_ALLOWED_EFFECTS)$" \
     | sort -u)" || true

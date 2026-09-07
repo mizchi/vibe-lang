@@ -1879,8 +1879,55 @@ else
 fi
 restore
 
+# --- cases 110-112: a qualified row item may be spaced ----------------------
+#
+# Round 48, and the second place the same spacing assumption was wrong -- the
+# direct-call pattern was the first, one round earlier. `parse_effect_item`
+# consumes the `::` token regardless of source spacing (parser_base.vibe), so
+# `with Exception :: Throw` is the same row as `with Exception::Throw`.
+# Stripping only the ADJACENT `::op` left `Throw` to reach the allow-list as an
+# effect of its own, and the row was rejected: `effect: Throw` on a portable
+# boundary.
+printf '\nexport fn probe_spaced_qualified() -> Unit with Exception :: Throw {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'with Exception :: Throw {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a spaced qualified row item is the same item"
+  else
+    fail "case: a spaced qualified row was rejected, most likely as effect: Throw"
+  fi
+else
+  fail "case: the spaced-qualified mutation did not land -- it proves nothing"
+fi
+restore
+
+# The strip must not become a way to hide the CAPABILITY either: only the
+# `::op` suffix goes, never the head.
+printf '\nexport fn probe_spaced_qualified_native() -> Unit with Fs :: ReadFile {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'with Fs :: ReadFile {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a spaced qualified NATIVE row passed the allow-list"
+  else
+    pass "case: spacing does not hide the capability in a qualified row"
+  fi
+else
+  fail "case: the spaced-native mutation did not land -- it proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_spaced_compound() -> Unit with Exception :: Throw + Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'with Exception :: Throw + Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a native item beside a spaced qualified item was missed"
+  else
+    pass "case: the rest of a compound row survives the spaced strip"
+  fi
+else
+  fail "case: the spaced-compound mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 109 cases)"
+echo "portable-boundary-test: ok (control + 112 cases)"
