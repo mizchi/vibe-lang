@@ -922,8 +922,44 @@ else
 fi
 restore
 
+# --- cases 55-56: a type argument is not a return-type layer ----------------
+#
+# Round 27. The arrow layers of case 53 are counted by scanning for `->` at
+# parenthesis depth 0 -- but brackets were not tracked, so the arrow inside
+# `Array[() -> Unit]` counted as a layer of its own. `-> Array[() -> Unit] with
+# Fs` then read as arrows 2 against rows 1, which is the "returned closure owns
+# it" shape, and the declaration's native row went unchecked.
+#
+# A type ARGUMENT is not a layer: nothing is returned through it that could own
+# a row. Brackets now nest like parens, so the arrow inside them is invisible
+# to the count and the row is the declaration's.
+printf '\nexport fn probe_brk_native() -> Array[() -> Unit] with Fs {\n  []\n}\n' >> "$impl"
+if grep -qF -- '-> Array[() -> Unit] with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an arrow inside a type argument hid the declaration native row"
+  else
+    pass "case: an arrow inside a type argument is not a return-type layer"
+  fi
+else
+  fail "case: the bracket mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# The converse at the same shape, so the fix is not "brackets mean reject".
+printf '\nexport fn probe_brk_ok() -> Array[() -> Unit] with Async {\n  []\n}\n' >> "$impl"
+if grep -qF -- '-> Array[() -> Unit] with Async {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an allowed row on a bracketed return type is accepted"
+  else
+    fail "case: an allowed row on a bracketed return type was rejected"
+  fi
+else
+  fail "case: the bracket mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 54 cases)"
+echo "portable-boundary-test: ok (control + 56 cases)"

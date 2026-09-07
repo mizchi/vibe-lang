@@ -265,17 +265,23 @@ boundary_scan_text() { # <file>
 # one of them is recoverable.
 boundary_effect_rows() { # reads normalized text on stdin
   awk '{
-    s = $0; n = length(s); depth = 0; brace = 0; arrows = 0; rown = 0; i = 1
+    s = $0; n = length(s); depth = 0; brack = 0; brace = 0; arrows = 0; rown = 0; i = 1
     while (i <= n) {
       c = substr(s, i, 1)
       if (c == "(") { depth++; i++; continue }
       if (c == ")") { if (depth > 0) depth--; i++; continue }
-      if (depth == 0 && brace == 0 && substr(s, i, 3) == "fn ") {
+      # Brackets nest like parens. `-> Array[() -> Unit] with Fs` has an arrow
+      # INSIDE the type argument; counting it made arrows 2 against 1 row, so
+      # the row was written off as the returned closures and a native boundary
+      # passed. A type argument is not a return-type layer.
+      if (c == "[") { brack++; i++; continue }
+      if (c == "]") { if (brack > 0) brack--; i++; continue }
+      if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 3) == "fn ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
         if (prev !~ /[A-Za-z0-9_]/) { arrows = 0; rown = 0 }
         i += 3; continue
       }
-      if (c == "-" && substr(s, i + 1, 1) == ">" && depth == 0 && brace == 0) {
+      if (c == "-" && substr(s, i + 1, 1) == ">" && depth == 0 && brack == 0 && brace == 0) {
         arrows++; i++; continue
       }
       if (c == "{") {
@@ -283,8 +289,8 @@ boundary_effect_rows() { # reads normalized text on stdin
         brace++; i++; continue
       }
       if (c == "}") { if (brace > 0) brace--; i++; continue }
-      if (c == ";" && depth == 0 && brace == 0) { flush(); arrows = 0; rown = 0; i++; continue }
-      if (depth == 0 && brace == 0 && substr(s, i, 5) == "with ") {
+      if (c == ";" && depth == 0 && brack == 0 && brace == 0) { flush(); arrows = 0; rown = 0; i++; continue }
+      if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 5) == "with ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
         if (prev ~ /[A-Za-z0-9_]/) { i++; continue }
         j = i + 5; row = ""; d2 = 0
