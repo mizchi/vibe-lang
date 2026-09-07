@@ -517,8 +517,57 @@ else
 fi
 restore
 
+# --- cases 31-32: forbid_pattern reads the same normalized view -------------
+#
+# forbid_pattern dropped only whole comment LINES, so an inert diagnostic
+# containing `perform Fs::read_file` was reported as a leak. Case 1 already
+# covers a comment; this covers a STRING, and the pair with case 32 is what
+# keeps the fix from becoming a way to hide the real call.
+printf '\nexport fn probe_pstr() -> String with Exception {\n  "do not generate perform Fs::read_file here"\n}\n' >> "$impl"
+if grep -qF 'do not generate perform Fs::read_file here' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: 'perform Fs::' inside a string literal is not a leak"
+  else
+    fail "case: an inert string containing 'perform Fs::' failed the gate"
+  fi
+else
+  fail "case: the string mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_pcall() -> Unit with Exception {\n  perform Fs::read_file("x")\n}\n' >> "$impl"
+if grep -qF 'perform Fs::read_file("x")' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a real 'perform Fs::' call was hidden by the string strip"
+  else
+    pass "case: a real 'perform Fs::' call is still a leak"
+  fi
+else
+  fail "case: the call mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# --- case 33: a handler clause is not a declaration row ---------------------
+#
+# `handle { ... } with ReviewAsk { ... }` discharges an effect locally. Its
+# `with` is at paren depth 0, so it was read as a signature and reported
+# `effect: ReviewAsk` -- rejecting a helper that is pure BECAUSE it handles the
+# effect. A declaration's row sits before the body brace; a handler is inside
+# one, so brace depth tells them apart.
+printf '\nexport fn probe_handle() -> Unit with Exception {\n  handle {\n    ()\n  } with ReviewAsk {\n    ReviewAsk::Ask(_k) => ()\n  }\n}\n' >> "$impl"
+if grep -qF '} with ReviewAsk {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a handler clause is not read as a declaration effect row"
+  else
+    fail "case: a locally handled effect was reported as non-portable"
+  fi
+else
+  fail "case: the handler mutation did not land -- the assertion above proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 30 cases)"
+echo "portable-boundary-test: ok (control + 33 cases)"

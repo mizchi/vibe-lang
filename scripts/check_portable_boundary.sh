@@ -31,7 +31,12 @@ forbid_pattern() {
   local file="$1"
   local pattern="$2"
   local label="$3"
-  if grep -vE '^[[:space:]]*(///?|//#)' "$ROOT_DIR/$file" \
+  # Reads the same normalized view as the row and authority scans -- strings
+  # and comments removed, lines preserved so the report keeps its line numbers.
+  # It used to drop only whole comment LINES, so an inert diagnostic such as
+  # "do not generate perform Fs::read_file here" was reported as a leak, which
+  # is a required gate rejecting an ordinary message.
+  if boundary_scan_lines "$file" \
     | grep -En "$pattern" >/tmp/vibe_portable_boundary_hits.$$; then
     cat /tmp/vibe_portable_boundary_hits.$$ >&2
     rm -f /tmp/vibe_portable_boundary_hits.$$
@@ -100,11 +105,15 @@ PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 #
 # Order: quoted strings, then raw strings, then comments. A `//` inside a raw
 # string is removed with the raw string rather than mistaken for a comment.
-boundary_scan_text() { # <file>
+# Line-preserving form, so a report can still cite a line number.
+boundary_scan_lines() { # <file>
   sed -E 's/"([^"\\]|\\.)*"//g' "$ROOT_DIR/$1" \
     | sed 's/#|.*$//' \
-    | sed 's://.*::' \
-    | tr '\n\t\r' '   '
+    | sed 's://.*::'
+}
+
+boundary_scan_text() { # <file>
+  boundary_scan_lines "$1" | tr '\n\t\r' '   '
 }
 
 # Every DECLARATION's own effect row, one per line.
@@ -123,14 +132,27 @@ boundary_scan_text() { # <file>
 # construction, whatever shape they take. Everything up to the body brace is
 # then the row, so separators, type arguments and qualified items still need no
 # special handling.
+#
+# BRACE depth matters as well as paren depth. `handle { ... } with ReviewAsk
+# { ... }` discharges an effect locally and is not a signature, but its `with`
+# is at paren depth 0, so it was read as a declaration row and reported
+# `effect: ReviewAsk` -- rejecting a helper that is pure precisely BECAUSE it
+# handles the effect. A declaration's row sits before the body brace (brace
+# depth 0); a handler clause is inside a body (depth >= 1).
+#
+# Consequence worth stating: an effect row on a nested function or lambda,
+# being inside a body, is not scanned. That is a miss rather than a false
+# positive -- the safe direction of the two -- and neither boundary has one.
 boundary_effect_rows() { # reads normalized text on stdin
   awk '{
-    s = $0; n = length(s); depth = 0; i = 1
+    s = $0; n = length(s); depth = 0; brace = 0; i = 1
     while (i <= n) {
       c = substr(s, i, 1)
       if (c == "(") { depth++; i++; continue }
       if (c == ")") { if (depth > 0) depth--; i++; continue }
-      if (depth == 0 && substr(s, i, 5) == "with ") {
+      if (c == "{") { brace++; i++; continue }
+      if (c == "}") { if (brace > 0) brace--; i++; continue }
+      if (depth == 0 && brace == 0 && substr(s, i, 5) == "with ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
         if (prev ~ /[A-Za-z0-9_]/) { i++; continue }
         j = i + 5; row = ""; d2 = 0
