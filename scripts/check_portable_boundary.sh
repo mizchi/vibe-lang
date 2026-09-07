@@ -136,6 +136,18 @@ boundary_scan_lines() { # <file>
         if (c == "\"") { sp++; mode[sp] = "str"; i++; continue }
         if (c == "#" && substr(line, i + 1, 1) == "|") { break }   # raw string to EOL
         if (c == "/" && substr(line, i + 1, 1) == "/") { break }   # comment to EOL
+        if (c == "\047") {
+          # A char literal is inert, and a brace inside one would otherwise be
+          # counted as a real brace -- which skips every declaration after it,
+          # since they all then look nested. \047 is the quote character:
+          # writing it literally would end the single-quoted awk program.
+          # Consumed ONLY when the shape actually matches, so a stray quote is
+          # left alone rather than eating the code after it.
+          if (substr(line, i + 1, 1) == "\\") {
+            if (substr(line, i + 3, 1) == "\047") { out = out " "; i += 4; continue }
+          } else if (substr(line, i + 2, 1) == "\047") { out = out " "; i += 3; continue }
+          out = out c; i++; continue
+        }
         if (c == "{") { bdepth[sp]++; out = out c; i++; continue }
         if (c == "}") {
           if (bdepth[sp] > 0) { bdepth[sp]--; out = out c }

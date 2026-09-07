@@ -597,8 +597,40 @@ else
 fi
 restore
 
+# --- cases 36-37: a char literal is inert -----------------------------------
+#
+# A brace inside a char literal was counted as a real brace, so every
+# declaration AFTER it looked nested and had its effect row skipped. One
+# `'{'` anywhere in the file silently disabled the rest of the scan -- the
+# worst kind of miss, since it is unbounded and invisible.
+printf '\nfn brace_literal_probe() -> Char {\n  %s{%s\n}\n\nexport fn probe_after_char() -> Unit with Fs {\n  ()\n}\n' "'" "'" >> "$impl"
+if grep -qF "export fn probe_after_char() -> Unit with Fs {" "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a brace in a char literal disabled the scan for everything after it"
+  else
+    pass "case: a char literal does not corrupt the brace depth"
+  fi
+else
+  fail "case: the char-literal mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+# The converse: consuming a char literal must not eat the code after it, or the
+# same declaration would go unscanned for the opposite reason.
+printf '\nfn quote_char_probe() -> Char {\n  %s\\\\%s%s\n}\n\nexport fn probe_after_quote() -> Unit with Exception {\n  ()\n}\n' "'" "n" "'" >> "$impl"
+if grep -qF "export fn probe_after_quote() -> Unit with Exception {" "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an escaped char literal is consumed without eating what follows"
+  else
+    fail "case: an escaped char literal broke the scan of the next declaration"
+  fi
+else
+  fail "case: the escaped-char mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 35 cases)"
+echo "portable-boundary-test: ok (control + 37 cases)"
