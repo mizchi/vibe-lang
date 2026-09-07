@@ -1,14 +1,24 @@
 # docs/
 
 Audience index for [#2002](https://github.com/mizchi/vibe-lang/issues/2002).
-Paths are **current locations** at `7e3ca3ebc`. This file does not move anything;
-later PRs use it as the inventory.
+Paths are **current locations**. This file does not move anything; later PRs use
+it as the inventory.
+
+**Every document under `docs/` must appear in exactly one class table below**,
+and `scripts/check_doc_classification.sh` (`pkf run check-doc-classification`)
+enforces it: a new document in no table fails, a document in two tables fails,
+and a row pointing at a file that is no longer there fails. Add the row in the
+same change as the document.
 
 `docs/language-tour/` is not in the tree. Its content was folded into
 [cheatsheet.md](cheatsheet.md).
 
-Proposed later homes (`docs/user/…`, `docs/internal/…`, `docs/generated/`) are
-labels from #2002, not directories in this commit.
+The `Later home` column (`docs/user/…`, `docs/internal/…`, `docs/generated/`) is
+a **destination label, not a path that exists yet**; the moves are #2565, #2566
+and #2567. One exception is already real: `docs/internal/` exists and holds the
+two experiment records classified below, created ahead of the move. Do not add
+to it — a document goes where the tree puts things today, and moves happen in
+one pass so the link rewrites can be reviewed together.
 
 **Users:** [install](install.md) · [The Vibe Book](../book/README.md) ·
 [tutorial (pointer)](tutorial/README.md) ·
@@ -38,6 +48,7 @@ Install, learn, write, build, test, package, debug, deploy.
 | [cheatsheet.md](cheatsheet.md) | `user/reference/` | Language reference. Absorbed `language-tour/`. |
 | [cli-commands.md](cli-commands.md) | `user/reference/` | |
 | [editor-and-debugging.md](editor-and-debugging.md) | `user/reference/` | LSP, DAP, editor query CLI |
+| [source-range-contract.md](source-range-contract.md) | `user/reference/` | What a reported position MEANS (byte, ADR-0108). Written because [editor-and-debugging.md](editor-and-debugging.md) called byte offsets "char offsets"; enforced by `scripts/check_source_range_contract.sh` |
 | [guide/when-to-use-effects.md](guide/when-to-use-effects.md) | `user/guide/` | `guide/` is mixed; sibling is internal |
 | [vibe.md](vibe.md) | `user/reference/` | Implemented language design outside pure syntax |
 | [spec/syntax.md](spec/syntax.md) | `user/reference/` | Canonical implemented surface syntax. `spec/` is mixed |
@@ -125,8 +136,11 @@ the repo; not the user manual.
 | Current path | Later home | Notes |
 | --- | --- | --- |
 | [ast_binary_abi.md](ast_binary_abi.md) | `internal/compiler/` | |
+| [checked-body-transport.md](checked-body-transport.md) | `internal/compiler/` | Checked-implementation-body artifact + normalized typed-IR codec. Its "shadow-only" framing is superseded: #2505 promotes this lane, and the #1958 it cites is closed |
 | [checked-direct-expression-return-observation.md](checked-direct-expression-return-observation.md) | `internal/compiler/` | Checker observation note |
 | [tracing-design.md](tracing-design.md) | `internal/compiler/` | Proposed internal spans |
+| [internal/experimental-wasmfx-effect-backend.md](internal/experimental-wasmfx-effect-backend.md) | `internal/design/` | WasmFX feasibility probe. Tracked by #2221 |
+| [internal/experimental-wasmtime-guest-profiler.md](internal/experimental-wasmtime-guest-profiler.md) | `internal/design/` | Guest-profiler integration. Tracked by #2207 |
 | [vibec-component.md](vibec-component.md) | `internal/compiler/` | Compiler-core component split |
 | [wasm/gc-value-abi.md](wasm/gc-value-abi.md) | `internal/compiler/` | wasm-gc value ABI |
 | [wasm_threads_requirements.md](wasm_threads_requirements.md) | `internal/compiler/` | |
@@ -171,6 +185,7 @@ only while it is still cited.
 | [archive/moonbit-retirement.md](archive/moonbit-retirement.md) | Cited recovery record (`moonbit-host-final-2026-06-23`) |
 | [archive/mut-effect-plan.md](archive/mut-effect-plan.md) | |
 | [archive/report/](archive/report/) | Dated evaluations |
+| [archive/release-notes-0.3.0.md](archive/release-notes-0.3.0.md) | A release that was never cut (renumbered by ADR-0109). Kept as the record of 2026-06 to 2026-07-17; carries a status banner, so a delete candidate by the AGENTS.md rule |
 | [archive/review-by-x-markdown.md](archive/review-by-x-markdown.md) | |
 | [archive/spec/](archive/spec/) | Retired spec notes |
 | [archive/TODO.md](archive/TODO.md) | Moved from repo-root `TODO.md`. Delete candidate |
@@ -178,29 +193,12 @@ only while it is still cited.
 
 ## Inventory coverage
 
-Top-level names from `ls docs/` at the parent commit, excluding this router:
-
-`BENCHMARKS.md`, `adding-modules.md`, `adr.md`, `archive`, `ast_binary_abi.md`,
-`bootstrap.md`, `build-cache.md`, `builtin_contract_table.generated.md`,
-`capability-authorization-surface.md`, `cheatsheet.md`,
-`checked-direct-expression-return-observation.md`, `ci-speed.md`,
-`cli-commands.md`, `compiler-parallelism.md`, `concurrency.md`, `coverage.md`,
-`editor-and-debugging.md`, `effect-evidence-passing.md`,
-`effect-taxonomy-entry-policy.md`, `effect-taxonomy-review.md`,
-`effect-wit-mapping.md`, `effectset.md`, `error-effect-policy.md`,
-`exception-effect.md`, `guide`, `host-runtime-contract.md`,
-`http_server_contract.md`, `incremental-build.md`, `install.md`,
-`issue-triage.md`, `module-system-oracle.md`,
-`module-system-v2.md`, `mutability-control-review.md`,
-`naming-convention-migration.md`, `operation-gate.md`, `perceus-reuse.md`,
-`perf-snapshot-2026-08-07.md`, `pkfire-pkspec.md`, `pl-survey-2026-07.md`,
-`qualified-constructor-migration.md`, `region-mutable-state.md`,
-`registry-design.md`, `release-notes-0.1.0.md`, `release-roadmap.md`, `report`,
-`resource-kind-parameters.md`, `selfcompile-heap-policy.md`,
-`side-effect-consolidation.md`, `spec`, `tracing-design.md`, `tutorial`,
-`vibe.md`, `vibec-component.md`, `vibex-runtime-contract.md`,
-`wasip3-effect-alignment.md`, `wasm`, `wasm-opt-dogfood.md`,
-`wasm_threads_requirements.md`, `wit`, `zero-alloc-check.md`
+Answered by `scripts/check_doc_classification.sh`, not by a list kept here. A
+list of names copied from `ls docs/` is a **proxy** for "every document is
+classified", and it drifted within three weeks of being written: two documents
+were in no class table, one archived file was missing from the archive table,
+and `docs/internal/` had been created while the text above said it did not
+exist. The gate walks the tree instead, so this section cannot go stale.
 
 Mixed directories, children classified above:
 
