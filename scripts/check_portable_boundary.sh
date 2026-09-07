@@ -197,7 +197,15 @@ boundary_scan_lines() { # <file>
             # effect really called `where` is rejected either way -- it is
             # simply not `Exception` or `Async`. The suffix keeps the name
             # readable in the diagnostic instead of dropping it.
-            if (nm == "fn" || nm == "let" || nm == "type" || nm == "with" \
+            # `r#fn` is the ONE raw spelling that is still the keyword:
+            # lex_ident returns TFn for it (lexer.vibe, #1280 -- a binding
+            # named fn cannot be smuggled back in through r#). Suffixing it
+            # like the others cost the `fn ` reset, so a preceding type alias
+            # kept decl = "type" and the functions native row was suppressed.
+            # It is emitted as the keyword because that is what it IS.
+            if (nm == "fn") {
+              out = out "fn"
+            } else if (nm == "let" || nm == "type" || nm == "with" \
                 || nm == "where" || nm == "allows" || nm == "perform") {
               out = out nm "_"
             } else {

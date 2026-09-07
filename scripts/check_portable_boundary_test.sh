@@ -1323,8 +1323,44 @@ else
 fi
 restore
 
+# --- cases 77-78: `r#fn` is still the keyword -------------------------------
+#
+# Round 35, and round 34 made it: the underscore that stops a raw keyword from
+# becoming syntax was applied to `fn` as well, but `r#fn` is the ONE raw
+# spelling that IS the keyword. lex_ident returns TFn for it
+# (lib/@vibe/parser/lexer.vibe, #1280 -- a binding named fn cannot be smuggled
+# back in through r#). Suffixed to `fn_`, it stopped being the reset, so a
+# preceding `type` alias kept decl = "type" and the following function's
+# native row was suppressed. Measured: ACCEPT.
+#
+# The lesson is round 34's inverted: normalizing raw source needs the LEXER's
+# rule for each name, not a rule about raw identifiers in general.
+printf '\ntype LeadAlias = Int\n\nr#fn probe_raw_fn() -> Unit with Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'r#fn probe_raw_fn() -> Unit with Fs {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: r#fn stopped being a declaration and the native row was skipped"
+  else
+    pass "case: r#fn is the function keyword, so the declaration is checked"
+  fi
+else
+  fail "case: the r#fn mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\ntype LeadAlias2 = Int\n\nr#fn probe_raw_fn_ok() -> Unit with Async {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'r#fn probe_raw_fn_ok() -> Unit with Async {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an allowed row on an r#fn declaration is accepted"
+  else
+    fail "case: an allowed row on an r#fn declaration was rejected"
+  fi
+else
+  fail "case: the r#fn-allowed mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 76 cases)"
+echo "portable-boundary-test: ok (control + 78 cases)"
