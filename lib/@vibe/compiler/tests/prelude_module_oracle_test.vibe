@@ -1,0 +1,55 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  prelude_module_oracle_report_fs
+}
+
+//# Functions
+
+// #2388: the oracle runs every pre-codegen pass on the whole merged program
+// and on each file's statements alone from the same state, and reports per
+// pass whether the two agree. A two-file program whose entry rewrites through
+// `inspect` (desugar_inspect_calls changes it) and calls across the import
+// (the alias and evidence passes see both sides) must agree on every pass.
+fn oracle_lines(report: String) -> Array[String] {
+  let lines = String::split(report, "\n")
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "PASS ") {
+      Array::push(out, line)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn status_of(line: String) -> String {
+  let at = String::index_of(line, " status=")
+  if at < 0 {
+    "?"
+  } else {
+    String::substring(line, at + 8, String::length(line))
+  }
+}
+
+test "every pre-codegen pass agrees between whole-program and per-file runs on a two-file program" {
+  let helper_path = "/tmp/vibe_prelude_oracle_helper.vibe"
+  let main_path = "/tmp/vibe_prelude_oracle_main.vibe"
+  Fs::write_file(helper_path, "export fn twice(x: Int) -> Int {\n  x + x\n}\n")
+  Fs::write_file(main_path, "import ./vibe_prelude_oracle_helper.vibe { twice }\n\nfn run() -> Int {\n  twice(21)\n}\n\ntest \"twice\" {\n  inspect(run(), content = \"42\")\n}\n")
+  let report = prelude_module_oracle_report_fs(main_path, "__no_entry__", 16)
+  let lines = oracle_lines(report)
+  inspect(Array::length(lines), content = "17")
+  let statuses: Array[String] = []
+  let mut i = 0
+  while i < Array::length(lines) {
+    Array::push(statuses, status_of(Array::get(lines, i)))
+    i = i + 1
+  }
+  inspect(String::join(statuses, ","), content = "same,same,same,same,same,same,same,same,same,same,same,same,same,same,same,same,same")
+  // The first line names the first pass and carries the statement counts of
+  // both sides; a run that skipped either side could not report them equal.
+  inspect(String::starts_with(Array::get(lines, 0), "PASS elaborate_heap_params stmts="), content = "true")
+}

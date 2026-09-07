@@ -37,11 +37,16 @@ import @vibe/ast {
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 import @vibe/compiler/normalize {
-  desugar_inspect_calls, desugar_trait_dicts_with_typed_eq, lift_match_scrutinees, unbox_tuple_loop_params, uniquify_shadowed_bindings_fresh
+  desugar_inspect_calls,
+  desugar_trait_dicts_module,
+  desugar_trait_dicts_with_typed_eq,
+  lift_match_scrutinees,
+  unbox_tuple_loop_params,
+  uniquify_shadowed_bindings_fresh
 }
 
 import @vibe/compiler/perceus {
@@ -3598,6 +3603,530 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
   errs
 }
 
+// #2388 measurement: is each pre-codegen pass sound to run on one module at
+// a time? For every pass of the prelude (and the heap-parameter elaboration
+// in front of it) the oracle runs the pass twice from the same state: once
+// on the whole merged program, once on each source file's statements alone
+// (the entry name reaches only the entry file), then renders both results
+// statement by statement. A pass whose per-file result renders identically
+// to its whole-program result is per-module-sound on this corpus; the first
+// differing statement is reported so the reason can be classified.
+// Provenance survives a pass that inserts statements by re-aligning the
+// per-statement file ids on stable statement keys (a declaration's kind and
+// name): an inserted statement belongs to the file of the statement before
+// it, which is also where a per-module run would put it.
+fn oracle_stmt_key(s: Stmt) -> String {
+  match s {
+    SLet(_, _, n, _, _) => String::concat("let:", n),
+    SLetMut(n, _, _) => String::concat("letmut:", n),
+    SEnum(_, n, _, _, _) => String::concat("enum:", n),
+    SSuberror(_, n, _) => String::concat("suberror:", n),
+    SStruct(_, n, _, _, _, _) => String::concat("struct:", n),
+    STypeAlias(_, n, _, _) => String::concat("alias:", n),
+    STrait(_, n, _, _, _, _) => String::concat("trait:", n),
+    SImpl(_, _, n, _) => String::concat("impl:", n),
+    SExternLet(n, _) => String::concat("extern:", n),
+    SImport(p, _) => String::concat("import:", p),
+    STest(n, _) => String::concat("test:", n),
+    SBench(n, _) => String::concat("bench:", n),
+    SExample(n, _) => String::concat("example:", n),
+    SExpr(_) => "expr",
+    SExport(_) => "export",
+    SReExport(p, _) => String::concat("reexport:", p),
+    SAliasDecl(a, _) => String::concat("aliasdecl:", a),
+    SReExportSourceBoundary(_, _) => "reexport_boundary",
+    SQualifiedPatternRefs(_) => "qualified_pattern_refs",
+    STestEffectRows(_) => "test_effect_rows",
+    SLetPat(_, _) => "letpat",
+    SModule(_, n, _) => String::concat("module:", n),
+    SEffectDef(_, n, _, _) => String::concat("effect:", n),
+    SEffectSet(_, n, _) => String::concat("effectset:", n),
+    SResource(n, _) => String::concat("resource:", n),
+    SFnDecl(_, n, _, _, _) => String::concat("fndecl:", n)
+  }
+}
+
+fn oracle_realign(old_keys: Array[String], old_file: Array[Int], new_stmts: Array[Stmt]) -> Array[Int] {
+  let out: Array[Int] = []
+  let n_old = Array::length(old_keys)
+  let mut i = 0
+  let mut j = 0
+  let mut last_file = 0
+  while j < Array::length(new_stmts) {
+    let k = oracle_stmt_key(Array::get(new_stmts, j))
+    if i < n_old && Array::get(old_keys, i) == k {
+      last_file = Array::get(old_file, i)
+      Array::push(out, last_file)
+      i = i + 1
+      j = j + 1
+    } else if i + 1 < n_old && Array::get(old_keys, i + 1) == k {
+      i = i + 1
+    } else {
+      Array::push(out, last_file)
+      j = j + 1
+    }
+  }
+  out
+}
+
+fn oracle_pass_name(k: Int) -> String {
+  match k {
+    0 => "elaborate_heap_params",
+    1 => "desugar_inspect_calls",
+    2 => "lower_optional_performs",
+    3 => "erase_railway_origin_markers",
+    4 => "desugar_trait_dicts_with_typed_eq",
+    5 => "unbox_tuple_loop_params",
+    6 => "rewrite_top_level_fn_alias_refs",
+    7 => "lc_inject_stdin_surface_wrappers",
+    8 => "lc_extract_inline_wasm",
+    9 => "await_poll_pass",
+    10 => "rewrite_self_tail_calls",
+    11 => "wrap_entry_exception_boundary",
+    12 => "lc_inject_async_sleep_boundary",
+    13 => "suspend_cps_pass",
+    14 => "inline_direct_performs",
+    15 => "evidence_dict_pass",
+    _ => "forin_discard_pass"
+  }
+}
+
+fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Unit with Exception {
+  match k {
+    0 => {
+      // elaborate_heap_params returns a fresh array; the oracle keeps every
+      // program in place, so its result is copied back into `stmts`.
+      let out = elaborate_heap_params(stmts)
+      Array::truncate(stmts, 0)
+      let mut oi = 0
+      while oi < Array::length(out) {
+        Array::push(stmts, Array::get(out, oi))
+        oi = oi + 1
+      }
+    },
+    1 => desugar_inspect_calls(stmts),
+    2 => {
+      let res = optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
+      lower_optional_performs(stmts, res)
+    },
+    3 => erase_railway_origin_markers(stmts),
+    4 => desugar_trait_dicts_with_typed_eq(stmts, checker_eq_offsets, checker_eq_type_keys),
+    5 => unbox_tuple_loop_params(stmts),
+    6 => rewrite_top_level_fn_alias_refs(stmts),
+    7 => {
+      let _ = lc_inject_stdin_surface_wrappers(stmts)
+      ()
+    },
+    8 => lc_extract_inline_wasm(stmts, lc_fresh_string_array(), lc_fresh_string_array()),
+    9 => await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, array_empty())),
+    10 => rewrite_self_tail_calls(stmts),
+    11 => wrap_entry_exception_boundary(stmts, entry_name),
+    12 => {
+      let _ = lc_inject_async_sleep_boundary(stmts, entry_name)
+      ()
+    },
+    13 => {
+      let _ = suspend_cps_pass(stmts)
+      ()
+    },
+    14 => inline_direct_performs(stmts),
+    15 => {
+      let _ = evidence_dict_pass(stmts, entry_name)
+      ()
+    },
+    _ => forin_discard_pass(stmts)
+  }
+}
+
+fn oracle_head(s: String) -> String {
+  let n = String::length(s)
+  if n > 160 {
+    String::substring(s, 0, 160)
+  } else {
+    s
+  }
+}
+
+/// #2388: a module's dependency interface as the per-module pass sees it --
+/// what another file contributes without its bodies being compiled here:
+/// type, trait, suberror and impl declarations, and every top-level
+/// definition (a function's signature drives witness threading at a call
+/// site and the exception kind of a throw whose payload it returns; an
+/// explicit `T::op` suppresses a derive). Bodies ride along unread: the
+/// module entry never rewrites or emits a context statement, which is the
+/// bodyless form a `.vpkg` contract carries.
+fn oracle_is_interface_stmt(s: Stmt) -> Bool {
+  match s {
+    SEnum(_, _, _, _, _) => true,
+    SStruct(_, _, _, _, _, _) => true,
+    STypeAlias(_, _, _, _) => true,
+    SSuberror(_, _, _) => true,
+    STrait(_, _, _, _, _, _) => true,
+    SImpl(_, _, _, _) => true,
+    SLet(_, _, _, _, _) => true,
+    SLetMut(_, _, _) => true,
+    _ => false
+  }
+}
+
+/// The interface form of a context statement: a function whose return type
+/// is spelled loses its body (`EUnit`), the shape a `.vpkg` contract carries,
+/// so no body-reading collector (the trivial-wrapper inliner above all) can
+/// see through the interface. A function with no return annotation keeps its
+/// body: the contract would carry the checker's elaborated return type, which
+/// the pass reads off the body's tail expression (`fn_return_head_of`,
+/// `collect_fn_eq_return_shape`), and the oracle has no other spelling of it.
+fn oracle_interface_form(s: Stmt) -> Stmt {
+  match s {
+    SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, Some(ret), eff, _)) => SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, Some(ret), eff, EUnit)),
+    _ => s
+  }
+}
+
+/// Whether two renderings differ only at generated fresh-name counters
+/// (`__teq_l12_0` vs `__teq_l2_0`, `__me_ks22`, `_exn_payload100` vs
+/// `_exn_payload10`). Anything else is a real content difference.
+fn oracle_rename_only(rw: String, rs: String) -> Bool {
+  oracle_strip_counters(rw) == oracle_strip_counters(rs)
+}
+
+/// The rendering with every generated counter removed: a digit run right
+/// after `__teq_l` / `__teq_r` / `__me_` / `__ae_` / `__be_` / `_exn_payload`
+/// (the names the pass mints from program-wide counters). Comparing the
+/// stripped renderings sees a real difference AFTER a renamed binder, which
+/// a first-difference test does not.
+fn oracle_strip_counters(s: String) -> String {
+  let out = StringBuilder::new()
+  let n = String::length(s)
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(out, String::substring(s, i, i + 1))
+    i = i + 1
+    // After the '_' that ends one of the prefixes, skip a digit run.
+    let tail_from = if i > 12 {
+      i - 12
+    } else {
+      0
+    }
+    let tail = String::substring(s, tail_from, i)
+    if String::ends_with(tail, "__teq_l") || String::ends_with(tail, "__teq_r") || String::ends_with(tail, "__me_k") || String::ends_with(tail, "__me_ks") || String::ends_with(tail, "__me_i") || String::ends_with(tail, "__me_ok") || String::ends_with(tail, "__ae_i") || String::ends_with(tail, "__ae_ok") || String::ends_with(tail, "__be_i") || String::ends_with(tail, "__be_ok") || String::ends_with(tail, "_exn_payload") {
+      while i < n && String::char_code_at(s, i) >= 48 && String::char_code_at(s, i) <= 57 {
+        i = i + 1
+      }
+    } else {
+      ()
+    }
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Compare the whole-program result `a` and the per-module result `trial` by
+/// declaration key rather than by position: per-module synthesis lands at each
+/// module's position and may repeat a helper per module, which a link-time
+/// dedup by name folds, so position and count are not the verdict. Keys that
+/// repeat within `a` are skipped (a repeated key cannot be matched). Returns
+/// `keyed missing=<in a only> extra=<in trial only> copies=<repeats in trial>
+/// content=<same key, different content, not a fresh-name rename>
+/// renames=<same key, fresh-name renames only>` plus the first missing key and
+/// the first content-differing key.
+fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> String) -> String {
+  let wmap: MutMap[String, Int] = MutMap::new_string()
+  let mut ki = 0
+  while ki < Array::length(a) {
+    let key = oracle_stmt_key(Array::get(a, ki))
+    if MutMap::has(wmap, key) {
+      MutMap::set(wmap, key, 0 - 1)
+    } else {
+      MutMap::set(wmap, key, ki)
+    }
+    ki = ki + 1
+  }
+  let seen: MutMap[String, Int] = MutMap::new_string()
+  let mut extra = 0
+  let mut copies = 0
+  let mut content = 0
+  let mut renames = 0
+  let mut first_content = ""
+  let mut ti = 0
+  while ti < Array::length(trial) {
+    let st = Array::get(trial, ti)
+    let key = oracle_stmt_key(st)
+    match MutMap::get(wmap, key) {
+      Some(widx) => {
+        if MutMap::has(seen, key) {
+          copies = copies + 1
+        } else {
+          MutMap::set(seen, key, 1)
+        }
+        if widx < 0 || Array::get(a, widx) == st {
+          ()
+        } else if oracle_rename_only(render(Array::get(a, widx)), render(st)) {
+          // Includes an identical rendering: the nodes then differ only in
+          // fields the printer does not show, i.e. synthetic offsets (the
+          // namespace operations derive theirs from the trait's statement
+          // index, which is module-local in a per-module run).
+          renames = renames + 1
+        } else {
+          content = content + 1
+          if content <= 3 {
+            let rw = render(Array::get(a, widx))
+            let rs = render(st)
+            let lim = if String::length(rw) < String::length(rs) {
+              String::length(rw)
+            } else {
+              String::length(rs)
+            }
+            let mut p = 0
+            while p < lim && String::char_code_at(rw, p) == String::char_code_at(rs, p) {
+              p = p + 1
+            }
+            let from = if p > 100 {
+              p - 100
+            } else {
+              0
+            }
+            let wto = if p + 100 < String::length(rw) {
+              p + 100
+            } else {
+              String::length(rw)
+            }
+            let sto = if p + 100 < String::length(rs) {
+              p + 100
+            } else {
+              String::length(rs)
+            }
+            first_content = String::concat(first_content, String::concat("\n    ", String::concat(key, String::concat(" at=", String::concat(Int::to_string(p), String::concat("\n    whole<", String::concat(String::substring(rw, from, wto), String::concat(">\n    split<", String::concat(String::substring(rs, from, sto), ">")))))))))
+          } else {
+            ()
+          }
+        }
+      },
+      None => {
+        extra = extra + 1
+      }
+    }
+    ti = ti + 1
+  }
+  let mut missing = 0
+  let mut first_missing = ""
+  ki = 0
+  while ki < Array::length(a) {
+    let key = oracle_stmt_key(Array::get(a, ki))
+    if MutMap::has(seen, key) {
+      ()
+    } else {
+      missing = missing + 1
+      if String::length(first_missing) == 0 {
+        first_missing = key
+      } else {
+        ()
+      }
+    }
+    ki = ki + 1
+  }
+  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))
+}
+
+/// One step of the oracle: pass `k`. `a` is the whole-program state after
+/// passes 0..k-1 (advanced in place here by pass k); `c` is a FRESH merge of
+/// the same program with its per-statement file ids, brought to the same
+/// pre-pass state here and then split by file for the trial. The two never
+/// share a node: a pass may drop what it replaces, and a trial that shared
+/// nodes with `a` corrupted the whole-program rendering (measured 2026-09-06).
+/// Returns one grep-able line, `PASS <name> stmts=<whole> split=<trial>
+/// diff=<count> first=<index> file=<id> status=same|differs`, followed on a
+/// difference by the two renderings' heads. `render` is the AST printer (this
+/// package cannot reach @vibe/compiler/syntax; the caller passes it).
+export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
+  let entry_fid = file_count - 1
+  let mut file_of = c_file_id
+  let mut j = 0
+  while j < k {
+    let old_keys: Array[String] = []
+    let mut qi = 0
+    while qi < Array::length(c) {
+      Array::push(old_keys, oracle_stmt_key(Array::get(c, qi)))
+      qi = qi + 1
+    }
+    oracle_apply_pass(j, c, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    file_of = oracle_realign(old_keys, file_of, c)
+    j = j + 1
+  }
+  let n = Array::length(c)
+  let parts: Array[Array[Stmt]] = []
+  let mut fi = 0
+  while fi < file_count {
+    Array::push(parts, array_empty())
+    fi = fi + 1
+  }
+  let mut si = 0
+  while si < n {
+    let part = Array::get(parts, Array::get(file_of, si))
+    Array::push(part, Array::get(c, si))
+    si = si + 1
+  }
+  // The whole program goes first: for the per-module entry the context is
+  // the other files' POST-pass interface (a dependency is compiled before
+  // its dependents, so a dependent sees its threaded signatures), taken
+  // from `a` and limited to keys that existed before the pass (a
+  // synthesized statement belongs to its own module's output, not to a
+  // sibling's context).
+  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+  let pre_keys: MutMap[String, Int] = MutMap::new_string()
+  let mut pk = 0
+  while pk < Array::length(c) {
+    MutMap::set(pre_keys, oracle_stmt_key(Array::get(c, pk)), 1)
+    pk = pk + 1
+  }
+  // Each file's interface, taken BEFORE any module run: a module run rewrites
+  // its own part in place (a threaded signature is skipped by `build_gens` as
+  // already done), and a dependent must see the pre-pass, contract form.
+  let ifaces: Array[Array[Stmt]] = []
+  let mut pf = 0
+  while pf < file_count {
+    let src = Array::get(parts, pf)
+    let dst: Array[Stmt] = []
+    let mut ps = 0
+    while ps < Array::length(src) {
+      if oracle_is_interface_stmt(Array::get(src, ps)) {
+        Array::push(dst, oracle_interface_form(Array::get(src, ps)))
+      } else {
+        ()
+      }
+      ps = ps + 1
+    }
+    Array::push(ifaces, dst)
+    pf = pf + 1
+  }
+  let trial: Array[Stmt] = []
+  let trial_file: Array[Int] = []
+  fi = 0
+  while fi < file_count {
+    let part_entry = if fi == entry_fid {
+      entry_name
+    } else {
+      ""
+    }
+    let part = Array::get(parts, fi)
+    if k == 4 {
+      // The one pass with a per-module entry: the module's statements plus the
+      // other files' interface, synthesized program-level statements appended
+      // after the module's own.
+      let own_keys: MutMap[String, Int] = MutMap::new_string()
+      let mut ok = 0
+      while ok < Array::length(part) {
+        MutMap::set(own_keys, oracle_stmt_key(Array::get(part, ok)), 1)
+        ok = ok + 1
+      }
+      // The other files' PRE-pass interface: `build_gens` registers a bounded
+      // generic only from its unthreaded signature (a threaded one is
+      // skipped as already done), which is also the form a `.vpkg` contract
+      // carries.
+      let ctx: Array[Stmt] = []
+      let mut cj = 0
+      while cj < file_count {
+        if cj == fi {
+          ()
+        } else {
+          let other = Array::get(ifaces, cj)
+          let mut ci = 0
+          while ci < Array::length(other) {
+            let cs = Array::get(other, ci)
+            if MutMap::has(own_keys, oracle_stmt_key(cs)) {
+              ()
+            } else {
+              Array::push(ctx, cs)
+            }
+            ci = ci + 1
+          }
+        }
+        cj = cj + 1
+      }
+      let synthesized = desugar_trait_dicts_module(part, ctx, checker_eq_offsets, checker_eq_type_keys)
+      let mut sy = 0
+      while sy < Array::length(synthesized) {
+        Array::push(part, Array::get(synthesized, sy))
+        sy = sy + 1
+      }
+    } else {
+      oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+    }
+    let mut oi = 0
+    while oi < Array::length(part) {
+      Array::push(trial, Array::get(part, oi))
+      Array::push(trial_file, fi)
+      oi = oi + 1
+    }
+    fi = fi + 1
+  }
+  let nn = Array::length(a)
+  let nt = Array::length(trial)
+  let lim = if nn < nt {
+    nn
+  } else {
+    nt
+  }
+  let mut diffs = 0
+  let mut first = 0 - 1
+  let mut first_whole = ""
+  let mut first_split = ""
+  let mut ci = 0
+  while ci < lim {
+    // Structural `==` on Stmt (ADR-0097): no allocation. The printer is
+    // used only to show the first difference -- rendering every statement
+    // through String::concat pushed the bump high-water to 3.6 GB on this
+    // corpus (measured 2026-09-06) and tripped the 4 GB ceiling.
+    if Array::get(a, ci) == Array::get(trial, ci) {
+      ()
+    } else {
+      diffs = diffs + 1
+      if first < 0 {
+        first = ci
+        first_whole = oracle_head(render(Array::get(a, ci)))
+        first_split = oracle_head(render(Array::get(trial, ci)))
+      } else {
+        ()
+      }
+    }
+    ci = ci + 1
+  }
+  if nn != nt {
+    diffs = diffs + (if nn > nt {
+      nn - nt
+    } else {
+      nt - nn
+    })
+    if first < 0 {
+      first = lim
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+  let first_file = if first >= 0 && first < Array::length(trial_file) {
+    Array::get(trial_file, first)
+  } else {
+    0 - 1
+  }
+  let status = if diffs == 0 {
+    "same"
+  } else {
+    "differs"
+  }
+  let line = String::concat("PASS ", String::concat(oracle_pass_name(k), String::concat(" stmts=", String::concat(Int::to_string(nn), String::concat(" split=", String::concat(Int::to_string(nt), String::concat(" diff=", String::concat(Int::to_string(diffs), String::concat(" first=", String::concat(Int::to_string(first), String::concat(" file=", String::concat(Int::to_string(first_file), String::concat(" status=", String::concat(status, "\n"))))))))))))))
+  let line2 = if k == 4 {
+    String::concat(line, oracle_keyed_line(a, trial, render))
+  } else {
+    line
+  }
+  if diffs > 0 {
+    String::concat(line2, String::concat("  whole: ", String::concat(first_whole, String::concat("\n  split: ", String::concat(first_split, "\n")))))
+  } else {
+    line2
+  }
+}
+
 /// #1666: does `name` name a top-level definition in this program?
 ///
 /// Mirrors `stmt_name` in core/dce.vibe -- the same three statement shapes DCE
@@ -3743,12 +4272,15 @@ fn lc_pf_skip_blocktype(b: Bytes, p: Int) -> Int {
   }
 }
 
-/// Decode one function body's instructions, recording the byte range and
-/// target of every `call` / `return_call` / `ref.func` immediate into the
-/// three parallel sink arrays. Returns true only when the walk lands EXACTLY
-/// on `body_end` -- see the header note: that equality is what makes an
+/// Decode one function body's instructions, recording every `call` /
+/// `return_call` / `ref.func` immediate into `sink` as one packed Int:
+/// `(byte offset of the immediate) << 32 | (function index)`. The immediate's
+/// byte length is not stored -- the re-emit skips the LEB again at that
+/// offset, which is cheaper than a third parallel array over ~170k sites (the
+/// compiler closure). Returns true only when the walk lands EXACTLY on
+/// `body_end` -- see the header note: that equality is what makes an
 /// incomplete opcode table refuse rather than corrupt.
-fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int], sink_pos: Array[Int], sink_end: Array[Int], sink_val: Array[Int]) -> Bool {
+fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int], sink: Array[Int]) -> Bool {
   let mut p = instr_start
   let mut ok = true
   while ok && p < body_end {
@@ -3759,9 +4291,12 @@ fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int]
       let ipos = p
       let v = lc_pf_leb(b, p, cell)
       p = Array::get(cell, 0)
-      Array::push(sink_pos, ipos)
-      Array::push(sink_end, p)
-      Array::push(sink_val, v)
+      if v > 4294967295 {
+        // Not a u32: the LEB reader admits 35 bits, a function index does not.
+        ok = false
+      } else {
+        Array::push(sink, (ipos<<32)|v)
+      }
     } else if op == 2 || op == 3 || op == 4 || op == 6 {
       p = lc_pf_skip_blocktype(b, p)
     } else if op == 31 {
@@ -3853,77 +4388,276 @@ fn lc_pf_decode_body(b: Bytes, instr_start: Int, body_end: Int, cell: Array[Int]
   ok && p == body_end
 }
 
-/// Copy `[from, to)` of `src` onto `dst`.
-fn lc_pf_copy_range(dst: Bytes, src: Bytes, from: Int, to: Int) -> Unit {
-  let mut i = from
-  while i < to {
-    bytebuf_push(dst, Bytes::get(src, i))
-    i = i + 1
+/// Byte length of `leb128_encode_u32(v)` for `0 <= v < 2^32`. The re-emit
+/// below writes every section straight into the output buffer, and a
+/// section's length prefix comes BEFORE its content, so each rewritten
+/// section is sized by the same walk that later writes it (the `write`
+/// flag of the `lc_pf_emit_*` helpers) and this answers what the encoder
+/// will take.
+fn lc_pf_leb_len(v: Int) -> Int {
+  if v < 128 {
+    1
+  } else if v < 16384 {
+    2
+  } else if v < 2097152 {
+    3
+  } else if v < 268435456 {
+    4
+  } else {
+    5
   }
 }
 
-/// Rewrite the "name" custom section's function-name subsection (id 1) through
-/// `newidx`, dropping entries for pruned functions. Other subsections are
-/// copied verbatim. Returns the rebuilt payload, or an empty buffer when the
-/// layout is not the one this understands (caller then abandons the prune --
-/// a name section left pointing at old indices would mislabel every frame in
-/// a backtrace, which is worse than not shrinking).
-fn lc_pf_remap_name_section(payload: Bytes, newidx: Array[Int], cell: Array[Int], failed: Array[Bool]) -> Bytes {
-  let out = bytebuf_new()
-  let len = Bytes::length(payload)
-  // section name ("name"), copied as-is
-  let nlen = lc_pf_leb(payload, 0, cell)
-  let mut p = Array::get(cell, 0)
-  lc_pf_copy_range(out, payload, 0, p + nlen)
-  p = p + nlen
-  while p < len {
-    let sub_id = Bytes::get(payload, p)
-    p = p + 1
-    let sub_len = lc_pf_leb(payload, p, cell)
-    let sub_body = Array::get(cell, 0)
-    let sub_end = sub_body + sub_len
-    if sub_id == 1 {
-      let names = bytebuf_new()
-      let cnt = lc_pf_leb(payload, sub_body, cell)
-      let mut q = Array::get(cell, 0)
-      let kept = bytebuf_new()
-      let mut kept_n = 0
-      let mut ni = 0
-      while ni < cnt && q < sub_end {
-        let idx = lc_pf_leb(payload, q, cell)
-        q = Array::get(cell, 0)
-        let slen = lc_pf_leb(payload, q, cell)
-        let sstart = Array::get(cell, 0)
-        q = sstart + slen
-        if idx < Array::length(newidx) && Array::get(newidx, idx) >= 0 {
-          leb128_encode_u32(kept, Array::get(newidx, idx))
-          leb128_encode_u32(kept, slen)
-          lc_pf_copy_range(kept, payload, sstart, sstart + slen)
-          kept_n = kept_n + 1
-        } else {
-          ()
-        }
-        ni = ni + 1
-      }
-      if q != sub_end {
-        Array::set(failed, 0, true)
-        Array::set(lc_pf_refusal_cell, 0, 3909)
+/// How many entries `lc_pf_emit_exports` will emit: the section's count minus
+/// the `func` exports whose function was pruned. Split out because the vec
+/// header carries that number and is written BEFORE the entries, so both the
+/// size pass and the write pass need it up front.
+fn lc_pf_kept_export_count(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int]) -> Int {
+  let c = lc_pf_leb(mod_bytes, sstart, cell)
+  let mut q = Array::get(cell, 0)
+  let mut kept = 0
+  let mut ei = 0
+  while ei < c && q < send {
+    let nl = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0) + nl
+    let kind = Bytes::get(mod_bytes, q)
+    q = q + 1
+    let idx = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    if kind == 0 && (idx >= Array::length(newidx) || Array::get(newidx, idx) < 0) {
+      ()
+    } else {
+      kept = kept + 1
+    }
+    ei = ei + 1
+  }
+  kept
+}
+
+/// Export section content through `newidx`: every `func` export is renumbered,
+/// the others copied. Sizes when `write` is false, writes when true; returns
+/// the content length either way.
+///
+/// #2497 unit 2: an export of a PRUNED function is DROPPED, not refused. This
+/// comment used to say such an export "cannot happen unless the two walks
+/// disagree", because the roots came from this very section -- and that
+/// premise is exactly what `exports_stripped` removes. With the strip
+/// announced, only the exports that outlive it are roots, so every other
+/// function export names something the pruner is entitled to remove and the
+/// strip is about to delete anyway. Keeping the entry would name a function
+/// that no longer exists; refusing left the whole module unpruned, measured at
+/// 23 KB on the compile-only artifact.
+fn lc_pf_emit_exports(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let c = lc_pf_leb(mod_bytes, sstart, cell)
+  let kept = lc_pf_kept_export_count(mod_bytes, sstart, send, cell, newidx)
+  let mut q = Array::get(cell, 0)
+  let mut n = lc_pf_leb_len(kept)
+  if write {
+    bytebuf_push_vec_header(dst, kept)
+  } else {
+    ()
+  }
+  let mut ei = 0
+  while ei < c && q < send {
+    let nl = lc_pf_leb(mod_bytes, q, cell)
+    let nstart = Array::get(cell, 0)
+    q = nstart + nl
+    let kind = Bytes::get(mod_bytes, q)
+    q = q + 1
+    let idx = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    let dropped = kind == 0 && (idx >= Array::length(newidx) || Array::get(newidx, idx) < 0)
+    if dropped {
+      ()
+    } else {
+      let mut out_idx = idx
+      if kind == 0 {
+        out_idx = Array::get(newidx, idx)
       } else {
         ()
       }
-      bytebuf_push_vec_header(names, kept_n)
-      bytebuf_push_buf(names, kept)
-      bytebuf_push(out, 1)
-      leb128_encode_u32(out, bytebuf_length(names))
-      bytebuf_push_buf(out, names)
+      n = n + lc_pf_leb_len(nl) + nl + 1 + lc_pf_leb_len(out_idx)
+      if write {
+        leb128_encode_u32(dst, nl)
+        Bytes::blit(dst, mod_bytes, nstart, nstart + nl)
+        bytebuf_push(dst, kind)
+        leb128_encode_u32(dst, out_idx)
+      } else {
+        ()
+      }
+    }
+    ei = ei + 1
+  }
+  n
+}
+
+/// Element section content through `newidx` (active table-0 segments only --
+/// the section walk already refused any other flag). Same size / write
+/// contract as lc_pf_emit_exports.
+fn lc_pf_emit_elements(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let c = lc_pf_leb(mod_bytes, sstart, cell)
+  let mut q = Array::get(cell, 0)
+  let mut n = lc_pf_leb_len(c)
+  if write {
+    bytebuf_push_vec_header(dst, c)
+  } else {
+    ()
+  }
+  let mut gi = 0
+  while gi < c && q < send && !Array::get(failed, 0) {
+    let flag = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    n = n + lc_pf_leb_len(flag)
+    if write {
+      leb128_encode_u32(dst, flag)
     } else {
-      bytebuf_push(out, sub_id)
-      leb128_encode_u32(out, sub_len)
-      lc_pf_copy_range(out, payload, sub_body, sub_end)
+      ()
+    }
+    let expr_from = q
+    while q < send && Bytes::get(mod_bytes, q) != 11 {
+      let iop = Bytes::get(mod_bytes, q)
+      q = q + 1
+      if iop == 65 || iop == 35 {
+        q = lc_pf_skip_leb(mod_bytes, q)
+      } else {
+        ()
+      }
+    }
+    q = q + 1
+    n = n + (q - expr_from)
+    if write {
+      Bytes::blit(dst, mod_bytes, expr_from, q)
+    } else {
+      ()
+    }
+    let nf = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    n = n + lc_pf_leb_len(nf)
+    if write {
+      leb128_encode_u32(dst, nf)
+    } else {
+      ()
+    }
+    let mut fi = 0
+    while fi < nf {
+      let f = lc_pf_leb(mod_bytes, q, cell)
+      q = Array::get(cell, 0)
+      if f < Array::length(newidx) && Array::get(newidx, f) >= 0 {
+        n = n + lc_pf_leb_len(Array::get(newidx, f))
+        if write {
+          leb128_encode_u32(dst, Array::get(newidx, f))
+        } else {
+          ()
+        }
+      } else {
+        Array::set(failed, 0, true)
+      }
+      fi = fi + 1
+    }
+    gi = gi + 1
+  }
+  n
+}
+
+/// The function-name subsection (id 1) of the "name" custom section through
+/// `newidx`: entries of pruned functions are dropped, the rest renumbered.
+/// Returns the subsection's content length; writes it when `write` is true.
+fn lc_pf_emit_name_funcs(mod_bytes: Bytes, sub_body: Int, sub_end: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let cnt = lc_pf_leb(mod_bytes, sub_body, cell)
+  let mut q = Array::get(cell, 0)
+  let mut kept_n = 0
+  let mut kept_bytes = 0
+  let mut ni = 0
+  while ni < cnt && q < sub_end {
+    let idx = lc_pf_leb(mod_bytes, q, cell)
+    q = Array::get(cell, 0)
+    let slen = lc_pf_leb(mod_bytes, q, cell)
+    let sstart = Array::get(cell, 0)
+    q = sstart + slen
+    if idx < Array::length(newidx) && Array::get(newidx, idx) >= 0 {
+      kept_n = kept_n + 1
+      kept_bytes = kept_bytes + lc_pf_leb_len(Array::get(newidx, idx)) + lc_pf_leb_len(slen) + slen
+    } else {
+      ()
+    }
+    ni = ni + 1
+  }
+  if q != sub_end {
+    Array::set(failed, 0, true)
+  } else {
+    ()
+  }
+  if write {
+    bytebuf_push_vec_header(dst, kept_n)
+    let _cnt2 = lc_pf_leb(mod_bytes, sub_body, cell)
+    let mut q2 = Array::get(cell, 0)
+    let mut wi = 0
+    while wi < cnt && q2 < sub_end {
+      let idx = lc_pf_leb(mod_bytes, q2, cell)
+      q2 = Array::get(cell, 0)
+      let slen = lc_pf_leb(mod_bytes, q2, cell)
+      let sstart = Array::get(cell, 0)
+      q2 = sstart + slen
+      if idx < Array::length(newidx) && Array::get(newidx, idx) >= 0 {
+        leb128_encode_u32(dst, Array::get(newidx, idx))
+        leb128_encode_u32(dst, slen)
+        Bytes::blit(dst, mod_bytes, sstart, sstart + slen)
+      } else {
+        ()
+      }
+      wi = wi + 1
+    }
+  } else {
+    ()
+  }
+  lc_pf_leb_len(kept_n) + kept_bytes
+}
+
+/// The "name" custom section's content (`[sstart, send)` of `mod_bytes`,
+/// starting at the section-name string) with its function-name subsection
+/// remapped through `newidx` and every other subsection copied verbatim. A
+/// name section left pointing at old indices would mislabel every frame in a
+/// backtrace, which is worse than not shrinking, so a layout this does not
+/// understand fails the prune. Same size / write contract as the other
+/// `lc_pf_emit_*` helpers.
+fn lc_pf_emit_name_section(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let nlen = lc_pf_leb(mod_bytes, sstart, cell)
+  let mut p = Array::get(cell, 0) + nlen
+  let mut n = p - sstart
+  if write {
+    Bytes::blit(dst, mod_bytes, sstart, p)
+  } else {
+    ()
+  }
+  while p < send {
+    let sub_id = Bytes::get(mod_bytes, p)
+    p = p + 1
+    let sub_len = lc_pf_leb(mod_bytes, p, cell)
+    let sub_body = Array::get(cell, 0)
+    let sub_end = sub_body + sub_len
+    if sub_id == 1 {
+      let names_len = lc_pf_emit_name_funcs(mod_bytes, sub_body, sub_end, cell, newidx, failed, dst, false)
+      n = n + 1 + lc_pf_leb_len(names_len) + names_len
+      if write {
+        bytebuf_push(dst, 1)
+        leb128_encode_u32(dst, names_len)
+        lc_pf_emit_name_funcs(mod_bytes, sub_body, sub_end, cell, newidx, failed, dst, true)
+      } else {
+        ()
+      }
+    } else {
+      n = n + 1 + lc_pf_leb_len(sub_len) + sub_len
+      if write {
+        bytebuf_push(dst, sub_id)
+        leb128_encode_u32(dst, sub_len)
+        Bytes::blit(dst, mod_bytes, sub_body, sub_end)
+      } else {
+        ()
+      }
     }
     p = sub_end
   }
-  out
+  n
 }
 
 /// Test entry for the #2359 pruner: the same pass the linked lane runs on
@@ -3935,18 +4669,12 @@ export fn late_dce_prune_module(mod_bytes: Bytes) -> Bytes {
 
 /// Why the last `lc_pf_prune_module` run left its input alone, for the
 /// probes in tests: 0 = it pruned, -1 = nothing was unreachable, otherwise
-/// the source line of the refusal (`lc_pf_refuse`) or a small code for the
-/// early exits (1 = too short, 2 = section walk, 3 = no code section /
-/// layout mismatch, 4 = a body did not decode). The pass itself stays
-/// silent on purpose (the safe answer is the unpruned module); this only
-/// makes that silence inspectable.
+/// the source line of the refusal or a small code for the early exits
+/// (1 = too short or too large, 2 = section walk, 3 = no code section /
+/// layout mismatch, 4 = a body did not decode, 5 = a section emitter
+/// refused). The pass itself stays silent on purpose (the safe answer is
+/// the unpruned module); this only makes that silence inspectable.
 let lc_pf_refusal_cell: Array[Int] = [0]
-
-fn lc_pf_refuse(failed: Array[Bool], site: Int) -> Unit {
-  Array::set(failed, 0, true)
-  Array::set(lc_pf_refusal_cell, 0, 3945)
-  Array::set(lc_pf_refusal_cell, 0, site)
-}
 
 export fn late_dce_prune_refusal() -> Int {
   Array::get(lc_pf_refusal_cell, 0)
@@ -3963,7 +4691,6 @@ export fn late_dce_prune_module_for(mod_bytes: Bytes, entry_name: String, export
 /// `call_indirect` target is only known dynamically, so a table slot is a
 /// root, not an edge). Returns `mod_bytes` unchanged whenever anything is not
 /// understood -- see the header note on why refusing is the safe answer.
-///
 /// #2497 unit 2: with `exports_stripped`, only the exports that outlive the
 /// CLI's executable strip are roots (`executable_export_kept_bytes`, core).
 /// A flat module source exports every function, so rooting them all made
@@ -3977,8 +4704,10 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
   Array::push(failed, false)
   Array::set(lc_pf_refusal_cell, 0, 0)
   let total = Bytes::length(mod_bytes)
-  if total < 8 {
+  if total < 8 || total >= 1073741824 {
     Array::set(lc_pf_refusal_cell, 0, 1)
+    // Below 8 bytes there is no header; at 1 GiB and above a byte offset no
+    // longer fits the packed site record (lc_pf_decode_body).
     mod_bytes
   } else {
     // --- section table -------------------------------------------------
@@ -4080,7 +4809,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
             gq = gq + 2
             if gq >= send {
               Array::set(failed, 0, true)
-              Array::set(lc_pf_refusal_cell, 0, 4077)
+              Array::set(lc_pf_refusal_cell, 0, 4812)
             } else {
               let iop = Bytes::get(mod_bytes, gq)
               gq = gq + 1
@@ -4094,14 +4823,14 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
                 gq = gq + 1
               } else {
                 Array::set(failed, 0, true)
-                Array::set(lc_pf_refusal_cell, 0, 4090)
+                Array::set(lc_pf_refusal_cell, 0, 4826)
               }
               if !Array::get(failed, 0) {
                 if gq < send && Bytes::get(mod_bytes, gq) == 11 {
                   gq = gq + 1
                 } else {
                   Array::set(failed, 0, true)
-                  Array::set(lc_pf_refusal_cell, 0, 4096)
+                  Array::set(lc_pf_refusal_cell, 0, 4833)
                 }
               } else {
                 ()
@@ -4111,7 +4840,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
           }
           if !Array::get(failed, 0) && gq != send {
             Array::set(failed, 0, true)
-            Array::set(lc_pf_refusal_cell, 0, 4105)
+            Array::set(lc_pf_refusal_cell, 0, 4843)
           } else {
             ()
           }
@@ -4144,7 +4873,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
             if flag != 0 {
               // Only the active-table-0 form is emitted today.
               Array::set(failed, 0, true)
-              Array::set(lc_pf_refusal_cell, 0, 4137)
+              Array::set(lc_pf_refusal_cell, 0, 4876)
             } else {
               while q < send && Bytes::get(mod_bytes, q) != 11 {
                 let iop = Bytes::get(mod_bytes, q)
@@ -4171,7 +4900,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
         } else if sid == 8 {
           // A start function would be another root; none is emitted today.
           Array::set(failed, 0, true)
-          Array::set(lc_pf_refusal_cell, 0, 4163)
+          Array::set(lc_pf_refusal_cell, 0, 4903)
         } else if sid == 10 {
           code_i = si
           let c = lc_pf_leb(mod_bytes, sstart, cell)
@@ -4220,58 +4949,79 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
 /// Second half of lc_pf_prune_module: decode every body, close reachability
 /// over the call graph, then re-emit the module with the survivors renumbered.
 /// Split out only because the section walk above already fills a screen.
+///
+/// Allocation is the cost to watch here, not time: this runs once per compile
+/// on the finished module, and the selfcompile KPI (heap_ptr, the bump
+/// high-water) counts every byte it touches. Measured on the compiler closure
+/// (3.9 MB module, 4597 bodies, ~170k call sites) the first version spent
+/// 46.7 MB: three parallel site arrays (12.6 MB), a fresh buffer per
+/// rewritten body plus a code-section buffer appended into the output
+/// (19.6 MB), and a copy of every other section on its way through (the
+/// name section alone 3.3 MB). Now the sites are one packed array, every
+/// section is written straight into the output buffer behind a length
+/// computed by the same walk (`lc_pf_leb_len`, the `write` flag of the
+/// `lc_pf_emit_*` helpers), and the reachability stack holds each function
+/// once. What remains is the site array and the output buffer's own growth.
 fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], num_imported: Int, ftypes: Array[Int], body_start: Array[Int], body_instr: Array[Int], body_end: Array[Int], roots: Array[Int], code_i: Int) -> Bytes {
   let nbodies = Array::length(body_end)
   // --- decode every body once; remember each call immediate ---------------
-  // Sites are stored flat with a per-body [begin, end) window into them, so
-  // the whole pass allocates a fixed number of arrays regardless of module
-  // size.
-  let site_pos = lc_fresh_int_array()
-  let site_end = lc_fresh_int_array()
-  let site_val = lc_fresh_int_array()
+  // Sites are stored flat (packed offset << 32 | target, lc_pf_decode_body)
+  // with a per-body [begin, end) window into them, so the whole pass
+  // allocates a fixed number of arrays regardless of module size.
+  let site = lc_fresh_int_array()
   let site_from = lc_fresh_int_array()
-  let site_to = lc_fresh_int_array()
   let mut bi = 0
   let mut all_ok = true
   while bi < nbodies && all_ok {
-    Array::push(site_from, Array::length(site_pos))
-    all_ok = lc_pf_decode_body(mod_bytes, Array::get(body_instr, bi), Array::get(body_end, bi), cell, site_pos, site_end, site_val)
-    Array::push(site_to, Array::length(site_pos))
+    Array::push(site_from, Array::length(site))
+    all_ok = lc_pf_decode_body(mod_bytes, Array::get(body_instr, bi), Array::get(body_end, bi), cell, site)
     bi = bi + 1
   }
+  Array::push(site_from, Array::length(site))
   if !all_ok {
     Array::set(lc_pf_refusal_cell, 0, 4)
     mod_bytes
   } else {
     // --- reachability -----------------------------------------------------
+    // A function goes onto the stack once, when first seen; a target already
+    // marked is not pushed again (the ~170k call edges of the compiler
+    // closure would otherwise each cost a stack slot).
+    let nfuncs = num_imported + nbodies
     let seen = lc_fresh_bool_array()
     let mut szi = 0
-    while szi < num_imported + nbodies {
+    while szi < nfuncs {
       Array::push(seen, false)
       szi = szi + 1
     }
     let stack = lc_fresh_int_array()
     let mut ri = 0
     while ri < Array::length(roots) {
-      Array::push(stack, Array::get(roots, ri))
+      let r = Array::get(roots, ri)
+      if r >= 0 && r < nfuncs && !Array::get(seen, r) {
+        Array::set(seen, r, true)
+        Array::push(stack, r)
+      } else {
+        ()
+      }
       ri = ri + 1
     }
     let mut sp = 0
     while sp < Array::length(stack) {
       let f = Array::get(stack, sp)
       sp = sp + 1
-      if f >= 0 && f < Array::length(seen) && !Array::get(seen, f) {
-        Array::set(seen, f, true)
-        if f >= num_imported {
-          let fb = f - num_imported
-          let mut k = Array::get(site_from, fb)
-          let kend = Array::get(site_to, fb)
-          while k < kend {
-            Array::push(stack, Array::get(site_val, k))
-            k = k + 1
+      if f >= num_imported {
+        let fb = f - num_imported
+        let mut k = Array::get(site_from, fb)
+        let kend = Array::get(site_from, fb + 1)
+        while k < kend {
+          let t = Array::get(site, k)&4294967295
+          if t < nfuncs && !Array::get(seen, t) {
+            Array::set(seen, t, true)
+            Array::push(stack, t)
+          } else {
+            ()
           }
-        } else {
-          ()
+          k = k + 1
         }
       } else {
         ()
@@ -4305,177 +5055,183 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
       // only the dead bodies' bytes, so skipping a barely-dead module looks
       // free. It is not free: skipping always buys transient compile heap
       // with permanent OUTPUT size, which is backwards for a pass whose
-      // purpose is output size. At the selfcompile KPI input -- 2.3% dead,
-      // 180 of 4305 bodies, 89752 B of 3.85 MB -- the rate is 29848504 heap
-      // bytes saved for 104420 output bytes added, and not worth taking
-      // while the heap gate still allows 14.8% of growth (its ceiling is
-      // the committed baseline + 10%, ci.yml).
+      // purpose is output size. At the selfcompile KPI input -- 4.4% dead,
+      // 203 of 4597 bodies, 93630 B of 3.99 MB -- the whole pass now costs
+      // 13275388 heap bytes, and not worth taking while the
+      // heap gate still allows growth (its ceiling is the committed baseline
+      // + 10%, ci.yml).
       //
       // That rate is not constant, so do not extrapolate this one point. The
       // re-emit's cost tracks module size while the saving tracks
       // dead_fraction * module size, so skipping gets relatively cheaper as
-      // the dead fraction falls: the compiler's own module (0.4% dead) costs
-      // 10374 output bytes to skip, a tenth of the KPI's. A threshold is
-      // therefore unmeasured here, not refuted -- justifying one needs heap
-      // numbers from the barely-dead inputs that motivate it. What is settled
-      // is the direction: skipping never saves output bytes, so the only free
-      // case is nothing to drop at all, which is the test above.
-      Array::set(lc_pf_refusal_cell, 0, 0 - 1)
+      // the dead fraction falls. A threshold is therefore unmeasured here,
+      // not refuted -- justifying one needs heap numbers from the barely-dead
+      // inputs that motivate it. What is settled is the direction: skipping
+      // never saves output bytes, so the only free case is nothing to drop
+      // at all, which is the test above.
       mod_bytes
     } else {
-      // --- rebuilt code + function sections --------------------------------
-      let code_content = bytebuf_new()
-      bytebuf_push_vec_header(code_content, Array::length(keep))
-      let func_content = bytebuf_new()
-      bytebuf_push_vec_header(func_content, Array::length(keep))
-      let mut kj = 0
-      while kj < Array::length(keep) && !Array::get(failed, 0) {
-        let b = Array::get(keep, kj)
-        leb128_encode_u32(func_content, Array::get(ftypes, b))
-        let nb = bytebuf_new()
-        let mut prev = Array::get(body_start, b)
-        let mut k = Array::get(site_from, b)
-        let kend = Array::get(site_to, b)
-        while k < kend {
-          lc_pf_copy_range(nb, mod_bytes, prev, Array::get(site_pos, k))
-          let target = Array::get(site_val, k)
-          if target < 0 || target >= Array::length(newidx) || Array::get(newidx, target) < 0 {
-            // A kept body calls something the walk pruned: the reachability
-            // closure and the rewrite disagree, so trust neither.
-            Array::set(failed, 0, true)
-            Array::set(lc_pf_refusal_cell, 0, 4325)
-          } else {
-            leb128_encode_u32(nb, Array::get(newidx, target))
-          }
-          prev = Array::get(site_end, k)
-          k = k + 1
-        }
-        lc_pf_copy_range(nb, mod_bytes, prev, Array::get(body_end, b))
-        leb128_encode_u32(code_content, bytebuf_length(nb))
-        bytebuf_push_buf(code_content, nb)
-        kj = kj + 1
-      }
-      if Array::get(failed, 0) {
-        mod_bytes
-      } else {
-        lc_pf_reemit(mod_bytes, cell, failed, sec_id, sec_start, sec_len, newidx, func_content, code_content)
-      }
+      lc_pf_reemit(mod_bytes, cell, failed, sec_id, sec_start, sec_len, newidx, ftypes, keep, body_start, body_end, site, site_from)
     }
+  }
+}
+
+/// Code-section content for the kept bodies: sizes when `write` is false,
+/// writes when true, returns the content length either way. A kept body
+/// calling something the walk pruned means the reachability closure and the
+/// rewrite disagree, so neither is trusted (fails the prune).
+fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_start: Array[Int], body_end: Array[Int], site: Array[Int], site_from: Array[Int], failed: Array[Bool], dst: Bytes, write: Bool) -> Int {
+  let nkeep = Array::length(keep)
+  let mut n = lc_pf_leb_len(nkeep)
+  if write {
+    bytebuf_push_vec_header(dst, nkeep)
+  } else {
+    ()
+  }
+  let mut kj = 0
+  while kj < nkeep && !Array::get(failed, 0) {
+    let b = Array::get(keep, kj)
+    // The body's size after renumbering: each immediate is replaced by the
+    // LEB of its new index.
+    let mut sz = Array::get(body_end, b) - Array::get(body_start, b)
+    let kfrom = Array::get(site_from, b)
+    let kend = Array::get(site_from, b + 1)
+    let mut k = kfrom
+    while k < kend {
+      let pk = Array::get(site, k)
+      let pos = pk>>32
+      let target = pk&4294967295
+      if target >= Array::length(newidx) || Array::get(newidx, target) < 0 {
+        Array::set(failed, 0, true)
+        Array::set(lc_pf_refusal_cell, 0, 5106)
+      } else {
+        sz = sz - (lc_pf_skip_leb(mod_bytes, pos) - pos) + lc_pf_leb_len(Array::get(newidx, target))
+      }
+      k = k + 1
+    }
+    n = n + lc_pf_leb_len(sz) + sz
+    if write && !Array::get(failed, 0) {
+      leb128_encode_u32(dst, sz)
+      let mut prev = Array::get(body_start, b)
+      let mut w = kfrom
+      while w < kend {
+        let pk = Array::get(site, w)
+        let pos = pk>>32
+        Bytes::blit(dst, mod_bytes, prev, pos)
+        leb128_encode_u32(dst, Array::get(newidx, pk&4294967295))
+        prev = lc_pf_skip_leb(mod_bytes, pos)
+        w = w + 1
+      }
+      Bytes::blit(dst, mod_bytes, prev, Array::get(body_end, b))
+    } else {
+      ()
+    }
+    kj = kj + 1
+  }
+  n
+}
+
+/// Write one section into `out`: id, the content length the sizing walk
+/// computed, then the content through the same walk in write mode. The
+/// writer landing on any other length than it announced would be a corrupt
+/// module, so that is checked and fails the prune.
+fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: Array[Bool]) -> Unit {
+  if bytebuf_length(out) - content_start != announced {
+    Array::set(failed, 0, true)
+    Array::set(lc_pf_refusal_cell, 0, 5141)
+  } else {
+    ()
   }
 }
 
 /// Final step: write the module back out, substituting the rebuilt function
 /// and code sections and remapping every function index the other sections
-/// carry (exports, element segments, the name section).
-fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], newidx: Array[Int], func_content: Bytes, code_content: Bytes) -> Bytes {
+/// carry (exports, element segments, the name section). Every section goes
+/// straight into `out`: its content length is computed first by the sizing
+/// mode of the same helper that then writes it.
+fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], newidx: Array[Int], ftypes: Array[Int], keep: Array[Int], body_start: Array[Int], body_end: Array[Int], site: Array[Int], site_from: Array[Int]) -> Bytes {
   let out = bytebuf_new()
-  lc_pf_copy_range(out, mod_bytes, 0, 8)
+  Bytes::blit(out, mod_bytes, 0, 8)
+  let nkeep = Array::length(keep)
   let mut si = 0
   while si < Array::length(sec_id) && !Array::get(failed, 0) {
     let sid = Array::get(sec_id, si)
     let sstart = Array::get(sec_start, si)
     let send = sstart + Array::get(sec_len, si)
     if sid == 3 {
-      bytebuf_push_section(out, 3, func_content)
+      let mut flen = lc_pf_leb_len(nkeep)
+      let mut fi = 0
+      while fi < nkeep {
+        flen = flen + lc_pf_leb_len(Array::get(ftypes, Array::get(keep, fi)))
+        fi = fi + 1
+      }
+      bytebuf_push(out, 3)
+      leb128_encode_u32(out, flen)
+      let cstart = bytebuf_length(out)
+      bytebuf_push_vec_header(out, nkeep)
+      let mut fw = 0
+      while fw < nkeep {
+        leb128_encode_u32(out, Array::get(ftypes, Array::get(keep, fw)))
+        fw = fw + 1
+      }
+      lc_pf_check_written(out, cstart, flen, failed)
     } else if sid == 10 {
-      bytebuf_push_section(out, 10, code_content)
+      let clen = lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, false)
+      if !Array::get(failed, 0) {
+        bytebuf_push(out, 10)
+        leb128_encode_u32(out, clen)
+        let cstart = bytebuf_length(out)
+        lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, true)
+        lc_pf_check_written(out, cstart, clen, failed)
+      } else {
+        ()
+      }
     } else if sid == 7 {
-      // #2497 unit 2: an export of a PRUNED function is dropped, not refused.
-      // A function export is a root unless the CLI announced the strip and
-      // the name is outside its keep list, so a pruned export is exactly one
-      // the strip is about to remove; keeping the entry would name a
-      // function that no longer exists, and refusing kept the whole module
-      // unpruned (measured: the compile-only artifact came out 23 KB
-      // larger than its own post-strip prune).
-      let ec_entries = bytebuf_new()
-      let mut ec_count = 0
-      let c = lc_pf_leb(mod_bytes, sstart, cell)
-      let mut q = Array::get(cell, 0)
-      let mut ei = 0
-      while ei < c && q < send {
-        let nl = lc_pf_leb(mod_bytes, q, cell)
-        let nstart = Array::get(cell, 0)
-        q = nstart + nl
-        let kind = Bytes::get(mod_bytes, q)
-        q = q + 1
-        let idx = lc_pf_leb(mod_bytes, q, cell)
-        q = Array::get(cell, 0)
-        let dropped = kind == 0 && Array::get(newidx, idx) < 0
-        if dropped {
-          ()
-        } else {
-          leb128_encode_u32(ec_entries, nl)
-          lc_pf_copy_range(ec_entries, mod_bytes, nstart, nstart + nl)
-          bytebuf_push(ec_entries, kind)
-          if kind == 0 {
-            leb128_encode_u32(ec_entries, Array::get(newidx, idx))
-          } else {
-            leb128_encode_u32(ec_entries, idx)
-          }
-          ec_count = ec_count + 1
-        }
-        ei = ei + 1
+      let elen = lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, false)
+      if !Array::get(failed, 0) {
+        bytebuf_push(out, 7)
+        leb128_encode_u32(out, elen)
+        let cstart = bytebuf_length(out)
+        lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+        lc_pf_check_written(out, cstart, elen, failed)
+      } else {
+        ()
       }
-      let ec = bytebuf_new()
-      bytebuf_push_vec_header(ec, ec_count)
-      bytebuf_push_buf(ec, ec_entries)
-      bytebuf_push_section(out, 7, ec)
     } else if sid == 9 {
-      let el = bytebuf_new()
-      let c = lc_pf_leb(mod_bytes, sstart, cell)
-      let mut q = Array::get(cell, 0)
-      bytebuf_push_vec_header(el, c)
-      let mut gi = 0
-      while gi < c && q < send && !Array::get(failed, 0) {
-        let flag = lc_pf_leb(mod_bytes, q, cell)
-        q = Array::get(cell, 0)
-        leb128_encode_u32(el, flag)
-        let expr_from = q
-        while q < send && Bytes::get(mod_bytes, q) != 11 {
-          let iop = Bytes::get(mod_bytes, q)
-          q = q + 1
-          if iop == 65 || iop == 35 {
-            q = lc_pf_skip_leb(mod_bytes, q)
-          } else {
-            ()
-          }
-        }
-        q = q + 1
-        lc_pf_copy_range(el, mod_bytes, expr_from, q)
-        let nf = lc_pf_leb(mod_bytes, q, cell)
-        q = Array::get(cell, 0)
-        leb128_encode_u32(el, nf)
-        let mut fi = 0
-        while fi < nf {
-          let f = lc_pf_leb(mod_bytes, q, cell)
-          q = Array::get(cell, 0)
-          if Array::get(newidx, f) < 0 {
-            Array::set(failed, 0, true)
-            Array::set(lc_pf_refusal_cell, 0, 4420)
-          } else {
-            leb128_encode_u32(el, Array::get(newidx, f))
-          }
-          fi = fi + 1
-        }
-        gi = gi + 1
+      let slen = lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, false)
+      if !Array::get(failed, 0) {
+        bytebuf_push(out, 9)
+        leb128_encode_u32(out, slen)
+        let cstart = bytebuf_length(out)
+        lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+        lc_pf_check_written(out, cstart, slen, failed)
+      } else {
+        ()
       }
-      bytebuf_push_section(out, 9, el)
     } else if sid == 0 {
-      let payload = bytebuf_new()
-      lc_pf_copy_range(payload, mod_bytes, sstart, send)
       let nlen = lc_pf_leb(mod_bytes, sstart, cell)
       let nstart = Array::get(cell, 0)
       let is_name = nlen == 4 && Bytes::get(mod_bytes, nstart) == 110 && Bytes::get(mod_bytes, nstart + 1) == 97 && Bytes::get(mod_bytes, nstart + 2) == 109 && Bytes::get(mod_bytes, nstart + 3) == 101
       if is_name {
-        let remapped = lc_pf_remap_name_section(bytebuf_to_bytes(payload), newidx, cell, failed)
-        bytebuf_push_section(out, 0, remapped)
+        let mlen = lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, false)
+        if !Array::get(failed, 0) {
+          bytebuf_push(out, 0)
+          leb128_encode_u32(out, mlen)
+          let cstart = bytebuf_length(out)
+          lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+          lc_pf_check_written(out, cstart, mlen, failed)
+        } else {
+          ()
+        }
       } else {
-        bytebuf_push_section(out, 0, payload)
+        bytebuf_push(out, 0)
+        leb128_encode_u32(out, send - sstart)
+        Bytes::blit(out, mod_bytes, sstart, send)
       }
     } else {
-      let raw = bytebuf_new()
-      lc_pf_copy_range(raw, mod_bytes, sstart, send)
-      bytebuf_push_section(out, sid, raw)
+      bytebuf_push(out, sid)
+      leb128_encode_u32(out, send - sstart)
+      Bytes::blit(out, mod_bytes, sstart, send)
     }
     si = si + 1
   }
@@ -4608,12 +5364,11 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // (Codex review on #2569): coverage counts branch sites from the source
   // `if`s, so folding one away would shrink the denominator and report a
   // higher branch rate for the same program; a debug-break build maps
-  // interior lines onto the statements it emits, and a folded arm has
-  // none. Those builds are about observing the program as written, so
-  // they get it as written. The inline-wasm texts go along because the
-  // prelude has already replaced the `%wasm` marker bodies with a neutral
-  // literal, so a `(call $f ..)` in one of them is invisible to the pass's
-  // own scan.
+  // interior lines onto the statements it emits, and a folded arm has none.
+  // Those builds are about observing the program as written, so they get it
+  // as written. The inline-wasm texts go along because the prelude has
+  // already replaced the `%wasm` marker bodies with a neutral literal, so a
+  // `(call $f ..)` in one of them is invisible to the pass's own scan.
   //
   // A folded body no longer matches its source text, so a fold counts as a
   // prune for the body-cache guards below (`late_dce_pruned`): a replayed

@@ -1,7 +1,14 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, lex_with_offsets, parse_program, parse_program_located, rewrite_string_binops_stmts, shift_stmt_offsets, shift_stmts_offsets
+  lex,
+  lex_with_offsets,
+  parse_program,
+  parse_program_located,
+  print_stmt,
+  rewrite_string_binops_stmts,
+  shift_stmt_offsets,
+  shift_stmts_offsets
 }
 
 // #897: this used to also import `empty_stmt_array` via a leaf path into
@@ -70,7 +77,8 @@ import @vibe/compiler/codegen/wasi {
   compile_wasi_module_with_sources_break_impl_with_typed_offsets,
   compile_wasi_module_with_sources_coverage_impl_with_typed_offsets,
   compile_wasi_module_with_sources_trace_impl_with_typed_offsets,
-  effect_lowering_prelude
+  effect_lowering_prelude,
+  prelude_pass_module_oracle_step
 }
 
 import @vibe/compiler/entry/source_compile/gc_only {
@@ -492,6 +500,42 @@ fn build_grouped_merged_stmts(source_groups: Array[(String, Array[(String, Strin
 
 fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, String)])]) -> Array[Stmt] with Exception {
   build_grouped_merged_stmts_impl(source_groups, true, array_empty(), array_empty(), array_empty())
+}
+
+/// #2388 measurement: run every pre-codegen pass on the entry's closure both
+/// whole-program and one file at a time from the same state, and report per
+/// pass whether the two render identically (prelude_pass_module_oracle_step).
+/// Same load, check and merge as compile_file_fs_mode_rc; the split side is
+/// re-merged fresh for every pass so the two programs never share a node.
+export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String, pass_limit: Int) -> String with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let (a, _, _, _) = prelude_oracle_merge(source_groups)
+  let mut report = ""
+  let mut k = 0
+  while k <= pass_limit {
+    let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups)
+    let (eq_offs, eq_keys) = eq
+    report = String::concat(report, prelude_pass_module_oracle_step(k, a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, print_stmt))
+    k = k + 1
+  }
+  report
+}
+
+fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {
+  let flat_paths: Array[String] = []
+  let flat_bases: Array[Int] = []
+  let clone_float_offsets: Array[Int] = []
+  let (merged, files, _, stmt_file_id) = build_grouped_merged_stmts_prov(source_groups, flat_paths, flat_bases, clone_float_offsets)
+  let (_, rels, pluses, _, _) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
+  let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)
+  let stmts = rewrite_string_binops_stmts(merged, rels, pluses, typed_lowering_binop_anchor)
+  if Array::length(stmts) != Array::length(stmt_file_id) {
+    throw("prelude oracle: the binop rewrite changed the statement count")
+  } else {
+    ()
+  }
+  (stmts, files, stmt_file_id, (eq_offs, eq_keys))
 }
 
 /// #2391: the merge every offsets-consuming linear FS lane shares -- each file

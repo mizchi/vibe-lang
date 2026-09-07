@@ -1,0 +1,202 @@
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts, desugar_trait_dicts_module
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+// #2388: the per-module entry of the trait-dictionary pass. A dependency file
+// declares a trait, an impl and a bounded-generic function; the module file
+// declares a struct and a bounded-generic function that calls the
+// dependency's. Run whole-program (both files in one array) and per-module
+// (the module's statements plus the dependency's statements as a read-only
+// context), the module's function must come out the same -- the witness
+// threaded into the call -- and the context must not pick up definitions
+// that belong to its own module (its trait's namespace operation and dict
+// struct), while the program-level helpers land in the synthesized set.
+
+fn dep_src() -> String {
+  "export trait Hash {\n  hash_key(Self) -> String\n}\n\nimpl Hash for String {\n  hash_key(self) -> String {\n    self\n  }\n}\n\nexport fn map_key_to_string[K: Hash](key: K) -> String {\n  K::hash_key(key)\n}\n\nstruct Key {\n  k: (Int, String)\n}\n\nexport fn fail_dep(msg: String) -> Int with Exception {\n  throw(msg)\n}\n"
+}
+
+fn own_src() -> String {
+  "struct Set[T] {\n  entries: Map[String, T]\n}\n\nexport fn contains[T: Hash](s: Set[T], value: T) -> Bool {\n  Map::has_key(s.entries, map_key_to_string(value))\n}\n\nstruct Pair {\n  p: (Int, String)\n}\n\nexport fn fail_own(msg: String) -> Int with Exception {\n  throw(msg)\n}\n"
+}
+
+// #2563 review: a dependency with a labeled-parameter function and a trivial
+// pass-through wrapper, and a module that calls both -- the wrapper directly,
+// the labeled function from a non-capturing effectful local lambda, which
+// `desugar_hoist_local_lambdas` promotes to a top-level function.
+fn dep2_src() -> String {
+  "export fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nexport fn apply(f: () -> Int) -> Int {\n  f()\n}\n"
+}
+
+fn own2_src() -> String {
+  "fn forty_two() -> Int {\n  42\n}\n\nexport fn via_apply() -> Int {\n  apply(forty_two)\n}\n\nexport fn use_local() -> Int with Log {\n  let f = (a: Int) -> Int with Log {\n    perform Log::Emit(\"x\")\n    let g = (b: Int, c?: Int) -> Int {\n      b\n    }\n    g(a)\n  }\n  f(2)\n}\n"
+}
+
+fn render_named(stmts: Array[Stmt], name: String) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => if n == name {
+        out = print_stmt(Array::get(stmts, i))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn stmt_names(stmts: Array[Stmt]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let n = match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => n,
+      SStruct(_, n, _, _, _, _) => String::concat("struct ", n),
+      STrait(_, n, _, _, _, _) => String::concat("trait ", n),
+      SImpl(_, _, n, _) => String::concat("impl ", n),
+      _ => "?"
+    }
+    out = String::concat(out, String::concat(if i == 0 {
+      ""
+    } else {
+      ", "
+    }, n))
+    i = i + 1
+  }
+  out
+}
+
+fn whole_named(name: String) -> String with Exception {
+  let stmts = parse_program(lex(String::concat(dep_src(), own_src())))
+  desugar_trait_dicts(stmts)
+  render_named(stmts, name)
+}
+
+test "the module entry threads the witness into a call of the context's bounded generic" {
+  let ctx = parse_program(lex(dep_src()))
+  let own = parse_program(lex(own_src()))
+  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  inspect(render_named(own, "contains") == whole_named("contains"), content = "true")
+  inspect(render_named(own, "contains"), content = "export let rec contains = [T: Hash](__dict_Hash_T: HashDict[T], s: Set[T], value: T) -> Bool { Map::has_key(s.entries, map_key_to_string(__dict_Hash_T, value)) }")
+  // The context is read, never rewritten or extended: its trait gets no
+  // operation and no dict struct from this module's run. What the pass
+  // appends -- the module's own derived comparator and the program-level
+  // helper it needs -- comes back as the synthesized set.
+  inspect(stmt_names(ctx), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, struct Key, fail_dep")
+  inspect(stmt_names(own), content = "struct Set, contains, struct Pair, fail_own")
+  inspect(stmt_names(synth), content = "Set::equals, Pair::equals, __map_equals__N6_String__N7___Vfp_T, __exn_kind_cell")
+}
+
+test "the whole-program entry is the module entry with no context and everything own" {
+  let stmts = parse_program(lex(String::concat(dep_src(), own_src())))
+  desugar_trait_dicts(stmts)
+  inspect(stmt_names(stmts), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key, struct Key, fail_dep, struct Set, contains, struct Pair, fail_own, Key::equals, Set::equals, Pair::equals, __map_equals__N6_String__N7___Vfp_T, __exn_kind_cell, struct HashDict")
+}
+
+test "the dependency's own run places its trait operation inside the module and its dict struct in the synthesized set" {
+  let own = parse_program(lex(dep_src()))
+  let ctx = parse_program(lex(own_src()))
+  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  // The namespace operation is inserted after the trait's impls and the
+  // lets that immediately follow them, growing the module's own region; the
+  // context's structs are not derived for here.
+  inspect(stmt_names(own), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key, struct Key, fail_dep")
+  inspect(stmt_names(synth), content = "Key::equals, __exn_kind_cell, struct HashDict")
+  inspect(stmt_names(ctx), content = "struct Set, contains, struct Pair, fail_own")
+}
+
+test "generated local names restart at every declaration, so a module compiled after the dependency gets the names it gets alone" {
+  let ctx = parse_program(lex(dep_src()))
+  let own = parse_program(lex(own_src()))
+  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  // Whole-program, the dependency's `Key::equals` and `fail_dep` would have
+  // consumed the tuple-binder and payload counters first.
+  inspect(render_named(synth, "Pair::equals"), content = "let Pair::equals = (a: Pair, b: Pair) -> Bool { (match a.p { (__teq_l0_0, __teq_l0_1) => match b.p { (__teq_r0_0, __teq_r0_1) => (((__teq_l0_0 + 0) == (__teq_r0_0 + 0)) && ((__teq_l0_1 == __teq_r0_1) && true)) } } && true) }")
+  inspect(render_named(own, "fail_own"), content = "export let rec fail_own = (msg: String) -> Int with Exception { { let __exn_payload0 = msg; { Array::set(__exn_kind_cell, 0, \"String\"); { Array::set(__exn_kind_cell, 1, \"\"); throw(__exn_payload0) } } } }")
+  inspect(render_named(synth, "Pair::equals") == whole_named("Pair::equals"), content = "true")
+  inspect(render_named(own, "fail_own") == whole_named("fail_own"), content = "true")
+}
+
+fn whole2_named(name: String) -> String with Exception {
+  let stmts = parse_program(lex(String::concat(dep2_src(), own2_src())))
+  desugar_trait_dicts(stmts)
+  render_named(stmts, name)
+}
+
+test "a hoisted local lambda's labeled call is reordered in a per-module run" {
+  let ctx = parse_program(lex(dep2_src()))
+  let own = parse_program(lex(own2_src()))
+  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  // The hoisted function is appended after the context block, so it comes
+  // back with the synthesized set; the labeled-argument stage must still
+  // visit it -- the call to the dependency's `sub` binds by position after
+  // this pass, and a call left labeled here would bind `y = a` to `x`.
+  inspect(stmt_names(synth), content = "__hoisted_lam_0_f")
+  inspect(render_named(synth, "__hoisted_lam_0_f"), content = "let __hoisted_lam_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
+  inspect(whole2_named("__hoisted_lam_0_f"), content = "let __hoisted_lam_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
+  inspect(render_named(synth, "__hoisted_lam_0_f") == whole2_named("__hoisted_lam_0_f"), content = "true")
+  inspect(render_named(own, "use_local") == whole2_named("use_local"), content = "true")
+}
+
+test "a trivial wrapper defined in the dependency is not inlined by a per-module run" {
+  let ctx = parse_program(lex(dep2_src()))
+  let own = parse_program(lex(own2_src()))
+  let _ = desugar_trait_dicts_module(own, ctx, [], [])
+  // The whole-program run reads `apply`'s body and inlines the call; a
+  // dependency interface carries no body, so a per-module run cannot, and
+  // must not pretend to by reading the body it happens to be handed.
+  inspect(render_named(own, "via_apply"), content = "export let rec via_apply = () -> Int { apply(forty_two) }")
+  inspect(whole2_named("via_apply"), content = "export let rec via_apply = () -> Int { forty_two() }")
+}
+
+/// The offset the printer does not show: the call node of a synthesized
+/// `Trait::op` wrapper's body.
+fn wrapper_call_off(stmts: Array[Stmt], name: String) -> Int {
+  let mut out = 0 - 99
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, body)) => if n == name {
+        out = match body {
+          ECall(_, _, off) => off,
+          _ => 0 - 98
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+test "a trait namespace operation carries the same synthetic offset whether its trait is compiled alone or after other files" {
+  // The module declaring `trait Hash` is compiled alone (its trait is
+  // statement 0) and as the tail of a program where three statements
+  // precede it. The wrapper's nodes are synthesized, not read from a
+  // source position, so both runs give them the wrapper's synthetic offset
+  // (-2: negative like the parser's own synthesized nodes, so it is in no
+  // offset-keyed table, and distinct from their -1, so a source binding can
+  // never pass for a generated one) rather than a value derived from the
+  // trait's statement index.
+  let own = parse_program(lex(dep_src()))
+  let ctx = parse_program(lex(own2_src()))
+  let _ = desugar_trait_dicts_module(own, ctx, [], [])
+  let whole = parse_program(lex(String::concat(own2_src(), dep_src())))
+  desugar_trait_dicts(whole)
+  inspect(wrapper_call_off(own, "Hash::hash_key"), content = "-2")
+  inspect(wrapper_call_off(whole, "Hash::hash_key"), content = "-2")
+}
