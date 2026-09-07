@@ -1972,8 +1972,79 @@ else
 fi
 restore
 
+# --- cases 116-118: the capability list is read, not restated ---------------
+#
+# Round 50. The entry file's namespace list was written by hand as
+# Console|Env|Process|Socket|Http|Net. The real list --
+# capability_effect_name_list in lib/@vibe/parser/parser_base.vibe -- has TEN
+# names: it also has Stdin, Stdout, Stderr and Profiler, which this boundary
+# could therefore use unseen, and it does NOT have Net. Measured: `fn f() ->
+# Int with Stdin { Stdin::read_char() }` compiles and the gate printed ok.
+#
+# The gate derives the list from that file now. Enumerating a list that lives
+# somewhere else is the structure that produces the drift, so this removes the
+# class rather than the four names -- a capability added to the compiler is
+# covered here without anyone remembering to come back.
+for cap in Stdin Stdout Stderr Profiler; do
+  printf '\nfn probe_cap_%s() -> Unit with %s {\n  %s::write_all("x")\n}\n' "$cap" "$cap" "$cap" >> "$entry"
+  if grep -qF "fn probe_cap_$cap() -> Unit with $cap {" "$entry"; then
+    if bash "$gate" >/dev/null 2>&1; then
+      fail "case: the entry file used $cap and passed the gate"
+    else
+      pass "case: $cap is a capability the entry file may not use"
+    fi
+  else
+    fail "case: the $cap mutation did not land -- the assertion proves nothing"
+  fi
+  restore
+done
+
+# The derived list must not swallow the file's own declared contract.
+printf '\nfn probe_declared_fs(p: String) -> Int with Fs {\n  Fs::stat_token(p)\n}\n' >> "$entry"
+if grep -qF -- 'fn probe_declared_fs(p: String) -> Int with Fs {' "$entry"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: Fs is dropped from the derived list, as the contract requires"
+  else
+    fail "case: the derived list banned the entry file own declared Fs call"
+  fi
+else
+  fail "case: the declared-Fs mutation did not land -- it proves nothing"
+fi
+restore
+
+# And the reader must FAIL CLOSED, LOUDLY. An empty alternation would match
+# nothing and the gate would print ok on everything, which is the worst
+# outcome a derived list can have.
+#
+# The first version of this guard never fired: `set -e` killed the script on
+# the reader's own pipeline first, so the gate exited 1 with NO message.
+# Fail-closed and silent is not good enough -- silence is indistinguishable
+# from unchecked, and the message is the part that says what to repair. Every
+# stage of the reader is guarded so the check itself is what stops the run.
+#
+# The mutation renames the array in the gate's own copy, which is the shape
+# change the guard exists for: the file is still readable, so nothing errors.
+# The copy has to live beside the gate: it derives ROOT_DIR from BASH_SOURCE,
+# so a copy in /tmp resolves every repository path against /tmp and fails for
+# an unrelated reason -- which is how the first draft of this case "passed".
+gate_tmp="scripts/.portable_boundary_reader_probe.$$.sh"
+sed 's/capability_effect_name_list/capability_effect_name_list_RENAMED/' "$gate" > "$gate_tmp"
+if ! grep -q 'capability_effect_name_list_RENAMED' "$gate_tmp"; then
+  fail "case: the capability-reader mutation did not land -- it proves nothing"
+else
+  out="$(bash "$gate_tmp" 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    fail "case: an unreadable capability list still passed the gate"
+  elif printf '%s' "$out" | grep -qF 'cannot read capability_effect_name_list'; then
+    pass "case: an unreadable capability list fails closed, and says so"
+  else
+    fail "case: it failed closed but silently, which reads as unchecked: $out"
+  fi
+fi
+rm -f "$gate_tmp"
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 115 cases)"
+echo "portable-boundary-test: ok (control + 121 cases)"

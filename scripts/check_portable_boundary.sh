@@ -789,7 +789,40 @@ require_line \
 # IO and says so, carrying `with Exception + Fs` / `with Fs`. Its contract is
 # exactly that row, so a call inside it is declared and the others are not. It
 # makes exactly one capability call today, `Fs::stat_token`.
-entry_native_pattern="$native_effect_pattern"'|(Console|Env|Process|Socket|Http|Net)[[:space:]]*::'
+# The capability names are READ FROM THE COMPILER, not restated here. The
+# hand-written list said Console|Env|Process|Socket|Http|Net, and the real one
+# (capability_effect_name_list in lib/@vibe/parser/parser_base.vibe) has ten:
+# it also has Stdin, Stdout, Stderr and Profiler, which the entry file could
+# therefore use unseen, and it does NOT have Net. Enumerating a list that lives
+# somewhere else is the structure that produces that drift; reading it removes
+# the class rather than the four names.
+#
+# `Fs` is dropped from the derived list for this file alone: this entry does
+# file IO and declares it (`with Exception + Fs`), so banning it would be the
+# false positive the row allow-list was switched off to avoid.
+#
+# Fails closed. If the list cannot be read -- the file moved, the shape
+# changed -- the gate stops rather than checking against nothing, because an
+# empty alternation would match nothing and print ok.
+# Every stage is guarded with `|| true` so the reader cannot die under `set -e`
+# before the check below runs. Exiting 1 with no message would be fail-closed
+# and SILENT, and silence is indistinguishable from unchecked -- the message is
+# the part that tells the next person what to repair.
+entry_capabilities="$(
+  { awk '/^let capability_effect_name_list/,/^\]/' \
+      "$ROOT_DIR/lib/@vibe/parser/parser_base.vibe" 2>/dev/null || true; } \
+  | { grep -oE '"[A-Za-z_][A-Za-z0-9_]*"' || true; } | tr -d '"' \
+  | { grep -vx Fs || true; } | paste -sd'|' -
+)"
+entry_capability_count="$(printf '%s' "$entry_capabilities" | tr '|' '\n' | { grep -c . || true; })"
+if [ "$entry_capability_count" -lt 5 ]; then
+  echo "selfhost-portable-boundary: cannot read capability_effect_name_list from" >&2
+  echo "  lib/@vibe/parser/parser_base.vibe -- the gate would check the entry file" >&2
+  echo "  against an empty capability list and pass everything. Fix the reader in" >&2
+  echo "  scripts/check_portable_boundary.sh rather than removing this guard." >&2
+  exit 1
+fi
+entry_native_pattern="$native_effect_pattern|($entry_capabilities)[[:space:]]*::"
 forbid_pattern \
   "lib/@vibe/compiler/cli_direct_component_entry.vibe" \
   "$entry_native_pattern" \
