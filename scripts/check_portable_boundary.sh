@@ -66,9 +66,18 @@ PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 
 # Reject any effect row on a pure boundary that names something outside the
 # allow-list. Comment lines are stripped first, as in forbid_pattern.
+#
+# Comments are dropped to end of line and the file flattened to one line before
+# matching, for the same reason as forbid_capability_authority below: a row may
+# be split after `+`. Measured -- this compiles, and a line-by-line scan matched
+# `with Exception`, accepted it, and never associated the `Fs`:
+#
+#   fn probe() -> String with Exception +
+#     Fs { ... }
 forbid_foreign_effect_rows() { # <file> <label>
   local file="$1" label="$2" bad
-  bad="$(grep -vE '^[[:space:]]*(///?|//#)' "$ROOT_DIR/$file" \
+  bad="$(sed 's://.*::' "$ROOT_DIR/$file" \
+    | tr '\n' ' ' \
     | grep -oE 'with +[A-Z][A-Za-z0-9_]*( *\+ *[A-Z][A-Za-z0-9_]*)*' \
     | sed 's/^with  *//' \
     | tr '+' '\n' \

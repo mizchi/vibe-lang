@@ -278,8 +278,40 @@ else
 fi
 restore
 
+# --- cases 16-17: an effect row split across lines --------------------------
+#
+# A row may be broken after `+`, and it compiles -- verified with `vibe test`.
+# A line-by-line scan matched `with Exception`, accepted it, and never
+# associated the `Fs` on the next line. Both directions are pinned: the split
+# row must still be REJECTED when it names a capability, and still ACCEPTED
+# when it does not, since flattening must not make the scanner blind or
+# trigger-happy.
+printf '\nexport fn probe_split() -> String with Exception +\n  Fs {\n  ""\n}\n' >> "$impl"
+if grep -qE 'with Exception \+$' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a row split after '+' hid a native effect from the gate"
+  else
+    pass "case: a native effect on the next line of a split row is rejected"
+  fi
+else
+  fail "case: the split-row mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_split_ok() -> String with Exception +\n  Async {\n  ""\n}\n' >> "$impl"
+if grep -qE 'with Exception \+$' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a split row of allowed effects is accepted"
+  else
+    fail "case: 'with Exception +\\n Async' was rejected -- flattening broke acceptance"
+  fi
+else
+  fail "case: the split-row mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 15 cases)"
+echo "portable-boundary-test: ok (control + 17 cases)"
