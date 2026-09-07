@@ -1131,8 +1131,107 @@ else
 fi
 restore
 
+# --- cases 67-70: authority belongs to a declaration too --------------------
+#
+# Round 32. The `allows` check was a whole-file grep with no notion of
+# declarations, so `type Cb = () -> Unit with Log::Emit allows Fs::read_file`
+# was rejected -- authority that belongs to the aliased function type, exactly
+# as its effect row does. `allows` in type position is legal and the parser has
+# its own test for it (lib/@vibe/compiler/tests/parser_test.vibe, "#1345:
+# `allows` works in type position too").
+#
+# The fix moved the collection into boundary_effect_rows, the one pass that
+# knows which declaration a clause belongs to; the two checks now read the same
+# tagged stream. Cases 11-15 still hold -- they are on `fn` declarations, which
+# is the point.
+printf '\ntype AllowsAlias = () -> Unit with Log::Emit allows Fs::read_file\n' >> "$impl"
+if grep -qF -- 'type AllowsAlias = () -> Unit with Log::Emit allows Fs::read_file' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: an allows clause on a type alias is not the boundary authority"
+  else
+    fail "case: a legal allows clause in type position failed the gate"
+  fi
+else
+  fail "case: the alias-allows mutation did not land -- it proves nothing"
+fi
+restore
+
+# The miss that suppression could open, pinned in the same commit: an alias
+# must not swallow the authority of the declaration after it.
+printf '\ntype AllowsAlias2 = () -> Unit with Log::Emit allows Fs::read_file\n\nexport fn probe_after_allows_alias() -> String with Exception allows Console::write_stream {\n  ""\n}\n' >> "$impl"
+if grep -qF -- 'allows Console::write_stream {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: an alias swallowed the next declaration authority clause"
+  else
+    pass "case: a declaration after an allows alias keeps its own authority"
+  fi
+else
+  fail "case: the alias-then-authority mutation did not land -- it proves nothing"
+fi
+restore
+
+# A BINDING is a boundary declaration, so its authority is still reported --
+# the same split as case 62 draws for rows.
+printf '\nexport let probe_bind_allows: (Int) -> Unit with Exception allows Fs::read_file = (x) -> {\n  ()\n}\n' >> "$impl"
+if grep -qF -- 'export let probe_bind_allows: (Int) -> Unit with Exception allows Fs::read_file = (x) -> {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: authority on a function binding went unreported"
+  else
+    pass "case: a function binding authority clause is still the boundary own"
+  fi
+else
+  fail "case: the binding-allows mutation did not land -- it proves nothing"
+fi
+restore
+
+# --- case 70: THE COST OF CASE 67, pinned so it is visible ------------------
+#
+# `type Cb = () -> Unit with () allows Fs` is now accepted. Same trade as cases
+# 43 and 60: an alias is not itself a boundary, and no text scan can tell
+# whether the boundary ever hands one out. #2581 answers it from the AST.
+#
+# When #2581 lands this flips to a rejection. UPDATE THE CASE, do not revert --
+# accepting the alias is what keeps legal code building.
+printf '\ntype AllowsAlias3 = () -> Unit with () allows Fs\n' >> "$impl"
+if grep -qF -- 'type AllowsAlias3 = () -> Unit with () allows Fs' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: KNOWN MISS -- authority named only by an alias (#2581)"
+  else
+    fail "case: the alias authority miss closed; flip this case to a rejection"
+  fi
+else
+  fail "case: the alias-authority-miss mutation did not land -- it proves nothing"
+fi
+restore
+
+# --- case 71: authority is diagnosed AS authority ---------------------------
+#
+# Round 32, found by red-testing rather than by review: dropping the `allows`
+# row terminator changed no verdict, so nothing failed -- the clause was simply
+# swallowed into the effect row and rejected there instead, as
+# `effect: allows` alongside `effect: Fs`. Same exit code, useless message: it
+# names an effect that does not exist and no edit that fixes it, which is the
+# defect AGENTS.md's actionable-diagnostic rule is about. Cases 11-12 could not
+# see it because they assert only that the text `allows` appears somewhere.
+#
+# So this pins the CLAUSE being diagnosed as a clause.
+printf '\nexport fn probe_auth_msg() -> String with Exception allows Fs::read_file {\n  ""\n}\n' >> "$impl"
+if grep -qF -- 'allows Fs::read_file {' "$impl"; then
+  out="$(bash "$gate" 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    fail "case: an authority clause passed the gate"
+  elif printf '%s' "$out" | grep -qF 'granted: allows Fs::read_file'; then
+    pass "case: an authority clause is diagnosed as authority, not as an effect"
+  else
+    fail "case: rejected, but not as an authority grant: $out"
+  fi
+else
+  fail "case: the authority-message mutation did not land -- it proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 66 cases)"
+echo "portable-boundary-test: ok (control + 71 cases)"

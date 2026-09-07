@@ -279,7 +279,7 @@ boundary_scan_text() { # <file>
 # one of them is recoverable.
 boundary_effect_rows() { # reads normalized text on stdin
   awk '{
-    s = $0; n = length(s); depth = 0; brack = 0; brace = 0; arrows = 0; rown = 0; decl = ""; i = 1
+    s = $0; n = length(s); depth = 0; brack = 0; brace = 0; arrows = 0; rown = 0; authn = 0; decl = ""; i = 1
     while (i <= n) {
       c = substr(s, i, 1)
       if (c == "(") { depth++; i++; continue }
@@ -292,7 +292,7 @@ boundary_effect_rows() { # reads normalized text on stdin
       if (c == "]") { if (brack > 0) brack--; i++; continue }
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 3) == "fn ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev !~ /[A-Za-z0-9_]/) { arrows = 0; rown = 0; decl = "fn" }
+        if (prev !~ /[A-Za-z0-9_]/) { arrows = 0; rown = 0; authn = 0; decl = "fn" }
         i += 3; continue
       }
       # Which KIND of declaration a row was collected under.
@@ -312,23 +312,23 @@ boundary_effect_rows() { # reads normalized text on stdin
       # this suppresses `type` and nothing else.
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 5) == "type ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev == " ") { arrows = 0; rown = 0; decl = "type" }
+        if (prev == " ") { arrows = 0; rown = 0; authn = 0; decl = "type" }
         i += 5; continue
       }
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 4) == "let ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
-        if (prev == " ") { arrows = 0; rown = 0; decl = "let" }
+        if (prev == " ") { arrows = 0; rown = 0; authn = 0; decl = "let" }
         i += 4; continue
       }
       if (c == "-" && substr(s, i + 1, 1) == ">" && depth == 0 && brack == 0 && brace == 0) {
         arrows++; i++; continue
       }
       if (c == "{") {
-        if (brace == 0) { flush(); arrows = 0; rown = 0; decl = "" }
+        if (brace == 0) { flush(); arrows = 0; rown = 0; authn = 0; decl = "" }
         brace++; i++; continue
       }
       if (c == "}") { if (brace > 0) brace--; i++; continue }
-      if (c == ";" && depth == 0 && brack == 0 && brace == 0) { flush(); arrows = 0; rown = 0; decl = ""; i++; continue }
+      if (c == ";" && depth == 0 && brack == 0 && brace == 0) { flush(); arrows = 0; rown = 0; authn = 0; decl = ""; i++; continue }
       # `=` ends the TYPE of a binding and starts its value. Without this,
       # `export let f: (Int) -> Unit with Exception = (x) -> { () }` ran the
       # row on to the initializer body and reported `effect: x` on a portable
@@ -341,7 +341,28 @@ boundary_effect_rows() { # reads normalized text on stdin
       if (c == "=" && depth == 0 && brack == 0 && brace == 0 \
           && substr(s, i + 1, 1) != "=" \
           && ((i > 1) ? substr(s, i - 1, 1) : " ") !~ /[=<>!+\-*\/%]/) {
-        flush(); arrows = 0; rown = 0; i++; continue
+        flush(); arrows = 0; rown = 0; authn = 0; i++; continue
+      }
+      # An `allows` clause grants host authority (ADR-0088). It is collected
+      # HERE, in the one pass that knows which declaration it belongs to,
+      # rather than by a separate whole-file grep -- that grep had no notion of
+      # declarations, so it rejected `type Cb = () -> Unit with R allows Fs`,
+      # authority that belongs to the aliased function type exactly as the row
+      # does. A capability name is CamelCase; the uppercase test is what keeps
+      # the English verb in prose from reading as a grant.
+      if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 7) == "allows ") {
+        prev = (i > 1) ? substr(s, i - 1, 1) : " "
+        if (prev !~ /[A-Za-z0-9_]/) {
+          j = i + 7
+          while (j <= n && substr(s, j, 1) == " ") { j++ }
+          if (substr(s, j, 1) ~ /[A-Z]/) {
+            name = ""
+            while (j <= n && substr(s, j, 1) ~ /[A-Za-z0-9_:]/) { name = name substr(s, j, 1); j++ }
+            authbuf[++authn] = name
+            i = j; continue
+          }
+          i += 7; continue
+        }
       }
       if (depth == 0 && brack == 0 && brace == 0 && substr(s, i, 5) == "with ") {
         prev = (i > 1) ? substr(s, i - 1, 1) : " "
@@ -366,6 +387,7 @@ boundary_effect_rows() { # reads normalized text on stdin
           # and its native row went unreported. No effect item contains these
           # keywords, so breaking on them costs nothing.
           else if (d2 == 0 && cc == "=" && substr(s, j + 1, 1) != "=" && substr(s, j - 1, 1) !~ /[=<>!+\-*\/%]/) { break }
+          else if (d2 == 0 && substr(s, j, 7) == "allows " && substr(row, length(row), 1) ~ /[ ]/) { break }
           else if (d2 == 0 && substr(s, j, 3) == "fn " && substr(row, length(row), 1) ~ /[ ]/) { break }
           else if (d2 == 0 && substr(s, j, 5) == "type " && substr(row, length(row), 1) ~ /[ ]/) { break }
           else if (d2 == 0 && substr(s, j, 4) == "let " && substr(row, length(row), 1) ~ /[ ]/) { break }
@@ -404,10 +426,11 @@ boundary_effect_rows() { # reads normalized text on stdin
     #
     # Counting rows against a fixed threshold instead got the last of those
     # wrong: two rows does not mean one of them is the declarations.
-    if (decl != "type" && rown >= arrows && rown >= 1) {
-      print rowbuf[rown]
+    if (decl != "type") {
+      if (rown >= arrows && rown >= 1) { print "row:" rowbuf[rown] }
+      for (k = 1; k <= authn; k++) { print "auth:" authbuf[k] }
     }
-    rown = 0
+    rown = 0; authn = 0
   }'
 }
 
@@ -443,6 +466,7 @@ forbid_foreign_effect_rows() { # <file> <label>
   # allow-list rejects it like any other name it does not know.
   bad="$(boundary_scan_text "$file" \
     | boundary_effect_rows \
+    | sed -n 's/^row://p' \
     | sed 's/\[[^]]*\]//g' \
     | sed 's/::[A-Za-z0-9_]*//g' \
     | grep -oE '[A-Za-z_][A-Za-z0-9_]*' \
@@ -491,8 +515,15 @@ forbid_foreign_effect_rows() { # <file> <label>
 # (`expected an effect name in the effect row after 'with'`).
 forbid_capability_authority() { # <file> <label>
   local file="$1" label="$2"
+  # Declaration-aware, not a whole-file grep: boundary_effect_rows is the one
+  # pass that knows which declaration a clause belongs to, and it tags what it
+  # emits. The grep it replaced rejected an `allows` on a type alias, where the
+  # authority belongs to the aliased function type -- the same reasoning that
+  # already skips an alias's effect row.
   if boundary_scan_text "$file" \
-    | grep -oE '\ballows +[A-Z][A-Za-z0-9_:]*' >/tmp/vibe_portable_authority_hits.$$; then
+    | boundary_effect_rows \
+    | sed -n 's/^auth:/allows /p' >/tmp/vibe_portable_authority_hits.$$
+    [ -s /tmp/vibe_portable_authority_hits.$$ ]; then
     echo "selfhost-portable-boundary: capability authority granted in $label ($file)" >&2
     sed 's/^/  granted: /' /tmp/vibe_portable_authority_hits.$$ >&2
     rm -f /tmp/vibe_portable_authority_hits.$$
