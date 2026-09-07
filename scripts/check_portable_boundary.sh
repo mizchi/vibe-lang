@@ -59,8 +59,16 @@ forbid_pattern() {
 # Separators are `[[:space:]]+`, not one literal space. `perform  Fs::ReadFile`
 # with two spaces, or a tab or newline after `perform`, all compile and all
 # bypassed a pattern that matched exactly one space.
-native_effect_pattern='with[[:space:]]*\{[^}]*(Fs|Process|Socket|Net)|perform[[:space:]]+(Fs|Process|Socket|Http)::|compile_file_fs|session-http|daemon'
+native_effect_pattern='with[[:space:]]*\{[^}]*(Fs|Process|Socket|Net)|perform[[:space:]]+(Fs|Process|Socket|Http)::|\b(compile_file_fs|session-http|daemon)\b'
 
+# The three lane names are anchored to token boundaries. Unanchored, `daemon`
+# matched inside `daemonless_probe` and `compile_file_fs` inside
+# `compile_file_fsx_probe`, so an ordinary helper whose name merely CONTAINS a
+# forbidden lane failed the required job on correct code. A lane is a name, not
+# a substring. `\b` is a GNU extension that check_gate_portability admits, and
+# it is the boundary that matters here: `my_daemon_helper` keeps building
+# because an underscore is a word character.
+#
 # The `with \{...\}` alternative above matches the HANDLER syntax
 # (`try ... with { Exception::Throw(e) => ... }`), which is a different
 # construct from an effect row. An effect ROW is unbraced and `+`-separated:

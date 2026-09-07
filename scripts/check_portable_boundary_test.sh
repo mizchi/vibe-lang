@@ -1562,8 +1562,47 @@ else
 fi
 restore
 
+# --- cases 90-93: a forbidden lane is a name, not a substring ---------------
+#
+# Round 40, a false positive. The three lane names in native_effect_pattern
+# were unanchored, so `daemon` matched inside `daemonless_probe` and
+# `compile_file_fs` inside `compile_file_fsx_probe`: an ordinary helper whose
+# name merely CONTAINS a forbidden lane failed the required job on correct
+# code. They are anchored to token boundaries now.
+#
+# `my_daemon_helper` is the case that says why the anchor is the right shape
+# rather than a longer list of exceptions -- an underscore is a word
+# character, so the name simply has no boundary there.
+for name in daemonless_probe my_daemon_helper compile_file_fsx_probe; do
+  printf '\nfn %s() -> Bool {\n  false\n}\n' "$name" >> "$impl"
+  if grep -qF "fn $name() -> Bool {" "$impl"; then
+    if bash "$gate" >/dev/null 2>&1; then
+      pass "case: a helper named $name is not a forbidden lane"
+    else
+      fail "case: $name was rejected because its name contains a lane"
+    fi
+  else
+    fail "case: the $name mutation did not land -- the assertion proves nothing"
+  fi
+  restore
+done
+
+# The direction the anchor must not cost: the lanes themselves are still
+# forbidden. Without this the fix could have been "delete the alternative".
+printf '\nfn probe_real_lane(p: String) -> Bool {\n  let _ = compile_file_fs(p)\n  false\n}\n' >> "$impl"
+if grep -qF -- 'let _ = compile_file_fs(p)' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: the compile_file_fs lane passed after anchoring"
+  else
+    pass "case: the compile_file_fs lane is still forbidden"
+  fi
+else
+  fail "case: the lane mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 89 cases)"
+echo "portable-boundary-test: ok (control + 93 cases)"
