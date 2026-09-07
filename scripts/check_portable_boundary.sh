@@ -76,19 +76,26 @@ PORTABLE_ALLOWED_EFFECTS='Exception|Async'
 #     Fs { ... }
 forbid_foreign_effect_rows() { # <file> <label>
   local file="$1" label="$2" bad
-  # An effect item may carry type arguments -- `parse_effect_item`
-  # (lib/@vibe/parser/parser_base.vibe) accepts `Exception[String] + Fs`, and it
-  # compiles. Matching bare identifiers stopped at the `[`, recorded the allowed
-  # `Exception`, and never saw the `Fs`. The argument is dropped BEFORE the row
-  # is split on `+`, so an argument that itself contains `+` cannot fragment
-  # into pieces that match nothing and read as leaks.
+  # This deliberately does NOT model the row grammar. Six review rounds went
+  # into a regex that tried to, and each round found another form it did not
+  # know: a row split after `+`, an item with type arguments
+  # (`Exception[String] + Fs`), a qualified item (`Exception::Throw + Fs`).
+  # Every patch was correct and none of them made the next one less likely,
+  # because enumerating a grammar in a regex is the proxy -- the property is
+  # "no capability name appears in this boundary's effect row".
+  #
+  # So: take the whole span from `with` to the start of the body, drop type
+  # arguments and the `::op` suffix of a qualified item, and check EVERY
+  # capability name in it. Separators are irrelevant -- `+`, newlines, or a
+  # syntax `parse_effect_item` grows next week -- because nothing about the
+  # row's shape is assumed. A name is either allow-listed or it is a leak.
   bad="$(sed 's://.*::' "$ROOT_DIR/$file" \
     | tr '\n' ' ' \
-    | grep -oE 'with +[A-Z][A-Za-z0-9_]*(\[[^]]*\])?( *\+ *[A-Z][A-Za-z0-9_]*(\[[^]]*\])?)*' \
+    | grep -oE 'with +[^{;]*' \
     | sed 's/^with  *//' \
     | sed 's/\[[^]]*\]//g' \
-    | tr '+' '\n' \
-    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | sed 's/::[A-Za-z0-9_]*//g' \
+    | grep -oE '[A-Z][A-Za-z0-9_]*' \
     | grep -vE "^($PORTABLE_ALLOWED_EFFECTS)$" \
     | sort -u)" || true
   if [ -n "$bad" ]; then
@@ -199,17 +206,23 @@ forbid_pattern \
 # at lines 304/322, so an allow-list there would fail the gate on correct code.
 # It keeps forbid_pattern above, which bans the direct `perform Fs::` and the
 # FS compile lane rather than the row.
-forbid_foreign_effect_rows \
+# Authority first, then the row. The row span now runs from `with` to the body,
+# so it also covers the capability named in an `allows` clause -- harmless as
+# defence in depth, but it would report the generic "non-portable effect row"
+# for a declaration whose actual problem is an authority grant. The specific
+# diagnostic has to win, and the self-test asserts the message names `allows`,
+# which is what caught this ordering.
+forbid_capability_authority \
   "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \
   "source compile API"
-forbid_foreign_effect_rows \
+forbid_capability_authority \
   "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
   "wasi source compile API"
 
-forbid_capability_authority \
+forbid_foreign_effect_rows \
   "lib/@vibe/compiler/entry/source_compile/source_compile.vibe" \
   "source compile API"
-forbid_capability_authority \
+forbid_foreign_effect_rows \
   "lib/@vibe/compiler/entry/source_compile/wasi_only/preprocess_compile.vibe" \
   "wasi source compile API"
 

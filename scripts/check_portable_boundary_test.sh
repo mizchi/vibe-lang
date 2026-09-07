@@ -341,8 +341,40 @@ else
 fi
 restore
 
+# --- cases 20-21: a qualified effect item -----------------------------------
+#
+# `parse_effect_item` accepts `Ident::Ident`, and `with Exception::Throw + Fs`
+# compiles. This was the sixth form the old grammar-matching regex did not
+# know, and the reason the scan stopped modelling the grammar: it now reads the
+# whole span between `with` and the body and checks every capability name in
+# it, so separators and item shapes do not matter. The allowed-qualified case
+# is what proves the `::op` suffix is dropped rather than read as a name.
+printf '\nexport fn probe_qual() -> Unit with Exception::Throw + Fs {\n  ()\n}\n' >> "$impl"
+if grep -qF 'with Exception::Throw + Fs' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    fail "case: a qualified effect item hid the capability after it"
+  else
+    pass "case: a capability after a qualified effect item is rejected"
+  fi
+else
+  fail "case: the qualified-item mutation did not land -- the assertion proves nothing"
+fi
+restore
+
+printf '\nexport fn probe_qual_ok() -> Unit with Exception::Throw {\n  ()\n}\n' >> "$impl"
+if grep -qF 'with Exception::Throw {' "$impl"; then
+  if bash "$gate" >/dev/null 2>&1; then
+    pass "case: a qualified allowed item is accepted"
+  else
+    fail "case: 'with Exception::Throw' was rejected -- the operation name was read as an effect"
+  fi
+else
+  fail "case: the qualified-item mutation did not land -- the assertion proves nothing"
+fi
+restore
+
 if [ "$fails" -ne 0 ]; then
   echo "portable-boundary-test: FAILED" >&2
   exit 1
 fi
-echo "portable-boundary-test: ok (control + 19 cases)"
+echo "portable-boundary-test: ok (control + 21 cases)"
