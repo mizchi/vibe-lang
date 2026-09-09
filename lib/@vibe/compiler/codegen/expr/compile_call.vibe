@@ -1532,9 +1532,101 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
       EIdent(cn, _) => cn == "Fs::stat_token" || cn == "vibe_fs_stat_token_raw" || cn == "Profiler::now_us" || cn == "Profiler::heap_bytes" || cn == "Env::args_len" || cn == "String::length" || cn == "Array::length" || cn == "Bytes::length" || cn == "String::char_code_at" || cn == "String::index_of" || cn == "String::last_index_of" || cn == "Stdin::read_char",
       _ => false
     }
+  } else if tag == 7 {
+    // #2585: the JOIN shapes. A join is an Int only when EVERY way out of it
+    // is -- the same AND semantics, and the same fail-closed direction, that
+    // cc_expr_is_floatish / _stringish / _boolish in this file have had since
+    // #825/#2432. `ts_known_int` was the one classifier of the four without
+    // them, so an `if` / `match` / block argument fell through to the runtime
+    // string-pointer heuristic below, which returns the operand UNCHANGED when
+    // `raw >> 32` lands in bounds. A tagged Int is `n << 1`, so that happens
+    // for every `n >= 2^37` -- measured, on stage2 AND on the committed seed:
+    //
+    //   __to_string(if flag { 214748364804 } else { 0 })  ->  "  =B at "
+    //   __to_string(if flag { 137438953472 } else { 0 })  ->  ""
+    //   __to_string(mk(xs))                               ->  "214748364804"
+    //
+    // -- eight bytes read from the static data section at `raw >> 32`, with no
+    // diagnostic, while the wasm-gc lane printed the number. Both arms are Int
+    // LITERALS in the first case, so nothing about the type was ambiguous; the
+    // shape simply had no arm here. Same class as #2422, which fixed it for
+    // `+ - * /` after the identical symptom (`"\{i + j}" -> "x "`).
+    ts_known_int(get_eif_then(e), local_names, ctx) && ts_known_int(get_eif_else(e), local_names, ctx)
+  } else if tag == 14 {
+    ts_known_int(get_eseq_second(e), local_names, ctx)
+  } else if tag == 9 {
+    ts_binder_known_int(get_elet_name(e), get_elet_val(e), get_elet_body(e), local_names, ctx)
+  } else if tag == 10 {
+    ts_binder_known_int(get_eletrec_name(e), get_eletrec_val(e), get_eletrec_body(e), local_names, ctx)
+  } else if tag == 11 {
+    ts_binder_known_int(get_eletmut_name(e), get_eletmut_val(e), get_eletmut_body(e), local_names, ctx)
+  } else if tag == 16 {
+    ts_arms_known_int(get_match_arms(e), local_names, ctx)
   } else {
     false
   }
+}
+
+/// #2585: a `let` / `let rec` / `let mut` join arm, restricted to the ONE
+/// shape answerable WITHOUT an environment -- cc_expr_is_floatish's #2432
+/// reasoning, kept in the same words because it is the same constraint. The
+/// body is a single identifier and the binder immediately above it binds that
+/// exact name, so no inner scope can intervene and no outer binding of the
+/// same name is reachable; the binder's VALUE therefore answers for the body.
+/// Anything deeper -- `let x = 0; let z = x; z` -- is NOT answerable this way
+/// and stays open, falling back to the runtime heuristic exactly as before.
+/// Closing it needs the binding's TYPE (#2424's channel); the alternative, an
+/// environment carried through the descent, is the design AGENTS.md records
+/// going silently wrong (an outer `let v = 1` read for an inner `v` of another
+/// type).
+fn ts_binder_known_int(name: String, value: Expr, body: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if expr_tag(body) == 4 && get_eident_name(body) == name {
+    ts_known_int(value, local_names, ctx)
+  } else {
+    false
+  }
+}
+
+/// #2585: every arm of a `match` in Int-operand position. AND semantics like
+/// the `if` arm, and `false` for an empty match rather than a vacuous `true`.
+///
+/// An arm whose pattern BINDS a name is not classified. `ts_known_int`'s
+/// identifier arm resolves through `local_names`, which does not yet carry the
+/// arm's own binders at classification time -- so `match o { Some(v) => v, .. }`
+/// would judge the arm's `v` against an OUTER `v` wherever one exists, and
+/// answer for the wrong binding. Refusing such an arm costs a fallback to the
+/// runtime heuristic, which is exactly today's behaviour and so cannot regress;
+/// answering it from the wrong binding would be the silently-wrong failure this
+/// change exists to remove. (The floatish / stringish / boolish siblings do not
+/// draw this distinction -- that is a pre-existing exposure, not one widened
+/// here.)
+fn ts_arms_known_int(arms: Array[(Pat, Expr)], local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let n = Array::length(arms)
+  if n == 0 {
+    false
+  } else {
+    let mut all = true
+    let mut i = 0
+    while i < n {
+      let arm = Array::get(arms, i)
+      if ts_pat_binds_nothing(get_arm_pat(arm)) && ts_known_int(get_arm_body(arm), local_names, ctx) {
+        ()
+      } else {
+        all = false
+      }
+      i = i + 1
+    }
+    all
+  }
+}
+
+/// #2585: a pattern that introduces no binding, so an arm body under it can be
+/// classified against the enclosing `local_names` with no scope of its own. A
+/// nullary constructor binds nothing either, but `is_pctor` cannot say whether
+/// its sub-patterns do, so it stays out -- conservative, and the arms that
+/// matter for an Int join (`0 =>`, `true =>`, `_ =>`) are all here.
+fn ts_pat_binds_nothing(p: Pat) -> Bool {
+  is_pwild(p) || is_pint(p) || is_pbool(p) || is_pstring(p)
 }
 
 /// A synthesized `EString` literal is NOT in the compile unit's string table

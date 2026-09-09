@@ -1,0 +1,95 @@
+// #2585: `__to_string` of an Int reached through a JOIN -- an `if`, a `match`,
+// a sequence, or a block whose tail is its own binder.
+//
+// `ts_known_int` (codegen/expr/compile_call.vibe) had no arm for these shapes
+// and `typed_lowering_arg_offset` answers only for an ident, a call or a
+// projection, so neither the syntactic classifier nor the typed channel could
+// name them. Codegen fell through to the runtime string-pointer heuristic,
+// which returns the operand UNCHANGED when `raw >> 32` lands in bounds. A
+// tagged Int is `n << 1`, so that fires for every `n >= 2^37` (137438953472)
+// and the value rendered as bytes read from the static data section:
+//
+//   __to_string(if flag { 214748364804 } else { 0 })  ->  "  =B at "
+//   __to_string(if flag { 137438953472 } else { 0 })  ->  ""
+//
+// -- silently, with no diagnostic, while the wasm-gc lane printed the number.
+// Measured on the committed seed too, so it was long-standing.
+//
+// Every case below therefore uses a value AT or ABOVE 2^37: below the
+// threshold the heuristic cannot fire, so a small value would pass with the
+// bug still in place. `THRESH` is exactly 2^37, the first value that breaks.
+let THRESH = 137438953472
+
+let BIG = 214748364804
+
+fn mk(xs: Array[Int], i: Int) -> Int {
+  Array::get(xs, i)
+}
+
+test "if over two int literals" {
+  let flag = BIG > 0
+  inspect(__to_string(if flag { BIG } else { 0 }), "214748364804")
+}
+
+test "if at exactly 2^37, the first value the heuristic can misread" {
+  let flag = THRESH > 0
+  inspect(__to_string(if flag { THRESH } else { 0 }), "137438953472")
+}
+
+test "if whose arm is a user call" {
+  let xs = [BIG]
+  let flag = Array::length(xs) > 0
+  inspect(__to_string(if flag { mk(xs, 0) } else { 0 }), "214748364804")
+}
+
+test "match arms that bind nothing" {
+  let xs = [BIG]
+  let flag = Array::length(xs) > 0
+  inspect(__to_string(match flag { true => mk(xs, 0), false => 0 }), "214748364804")
+}
+
+test "block whose tail is its own binder" {
+  let xs = [BIG]
+  inspect(__to_string({ let w = mk(xs, 0); w }), "214748364804")
+}
+
+test "nested join: an if inside an if" {
+  let xs = [BIG]
+  let flag = Array::length(xs) > 0
+  inspect(__to_string(if flag { if flag { mk(xs, 0) } else { 1 } } else { 0 }), "214748364804")
+}
+
+// A sum whose operand is a `let` bound from a CALL. #2422 made `+ - * /` Int
+// when both operands are, but that arm reads slot kinds, which only know a
+// binding codegen could already see as intish -- a call result is not one. So
+// the bare `__to_string(v)` beside it answered (the ident has a key the checker
+// typed) while `__to_string(v + 0)` rendered `el-binop`. Measured on the
+// pre-fix compiler AND on the committed seed, so this half was long-standing
+// too and is not a join shape at all; recording the operands' keys is what
+// lets #2422's existing recursion answer.
+test "sum of a call-bound local" {
+  let xs = [BIG]
+  let v = mk(xs, 0)
+  inspect(__to_string(v + 0), "214748364804")
+  inspect(__to_string(0 + v), "214748364804")
+  inspect(__to_string(v - 0), "214748364804")
+}
+
+// The shapes that DID already answer stay answering. A fix that broke one of
+// these would be trading one silent-wrong for another.
+test "shapes that already answered still answer" {
+  let xs = [BIG]
+  let v = mk(xs, 0)
+  inspect(__to_string(mk(xs, 0)), "214748364804")
+  inspect(__to_string(v), "214748364804")
+  inspect(__to_string(BIG), "214748364804")
+}
+
+// A join whose arms are STRINGS must not be forced onto the integer path by
+// the new arms -- the classifier answers "is this an Int", and a wrong `true`
+// here would render a string as a number.
+test "a string-armed join is not classified as Int" {
+  let flag = BIG > 0
+  inspect(if flag { "a" } else { "b" }, "a")
+  inspect(String::concat(if flag { "x" } else { "y" }, "z"), "xz")
+}
