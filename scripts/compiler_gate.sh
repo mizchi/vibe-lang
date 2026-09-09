@@ -71,6 +71,15 @@ for lane in "${selected[@]}"; do
   validate_lane "$lane"
 done
 
+# The lane entrypoints, declared for scripts/check_gate_wiring.sh (#2580): the
+# loop below runs a path built at RUNTIME from $lane, which a lexical scanner
+# cannot read. Rather than have it guess -- or stay silent, which is the same
+# as unchecked -- the targets are named here and the gate verifies each file
+# exists. GATE_LANES in tests/gates/lib.sh is the list these mirror.
+# gate-wiring: reaches tests/gates/bootstrap/run.sh
+# gate-wiring: reaches tests/gates/early/run.sh
+# gate-wiring: reaches tests/gates/mid/run.sh
+# gate-wiring: reaches tests/gates/late/run.sh
 for lane in "${selected[@]}"; do
   script="$(gate_lane_script "$lane")"
   if [ ! -f "$script" ]; then

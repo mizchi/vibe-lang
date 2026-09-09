@@ -6003,6 +6003,13 @@ bash "$ROOT_DIR/scripts/check_gate_portability_test.sh"
 # message each mutation adds on top: block count, ja/en parity, and whether the
 # chapter's documented 42 -> 43 edit still applies. ~1s, no generation needed.
 bash "$ROOT_DIR/scripts/check_book_console_test.sh"
+# #2580: and the PRODUCTION gate, which ran nowhere in CI. Only its self-test
+# was wired here, and a self-test proves its own red/green -- not that the book
+# transcripts still match the launcher. check_gate_wiring.sh found it on its
+# first correct run, and it was RED: the launcher had grown an `at off=62`
+# line the chapter did not carry, and the paragraph under it still said the
+# report has no position at all, a gap #2202 closed.
+bash "$ROOT_DIR/scripts/check_book_console.sh"
 
 # 107/107. The host runner's `[crash debug]` dump is OFF by default (#2199).
 #      It is compiler-developer diagnostics -- heap bytes, the RC freelist, raw

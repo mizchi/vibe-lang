@@ -45,13 +45,15 @@ $ vibe test demo_test.vibe
 FAIL demo_test.vibe
        failing test: double works
        assert_eq failed
+         at off=62
          expected: 43
          actual:   42
 [vibe-test] 0 passed, 1 failed (1 files, 1 tests)
 ```
 
-The report does not yet carry a line number, so two asserts with the
-same expected value in one test are indistinguishable (#2202).
+`at off=62` is the assert's own position, so two asserts with the same
+expected value in one test are told apart (#2202). It is a BYTE offset,
+not a line number -- every position in vibe is a byte offset (ADR-0108).
 
 `assert_eq(actual, expected)` works for any type that can be compared,
 and compares strings by content — so you can assert directly on a
