@@ -1528,8 +1528,24 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
     // persistent-source-groups cache row for one specific file, "invalid
     // persistent source group cache group row" on re-read). The bound can
     // never be airtight for 61-bit hashes; static knowledge is.
+    //
+    // #2585 review (Codex P1): the name must not be SHADOWED. This arm used to
+    // answer from the callee SPELLING alone, while `cc_builtin_call_ret_kind`
+    // in this same file has always required that no local and no user `fn`
+    // carry the name -- so with the supported declaration
+    // `fn String::length(s: String) -> String { s }` in scope,
+    // `__to_string(String::length("abc"))` answered `169651208193`. That was
+    // already wrong before the join arms below; what those arms did was
+    // PROPAGATE it into positions that had been right, because with no arm for
+    // a join the runtime heuristic returned the packed string unchanged:
+    // `__to_string(if c { String::length("aaa") } else { .. })` answered "aaa"
+    // and became "188978561025". Guarding here fixes the propagation and the
+    // original together, and it is the same guard, not a second spelling of it.
     match get_ecall_callee(e) {
-      EIdent(cn, _) => cn == "Fs::stat_token" || cn == "vibe_fs_stat_token_raw" || cn == "Profiler::now_us" || cn == "Profiler::heap_bytes" || cn == "Env::args_len" || cn == "String::length" || cn == "Array::length" || cn == "Bytes::length" || cn == "String::char_code_at" || cn == "String::index_of" || cn == "String::last_index_of" || cn == "Stdin::read_char",
+      EIdent(cn, _) => {
+        let bn = canonical_builtin_name(cn)
+        ts_int_returning_builtin_name(bn) && !ts_name_is_shadowed(bn, local_names, ctx)
+      },
       _ => false
     }
   } else if tag == 7 {
@@ -1564,6 +1580,31 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
     ts_arms_known_int(get_match_arms(e), local_names, ctx)
   } else {
     false
+  }
+}
+
+/// #769's list of Int-returning builtins, lifted out of `ts_known_int`'s tag-8
+/// arm so the shadow guard beside it reads as one condition rather than a
+/// chain with a trailing `&&`.
+fn ts_int_returning_builtin_name(bn: String) -> Bool {
+  bn == "Fs::stat_token" || bn == "vibe_fs_stat_token_raw" || bn == "Profiler::now_us" || bn == "Profiler::heap_bytes" || bn == "Env::args_len" || bn == "String::length" || bn == "Array::length" || bn == "Bytes::length" || bn == "String::char_code_at" || bn == "String::index_of" || bn == "String::last_index_of" || bn == "Stdin::read_char"
+}
+
+/// #2585 review (Codex P1): does the source shadow this builtin name?
+///
+/// The two tests are `cc_builtin_call_ret_kind`'s, unchanged: a LOCAL of the
+/// same name (the call resolves to a closure value, not the builtin), or a USER
+/// `fn` of that name in the func table (`fi < num_user_funcs` -- the builtin
+/// entries sit above that boundary). Shadowing a qualified builtin name is
+/// supported and exercised in-tree; `borrow_returning_names_test.vibe` declares
+/// `fn Map::iter_get` exactly this way and asserts the source declaration is
+/// what wins.
+fn ts_name_is_shadowed(bn: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  if find_local_slot(local_names, bn) >= 0 {
+    true
+  } else {
+    let fi = cc_ft_first_idx(ctx.func_table, bn)
+    fi >= 0 && fi < ctx.num_user_funcs
   }
 }
 

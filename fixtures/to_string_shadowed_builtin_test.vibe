@@ -1,0 +1,59 @@
+// #2585 review (Codex P1): a builtin name the source has SHADOWED is not that
+// builtin, and `__to_string` must not classify a call to it from the callee
+// SPELLING alone.
+//
+// `ts_known_int`'s tag-8 arm (codegen/expr/compile_call.vibe) hard-codes a list
+// of Int-returning builtin names. It used to match on the spelling with no
+// shadow test, while `cc_builtin_call_ret_kind` in the same file has always
+// required that no local and no user `fn` carry the name. Measured before the
+// guard, with the declaration below in scope:
+//
+//   __to_string(String::length("abc"))                             -> "169651208193"
+//   __to_string(if c { String::length("aaa") } else { .. })        -> "aaa"   (correct)
+//
+// -- the bare call was already wrong. Adding the #2585 join arms then
+// PROPAGATED it, because with no arm for a join the runtime string-pointer
+// heuristic had been returning the packed string unchanged, which happened to
+// be right:
+//
+//   __to_string(if c { String::length("aaa") } else { .. })        -> "188978561025"
+//
+// Both are fixed by guarding the tag-8 arm. Shadowing a qualified builtin name
+// is supported and exercised elsewhere in-tree -- borrow_returning_names_test
+// .vibe declares `fn Map::iter_get` the same way and asserts the source
+// declaration wins.
+//
+// This lives in its OWN file because the declaration shadows `String::length`
+// for the whole module, which would change what every other test in a shared
+// file means.
+fn String::length(s: String) -> String {
+  s
+}
+
+test "a bare call to a shadowed builtin renders as what the shadow returns" {
+  inspect(__to_string(String::length("abc")), "abc")
+}
+
+test "a shadowed builtin inside an if is not forced onto the integer path" {
+  let flag = true
+  inspect(__to_string(if flag { String::length("aaa") } else { String::length("bbb") }), "aaa")
+}
+
+test "a shadowed builtin inside a match is not forced onto the integer path" {
+  let flag = true
+  inspect(__to_string(match flag { true => String::length("ccc"), false => String::length("ddd") }), "ccc")
+}
+
+test "a shadowed builtin through a binder join" {
+  inspect(__to_string({ let w = String::length("eee"); w }), "eee")
+}
+
+// The shadow must not disable the classification for the builtins that are NOT
+// shadowed: `Array::length` still returns Int here and must still render as a
+// number through a join. Without this, "guard everything" would pass the tests
+// above while silently reopening #2585.
+test "an unshadowed Int builtin still classifies through a join" {
+  let xs = [1, 2, 3]
+  let flag = true
+  inspect(__to_string(if flag { Array::length(xs) } else { 0 }), "3")
+}
