@@ -494,6 +494,13 @@ fn idp_call_is_unsafe(callee: Expr) -> Bool {
 /// perform in disguise), so only exact, individually-verified names belong
 /// here. Extending this list requires re-checking the new name's entry in
 /// those files, not just adding a plausible-looking string.
+///
+/// #2373: this is THE list -- both consumers read it. `idp_is_pure_builtin_
+/// call` (this pass, and `scps_named_call_ok`'s suspend-class lowering
+/// through it) and `edp_is_pure_builtin_call` (the evidence pass's safety
+/// scans) share one table; the evidence pass used to keep a second copy whose
+/// doc comment claimed to mirror this one and did not. The audit criterion is
+/// the same for both, so a name belongs to both or to neither.
 fn idp_pure_builtin_names() -> Array[String] {
   [
     "String::concat",
@@ -1146,7 +1153,7 @@ fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_b
 /// effect_nested_handles.vibe for the regression lock. A call to a plain
 /// user-defined function the checker has ALREADY proven pure (empty
 /// declared row, `edp_pure_fn_names`) is ALSO safe now, not just the
-/// hand-audited `edp_pure_builtin_names` allowlist -- see fixtures/
+/// hand-audited `idp_pure_builtin_names` allowlist -- see fixtures/
 /// effect_handle_call_evidence_pure_helper.vibe. A bare `.field` READ
 /// (`EDot`, not a call through it) is ALSO safe now -- see fixtures/
 /// effect_handle_call_evidence_struct_field.vibe -- despite this pass
@@ -4859,7 +4866,7 @@ fn empty_str_array() -> Array[String] {
 /// clause cannot perform ANY effect, ever, so it cannot possibly hide a
 /// perform of `ename`, a call to a needing function, or anything else this
 /// pass would need to rewrite -- generalizing the old hand-audited
-/// `edp_pure_builtin_names` allowlist (kept as-is for the handful of
+/// `idp_pure_builtin_names` allowlist (kept as-is for the handful of
 /// builtins the checker doesn't track as ordinary functions) to every
 /// user-defined pure function too. Only the call's OWN ARGS still need
 /// checking (they're evaluated in the CALLER's context, where a perform of
@@ -5187,126 +5194,79 @@ fn edp_builtin_is_first_order(nm: String) -> Bool {
   }
 }
 
-/// Mirrors inline_direct_perform.vibe's idp_pure_builtin_names allowlist
-/// exactly (same hand-audited, individually-verified set -- see that file's
-/// doc comment for the auditing rule).
-fn edp_pure_builtin_names() -> Array[String] {
-  [
-    "String::concat",
-    "String::equals",
-    "String::length",
-    "String::substring",
-    "string_char_at",
-    "String::trim",
-    "String::split",
-    "String::contains",
-    "String::index_of",
-    // #2345: mirrors idp_pure_builtin_names' entry (same audit, see that
-    // list's comment).
-    "Bytes::index_of_bytes",
-    // #2345: mirrors idp_pure_builtin_names' entries (same audit).
-    "Bytes::index_of",
-    "Bytes::count",
-    "Bytes::last_index_of",
-    "Bytes::compare",
-    "String::to_lower",
-    "String::to_upper",
-    "String::ends_with",
-    "String::starts_with",
-    "String::char_code_at",
-    "String::last_index_of",
-    "String::from_char_code",
-    "String::join",
-    "Char::to_int",
-    "Char::from_int",
-    "Int::to_double",
-    "Int::to_float",
-    "Int::to_string",
-    "Double::to_int",
-    "Float::to_int",
-    "Double::to_string",
-    "Float::to_string",
-    "Double::abs",
-    "Double::floor",
-    "Double::ceil",
-    "Double::max",
-    "Double::min",
-    "Int::parse",
-    "Double::parse",
-    // Mirrors idp_pure_builtin_names' own additions (same doc comments,
-    // same audits) -- see that function's doc comment for the rationale,
-    // including 追記34 V2's `__to_string` (string-interp desugar output)
-    // and `not`.
-    "__index",
-    "Array::get",
-    "Map::get",
-    "Bytes::get",
-    "Array::length",
-    "Map::size",
-    "Bytes::length",
-    "__to_string",
-    "not",
-    // #1324: desugar_trait_dict's undeterminable-operand helpers -- mirrors
-    // idp_pure_builtin_names' entry (same audit, see that list's comment).
-    "__generic_add",
-    "__generic_rel_diff",
-    "str_lex_diff",
-    // #1374: the exception-kind side channel's write, emitted before every
-    // `throw` -- mirrors idp_pure_builtin_names' entry (same audit).
-    "Array::set",
-    // ADR-0089 D1 (#1218/#1312): the HOST sleeps. Not effect-free -- `sleep`
-    // carries the nominal Async row -- but what this list actually gates is
-    // "an opaque callee that cannot PERFORM a user effect and never invokes
-    // a function-typed argument", and both qualify (Int -> Unit host
-    // calls). Needed because the scoped sleep retarget deliberately leaves
-    // the raw builtin in top-level fn bodies when no entry boundary exists
-    // (Codex P1 on #1312): an Async-row fn like `fn delay() with Async
-    // { sleep(1) }` must classify as PERFORM-FREE (the stat_token
-    // precedent, edp_append_perform_free_row_fns) rather than sinking the
-    // whole effect's migration to ineligible on an unknown callee -- and
-    // the same call must pass scps_calls_ok when such a fn is driven from
-    // a suspend-class handle.
-    "sleep",
-    "sleep_blocking",
-    // ADR-0089 D2 (#1218): Future cell primitives -- mirrors
-    // idp_pure_builtin_names' entry (same audit, see that list's comment).
-    "Future::pending",
-    "Future::ready",
-    "Future::resolve",
-    // ADR-0089 step 4 (#1218): host-future surface + raw halves -- mirrors
-    // idp_pure_builtin_names' entry (same audit, see that list's comment).
-    "host_future_get",
-    "vibe_hf_get_raw",
-    "vibe_hf_wait_raw",
-    // ADR-0089 (c) (#1218): the NAMED sibling; its per-name raw halves are
-    // matched by prefix below (see idp_is_host_future_named_raw's comment).
-    "host_future_named",
-    // ADR-0089 Decision 3 (#1218): host-stream surface + shared raw read --
-    // mirrors idp_pure_builtin_names' entry (same audit, see that list's
-    // comment; the per-name `vibe_hs_get_raw$<name>` halves are matched by
-    // prefix below).
-    "host_stream_named",
-    "vibe_hs_close_raw",
-    "vibe_hs_read_raw",
-    "Stdin::read_via_stream",
-    "StdinStream::next",
-    "StdinStream::close",
-    "vibe_stdin_provider_acquire_raw",
-    "vibe_stdin_provider_read_raw",
-    "vibe_stdin_provider_close_raw"
-  ]
-}
-
-// #1875 R3: module-level memo (initialized once -- module_let_memo_test.vibe
+// #2373: this used to be a SECOND copy of the list, whose doc comment claimed
+// to mirror `idp_pure_builtin_names` "exactly" while three names
+// (`Array::concat`, `HostStream::next`, `HostStream::close`) were only in the
+// idp copy. The divergence was invisible because it ran in the harmless
+// direction -- edp's consumer has fallbacks (the registry first-order probe in
+// `edp_has_unsafe_construct`, the raw-half prefixes below) and idp's
+// (`scps_named_call_ok`, suspend-class lowering) has none -- so nothing failed
+// and nothing checked it either. A mirror gate would have enforced the copy;
+// there is no copy to enforce now, which is the same guarantee without a
+// script that can rot. The audit criterion is one criterion for both consumers
+// ("can neither perform a user effect nor invoke a function-typed argument"),
+// so a name belongs to both lists or to neither -- see
+// idp_pure_builtin_names' doc comment for what adding one requires.
+//
+// #1875 R3: the memo is idp's (initialized once -- module_let_memo_test.vibe
 // is the spec). edp_is_pure_builtin_call runs per CALL NODE inside every
 // safety scan and read query (RQOpaqueCall via edp_callee_is_resolvable,
 // edp_has_unsafe_construct_sc), so rebuilding the ~100-entry table per probe
 // was ~17MB of allocation for one analyzed effect's performing-fns fixpoint
 // alone.
-let edp_pure_builtin_names_table: Array[String] = edp_pure_builtin_names()
-
 fn edp_is_pure_builtin_call(nm: String) -> Bool {
-  idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) || edp_str_array_contains(edp_pure_builtin_names_table, nm)
+  idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) || edp_str_array_contains(idp_pure_builtin_names_table, nm)
+}
+
+/// #2373: the two consumers of the pure-builtin allowlist must not become two
+/// spellings of it again. `idp_is_pure_builtin_call` gates suspend-class
+/// lowering (`scps_named_call_ok`, which has no fallback: a name it does not
+/// recognize REFUSES the program naming the call) and `edp_is_pure_builtin_
+/// call` gates the evidence pass's safety scans (which do have fallbacks, so a
+/// name missing there only sinks eligibility silently). The failure directions
+/// are opposite, so neither list is the safe one to forget -- which is exactly
+/// how the second copy sat three names behind the first without anything
+/// failing. Both predicates now read one table; this asserts they answer
+/// alike, including the negative control that makes the assertion mean
+/// something (a predicate that returned `true` for everything would satisfy
+/// the positive half alone). Same shape as `is_borrow_ret_builtin`'s
+/// agreement test (#1979). Called from tests/pure_builtin_name_agreement_
+/// test.vibe.
+export fn verify_pure_builtin_name_agreement() -> Unit with Exception {
+  let names = idp_pure_builtin_names_table
+  if Array::length(names) == 0 {
+    throw("pure-builtin allowlist is empty: idp_pure_builtin_names_table has no entries, so every agreement check below is vacuous")
+  } else {
+    ()
+  }
+  let mut i = 0
+  while i < Array::length(names) {
+    let nm = Array::get(names, i)
+    if !idp_is_pure_builtin_call(nm) {
+      throw("pure-builtin allowlist drift: '\{nm}' is in idp_pure_builtin_names but idp_is_pure_builtin_call rejects it. The direct-perform pass and scps_named_call_ok read this predicate; a listed name it rejects refuses a program naming the call.")
+    } else {
+      ()
+    }
+    if !edp_is_pure_builtin_call(nm) {
+      throw("pure-builtin allowlist drift: '\{nm}' is in idp_pure_builtin_names but edp_is_pure_builtin_call rejects it. The evidence pass reads the SAME audited set -- if a second copy of the list was reintroduced, delete it and point edp_is_pure_builtin_call back at idp_pure_builtin_names_table.")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  // Negative control: `Array::push` mutates and `println` writes, so neither
+  // is on the audited set. Without this, both loops above would pass for a
+  // predicate that answered `true` unconditionally.
+  if idp_is_pure_builtin_call("Array::push") || edp_is_pure_builtin_call("Array::push") {
+    throw("pure-builtin allowlist drift: 'Array::push' is not on the audited set but a predicate accepts it")
+  } else {
+    ()
+  }
+  if idp_is_pure_builtin_call("println") || edp_is_pure_builtin_call("println") {
+    throw("pure-builtin allowlist drift: 'println' is not on the audited set but a predicate accepts it")
+  } else {
+    ()
+  }
 }
 
 /// Every top-level function name whose declared effect row is
