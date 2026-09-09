@@ -5,19 +5,28 @@
 // and `typed_lowering_arg_offset` answers only for an ident, a call or a
 // projection, so neither the syntactic classifier nor the typed channel could
 // name them. Codegen fell through to the runtime string-pointer heuristic,
-// which returns the operand UNCHANGED when `raw >> 32` lands in bounds. A
-// tagged Int is `n << 1`, so that fires for every `n >= 2^37` (137438953472)
-// and the value rendered as bytes read from the static data section:
+// which returns the operand UNCHANGED when the value looks like a packed
+// `(ptr << 32) | len`, so the render produced bytes read out of the program's
+// own data section -- silently, with no diagnostic, while the wasm-gc lane
+// printed the number. Measured on the committed seed too, so it was
+// long-standing.
 //
-//   __to_string(if flag { 214748364804 } else { 0 })  ->  "  =B at "
-//   __to_string(if flag { 137438953472 } else { 0 })  ->  ""
+// CHOOSING A VALUE FOR A TEST IN THIS CLASS -- the bug fires only inside a
+// WINDOW, and both ends of it will let a bad compiler pass:
 //
-// -- silently, with no diagnostic, while the wasm-gc lane printed the number.
-// Measured on the committed seed too, so it was long-standing.
+//   lower end: `abs = (n << 1) >>u 32` must be >= 64, i.e. `n >= 2^37`
+//              (137438953472). Below that the heuristic cannot fire at all.
+//   upper end: `abs` must also stay INSIDE linear memory (`abs < memory_size`
+//              and `abs + low <= memory_size`, the #664 bounds). Those are
+//              LOAD-DEPENDENT, so a value large enough to push `abs` past the
+//              module's memory size also renders correctly with the bug
+//              present -- measured: 2^60 was right on the pre-fix compiler.
+//              A round constant like `1 << 60` is therefore NOT a regression
+//              test for this; it passes either way.
 //
-// Every case below therefore uses a value AT or ABOVE 2^37: below the
-// threshold the heuristic cannot fire, so a small value would pass with the
-// bug still in place. `THRESH` is exactly 2^37, the first value that breaks.
+// Every case below uses `BIG` or `THRESH`, both confirmed to be inside the
+// window: the whole file is RED on the pre-fix compiler. `THRESH` is exactly
+// 2^37, the first value that can break.
 let THRESH = 137438953472
 
 let BIG = 214748364804

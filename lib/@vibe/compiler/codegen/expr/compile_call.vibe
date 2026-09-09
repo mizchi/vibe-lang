@@ -1555,18 +1555,32 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
     // #825/#2432. `ts_known_int` was the one classifier of the four without
     // them, so an `if` / `match` / block argument fell through to the runtime
     // string-pointer heuristic below, which returns the operand UNCHANGED when
-    // `raw >> 32` lands in bounds. A tagged Int is `n << 1`, so that happens
-    // for every `n >= 2^37` -- measured, on stage2 AND on the committed seed:
+    // the value looks like a packed `(ptr << 32) | len`.
     //
-    //   __to_string(if flag { 214748364804 } else { 0 })  ->  "  =B at "
-    //   __to_string(if flag { 137438953472 } else { 0 })  ->  ""
-    //   __to_string(mk(xs))                               ->  "214748364804"
+    // When that fires is NOT a threshold on the value alone. All three of the
+    // #664 bounds emitted below must hold: `abs = raw >>u 32 >= 64`, `abs <
+    // memory.size * 65536`, and `abs + (raw & 0xFFFFFFFF) <= memory.size *
+    // 65536`. Only the first is a property of `n`: a tagged Int is `n << 1`,
+    // so it needs `n >= 2^37`. The other two are LOAD-DEPENDENT, which is what
+    // the #664 comment further down says in its own words -- so `n >= 2^37` is
+    // necessary and not sufficient, and a value large enough to push `abs`
+    // past the module's memory size renders correctly even with the bug
+    // present (measured: 2^60 was right on the pre-fix compiler).
     //
-    // -- eight bytes read from the static data section at `raw >> 32`, with no
-    // diagnostic, while the wasm-gc lane printed the number. Both arms are Int
+    // Measured on stage2 AND on the committed seed, inside that window:
+    //
+    //   __to_string(if flag { 214748364804 } else { 0 })  ->  8 junk bytes
+    //   __to_string(if flag { 137438953472 } else { 0 })  ->  ""  (len 0)
+    //
+    // The junk is whatever the program's own data section holds at `abs`, so
+    // it differs per program -- "  =B at " in one probe, "h:" in the fixture
+    // beside this file -- and is not quotable as a fixed string. No
+    // diagnostic; the wasm-gc lane printed the number. Both arms are Int
     // LITERALS in the first case, so nothing about the type was ambiguous; the
-    // shape simply had no arm here. Same class as #2422, which fixed it for
-    // `+ - * /` after the identical symptom (`"\{i + j}" -> "x "`).
+    // shape simply had no arm here. The control, correct before and after:
+    // `__to_string(mk(xs))` -> "214748364804", a shape that already had one.
+    // Same class as #2422, which fixed it for `+ - * /` after the identical
+    // symptom (`"\{i + j}" -> "x "`).
     ts_known_int(get_eif_then(e), local_names, ctx) && ts_known_int(get_eif_else(e), local_names, ctx)
   } else if tag == 14 {
     ts_known_int(get_eseq_second(e), local_names, ctx)
