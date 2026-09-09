@@ -99,20 +99,36 @@ grep -qF 'mapfile -d' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 1e2 did not 
 run && { cat "$TMP_ROOT/out" >&2; fail "a NUL-delimited mapfile call was accepted"; }
 ok "the NUL-delimited mapfile spelling is rejected"
 
+# --- red 1f: PREFIXED invocations. A command-position rule was the first
+# draft, and `if mapfile ...`, `command mapfile ...`, `! mapfile ...` and
+# `FOO=bar mapfile ...` all ran the builtin and all sailed past it (Codex on
+# #2588). Each is asserted on its own so a rule that fixes one and misses
+# another cannot pass.
+for prefixed in \
+  'if mapfile -t xs < input; then echo hi; fi' \
+  'command mapfile -t ys < input' \
+  '! mapfile -t zs < input' \
+  'FOO=bar mapfile -t ws < input'; do
+  reset_tree
+  printf '%s\n' "$prefixed" >> "$TMP_ROOT/scripts/clean.sh"
+  grep -qF "$prefixed" "$TMP_ROOT/scripts/clean.sh" || fail "fixture 1f did not land: $prefixed"
+  run && { cat "$TMP_ROOT/out" >&2; fail "a prefixed mapfile call was accepted: $prefixed"; }
+done
+ok "prefixed mapfile calls (if / command / ! / VAR=) are rejected"
+
 # --- green guard for 1d: the REPLACEMENT must pass, or the rule could be
-# satisfied by rejecting every array fill; and a mention of the word in a
-# comment or a message is not a call.
+# satisfied by rejecting every array fill; and a whole-line comment mentioning
+# the builtin is not a call -- the six converted scripts each carry one.
 reset_tree
 cat >> "$TMP_ROOT/scripts/clean.sh" <<'EOF'
 files=()
 while IFS= read -r line || [ -n "$line" ]; do
   files+=("$line")
 done < <(git ls-files)
-# mapfile is a bash 4 builtin, which is why this loop exists
-echo "use a read loop instead of mapfile"
+# bash 3.2 has no mapfile, which is why this loop exists
 EOF
 run || { cat "$TMP_ROOT/out" >&2; fail "the portable read-loop replacement was rejected"; }
-ok "the read-loop replacement passes, and mapfile in a comment or a string is not a call"
+ok "the read-loop replacement passes, and mapfile in a whole-line comment is not a call"
 
 # --- red 2: ripgrep behind a pipe.
 reset_tree

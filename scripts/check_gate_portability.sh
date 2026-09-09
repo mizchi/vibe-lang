@@ -94,13 +94,22 @@ findings="$(
     #    so the documented local sign-off commands did not run on a supported
     #    contributor platform (#2349).
     #
-    #    Only a real invocation counts: the word must start a command, so a
-    #    mention inside a comment or a message string passes.
+    #    Matched as a WORD anywhere on the line, not in command position.
+    #    A command-position rule was the first draft and it was too narrow in
+    #    a way that is easy to reach by accident (Codex on #2588): `if mapfile
+    #    -t xs < f; then`, `command mapfile ...`, `! mapfile ...` and
+    #    `FOO=bar mapfile ...` all run the builtin and all sailed past it.
+    #    Enumerating reserved words, negation, assignment prefixes and the
+    #    command/builtin wrappers is the losing side of that game, so this
+    #    fails CLOSED instead -- the same shape the `rg` rule above uses, for
+    #    the same reason. Whole-line comments are already dropped further up;
+    #    a mention in a message string is a finding, and the fix is to reword
+    #    the message.
     #
     #    NOTE for anyone editing this awk program: it is one single-quoted
     #    shell string, so an apostrophe anywhere in here -- including in a
     #    comment -- closes it and the shell then parses awk syntax as its own.
-    /(^|[;&|(]|[[:space:]]then|[[:space:]]do|[[:space:]]else)[[:space:]]*(mapfile|readarray)([[:space:]]|$)/ {
+    /(^|[^A-Za-z0-9_.\/-])(mapfile|readarray)([^A-Za-z0-9_.\/-]|$)/ {
       printf "  %s:%d: mapfile/readarray is a bash 4 builtin; macOS ships bash 3.2 -- fill the array with a `while IFS= read -r ...` loop over a process substitution instead (`read -r -d` for NUL-delimited input)\n", rel, FNR
       next
     }
