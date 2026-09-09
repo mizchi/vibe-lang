@@ -1,0 +1,188 @@
+//# #2555: the typed-lowering sidecar codec's corruption contract, asserted
+//# DIRECTLY instead of through the shape that happened to encode it.
+//#
+//# The v5-v7 envelope wrote every row twice and spelled both counts in unary.
+//# Neither was chosen on its merits: PR #2425 round 3 asked for "a declared
+//# count/checksum", v2 shipped exactly that, and it was pulled again for a
+//# constraint that turned out to be a misdiagnosis. v8 restores the count and
+//# adds a digest, and this file pins what that has to keep buying.
+//#
+//# The property is one-directional and that is the point: a corrupted sidecar
+//# must decode as `None`, an ordinary cache MISS that re-checks the module.
+//# It must never decode as a DIFFERENT table, because the offsets decide what
+//# a compile emits (#2425, #2449) -- a wrong table is the silent-wrong failure,
+//# a miss is just slower.
+import @vibe/core {
+  array_empty
+}
+
+import @vibe/compiler/runtime {
+  module_typed_lowering_text, parse_module_typed_lowering_offsets_text
+}
+
+fn sample_text() -> String {
+  module_typed_lowering_text([8, 24, 6263971], [40, 128], ["I", "S"])
+}
+
+/// Decodes back to exactly what was encoded?
+fn round_trips(text: String) -> Bool {
+  match parse_module_typed_lowering_offsets_text(text) {
+    Some((offs, eq_offs, eq_keys)) => Array::length(offs) == 3 && Array::get(offs, 0) == 8 && Array::get(offs, 1) == 24 && Array::get(offs, 2) == 6263971 && Array::length(eq_offs) == 2 && Array::get(eq_offs, 0) == 40 && Array::get(eq_offs, 1) == 128 && Array::length(eq_keys) == 2 && Array::get(eq_keys, 0) == "I" && Array::get(eq_keys, 1) == "S",
+    None => false
+  }
+}
+
+fn rejected(text: String) -> Bool {
+  match parse_module_typed_lowering_offsets_text(text) {
+    Some(_) => false,
+    None => true
+  }
+}
+
+/// Drop the first line whose content is exactly `victim`.
+fn drop_line(text: String, victim: String) -> String {
+  edit_line(text, victim, "", true)
+}
+
+/// Replace the first line whose content is exactly `victim`, IN PLACE.
+///
+/// In place is the whole point. Appending the replacement to the end of the
+/// file instead would put it after the end marker, where the decoder rejects it
+/// for being trailing content -- so the test would pass while the mechanism it
+/// names went unexercised. Measured: with the digest check removed from the
+/// decoder, an append-style "changed offset digit" case still passed.
+fn replace_line(text: String, victim: String, replacement: String) -> String {
+  edit_line(text, victim, replacement, false)
+}
+
+fn edit_line(text: String, victim: String, replacement: String, drop: Bool) -> String {
+  let lines = String::split(text, "\n")
+  let kept = array_empty()
+  let mut edited = false
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if !edited && line == victim {
+      edited = true
+      if drop {
+        ()
+      } else {
+        Array::push(kept, replacement)
+      }
+    } else {
+      Array::push(kept, line)
+    }
+    i = i + 1
+  }
+  String::join(kept, "\n")
+}
+
+/// Insert `line` immediately before the end marker, i.e. inside the envelope.
+fn insert_before_end(text: String, line: String) -> String {
+  replace_line(text, "module_typed_lowering_offsets\tend", String::concat(line, "\nmodule_typed_lowering_offsets\tend"))
+}
+
+test "a well-formed envelope round-trips" {
+  inspect(round_trips(sample_text()), "true")
+}
+
+// Every mutation below must be REJECTED. Each one is a real way a sidecar can
+// come back wrong, and each is caught by a different piece of the envelope --
+// stated next to it, so a future change that removes a piece fails the case
+// that names it rather than silently widening what is accepted.
+
+test "a dropped offset row is rejected (the count)" {
+  inspect(rejected(drop_line(sample_text(), "24")), "true")
+}
+
+test "a dropped eq row is rejected (the eqcount)" {
+  inspect(rejected(drop_line(sample_text(), "module_typed_lowering_offsets\teqrow\t40\tI")), "true")
+}
+
+test "a changed offset digit is rejected (the digest)" {
+  // In place, so the count still matches and the end marker is still there:
+  // this is exactly the case the per-row duplication used to catch and the
+  // counts cannot. Removing the digest check from the decoder makes THIS test
+  // fail, which is how it was shown to be load-bearing.
+  inspect(rejected(replace_line(sample_text(), "24", "25")), "true")
+}
+
+test "a changed eq key is rejected (the digest)" {
+  inspect(rejected(replace_line(sample_text(), "module_typed_lowering_offsets\teqrow\t40\tI", "module_typed_lowering_offsets\teqrow\t40\tZ")), "true")
+}
+
+test "truncation before the end marker is rejected (the end marker)" {
+  inspect(rejected(drop_line(sample_text(), "module_typed_lowering_offsets\tend")), "true")
+}
+
+test "content after the end marker is rejected" {
+  // The only case that SHOULD be an append.
+  inspect(rejected(String::concat(sample_text(), "8\n")), "true")
+}
+
+test "a missing digest line is rejected" {
+  let lines = String::split(sample_text(), "\n")
+  let kept = array_empty()
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "module_typed_lowering_offsets\tdigest\t") {
+      ()
+    } else {
+      Array::push(kept, line)
+    }
+    i = i + 1
+  }
+  inspect(rejected(String::join(kept, "\n")), "true")
+}
+
+test "a wrong digest is rejected" {
+  let lines = String::split(sample_text(), "\n")
+  let kept = array_empty()
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "module_typed_lowering_offsets\tdigest\t") {
+      Array::push(kept, "module_typed_lowering_offsets\tdigest\tdeadbeef")
+    } else {
+      Array::push(kept, line)
+    }
+    i = i + 1
+  }
+  inspect(rejected(String::join(kept, "\n")), "true")
+}
+
+test "a wrong count is rejected" {
+  inspect(rejected(replace_line(sample_text(), "module_typed_lowering_offsets\tcount\t3", "module_typed_lowering_offsets\tcount\t2")), "true")
+}
+
+test "a second count line is rejected" {
+  // Inside the envelope, so it is the duplicate-count rule that rejects it and
+  // not the trailing-content rule.
+  inspect(rejected(insert_before_end(sample_text(), "module_typed_lowering_offsets\tcount\t3")), "true")
+}
+
+test "a foreign or older header is rejected" {
+  let body = drop_line(sample_text(), "module_typed_lowering_offsets\tv8")
+  inspect(rejected(String::concat("module_typed_lowering_offsets\tv7\n", body)), "true")
+  inspect(rejected(String::concat("something_else\tv8\n", body)), "true")
+  inspect(rejected(""), "true")
+}
+
+test "a non-digit offset row is rejected (the digit parse)" {
+  inspect(rejected(replace_line(sample_text(), "24", "2x")), "true")
+}
+
+// The empty table is a real case -- most modules have no typed-lowering rows
+// at all -- and it must round-trip rather than being mistaken for a miss.
+test "the empty table round-trips as an empty table, not a miss" {
+  let empty = module_typed_lowering_text([], [], [])
+  match parse_module_typed_lowering_offsets_text(empty) {
+    Some((offs, eq_offs, eq_keys)) => {
+      inspect(Array::length(offs), "0")
+      inspect(Array::length(eq_offs), "0")
+      inspect(Array::length(eq_keys), "0")
+    },
+    None => assert(false)
+  }
+}
