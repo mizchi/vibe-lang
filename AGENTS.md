@@ -711,8 +711,7 @@ classification artifacts. Read that file if you want to count them (#1861).
 ## Task Management
 
 タスクは GitHub Issues (`gh issue`) で管理する。ロードマップは
-[docs/release-roadmap.md](docs/release-roadmap.md) 参照 (`TODO.md` は
-`docs/archive/TODO.md` へ移動済み、historical のみ)。
+[docs/release-roadmap.md](docs/release-roadmap.md) 参照。
 
 ```bash
 # タスク一覧

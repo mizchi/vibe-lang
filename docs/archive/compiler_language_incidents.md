@@ -1,5 +1,11 @@
 # Compiler / Language Incident Log
 
+> **参照先の注記 (#2564):** 以下のログ本文が「関連 TODO」として挙げる `TODO.md`
+> は削除済み。**未完了項目の現在地は GitHub Issues と
+> [docs/release-roadmap.md](../release-roadmap.md)** で、当時の `TODO.md` の中身は
+> git history から復元できる。記録としての正確さのため、ログ本文は当時の参照の
+> まま残す (同じ理由で本文が挙げる `src/lib/*.mbt` も #594 で退役済み)。
+
 このドキュメントは、実際に遭遇した不具合を
 
 - コンパイラ実装側の問題

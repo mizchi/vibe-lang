@@ -155,7 +155,6 @@ Reference index:
 - [docs/module-system-oracle.md](docs/module-system-oracle.md) — package boundaries, visibility, pinning (canonical)
 - [docs/adding-modules.md](docs/adding-modules.md) — how to add/repair a `lib/@vibe/*` module
 - [docs/editor-and-debugging.md](docs/editor-and-debugging.md) — LSP, debugger, DAP
-- [docs/builtin_contract_table.generated.md](docs/builtin_contract_table.generated.md) — builtin function contracts
 - [docs/effect-wit-mapping.md](docs/effect-wit-mapping.md) — effect system ↔ WASI WIT mapping
 - [docs/registry-design.md](docs/registry-design.md) — package registry design
 - [docs/release-roadmap.md](docs/release-roadmap.md) — roadmap and release themes

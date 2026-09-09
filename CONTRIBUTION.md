@@ -279,6 +279,5 @@ pkf run bench-module-job-pool
 ## Task management
 
 タスクは GitHub Issues (`gh issue`) で管理する。ロードマップは
-[docs/release-roadmap.md](docs/release-roadmap.md) 参照 (`TODO.md` は
-`docs/archive/TODO.md` へ移動済み、historical のみ)。設計判断は
+[docs/release-roadmap.md](docs/release-roadmap.md) 参照。設計判断は
 [docs/adr.md](docs/adr.md) に記録する。
