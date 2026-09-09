@@ -51,11 +51,30 @@ where it converts.
 vibe type-at <file.vibe> <line> <col>     # inferred type of the identifier at 1-based (line, BYTE col)
 vibe binding-at <file.vibe> <line> <col>  # source spans (START END byte offsets) of every occurrence of that binding
 vibe symbols <file.vibe>                  # declaration outline (NAME KIND START END [DOC] per line)
+vibe symbols <dir> | vibe symbols a.vibe b.vibe   # BATCH: one sweep, PATH NAME KIND START END [DOC] per line
+vibe symbols --with-path <file.vibe>      # force the PATH field on for a single file
 vibe symbols --legend                     # KIND NAME table (LSP SymbolKind v1, 2026-08-17)
 vibe check <file.vibe>                    # all diagnostics, one per line on stdout; empty output = clean, exit 1 if not
 vibe check --single-file <file.vibe>      # same, analysing the buffer ALONE (no FS import resolution)
 vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array of LSP Diagnostic objects (#820)
 ```
+
+- `symbols` takes **several paths, or a directory** (#2381). Each root is one
+  compiler process rather than one per file, which is what makes a repository
+  rule about declarations affordable: `lib/` is ~43 s in a single sweep, where
+  one process per file was ~1.08 s each — about 17 minutes for the same 966
+  files. Whenever the invocation can produce lines from more than one file, and
+  under `--with-path`, every line gains a leading `PATH` field so the field
+  order never depends on how many files happened to match.
+- An argument `symbols` does not recognise is **refused**. It used to be
+  accepted and ignored: `vibe symbols a.vibe b.vibe` printed `a.vibe`'s outline
+  and exited 0, and so did a typo'd flag — a complete-looking answer to a
+  question nobody asked.
+- A file that cannot be lexed or parsed is **named on stderr** and makes the
+  command exit non-zero, while the declarations that WERE read still reach
+  stdout. Aborting at the first bad file would lose the sweep (one
+  `declare`-form file under `lib/` does that to all 966); dropping it silently
+  would be a partial inventory that reads as a complete one.
 
 - `type-at` powers hover. Empty output means there is no env-visible
   identifier at that position. Field accesses resolve at BOTH positions of

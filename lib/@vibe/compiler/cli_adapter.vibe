@@ -48,6 +48,7 @@ import @vibe/compiler/runtime {
   set_incremental_interface_trace_enabled,
   set_incremental_typecheck_telemetry_enabled,
   set_scheduler_trace_path,
+  symbol_spans_fs_report,
   symbol_spans_with_docs,
   type_at_source
 }
@@ -367,6 +368,41 @@ fn join_symbol_spans(syms: Array[(String, Int, Int, Int, String)]) -> String {
       ()
     } else {
       let head = String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
+      let line = if String::length(doc) == 0 {
+        head
+      } else {
+        String::concat(head, String::concat(" ", escape_doc_field(doc)))
+      }
+      if first {
+        StringBuilder::push(acc, line)
+        first = false
+      } else {
+        StringBuilder::push(acc, "\n")
+        StringBuilder::push(acc, line)
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+/// The batch form of `join_symbol_spans` (#2381): the same fields with the
+/// source PATH prepended, one `PATH NAME KIND START END [DOC]` per
+/// declaration. The path goes FIRST because it is the field a caller groups or
+/// filters on, and it cannot contain a space in this repository's trees; DOC
+/// stays last for the reason it always was -- it is the only field that can.
+fn join_symbol_spans_with_path(rows: Array[(String, String, Int, Int, Int, String)]) -> String {
+  let n = Array::length(rows)
+  // O(N) join via StringBuilder; per-record String::concat was O(N2) (issue #366).
+  let acc = StringBuilder::new()
+  let mut first = true
+  let mut i = 0
+  while i < n {
+    let (path, name, kind, s, e, doc) = Array::get(rows, i)
+    if String::length(name) == 0 {
+      ()
+    } else {
+      let head = String::concat(path, String::concat(" ", String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))))
       let line = if String::length(doc) == 0 {
         head
       } else {
@@ -1665,11 +1701,36 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // convention as VIBE_CHECK_ONLY below: `output_path` itself (the outline
   // wire format LSP clients parse) is untouched on failure, so this can't
   // emit a "plausible but wrong" symbol list.
+  //
+  // #2381: `VIBE_SYMBOLS_WITH_PATH=1` answers the same question over a whole
+  // TREE instead, one `PATH NAME KIND START END [DOC]` per declaration --
+  // `input_path` may then be a directory. The launcher turns it on whenever
+  // the invocation can produce lines from more than one file (several paths,
+  // or a directory) and for an explicit `--with-path`, so the field order a
+  // caller sees never depends on how many files happened to match.
   if Env::get("VIBE_SYMBOLS") == "1" {
     return handle {
-      let src = Fs::read_file(input_path)
-      let syms = symbol_spans_with_docs(src)
-      Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_symbol_spans(syms))))
+      if Env::get("VIBE_SYMBOLS_WITH_PATH") == "1" {
+        let (rows, failures) = symbol_spans_fs_report(input_path)
+        Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_symbol_spans_with_path(rows))))
+        // The rows that WERE read still go to stdout; the files that could not
+        // be read go to the same `.diag` sidecar a thrown Error uses, so the
+        // launcher reports them on stderr and exits non-zero. Aborting the
+        // whole sweep at the first bad file would lose the answer the batch
+        // mode exists for -- one unparseable file under `lib/` took the entire
+        // 966-file sweep with it -- and dropping it silently is the partial
+        // inventory that reads as complete.
+        if Array::length(failures) > 0 {
+          let _ = emit_compile_diag(output_path, String::join(failures, "\n"))
+          ()
+        } else {
+          ()
+        }
+      } else {
+        let src = Fs::read_file(input_path)
+        let syms = symbol_spans_with_docs(src)
+        Fs::write_bytes(output_path, adapter_string_to_bytes(line_terminated(join_symbol_spans(syms))))
+      }
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
   }

@@ -30,6 +30,7 @@ query surface passes them through unconverted. Two spellings of the same thing:
 | surface | what it reports | unit | base | interval |
 |---|---|---|---|---|
 | `vibe symbols` | `NAME KIND START END` | byte offset | 0 | half-open |
+| `vibe symbols` (batch) | `PATH NAME KIND START END` | byte offset | 0 | half-open |
 | `vibe binding-at` | `START END` per occurrence | byte offset | 0 | half-open |
 | `vibe escapes` | `NAME START END` | byte offset | 0 | half-open |
 | `vibe allocs` | `FN SITE OFFSET` | byte offset | 0 | point |

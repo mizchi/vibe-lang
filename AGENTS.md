@@ -444,6 +444,18 @@ CI shard では:
 ```bash
 # 宣言アウトライン (NAME KIND START END / 行)。go-to-def / outline の基盤
 vibe symbols file.vibe
+# Several paths, or a directory, are swept in ONE compiler process and every
+# line gains a leading PATH field: `PATH NAME KIND START END [DOC]` (#2381).
+# That is what makes a repo-wide rule about DECLARATIONS affordable -- one
+# process per file was ~1.08 s, so all of `lib/` took ~17 minutes; the whole
+# tree in one sweep is ~43 s. `--with-path` forces the PATH field on for a
+# single file, so a caller building the list programmatically gets one field
+# order whether the list held one entry or a thousand.
+# An unrecognised argument is REFUSED (it used to be accepted and ignored), a
+# file that cannot be parsed is NAMED on stderr while the rows that were read
+# still reach stdout, and either failure exits non-zero.
+vibe symbols lib
+vibe symbols --with-path file.vibe
 
 # カーソル位置 (1-based line,col) の識別子の推論型。hover の基盤
 vibe type-at file.vibe <line> <col>

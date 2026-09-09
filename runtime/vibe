@@ -54,7 +54,8 @@
 #   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
 #   vibe doc-at  <file.vibe> <line> <col> print the `///` doc comment at a position (#854)
 #   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
-#   vibe symbols <file.vibe>              print declaration outline (NAME KIND START END [DOC] per line)
+#   vibe symbols [--with-path] <path>...  print declaration outline (NAME KIND START END [DOC] per line;
+#                                       a directory / several paths / --with-path prefix each line with PATH)
 #   vibe symbols --legend                 print KIND NAME table (LSP SymbolKind v1, 2026-08-17)
 #   vibe escapes [--strict] <file.vibe>   print the `let mut` bindings a closure
 #                                         captures -- the ones codegen boxes into
@@ -198,7 +199,7 @@ VIBE_SELECTOR_ORDER="VIBE_LSP VIBE_CHECK_ONLY VIBE_COVERAGE
   VIBE_PUBLISH_CHECK VIBE_MODULE_JOB_DIR VIBE_PUBLISH_ENV_CACHE
   VIBE_LIST_DEPS VIBE_MODULE_PLAN VIBE_REPIN VIBE_FS_COMPILE VIBE_FMT
   VIBE_NORMALIZE VIBE_INSPECT_UPDATE VIBE_TYPE_AT VIBE_DOC_AT
-  VIBE_BINDING_AT VIBE_SYMBOLS VIBE_ESCAPES VIBE_ESCAPES_STRICT
+  VIBE_BINDING_AT VIBE_SYMBOLS VIBE_SYMBOLS_WITH_PATH VIBE_ESCAPES VIBE_ESCAPES_STRICT
   VIBE_RC_CLASSIFY VIBE_RC_PLAN VIBE_ALLOCS VIBE_DEPS VIBE_DEPS_DIRECT
   VIBE_GREP VIBE_GREP_JSON VIBE_DIAGNOSTICS VIBE_DIAGNOSTICS_JSON
   VIBE_EMIT_COVERAGE_DRIVER_SOURCE VIBE_EMIT_MERGED_SOURCE VIBE_EMIT_WIT
@@ -1502,10 +1503,10 @@ case "$cmd" in
     if [ -s "$out" ]; then cat "$out"; fi
     ;;
   symbols)
-    # vibe symbols <file.vibe>
+    # vibe symbols [--with-path] <file.vibe|dir>...
     # vibe symbols --legend
     # Print the declaration outline, one `NAME KIND START END [DOC]` per line
-    # (KIND = LSP SymbolKind int, START/END = char offsets of the name).
+    # (KIND = LSP SymbolKind int, START/END = byte offsets of the name).
     # AST-accurate (no line-regex scan): handles multi-line decls and
     # module-nested symbols. Empty output means the file declares no top-level
     # symbols. Powers LSP document-outline / go-to-definition.
@@ -1516,6 +1517,20 @@ case "$cmd" in
     # contain spaces, so `cut -d" " -f1-4` still reads the fixed part. Inside
     # it a newline is the two characters `\n` and a backslash is doubled, so
     # one declaration is always one line.
+    #
+    # BATCH (#2381): several paths, or a directory, are swept in ONE compiler
+    # process each and every line gains a leading PATH field:
+    # `PATH NAME KIND START END [DOC]`. That is what makes a repo-wide rule
+    # affordable -- one process per file cost ~1.08 s, so `lib/` took ~17
+    # minutes and rules about declarations got written as shell regex instead.
+    # `--with-path` forces the PATH field on for a single file, so a caller
+    # building the path list programmatically gets ONE field order whether the
+    # list ended up with one entry or a hundred.
+    #
+    # An unrecognised argument is REFUSED. It used to be accepted and ignored:
+    # `vibe symbols a.vibe b.vibe` printed a.vibe's symbols and exited 0, and
+    # so did a typo'd flag -- a confident, complete-looking answer to a
+    # question nobody asked (#2381).
     # `--legend` prints the versioned KIND table (v1 / 2026-08-17): one
     # `KIND NAME` per line, no decoration, never empty. `--help`/`-h` print
     # usage plus a pointer at that table. Neither flag changes the file
@@ -1536,41 +1551,74 @@ case "$cmd" in
         ;;
       --help|-h)
         printf '%s\n' \
-          'usage: vibe symbols <file.vibe>' \
+          'usage: vibe symbols [--with-path] <file.vibe|dir>...' \
           '       vibe symbols --legend' \
           'Prints NAME KIND START END [DOC] per declaration.' \
+          'With several paths, a directory, or --with-path, each line gains a leading PATH field.' \
           'DOC is the `///` doc comment, omitted when there is none; newlines in it are escaped as \n.' \
           'KIND integers are LSP SymbolKind; print the table with `vibe symbols --legend`.'
         exit 0
         ;;
     esac
-    [ "$#" -ge 1 ] || die "usage: vibe symbols <file.vibe>"
-    src="$1"
-    [ -f "$src" ] || die "not found: $src"
+    sym_with_path=0
+    sym_paths=()
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --with-path) sym_with_path=1; shift ;;
+        --) shift; while [ "$#" -gt 0 ]; do sym_paths+=("$1"); shift; done ;;
+        -*) die "symbols: unknown flag: $1 (see \`vibe symbols --help\`)" ;;
+        *) sym_paths+=("$1"); shift ;;
+      esac
+    done
+    [ "${#sym_paths[@]}" -ge 1 ] || die "usage: vibe symbols [--with-path] <file.vibe|dir>..."
+    # More than one root, or a directory root, can produce lines from more than
+    # one file -- so the PATH field is not optional there.
+    [ "${#sym_paths[@]}" -eq 1 ] || sym_with_path=1
+    for sym_path in "${sym_paths[@]}"; do
+      [ -e "$sym_path" ] || die "not found: $sym_path"
+      if [ -d "$sym_path" ]; then sym_with_path=1; fi
+    done
     # Use the portable .wasm (not the AOT .cwasm): the recovering-parser path
     # trapped under the precompiled image on some hosts, and these LSP queries
     # are latency-amortized, so prefer correctness.
     cli="$CLI_WASM"; [ -f "$cli" ] || cli="$(pick_cli)"
     out="$(mktemp -t vibe-symbols-XXXXXX)"
     trap 'rm -f "$out" "$out.diag"' EXIT
-    # Clear any inherited compile-mode envs so this query can't be diverted to the
-    # compile path (which would emit wasm bytes instead of the symbol list).
-    env $(selector_clears_before VIBE_SYMBOLS) -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-        -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
-        -u VIBE_EMIT_MODULE_SOURCE \
-      VIBE_SYMBOLS=1 \
-      VIBE_IMPORT_ABI=raw \
-      "$RUNNER" "$cli" "$src" "$out" >/dev/null 2>&1 || true
-    # #946: a lex/parse error crashing `symbol_spans` used to leave `$out`
-    # empty with no way to tell that apart from "genuinely no symbols" (both
-    # looked identical to a caller). The adapter now routes a thrown Error to
-    # `$out.diag` (same sidecar convention as `check)` below) instead of
-    # `$out` itself, so stdout here stays a pure outline (no risk of a
-    # "plausible but wrong" symbol line) while stderr surfaces the failure.
-    if [ -s "$out.diag" ]; then
-      echo "error: $(cat "$out.diag")" >&2
-    fi
-    if [ -s "$out" ]; then cat "$out"; fi
+    sym_status=0
+    for sym_path in "${sym_paths[@]}"; do
+      : >"$out"; rm -f "$out.diag"
+      # Clear any inherited compile-mode envs so this query can't be diverted to the
+      # compile path (which would emit wasm bytes instead of the symbol list).
+      env $(selector_clears_before VIBE_SYMBOLS) -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+          -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK \
+          -u VIBE_EMIT_MODULE_SOURCE \
+        VIBE_SYMBOLS=1 \
+        VIBE_SYMBOLS_WITH_PATH="$sym_with_path" \
+        VIBE_IMPORT_ABI=raw \
+        "$RUNNER" "$cli" "$sym_path" "$out" >/dev/null 2>&1 || true
+      # #946: a lex/parse error crashing `symbol_spans` used to leave `$out`
+      # empty with no way to tell that apart from "genuinely no symbols" (both
+      # looked identical to a caller). The adapter now routes a thrown Error to
+      # `$out.diag` (same sidecar convention as `check)` below) instead of
+      # `$out` itself, so stdout here stays a pure outline (no risk of a
+      # "plausible but wrong" symbol line) while stderr surfaces the failure.
+      #
+      # #2381: and the EXIT CODE now says so too. Reporting the failure on
+      # stderr while exiting 0 is the same defect as accepting an argument and
+      # ignoring it: a caller testing `$?` is told the outline is complete.
+      #
+      # #2381: and the batch lane puts one line per UNREADABLE FILE there,
+      # while stdout still carries every declaration it did read. A sweep that
+      # aborted at the first bad file would lose the whole answer -- one file
+      # under `lib/` does that to all 966 -- and one that dropped it silently
+      # would be the partial inventory that reads as complete.
+      if [ -s "$out.diag" ]; then
+        sed 's/^/error: /' "$out.diag" >&2
+        sym_status=1
+      fi
+      if [ -s "$out" ]; then cat "$out"; fi
+    done
+    exit "$sym_status"
     ;;
   escapes)
     # vibe escapes [--strict] <file.vibe>

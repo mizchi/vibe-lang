@@ -1,0 +1,113 @@
+//# Imports
+
+// `vibe symbols` over a whole tree (#2381).
+//
+// symbol_spans.vibe answers for ONE source string. That is the right shape for
+// an editor, and the wrong one for a repository rule: one process per file
+// costs ~1.08 s, so the 966 `.vibe` files under `lib/` took ~17 minutes and any
+// rule of the form "no file in `lib/**` may declare X" was written as a lexical
+// shell scan instead -- which is exactly what CLAUDE.md's recurrence-prevention
+// policy routes people away from. #2380 shipped such a scan and paid for it:
+// an anchored `^(export )?fn` regex missed four real declarations.
+//
+// So this file walks the tree ONCE inside the compiler and returns every
+// declaration with the path it came from. It is parse-only, like the
+// single-file query: no import resolution, no checker, one parse per file.
+//
+// A file that does not parse is REPORTED, not skipped. `vibe grep` skips it
+// with a warning and still exits 0, because a sweep for matches is meaningful
+// over the files that did parse. A DECLARATION INVENTORY is not: a caller
+// asking "does anything under lib/ declare X" would read a short answer as
+// "no", which is the same under-selection `vibe deps` refuses for a truncated
+// import closure.
+//
+// But aborting at the first bad file is not the answer either -- measured, one
+// unparseable file (`builtins/declarations.vibe`, whose `declare` form
+// symbol_spans does not accept) took the whole `lib/` sweep with it, which is
+// the one call the batch mode exists for. So the split is: every declaration
+// that WAS read comes back, every file that could not be read comes back too,
+// and the caller is told which is which. The CLI puts the rows on stdout, the
+// failures on stderr, and exits non-zero -- the same shape as `vibe check`.
+
+import @vibe/core {
+  array_empty
+}
+
+import ./source_walk.vibe {
+  source_walk_collect_files, source_walk_empty_paths
+}
+
+import ./symbol_spans.vibe {
+  symbol_spans_with_docs
+}
+
+//# Functions
+
+fn symbols_fs_empty_rows() -> Array[(String, String, Int, Int, Int, String)] {
+  array_empty()
+}
+
+fn symbols_fs_empty_syms() -> Array[(String, Int, Int, Int, String)] {
+  array_empty()
+}
+
+/// Every declaration under `root`, one row per declaration, each carrying the
+/// path it came from: `(path, name, kind, start, end, doc)`, PLUS one message
+/// per file that could not be read. The five span fields are exactly what
+/// `symbol_spans_with_docs` returns for that file, so the batch answer and the
+/// single-file answer cannot drift.
+///
+/// `root` may be a file or a directory; a directory is walked recursively with
+/// source_walk.vibe's shared skip policy. Files come back in byte-sorted
+/// directory order and declarations in source order, so the whole result is
+/// deterministic for a given tree.
+///
+/// A non-empty second element means the inventory is INCOMPLETE. It is never
+/// empty silently: see the header note.
+export fn symbol_spans_fs_report(root: String) -> (Array[(String, String, Int, Int, Int, String)], Array[String]) with Exception + Fs {
+  let files = source_walk_empty_paths()
+  source_walk_collect_files(root, files)
+  let out = symbols_fs_empty_rows()
+  let failures = source_walk_empty_paths()
+  let mut i = 0
+  while i < Array::length(files) {
+    let path = Array::get(files, i)
+    let source = Fs::read_file(path)
+    // Recording the failure and reading it after the handle keeps the arm's
+    // own effect row explicit; the message names the file either way.
+    let mut failed = false
+    let mut failure = ""
+    let syms = handle {
+      symbol_spans_with_docs(source)
+    } with { Exception::Throw(msg) => {
+      failed = true
+      failure = msg
+      symbols_fs_empty_syms()
+    } }
+    if failed {
+      Array::push(failures, String::concat(path, String::concat(": ", failure)))
+    } else {
+      let mut j = 0
+      while j < Array::length(syms) {
+        let (name, kind, s, e, doc) = Array::get(syms, j)
+        Array::push(out, (path, name, kind, s, e, doc))
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  (out, failures)
+}
+
+/// Result-only wrapper for callers that want the sweep to be all-or-nothing.
+/// The CLI uses `symbol_spans_fs_report` so it can print the rows it did read
+/// alongside the files it could not.
+export fn symbol_spans_fs(root: String) -> Array[(String, String, Int, Int, Int, String)] with Exception + Fs {
+  let (rows, failures) = symbol_spans_fs_report(root)
+  if Array::length(failures) > 0 {
+    throw(Array::get(failures, 0))
+  } else {
+    ()
+  }
+  rows
+}
