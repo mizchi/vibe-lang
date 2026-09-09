@@ -44,13 +44,15 @@ $ vibe test demo_test.vibe
 FAIL demo_test.vibe
        failing test: double works
        assert_eq failed
+         at off=62
          expected: 43
          actual:   42
 [vibe-test] 0 passed, 1 failed (1 files, 1 tests)
 ```
 
-レポートにはまだ行番号が付かないので、同じ期待値の assert が1つの
-テストに2つあると区別できません (#2202)。
+`at off=62` は assert 自身の位置なので、同じ期待値の assert が1つの
+テストに2つあっても区別できます (#2202)。これは行番号ではなく
+**バイトオフセット**です — vibe の位置はすべてバイト単位 (ADR-0108)。
 
 `assert_eq(actual, expected)` は比較可能な任意の型で使え、文字列は内容で
 比較します — なので連結の結果や関数の戻り値に対して、何も変換せずそのまま

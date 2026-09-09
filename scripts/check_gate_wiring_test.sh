@@ -143,6 +143,62 @@ for _ in 1 2 3 4 5; do
 done
 ok "the answer is stable across repeated runs"
 
+# --- red 6: a MESSAGE is not an invocation. The first draft accepted any
+# non-comment line carrying a basename, so a reachable wrapper containing only
+# `echo "run bash scripts/check_dark.sh"` certified a wire that does not exist
+# (Codex P1 on #2591) -- documentation text marking a gate as run.
+reset_tree
+printf '#!/usr/bin/env bash\necho dark\n' > "$TMP_ROOT/scripts/check_dark.sh"
+printf 'echo "to run it by hand: bash scripts/check_dark.sh"\n' >> "$TMP_ROOT/scripts/check_direct.sh"
+grep -qF 'to run it by hand' "$TMP_ROOT/scripts/check_direct.sh" || fail "fixture 6 did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a basename inside an echo certified a wire"; }
+grep -qF "check_dark.sh" "$TMP_ROOT/out" || fail "the finding did not name the still-dark gate"
+ok "a basename inside an echo is not an invocation"
+
+# --- red 7: a gate SELF-TEST is not evidence its production gate runs. A
+# self-test names its gate because it runs it against fixtures; left as an edge,
+# unwiring the real CI step would go unnoticed -- the dark-gate case itself
+# (Codex P1 on #2591). Measured on the real tree: this is what exposed
+# check_book_console.sh, wired only via its self-test, and red.
+reset_tree
+printf '#!/usr/bin/env bash\necho dark\n' > "$TMP_ROOT/scripts/check_dark.sh"
+printf '#!/usr/bin/env bash\nbash scripts/check_dark.sh --fixture\n' > "$TMP_ROOT/scripts/check_dark_test.sh"
+printf '      - run: bash scripts/check_dark_test.sh\n' >> "$TMP_ROOT/.github/workflows/ci.yml"
+grep -qF 'check_dark_test.sh' "$TMP_ROOT/.github/workflows/ci.yml" || fail "fixture 7 did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a self-test certified its production gate as wired"; }
+grep -qF "check_dark.sh" "$TMP_ROOT/out" || fail "the finding did not name the gate the self-test hid"
+ok "a gate self-test does not certify its production gate as wired"
+
+# --- red 8: a DYNAMIC run must be declared, and the declaration is checked.
+reset_tree
+printf 'script="$(pick_lane)"\nbash "$script"\n' >> "$TMP_ROOT/scripts/check_direct.sh"
+grep -qF 'bash "$script"' "$TMP_ROOT/scripts/check_direct.sh" || fail "fixture 8 did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "an undeclared dynamic invocation was skipped"; }
+grep -qF "declares nothing" "$TMP_ROOT/out" || fail "the finding did not name the reason"
+ok "a dynamic run with no declaration fails rather than being skipped"
+
+reset_tree
+mkdir -p "$TMP_ROOT/lanes/x"
+printf '#!/usr/bin/env bash\nbash scripts/check_behind_dispatch.sh\n' > "$TMP_ROOT/lanes/x/go.sh"
+printf '#!/usr/bin/env bash\necho behind\n' > "$TMP_ROOT/scripts/check_behind_dispatch.sh"
+printf '# gate-wiring: reaches lanes/x/go.sh\nscript="$(pick_lane)"\nbash "$script"\n' >> "$TMP_ROOT/scripts/check_direct.sh"
+run || { cat "$TMP_ROOT/out" >&2; fail "a declared dynamic invocation was not followed"; }
+ok "a declared dynamic run resolves, and what is behind it counts as reached"
+
+reset_tree
+printf '# gate-wiring: reaches lanes/nope/go.sh\nscript="$(pick_lane)"\nbash "$script"\n' >> "$TMP_ROOT/scripts/check_direct.sh"
+run && { cat "$TMP_ROOT/out" >&2; fail "a declaration naming no file was accepted"; }
+grep -qF "names no such file" "$TMP_ROOT/out" || fail "the finding did not name the reason"
+ok "a declaration naming a file that does not exist is rejected"
+
+# --- red 9: an allowlist row with no reason is not a written admission.
+reset_tree
+printf '#!/usr/bin/env bash\necho dark\n' > "$TMP_ROOT/scripts/check_dark.sh"
+printf 'check_dark.sh\n' > "$TMP_ROOT/scripts/gate_wiring_allowlist.txt"
+run && { cat "$TMP_ROOT/out" >&2; fail "an allowlist row with no reason was accepted"; }
+grep -qF "no reason" "$TMP_ROOT/out" || fail "the finding did not name the reason"
+ok "an allowlist row with no reason is rejected"
+
 # --- red 4: a scan whose ROOTS vanish must fail, not report everything dark or
 # everything fine. An empty corpus is the shape that let five broken self-tests
 # sit green (#2252).
