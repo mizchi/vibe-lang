@@ -288,18 +288,76 @@ fn apply_value_bracket_type_params(tps: Array[String], tbs: Array[(String, Array
   }
 }
 
+/// Skip the bracket group starting at `pos` (which must be a `[`), returning
+/// the position just past its matching `]`. Bounded by the token count so an
+/// unbalanced source cannot spin here.
+fn skip_bracket_group(tokens: Array[Token], pos: Int) -> Int {
+  let limit = Array::length(tokens)
+  let mut scan_pos = pos + 1
+  let mut depth = 1
+  while depth > 0 && scan_pos <= limit {
+    match peek(tokens, scan_pos) {
+      TLBracket => {
+        depth = depth + 1
+      },
+      TRBracket => {
+        depth = depth - 1
+      },
+      _ => ()
+    }
+    scan_pos = scan_pos + 1
+  }
+  scan_pos
+}
+
+/// #2535: does the bracket group that ends at `scan_pos` head a LAMBDA?
+///
+/// This is the whole difference between a value-position type-parameter header
+/// and an array literal, and the shape of the group cannot decide it: `[a, b]`
+/// is a comma-separated list of identifiers either way. What separates them is
+/// what comes AFTER — a header always introduces a lambda, so the next token
+/// is its parameter list `(`. Consecutive headers are legal
+/// (`let f = [A][B](..)`), so a run of bracket groups is skipped first and the
+/// parameter list is required at the end of the run.
+///
+/// Without this the top-level `let xs = [a, b]` was read as `let xs = [A, B]`
+/// followed by a value, the header scan swallowed the array literal, and the
+/// NEXT top-level item became `unexpected token: let`. `false` and `true` lex
+/// as `TIdent`, which is why the bug was first seen as "two or more Bool
+/// literals" (#2535) rather than "two or more identifiers".
+fn value_bracket_header_heads_lambda(tokens: Array[Token], scan_pos: Int) -> Bool {
+  let limit = Array::length(tokens)
+  let mut p = scan_pos
+  let mut done = false
+  let mut heads_lambda = false
+  while !done {
+    match peek(tokens, p) {
+      TLParen => {
+        heads_lambda = true
+        done = true
+      },
+      TLBracket => {
+        let next_p = skip_bracket_group(tokens, p)
+        if next_p > p && next_p <= limit {
+          p = next_p
+        } else {
+          done = true
+        }
+      },
+      _ => {
+        done = true
+      }
+    }
+  }
+  heads_lambda
+}
+
 fn skip_generic_value_start(tokens: Array[Token], pos: Int) -> Int {
   match peek(tokens, pos) {
     TLBracket => match peek(tokens, pos + 1) {
       TIdent(_) => {
-        let maybe_generic = match peek(tokens, pos + 2) {
-          TRBracket => match peek(tokens, pos + 3) {
-            TLParen => true,
-            // Consecutive value headers: the outer header is reconciled here;
-            // the inner header is parsed by the generic-expression lane.
-            TLBracket => true,
-            _ => false
-          },
+        let header_shaped = match peek(tokens, pos + 2) {
+          TRBracket => true,
           TColon => true,
           TComma => true,
           // A constructor-kind binder starts with a nested `[_]`. Restrict
@@ -311,22 +369,13 @@ fn skip_generic_value_start(tokens: Array[Token], pos: Int) -> Int {
           },
           _ => false
         }
-        if maybe_generic {
-          let mut scan_pos = pos + 1
-          let mut depth = 1
-          while depth > 0 {
-            match peek(tokens, scan_pos) {
-              TLBracket => {
-                depth = depth + 1
-              },
-              TRBracket => {
-                depth = depth - 1
-              },
-              _ => ()
-            }
-            scan_pos = scan_pos + 1
+        if header_shaped {
+          let scan_pos = skip_bracket_group(tokens, pos)
+          if value_bracket_header_heads_lambda(tokens, scan_pos) {
+            scan_pos
+          } else {
+            pos
           }
-          scan_pos
         } else {
           pos
         }

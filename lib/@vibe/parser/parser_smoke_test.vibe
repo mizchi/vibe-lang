@@ -654,3 +654,37 @@ test "#2344 a parenthesized `~` operand does not steal a control brace" {
   // the parens -- this is what the `TTilde` row must not have broken.
   assert(String::starts_with(tilde_printed("fn main() -> Unit { let f = (n) { n } }"), "THROW"))
 }
+
+test "#2535: a top-level `let` bound to an array of identifiers does not swallow the next item" {
+  // `[a, b]` and a value-position type-parameter header `[A, B]` have the
+  // SAME shape; only what follows tells them apart. The header scan used to
+  // accept the shape alone, skip past the `]`, and take the next top-level
+  // item as the value -- so `let other` became `unexpected token: let`.
+  let stmts = parse_program(lex("let a = 1\nlet b = 2\nlet cell = [a, b]\nlet other = 3\n"))
+  assert(Array::length(stmts) == 4)
+}
+
+test "#2535: the Bool spelling of the same bug (`false` lexes as an ident)" {
+  // This is how the bug was first seen: "two or more Bool literals". `false`
+  // and `true` are `TIdent`, which is why one Bool element was fine and two
+  // were not -- the second element supplied the comma the header shape wanted.
+  assert(Array::length(parse_program(lex("let cell = [false, false]\nlet other = 1\n"))) == 2)
+  assert(Array::length(parse_program(lex("let cell = [true, true]\nfn main() -> Int { 1 }\n"))) == 2)
+  assert(Array::length(parse_program(lex("let cell = [false, false, false]\nlet other = 1\n"))) == 2)
+  // One element never had the comma, so it always worked; keep it pinned.
+  assert(Array::length(parse_program(lex("let cell = [false]\nlet other = 1\n"))) == 2)
+  // An annotation did not change the answer either way.
+  assert(Array::length(parse_program(lex("let cell: Array[Bool] = [false, false]\nlet other = 1\n"))) == 2)
+}
+
+test "#2535: a real value-position type-parameter header still parses as one" {
+  // The control the fix must not break: the header IS followed by a parameter
+  // list, which is exactly what distinguishes it from an array literal.
+  let one = fn_generic_lanes_at(parse_program(lex("let idf = [T](x: T) -> T { x }\n")), 0)
+  assert(Array::length(one.0) == 1)
+  let two = fn_generic_lanes_at(parse_program(lex("let pair = [A, B](a: A, b: B) -> A { a }\n")), 0)
+  assert(Array::length(two.0) == 2)
+  let bound = fn_generic_lanes_at(parse_program(lex("let shown = [T: Show](x: T) -> String { \"s\" }\n")), 0)
+  assert(Array::length(bound.0) == 1)
+  assert(Array::length(bound.1) == 1)
+}
