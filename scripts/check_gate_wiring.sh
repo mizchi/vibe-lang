@@ -183,28 +183,37 @@ while pending_tasks:
             pending_tasks.append(local_to_task[local])
 
 # ---- walk the script graph, transitively, anywhere in the tree
+# A basename can name MORE THAN ONE file, and every one of them must be read.
+# `tests/gates/{bootstrap,early,mid,late}/run.sh` are four files with one
+# basename, and compiler_gate.sh invokes them as
+# `bash "$ROOT_DIR/tests/gates/$lane/run.sh"` -- a computed DIRECTORY with a
+# literal basename, which is the shape this scanner resolves. Keeping only the
+# first match made the answer depend on os.walk ORDER: it passed locally and
+# reported five gates dark in CI, because a different order read a different
+# `run.sh`. A gate that answers differently on two machines is worse than no
+# gate, so: all copies, sorted, every one read.
 by_basename = {}
-for dirpath, dirnames, filenames in os.walk("."):
-    dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "_build", "target")]
-    for f in filenames:
+for dirpath, dirnames, filenames in sorted(os.walk(".")):
+    dirnames[:] = sorted(d for d in dirnames if d not in (".git", "node_modules", "_build", "target"))
+    for f in sorted(filenames):
         if f.endswith(".sh"):
-            by_basename.setdefault(f, os.path.join(dirpath, f).lstrip("./"))
+            by_basename.setdefault(f, []).append(os.path.join(dirpath, f).lstrip("./"))
 
 while pending_scripts:
     s = pending_scripts.pop()
     if s in reached_scripts:
         continue
     reached_scripts.add(s)
-    path = by_basename.get(s)
-    if not path or s in SKIP_AS_SOURCE:
+    if s in SKIP_AS_SOURCE:
         # #2138: this gate's own text, and its self-test's fixtures, are not
         # evidence of a wire. Reached (so it counts as wired), never read.
         continue
-    text = read(path)
-    check_resolvable(path, text)
-    for nxt in invoked_scripts(text):
-        if nxt != s:  # a script naming itself in its own message is not an edge
-            pending_scripts.append(nxt)
+    for path in by_basename.get(s, []):
+        text = read(path)
+        check_resolvable(path, text)
+        for nxt in invoked_scripts(text):
+            if nxt != s:  # a script naming itself in its own message is not an edge
+                pending_scripts.append(nxt)
 
 # ---- verdict
 dark = [g for g in corpus if g not in reached_scripts and g not in allow]

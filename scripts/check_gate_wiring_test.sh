@@ -118,6 +118,31 @@ grep -qF 'pkf run no-such-task' "$TMP_ROOT/.github/workflows/ci.yml" || fail "fi
 run && { cat "$TMP_ROOT/out" >&2; fail "a workflow naming an undefined task was accepted"; }
 ok "a workflow naming an undefined pkf task is rejected"
 
+# --- green/red 5: an AMBIGUOUS BASENAME must read EVERY file carrying it.
+# This is the shape `tests/gates/{bootstrap,early,mid,late}/run.sh` has, invoked
+# by compiler_gate.sh as `bash "$ROOT_DIR/tests/gates/$lane/run.sh"` -- computed
+# directory, literal basename. Keeping only the first match made the answer
+# depend on os.walk ORDER: the first draft passed locally and reported five
+# gates dark in CI. A gate that answers differently on two machines is worse
+# than no gate.
+reset_tree
+mkdir -p "$TMP_ROOT/lanes/a" "$TMP_ROOT/lanes/b"
+printf '#!/usr/bin/env bash\necho lane a, names no gate\n' > "$TMP_ROOT/lanes/a/run.sh"
+printf '#!/usr/bin/env bash\nbash scripts/check_only_in_lane_b.sh\n' > "$TMP_ROOT/lanes/b/run.sh"
+printf '#!/usr/bin/env bash\necho reached only through lane b\n' > "$TMP_ROOT/scripts/check_only_in_lane_b.sh"
+printf '      - run: bash "$ROOT/lanes/$lane/run.sh"\n' >> "$TMP_ROOT/.github/workflows/ci.yml"
+grep -qF 'lanes/$lane/run.sh' "$TMP_ROOT/.github/workflows/ci.yml" || fail "fixture 5 did not land"
+[ -f "$TMP_ROOT/lanes/a/run.sh" ] && [ -f "$TMP_ROOT/lanes/b/run.sh" ] || fail "fixture 5 lanes did not land"
+run || { cat "$TMP_ROOT/out" >&2; fail "a gate reached only through the SECOND file sharing a basename was reported dark"; }
+ok "an ambiguous basename reads every file carrying it, not whichever the walk hit first"
+
+# The same tree, five times, must give the same answer. Order-dependence is the
+# defect; one passing run does not rule it out.
+for _ in 1 2 3 4 5; do
+  run || { cat "$TMP_ROOT/out" >&2; fail "the ambiguous-basename tree answered differently between runs"; }
+done
+ok "the answer is stable across repeated runs"
+
 # --- red 4: a scan whose ROOTS vanish must fail, not report everything dark or
 # everything fine. An empty corpus is the shape that let five broken self-tests
 # sit green (#2252).
