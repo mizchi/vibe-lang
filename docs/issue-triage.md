@@ -1,7 +1,9 @@
 # Issue triage — deciding kind and priority mechanically
 
-Last updated: 2026-09-06 (applied state and lanes rewritten against the open
-set; the 2026-08-25 lists named merged PRs and closed issues).
+Last updated: 2026-09-08 (applied state rewritten against the open set after the
+#2579 merge; the 2026-09-06 edition had drifted five ways -- three new P1s
+missing, one epic's blocker landed, two issues in a state their own comments
+contradicted, and a closed issue still named in a lane).
 
 So that "what do I do next" does not have to be re-derived every time, **each
 label means exactly one thing**. Every issue is labelled independently on three
@@ -53,7 +55,7 @@ the same shelf as a real bug.
 An `epic` is an index, so it is never itself the thing to work on (look at its
 sub-issues).
 
-## Applied state as of 2026-09-06
+## Applied state as of 2026-09-08
 
 **Rewrite this section; never append to it.** It is a snapshot of the open set,
 and a snapshot that has drifted is worse than none — the 2026-08-25 edition sat
@@ -80,15 +82,21 @@ first, then take the leftover.
 | #2381 | `vibe symbols` silently ignores extra arguments, and has no batch mode |
 | #2378 | a library `fn` silently replaces a same-named builtin program-wide |
 
-### P1 — crashes, or cannot be written (5)
+### P1 — crashes, or cannot be written (8)
 
 | # | what |
 |---|---|
+| #2574 | calling a two-line helper from the module pruner's `ref.func` refusal path overflows the wasm stack |
+| #2573 | a compiler sibling missing from `compiler_sources_manifest.tsv` fails as `type_db: missing resolved dependency environment`, not as a manifest error |
+| #2570 | `+` over two `Trait::method(receiver)` results returning `Double` is typed `Int`, so a correct program is rejected |
 | #2535 | a module-level `let` initialized with two or more Bool literals (`[false, false]`) makes the next top-level item "unexpected token" |
 | #2527 | defining a `fn` named `id` or `call` that returns `Expr` makes an unrelated file fail with "cannot interpolate a value of type `Expr`" |
 | #2444 | `try { } with { }` says a handler arm must be fully qualified while the arm already is exactly that |
 | #2349 | `mapfile` (bash 4) keeps six gate scripts from running on macOS stock bash, so local sign-off is impossible there |
 | #2199 | OOB aborts name operation / index / length but carry no source provenance (rides #1987) |
+
+The first three arrived on 2026-09-06 and were missing from the previous
+edition of this table, which is the drift this section's own rule is about.
 
 ### P2 carrying `blocker` — the entrance to a subtree
 
@@ -107,8 +115,8 @@ first, then take the leftover.
 | #2492 | build-time configuration, `VIBE_*` → `#cfg` → #2497, #2498, #2499 |
 | #2493 | a compile-only artifact at or under 1.0 MB → #2500 (blocker), #2501 – #2506 |
 | #2494 | compiler memory, 128 MB per unit of work → #2509 (blocker), #2507, #2508, #2510 |
-| #2340 | SIMD-first data structures → #2347 (#2348 closed: both inline-wasm halves landed in #2399 / #2420) |
-| #2002 | documentation by audience → #2562 (blocker), #2564, #2565, #2566, #2567. Phases 0-1 already landed as `docs/README.md`; the gate is missing and the router has drifted three ways |
+| #2340 | SIMD-first data structures → #2347. #2348's two inline-wasm halves landed in #2399 / #2420; the issue itself carried a "Closing" comment for two days without the state change, applied 2026-09-08 |
+| #2002 | documentation by audience → #2564, #2565, #2566, #2567. **The blocker is gone**: #2562's fail-closed classification gate landed in #2576, so the four moves are unblocked and can run in order (delete, then user, then internal/generated, then split the mixed ones) |
 | #2001 | retire the scripts layer |
 
 ### Everything else
@@ -125,6 +133,21 @@ hand-rolled renderer and unary counts — the bug they route around was a
 misdiagnosis and is closed), **#2219** (its "after the next bootstrap bump"
 precondition has fired — the committed seed emits the assert marker, so the
 legacy block recognizer can go).
+
+**The gate-wiring pair, both from #2579 and both worth doing in order.** #2579
+wired all 19 previously-unreachable gate scripts into CI, so the count is zero
+today — by hand, and the hand audit got one of ten entries wrong. **#2580** is
+the mechanical replacement: a gate that fails when a `check_*` / `lint_*` script
+is reachable from no workflow, which is what keeps the count at zero.
+**#2581** is the other half of the same lesson: `check_portable_boundary.sh`
+answers a semantic question with a text scanner, and its review ran to 53
+findings — 52 fixed, one refused because measuring the emitted wasm showed the
+gate was right. Its three comments are the acceptance list for the AST version.
+
+**#1872 has no open parent.** Its parent #1770 closed, so the `effect Source`
+design is invisible from every open epic even though its remaining steps are
+written out. Either re-parent it or treat it as a standalone lane entry; do not
+assume it is covered because it has a phase number.
 
 Sequencing worth knowing: **#1953 comes after #2497 and #2498**, not beside
 them. The two issues used to conflict — both moved the compiler's trace and
@@ -176,8 +199,8 @@ serially. Running across lanes is free.**
 | **E. codegen / RC** | `codegen/**` | #2389, #1980, #1934 | |
 | **F. runtime / host** | `runtime/viberun`, abort provenance | #2199 (rides #1987), #2397 | |
 | **G. CLI / editor queries** | `lib/@vibe/cli/**`, `entry/cli_cache` | #2381 (P0), #2378 (P0), #1943, #2499 | |
-| **H. scripts / gates** | `scripts/**`, `tests/gates/**` | #2349 (P1), #2538, #2001 | |
-| **I. docs** | `docs/**`, `book/**` | #2002, #2146, #1346 | conflicts only on the cheatsheet |
+| **H. scripts / gates** | `scripts/**`, `tests/gates/**` | #2349 (P1), #2538, #2580, #2581, #2001 | #2580 before #2581: the reachability gate is cheap and keeps the wiring #2579 did from rotting, while #2581 needs a compiler-bearing job |
+| **I. docs** | `docs/**`, `book/**` | #2002 → #2564, #2565, #2566, #2567 (in that order), #1346 | conflicts only on the cheatsheet. #2146 closed 2026-09-06 |
 
 The #2386 perf subtree deliberately touches every lane — its slices land as many
 small independent PRs, which is why `git log` on a file is worth a look before
@@ -198,6 +221,17 @@ a list conflicts with the neighbouring lane.
   the issues still open, and one (#2437) whose scope had been rewritten three
   times in comments while the body still described the original ask. A merged
   PR does not close an issue; a person does.
+- **The state and the comments can disagree in both directions, so check both.**
+  Two cases on 2026-09-08: #2348 carried a "Closing" comment for two days with
+  the state never applied, and #2581 was closed by a merge although nothing about
+  it was done.
+- **Never write `#NNNN` after a closing verb you are negating.** #2581 was closed
+  by a commit body reading *"This does not close #2581."* — GitHub's parser sees
+  `close #2581` and does not see the `not`. The keywords are `close` / `closes` /
+  `closed` / `fix*` / `resolve*`, anywhere in a commit body on the default branch.
+  Spell it `does not close issue 2581`, with no `#`, when saying so. This
+  repository writes commit bodies that explain what a change deliberately does
+  NOT do, so the hazard is structural here rather than incidental.
 - **Restate a body when its comments have overtaken it.** A reader who has to
   reconstruct the current ask from a comment thread pays that cost every time.
   The body holds where things stand; the thread holds how it got there.
