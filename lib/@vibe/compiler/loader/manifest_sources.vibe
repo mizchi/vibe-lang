@@ -1148,6 +1148,41 @@ export fn probe_manifest_scan_paths_count(entry_path: String) -> Int with Except
 
 //# Source collection
 
+/// #2573: a needed path INSIDE the manifest's own tree that the manifest does
+/// not list.
+///
+/// The build reads the compiler's sources from `compiler_sources_manifest.tsv`,
+/// so an unlisted sibling never enters the ripple db at all. `step_module_fs`
+/// then answers `missing:<path>` for it, its importer folds that
+/// pseudo-fingerprint, and the failure surfaced three layers away as
+/// `type_db: missing resolved dependency environment: <the sibling>` -- an
+/// infrastructure message that names neither the manifest nor the rule in
+/// docs/adding-modules.md, and that points at the one file which is fine.
+/// Measured on #2569: it cost a full investigation of the module planner and
+/// the persistent caches before the manifest turned up, and a trivial sibling
+/// with no imports fails identically, so the content is irrelevant.
+///
+/// Only a path inside `base_dir` is judged. Whatever the manifest reaches
+/// outside its own tree is listed with a `../` row, which `join_path`
+/// normalizes into the index; and a generated `_build/` types stub (#1840) is
+/// never a row -- `load_planned_module_source` reads it from disk.
+fn verify_manifest_needed_paths(base_dir: String, manifest_path: String, manifest_path_index: Map[String, Bool], needed_paths: Array[String]) -> Unit with Exception {
+  let prefix = String::concat(base_dir, "/")
+  let tab = String::from_char_code(9)
+  let mut i = 0
+  while i < Array::length(needed_paths) {
+    let path = Array::get(needed_paths, i)
+    let inside = String::starts_with(path, prefix)
+    if inside && !Map::has_key(manifest_path_index, path) && !is_manifest_external_terminal_dep(path) {
+      let rel = path[String::length(prefix): String::length(path)]
+      throw("add a row `<group>" + tab + rel + "` to " + manifest_path + ": " + path + " is imported from inside the compiler tree but is not listed there, so the build never reads it." + " Use the group the rows for its directory already use (docs/adding-modules.md, \"Only when the compiler consumes it\").")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 export fn try_collect_manifest_sources_fs(entry_path: String) -> Option[(String, Array[(String, String)])] with Exception + Fs {
   match try_load_manifest_rows(entry_path) {
     Some((base_dir, rows)) => {
@@ -1155,6 +1190,7 @@ export fn try_collect_manifest_sources_fs(entry_path: String) -> Option[(String,
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir, rows)
       let header_rows = load_or_collect_manifest_header_rows(entry_path, manifest_path, manifest_path_index)
       let needed_paths = collect_needed_paths_from_manifest_headers(entry_path, manifest_path_index, header_rows)
+      verify_manifest_needed_paths(base_dir, manifest_path, manifest_path_index, needed_paths)
       let needed_path_index = build_manifest_path_index(needed_paths)
       let sources = load_manifest_sources_by_path_index(base_dir, rows, needed_path_index)
       Some((manifest_path, sources))
@@ -1170,6 +1206,7 @@ export fn try_collect_manifest_source_groups_fs(entry_path: String) -> Option[(S
       let manifest_path_index = build_manifest_path_index_from_rows(base_dir, rows)
       let header_rows = load_or_collect_manifest_header_rows(entry_path, manifest_path, manifest_path_index)
       let needed_paths = collect_needed_paths_from_manifest_headers(entry_path, manifest_path_index, header_rows)
+      verify_manifest_needed_paths(base_dir, manifest_path, manifest_path_index, needed_paths)
       let needed_path_index = build_manifest_path_index(needed_paths)
       let groups = load_manifest_source_groups_by_path_index(base_dir, rows, needed_path_index)
       Some((manifest_path, groups))

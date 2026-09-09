@@ -436,3 +436,63 @@ test "try_collect_manifest_sources_fs: does not treat export type as re-export p
     None => assert(false)
   }
 }
+
+test "try_collect_manifest_sources_fs: an unlisted sibling names the manifest, not type_db (#2573)" {
+  // Before #2573 this path produced nothing here at all: the unlisted sibling
+  // simply never entered the source set, and the failure surfaced three layers
+  // later as `type_db: missing resolved dependency environment: <sibling>` --
+  // which names the one file that is fine and neither the manifest nor the
+  // rule in docs/adding-modules.md.
+  let base_dir = "/tmp/vibe_compiler_manifest_unlisted_sibling"
+  let manifest_path = String::concat(base_dir, "/compiler_sources_manifest.tsv")
+  let unlisted_path = String::concat(base_dir, "/core/unlisted.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(String::concat(base_dir, "/core"))
+  Fs::write_bytes(manifest_path, string_to_bytes("# group\tpath\nentry\tmain.vibe\n"))
+  Fs::write_bytes(unlisted_path, string_to_bytes("export let add: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./core/unlisted.vibe { add }\nlet run: () -> Int = () -> { add() }"))
+  let message = handle {
+    let _ = try_collect_manifest_sources_fs(main_path)
+    "no throw"
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(message, "add a row `<group>"))
+  assert(String::contains(message, "core/unlisted.vibe"))
+  assert(String::contains(message, manifest_path))
+  assert(String::contains(message, "docs/adding-modules.md"))
+  assert(!String::contains(message, "type_db"))
+}
+
+test "try_collect_manifest_source_groups_fs: the grouped collector says the same thing (#2573)" {
+  let base_dir = "/tmp/vibe_compiler_manifest_unlisted_sibling_groups"
+  let manifest_path = String::concat(base_dir, "/compiler_sources_manifest.tsv")
+  Fs::mkdir_p(String::concat(base_dir, "/core"))
+  Fs::write_bytes(manifest_path, string_to_bytes("# group\tpath\nentry\tmain.vibe\n"))
+  Fs::write_bytes(String::concat(base_dir, "/core/unlisted.vibe"), string_to_bytes("export let add: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(String::concat(base_dir, "/main.vibe"), string_to_bytes("import ./core/unlisted.vibe { add }\nlet run: () -> Int = () -> { add() }"))
+  let message = handle {
+    let _ = try_collect_manifest_source_groups_fs(String::concat(base_dir, "/main.vibe"))
+    "no throw"
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(message, "core/unlisted.vibe"))
+  assert(String::contains(message, manifest_path))
+}
+
+test "try_collect_manifest_sources_fs: a LISTED sibling is still collected (#2573 control)" {
+  // The check must not fire on the shape it is meant to leave alone -- without
+  // this the test above would pass on a checker that rejected everything.
+  let base_dir = "/tmp/vibe_compiler_manifest_listed_sibling"
+  let manifest_path = String::concat(base_dir, "/compiler_sources_manifest.tsv")
+  let sibling_path = String::concat(base_dir, "/core/listed.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(String::concat(base_dir, "/core"))
+  Fs::write_bytes(manifest_path, string_to_bytes("# group\tpath\ncore\tcore/listed.vibe\nentry\tmain.vibe\n"))
+  Fs::write_bytes(sibling_path, string_to_bytes("export let add: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./core/listed.vibe { add }\nlet run: () -> Int = () -> { add() }"))
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(has_source_path(sources, sibling_path))
+      assert(has_source_path(sources, main_path))
+    },
+    None => assert(false)
+  }
+}
