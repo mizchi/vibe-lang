@@ -17,7 +17,13 @@
 #      quoting: `grep -qE $'^x:finding\t'`. `\d` is the same trap (grep has no
 #      `\d`; `\s`, `\w` and `\b` are real GNU extensions and stay allowed).
 #
-# Both are lexical, so both are decidable from the text.
+#   3. `mapfile` is a bash 4 builtin and macOS ships bash 3.2, so a script
+#      using it aborts before it can validate anything. Eleven uses across six
+#      scripts had accumulated under this gate (#2349) -- including both
+#      formatter entry points, so `pkf run fmt` and `bash scripts/
+#      check_vibe_fmt.sh` did not run on a supported contributor platform.
+#
+# All are lexical, so all are decidable from the text.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -79,6 +85,35 @@ findings="$(
       next
     }
 
+    # 4. `mapfile` (and its `readarray` synonym) is a bash 4 builtin. macOS
+    #    ships bash 3.2, so a script using it aborts before it can validate
+    #    anything -- this failure mode taken to the limit: not "a gate that
+    #    fails for an unrelated reason" but a gate that cannot start at all.
+    #    Eleven uses across six scripts had accumulated under a gate whose whole
+    #    job is this class, including check_vibe_fmt.sh and vibe_fmt_apply.sh,
+    #    so the documented local sign-off commands did not run on a supported
+    #    contributor platform (#2349).
+    #
+    #    Matched as a WORD anywhere on the line, not in command position.
+    #    A command-position rule was the first draft and it was too narrow in
+    #    a way that is easy to reach by accident (Codex on #2588): `if mapfile
+    #    -t xs < f; then`, `command mapfile ...`, `! mapfile ...` and
+    #    `FOO=bar mapfile ...` all run the builtin and all sailed past it.
+    #    Enumerating reserved words, negation, assignment prefixes and the
+    #    command/builtin wrappers is the losing side of that game, so this
+    #    fails CLOSED instead -- the same shape the `rg` rule above uses, for
+    #    the same reason. Whole-line comments are already dropped further up;
+    #    a mention in a message string is a finding, and the fix is to reword
+    #    the message.
+    #
+    #    NOTE for anyone editing this awk program: it is one single-quoted
+    #    shell string, so an apostrophe anywhere in here -- including in a
+    #    comment -- closes it and the shell then parses awk syntax as its own.
+    /(^|[^A-Za-z0-9_.\/-])(mapfile|readarray)([^A-Za-z0-9_.\/-]|$)/ {
+      printf "  %s:%d: mapfile/readarray is a bash 4 builtin; macOS ships bash 3.2 -- fill the array with a `while IFS= read -r ...` loop over a process substitution instead (`read -r -d` for NUL-delimited input)\n", rel, FNR
+      next
+    }
+
     # 3. `sed -i` with no suffix. GNU takes an optional one, BSD/macOS REQUIRES
     #    one, so the bare form aborts there. Lexical, and a real instance:
     #    check_book_console_test.sh -- a release-check dependency -- used it,
@@ -118,4 +153,4 @@ if [ -n "$findings" ]; then
   exit 1
 fi
 
-echo "[gate-portability] ok (no ripgrep dependency; no bare sed -i; no uninterpreted \\t in grep patterns)"
+echo "[gate-portability] ok (no ripgrep dependency; no bash 4 mapfile; no bare sed -i; no uninterpreted \\t in grep patterns)"

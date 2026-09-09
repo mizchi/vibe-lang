@@ -44,7 +44,11 @@ is_allowed() {
   ' "$ALLOWLIST_FILE"
 }
 
-mapfile -t files < <(git ls-files "$SCAN_ROOT/*.vibe" "$SCAN_ROOT/*.vpkg" | sort)
+# bash 3.2 (macOS stock) has no `mapfile` (#2349).
+files=()
+while IFS= read -r line || [ -n "$line" ]; do
+  files+=("$line")
+done < <(git ls-files "$SCAN_ROOT/*.vibe" "$SCAN_ROOT/*.vpkg" | sort)
 
 if [ "${#files[@]}" -eq 0 ]; then
   echo "vibe-fmt lint: no tracked .vibe/.vpkg files under $SCAN_ROOT" >&2

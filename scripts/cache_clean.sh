@@ -31,7 +31,12 @@ done
 
 # Collect the persistent-cache files (NUL-safe; nothing else under _build is
 # touched, so generation builds / fixtures are preserved).
-mapfile -d '' -t files < <(find _build -maxdepth 1 -type f -name 'vibe_*' -print0 2>/dev/null || true)
+# bash 3.2 (macOS stock) has no `mapfile` (#2349). `read -d ''` is the
+# NUL-delimited equivalent and is a bash 3 builtin.
+files=()
+while IFS= read -r -d '' f || [ -n "$f" ]; do
+  files+=("$f")
+done < <(find _build -maxdepth 1 -type f -name 'vibe_*' -print0 2>/dev/null || true)
 
 count=${#files[@]}
 if [ "$count" -eq 0 ]; then

@@ -36,7 +36,13 @@ is_excluded() {
   ' "$ALLOWLIST_FILE"
 }
 
-mapfile -t files < <(git ls-files "$SCAN_ROOT/*.vibe" "$SCAN_ROOT/*.vpkg" | sort)
+# bash 3.2 (macOS stock) has no `mapfile` (#2349): read the list instead. The
+# `|| [ -n "$line" ]` tail keeps a final line that carries no newline, which is
+# the one behaviour `mapfile` has and a bare `read` loop does not.
+files=()
+while IFS= read -r line || [ -n "$line" ]; do
+  files+=("$line")
+done < <(git ls-files "$SCAN_ROOT/*.vibe" "$SCAN_ROOT/*.vpkg" | sort)
 
 to_format=()
 skipped=0
