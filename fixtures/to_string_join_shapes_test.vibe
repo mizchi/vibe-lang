@@ -1,0 +1,104 @@
+// #2585: `__to_string` of an Int reached through a JOIN -- an `if`, a `match`,
+// a sequence, or a block whose tail is its own binder.
+//
+// `ts_known_int` (codegen/expr/compile_call.vibe) had no arm for these shapes
+// and `typed_lowering_arg_offset` answers only for an ident, a call or a
+// projection, so neither the syntactic classifier nor the typed channel could
+// name them. Codegen fell through to the runtime string-pointer heuristic,
+// which returns the operand UNCHANGED when the value looks like a packed
+// `(ptr << 32) | len`, so the render produced bytes read out of the program's
+// own data section -- silently, with no diagnostic, while the wasm-gc lane
+// printed the number. Measured on the committed seed too, so it was
+// long-standing.
+//
+// CHOOSING A VALUE FOR A TEST IN THIS CLASS -- the bug fires only inside a
+// WINDOW, and both ends of it will let a bad compiler pass:
+//
+//   lower end: `abs = (n << 1) >>u 32` must be >= 64, i.e. `n >= 2^37`
+//              (137438953472). Below that the heuristic cannot fire at all.
+//   upper end: `abs` must also stay INSIDE linear memory (`abs < memory_size`
+//              and `abs + low <= memory_size`, the #664 bounds). Those are
+//              LOAD-DEPENDENT, so a value large enough to push `abs` past the
+//              module's memory size also renders correctly with the bug
+//              present -- measured: 2^60 was right on the pre-fix compiler.
+//              A round constant like `1 << 60` is therefore NOT a regression
+//              test for this; it passes either way.
+//
+// Every case below uses `BIG` or `THRESH`, both confirmed to be inside the
+// window: the whole file is RED on the pre-fix compiler. `THRESH` is exactly
+// 2^37, the first value that can break.
+let THRESH = 137438953472
+
+let BIG = 214748364804
+
+fn mk(xs: Array[Int], i: Int) -> Int {
+  Array::get(xs, i)
+}
+
+test "if over two int literals" {
+  let flag = BIG > 0
+  inspect(__to_string(if flag { BIG } else { 0 }), "214748364804")
+}
+
+test "if at exactly 2^37, the first value the heuristic can misread" {
+  let flag = THRESH > 0
+  inspect(__to_string(if flag { THRESH } else { 0 }), "137438953472")
+}
+
+test "if whose arm is a user call" {
+  let xs = [BIG]
+  let flag = Array::length(xs) > 0
+  inspect(__to_string(if flag { mk(xs, 0) } else { 0 }), "214748364804")
+}
+
+test "match arms that bind nothing" {
+  let xs = [BIG]
+  let flag = Array::length(xs) > 0
+  inspect(__to_string(match flag { true => mk(xs, 0), false => 0 }), "214748364804")
+}
+
+test "block whose tail is its own binder" {
+  let xs = [BIG]
+  inspect(__to_string({ let w = mk(xs, 0); w }), "214748364804")
+}
+
+test "nested join: an if inside an if" {
+  let xs = [BIG]
+  let flag = Array::length(xs) > 0
+  inspect(__to_string(if flag { if flag { mk(xs, 0) } else { 1 } } else { 0 }), "214748364804")
+}
+
+// A sum whose operand is a `let` bound from a CALL. #2422 made `+ - * /` Int
+// when both operands are, but that arm reads slot kinds, which only know a
+// binding codegen could already see as intish -- a call result is not one. So
+// the bare `__to_string(v)` beside it answered (the ident has a key the checker
+// typed) while `__to_string(v + 0)` rendered `el-binop`. Measured on the
+// pre-fix compiler AND on the committed seed, so this half was long-standing
+// too and is not a join shape at all; recording the operands' keys is what
+// lets #2422's existing recursion answer.
+test "sum of a call-bound local" {
+  let xs = [BIG]
+  let v = mk(xs, 0)
+  inspect(__to_string(v + 0), "214748364804")
+  inspect(__to_string(0 + v), "214748364804")
+  inspect(__to_string(v - 0), "214748364804")
+}
+
+// The shapes that DID already answer stay answering. A fix that broke one of
+// these would be trading one silent-wrong for another.
+test "shapes that already answered still answer" {
+  let xs = [BIG]
+  let v = mk(xs, 0)
+  inspect(__to_string(mk(xs, 0)), "214748364804")
+  inspect(__to_string(v), "214748364804")
+  inspect(__to_string(BIG), "214748364804")
+}
+
+// A join whose arms are STRINGS must not be forced onto the integer path by
+// the new arms -- the classifier answers "is this an Int", and a wrong `true`
+// here would render a string as a number.
+test "a string-armed join is not classified as Int" {
+  let flag = BIG > 0
+  inspect(if flag { "a" } else { "b" }, "a")
+  inspect(String::concat(if flag { "x" } else { "y" }, "z"), "xz")
+}

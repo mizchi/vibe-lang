@@ -6339,23 +6339,110 @@ fn irc_show_shim_names(stmts: Array[Stmt]) -> Array[String] {
 /// argument. Collecting under the key the consumer reads is the point: a
 /// candidate filed under a key nobody looks up is not a wrong answer, it is
 /// silence.
+/// #2585: the key for one render argument -- its own if it has one, else its
+/// JOIN ARMS'.
+///
+/// `typed_lowering_arg_offset` answers only for an ident, a call or a
+/// projection, so a render argument that is an `if` / `match` / block had NO
+/// key and this walk recorded nothing for it. The consumer then fell through to
+/// the runtime string-pointer heuristic, which returns the operand unchanged
+/// when `raw >> 32` lands in bounds -- rendering an Int at or above 2^37 as
+/// bytes read from the static data section, silently, while the wasm-gc lane
+/// printed the number.
+///
+/// The arms DO have keys and the checker has already typed them, so record
+/// those instead. The descent mirrors `ts_known_int`'s (codegen/expr/
+/// compile_call.vibe) exactly, including the binder rule: only the "body is
+/// its own binder" shape is followed, and what it records is the binder's
+/// VALUE, which is the expression the consumer classifies.
+///
+/// Neither side can answer WRONGLY if the two ever drift. A key recorded here
+/// that the consumer does not descend into is inert -- nobody reads it. A shape
+/// the consumer descends into that is not recorded here falls back to the
+/// heuristic, which is the behaviour before this change. And an offset recorded
+/// here survives `irc_render_arg_offsets_pair` only when EVERY typed occurrence
+/// at it resolves to the wanted type, so recording a candidate can never
+/// promote a non-Int.
+fn irc_push_arg_key(arg: Expr, out: Array[Int], want: Int) -> Unit {
+  let aoff = if want == 4 {
+    typed_lowering_float_key(arg)
+  } else {
+    typed_lowering_arg_offset(arg)
+  }
+  if aoff >= 0 {
+    Array::push(out, aoff)
+  } else {
+    match arg {
+      EIf(_, t, f) => {
+        irc_push_arg_key(t, out, want)
+        irc_push_arg_key(f, out, want)
+      },
+      ESeq(_, second) => irc_push_arg_key(second, out, want),
+      // #2585: the ARITHMETIC operands, for the same reason and by the same
+      // rule as #2422's arm in `ts_known_int`: `+ - * /` resolve from their
+      // operands, so a sum is an Int exactly when both sides are. That arm
+      // reads slot kinds, which only know a `let` whose value codegen could
+      // already see as intish -- so `let v = mk(xs); __to_string(v + 0)` was
+      // silently wrong at >= 2^37 while the bare `__to_string(v)` beside it
+      // was right, because the bare ident had a key and the sum had none.
+      // Recording the operands' keys is what lets the existing recursion
+      // answer. The other Int operators (`& | ^ << >> %`) are Int by the
+      // checker's own rule whatever the operands are, so that arm never
+      // reaches for a key and none is recorded for them.
+      EBinOp(op, lhs, rhs, _) => if op == "+" || op == "-" || op == "*" || op == "/" {
+        irc_push_arg_key(lhs, out, want)
+        irc_push_arg_key(rhs, out, want)
+      } else {
+        ()
+      },
+      EMatch(_, arms) => irc_push_arm_keys(arms, out, want),
+      ELet(nm, val, body, _) => irc_push_binder_key(nm, val, body, out, want),
+      ELetRec(nm, val, body) => irc_push_binder_key(nm, val, body, out, want),
+      ELetMut(nm, val, body, _) => irc_push_binder_key(nm, val, body, out, want),
+      _ => ()
+    }
+  }
+}
+
+/// #2585: every arm body of a `match` in render-argument position.
+///
+/// No pattern filter here, deliberately: this side only proposes CANDIDATE
+/// offsets, and the consumer refuses an arm whose pattern binds a name (it
+/// resolves identifiers through `local_names`, which does not carry the arm's
+/// own binders). An offset proposed for an arm the consumer will not read is
+/// inert.
+fn irc_push_arm_keys(arms: Array[(Pat, Expr)], out: Array[Int], want: Int) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    irc_push_arg_key(body, out, want)
+    i = i + 1
+  }
+}
+
+/// #2585: a `let` / `let rec` / `let mut` in render-argument position, in the
+/// one shape that is answerable without an environment -- the body is a single
+/// identifier and the binder immediately above it binds that exact name, so the
+/// binder's VALUE answers for the body. Deeper chains stay unrecorded, matching
+/// the consumer.
+fn irc_push_binder_key(name: String, value: Expr, body: Expr, out: Array[Int], want: Int) -> Unit {
+  match body {
+    EIdent(bn, _) => if bn == name {
+      irc_push_arg_key(value, out, want)
+    } else {
+      ()
+    },
+    _ => ()
+  }
+}
+
 fn irc_collect_expr(e: Expr, out: Array[Int], want: Int, shims: Int) -> Unit {
   match e {
     ECall(callee, args, _) => match callee {
       EIdent(cn, _) => if irc_is_render_callee(cn, shims) {
         let mut ai = 0
         while ai < Array::length(args) {
-          let arg = Array::get(args, ai)
-          let aoff = if want == 4 {
-            typed_lowering_float_key(arg)
-          } else {
-            typed_lowering_arg_offset(arg)
-          }
-          if aoff >= 0 {
-            Array::push(out, aoff)
-          } else {
-            ()
-          }
+          irc_push_arg_key(Array::get(args, ai), out, want)
           ai = ai + 1
         }
       } else {

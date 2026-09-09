@@ -1528,13 +1528,160 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
     // persistent-source-groups cache row for one specific file, "invalid
     // persistent source group cache group row" on re-read). The bound can
     // never be airtight for 61-bit hashes; static knowledge is.
+    //
+    // #2585 review (Codex P1): the name must not be SHADOWED. This arm used to
+    // answer from the callee SPELLING alone, while `cc_builtin_call_ret_kind`
+    // in this same file has always required that no local and no user `fn`
+    // carry the name -- so with the supported declaration
+    // `fn String::length(s: String) -> String { s }` in scope,
+    // `__to_string(String::length("abc"))` answered `169651208193`. That was
+    // already wrong before the join arms below; what those arms did was
+    // PROPAGATE it into positions that had been right, because with no arm for
+    // a join the runtime heuristic returned the packed string unchanged:
+    // `__to_string(if c { String::length("aaa") } else { .. })` answered "aaa"
+    // and became "188978561025". Guarding here fixes the propagation and the
+    // original together, and it is the same guard, not a second spelling of it.
     match get_ecall_callee(e) {
-      EIdent(cn, _) => cn == "Fs::stat_token" || cn == "vibe_fs_stat_token_raw" || cn == "Profiler::now_us" || cn == "Profiler::heap_bytes" || cn == "Env::args_len" || cn == "String::length" || cn == "Array::length" || cn == "Bytes::length" || cn == "String::char_code_at" || cn == "String::index_of" || cn == "String::last_index_of" || cn == "Stdin::read_char",
+      EIdent(cn, _) => {
+        let bn = canonical_builtin_name(cn)
+        ts_int_returning_builtin_name(bn) && !ts_name_is_shadowed(bn, local_names, ctx)
+      },
       _ => false
     }
+  } else if tag == 7 {
+    // #2585: the JOIN shapes. A join is an Int only when EVERY way out of it
+    // is -- the same AND semantics, and the same fail-closed direction, that
+    // cc_expr_is_floatish / _stringish / _boolish in this file have had since
+    // #825/#2432. `ts_known_int` was the one classifier of the four without
+    // them, so an `if` / `match` / block argument fell through to the runtime
+    // string-pointer heuristic below, which returns the operand UNCHANGED when
+    // the value looks like a packed `(ptr << 32) | len`.
+    //
+    // When that fires is NOT a threshold on the value alone. All three of the
+    // #664 bounds emitted below must hold: `abs = raw >>u 32 >= 64`, `abs <
+    // memory.size * 65536`, and `abs + (raw & 0xFFFFFFFF) <= memory.size *
+    // 65536`. Only the first is a property of `n`: a tagged Int is `n << 1`,
+    // so it needs `n >= 2^37`. The other two are LOAD-DEPENDENT, which is what
+    // the #664 comment further down says in its own words -- so `n >= 2^37` is
+    // necessary and not sufficient, and a value large enough to push `abs`
+    // past the module's memory size renders correctly even with the bug
+    // present (measured: 2^60 was right on the pre-fix compiler).
+    //
+    // Measured on stage2 AND on the committed seed, inside that window:
+    //
+    //   __to_string(if flag { 214748364804 } else { 0 })  ->  8 junk bytes
+    //   __to_string(if flag { 137438953472 } else { 0 })  ->  ""  (len 0)
+    //
+    // The junk is whatever the program's own data section holds at `abs`, so
+    // it differs per program -- "  =B at " in one probe, "h:" in the fixture
+    // beside this file -- and is not quotable as a fixed string. No
+    // diagnostic; the wasm-gc lane printed the number. Both arms are Int
+    // LITERALS in the first case, so nothing about the type was ambiguous; the
+    // shape simply had no arm here. The control, correct before and after:
+    // `__to_string(mk(xs))` -> "214748364804", a shape that already had one.
+    // Same class as #2422, which fixed it for `+ - * /` after the identical
+    // symptom (`"\{i + j}" -> "x "`).
+    ts_known_int(get_eif_then(e), local_names, ctx) && ts_known_int(get_eif_else(e), local_names, ctx)
+  } else if tag == 14 {
+    ts_known_int(get_eseq_second(e), local_names, ctx)
+  } else if tag == 9 {
+    ts_binder_known_int(get_elet_name(e), get_elet_val(e), get_elet_body(e), local_names, ctx)
+  } else if tag == 10 {
+    ts_binder_known_int(get_eletrec_name(e), get_eletrec_val(e), get_eletrec_body(e), local_names, ctx)
+  } else if tag == 11 {
+    ts_binder_known_int(get_eletmut_name(e), get_eletmut_val(e), get_eletmut_body(e), local_names, ctx)
+  } else if tag == 16 {
+    ts_arms_known_int(get_match_arms(e), local_names, ctx)
   } else {
     false
   }
+}
+
+/// #769's list of Int-returning builtins, lifted out of `ts_known_int`'s tag-8
+/// arm so the shadow guard beside it reads as one condition rather than a
+/// chain with a trailing `&&`.
+fn ts_int_returning_builtin_name(bn: String) -> Bool {
+  bn == "Fs::stat_token" || bn == "vibe_fs_stat_token_raw" || bn == "Profiler::now_us" || bn == "Profiler::heap_bytes" || bn == "Env::args_len" || bn == "String::length" || bn == "Array::length" || bn == "Bytes::length" || bn == "String::char_code_at" || bn == "String::index_of" || bn == "String::last_index_of" || bn == "Stdin::read_char"
+}
+
+/// #2585 review (Codex P1): does the source shadow this builtin name?
+///
+/// The two tests are `cc_builtin_call_ret_kind`'s, unchanged: a LOCAL of the
+/// same name (the call resolves to a closure value, not the builtin), or a USER
+/// `fn` of that name in the func table (`fi < num_user_funcs` -- the builtin
+/// entries sit above that boundary). Shadowing a qualified builtin name is
+/// supported and exercised in-tree; `borrow_returning_names_test.vibe` declares
+/// `fn Map::iter_get` exactly this way and asserts the source declaration is
+/// what wins.
+fn ts_name_is_shadowed(bn: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  if find_local_slot(local_names, bn) >= 0 {
+    true
+  } else {
+    let fi = cc_ft_first_idx(ctx.func_table, bn)
+    fi >= 0 && fi < ctx.num_user_funcs
+  }
+}
+
+/// #2585: a `let` / `let rec` / `let mut` join arm, restricted to the ONE
+/// shape answerable WITHOUT an environment -- cc_expr_is_floatish's #2432
+/// reasoning, kept in the same words because it is the same constraint. The
+/// body is a single identifier and the binder immediately above it binds that
+/// exact name, so no inner scope can intervene and no outer binding of the
+/// same name is reachable; the binder's VALUE therefore answers for the body.
+/// Anything deeper -- `let x = 0; let z = x; z` -- is NOT answerable this way
+/// and stays open, falling back to the runtime heuristic exactly as before.
+/// Closing it needs the binding's TYPE (#2424's channel); the alternative, an
+/// environment carried through the descent, is the design AGENTS.md records
+/// going silently wrong (an outer `let v = 1` read for an inner `v` of another
+/// type).
+fn ts_binder_known_int(name: String, value: Expr, body: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  if expr_tag(body) == 4 && get_eident_name(body) == name {
+    ts_known_int(value, local_names, ctx)
+  } else {
+    false
+  }
+}
+
+/// #2585: every arm of a `match` in Int-operand position. AND semantics like
+/// the `if` arm, and `false` for an empty match rather than a vacuous `true`.
+///
+/// An arm whose pattern BINDS a name is not classified. `ts_known_int`'s
+/// identifier arm resolves through `local_names`, which does not yet carry the
+/// arm's own binders at classification time -- so `match o { Some(v) => v, .. }`
+/// would judge the arm's `v` against an OUTER `v` wherever one exists, and
+/// answer for the wrong binding. Refusing such an arm costs a fallback to the
+/// runtime heuristic, which is exactly today's behaviour and so cannot regress;
+/// answering it from the wrong binding would be the silently-wrong failure this
+/// change exists to remove. (The floatish / stringish / boolish siblings do not
+/// draw this distinction -- that is a pre-existing exposure, not one widened
+/// here.)
+fn ts_arms_known_int(arms: Array[(Pat, Expr)], local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let n = Array::length(arms)
+  if n == 0 {
+    false
+  } else {
+    let mut all = true
+    let mut i = 0
+    while i < n {
+      let arm = Array::get(arms, i)
+      if ts_pat_binds_nothing(get_arm_pat(arm)) && ts_known_int(get_arm_body(arm), local_names, ctx) {
+        ()
+      } else {
+        all = false
+      }
+      i = i + 1
+    }
+    all
+  }
+}
+
+/// #2585: a pattern that introduces no binding, so an arm body under it can be
+/// classified against the enclosing `local_names` with no scope of its own. A
+/// nullary constructor binds nothing either, but `is_pctor` cannot say whether
+/// its sub-patterns do, so it stays out -- conservative, and the arms that
+/// matter for an Int join (`0 =>`, `true =>`, `_ =>`) are all here.
+fn ts_pat_binds_nothing(p: Pat) -> Bool {
+  is_pwild(p) || is_pint(p) || is_pbool(p) || is_pstring(p)
 }
 
 /// A synthesized `EString` literal is NOT in the compile unit's string table
