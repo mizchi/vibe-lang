@@ -1,0 +1,131 @@
+//# Imports
+
+// Batch `vibe symbols` (#2381). Lives next to symbol_spans_fs.vibe because it
+// needs `Fs`; symbol_spans_test.vibe stays on the pure source-string seam.
+
+import ./symbol_spans_fs.vibe {
+  symbol_spans_fs, symbol_spans_fs_report
+}
+
+import ./source_walk.vibe {
+  source_walk_collect_files, source_walk_empty_paths, source_walk_skip_dir
+}
+
+import @vibe/core {
+  inspect
+}
+
+//# Functions
+
+/// `PATH NAME KIND` per row, one row per line -- the fields a reader of this
+/// file can check by eye. The two offsets are symbol_spans' own answer and are
+/// pinned by symbol_spans_test.vibe, so repeating them here would only couple
+/// this file to unrelated edits.
+fn rows_text(rows: Array[(String, String, Int, Int, Int, String)]) -> String {
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (path, name, kind, _, _, _) = Array::get(rows, i)
+    StringBuilder::push(acc, String::concat(path, String::concat(" ", String::concat(name, String::concat(" ", String::concat(__to_string(kind), "\n"))))))
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+/// `inspect` renders a Bool as 1/0; the policy reads better as yes/no.
+fn yn(b: Bool) -> String {
+  if b {
+    "yes"
+  } else {
+    "no"
+  }
+}
+
+fn lines_text(lines: Array[String]) -> String {
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(lines) {
+    StringBuilder::push(acc, String::concat(Array::get(lines, i), "\n"))
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
+//# Tests
+
+test "symbol_spans_fs_report: a directory sweep carries the path and descends" {
+  let dir = "_build/vibe_symbols_fs_sweep"
+  Fs::mkdir_p(String::concat(dir, "/sub"))
+  Fs::write_file(String::concat(dir, "/a.vibe"), "export struct Point { x: Int }\n")
+  Fs::write_file(String::concat(dir, "/b.vibe"), "export let zero = 0\n")
+  Fs::write_file(String::concat(dir, "/sub/c.vibe"), "export fn deep() -> Int { 1 }\n")
+  // A non-source file in the same directory must not appear.
+  Fs::write_file(String::concat(dir, "/notes.txt"), "export let ghost = 1\n")
+  let (rows, failures) = symbol_spans_fs_report(dir)
+  inspect(rows_text(rows), "_build/vibe_symbols_fs_sweep/a.vibe Point 23\n_build/vibe_symbols_fs_sweep/b.vibe zero 13\n_build/vibe_symbols_fs_sweep/sub/c.vibe deep 12\n")
+  inspect(Array::length(failures), "0")
+}
+
+test "symbol_spans_fs_report: an unparseable file is reported, and the rest still come back" {
+  // The unparseable file sorts FIRST, so a sweep that aborted on it would
+  // return nothing at all -- which is what one `declare`-using file under
+  // `lib/` did to all 966 before this shape.
+  let dir = "_build/vibe_symbols_fs_partial"
+  Fs::mkdir_p(dir)
+  Fs::write_file(String::concat(dir, "/a_broken.vibe"), "export fn broken( {\n")
+  Fs::write_file(String::concat(dir, "/b_good.vibe"), "export let kept = 1\n")
+  let (rows, failures) = symbol_spans_fs_report(dir)
+  inspect(rows_text(rows), "_build/vibe_symbols_fs_partial/b_good.vibe kept 13\n")
+  inspect(lines_text(failures), "_build/vibe_symbols_fs_partial/a_broken.vibe: expected parameter name, got '{' at #4\n")
+}
+
+test "symbol_spans_fs: a single named file is a root too" {
+  let dir = "_build/vibe_symbols_fs_one"
+  Fs::mkdir_p(dir)
+  let path = String::concat(dir, "/only.vibe")
+  Fs::write_file(path, "export fn one() -> Int { 1 }\n")
+  inspect(rows_text(symbol_spans_fs(path)), "_build/vibe_symbols_fs_one/only.vibe one 12\n")
+}
+
+test "symbol_spans_fs: the all-or-nothing wrapper throws, naming the file" {
+  let dir = "_build/vibe_symbols_fs_throws"
+  Fs::mkdir_p(dir)
+  Fs::write_file(String::concat(dir, "/bad.vibe"), "export fn broken( {\n")
+  let msg = handle {
+    let _ = symbol_spans_fs(dir)
+    "no throw"
+  } with { Exception::Throw(m) => m }
+  inspect(msg, "_build/vibe_symbols_fs_throws/bad.vibe: expected parameter name, got '{' at #4")
+}
+
+test "source_walk_collect_files: build and vendor directories are not descended into" {
+  let dir = "_build/vibe_source_walk_skip"
+  Fs::mkdir_p(String::concat(dir, "/node_modules"))
+  Fs::mkdir_p(String::concat(dir, "/deps"))
+  Fs::mkdir_p(String::concat(dir, "/src"))
+  Fs::write_file(String::concat(dir, "/node_modules/vendored.vibe"), "let a = 1\n")
+  Fs::write_file(String::concat(dir, "/deps/pkg.vibe"), "let b = 1\n")
+  Fs::write_file(String::concat(dir, "/src/own.vibe"), "let c = 1\n")
+  let files = source_walk_empty_paths()
+  source_walk_collect_files(dir, files)
+  inspect(lines_text(files), "_build/vibe_source_walk_skip/src/own.vibe\n")
+}
+
+test "source_walk_collect_files: a NAMED skip directory is still swept" {
+  // The skip list applies while recursing, never to what the caller asked for.
+  let dir = "_build/vibe_source_walk_named"
+  Fs::mkdir_p(String::concat(dir, "/deps"))
+  Fs::write_file(String::concat(dir, "/deps/pkg.vibe"), "let b = 1\n")
+  let files = source_walk_empty_paths()
+  source_walk_collect_files(String::concat(dir, "/deps"), files)
+  inspect(lines_text(files), "_build/vibe_source_walk_named/deps/pkg.vibe\n")
+}
+
+test "source_walk_skip_dir: the policy itself" {
+  inspect(yn(source_walk_skip_dir("_build")), "yes")
+  inspect(yn(source_walk_skip_dir(".git")), "yes")
+  inspect(yn(source_walk_skip_dir("node_modules")), "yes")
+  inspect(yn(source_walk_skip_dir("deps")), "yes")
+  inspect(yn(source_walk_skip_dir("lib")), "no")
+  inspect(yn(source_walk_skip_dir("dependencies")), "no")
+}

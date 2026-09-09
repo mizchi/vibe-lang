@@ -30,6 +30,10 @@ import @vibe/compiler/incremental {
   RippleDb, ripple_get_deps, ripple_get_fingerprint, ripple_new, ripple_set_source
 }
 
+import ./source_walk.vibe {
+  source_walk_collect_files
+}
+
 import ./grep.vibe {
   GrepTyped,
   grep_check_filters,
@@ -61,62 +65,6 @@ fn grep_fs_empty_env_cache() -> Array[(String, TypeEnv)] {
 
 fn grep_fs_empty_pairs() -> Array[(String, String)] {
   array_empty()
-}
-
-fn grep_fs_is_source_name(name: String) -> Bool {
-  String::ends_with(name, ".vibe") || String::ends_with(name, ".vibex")
-}
-
-/// Directories a recursive sweep does not descend into: build output and
-/// vendored trees are not the user's source, and walking them dominates the
-/// runtime. `deps` is where `vibe fetch` vendors packages (and, since relative
-/// imports nest, each vendored package's own `deps` under that), so the
-/// default `vibe grep ... .` would otherwise report the whole transitive
-/// dependency tree as if it were project code.
-///
-/// This only applies while RECURSING. A directory named here is still searched
-/// when the caller names it: `vibe grep --pattern '..' deps` asks for exactly
-/// that, and a skip list must not override what was asked for.
-fn grep_fs_skip_dir(name: String) -> Bool {
-  String::starts_with(name, ".") || name == "_build" || name == "node_modules" || name == "dist" || name == "target" || name == "deps"
-}
-
-fn grep_fs_join(dir: String, name: String) -> String {
-  if String::ends_with(dir, "/") {
-    String::concat(dir, name)
-  } else {
-    String::concat(dir, String::concat("/", name))
-  }
-}
-
-/// Collect the `.vibe` / `.vibex` files under `root`, in directory order. An
-/// explicitly named file is taken whatever its extension: the caller asked for
-/// that file by name.
-fn grep_fs_collect_files(root: String, out: Array[String]) -> Unit with Fs {
-  if Fs::is_dir(root) {
-    let names = Fs::readdir(root)
-    let mut i = 0
-    while i < Array::length(names) {
-      let name = Array::get(names, i)
-      let child = grep_fs_join(root, name)
-      if Fs::is_dir(child) {
-        if !grep_fs_skip_dir(name) {
-          grep_fs_collect_files(child, out)
-        } else {
-          ()
-        }
-      } else if grep_fs_is_source_name(name) {
-        Array::push(out, child)
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-  } else if Fs::is_file(root) {
-    Array::push(out, root)
-  } else {
-    ()
-  }
 }
 
 /// The typed context for `path`, resolved the way `vibe check` resolves it.
@@ -221,7 +169,7 @@ export fn grep_scan_fs_report(root: String, pattern: String, wheres: Array[Strin
   let pat = grep_compile_pattern(pattern)
   grep_check_filters(pat, wheres, where_rows)
   let files = grep_empty_strings()
-  grep_fs_collect_files(root, files)
+  source_walk_collect_files(root, files)
   let typed = grep_needs_typing(wheres, where_rows, only)
   let has_typed_filter = Array::length(wheres) > 0 || Array::length(where_rows) > 0
   let out = grep_empty_strings()

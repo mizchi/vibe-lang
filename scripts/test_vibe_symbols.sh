@@ -129,6 +129,99 @@ else
   bad "symbols should find add/adds/once/Show/Point+impl; got: $out_tb"
 fi
 
+# --- #2381: arguments are no longer accepted and ignored --------------------
+# Every case below used to print a.vibe's outline and exit 0, so a caller who
+# believed they had asked about two files -- or who typo'd a flag -- got a
+# confident, complete-looking answer to a different question.
+a1="$WORK/args_a.vibe"; printf 'export let alpha = 1\n' > "$a1"
+a2="$WORK/args_b.vibe"; printf 'export let beta = 1\n'  > "$a2"
+
+if out_bad="$("$VIBE" symbols "$a1" --bogus-flag 2>&1)"; then
+  bad "symbols must refuse an unknown flag; it exited 0 with: $out_bad"
+else
+  case "$out_bad" in
+    *"unknown flag: --bogus-flag"*) ok "symbols refuses an unknown flag" ;;
+    *) bad "symbols refused, but not about the flag: $out_bad" ;;
+  esac
+fi
+
+if out_missing="$("$VIBE" symbols "$a1" /nonexistent/path.vibe 2>&1)"; then
+  bad "symbols must refuse a path that does not exist; it exited 0 with: $out_missing"
+else
+  case "$out_missing" in
+    *"not found: /nonexistent/path.vibe"*) ok "symbols refuses a path that does not exist" ;;
+    *) bad "symbols refused, but not about the missing path: $out_missing" ;;
+  esac
+fi
+
+# --- #2381: batch mode ------------------------------------------------------
+# Two paths answer about BOTH, and every line names the file it came from.
+out_two="$("$VIBE" symbols "$a1" "$a2")"
+if printf '%s\n' "$out_two" | grep -qE "^$a1 alpha 13 [0-9]+ [0-9]+$" \
+   && printf '%s\n' "$out_two" | grep -qE "^$a2 beta 13 [0-9]+ [0-9]+$"; then
+  ok "symbols over two files answers about both, PATH-prefixed"
+else
+  bad "symbols over two files should report alpha and beta with paths; got: $out_two"
+fi
+
+# A directory is swept recursively, and a non-source file in it is not read.
+bd="$WORK/batchdir"; mkdir -p "$bd/sub"
+printf 'export let top = 1\n'          > "$bd/top.vibe"
+printf 'export let nested = 1\n'       > "$bd/sub/nested.vibe"
+printf 'export let ghost = 1\n'        > "$bd/notes.txt"
+out_dir="$("$VIBE" symbols "$bd")"
+if printf '%s\n' "$out_dir" | grep -qE "^$bd/top.vibe top 13 " \
+   && printf '%s\n' "$out_dir" | grep -qE "^$bd/sub/nested.vibe nested 13 " \
+   && ! printf '%s\n' "$out_dir" | grep -q 'ghost'; then
+  ok "symbols over a directory descends and reads only source files"
+else
+  bad "symbols over a directory should find top and nested but not ghost; got: $out_dir"
+fi
+
+# The field order must not depend on how many files matched: --with-path forces
+# the PATH column on for a caller whose computed list happens to hold one entry.
+out_one="$("$VIBE" symbols --with-path "$a1")"
+if printf '%s\n' "$out_one" | grep -qE "^$a1 alpha 13 [0-9]+ [0-9]+$"; then
+  ok "symbols --with-path prefixes a single file too"
+else
+  bad "symbols --with-path should prefix the path; got: $out_one"
+fi
+
+# ... and one bare path still emits exactly the four fields it always did.
+out_plain="$("$VIBE" symbols "$a1")"
+if printf '%s\n' "$out_plain" | grep -qE '^alpha 13 [0-9]+ [0-9]+$'; then
+  ok "symbols on one named file keeps the un-prefixed format"
+else
+  bad "symbols on one file should stay NAME KIND START END; got: $out_plain"
+fi
+
+# --- #2381: a failure is reported AND says so in the exit code --------------
+# The unparseable file sorts first, so a sweep that aborted on it would return
+# nothing; one that dropped it silently would be a partial inventory reading as
+# a complete one. Both halves are asserted: the good rows AND the named failure.
+pd="$WORK/partialdir"; mkdir -p "$pd"
+printf 'export fn broken( {\n'  > "$pd/a_broken.vibe"
+printf 'export let kept = 1\n' > "$pd/b_good.vibe"
+p_out="$WORK/partial.out"; p_err="$WORK/partial.err"
+if "$VIBE" symbols "$pd" >"$p_out" 2>"$p_err"; then
+  bad "symbols must exit non-zero when a file could not be read"
+else
+  if grep -qE "^$pd/b_good.vibe kept 13 " "$p_out" \
+     && grep -q "a_broken.vibe" "$p_err"; then
+    ok "symbols reports the readable rows, names the unreadable file, and exits non-zero"
+  else
+    bad "symbols partial sweep: out=[$(cat "$p_out")] err=[$(cat "$p_err")]"
+  fi
+fi
+
+# The single-file lane says it failed in the exit code too (it used to print
+# the error on stderr and exit 0).
+if "$VIBE" symbols "$pd/a_broken.vibe" >/dev/null 2>&1; then
+  bad "symbols on an unparseable file must exit non-zero"
+else
+  ok "symbols on an unparseable file exits non-zero"
+fi
+
 echo "----"
 echo "passed: $pass, failed: $fail"
 [ "$fail" -eq 0 ]
