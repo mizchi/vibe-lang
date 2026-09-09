@@ -163,7 +163,6 @@ Machine-produced. Do not edit by hand. Generator / freshness is noted where know
 
 | Current path | Later home | Notes |
 | --- | --- | --- |
-| [builtin_contract_table.generated.md](builtin_contract_table.generated.md) | `generated/` | `scripts/gen_builtin_contract_table.mjs` no longer exists (retired MoonBit host). Historical snapshot. Delete candidate once a live builtin table exists |
 | [wasm/feature-matrix.json](wasm/feature-matrix.json) | `generated/` | Fetched by `scripts/wasm_feature_matrix_fetch.sh` |
 | [wasm/feature-levels.expected.json](wasm/feature-levels.expected.json) | `generated/` | Oracle for feature-level checks |
 | [wasm/host-runtime-contract.json](wasm/host-runtime-contract.json) | `generated/` | Machine-checked companion of [wasm/host-runtime-contract.md](wasm/host-runtime-contract.md) |
@@ -181,14 +180,12 @@ only while it is still cited.
 | [archive/build-optimization-analysis.md](archive/build-optimization-analysis.md) | |
 | [archive/codegen/](archive/codegen/) | [vibe-output-analysis.md](archive/codegen/vibe-output-analysis.md), [wasm-gc-vs-selfhost-analysis.md](archive/codegen/wasm-gc-vs-selfhost-analysis.md) |
 | [archive/compiler_language_incidents.md](archive/compiler_language_incidents.md) | Cited from [vibe.md](vibe.md) |
-| [archive/DONE.md](archive/DONE.md) | Delete candidate |
 | [archive/moonbit-retirement.md](archive/moonbit-retirement.md) | Cited recovery record (`moonbit-host-final-2026-06-23`) |
 | [archive/mut-effect-plan.md](archive/mut-effect-plan.md) | |
 | [archive/report/](archive/report/) | Dated evaluations |
 | [archive/release-notes-0.3.0.md](archive/release-notes-0.3.0.md) | A release that was never cut (renumbered by ADR-0109). Kept as the record of 2026-06 to 2026-07-17; carries a status banner, so a delete candidate by the AGENTS.md rule |
 | [archive/review-by-x-markdown.md](archive/review-by-x-markdown.md) | |
 | [archive/spec/](archive/spec/) | Retired spec notes |
-| [archive/TODO.md](archive/TODO.md) | Moved from repo-root `TODO.md`. Delete candidate |
 | [archive/wasmtime-v43.md](archive/wasmtime-v43.md) | |
 
 ## Inventory coverage

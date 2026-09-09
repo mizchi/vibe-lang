@@ -387,10 +387,9 @@ Concurrency (v0.4.0 proposed):
 - JSPI / Worker、WASI Component Model、shared-everything-threads は公開 API ではなく
   同じ意味論の backend lowering とする。
 
-Historical builtin contract snapshot:
-- `docs/builtin_contract_table.generated.md`
-- the old MoonBit-host generator has been retired; do not infer proposed concurrency
-  APIs from this snapshot
+Builtin contracts: see `docs/cheatsheet.md`'s Signature reference, checked against
+the checker's own builtin table by `scripts/check_cheatsheet_signatures.sh`. Do not
+infer proposed concurrency APIs from any builtin table; ADR-0068 is authoritative.
 
 ## WASM Primitive Type Aliases
 

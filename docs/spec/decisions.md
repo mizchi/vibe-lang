@@ -101,10 +101,11 @@ Status: accepted and moved from `TODO.md`.
   `docs/vibe.md` now documents trait/impl rules, struct/enum details,
   placeholder lambda shorthand, `while`/`yield`, and member/index/pipe call
   forms.
-- Historical builtin contract table is retained:
-  `docs/builtin_contract_table.generated.md` was generated from the retired MoonBit
-  host sources. Its generator/task no longer exists after the selfhost cutover; the
-  current compiler's builtin definitions and accepted/proposed ADRs are authoritative.
+- Builtin contracts are documented in `docs/cheatsheet.md`'s Signature reference,
+  which `scripts/check_cheatsheet_signatures.sh` checks against the CHECKER's own
+  builtin table. The historical `builtin_contract_table.generated.md` snapshot was
+  deleted in #2564: its generator belonged to the retired MoonBit host and it
+  described that implementation, while presenting itself as machine-derived.
 - Import cycle reporting is implemented for path imports:
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
   messages.
