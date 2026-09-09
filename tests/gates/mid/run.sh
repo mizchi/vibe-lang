@@ -2235,7 +2235,8 @@ echo "[compiler-gate] evidence-dict pass let-bound perform ok"
 #       ordinary user-defined PURE helper function (no `with` clause, so
 #       the checker has already proven it performs no effect) that is
 #       neither a needing function itself nor a hand-listed
-#       `edp_pure_builtin_names` entry. edp_has_unsafe_construct now
+#       `idp_pure_builtin_names` entry (#2373: the evidence pass's own
+#       second copy of that list is gone). edp_has_unsafe_construct now
 #       recognizes a call to any function whose OWN declared effect row is
 #       checker-verified empty (edp_pure_fn_names) as safe, generalizing
 #       the old hand-audited builtin allowlist to every pure user-defined
