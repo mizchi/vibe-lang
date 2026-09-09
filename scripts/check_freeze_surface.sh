@@ -165,9 +165,19 @@ for name in sorted(negated - frozen):
     print("N " + name)
 PYEOF
 
-mapfile -t syms < <(awk '$1=="F"{print $2}' "$freeze_lists")
-mapfile -t negated < <(awk '$1=="N"{print $2}' "$freeze_lists")
-mapfile -t conflicts < <(awk '$1=="C"{print $2}' "$freeze_lists")
+# bash 3.2 (macOS stock) has no `mapfile` (#2349).
+syms=()
+while IFS= read -r line || [ -n "$line" ]; do
+  syms+=("$line")
+done < <(awk '$1=="F"{print $2}' "$freeze_lists")
+negated=()
+while IFS= read -r line || [ -n "$line" ]; do
+  negated+=("$line")
+done < <(awk '$1=="N"{print $2}' "$freeze_lists")
+conflicts=()
+while IFS= read -r line || [ -n "$line" ]; do
+  conflicts+=("$line")
+done < <(awk '$1=="C"{print $2}' "$freeze_lists")
 
 if [ "${#conflicts[@]}" -gt 0 ]; then
   echo "check-freeze-surface: FAIL: $DOC says two different things about ${#conflicts[@]} name(s):" >&2
@@ -303,7 +313,12 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 
 # The index document: every name it presents as a builtin must be one.
-mapfile -t index_syms < <(FREEZE_CHEATSHEET="$CHEATSHEET" python3 - <<'PYEOF'
+# bash 3.2 (macOS stock) has no `mapfile` (#2349).
+index_syms=()
+while IFS= read -r line || [ -n "$line" ]; do
+  index_syms+=("$line")
+done < <(FREEZE_CHEATSHEET="$CHEATSHEET" python3 - <<'PYEOF'
+
 import os, re, sys
 
 doc = open(os.environ["FREEZE_CHEATSHEET"], encoding="utf-8").read()

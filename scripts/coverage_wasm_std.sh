@@ -40,7 +40,11 @@ for name in "${legacy_vars[@]}"; do
 done
 
 cd "$PROJECT_ROOT"
-mapfile -t tests < <(find lib/@vibe/builtin -name '*_test.vibe' | sort)
+# bash 3.2 (macOS stock) has no `mapfile` (#2349).
+tests=()
+while IFS= read -r line || [ -n "$line" ]; do
+  tests+=("$line")
+done < <(find lib/@vibe/builtin -name '*_test.vibe' | sort)
 # `|| true` used to swallow BOTH of grep's non-zero statuses, and they mean
 # opposite things: 1 is "no line matched" (legitimate -- the empty-selection
 # check below reports it), 2 is "this pattern is not valid ERE", which must
@@ -48,7 +52,7 @@ mapfile -t tests < <(find lib/@vibe/builtin -name '*_test.vibe' | sort)
 # not ripgrep's dialect -- see docs/coverage.md.
 select_tests() { # <label> <grep-args...>
   local label="$1"; shift
-  local out status=0
+  local out status=0 line
   out="$(printf '%s\n' "${tests[@]}" | "$@")" || status=$?
   if [ "$status" -gt 1 ]; then
     echo "[wasm std coverage] $label is not a valid POSIX extended regex (grep exit $status)" >&2
@@ -56,7 +60,12 @@ select_tests() { # <label> <grep-args...>
     echo "[wasm std coverage]   \\d, (?i) and other PCRE/Rust-regex constructs are rejected." >&2
     exit 2
   fi
-  mapfile -t tests < <(printf '%s' "$out" | grep -v '^$' || true)
+  # bash 3.2 has no `mapfile` (#2349). `while ... done < <(...)` runs in THIS
+  # shell -- a pipeline would not, and `tests` is the caller's array.
+  tests=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    tests+=("$line")
+  done < <(printf '%s' "$out" | grep -v '^$' || true)
 }
 if [ -n "$FILTER" ]; then
   select_tests VIBE_WASM_STD_COVERAGE_FILTER grep -E "$FILTER"

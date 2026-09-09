@@ -56,7 +56,11 @@ is_allowed() {
   ' "$ALLOWLIST_FILE"
 }
 
-mapfile -t vpkgs < <(git ls-files 'lib/@vibe/*/index.vpkg' 'lib/@vibex/*/index.vpkg' \
+# bash 3.2 (macOS stock) has no `mapfile` (#2349).
+vpkgs=()
+while IFS= read -r line || [ -n "$line" ]; do
+  vpkgs+=("$line")
+done < <(git ls-files 'lib/@vibe/*/index.vpkg' 'lib/@vibex/*/index.vpkg' \
   | grep -v '^lib/@vibe/compiler/' | grep -v '^lib/@vibe/cli/' | sort)
 
 if [ "${#vpkgs[@]}" -eq 0 ]; then
@@ -82,14 +86,22 @@ for vpkg in "${vpkgs[@]}"; do
   #    the 49 violations this lint reported were that. `Byte`, `Parser`,
   #    `StringView` and the rest of prelude's types are genuinely its own and
   #    stay in scope, as does @vibe/wit_runtime's own `export enum Result`.
-  mapfile -t types < <(grep -oE '^(export )?(opaque )?(type|struct|enum) [A-Z][A-Za-z0-9_]*' "$vpkg" \
+  # bash 3.2 has no `mapfile` (#2349). The reset matters here: this runs once
+  # per vpkg and the loop appends, where `mapfile` overwrote.
+  types=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    types+=("$line")
+  done < <(grep -oE '^(export )?(opaque )?(type|struct|enum) [A-Z][A-Za-z0-9_]*' "$vpkg" \
     | sed -E 's/^(export )?(opaque )?(type|struct|enum) //' \
     | grep -vxE 'Int|Float|Double|Bool|String|Char|Unit|Bytes|Array|Option')
   [ "${#types[@]}" -eq 0 ] && continue
   type_alt="$(IFS='|'; echo "${types[*]}")"
 
   # 2. Type::method names already declared in this package's contract
-  mapfile -t qualified < <(grep -oE "^fn (${type_alt})::[a-zA-Z_][a-zA-Z0-9_]*" "$vpkg" \
+  qualified=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    qualified+=("$line")
+  done < <(grep -oE "^fn (${type_alt})::[a-zA-Z_][a-zA-Z0-9_]*" "$vpkg" \
     | sed -E 's/^fn //')
 
   # 3. bare recv-shaped fns: `fn name(recv: OwnType[...]?, ...)`

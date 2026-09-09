@@ -75,6 +75,45 @@ printf '%s\n' 'sed "s/a/b/" "$1" > "$1.tmp" && mv "$1.tmp" "$1"' >> "$TMP_ROOT/s
 run || { cat "$TMP_ROOT/out" >&2; fail "a portable sed spelling was rejected"; }
 ok "sed -i.bak and a temp-file edit still pass"
 
+# --- red 1d: `mapfile` (bash 4). macOS ships bash 3.2, so the script aborts
+# before it validates anything -- a gate that cannot start. Eleven uses across
+# six scripts, including both formatter entry points, had accumulated under
+# this gate before it had a rule for them (#2349).
+reset_tree
+printf '%s\n' 'mapfile -t files < <(git ls-files)' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF 'mapfile -t files' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 1d did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a mapfile call was accepted"; }
+grep -qF 'bash 4 builtin' "$TMP_ROOT/out" || { cat "$TMP_ROOT/out" >&2; fail "mapfile finding did not name the reason"; }
+ok "a mapfile call is rejected"
+
+# --- red 1e: the `readarray` synonym, and the NUL-delimited spelling.
+reset_tree
+printf '%s\n' 'readarray -t files < <(git ls-files)' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF 'readarray -t files' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 1e did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a readarray call was accepted"; }
+ok "the readarray synonym is rejected"
+
+reset_tree
+printf '%s\n' 'mapfile -d "" -t files < <(find . -print0)' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF 'mapfile -d' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 1e2 did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a NUL-delimited mapfile call was accepted"; }
+ok "the NUL-delimited mapfile spelling is rejected"
+
+# --- green guard for 1d: the REPLACEMENT must pass, or the rule could be
+# satisfied by rejecting every array fill; and a mention of the word in a
+# comment or a message is not a call.
+reset_tree
+cat >> "$TMP_ROOT/scripts/clean.sh" <<'EOF'
+files=()
+while IFS= read -r line || [ -n "$line" ]; do
+  files+=("$line")
+done < <(git ls-files)
+# mapfile is a bash 4 builtin, which is why this loop exists
+echo "use a read loop instead of mapfile"
+EOF
+run || { cat "$TMP_ROOT/out" >&2; fail "the portable read-loop replacement was rejected"; }
+ok "the read-loop replacement passes, and mapfile in a comment or a string is not a call"
+
 # --- red 2: ripgrep behind a pipe.
 reset_tree
 printf '%s\n' 'printf x | rg -v y' >> "$TMP_ROOT/scripts/clean.sh"
