@@ -23,10 +23,19 @@
 // lands in the same `CompileCtx.int_render_offsets` field those lanes read,
 // through the same consumers.
 //
-// The three FS module callers deliberately keep the no-offsets spelling and
-// are NOT covered here -- they run no whole-program check, so filling their
-// tables would add a second one over the reprinted merged closure. The
-// measurement and the reason are on `compile_module_expr_with_typed_offsets`.
+// #2449/#2437: `compile_with_modules_cached` -- the inline-source module entry
+// -- has joined them, and its half is pinned the same way at the bottom of
+// this file. It used to print the merge, REPARSE that text unlocated, and hand
+// the result to `compile_module`, so every offset was -1 and both tables were
+// empty; it now compiles the statement merge directly, whose per-file rebasing
+// gives the rows `prepare_modules_cached` already published an offset space to
+// land in. No second check: this is plumbing.
+//
+// The FS module callers (`compile_file_fs_module_cached_slow`, both copies)
+// still keep the no-offsets spelling -- routing THEM onto the statement merge
+// is #2437's remaining work, and it changes cache identity in ways this one
+// did not. The measurement and the reason are on
+// `compile_module_expr_with_typed_offsets`.
 
 import @vibe/compiler/entry/source_compile {
   compile_source as compile_source_with_offsets
@@ -34,6 +43,18 @@ import @vibe/compiler/entry/source_compile {
 
 import ./codegen_test_support.vibe {
   compile_source
+}
+
+import @vibe/compiler/entry/compiler/fs_compile {
+  compile_with_modules_cached
+}
+
+import @vibe/compiler/runtime {
+  db_new
+}
+
+import @vibe/core {
+  array_empty
 }
 
 /// A projection is the sharpest argument to use here: `ts_known_int` has no
@@ -57,4 +78,28 @@ test "#2437 a program with nothing to classify compiles byte-identically" {
   let with_tables = compile_source_with_offsets(module_lane_plain_source)
   let without_tables = compile_source(module_lane_plain_source)
   assert(with_tables == without_tables)
+}
+
+/// #2449/#2437: the same pair for the INLINE module entry.
+///
+/// `compile_with_modules_cached` runs `prepare_modules_cached`, so every module
+/// of the program has been checked in this process and published its
+/// typed-lowering rows -- there is nothing to add, only somewhere to put them.
+/// The control is `codegen_test_support`'s `compile_source`, which is the
+/// no-offsets `compile_module` over an unlocated parse: exactly what this entry
+/// used to do to itself.
+fn compile_inline_module(src: String) -> Bytes with Exception {
+  let (bytes, _) = compile_with_modules_cached(db_new(), src, "main.vibe", array_empty())
+  bytes
+}
+
+test "#2449 the inline module entry's typed-lowering tables reach codegen" {
+  assert(!(compile_inline_module(module_lane_projection_source) == compile_source(module_lane_projection_source)))
+}
+
+test "#2449 the inline module entry is inert where there is nothing to classify" {
+  // Not merely "does not crash": an offsets channel that moved bytes for a
+  // program with no render, no `eq` and no Double call result would be a
+  // regression rather than a fix.
+  assert(compile_inline_module(module_lane_plain_source) == compile_source(module_lane_plain_source))
 }

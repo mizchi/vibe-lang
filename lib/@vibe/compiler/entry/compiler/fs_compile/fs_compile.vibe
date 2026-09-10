@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/syntax {
-  lex, parse_program, rewrite_string_binops_stmts, shift_stmt_offsets, shift_stmts_offsets
+  lex, parse_program, print_program, rewrite_string_binops_stmts, shift_stmt_offsets, shift_stmts_offsets
 }
 
 import @vibe/core {
@@ -9,7 +9,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen {
-  compile_module, compile_wasi_module
+  compile_module, compile_module_with_typed_offsets, compile_wasi_module
 }
 
 import @vibe/compiler/codegen/wasi {
@@ -31,6 +31,7 @@ import @vibe/compiler/core {
   append_import_alias_rewritten_non_import_stmts_with_renames,
   apply_export_renames_stmts,
   build_export_rename_plan,
+  builtin_iterator_serialized_boundary_markers,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
@@ -564,24 +565,81 @@ export fn source_group_pruned_stmt_count(db: TypeDb, main_source: String, main_p
   count_executable_merge_stmts(pruned_stmts)
 }
 
+/// The statement filter `build_module_source` applies while reprinting: a
+/// module keeps its top-level function bindings and the serialized
+/// builtin-iterator boundary markers, and nothing else.
+///
+/// #2437/#2449: lifted out of the reprint so the statement merge can be
+/// filtered directly. Selecting statements preserves every node offset, which
+/// is what lets the rebased typed-lowering tables still name the right nodes.
+fn module_lane_filter_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
+  let filtered = empty_stmt_array()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let keep = match stmt {
+      SLet(_, _, _, _, expr) => match expr {
+        EFn(_, _, _, _, _, _) => true,
+        _ => false
+      },
+      _ => builtin_iterator_serialized_boundary_markers(stmt) is Some(_)
+    }
+    if keep {
+      Array::push(filtered, stmt)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  filtered
+}
+
+/// #2437/#2449: the last of the three inline entries to leave the reprint.
+///
+/// It used to build `merged_source` by printing the merge, reparse that text
+/// UNLOCATED, and hand the result to `compile_module` -- so every node offset
+/// was -1, the per-module typed-lowering rows had no offset space to be
+/// rebased into, and this lane compiled with each channel EMPTY. What that
+/// costs is the pre-#2158 syntactic answer: a large `Int` rendering as the
+/// empty string, a `Double` through a projection not rendering as a Double,
+/// `a < b` on Strings comparing pointers wherever the desugar tracker cannot
+/// classify the shape syntactically.
+///
+/// It now takes the same route the two wasi entries below took under #2449:
+/// `merged_stmts_and_offsets_inline` rebases the rows `prepare_modules_cached`
+/// already published, so this is plumbing rather than a second check. The
+/// reprint's statement filter is applied to the merge instead
+/// (`module_lane_filter_stmts`).
+///
+/// Two deliberate consequences:
+///
+///   - The artifact kind is `module-typed`, not `module`. Same reason #2449
+///     split `wasi-typed` off `wasi`: this entry now emits DIFFERENT bytes for
+///     the same sources, and sharing a kind with an entry that compiles
+///     without the tables would let one silently return the other's lowering.
+///   - `db_merged_source` / `db_module_source` are no longer called here, so
+///     this entry no longer bumps their counters. It also no longer reprints
+///     the program twice.
+///
+/// The artifact key keeps EXACTLY the strength it had. It is derived from the
+/// merged program's own text, not from the input sources: private namespacing
+/// mangles names with the file PATH (`namespace_private_value_stmts`), so two
+/// programs whose sources are identical can merge to different statements, and
+/// a key hashed from the sources alone would hand the second call the first
+/// call's bytes. Printing here costs one print of a program that used to be
+/// printed TWICE -- and unlike before, nothing REPARSES that text, so the
+/// offsets survive.
 export fn compile_with_modules_cached(db: TypeDb, main_source: String, main_path: String, sources: Array[(String, String)]) -> (Bytes, TypeDb) with Exception {
   let next_db = prepare_modules_cached(db, main_path, main_source, sources)
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
-  let (merged_source, merge_fingerprint, merge_db) = db_merged_source(next_db, main_path, ordered_sources)
-  let (module_source, codegen_db) = db_module_source(merge_db, merge_fingerprint, merged_source)
-  let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
-  match db_load_artifact(codegen_db, main_path, "module", "", artifact_fingerprint) {
-    Some(bytes) => (bytes, codegen_db),
+  let (merged_stmts, float_offsets, int_offsets, bool_offsets, _, _) = merged_stmts_and_offsets_inline(ordered_sources)
+  let filtered = module_lane_filter_stmts(merged_stmts)
+  let artifact_fingerprint = artifact_fingerprint_from_source(print_program(filtered))
+  match db_load_artifact(next_db, main_path, "module-typed", "", artifact_fingerprint) {
+    Some(bytes) => (bytes, next_db),
     None => {
-      // #2437: this entry does NOT go through the statement merge -- it
-      // reprints the program to `module_source` and reparses that text, so the
-      // per-module offsets have no space to be rebased into and the tables stay
-      // empty here. Routing this lane onto `merged_stmts_and_offsets_inline` is
-      // #2437's remaining work; it changes cache identity and output bytes, so
-      // it is not folded in here.
-      let stmts = parse_program(lex(module_source))
-      let bytes = compile_module(stmts)
-      (bytes, db_store_artifact(codegen_db, main_path, "module", "", artifact_fingerprint, bytes))
+      let bytes = compile_module_with_typed_offsets(filtered, float_offsets, int_offsets, bool_offsets)
+      (bytes, db_store_artifact(next_db, main_path, "module-typed", "", artifact_fingerprint, bytes))
     }
   }
 }
