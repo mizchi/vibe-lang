@@ -142,14 +142,17 @@ test "a hoisted local lambda's labeled call is reordered in a per-module run" {
   let ctx = parse_program(lex(dep2_src()))
   let own = parse_program(lex(own2_src()))
   let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
-  // The hoisted function is appended after the context block, so it comes
-  // back with the synthesized set; the labeled-argument stage must still
-  // visit it -- the call to the dependency's `sub` binds by position after
-  // this pass, and a call left labeled here would bind `y = a` to `x`.
-  inspect(stmt_names(synth), content = "__hoisted_lam_9_use_local_0_f")
-  inspect(render_named(synth, "__hoisted_lam_9_use_local_0_f"), content = "let __hoisted_lam_9_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
-  inspect(whole2_named("__hoisted_lam_9_use_local_0_f"), content = "let __hoisted_lam_9_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
-  inspect(render_named(synth, "__hoisted_lam_9_use_local_0_f") == whole2_named("__hoisted_lam_9_use_local_0_f"), content = "true")
+  // #2388: the hoisted function goes next to the declaration it came out of,
+  // so it is one of the module's OWN statements and the synthesized set stays
+  // empty here. It used to be appended past the context block, which made it
+  // belong to whatever the program ended with.
+  inspect(stmt_names(own), content = "forty_two, via_apply, use_local, __hoisted_lam_9_use_local_0_f")
+  inspect(stmt_names(synth), content = "")
+  // The labeled-argument stage must still visit it -- the call to the
+  // dependency's `sub` binds by position after this pass, and a call left
+  // labeled here would bind `y = a` to `x`.
+  inspect(render_named(own, "__hoisted_lam_9_use_local_0_f"), content = "let __hoisted_lam_9_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
+  inspect(render_named(own, "__hoisted_lam_9_use_local_0_f") == whole2_named("__hoisted_lam_9_use_local_0_f"), content = "true")
   inspect(render_named(own, "use_local") == whole2_named("use_local"), content = "true")
 }
 
@@ -233,13 +236,16 @@ test "a hoisted lambda is named after the declaration it came out of, so two mod
   let ctx_for_dep = parse_program(lex(own4_src()))
   let own_synth = desugar_trait_dicts_module(own, ctx_for_own, "", [], [])
   let dep_synth = desugar_trait_dicts_module(dep, ctx_for_dep, "", [], [])
-  inspect(stmt_names(own_synth), content = "__hoisted_lam_7_own_use_0_f")
-  inspect(stmt_names(dep_synth), content = "__hoisted_lam_7_dep_use_0_f")
+  // The hoisted function is one of the module's own statements now (#2388), so
+  // each module's name shows up there rather than in the synthesized set.
+  inspect(stmt_names(own), content = "?, own_use, __hoisted_lam_7_own_use_0_f")
+  inspect(stmt_names(dep), content = "?, dep_use, __hoisted_lam_7_dep_use_0_f")
+  inspect(String::concat(stmt_names(own_synth), stmt_names(dep_synth)), content = "")
   // What each module mints alone is what the whole-program run mints for it:
   // the counter restarts at every declaration and the name carries that
   // declaration, so neither spelling depends on the other module.
-  inspect(render_named(own_synth, "__hoisted_lam_7_own_use_0_f") == whole4_named("__hoisted_lam_7_own_use_0_f"), content = "true")
-  inspect(render_named(dep_synth, "__hoisted_lam_7_dep_use_0_f") == whole4_named("__hoisted_lam_7_dep_use_0_f"), content = "true")
+  inspect(render_named(own, "__hoisted_lam_7_own_use_0_f") == whole4_named("__hoisted_lam_7_own_use_0_f"), content = "true")
+  inspect(render_named(dep, "__hoisted_lam_7_dep_use_0_f") == whole4_named("__hoisted_lam_7_dep_use_0_f"), content = "true")
   inspect(whole4_named("__hoisted_lam_7_own_use_0_f"), content = "let __hoisted_lam_7_own_use_0_f = (a: Int) -> Int with OwnLog { { perform OwnLog::Emit(\"own\"); (a + 1) } }")
 }
 
