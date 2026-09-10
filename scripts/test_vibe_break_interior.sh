@@ -8,6 +8,15 @@
 #
 # Builds a FRESH compiler+runner via install/install.sh into a throwaway
 # VIBE_HOME/VIBE_BIN_DIR (the committed seed predates dbg_line).
+#
+# DO NOT run this concurrently with scripts/compiler_gate.sh in the same
+# checkout. VIBE_HOME is throwaway, but the compiler build is not: install.sh
+# reaches scripts/build_cli_wasm.sh, which runs `scripts/generations.sh build`
+# into _build/selfhost/generations/ -- the same directory the gate's selfbuild
+# writes. Two of them interleaved once here and the gate reported
+# `FAIL: stage2 != stage3` for a tree whose fixpoint was fine (CI, which shards
+# these into separate jobs, was green on the same commit). Run them one at a
+# time, or point this one at its own tree.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
