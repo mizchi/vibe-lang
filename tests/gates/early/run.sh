@@ -2008,7 +2008,43 @@ rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
 # `structural_eq_owned_scalar_*_trap.vibe` joins too (Codex round 4 on #2471):
 # a program that declares `struct Int` makes a literal-derived shape's `Int`
 # ambiguous with the struct, so the literal-shape rungs fail closed.
-for eqtrap_src in fixtures/structural_eq_untyped_empty_*_trap.vibe fixtures/structural_eq_generic_enum_*_trap.vibe fixtures/structural_eq_owned_scalar_*_trap.vibe; do
+# #2475: the refusals that are decided about a comparison the program WRITES
+# are compile errors now, not runtime traps. They used to emit a bare
+# `assert_true(false)`, so the program compiled clean and died with
+# `trap: RuntimeError: unreachable` -- no message, no position, nothing to act
+# on. There is no way to attach a message at run time (`assert_eq` lowers to
+# `println` and so requires `Stdout` on the containing function, #2107), so
+# earlier is the only place a message can go, and no guard is emitted for them.
+#
+# The MESSAGE is asserted, not just the refusal: "did not compile" is what the
+# old loop checked for, and it is satisfied by any unrelated breakage.
+for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe fixtures/structural_eq_owned_scalar_*_refused.vibe; do
+  eqrefuse_name="$(basename "${eqrefuse_src%.vibe}")"
+  eqrefuse_wasm="$eqtrapdir/$eqrefuse_name.wasm"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$eqrefuse_src" "$eqrefuse_wasm" _start >/dev/null 2>&1 || true
+  if [ -s "$eqrefuse_wasm" ]; then
+    echo "[compiler-gate] FAIL: $eqrefuse_src compiled; expected a compile-time refusal (#2475)" >&2
+    exit 1
+  fi
+  if ! grep -qF 'structural `==` cannot be decided here' "$eqrefuse_wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $eqrefuse_src was refused without the #2475 message" >&2
+    cat "$eqrefuse_wasm.diag" 2>/dev/null >&2
+    exit 1
+  fi
+  if ! grep -qE 'Annotate|rename the declared type' "$eqrefuse_wasm.diag" 2>/dev/null; then
+    echo "[compiler-gate] FAIL: $eqrefuse_src refusal does not name an edit" >&2
+    cat "$eqrefuse_wasm.diag" 2>/dev/null >&2
+    exit 1
+  fi
+done
+# The rungs that stay a RUNTIME trap. These fire while GENERATING a comparator
+# for a generic shape, not at a comparison the program performs -- the
+# compiler's own sources reach two of them (`List` and `AvlTree` at a formal
+# argument) and the emitted trap is never executed, so reporting them at
+# compile time would reject the compiler itself. Measured on #2475.
+for eqtrap_src in fixtures/structural_eq_generic_enum_*_trap.vibe; do
   eqtrap_name="$(basename "${eqtrap_src%.vibe}")"
   eqtrap_wasm="$eqtrapdir/$eqtrap_name.wasm"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
