@@ -2039,6 +2039,55 @@ for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe fixtures
     exit 1
   fi
 done
+# #2378: `vibe check` reports a qualified `fn` definition of a builtin name.
+#
+# The leak is narrow and so is the rule. Measured on the seed: a BARE `fn eq` in
+# a dependency does NOT leak (export namespacing renames every non-entry value
+# def to `name_exp_<path>`), while `fn String::index_of` DOES -- a caller that
+# imports only an unrelated name from that file gets the override, silently.
+# `append_export_def_name` excludes a name containing `::` from the rename on
+# purpose ("ordinary `Type::method` lets remain global receiver dispatch"), so
+# this shape, and only this shape, is program-wide.
+#
+# Three cases, not one. A gate that only asserts the warning fires would pass on
+# a rule that warns about everything; the two clean cases are what make it mean
+# something. The VALUE ALIAS case is the sharp one: `lib/@vibe/fs/fs.vibe`
+# records that a bare alias does not participate in the name-to-fn-def
+# resolution the lowering uses, while a real fn def does -- so an alias
+# re-exports the builtin and must stay silent.
+echo "[compiler-gate] a qualified fn definition of a builtin name is reported (#2378)"
+bsdir="_build/_gate_builtin_shadow_warn"
+rm -rf "$bsdir"; mkdir -p "$bsdir"
+printf 'export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n' > "$bsdir/shadow_fn.vibe"
+printf 'fn my_index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nexport let String::index_of = my_index_of\n' > "$bsdir/alias.vibe"
+printf 'export fn eq(a: Int, b: Int) -> Bool {\n  false\n}\n' > "$bsdir/bare.vibe"
+bs_check() { # <src> <tag>
+  rm -f "$bsdir/$2.out" "$bsdir/$2.out.diag"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_CHECK_ONLY=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$1" "$bsdir/$2.out" "" >/dev/null 2>&1 || true
+}
+bs_check "$bsdir/shadow_fn.vibe" shadow_fn
+if ! grep -qF 'rename `String::index_of`' "$bsdir/shadow_fn.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a qualified fn definition of a builtin name was not reported (#2378)" >&2
+  cat "$bsdir/shadow_fn.out" "$bsdir/shadow_fn.out.diag" 2>/dev/null >&2; exit 1
+fi
+if ! grep -qE 'never import it' "$bsdir/shadow_fn.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the #2378 report does not say why the name is program-wide" >&2
+  cat "$bsdir/shadow_fn.out" >&2; exit 1
+fi
+bs_check "$bsdir/alias.vibe" alias
+if grep -qF 'rename `' "$bsdir/alias.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a VALUE ALIAS at a builtin name was reported; it re-exports the builtin (#2378)" >&2
+  cat "$bsdir/alias.out" >&2; exit 1
+fi
+bs_check "$bsdir/bare.vibe" bare
+if grep -qF 'rename `' "$bsdir/bare.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: a BARE definition was reported; export namespacing already scopes it (#2378)" >&2
+  cat "$bsdir/bare.out" >&2; exit 1
+fi
+echo "[compiler-gate] qualified fn reported; value alias and bare name stay silent ok (#2378)"
+
 # The rungs that stay a RUNTIME trap. These fire while GENERATING a comparator
 # for a generic shape, not at a comparison the program performs -- the
 # compiler's own sources reach two of them (`List` and `AvlTree` at a formal
