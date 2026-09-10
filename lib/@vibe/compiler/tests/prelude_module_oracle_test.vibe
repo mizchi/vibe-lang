@@ -1,5 +1,5 @@
 import @vibe/compiler/entry/compiler/file_compile {
-  prelude_module_oracle_report_fs
+  prelude_module_full_oracle_report_fs, prelude_module_oracle_report_fs
 }
 
 //# Functions
@@ -106,7 +106,7 @@ test "two files that each hoist a local lambda mint top-level names the other mo
   // says the copies agree); `missing=0 content=0` is the property under test:
   // every declaration the whole-program run produced is produced by the module
   // that owns it, under the same name and with the same body.
-  inspect(keyed_line_of(report, "desugar_trait_dicts_with_typed_eq"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 first_missing= first_content=")
+  inspect(keyed_line_of(report, "desugar_trait_dicts_with_typed_eq"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 first_missing= first_content=")
   // `evidence_dict_pass` synthesizes a dict struct per module the same way, so
   // its verdict is its keyed line too. It used to differ in CONTENT here: the
   // hoisted function was appended at the end of the merged program, the
@@ -115,7 +115,7 @@ test "two files that each hoist a local lambda mint top-level names the other mo
   // was threaded (`stmts=11 split=10`). With the hoist placing its output next
   // to its owner, the declarations agree and only the position of the one
   // synthesized struct is left.
-  inspect(keyed_line_of(report, "evidence_dict_pass"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 first_missing= first_content=")
+  inspect(keyed_line_of(report, "evidence_dict_pass"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 first_missing= first_content=")
   // What the rest of the report says on this program, as measured.
   let statuses: Array[String] = []
   let lines = oracle_lines(report)
@@ -125,4 +125,24 @@ test "two files that each hoist a local lambda mint top-level names the other mo
     i = i + 1
   }
   inspect(String::join(statuses, ","), content = "same,same,same,same,same,same,same,same,same,same,same,same,same,same,same,differs,same")
+}
+
+// #2388: the same program through the WHOLE prelude per module, which is the
+// property a real per-module driver needs -- each module alone through every
+// pass, then linked. The pass-by-pass oracle above cannot answer it: it
+// advances the split side through the earlier passes as ONE program, so a pass
+// there never reads another pass's per-module output.
+test "the whole prelude per module reproduces the whole-program prelude" {
+  let helper_path = "/tmp/vibe_full_oracle_helper.vibe"
+  let main_path = "/tmp/vibe_full_oracle_main.vibe"
+  Fs::write_file(helper_path, "effect HLog {\n  Emit(String) -> Unit\n}\n\nexport fn helper_use() -> Int {\n  let f = (a: Int) -> Int with HLog {\n    perform HLog::Emit(\"helper\")\n    a\n  }\n  handle {\n    f(1)\n  } with {\n    HLog::Emit(_m) => resume(0)\n  }\n}\n")
+  Fs::write_file(main_path, "import ./vibe_full_oracle_helper.vibe {\n  helper_use\n}\n\neffect MLog {\n  Emit(String) -> Unit\n}\n\nfn main_use() -> Int {\n  let f = (a: Int) -> Int with MLog {\n    perform MLog::Emit(\"main\")\n    a + 1\n  }\n  handle {\n    f(2)\n  } with {\n    MLog::Emit(_m) => resume(0)\n  }\n}\n\ntest \"hoisted\" {\n  inspect(helper_use() + main_use(), content = \"4\")\n}\n")
+  let report = prelude_module_full_oracle_report_fs(main_path, "__no_entry__")
+  let lines = String::split(report, "\n")
+  inspect(String::trim(Array::get(lines, 0)), content = "FULL stmts=11 split=11 modules=2")
+  // `copies=1` is the one program-level helper synthesized per module, which a
+  // link-time dedup by name folds; `missing=0 extra=0 content=0` is the
+  // property: every declaration the whole-program prelude produced is produced
+  // by the module that owns it, with the same body.
+  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 first_missing= first_content=")
 }
