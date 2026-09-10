@@ -1,0 +1,74 @@
+//# Imports
+
+// #2600: THIS FILE'S REGRESSION IS THAT IT COMPILES, the same way
+// interp_cross_module_name_collision_test.vibe's is.
+//
+// #2527 fixed the BARE-identifier half: a lowercase `EIdent` no longer falls
+// through to `fn_returns`, the program-wide FLAT table for the whole import
+// closure, so `CtVar(id) => "?t\{id}"` in core/types.vibe stopped picking up an
+// unrelated file's `fn id(n: String) -> Expr`. #2600 asks whether the CALL arm
+// -- `ECall(EIdent(fname), ..)`, which really does have `fname`'s return type
+// and so still consults that table -- has the same exposure.
+//
+// Measured, it does not, and this file is the measurement. Each declaration
+// below collides with a name the compiler's own sources CALL INSIDE AN
+// INTERPOLATION, and returns a type with no Show renderer:
+//
+//   lib/@vibe/core/bigint.vibe:454             out = "\{pad9(r)}\{out}"
+//   lib/@vibe/compiler/checker/checker_stmt.vibe:1699
+//                                              "... \{import_kind_article(actual)} ..."
+//
+// Both of those files are in this file's import closure (measured with
+// `vibe deps`: 31 and 114 entries respectively, containing bigint.vibe and
+// checker_stmt.vibe), so if the flat table answered for the call sites they
+// own, compiling this file would reject THEM -- positionless, and about files
+// that are correct. That is exactly how #2527 presented.
+//
+// The reason it holds: the FS lane runs the per-module entry
+// (`desugar_trait_dicts_module`), where `dtd_own_end` puts the module's OWN
+// statements before the read-only context block and `fn_return_type` is
+// first-match -- so the querying module's row already wins, which is the
+// "prefer the querying expression's own module" rule #2600's Done-when asks
+// for. If that ordering is ever changed, this file stops compiling.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+/// No Show renderer, deliberately: a wrong classification has to be reportable.
+struct NoRenderer {
+  v: Int
+}
+
+fn pad9(n: Int) -> NoRenderer {
+  NoRenderer::{ v: n }
+}
+
+fn import_kind_article(n: Int) -> NoRenderer {
+  NoRenderer::{ v: n }
+}
+
+//# Tests
+
+test "#2600: a colliding CALLED name does not reclassify another module's interpolation" {
+  // Exercised so they are not dead; the assertion that matters is that this
+  // file, and everything in its closure, compiled at all.
+  assert(pad9(1).v == 1)
+  assert(import_kind_article(2).v == 2)
+  let _ = array_empty()
+  let diags = handle {
+    let _ = check_program(parse_program(lex("let a = 1")))
+    ""
+  } with { Exception::Throw(msg) => msg }
+  assert(String::length(diags) == 0)
+}
