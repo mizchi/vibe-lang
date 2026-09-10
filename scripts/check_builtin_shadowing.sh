@@ -57,18 +57,83 @@ trap 'rm -rf "$WORK"' EXIT
 RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
 [ -f "$RUNNER" ] || { echo "builtin-shadowing: FAIL: missing host runner: $RUNNER" >&2; exit 1; }
 
-# `vibe symbols <dir>`, one process for the whole tree. The launcher is not
-# used: this drives cli_main directly, the same way scripts/vibe_grep_bin.sh
+# `vibe symbols`, driving cli_main directly the way scripts/vibe_grep_bin.sh
 # does, so the gate needs no installed `vibe`.
+#
+# TWO LANES, because the compiler that answers is not always one that can sweep
+# a directory. Batch mode is #2381; the committed seed predates it and reads the
+# directory as a FILE (`EISDIR`), which comes back as an empty sweep. Measured
+# in CI: the `late` lane has no generation on disk, falls back to the seed, and
+# every case of this gate's own self-test failed there for that reason and no
+# other -- exactly the "a gate must not assume its environment" defect of #2252.
+#
+# So: probe once, then take the batch lane when it works and a per-file lane
+# when it does not. The per-file lane asks the same question of the same
+# compiler, one file at a time, and is BOUNDED -- past the cap it refuses
+# rather than grinding (one process per file was ~1.08 s, about 17 minutes for
+# `lib/`, which is the cost #2381 removed and this gate must not silently
+# re-pay).
+sym_run() { # <input path> <output path> <with_path 0|1>
+  env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
+      -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_GREP \
+      -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
+    VIBE_SYMBOLS=1 \
+    VIBE_SYMBOLS_WITH_PATH="$3" \
+    VIBE_IMPORT_ABI=raw \
+    VIBE_PREOPEN_DIR="${VIBE_PREOPEN_DIR:-$ROOT_DIR}" \
+    bash "$RUNNER" --invoke cli_main "$STAGE2" "$1" "$2" >/dev/null 2>>"$WORK/runner.err" || true
+}
+
 SYMS="$WORK/syms.txt"
-env -u VIBE_FS_COMPILE -u VIBE_DIAGNOSTICS -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_TYPE_AT -u VIBE_DOC_AT \
-    -u VIBE_BINDING_AT -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS -u VIBE_DEPS -u VIBE_GREP \
-    -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK -u VIBE_EMIT_MODULE_SOURCE \
-  VIBE_SYMBOLS=1 \
-  VIBE_SYMBOLS_WITH_PATH=1 \
-  VIBE_IMPORT_ABI=raw \
-  VIBE_PREOPEN_DIR="${VIBE_PREOPEN_DIR:-$ROOT_DIR}" \
-  bash "$RUNNER" --invoke cli_main "$STAGE2" "$SWEEP_ROOT" "$SYMS" >/dev/null 2>"$WORK/runner.err" || true
+FALLBACK_CAP="${BUILTIN_SHADOW_FALLBACK_CAP:-50}"
+
+sym_run "$SWEEP_ROOT" "$SYMS" 1
+
+# Did the batch lane actually work? A compiler without it leaves nothing and
+# an EISDIR diag. Distinguish that from a genuinely empty tree by asking
+# whether the root holds any source at all.
+batch_worked=1
+if [ ! -s "$SYMS" ] && [ -d "$SWEEP_ROOT" ]; then
+  if grep -q "EISDIR" "$SYMS.diag" 2>/dev/null; then
+    batch_worked=0
+  elif [ ! -s "$SYMS.diag" ]; then
+    batch_worked=0
+  fi
+fi
+
+if [ "$batch_worked" -eq 0 ]; then
+  # Enumerate the way source_walk.vibe does when RECURSING: `.vibe` / `.vibex`,
+  # skipping build output and vendored trees. This shell-side selection exists
+  # ONLY for the fallback -- the batch lane uses the compiler's own walk, which
+  # is the answer that cannot drift.
+  : > "$WORK/files.txt"
+  find "$SWEEP_ROOT" \( -name '.*' -o -name '_build' -o -name 'node_modules' -o -name 'dist' -o -name 'target' -o -name 'deps' \) -prune -o \
+       -type f \( -name '*.vibe' -o -name '*.vibex' \) -print > "$WORK/files.txt" 2>/dev/null || true
+  n_files="$(wc -l < "$WORK/files.txt" | tr -d ' ')"
+  if [ "$n_files" -gt "$FALLBACK_CAP" ]; then
+    echo "builtin-shadowing: FAIL: this compiler cannot sweep a directory (batch symbols is #2381)," >&2
+    echo "  and '$SWEEP_ROOT' holds $n_files files -- more than the $FALLBACK_CAP-file fallback cap." >&2
+    echo "  One process per file costs ~1.08 s, about 17 minutes here; that is the cost #2381" >&2
+    echo "  removed and this gate will not silently re-pay it." >&2
+    echo "  Build a compiler that has it:  pkf run generation" >&2
+    echo "  (or hand one over:  BUILTIN_SHADOW_STAGE2=<path to stage2.wasm>)" >&2
+    exit 1
+  fi
+  : > "$SYMS"; : > "$SYMS.diag"
+  while IFS= read -r one || [ -n "$one" ]; do
+    [ -n "$one" ] || continue
+    sym_run "$one" "$WORK/one.txt" 0
+    if [ -s "$WORK/one.txt.diag" ]; then
+      printf '%s: ' "$one" >> "$SYMS.diag"
+      cat "$WORK/one.txt.diag" >> "$SYMS.diag"
+      printf '\n' >> "$SYMS.diag"
+    fi
+    if [ -s "$WORK/one.txt" ]; then
+      awk -v p="$one" '{ print p, $0 }' "$WORK/one.txt" >> "$SYMS"
+    fi
+    rm -f "$WORK/one.txt" "$WORK/one.txt.diag"
+  done < "$WORK/files.txt"
+fi
 
 if [ ! -s "$SYMS" ]; then
   echo "builtin-shadowing: FAIL: the symbols sweep produced nothing for '$SWEEP_ROOT'." >&2

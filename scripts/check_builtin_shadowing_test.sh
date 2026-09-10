@@ -146,6 +146,29 @@ else
   esac
 fi
 
+# --- 8. a compiler that cannot sweep a directory REFUSES, not grinds --------
+# Batch symbols is #2381; the committed seed predates it and reads a directory
+# as a file. The per-file fallback covers small trees (every case above runs
+# through it when this suite is handed a seed), but it must never silently
+# re-pay the ~17 minutes #2381 removed. Pinned with the seed explicitly and a
+# cap of 0, so the assertion does not depend on which compiler is ambient.
+fresh_tree "$TREE"; empty_allowlist "$ALLOW"
+if [ -s "$ROOT_DIR/bootstrap/seed/compiler.wasm" ]; then
+  if out="$(BUILTIN_SHADOW_STAGE2="$ROOT_DIR/bootstrap/seed/compiler.wasm" \
+            BUILTIN_SHADOW_FALLBACK_CAP=0 \
+            BUILTIN_SHADOW_ROOT="$TREE" BUILTIN_SHADOW_ALLOWLIST="$ALLOW" \
+            bash "$GATE" 2>&1)"; then
+    bad "past the fallback cap the gate passed instead of refusing: $out"
+  else
+    case "$out" in
+      *"fallback cap"*) ok "past the fallback cap the gate refuses, naming the fix" ;;
+      *) bad "refused, but not about the cap: $out" ;;
+    esac
+  fi
+else
+  bad "no committed seed to pin the no-batch lane against"
+fi
+
 echo "----"
 echo "passed: $pass, failed: $fail"
 [ "$fail" -eq 0 ]
