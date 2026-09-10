@@ -1,5 +1,5 @@
 import @vibe/compiler/codegen/wasi {
-  late_dce_prune_module
+  late_dce_prune_module, late_dce_prune_refusal
 }
 
 //# Functions
@@ -155,4 +155,70 @@ test "a real ref.func initializer still refuses" {
   ])
   let pruned = late_dce_prune_module(wasm)
   inspect(function_count(pruned), content = "2")
+}
+
+test "#2574: the ref.func refusal goes through the shared helper" {
+  // The case above is the one that overflowed the wasm stack on #2569's branch
+  // when the two `Array::set` calls at each refusal site were replaced by a
+  // two-line `lc_pf_refuse` helper. #2569 shipped them INLINED as the
+  // workaround. Measured on main with the helper restored it does not
+  // reproduce -- the case above passes on the committed seed and on a stage2
+  // built from this tree, with all four gate lanes green.
+  //
+  // This case exists so the duplication cannot creep back unnoticed:
+  // `late_dce_prune_refusal` names WHICH site refused, and only a call that
+  // actually reached the helper sets it. It is also what makes the case above
+  // meaningful rather than accidental -- an unpruned module is the safe answer
+  // for any reason at all, including never having decoded the initializer.
+  let wasm = Bytes::from_array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    4,
+    1,
+    96,
+    0,
+    0,
+    3,
+    3,
+    2,
+    0,
+    0,
+    6,
+    6,
+    1,
+    112,
+    0,
+    210,
+    0,
+    11,
+    7,
+    8,
+    1,
+    4,
+    109,
+    97,
+    105,
+    110,
+    0,
+    0,
+    10,
+    7,
+    2,
+    2,
+    0,
+    11,
+    2,
+    0,
+    11
+  ])
+  let pruned = late_dce_prune_module(wasm)
+  assert(Bytes::length(pruned) == Bytes::length(wasm))
+  assert(late_dce_prune_refusal() > 0)
 }
