@@ -91,24 +91,34 @@ runs. Pinned by `fixtures/structural_eq_contexts_test.vibe` and
 both lanes of the same contract enforced in `tests/gates/early/run.sh`.
 This paragraph used to list four cases as "remaining reference equality";
 measurement showed three of them are structural. The fourth — an erased type
-variable (the `T` of `[T: Eq]`) — is **still one of them**, and this sentence
-used to say otherwise ("goes through a witness, so it is correct for … a
-`derive(Eq)` struct"). Measured on main (#2523), that is false: `Eq` is a
-**marker trait** — `lib/@vibe/builtin/builtin_traits.vibe` declares a bare
-`export trait Eq` with no methods, and its impls are only `Int` / `Double` /
-`Bool` / `Char` / `String`. There is no dictionary to dispatch through, so
-`[T: Eq]` is correct for exactly those five scalar types, and a **user
-aggregate under that bound is silently wrong in any position, bare or as a
-payload**. Both ways of reaching for it end badly: `derive (Eq)` does not
-satisfy the bound (``no impl `Eq` for `Pt` ``), and adding `impl Eq for Pt`
-replaces that error with reference identity (equal-but-distinct objects answer
-`false`, the same object answers `true`, while `p1 == p2` at a concrete site
-and `Pt::equals(p1, p2)` both answer `true`). That is **#2523, an open P0**;
-giving `Eq` a real method is the fix. A container with no witness is
-**rejected** (`fn eq2[T: Eq](a: T, b: T) { a == b }` applied to `Array[Int]`
-gives ``no impl `Eq` for `Array[Int]` ``) — that one is a diagnostic, not
-silent-wrong, and it is the deliberate gate that stays until ADR-0097 is done.
-`fixtures/structural_eq_contexts_test.vibe` holds the regression.
+variable (the `T` of `[T: Eq]`) — is **not** structural either, and this
+sentence used to say it was ("goes through a witness, so it is correct for … a
+`derive(Eq)` struct"). `Eq` is a **marker trait**:
+`lib/@vibe/builtin/builtin_traits.vibe` declares a bare `export trait Eq` with
+no methods, and its impls are only `Int` / `Double` / `Bool` / `Char` /
+`String`. There is no dictionary to dispatch through, so **`[T: Eq]` can only
+be correct for those five scalar types**.
+
+**Since #2612 that is enforced rather than trusted**: the bound is REFUSED at a
+non-scalar instantiation, so it is a diagnostic and no longer silently wrong.
+Before it, `derive (Eq)` did not satisfy the bound (``no impl `Eq` for `Pt` ``)
+and adding `impl Eq for Pt` replaced that error with reference identity —
+equal-but-distinct objects answered `false` and the same object answered `true`,
+while `p1 == p2` at a concrete site and `Pt::equals(p1, p2)` both answered
+`true`. What is refused is the **bound**, not the impl: `impl Eq for Pt` is
+still a legal declaration (a marker impl can be a tag), the concrete `==` still
+compares structurally, and a non-comparison marker (`Sealed`) is untouched. The
+message names the edit (`unsatisfied_bound_hint`, #1503). A container is refused
+the same way (`fn eq2[T: Eq](a: T, b: T) { a == b }` applied to `Array[Int]`
+gives ``no impl `Eq` for `Array[Int]` ``).
+
+**The guard has a deletion condition**: it tests `trait_is_marker`, so an `Eq`
+that carries a method dispatches through a real witness dictionary and the
+guard does not fire. Giving `Eq` a real method (ADR-0097, **#2523**, now P1) is
+the fix, and landing it removes the arm rather than working around it.
+`fixtures/structural_eq_contexts_test.vibe`,
+`lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe` and
+`fixtures/err_type_{eq,ord}_marker_bound_struct.vibe` hold the regression.
 **The bound itself is required** (#2474): `==` / `!=`
 on an operand whose type mentions a formal with no `Eq` bound (bare `T`,
 `Option[T]`, `(T, Int)`, `Array[T]`) is rejected by the checker, because the
