@@ -3930,11 +3930,26 @@ fn oracle_strip_counters(s: String) -> String {
 /// first missing key and the first content-differing key.
 fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> String) -> String {
   let wmap: MutMap[String, Int] = MutMap::new_string()
+  let mut dup_defs = 0
+  let mut first_dup_def = ""
   let mut ki = 0
   while ki < Array::length(a) {
     let key = oracle_stmt_key(Array::get(a, ki))
     if MutMap::has(wmap, key) {
       MutMap::set(wmap, key, 0 - 1)
+      // A key that repeats in the WHOLE program and names a definition is the
+      // one shape a link-time fold must not touch: the program really does
+      // carry two of them, so folding by name alone deletes one.
+      if link_key_is_definition(key) {
+        dup_defs = dup_defs + 1
+        if String::length(first_dup_def) == 0 {
+          first_dup_def = key
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
     } else {
       MutMap::set(wmap, key, ki)
     }
@@ -3966,6 +3981,7 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
   let mut copies = 0
   let mut content = 0
   let mut renames = 0
+  let mut first_copy = ""
   let mut first_content = ""
   let mut ti = 0
   while ti < Array::length(trial) {
@@ -3975,6 +3991,14 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
       Some(widx) => {
         if MutMap::has(seen, key) {
           copies = copies + 1
+          // `copies=N` with no example is a number nobody can act on: a
+          // synthesized helper the link folds and a nameless statement that
+          // simply repeats both land in it, and they mean opposite things.
+          if String::length(first_copy) == 0 {
+            first_copy = key
+          } else {
+            ()
+          }
         } else {
           MutMap::set(seen, key, 1)
         }
@@ -4044,7 +4068,7 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
     }
     ki = ki + 1
   }
-  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))
+  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" dup_defs=", String::concat(Int::to_string(dup_defs), String::concat(" first_dup_def=", String::concat(first_dup_def, String::concat(" first_copy=", String::concat(first_copy, String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))))))))
 }
 
 /// One step of the oracle: pass `k`. `a` is the whole-program state after
@@ -4076,6 +4100,83 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
 /// Returns `FULL stmts=<whole> split=<trial>` plus the keyed line, which is the
 /// verdict: per-module synthesis lands at each module's position and repeats a
 /// program-level helper per module, so position and count are not the answer.
+/// #2388 / #2575 item 3: the LINK step of a per-module prelude -- fold the
+/// program-level helpers each module synthesized for itself into one.
+///
+/// A module compiled alone emits every helper it needs (`__arr_equals__*`, a
+/// derived comparator of a shared type, the exception-kind cell), so a program
+/// linked from N modules holds N copies of each.
+///
+/// `foldable_keys` are the declaration keys some module reported as
+/// SYNTHESIZED (`desugar_trait_dicts_module` returns that set). Only those
+/// fold. This is not a refinement of folding by name -- it is what makes the
+/// fold sound at all, and folding by name alone was measured WRONG on the
+/// compiler's own closure: two definition keys repeat in the whole program
+/// there (`effect:Source` first), so a by-name fold deleted one of each and
+/// the linked program came out two statements short of the whole-program one.
+/// A source declaration cannot be folded now, because the caller never offers
+/// it, so that failure is unreachable rather than guarded against.
+///
+/// The fold is also CONTENT-CHECKED. Two definitions that share a name and
+/// differ are not a copy -- they are the collision the hoisted-lambda owner
+/// key exists to prevent (#2618), where a link that concatenates modules
+/// silently keeps one of two different bodies. This throws instead, naming the
+/// key: at link time a wrong body is the worst possible outcome and a miss is
+/// free. Measured on the closure, 74 folds and no throw: every duplicate pair
+/// the compiler's own modules produce is byte-identical.
+///
+/// Copies are compared by RENDERING, not by structural `==`. True copies
+/// routinely differ in synthetic offsets -- a helper synthesized by module 7
+/// carries offsets derived from module 7's statement index -- which `==` on
+/// `Stmt` reports as different nodes while the program they describe is the
+/// same. Rendering costs a string per statement, so it is paid only where a
+/// foldable key actually repeats, never on the whole program (rendering a
+/// 4,567 statement program twice pushed the bump high-water to 3.6 GB,
+/// measured 2026-09-06).
+export fn link_fold_duplicate_definitions(stmts: Array[Stmt], foldable_keys: Array[String], render: (Stmt) -> String) -> Array[Stmt] with Exception {
+  let foldable: MutMap[String, Int] = MutMap::new_string()
+  let mut fk = 0
+  while fk < Array::length(foldable_keys) {
+    MutMap::set(foldable, Array::get(foldable_keys, fk), 1)
+    fk = fk + 1
+  }
+  let first_at: MutMap[String, Int] = MutMap::new_string()
+  let out: Array[Stmt] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let s = Array::get(stmts, i)
+    let k = oracle_stmt_key(s)
+    if link_key_is_definition(k) && MutMap::has(foldable, k) {
+      match MutMap::get(first_at, k) {
+        Some(at) => {
+          let kept = Array::get(out, at)
+          if kept == s || render(kept) == render(s) {
+            ()
+          } else {
+            throw(String::concat("link: two different definitions of ", String::concat(k, " -- a per-module synthesis collision, which a link that concatenates modules would resolve by silently keeping one of them")))
+          }
+        },
+        None => {
+          MutMap::set(first_at, k, Array::length(out))
+          Array::push(out, s)
+        }
+      }
+    } else {
+      Array::push(out, s)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Whether a declaration key names something, so two statements carrying it
+/// could be the same definition. The keys `oracle_stmt_key` returns for
+/// statements that bind no name are fixed strings, and every one of them
+/// repeats in an ordinary program.
+fn link_key_is_definition(k: String) -> Bool {
+  !(k == "expr" || k == "export" || k == "letpat" || k == "reexport_boundary" || k == "qualified_pattern_refs" || k == "test_effect_rows")
+}
+
 export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
   let entry_fid = file_count - 1
   let mut k = 0
@@ -4129,6 +4230,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   }
   // The trait-dict entry with that interface, then the rest of the prelude,
   // per module.
+  let synth_keys = lc_fresh_string_array()
   fi = 0
   while fi < file_count {
     let part_entry = if fi == entry_fid {
@@ -4186,6 +4288,11 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
     let mut sy = 0
     while sy < Array::length(synthesized) {
+      // The keys this module SYNTHESIZED, recorded before the rest of the
+      // prelude runs over them. They are the only keys the link may fold: a
+      // declaration the source wrote is never offered to it, so a definition
+      // the whole program legitimately carries twice cannot be collapsed.
+      Array::push(synth_keys, oracle_stmt_key(Array::get(synthesized, sy)))
       Array::push(part, Array::get(synthesized, sy))
       sy = sy + 1
     }
@@ -4207,8 +4314,16 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     }
     fi = fi + 1
   }
-  let line = String::concat("FULL stmts=", String::concat(Int::to_string(Array::length(a)), String::concat(" split=", String::concat(Int::to_string(Array::length(trial)), String::concat(" modules=", String::concat(Int::to_string(file_count), "\n"))))))
-  String::concat(line, oracle_keyed_line(a, trial, render))
+  // LINK. Up to here `trial` is the modules concatenated, which holds one copy
+  // of each program-level helper per module that needed it. Folding them is
+  // what a per-module driver's link step does (#2575 item 3), and doing it
+  // here is what makes the comparison below the real question -- not "do the
+  // modules agree with the whole program before linking", but "does the
+  // LINKED program equal the whole-program one". A collision throws rather
+  // than picking a body.
+  let linked = link_fold_duplicate_definitions(trial, synth_keys, render)
+  let line = String::concat("FULL stmts=", String::concat(Int::to_string(Array::length(a)), String::concat(" split=", String::concat(Int::to_string(Array::length(trial)), String::concat(" linked=", String::concat(Int::to_string(Array::length(linked)), String::concat(" folded=", String::concat(Int::to_string(Array::length(trial) - Array::length(linked)), String::concat(" modules=", String::concat(Int::to_string(file_count), "\n"))))))))))
+  String::concat(line, oracle_keyed_line(a, linked, render))
 }
 
 export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {

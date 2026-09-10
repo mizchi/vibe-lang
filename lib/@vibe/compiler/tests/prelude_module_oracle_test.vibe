@@ -101,12 +101,18 @@ test "two files that each hoist a local lambda mint top-level names the other mo
   Fs::write_file(helper_path, "effect HLog {\n  Emit(String) -> Unit\n}\n\nexport fn helper_use() -> Int {\n  let f = (a: Int) -> Int with HLog {\n    perform HLog::Emit(\"helper\")\n    a\n  }\n  handle {\n    f(1)\n  } with {\n    HLog::Emit(_m) => resume(0)\n  }\n}\n")
   Fs::write_file(main_path, "import ./vibe_prelude_oracle_hoist_helper.vibe {\n  helper_use\n}\n\neffect MLog {\n  Emit(String) -> Unit\n}\n\nfn main_use() -> Int {\n  let f = (a: Int) -> Int with MLog {\n    perform MLog::Emit(\"main\")\n    a + 1\n  }\n  handle {\n    f(2)\n  } with {\n    MLog::Emit(_m) => resume(0)\n  }\n}\n\ntest \"hoisted\" {\n  inspect(helper_use() + main_use(), content = \"4\")\n}\n")
   let report = prelude_module_oracle_report_fs(main_path, "__no_entry__", 16)
-  // `copies=1` is the one program-level helper this pass synthesizes per
-  // module by design (a link-time dedup by name folds it, and `content=0`
-  // says the copies agree); `missing=0 content=0` is the property under test:
-  // every declaration the whole-program run produced is produced by the module
-  // that owns it, under the same name and with the same body.
-  inspect(keyed_line_of(report, "desugar_trait_dicts_with_typed_eq"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 first_missing= first_content=")
+  // `missing=0 content=0` is the property under test: every declaration the
+  // whole-program run produced is produced by the module that owns it, under
+  // the same name and with the same body.
+  //
+  // `copies=1` is NOT, as this comment used to say, "the one program-level
+  // helper this pass synthesizes per module, which a link-time dedup by name
+  // folds". `first_copy` names it: `reexport_boundary`, an
+  // `SReExportSourceBoundary` marker that every module carries one of and no
+  // link should merge. Measured by running the link
+  // (`link_fold_duplicate_definitions`) over this program's per-module result:
+  // it folds nothing, because there is no duplicated definition here.
+  inspect(keyed_line_of(report, "desugar_trait_dicts_with_typed_eq"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 first_dup_def= first_copy=reexport_boundary first_missing= first_content=")
   // `evidence_dict_pass` synthesizes a dict struct per module the same way, so
   // its verdict is its keyed line too. It used to differ in CONTENT here: the
   // hoisted function was appended at the end of the merged program, the
@@ -115,7 +121,7 @@ test "two files that each hoist a local lambda mint top-level names the other mo
   // was threaded (`stmts=11 split=10`). With the hoist placing its output next
   // to its owner, the declarations agree and only the position of the one
   // synthesized struct is left.
-  inspect(keyed_line_of(report, "evidence_dict_pass"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 first_missing= first_content=")
+  inspect(keyed_line_of(report, "evidence_dict_pass"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 first_dup_def= first_copy=reexport_boundary first_missing= first_content=")
   // What the rest of the report says on this program, as measured.
   let statuses: Array[String] = []
   let lines = oracle_lines(report)
@@ -139,10 +145,36 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   Fs::write_file(main_path, "import ./vibe_full_oracle_helper.vibe {\n  helper_use\n}\n\neffect MLog {\n  Emit(String) -> Unit\n}\n\nfn main_use() -> Int {\n  let f = (a: Int) -> Int with MLog {\n    perform MLog::Emit(\"main\")\n    a + 1\n  }\n  handle {\n    f(2)\n  } with {\n    MLog::Emit(_m) => resume(0)\n  }\n}\n\ntest \"hoisted\" {\n  inspect(helper_use() + main_use(), content = \"4\")\n}\n")
   let report = prelude_module_full_oracle_report_fs(main_path, "__no_entry__")
   let lines = String::split(report, "\n")
-  inspect(String::trim(Array::get(lines, 0)), content = "FULL stmts=11 split=11 modules=2")
-  // `copies=1` is the one program-level helper synthesized per module, which a
-  // link-time dedup by name folds; `missing=0 extra=0 content=0` is the
-  // property: every declaration the whole-program prelude produced is produced
-  // by the module that owns it, with the same body.
-  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 first_missing= first_content=")
+  // `split` is the modules concatenated, `linked` is after the link folds the
+  // program-level helpers each module synthesized for itself, and `folded` is
+  // how many that was. The comparison below is against `linked`, so it answers
+  // the question a per-module driver actually has: does the LINKED program
+  // equal the whole-program one.
+  //
+  // `folded=0` on this program, and that is a correction to what this test
+  // used to say. Its `copies=1` was read as "the one program-level helper
+  // synthesized per module, which a link-time dedup by name folds" -- but the
+  // link folds nothing here, because `first_copy=reexport_boundary`: the
+  // repeat is an `SReExportSourceBoundary` MARKER, which every module carries
+  // one of and no link should merge. This program duplicates no helper at all.
+  // On the COMPILER'S OWN closure (191 modules, too slow for the suite --
+  // measured 2026-09-10 and recorded on #2388):
+  //
+  //   FULL stmts=4774 split=4846 linked=4774 folded=72 modules=191
+  //   keyed missing=0 extra=0 copies=249 content=0 renames=0 dup_keys=254
+  //         dup_defs=2 first_dup_def=effect:Source
+  //
+  // `linked` equals `stmts` exactly: compiling that closure per module and
+  // linking gives the same statement count and the same declarations, name for
+  // name and body for body, as compiling it whole. 72 folds, no collision
+  // thrown -- every duplicate pair the compiler's own modules produce is
+  // identical.
+  inspect(String::trim(Array::get(lines, 0)), content = "FULL stmts=11 split=11 linked=11 folded=0 modules=2")
+  // `missing=0 extra=0 content=0` is the property: every declaration the
+  // whole-program prelude produced is produced by the module that owns it,
+  // with the same body. `copies` is what remains after the link, and
+  // `first_copy` says what it is -- a number nobody could act on before,
+  // because a helper the link folds and a marker that simply repeats both
+  // landed in it and mean opposite things.
+  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 first_dup_def= first_copy=reexport_boundary first_missing= first_content=")
 }
