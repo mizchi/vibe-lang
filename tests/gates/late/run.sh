@@ -939,6 +939,19 @@ send_check_reject "err_type_send_user_impl.vibe" '`Send` is a compiler-judged st
 # #1090 review: the coinductive guard keys on constructor + ARGS — a
 # recursive occurrence with different arguments must still be checked.
 send_check_reject "err_type_send_nonregular_recursion.vibe" 'no impl `Send` for `LoopT[Int]`' "nonreg"
+# #2523: the same shape for the COMPARISON markers. `Eq` / `Ord` are declared
+# with no methods, so a `[T: Eq]` / `[T: Ord]` bound lowers to the builtin
+# `==` / `<` -- correct for the five scalars the markers register impls for,
+# REFERENCE identity for anything else. A user `impl Eq for Pt` used to make
+# the bound satisfiable and the answer wrong (two EQUAL, distinct `Pt` gave
+# `false`; one `Pt` against itself gave `true`). The bound is refused at the
+# instantiation, not the impl, so the message matters as much as the refusal:
+# the plain "no impl" half is misleading when an impl IS declared three lines
+# above, and the hint is what names the edit.
+send_check_reject "err_type_eq_marker_bound_struct.vibe" 'no impl `Eq` for `Pt`' "eqmarker"
+send_check_reject "err_type_eq_marker_bound_struct.vibe" 'is a marker trait (declared with no methods)' "eqmarker2"
+send_check_reject "err_type_eq_marker_bound_struct.vibe" 'Give `Eq` at least one method' "eqmarker3"
+send_check_reject "err_type_ord_marker_bound_struct.vibe" 'no impl `Ord` for `Token`' "ordmarker"
 # #1090 review: bounds are enforced on the IMPORT (check_program_with_env /
 # FS) path too — a consumer importing a [T: Send] fn must not bypass it.
 cat > "$senddir/send_dep.vibe" <<'SENDDEP'

@@ -1,19 +1,24 @@
 // #1967: was fixtures/derive_struct_ord_implies_eq.vibe + __DATA__.last "true".
-// derive(LocalOrd) is no longer a known marker. Current derive(Ord) plus
-// impl Ord still implies Eq, so the Token pair stays true.
+//
+// #2523: this used to pin that `impl Ord for Token` makes both a `[T: Ord]`
+// and a `[T: Eq]` bound satisfiable at `Token`, through `fn same[T](a, b) {
+// true }` bodies that never compared. Both bounds are now refused at a
+// non-scalar instantiation (fixtures/err_type_ord_marker_bound_struct.vibe),
+// because a marker `Ord` dispatches to the builtin `<` and that is a REFERENCE
+// comparison on an aggregate. What survives -- and is what `derive(Ord)` is
+// for -- is the comparator at a CONCRETE site.
 
 struct Token { value: Int } derive(Ord)
 
 impl Ord for Token
 
-fn same[T: Ord](a: T, b: T) -> Bool {
-  true
-}
-
-fn accepts_eq[T: Eq](value: T) -> Bool {
-  true
-}
-
-test "Ord Token is accepted as Eq and same is true" {
-  inspect(same(Token::{ value: 1 }, Token::{ value: 1 }) && accepts_eq(Token::{ value: 1 }), "true")
+test "derive(Ord) orders two Tokens by content" {
+  let a = Token::{ value: 1 }
+  let b = Token::{ value: 1 }
+  let c = Token::{ value: 2 }
+  inspect(a == b, "true")
+  inspect(a == c, "false")
+  inspect(Token::compare(a, c) < 0, "true")
+  inspect(Token::compare(c, a) > 0, "true")
+  inspect(Token::compare(a, b) == 0, "true")
 }
