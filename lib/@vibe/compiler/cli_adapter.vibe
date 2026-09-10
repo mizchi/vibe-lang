@@ -114,6 +114,7 @@ import @vibe/compiler/syntax {
 }
 
 import ./cli_support.vibe {
+  check_builtin_shadowing_warnings_from_source_groups,
   check_deprecated_warnings_from_source_groups,
   check_linked_file_source_groups,
   check_redundant_import_warnings_from_source_groups,
@@ -1354,6 +1355,18 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
         StringBuilder::push(out_text, Array::get(redundant_import_warns, rwi))
         StringBuilder::push(out_text, "\n")
         rwi = rwi + 1
+      }
+      // #2378: a qualified `fn` definition of a builtin name replaces that
+      // builtin program-wide, including in files that never import it, and
+      // until now nothing said so -- which is the "silently wrong" property
+      // that made it P0. A WARNING rather than a rejection: it breaks no
+      // existing program, and the reject-vs-warn choice stays open above it.
+      let builtin_shadow_warns = check_builtin_shadowing_warnings_from_source_groups(input_path, checked_source_groups)
+      let mut bwi = 0
+      while bwi < Array::length(builtin_shadow_warns) {
+        StringBuilder::push(out_text, Array::get(builtin_shadow_warns, bwi))
+        StringBuilder::push(out_text, "\n")
+        bwi = bwi + 1
       }
       // Unstable-surface warnings (ADR-0068). `docs/spec/stable-surface.md`
       // section 6 used to claim this surface "is reached only through
