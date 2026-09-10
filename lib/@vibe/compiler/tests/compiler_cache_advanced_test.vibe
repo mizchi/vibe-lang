@@ -160,13 +160,32 @@ test "compile_with_modules_cached: same output reuses compiled artifact after pa
   assert(eq(db_codegen_count(db2), codegen_count1))
 }
 
-test "compile_with_modules_cached: same source at different paths does not reuse module source cache" {
+test "compile_with_modules_cached: builds no module source, and shares the artifact by content (#2437)" {
+  // This used to assert that the module-source count GREW across two entry
+  // paths. #2437/#2449 routed this entry off the reprint and onto the statement
+  // merge, so it builds no module source at all -- the count stays 0, and the
+  // property the old assertion stood in for is the artifact one below.
+  //
+  // Measured before and after that change, the artifact behaviour is
+  // IDENTICAL: warm at the same path reuses, a second path with the same source
+  // reuses, and a different source recompiles. The key is derived from the
+  // merged program's own text, not from the input sources, because private
+  // namespacing mangles names with the file path -- a key hashed from the
+  // sources alone would hand the second call the first call's bytes.
   let main_source = "let main: () -> Int = () -> { 1 + 2 }"
+  let other_source = "let main: () -> Int = () -> { 1 + 3 }"
   let sources = empty_sources()
   let (_, db1) = compile_with_modules_cached(db_new(), main_source, "main_a.vibe", sources)
-  let module_source_count1 = db_module_source_count(db1)
-  let (_, db2) = compile_with_modules_cached(db1, main_source, "main_b.vibe", sources)
-  assert(db_module_source_count(db2) > module_source_count1)
+  assert(eq(db_module_source_count(db1), 0))
+  let codegen1 = db_codegen_count(db1)
+  assert(codegen1 > 0)
+  let (_, db2) = compile_with_modules_cached(db1, main_source, "main_a.vibe", sources)
+  assert(eq(db_codegen_count(db2), codegen1))
+  let (_, db3) = compile_with_modules_cached(db2, main_source, "main_b.vibe", sources)
+  assert(eq(db_codegen_count(db3), codegen1))
+  assert(eq(db_module_source_count(db3), 0))
+  let (_, db4) = compile_with_modules_cached(db3, other_source, "main_a.vibe", sources)
+  assert(db_codegen_count(db4) > codegen1)
 }
 
 test "compile_file_fs_module_cached: warm compile reuses compiled fs artifact cache" {
