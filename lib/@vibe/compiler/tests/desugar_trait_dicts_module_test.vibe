@@ -146,10 +146,10 @@ test "a hoisted local lambda's labeled call is reordered in a per-module run" {
   // back with the synthesized set; the labeled-argument stage must still
   // visit it -- the call to the dependency's `sub` binds by position after
   // this pass, and a call left labeled here would bind `y = a` to `x`.
-  inspect(stmt_names(synth), content = "__hoisted_lam_use_local_0_f")
-  inspect(render_named(synth, "__hoisted_lam_use_local_0_f"), content = "let __hoisted_lam_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
-  inspect(whole2_named("__hoisted_lam_use_local_0_f"), content = "let __hoisted_lam_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
-  inspect(render_named(synth, "__hoisted_lam_use_local_0_f") == whole2_named("__hoisted_lam_use_local_0_f"), content = "true")
+  inspect(stmt_names(synth), content = "__hoisted_lam_9_use_local_0_f")
+  inspect(render_named(synth, "__hoisted_lam_9_use_local_0_f"), content = "let __hoisted_lam_9_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
+  inspect(whole2_named("__hoisted_lam_9_use_local_0_f"), content = "let __hoisted_lam_9_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
+  inspect(render_named(synth, "__hoisted_lam_9_use_local_0_f") == whole2_named("__hoisted_lam_9_use_local_0_f"), content = "true")
   inspect(render_named(own, "use_local") == whole2_named("use_local"), content = "true")
 }
 
@@ -233,14 +233,14 @@ test "a hoisted lambda is named after the declaration it came out of, so two mod
   let ctx_for_dep = parse_program(lex(own4_src()))
   let own_synth = desugar_trait_dicts_module(own, ctx_for_own, "", [], [])
   let dep_synth = desugar_trait_dicts_module(dep, ctx_for_dep, "", [], [])
-  inspect(stmt_names(own_synth), content = "__hoisted_lam_own_use_0_f")
-  inspect(stmt_names(dep_synth), content = "__hoisted_lam_dep_use_0_f")
+  inspect(stmt_names(own_synth), content = "__hoisted_lam_7_own_use_0_f")
+  inspect(stmt_names(dep_synth), content = "__hoisted_lam_7_dep_use_0_f")
   // What each module mints alone is what the whole-program run mints for it:
   // the counter restarts at every declaration and the name carries that
   // declaration, so neither spelling depends on the other module.
-  inspect(render_named(own_synth, "__hoisted_lam_own_use_0_f") == whole4_named("__hoisted_lam_own_use_0_f"), content = "true")
-  inspect(render_named(dep_synth, "__hoisted_lam_dep_use_0_f") == whole4_named("__hoisted_lam_dep_use_0_f"), content = "true")
-  inspect(whole4_named("__hoisted_lam_own_use_0_f"), content = "let __hoisted_lam_own_use_0_f = (a: Int) -> Int with OwnLog { { perform OwnLog::Emit(\"own\"); (a + 1) } }")
+  inspect(render_named(own_synth, "__hoisted_lam_7_own_use_0_f") == whole4_named("__hoisted_lam_7_own_use_0_f"), content = "true")
+  inspect(render_named(dep_synth, "__hoisted_lam_7_dep_use_0_f") == whole4_named("__hoisted_lam_7_dep_use_0_f"), content = "true")
+  inspect(whole4_named("__hoisted_lam_7_own_use_0_f"), content = "let __hoisted_lam_7_own_use_0_f = (a: Int) -> Int with OwnLog { { perform OwnLog::Emit(\"own\"); (a + 1) } }")
 }
 
 /// The top-level names this pass minted for hoisted lambdas, in program order.
@@ -274,5 +274,25 @@ fn collide_src() -> String {
 test "owners that a spelling rewrite would fold together keep different hoisted names" {
   let stmts = parse_program(lex(collide_src()))
   desugar_trait_dicts(stmts)
-  inspect(hoisted_names(stmts), content = "__hoisted_lam_Wrapper::scaled_0_f, __hoisted_lam_Wrapper__scaled_0_f, __hoisted_lam_test_probe_0_f, __hoisted_lam_:t:probe_0_f")
+  inspect(hoisted_names(stmts), content = "__hoisted_lam_15_Wrapper::scaled_0_f, __hoisted_lam_15_Wrapper__scaled_0_f, __hoisted_lam_10_test_probe_0_f, __hoisted_lam_8_:t:probe_0_f")
+}
+
+// #2618 review (Codex P1, round 2): each part of the name being injective is
+// not enough -- joining owner, counter and local name with `_` is ambiguous
+// about where the owner ends. The pair Codex named: a local `bar_1_baz`
+// hoisted first out of `foo`, and a local `baz` hoisted second out of
+// `foo_0_bar`, both read `__hoisted_lam_foo_0_bar_1_baz`. The owner's length
+// in front decides its extent. (The hoist walks a body inside out, so the
+// SECOND counter value goes to the lambda written FIRST -- hence `baz` above
+// `first` here.)
+fn ambiguous_join_src() -> String {
+  "effect JLog {\n  Emit(String) -> Unit\n}\n\nexport fn foo() -> Int with JLog {\n  let bar_1_baz = (a: Int) -> Int with JLog {\n    perform JLog::Emit(\"one\")\n    a\n  }\n  bar_1_baz(1)\n}\n\nexport fn foo_0_bar() -> Int with JLog {\n  let baz = (a: Int) -> Int with JLog {\n    perform JLog::Emit(\"two\")\n    a\n  }\n  let first = (a: Int) -> Int with JLog {\n    perform JLog::Emit(\"three\")\n    a\n  }\n  baz(1) + first(2)\n}\n"
+}
+
+test "the owner, the counter and the local name join into one name unambiguously" {
+  let stmts = parse_program(lex(ambiguous_join_src()))
+  desugar_trait_dicts(stmts)
+  // Without the length in front, the first and the third read the same:
+  // `__hoisted_lam_foo_0_bar_1_baz`.
+  inspect(hoisted_names(stmts), content = "__hoisted_lam_3_foo_0_bar_1_baz, __hoisted_lam_9_foo_0_bar_0_first, __hoisted_lam_9_foo_0_bar_1_baz")
 }
