@@ -3,7 +3,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/normalize {
-  desugar_trait_dicts, desugar_trait_dicts_module, hoisted_lambda_owner_key
+  desugar_trait_dicts, desugar_trait_dicts_module, hoisted_lambda_owner_key, hoisted_lambda_owner_of_stmt
 }
 
 import @vibe/compiler/syntax {
@@ -377,4 +377,60 @@ test "a name that does not carry a well-formed owner decodes to nothing" {
   // otherwise decode to a small (or negative) length and answer with a slice
   // of the name.
   inspect(decoded("__hoisted_lam_99999999999999999999999_foo_0_f"), content = "<none>")
+}
+
+// Codex P2 on #2623: validating only the length-prefixed owner accepted
+// `__hoisted_lam_3_foo_bad` and answered `foo`. That name is reachable -- a
+// helper synthesized for a user type spelled `__hoisted_lam_3_foo_bad` starts
+// with this prefix and is in no pre-prelude name table -- so a consumer would
+// have filed it under whatever module declares `foo`. The whole minted
+// grammar is checked now: `_<counter>_<local name>` must follow the owner.
+test "a hoisted name whose counter or local name is missing decodes to nothing" {
+  // The finding's own input.
+  inspect(decoded("__hoisted_lam_3_foo_bad"), content = "<none>")
+  // No counter digits at all between the two underscores.
+  inspect(decoded("__hoisted_lam_3_foo__f"), content = "<none>")
+  // A counter with nothing after it, and a counter no `_` closes.
+  inspect(decoded("__hoisted_lam_3_foo_0_"), content = "<none>")
+  inspect(decoded("__hoisted_lam_3_foo_0"), content = "<none>")
+  // The control: the same shape, complete, still decodes.
+  inspect(decoded("__hoisted_lam_3_foo_0_f"), content = "foo")
+  inspect(decoded("__hoisted_lam_3_foo_12_local"), content = "foo")
+}
+
+/// The owner key each top-level statement would give a lambda hoisted out of
+/// it, in program order; `-` for a statement that names no owner.
+fn owner_keys(stmts: Array[Stmt]) -> String {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match hoisted_lambda_owner_of_stmt(Array::get(stmts, i)) {
+      Some(k) => Array::push(out, k),
+      None => Array::push(out, "-")
+    }
+    i = i + 1
+  }
+  String::join(out, ", ")
+}
+
+// Codex P2 on #2623: a consumer that indexes definitions BY OWNER used to
+// mirror the hoist's arms, and the mirror covered `SLet` / `STest` / `SBench`
+// but not `SLetPat`. `hoisted_lambda_owner_of_stmt` is the hoist's own arms in
+// one place, so a consumer cannot cover a different subset of them.
+//
+// Measured while writing this: a top-level `let (a, b) = (1, 2)` does not
+// reach the hoist as an `SLetPat` at all -- the parser lowers it to a
+// `__dst<n>` binding plus one `SLet` per binder, which is why the row below
+// reads `__dst1, pair_a, pair_b` rather than one pattern owner. So the arm
+// this finding is about is defensive rather than reachable through that
+// spelling today; it stays because `dlh_set_owner` has it, and the point of
+// this function is that the two cannot diverge. `-` marks the shapes whose
+// key is a POSITION rather than a name.
+fn owner_shapes_src() -> String {
+  "effect OLog {\n  Emit(String) -> Unit\n}\n\nlet (pair_a, pair_b) = (1, 2)\n\nlet plain = 3\n\nlet mut counter = 0\n\nstruct Marker {\n  v: Int\n}\n\ntest \"probe\" {\n  assert_true(true)\n}\n"
+}
+
+test "every top-level shape the hoist names an owner after answers with that owner" {
+  let stmts = parse_program(lex(owner_shapes_src()))
+  inspect(owner_keys(stmts), content = "-, __dst1, pair_a, pair_b, plain, counter, -, :t:probe")
 }

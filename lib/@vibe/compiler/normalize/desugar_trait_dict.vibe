@@ -16835,6 +16835,42 @@ let dlh_module_tag: Array[String] = [""]
 /// `[A-Za-z_][A-Za-z0-9_]*` possibly joined by `::`, so it can never START with
 /// a colon, and `test_foo` -- which a top-level `let test_foo` could also spell
 /// -- becomes `:t:foo`.
+/// #2388: the owner key a lambda hoisted out of `stmt` carries, or `None` for
+/// a top-level statement that binds no name -- whose key is a POSITION
+/// (`dlh_anonymous_owner_key`) and so cannot be looked up by name.
+///
+/// The SAME arms `dlh_set_owner` records and `dlh_owner_key` spells, in one
+/// place, so a consumer that indexes definitions BY OWNER does not mirror them
+/// -- the break lane's file index did, and its mirror covered `SLet` / `STest`
+/// / `SBench` but not `SLetPat`, so a lambda hoisted out of a top-level
+/// pattern binding resolved to no owner at all (Codex P2 on #2623).
+///
+/// `dlh_set_owner` deliberately does NOT call this: it stores the kind and the
+/// raw name and lets `dlh_owner_key` build the string only when a lambda is
+/// actually hoisted. A compile of the compiler walks ~4,600 top-level
+/// statements and hoists none, and building one key string per statement cost
+/// ~138 kB of bump heap per compile on the selfcompile KPI. A consumer that
+/// wants every owner up front calls this instead, and pays that only when it
+/// needs the index.
+export fn hoisted_lambda_owner_of_stmt(stmt: Stmt) -> Option[String] {
+  match stmt {
+    SLet(_, _, name, _, _) => Some(name),
+    SLetMut(name, _, _) => Some(name),
+    STest(name, _) => Some(":t:\{name}"),
+    SBench(name, _) => Some(":b:\{name}"),
+    SLetPat(pat, _) => {
+      let binders = empty_str_array()
+      collect_pat_binders(pat, binders)
+      if Array::length(binders) == 0 {
+        None
+      } else {
+        Some(Array::get(binders, 0))
+      }
+    },
+    _ => None
+  }
+}
+
 fn dlh_set_owner(stmt: Stmt, idx: Int) -> Unit {
   Array::set(dlh_owner_idx, 0, idx)
   Array::set(dlh_owner_kind, 0, 0)
@@ -16941,7 +16977,16 @@ export fn hoisted_lambda_owner_key(name: String) -> Option[String] {
     } else {
       let owner_start = digits_end + 1
       let owner_end = owner_start + owner_len
-      if owner_end >= n || String::char_code_at(name, owner_end) != 95 {
+      // The WHOLE minted grammar, not just the owner: `_<counter>_<local>`
+      // must follow, with at least one digit and at least one character of
+      // local name. Validating only the owner accepted
+      // `__hoisted_lam_3_foo_bad` and answered `foo` (Codex P2 on #2623) --
+      // and a name like that is reachable, because a helper synthesized for a
+      // user type spelled `__hoisted_lam_3_foo_bad` starts with this prefix
+      // and is not in any pre-prelude name table.
+      let ctr_start = owner_end + 1
+      let ctr_end = dlh_digit_run_end(name, ctr_start, n)
+      if owner_end >= n || String::char_code_at(name, owner_end) != 95 || ctr_end == ctr_start || ctr_end + 1 >= n || String::char_code_at(name, ctr_end) != 95 {
         None
       } else {
         Some(String::substring(name, owner_start, owner_end))

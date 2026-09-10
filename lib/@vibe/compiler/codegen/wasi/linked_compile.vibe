@@ -45,6 +45,7 @@ import @vibe/compiler/normalize {
   desugar_trait_dicts_module,
   desugar_trait_dicts_with_typed_eq,
   hoisted_lambda_owner_key,
+  hoisted_lambda_owner_of_stmt,
   lift_match_scrutinees,
   unbox_tuple_loop_params,
   uniquify_shadowed_bindings_fresh
@@ -4164,46 +4165,26 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
 /// A function the prelude SYNTHESIZED has no pre-prelude name. Where it
 /// records the module it belongs to in its own name -- a hoisted lambda,
 /// whose top-level definition is its declaration's and no one else's (#2618)
-/// -- that owner answers instead. What records no owner is a program-level
-/// definition that belongs to no single file: a comparator derived for a type
-/// is emitted once and called from wherever that type is compared. Those get
-/// file 0, a placement rather than a claim -- a breakpoint set in a file is
-/// matched by basename against `vibe.dbgfiles`, so the effect is that a
-/// synthesized body reports the first file's name, not that a user's
-/// breakpoint moves.
-fn lc_dbg_file_of_fn(dbg_name_file: MutMap[String, Int], name: String) -> Int {
+/// -- that owner answers instead, against an index keyed by the hoist's OWN
+/// owner spelling (`hoisted_lambda_owner_of_stmt`). Mirroring those spellings
+/// here instead covered `SLet` / `STest` / `SBench` and missed `SLetPat`, so a
+/// lambda hoisted out of a top-level pattern binding silently fell through to
+/// the default (Codex P2 on #2623).
+///
+/// What records no owner is a program-level definition that belongs to no
+/// single file: a comparator derived for a type is emitted once and called
+/// from wherever that type is compared. Those get file 0, a placement rather
+/// than a claim -- a breakpoint set in a file is matched by basename against
+/// `vibe.dbgfiles`, so the effect is that a synthesized body reports the first
+/// file's name, not that a user's breakpoint moves.
+fn lc_dbg_file_of_fn(dbg_name_file: MutMap[String, Int], dbg_owner_file: MutMap[String, Int], name: String) -> Int {
   match MutMap::get(dbg_name_file, name) {
     Some(fid) => fid,
     None => match hoisted_lambda_owner_key(name) {
-      Some(owner) => lc_dbg_file_of_owner(dbg_name_file, owner),
-      None => 0
-    }
-  }
-}
-
-/// An owner key resolved against the same index. The spellings are the
-/// minter's (`dlh_owner_key` in normalize/desugar_trait_dict.vibe): a
-/// declaration's name verbatim, `:t:` / `:b:` for a test or bench block --
-/// which the scan above recorded under their lowered `__test_` / `__bench_`
-/// names -- and `:s:` for a top-level statement that binds no name, whose key
-/// is a POSITION in the program the hoist walked rather than a name, and so
-/// does not resolve here.
-fn lc_dbg_file_of_owner(dbg_name_file: MutMap[String, Int], owner: String) -> Int {
-  let n = String::length(owner)
-  let key = if String::starts_with(owner, ":t:") {
-    String::concat("__test_", String::substring(owner, 3, n))
-  } else if String::starts_with(owner, ":b:") {
-    String::concat("__bench_", String::substring(owner, 3, n))
-  } else if String::starts_with(owner, ":s:") {
-    ""
-  } else {
-    owner
-  }
-  if String::length(key) == 0 {
-    0
-  } else {
-    match MutMap::get(dbg_name_file, key) {
-      Some(fid) => fid,
+      Some(owner) => match MutMap::get(dbg_owner_file, owner) {
+        Some(fid) => fid,
+        None => 0
+      },
       None => 0
     }
   }
@@ -5416,6 +5397,13 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // while the positions `prov.stmt_file_id` is indexed by are still the
   // program's. See lc_dbg_file_of_fn -- after the prelude they are not.
   let pre_prelude_let_files = lc_fresh_int_array()
+  // The same, keyed by OWNER: what a lambda hoisted out of each statement
+  // would name itself after (`hoisted_lambda_owner_of_stmt`, the hoist's own
+  // arms rather than a mirror of them here). Built only when there is
+  // provenance to attach -- the break lane -- so an ordinary compile pays
+  // nothing, which is why it is not folded into the name scan below.
+  let pre_prelude_owner_keys = lc_fresh_string_array()
+  let pre_prelude_owner_files = lc_fresh_int_array()
   let dbg_prov_len = Array::length(prov.stmt_file_id)
   let mut __sbn_i = 0
   while __sbn_i < synth_boundary_stmt {
@@ -5427,6 +5415,17 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
       Array::get(prov.stmt_file_id, __sbn_i)
     } else {
       0
+    }
+    if dbg_prov_len > 0 {
+      match hoisted_lambda_owner_of_stmt(Array::get(stmts, __sbn_i)) {
+        Some(__sbn_owner) => {
+          Array::push(pre_prelude_owner_keys, __sbn_owner)
+          Array::push(pre_prelude_owner_files, __sbn_file)
+        },
+        None => ()
+      }
+    } else {
+      ()
     }
     match Array::get(stmts, __sbn_i) {
       SLet(_, _, __sbn_name, _, _) => {
@@ -7087,14 +7086,30 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // work. Gated on `debug_break && prov has files`, so default builds reserve
   // nothing and stay byte-identical.
   let dbg_line_on = debug_break && Array::length(prov.files) > 0
-  // Pre-prelude name -> file, the identity that survives the prelude. Built
-  // only in break mode; every other build leaves it empty and never reads it.
+  // Pre-prelude name -> file, the identity that survives the prelude, and
+  // pre-prelude owner key -> file for the definitions the prelude synthesizes.
+  // Built only in break mode; every other build leaves both empty and reads
+  // neither.
   let dbg_name_file: MutMap[String, Int] = MutMap::new_string()
+  let dbg_owner_file: MutMap[String, Int] = MutMap::new_string()
   if dbg_line_on {
     let mut dnf_i = 0
     while dnf_i < Array::length(pre_prelude_let_names) && dnf_i < Array::length(pre_prelude_let_files) {
       MutMap::set(dbg_name_file, Array::get(pre_prelude_let_names, dnf_i), Array::get(pre_prelude_let_files, dnf_i))
       dnf_i = dnf_i + 1
+    }
+    let mut dof_i = 0
+    while dof_i < Array::length(pre_prelude_owner_keys) && dof_i < Array::length(pre_prelude_owner_files) {
+      // First wins: a merged program's top-level names are unique, so a repeat
+      // can only be a key two statements really share, and the earlier one is
+      // the one the hoist walked first.
+      let __dof_key = Array::get(pre_prelude_owner_keys, dof_i)
+      if MutMap::has(dbg_owner_file, __dof_key) {
+        ()
+      } else {
+        MutMap::set(dbg_owner_file, __dof_key, Array::get(pre_prelude_owner_files, dof_i))
+      }
+      dof_i = dof_i + 1
     }
   } else {
     ()
@@ -8714,7 +8729,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
         // Interior-line breakpoints: this function's source file id + that file's
         // newline index (for mapping its statement offsets to lines). Off => 0/empty.
         let dbg_fid = if dbg_line_on {
-          lc_dbg_file_of_fn(dbg_name_file, fn_name_dbg)
+          lc_dbg_file_of_fn(dbg_name_file, dbg_owner_file, fn_name_dbg)
         } else {
           0
         }
