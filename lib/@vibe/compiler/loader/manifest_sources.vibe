@@ -308,6 +308,51 @@ fn manifest_header_scan_source(path: String, source: String) -> String with Exce
   }
 }
 
+/// Does a top-level `import` / `export ./..` statement start at or after
+/// `from`? Column 0 only, which is where every one of them is written.
+///
+/// #2595: the header scan below stops at the first statement that is not
+/// `import` / `export`, which is what makes it a fast HEADER scan. An import
+/// written BELOW a declaration is then invisible to it. `loader/loader.vibe`
+/// has four of them, and `loader/manifest_sources.vibe` was reachable through
+/// none of its other deps, so the manifest-preferring collection closure
+/// silently omitted a file the manifest DOES list -- `vibe check
+/// lib/@vibe/compiler/loader/loader.vibe` then failed with `type_db: missing
+/// resolved dependency environment` for a file that compiles, and `vibe deps`
+/// on the same root returned a closure one entry short without saying so.
+///
+/// This test is deliberately LOOSE. Over-triggering costs one module-header
+/// parse for a file whose text merely looks like it has a late import (a string
+/// literal, say) and answers the same either way; under-triggering is the bug.
+/// `export` alone is not enough -- `export fn` / `export let` / `export struct`
+/// are ordinary declarations -- so it must be followed by a re-export path,
+/// which always begins with `.` (`./x.vibe`, `../x.vibe`).
+fn manifest_header_tail_has_top_level_import(source: String, from: Int) -> Bool {
+  let len = String::length(source)
+  let mut pos = from
+  let mut found = false
+  while pos < len && !found {
+    let at_line_start = pos == 0 || String::char_code_at(source, pos - 1) == 10
+    if at_line_start && starts_with_keyword_at(source, pos, "import") {
+      found = true
+    } else if at_line_start && starts_with_keyword_at(source, pos, "export") {
+      let mut probe = pos + String::length("export")
+      while probe < len && (String::char_code_at(source, probe) == 32 || String::char_code_at(source, probe) == 9) {
+        probe = probe + 1
+      }
+      if probe < len && String::char_code_at(source, probe) == '.' {
+        found = true
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    pos = pos + 1
+  }
+  found
+}
+
 fn collect_manifest_header_deps_from_source(path: String, raw_source: String, manifest_path_index: Map[String, Bool]) -> Array[String] with Exception + Fs {
   let deps = array_empty()
   let base_dir = dir_of_path(path)
@@ -348,6 +393,18 @@ fn collect_manifest_header_deps_from_source(path: String, raw_source: String, ma
       }
     }
   }
+  // #2595: the loop above stopped, either at end of file or at the first
+  // statement that is not `import` / `export`. In the second case a top-level
+  // import may still follow it, and the scan cannot see one. Ask the real
+  // module-header parser, which reads the whole file, and MERGE -- the
+  // fast-scan entries keep their manifest-preferred resolution
+  // (`resolve_manifest_dep_path`), so this can only ADD the deps that were
+  // missing, never re-resolve one that was already found.
+  let scanned = if pos < len && manifest_header_tail_has_top_level_import(source, pos) {
+    merge_impl_raws_dedupe(deps, load_or_parse_module_header_deps_with_context(path, raw_source))
+  } else {
+    deps
+  }
   // Mirror the full loader's unconditional `.vpkg` sibling auto-discovery
   // (ADR-0070 Phase 1): this fast textual scanner only sees deps the
   // contract's OWN `import ./x.vibe {}` lines spell out explicitly, so a
@@ -363,9 +420,9 @@ fn collect_manifest_header_deps_from_source(path: String, raw_source: String, ma
       Array::push(discovered_deps, resolve_manifest_dep_path(base_dir, Array::get(discovered_raws, di), manifest_path_index))
       di = di + 1
     }
-    merge_impl_raws_dedupe(deps, discovered_deps)
+    merge_impl_raws_dedupe(scanned, discovered_deps)
   } else {
-    deps
+    scanned
   }
 }
 
