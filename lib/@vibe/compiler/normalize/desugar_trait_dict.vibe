@@ -16952,12 +16952,32 @@ fn dlh_hoisted_name(idx: Int, name: String) -> String {
 /// (`dlh_place_after_owners`). Where a consumer sees only the NAME -- a table
 /// keyed by the pre-prelude declarations, which a synthesized function is by
 /// definition not in -- the owner is read back out of the name instead. This
-/// is the inverse of `dlh_hoisted_name`, and the length prefix is what makes
-/// it a decode rather than a guess: the owner's extent is read from the digits
-/// in front of it, so an owner that itself contains `_<digits>_` cannot be
-/// mistaken for the counter.
+/// is the inverse of `dlh_hoisted_name`.
 ///
-/// Fails closed. A name that does not carry a well-formed owner is `None`, not
+/// The grammar it accepts, written out, because checking it piecemeal was
+/// wrong twice (Codex P2 on #2623, two rounds -- first the counter and local
+/// name were not checked at all, then any non-empty remainder was taken as a
+/// local name):
+///
+/// ```text
+/// __hoisted_lam_ <digits> _ <owner: exactly <digits> bytes> _ <digits> _ <local>
+/// local ::= [A-Za-z_] [A-Za-z0-9_]*
+/// ```
+///
+/// Every part is checked. The owner needs no grammar of its own because its
+/// extent is length-prefixed -- that is what lets it hold `::` (an impl
+/// method) or a leading `:` (the `:t:` / `:b:` / `:s:` forms) while the rest
+/// stays unambiguous. The LOCAL name does need one: it comes from an
+/// `ELet(name, ..)` binder, so it is a source identifier and can be neither
+/// qualified nor digit-initial.
+///
+/// Both mistakes were reachable rather than hypothetical, and by the same
+/// route: a helper synthesized for a user type whose name starts with this
+/// prefix (`__hoisted_lam_3_foo_bad`, `__hoisted_lam_3_foo_0_x`) is in no
+/// pre-prelude name table, so it reaches this decoder, and answering `foo`
+/// files it under whatever module declares `foo`.
+///
+/// Fails closed. A name that does not match the whole grammar is `None`, not
 /// a partial answer: a caller that attributed a synthesized definition to a
 /// half-decoded owner would be silently wrong (#2618's collision, one level
 /// down), whereas `None` leaves the caller on whatever rule it already had.
@@ -16967,26 +16987,21 @@ export fn hoisted_lambda_owner_key(name: String) -> Option[String] {
     let start = String::length(dlh_hoisted_prefix)
     let digits_end = dlh_digit_run_end(name, start, n)
     let owner_len = dlh_owner_len_at(name, start, digits_end, n)
-    // The digit run ends at the `_` that opens the owner, so the owner runs
-    // [digits_end + 1, + owner_len) and is followed by the `_` that opens the
-    // counter. An owner is never empty (`dlh_owner_key` returns either a
-    // declaration's name or a `:t:` / `:b:` / `:s:` form), so a zero length is
-    // not one of ours either.
+    // An owner is never empty: `dlh_owner_key` returns either a declaration's
+    // name or a `:t:` / `:b:` / `:s:` form.
     if owner_len <= 0 {
       None
     } else {
       let owner_start = digits_end + 1
       let owner_end = owner_start + owner_len
-      // The WHOLE minted grammar, not just the owner: `_<counter>_<local>`
-      // must follow, with at least one digit and at least one character of
-      // local name. Validating only the owner accepted
-      // `__hoisted_lam_3_foo_bad` and answered `foo` (Codex P2 on #2623) --
-      // and a name like that is reachable, because a helper synthesized for a
-      // user type spelled `__hoisted_lam_3_foo_bad` starts with this prefix
-      // and is not in any pre-prelude name table.
       let ctr_start = owner_end + 1
       let ctr_end = dlh_digit_run_end(name, ctr_start, n)
-      if owner_end >= n || String::char_code_at(name, owner_end) != 95 || ctr_end == ctr_start || ctr_end + 1 >= n || String::char_code_at(name, ctr_end) != 95 {
+      let local_start = ctr_end + 1
+      if owner_end >= n || String::char_code_at(name, owner_end) != 95 {
+        None
+      } else if ctr_end == ctr_start || ctr_end >= n || String::char_code_at(name, ctr_end) != 95 {
+        None
+      } else if !dlh_is_local_name(name, local_start, n) {
         None
       } else {
         Some(String::substring(name, owner_start, owner_end))
@@ -16994,6 +17009,34 @@ export fn hoisted_lambda_owner_key(name: String) -> Option[String] {
     }
   } else {
     None
+  }
+}
+
+/// Whether `[i, n)` is a source identifier: `[A-Za-z_] [A-Za-z0-9_]*`, and not
+/// empty. The local half of a hoisted name is an `ELet` binder, so a remainder
+/// that is qualified (`x::equals`) or digit-initial (`1bad`) is not one this
+/// compiler minted.
+fn dlh_is_local_name(s: String, i: Int, n: Int) -> Bool {
+  if i >= n {
+    false
+  } else {
+    let c0 = String::char_code_at(s, i)
+    if !((c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) || c0 == 95) {
+      false
+    } else {
+      let mut j = i + 1
+      let mut ok = true
+      while j < n {
+        let c = String::char_code_at(s, j)
+        if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 {
+          j = j + 1
+        } else {
+          ok = false
+          j = n
+        }
+      }
+      ok
+    }
   }
 }
 

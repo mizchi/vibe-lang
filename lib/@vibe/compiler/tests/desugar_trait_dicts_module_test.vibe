@@ -398,6 +398,30 @@ test "a hoisted name whose counter or local name is missing decodes to nothing" 
   inspect(decoded("__hoisted_lam_3_foo_12_local"), content = "foo")
 }
 
+// Codex P2 on #2623, round 2: after the counter was checked, ANY non-empty
+// remainder was still taken as a local name. The local half comes from an
+// `ELet` binder, so it is a source identifier -- `__hoisted_lam_3_foo_0_x::equals`
+// is not a name this compiler minted, and answering `foo` for it files a helper
+// synthesized for a user type spelled `__hoisted_lam_3_foo_0_x` under whatever
+// module declares `foo`.
+//
+// The lesson, and why the decoder now carries the grammar as a comment: checking
+// it a piece at a time was wrong twice. These cases walk the local-name rule
+// itself rather than the two inputs that were reported.
+test "a hoisted name whose local half is not a source identifier decodes to nothing" {
+  // Qualified -- the finding's own input, and the shape a derived helper takes.
+  inspect(decoded("__hoisted_lam_3_foo_0_x::equals"), content = "<none>")
+  // Digit-initial, which no binder can be.
+  inspect(decoded("__hoisted_lam_3_foo_0_1bad"), content = "<none>")
+  // A character that is legal in neither position.
+  inspect(decoded("__hoisted_lam_3_foo_0_a-b"), content = "<none>")
+  inspect(decoded("__hoisted_lam_3_foo_0_a.b"), content = "<none>")
+  // The controls: every character class a binder may actually use.
+  inspect(decoded("__hoisted_lam_3_foo_0_a"), content = "foo")
+  inspect(decoded("__hoisted_lam_3_foo_0__leading_underscore"), content = "foo")
+  inspect(decoded("__hoisted_lam_3_foo_0_A9_z"), content = "foo")
+}
+
 /// The owner key each top-level statement would give a lambda hoisted out of
 /// it, in program order; `-` for a statement that names no owner.
 fn owner_keys(stmts: Array[Stmt]) -> String {
