@@ -1,0 +1,91 @@
+//# Imports
+
+// #2454: the `FrozenArray::*` receiver refinements were TOLERANT -- they
+// recovered the element type by pattern-matching the receiver and fell back to
+// `CtUnknown`, which cannot report. So the phantom distinction `FrozenArray[T]`
+// exists for (#906) was not held apart in EITHER direction, and all three of
+// these checked clean:
+//
+//   fn f(x: Array[Int]) -> Int { FrozenArray::length(x) }
+//   fn g(x: Array[Int]) -> Int { FrozenArray::get(x, 0) }
+//   fn h(x: FrozenArray[Int]) -> Int { Array::get(x, 0) }
+//
+// Nothing goes wrong at RUN time -- the copy contract is codegen's
+// (fixtures/frozen_array_copies_test.vibe) -- so this pins a DIAGNOSTIC.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// The checker's first diagnostic for `src`, or "" when it checks clean.
+/// Same fail-fast shape as checker_diag_report_test.vibe's `first_check_error`.
+fn diags_of(src: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(src)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn rejects(src: String) -> Bool {
+  String::length(diags_of(src)) > 0
+}
+
+//# Tests
+
+test "#2454: an Array receiver is rejected by FrozenArray::length" {
+  let d = diags_of("fn f(x: Array[Int]) -> Int { FrozenArray::length(x) }\n")
+  assert(String::contains(d, "FrozenArray::length"))
+  assert(String::contains(d, "Array[Int]"))
+  // The message must name the EDIT, not the phantom-type theory.
+  assert(String::contains(d, "FrozenArray::from_array"))
+}
+
+test "#2454: an Array receiver is rejected by FrozenArray::get" {
+  let d = diags_of("fn g(x: Array[Int]) -> Int { FrozenArray::get(x, 0) }\n")
+  assert(String::contains(d, "FrozenArray::get"))
+  assert(String::contains(d, "Array[Int]"))
+}
+
+test "#2454: an Array receiver is rejected by FrozenArray::to_array" {
+  let d = diags_of("fn i(x: Array[Int]) -> Array[Int] { FrozenArray::to_array(x) }\n")
+  assert(String::contains(d, "FrozenArray::to_array"))
+}
+
+test "#2454: a FrozenArray receiver is rejected by Array::get" {
+  // The other direction, which the Array head check now sees because
+  // FrozenArray has a certain head kind rather than sitting in the tolerated
+  // `0` bucket.
+  let d = diags_of("fn h(x: FrozenArray[Int]) -> Int { Array::get(x, 0) }\n")
+  assert(String::contains(d, "Array::get"))
+  assert(String::contains(d, "FrozenArray[Int]"))
+}
+
+test "#2454: the legitimate shapes stay clean (the control)" {
+  // Without this, every assertion above would pass on a checker that had
+  // simply started rejecting FrozenArray entirely.
+  assert(!rejects("fn ok1(x: FrozenArray[Int]) -> Int { FrozenArray::get(x, 0) }\n"))
+  assert(!rejects("fn ok2(x: FrozenArray[Int]) -> Int { FrozenArray::length(x) }\n"))
+  assert(!rejects("fn ok3(a: Array[Int]) -> Int { FrozenArray::get(FrozenArray::from_array(a), 0) }\n"))
+  assert(!rejects("fn ok4(x: FrozenArray[Int]) -> Int { Array::get(FrozenArray::to_array(x), 0) }\n"))
+}
+
+test "#2454: an unresolved receiver stays tolerated" {
+  // Ground-gated, like every other receiver head check here: head 0 means
+  // "unresolved, tolerate". Over-rejecting a generic receiver would be a
+  // worse bug than the one being fixed.
+  assert(!rejects("fn ok5[T](x: T) -> Int { FrozenArray::length(x) }\n"))
+}
+
+test "#2454: the element type is still recovered from the receiver" {
+  // The refinement's USEFUL half must survive: `FrozenArray::get` on a
+  // `FrozenArray[Int]` is an Int, not CtUnknown.
+  let d = diags_of("fn e(x: FrozenArray[Int]) -> String { let s: String = FrozenArray::get(x, 0)\n  s }\n")
+  assert(String::contains(d, "expected String"))
+  assert(String::contains(d, "Int"))
+}
