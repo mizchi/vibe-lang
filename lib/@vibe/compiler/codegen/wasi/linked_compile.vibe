@@ -3615,6 +3615,75 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
 // per-statement file ids on stable statement keys (a declaration's kind and
 // name): an inserted statement belongs to the file of the statement before
 // it, which is also where a per-module run would put it.
+/// A type as a key, for telling one impl of a trait from another. Keying an
+/// impl by its TRAIT alone (what this did) collapses every `impl Eq for ...` in
+/// a program onto `impl:Eq`, and a key that repeats is skipped by the content
+/// comparison -- so a per-module run could drop or change an implementation and
+/// still read `missing=0 content=0` (Codex P1 on #2622).
+fn oracle_type_key(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, n)
+      StringBuilder::push(out, "[")
+      let mut i = 0
+      while i < Array::length(args) {
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, oracle_type_key(Array::get(args, i)))
+        i = i + 1
+      }
+      StringBuilder::push(out, "]")
+      StringBuilder::freeze(out)
+    },
+    TyTuple(elems) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "(")
+      let mut i = 0
+      while i < Array::length(elems) {
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, oracle_type_key(Array::get(elems, i)))
+        i = i + 1
+      }
+      StringBuilder::push(out, ")")
+      StringBuilder::freeze(out)
+    },
+    TyFn(params, ret, eff) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "fn(")
+      let mut i = 0
+      while i < Array::length(params) {
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, oracle_type_key(Array::get(params, i)))
+        i = i + 1
+      }
+      StringBuilder::push(out, ")->")
+      StringBuilder::push(out, oracle_type_key(ret))
+      match eff {
+        Some(row) => {
+          StringBuilder::push(out, " with ")
+          StringBuilder::push(out, row)
+        },
+        None => ()
+      }
+      StringBuilder::freeze(out)
+    },
+    TyUnit => "Unit"
+  }
+}
+
 fn oracle_stmt_key(s: Stmt) -> String {
   match s {
     SLet(_, _, n, _, _) => String::concat("let:", n),
@@ -3624,7 +3693,7 @@ fn oracle_stmt_key(s: Stmt) -> String {
     SStruct(_, n, _, _, _, _) => String::concat("struct:", n),
     STypeAlias(_, n, _, _) => String::concat("alias:", n),
     STrait(_, n, _, _, _, _) => String::concat("trait:", n),
-    SImpl(_, _, n, _) => String::concat("impl:", n),
+    SImpl(_, _, n, ty) => String::concat("impl:", String::concat(n, String::concat(":", oracle_type_key(ty)))),
     SExternLet(n, _) => String::concat("extern:", n),
     SImport(p, _) => String::concat("import:", p),
     STest(n, _) => String::concat("test:", n),
@@ -3845,8 +3914,9 @@ fn oracle_strip_counters(s: String) -> String {
 /// repeat within `a` are skipped (a repeated key cannot be matched). Returns
 /// `keyed missing=<in a only> extra=<in trial only> copies=<repeats in trial>
 /// content=<same key, different content, not a fresh-name rename>
-/// renames=<same key, fresh-name renames only>` plus the first missing key and
-/// the first content-differing key.
+/// renames=<same key, fresh-name renames only> dup_keys=<statements the
+/// comparison cannot speak for, because their key repeats in `a`>` plus the
+/// first missing key and the first content-differing key.
 fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> String) -> String {
   let wmap: MutMap[String, Int] = MutMap::new_string()
   let mut ki = 0
@@ -3856,6 +3926,27 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
       MutMap::set(wmap, key, 0 - 1)
     } else {
       MutMap::set(wmap, key, ki)
+    }
+    ki = ki + 1
+  }
+  // Statements whose key is not unique in the whole-program result. Their
+  // content is NOT compared (there is no single node to compare against) and
+  // one occurrence in the trial answers for all of them, so the rest of the
+  // line is a verdict about everything except these. Reported rather than left
+  // implicit: a reader who does not know the number cannot tell how much of
+  // the program `content=0` covers (Codex P1 on #2622). Shapes with no name of
+  // their own -- a bare expression statement, a destructuring `let` -- are
+  // what is left here now that an impl is keyed by trait AND type.
+  let mut dup_keys = 0
+  ki = 0
+  while ki < Array::length(a) {
+    match MutMap::get(wmap, oracle_stmt_key(Array::get(a, ki))) {
+      Some(widx) => if widx < 0 {
+        dup_keys = dup_keys + 1
+      } else {
+        ()
+      },
+      None => ()
     }
     ki = ki + 1
   }
@@ -3942,7 +4033,7 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
     }
     ki = ki + 1
   }
-  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))
+  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))
 }
 
 /// One step of the oracle: pass `k`. `a` is the whole-program state after
