@@ -102,17 +102,20 @@ test "the module entry threads the witness into a call of the context's bounded 
 test "the whole-program entry is the module entry with no context and everything own" {
   let stmts = parse_program(lex(String::concat(dep_src(), own_src())))
   desugar_trait_dicts(stmts)
-  inspect(stmt_names(stmts), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key, struct Key, fail_dep, struct Set, contains, struct Pair, fail_own, Key::equals, Set::equals, Pair::equals, __map_equals__N6_String__N7___Vfp_T, __exn_kind_cell, struct HashDict")
+  inspect(stmt_names(stmts), content = "trait Hash, impl Hash, Hash::hash_key, String::hash_key, map_key_to_string, struct Key, fail_dep, struct Set, contains, struct Pair, fail_own, Key::equals, Set::equals, Pair::equals, __map_equals__N6_String__N7___Vfp_T, __exn_kind_cell, struct HashDict")
 }
 
 test "the dependency's own run places its trait operation inside the module and its dict struct in the synthesized set" {
   let own = parse_program(lex(dep_src()))
   let ctx = parse_program(lex(own_src()))
   let synth = desugar_trait_dicts_module(own, ctx, [], [])
-  // The namespace operation is inserted after the trait's impls and the
-  // lets that immediately follow them, growing the module's own region; the
-  // context's structs are not derived for here.
-  inspect(stmt_names(own), content = "trait Hash, impl Hash, String::hash_key, map_key_to_string, Hash::hash_key, struct Key, fail_dep")
+  // The namespace operation is inserted directly after the trait's impls,
+  // growing the module's own region; the context's structs are not derived
+  // for here. It used to be placed one step further -- past the run of
+  // `let`/`fn` that immediately follows -- which made a `Trait::op(..)` call
+  // inside a `fn` body a forward reference the checker could not type
+  // (#2570), so `Hash::hash_key` now precedes `String::hash_key` here.
+  inspect(stmt_names(own), content = "trait Hash, impl Hash, Hash::hash_key, String::hash_key, map_key_to_string, struct Key, fail_dep")
   inspect(stmt_names(synth), content = "Key::equals, __exn_kind_cell, struct HashDict")
   inspect(stmt_names(ctx), content = "struct Set, contains, struct Pair, fail_own")
 }

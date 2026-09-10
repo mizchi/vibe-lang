@@ -1496,6 +1496,20 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
     }
     i = i + 1
   }
+  // Right after the last trait/impl, and NOT one statement further.
+  //
+  // #2570: this used to skip forward over the run of `SLet`/`SFnDecl` that
+  // follows, which put every wrapper BELOW the module's top-level functions.
+  // A `Trait::op(..)` inside a `fn` body was then a forward reference, and the
+  // checker's forward-reference hoist pre-binds a value whose EFn carries type
+  // parameters as `CtUnknown` -- every wrapper carries a `Self`-dispatch type
+  // parameter, so every wrapper hoisted as `CtUnknown`, which unifies with
+  // anything. Measured: result type, argument types and arity were all
+  // unchecked, `let z: String = Num::zero(p)` on a `-> Double` operation
+  // compiled and printed the Double's bits as a string, and the identical line
+  // inside a `test` body -- which sits below the old insertion point -- was
+  // correctly rejected. Inserting here makes the call an ordinary backward
+  // reference, so the wrapper's own statement has already bound its real type.
   let mut insertion = 0
   let mut si = 0
   while si < original_len {
@@ -1509,17 +1523,6 @@ export fn derive_trait_namespace_operations(stmts: Array[Stmt]) -> Unit {
       _ => ()
     }
     si = si + 1
-  }
-  while insertion < original_len {
-    match Array::get(stmts, insertion) {
-      SLet(_, _, _, _, _) => {
-        insertion = insertion + 1
-      },
-      SFnDecl(_, _, _, _, _) => {
-        insertion = insertion + 1
-      },
-      _ => break
-    }
   }
   let ordered = array_empty()
   si = 0
