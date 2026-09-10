@@ -1928,23 +1928,128 @@ fn hoisted_binding_type(annotation: Option[TypeExpr], defs: Array[TypeDef]) -> T
 /// `Option[TypeExpr]` into a type, so there is one implementation of that rule
 /// rather than a copy per slot.
 ///
-/// Two shapes ARE excluded, because for them a synthesized signature would be
-/// WRONG rather than merely imprecise:
-///
-///   - a type parameter makes a concrete `CtFn` a lie at every call site;
-///   - an optional or labeled parameter (a trailing `~`/`?` in the raw AST
-///     name, see `labeled_param_base_name`) may be omitted by a legitimate
-///     call, so a strict arity would report a false error.
-///
-/// Both keep the `CtUnknown` the hoist gave everything before this. Ordered
+/// One shape IS excluded, because for it a synthesized signature would be
+/// WRONG rather than merely imprecise: an optional or labeled parameter (a
+/// trailing `~`/`?` in the raw AST name, see `labeled_param_base_name`) may be
+/// omitted by a legitimate call, so a strict arity would report a false error.
+/// It keeps the `CtUnknown` the hoist gave everything before this. Ordered
 /// (backward-reference) code is unaffected either way: the binding's own
 /// statement fills in the precise type when it is reached and shadows this
 /// pre-binding.
+///
+/// #2607: a type parameter used to disqualify the WHOLE signature, for a reason
+/// that is true only of PART of it -- `[T](x: T) -> Double` cannot hoist as a
+/// concrete `CtFn`, because one pre-binding is shared by every call site and `T`
+/// is not the same type at each. That is a fact about the SLOTS THAT MENTION a
+/// parameter, not about the signature, and collapsing the whole thing to
+/// `CtUnknown` threw the arity and any concrete return type away with it.
+///
+/// Measured on the production linear/RC lane:
+///
+///   fn caller() -> String { len([1, 2]) }        // len returns Int
+///   fn len[T](xs: Array[T]) -> Int { Array::length(xs) }
+///
+/// compiled clean and printed `2`, and `String::length(caller())` answered `4`
+/// -- an Int in a String slot, no diagnostic at any stage. The identical program
+/// with the definition ABOVE the caller was rejected, so source order decided
+/// the verdict. A forward call with one argument too many was clean too, and
+/// then failed at run with no message.
+///
+/// Not a corner: every `Trait::op` wrapper `derive_trait_namespace_operations`
+/// synthesizes carries a `Self`-dispatch type parameter, which is the mechanism
+/// #2570 ran into from the other side.
+///
+/// So the mask is per slot: a parameter or return annotation that mentions one
+/// of the binder's own type parameters reads as unannotated (`CtUnknown`,
+/// unifies with anything, unchecked exactly as before), and every other slot
+/// resolves normally. Arity is checked either way.
+fn hoist_is_type_param(tparams: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(tparams) && !found {
+    if type_param_name(Array::get(tparams, i)) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Does `ty` mention one of `tparams` anywhere? Head positions count: `T[Int]`
+/// under `[T[_]]` is as unresolvable as bare `T`.
+fn hoist_mentions_type_param(ty: TypeExpr, tparams: Array[String]) -> Bool {
+  match ty {
+    TyName(name) => hoist_is_type_param(tparams, name),
+    TyApp(head, args) => if hoist_is_type_param(tparams, head) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(args) && !found {
+        if hoist_mentions_type_param(Array::get(args, i), tparams) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyFn(ps, r, _) => if hoist_mentions_type_param(r, tparams) {
+      true
+    } else {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(ps) && !found {
+        if hoist_mentions_type_param(Array::get(ps, i), tparams) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(items) && !found {
+        if hoist_mentions_type_param(Array::get(items, i), tparams) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+/// `hoisted_binding_type`, with the per-slot type-parameter mask of #2607.
+///
+/// Masking a slot is exactly "treat it as unannotated": `hoisted_binding_type`
+/// already turns that into `CtUnknown`, and its doc says why that is the right
+/// answer for a slot the hoist cannot know. Routing through it keeps one
+/// implementation of that rule rather than a second copy here.
+fn hoisted_slot_type(annotation: Option[TypeExpr], tparams: Array[String], defs: Array[TypeDef]) -> Type {
+  let readable = match annotation {
+    Some(type_expr) => if hoist_mentions_type_param(type_expr, tparams) {
+      None
+    } else {
+      annotation
+    },
+    _ => annotation
+  }
+  hoisted_binding_type(readable, defs)
+}
+
 fn hoisted_fn_signature(value: Expr, defs: Array[TypeDef]) -> Type {
   match value {
-    EFn(tparams, _bounds, params, ret, eff, _body) => if Array::length(tparams) > 0 {
-      CtUnknown
-    } else {
+    EFn(tparams, _bounds, params, ret, eff, _body) => {
       let ptys = array_empty()
       let mut usable = true
       let mut i = 0
@@ -1953,12 +2058,12 @@ fn hoisted_fn_signature(value: Expr, defs: Array[TypeDef]) -> Type {
         if labeled_param_base_name(pname) != pname {
           usable = false
         } else {
-          Array::push(ptys, hoisted_binding_type(pann, defs))
+          Array::push(ptys, hoisted_slot_type(pann, tparams, defs))
         }
         i = i + 1
       }
       if usable {
-        CtFn(ptys, hoisted_binding_type(ret, defs), eff)
+        CtFn(ptys, hoisted_slot_type(ret, tparams, defs), eff)
       } else {
         CtUnknown
       }
