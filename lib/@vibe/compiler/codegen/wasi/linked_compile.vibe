@@ -3749,22 +3749,32 @@ fn oracle_head(s: String) -> String {
 
 /// #2388: a module's dependency interface as the per-module pass sees it --
 /// what another file contributes without its bodies being compiled here:
-/// type, trait, suberror and impl declarations, and every top-level
-/// definition (a function's signature drives witness threading at a call
-/// site and the exception kind of a throw whose payload it returns; an
+/// EXPORTED type, trait, suberror and impl declarations, and exported
+/// top-level definitions (a function's signature drives witness threading at a
+/// call site and the exception kind of a throw whose payload it returns; an
 /// explicit `T::op` suppresses a derive). Bodies ride along unread: the
 /// module entry never rewrites or emits a context statement, which is the
 /// bodyless form a `.vpkg` contract carries.
+///
+/// The export test is the point. This used to admit PRIVATE declarations too,
+/// which made the oracle more permissive than any real driver -- `index.vpkg`
+/// is the bodyless PUBLIC boundary, so a pass reading a dependency's private
+/// declaration stayed green here while a per-module compile could not see it
+/// (Codex P1 on #2622).
 fn oracle_is_interface_stmt(s: Stmt) -> Bool {
   match s {
-    SEnum(_, _, _, _, _) => true,
-    SStruct(_, _, _, _, _, _) => true,
-    STypeAlias(_, _, _, _) => true,
-    SSuberror(_, _, _) => true,
-    STrait(_, _, _, _, _, _) => true,
+    SEnum(exported, _, _, _, _) => exported,
+    SStruct(exported, _, _, _, _, _) => exported,
+    STypeAlias(exported, _, _, _) => exported,
+    SSuberror(exported, _, _) => exported,
+    STrait(exported, _, _, _, _, _) => exported,
+    // An impl carries no export flag and is not addressed by name: trait
+    // resolution is global, and a contract that dropped a dependency's impls
+    // would make its bounded generics unusable.
     SImpl(_, _, _, _) => true,
-    SLet(_, _, _, _, _) => true,
-    SLetMut(_, _, _) => true,
+    SLet(exported, _, _, _, _) => exported,
+    // A top-level mutable binding is never part of a package's surface.
+    SLetMut(_, _, _) => false,
     _ => false
   }
 }
@@ -4026,6 +4036,26 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     let ctx: Array[Stmt] = []
     let mut cj = 0
     while cj < file_count {
+      // Every other file, which is WIDER than a real per-module compile sees.
+      // Two narrower rules were built and measured (Codex P1 on #2622), and
+      // neither holds at this granularity:
+      //
+      //  - "only files merged before this one" (dependencies precede
+      //    dependents) reports a false difference, because a `.vpkg`
+      //    contract is MATERIALIZED into a generated types file that the
+      //    merge lays FIRST, ahead of the implementation whose declarations
+      //    its own derives need: `PerceusAction::equals` then compares
+      //    `a.kind == b.kind` instead of calling `PerceusActionKind::equals`.
+      //  - grouping files into packages first does not exist to be had:
+      //    `collect_source_groups_fs` returns ONE group (`recursive`, 191
+      //    files) for the compiler closure, so there is no package partition
+      //    to split on.
+      //
+      // Exact import edges would settle it, and the merge drops `SImport`
+      // ("Skips SImport, SReExport (already resolved)"), so they have to come
+      // from the loader. That is filed on #2388 as what the per-module driver
+      // needs first, and until then this oracle's green is the weaker claim:
+      // no module needed anything the whole program did not have.
       if cj == fi {
         ()
       } else {
@@ -4067,7 +4097,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     }
     fi = fi + 1
   }
-  let line = String::concat("FULL stmts=", String::concat(Int::to_string(Array::length(a)), String::concat(" split=", String::concat(Int::to_string(Array::length(trial)), "\n"))))
+  let line = String::concat("FULL stmts=", String::concat(Int::to_string(Array::length(a)), String::concat(" split=", String::concat(Int::to_string(Array::length(trial)), String::concat(" modules=", String::concat(Int::to_string(file_count), "\n"))))))
   String::concat(line, oracle_keyed_line(a, trial, render))
 }
 
@@ -4159,6 +4189,9 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
       let ctx: Array[Stmt] = []
       let mut cj = 0
       while cj < file_count {
+        // Every other file -- wider than a real per-module compile sees; the
+        // full-sequence oracle above records the two narrower rules that were
+        // measured and why neither holds at file granularity.
         if cj == fi {
           ()
         } else {
