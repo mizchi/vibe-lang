@@ -5,6 +5,7 @@ import @vibe/compiler/syntax {
   lex_with_offsets,
   parse_program,
   parse_program_located,
+  print_program,
   print_stmt,
   rewrite_string_binops_stmts,
   shift_stmt_offsets,
@@ -33,6 +34,7 @@ import @vibe/compiler/core {
   append_non_import_stmts_without_alias_rewrite,
   apply_export_renames_stmts,
   build_export_rename_plan,
+  builtin_iterator_serialized_boundary_markers,
   collect_import_alias_collision_locals,
   collect_import_alias_collision_refs,
   collect_import_value_renames,
@@ -53,7 +55,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen {
-  compile_module, compile_wasi_module
+  compile_module_with_typed_offsets, compile_wasi_module
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -96,9 +98,7 @@ import @vibe/compiler/checker {
 import @vibe/compiler/runtime {
   TypeDb,
   artifact_input_trace_dependency_plan_evidence_fs,
-  db_grouped_merged_source,
   db_load_artifact,
-  db_module_source,
   db_new,
   db_set_source,
   db_store_artifact,
@@ -558,6 +558,37 @@ fn merged_stmts_and_offsets(source_groups: Array[(String, Array[(String, String)
   // #2441: the typed-`==` rows ride the same disjoint offset spaces.
   let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)
   (rewrite_string_binops_stmts(merged, rels, pluses, typed_lowering_binop_anchor), floats, int_renders, bool_renders, eq_offs, eq_keys)
+}
+
+/// The statement filter `build_module_source` (runtime.vibe) applies while
+/// reprinting: a module keeps its top-level function bindings and the
+/// serialized builtin-iterator boundary markers, and nothing else.
+///
+/// #2437: lifted out of the reprint so the statement merge can be filtered
+/// directly. Selecting statements preserves every node offset, which is what
+/// lets the rebased typed-lowering tables still name the right nodes. Kept
+/// byte-identical to `fs_compile`'s copy on purpose -- the two lanes must
+/// agree on what a module contains.
+fn module_lane_filter_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
+  let filtered = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let keep = match stmt {
+      SLet(_, _, _, _, expr) => match expr {
+        EFn(_, _, _, _, _, _) => true,
+        _ => false
+      },
+      _ => builtin_iterator_serialized_boundary_markers(stmt) is Some(_)
+    }
+    if keep {
+      Array::push(filtered, stmt)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  filtered
 }
 
 /// Interior-line breakpoints (span-arc step5): the basename of a file path (text
@@ -1666,6 +1697,57 @@ export fn compile_file_fs_mode_cached_profiled(db: TypeDb, entry_path: String, e
   }
 }
 
+/// #2437: the last FS caller to leave the reprint.
+///
+/// It used to print the merge into `merged_source`, reparse + filter + print
+/// THAT into `module_source`, reparse the result UNLOCATED, and hand it to
+/// `compile_module` -- so every node offset was -1, the per-module
+/// typed-lowering rows had no offset space to be rebased into, and this lane
+/// compiled with every channel EMPTY. What that costs is the pre-#2158
+/// syntactic answer: a large `Int` rendering as the empty string, a `Double`
+/// through a projection not rendering as a Double, `a < b` on Strings
+/// comparing pointers wherever the desugar tracker cannot classify the shape
+/// syntactically.
+///
+/// It now takes the route #2449 gave the inline entries, one layer up:
+/// `merged_stmts_and_offsets` rebases the rows the check above already
+/// published, so this is PLUMBING rather than the second whole-program check
+/// this issue measured at +330 ms on a 960-function program (superlinear --
+/// seconds per cold compile at compiler size). Two prints and two parses go
+/// away with it; the reprint's statement filter is applied to the merge
+/// instead (`module_lane_filter_stmts`), which preserves every node offset.
+///
+/// The precondition the inline siblings have to argue for is free here. The
+/// memo is keyed by PATH, and `ensure_fingerprint_fs_impl` RESETS it and then
+/// leaves a row for every module of the closure: a module served from the
+/// persistent type-env cache counts as reused only if its offsets sidecar
+/// loads too (`ensure_module_typed_lowering_offsets`), and otherwise it is
+/// rechecked. So there is no window where a row left by an earlier compile of
+/// a different source at the same path can be read.
+///
+/// Two deliberate consequences:
+///
+///   - The in-db artifact kind is `module-typed`, not `module`. `fs_compile`
+///     carries a second copy of this entry that still compiles WITHOUT the
+///     tables and still writes `module`; sharing a kind would let one entry
+///     silently return the other's lowering on a shared `TypeDb`. The two
+///     PERSISTENT kinds were already distinct (`file-compile-module` vs
+///     `fs-compile-module`) and that key folds in `codegen_fingerprint()`, a
+///     hash of every compiler source, so entries written before this change
+///     cold-miss on their own.
+///   - `db_grouped_merged_source` / `db_module_source` are no longer called
+///     here, so this entry no longer bumps their counters. Those counters were
+///     this lane's only behavioural coverage, so the tests that read them were
+///     rewritten rather than deleted.
+///
+/// The artifact key keeps exactly the strength it had. It is derived from the
+/// merged program's own text, not from the input sources: private namespacing
+/// mangles names with the file PATH (`namespace_private_value_stmts`), so two
+/// programs whose sources are identical can merge to different statements, and
+/// a key hashed from the sources alone would hand the second call the first
+/// call's bytes. Printing here costs one print of a program that used to be
+/// printed TWICE -- and unlike before, nothing REPARSES that text, so the
+/// offsets survive.
 fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes, TypeDb) with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let persistent_artifact_fingerprint = build_file_compile_module_artifact_fingerprint_for_entry_path(source_groups, entry_path)
@@ -1673,16 +1755,15 @@ fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes,
     Some(bytes) => (bytes, db),
     None => {
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
-      let (merged_source, merge_fingerprint, module_db) = db_grouped_merged_source(next_db, source_groups)
-      let (module_source, codegen_db) = db_module_source(module_db, merge_fingerprint, merged_source)
-      let artifact_fingerprint = artifact_fingerprint_from_source(module_source)
-      match db_load_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint) {
-        Some(bytes) => (bytes, codegen_db),
+      let (merged_stmts, float_offsets, int_offsets, bool_offsets, _, _) = merged_stmts_and_offsets(source_groups)
+      let filtered = module_lane_filter_stmts(merged_stmts)
+      let artifact_fingerprint = artifact_fingerprint_from_source(print_program(filtered))
+      match db_load_artifact(next_db, entry_path, "module-typed", "", artifact_fingerprint) {
+        Some(bytes) => (bytes, next_db),
         None => {
-          let merged_stmts = parse_program(lex(module_source))
-          let bytes = compile_module(merged_stmts)
+          let bytes = compile_module_with_typed_offsets(filtered, float_offsets, int_offsets, bool_offsets)
           store_persistent_artifact("file-compile-module", "", persistent_artifact_fingerprint, bytes)
-          (bytes, db_store_artifact(codegen_db, entry_path, "module", "", artifact_fingerprint, bytes))
+          (bytes, db_store_artifact(next_db, entry_path, "module-typed", "", artifact_fingerprint, bytes))
         }
       }
     }
