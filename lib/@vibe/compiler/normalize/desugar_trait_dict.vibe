@@ -17137,20 +17137,87 @@ fn dlh_hoist_stmt(stmt: Stmt, hoisted: Array[Stmt], ctr: Array[Int]) -> Stmt {
 /// program-wide counter cannot survive a per-module run.
 export fn desugar_hoist_local_lambdas(stmts: Array[Stmt]) -> Unit {
   let hoisted = array_empty()
+  let hoisted_owner: Array[Int] = []
   let n = dtd_own_end(stmts)
   let ctr = [0]
   let mut i = 0
   while i < n {
     Array::set(ctr, 0, 0)
     dlh_set_owner(Array::get(stmts, i), i)
+    let before = Array::length(hoisted)
     Array::set(stmts, i, dlh_hoist_stmt(Array::get(stmts, i), hoisted, ctr))
+    let mut b = before
+    while b < Array::length(hoisted) {
+      Array::push(hoisted_owner, i)
+      b = b + 1
+    }
     i = i + 1
   }
   Array::set(dlh_owner_name, 0, "")
-  let mut h = 0
-  while h < Array::length(hoisted) {
-    Array::push(stmts, Array::get(hoisted, h))
-    h = h + 1
+  if Array::length(hoisted) == 0 {
+    ()
+  } else {
+    dlh_place_after_owners(stmts, hoisted, hoisted_owner)
+  }
+}
+
+/// #2388: put each hoisted function directly after the declaration it came out
+/// of, instead of at the end of the program.
+///
+/// The end is where they used to go, and it made a hoisted function belong to
+/// nobody: a merged program's per-statement file provenance gives a statement
+/// it has not seen the file of the statement BEFORE it, so a lambda hoisted out
+/// of a dependency was attributed to whatever file the program happens to end
+/// with. Two passes later the owning module's part called a function it did not
+/// contain, and `evidence_dict_pass` could not thread the handler's dictionary
+/// into that call (measured on the two-file program in
+/// `prelude_module_oracle_test.vibe`: `stmts=11 split=10`, the dictionary
+/// present whole-program and absent per file). Next to its owner, a hoisted
+/// function is in its module by construction -- for that provenance, for the
+/// per-module entry's own region, and for the link.
+fn dlh_place_after_owners(stmts: Array[Stmt], hoisted: Array[Stmt], hoisted_owner: Array[Int]) -> Unit {
+  let total = Array::length(stmts)
+  let ordered: Array[Stmt] = []
+  // `hoisted_owner` rises with the statement the walk was on, and one owner's
+  // entries are contiguous, so ONE advancing index visits each entry once.
+  // Restarting the scan per statement (the first version of this, Codex P2 on
+  // #2620) makes the placement O(statements x hoists) -- 25 million probes on a
+  // generated program with 5,000 declarations that each hoist one lambda.
+  let mut hi = 0
+  let mut si = 0
+  while si < total {
+    Array::push(ordered, Array::get(stmts, si))
+    while hi < Array::length(hoisted) && Array::get(hoisted_owner, hi) == si {
+      Array::push(ordered, Array::get(hoisted, hi))
+      hi = hi + 1
+    }
+    si = si + 1
+  }
+  // An entry whose owner is not a statement of this array would otherwise be
+  // dropped silently; there is no such entry (an owner index is a position in
+  // `stmts`), and if one appeared it lands where the pass used to put every
+  // hoist -- the end -- rather than nowhere.
+  while hi < Array::length(hoisted) {
+    Array::push(ordered, Array::get(hoisted, hi))
+    hi = hi + 1
+  }
+  // The module's own region grew, and the dependency-interface block after it
+  // moved by the same amount -- the same bookkeeping the trait namespace
+  // operations do when they insert next to their trait.
+  Array::set(dtd_own_growth, 0, Array::get(dtd_own_growth, 0) + Array::length(hoisted))
+  if Array::get(dtd_own_limit, 0) >= 0 {
+    Array::set(dtd_own_limit, 0, Array::get(dtd_own_limit, 0) + Array::length(hoisted))
+  } else {
+    ()
+  }
+  let mut oi = 0
+  while oi < Array::length(ordered) {
+    if oi < total {
+      Array::set(stmts, oi, Array::get(ordered, oi))
+    } else {
+      Array::push(stmts, Array::get(ordered, oi))
+    }
+    oi = oi + 1
   }
 }
 
