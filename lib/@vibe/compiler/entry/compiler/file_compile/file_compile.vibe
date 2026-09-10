@@ -23,7 +23,7 @@ import @vibe/compiler/syntax {
 // call `array_empty()` directly instead -- same fix cli_support.vibe needed
 // for the same reason.
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap
 }
 
 import @vibe/compiler/core {
@@ -89,7 +89,10 @@ import @vibe/compiler/entry/source_compile/gc_only {
 }
 
 import @vibe/compiler/loader {
-  artifact_input_trace_resolution_context_fingerprint_fs, collect_source_groups_fs, load_persistent_source_group_fingerprint_if_valid
+  artifact_input_trace_resolution_context_fingerprint_fs,
+  collect_source_groups_fs,
+  load_or_parse_module_header_fs,
+  load_persistent_source_group_fingerprint_if_valid
 }
 
 import @vibe/compiler/checker {
@@ -555,7 +558,192 @@ export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: S
   let (a, _, _, _) = prelude_oracle_merge(source_groups)
   let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups)
   let (eq_offs, eq_keys) = eq
-  prelude_module_full_oracle_line(a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, print_stmt)
+  let (import_closure, unresolved_edges) = oracle_import_closure(source_groups)
+  // The closure is indexed by FLAT SOURCE, the oracle by MERGED FILE ID. They
+  // are the same space only because the merge keeps one file entry per flat
+  // source; if that ever stops holding, every row would be read for the wrong
+  // module and the comparison would be quietly meaningless rather than wrong
+  // in a way anyone could see.
+  if Array::length(import_closure) != Array::length(files) {
+    throw(String::concat("prelude oracle: import closure is indexed by flat source but the merge reports a different file count -- ", String::concat(Int::to_string(Array::length(import_closure)), String::concat(" vs ", Int::to_string(Array::length(files))))))
+  } else {
+    ()
+  }
+  let line = prelude_module_full_oracle_line(a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, import_closure, print_stmt)
+  String::concat(String::concat(line, "edges_unresolved="), String::concat(Int::to_string(unresolved_edges), "\n"))
+}
+
+/// #2388 measurement: the shape of the import closure the per-module oracle
+/// runs under, on its own. `files edges unresolved` -- the number of sources,
+/// the total size of the transitive closure, and the dependency edges that
+/// could not be placed in the source list.
+///
+/// Separate from `prelude_module_full_oracle_report_fs` because a per-module
+/// run that THROWS (the link finding two different bodies under one key is
+/// exactly the outcome worth reporting) would take the count with it, and a
+/// narrowing caused by dropped edges reads identically to one caused by the
+/// real import graph.
+export fn prelude_module_import_closure_report_fs(entry_path: String) -> String with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let (closure, unresolved) = oracle_import_closure(source_groups)
+  let mut edges = 0
+  let mut i = 0
+  while i < Array::length(closure) {
+    edges = edges + Array::length(Array::get(closure, i))
+    i = i + 1
+  }
+  String::concat(String::concat(String::concat("CLOSURE files=", Int::to_string(Array::length(closure))), String::concat(" edges=", Int::to_string(edges))), String::concat(" unresolved=", String::concat(Int::to_string(unresolved), "\n")))
+}
+
+/// #2388: for each flat source, the indices of the sources it can see -- its
+/// own resolved imports, transitively -- plus the number of dependency edges
+/// this could NOT place in that source list.
+///
+/// This is what turns the per-module oracle's green from the weaker claim ("no
+/// module needed anything the whole program did not have") into the real one
+/// ("no module needed anything it imports"). The edges come from the LOADER
+/// (`load_or_parse_module_header_fs`, the same header scan the FS typecheck
+/// lane plans module order with), because the merge drops `SImport` /
+/// `SReExport` as already resolved, so they cannot be read back off the merged
+/// program.
+///
+/// Transitive rather than one hop: a module sees what its dependencies
+/// re-export, and what this feeds is declaration surface rather than a
+/// name-resolution decision. A dep naming a `.vpkg` contract expands to that
+/// group's sibling implementations, which are the sources the merge actually
+/// carries.
+///
+/// The unresolved count is returned rather than swallowed. A dropped edge
+/// narrows a module's context, so it can only manufacture a `missing`, never
+/// hide one -- but a caller that does not print it cannot tell a closure built
+/// from every edge from one built from half of them, and those two greens are
+/// not the same claim.
+fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Exception + Fs {
+  let flat = flatten_source_groups_local(source_groups)
+  let n = Array::length(flat)
+  // path -> EVERY flat index carrying it, and group key -> that group's flat
+  // indices. Every index, not the first: a source that appears in two groups
+  // is two modules in the merged program, and an edge to only one of them
+  // would give a dependent the declarations of one copy and not the other --
+  // a narrowing that looks exactly like a real import boundary (ARCH011).
+  let index_of: MutMap[String, Array[Int]] = MutMap::new_string()
+  let mut i = 0
+  while i < n {
+    let (path, _) = Array::get(flat, i)
+    match MutMap::get(index_of, path) {
+      Some(seats) => Array::push(seats, i),
+      None => MutMap::set(index_of, path, [i])
+    }
+    i = i + 1
+  }
+  let group_members: MutMap[String, Array[Int]] = MutMap::new_string()
+  let mut gi = 0
+  let mut flat_at = 0
+  while gi < Array::length(source_groups) {
+    let (key, sources) = Array::get(source_groups, gi)
+    let members: Array[Int] = []
+    let mut si = 0
+    while si < Array::length(sources) {
+      Array::push(members, flat_at + si)
+      si = si + 1
+    }
+    flat_at = flat_at + Array::length(sources)
+    if MutMap::has(group_members, key) {
+      ()
+    } else {
+      MutMap::set(group_members, key, members)
+    }
+    gi = gi + 1
+  }
+  // Direct edges, from the loader's own header scan.
+  let direct: Array[Array[Int]] = []
+  let mut unresolved = 0
+  i = 0
+  while i < n {
+    let (path, source) = Array::get(flat, i)
+    let (dep_paths, _, _) = load_or_parse_module_header_fs(path, source, 0)
+    let row: Array[Int] = []
+    let mut d = 0
+    while d < Array::length(dep_paths) {
+      let dep = Array::get(dep_paths, d)
+      // A dep names a source, or a `.vpkg` group whose sibling implementations
+      // are what the merge actually carries. Either way it resolves to a SET
+      // of seats, and every one of them is an edge.
+      let seats = match MutMap::get(index_of, dep) {
+        Some(found) => found,
+        None =>
+        match MutMap::get(group_members, dep) {
+          Some(members) => members,
+          None => {
+            unresolved = unresolved + 1
+            []
+          }
+        }
+      }
+      let mut m = 0
+      while m < Array::length(seats) {
+        let at = Array::get(seats, m)
+        if at == i {
+          ()
+        } else {
+          Array::push(row, at)
+        }
+        m = m + 1
+      }
+      d = d + 1
+    }
+    Array::push(direct, row)
+    i = i + 1
+  }
+  // Transitive closure: one BFS per source over the direct edges. Cycles are
+  // ordinary here (a `.vpkg` group's siblings import each other), so this
+  // marks-then-visits rather than recursing.
+  let out: Array[Array[Int]] = []
+  i = 0
+  while i < n {
+    let mark: Array[Bool] = []
+    let mut j = 0
+    while j < n {
+      Array::push(mark, false)
+      j = j + 1
+    }
+    let reach: Array[Int] = []
+    let queue: Array[Int] = []
+    let seed = Array::get(direct, i)
+    let mut d = 0
+    while d < Array::length(seed) {
+      let at = Array::get(seed, d)
+      if Array::get(mark, at) {
+        ()
+      } else {
+        Array::set(mark, at, true)
+        Array::push(reach, at)
+        Array::push(queue, at)
+      }
+      d = d + 1
+    }
+    let mut head = 0
+    while head < Array::length(queue) {
+      let u = Array::get(queue, head)
+      head = head + 1
+      let du = Array::get(direct, u)
+      let mut e = 0
+      while e < Array::length(du) {
+        let at = Array::get(du, e)
+        if Array::get(mark, at) || at == i {
+          ()
+        } else {
+          Array::set(mark, at, true)
+          Array::push(reach, at)
+          Array::push(queue, at)
+        }
+        e = e + 1
+      }
+    }
+    Array::push(out, reach)
+    i = i + 1
+  }
+  (out, unresolved)
 }
 
 fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {

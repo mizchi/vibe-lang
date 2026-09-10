@@ -1,5 +1,5 @@
 import ./linked_compile.vibe {
-  link_fold_duplicate_definitions
+  link_fold_duplicate_definitions, link_fold_duplicate_definitions_report
 }
 
 import @vibe/compiler/core {
@@ -95,5 +95,52 @@ test "two different definitions under one synthesized name are refused, not fold
   let same: Array[Stmt] = []
   add(same, "let __arr_equals__A1_N3_Int = 2\n")
   add(same, "let __arr_equals__A1_N3_Int = 2\n")
+  inspect(fold_throws(same, ["let:__arr_equals__A1_N3_Int"]), content = "no throw: __arr_equals__A1_N3_Int")
+}
+
+// #2388: the REPORTING half. Measured on the compiler's own CLI closure, the
+// per-module run collides on exactly one key
+// (`let:__arr_equals__T2_N6_StringN7_TypeEnv`) -- a number that only means
+// something because the fold reports every collision instead of stopping at
+// the first. A run that stopped at one could not tell a single systematic
+// cause from a dozen unrelated ones, which is the whole question at this
+// granularity.
+test "the reporting fold names every colliding key, not just the first" {
+  let stmts: Array[Stmt] = []
+  add(stmts, "let __arr_equals__A1_N3_Int = 2\n")
+  add(stmts, "let __arr_equals__A1_N3_Int = 99\n")
+  add(stmts, "let __arr_equals__A1_N6_String = 3\n")
+  add(stmts, "let __arr_equals__A1_N6_String = 77\n")
+  let (out, collisions) = link_fold_duplicate_definitions_report(stmts, [
+    "let:__arr_equals__A1_N3_Int",
+    "let:__arr_equals__A1_N6_String"
+  ], print_stmt)
+  inspect(String::join(collisions, ", "), content = "let:__arr_equals__A1_N3_Int, let:__arr_equals__A1_N6_String")
+  // A colliding key still folds to ONE statement -- the report is out of band,
+  // so the caller decides whether to refuse. Keeping both would make the
+  // reported count and the returned program disagree about what happened.
+  inspect(names(out), content = "__arr_equals__A1_N3_Int, __arr_equals__A1_N6_String")
+}
+
+// The two halves cannot drift, because the throwing one is a wrapper: it
+// throws exactly when the report is non-empty, and names the report's first
+// key. Pinned in both directions so a later edit that inlines one of them has
+// to keep them agreeing.
+test "the throwing fold refuses exactly when the reporting fold has something to report" {
+  let differ: Array[Stmt] = []
+  add(differ, "let __arr_equals__A1_N3_Int = 2\n")
+  add(differ, "let __arr_equals__A1_N3_Int = 99\n")
+  let (_, dc) = link_fold_duplicate_definitions_report(differ, [
+    "let:__arr_equals__A1_N3_Int"
+  ], print_stmt)
+  inspect(Array::length(dc) > 0, content = "true")
+  inspect(String::contains(fold_throws(differ, ["let:__arr_equals__A1_N3_Int"]), "two different definitions of let:__arr_equals__A1_N3_Int"), content = "true")
+  let same: Array[Stmt] = []
+  add(same, "let __arr_equals__A1_N3_Int = 2\n")
+  add(same, "let __arr_equals__A1_N3_Int = 2\n")
+  let (_, sc) = link_fold_duplicate_definitions_report(same, [
+    "let:__arr_equals__A1_N3_Int"
+  ], print_stmt)
+  inspect(Array::length(sc), content = "0")
   inspect(fold_throws(same, ["let:__arr_equals__A1_N3_Int"]), content = "no throw: __arr_equals__A1_N3_Int")
 }

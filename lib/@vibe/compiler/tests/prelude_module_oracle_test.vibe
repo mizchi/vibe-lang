@@ -1,5 +1,5 @@
 import @vibe/compiler/entry/compiler/file_compile {
-  prelude_module_full_oracle_report_fs, prelude_module_oracle_report_fs
+  prelude_module_full_oracle_report_fs, prelude_module_import_closure_report_fs, prelude_module_oracle_report_fs
 }
 
 //# Functions
@@ -157,19 +157,36 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // link folds nothing here, because `first_copy=reexport_boundary`: the
   // repeat is an `SReExportSourceBoundary` MARKER, which every module carries
   // one of and no link should merge. This program duplicates no helper at all.
-  // On the COMPILER'S OWN closure (191 modules, too slow for the suite --
-  // measured 2026-09-10 and recorded on #2388):
+  // On the COMPILER'S OWN closure (too slow for the suite -- measured
+  // 2026-09-10 on `lib/@vibe/cli/entry.vibe`, 365 modules, and recorded on
+  // #2388):
   //
-  //   FULL stmts=4774 split=4846 linked=4774 folded=72 modules=191
-  //   keyed missing=0 extra=0 copies=249 content=0 renames=0 dup_keys=254
-  //         dup_defs=2 first_dup_def=effect:Source
+  //   FULL stmts=9849 split=10005 linked=9848 folded=157 modules=365
+  //        collisions=1
+  //     collision let:__arr_equals__T2_N6_StringN7_TypeEnv
+  //   keyed missing=1 extra=0 copies=444 content=6 renames=0 dup_keys=451
+  //         dup_defs=5 first_dup_def=effect:Source
+  //   edges_unresolved=0
   //
-  // `linked` equals `stmts` exactly: compiling that closure per module and
-  // linking gives the same statement count and the same declarations, name for
-  // name and body for body, as compiling it whole. 72 folds, no collision
-  // thrown -- every duplicate pair the compiler's own modules produce is
-  // identical.
-  inspect(String::trim(Array::get(lines, 0)), content = "FULL stmts=11 split=11 linked=11 folded=0 modules=2")
+  // That is a CORRECTION to what this comment used to record. It read
+  // `missing=0 extra=0 content=0` at `modules=191` and called the split exact.
+  // Two things were wrong with it. The 191-module closure is not either CLI
+  // entry in the current tree (`entry.vibe` is 365, `main.vibex` 370), so it
+  // was a smaller program than "the compiler's own closure" implies. And that
+  // run gave each module EVERY OTHER FILE's exported surface, which no real
+  // compile sees; its green was the weaker claim, that no module needed
+  // anything the whole program did not have.
+  //
+  // With each module's real import closure (#2388) the answer is not clean,
+  // and the difference is one cause: a synthesized comparator's BODY depends
+  // on how much of a field's type the synthesizing module can see, while its
+  // NAME -- the link's fold key -- does not.
+  // `lib/@vibe/compiler/perceus/index.vpkg` declares `opaque type
+  // PerceusActionKind`, so the materialized contract emits `a.kind == b.kind`
+  // where the whole program emits `PerceusActionKind::equals(a.kind, b.kind)`.
+  // The single collision is the same shape, and the fold REFUSING it is the
+  // fold working. docs/incremental-build.md, "What a module must see".
+  inspect(String::trim(Array::get(lines, 0)), content = "FULL stmts=11 split=11 linked=11 folded=0 modules=2 collisions=0")
   // `missing=0 extra=0 content=0` is the property: every declaration the
   // whole-program prelude produced is produced by the module that owns it,
   // with the same body. `copies` is what remains after the link, and
@@ -177,4 +194,36 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // because a helper the link folds and a marker that simply repeats both
   // landed in it and mean opposite things.
   inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 first_dup_def= first_copy=reexport_boundary first_missing= first_content=")
+}
+
+// #2388: the context the full oracle runs each module under is that module's
+// own resolved import closure, and this is the shape of it on its own.
+//
+// Reported separately from the oracle line because a per-module run that
+// THROWS takes the count with it, and because a closure narrowed by DROPPED
+// EDGES reads exactly like one narrowed by the real import graph. `unresolved`
+// is the difference between those two, and a green with it unprinted is not
+// the same claim as a green with it at zero.
+test "the import closure the oracle runs under is the module's own, and places every edge" {
+  let helper_path = "/tmp/vibe_closure_shape_helper.vibe"
+  let mid_path = "/tmp/vibe_closure_shape_mid.vibe"
+  let main_path = "/tmp/vibe_closure_shape_main.vibe"
+  Fs::write_file(helper_path, "export fn leaf() -> Int {\n  1\n}\n")
+  Fs::write_file(mid_path, "import ./vibe_closure_shape_helper.vibe {\n  leaf\n}\n\nexport fn mid() -> Int {\n  leaf() + 1\n}\n")
+  Fs::write_file(main_path, "import ./vibe_closure_shape_mid.vibe {\n  mid\n}\n\ntest \"chain\" {\n  inspect(mid(), content = \"2\")\n}\n")
+  // Three files in a chain main -> mid -> leaf. The closure is TRANSITIVE, so
+  // the edge count is 3 (main sees mid and leaf; mid sees leaf; leaf sees
+  // nothing) and not 2, which is what one hop would give. That distinction is
+  // the point: a module sees what its dependencies re-export.
+  inspect(String::trim(prelude_module_import_closure_report_fs(main_path)), content = "CLOSURE files=3 edges=3 unresolved=0")
+  // The control, and the reason this test can fail: a program with no imports
+  // at all has no edges. If the closure were quietly falling back to "every
+  // other file" -- the rule this replaced -- a two-file program would report
+  // edges=2 here rather than 0.
+  let lone_a = "/tmp/vibe_closure_shape_lone_a.vibe"
+  let lone_b = "/tmp/vibe_closure_shape_lone_b.vibe"
+  Fs::write_file(lone_a, "export fn a_only() -> Int {\n  1\n}\n")
+  Fs::write_file(lone_b, "test \"lone\" {\n  inspect(1, content = \"1\")\n}\n")
+  let _ = lone_a
+  inspect(String::trim(prelude_module_import_closure_report_fs(lone_b)), content = "CLOSURE files=1 edges=0 unresolved=0")
 }

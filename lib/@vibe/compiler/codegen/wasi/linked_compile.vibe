@@ -4134,6 +4134,25 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
 /// 4,567 statement program twice pushed the bump high-water to 3.6 GB,
 /// measured 2026-09-06).
 export fn link_fold_duplicate_definitions(stmts: Array[Stmt], foldable_keys: Array[String], render: (Stmt) -> String) -> Array[Stmt] with Exception {
+  let (out, collisions) = link_fold_duplicate_definitions_report(stmts, foldable_keys, render)
+  if Array::length(collisions) > 0 {
+    throw(String::concat("link: two different definitions of ", String::concat(Array::get(collisions, 0), String::concat(" -- a per-module synthesis collision, which a link that concatenates modules would resolve by silently keeping one of them; colliding keys: ", Int::to_string(Array::length(collisions))))))
+  } else {
+    ()
+  }
+  out
+}
+
+/// The same fold, REPORTING the colliding keys instead of throwing on the
+/// first one. `link_fold_duplicate_definitions` is a thin wrapper over this,
+/// so the production lane cannot come to disagree with what a measurement of
+/// it reports.
+///
+/// The split exists because a collision is an ANSWER to the per-module
+/// question, not only a failure of it: a driver that produces N of them needs
+/// to see all N to tell one systematic cause from N unrelated ones, and a run
+/// that stops at the first cannot. Production still refuses to pick a body.
+export fn link_fold_duplicate_definitions_report(stmts: Array[Stmt], foldable_keys: Array[String], render: (Stmt) -> String) -> (Array[Stmt], Array[String]) {
   let foldable: MutMap[String, Int] = MutMap::new_string()
   let mut fk = 0
   while fk < Array::length(foldable_keys) {
@@ -4141,6 +4160,8 @@ export fn link_fold_duplicate_definitions(stmts: Array[Stmt], foldable_keys: Arr
     fk = fk + 1
   }
   let first_at: MutMap[String, Int] = MutMap::new_string()
+  let reported: MutMap[String, Int] = MutMap::new_string()
+  let collisions: Array[String] = []
   let out: Array[Stmt] = []
   let mut i = 0
   while i < Array::length(stmts) {
@@ -4153,7 +4174,12 @@ export fn link_fold_duplicate_definitions(stmts: Array[Stmt], foldable_keys: Arr
           if kept == s || render(kept) == render(s) {
             ()
           } else {
-            throw(String::concat("link: two different definitions of ", String::concat(k, " -- a per-module synthesis collision, which a link that concatenates modules would resolve by silently keeping one of them")))
+            if MutMap::has(reported, k) {
+              ()
+            } else {
+              MutMap::set(reported, k, 1)
+              Array::push(collisions, k)
+            }
           }
         },
         None => {
@@ -4166,7 +4192,7 @@ export fn link_fold_duplicate_definitions(stmts: Array[Stmt], foldable_keys: Arr
     }
     i = i + 1
   }
-  out
+  (out, collisions)
 }
 
 /// Whether a declaration key names something, so two statements carrying it
@@ -4177,7 +4203,7 @@ fn link_key_is_definition(k: String) -> Bool {
   !(k == "expr" || k == "export" || k == "letpat" || k == "reexport_boundary" || k == "qualified_pattern_refs" || k == "test_effect_rows")
 }
 
-export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
+export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String) -> String with Exception {
   let entry_fid = file_count - 1
   let mut k = 0
   while k < 17 {
@@ -4245,30 +4271,29 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
       MutMap::set(own_keys, oracle_stmt_key(Array::get(part, ok)), 1)
       ok = ok + 1
     }
+    // The module's OWN resolved import closure, from the loader's header scan
+    // (#2388). This used to be "every other file", which is wider than a real
+    // per-module compile sees, and made this oracle's green the weaker claim:
+    // no module needed anything the WHOLE PROGRAM did not have. With real
+    // edges it is the claim that matters: no module needed anything IT
+    // IMPORTS did not have.
+    //
+    // Transitive, because a module sees what its dependencies re-export, and
+    // what this feeds is declaration surface rather than a name-resolution
+    // decision. An index out of range is a caller that built the closure over
+    // a different file space, which would silently hand a module some other
+    // module's context, so it is refused rather than defaulted.
+    if Array::length(import_closure) != file_count {
+      throw(String::concat("prelude oracle: the import closure has ", String::concat(Int::to_string(Array::length(import_closure)), String::concat(" rows for ", String::concat(Int::to_string(file_count), " modules")))))
+    } else {
+      ()
+    }
+    let visible = Array::get(import_closure, fi)
     let ctx: Array[Stmt] = []
-    let mut cj = 0
-    while cj < file_count {
-      // Every other file, which is WIDER than a real per-module compile sees.
-      // Two narrower rules were built and measured (Codex P1 on #2622), and
-      // neither holds at this granularity:
-      //
-      //  - "only files merged before this one" (dependencies precede
-      //    dependents) reports a false difference, because a `.vpkg`
-      //    contract is MATERIALIZED into a generated types file that the
-      //    merge lays FIRST, ahead of the implementation whose declarations
-      //    its own derives need: `PerceusAction::equals` then compares
-      //    `a.kind == b.kind` instead of calling `PerceusActionKind::equals`.
-      //  - grouping files into packages first does not exist to be had:
-      //    `collect_source_groups_fs` returns ONE group (`recursive`, 191
-      //    files) for the compiler closure, so there is no package partition
-      //    to split on.
-      //
-      // Exact import edges would settle it, and the merge drops `SImport`
-      // ("Skips SImport, SReExport (already resolved)"), so they have to come
-      // from the loader. That is filed on #2388 as what the per-module driver
-      // needs first, and until then this oracle's green is the weaker claim:
-      // no module needed anything the whole program did not have.
-      if cj == fi {
+    let mut vj = 0
+    while vj < Array::length(visible) {
+      let cj = Array::get(visible, vj)
+      if cj == fi || cj < 0 || cj >= file_count {
         ()
       } else {
         let other = Array::get(ifaces, cj)
@@ -4283,7 +4308,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
           ci = ci + 1
         }
       }
-      cj = cj + 1
+      vj = vj + 1
     }
     let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
     let mut sy = 0
@@ -4321,9 +4346,23 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // modules agree with the whole program before linking", but "does the
   // LINKED program equal the whole-program one". A collision throws rather
   // than picking a body.
-  let linked = link_fold_duplicate_definitions(trial, synth_keys, render)
-  let line = String::concat("FULL stmts=", String::concat(Int::to_string(Array::length(a)), String::concat(" split=", String::concat(Int::to_string(Array::length(trial)), String::concat(" linked=", String::concat(Int::to_string(Array::length(linked)), String::concat(" folded=", String::concat(Int::to_string(Array::length(trial) - Array::length(linked)), String::concat(" modules=", String::concat(Int::to_string(file_count), "\n"))))))))))
-  String::concat(line, oracle_keyed_line(a, linked, render))
+  // The REPORTING fold, not the throwing one: at this granularity a collision
+  // is the measurement's ANSWER, and stopping at the first would say "some
+  // module disagrees" without saying how many or about what. Production keeps
+  // the throw.
+  let (linked, collisions) = link_fold_duplicate_definitions_report(trial, synth_keys, render)
+  let head = String::concat(String::concat("FULL stmts=", Int::to_string(Array::length(a))), String::concat(" split=", Int::to_string(Array::length(trial))))
+  let mid = String::concat(String::concat(" linked=", Int::to_string(Array::length(linked))), String::concat(" folded=", Int::to_string(Array::length(trial) - Array::length(linked))))
+  let tail = String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", String::concat(Int::to_string(Array::length(collisions)), "\n")))
+  let line = String::concat(String::concat(head, mid), tail)
+  let mut collision_lines = ""
+  let mut coi = 0
+  while coi < Array::length(collisions) && coi < 20 {
+    collision_lines = String::concat(collision_lines, String::concat("  collision ", String::concat(Array::get(collisions, coi), "\n")))
+    coi = coi + 1
+  }
+  let line2 = String::concat(line, collision_lines)
+  String::concat(line2, oracle_keyed_line(a, linked, render))
 }
 
 export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {

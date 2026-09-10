@@ -51,6 +51,16 @@ is an ADR-sized decision, not a slice-sized one.
 
 **Safety**
 
+- **A synthesized top-level definition carries the module that owns it, and a
+  consumer reads that owner rather than inferring it from a position.** A
+  per-module prelude places each module's synthesized helpers among its own
+  statements, so a positional guess about which file a definition came from is
+  wrong for exactly the definitions the split created (#2618, #2620).
+- **A synthesized definition's NAME must determine its BODY.** The link folds
+  per-module helpers by declaration key, so two modules that mint one name for
+  two different bodies leave the link a choice it cannot make correctly.
+  Measured (#2388): they do — see "What a module must see" below — and the fold
+  refuses rather than keeping one of them.
 - A **missing required recheck is a failure.** Conservative over-invalidation is
   permitted but must be *visible* — reported as residual, never silently accepted
   as conformance.
@@ -131,6 +141,75 @@ namespace v19, TDRE5, interface-v2, artifact-input traces, planner decisions,
 reuse, CLI, or a persistent cache namespace. Decoded values establish canonical
 bytes, not a checker invocation. Runtime retains v2 bytes only in an opaque,
 in-memory successful `ModuleOutcome`; it does not publish or persist them.
+
+## What a module must see (#2388, #2575 item 2)
+
+The per-module prelude is measured by an oracle that runs every pre-codegen
+pass twice over the same program: once whole, once on each file alone, then
+links the per-module results and compares by declaration key
+(`prelude_module_full_oracle_report_fs`). What each file is given as *context*
+decides what its green means.
+
+That context is now each module's **own resolved import closure**, taken from
+the loader's header scan (`load_or_parse_module_header_fs` — the same scan the
+FS typecheck lane plans module order with) and closed transitively. It has to
+come from the loader because the merge drops `SImport` / `SReExport` as already
+resolved, so the edges cannot be read back off the merged program. The oracle
+reports the edges it could not place (`edges_unresolved`) rather than dropping
+them quietly: a dropped edge narrows a module's context, so it can only
+manufacture a difference, never hide one — but a closure built from every edge
+and one built from half of them produce the same-looking green.
+
+Before this, each module was given **every other file's** exported surface,
+which is wider than any real compile. That green was the weaker claim: *no
+module needed anything the whole program did not have.*
+
+### Measured
+
+`lib/@vibe/cli/entry.vibe`, 365 modules, `edges_unresolved=0` (every edge the
+loader reported was placed; the closure covers 32017 of the 132 860 ordered
+pairs a whole-program context would, about 24%):
+
+| | every other file | own import closure |
+|---|---:|---:|
+| statements (whole) | 9846 | 9849 |
+| split | 10002 | 10005 |
+| linked | 9845 | 9848 |
+| folded | 157 | 157 |
+| link collisions | 0 | **1** |
+| keyed `missing` | 1 | 1 |
+| keyed `content` | 4 | **6** |
+
+(The three-statement difference in the whole-program column is this slice's own
+new definitions: the compiler's closure contains the compiler.)
+
+### The finding
+
+Both new differences have one cause, and it is not the closure being too
+narrow. A **synthesized comparator's body depends on how much of a field's type
+the synthesizing module can see, while its name — the link's fold key — does
+not.**
+
+`lib/@vibe/compiler/perceus/index.vpkg` declares `opaque type
+PerceusActionKind` and a `struct PerceusAction` with a `kind:
+PerceusActionKind` field; `perceus.vibe` declares the real `export enum
+PerceusActionKind`. Compiled whole, the equality pass can see the enum and
+emits `PerceusActionKind::equals(a.kind, b.kind)`. Compiled per module, the
+materialized contract sees only the opaque type and emits `a.kind == b.kind`.
+Two bodies, one name. The same shape produces the run's single link collision,
+`let:__arr_equals__T2_N6_StringN7_TypeEnv`.
+
+This is why the link folds by a key a module reported as **synthesized** and
+content-checks the bodies under it: a link that concatenated modules would
+resolve this by keeping whichever copy came first, and the two are not
+interchangeable. The refusal is the fold working, not the fold failing.
+
+What it means for #2575 item 2: **the import closure is the right context rule,
+and it is not sufficient on its own.** A module that can see a field's type only
+as `opaque` must not synthesize a comparator for it — it has to emit a
+reference and let the module that can see the type provide the body. Until that
+holds, per-module synthesis is not a function of the declaration key, and the
+link cannot fold what per-module synthesis produces.
 
 ## User-visible KPI contract
 
