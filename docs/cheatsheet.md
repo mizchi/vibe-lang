@@ -2080,11 +2080,24 @@ Console::write_stream` does not admit `Console::read_stream` (#1496).
 | `StdinStream::next` | `(StdinStream) -> Int` (`-1` after EOF) | `Async` |
 | `StdinStream::close` | `(StdinStream) -> Unit` (idempotent once it succeeds) | `Async` |
 | `StdinStream::read_chunk` | `(StdinStream, Int) -> Option[String]` | `Async` |
+| `sleep` | `(Int) -> Unit` — the argument is **milliseconds** | `Async` |
 
 The four stdin providers are **direct-call only**. To pass one as a value,
 define a wrapper whose `with` row names `Stdin` / `Async` explicitly — the
 checker rejects an alias to the builtin itself or a value-position
 reference.
+
+**Raw wasm opcodes are not part of this surface.** The `i32_*` / `i64_*` /
+`f32_*` / `f64_*` names (`i32_store`, `i32_load8_u`, `f64_neg`,
+`f32_demote_f64`, …) that appear in `lib/@vibe/compiler/builtins/declarations.vibe`
+under "WASM intrinsics (low-level)" are what the backends emit through: they
+have no `checker_visible` registry row and no namespace lookup, so spelling one
+in vibe source is `unknown name` (#2343). The block says so at its head and
+`tests/gates/early/run.sh` section 4g checks the claim, so their absence here is
+a decision, not an omission — do not add them from an old table. The
+`__`-prefixed operator names (`__add`, `__index`, `__eq`, …) are internal for the
+same reason; the **Operators** table above documents the spellings that reach
+them.
 
 **JSON**: `Json::stringify: (Any) -> String`, `parse: (String) -> Json`,
 `type_of: (Json) -> String`, `get: (Json, String) -> Json`,
