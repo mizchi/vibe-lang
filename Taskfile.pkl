@@ -750,6 +750,31 @@ local checkCheatsheetSignatures = new Task {
   // building, and on a reused workspace from an unrelated generation.
   deps { selfhostGeneration }
 }
+// NOT `scriptTask`: the ALLOWLIST is an input too. Without it, editing the
+// exemption list replays a cached "ok" -- the list would stop being checked by
+// the one gate that reads it, which is how an allowlist goes stale unnoticed
+// (#2138 review, same reason as checkCheatsheetSignatures above).
+local checkBuiltinShadowing = new Task {
+  name = "check-builtin-shadowing"
+  description = "no file under lib/** defines a name the builtin registry owns (#2378)"
+  cmd = "bash scripts/check_builtin_shadowing.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "scripts/builtin_shadowing_allowlist.txt"
+  }
+  // The oracle is `vibe symbols`, so it must be THIS checkout's compiler:
+  // left alone the gate takes the newest generation on disk, else the seed,
+  // and answers confidently about a compiler that does not contain the change.
+  deps { selfhostGeneration }
+}
+local testCheckBuiltinShadowing = new Task {
+  name = "test-check-builtin-shadowing"
+  description = "the builtin-shadowing gate can actually fail (#2248)"
+  cmd = "bash scripts/check_builtin_shadowing_test.sh"
+  inputs { ...compilerProbeInputs; ...scriptSources }
+  deps { selfhostGeneration }
+}
 local checkCliLineTermination =
   scriptTask("check-cli-line-termination", "scripts/check_cli_line_termination.sh")
 local checkDeclarationScale =
@@ -1819,6 +1844,8 @@ local releaseCheck = new Task {
     checkDeclarationScale
     checkCliLineTermination
     checkCheatsheetSignatures
+    checkBuiltinShadowing
+    testCheckBuiltinShadowing
     checkPackageSiblingScope
     checkDocCommands
     checkRcDefault
@@ -1923,6 +1950,8 @@ tasks {
   checkDeclarationScale
   checkCliLineTermination
   checkCheatsheetSignatures
+  checkBuiltinShadowing
+  testCheckBuiltinShadowing
   checkPackageSiblingScope
   checkDocCommands
   checkRcDefault
