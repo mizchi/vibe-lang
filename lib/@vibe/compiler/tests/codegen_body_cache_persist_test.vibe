@@ -312,13 +312,14 @@ fn cache_with_indices(indices: Array[Int]) -> CodegenBodyCache {
   c
 }
 
-/// Every key in [lo, hi) on which the indexed lookup disagrees with the scan,
-/// as `key:scan/indexed`. Empty means they agree everywhere in the range.
-fn lookup_disagreements(c: CodegenBodyCache, lo: Int, hi: Int) -> String {
-  let idx = codegen_body_cache_slot_index(c)
+/// Every key in [0, key_count) on which the indexed lookup disagrees with the
+/// scan, as `key:scan/indexed`. Empty means they agree over the whole key
+/// space the table is built for.
+fn lookup_disagreements(c: CodegenBodyCache, key_count: Int) -> String {
+  let idx = codegen_body_cache_slot_index(c, key_count)
   let out: Array[String] = []
-  let mut k = lo
-  while k < hi {
+  let mut k = 0
+  while k < key_count {
     let a = codegen_body_cache_find(c, k)
     let b = codegen_body_cache_find_at(idx, k)
     if a == b {
@@ -333,31 +334,49 @@ fn lookup_disagreements(c: CodegenBodyCache, lo: Int, hi: Int) -> String {
 
 test "the indexed body-cache lookup answers exactly what the scan answers" {
   // Out of order, with a gap at 3 and 7, so a table that merely counted up
-  // would disagree; the range runs past both ends of the key set.
+  // would disagree.
   let c = cache_with_indices([5, 0, 9, 2, 6, 1, 8, 4])
-  inspect(lookup_disagreements(c, 0 - 3, 14), content = "")
+  inspect(lookup_disagreements(c, 12), content = "")
   // Spot-checks, so a `lookup_disagreements` that silently compared nothing
   // would not pass this test: the slot is the POSITION in the cache.
-  let idx = codegen_body_cache_slot_index(c)
+  let idx = codegen_body_cache_slot_index(c, 12)
   inspect(codegen_body_cache_find_at(idx, 5), content = "0")
   inspect(codegen_body_cache_find_at(idx, 4), content = "7")
   inspect(codegen_body_cache_find_at(idx, 3), content = "-1")
-  inspect(codegen_body_cache_find_at(idx, 99), content = "-1")
+}
+
+// The table is sized by the CALLER's key space, so an entry outside it is
+// unreachable rather than dropped -- the scan cannot return it either without
+// being asked with a key the caller never uses. Sizing the table from the
+// cache instead would let one absurd index in a torn artifact turn a lookup
+// into an allocation the scan never made.
+test "the table covers the caller's key space and answers -1 beyond it" {
+  let c = cache_with_indices([5, 0, 9, 2])
+  let idx = codegen_body_cache_slot_index(c, 6)
+  inspect(Array::length(idx), content = "6")
+  inspect(lookup_disagreements(c, 6), content = "")
+  // 9 is in the cache and outside the key space: the table says -1, and the
+  // body loop never asks (its keys are function indices below num_user_funcs).
+  inspect(codegen_body_cache_find(c, 9), content = "2")
+  inspect(codegen_body_cache_find_at(idx, 9), content = "-1")
+  // A cache whose only index is absurd costs one Int per KEY, not per index.
+  let absurd = cache_with_indices([1099511627776])
+  inspect(Array::length(codegen_body_cache_slot_index(absurd, 4)), content = "4")
 }
 
 test "a duplicate function index resolves to the first entry, as the scan does" {
   // Two entries for function 4; the scan returns the first, so the table must
   // not let the later one overwrite it.
   let c = cache_with_indices([4, 1, 4, 0])
-  inspect(lookup_disagreements(c, 0 - 2, 8), content = "")
-  let idx = codegen_body_cache_slot_index(c)
+  inspect(lookup_disagreements(c, 8), content = "")
+  let idx = codegen_body_cache_slot_index(c, 8)
   inspect(codegen_body_cache_find_at(idx, 4), content = "0")
 }
 
 test "an empty cache answers -1 through both lookups" {
   let empty = codegen_body_cache_new()
-  inspect(lookup_disagreements(empty, 0 - 2, 5), content = "")
-  inspect(codegen_body_cache_find_at(codegen_body_cache_slot_index(empty), 0), content = "-1")
+  inspect(lookup_disagreements(empty, 5), content = "")
+  inspect(codegen_body_cache_find_at(codegen_body_cache_slot_index(empty, 5), 0), content = "-1")
 }
 
 // The one shape on which the two lookups CANNOT agree: a cache carrying a

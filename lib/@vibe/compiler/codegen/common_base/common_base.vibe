@@ -330,41 +330,35 @@ export fn codegen_body_cache_find(cache: CodegenBodyCache, fn_index: Int) -> Int
 /// closure, so a fully populated cache answers 4,214 questions with ~8.9
 /// million comparisons.
 ///
-/// The key is a function INDEX, dense in [0, num_user_funcs), so a
-/// direct-address table answers each question in one read. `slot_of[k]` is the
-/// cache slot holding function k, or -1. One Int per function, built once.
+/// The key is a function INDEX, dense in [0, key_count), so a direct-address
+/// table answers each question in one read. `slot_of[k]` is the cache slot
+/// holding function k, or -1. FIRST occurrence wins, exactly like the scan: an
+/// entry is written only into a slot that is still -1.
 ///
-/// FIRST occurrence wins, exactly like the scan: an entry is written only into
-/// a slot that is still -1.
+/// The table is sized by the CALLER's key space, not by the largest index the
+/// cache happens to carry. `key_count` is what the caller can ask about --
+/// `num_user_funcs` at the body loop -- so the table is one Int per function
+/// and an entry outside that range is simply left out, unreachable rather than
+/// dropped: the scan cannot return it either without being asked with a key
+/// the caller never uses. Sizing it from the cache instead would let a torn or
+/// hand-built artifact carrying one absurd index (`2^40`) turn a lookup into
+/// an allocation the scan never made.
 ///
-/// The one shape on which a table and a scan cannot agree is a cache carrying
-/// a NEGATIVE function index -- the scan finds it, a direct-address table has
-/// no slot for it. That is why `codegen_body_cache_from_bytes` refuses such a
-/// cache: the equivalence then holds for every cache the system can load,
-/// rather than resting on an assumption about which keys callers ask with.
-export fn codegen_body_cache_slot_index(cache: CodegenBodyCache) -> Array[Int] {
-  let n = Array::length(cache.fn_indices)
-  let mut hi = 0 - 1
-  let mut i = 0
-  while i < n {
-    let k = Array::get(cache.fn_indices, i)
-    if k > hi {
-      hi = k
-    } else {
-      ()
-    }
-    i = i + 1
-  }
+/// So the contract is exact and bounded: for every key in [0, key_count), this
+/// answers what `codegen_body_cache_find` answers, and
+/// `codegen_body_cache_find_at` answers -1 outside it.
+export fn codegen_body_cache_slot_index(cache: CodegenBodyCache, key_count: Int) -> Array[Int] {
   let out: Array[Int] = []
   let mut j = 0
-  while j <= hi {
+  while j < key_count {
     Array::push(out, 0 - 1)
     j = j + 1
   }
-  i = 0
+  let n = Array::length(cache.fn_indices)
+  let mut i = 0
   while i < n {
     let k = Array::get(cache.fn_indices, i)
-    if k >= 0 && Array::get(out, k) < 0 {
+    if k >= 0 && k < key_count && Array::get(out, k) < 0 {
       Array::set(out, k, i)
     } else {
       ()
@@ -375,8 +369,8 @@ export fn codegen_body_cache_slot_index(cache: CodegenBodyCache) -> Array[Int] {
 }
 
 /// The cache slot holding `fn_index`, or -1. Same answer as
-/// `codegen_body_cache_find` on the cache the index was built from -- pinned
-/// against it as the oracle, over every key including the ones no entry has.
+/// `codegen_body_cache_find` for every key inside the table's range -- pinned
+/// against it as the oracle -- and -1 outside it.
 export fn codegen_body_cache_find_at(slot_index: Array[Int], fn_index: Int) -> Int {
   if fn_index < 0 || fn_index >= Array::length(slot_index) {
     0 - 1
