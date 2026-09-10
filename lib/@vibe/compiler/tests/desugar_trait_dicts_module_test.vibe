@@ -3,7 +3,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/normalize {
-  desugar_trait_dicts, desugar_trait_dicts_module
+  desugar_trait_dicts, desugar_trait_dicts_module, hoisted_lambda_owner_key
 }
 
 import @vibe/compiler/syntax {
@@ -301,4 +301,80 @@ test "the owner, the counter and the local name join into one name unambiguously
   // Without the length in front, the first and the third read the same:
   // `__hoisted_lam_foo_0_bar_1_baz`.
   inspect(hoisted_names(stmts), content = "__hoisted_lam_3_foo_0_bar_1_baz, __hoisted_lam_9_foo_0_bar_0_first, __hoisted_lam_9_foo_0_bar_1_baz")
+}
+
+/// What every hoisted name in `stmts` decodes back to, in program order.
+/// `<none>` for a name the decoder refuses.
+fn hoisted_owners(stmts: Array[Stmt]) -> String {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => if String::starts_with(n, "__hoisted_lam_") {
+        match hoisted_lambda_owner_key(n) {
+          Some(owner) => Array::push(out, owner),
+          None => Array::push(out, "<none>")
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  String::join(out, ", ")
+}
+
+// #2388: the name carries the owner so that a consumer which sees only the
+// name can READ IT BACK -- a table keyed by the pre-prelude declarations does
+// not contain a function the prelude synthesized. These two corpora are the
+// ones the minter's own tests above pin as adversarial, so decoding them
+// exercises the length prefix rather than a happy path: four owners a spelling
+// rewrite would fold into two, and the join whose extent is decidable only
+// from the length.
+test "a hoisted name decodes back to the owner it was minted from" {
+  let stmts = parse_program(lex(collide_src()))
+  desugar_trait_dicts(stmts)
+  inspect(hoisted_owners(stmts), content = "Wrapper::scaled, Wrapper__scaled, test_probe, :t:probe")
+}
+
+test "the ambiguously joined names decode to the owners their lengths declare" {
+  let stmts = parse_program(lex(ambiguous_join_src()))
+  desugar_trait_dicts(stmts)
+  inspect(hoisted_owners(stmts), content = "foo, foo_0_bar, foo_0_bar")
+}
+
+/// `Some(owner)` rendered, or `<none>`.
+fn decoded(name: String) -> String {
+  match hoisted_lambda_owner_key(name) {
+    Some(owner) => owner,
+    None => "<none>"
+  }
+}
+
+// The decoder fails closed: a caller that attributed a synthesized definition
+// to a partially decoded owner would be silently wrong, which is the collision
+// the owner key exists to prevent, one level down. Every malformed shape is
+// `<none>`, and the well-formed one next to them says the refusals are not
+// simply a decoder that never answers.
+test "a name that does not carry a well-formed owner decodes to nothing" {
+  inspect(decoded("__hoisted_lam_3_foo_0_f"), content = "foo")
+  // Not a hoisted name at all.
+  inspect(decoded("plain_name"), content = "<none>")
+  inspect(decoded("__hoisted_lam"), content = "<none>")
+  // Nothing after the prefix, and a prefix that is not a digit run.
+  inspect(decoded("__hoisted_lam_"), content = "<none>")
+  inspect(decoded("__hoisted_lam_foo_0_f"), content = "<none>")
+  // A digit run that no `_` closes.
+  inspect(decoded("__hoisted_lam_3"), content = "<none>")
+  // A length the name cannot hold, and one that runs to the very end -- there
+  // is then no `_` to open the counter, so the owner's extent is unconfirmed.
+  inspect(decoded("__hoisted_lam_99_foo_0_f"), content = "<none>")
+  inspect(decoded("__hoisted_lam_3_foo"), content = "<none>")
+  // An empty owner: `dlh_owner_key` never returns one.
+  inspect(decoded("__hoisted_lam_0__0_f"), content = "<none>")
+  // A digit run long enough to wrap a 63-bit accumulator, which would
+  // otherwise decode to a small (or negative) length and answer with a slice
+  // of the name.
+  inspect(decoded("__hoisted_lam_99999999999999999999999_foo_0_f"), content = "<none>")
 }

@@ -16898,9 +16898,95 @@ fn dlh_anonymous_owner_key(idx: Int) -> String {
 /// declarations are legal. With the length in front, the owner's extent is
 /// decidable and the rest is unambiguous on its own -- the counter is digits
 /// and a local name can never begin with one.
+/// The prefix `dlh_hoisted_name` mints and `hoisted_lambda_owner_key` reads
+/// back. One spelling, so the minter and the decoder cannot drift apart.
+let dlh_hoisted_prefix: String = "__hoisted_lam_"
+
 fn dlh_hoisted_name(idx: Int, name: String) -> String {
   let owner = dlh_owner_key()
-  "__hoisted_lam_\{String::length(owner)}_\{owner}_\{idx}_\{name}"
+  "\{dlh_hoisted_prefix}\{String::length(owner)}_\{owner}_\{idx}_\{name}"
+}
+
+/// #2388: the owner key encoded in a hoisted lambda's top-level name, or
+/// `None` when `name` is not one of those names.
+///
+/// A hoisted lambda is a synthesized TOP-LEVEL definition that belongs to
+/// exactly one module -- the declaration it came out of. Where the merged
+/// program can place it next to that declaration, its position says so
+/// (`dlh_place_after_owners`). Where a consumer sees only the NAME -- a table
+/// keyed by the pre-prelude declarations, which a synthesized function is by
+/// definition not in -- the owner is read back out of the name instead. This
+/// is the inverse of `dlh_hoisted_name`, and the length prefix is what makes
+/// it a decode rather than a guess: the owner's extent is read from the digits
+/// in front of it, so an owner that itself contains `_<digits>_` cannot be
+/// mistaken for the counter.
+///
+/// Fails closed. A name that does not carry a well-formed owner is `None`, not
+/// a partial answer: a caller that attributed a synthesized definition to a
+/// half-decoded owner would be silently wrong (#2618's collision, one level
+/// down), whereas `None` leaves the caller on whatever rule it already had.
+export fn hoisted_lambda_owner_key(name: String) -> Option[String] {
+  if String::starts_with(name, dlh_hoisted_prefix) {
+    let n = String::length(name)
+    let start = String::length(dlh_hoisted_prefix)
+    let digits_end = dlh_digit_run_end(name, start, n)
+    let owner_len = dlh_owner_len_at(name, start, digits_end, n)
+    // The digit run ends at the `_` that opens the owner, so the owner runs
+    // [digits_end + 1, + owner_len) and is followed by the `_` that opens the
+    // counter. An owner is never empty (`dlh_owner_key` returns either a
+    // declaration's name or a `:t:` / `:b:` / `:s:` form), so a zero length is
+    // not one of ours either.
+    if owner_len <= 0 {
+      None
+    } else {
+      let owner_start = digits_end + 1
+      let owner_end = owner_start + owner_len
+      if owner_end >= n || String::char_code_at(name, owner_end) != 95 {
+        None
+      } else {
+        Some(String::substring(name, owner_start, owner_end))
+      }
+    }
+  } else {
+    None
+  }
+}
+
+/// The index just past the digit run starting at `i`.
+fn dlh_digit_run_end(s: String, i: Int, n: Int) -> Int {
+  let mut j = i
+  while j < n && String::char_code_at(s, j) >= 48 && String::char_code_at(s, j) <= 57 {
+    j = j + 1
+  }
+  j
+}
+
+/// The owner length a hoisted name's prefix declares, or -1 when the prefix is
+/// not a digit run followed by `_`, or declares a length the name cannot hold.
+/// Bounded by the name's own length while it accumulates, so a long digit run
+/// can never overflow into a wrapped (negative, or spuriously small) value.
+fn dlh_owner_len_at(s: String, i: Int, end: Int, n: Int) -> Int {
+  if end == i || end >= n || String::char_code_at(s, end) != 95 {
+    0 - 1
+  } else {
+    let mut acc = 0
+    let mut j = i
+    let mut overflow = false
+    while j < end {
+      acc = acc * 10 + (String::char_code_at(s, j) - 48)
+      if acc > n {
+        overflow = true
+        j = end
+      } else {
+        j = j + 1
+      }
+    }
+    if overflow {
+      0 - 1
+    } else {
+      acc
+    }
+  }
 }
 
 fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
