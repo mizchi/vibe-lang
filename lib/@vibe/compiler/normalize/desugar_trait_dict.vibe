@@ -17178,19 +17178,28 @@ export fn desugar_hoist_local_lambdas(stmts: Array[Stmt]) -> Unit {
 fn dlh_place_after_owners(stmts: Array[Stmt], hoisted: Array[Stmt], hoisted_owner: Array[Int]) -> Unit {
   let total = Array::length(stmts)
   let ordered: Array[Stmt] = []
+  // `hoisted_owner` rises with the statement the walk was on, and one owner's
+  // entries are contiguous, so ONE advancing index visits each entry once.
+  // Restarting the scan per statement (the first version of this, Codex P2 on
+  // #2620) makes the placement O(statements x hoists) -- 25 million probes on a
+  // generated program with 5,000 declarations that each hoist one lambda.
+  let mut hi = 0
   let mut si = 0
   while si < total {
     Array::push(ordered, Array::get(stmts, si))
-    let mut hi = 0
-    while hi < Array::length(hoisted) {
-      if Array::get(hoisted_owner, hi) == si {
-        Array::push(ordered, Array::get(hoisted, hi))
-      } else {
-        ()
-      }
+    while hi < Array::length(hoisted) && Array::get(hoisted_owner, hi) == si {
+      Array::push(ordered, Array::get(hoisted, hi))
       hi = hi + 1
     }
     si = si + 1
+  }
+  // An entry whose owner is not a statement of this array would otherwise be
+  // dropped silently; there is no such entry (an owner index is a position in
+  // `stmts`), and if one appeared it lands where the pass used to put every
+  // hoist -- the end -- rather than nowhere.
+  while hi < Array::length(hoisted) {
+    Array::push(ordered, Array::get(hoisted, hi))
+    hi = hi + 1
   }
   // The module's own region grew, and the dependency-interface block after it
   // moved by the same amount -- the same bookkeeping the trait namespace
