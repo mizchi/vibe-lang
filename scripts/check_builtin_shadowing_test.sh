@@ -53,6 +53,35 @@ else
   bad "the clean control was rejected: $out"
 fi
 
+# --- 1b. a `test "<builtin name>"` BLOCK is not a declaration ----------------
+# `vibe symbols` reports a test/bench block under its quoted label with kind 12
+# (LSP has no Test kind), and the gate used to read those labels as
+# definitions: four allowlist rows described shadows that did not exist. The
+# pair below is what makes the filter meaningful -- the block must be ACCEPTED
+# while a real definition of the same name in the same tree is still REJECTED,
+# so "accepted" cannot be coming from the gate having stopped looking.
+fresh_tree "$TREE"; empty_allowlist "$ALLOW"
+printf 'test "String::length" {\n  assert(true)\n}\n' > "$TREE/label_test.vibe"
+if ! grep -q 'test "String::length"' "$TREE/label_test.vibe"; then
+  bad "mutation 1b did not land"
+elif out="$(run_gate "$TREE" "$ALLOW")"; then
+  ok "a test block LABELLED with a builtin name is not a shadow"
+else
+  bad "a test block label was reported as a shadow: $out"
+fi
+
+# ...and the same tree, plus one real definition, must still fail.
+printf 'export fn String::length(s: String) -> Int {\n  -1\n}\n' > "$TREE/real_def.vibe"
+if ! grep -q 'fn String::length' "$TREE/real_def.vibe"; then
+  bad "mutation 1b-pair did not land"
+elif out="$(run_gate "$TREE" "$ALLOW")"; then
+  bad "a real definition beside a test label was accepted: $out"
+elif printf '%s' "$out" | grep -q 'String::length'; then
+  ok "a real definition beside a test label is still rejected, and named"
+else
+  bad "rejected without naming String::length: $out"
+fi
+
 # --- 1. kind 12: a `fn` shadowing a builtin ---------------------------------
 fresh_tree "$TREE"; empty_allowlist "$ALLOW"
 printf 'export fn String::length(s: String) -> Int {\n  -1\n}\n' > "$TREE/shadow_fn.vibe"
