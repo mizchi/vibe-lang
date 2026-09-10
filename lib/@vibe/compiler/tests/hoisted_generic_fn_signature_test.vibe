@@ -104,3 +104,42 @@ test "an optional or labeled parameter still disqualifies the signature" {
 test "a non-generic forward call keeps the #2318 behavior" {
   inspect(rejects(forward("fn caller() -> String {\n  plain(1)\n}\n", "fn plain(x: Int) -> Int { x }\n")), "true")
 }
+
+// #2610: the argument slots. #2607's per-slot mask left them unchecked, because
+// they are exactly the slots that mention a formal -- so for a function whose
+// parameters are generic, that was every argument. Measured, `len("not an
+// array")` above the definition compiled and printed `0`. A single pre-binding
+// shared by every call site cannot be a concrete `CtFn`, but it can be a
+// `CtForAll`, which each call site instantiates. The polymorphism controls
+// above and below are what keep that honest.
+
+test "a forward call's ARGUMENT types are checked" {
+  inspect(rejects(forward("fn caller() -> Int {\n  len(\"not an array\")\n}\n", len_defn)), "true")
+}
+
+test "the same wrong argument BELOW the definition was always checked" {
+  inspect(rejects(String::concat(len_defn, "fn caller() -> Int {\n  len(\"not an array\")\n}\n")), "true")
+}
+
+test "two parameters sharing one formal must agree, forward" {
+  let defn = "fn pick[T](a: T, b: T) -> T { a }\n"
+  inspect(rejects(forward("fn caller() -> Int {\n  pick(1, \"s\")\n}\n", defn)), "true")
+}
+
+test "two parameters sharing one formal at the same type are accepted, forward" {
+  let defn = "fn pick[T](a: T, b: T) -> T { a }\n"
+  inspect(rejects(forward("fn caller() -> Int {\n  pick(1, 2)\n}\n", defn)), "false")
+}
+
+test "a bounded formal's forward call is accepted at a scalar" {
+  let defn = "fn eqb[T: Eq](a: T, b: T) -> Bool { a == b }\n"
+  inspect(rejects(forward("fn caller() -> Bool {\n  eqb(1, 1)\n}\n", defn)), "false")
+}
+
+test "a higher-kinded formal keeps the per-slot mask" {
+  // `F[A]` is made RIGID by the EFn arm so it cannot unify with `Array[Int]`,
+  // and the hoist has no way to reproduce that -- so this binder is left on
+  // #2607's mask rather than given a scheme whose `CtVar` would.
+  let defn = "fn hk[F[_], A](x: F[A]) -> Int { 0 }\n"
+  inspect(rejects(forward("fn caller() -> Int {\n  hk([1, 2])\n}\n", defn)), "false")
+}
