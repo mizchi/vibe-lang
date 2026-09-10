@@ -53,3 +53,71 @@ test "every pre-codegen pass agrees between whole-program and per-file runs on a
   // both sides; a run that skipped either side could not report them equal.
   inspect(String::starts_with(Array::get(lines, 0), "PASS elaborate_heap_params stmts="), content = "true")
 }
+
+/// The `keyed ...` line the oracle prints under one pass: the verdict for a
+/// pass whose per-module run synthesizes program-level statements, which land
+/// at each module's position and repeat per module, so position and count are
+/// not the comparison.
+fn keyed_line_of(report: String, pass: String) -> String {
+  let lines = String::split(report, "\n")
+  let mut out = "<none>"
+  let mut seen = false
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, String::concat("PASS ", pass)) {
+      seen = true
+    } else if seen && String::contains(line, "keyed ") {
+      if out == "<none>" {
+        out = String::trim(line)
+      } else {
+        ()
+      }
+    } else if String::starts_with(line, "PASS ") {
+      seen = false
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+// #2388: two files that each hoist a non-capturing effectful local lambda, and
+// both call it `f`. A hoisted lambda becomes a TOP-LEVEL definition, so a name
+// minted from a program-wide counter makes what a module mints depend on the
+// files compiled before it. Measured on this program before the name carried
+// the declaration it came out of:
+//
+//   keyed missing=1 extra=0 copies=2 content=2 first_missing=let:__hoisted_lam_1_f
+//     whole<let __hoisted_lam_0_f = (a: Int) -> Int with HLog { ... "helper" ... }>
+//     split<let __hoisted_lam_0_f = (a: Int) -> Int with MLog { ... "main" ... }>
+//
+// -- one name, two different bodies, which a link that concatenates the modules
+// resolves by silently keeping one of them.
+test "two files that each hoist a local lambda mint top-level names the other module cannot collide with" {
+  let helper_path = "/tmp/vibe_prelude_oracle_hoist_helper.vibe"
+  let main_path = "/tmp/vibe_prelude_oracle_hoist_main.vibe"
+  Fs::write_file(helper_path, "effect HLog {\n  Emit(String) -> Unit\n}\n\nexport fn helper_use() -> Int {\n  let f = (a: Int) -> Int with HLog {\n    perform HLog::Emit(\"helper\")\n    a\n  }\n  handle {\n    f(1)\n  } with {\n    HLog::Emit(_m) => resume(0)\n  }\n}\n")
+  Fs::write_file(main_path, "import ./vibe_prelude_oracle_hoist_helper.vibe {\n  helper_use\n}\n\neffect MLog {\n  Emit(String) -> Unit\n}\n\nfn main_use() -> Int {\n  let f = (a: Int) -> Int with MLog {\n    perform MLog::Emit(\"main\")\n    a + 1\n  }\n  handle {\n    f(2)\n  } with {\n    MLog::Emit(_m) => resume(0)\n  }\n}\n\ntest \"hoisted\" {\n  inspect(helper_use() + main_use(), content = \"4\")\n}\n")
+  let report = prelude_module_oracle_report_fs(main_path, "__no_entry__", 16)
+  // `copies=1` is the one program-level helper this pass synthesizes per
+  // module by design (a link-time dedup by name folds it, and `content=0`
+  // says the copies agree); `missing=0 content=0` is the property under test:
+  // every declaration the whole-program run produced is produced by the module
+  // that owns it, under the same name and with the same body.
+  inspect(keyed_line_of(report, "desugar_trait_dicts_with_typed_eq"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 first_missing= first_content=")
+  // What the rest of the report says on this program, as measured. The
+  // trait-dict pass's positional status is `differs` by design (see above).
+  // `evidence_dict_pass` is a separate, still-open per-module gap: whole
+  // program it threads the handler's dictionary into the hoisted function's
+  // call, per file it does not.
+  let statuses: Array[String] = []
+  let lines = oracle_lines(report)
+  let mut i = 0
+  while i < Array::length(lines) {
+    Array::push(statuses, status_of(Array::get(lines, i)))
+    i = i + 1
+  }
+  inspect(String::join(statuses, ","), content = "same,same,same,same,differs,same,same,same,same,same,same,same,same,same,same,differs,same")
+}

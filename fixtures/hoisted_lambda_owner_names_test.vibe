@@ -1,0 +1,45 @@
+// #2388: a lambda hoisted out of a declaration becomes a TOP-LEVEL definition
+// named after that declaration, so two modules cannot mint the same one. The
+// owner can be spelled in ways a plain `let` cannot be -- an impl method
+// carries `::`, a `test` block carries a free-form string -- and the key keeps
+// those distinguishable instead of folding them onto one name. This fixture
+// runs both shapes through codegen and executes them: the hoisted function is
+// called through the name the key produced.
+effect QLog {
+  Emit(String) -> Unit
+}
+
+struct Wrapper {
+  v: Int
+}
+
+trait Scale {
+  scaled(Self) -> Int
+}
+
+impl Scale for Wrapper {
+  scaled(self) -> Int {
+    let f = (a: Int) -> Int with QLog {
+      perform QLog::Emit("impl")
+      a * 2
+    }
+    handle {
+      f(self.v)
+    } with { QLog::Emit(_m) => resume(0) }
+  }
+}
+
+test "a lambda hoisted out of an impl method" {
+  inspect(Wrapper::scaled(Wrapper::{ v: 21 }), content = "42")
+}
+
+test "a lambda hoisted out of a test block" {
+  let f = (a: Int) -> Int with QLog {
+    perform QLog::Emit("test")
+    a + 1
+  }
+  let got = handle {
+    f(41)
+  } with { QLog::Emit(_m) => resume(0) }
+  inspect(got, content = "42")
+}

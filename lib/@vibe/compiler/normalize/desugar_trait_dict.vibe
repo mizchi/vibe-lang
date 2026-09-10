@@ -16778,6 +16778,131 @@ fn dlh_letbind_literal_args(callee: Expr, args: Array[Expr], off: Int, ctr: Arra
   wrapped
 }
 
+/// #2388: the top-level declaration whose body is being hoisted, and the
+/// module tag to fall back on when that declaration has no name of its own.
+///
+/// A hoisted lambda becomes a TOP-LEVEL definition, so its name has to be a
+/// function of the module that owns it and of nothing else. It used to come
+/// from a counter that ran across the whole program, which makes the spelling
+/// depend on how many lambdas EARLIER FILES hoisted: compiled whole-program a
+/// module's `let f` is `__hoisted_lam_7_f`, compiled alone it is
+/// `__hoisted_lam_0_f`, and two modules compiled alone both mint
+/// `__hoisted_lam_0_f` and collide when the link concatenates them.
+///
+/// The owner's own name is already unique across a merged program -- the merge
+/// renames a private name to `<name>_dep_<path>` and an exported one must be
+/// unique for the link to resolve it at all -- so deriving the spelling from it
+/// gives the same name whether the pass runs whole-program or per module, and
+/// gives two modules different names. The counter then only has to separate
+/// lambdas hoisted out of the SAME declaration, so it restarts at each one.
+let dlh_owner_name: Array[String] = [""]
+
+/// What `dlh_owner_name` holds: 0 a declaration's own name, 1 a test block's
+/// name, 2 a bench block's, 3 nothing (a statement that binds no name). The
+/// key itself is built only when a lambda is actually hoisted -- a compile of
+/// the compiler walks ~4,600 top-level statements and hoists none of them, so
+/// building one string per statement was ~138 kB of bump heap per compile,
+/// measured on the selfcompile KPI.
+let dlh_owner_kind: Array[Int] = [0]
+
+let dlh_owner_idx: Array[Int] = [0]
+
+/// The module tag set by the per-module entry (`desugar_trait_dicts_module`),
+/// empty for the whole-program entry. Read only for a top-level statement that
+/// binds no name -- a bare expression statement -- where there is nothing to
+/// derive an owner from; the whole-program lane numbers those by their position
+/// in the merged program, which is unique there but not across modules.
+let dlh_module_tag: Array[String] = [""]
+
+/// Record which top-level statement the hoist is walking, so a lambda it
+/// hoists can be named after it: the statement's own name where it has one,
+/// and otherwise the module tag (a per-module run) or the statement's position
+/// (the whole-program run, where the position is the merged program's and so
+/// unique). `dlh_owner_key` spells the recorded owner out.
+///
+/// Every arm has to be INJECTIVE -- two owners may never produce one key, or
+/// the collision this key exists to prevent comes back one level down. So a
+/// declaration's name goes in VERBATIM, `::` and all: rewriting it (`::` ->
+/// `_`, the first version of this) maps an impl method `Wrapper::scaled` and a
+/// legal declaration spelled `Wrapper__scaled` onto one key (Codex P1 on
+/// #2618). A generated top-level name carrying `::` is already what the
+/// compiler does elsewhere -- a `test "Json::get"` block becomes the top-level
+/// `__test_Json::get` -- and the call path is covered by
+/// fixtures/hoisted_lambda_owner_names_test.vibe.
+///
+/// The other arms name things that are not declarations, so they are kept out
+/// of the declaration namespace by a leading `:`: a source name is
+/// `[A-Za-z_][A-Za-z0-9_]*` possibly joined by `::`, so it can never START with
+/// a colon, and `test_foo` -- which a top-level `let test_foo` could also spell
+/// -- becomes `:t:foo`.
+fn dlh_set_owner(stmt: Stmt, idx: Int) -> Unit {
+  Array::set(dlh_owner_idx, 0, idx)
+  Array::set(dlh_owner_kind, 0, 0)
+  match stmt {
+    SLet(_, _, name, _, _) => Array::set(dlh_owner_name, 0, name),
+    SLetMut(name, _, _) => Array::set(dlh_owner_name, 0, name),
+    STest(name, _) => {
+      Array::set(dlh_owner_kind, 0, 1)
+      Array::set(dlh_owner_name, 0, name)
+    },
+    SBench(name, _) => {
+      Array::set(dlh_owner_kind, 0, 2)
+      Array::set(dlh_owner_name, 0, name)
+    },
+    SLetPat(pat, _) => {
+      let binders = empty_str_array()
+      collect_pat_binders(pat, binders)
+      if Array::length(binders) == 0 {
+        Array::set(dlh_owner_kind, 0, 3)
+      } else {
+        Array::set(dlh_owner_name, 0, Array::get(binders, 0))
+      }
+    },
+    _ => Array::set(dlh_owner_kind, 0, 3)
+  }
+}
+
+/// The recorded owner as a key. Called once per lambda actually hoisted.
+fn dlh_owner_key() -> String {
+  let kind = Array::get(dlh_owner_kind, 0)
+  let name = Array::get(dlh_owner_name, 0)
+  if kind == 1 {
+    ":t:\{name}"
+  } else if kind == 2 {
+    ":b:\{name}"
+  } else if kind == 3 {
+    dlh_anonymous_owner_key(Array::get(dlh_owner_idx, 0))
+  } else {
+    name
+  }
+}
+
+fn dlh_anonymous_owner_key(idx: Int) -> String {
+  let tag = Array::get(dlh_module_tag, 0)
+  if String::length(tag) == 0 {
+    ":s:\{idx}"
+  } else {
+    ":s:\{tag}:\{idx}"
+  }
+}
+
+/// The top-level name of the `idx`-th lambda hoisted out of the current
+/// declaration. `__hoisted_lam_` stays the prefix: the gc backend's
+/// float-return collection treats it as a hint and takes provenance (the
+/// before-set) as the authority, so the spelling is free to carry the owner.
+///
+/// The owner is LENGTH-PREFIXED, because joining the three parts with `_` is
+/// not injective even when each part is (Codex P1 on #2618): a local
+/// `bar_1_baz` hoisted first out of `foo`, and a local `baz` hoisted second
+/// out of `foo_0_bar`, both read `__hoisted_lam_foo_0_bar_1_baz`, and both
+/// declarations are legal. With the length in front, the owner's extent is
+/// decidable and the rest is unambiguous on its own -- the counter is digits
+/// and a local name can never begin with one.
+fn dlh_hoisted_name(idx: Int, name: String) -> String {
+  let owner = dlh_owner_key()
+  "__hoisted_lam_\{String::length(owner)}_\{owner}_\{idx}_\{name}"
+}
+
 fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
   match expr {
     ELet(name, v, b, soff) => match v {
@@ -16825,7 +16950,7 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
         if hoistable {
           let idx = Array::get(ctr, 0)
           Array::set(ctr, 0, idx + 1)
-          let fresh = "__hoisted_lam_\{idx}_\{name}"
+          let fresh = dlh_hoisted_name(idx, name)
           Array::push(hoisted, SLet(false, false, fresh, None, hoisted_fn))
           dlh_subst(rest, name, fresh)
         } else if dlh_has_perform(fbody) && Array::length(bad) > 0 {
@@ -16856,7 +16981,7 @@ fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
               EFn(tp2, bnds2, _, rt2, eff2, hb2) => EFn(tp2, bnds2, new_params, rt2, eff2, hb2),
               _ => hoisted_fn
             }
-            let fresh = "__hoisted_lam_\{idx}_\{name}"
+            let fresh = dlh_hoisted_name(idx, name)
             Array::push(hoisted, SLet(false, false, fresh, None, hoisted_fn2))
             dlh_prepend_and_rename_calls(rest_marked, marker, fresh, captured)
           } else {
@@ -17005,15 +17130,23 @@ fn dlh_hoist_stmt(stmt: Stmt, hoisted: Array[Stmt], ctr: Array[Int]) -> Stmt {
 }
 
 /// In-place hoisting of non-capturing effectful local lambdas across the program.
+///
+/// #2388: the counter restarts at every top-level declaration and the hoisted
+/// name carries the declaration it came out of (`dlh_owner_name`), so what a module
+/// mints depends on that module alone -- see `dlh_owner`'s comment for why a
+/// program-wide counter cannot survive a per-module run.
 export fn desugar_hoist_local_lambdas(stmts: Array[Stmt]) -> Unit {
   let hoisted = array_empty()
-  let ctr = [0]
   let n = dtd_own_end(stmts)
+  let ctr = [0]
   let mut i = 0
   while i < n {
+    Array::set(ctr, 0, 0)
+    dlh_set_owner(Array::get(stmts, i), i)
     Array::set(stmts, i, dlh_hoist_stmt(Array::get(stmts, i), hoisted, ctr))
     i = i + 1
   }
+  Array::set(dlh_owner_name, 0, "")
   let mut h = 0
   while h < Array::length(hoisted) {
     Array::push(stmts, Array::get(hoisted, h))
@@ -20577,6 +20710,7 @@ fn eq_ty_mentions_scope_formal(t: TypeExpr) -> Bool {
 export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Unit with Exception {
   Array::set(dtd_own_limit, 0, 0 - 1)
   Array::set(dtd_ctx_len, 0, 0)
+  Array::set(dlh_module_tag, 0, "")
   dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
 }
 
@@ -20592,7 +20726,13 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
 /// declares is this module's definition. Only the trait namespace operations
 /// are placed inside `own` (right after their trait, as the whole-program
 /// entry does), which is why the entry tracks how much the own region grew.
-export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Array[Stmt] with Exception {
+///
+/// `module_tag` names this module for the one generated top-level name that
+/// cannot be derived from a declaration -- a lambda hoisted out of a bare
+/// expression statement (see `dlh_owner_name`). Every other hoisted name comes from
+/// the declaration that owns it and so is already module-unique; pass "" to
+/// number the nameless ones by position, as the whole-program entry does.
+export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Array[Stmt] with Exception {
   let stmts: Array[Stmt] = []
   let mut i = 0
   while i < Array::length(own) {
@@ -20607,6 +20747,7 @@ export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], typed_e
   Array::set(dtd_own_limit, 0, Array::length(own))
   Array::set(dtd_ctx_len, 0, Array::length(ctx))
   Array::set(dtd_own_growth, 0, 0)
+  Array::set(dlh_module_tag, 0, module_tag)
   dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
   let own_n = Array::length(own)
   let own_end = own_n + Array::get(dtd_own_growth, 0)
@@ -20627,6 +20768,7 @@ export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], typed_e
   }
   Array::set(dtd_own_limit, 0, 0 - 1)
   Array::set(dtd_ctx_len, 0, 0)
+  Array::set(dlh_module_tag, 0, "")
   synthesized
 }
 
