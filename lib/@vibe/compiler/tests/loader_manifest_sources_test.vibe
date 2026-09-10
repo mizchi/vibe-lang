@@ -496,3 +496,63 @@ test "try_collect_manifest_sources_fs: a LISTED sibling is still collected (#257
     None => assert(false)
   }
 }
+
+test "try_collect_manifest_sources_fs: an import written BELOW a declaration is still collected (#2595)" {
+  // The manifest header scan stops at the first statement that is not
+  // `import` / `export`, which is what makes it a fast HEADER scan. A
+  // top-level import placed after a declaration was therefore invisible, and
+  // the file it names never entered the source set -- so the failure surfaced
+  // three layers later as `type_db: missing resolved dependency environment`
+  // for a file the manifest DOES list.
+  //
+  // Measured on `lib/@vibe/compiler/loader/loader.vibe`, which has four such
+  // imports: `vibe check` on it failed on a file that compiles, and
+  // `vibe deps` returned a closure one entry short without saying so. The
+  // other manifest roots were clean, because their late-imported siblings
+  // happened to be reachable through some other dep.
+  //
+  // Red-testing this by hand needs `VIBE_BUILD_CACHE_DIR=$(mktemp -d)`. The
+  // manifest header rows are cached persistently under a key that includes the
+  // COMPILER's version tag, so reverting the fix and re-running on the same
+  // `vibe test` compiler reads back the rows the fixed run just wrote, and the
+  // case passes while proving nothing.
+  let base_dir = "/tmp/vibe_compiler_manifest_late_import"
+  let manifest_path = String::concat(base_dir, "/compiler_sources_manifest.tsv")
+  let early_path = String::concat(base_dir, "/early.vibe")
+  let late_path = String::concat(base_dir, "/late.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(manifest_path, string_to_bytes("# group\tpath\ncore\tearly.vibe\ncore\tlate.vibe\nentry\tmain.vibe\n"))
+  Fs::write_bytes(early_path, string_to_bytes("export let early_value: () -> Int = () -> { 1 }"))
+  Fs::write_bytes(late_path, string_to_bytes("export let late_value: () -> Int = () -> { 2 }"))
+  Fs::write_bytes(main_path, string_to_bytes("import ./early.vibe { early_value }\nlet gap: Int = 0\nimport ./late.vibe { late_value }\nlet run: () -> Int = () -> { early_value() + late_value() + gap }"))
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(has_source_path(sources, early_path))
+      assert(has_source_path(sources, late_path))
+      assert(eq(Array::length(sources), 3))
+    },
+    None => assert(false)
+  }
+}
+
+test "try_collect_manifest_sources_fs: a re-export written BELOW a declaration is still collected (#2595)" {
+  // Same scan, the other statement form it understands. `export` alone does
+  // not qualify -- `export let` here is an ordinary declaration -- so the
+  // detector requires the re-export path that follows it.
+  let base_dir = "/tmp/vibe_compiler_manifest_late_reexport"
+  let manifest_path = String::concat(base_dir, "/compiler_sources_manifest.tsv")
+  let late_path = String::concat(base_dir, "/late.vibe")
+  let main_path = String::concat(base_dir, "/main.vibe")
+  Fs::mkdir_p(base_dir)
+  Fs::write_bytes(manifest_path, string_to_bytes("# group\tpath\ncore\tlate.vibe\nentry\tmain.vibe\n"))
+  Fs::write_bytes(late_path, string_to_bytes("export let late_value: () -> Int = () -> { 2 }"))
+  Fs::write_bytes(main_path, string_to_bytes("let gap: Int = 0\nexport ./late.vibe { late_value }\nlet run: () -> Int = () -> { gap }"))
+  match try_collect_manifest_sources_fs(main_path) {
+    Some((_, sources)) => {
+      assert(has_source_path(sources, late_path))
+      assert(eq(Array::length(sources), 2))
+    },
+    None => assert(false)
+  }
+}
