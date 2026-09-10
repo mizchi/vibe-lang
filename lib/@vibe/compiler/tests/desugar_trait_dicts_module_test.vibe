@@ -242,3 +242,37 @@ test "a hoisted lambda is named after the declaration it came out of, so two mod
   inspect(render_named(dep_synth, "__hoisted_lam_dep_use_0_f") == whole4_named("__hoisted_lam_dep_use_0_f"), content = "true")
   inspect(whole4_named("__hoisted_lam_own_use_0_f"), content = "let __hoisted_lam_own_use_0_f = (a: Int) -> Int with OwnLog { { perform OwnLog::Emit(\"own\"); (a + 1) } }")
 }
+
+/// The top-level names this pass minted for hoisted lambdas, in program order.
+fn hoisted_names(stmts: Array[Stmt]) -> String {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => if String::starts_with(n, "__hoisted_lam_") {
+        Array::push(out, n)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  String::join(out, ", ")
+}
+
+// #2618 review (Codex P1): the owner key has to be INJECTIVE, or the collision
+// it exists to prevent comes back one level down. Four owners that a
+// non-injective key folds into two: an impl method `Wrapper::scaled` against a
+// legal declaration spelled `Wrapper__scaled` (the first version replaced `::`
+// with `_`), and a `test "probe"` block against a declaration `test_probe`
+// (the first version prefixed a test's name with `test_`).
+fn collide_src() -> String {
+  "effect CLog {\n  Emit(String) -> Unit\n}\n\nstruct Wrapper {\n  v: Int\n}\n\ntrait Scale {\n  scaled(Self) -> Int\n}\n\nimpl Scale for Wrapper {\n  scaled(self) -> Int {\n    let f = (a: Int) -> Int with CLog {\n      perform CLog::Emit(\"impl\")\n      a\n    }\n    f(self.v)\n  }\n}\n\nexport fn Wrapper__scaled(v: Int) -> Int with CLog {\n  let f = (a: Int) -> Int with CLog {\n    perform CLog::Emit(\"plain\")\n    a\n  }\n  f(v)\n}\n\nexport fn test_probe() -> Int with CLog {\n  let f = (a: Int) -> Int with CLog {\n    perform CLog::Emit(\"fn\")\n    a\n  }\n  f(1)\n}\n\ntest \"probe\" {\n  let f = (a: Int) -> Int with CLog {\n    perform CLog::Emit(\"test\")\n    a\n  }\n  f(2)\n}\n"
+}
+
+test "owners that a spelling rewrite would fold together keep different hoisted names" {
+  let stmts = parse_program(lex(collide_src()))
+  desugar_trait_dicts(stmts)
+  inspect(hoisted_names(stmts), content = "__hoisted_lam_Wrapper::scaled_0_f, __hoisted_lam_Wrapper__scaled_0_f, __hoisted_lam_test_probe_0_f, __hoisted_lam_:t:probe_0_f")
+}

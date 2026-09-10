@@ -16804,43 +16804,39 @@ let dlh_owner: Array[String] = [""]
 /// in the merged program, which is unique there but not across modules.
 let dlh_module_tag: Array[String] = [""]
 
-/// A generated top-level name may not carry `::`: that spelling is how a
-/// namespaced operation is written (`String::hash_key`), and the passes and
-/// codegen after this one split on it. Owners spelled that way -- a trait
-/// operation, an impl method -- would otherwise mint a hoisted name that reads
-/// as a namespace member of a type that does not have one.
-fn dlh_sanitize_owner(name: String) -> String {
-  let out = StringBuilder::new()
-  let mut i = 0
-  while i < String::length(name) {
-    let c = String::char_code_at(name, i)
-    if c == 58 {
-      StringBuilder::push(out, "_")
-    } else {
-      StringBuilder::push(out, String::from_char_code(c))
-    }
-    i = i + 1
-  }
-  StringBuilder::freeze(out)
-}
-
 /// The owner key of a module's top-level statement at index `idx`: its own name
 /// where it has one, and otherwise the module tag (a per-module run) or the
 /// statement's position (the whole-program run, where the position is the
 /// merged program's and so unique).
+///
+/// Every arm has to be INJECTIVE -- two owners may never produce one key, or
+/// the collision this key exists to prevent comes back one level down. So a
+/// declaration's name goes in VERBATIM, `::` and all: rewriting it (`::` ->
+/// `_`, the first version of this) maps an impl method `Wrapper::scaled` and a
+/// legal declaration spelled `Wrapper__scaled` onto one key (Codex P1 on
+/// #2618). A generated top-level name carrying `::` is already what the
+/// compiler does elsewhere -- a `test "Json::get"` block becomes the top-level
+/// `__test_Json::get` -- and the call path is covered by
+/// fixtures/hoisted_lambda_owner_names_test.vibe.
+///
+/// The other arms name things that are not declarations, so they are kept out
+/// of the declaration namespace by a leading `:`: a source name is
+/// `[A-Za-z_][A-Za-z0-9_]*` possibly joined by `::`, so it can never START with
+/// a colon, and `test_foo` -- which a top-level `let test_foo` could also spell
+/// -- becomes `:t:foo`.
 fn dlh_owner_key(stmt: Stmt, idx: Int) -> String {
   match stmt {
-    SLet(_, _, name, _, _) => dlh_sanitize_owner(name),
-    SLetMut(name, _, _) => dlh_sanitize_owner(name),
-    STest(name, _) => "test_\{dlh_sanitize_owner(name)}",
-    SBench(name, _) => "bench_\{dlh_sanitize_owner(name)}",
+    SLet(_, _, name, _, _) => name,
+    SLetMut(name, _, _) => name,
+    STest(name, _) => ":t:\{name}",
+    SBench(name, _) => ":b:\{name}",
     SLetPat(pat, _) => {
       let binders = empty_str_array()
       collect_pat_binders(pat, binders)
       if Array::length(binders) == 0 {
         dlh_anonymous_owner_key(idx)
       } else {
-        dlh_sanitize_owner(Array::get(binders, 0))
+        Array::get(binders, 0)
       }
     },
     _ => dlh_anonymous_owner_key(idx)
@@ -16850,9 +16846,9 @@ fn dlh_owner_key(stmt: Stmt, idx: Int) -> String {
 fn dlh_anonymous_owner_key(idx: Int) -> String {
   let tag = Array::get(dlh_module_tag, 0)
   if String::length(tag) == 0 {
-    "s\{idx}"
+    ":s:\{idx}"
   } else {
-    "\{tag}_s\{idx}"
+    ":s:\{tag}:\{idx}"
   }
 }
 
