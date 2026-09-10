@@ -3416,9 +3416,74 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
 fn unsatisfied_bound_hint(env: TypeEnv, trait_name: String, resolved: Type) -> String {
   if trait_impl_declared_for_ctor(env, trait_name, resolved) && trait_is_marker(env, trait_name) {
     let display = trait_reference_display(trait_name)
-    String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(type_constructor_name(resolved), String::concat("` IS declared, but `", String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those are REFERENCE equality on `Array` / `Bytes` -- honouring the impl would make the comparison silently wrong. Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))))))))
+    let ctor = type_constructor_name(resolved)
+    // String::concat rather than `\{}` interpolation, for the reason recorded
+    // at the SResource diagnostic above.
+    let declared = String::concat(": an `impl ", String::concat(display, String::concat(" for ", String::concat(ctor, "` IS declared, but `"))))
+    let why = String::concat(display, String::concat("` is a marker trait (declared with no methods) so it dispatches to the builtin `==` / `<`, and those compare `", String::concat(ctor, "` by REFERENCE")))
+    let cost = " -- honouring the impl would make the comparison silently wrong: two equal values answer `false`, and one value compared with itself answers `true`"
+    let edit = String::concat(". Give `", String::concat(display, "` at least one method so the impl dispatches through the witness dictionary, or drop the bound"))
+    String::concat(declared, String::concat(why, String::concat(cost, edit)))
   } else {
     ""
+  }
+}
+
+/// #2523: does the builtin `==` / `<` compare a value of this type by VALUE?
+///
+/// Exactly the scalars `lib/@vibe/builtin/builtin_traits.vibe` registers marker
+/// impls for. Everything else -- `Array`, `Bytes`, a tuple, an `Option`, a
+/// declared struct or enum -- is compared by REFERENCE where the type has been
+/// erased, which is the whole reason this predicate exists.
+///
+/// Erring toward `false` costs a correct program a diagnostic, which the gates
+/// see; erring toward `true` keeps a silently wrong answer, which nothing sees.
+fn marker_cmp_is_by_value(ty: Type) -> Bool {
+  match ty {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtChar => true,
+    CtString => true,
+    CtNamed(name, args) => Array::length(args) == 0 && (name == "Int" || name == "Double" || name == "Bool" || name == "Char" || name == "String"),
+    _ => false
+  }
+}
+
+/// #2523: would satisfying this bound make the comparison silently wrong?
+///
+/// `Eq` and `Ord` are declared in `@vibe/builtin` as MARKER traits -- `export
+/// trait Eq` with no methods -- so there is no dictionary for `[T: Eq]`'s `==`
+/// to dispatch through and it lowers to the builtin comparison. That is right
+/// for the five scalars the markers register impls for, and REFERENCE identity
+/// for anything else.
+///
+/// So a user `impl Eq for Pt` turned a clear error into a wrong answer.
+/// Measured on the production linear/RC lane with `fn bare[T: Eq](x: T, y: T)
+/// { x == y }`: `bare(p1, p2)` on two EQUAL, distinct `Pt` answered `false`
+/// and `bare(p1, p1)` on the same object answered `true`, while `p1 == p2` at a
+/// concrete site and `Pt::equals(p1, p2)` both answered `true`. The comparator
+/// exists and works; the bound simply never reaches it.
+///
+/// What is refused is the BOUND at this instantiation, not the impl. That is
+/// what keeps it narrow: `impl Eq for Pt` remains a legal declaration (a marker
+/// impl can be a tag), a concrete `p1 == p2` still compares structurally, and
+/// only the instantiation that would answer by identity is rejected. The edit
+/// is named by `unsatisfied_bound_hint`, which has said exactly this since
+/// #1503 and until now could only fire when the bound failed for some other
+/// reason.
+///
+/// A program whose own `Eq` carries a method is not a marker, dispatches
+/// through a real witness dictionary, and is left alone -- that is the shape
+/// ADR-0097 wants, and landing it deletes this guard.
+fn marker_cmp_bound_is_unsound(env: TypeEnv, trait_bound: String, resolved: Type) -> Bool {
+  let display = trait_reference_display(trait_bound)
+  if display != "Eq" && display != "Ord" {
+    false
+  } else if not(trait_is_marker(env, trait_bound)) {
+    false
+  } else {
+    not(marker_cmp_is_by_value(resolved))
   }
 }
 
@@ -3459,6 +3524,10 @@ fn check_program_bounds(env: TypeEnv, s: Subst, defs: Array[TypeDef], errors: Ar
             // ADR-0068: `Send` is judged structurally from the type
             // definitions (type_send_ok), not from user impls.
             type_send_ok(env, s, defs, resolved)
+          } else if marker_cmp_bound_is_unsound(env, resolved_bound, resolved) {
+            // #2523: a marker `Eq` / `Ord` cannot make a non-scalar compare by
+            // content, so no impl may satisfy it here.
+            false
           } else {
             type_implements_trait(env, s, resolved, resolved_bound)
           }

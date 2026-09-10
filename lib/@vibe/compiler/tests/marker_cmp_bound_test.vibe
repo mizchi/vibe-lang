@@ -1,0 +1,93 @@
+//# Imports
+
+// #2523: `Eq` and `Ord` are MARKER traits -- `lib/@vibe/builtin/builtin_traits.vibe`
+// declares `export trait Eq` with no methods -- so a `[T: Eq]` bound's `==` has
+// no dictionary to dispatch through and lowers to the builtin comparison. That
+// is correct for the five scalars the markers register impls for, and REFERENCE
+// identity for anything else.
+//
+// Both ways a program could reach for it ended badly. `derive (Eq)` alone does
+// not satisfy the bound (`no impl `Eq` for `Pt``); adding `impl Eq for Pt`
+// replaced that error with a wrong answer. Measured on the production
+// linear/RC lane with `fn bare[T: Eq](x: T, y: T) { x == y }`:
+//
+//   bare(1, 1)                       true    (correct)
+//   bare(p1, p2)  equal, distinct    FALSE   (reference identity)
+//   bare(p1, p3)  different          false
+//   bare(p1, p1)  same object        TRUE    (reference identity)
+//   p1 == p2      concrete site      true    (correct, structural)
+//
+// What is refused is the BOUND at this instantiation, not the impl: the impl
+// stays a legal declaration (a marker impl can be a tag) and the concrete site
+// keeps answering by content. Giving `Eq` a real method makes it non-marker,
+// dispatches through a witness dictionary, and deletes this guard (ADR-0097).
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn diags_of(src: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(src)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn rejects(src: String) -> Bool {
+  String::length(diags_of(src)) > 0
+}
+
+/// A marker `Eq` with the builtin's scalar impls, a declared aggregate that
+/// also has one, and a bounded generic that compares.
+let eq_prelude = "trait Eq\nimpl Eq for Int\nimpl Eq for String\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt\nfn bare[T: Eq](x: T, y: T) -> Bool {\n  x == y\n}\n"
+
+//# Tests
+
+test "a marker Eq bound at a declared struct is refused" {
+  inspect(rejects(String::concat(eq_prelude, "let r = bare(Pt::{ v: 1 }, Pt::{ v: 1 })\n")), "true")
+}
+
+test "the refusal names the edit, not just the missing impl" {
+  let msg = diags_of(String::concat(eq_prelude, "let r = bare(Pt::{ v: 1 }, Pt::{ v: 1 })\n"))
+  inspect(String::contains(msg, "is a marker trait (declared with no methods)"), "true")
+  inspect(String::contains(msg, "compare `Pt` by REFERENCE"), "true")
+  inspect(String::contains(msg, "Give `Eq` at least one method"), "true")
+}
+
+test "the same bound at a scalar is accepted" {
+  inspect(rejects(String::concat(eq_prelude, "let r = bare(1, 1)\n")), "false")
+  inspect(rejects(String::concat(eq_prelude, "let r = bare(\"a\", \"a\")\n")), "false")
+}
+
+test "a concrete == on the same struct still checks clean" {
+  inspect(rejects(String::concat(eq_prelude, "let a = Pt::{ v: 1 }\nlet b = Pt::{ v: 1 }\nlet r = a == b\n")), "false")
+}
+
+test "the impl on its own is still a legal declaration" {
+  inspect(rejects(eq_prelude), "false")
+}
+
+test "an Eq that carries a method is not a marker and is left alone" {
+  // The ADR-0097 shape: a real witness dictionary, so the bound is sound and
+  // this guard must not fire.
+  let src = "trait Eq {\n  equals(Self, Self) -> Bool\n}\nstruct Pt {\n  v: Int\n}\nimpl Eq for Pt {\n  equals(a: Pt, b: Pt) -> Bool {\n    a.v == b.v\n  }\n}\nfn bare[T: Eq](x: T, y: T) -> Bool {\n  T::equals(x, y)\n}\nlet r = bare(Pt::{ v: 1 }, Pt::{ v: 1 })\n"
+  inspect(rejects(src), "false")
+}
+
+test "a marker Ord bound at a declared struct is refused too" {
+  let src = "trait Ord\nimpl Ord for Int\nstruct Token {\n  value: Int\n}\nimpl Ord for Token\nfn smaller[T: Ord](a: T, b: T) -> Bool {\n  a < b\n}\nlet r = smaller(Token::{ value: 1 }, Token::{ value: 2 })\n"
+  inspect(rejects(src), "true")
+}
+
+test "a non-comparison marker trait is untouched" {
+  // `Sealed` is a tag: its bound never lowers to `==` or `<`, so nothing about
+  // it can be silently wrong and this guard has no business refusing it.
+  let src = "trait Sealed\nstruct Pt {\n  v: Int\n}\nimpl Sealed for Pt\nfn tagged[T: Sealed](x: T) -> Int {\n  0\n}\nlet r = tagged(Pt::{ v: 1 })\n"
+  inspect(rejects(src), "false")
+}
