@@ -4478,8 +4478,7 @@ fn lc_pf_emit_exports(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int]
     let out_of_range = kind == 0 && idx >= Array::length(newidx)
     let dropped = kind == 0 && !out_of_range && Array::get(newidx, idx) < 0
     if out_of_range {
-      Array::set(failed, 0, true)
-      Array::set(lc_pf_refusal_cell, 0, 5)
+      lc_pf_refuse(failed, 5)
     } else {
       ()
     }
@@ -4692,6 +4691,33 @@ export fn late_dce_prune_module(mod_bytes: Bytes) -> Bytes {
 /// the unpruned module); this only makes that silence inspectable.
 let lc_pf_refusal_cell: Array[Int] = [0]
 
+/// Refuse the prune, and record WHERE. One helper rather than the two
+/// `Array::set` calls repeated at every refusal site.
+///
+/// #2574: this shape existed on #2569's branch and was inlined back out,
+/// because with it `late_dce_global_init_test`'s second case -- a 46-byte
+/// module whose global initializer is `ref.func 0`, i.e. the one path that
+/// reaches the refusal at the `ref.func` arm -- died with
+///
+///   [vibe] stack overflow while type-checking: one expression nests too
+///   deeply, or the file has too many top-level declarations.
+///
+/// at RUN time, inside `late_dce_prune_module`. The first case (an `i32.const`
+/// initializer, which prunes) passed, and so did a 3 MB compile-only module, so
+/// only the refusing path overflowed. A standalone program of the same shape
+/// did not, which is why the issue records that the trigger needs this
+/// surrounding function.
+///
+/// Re-measured on main with the helper restored, it does not reproduce: the
+/// test passes on the committed seed AND on a stage2 built from this tree, and
+/// all four `compiler_gate.sh` lanes are green. The helper is genuinely on the
+/// executed path -- flipping its `true` to `false` takes the same test's answer
+/// from 2 to 1 -- so this is not a case of the refusal being skipped.
+fn lc_pf_refuse(failed: Array[Bool], site: Int) -> Unit {
+  Array::set(failed, 0, true)
+  Array::set(lc_pf_refusal_cell, 0, site)
+}
+
 export fn late_dce_prune_refusal() -> Int {
   Array::get(lc_pf_refusal_cell, 0)
 }
@@ -4824,8 +4850,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
             // valtype, mutability, then one constant instruction and `end`.
             gq = gq + 2
             if gq >= send {
-              Array::set(failed, 0, true)
-              Array::set(lc_pf_refusal_cell, 0, 4828)
+              lc_pf_refuse(failed, 4828)
             } else {
               let iop = Bytes::get(mod_bytes, gq)
               gq = gq + 1
@@ -4838,15 +4863,13 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
               } else if iop == 208 {
                 gq = gq + 1
               } else {
-                Array::set(failed, 0, true)
-                Array::set(lc_pf_refusal_cell, 0, 4842)
+                lc_pf_refuse(failed, 4842)
               }
               if !Array::get(failed, 0) {
                 if gq < send && Bytes::get(mod_bytes, gq) == 11 {
                   gq = gq + 1
                 } else {
-                  Array::set(failed, 0, true)
-                  Array::set(lc_pf_refusal_cell, 0, 4849)
+                  lc_pf_refuse(failed, 4849)
                 }
               } else {
                 ()
@@ -4855,8 +4878,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
             gk = gk + 1
           }
           if !Array::get(failed, 0) && gq != send {
-            Array::set(failed, 0, true)
-            Array::set(lc_pf_refusal_cell, 0, 4859)
+            lc_pf_refuse(failed, 4859)
           } else {
             ()
           }
@@ -4888,8 +4910,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
             q = Array::get(cell, 0)
             if flag != 0 {
               // Only the active-table-0 form is emitted today.
-              Array::set(failed, 0, true)
-              Array::set(lc_pf_refusal_cell, 0, 4892)
+              lc_pf_refuse(failed, 4892)
             } else {
               while q < send && Bytes::get(mod_bytes, q) != 11 {
                 let iop = Bytes::get(mod_bytes, q)
@@ -4915,8 +4936,7 @@ fn lc_pf_prune_module(mod_bytes: Bytes, entry_name: String, exports_stripped: Bo
           }
         } else if sid == 8 {
           // A start function would be another root; none is emitted today.
-          Array::set(failed, 0, true)
-          Array::set(lc_pf_refusal_cell, 0, 4919)
+          lc_pf_refuse(failed, 4919)
         } else if sid == 10 {
           code_i = si
           let c = lc_pf_leb(mod_bytes, sstart, cell)
@@ -5119,8 +5139,7 @@ fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_
       let pos = pk>>32
       let target = pk&4294967295
       if target >= Array::length(newidx) || Array::get(newidx, target) < 0 {
-        Array::set(failed, 0, true)
-        Array::set(lc_pf_refusal_cell, 0, 5123)
+        lc_pf_refuse(failed, 5123)
       } else {
         sz = sz - (lc_pf_skip_leb(mod_bytes, pos) - pos) + lc_pf_leb_len(Array::get(newidx, target))
       }
@@ -5154,8 +5173,7 @@ fn lc_pf_emit_code(mod_bytes: Bytes, newidx: Array[Int], keep: Array[Int], body_
 /// module, so that is checked and fails the prune.
 fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: Array[Bool]) -> Unit {
   if bytebuf_length(out) - content_start != announced {
-    Array::set(failed, 0, true)
-    Array::set(lc_pf_refusal_cell, 0, 5158)
+    lc_pf_refuse(failed, 5158)
   } else {
     ()
   }
