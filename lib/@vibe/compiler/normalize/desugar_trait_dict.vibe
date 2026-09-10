@@ -2246,6 +2246,36 @@ fn lookup_var_type(var_types: Array[(String, String)], name: String) -> Option[S
 /// Bare `Green` -> `Color` via fn_returns; qualified `Color::Green` first tries
 /// the whole name (no match) then the member `Green` confirming its enum equals
 /// the head — so `let a = Color::Green` seeds `a -> Color` for `==` dispatch.
+/// #2527: is a BARE identifier in value position a nullary constructor?
+///
+/// It is exactly when its head is uppercase (`Green`, `None`) or it is
+/// qualified (`Color::Green`). A lowercase bare name is a variable or a
+/// function VALUE, and neither has the type `fn_returns` would report for it.
+///
+/// This matters because `fn_returns` is the program-wide FLAT table for the
+/// whole import closure, with no module scoping: consulting it for a lowercase
+/// name answers about a same-spelled function in another module. Measured --
+/// `CtVar(id) => "?t\{id}"` in `core/types.vibe`, where `id` is an `Int` bound
+/// by the match arm and so absent from `var_types`, picked up a test file's
+/// `fn id(n: String) -> Expr` and rejected THAT file with "cannot interpolate
+/// a value of type `Expr`: it has no Show renderer". The named file had no
+/// interpolation, the suggested fix (`derive(Show)` on `Expr`) was wrong, and
+/// renaming the helper was the only way out.
+///
+/// The CALL arm is a different question -- `f(x)` really does have `f`'s
+/// return type -- so it keeps asking `ctor_enum_of_name` unchanged, and the
+/// cross-module ambiguity there is #2527's remaining half.
+fn dtd_name_is_constructor_shaped(name: String) -> Bool {
+  if String::contains(name, "::") {
+    true
+  } else if String::length(name) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(name, 0)
+    c >= 'A' && c <= 'Z'
+  }
+}
+
 fn ctor_enum_of_name(fn_returns: Array[(String, String)], name: String) -> Option[String] {
   match fn_return_type(fn_returns, name) {
     Some(t) => Some(t),
@@ -2439,7 +2469,13 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
     } else {
       match lookup_var_type(var_types, name) {
         Some(t) => Some(t),
-        None => ctor_enum_of_name(fn_returns, name)
+        // #2527: only a constructor-shaped name may fall through to the flat
+        // program-wide table -- see dtd_name_is_constructor_shaped.
+        None => if dtd_name_is_constructor_shaped(name) {
+          ctor_enum_of_name(fn_returns, name)
+        } else {
+          None
+        }
       }
     },
     // #1341 (Codex P1 on #1369): a PROJECTION (`h.s`). The object's type name
