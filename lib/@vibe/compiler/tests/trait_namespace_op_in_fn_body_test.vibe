@@ -1,0 +1,116 @@
+//# Imports
+
+// #2570: inside a `fn` body a `Trait::op(..)` call was not type-checked at
+// all -- not the result, not the argument types, not the arity.
+//
+// `derive_trait_namespace_operations` synthesizes each `Trait::op` wrapper as
+// an `SLet` and used to insert it AFTER the run of top-level `SLet`/`SFnDecl`
+// that follows the last trait/impl. So a call from a `fn` body above it was a
+// FORWARD reference, and the checker's forward-reference hoist pre-binds a
+// generic value as `CtUnknown` -- every wrapper carries a `Self`-dispatch type
+// parameter, so every wrapper hoisted as `CtUnknown`, which unifies with
+// anything.
+//
+// Measured on the repro below, `let z: String = Num::zero(p)` -- declared
+// `-> Double` -- checked clean inside a `fn` body, compiled, and printed the
+// Double's bits as a string, while the identical line inside a `test` body
+// (which sits BELOW the insertion point) was correctly rejected. Same program,
+// same wrapper: the verdict depended on which site the checker typed.
+//
+// The reported symptom was narrower: `Num::zero(p) + Num::zero(p)` was
+// rejected as `expected Double, got Int`, because `infer_binop_type` tries the
+// `CtInt` candidate first and two UNCONSTRAINED operands unify with it. The
+// `Int::to_string(Num::zero(p) + 1)` case below is the discriminator -- it is
+// clean exactly when the operand is unconstrained.
+//
+// The fix inserts the wrappers immediately after the last trait/impl, so the
+// call is an ordinary BACKWARD reference and the wrapper's own statement has
+// already bound its real (generic) type.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// The checker's first diagnostic for `src`, or "" when it checks clean.
+/// Same fail-fast shape as checker_diag_report_test.vibe's `first_check_error`.
+fn diags_of(src: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(src)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn rejects(src: String) -> Bool {
+  String::length(diags_of(src)) > 0
+}
+
+let trait_prelude = "trait Num {\n  zero(Self) -> Double\n}\n\nstruct P {\n  v: Double\n}\n\nimpl Num for P {\n  zero(p: P) -> Double {\n    0.5\n  }\n}\n\n"
+
+/// `body` placed inside a `fn` body, with `p: P` already in scope.
+fn in_fn_body(body: String) -> String {
+  String::concat(trait_prelude, String::concat("fn f() -> Unit with Stdout {\n  let p = P::{ v: 1.25 }\n", String::concat(body, "\n}\n")))
+}
+
+//# Tests
+
+test "the call's RESULT type is checked inside a fn body" {
+  // The silently-wrong case: this compiled and printed the Double's bits.
+  inspect(rejects(in_fn_body("  let z: String = Num::zero(p)\n  println(z)")), "true")
+}
+
+test "the call's ARGUMENT types are checked inside a fn body" {
+  inspect(rejects(in_fn_body("  println(Double::to_string(Num::zero(\"not a P\")))")), "true")
+}
+
+test "the call's ARITY is checked inside a fn body" {
+  inspect(rejects(in_fn_body("  println(Double::to_string(Num::zero(p, p)))")), "true")
+}
+
+test "a correct call inside a fn body still checks clean" {
+  inspect(rejects(in_fn_body("  let z: Double = Num::zero(p)\n  println(Double::to_string(z))")), "false")
+}
+
+// The reported symptom, on all three arithmetic operators. They share
+// `infer_binop_type`'s candidate ladder, so the issue's `+` was never alone.
+
+test "the SUM of two trait calls is a Double" {
+  inspect(rejects(in_fn_body("  println(Double::to_string(Num::zero(p) + Num::zero(p)))")), "false")
+}
+
+test "the DIFFERENCE of two trait calls is a Double" {
+  inspect(rejects(in_fn_body("  println(Double::to_string(Num::zero(p) - Num::zero(p)))")), "false")
+}
+
+test "the PRODUCT of two trait calls is a Double" {
+  inspect(rejects(in_fn_body("  println(Double::to_string(Num::zero(p) * Num::zero(p)))")), "false")
+}
+
+test "a trait call does NOT unify with Int -- the discriminator" {
+  // Clean exactly when the operand is unconstrained, which is what made the
+  // `+` ladder answer CtInt. `<` hides the same defect (its arm returns
+  // CtBool down every path), so this is the case that can observe it.
+  inspect(rejects(in_fn_body("  println(Int::to_string(Num::zero(p) + 1))")), "true")
+}
+
+test "the same call inside a test body was already checked, and still is" {
+  let src = String::concat(trait_prelude, "test \"t\" {\n  let p = P::{ v: 1.25 }\n  let z: String = Num::zero(p)\n  assert_true(String::length(z) >= 0)\n}\n")
+  inspect(rejects(src), "true")
+}
+
+// Controls: an ordinary generic top-level function is a forward reference too.
+// The fix does not touch the hoist, so these keep their existing behavior --
+// they are here so a later change to the hoist cannot move them unnoticed.
+
+test "a forward call to a generic identity is accepted" {
+  inspect(rejects("fn f() -> Int {\n  ident(1)\n}\nfn ident[T](x: T) -> T { x }\n"), "false")
+}
+
+test "a forward call to a generic identity at String is accepted" {
+  inspect(rejects("fn f() -> String {\n  ident(\"s\")\n}\nfn ident[T](x: T) -> T { x }\n"), "false")
+}
