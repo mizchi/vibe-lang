@@ -1,0 +1,106 @@
+//# Imports
+
+// #2607: a forward call to a GENERIC top-level `fn` was unchecked -- the half
+// #2318 excluded.
+//
+// #2318 gave the forward-reference hoist a real signature for a top-level `fn`,
+// so a call placed ABOVE the definition is checked. It excluded a `fn` with type
+// parameters, on the grounds that "a type parameter makes a concrete `CtFn` a
+// lie at every call site". That is true of the SLOTS THAT MENTION a parameter,
+// not of the signature: collapsing the whole thing to `CtUnknown` threw away the
+// arity and any concrete return type with it, and `CtUnknown` unifies with
+// anything.
+//
+// Measured on the production linear/RC lane, `fn caller() -> String { len([1,2]) }`
+// above `fn len[T](xs: Array[T]) -> Int` compiled clean and printed `2`, with
+// `String::length(caller())` answering `4` -- an `Int` in a `String` slot, no
+// diagnostic at any stage. Moving the definition above the caller rejected the
+// same program (`return type mismatch: expected String, got Int`), so source
+// order decided the verdict.
+//
+// The fix masks per slot: a parameter or return annotation that mentions one of
+// the binder's own type parameters resolves to `CtUnknown` (unchecked exactly as
+// before), every other slot resolves normally, and arity is checked either way.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+/// The checker's first diagnostic for `src`, or "" when it checks clean.
+fn diags_of(src: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(src)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn rejects(src: String) -> Bool {
+  String::length(diags_of(src)) > 0
+}
+
+/// `caller` above `defn`: the forward-reference direction, which is the one
+/// the hoist answers for.
+fn forward(caller: String, defn: String) -> String {
+  String::concat(caller, defn)
+}
+
+let len_defn = "fn len[T](xs: Array[T]) -> Int { Array::length(xs) }\n"
+
+let ident_defn = "fn ident[T](x: T) -> T { x }\n"
+
+//# Tests
+
+test "a forward call's concrete RETURN type is checked" {
+  inspect(rejects(forward("fn caller() -> String {\n  len([1, 2])\n}\n", len_defn)), "true")
+}
+
+test "the same call BELOW the definition was always checked" {
+  inspect(rejects(String::concat(len_defn, "fn caller() -> String {\n  len([1, 2])\n}\n")), "true")
+}
+
+test "a forward call's ARITY is checked" {
+  inspect(rejects(forward("fn caller() -> Int {\n  len([1, 2], 3)\n}\n", len_defn)), "true")
+}
+
+test "a correct forward call is accepted" {
+  inspect(rejects(forward("fn caller() -> Int {\n  len([1, 2])\n}\n", len_defn)), "false")
+}
+
+// The masked slots. A parameter or return that mentions the binder's own type
+// parameter has no one right answer for a pre-binding every call site shares,
+// so it stays `CtUnknown` -- these must NOT start being rejected.
+
+test "a forward call to a generic identity is accepted at Int" {
+  inspect(rejects(forward("fn caller() -> Int {\n  ident(1)\n}\n", ident_defn)), "false")
+}
+
+test "a forward call to a generic identity is accepted at String" {
+  inspect(rejects(forward("fn caller() -> String {\n  ident(\"s\")\n}\n", ident_defn)), "false")
+}
+
+test "two calls to one generic forward binding may pick different types" {
+  let src = String::concat("fn caller() -> String {\n  let a: Int = ident(1)\n  let b: String = ident(\"s\")\n  String::concat(__to_string(a), b)\n}\n", ident_defn)
+  inspect(rejects(src), "false")
+}
+
+test "a parameter slot that mentions the type parameter stays unchecked" {
+  let src = String::concat("fn caller() -> Int {\n  pick(1, 2)\n}\n", "fn pick[T](a: T, b: T) -> T { a }\n")
+  inspect(rejects(src), "false")
+}
+
+test "an optional or labeled parameter still disqualifies the signature" {
+  // The other #2318 exclusion, which this change does not touch: a legitimate
+  // call may omit the parameter, so a strict arity would report a false error.
+  let src = String::concat("fn caller() -> Int {\n  opt(1)\n}\n", "fn opt[T](a: T, b?: Int) -> Int { 0 }\n")
+  inspect(rejects(src), "false")
+}
+
+test "a non-generic forward call keeps the #2318 behavior" {
+  inspect(rejects(forward("fn caller() -> String {\n  plain(1)\n}\n", "fn plain(x: Int) -> Int { x }\n")), "true")
+}
