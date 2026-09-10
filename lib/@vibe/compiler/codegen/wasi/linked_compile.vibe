@@ -3618,6 +3618,75 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
 // per-statement file ids on stable statement keys (a declaration's kind and
 // name): an inserted statement belongs to the file of the statement before
 // it, which is also where a per-module run would put it.
+/// A type as a key, for telling one impl of a trait from another. Keying an
+/// impl by its TRAIT alone (what this did) collapses every `impl Eq for ...` in
+/// a program onto `impl:Eq`, and a key that repeats is skipped by the content
+/// comparison -- so a per-module run could drop or change an implementation and
+/// still read `missing=0 content=0` (Codex P1 on #2622).
+fn oracle_type_key(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => n,
+    TyApp(n, args) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, n)
+      StringBuilder::push(out, "[")
+      let mut i = 0
+      while i < Array::length(args) {
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, oracle_type_key(Array::get(args, i)))
+        i = i + 1
+      }
+      StringBuilder::push(out, "]")
+      StringBuilder::freeze(out)
+    },
+    TyTuple(elems) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "(")
+      let mut i = 0
+      while i < Array::length(elems) {
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, oracle_type_key(Array::get(elems, i)))
+        i = i + 1
+      }
+      StringBuilder::push(out, ")")
+      StringBuilder::freeze(out)
+    },
+    TyFn(params, ret, eff) => {
+      let out = StringBuilder::new()
+      StringBuilder::push(out, "fn(")
+      let mut i = 0
+      while i < Array::length(params) {
+        if i > 0 {
+          StringBuilder::push(out, ",")
+        } else {
+          ()
+        }
+        StringBuilder::push(out, oracle_type_key(Array::get(params, i)))
+        i = i + 1
+      }
+      StringBuilder::push(out, ")->")
+      StringBuilder::push(out, oracle_type_key(ret))
+      match eff {
+        Some(row) => {
+          StringBuilder::push(out, " with ")
+          StringBuilder::push(out, row)
+        },
+        None => ()
+      }
+      StringBuilder::freeze(out)
+    },
+    TyUnit => "Unit"
+  }
+}
+
 fn oracle_stmt_key(s: Stmt) -> String {
   match s {
     SLet(_, _, n, _, _) => String::concat("let:", n),
@@ -3627,7 +3696,7 @@ fn oracle_stmt_key(s: Stmt) -> String {
     SStruct(_, n, _, _, _, _) => String::concat("struct:", n),
     STypeAlias(_, n, _, _) => String::concat("alias:", n),
     STrait(_, n, _, _, _, _) => String::concat("trait:", n),
-    SImpl(_, _, n, _) => String::concat("impl:", n),
+    SImpl(_, _, n, ty) => String::concat("impl:", String::concat(n, String::concat(":", oracle_type_key(ty)))),
     SExternLet(n, _) => String::concat("extern:", n),
     SImport(p, _) => String::concat("import:", p),
     STest(n, _) => String::concat("test:", n),
@@ -3752,36 +3821,62 @@ fn oracle_head(s: String) -> String {
 
 /// #2388: a module's dependency interface as the per-module pass sees it --
 /// what another file contributes without its bodies being compiled here:
-/// type, trait, suberror and impl declarations, and every top-level
-/// definition (a function's signature drives witness threading at a call
-/// site and the exception kind of a throw whose payload it returns; an
+/// EXPORTED type, trait, suberror and impl declarations, and exported
+/// top-level definitions (a function's signature drives witness threading at a
+/// call site and the exception kind of a throw whose payload it returns; an
 /// explicit `T::op` suppresses a derive). Bodies ride along unread: the
 /// module entry never rewrites or emits a context statement, which is the
 /// bodyless form a `.vpkg` contract carries.
+///
+/// The export test is the point. This used to admit PRIVATE declarations too,
+/// which made the oracle more permissive than any real driver -- `index.vpkg`
+/// is the bodyless PUBLIC boundary, so a pass reading a dependency's private
+/// declaration stayed green here while a per-module compile could not see it
+/// (Codex P1 on #2622).
 fn oracle_is_interface_stmt(s: Stmt) -> Bool {
   match s {
-    SEnum(_, _, _, _, _) => true,
-    SStruct(_, _, _, _, _, _) => true,
-    STypeAlias(_, _, _, _) => true,
-    SSuberror(_, _, _) => true,
-    STrait(_, _, _, _, _, _) => true,
+    SEnum(exported, _, _, _, _) => exported,
+    SStruct(exported, _, _, _, _, _) => exported,
+    STypeAlias(exported, _, _, _) => exported,
+    SSuberror(exported, _, _) => exported,
+    STrait(exported, _, _, _, _, _) => exported,
+    // An impl carries no export flag and is not addressed by name: trait
+    // resolution is global, and a contract that dropped a dependency's impls
+    // would make its bounded generics unusable.
     SImpl(_, _, _, _) => true,
-    SLet(_, _, _, _, _) => true,
-    SLetMut(_, _, _) => true,
+    SLet(exported, _, _, _, _) => exported,
+    // A top-level mutable binding is never part of a package's surface.
+    SLetMut(_, _, _) => false,
     _ => false
   }
 }
 
-/// The interface form of a context statement: a function whose return type
-/// is spelled loses its body (`EUnit`), the shape a `.vpkg` contract carries,
-/// so no body-reading collector (the trivial-wrapper inliner above all) can
-/// see through the interface. A function with no return annotation keeps its
-/// body: the contract would carry the checker's elaborated return type, which
+/// The interface form of a context statement: a function loses its body
+/// (`EUnit`), the shape a `.vpkg` contract carries, so no body-reading
+/// collector (the trivial-wrapper inliner above all) can see through the
+/// interface.
+///
+/// A function with NO return annotation used to keep its body, on the argument
+/// that a contract would carry the checker's elaborated return type -- which
 /// the pass reads off the body's tail expression (`fn_return_head_of`,
-/// `collect_fn_eq_return_shape`), and the oracle has no other spelling of it.
+/// `collect_fn_eq_return_shape`) -- and the oracle had no other spelling of
+/// it. That made the simulated interface wider than the real boundary (Codex
+/// P1 on #2622). Measured with the bodies dropped anyway: the compiler closure
+/// reads `missing=0 extra=0 copies=328 content=0 renames=0`, unchanged, so on
+/// this corpus nothing was reading them and the interface can be what a
+/// contract actually is. A module that DID need the elaborated return type
+/// would now show up as a difference, which is the point.
 fn oracle_interface_form(s: Stmt) -> Stmt {
   match s {
-    SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, Some(ret), eff, _)) => SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, Some(ret), eff, EUnit)),
+    SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, ret, eff, _)) => SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, ret, eff, EUnit)),
+    // A non-function value loses its initializer too. `export let config:
+    // Config = …` used to go into the context whole, and `dtd_run` reads
+    // initializers (`collect_local_binder_names`,
+    // `collect_toplevel_constructor_vars`), so the split run could make a
+    // rewrite by inspecting a dependency's implementation -- which a `.vpkg`,
+    // carrying `let config: Config` and nothing else, does not expose (Codex
+    // P1 on #2622).
+    SLet(exported, is_rec, name, ty, _) => SLet(exported, is_rec, name, ty, EUnit),
     _ => s
   }
 }
@@ -3830,8 +3925,9 @@ fn oracle_strip_counters(s: String) -> String {
 /// repeat within `a` are skipped (a repeated key cannot be matched). Returns
 /// `keyed missing=<in a only> extra=<in trial only> copies=<repeats in trial>
 /// content=<same key, different content, not a fresh-name rename>
-/// renames=<same key, fresh-name renames only>` plus the first missing key and
-/// the first content-differing key.
+/// renames=<same key, fresh-name renames only> dup_keys=<statements the
+/// comparison cannot speak for, because their key repeats in `a`>` plus the
+/// first missing key and the first content-differing key.
 fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> String) -> String {
   let wmap: MutMap[String, Int] = MutMap::new_string()
   let mut ki = 0
@@ -3841,6 +3937,27 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
       MutMap::set(wmap, key, 0 - 1)
     } else {
       MutMap::set(wmap, key, ki)
+    }
+    ki = ki + 1
+  }
+  // Statements whose key is not unique in the whole-program result. Their
+  // content is NOT compared (there is no single node to compare against) and
+  // one occurrence in the trial answers for all of them, so the rest of the
+  // line is a verdict about everything except these. Reported rather than left
+  // implicit: a reader who does not know the number cannot tell how much of
+  // the program `content=0` covers (Codex P1 on #2622). Shapes with no name of
+  // their own -- a bare expression statement, a destructuring `let` -- are
+  // what is left here now that an impl is keyed by trait AND type.
+  let mut dup_keys = 0
+  ki = 0
+  while ki < Array::length(a) {
+    match MutMap::get(wmap, oracle_stmt_key(Array::get(a, ki))) {
+      Some(widx) => if widx < 0 {
+        dup_keys = dup_keys + 1
+      } else {
+        ()
+      },
+      None => ()
     }
     ki = ki + 1
   }
@@ -3927,7 +4044,7 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
     }
     ki = ki + 1
   }
-  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))
+  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))
 }
 
 /// One step of the oracle: pass `k`. `a` is the whole-program state after
@@ -3940,6 +4057,160 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
 /// diff=<count> first=<index> file=<id> status=same|differs`, followed on a
 /// difference by the two renderings' heads. `render` is the AST printer (this
 /// package cannot reach @vibe/compiler/syntax; the caller passes it).
+/// #2388: the WHOLE prelude per module, in one run.
+///
+/// `prelude_pass_module_oracle_step` answers "is pass k per-module-safe when
+/// every earlier pass ran whole-program" -- it advances the split side through
+/// 0..k-1 as one program and only splits for pass k. The driver this epic is
+/// heading for needs the stronger property: each module goes through EVERY
+/// pass alone, and the results are linked. A pass can be safe under the first
+/// question and not under the second, because per-module output of an earlier
+/// pass is what a later one then reads.
+///
+/// So this splits ONCE and never runs a pass whole-program on the split side.
+/// The one pass with a per-module entry (`desugar_trait_dicts_module`) gets
+/// each module's dependency interface, taken after the passes before it have
+/// run per module -- the same pre-pass, declaration-only form the step oracle
+/// uses, and the form a `.vpkg` contract carries.
+///
+/// Returns `FULL stmts=<whole> split=<trial>` plus the keyed line, which is the
+/// verdict: per-module synthesis lands at each module's position and repeats a
+/// program-level helper per module, so position and count are not the answer.
+export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
+  let entry_fid = file_count - 1
+  let mut k = 0
+  while k < 17 {
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    k = k + 1
+  }
+  let parts: Array[Array[Stmt]] = []
+  let mut fi = 0
+  while fi < file_count {
+    Array::push(parts, array_empty())
+    fi = fi + 1
+  }
+  let mut si = 0
+  while si < Array::length(c) {
+    let part = Array::get(parts, Array::get(c_file_id, si))
+    Array::push(part, Array::get(c, si))
+    si = si + 1
+  }
+  // Everything before the trait-dict entry, per module.
+  fi = 0
+  while fi < file_count {
+    let part_entry = if fi == entry_fid {
+      entry_name
+    } else {
+      ""
+    }
+    let mut j = 0
+    while j < 4 {
+      oracle_apply_pass(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys)
+      j = j + 1
+    }
+    fi = fi + 1
+  }
+  let ifaces: Array[Array[Stmt]] = []
+  let mut pf = 0
+  while pf < file_count {
+    let src = Array::get(parts, pf)
+    let dst: Array[Stmt] = []
+    let mut ps = 0
+    while ps < Array::length(src) {
+      if oracle_is_interface_stmt(Array::get(src, ps)) {
+        Array::push(dst, oracle_interface_form(Array::get(src, ps)))
+      } else {
+        ()
+      }
+      ps = ps + 1
+    }
+    Array::push(ifaces, dst)
+    pf = pf + 1
+  }
+  // The trait-dict entry with that interface, then the rest of the prelude,
+  // per module.
+  fi = 0
+  while fi < file_count {
+    let part_entry = if fi == entry_fid {
+      entry_name
+    } else {
+      ""
+    }
+    let part = Array::get(parts, fi)
+    let own_keys: MutMap[String, Int] = MutMap::new_string()
+    let mut ok = 0
+    while ok < Array::length(part) {
+      MutMap::set(own_keys, oracle_stmt_key(Array::get(part, ok)), 1)
+      ok = ok + 1
+    }
+    let ctx: Array[Stmt] = []
+    let mut cj = 0
+    while cj < file_count {
+      // Every other file, which is WIDER than a real per-module compile sees.
+      // Two narrower rules were built and measured (Codex P1 on #2622), and
+      // neither holds at this granularity:
+      //
+      //  - "only files merged before this one" (dependencies precede
+      //    dependents) reports a false difference, because a `.vpkg`
+      //    contract is MATERIALIZED into a generated types file that the
+      //    merge lays FIRST, ahead of the implementation whose declarations
+      //    its own derives need: `PerceusAction::equals` then compares
+      //    `a.kind == b.kind` instead of calling `PerceusActionKind::equals`.
+      //  - grouping files into packages first does not exist to be had:
+      //    `collect_source_groups_fs` returns ONE group (`recursive`, 191
+      //    files) for the compiler closure, so there is no package partition
+      //    to split on.
+      //
+      // Exact import edges would settle it, and the merge drops `SImport`
+      // ("Skips SImport, SReExport (already resolved)"), so they have to come
+      // from the loader. That is filed on #2388 as what the per-module driver
+      // needs first, and until then this oracle's green is the weaker claim:
+      // no module needed anything the whole program did not have.
+      if cj == fi {
+        ()
+      } else {
+        let other = Array::get(ifaces, cj)
+        let mut ci = 0
+        while ci < Array::length(other) {
+          let cs = Array::get(other, ci)
+          if MutMap::has(own_keys, oracle_stmt_key(cs)) {
+            ()
+          } else {
+            Array::push(ctx, cs)
+          }
+          ci = ci + 1
+        }
+      }
+      cj = cj + 1
+    }
+    let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
+    let mut sy = 0
+    while sy < Array::length(synthesized) {
+      Array::push(part, Array::get(synthesized, sy))
+      sy = sy + 1
+    }
+    let mut j2 = 5
+    while j2 < 17 {
+      oracle_apply_pass(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+      j2 = j2 + 1
+    }
+    fi = fi + 1
+  }
+  let trial: Array[Stmt] = []
+  fi = 0
+  while fi < file_count {
+    let part = Array::get(parts, fi)
+    let mut oi = 0
+    while oi < Array::length(part) {
+      Array::push(trial, Array::get(part, oi))
+      oi = oi + 1
+    }
+    fi = fi + 1
+  }
+  let line = String::concat("FULL stmts=", String::concat(Int::to_string(Array::length(a)), String::concat(" split=", String::concat(Int::to_string(Array::length(trial)), String::concat(" modules=", String::concat(Int::to_string(file_count), "\n"))))))
+  String::concat(line, oracle_keyed_line(a, trial, render))
+}
+
 export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
   let entry_fid = file_count - 1
   let mut file_of = c_file_id
@@ -4028,6 +4299,9 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
       let ctx: Array[Stmt] = []
       let mut cj = 0
       while cj < file_count {
+        // Every other file -- wider than a real per-module compile sees; the
+        // full-sequence oracle above records the two narrower rules that were
+        // measured and why neither holds at file granularity.
         if cj == fi {
           ()
         } else {

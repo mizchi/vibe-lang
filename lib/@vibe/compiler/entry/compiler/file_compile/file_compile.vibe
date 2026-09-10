@@ -80,6 +80,7 @@ import @vibe/compiler/codegen/wasi {
   compile_wasi_module_with_sources_coverage_impl_with_typed_offsets,
   compile_wasi_module_with_sources_trace_impl_with_typed_offsets,
   effect_lowering_prelude,
+  prelude_module_full_oracle_line,
   prelude_pass_module_oracle_step
 }
 
@@ -541,6 +542,20 @@ export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String
     k = k + 1
   }
   report
+}
+
+/// #2388 measurement: the same closure through the WHOLE prelude per module.
+/// `prelude_module_oracle_report_fs` reports pass by pass from a whole-program
+/// state; this one splits once and runs every pass on each file alone, which is
+/// the property a real per-module driver needs. One `FULL ...` line plus the
+/// keyed comparison.
+export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: String) -> String with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let (a, _, _, _) = prelude_oracle_merge(source_groups)
+  let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups)
+  let (eq_offs, eq_keys) = eq
+  prelude_module_full_oracle_line(a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, print_stmt)
 }
 
 fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {
