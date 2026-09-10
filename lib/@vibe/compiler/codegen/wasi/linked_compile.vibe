@@ -3937,6 +3937,140 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
 /// diff=<count> first=<index> file=<id> status=same|differs`, followed on a
 /// difference by the two renderings' heads. `render` is the AST printer (this
 /// package cannot reach @vibe/compiler/syntax; the caller passes it).
+/// #2388: the WHOLE prelude per module, in one run.
+///
+/// `prelude_pass_module_oracle_step` answers "is pass k per-module-safe when
+/// every earlier pass ran whole-program" -- it advances the split side through
+/// 0..k-1 as one program and only splits for pass k. The driver this epic is
+/// heading for needs the stronger property: each module goes through EVERY
+/// pass alone, and the results are linked. A pass can be safe under the first
+/// question and not under the second, because per-module output of an earlier
+/// pass is what a later one then reads.
+///
+/// So this splits ONCE and never runs a pass whole-program on the split side.
+/// The one pass with a per-module entry (`desugar_trait_dicts_module`) gets
+/// each module's dependency interface, taken after the passes before it have
+/// run per module -- the same pre-pass, declaration-only form the step oracle
+/// uses, and the form a `.vpkg` contract carries.
+///
+/// Returns `FULL stmts=<whole> split=<trial>` plus the keyed line, which is the
+/// verdict: per-module synthesis lands at each module's position and repeats a
+/// program-level helper per module, so position and count are not the answer.
+export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
+  let entry_fid = file_count - 1
+  let mut k = 0
+  while k < 17 {
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    k = k + 1
+  }
+  let parts: Array[Array[Stmt]] = []
+  let mut fi = 0
+  while fi < file_count {
+    Array::push(parts, array_empty())
+    fi = fi + 1
+  }
+  let mut si = 0
+  while si < Array::length(c) {
+    let part = Array::get(parts, Array::get(c_file_id, si))
+    Array::push(part, Array::get(c, si))
+    si = si + 1
+  }
+  // Everything before the trait-dict entry, per module.
+  fi = 0
+  while fi < file_count {
+    let part_entry = if fi == entry_fid {
+      entry_name
+    } else {
+      ""
+    }
+    let mut j = 0
+    while j < 4 {
+      oracle_apply_pass(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys)
+      j = j + 1
+    }
+    fi = fi + 1
+  }
+  let ifaces: Array[Array[Stmt]] = []
+  let mut pf = 0
+  while pf < file_count {
+    let src = Array::get(parts, pf)
+    let dst: Array[Stmt] = []
+    let mut ps = 0
+    while ps < Array::length(src) {
+      if oracle_is_interface_stmt(Array::get(src, ps)) {
+        Array::push(dst, oracle_interface_form(Array::get(src, ps)))
+      } else {
+        ()
+      }
+      ps = ps + 1
+    }
+    Array::push(ifaces, dst)
+    pf = pf + 1
+  }
+  // The trait-dict entry with that interface, then the rest of the prelude,
+  // per module.
+  fi = 0
+  while fi < file_count {
+    let part_entry = if fi == entry_fid {
+      entry_name
+    } else {
+      ""
+    }
+    let part = Array::get(parts, fi)
+    let own_keys: MutMap[String, Int] = MutMap::new_string()
+    let mut ok = 0
+    while ok < Array::length(part) {
+      MutMap::set(own_keys, oracle_stmt_key(Array::get(part, ok)), 1)
+      ok = ok + 1
+    }
+    let ctx: Array[Stmt] = []
+    let mut cj = 0
+    while cj < file_count {
+      if cj == fi {
+        ()
+      } else {
+        let other = Array::get(ifaces, cj)
+        let mut ci = 0
+        while ci < Array::length(other) {
+          let cs = Array::get(other, ci)
+          if MutMap::has(own_keys, oracle_stmt_key(cs)) {
+            ()
+          } else {
+            Array::push(ctx, cs)
+          }
+          ci = ci + 1
+        }
+      }
+      cj = cj + 1
+    }
+    let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
+    let mut sy = 0
+    while sy < Array::length(synthesized) {
+      Array::push(part, Array::get(synthesized, sy))
+      sy = sy + 1
+    }
+    let mut j2 = 5
+    while j2 < 17 {
+      oracle_apply_pass(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+      j2 = j2 + 1
+    }
+    fi = fi + 1
+  }
+  let trial: Array[Stmt] = []
+  fi = 0
+  while fi < file_count {
+    let part = Array::get(parts, fi)
+    let mut oi = 0
+    while oi < Array::length(part) {
+      Array::push(trial, Array::get(part, oi))
+      oi = oi + 1
+    }
+    fi = fi + 1
+  }
+  let line = String::concat("FULL stmts=", String::concat(Int::to_string(Array::length(a)), String::concat(" split=", String::concat(Int::to_string(Array::length(trial)), "\n"))))
+  String::concat(line, oracle_keyed_line(a, trial, render))
+}
+
 export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
   let entry_fid = file_count - 1
   let mut file_of = c_file_id
