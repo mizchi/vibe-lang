@@ -87,7 +87,7 @@ fn whole_named(name: String) -> String with Exception {
 test "the module entry threads the witness into a call of the context's bounded generic" {
   let ctx = parse_program(lex(dep_src()))
   let own = parse_program(lex(own_src()))
-  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
   inspect(render_named(own, "contains") == whole_named("contains"), content = "true")
   inspect(render_named(own, "contains"), content = "export let rec contains = [T: Hash](__dict_Hash_T: HashDict[T], s: Set[T], value: T) -> Bool { Map::has_key(s.entries, map_key_to_string(__dict_Hash_T, value)) }")
   // The context is read, never rewritten or extended: its trait gets no
@@ -108,7 +108,7 @@ test "the whole-program entry is the module entry with no context and everything
 test "the dependency's own run places its trait operation inside the module and its dict struct in the synthesized set" {
   let own = parse_program(lex(dep_src()))
   let ctx = parse_program(lex(own_src()))
-  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
   // The namespace operation is inserted directly after the trait's impls,
   // growing the module's own region; the context's structs are not derived
   // for here. It used to be placed one step further -- past the run of
@@ -123,7 +123,7 @@ test "the dependency's own run places its trait operation inside the module and 
 test "generated local names restart at every declaration, so a module compiled after the dependency gets the names it gets alone" {
   let ctx = parse_program(lex(dep_src()))
   let own = parse_program(lex(own_src()))
-  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
   // Whole-program, the dependency's `Key::equals` and `fail_dep` would have
   // consumed the tuple-binder and payload counters first.
   inspect(render_named(synth, "Pair::equals"), content = "let Pair::equals = (a: Pair, b: Pair) -> Bool { (match a.p { (__teq_l0_0, __teq_l0_1) => match b.p { (__teq_r0_0, __teq_r0_1) => (((__teq_l0_0 + 0) == (__teq_r0_0 + 0)) && ((__teq_l0_1 == __teq_r0_1) && true)) } } && true) }")
@@ -141,22 +141,22 @@ fn whole2_named(name: String) -> String with Exception {
 test "a hoisted local lambda's labeled call is reordered in a per-module run" {
   let ctx = parse_program(lex(dep2_src()))
   let own = parse_program(lex(own2_src()))
-  let synth = desugar_trait_dicts_module(own, ctx, [], [])
+  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
   // The hoisted function is appended after the context block, so it comes
   // back with the synthesized set; the labeled-argument stage must still
   // visit it -- the call to the dependency's `sub` binds by position after
   // this pass, and a call left labeled here would bind `y = a` to `x`.
-  inspect(stmt_names(synth), content = "__hoisted_lam_0_f")
-  inspect(render_named(synth, "__hoisted_lam_0_f"), content = "let __hoisted_lam_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
-  inspect(whole2_named("__hoisted_lam_0_f"), content = "let __hoisted_lam_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
-  inspect(render_named(synth, "__hoisted_lam_0_f") == whole2_named("__hoisted_lam_0_f"), content = "true")
+  inspect(stmt_names(synth), content = "__hoisted_lam_use_local_0_f")
+  inspect(render_named(synth, "__hoisted_lam_use_local_0_f"), content = "let __hoisted_lam_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
+  inspect(whole2_named("__hoisted_lam_use_local_0_f"), content = "let __hoisted_lam_use_local_0_f = (a: Int) -> Int with Log { { perform Log::Emit(\"x\"); { let g = (b: Int, c?: Option[Int]) -> Int { b }; g(a, None) } } }")
+  inspect(render_named(synth, "__hoisted_lam_use_local_0_f") == whole2_named("__hoisted_lam_use_local_0_f"), content = "true")
   inspect(render_named(own, "use_local") == whole2_named("use_local"), content = "true")
 }
 
 test "a trivial wrapper defined in the dependency is not inlined by a per-module run" {
   let ctx = parse_program(lex(dep2_src()))
   let own = parse_program(lex(own2_src()))
-  let _ = desugar_trait_dicts_module(own, ctx, [], [])
+  let _ = desugar_trait_dicts_module(own, ctx, "", [], [])
   // The whole-program run reads `apply`'s body and inlines the call; a
   // dependency interface carries no body, so a per-module run cannot, and
   // must not pretend to by reading the body it happens to be handed.
@@ -197,9 +197,48 @@ test "a trait namespace operation carries the same synthetic offset whether its 
   // trait's statement index.
   let own = parse_program(lex(dep_src()))
   let ctx = parse_program(lex(own2_src()))
-  let _ = desugar_trait_dicts_module(own, ctx, [], [])
+  let _ = desugar_trait_dicts_module(own, ctx, "", [], [])
   let whole = parse_program(lex(String::concat(own2_src(), dep_src())))
   desugar_trait_dicts(whole)
   inspect(wrapper_call_off(own, "Hash::hash_key"), content = "-2")
   inspect(wrapper_call_off(whole, "Hash::hash_key"), content = "-2")
+}
+
+// #2388: a hoisted lambda becomes a TOP-LEVEL definition, so its name has to
+// be a function of the module that owns it. These two modules each hoist a
+// local `f`. Measured on these two sources before the fresh name carried its
+// owner: each module compiled alone minted `__hoisted_lam_0_f`, so a link that
+// concatenates them had two different bodies under one name, and neither
+// matched the whole-program run, which numbered them `__hoisted_lam_0_f` (the
+// dependency's) and `__hoisted_lam_1_f` (this module's) by the order the files
+// happened to be merged in.
+fn dep4_src() -> String {
+  "effect DepLog {\n  Emit(String) -> Unit\n}\n\nexport fn dep_use() -> Int with DepLog {\n  let f = (a: Int) -> Int with DepLog {\n    perform DepLog::Emit(\"dep\")\n    a\n  }\n  f(1)\n}\n"
+}
+
+fn own4_src() -> String {
+  "effect OwnLog {\n  Emit(String) -> Unit\n}\n\nexport fn own_use() -> Int with OwnLog {\n  let f = (a: Int) -> Int with OwnLog {\n    perform OwnLog::Emit(\"own\")\n    a + 1\n  }\n  f(2)\n}\n"
+}
+
+fn whole4_named(name: String) -> String with Exception {
+  let stmts = parse_program(lex(String::concat(dep4_src(), own4_src())))
+  desugar_trait_dicts(stmts)
+  render_named(stmts, name)
+}
+
+test "a hoisted lambda is named after the declaration it came out of, so two modules cannot mint the same top-level name" {
+  let own = parse_program(lex(own4_src()))
+  let dep = parse_program(lex(dep4_src()))
+  let ctx_for_own = parse_program(lex(dep4_src()))
+  let ctx_for_dep = parse_program(lex(own4_src()))
+  let own_synth = desugar_trait_dicts_module(own, ctx_for_own, "", [], [])
+  let dep_synth = desugar_trait_dicts_module(dep, ctx_for_dep, "", [], [])
+  inspect(stmt_names(own_synth), content = "__hoisted_lam_own_use_0_f")
+  inspect(stmt_names(dep_synth), content = "__hoisted_lam_dep_use_0_f")
+  // What each module mints alone is what the whole-program run mints for it:
+  // the counter restarts at every declaration and the name carries that
+  // declaration, so neither spelling depends on the other module.
+  inspect(render_named(own_synth, "__hoisted_lam_own_use_0_f") == whole4_named("__hoisted_lam_own_use_0_f"), content = "true")
+  inspect(render_named(dep_synth, "__hoisted_lam_dep_use_0_f") == whole4_named("__hoisted_lam_dep_use_0_f"), content = "true")
+  inspect(whole4_named("__hoisted_lam_own_use_0_f"), content = "let __hoisted_lam_own_use_0_f = (a: Int) -> Int with OwnLog { { perform OwnLog::Emit(\"own\"); (a + 1) } }")
 }
