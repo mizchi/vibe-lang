@@ -3779,16 +3779,24 @@ fn oracle_is_interface_stmt(s: Stmt) -> Bool {
   }
 }
 
-/// The interface form of a context statement: a function whose return type
-/// is spelled loses its body (`EUnit`), the shape a `.vpkg` contract carries,
-/// so no body-reading collector (the trivial-wrapper inliner above all) can
-/// see through the interface. A function with no return annotation keeps its
-/// body: the contract would carry the checker's elaborated return type, which
+/// The interface form of a context statement: a function loses its body
+/// (`EUnit`), the shape a `.vpkg` contract carries, so no body-reading
+/// collector (the trivial-wrapper inliner above all) can see through the
+/// interface.
+///
+/// A function with NO return annotation used to keep its body, on the argument
+/// that a contract would carry the checker's elaborated return type -- which
 /// the pass reads off the body's tail expression (`fn_return_head_of`,
-/// `collect_fn_eq_return_shape`), and the oracle has no other spelling of it.
+/// `collect_fn_eq_return_shape`) -- and the oracle had no other spelling of
+/// it. That made the simulated interface wider than the real boundary (Codex
+/// P1 on #2622). Measured with the bodies dropped anyway: the compiler closure
+/// reads `missing=0 extra=0 copies=328 content=0 renames=0`, unchanged, so on
+/// this corpus nothing was reading them and the interface can be what a
+/// contract actually is. A module that DID need the elaborated return type
+/// would now show up as a difference, which is the point.
 fn oracle_interface_form(s: Stmt) -> Stmt {
   match s {
-    SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, Some(ret), eff, _)) => SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, Some(ret), eff, EUnit)),
+    SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, ret, eff, _)) => SLet(exported, is_rec, name, ty, EFn(tps, bounds, params, ret, eff, EUnit)),
     _ => s
   }
 }
