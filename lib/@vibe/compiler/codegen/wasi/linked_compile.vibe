@@ -180,11 +180,12 @@ import @vibe/compiler/codegen/common_base {
   bcc_guard_synth_matches,
   bcc_int_lists_equal,
   bcc_string_lists_equal,
-  codegen_body_cache_find,
+  codegen_body_cache_find_at,
   codegen_body_cache_merge,
   codegen_body_cache_new,
   codegen_body_cache_record,
   codegen_body_cache_replay,
+  codegen_body_cache_slot_index,
   compile_inline_wat_array_params,
   compute_agg_returning,
   ctor_sorted_index,
@@ -7683,6 +7684,13 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
       __gum = __gum + 1
     }
   }
+  // #2388 step 3 follow-up: function index -> cache slot, built once. The
+  // lookup below runs per function, and scanning the whole cache each time is
+  // quadratic in the function count -- ~8.9 million comparisons to answer the
+  // 4,214 questions the compiler's own closure asks (#2388's prefix-stability
+  // probe counted the bodies), paid on the lane that exists to make a warm
+  // compile cheap.
+  let body_cache_slot_index = codegen_body_cache_slot_index(body_cache_in)
   let body_cache_in_ok = if Array::length(body_cache_in.fn_indices) == 0 {
     true
   } else if pin_region_capacity < 0 {
@@ -8399,7 +8407,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
       // pipeline below -- Perceus plan, locals analysis, ctx construction,
       // compile_expr -- is skipped, not merely discarded.
       let __cache_hit = if body_cache_in_ok {
-        codegen_body_cache_find(body_cache_in, bi)
+        codegen_body_cache_find_at(body_cache_slot_index, bi)
       } else {
         0 - 1
       }
