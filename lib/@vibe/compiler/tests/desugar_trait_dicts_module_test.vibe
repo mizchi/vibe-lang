@@ -3,7 +3,12 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/normalize {
-  desugar_trait_dicts, desugar_trait_dicts_module, hoisted_lambda_owner_key, hoisted_lambda_owner_of_stmt
+  desugar_trait_dicts,
+  desugar_trait_dicts_module,
+  eq_invisible_nominals_list,
+  eq_invisible_nominals_reset,
+  hoisted_lambda_owner_key,
+  hoisted_lambda_owner_of_stmt
 }
 
 import @vibe/compiler/syntax {
@@ -457,4 +462,47 @@ fn owner_shapes_src() -> String {
 test "every top-level shape the hoist names an owner after answers with that owner" {
   let stmts = parse_program(lex(owner_shapes_src()))
   inspect(owner_keys(stmts), content = "-, __dst1, pair_a, pair_b, plain, counter, -, :t:probe")
+}
+
+// #2631: what the module could NOT see while synthesizing a comparator.
+//
+// `eq_for_typed` emits a structural `K::equals(a.kind, b.kind)` when `K` is a
+// declared type in the statements the pass was given, and a raw `a.kind ==
+// b.kind` when it is not. The second compares an AGGREGATE BY REFERENCE, and
+// nothing in the emitted body says which of the two happened -- the two
+// comparators have the same name. That is what makes per-module synthesis not
+// a function of the declaration key, and the link fold's collision the only
+// thing standing between it and a silently kept wrong body.
+//
+// Measured on the compiler's CLI closure (#2388): the whole-program lane
+// admits none of these, and the per-module lane admits exactly
+// `PerceusActionKind` and `TypeEnv` -- both declared behind an `opaque` line in
+// a `.vpkg` contract whose sibling implementation declares the real enum.
+fn invisible_probe(own_text: String, ctx_text: String) -> String with Exception {
+  let own = parse_program(lex(own_text))
+  let ctx = parse_program(lex(ctx_text))
+  eq_invisible_nominals_reset()
+  let _ = desugar_trait_dicts_module(own, ctx, "", [], [])
+  String::join(eq_invisible_nominals_list(), ", ")
+}
+
+test "a nominal the module cannot see is reported, and one it can see is not" {
+  let owner = "struct P {\n  kind: K\n} derive (Eq)\n\nexport fn use_p(a: P, b: P) -> Bool {\n  a == b\n}\n"
+  let kind_decl = "export enum K {\n  Ka;\n  Kb\n}\n"
+  // The module sees only its own struct: `K` is a name it cannot resolve to a
+  // declaration, so the comparator it synthesizes falls to the raw `==`.
+  inspect(invisible_probe(owner, ""), content = "K")
+  // The SAME module with `K`'s declaration in its context reports nothing --
+  // so the report is about visibility and not about the struct, and a checker
+  // that simply always reported would fail here.
+  inspect(invisible_probe(owner, kind_decl), content = "")
+  // A type FORMAL is not an invisible nominal: it has no declaration to be
+  // invisible to, and refusing it would reject every bounded generic. This is
+  // the control that keeps the predicate from degenerating into "not declared
+  // here".
+  let generic = "struct Holder[T] {\n  item: T\n} derive (Eq)\n"
+  inspect(invisible_probe(generic, ""), content = "")
+  // And a scalar field never reports, whatever the context.
+  let scalar = "struct S {\n  n: Int;\n  s: String\n} derive (Eq)\n"
+  inspect(invisible_probe(scalar, ""), content = "")
 }

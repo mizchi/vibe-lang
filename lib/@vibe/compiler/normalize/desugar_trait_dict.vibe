@@ -11444,6 +11444,15 @@ fn field_show_expr(fname: String, fty: TypeExpr, known_types: Array[String]) -> 
 // binding it would change a working program).
 let dtd_type_param_names: Array[String] = empty_str_array()
 
+// #2631 measurement (non-behavioural): the non-scalar `TyName`s that reach
+// `eq_for_typed`'s raw-`==` fallthrough while NOT being a type formal. Those
+// are nominals the statement list handed to the pass cannot see -- the whole
+// program can see every one of them, so on that lane this set is expected to
+// be EMPTY, and a per-module run is where it fills up. Recorded rather than
+// reasoned about because "expected to be empty" is exactly the kind of claim
+// this repo has been wrong about before.
+let dtd_eq_invisible_nominals: Array[String] = empty_str_array()
+
 // ---- #2141: the LEXICAL type-parameter scope during the rewrite ----
 //
 // `dtd_type_param_names` is a program-wide UNION minus declared type names, so
@@ -12614,6 +12623,53 @@ fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
   }
 }
 
+/// #2631: clear the invisible-nominal record. Deliberately NOT part of
+/// `eq_known_types_reset`, which runs once per pass entry -- the caller decides
+/// which span of compilation it wants the answer for (the whole program, or one
+/// module), and folding it into the pass reset would only ever report the last
+/// one.
+/// #2631: `n` reached `eq_for_typed`'s raw-`==` fallthrough as a NOMINAL the
+/// statement list could not see -- as opposed to the three things that legally
+/// land there.
+///
+///  - a scalar, where `==` is the right answer;
+///  - a type FORMAL, which cannot have a comparator because it has no type
+///    yet. `dtd_type_param_names` holds the names the program binds as type
+///    parameters, and `scope_formal_mark_prefix` marks one that a re-spelling
+///    already resolved to a formal (`__Vfp_E` and friends are formals by
+///    construction, #2141);
+///  - `?EqUnknown`, the shape scanner's explicit "no answer", spelled so that
+///    no identifier can collide with it.
+///
+/// What is left is a declared struct or enum that some OTHER module declares.
+/// A raw `==` on that compares an aggregate by REFERENCE, so this predicate is
+/// the defect's shape rather than a statistic about it. Measured on the
+/// compiler's CLI closure: the whole-program lane admits none of these, and a
+/// per-module lane admits exactly the ones behind an `opaque` contract
+/// declaration (#2631).
+fn eq_name_is_invisible_nominal(n: String) -> Bool {
+  !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
+}
+
+export fn eq_invisible_nominals_reset() -> Unit {
+  Array::truncate(dtd_eq_invisible_nominals, 0)
+}
+
+/// The non-scalar type names that reached `eq_for_typed`'s raw-`==`
+/// fallthrough without being a type formal, since the last reset: nominals the
+/// statement list could not see. A raw `==` on such a name compares an
+/// aggregate by reference, so a non-empty list is the #2631 defect and an
+/// empty one is its absence -- reported rather than assumed.
+export fn eq_invisible_nominals_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_invisible_nominals) {
+    Array::push(out, Array::get(dtd_eq_invisible_nominals, i))
+    i = i + 1
+  }
+  out
+}
+
 fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_known_types, 0)
   Array::truncate(dtd_eq_generic_types, 0)
@@ -13435,6 +13491,11 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       // pair can only be `false` vs `true`, which the fallback keeps unequal.
       EBinOp("==", EBinOp("+", lhs, EInt(0), -1), EBinOp("+", rhs, EInt(0), -1), -1)
     } else {
+      if eq_name_is_invisible_nominal(n) && !str_array_contains(dtd_eq_invisible_nominals, n) {
+        Array::push(dtd_eq_invisible_nominals, n)
+      } else {
+        ()
+      }
       EBinOp("==", lhs, rhs, -1)
     },
     TyApp("Option", args) => if eq_builtin_head_owned_by_nonenum("Option") {

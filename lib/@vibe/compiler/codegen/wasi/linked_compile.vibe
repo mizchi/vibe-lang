@@ -44,6 +44,8 @@ import @vibe/compiler/normalize {
   desugar_inspect_calls,
   desugar_trait_dicts_module,
   desugar_trait_dicts_with_typed_eq,
+  eq_invisible_nominals_list,
+  eq_invisible_nominals_reset,
   hoisted_lambda_owner_key,
   hoisted_lambda_owner_of_stmt,
   lift_match_scrutinees,
@@ -4205,11 +4207,17 @@ fn link_key_is_definition(k: String) -> Bool {
 
 export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String) -> String with Exception {
   let entry_fid = file_count - 1
+  // #2631: which nominals each lane could not see. A raw `==` on a non-scalar
+  // name that is not a type formal compares an aggregate by reference, so this
+  // is the property, not a statistic about it.
+  eq_invisible_nominals_reset()
   let mut k = 0
   while k < 17 {
     oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
     k = k + 1
   }
+  let whole_invisible = eq_invisible_nominals_list()
+  eq_invisible_nominals_reset()
   let parts: Array[Array[Stmt]] = []
   let mut fi = 0
   while fi < file_count {
@@ -4353,7 +4361,8 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let (linked, collisions) = link_fold_duplicate_definitions_report(trial, synth_keys, render)
   let head = String::concat(String::concat("FULL stmts=", Int::to_string(Array::length(a))), String::concat(" split=", Int::to_string(Array::length(trial))))
   let mid = String::concat(String::concat(" linked=", Int::to_string(Array::length(linked))), String::concat(" folded=", Int::to_string(Array::length(trial) - Array::length(linked))))
-  let tail = String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", String::concat(Int::to_string(Array::length(collisions)), "\n")))
+  let split_invisible = eq_invisible_nominals_list()
+  let tail = String::concat(String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", Int::to_string(Array::length(collisions)))), String::concat(String::concat(" invisible_whole=", Int::to_string(Array::length(whole_invisible))), String::concat(" invisible_split=", String::concat(Int::to_string(Array::length(split_invisible)), "\n"))))
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
   let mut coi = 0
@@ -4361,7 +4370,13 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     collision_lines = String::concat(collision_lines, String::concat("  collision ", String::concat(Array::get(collisions, coi), "\n")))
     coi = coi + 1
   }
-  let line2 = String::concat(line, collision_lines)
+  let mut ini = 0
+  let mut invisible_lines = ""
+  while ini < Array::length(split_invisible) && ini < 20 {
+    invisible_lines = String::concat(invisible_lines, String::concat("  invisible ", String::concat(Array::get(split_invisible, ini), "\n")))
+    ini = ini + 1
+  }
+  let line2 = String::concat(String::concat(line, collision_lines), invisible_lines)
   String::concat(line2, oracle_keyed_line(a, linked, render))
 }
 
