@@ -1,0 +1,57 @@
+//# Imports
+
+// #2527: this file's REGRESSION IS THAT IT COMPILES.
+//
+// A top-level `fn id` returning a declared enum with no Show renderer used to
+// make this file fail with
+//
+//   cannot interpolate a value of type `Expr`: it has no Show renderer --
+//   add `derive(Show)` to `Expr`, or define `fn Expr::to_string(v) -> String`
+//
+// -- positionless, and about a file that contains no interpolation at all. The
+// interpolation was `CtVar(id) => "?t\{id}"` in `core/types.vibe`, where `id`
+// is an `Int` bound by the match arm and therefore absent from `var_types`.
+// The classification fell through to `fn_returns`, the program-wide FLAT table
+// for the whole import closure, and found THIS file's `id`.
+//
+// `mk` compiled and `id` did not, so the trigger was purely the name. Both
+// spellings the issue measured are kept below.
+
+import @vibe/compiler/core {
+  Expr
+}
+
+import @vibe/core {
+  array_empty
+}
+
+//# Functions
+
+fn id(n: String) -> Expr {
+  EIdent(n, -1)
+}
+
+fn call(f: String, args: Array[Expr]) -> Expr {
+  ECall(EIdent(f, -1), args, -1)
+}
+
+fn no_args() -> Array[Expr] {
+  array_empty()
+}
+
+//# Tests
+
+test "#2527: a colliding helper name does not break an unrelated module's interpolation" {
+  // The helpers are exercised so they are not dead, but the assertion that
+  // matters is that this file compiled at all.
+  let is_ident = match id("x") {
+    EIdent(_, _) => true,
+    _ => false
+  }
+  assert(is_ident)
+  let is_call = match call("f", no_args()) {
+    ECall(_, _, _) => true,
+    _ => false
+  }
+  assert(is_call)
+}
