@@ -125,6 +125,37 @@ else
   bad "multi-file main.vibex:3 should pause (and not helper); got: $outm"
 fi
 
+# 9-10. (#2388) MULTI-FILE WITH A SYNTHESIZED TOP-LEVEL FUNCTION. Every case
+#       above compiles a program the prelude adds nothing to, which is the only
+#       shape that used to compile at all here: `DbgProv.stmt_file_id` is indexed
+#       by merged PRE-prelude statement positions, and the prelude APPENDS a
+#       top-level function per derive, hoisted lambda, trait-operation dispatcher
+#       and `__exn_kind_cell` -- so reading it at a synthesized function's index
+#       ran off the end and aborted the build with
+#       `Array::get: index 4 out of bounds for length 3`. A function is now
+#       placed by NAME, and a hoisted lambda -- which belongs to exactly one
+#       module -- by the owner its name records (#2618).
+#
+#       `helper2.vibe` hoists a local lambda AND derives a comparator; the
+#       breakpoint sits INSIDE the hoisted body, so the pause proves the
+#       synthesized function was filed under the helper and not under the entry
+#       (a wrong file id maps its offsets through the wrong newline table, so
+#       the pair the runner reports would not be helper2.vibe:11).
+printf 'effect HLog {\n  Emit(String) -> Unit\n}\n\nstruct Pt {\n  v: Int\n} derive (Eq)\n\nexport let compute2 = (n: Int) -> Int {\n  let bump = (a: Int) -> Int with HLog {\n    let stepped = a + 1\n    perform HLog::Emit("bump")\n    stepped\n  }\n  handle {\n    bump(n)\n  } with {\n    HLog::Emit(_m) => resume(0)\n  }\n}\n' > "$WORK/helper2.vibe"
+printf 'import ./helper2.vibe { compute2 }\nfn main with Stdout {\n  let r = compute2(10)\n  Stdout::write_stream("\\{r}\\n")\n}\n' > "$WORK/main2.vibex"
+outh2="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "helper2.vibe:11" "$WORK/main2.vibex" 2>&1 || true)"
+if printf '%s' "$outh2" | grep -qF "breakpoint hit: helper2.vibe:11"; then
+  ok "multi-file: a line inside a HOISTED lambda in an imported module pauses (#2388)"
+else
+  bad "multi-file helper2.vibe:11 (inside a hoisted lambda) should pause; got: $outh2"
+fi
+outm2="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "main2.vibex:3" "$WORK/main2.vibex" 2>&1 || true)"
+if printf '%s' "$outm2" | grep -qF "breakpoint hit: main2.vibex:3" && printf '%s' "$outm2" | grep -qx "11"; then
+  ok "multi-file with synthesis: the ENTRY file still pauses and the run computes 11"
+else
+  bad "multi-file main2.vibex:3 should pause and print 11; got: $outm2"
+fi
+
 echo "----"
 echo "[test_vibe_break_interior] passed: $pass, failed: $fail"
 [ "$fail" -eq 0 ]

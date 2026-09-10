@@ -44,6 +44,7 @@ import @vibe/compiler/normalize {
   desugar_inspect_calls,
   desugar_trait_dicts_module,
   desugar_trait_dicts_with_typed_eq,
+  hoisted_lambda_owner_key,
   lift_match_scrutinees,
   unbox_tuple_loop_params,
   uniquify_shadowed_bindings_fresh
@@ -4137,6 +4138,76 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
   }
 }
 
+/// Interior-line breakpoints: the source file a compiled function came from,
+/// looked up BY NAME (#2388).
+///
+/// `prov.stmt_file_id` maps merged PRE-PRELUDE statement positions to files,
+/// while the codegen loop below runs over the POST-prelude program -- so
+/// indexing it with a post-prelude statement index is only correct while the
+/// prelude neither adds nor removes a top-level statement. It does both: every
+/// derived comparator, trait-operation dispatcher, monoify specialization and
+/// `__exn_kind_cell` is appended past the end, and a hoisted lambda is inserted
+/// next to its own declaration (#2620), which SHIFTS every statement after it.
+/// Reading the array at a post-prelude index therefore ran off the end --
+/// measured before this lookup, a `vibe build` under VIBE_DEBUG_BREAK=1 died
+/// with `Array::get: index 4 out of bounds for length 3` on a single file whose
+/// only synthesis was one `derive (Eq)`, and `index 7 out of bounds for length
+/// 5` on a two-file program with a hoisted lambda. A program with no synthesis
+/// at all compiled, which is why the lane looked healthy.
+///
+/// A NAME is the identity that survives the prelude: the merge makes every
+/// top-level name unique (`<name>_dep_<path>` for a private one, `<name>_exp_
+/// <path>` for an exported one), so the pre-prelude name -> file index answers
+/// for every function the source wrote, whatever the passes did to positions.
+///
+/// A function the prelude SYNTHESIZED has no pre-prelude name. Where it
+/// records the module it belongs to in its own name -- a hoisted lambda,
+/// whose top-level definition is its declaration's and no one else's (#2618)
+/// -- that owner answers instead. What records no owner is a program-level
+/// definition that belongs to no single file: a comparator derived for a type
+/// is emitted once and called from wherever that type is compared. Those get
+/// file 0, a placement rather than a claim -- a breakpoint set in a file is
+/// matched by basename against `vibe.dbgfiles`, so the effect is that a
+/// synthesized body reports the first file's name, not that a user's
+/// breakpoint moves.
+fn lc_dbg_file_of_fn(dbg_name_file: MutMap[String, Int], name: String) -> Int {
+  match MutMap::get(dbg_name_file, name) {
+    Some(fid) => fid,
+    None => match hoisted_lambda_owner_key(name) {
+      Some(owner) => lc_dbg_file_of_owner(dbg_name_file, owner),
+      None => 0
+    }
+  }
+}
+
+/// An owner key resolved against the same index. The spellings are the
+/// minter's (`dlh_owner_key` in normalize/desugar_trait_dict.vibe): a
+/// declaration's name verbatim, `:t:` / `:b:` for a test or bench block --
+/// which the scan above recorded under their lowered `__test_` / `__bench_`
+/// names -- and `:s:` for a top-level statement that binds no name, whose key
+/// is a POSITION in the program the hoist walked rather than a name, and so
+/// does not resolve here.
+fn lc_dbg_file_of_owner(dbg_name_file: MutMap[String, Int], owner: String) -> Int {
+  let n = String::length(owner)
+  let key = if String::starts_with(owner, ":t:") {
+    String::concat("__test_", String::substring(owner, 3, n))
+  } else if String::starts_with(owner, ":b:") {
+    String::concat("__bench_", String::substring(owner, 3, n))
+  } else if String::starts_with(owner, ":s:") {
+    ""
+  } else {
+    owner
+  }
+  if String::length(key) == 0 {
+    0
+  } else {
+    match MutMap::get(dbg_name_file, key) {
+      Some(fid) => fid,
+      None => 0
+    }
+  }
+}
+
 /// #1666: does `name` name a top-level definition in this program?
 ///
 /// Mirrors `stmt_name` in core/dce.vibe -- the same three statement shapes DCE
@@ -5340,15 +5411,38 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // no pass inserted or renamed ahead of the boundary before it trusts it.
   let synth_boundary_stmt = Array::length(stmts)
   let pre_prelude_let_names = lc_fresh_string_array()
+  // Interior-line breakpoints: the file each of those names came from, taken
+  // while the positions `prov.stmt_file_id` is indexed by are still the
+  // program's. See lc_dbg_file_of_fn -- after the prelude they are not.
+  let pre_prelude_let_files = lc_fresh_int_array()
+  let dbg_prov_len = Array::length(prov.stmt_file_id)
   let mut __sbn_i = 0
   while __sbn_i < synth_boundary_stmt {
+    // Kept exactly parallel to the names: one push into each per recorded
+    // statement. A position the provenance does not cover (an empty
+    // `DbgProv`, every non-break build) records file 0, which the lookup
+    // never reads because `dbg_line_on` is false there.
+    let __sbn_file = if __sbn_i < dbg_prov_len {
+      Array::get(prov.stmt_file_id, __sbn_i)
+    } else {
+      0
+    }
     match Array::get(stmts, __sbn_i) {
-      SLet(_, _, __sbn_name, _, _) => Array::push(pre_prelude_let_names, __sbn_name),
+      SLet(_, _, __sbn_name, _, _) => {
+        Array::push(pre_prelude_let_names, __sbn_name)
+        Array::push(pre_prelude_let_files, __sbn_file)
+      },
       // The test/bench lowering below rewrites these in place to
       // `SLet(__test_<name>, ...)` / `SLet(__bench_<name>, ...)` before the
       // padding step verifies the prefix, so record the POST-rewrite name.
-      STest(__sbn_tname, _) => Array::push(pre_prelude_let_names, String::concat("__test_", __sbn_tname)),
-      SBench(__sbn_bname, _) => Array::push(pre_prelude_let_names, String::concat("__bench_", __sbn_bname)),
+      STest(__sbn_tname, _) => {
+        Array::push(pre_prelude_let_names, String::concat("__test_", __sbn_tname))
+        Array::push(pre_prelude_let_files, __sbn_file)
+      },
+      SBench(__sbn_bname, _) => {
+        Array::push(pre_prelude_let_names, String::concat("__bench_", __sbn_bname))
+        Array::push(pre_prelude_let_files, __sbn_file)
+      },
       _ => ()
     }
     __sbn_i = __sbn_i + 1
@@ -6992,6 +7086,18 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // work. Gated on `debug_break && prov has files`, so default builds reserve
   // nothing and stay byte-identical.
   let dbg_line_on = debug_break && Array::length(prov.files) > 0
+  // Pre-prelude name -> file, the identity that survives the prelude. Built
+  // only in break mode; every other build leaves it empty and never reads it.
+  let dbg_name_file: MutMap[String, Int] = MutMap::new_string()
+  if dbg_line_on {
+    let mut dnf_i = 0
+    while dnf_i < Array::length(pre_prelude_let_names) && dnf_i < Array::length(pre_prelude_let_files) {
+      MutMap::set(dbg_name_file, Array::get(pre_prelude_let_names, dnf_i), Array::get(pre_prelude_let_files, dnf_i))
+      dnf_i = dnf_i + 1
+    }
+  } else {
+    ()
+  }
   let dbg_line_import_idx = if dbg_line_on {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
@@ -8600,7 +8706,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
         // Interior-line breakpoints: this function's source file id + that file's
         // newline index (for mapping its statement offsets to lines). Off => 0/empty.
         let dbg_fid = if dbg_line_on {
-          Array::get(prov.stmt_file_id, Array::get(fn_stmt_indices, bi))
+          lc_dbg_file_of_fn(dbg_name_file, fn_name_dbg)
         } else {
           0
         }
