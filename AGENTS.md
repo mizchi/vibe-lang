@@ -76,19 +76,32 @@ test is an **allow-list** — measured, a declared field of `Int` / `String` /
 content-compared and keeps answering. `Map` joined them once #2218 gave
 `eq_for_typed` a `Map` arm; a head nobody measured still costs its owner a
 trap.
-**What does not resolve traps** once both sides are
+**What does not resolve is REFUSED AT COMPILE TIME** once both sides are
 non-empty, rather than answering by length or by identity, and an annotation
 fixes it. On the FS lane that is now only an element the allow-list rejects (a
-closure field, an opaque nominal field — the remaining
-`structural_eq_untyped_empty_*_trap.vibe` fixtures). While either side is
-still empty the lengths decide, annotation or not.
+closure field, an opaque nominal field — the
+`structural_eq_untyped_empty_*_refused.vibe` fixtures). Since #2475 the refusal
+is a build error naming the edit, not a bare `trap: RuntimeError: unreachable`
+on a program that compiled clean; a message cannot be attached at run time
+because `assert_eq` lowers to `println` and so demands `Stdout` on the
+containing function (#2107). The cost, accepted: a comparison that is written
+but never executed no longer compiles. `vibe check` does not run this pass, so
+the refusal lands on `vibe build` / `vibe run` / `vibe test`. While either side
+is still empty the lengths decide, annotation or not.
 The typed replacement is not available here yet: #2158 built it and measured
 the FS lane — the one `vibe test` and `vibe run` use — at 6.12s → 77.55s on a
 compiler-sized closure, so it ships only where a whole-program check already
 runs. Pinned by `fixtures/structural_eq_contexts_test.vibe` and
-`fixtures/generic_derive_eq_test.vibe` (the answers), plus the remaining
-`structural_eq_untyped_empty_*_trap.vibe` fixtures (the fail-closed side),
-both lanes of the same contract enforced in `tests/gates/early/run.sh`.
+`fixtures/generic_derive_eq_test.vibe` (the answers), plus the
+`structural_eq_{untyped_empty,owned_scalar}_*_refused.vibe` fixtures (the
+fail-closed side, whose gate rows assert the MESSAGE and not merely the
+refusal), both lanes of the same contract enforced in
+`tests/gates/early/run.sh`. One rung stays a runtime trap and keeps the `_trap`
+name: `eq_for_typed_nonstandard_enum` and the expanding-recursion arm fire
+while GENERATING a comparator for a generic shape rather than at a comparison
+the program performs, and the compiler's own sources reach both (`List` and
+`AvlTree` at a formal argument) with the emitted trap never executed — moving
+those to compile time rejects the compiler itself.
 This paragraph used to list four cases as "remaining reference equality";
 measurement showed three of them are structural. The fourth — an erased type
 variable (the `T` of `[T: Eq]`) — is **not** structural either, and this

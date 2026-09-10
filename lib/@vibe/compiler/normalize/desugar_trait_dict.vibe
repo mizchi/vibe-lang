@@ -10894,9 +10894,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               let ln = dinsp_fresh_name("__eqempty_l", rl, rr)
               let rn = dinsp_fresh_name("__eqempty_r", rl, rr)
               let either_empty = EBinOp("||", EBinOp("==", EIdent(ln, -1), EInt(0), -1), EBinOp("==", EIdent(rn, -1), EInt(0), -1), -1)
-              let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1), -1), ESeq(ECall(EIdent("assert_true", -1), [
-                EBool(false)
-              ], -1), EBool(false)))
+              let decided = EIf(either_empty, EBinOp("==", EIdent(ln, -1), EIdent(rn, -1), -1), eq_refuse("both operands are untyped empty-array bindings that were pushed to, so neither side describes its element type. Annotate one of them (`let xs: Array[<type>] = []`)."))
               let guarded = ELet(ln, ECall(EIdent("Array::length", -1), [rl], -1), ELet(rn, ECall(EIdent("Array::length", -1), [
                 rr
               ], -1), decided, -1), -1)
@@ -10911,7 +10909,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           match arr_elem {
             Some(elem) => if ty_mentions_owned_scalar(elem) {
               // Codex round 4 on #2471: see ty_mentions_owned_scalar.
-              eq_fail_closed(op)
+              eq_fail_closed(op, owned_scalar_name_in(elem))
             } else {
               // #1526: record before emitting -- this is one of the two sites
               // that can reference a `__arr_equals__<key>` helper, and the
@@ -10960,7 +10958,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               match dty {
                 Some(dt) => if ty_mentions_owned_scalar(dt) {
                   // Codex round 4 on #2471: see ty_mentions_owned_scalar.
-                  eq_fail_closed(op)
+                  eq_fail_closed(op, owned_scalar_name_in(dt))
                 } else {
                   let call = eq_for_typed(dt, rl, rr, dtd_eq_known_types)
                   if op == "==" {
@@ -11025,7 +11023,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                         // ty_mentions_owned_scalar) and fails closed.
                         let eqm = match dtd_typed_eq_admitted_ty(boff) {
                           Some(te) => if ty_mentions_owned_scalar(te) {
-                            eq_fail_closed("==")
+                            eq_fail_closed("==", owned_scalar_name_in(te))
                           } else {
                             eq_for_typed(te, rl, rr, dtd_eq_known_types)
                           },
@@ -11039,7 +11037,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                       } else if t == "Result" {
                         let eqm = match dtd_typed_eq_admitted_ty(boff) {
                           Some(te) => if ty_mentions_owned_scalar(te) {
-                            eq_fail_closed("==")
+                            eq_fail_closed("==", owned_scalar_name_in(te))
                           } else {
                             eq_for_typed(te, rl, rr, dtd_eq_known_types)
                           },
@@ -11851,8 +11849,97 @@ fn ty_mentions_owned_scalar(t: TypeExpr) -> Bool {
 }
 
 /// The fail-closed `==` result: trap, never a guessed answer.
-fn eq_fail_closed(op: String) -> Expr {
-  let trapped = ESeq(ECall(EIdent("assert_true", -1), [EBool(false)], -1), EBool(false))
+/// #2475: the structural-equality refusals this run decided it cannot answer.
+///
+/// Recorded rather than thrown at the site, because the deciding functions
+/// (`eq_for_typed`, `eq_for_typed_nonstandard_enum`, `eq_fail_closed`) are
+/// pure `-> Expr` and giving them `with Exception` would ripple through
+/// sixteen callers. `desugar_trait_dicts_with_typed_eq` throws once at the end
+/// of the rewrite, which is also where a single message can name every site.
+///
+/// Truncated at the same entry point as `dtd_eq_type_owners`, so a refusal can
+/// never outlive the one program it describes.
+let dtd_eq_refusals: Array[String] = empty_str_array()
+
+/// The fail-closed expression itself, for the rungs that stay a RUNTIME trap.
+///
+/// #2475 measured why they cannot all move: `eq_for_typed_nonstandard_enum` and
+/// the expanding-recursion arm fire while GENERATING a comparator for a generic
+/// shape, not at a comparison the program performs. The compiler's own sources
+/// reach both (`List` and `AvlTree` at a formal argument), so reporting them at
+/// compile time rejects the compiler itself -- the trap they emit is never
+/// executed. Those keep the status quo, and #2475's remaining half is the
+/// builtin-scalar marker that makes them answerable.
+fn eq_trap() -> Expr {
+  ESeq(ECall(EIdent("assert_true", -1), [EBool(false)], -1), EBool(false))
+}
+
+/// #2475: record a structural-equality refusal, and keep emitting the
+/// fail-closed expression.
+///
+/// The expression still matters. The refusal is reported by throwing after the
+/// rewrite, so nothing downstream sees this node -- but if a future path ever
+/// swallows the throw, the emitted trap is what keeps the contract fail-closed
+/// rather than silently wrong, which is the property that outranks the
+/// diagnostic (AGENTS.md's first pillar).
+fn eq_refuse(reason: String) -> Expr {
+  if str_array_contains(dtd_eq_refusals, reason) {
+    ()
+  } else {
+    Array::push(dtd_eq_refusals, reason)
+  }
+  eq_trap()
+}
+
+/// The owned scalar spelling that made `t` ambiguous, or "" -- the same walk
+/// `ty_mentions_owned_scalar` does, returning WHICH name it found so the
+/// refusal can name it.
+fn owned_scalar_name_in(t: TypeExpr) -> String {
+  match t {
+    TyName(n) => if is_scalar_type_name(n) && str_array_contains(dtd_eq_type_owners, n) {
+      n
+    } else {
+      ""
+    },
+    TyApp(h, args) => if is_scalar_type_name(h) && str_array_contains(dtd_eq_type_owners, h) {
+      h
+    } else {
+      let mut found = ""
+      let mut i = 0
+      while i < Array::length(args) {
+        if found == "" {
+          found = owned_scalar_name_in(Array::get(args, i))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(ts) => {
+      let mut found = ""
+      let mut i = 0
+      while i < Array::length(ts) {
+        if found == "" {
+          found = owned_scalar_name_in(Array::get(ts, i))
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => ""
+  }
+}
+
+fn eq_fail_closed(op: String, owned: String) -> Expr {
+  let named = if owned == "" {
+    "a builtin scalar"
+  } else {
+    String::concat("`", String::concat(owned, "`"))
+  }
+  let trapped = eq_refuse(String::concat("this program declares a type named ", String::concat(named, ", so an operand with that spelling may be the builtin or the declared type, and comparing the wrong one reads its words as the other's. Annotate the operands with the type you mean (`let xs: Array[<type>] = []`), or rename the declared type.")))
   if op == "==" {
     trapped
   } else {
@@ -12539,6 +12626,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_explicit_equals_param, 0)
   Array::truncate(dtd_eq_type_aliases, 0)
   Array::truncate(dtd_eq_type_owners, 0)
+  Array::truncate(dtd_eq_refusals, 0)
   Array::truncate(dtd_eq_nonstandard_builtin_enums, 0)
   Array::truncate(dtd_eq_nonenum_builtin_heads, 0)
   Array::truncate(dtd_eq_specializations, 0)
@@ -13301,7 +13389,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
   let fty = eq_expand_alias_ty(subst_scope_formals_ty(fty0))
   match fty {
     TyName(n) => if n == "__EqAliasCycle" {
-      ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+      eq_trap()
     } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) {
       // Codex round 17 on #2456: a source-owned spelling takes its declared
       // comparator BEFORE any builtin arm below can claim it. Measured: with
@@ -13312,7 +13400,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
     } else if str_array_contains(dtd_eq_type_owners, n) {
       // Owned by an alias or an effect: no comparator to call. Fail closed
       // rather than fall to a builtin arm for a name that is not the builtin.
-      ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+      eq_trap()
     } else if n == "Double" || n == "Float" {
       // Under RC a Double is a BOXED heap value, so a raw `==` between two
       // Double fields compares box identity (always false) instead of the f64
@@ -13832,9 +13920,7 @@ fn eq_generic_enum_instantiation_content_comparable(head: String, args: Array[Ty
 /// closed, as does a non-regular recursion whose specializations never
 /// close (`generic_eq_is_expanding_recursion`).
 fn eq_for_typed_nonstandard_enum(head: String, args: Array[TypeExpr], lhs: Expr, rhs: Expr) -> Expr {
-  let fail_closed = ESeq(ECall(EIdent("assert_true", -1), Array::slice([
-    EBool(false)
-  ], 0, 1), -1), EBool(false))
+  let fail_closed = eq_trap()
   if eq_has_explicit_equals(head) {
     if eq_explicit_equals_matches(head, args) {
       ECall(EIdent(qualified_name(head, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
@@ -13880,7 +13966,7 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
       eq_expand_alias_ty(arg)
     }
     if generic_eq_is_expanding_recursion(n, canonical_args) {
-      ESeq(ECall(EIdent("assert_true", -1), Array::slice([EBool(false)], 0, 1), -1), EBool(false))
+      eq_trap()
     } else {
       generic_eq_record(n, canonical_args)
       ECall(EIdent(generic_eq_name(n, canonical_args), -1), Array::slice([
@@ -20740,5 +20826,42 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
       }
       ti = ti + 1
     }
+  }
+  eq_refusals_report()
+}
+
+/// #2475: a structural-equality refusal is a COMPILE error, not a runtime trap.
+///
+/// Every one of these used to be emitted as a bare `assert_true(false)`, so the
+/// program compiled clean and died with `trap: RuntimeError: unreachable` -- no
+/// message, no position, nothing to act on. There is no way to attach a message
+/// at run time: `assert_eq` lowers to `println` and so requires `Stdout` on the
+/// containing function (#2107), which breaks a derived `::equals` outright and
+/// would reject user code with an effect-row error about the wrong thing.
+///
+/// So it is reported here, at the end of the rewrite, where the pass already
+/// carries `with Exception`. The refusal itself is unchanged -- these sites
+/// were never going to answer -- but the program now fails to build, saying
+/// which comparison and what to write instead, and NO guard is emitted for it.
+///
+/// The cost, accepted deliberately: a comparison that is written but never
+/// executed used to compile and run, and no longer does. `vibe check` does not
+/// run this pass, so it stays clean; the refusal lands on `vibe build` /
+/// `vibe run` / `vibe test`.
+fn eq_refusals_report() -> Unit with Exception {
+  if Array::length(dtd_eq_refusals) == 0 {
+    ()
+  } else {
+    let mut out = ""
+    let mut i = 0
+    while i < Array::length(dtd_eq_refusals) {
+      out = String::concat(out, String::concat(if i == 0 {
+        ""
+      } else {
+        "\n"
+      }, String::concat("structural `==` cannot be decided here: ", Array::get(dtd_eq_refusals, i))))
+      i = i + 1
+    }
+    throw(out)
   }
 }
