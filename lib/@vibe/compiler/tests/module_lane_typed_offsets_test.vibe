@@ -31,11 +31,14 @@
 // gives the rows `prepare_modules_cached` already published an offset space to
 // land in. No second check: this is plumbing.
 //
-// The FS module callers (`compile_file_fs_module_cached_slow`, both copies)
-// still keep the no-offsets spelling -- routing THEM onto the statement merge
-// is #2437's remaining work, and it changes cache identity in ways this one
-// did not. The measurement and the reason are on
-// `compile_module_expr_with_typed_offsets`.
+// #2437: the FS module entry (`compile_file_fs_module_cached`) has joined them
+// too, and its half is pinned the same way at the bottom of this file. It is
+// the one the CLI reaches. `fs_compile`'s second copy of
+// `compile_file_fs_module_cached_slow` -- reachable only through the
+// `@vibe/compiler` facade, whose package cannot see the grouped statement
+// merge -- keeps the no-offsets spelling deliberately, which is why the two
+// carry DIFFERENT in-db artifact kinds (`module-typed` vs `module`): sharing
+// one would let a shared `TypeDb` hand an entry the other's lowering.
 
 import @vibe/compiler/entry/source_compile {
   compile_source as compile_source_with_offsets
@@ -47,6 +50,10 @@ import ./codegen_test_support.vibe {
 
 import @vibe/compiler/entry/compiler/fs_compile {
   compile_with_modules_cached
+}
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_module_cached
 }
 
 import @vibe/compiler/runtime {
@@ -102,4 +109,33 @@ test "#2449 the inline module entry is inert where there is nothing to classify"
   // program with no render, no `eq` and no Double call result would be a
   // regression rather than a fix.
   assert(compile_inline_module(module_lane_plain_source) == compile_source(module_lane_plain_source))
+}
+
+/// #2437: the same pair for the FS module entry -- the one `compile_job_cached`
+/// routes an empty entry name to.
+///
+/// `compile_file_fs_module_cached` runs the FS check before the merge, and
+/// `ensure_fingerprint_fs_impl` resets the per-path memo and then leaves a row
+/// for every module of the closure, so the rows are both present and current
+/// by construction. As above, the control is `codegen_test_support`'s
+/// `compile_source`: the no-offsets `compile_module` over an unlocated parse,
+/// which is exactly what this entry used to do to itself after printing the
+/// program twice.
+fn compile_fs_module(path: String, src: String) -> Bytes with Exception + Fs {
+  Fs::write_file(path, src)
+  let (bytes, _) = compile_file_fs_module_cached(db_new(), path)
+  bytes
+}
+
+test "#2437 the FS module entry's typed-lowering tables reach codegen" {
+  let with_tables = compile_fs_module("/tmp/vibe_fs_module_typed_offsets_projection.vibe", module_lane_projection_source)
+  assert(!(with_tables == compile_source(module_lane_projection_source)))
+}
+
+test "#2437 the FS module entry is inert where there is nothing to classify" {
+  // Not merely "does not crash": an offsets channel that moved bytes for a
+  // program with no render, no `eq` and no Double call result would be a
+  // regression rather than a fix.
+  let with_tables = compile_fs_module("/tmp/vibe_fs_module_typed_offsets_plain.vibe", module_lane_plain_source)
+  assert(with_tables == compile_source(module_lane_plain_source))
 }

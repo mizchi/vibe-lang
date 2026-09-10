@@ -21,7 +21,7 @@ import @vibe/compiler/entry/compiler/fs_compile {
 }
 
 import ../type_db.vibe {
-  db_merge_count, db_new, db_parse_count, db_typecheck_count
+  db_codegen_count, db_merge_count, db_new, db_parse_count, db_typecheck_count
 }
 
 //# Functions
@@ -78,27 +78,53 @@ test "prepare_modules_cached: warm prepare reuses parsed modules" {
   assert(eq(db_parse_count(db2), parse_count1))
 }
 
-test "compile_file_fs_module_cached: warm compile reuses merged module cache" {
+test "compile_file_fs_module_cached: the FS module lane builds no merged source at all (#2437)" {
+  // This used to assert only that the merge counter did not GROW across a warm
+  // recompile. #2437 routed this lane off the reprint and onto the statement
+  // merge, which is what lets the typed-lowering tables reach codegen: it
+  // compiles the merged statements directly, so `db_grouped_merged_source` is
+  // never called and there is nothing to count.
+  //
+  // Asserting ZERO rather than deleting the case: the counter is the only
+  // observable that says whether this lane reprints, and a lane that quietly
+  // started reprinting again would take every node offset back to -1 and empty
+  // the tables without any other test noticing.
   let helper_path = "/tmp/vibe_compiler_cache_helper.vibe"
   let main_path = "/tmp/vibe_compiler_cache_main.vibe"
   Fs::write_bytes(helper_path, string_to_bytes("export let add: (Int, Int) -> Int = (a, b) -> { a + b }"))
   Fs::write_bytes(main_path, string_to_bytes("import ./vibe_compiler_cache_helper.vibe { add }\nlet run: () -> Int = () -> { add(1, 2) }"))
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path)
-  let merge_count1 = db_merge_count(db1)
+  assert(eq(db_merge_count(db1), 0))
   let (_, db2) = compile_file_fs_module_cached(db1, main_path)
-  assert(eq(db_merge_count(db2), merge_count1))
+  assert(eq(db_merge_count(db2), 0))
 }
 
-test "compile_file_fs_module_cached: same source at different entry paths does not reuse merge cache" {
-  let main_path1 = "/tmp/vibe_compiler_merge_cache_same_source_a.vibe"
-  let main_path2 = "/tmp/vibe_compiler_merge_cache_same_source_b.vibe"
-  let source = "let run: () -> Int = () -> { 1 + 2 }"
-  Fs::write_bytes(main_path1, string_to_bytes(source))
-  Fs::write_bytes(main_path2, string_to_bytes(source))
+test "compile_file_fs_module_cached: a dependency at a different path is a different artifact (#2437)" {
+  // The property the deleted "does not reuse merge cache" case stood in for.
+  // The path-aware merge cache is gone, so the artifact key carries this alone
+  // -- and it is derived from the MERGED program's text rather than from the
+  // input sources for exactly this reason: private namespacing mangles a
+  // dependency's names with its file PATH, so two programs with byte-identical
+  // sources at different paths merge to DIFFERENT statements. A key hashed
+  // from the sources alone would hand the second call the first call's bytes.
+  //
+  // Both entries have the same text and import a helper with the same text;
+  // only the helper's path differs. The entry's own defs are never renamed, so
+  // this is the case that isolates the dependency mangling.
+  let helper_path1 = "/tmp/vibe_compiler_merge_dep_a_helper.vibe"
+  let helper_path2 = "/tmp/vibe_compiler_merge_dep_b_helper.vibe"
+  let main_path1 = "/tmp/vibe_compiler_merge_dep_a_main.vibe"
+  let main_path2 = "/tmp/vibe_compiler_merge_dep_b_main.vibe"
+  let helper_source = "export let add: (Int, Int) -> Int = (a, b) -> { a + b }"
+  Fs::write_bytes(helper_path1, string_to_bytes(helper_source))
+  Fs::write_bytes(helper_path2, string_to_bytes(helper_source))
+  Fs::write_bytes(main_path1, string_to_bytes("import ./vibe_compiler_merge_dep_a_helper.vibe { add }\nlet run: () -> Int = () -> { add(1, 2) }"))
+  Fs::write_bytes(main_path2, string_to_bytes("import ./vibe_compiler_merge_dep_b_helper.vibe { add }\nlet run: () -> Int = () -> { add(1, 2) }"))
   clear_file_compile_module_cache(main_path1)
   clear_file_compile_module_cache(main_path2)
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
-  let merge_count1 = db_merge_count(db1)
+  let codegen_count1 = db_codegen_count(db1)
+  assert(codegen_count1 > 0)
   let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
-  assert(db_merge_count(db2) > merge_count1)
+  assert(db_codegen_count(db2) > codegen_count1)
 }

@@ -213,7 +213,19 @@ test "compile_file_fs_module_cached: same output reuses compiled artifact after 
   assert(eq(db_codegen_count(db2), codegen_count1))
 }
 
-test "compile_file_fs_module_cached: same source at different entry paths does not reuse module source cache" {
+test "compile_file_fs_module_cached: builds no module source, and shares the artifact by content (#2437)" {
+  // This used to assert that the module-source count GREW across two entry
+  // paths. #2437 routed this lane off the reprint and onto the statement merge,
+  // so it builds no module source at all -- the count stays 0, and the property
+  // the old assertion stood in for now lives in two places: the artifact one
+  // below (identical merged text at two paths shares), and the
+  // dependency-mangling case in `compiler_cache_prepare_test` (different merged
+  // text at two paths does not).
+  //
+  // Same shape as the inline lane's case above, one layer up. Asserting ZERO
+  // rather than deleting: the counter is the only observable that says whether
+  // this lane reprints, and a lane that quietly started reprinting again would
+  // take the offsets back to -1 and empty the tables silently.
   let main_path1 = "/tmp/vibe_compiler_module_source_cache_same_source_a.vibe"
   let main_path2 = "/tmp/vibe_compiler_module_source_cache_same_source_b.vibe"
   let source = "let run: () -> Int = () -> { 1 + 2 }"
@@ -222,7 +234,10 @@ test "compile_file_fs_module_cached: same source at different entry paths does n
   clear_file_compile_module_cache(main_path1)
   clear_file_compile_module_cache(main_path2)
   let (_, db1) = compile_file_fs_module_cached(db_new(), main_path1)
-  let module_source_count1 = db_module_source_count(db1)
+  assert(eq(db_module_source_count(db1), 0))
+  let codegen_count1 = db_codegen_count(db1)
+  assert(codegen_count1 > 0)
   let (_, db2) = compile_file_fs_module_cached(db1, main_path2)
-  assert(db_module_source_count(db2) > module_source_count1)
+  assert(eq(db_module_source_count(db2), 0))
+  assert(eq(db_codegen_count(db2), codegen_count1))
 }
