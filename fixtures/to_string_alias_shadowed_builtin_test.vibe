@@ -1,0 +1,54 @@
+// #2585 review (Codex P1, second round): a shadow declared under a
+// SOURCE-COMPATIBLE ALIAS spelling.
+//
+// `canonical_builtin_name` folds `String::byte_at` onto `String::char_code_at`
+// (ADR-0098 Phase 1), but a call resolves by what the source wrote. Testing
+// only the canonical name looked for `String::char_code_at`, found nothing,
+// and classified this String-returning call as the Int-returning builtin --
+// so the packed string pointer went through the integer formatter.
+//
+// Measured on main at `cfc01cc`: `156766306305` for the first two cases,
+// bare and through a join, with no diagnostic.
+//
+// Its own file because the declaration shadows the name module-wide.
+
+fn String::byte_at(s: String, i: Int) -> String {
+  s
+}
+
+test "#2585: an alias-spelled shadow is not the Int builtin (bare call)" {
+  inspect(__to_string(String::byte_at("abc", 0)), "abc")
+}
+
+test "#2585: an alias-spelled shadow is not the Int builtin (through a join)" {
+  let flag = true
+  inspect(__to_string(if flag {
+    String::byte_at("aaa", 0)
+  } else {
+    String::byte_at("bbb", 0)
+  }), "aaa")
+}
+
+test "#2585: an alias-spelled shadow is not a Bool/String builtin either" {
+  // cc_builtin_call_ret_kind had the same canonicalize-then-test shape, and
+  // older: it is what decides the Bool / String return kinds.
+  let flag = true
+  inspect(if flag {
+    String::byte_at("zz", 0)
+  } else {
+    ""
+  }, "zz")
+}
+
+test "#2585: an UNSHADOWED builtin must still classify (the control)" {
+  // Without this, "guard everything" would pass the cases above while
+  // silently reopening #2585 itself.
+  let xs = [1, 2, 3]
+  inspect(__to_string(Array::length(xs)), "3")
+  let flag = true
+  inspect(__to_string(if flag {
+    Array::length(xs)
+  } else {
+    0
+  }), "3")
+}

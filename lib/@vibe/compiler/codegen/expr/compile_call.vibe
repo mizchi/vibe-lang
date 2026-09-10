@@ -1045,7 +1045,8 @@ export fn cc_builtin_call_ret_kind(e: Expr, local_names: Array[String], ctx: Com
   if expr_tag(e) == 8 {
     let bcallee = get_ecall_callee(e)
     if is_eident(bcallee) {
-      let bn = canonical_builtin_name(get_eident_name(bcallee))
+      let cn = get_eident_name(bcallee)
+      let bn = canonical_builtin_name(cn)
       let kind = if bn == "eq" || bn == "not" || bn == "String::equals" || bn == "String::contains" || bn == "String::starts_with" || bn == "String::ends_with" || bn == "Array::contains" || bn == "Array::any" || bn == "Array::all" || bn == "Map::has_key" || bn == "Map::has" || bn == "map_has" || bn == "MapBuilder::has_key" || bn == "Path::is_absolute" || bn == "Fs::exists" || bn == "Fs::is_dir" || bn == "Fs::is_file" {
         1
       } else if bn == "__to_string" || bn == "Int::to_string" || bn == "Double::to_string" || bn == "Float::to_string" || bn == "String::concat" || bn == "String::substring" || bn == "String::trim" || bn == "String::from_char_code" || bn == "String::join" || bn == "Env::get" || bn == "Env::args_get" || bn == "Fs::read_file" || bn == "Fs::getcwd" || bn == "sh" {
@@ -1053,17 +1054,15 @@ export fn cc_builtin_call_ret_kind(e: Expr, local_names: Array[String], ctx: Com
       } else {
         0
       }
+      // Same alias hole as the tag-8 arm, and older than it: this test used
+      // to look only at the CANONICAL name, so a user `fn String::from_byte`
+      // (canonical `String::from_char_code`) was not seen as a shadow.
       if kind == 0 {
         0
-      } else if find_local_slot(local_names, bn) >= 0 {
+      } else if cc_name_or_alias_shadowed(cn, bn, local_names, ctx) {
         0
       } else {
-        let fi = cc_ft_first_idx(ctx.func_table, bn)
-        if fi >= 0 && fi < ctx.num_user_funcs {
-          0
-        } else {
-          kind
-        }
+        kind
       }
     } else {
       0
@@ -1544,7 +1543,7 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
     match get_ecall_callee(e) {
       EIdent(cn, _) => {
         let bn = canonical_builtin_name(cn)
-        ts_int_returning_builtin_name(bn) && !ts_name_is_shadowed(bn, local_names, ctx)
+        ts_int_returning_builtin_name(bn) && !cc_name_or_alias_shadowed(cn, bn, local_names, ctx)
       },
       _ => false
     }
@@ -1606,19 +1605,51 @@ fn ts_int_returning_builtin_name(bn: String) -> Bool {
 
 /// #2585 review (Codex P1): does the source shadow this builtin name?
 ///
-/// The two tests are `cc_builtin_call_ret_kind`'s, unchanged: a LOCAL of the
-/// same name (the call resolves to a closure value, not the builtin), or a USER
-/// `fn` of that name in the func table (`fi < num_user_funcs` -- the builtin
-/// entries sit above that boundary). Shadowing a qualified builtin name is
-/// supported and exercised in-tree; `borrow_returning_names_test.vibe` declares
-/// `fn Map::iter_get` exactly this way and asserts the source declaration is
-/// what wins.
-fn ts_name_is_shadowed(bn: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
-  if find_local_slot(local_names, bn) >= 0 {
+/// The two tests: a LOCAL of the same name (the call resolves to a closure
+/// value, not the builtin), or a USER `fn` of that name in the func table
+/// (`fi < num_user_funcs` -- the builtin entries sit above that boundary).
+/// Shadowing a qualified builtin name is supported and exercised in-tree;
+/// `borrow_returning_names_test.vibe` declares `fn Map::iter_get` exactly this
+/// way and asserts the source declaration is what wins.
+fn cc_single_name_shadowed(n: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  if find_local_slot(local_names, n) >= 0 {
     true
   } else {
-    let fi = cc_ft_first_idx(ctx.func_table, bn)
+    let fi = cc_ft_first_idx(ctx.func_table, n)
     fi >= 0 && fi < ctx.num_user_funcs
+  }
+}
+
+/// #2585 review (Codex P1, second round): the test must use the SOURCE
+/// spelling as well as the canonical one.
+///
+/// `canonical_builtin_name` folds source-compatible aliases onto one internal
+/// name (`String::byte_at` -> `String::char_code_at`, ADR-0098 Phase 1), but a
+/// call resolves by what the source WROTE. So a user `fn String::byte_at(..)
+/// -> String` sits in the func table under `String::byte_at`, while a test on
+/// the canonical name alone looks for `String::char_code_at`, finds nothing,
+/// and classifies the call as the Int-returning builtin it is not.
+///
+/// Measured on main at `cfc01cc`, with that declaration in scope:
+///
+///   __to_string(String::byte_at("abc", 0))                 -> 156766306305
+///   __to_string(if c { String::byte_at("aaa", 0) } else .. -> 156766306305
+///   the same shadow spelled String::char_code_at           -> "abc"
+///   unshadowed Array::length                               -> "3"
+///
+/// i.e. the packed string pointer through the integer formatter, silently,
+/// exactly where the canonical spelling was already handled.
+///
+/// BOTH names are tested because either spelling can carry the definition.
+/// Over-guarding costs only the pre-#2585 fallback (the runtime string-pointer
+/// heuristic), which is the fail-closed direction.
+fn cc_name_or_alias_shadowed(cn: String, bn: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  if cc_single_name_shadowed(cn, local_names, ctx) {
+    true
+  } else if bn == cn {
+    false
+  } else {
+    cc_single_name_shadowed(bn, local_names, ctx)
   }
 }
 
