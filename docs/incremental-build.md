@@ -269,6 +269,62 @@ Not every remaining row is attributed to one of these two yet. The counters name
 the first of each kind rather than all of them, and reading the rest out is the
 next measurement, not a conclusion available now.
 
+### The phases after the prelude (#2575 item 4)
+
+Between the prelude and codegen `linked_compile` runs three whole-program
+analyses: `compute_borrow_returning_names`, `compute_borrow_param_user_fns`
+(ADR-0092, per-position masks) and `compute_may_return_view_fns`. The oracle
+samples all three on both lanes after all 17 prelude passes, which is where the
+real compile runs them, and compares the whole-program answer against the union
+of the per-module ones.
+
+Unlike the evidence facts above, these are interprocedural **fixpoints**, so the
+two lanes differ in both directions and the directions do not mean the same
+thing. Measured on `lib/@vibe/cli/entry.vibe`, 365 modules:
+
+```
+ANALYSIS dce_entry=0 borrow_ret=378/363:-15:MutSortedSet::delete+0:
+         borrow_fns=2706/2627:-167:alloc_site_kind_dep_...+88:__arr_equals__N4_Expr
+         borrow_masks=2706/2627:-197:agg_expr_of_ident_exp_...#12+118:__arr_equals__N4_Expr#3
+         view_ret=2123/1943:-180:HashSet::size+0:
+```
+
+- **A name the whole program has and the union lacks** is a module being
+  conservative about a callee it cannot see: `via(xs) = pick(xs)` is not
+  classified view-returning by its own module when `pick` lives across the
+  import. Slower, sound; 167 on the borrow set and 180 on the view set.
+- **A name the union has and the whole program lacks** is a module qualifying a
+  function the whole program **disqualified**. `ca_collect_nonident_args`
+  disqualifies a callee from a *call site*, which may live in another module, so
+  a module reading only its own statements hands back the borrowed ABI for a
+  parameter the program says is consumed. 88 of them, and this is the unsound
+  direction.
+
+The net (2706 − 2627 = 79) hides all 88 behind the 167, which is why both
+directions are counted rather than subtracted. The mask row is the same question
+one level finer: 118 against 88 means 30 functions are in **both** sets under
+**different** masks — the names agree and the ABI does not, which a comparison on
+names alone reports as agreement.
+
+`dce_entry` is the sample point's own caveat. Production runs
+`fold_const_bool_params` and `dce_stmts` between the prelude and these
+analyses, gated on the merged program defining `entry_name`; a folded constant
+`Bool` argument can delete a consuming branch and change a borrow mask, and DCE
+can delete a generated helper outright. The oracle cannot reproduce either —
+`dce_stmts` is rooted at the entry and the split lane has no per-module entry —
+so it reports the condition and prints `unmeasured` instead of counts when it
+holds. The closure numbers above are a `dce_entry=0` measurement: the same
+closure through `vibe build` would give different sets, though not a different
+conclusion, since neither transform makes an interprocedural fixpoint
+decompose.
+
+So these phases do not decompose as written. What a module can compute alone is
+its own contribution; the disqualifications and the callee edges are the
+program's. That makes them the same shape as the evidence pass (#2633) — the
+module collects, the link unions and decides — with one difference that matters:
+an evidence disagreement produces two programs that cannot link, and a borrow
+disagreement produces two that link and disagree about ownership.
+
 ## User-visible KPI contract
 
 Measure these endpoints separately:
