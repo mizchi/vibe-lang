@@ -450,6 +450,45 @@ resolution and a boundary injection are not declaration differences: the oracle
 was structurally unable to see four of the six unsafe passes, and its green said
 nothing about them either way.
 
+#### Measured in the EMITTED WASM (#2575 item 2, step 3b)
+
+Everything above compares statement arrays. The FS lane can now compile a
+program both ways, so the question can be asked of the wasm. On the compiler's
+own closure, with the body cache genuinely off:
+
+```
+function=2   code=9368/5778988   data=0   export=0   element=0   name=658
+9250 functions, 477 differing, 18 of them at a different SIZE
+```
+
+The 19 that moved, by name:
+
+```
+BinderAuthorityNodeKind::equals   __arr_equals__N3_Pat
+BinderSemanticRole::equals        __arr_equals__T2_N6_StringN3_Pat
+__arr_equals__N8_TypeExpr         __arr_equals__N4_Expr        …
+```
+
+**All 19 are synthesized comparator helpers, at the end of the function list, in
+a different order.** The other 458 differing functions are their CALLERS: a
+callee at a different index changes the `call` immediate, same encoded width,
+which is why 459 of 477 differ at identical size and why the difference is
+spread across the whole index space. Data, exports and the element table are
+byte-identical.
+
+So this is the `order_diff` the two-wave assembly reduced from 9869 to 212,
+surviving DCE and the link down to 19 functions. It is layout, not meaning —
+and it is not closable without reproducing the trait-dict pass's whole-program
+discovery order inside each module, which is a dependency on one pass's
+traversal that is not worth taking.
+
+**The consequence for the cache (#2510) is the useful part.** A cached function
+body contains call immediates, and those depend on GLOBAL function index
+assignment. A per-module body cache therefore cannot store a body and replay it
+into a build where indices moved — the stored form or the cache key has to
+account for index assignment. That constraint came out of this measurement; no
+amount of comparing declarations would have produced it.
+
 #### What the split path still costs a caller
 
 Codegen emits functions in statement order, so switching lanes permutes the
