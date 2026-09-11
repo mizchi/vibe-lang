@@ -573,6 +573,65 @@ export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: S
   String::concat(String::concat(line, "edges_unresolved="), String::concat(Int::to_string(unresolved_edges), "\n"))
 }
 
+fn lc_fresh_str_row() -> Array[String] {
+  []
+}
+
+/// #2388: a dependency naming a `.vpkg` CONTRACT reaches that package's sibling
+/// implementations, because the contract is a surface and the merge carries the
+/// implementations.
+///
+/// This is not "siblings share scope" -- they do not, and an explicit relative
+/// import is required between them (`scripts/check_package_sibling_scope.sh`).
+/// It is that an import OF THE PACKAGE reaches everything the package's
+/// contract publishes, which is implemented next to it. Without this a module
+/// importing `@vibe/compiler/runtime` got the contract's materialized surface
+/// and not the sibling whose return types the prelude reads, which manufactured
+/// a difference the per-module lane does not really have.
+///
+/// NEAREST contract wins: a source under a deeper package belongs to that one,
+/// so `runtime/eval_loader/x.vibe` is not reached by importing `runtime`.
+fn oracle_expand_contract_dep(dep: String, own: Array[Int], flat: Array[(String, String)], contract_dirs: Array[String]) -> Array[Int] {
+  if !String::ends_with(dep, "/index.vpkg") {
+    own
+  } else {
+    let dir = String::substring(dep, 0, String::length(dep) - 11)
+    let out = lc_fresh_int_row()
+    let mut k = 0
+    while k < Array::length(own) {
+      Array::push(out, Array::get(own, k))
+      k = k + 1
+    }
+    let mut i = 0
+    while i < Array::length(flat) {
+      let (path, _) = Array::get(flat, i)
+      if String::starts_with(path, String::concat(dir, "/")) && oracle_nearest_contract_dir(path, contract_dirs) == dir && !lc_int_row_has(out, i) {
+        Array::push(out, i)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// The longest contract directory that is a prefix of `path`.
+fn oracle_nearest_contract_dir(path: String, contract_dirs: Array[String]) -> String {
+  let mut best = ""
+  let mut i = 0
+  while i < Array::length(contract_dirs) {
+    let d = Array::get(contract_dirs, i)
+    if String::starts_with(path, String::concat(d, "/")) && String::length(d) > String::length(best) {
+      best = d
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  best
+}
+
 fn lc_fresh_int_row() -> Array[Int] {
   []
 }
@@ -653,6 +712,20 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
     }
     i = i + 1
   }
+  // Every `.vpkg` contract in the flat list, by its directory. An import names
+  // a PACKAGE; the declarations it publishes are implemented by that package's
+  // sibling sources, and it is those the merge carries.
+  let contract_dirs = lc_fresh_str_row()
+  i = 0
+  while i < n {
+    let (path, _) = Array::get(flat, i)
+    if String::ends_with(path, "/index.vpkg") {
+      Array::push(contract_dirs, String::substring(path, 0, String::length(path) - 11))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
   let group_members: MutMap[String, Array[Int]] = MutMap::new_string()
   let mut gi = 0
   let mut flat_at = 0
@@ -687,7 +760,7 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
       // are what the merge actually carries. Either way it resolves to a SET
       // of seats, and every one of them is an edge.
       let seats = match MutMap::get(index_of, dep) {
-        Some(found) => found,
+        Some(found) => oracle_expand_contract_dep(dep, found, flat, contract_dirs),
         None =>
         match MutMap::get(group_members, dep) {
           Some(members) => members,

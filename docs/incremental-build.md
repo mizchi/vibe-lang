@@ -232,53 +232,57 @@ still content-checks the bodies under it. That is not redundant with the above:
 it is what turns the next such divergence into a refusal instead of a silently
 kept body.
 
-### What remains — one row
+### The per-module prelude reproduces the whole-program prelude exactly
 
 ```
-CLOSURE files=365 edges=1415 unresolved=0
-FULL stmts=9873 split=10022 linked=9873 folded=149 modules=365 collisions=0
-     invisible_whole=0 invisible_split=17 linked_dups=5
-keyed missing=0 extra=0 copies=444 content=1 renames=0 dup_keys=451 dup_defs=5
-  content_keys=let:check_linked_file_source_groups_exp_…_cli_support_vibe
+CLOSURE files=365 edges=11342 unresolved=0
+FULL stmts=9876 split=10033 linked=9876 folded=157 modules=365 collisions=0
+     invisible_whole=0 invisible_split=8 linked_dups=5
+keyed missing=0 extra=0 copies=444 content=0 renames=0 dup_keys=451 dup_defs=5
 EVIDENCE declared=6 handled=4 performed=3
 ```
 
-**`linked` equals `stmts` exactly, and `missing=0`.** Compiling the compiler's
-own CLI closure per module and linking produces every declaration the
-whole-program prelude produces, name for name, with one body differing.
+`lib/@vibe/cli/entry.vibe`, 365 modules. **`linked` equals `stmts`, and
+`missing`, `extra`, `content` and `renames` are all zero.** Compiling the
+compiler's own CLI closure per module and linking produces every declaration the
+whole-program prelude produces, name for name and body for body.
 
-That one:
+`copies=444` is what remains after the link and is not a difference: each is a
+module's own `reexport_boundary` marker, one per module, which no link should
+merge. `dup_defs=5` equals `linked_dups=5`, so the link removed none of the
+definitions the program legitimately carries twice and left nothing unfolded.
 
-```
-whole   Array::set(__exn_kind_cell, 0, "String")
-split   Array::set(__exn_kind_cell, 0, "")
-```
+### The context rule this holds under
 
-The **exception-kind cell**. The whole program knows the thrown payload's type;
-a module throwing a value it obtained from elsewhere does not. It is the same
-shape as the two families already closed — a whole-program table a module cannot
-reproduce alone — and the same answer should apply: the module records what it
-knows, the link decides. `throw_kind_cell` is one of the tables #2510 lists for
-exactly this treatment.
+Four corrections to get right, and they are worth keeping because three were the
+same mistake and the fourth was its mirror image:
 
-### How the evidence family closed (#2633) — 6 rows, now zero
+| rule | reachable pairs | `missing` | `content` |
+|---|---:|---:|---:|
+| every other file | 132 860 | 1 | 4 |
+| transitive closure | 32 017 | 1 | 4 |
+| own direct imports | 1 415 | 6 | 9 |
+| **direct + package deps** | **11 342** | **0** | **0** |
 
-`evidence_dict_pass` decides from a union over the whole program: *declared
-effects ∪ every effect label a handle site names*, and *zero performs anywhere*.
-That dependence runs **backwards along the import graph** — `effect Source` is
-declared and performed in `core/module_graph_path.vibe` and handled in
-`loader/loader.vibe`, which imports core and not the reverse — so no module can
-make the decision its own way and have the results link.
+- A module sees what it **directly imports** — not what its dependencies import.
+  A transitive closure hands A the declarations of a module its dependency
+  imports *privately*.
+- A dependency naming a **`.vpkg` contract** reaches that package's sibling
+  implementations. This is not "siblings share scope" — they do not, and an
+  explicit relative import is required between them. It is that an import *of
+  the package* reaches what the package publishes, which its siblings implement.
+  Without it, a module importing `@vibe/compiler/runtime` got the contract and
+  not the sibling whose return types the prelude reads.
+- Every context statement is reduced to its **exported** form
+  (`oracle_is_interface_stmt` returns each declaration's `exported` flag). So
+  what a module sees is exactly the published surface: nothing transitive,
+  nothing private, no bodies.
 
-Its **inputs** decompose, measured: the union of the per-module (declared,
-handled, performed) facts equals the whole-program facts, sampled immediately
-before the pass runs. So the pass simply moves: it runs **once at the link**,
-over the concatenated program, where the union is present rather than
-reconstructed. Pass 16 follows it there to keep the order.
-
-```
-keyed missing:  1 → 0        content:  5 → 1
-```
+The first three rules were too wide and produced greens that meant less than
+they looked; the fourth was too narrow and manufactured a difference that was
+not there. Both directions are errors, and only the counters distinguish them —
+which is why `edges_unresolved` and `invisible_*` are reported rather than
+assumed.
 
 ### How the comparator family closed (#2634) — 9 rows, now zero
 
