@@ -152,11 +152,15 @@ links the per-module results and compares by declaration key
 (`prelude_module_full_oracle_report_fs`). What each file is given as *context*
 decides what its green means.
 
-That context is now each module's **own direct imports**, taken from the
-loader's header scan (`load_or_parse_module_header_fs` — the same scan the FS
-typecheck lane plans module order with). It has to come from the loader because
-the merge drops `SImport` / `SReExport` as already resolved, so the edges cannot
-be read back off the merged program.
+That context is each module's **own direct imports**, taken from the loader's
+header scan (`load_or_parse_module_header_fs` — the same scan the FS typecheck
+lane plans module order with), with a dependency that names a `.vpkg` contract
+expanded to that package's sibling implementations. It has to come from the
+loader because the merge drops `SImport` / `SReExport` as already resolved, so
+the edges cannot be read back off the merged program. Four corrections were
+needed to land on that rule, and the counters only mean what they say under a
+rule that matches a real compile — they are set out with their measurements in
+[The context rule this holds under](#the-context-rule-this-holds-under) below.
 
 **One hop, not transitive.** Closing transitively hands A the declarations of a
 module C that A's dependency B imports *privately* — context no real compile of
@@ -168,28 +172,7 @@ one. `edges_unresolved` is reported for the same reason — a dropped edge narro
 a module's context, but a closure built from every edge and one built from half
 of them otherwise look identical.
 
-### Three rules, three answers
-
-Each narrowing uncovered differences the previous one was hiding. That is the
-whole point of writing the rule down: the counters only mean what they say under
-a rule that matches a real compile.
-
-| context rule | reachable pairs | `missing` | `content` | `invisible_split` |
-|---|---:|---:|---:|---:|
-| every other file | 132 860 | 1 | 4 | — |
-| transitive closure | 32 017 | 1 | 4 | 2 |
-| **own direct imports** | **1 415** | **6** | **9** | **15** |
-
-`lib/@vibe/cli/entry.vibe`, 365 modules, `edges_unresolved=0`. The current line:
-
-```
-CLOSURE files=365 edges=1415 unresolved=0
-FULL stmts=9863 split=10006 linked=9857 folded=149 modules=365 collisions=0
-     invisible_whole=0 invisible_split=15 linked_dups=5
-keyed missing=6 extra=0 copies=444 content=9 renames=0 dup_keys=451 dup_defs=5
-  first_missing=let:MutMap::equals__N6_String__N3_Int
-EVIDENCE declared=6 handled=4 performed=3
-```
+### The four counters
 
 Four counters name what a green would otherwise hide. `invisible_whole` /
 `invisible_split` count the nominals each lane could **not** see while
@@ -203,8 +186,9 @@ unfolded that it should have folded.
 
 ### What a comparator may depend on
 
-`invisible_whole=0` is the load-bearing number, and it holds under every context
-rule above: a program that type-checks whole can see every nominal it compares.
+`invisible_whole=0` is the load-bearing number, and it holds under every one of
+the four context rules below: a program that type-checks whole can see every
+nominal it compares.
 So a lane that sees fewer is the only one that can reach the question, and what
 it does there used to differ.
 
@@ -262,11 +246,16 @@ arguments are themselves whole-program computations
 from each module's own statements on the split side, so `content=0` covers them:
 the per-module computation produced the same rewrites.
 
-Three things it does **not** model, and they are not covered by that zero:
+One thing it does **not** model, and it is not covered by that zero:
 
 - **`await_poll_pass`** is modelled with an empty `linked_imports`, where
   production passes the real list. So the oracle exercises that pass, but not
   with production's input. Still unmeasured.
+
+This list had two entries when it was written. The validators were the other
+one, and they graduated: they are measured now, by the counter below rather
+than by `missing` / `content` / `renames`, which cannot see a diagnostic.
+
 None of this weakens the decomposition result for what it covers. It bounds it.
 
 **The validators are now measured too.** `zero_alloc_check` and
@@ -332,8 +321,8 @@ content  CbfTable::equals   AliasIdx::equals   ExportRenamePlan::equals
 ```
 
 #2631's sibling one level up. That issue was a comparator whose *body* depended
-on module visibility, and is fixed — which is why `collisions=0` survives
-`invisible_split=17`.
+on module visibility, and is fixed — which is why `collisions=0` survives a
+non-zero `invisible_split` under every context rule tried.
 
 **Measured which half of "never emits" it is**, because the two have different
 fixes: a module can fail to *record* the need, or record it and fail to emit.
