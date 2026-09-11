@@ -82,23 +82,8 @@ PY
 total=0
 skipped=0
 failed=0
-
-# One compiler run per source, and they share nothing -- so they run
-# concurrently. Serially this was 168s of CI wall time (run 34567587111) using
-# one of the runner's four cores. min(4, nproc) is the level
-# scripts/unit_test_runner.sh already runs compiler-sized compiles at; each
-# peaks at a few GB of wasm memory, so an unbounded -P would OOM.
-# VIBE_OFFBUILD_JOBS=1 restores the serial order.
-ob_hw_jobs="$(nproc 2>/dev/null || echo 1)"
-[ "$ob_hw_jobs" -gt 4 ] && ob_hw_jobs=4
-OB_JOBS="${VIBE_OFFBUILD_JOBS:-$ob_hw_jobs}"
-
-OB_WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe_offbuild.XXXXXX")"
-trap 'rm -rf "$OB_WORK"' EXIT
-
-# The selection is unchanged; it just becomes a file the workers consume.
-ob_selected="$OB_WORK/selected"
-: >"$ob_selected"
+out="$(mktemp -u)"
+runner_err="$out.stderr"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   if printf '%s' "$f" | grep -Eq "$EXCLUDE_RE"; then
@@ -106,41 +91,11 @@ while IFS= read -r f; do
     continue
   fi
   total=$((total + 1))
-  printf '%s\n' "$f" >>"$ob_selected"
-done < "$listing"
-
-ob_worker() {
-  ob_f="$1"
-  ob_slug="$(printf '%s' "$ob_f" | tr / _)"
-  ob_out="$OB_WORK/$ob_slug.wasm"
-  ob_err="$OB_WORK/$ob_slug.stderr"
-  ob_status=0
+  rm -f "$out" "$out.diag" "$runner_err"
+  runner_status=0
   VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_CHECK_ONLY=1 \
     timeout 300 bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" \
-    --invoke cli_main "$STAGE2" "$ob_f" "$ob_out" __no_entry__ >/dev/null 2>"$ob_err" || ob_status=$?
-  printf '%s\n' "$ob_status" >"$OB_WORK/$ob_slug.status"
-  return 0
-}
-export -f ob_worker
-export OB_WORK PROJECT_ROOT SCRIPT_DIR STAGE2
-
-# `|| true`: a worker records its status instead of exiting non-zero, so a
-# non-zero here would be xargs itself; the status files are the answer.
-xargs -P "$OB_JOBS" -I{} bash -c 'ob_worker "$@"' _ {} <"$ob_selected" || true
-
-# Reported serially in listing order: which worker finished first must not
-# change the output.
-timed_out=0
-while IFS= read -r f; do
-  slug="$(printf '%s' "$f" | tr / _)"
-  out="$OB_WORK/$slug.wasm"
-  runner_err="$OB_WORK/$slug.stderr"
-  if [ ! -f "$OB_WORK/$slug.status" ]; then
-    failed=$((failed + 1))
-    echo "[offbuild-typecheck] FAIL $f: no verdict (worker died)" >&2
-    continue
-  fi
-  runner_status="$(cat "$OB_WORK/$slug.status")"
+    --invoke cli_main "$STAGE2" "$f" "$out" __no_entry__ >/dev/null 2>"$runner_err" || runner_status=$?
   if [ -s "$out.diag" ]; then
     failed=$((failed + 1))
     echo "[offbuild-typecheck] FAIL $f" >&2
@@ -161,15 +116,12 @@ while IFS= read -r f; do
     fi
     head -3 "$runner_err" >&2
   fi
-  [ "$runner_status" -eq 124 ] && timed_out=1
-done < "$ob_selected"
-
-# The serial loop aborted the REMAINING sources on a timeout, which was a
-# latency choice; here every source has already run, so a timeout is reported
-# with the rest and still fails the gate.
-if [ "$timed_out" -eq 1 ]; then
-  echo "[offbuild-typecheck] at least one source timed out after 300 seconds" >&2
-fi
+  rm -f "$out" "$out.diag" "$runner_err"
+  if [ "$runner_status" -eq 124 ]; then
+    echo "[offbuild-typecheck] aborting after runner timeout; remaining sources were not checked" >&2
+    exit 1
+  fi
+done < "$listing"
 
 if [ "$failed" -gt 0 ]; then
   echo "[offbuild-typecheck] FAIL: $failed of $total off-manifest source(s) do not typecheck" >&2

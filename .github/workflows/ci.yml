@@ -103,12 +103,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: compiler-build
+          # The WHOLE _build/_ci_shard_gen directory, not just stage2.wasm:
+          # generations.sh leaves side products there that consumers read by
+          # position. experimental_typing_env_reuse_oracle.mjs opens
+          # `dirname(stage2)/cli_adapter_module_source.vibe` and died with
+          # ENOENT on run 34577224982 when only the wasm was shipped. Picking
+          # files by hand means re-deciding that list every time a consumer
+          # grows; shipping the directory makes the consumer's tree identical
+          # to the producer's, which is the property they actually depend on.
+          # It is ~16 MB.
+          #
           # .generated.stamp is what makes ensure_generated a no-op in the
           # consumers; without it every one of them regenerates.
           include-hidden-files: true
           retention-days: 1
           path: |
-            _build/_ci_shard_gen/stage2.wasm
+            _build/_ci_shard_gen
             lib/@vibe/compiler/compiler_sources_bundle.vibe
             lib/@vibe/compiler/cli_adapter_bundle.vibe
             lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
@@ -1106,7 +1116,7 @@ jobs:
   # shards run concurrently with compiler-gate instead of behind it.
   unit-tests:
     needs: [compiler-build]
-    name: unit-tests (shard ${{ matrix.shard }}/4)
+    name: unit-tests (shard ${{ matrix.shard }}/8)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

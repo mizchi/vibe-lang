@@ -25,10 +25,19 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if [ ! -s _build/_ci_shard_gen/stage2.wasm ]; then
-          echo "::error::compiler-build did not deliver _build/_ci_shard_gen/stage2.wasm" >&2
-          exit 1
-        fi
+        # Consumers read generations.sh's SIDE PRODUCTS by position, not just
+        # the wasm: experimental_typing_env_reuse_oracle.mjs opens
+        # `dirname(stage2)/cli_adapter_module_source.vibe`. Assert them here so
+        # a narrowed upload fails at the download, named, instead of three
+        # minutes later as an ENOENT inside an oracle (run 34577224982).
+        for f in _build/_ci_shard_gen/stage2.wasm \
+                 _build/_ci_shard_gen/cli_adapter_module_source.vibe \
+                 _build/_ci_shard_gen/generation.json; do
+          if [ ! -s "$f" ]; then
+            echo "::error::compiler-build did not deliver $f -- it must upload the whole _build/_ci_shard_gen directory" >&2
+            exit 1
+          fi
+        done
         # The assertion is on the OUTCOME, not on the files existing. If
         # ensure_generated regenerates here, the download bought nothing and
         # this job silently pays ~100s of flatten -- the exact shape of waste

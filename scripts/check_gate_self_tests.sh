@@ -151,19 +151,19 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
   # the lane's 341s, measured on CI run 34567587111 -- for work that is one
   # `bash` per file with nothing shared between them.
   #
-  # "Nothing shared" is a property to protect, not to assume. The one real
-  # coupling is the five generated compiler artifacts: a companion that needs
-  # them (check_compile_only_lanes_test.sh) calls ensure_generated.sh, which
-  # WRITES INTO lib/@vibe/compiler/. Two of those racing would interleave
-  # partial writes. So the fan-out is preceded by one ensure_generated here:
-  # afterwards every worker sees them current and regenerates nothing. On CI's
-  # late lane they are already generated, so this costs nothing; where they are
-  # stale it is the same work the serial loop paid inside the worker.
-  # `|| true` because a genuine generation failure belongs to the companion
-  # that depends on it -- reporting it here would name the wrong script.
-  if [ -z "${VIBE_GATE_SELF_TEST_ROOT:-}" ] && [ -x scripts/ensure_generated.sh ]; then
-    bash scripts/ensure_generated.sh >/dev/null 2>&1 || true
-  fi
+  # "Nothing shared" is a property to protect, not to assume. The one coupling
+  # would be the five generated compiler artifacts -- ensure_generated.sh
+  # WRITES INTO lib/@vibe/compiler/, so two companions regenerating at once
+  # would interleave partial writes. Measured: exactly ONE companion reaches
+  # it (check_compile_only_lanes_test.sh, via build_compile_only.sh), so there
+  # is no race and nothing to serialize.
+  #
+  # An earlier revision generated once here to be safe. That was worse than
+  # doing nothing: ensure_generated.sh REMOVES THE STAMP before regenerating,
+  # so when this pre-warm failed -- and it does inside the late lane, whose
+  # earlier sections leave lib/ in a state the seed cannot flatten -- the
+  # `|| true` swallowed the error and left the tree stamp-less, which then
+  # failed the companion for real. Measured on run 34577224982.
 
   # min(4, nproc) matches scripts/vibe_test.sh and scripts/unit_test_runner.sh:
   # a few companions compile with the wasm compiler and peak at GBs, so an
