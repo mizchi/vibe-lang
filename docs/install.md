@@ -34,9 +34,9 @@ This will:
    toolchain is unavailable,
 3. AOT-compile it to `vibe-cli.cwasm` for this machine,
 4. install the launcher into the toolchain + the dispatcher onto your `PATH`,
-5. materialize the stdlib packages (`@vibe/core` / `@vibe/ast` /
-   `@vibe/parser` / `@vibe/builtin` / `@vibe/wit_runtime`) into
-   `$VIBE_HOME/lib`, hash-verified (`vibe hash`).
+5. materialize the stdlib packages (`@vibe/core`, `@vibe/ast`, `@vibe/parser`,
+   `@vibe/builtin`, `@vibe/console`, `@vibe/wit_runtime`) into the toolchain's
+   own `lib/`, hash-verified (`vibe hash`), and write its `manifest.json`.
 
 Then:
 
@@ -49,41 +49,57 @@ vibe run hello.vibex        # -> 42
 The book's first program is this same builtin form; see
 [The Vibe Book](../book/README.md) (`book/en/`) (#1949).
 
-### Install layout (rustup-style toolchains, #755)
+### Install layout (`$VIBE_HOME`, ADR-0111)
 
+```text
+$VIBE_HOME/                           default ~/.vibe
+  bin/vibe                            dispatcher (the PATH entry)
+  env                                 shell setup, sourced from the rc files
+  toolchain                           default toolchain name
+  toolchains/<name>/
+    bin/{vibe,viberun}                launcher + wasmtime runner
+    lib/vibe-cli.wasm                 portable compiler
+    lib/vibe-cli.cwasm                host-specific AOT build of it
+    lib/{lsp_server.js,symbol_index.js,graph_query.js}
+    lib/{vibe_pkg.sh,parallel_warm_pool.sh,context-pack.md}
+    lib/@vibe/{core,ast,parser,builtin,console,wit_runtime}
+                                      stdlib, per toolchain
+    manifest.json                     version, ref, commit, installed_at, source,
+                                      sha256 of runner and compiler wasm,
+                                      wasmtime version
+  lib/@scope/name/                    shared packages from `vibe pkg install`
+  cache/pkg/sha1/<hex>/               content-addressed package store (CAS)
+  cache/pkg/{versions,provenance}.tsv
+  cache/test/<sha256>.pass            pure-test result cache
+  log/                                transparency log (publisher state)
 ```
-$VIBE_HOME/                 (default: ~/.vibe)
-├── bin/
-│   └── vibe                # dispatcher shim: picks a toolchain and execs it
-│                           # ($VIBE_TOOLCHAIN > $VIBE_HOME/toolchain file >
-│                           #  the single installed toolchain)
-├── toolchain               # default toolchain name
-├── toolchains/<name>/
-│   ├── bin/
-│   │   ├── vibe            # launcher (subcommand dispatch + orchestration)
-│   │   └── viberun          # wasmtime runner
-│   └── lib/
-│       ├── vibe-cli.wasm   # portable compiler artifact
-│       ├── vibe-cli.cwasm  # host-specific AOT build (`vibe self update`)
-│       └── lsp_server.js…  # editor tooling
-├── lib/
-│   └── @vibe/{core,ast,parser,prelude,wit_runtime}/   # stdlib packages — the default VIBE_LIB
-│                                  # resolution root (ADR-0065 #751), SHARED
-│                                  # across toolchains (content-addressed)
-└── cache/                  # package fetch cache (#754) — shared
+
+A toolchain is one versioned unit: runner, compiler, launcher, editor
+scripts and the stdlib they were built with. Nothing under
+`toolchains/<name>/` is shared with another toolchain, so installing a
+second one (`--toolchain <name>`, or another `--ref`) never touches the
+first. The launcher resolves `@scope/name` through the active toolchain's
+`lib/` first, then the shared `$VIBE_HOME/lib`: it sets `VIBE_LIB` to that
+pair when you have not set it. The names `build` and `store` are reserved
+directly under `$VIBE_HOME`, because a project rooted at `$HOME` keeps its
+`.vibe/build/` and `.vibe/store/` there.
+
+The dispatcher picks the toolchain named by `$VIBE_TOOLCHAIN`, else by the
+`toolchain` file, else the only installed one:
+
+```bash
+vibe toolchain list                 # installed toolchains, the default marked *
+vibe toolchain default <name>       # rewrite $VIBE_HOME/toolchain
+vibe toolchain remove <name>        # delete one; the default is refused
+vibe version                        # reads the toolchain's manifest.json
 ```
 
-Toolchains hold the versioned artifacts; packages and caches are shared and
-content-addressed. A future `vibe toolchain` selector (rustup-style) only has
-to rewrite `$VIBE_HOME/toolchain` — `install/install.sh` names toolchains
-after the installed ref so several can coexist.
-
-This layout is being replaced. The decided target is
-[toolchain-layout.md](toolchain-layout.md) (ADR-0111, #2674): each toolchain
-carries its own stdlib, a project keeps everything the toolchain generates
-under `.vibe/build/`, dependencies are pinned in the root `index.vpkg`, and
-`vibe self update <version>` installs a release without a checkout. Until
-those phases land, this page describes what the installer does today.
+The pre-#755 flat layout (`$VIBE_HOME/bin/vibe` next to
+`$VIBE_HOME/lib/vibe-cli.wasm`) is not recognized: the launcher and the
+installer refuse it and ask for a reinstall. The release install and update
+path (`vibe self update <version>`, prebuilt runners) is the last phase of
+[toolchain-layout.md](toolchain-layout.md) (ADR-0111, #2674) and is not
+available yet.
 
 PATH policy: **`~/.vibe/bin` is the PATH entry** (the dispatcher lives
 there). The installer writes a sourceable `~/.vibe/env` (rustup's
@@ -130,8 +146,11 @@ vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too
 vibe lsp                              start the stdio LSP server (diagnostics)
 vibe context-pack [--out FILE]        emit cheatsheet + verified golden examples
                                        as one file (AI-harness context, #820)
-vibe version                          print toolchain versions
+vibe version                          print toolchain versions (from manifest.json)
+vibe toolchain list|default <name>|remove <name>
+                                      installed toolchains / pick the default / delete one
 vibe self update --cli-wasm <path>    refresh compiler wasm + rebuild .cwasm
+vibe self uninstall [--purge]         remove the install (--purge: caches, shared packages, log too)
 vibe help                             usage
 ```
 
@@ -243,6 +262,13 @@ vibe self update --cli-wasm path/to/new/vibe-cli.wasm
 
 This copies the new compiler wasm into place and rebuilds the host-specific
 `vibe-cli.cwasm` against the installed runner.
+
+## Uninstalling
+
+```bash
+vibe self uninstall            # removes toolchains/, bin/, env, toolchain and the rc line
+vibe self uninstall --purge    # also cache/, lib/ and log/
+```
 
 ## Notes
 

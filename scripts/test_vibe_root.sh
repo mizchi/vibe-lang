@@ -35,7 +35,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # A gate must not inherit its environment (AGENTS.md, #2252): every variable
 # below changes where the launcher looks or writes.
-unset VIBE_LIB VIBE_BUILD_CACHE_DIR VIBE_BUILD_DIR VIBE_INVOKE_DIR VIBE_TEST_CACHE VIBE_TOOLCHAIN || true
+unset VIBE_LIB VIBE_BUILD_CACHE_DIR VIBE_BUILD_DIR VIBE_INVOKE_DIR VIBE_TOOLCHAIN || true
 
 compiler="${VIBE_ROOT_TEST_STAGE2:-}"
 if [ -z "$compiler" ]; then

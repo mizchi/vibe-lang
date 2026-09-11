@@ -50,7 +50,10 @@ key=value ヘッダー (ADR-0080)。`deps = { @scope/pkg : x.y.z }` が依存の
 | restore the store from the pins | `vibe fetch` | `.vibe/store/` (the `$VIBE_HOME/cache/pkg/` cache first, else the pinned source; hash-verified either way) |
 
 `@scope/name` resolves in order: `.vibe/store/` (pin-verified) → the workspace
-`lib/` → each `VIBE_LIB` root (`:`-separated, default `$VIBE_HOME/lib`). The
+`lib/` → each `VIBE_LIB` root (`:`-separated; the compiler's own default is
+`$VIBE_HOME/lib`, and an installed toolchain's launcher sets it to the
+toolchain's own `lib/` followed by `$VIBE_HOME/lib`, so the active toolchain's
+stdlib wins, #2677). The
 lib/VIBE_LIB steps are a dev-mode convenience; under `VIBE_REQUIRE_PINS=1` an
 unpinned resolution is an error. A store import is verified against the pins
 of the importer's owning `index.vpkg` (the nearest enclosing one, so the root

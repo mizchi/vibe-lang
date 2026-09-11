@@ -161,7 +161,12 @@
 #   vibe context-pack [--out FILE]        emit cheatsheet + verified golden
 #                                         examples as one file (AI-harness context, #820)
 #   vibe version                          print toolchain versions
+#   vibe toolchain list                   installed toolchains, the default marked
+#   vibe toolchain default <name>         select the default toolchain
+#   vibe toolchain remove <name>          delete a toolchain (never the default)
 #   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
+#   vibe self uninstall [--purge]         remove toolchains/, bin/, env, toolchain
+#                                         (--purge: cache/, lib/ and log/ too)
 #   vibe help                             this message
 set -euo pipefail
 
@@ -170,19 +175,24 @@ set -euo pipefail
 # release cannot ship carrying `-dev`. See docs/release-notes-0.1.0.md.
 VIBE_VERSION="0.1.0-dev"
 
-# Resolve install root. Two layouts are supported (rustup-style toolchains
-# landed with the #755-era installer; the flat layout stays recognized so old
-# installs keep working):
+# Resolve install root (docs/toolchain-layout.md section 2, #2677). An
+# installed launcher lives at $VIBE_HOME/toolchains/<name>/bin/vibe and
+# carries everything it needs inside that toolchain directory:
 #
-#   toolchain: $VIBE_HOME/toolchains/<name>/bin/{vibe,viberun}
-#              $VIBE_HOME/toolchains/<name>/lib/{vibe-cli.wasm,vibe-cli.cwasm,…}
-#              $VIBE_HOME/{lib/@scope/name…, cache/…}   (SHARED state: package
-#              root #751 / fetch cache #754 — versioned per toolchain is the
-#              artifacts, not the packages)
-#   flat:      $VIBE_HOME/bin/{vibe,viberun}
-#              $VIBE_HOME/lib/{vibe-cli.wasm,vibe-cli.cwasm}
+#   $VIBE_HOME/toolchains/<name>/bin/{vibe,viberun}
+#   $VIBE_HOME/toolchains/<name>/lib/{vibe-cli.wasm,vibe-cli.cwasm,…}
+#   $VIBE_HOME/toolchains/<name>/lib/@vibe/…    the stdlib, PER TOOLCHAIN
+#   $VIBE_HOME/toolchains/<name>/manifest.json
+#   $VIBE_HOME/{lib/@scope/name…, cache/…, log/} SHARED: the dev-mode package
+#              root (#751), the package CAS (#754), the test result cache and
+#              the publisher log -- keyed by content, not by compiler version
 #
-# TOOLCHAIN_DIR points at this launcher's own artifact root in both layouts.
+# The same script runs straight out of a checkout (runtime/vibe): then
+# TOOLCHAIN_DIR is the checkout, VIBE_HOME defaults to it, and the checkout's
+# lib/ is the stdlib. The pre-#755 flat layout ($VIBE_HOME/bin/vibe next to
+# $VIBE_HOME/lib/vibe-cli.wasm) is refused: two toolchains cannot share it,
+# and 0.1.0 is not tagged, so nothing published depends on it.
+#
 # Resolve this script's real path WITHOUT `readlink -f` (a GNU extension that
 # macOS/BSD readlink lacks — `readlink -f` there errors and breaks every install).
 # Walk symlinks portably instead.
@@ -196,13 +206,28 @@ LAUNCHER="$(cd -P "$(dirname "$_src")" && pwd)/$(basename "$_src")"
 SELF="$(cd -P "$(dirname "$LAUNCHER")" && pwd)"
 TOOLCHAIN_DIR="$(dirname "$SELF")"
 if [ "$(basename "$(dirname "$TOOLCHAIN_DIR")")" = "toolchains" ]; then
+  INSTALLED_TOOLCHAIN=1
+  TOOLCHAIN_NAME="$(basename "$TOOLCHAIN_DIR")"
   VIBE_HOME="${VIBE_HOME:-$(dirname "$(dirname "$TOOLCHAIN_DIR")")}"
 else
+  INSTALLED_TOOLCHAIN=0
+  TOOLCHAIN_NAME=""
+  if [ "$(basename "$SELF")" = "bin" ] && [ -f "$TOOLCHAIN_DIR/lib/vibe-cli.wasm" ]; then
+    echo "vibe: $TOOLCHAIN_DIR is a flat pre-#755 install (bin/vibe next to lib/vibe-cli.wasm), which this toolchain no longer runs from; remove it and reinstall with install/install.sh (docs/install.md)" >&2
+    exit 1
+  fi
   VIBE_HOME="${VIBE_HOME:-$TOOLCHAIN_DIR}"
 fi
 RUNNER="${VIBE_RUNNER:-$TOOLCHAIN_DIR/bin/viberun}"
 CLI_WASM="${VIBE_CLI_WASM:-$TOOLCHAIN_DIR/lib/vibe-cli.wasm}"
 CLI_CWASM="${VIBE_CLI_CWASM:-$TOOLCHAIN_DIR/lib/vibe-cli.cwasm}"
+# An installed toolchain resolves `@scope/name` through its own stdlib first,
+# then the shared dev-mode root (#751). The launcher is what knows which
+# toolchain is active, so it sets VIBE_LIB when the user has not; the
+# compiler's own default with no environment is unchanged.
+if [ "$INSTALLED_TOOLCHAIN" = 1 ] && [ -z "${VIBE_LIB:-}" ]; then
+  export VIBE_LIB="$TOOLCHAIN_DIR/lib:$VIBE_HOME/lib"
+fi
 
 # #2243: cli_main dispatches on VIBE_* selectors in SOURCE ORDER, so a selector
 # inherited from the environment hijacks every verb whose own selector is
@@ -254,6 +279,27 @@ _sha256_file() {
 }
 
 die() { echo "vibe: $*" >&2; exit 1; }
+
+# One string field of a toolchain manifest (`"key": "value"` per line, the
+# shape install/install.sh writes -- read with sed so an installed toolchain
+# needs no jq); "" when the file or the key is absent.
+manifest_field_of() {
+  [ -f "$1" ] || return 0
+  sed -n "s/^  \"$2\": \"\(.*\)\",\{0,1\}\$/\1/p" "$1" | sed -n '1p'
+}
+manifest_field() { manifest_field_of "$TOOLCHAIN_DIR/manifest.json" "$1"; }
+# The default toolchain's name: $VIBE_TOOLCHAIN, else the toolchain file --
+# the dispatcher's own selection order.
+default_toolchain_name() {
+  if [ -n "${VIBE_TOOLCHAIN:-}" ]; then
+    printf '%s' "$VIBE_TOOLCHAIN"
+  elif [ -f "$VIBE_HOME/toolchain" ]; then
+    sed -n '1p' "$VIBE_HOME/toolchain" | tr -d '[:space:]'
+  fi
+}
+valid_toolchain_name() {
+  case "$1" in ""|.|..|*[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac
+}
 
 # --- semver constraint resolution for `vibe add` -----------------------------
 # A source spec's `@<ref>` may be a constraint (^1.2, ~1.2.3, >=1.0, 1.x, *,
@@ -2431,7 +2477,11 @@ case "$cmd" in
       die "vibe test: no test files found"
     fi
     set -- "${_test_files[@]}"
-    tcache="${VIBE_TEST_CACHE:-$VIBE_HOME/cache/test}"
+    # The pass cache is $VIBE_HOME/cache/test, keyed by the compiled wasm's
+    # sha256 (which already folds in the compiler); no separate override
+    # (docs/toolchain-layout.md section 8, #2677) -- point VIBE_HOME at a
+    # scratch home to isolate a run.
+    tcache="$VIBE_HOME/cache/test"
     # #2228: per-file result records for the [vibe-test] summary line. A
     # file (not a shell var) because the --jobs driver runs _test_run_one
     # in background subshells, whose variable writes never reach the
@@ -2897,7 +2947,11 @@ PY
     # the same way the doctest harness resolves them: a `lib` symlink to the
     # install/checkout lib root. (Relative imports of OTHER user files do not
     # move with the session — load such files from their own directory.)
-    [ -d "$VIBE_HOME/lib" ] && ln -sfn "$VIBE_HOME/lib" "$repl_dir/lib"
+    # An installed toolchain carries its own stdlib (#2677); a checkout's is
+    # its lib/, which is also this launcher's TOOLCHAIN_DIR/lib.
+    shell_lib="$VIBE_HOME/lib"
+    [ -d "$TOOLCHAIN_DIR/lib/@vibe" ] && shell_lib="$TOOLCHAIN_DIR/lib"
+    [ -d "$shell_lib" ] && ln -sfn "$shell_lib" "$repl_dir/lib"
 
     # Validate the current buffer: compile buffer + an anchor fn with the test
     # entry (`__no_entry__`), so the WHOLE buffer is parse+type checked, not
@@ -3336,8 +3390,62 @@ EOF
       die "vibe context-pack: no pre-built asset ($cpasset) and no generator ($cpgen) found -- this installation doesn't ship the context pack"
     fi
     ;;
+  toolchain)
+    # vibe toolchain list | default <name> | remove <name>
+    # (docs/toolchain-layout.md section 3, #2677). Selection order is the
+    # dispatcher's: $VIBE_TOOLCHAIN, then $VIBE_HOME/toolchain, then the
+    # single installed toolchain; `default` rewrites the file.
+    tsub="${1:-list}"; shift || true
+    case "$tsub" in
+      list)
+        [ "$#" -eq 0 ] || die "usage: vibe toolchain list"
+        tdefault="$(default_toolchain_name)"
+        tfound=0
+        for d in "$VIBE_HOME/toolchains"/*/; do
+          [ -d "$d" ] || continue
+          tfound=1
+          tn="$(basename "$d")"
+          tv="$(manifest_field_of "${d}manifest.json" version)"
+          tmark=" "
+          [ "$tn" = "$tdefault" ] && tmark="*"
+          printf '%s %s\t%s\n' "$tmark" "$tn" "${tv:-?}"
+        done
+        [ "$tfound" = 1 ] || die "no toolchains installed under $VIBE_HOME/toolchains (install/install.sh puts one there)"
+        ;;
+      default)
+        [ "$#" -eq 1 ] || die "usage: vibe toolchain default <name>"
+        tn="$1"
+        valid_toolchain_name "$tn" || die "invalid toolchain name '$tn'"
+        [ -x "$VIBE_HOME/toolchains/$tn/bin/vibe" ] || die "toolchain '$tn' is not installed (vibe toolchain list)"
+        printf '%s\n' "$tn" > "$VIBE_HOME/toolchain"
+        echo "vibe: default toolchain -> $tn"
+        ;;
+      remove)
+        [ "$#" -eq 1 ] || die "usage: vibe toolchain remove <name>"
+        tn="$1"
+        valid_toolchain_name "$tn" || die "invalid toolchain name '$tn'"
+        [ -d "$VIBE_HOME/toolchains/$tn" ] || die "toolchain '$tn' is not installed (vibe toolchain list)"
+        [ "$tn" != "$(default_toolchain_name)" ] || die "toolchain '$tn' is the default; pick another with \`vibe toolchain default <name>\` first"
+        [ "$tn" != "$TOOLCHAIN_NAME" ] || die "toolchain '$tn' is the one running this command"
+        rm -rf "$VIBE_HOME/toolchains/$tn"
+        echo "vibe: removed toolchain $tn"
+        ;;
+      *) die "usage: vibe toolchain list | default <name> | remove <name>" ;;
+    esac
+    ;;
   version|--version|-V)
-    echo "vibe $VIBE_VERSION (selfhost launcher)"
+    # An installed toolchain answers from its manifest.json (#2677); a
+    # checkout launcher has none and answers from its own version constant.
+    if [ -f "$TOOLCHAIN_DIR/manifest.json" ]; then
+      mf_version="$(manifest_field version)"
+      mf_source="$(manifest_field source)"
+      mf_ref="$(manifest_field ref)"
+      mf_commit="$(manifest_field commit)"
+      mf_date="$(manifest_field installed_at)"
+      echo "vibe ${mf_version:-$VIBE_VERSION} (toolchain ${TOOLCHAIN_NAME:-?}: ${mf_source:-?} ${mf_ref:-?}@${mf_commit:0:12}, installed ${mf_date:-?})"
+    else
+      echo "vibe $VIBE_VERSION (selfhost launcher, checkout)"
+    fi
     echo "toolchain:   $TOOLCHAIN_DIR"
     echo "runner:      $RUNNER"
     "$RUNNER" --version 2>/dev/null || true
@@ -3364,7 +3472,41 @@ EOF
         "$RUNNER" --precompile "$CLI_WASM" -o "$CLI_CWASM"
         echo "vibe: rebuilt AOT compiler -> $CLI_CWASM"
         ;;
-      *) die "usage: vibe self update --cli-wasm <path>" ;;
+      uninstall)
+        # vibe self uninstall [--purge]  (docs/toolchain-layout.md section 3,
+        # #2677): removes what the installer put under $VIBE_HOME --
+        # toolchains/, bin/ (the dispatcher), env, toolchain -- and the one rc
+        # line a default-prefix install added. The shared, content-keyed state
+        # (cache/, the dev-mode lib/, log/) stays unless --purge.
+        purge=0
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --purge) purge=1; shift ;;
+            *) die "unknown self uninstall flag: $1" ;;
+          esac
+        done
+        [ "$INSTALLED_TOOLCHAIN" = 1 ] || die "vibe self uninstall: this launcher runs from a checkout ($TOOLCHAIN_DIR), not from an installed toolchain; nothing to remove"
+        if [ "$VIBE_HOME" = "$HOME/.vibe" ]; then
+          for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+            [ -f "$rc" ] || continue
+            if grep -qsF '. "$HOME/.vibe/env"' "$rc"; then
+              grep -vF '. "$HOME/.vibe/env"' "$rc" > "$rc.vibe-uninstall.tmp" || true
+              mv "$rc.vibe-uninstall.tmp" "$rc"
+              echo "vibe: removed '. \"\$HOME/.vibe/env\"' from $rc"
+            fi
+          done
+        fi
+        rm -rf "$VIBE_HOME/toolchains" "$VIBE_HOME/bin" "$VIBE_HOME/env" "$VIBE_HOME/toolchain"
+        echo "vibe: removed $VIBE_HOME/{toolchains,bin,env,toolchain}"
+        if [ "$purge" = 1 ]; then
+          rm -rf "$VIBE_HOME/cache" "$VIBE_HOME/lib" "$VIBE_HOME/log"
+          echo "vibe: removed $VIBE_HOME/{cache,lib,log}"
+          rmdir "$VIBE_HOME" 2>/dev/null || true
+        else
+          echo "vibe: kept $VIBE_HOME/{cache,lib,log} (vibe self uninstall --purge removes them too)"
+        fi
+        ;;
+      *) die "usage: vibe self update --cli-wasm <path> | vibe self uninstall [--purge]" ;;
     esac
     ;;
   root)
