@@ -61,19 +61,22 @@ import @vibe/compiler/codegen {
 import @vibe/compiler/codegen/common_base {
   CodegenBodyCache,
   DbgProv,
+  ModuleSplit,
   bcc_int_lists_equal,
   bcc_string_lists_equal,
   codegen_body_cache_filter_src_below,
   codegen_body_cache_from_bytes,
   codegen_body_cache_merge,
   codegen_body_cache_new,
-  codegen_body_cache_to_bytes
+  codegen_body_cache_to_bytes,
+  module_split_none
 }
 
 import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl_with_typed_offsets,
   compile_wasi_module_no_dce_impl_with_typed_offsets,
   compile_wasi_module_rc_cached_impl_with_prov,
+  compile_wasi_module_rc_cached_impl_with_split,
   compile_wasi_module_rc_cached_impl_with_typed_offsets,
   compile_wasi_module_rc_impl_with_typed_offsets,
   compile_wasi_module_rc_shadow_impl_with_typed_offsets,
@@ -1553,7 +1556,82 @@ fn ordinary_lane_dbg_prov(file_paths: Array[String], file_counts: Array[Int]) ->
   DbgProv::{ files: files, file_nls: array_empty(), stmt_file_id: stmt_file_id }
 }
 
+/// #2575 item 2 step 3b: the ordinary FS lane's `ModuleSplit`, or an unusable
+/// one.
+///
+/// `stmt_file_id` is the same run-length decode `ordinary_lane_dbg_prov` does,
+/// over the same `file_counts`, so the two describe one partition of one
+/// array.
+///
+/// The closure comes from `oracle_import_closure`, and TWO conditions make this
+/// return `module_split_none()` -- which is the whole-program prelude:
+///
+///   * `unresolved > 0`. A dropped edge narrows a module's context, and
+///     narrowing silently is the one failure that produces a wrong program
+///     rather than a slow one.
+///   * the closure's length disagrees with the merge's file count. The closure
+///     is indexed by FLAT SOURCE and this lane by MERGED FILE ID; they are the
+///     same space only because the merge keeps one file entry per flat source.
+///     If that ever stops holding, every row would be read for the wrong
+///     module -- quietly meaningless rather than wrong in a way anyone sees.
+///
+/// `use_split` is a parameter rather than an env read: production lanes stay
+/// Env-free (the #634 layering note), and `cache_mode` is the established shape
+/// for a decision the CLI adapter makes and passes down.
+fn ordinary_lane_module_split(file_paths: Array[String], file_counts: Array[Int], source_groups: Array[(String, Array[(String, String)])], use_split: Bool) -> ModuleSplit with Exception + Fs {
+  if !use_split {
+    module_split_none()
+  } else {
+    let (closure, unresolved) = oracle_import_closure(source_groups)
+    if unresolved > 0 || Array::length(closure) != Array::length(file_paths) {
+      module_split_none()
+    } else {
+      let stmt_file_id = array_empty()
+      let mut i = 0
+      while i < Array::length(file_paths) && i < Array::length(file_counts) {
+        let n = Array::get(file_counts, i)
+        let mut k = 0
+        while k < n {
+          Array::push(stmt_file_id, i)
+          k = k + 1
+        }
+        i = i + 1
+      }
+      ModuleSplit::{
+        file_count: Array::length(file_paths),
+        stmt_file_id: stmt_file_id,
+        import_closure: closure
+      }
+    }
+  }
+}
+
+/// The shape of the split this lane WOULD build for `entry_path`: the module
+/// count and the number of statements mapped, or `(0, 0)` when the split is
+/// not usable and the lane falls back to the whole-program prelude.
+///
+/// Exported because a byte-equality test between the two lanes is VACUOUS if
+/// the split path is never taken, and "I checked by mutating the source" is not
+/// a property a test can keep. A caller can also use it to ask whether a given
+/// root would split at all.
+export fn ordinary_lane_split_shape(entry_path: String) -> (Int, Int) with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let (_, file_paths, _, file_counts, _, _) = build_grouped_merged_stmts_counted(source_groups)
+  let split = ordinary_lane_module_split(file_paths, file_counts, source_groups, true)
+  (split.file_count, Array::length(split.stmt_file_id))
+}
+
+/// The ordinary RC lane with the per-module prelude selectable (#2575 item 2
+/// step 3b). `use_split` false is byte-for-byte the lane below it.
+export fn compile_file_fs_mode_rc_body_cached_split(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool) -> Bytes with Exception + Fs {
+  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, use_split)
+}
+
 export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Exception + Fs {
+  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false)
+}
+
+fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -1565,6 +1643,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   // rewrites in place), so the map built from the merge's counts still indexes
   // `merged_stmts`.
   let lane_prov = ordinary_lane_dbg_prov(file_paths, file_counts)
+  let lane_split = ordinary_lane_module_split(file_paths, file_counts, source_groups, use_split)
   // The key is independent of source CONTENT (the point is to hit after an
   // edit) but scoped to the entry PATH: two roots that share a conventional
   // entry name (`run`, `main`) must not share one artifact slot, or their
@@ -1576,7 +1655,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   }
   if cache_mode == "verify" {
     let fresh_out = codegen_body_cache_new()
-    let fresh = compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+    let fresh = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
     if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_in, fresh_out) {
       // Guard drift (an edit flipped a whole-program fact the guards pin)
       // is an EXPECTED cache miss, checked above against the fresh
@@ -1588,7 +1667,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
       // replay/sliced gates prove that recompile is byte-identical to the
       // first, so any difference here is attributable to the persisted
       // bodies being replayed.
-      let replayed = compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+      let replayed = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
       let fresh_n = Bytes::length(fresh)
       let rn = Bytes::length(replayed)
       if fresh_n != rn {
@@ -1617,7 +1696,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
     fresh
   } else {
     let cache_out = codegen_body_cache_new()
-    let bytes = compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, cache_in, cache_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+    let bytes = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, cache_in, cache_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
     // Replayed entries are not re-recorded, so the refreshed artifact is
     // the new harvest plus the entries it replayed -- but ONLY when the
     // cache was actually consumed (its guards match the new harvest's).
