@@ -454,7 +454,8 @@ import @vibe/compiler/normalize {
   collect_explicit_derived_op_names,
   collect_trivial_wrapper_names,
   desugar_trait_dicts_module,
-  desugar_trait_dicts_module_with_facts
+  desugar_trait_dicts_module_with_facts,
+  desugar_trait_dicts_with_typed_eq
 }
 
 test "the merge rename table survives every module, not just the first" {
@@ -518,4 +519,47 @@ test "the whole-program collectors find what a partition cannot" {
   inspect(Array::length(w) > 0, content = "true")
   let ops = collect_explicit_derived_op_names(program_stmts("struct Pt {\n  x: Int\n}\n\nfn Pt::equals(a: Pt, b: Pt) -> Bool {\n  a.x == b.x\n}\n"))
   inspect(Array::length(ops) > 0, content = "true")
+}
+
+fn no_stmts() -> Array[Stmt] {
+  []
+}
+
+/// A program whose lowering THROWS: a declared field holding a function has no
+/// structural comparator, so `==` on it is refused at compile time (#2475,
+/// mirroring fixtures/structural_eq_untyped_empty_fn_field_refused.vibe). The
+/// refusal is reported by `eq_refusals_report` at the very end of `dtd_run`,
+/// which is what makes it useful here -- the whole rewrite runs, and the throw
+/// lands after it.
+fn eq_refusal_src() -> String {
+  "struct F {\n  f: () -> Int\n} derive (Eq)\n\nfn mk1() -> () -> Int {\n  () -> {\n    1\n  }\n}\n\nexport fn _start() -> Int {\n  let left = []\n  Array::push(left, F::{\n    f: mk1()\n  })\n  let right = []\n  Array::push(right, F::{\n    f: mk1()\n  })\n  if left == right {\n    1\n  } else {\n    0\n  }\n}\n"
+}
+
+test "a module lowering that throws does not leak its trait facts into the next program" {
+  // #2647 Codex round 8. The per-module entry sets the whole-program facts on
+  // the way in and clears them on the way out -- but `dtd_run` ends in
+  // `eq_refusals_report`, which THROWS, so the clear at the bottom is skipped.
+  // The whole-program entry resets five other cells on entry and used to reset
+  // these none, so it inherited whatever a failed compile left behind. In a
+  // process that compiles more than once that is a silent miscompile, not a
+  // stale diagnostic: a leftover trivial-wrapper name rewrites `apply(pick)`
+  // in the NEXT program into `pick()`.
+  let refusing = program_stmts(eq_refusal_src())
+  let threw = handle {
+    let _ = desugar_trait_dicts_module_with_facts(refusing, no_stmts(), "m", no_ints(), no_keys(), ModuleTraitFacts::{
+      wrapper_names: ["apply"],
+      explicit_ops: []
+    })
+    false
+  } with { Exception::Throw(_) => true }
+  // Not vacuous: the module lowering really did throw. Without this the test
+  // would pass on a program that simply returned and cleared the facts itself.
+  inspect(threw, content = "true")
+  // `apply` here is NOT a trivial wrapper -- its body calls with an argument,
+  // where a trivial wrapper's body is a bare `g()` -- so nothing in THIS
+  // program can put it in the wrapper set. Only a fact left behind by the
+  // failed compile above can.
+  let victim = program_stmts("fn apply(g: (Int) -> Int) -> Int {\n  g(1)\n}\n\nfn pick(x: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  apply(pick)\n}\n")
+  desugar_trait_dicts_with_typed_eq(victim, no_ints(), no_keys())
+  inspect(String::contains(render_in_order(victim), "apply(pick)"), content = "true")
 }
