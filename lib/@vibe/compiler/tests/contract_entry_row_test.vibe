@@ -1,0 +1,28 @@
+//# ADR-0088: a `.vpkg` contract declaration is a requirement, never an entry
+
+import @vibe/compiler/contract {
+  parse_contract_program
+}
+
+import @vibe/compiler/syntax {
+  lex
+}
+
+fn contract_error(source: String) -> String {
+  handle {
+    let _ = parse_contract_program(lex(source))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "ADR-0088 (Codex on #2653): `allows` is refused on a bodyless contract declaration, even one named main" {
+  // A package publishes requirements; a callable API function that happens to
+  // be named `main` is not an entry point, so the entry-only keyword is
+  // refused by name with the `with` edit.
+  let msg = contract_error("fn main() -> Unit allows Fs\n")
+  assert(String::contains(msg, "written on an entry point only"))
+  assert(String::contains(msg, "the contract declaration `main` requires its effects from the caller"))
+  assert(String::contains(msg, "write `with` here"))
+  assert_eq(contract_error("fn main() -> Unit with Fs\n"), "")
+  assert_eq(contract_error("fn helper() -> Unit with Fs\n"), "")
+}

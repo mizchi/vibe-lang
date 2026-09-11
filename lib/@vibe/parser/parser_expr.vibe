@@ -790,6 +790,16 @@ fn parse_fn_name(tokens: Array[Token], pos: Int, context: Option[ParserBinderCon
 }
 
 fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])]) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
+  parse_fn_signature_impl(tokens, pos, context, contract_rows, true)
+}
+
+/// `entry_rows`: whether a signature named `main` / `_start` may write the
+/// entry grant `allows`. True for a definition in a source file; false for a
+/// bodyless `.vpkg` contract declaration, which is a REQUIREMENT the package
+/// publishes (a callable API function that happens to be named `main` is not
+/// an entry point), so `allows` is refused there by name (Codex review on PR
+/// #2653).
+fn parse_fn_signature_impl(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext], contract_rows: Option[(ArrayBuilder[SourceBinder], ArrayBuilder[SourceBinder])], entry_rows: Bool) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
   let (name, name_next) = parse_fn_name(tokens, pos, context)
   let (tps, tbs, after_gen) = parse_value_bracket_header(tokens, name_next, context)
   let lp = expect_tk(tokens, after_gen, "(")
@@ -812,11 +822,13 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
   // error leads with the edit rather than reading `allows` as a stray
   // identifier and reporting "expected {".
   let (eff_opt, eff_next) = if peek_is_allows(tokens, ret_next) {
-    if is_entry_fn_name(name) {
+    if entry_rows && is_entry_fn_name(name) {
       let (eff_names, en) = parse_allows_row(tokens, ret_next + 1)
       (Some(eff_names), en)
-    } else {
+    } else if entry_rows {
       throw(allows_outside_entry_error(String::concat("`", String::concat(name, "`")), ret_next))
+    } else {
+      throw(allows_outside_entry_error(String::concat("the contract declaration `", String::concat(name, "`")), ret_next))
     }
   } else {
     match peek(tokens, ret_next) {
@@ -880,6 +892,12 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
 
 export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
   parse_fn_signature_with_binder_context(tokens, pos, None, None)
+}
+
+/// A bodyless contract declaration (`.vpkg`): the same signature grammar, but
+/// the row is always a requirement, so `allows` is refused whatever the name.
+export fn parse_fn_signature_declaration(tokens: Array[Token], pos: Int) -> ((String, Array[String], Array[(String, Array[String])]), (Array[(String, Option[TypeExpr])], TypeExpr, Option[String]), (Array[Expr], Array[Expr]), Int) with Exception {
+  parse_fn_signature_impl(tokens, pos, None, None, false)
 }
 
 /// ADR-0069 Phase 1: `fn main { ... }` / `fn main allows Fs { ... }` — the ONE

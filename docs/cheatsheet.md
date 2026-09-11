@@ -2700,25 +2700,37 @@ let main = () -> Int { c }         // ok
 
 ```vibe skip
 // doctest-skip: every NG line here is a form the parser rejects on purpose
-test "name" { .. }               // ok  — 名前は文字列リテラル必須
+test "name" { .. }               // ok  -- the name must be a string literal
 test name { .. }                 // NG: expected test name string
-test "n" allows { Fs } { .. }    // NG: braced row は綴りではない — `allows Fs` と書く
-test "n" with { Fs } { .. }      // NG: braced row は #1429 で削除
+test "n" allows { Fs } { .. }    // NG: a braced row is not a spelling -- write `allows Fs`
+test "n" with { Fs } { .. }      // NG: the braced row was removed in #1429
 ```
 
-**名前付き `test` / `bench` / `example` は名前の後に row を書ける** (#1508)。
-test はエントリポイントなので、その row は **grant** で、キーワードは
-`fn main allows ..` と同じ `allows` (ADR-0088)。宣言した row は ambient row
-(`{ Fs, Env, Console, Stdin, Stdout, Stderr, Process, Profiler, Error,
-Exception }`; `Console` が tty の現行名、旧三つは legacy) を**置換ではなく
-拡張**する — `allows Http` を書いても `assert` に必要な `Exception` などの
-既定は残る。無名 `test { .. }` / `bench { .. }` には row を書けない (row を
-対応付ける名前が無い)。旧綴り `test "n" with ..` は今もパースされ、
-`vibe check` が `allows` への edit を warning で示す (seed-compiled な
-`lib/**` の test がまだこの綴りなので、拒否は bootstrap bump 後)。
+**A named `test` / `bench` / `example` may write a row after its name**
+(#1508). A test is an entry point, so the row is a **grant** and the keyword
+is `allows`, as on `fn main allows ..` (ADR-0088). The declared row
+**widens** the ambient row (`{ Fs, Env, Console, Stdin, Stdout, Stderr,
+Process, Profiler, Error, Exception }`; `Console` is the current name for the
+tty, the three older labels are legacy) rather than replacing it -- writing
+`allows Http` keeps the defaults `assert` needs, such as `Exception`. An
+anonymous `test { .. }` / `bench { .. }` cannot carry a row (there is no name
+to key it on). The legacy spelling `test "n" with ..` still parses, and
+`vibe check` reports it with the `allows` edit as a warning (the seed-compiled
+tests under `lib/**` still carry it, so the refusal lands after the bootstrap
+bump).
+
+The row is admitted like `main`'s: what it names must be something the run
+can bring in -- a host capability, `Exception`, `Async`, or an effectset of
+those. A user-declared effect (`test "x" allows Ask::Get`), a row variable,
+or an operation a provider does not own (`allows Console::Get`) is refused,
+with the `handle` edit for the user effect: nobody outside the program
+provides it, so granting it would only authorize a `perform` no handler
+catches. Nor can a block write `perform?` itself: a test artifact runs with
+full authority, so the `NotGranted` arm could never run -- put the
+`perform?` in a function that requires `with Op?` and call that.
 
 ```vibe
-// row は effect 名でも operation 粒度でも、effectset 名でも書ける
+// the row may name an effect, an operation, or an effectset
 test "declared row widens the ambient one" allows Exception {
   assert_eq(1 + 1, 2)
 }
@@ -2736,14 +2748,16 @@ test "op-granular row" allows Http::request + Http::close {
 }
 ```
 
-これで **`Http` を実際に呼ぶ test / bench が書ける** — network は ambient row に
-入っておらず明示宣言が必須、という設計はそのまま。クライアント系 builtin
-(`Http::request` / `response_status` / `response_header` / `response_body` /
-`close`) は bare file の直接綴りでも host import に落ちる (#1508 第2障壁の解消。
-実行例: `bench/http_bench.vibe`、要 `python3 tests/http_echo_server.py 18281`)。
-server 系 (`Http::listen` / `accept` / `respond`) は今も handler が必要。
-`handle { .. } with Http { _ => () }` で row を放電する古い回避策は、実 HTTP の
-test/bench にはもう不要。
+This is what makes **a test / bench that really calls `Http`** writable --
+the design is unchanged: the network is absent from the ambient row and must
+be declared. The client builtins (`Http::request` / `response_status` /
+`response_header` / `response_body` / `close`) lower to host imports even
+when spelled directly in a bare file (the second barrier of #1508, removed;
+runnable example: `bench/http_bench.vibe`, which needs `python3
+tests/http_echo_server.py 18281`). The server side (`Http::listen` /
+`accept` / `respond`) still needs a handler. The old workaround of
+discharging the row with `handle { .. } with Http { _ => () }` is no longer
+needed for a real HTTP test / bench.
 
 ### 引数
 

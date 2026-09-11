@@ -90,6 +90,53 @@ fn print_row_with_keyword(e: String, keyword: String) -> String {
   }
 }
 
+/// #1508 / ADR-0088: the rows of `test` / `bench` / `example` blocks are not
+/// on the block nodes but in the program's trailing `STestEffectRows` marker,
+/// so a per-statement printer cannot see them. `print_program` registers the
+/// marker's rows here before it prints and clears them after; a caller that
+/// prints statement by statement (`vibe normalize`) registers them the same
+/// way. A registered block prints its row as `allows ..` -- the canonical
+/// spelling, whichever keyword was read -- and `allows ()` for the explicitly
+/// empty row; an unregistered block prints no row. Before this the printer
+/// dropped every block row, so `vibe normalize` silently deleted the
+/// authority a block declared (Codex review on PR #2653).
+let printer_block_rows: Array[(String, String)] = Array::slice([("", "")], 0, 0)
+
+export fn register_block_rows(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(printer_block_rows, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STestEffectRows(rows) => {
+        let mut ri = 0
+        while ri < Array::length(rows) {
+          Array::push(printer_block_rows, Array::get(rows, ri))
+          ri = ri + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn block_row_suffix(name: String) -> String {
+  let mut i = 0
+  let mut out = ""
+  let mut found = false
+  while i < Array::length(printer_block_rows) && !found {
+    let (n, row) = Array::get(printer_block_rows, i)
+    if n == name {
+      out = print_entry_row(row)
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// Render a parser generic binder in parameter declaration order. Bounds are
 /// keyed by parameter name in the AST; scan them in AST order so the printer is
 /// deterministic without making an unrelated semantic ordering decision.
@@ -853,9 +900,9 @@ export fn print_stmt(s: Stmt) -> String {
       }
       String::concat("import ", String::concat(path, String::concat(" { ", String::concat(join(parts, ", "), " }"))))
     },
-    STest(name, body) => String::concat("test \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
-    SExample(name, body) => String::concat("example \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
-    SBench(name, body) => String::concat("bench \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
+    STest(name, body) => String::concat("test \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr(body), " }")))))),
+    SExample(name, body) => String::concat("example \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr(body), " }")))))),
+    SBench(name, body) => String::concat("bench \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr(body), " }")))))),
     SExpr(e) => print_expr(e),
     SExport(names) => String::concat("export { ", String::concat(join(names, ", "), " }")),
     SReExport(path, items) => {
@@ -925,6 +972,8 @@ fn needs_program_separator(stmt_text: String) -> Bool {
 
 export fn print_program(stmts: Array[Stmt]) -> String {
   let len = Array::length(stmts)
+  // The block rows live in the trailing marker; see register_block_rows.
+  register_block_rows(stmts)
   // O(N) build via ArrayBuilder (matching this file's join/escape_string idiom);
   // the previous `out = String::concat(out, ...)` per statement was O(N²) over
   // the total printed size, which dominates emit-module-source (issue #366).
@@ -950,5 +999,7 @@ export fn print_program(stmts: Array[Stmt]) -> String {
     }
     i = i + 1
   }
-  String::join(ArrayBuilder::freeze(b), "")
+  let out = String::join(ArrayBuilder::freeze(b), "")
+  Array::truncate(printer_block_rows, 0)
+  out
 }

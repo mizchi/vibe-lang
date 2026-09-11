@@ -427,5 +427,97 @@ test "ADR-0088: the grade is refused on anything but a host capability" {
   let boundary = first_check_error("fn main allows Exception? {\n  ()\n}\n")
   assert(String::contains(boundary, "`Exception?` in the row of `main`"))
   let block = first_check_error("effect Ask { Get() -> Int }\ntest \"graded user effect\" allows Ask::Get? {\n  assert(true)\n}\n")
-  assert(String::contains(block, "`Ask::Get?` in the row of `__test_graded user effect`") || String::contains(block, "Ask::Get?"))
+  // The block is named as the reader wrote it, and its row is admitted first:
+  // a user effect cannot be granted at all, graded or not (the checker
+  // surfaces the first error, so the grade refusal is pinned on an admitted
+  // label below).
+  assert(String::contains(block, "entry point test \"graded user effect\" cannot discharge { Ask::Get? }"))
+  let block_boundary = first_check_error("test \"graded boundary\" allows Exception? {\n  assert(true)\n}\n")
+  assert(String::contains(block_boundary, "`Exception?` in the row of test \"graded boundary\""))
+}
+
+test "ADR-0088 (Codex on #2653): a block grant is admitted like main's" {
+  let user_op = "effect Ask { Get() -> Int }\ntest \"x\" allows Ask::Get {\n  let _ = perform Ask::Get()\n  assert(true)\n}\n"
+  let msg = first_check_error(user_op)
+  assert(String::contains(msg, "entry point test \"x\" cannot discharge { Ask::Get }"))
+  assert(String::contains(msg, "handle ... with Ask"))
+  assert(!String::contains(msg, "add 'allows"))
+  let bench_msg = first_check_error("effect Tick { Now() -> Int }\nbench \"b\" allows Tick {\n  let _ = perform Tick::Now()\n  ()\n}\n")
+  assert(String::contains(bench_msg, "entry point bench \"b\" cannot discharge { Tick }"))
+  assert(String::contains(bench_msg, "handle ... with Tick"))
+  let example_msg = first_check_error("effect Ask { Get() -> Int }\nexample \"e\" allows Ask::Get {\n  assert(true)\n}\n")
+  assert(String::contains(example_msg, "\"e\" cannot discharge { Ask::Get }"))
+  let row_var = first_check_error("test \"v\" allows e {\n  assert(true)\n}\n")
+  assert(String::contains(row_var, "entry point test \"v\" has unresolved effect row { e }"))
+  let unknown_op = first_check_error("test \"u\" allows Console::Get {\n  assert(true)\n}\n")
+  assert(String::contains(unknown_op, "entry point test \"u\" grants `Console::Get`, but the `Console` provider has no such operation"))
+  // What the run can bring in is still granted: a host operation, the
+  // boundary's `Exception`, an effectset of host operations.
+  let fine = "effectset ReadCaps = { Fs::read_file, Fs::exists }\ntest \"host\" allows Http::request + Exception {\n  assert(true)\n}\ntest \"set\" allows ReadCaps {\n  assert(!Fs::exists(\"nope\"))\n}\n"
+  assert_eq(first_check_error(fine), "")
+}
+
+test "ADR-0088 (Codex on #2653): a block's unhandled user effect gets the handle edit, not the allows edit" {
+  let msg = first_check_error("effect Ask { Get() -> Int }\ntest \"x\" {\n  let _ = perform Ask::Get()\n  assert(true)\n}\n")
+  assert(String::contains(msg, "entry point test \"x\" cannot discharge { Ask::Get }"))
+  assert(String::contains(msg, "handle ... with Ask"))
+  assert(!String::contains(msg, "add 'allows"))
+  let handled = "effect Ask { Get() -> Int }\ntest \"h\" {\n  let v = handle { perform Ask::Get() } with { Ask::Get() => resume(41) }\n  assert_eq(v, 41)\n}\n"
+  assert_eq(first_check_error(handled), "")
+  // A host capability outside the ambient default is a plain row mismatch,
+  // and the edit is the `allows` row.
+  let host = first_check_error("test \"n\" {\n  let h = Http::request(\"GET\", \"http://127.0.0.1:1/x\", \"\", \"\")\n  Http::close(h)\n}\n")
+  assert(String::contains(host, "effect row mismatch for test \"n\": missing { Http::"))
+  assert(String::contains(host, "to test \"n\""))
+}
+
+test "ADR-0088 (Codex on #2653): a provider-wide optional grant covers an optional operation requirement" {
+  let covered = "import @vibe/core { Attempt }\nfn cached() -> Attempt[String, String] with Fs::read_file? {\n  perform? Fs::read_file(\"cache.json\")\n}\nfn main allows Fs? {\n  let _ = cached()\n  ()\n}\n"
+  assert_eq(first_check_error(covered), "")
+  // Required is the join for the provider too.
+  let required = "fn probe() -> Unit with Fs? {\n  ()\n}\nfn main allows Fs {\n  probe()\n}\n"
+  assert_eq(first_check_error(required), "")
+  // A plain call under the provider-wide optional grant is refused, and the
+  // diagnostic quotes the grant as written.
+  let plain = first_check_error("fn main() -> String allows Fs? {\n  Fs::read_file(\"x\")\n}\n")
+  assert(String::contains(plain, "`Fs::read_file` is granted as optional (`allows Fs?`) but `main` calls it as required"))
+  assert(String::contains(plain, "drop the `?` (`allows Fs`)"))
+  // The reverse is not coverage: an operation-level optional grant does not
+  // reach a provider-wide optional requirement.
+  let reverse = first_check_error("fn probe() -> Unit with Fs? {\n  ()\n}\nfn main allows Fs::read_file? {\n  probe()\n}\n")
+  assert(String::contains(reverse, "missing { Fs? }"))
+}
+
+test "ADR-0088 (Codex on #2653): the grade check reaches every function-type row" {
+  let alias = first_check_error("effect Ask { Get() -> Int }\ntype Callback = () -> Int with Ask::Get?\nfn main() -> Int { 0 }\n")
+  assert(String::contains(alias, "`Ask::Get?` in the row of `Callback`"))
+  let param = first_check_error("effect Ask { Get() -> Int }\nfn run(cb: () -> Unit with Ask::Get?) -> Unit {\n  cb()\n}\nfn main() -> Int { 0 }\n")
+  assert(String::contains(param, "`Ask::Get?` in the row of `run`"))
+  let field = first_check_error("effect Ask { Get() -> Int }\nstruct Job {\n  run: () -> Unit with Ask::Get?\n}\nfn main() -> Int { 0 }\n")
+  assert(String::contains(field, "`Ask::Get?` in the row of `Job`"))
+  let ret = first_check_error("effect Ask { Get() -> Int }\nfn make() -> () -> Unit with Ask::Get? {\n  () -> { () }\n}\nfn main() -> Int { 0 }\n")
+  assert(String::contains(ret, "`Ask::Get?` in the row of `make`"))
+  let literal = first_check_error("effect Ask { Get() -> Int }\nfn main() -> Int {\n  let f = (cb: () -> Unit with Ask::Get?) -> Unit { cb() }\n  0\n}\n")
+  assert(String::contains(literal, "`Ask::Get?` in the row of `main`"))
+  // A host capability keeps the grade in every position.
+  let ok = "import @vibe/core { Attempt }\ntype Loader = () -> Attempt[String, String] with Fs::read_file?\nfn run(cb: Loader) -> Attempt[String, String] with Fs::read_file? {\n  cb()\n}\nfn main allows Fs::read_file? {\n  let _ = run(() -> { perform? Fs::read_file(\"x\") })\n  ()\n}\n"
+  assert_eq(first_check_error(ok), "")
+}
+
+test "ADR-0088 (Codex on #2653): perform? is refused where NotGranted cannot happen" {
+  // Directly in a block: a test artifact runs with full authority, so every
+  // optional grant resolves to `Granted` and the arm is dead.
+  let block = first_check_error("test \"x\" allows Fs::read_file? {\n  let _ = perform? Fs::read_file(\"x\")\n  assert(true)\n}\n")
+  assert(String::contains(block, "`perform? Fs::read_file` in test \"x\": a `test` / `bench` / `example` block runs with full authority"))
+  assert(String::contains(block, "move the `perform?` into a function that requires `with Fs::read_file?`"))
+  // Under a row that also grants the operation's provider as required:
+  // Required is the join, so the optional grade is absorbed.
+  let absorbed = first_check_error("fn main() -> Int allows Fs + Fs::read_file? {\n  let _ = perform? Fs::read_file(\"x\")\n  0\n}\n")
+  assert(String::contains(absorbed, "`perform? Fs::read_file` can never be `NotGranted` here: `main` grants `Fs` as required"))
+  assert(String::contains(absorbed, "grant `Fs::read_file?` without the required `Fs`"))
+  // The honest shapes still check: the optional grant alone, and a helper
+  // that requires the grade, called from a block that grants it.
+  assert_eq(first_check_error("fn main() -> Int allows Fs::read_file? {\n  let _ = perform? Fs::read_file(\"x\")\n  0\n}\n"), "")
+  let helper = "import @vibe/core { Attempt }\nfn read_missing() -> Attempt[String, String] with Fs::read_file? {\n  perform? Fs::read_file(\"x\")\n}\ntest \"h\" allows Fs::read_file? {\n  let _ = read_missing()\n  assert(true)\n}\n"
+  assert_eq(first_check_error(helper), "")
 }

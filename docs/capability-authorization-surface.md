@@ -57,7 +57,10 @@ property of the declaration's position, not of the effect's class.
 
 - A called function, a function type, a closure annotation, a trait method
   and a `.vpkg` contract declaration write `with`. `allows` there is a parse
-  error that names the edit:
+  error that names the edit — for a contract declaration whatever its name,
+  since a package publishes requirements and a callable API function that
+  happens to be called `main` is not an entry point
+  (`parse_fn_signature_declaration`):
 
   ```text
   `allows` grants authority and is written on an entry point only (`fn main`,
@@ -78,6 +81,14 @@ property of the declaration's position, not of the effect's class.
 - `allows` is a **contextual keyword**, not reserved: it is recognized only
   where an entry row may begin, so `let allows = 7` keeps compiling.
 
+- The AST printer prints the row back with the keyword its position
+  dictates — `allows` on `main` / `_start` and on a `test` / `bench` /
+  `example` block, `with` elsewhere — so `vibe normalize` canonicalizes a
+  legacy `with` on an entry and never drops a block's row (the block rows
+  travel in the parse's trailing `STestEffectRows` marker, which
+  `print_program` and the normalizer register with the printer before
+  printing; `register_block_rows`).
+
 ### 2. What an entry may grant
 
 Every label on an entry row must have an owner the run can bring in
@@ -97,6 +108,16 @@ The `effectset` row is how a program extends the vocabulary on its own side:
 and `test "n" allows AppCaps` — one spelling at every entry, expanded before
 admission so it grants exactly its members.
 
+The table is one policy for every entry (`entry_grant_errors`): `fn main` /
+`fn _start` are admitted on their declared row, a `test` / `bench` / `example`
+block on the row after its name. `test "x" allows Ask::Get` is refused with
+the `handle` edit exactly as `fn main allows Ask::Get` is — the block row used
+to pass straight into the body walk, so it authorized a `perform` that no
+handler would ever catch and the test trapped at run time. A user effect
+performed in a block body without a handler gets the same `handle` edit,
+not an `allows` edit that the admission would then refuse; the diagnostics
+name the block as written (`entry point test "x" cannot discharge ..`).
+
 ### 3. Optional capability: the `?` grade
 
 - `?` marks an `allows` item optional (`Fs::read_file?`, or `Fs?` for every
@@ -111,10 +132,33 @@ admission so it grants exactly its members.
 - A called function may *require* the optional grade (`fn cached() -> .. with
   Fs::read_file?`) and perform `perform?` itself. The graded subset rule is
   the lattice `Optional ⊑ Required`: a caller satisfies an optional
-  requirement with either grade of the label, and an optional grant never
-  satisfies a required requirement or a plain call.
+  requirement with either grade of the label **or of its provider** —
+  `allows Fs::read_file?`, `allows Fs::read_file`, `allows Fs?` and `allows
+  Fs` all satisfy `with Fs::read_file?`; the grade is stripped and the usual
+  provider-to-operation containment applies. The reverse is not coverage:
+  `allows Fs::read_file?` does not satisfy `with Fs?`. An optional grant
+  never satisfies a required requirement or a plain call, and the refusal
+  quotes the grant as written (``is granted as optional (`allows Fs?`)``, so
+  the "drop the `?`" edit names that label).
+- A `perform?` is refused where its `NotGranted` arm could never run, for
+  the same reason `perform?` on a required grant is: **directly in a `test`
+  / `bench` / `example` block**, because a test artifact runs with full
+  authority and resolves every optional grant to `Granted`
+  (`optional_perform_artifact_resolution`); and **under a row that also
+  grants the operation or its provider as required** (`allows Fs +
+  Fs::read_file?`, or a block's ambient `Fs` next to its own
+  `Fs::read_file?`), because Required is the join and absorbs the optional
+  grade. The message names the absorbing grant and the two edits: call the
+  operation plainly, or move the `perform?` into a function that requires
+  `with Op?` (which a block may call — the helper's `perform?` is honest
+  about the helper's own requirement, and the block grants it).
 - `?` on `Exception` / `Async` / a user effect is refused: optionality is a
-  grant concept, and those are not granted by a host.
+  grant concept, and those are not granted by a host. The check reaches
+  every row position — a binding's own row, a callback parameter's row, a
+  return type's, a closure literal's annotations, a type alias, a struct
+  field, an enum payload, a trait or effect operation signature — because
+  the parser accepts the grade in any `with` row and the checker is the
+  only place that knows which labels have a host.
 
 ### 4. Resolution ladder — build → apply → instantiate, never mid-run
 
@@ -193,7 +237,10 @@ carries the grade column.
   `allows ()`, the refusals, contextual `allows`, `?` on a grant only);
 - `lib/@vibe/compiler/tests/checker_entry_effect_test.vibe` (admission,
   the optional-grant refusal, unknown provider operations, effectset grants,
-  the entry-aware hints);
+  the entry-aware hints; block-row admission, provider-wide optional grants
+  and the grade check in nested rows —
+  `fixtures/typecheck/{test_allows_user_effect,entry_optional_provider_grant,optional_grade_nested_row}.vibe`
+  pin the same three on the fixture lane);
 - `lib/@vibe/compiler/runtime/deprecated_scan_test.vibe` (the legacy-spelling
   warning);
 - `lib/@vibe/compiler/tests/perform_question_lowering_test.vibe`,

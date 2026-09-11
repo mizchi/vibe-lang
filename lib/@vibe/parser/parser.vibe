@@ -925,7 +925,21 @@ fn zero_alloc_marker_ident(mode: String) -> String {
 /// parse_stmt_preserving) — used by the printer/normalize round-trip so
 /// `vibe normalize` re-emits `fn name(..) -> T where { .. } { .. }` instead
 /// of rewriting it to `let rec` form (ADR-0064 #727).
+///
+/// The parse's two logs -- the qualified-pattern refs and the `test` /
+/// `bench` / `example` rows (#1508, ADR-0088) -- are folded into their
+/// trailing markers here too, exactly as `parse_program` folds them: the
+/// preserving entry used to return without draining either, so the rows a
+/// block declared never reached the printer (`vibe normalize` dropped them)
+/// and leaked into the NEXT parse's marker instead (Codex review on PR
+/// #2653). The array is copied before the markers are appended, so the
+/// builder's frozen result is never pushed to.
 export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exception {
+  let raw = parse_program_preserving_raw(tokens)
+  attach_qualified_pattern_refs(Array::slice(raw, 0, Array::length(raw)))
+}
+
+fn parse_program_preserving_raw(tokens: Array[Token]) -> Array[Stmt] with Exception {
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
   let mut pos = 0
@@ -1021,7 +1035,7 @@ fn attach_qualified_pattern_refs(stmts: Array[Stmt]) -> Array[Stmt] {
 /// (where-contracts desugared to runtime asserts) — the exact pre-#727
 /// output, so every checker/codegen consumer is unchanged.
 export fn parse_program(tokens: Array[Token]) -> Array[Stmt] with Exception {
-  attach_qualified_pattern_refs(expand_top_level_pattern_lets(lower_fn_decl_stmts(parse_program_preserving(tokens))))
+  attach_qualified_pattern_refs(expand_top_level_pattern_lets(lower_fn_decl_stmts(parse_program_preserving_raw(tokens))))
 }
 
 /// Like parse_program but, on a syntax error, prefixes the message with the
