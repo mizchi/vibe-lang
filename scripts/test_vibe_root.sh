@@ -22,8 +22,13 @@
 # directory the user stood in.
 #
 #   VIBE_ROOT_TEST_STAGE2=<path>  which compiler answers (AGENTS.md, "Which
-#                                 compiler answered?"); otherwise
-#                                 scripts/resolve_stage2.sh
+#                                 compiler answered?"); otherwise the
+#                                 generation built for HEAD, otherwise a fresh
+#                                 build_cli_wasm.sh build (what the cli-install
+#                                 workflow's smoke groups use). Never the seed:
+#                                 it predates the build directory and would
+#                                 fail the `_build/` assertion for the wrong
+#                                 reason.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,16 +37,41 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # below changes where the launcher looks or writes.
 unset VIBE_LIB VIBE_BUILD_CACHE_DIR VIBE_BUILD_DIR VIBE_INVOKE_DIR VIBE_TEST_CACHE VIBE_CACHE VIBE_TOOLCHAIN || true
 
-. "$ROOT_DIR/scripts/resolve_stage2.sh"
-compiler="$(cd "$ROOT_DIR" && resolve_stage2 vibe-root "${VIBE_ROOT_TEST_STAGE2:-}")" || exit 1
+compiler="${VIBE_ROOT_TEST_STAGE2:-}"
+if [ -z "$compiler" ]; then
+  sha="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+  if [ -n "$sha" ]; then
+    for gen in "$ROOT_DIR"/_build/selfhost/generations/*_"$sha"/; do
+      [ -s "${gen}stage2.wasm" ] && { compiler="${gen}stage2.wasm"; break; }
+    done
+  fi
+fi
+if [ -z "$compiler" ]; then
+  echo "[vibe-root] no generation for HEAD; building the checkout's compiler (scripts/build_cli_wasm.sh)" >&2
+  compiler="$(cd "$ROOT_DIR" && bash scripts/build_cli_wasm.sh)" || { echo "[vibe-root] FAIL: build_cli_wasm.sh failed" >&2; exit 1; }
+fi
 case "$compiler" in
   /*) ;;
   *) compiler="$ROOT_DIR/$compiler" ;;
 esac
 [ -s "$compiler" ] || { echo "[vibe-root] FAIL: compiler wasm not found: $compiler" >&2; exit 1; }
 
-runner="${VIBE_RUNNER:-$ROOT_DIR/bin/viberun}"
-[ -x "$runner" ] || { echo "[vibe-root] FAIL: runner not executable: $runner (build runtime/viberun first)" >&2; exit 1; }
+# The runner: an explicit VIBE_RUNNER, the dev shim, or the cargo build the
+# cli-install workflow produces; build it when none is there (as
+# scripts/test_vibe_bench.sh does).
+runner="${VIBE_RUNNER:-}"
+if [ -z "$runner" ]; then
+  for cand in "$ROOT_DIR/bin/viberun" "$ROOT_DIR/runtime/viberun/target/release/viberun"; do
+    [ -x "$cand" ] && { runner="$cand"; break; }
+  done
+fi
+if [ -z "$runner" ]; then
+  command -v cargo >/dev/null 2>&1 || { echo "[vibe-root] FAIL: no viberun runner and no cargo to build one (runtime/viberun)" >&2; exit 1; }
+  ( cd "$ROOT_DIR" && cargo build --release --manifest-path runtime/viberun/Cargo.toml >/dev/null ) \
+    || { echo "[vibe-root] FAIL: cargo build of runtime/viberun failed" >&2; exit 1; }
+  runner="$ROOT_DIR/runtime/viberun/target/release/viberun"
+fi
+[ -x "$runner" ] || { echo "[vibe-root] FAIL: runner not executable: $runner" >&2; exit 1; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe-root-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
