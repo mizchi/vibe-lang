@@ -1,0 +1,107 @@
+//# Imports
+
+// ADR-0092 for maps (#2683 follow-up): `Map::set` and `Map::delete` consume
+// their map. A uniquely referenced source is replaced / appended / removed
+// in place (capacity off the block's size word, twice the capacity when it
+// is full, the side index inserted into or rebuilt) and is the result; a
+// shared source takes the copy path and the consumed reference is
+// released. These programs pin that the two paths answer alike, that a
+// source read after the set is intact, that the index stays truthful
+// through in-place growth and deletion, and that a view read before a
+// consuming set survives: bump, RC and RC-shadow must agree.
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+//# Functions
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_map_reuse_rc_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Stdout {
+  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
+  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  let shadow = run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow"))
+  inspect(bump, content = expected)
+  inspect(rc, content = expected)
+  inspect(shadow, content = expected)
+  0
+}
+
+fn prelude() -> String {
+  "enum Tree {\n  Leaf(Int);\n  Node(Tree, Tree)\n}\nfn sumt(t: Tree) -> Int {\n  match t {\n    Leaf(v) => v,\n    Node(l, r) => sumt(l) + sumt(r)\n  }\n}\nfn add(m: Map[String, Int], k: String, v: Int) -> Map[String, Int] {\n  Map::set(m, k, v)\n}\n"
+}
+
+test "env threading through a let mut, replace included" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let mut m = Map::new()\n    m = Map::set(m, \"a\", i + 0)\n    m = Map::set(m, \"b\", i + 1)\n    m = Map::set(m, \"c\", i + 2)\n    m = Map::set(m, \"d\", i + 3)\n    m = Map::set(m, \"e\", i + 4)\n    m = Map::set(m, \"f\", i + 5)\n    m = Map::set(m, \"g\", i + 6)\n    m = Map::set(m, \"h\", i + 7)\n    m = Map::set(m, \"a\", i + 10)\n    total = total + Map::get(m, \"a\") + Map::get(m, \"h\") + Map::size(m)\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "letmut_threading", "4048000")
+}
+
+test "a source read after the set stays intact (copy path)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let m1 = Map::set(Map::new(), \"a\", i)\n    let m2 = Map::set(m1, \"b\", i + 1)\n    let m3 = Map::set(m1, \"a\", i + 5)\n    let leaked = if Map::has_key(m1, \"b\") {\n      100\n    } else {\n      0\n    }\n    total = total + Map::size(m1) + Map::get(m1, \"a\") + Map::size(m2) + Map::get(m2, \"b\") + Map::size(m3) + Map::get(m3, \"a\") + leaked\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "shared_source_intact", "6017000")
+}
+
+test "nested temporaries append and replace in place from an empty literal" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let v = Map::get(Map::set(Map::set(Map::set(Map::new(), \"a\", i), \"b\", i + 1), \"c\", i + 2), \"b\")\n    let s = Map::size(Map::set(Map::set(Map::new(), \"a\", i), \"a\", i + 1))\n    total = total + v + s\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "nested_temps", "2003000")
+}
+
+test "a unique chain past the index threshold, replaced through the index" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let m0 = Map::new()\n    let m1 = add(m0, \"k0\", i + 0)\n    let m2 = add(m1, \"k1\", i + 1)\n    let m3 = add(m2, \"k2\", i + 2)\n    let m4 = add(m3, \"k3\", i + 3)\n    let m5 = add(m4, \"k4\", i + 4)\n    let m6 = add(m5, \"k5\", i + 5)\n    let m7 = add(m6, \"k6\", i + 6)\n    let m8 = add(m7, \"k7\", i + 7)\n    let m9 = add(m8, \"k8\", i + 8)\n    let m10 = add(m9, \"k9\", i + 9)\n    let m11 = add(m10, \"k10\", i + 10)\n    let m12 = add(m11, \"k11\", i + 11)\n    let m13 = add(m12, \"k12\", i + 12)\n    let m14 = add(m13, \"k13\", i + 13)\n    let m15 = add(m14, \"k14\", i + 14)\n    let m16 = add(m15, \"k15\", i + 15)\n    let m17 = add(m16, \"k16\", i + 16)\n    let m18 = add(m17, \"k17\", i + 17)\n    let m19 = add(m18, \"k18\", i + 18)\n    let m20 = add(m19, \"k19\", i + 19)\n    let m21 = add(m20, \"k5\", i + 100)\n    let missing = if Map::has_key(m21, \"zz\") {\n      100\n    } else {\n      0\n    }\n    total = total + Map::get(m21, \"k0\") + Map::get(m21, \"k5\") + Map::get(m21, \"k19\") + Map::size(m21) + missing\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "unique_chain_indexed", "6275000")
+}
+
+test "delete in place on a unique map and by copy on a shared one" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let m0 = Map::new()\n    let m1 = add(m0, \"a\", i)\n    let m2 = add(m1, \"b\", i + 1)\n    let m3 = add(m2, \"c\", i + 2)\n    let m4 = add(m3, \"d\", i + 3)\n    let d1 = Map::delete(m4, \"b\")\n    let d2 = Map::delete(d1, \"zz\")\n    let keep = Map::set(Map::new(), \"x\", i)\n    let d3 = Map::delete(keep, \"x\")\n    let gone = if Map::has_key(d2, \"b\") {\n      100\n    } else {\n      0\n    }\n    total = total + Map::size(d2) + Map::get(d2, \"a\") + Map::get(d2, \"c\") + Map::get(d2, \"d\") + gone + Map::size(d3) + Map::size(keep)\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "delete_unique_and_shared", "6015000")
+}
+
+test "deletes that take an indexed map back under the threshold" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let m0 = Map::new()\n    let m1 = add(m0, \"k0\", i + 0)\n    let m2 = add(m1, \"k1\", i + 1)\n    let m3 = add(m2, \"k2\", i + 2)\n    let m4 = add(m3, \"k3\", i + 3)\n    let m5 = add(m4, \"k4\", i + 4)\n    let m6 = add(m5, \"k5\", i + 5)\n    let m7 = add(m6, \"k6\", i + 6)\n    let m8 = add(m7, \"k7\", i + 7)\n    let m9 = add(m8, \"k8\", i + 8)\n    let m10 = add(m9, \"k9\", i + 9)\n    let e1 = Map::delete(m10, \"k0\")\n    let e2 = Map::delete(e1, \"k9\")\n    let e3 = Map::delete(e2, \"k4\")\n    let gone = if Map::has_key(e3, \"k4\") {\n      100\n    } else {\n      0\n    }\n    total = total + Map::size(e3) + Map::get(e3, \"k1\") + Map::get(e3, \"k8\") + gone\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "delete_indexed", "4030000")
+}
+
+test "a replace releases the old heap value; a view read before keeps the source shared" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let m1 = Map::set(Map::new(), \"t\", Leaf(i))\n    let v = Map::get(m1, \"t\")\n    let m2 = Map::set(m1, \"t\", Node(Leaf(i), Leaf(i + 1)))\n    let m3 = Map::set(Map::set(Map::new(), \"u\", Leaf(i)), \"u\", Leaf(i + 5))\n    total = total + sumt(v) + sumt(Map::get(m2, \"t\")) + sumt(Map::get(m3, \"u\"))\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "replace_heap_values", "8008000")
+}
+
+test "one map consumed twice" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let m = Map::set(Map::new(), \"base\", i)\n    let a = add(m, \"x\", 1)\n    let b = add(m, \"y\", 2)\n    let cross = if Map::has_key(a, \"y\") {\n      100\n    } else if Map::has_key(b, \"x\") {\n      100\n    } else {\n      0\n    }\n    total = total + Map::size(a) + Map::size(b) + cross + Map::get(a, \"base\")\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "consumed_twice", "2007000")
+}
+
+test "an accumulator declared outside a while loop, two self-reassignments per iteration" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let mut m = Map::new()\n    let mut j = 0\n    while j < 12 {\n      m = Map::set(m, \"a\", i + j)\n      m = Map::set(m, \"b\", j)\n      j = j + 1\n    }\n    total = total + Map::get(m, \"a\") + Map::get(m, \"b\") + Map::size(m)\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "accumulator_outside_loop", "2047000")
+}
+
+test "a view held across a self-reassignment keeps the old value alive" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let mut m = Map::set(Map::new(), \"t\", Leaf(i))\n    let v = Map::get(m, \"t\")\n    m = Map::set(m, \"t\", Leaf(i + 1))\n    m = Map::set(m, \"u\", Leaf(i + 2))\n    total = total + sumt(v) + sumt(Map::get(m, \"t\")) + sumt(Map::get(m, \"u\"))\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "view_across_self_reassign", "6003000")
+}
+
+test "an array accumulator through a consuming builtin" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let mut xs: Array[Int] = []\n    xs = Array::concat(xs, [i])\n    xs = Array::concat(xs, [i + 1])\n    xs = Array::concat(xs, [i + 2])\n    total = total + Array::length(xs) + Array::get(xs, 2)\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "array_accumulator", "2009000")
+}
+
+test "a self-reassignment next to a second owning use of the same binding" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let mut m = Map::set(Map::new(), \"a\", i)\n    let other = add(m, \"z\", 9)\n    m = Map::set(m, \"b\", i + 1)\n    let cross = if Map::has_key(m, \"z\") {\n      100\n    } else {\n      0\n    }\n    total = total + Map::size(other) + Map::size(m) + Map::get(m, \"a\") + cross\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "self_reassign_with_other_consume", "2007000")
+}
+
+test "reads of the accumulator between its self-reassignments" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let mut m = Map::new()\n    let mut j = 0\n    while j < 5 {\n      let prev = if Map::has_key(m, \"n\") {\n        Map::get(m, \"n\")\n      } else {\n        0\n      }\n      m = Map::set(m, \"n\", prev + j)\n      j = j + 1\n    }\n    total = total + Map::get(m, \"n\")\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "reads_between_reassignments", "20000")
+}

@@ -216,6 +216,7 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i32_const,
   emit_i32_load,
   emit_i32_load8_u,
+  emit_i32_shr_u,
   emit_i32_store,
   emit_i32_store8,
   emit_i32_wrap_i64,
@@ -1718,6 +1719,349 @@ fn cc_map_release_temp_arg0(buf: Bytes, arg0: Expr, ptr_l: Int, ctx: CompileCtx)
   } else {
     ()
   }
+}
+
+/// ADR-0092 for maps (the reuse the #2683 accounting made possible). A
+/// `Map::set` / `Map::delete` CONSUMES its map: when the block is referenced
+/// exactly once (rc word == 1 | 6 << 24 -- a saturated, immortal block fails
+/// the test) the entry is replaced, appended or removed IN PLACE and the
+/// same block is the result; otherwise the copy path runs and the consumed
+/// reference is released. In place, an append that does not fit the
+/// block's capacity (read off its size word: rc_alloc hands back exactly
+/// the size asked for) moves the entries into a block of twice the
+/// capacity, and the side index is inserted into while it stays at or
+/// under half load, rebuilt otherwise. Leaves an i32 on the stack that is
+/// 1 when the class-6 block at UNTAGGED `ptr_l` is unique.
+fn cc_map_emit_unique_test(buf: Bytes, ptr_l: Int) -> Unit {
+  emit_local_get(buf, ptr_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 1 + (6<<24))
+  emit_i32_eq(buf)
+}
+
+/// Push the i32 address `map_l + idx_l * 16`: entry `idx_l`'s key sits at
+/// +8 and its value at +16 from it.
+fn cc_map_push_entry_addr(buf: Bytes, map_l: Int, idx_l: Int) -> Unit {
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, idx_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_i32_add(buf)
+}
+
+/// Store `count + delta` into the map's count word.
+fn cc_map_store_count_plus(buf: Bytes, map_l: Int, cnt_l: Int, delta: Int) -> Unit {
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, cnt_l)
+  emit_i64_const(buf, delta)
+  emit_i64_add(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf, 2, 0)
+}
+
+/// `pos_l` = the index of the entry holding `key_l`, or -1: through the side
+/// index when the map has one (`ip_l` receives it, 0 when absent), by a
+/// linear scan otherwise. `idx_l` is scratch.
+fn cc_map_find_pos(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, idx_l: Int, pos_l: Int, ip_l: Int, eq_fi: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 4)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, ip_l)
+  emit_i64_const(buf, -1)
+  emit_local_set(buf, pos_l)
+  if ctx.map_probe_func_idx >= 0 {
+    emit_local_get(buf, ip_l)
+    emit_i64_eqz(buf)
+    emit_if_void(buf)
+    cc_map_scan_pos(buf, map_l, key_l, cnt_l, idx_l, pos_l, eq_fi)
+    emit_else(buf)
+    emit_local_get(buf, map_l)
+    emit_local_get(buf, cnt_l)
+    emit_local_get(buf, key_l)
+    emit_call(buf, ctx.map_probe_func_idx)
+    emit_local_set(buf, pos_l)
+    emit_end(buf)
+  } else {
+    cc_map_scan_pos(buf, map_l, key_l, cnt_l, idx_l, pos_l, eq_fi)
+  }
+}
+
+fn cc_map_scan_pos(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, idx_l: Int, pos_l: Int, eq_fi: Int) -> Unit {
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, idx_l)
+  emit_block_void(buf)
+  emit_loop_void(buf)
+  emit_local_get(buf, idx_l)
+  emit_local_get(buf, cnt_l)
+  emit_i64_ge_s(buf)
+  emit_br_if(buf, 1)
+  cc_map_push_entry_addr(buf, map_l, idx_l)
+  emit_i64_load(buf, 3, 8)
+  emit_local_get(buf, key_l)
+  emit_call(buf, eq_fi)
+  emit_i32_wrap_i64(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, idx_l)
+  emit_local_set(buf, pos_l)
+  emit_br(buf, 2)
+  emit_end(buf)
+  emit_local_get(buf, idx_l)
+  emit_i64_const(buf, 1)
+  emit_i64_add(buf)
+  emit_local_set(buf, idx_l)
+  emit_br(buf, 0)
+  emit_end(buf)
+  emit_end(buf)
+}
+
+/// Build a side index for the map's CURRENT count (already stored) and
+/// attach it. `tmp_l` is scratch.
+fn cc_map_rebuild_index(buf: Bytes, map_l: Int, tmp_l: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, map_l)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i64_extend_i32_u(buf)
+  emit_call(buf, ctx.map_build_index_func_idx)
+  emit_local_set(buf, tmp_l)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_local_get(buf, tmp_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf, 2, 4)
+}
+
+/// Release the side index at `ip_l`: a class-0 rc block referenced once.
+fn cc_map_free_index(buf: Bytes, ip_l: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, ip_l)
+  emit_i64_const(buf, 1)
+  emit_i64_or(buf)
+  emit_call(buf, ctx.rc_drop_func_idx)
+}
+
+/// After an in-place append at old count `cnt_l` (the map's count word
+/// already holds cnt + 1, the new key is in `key_l`, `ip_l` is the index the
+/// map had): no index yet -> build one once the map holds 8 entries; an
+/// index -> insert while it stays at or under half load (the load
+/// __rt_map_cap_for sizes for), else release it and rebuild.
+fn cc_map_index_after_append(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, ip_l: Int, tmp_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.map_build_index_func_idx >= 0 {
+    emit_local_get(buf, ip_l)
+    emit_i64_eqz(buf)
+    emit_if_void(buf)
+    emit_local_get(buf, cnt_l)
+    emit_i64_const(buf, 1)
+    emit_i64_add(buf)
+    emit_i64_const(buf, 8)
+    emit_i64_ge_s(buf)
+    emit_if_void(buf)
+    cc_map_rebuild_index(buf, map_l, tmp_l, ctx)
+    emit_end(buf)
+    emit_else(buf)
+    if ctx.map_index_insert_func_idx >= 0 && ctx.map_hash_func_idx >= 0 {
+      emit_local_get(buf, cnt_l)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i64_const(buf, 2)
+      emit_i64_mul(buf)
+      emit_local_get(buf, ip_l)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_i64_const(buf, 1)
+      emit_i64_add(buf)
+      emit_i64_le_s(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, ip_l)
+      emit_local_get(buf, key_l)
+      emit_call(buf, ctx.map_hash_func_idx)
+      emit_local_get(buf, ip_l)
+      emit_i32_wrap_i64(buf)
+      emit_i64_load(buf, 3, 0)
+      emit_i64_and(buf)
+      emit_local_get(buf, cnt_l)
+      emit_call(buf, ctx.map_index_insert_func_idx)
+      emit_else(buf)
+      cc_map_free_index(buf, ip_l, ctx)
+      cc_map_rebuild_index(buf, map_l, tmp_l, ctx)
+      emit_end(buf)
+    } else {
+      cc_map_free_index(buf, ip_l, ctx)
+      cc_map_rebuild_index(buf, map_l, tmp_l, ctx)
+    }
+    emit_end(buf)
+  } else {
+    ()
+  }
+}
+
+/// The in-place `Map::set` (see cc_map_emit_unique_test). `map_l` is the
+/// untagged unique block, `key_l` / `val_l` the owned key and value; the
+/// result block lands in `new_l`.
+fn cc_map_set_in_place(buf: Bytes, map_l: Int, key_l: Int, val_l: Int, cnt_l: Int, new_l: Int, idx_l: Int, pos_l: Int, tmp_l: Int, ip_l: Int, cap_l: Int, eq_fi: Int, ctx: CompileCtx) -> Unit {
+  cc_map_find_pos(buf, map_l, key_l, cnt_l, idx_l, pos_l, ip_l, eq_fi, ctx)
+  emit_local_get(buf, pos_l)
+  emit_i64_const(buf, 0)
+  emit_i64_ge_s(buf)
+  emit_if_void(buf)
+  // replace: the old value goes, the stored key stays, the caller's key
+  // reference is unused
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i64_load(buf, 3, 16)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_local_get(buf, val_l)
+  emit_i64_store(buf, 3, 16)
+  emit_local_get(buf, key_l)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  emit_local_get(buf, map_l)
+  emit_local_set(buf, new_l)
+  emit_else(buf)
+  // append: capacity = (size word - 16) / 16
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_sub(buf)
+  emit_i32_load(buf, 2, 0)
+  emit_i32_const(buf, 16)
+  emit_i32_sub(buf)
+  emit_i32_const(buf, 4)
+  emit_i32_shr_u(buf)
+  emit_i64_extend_i32_u(buf)
+  emit_local_set(buf, cap_l)
+  emit_local_get(buf, cnt_l)
+  emit_local_get(buf, cap_l)
+  emit_i64_lt_s(buf)
+  emit_if_void(buf)
+  cc_map_push_entry_addr(buf, map_l, cnt_l)
+  emit_local_get(buf, key_l)
+  emit_i64_store(buf, 3, 8)
+  cc_map_push_entry_addr(buf, map_l, cnt_l)
+  emit_local_get(buf, val_l)
+  emit_i64_store(buf, 3, 16)
+  cc_map_store_count_plus(buf, map_l, cnt_l, 1)
+  emit_local_get(buf, map_l)
+  emit_local_set(buf, new_l)
+  cc_map_index_after_append(buf, map_l, key_l, cnt_l, ip_l, tmp_l, ctx)
+  emit_else(buf)
+  // grow: a block of max(4, 2 * count) entries; the entries MOVE (no
+  // retains), the old block's count is zeroed and it is released with its
+  // index
+  emit_local_get(buf, cnt_l)
+  emit_i64_const(buf, 2)
+  emit_i64_mul(buf)
+  emit_local_set(buf, cap_l)
+  emit_local_get(buf, cap_l)
+  emit_i64_const(buf, 4)
+  emit_i64_lt_s(buf)
+  emit_if_void(buf)
+  emit_i64_const(buf, 4)
+  emit_local_set(buf, cap_l)
+  emit_end(buf)
+  cc_map_alloc_rc(buf, new_l, 6, () -> {
+    emit_local_get(buf, cap_l)
+    emit_i64_const(buf, 16)
+    emit_i64_mul(buf)
+    emit_i64_const(buf, 8)
+    emit_i64_add(buf)
+  }, ctx)
+  emit_local_get(buf, new_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_add(buf)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 8)
+  emit_i32_add(buf)
+  emit_local_get(buf, cnt_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_memory_copy(buf)
+  cc_map_push_entry_addr(buf, new_l, cnt_l)
+  emit_local_get(buf, key_l)
+  emit_i64_store(buf, 3, 8)
+  cc_map_push_entry_addr(buf, new_l, cnt_l)
+  emit_local_get(buf, val_l)
+  emit_i64_store(buf, 3, 16)
+  cc_map_store_count_plus(buf, new_l, cnt_l, 1)
+  emit_i64_const(buf, 0)
+  emit_local_set(buf, ip_l)
+  cc_map_index_after_append(buf, new_l, key_l, cnt_l, ip_l, tmp_l, ctx)
+  emit_local_get(buf, map_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 0)
+  emit_i32_store(buf, 2, 0)
+  cc_map_release_ptr(buf, map_l, ctx)
+  emit_end(buf)
+  emit_end(buf)
+}
+
+/// The in-place `Map::delete` (see cc_map_emit_unique_test): the entry's key
+/// and value are released, the tail shifts down, the count drops by one
+/// and the side index, if any, is released and rebuilt (or dropped below 8
+/// entries). The map is the result whether or not the key was held. The
+/// key argument is borrowed, not owned.
+fn cc_map_delete_in_place(buf: Bytes, map_l: Int, key_l: Int, cnt_l: Int, new_l: Int, idx_l: Int, pos_l: Int, tmp_l: Int, ip_l: Int, eq_fi: Int, ctx: CompileCtx) -> Unit {
+  cc_map_find_pos(buf, map_l, key_l, cnt_l, idx_l, pos_l, ip_l, eq_fi, ctx)
+  emit_local_get(buf, map_l)
+  emit_local_set(buf, new_l)
+  emit_local_get(buf, pos_l)
+  emit_i64_const(buf, 0)
+  emit_i64_ge_s(buf)
+  emit_if_void(buf)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i64_load(buf, 3, 8)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i64_load(buf, 3, 16)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i32_const(buf, 8)
+  emit_i32_add(buf)
+  cc_map_push_entry_addr(buf, map_l, pos_l)
+  emit_i32_const(buf, 24)
+  emit_i32_add(buf)
+  emit_local_get(buf, cnt_l)
+  emit_i64_const(buf, 1)
+  emit_i64_sub(buf)
+  emit_local_get(buf, pos_l)
+  emit_i64_sub(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 16)
+  emit_i32_mul(buf)
+  emit_memory_copy(buf)
+  cc_map_store_count_plus(buf, map_l, cnt_l, -1)
+  if ctx.map_build_index_func_idx >= 0 {
+    emit_local_get(buf, ip_l)
+    emit_i64_eqz(buf)
+    emit_i32_eqz(buf)
+    emit_if_void(buf)
+    cc_map_free_index(buf, ip_l, ctx)
+    emit_local_get(buf, cnt_l)
+    emit_i64_const(buf, 1)
+    emit_i64_sub(buf)
+    emit_i64_const(buf, 8)
+    emit_i64_ge_s(buf)
+    emit_if_void(buf)
+    cc_map_rebuild_index(buf, map_l, tmp_l, ctx)
+    emit_else(buf)
+    emit_local_get(buf, map_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 0)
+    emit_i32_store(buf, 2, 4)
+    emit_end(buf)
+    emit_end(buf)
+  } else {
+    ()
+  }
+  emit_end(buf)
 }
 
 /// A predicate owns its parameter but the array keeps its element: retain
@@ -5134,6 +5478,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let idx_l = nl + 5
       let found_l = nl + 6
       let tmp_l = nl + 7
+      let ip_l = nl + 8
+      let cap_l = nl + 9
       Array::push(local_names, "__ms_map")
       Array::push(local_names, "__ms_key")
       Array::push(local_names, "__ms_val")
@@ -5142,9 +5488,17 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__ms_idx")
       Array::push(local_names, "__ms_found")
       Array::push(local_names, "__ms_tmp")
+      Array::push(local_names, "__ms_ip")
+      Array::push(local_names, "__ms_cap")
       emit_local_set(buf, val_l)
       emit_local_set(buf, key_l)
       emit_local_set(buf, map_l)
+      // ADR-0092 for maps: the map is CONSUMED here (an owning position; see
+      // md_is_borrow_arg0_call), unless the argument is a view or a
+      // planner-borrowed binding -- then take a reference of our own, as
+      // MapBuilder::freeze does. The tagged value is retained; the untagged
+      // pointer the reads use is derived after.
+      cc_hof_retain_arg(buf, Array::get(args, 0), map_l, fname, 0, ctx)
       emit_local_get(buf, map_l)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
@@ -5154,197 +5508,215 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_load(buf, 2, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, cnt_l)
-      if ctx.enable_rc {
-        // #2683: an RC map block (class 6) sized for count + 1 entries.
-        cc_map_alloc_rc(buf, new_l, 6, () -> {
+      // The copy path: a fresh block of count + 1 entries, the source's
+      // entries copied (and, on the RC lane, retained), the new entry
+      // replacing or appended.
+      let copy_path = () -> {
+        if ctx.enable_rc {
+          // #2683: an RC map block (class 6) sized for count + 1 entries.
+          cc_map_alloc_rc(buf, new_l, 6, () -> {
+            emit_local_get(buf, cnt_l)
+            emit_i64_const(buf, 1)
+            emit_i64_add(buf)
+            emit_i64_const(buf, 16)
+            emit_i64_mul(buf)
+            emit_i64_const(buf, 8)
+            emit_i64_add(buf)
+          }, ctx)
+        } else {
+          emit_global_get(buf, 0)
+          emit_i64_extend_i32_u(buf)
+          emit_local_set(buf, new_l)
+          emit_global_get(buf, 0)
           emit_local_get(buf, cnt_l)
           emit_i64_const(buf, 1)
           emit_i64_add(buf)
-          emit_i64_const(buf, 16)
-          emit_i64_mul(buf)
-          emit_i64_const(buf, 8)
-          emit_i64_add(buf)
-        }, ctx)
-      } else {
-        emit_global_get(buf, 0)
-        emit_i64_extend_i32_u(buf)
-        emit_local_set(buf, new_l)
-        emit_global_get(buf, 0)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 16)
+          emit_i32_mul(buf)
+          emit_i32_const(buf, 8)
+          emit_i32_add(buf)
+          emit_i32_add(buf)
+          emit_global_set(buf, 0)
+          emit_heap_grow_after_heap_set(buf, ctx)
+        }
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, idx_l)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, found_l)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, idx_l)
+        emit_local_get(buf, cnt_l)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        // #2683: the copied key is owned by both maps (see the value below).
+        if ctx.enable_rc {
+          emit_local_tee(buf, tmp_l)
+          emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+        emit_i64_store(buf, 3, 8)
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_local_get(buf, key_l)
+        emit_call(buf, eq_fi_ms)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, val_l)
+        emit_i64_store(buf, 3, 16)
+        emit_i64_const(buf, 1)
+        emit_local_set(buf, found_l)
+        // #2683: the key already present is kept; the caller's key was
+        // retained for storage and is not stored -- release it.
+        if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+          emit_local_get(buf, key_l)
+          emit_call(buf, ctx.rc_drop_func_idx)
+        } else {
+          ()
+        }
+        emit_else(buf)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 16)
+        // #2683: the copied value is now owned by BOTH maps; the source map
+        // is borrowed here and keeps its reference.
+        if ctx.enable_rc {
+          emit_local_tee(buf, tmp_l)
+          emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+        emit_i64_store(buf, 3, 16)
+        emit_end(buf)
+        emit_local_get(buf, idx_l)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, idx_l)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, found_l)
+        emit_i64_eqz(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, cnt_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, key_l)
+        emit_i64_store(buf, 3, 8)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, cnt_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, val_l)
+        emit_i64_store(buf, 3, 16)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
         emit_local_get(buf, cnt_l)
         emit_i64_const(buf, 1)
         emit_i64_add(buf)
         emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 16)
-        emit_i32_mul(buf)
-        emit_i32_const(buf, 8)
-        emit_i32_add(buf)
-        emit_i32_add(buf)
-        emit_global_set(buf, 0)
-        emit_heap_grow_after_heap_set(buf, ctx)
+        emit_i32_store(buf, 2, 0)
+        emit_else(buf)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, cnt_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 2, 0)
+        emit_end(buf)
+        // #Map-hash-index: (re-loading the just-written final count from new_l
+        // rather than re-deriving it from found_l/cnt_l) build + attach the
+        // O(1)-average side index when it's worth it (count>=8). idx_l/found_l
+        // are dead after the copy loop above -- reused here as scratch (final
+        // count, then the built index pointer) so this needs no new locals.
+        if ctx.map_build_index_func_idx >= 0 {
+          emit_local_get(buf, new_l)
+          emit_i32_wrap_i64(buf)
+          emit_i32_load(buf, 2, 0)
+          emit_i64_extend_i32_u(buf)
+          emit_local_set(buf, idx_l)
+          emit_local_get(buf, idx_l)
+          emit_i64_const(buf, 8)
+          emit_i64_ge_s(buf)
+          emit_if_void(buf)
+          emit_local_get(buf, new_l)
+          emit_local_get(buf, idx_l)
+          emit_call(buf, ctx.map_build_index_func_idx)
+          emit_local_set(buf, found_l)
+          emit_local_get(buf, new_l)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, found_l)
+          emit_i32_wrap_i64(buf)
+          emit_i32_store(buf, 2, 4)
+          emit_end(buf)
+        } else {
+          ()
+        }
       }
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, idx_l)
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, found_l)
-      emit_block_void(buf)
-      emit_loop_void(buf)
-      emit_local_get(buf, idx_l)
-      emit_local_get(buf, cnt_l)
-      emit_i64_ge_s(buf)
-      emit_br_if(buf, 1)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf, map_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 8)
-      // #2683: the copied key is owned by both maps (see the value below).
-      if ctx.enable_rc {
-        emit_local_tee(buf, tmp_l)
-        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
-      } else {
-        ()
-      }
-      emit_i64_store(buf, 3, 8)
-      emit_local_get(buf, map_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 8)
-      emit_local_get(buf, key_l)
-      emit_call(buf, eq_fi_ms)
-      emit_i32_wrap_i64(buf)
-      emit_if_void(buf)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf, val_l)
-      emit_i64_store(buf, 3, 16)
-      emit_i64_const(buf, 1)
-      emit_local_set(buf, found_l)
-      // #2683: the key already present is kept; the caller's key was
-      // retained for storage and is not stored -- release it.
       if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
-        emit_local_get(buf, key_l)
-        emit_call(buf, ctx.rc_drop_func_idx)
-      } else {
-        ()
-      }
-      emit_else(buf)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf, map_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 16)
-      // #2683: the copied value is now owned by BOTH maps; the source map
-      // is borrowed here and keeps its reference.
-      if ctx.enable_rc {
-        emit_local_tee(buf, tmp_l)
-        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
-      } else {
-        ()
-      }
-      emit_i64_store(buf, 3, 16)
-      emit_end(buf)
-      emit_local_get(buf, idx_l)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_local_set(buf, idx_l)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
-      emit_local_get(buf, found_l)
-      emit_i64_eqz(buf)
-      emit_if_void(buf)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, cnt_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf, key_l)
-      emit_i64_store(buf, 3, 8)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, cnt_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf, val_l)
-      emit_i64_store(buf, 3, 16)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, cnt_l)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_i32_wrap_i64(buf)
-      emit_i32_store(buf, 2, 0)
-      emit_else(buf)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, cnt_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_store(buf, 2, 0)
-      emit_end(buf)
-      // #Map-hash-index: (re-loading the just-written final count from new_l
-      // rather than re-deriving it from found_l/cnt_l) build + attach the
-      // O(1)-average side index when it's worth it (count>=8). idx_l/found_l
-      // are dead after the copy loop above -- reused here as scratch (final
-      // count, then the built index pointer) so this needs no new locals.
-      if ctx.map_build_index_func_idx >= 0 {
-        emit_local_get(buf, new_l)
-        emit_i32_wrap_i64(buf)
-        emit_i32_load(buf, 2, 0)
-        emit_i64_extend_i32_u(buf)
-        emit_local_set(buf, idx_l)
-        emit_local_get(buf, idx_l)
-        emit_i64_const(buf, 8)
-        emit_i64_ge_s(buf)
+        // ADR-0092 for maps: a uniquely referenced source is updated in
+        // place and is the result; a shared one is copied, then the
+        // consumed reference is released.
+        cc_map_emit_unique_test(buf, map_l)
         emit_if_void(buf)
-        emit_local_get(buf, new_l)
-        emit_local_get(buf, idx_l)
-        emit_call(buf, ctx.map_build_index_func_idx)
-        emit_local_set(buf, found_l)
-        emit_local_get(buf, new_l)
-        emit_i32_wrap_i64(buf)
-        emit_local_get(buf, found_l)
-        emit_i32_wrap_i64(buf)
-        emit_i32_store(buf, 2, 4)
+        cc_map_set_in_place(buf, map_l, key_l, val_l, cnt_l, new_l, idx_l, found_l, tmp_l, ip_l, cap_l, eq_fi_ms, ctx)
+        emit_else(buf)
+        copy_path()
+        cc_map_release_ptr(buf, map_l, ctx)
         emit_end(buf)
       } else {
-        ()
+        copy_path()
       }
-      cc_map_release_temp_arg0(buf, Array::get(args, 0), map_l, ctx)
       cc_map_value_out(buf, new_l, ctx)
-      nl + 8
+      nl + 10
     }
     else if fname == "Map::delete" {
       // Copies every entry whose key doesn't match into a fresh block (same
@@ -5363,6 +5735,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let idx_l = nl + 4
       let out_l = nl + 5
       let tmp_l = nl + 6
+      let ip_l = nl + 7
       Array::push(local_names, "__md_map")
       Array::push(local_names, "__md_key")
       Array::push(local_names, "__md_cnt")
@@ -5370,8 +5743,11 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__md_idx")
       Array::push(local_names, "__md_out")
       Array::push(local_names, "__md_tmp")
+      Array::push(local_names, "__md_ip")
       emit_local_set(buf, key_l)
       emit_local_set(buf, map_l)
+      // ADR-0092 for maps: consumed here, as in Map::set above.
+      cc_hof_retain_arg(buf, Array::get(args, 0), map_l, fname, 0, ctx)
       emit_local_get(buf, map_l)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
@@ -5381,140 +5757,152 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_load(buf, 2, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, cnt_l)
-      if ctx.enable_rc {
-        // #2683: an RC map block (class 6) sized for the old entry count.
-        cc_map_alloc_rc(buf, new_l, 6, () -> {
+      let copy_path = () -> {
+        if ctx.enable_rc {
+          // #2683: an RC map block (class 6) sized for the old entry count.
+          cc_map_alloc_rc(buf, new_l, 6, () -> {
+            emit_local_get(buf, cnt_l)
+            emit_i64_const(buf, 16)
+            emit_i64_mul(buf)
+            emit_i64_const(buf, 8)
+            emit_i64_add(buf)
+          }, ctx)
+        } else {
+          emit_global_get(buf, 0)
+          emit_i64_extend_i32_u(buf)
+          emit_local_set(buf, new_l)
+          emit_global_get(buf, 0)
           emit_local_get(buf, cnt_l)
-          emit_i64_const(buf, 16)
-          emit_i64_mul(buf)
-          emit_i64_const(buf, 8)
-          emit_i64_add(buf)
-        }, ctx)
-      } else {
-        emit_global_get(buf, 0)
-        emit_i64_extend_i32_u(buf)
-        emit_local_set(buf, new_l)
-        emit_global_get(buf, 0)
-        emit_local_get(buf, cnt_l)
-        emit_i32_wrap_i64(buf)
-        emit_i32_const(buf, 16)
-        emit_i32_mul(buf)
-        emit_i32_const(buf, 8)
-        emit_i32_add(buf)
-        emit_i32_add(buf)
-        emit_global_set(buf, 0)
-        emit_heap_grow_after_heap_set(buf, ctx)
-      }
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, idx_l)
-      emit_i64_const(buf, 0)
-      emit_local_set(buf, out_l)
-      emit_block_void(buf)
-      emit_loop_void(buf)
-      emit_local_get(buf, idx_l)
-      emit_local_get(buf, cnt_l)
-      emit_i64_ge_s(buf)
-      emit_br_if(buf, 1)
-      emit_local_get(buf, map_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 8)
-      emit_local_get(buf, key_l)
-      emit_call(buf, eq_fi_md)
-      emit_i32_wrap_i64(buf)
-      emit_if_void(buf)
-      emit_else(buf)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, out_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf, map_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 8)
-      // #2683: as in Map::set, the kept key is owned by both maps.
-      if ctx.enable_rc {
-        emit_local_tee(buf, tmp_l)
-        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
-      } else {
-        ()
-      }
-      emit_i64_store(buf, 3, 8)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, out_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_local_get(buf, map_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, idx_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_i64_load(buf, 3, 16)
-      // #2683: as in Map::set, the kept value is owned by both maps.
-      if ctx.enable_rc {
-        emit_local_tee(buf, tmp_l)
-        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
-      } else {
-        ()
-      }
-      emit_i64_store(buf, 3, 16)
-      emit_local_get(buf, out_l)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_local_set(buf, out_l)
-      emit_end(buf)
-      emit_local_get(buf, idx_l)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_local_set(buf, idx_l)
-      emit_br(buf, 0)
-      emit_end(buf)
-      emit_end(buf)
-      emit_local_get(buf, new_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, out_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_store(buf, 2, 0)
-      // See the matching comment in Map::set above. idx_l is dead after the
-      // copy loop; out_l already holds the final count (just stored above),
-      // no need to re-load it.
-      if ctx.map_build_index_func_idx >= 0 {
-        emit_local_get(buf, out_l)
-        emit_i64_const(buf, 8)
-        emit_i64_ge_s(buf)
-        emit_if_void(buf)
-        emit_local_get(buf, new_l)
-        emit_local_get(buf, out_l)
-        emit_call(buf, ctx.map_build_index_func_idx)
+          emit_i32_wrap_i64(buf)
+          emit_i32_const(buf, 16)
+          emit_i32_mul(buf)
+          emit_i32_const(buf, 8)
+          emit_i32_add(buf)
+          emit_i32_add(buf)
+          emit_global_set(buf, 0)
+          emit_heap_grow_after_heap_set(buf, ctx)
+        }
+        emit_i64_const(buf, 0)
         emit_local_set(buf, idx_l)
-        emit_local_get(buf, new_l)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, out_l)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, idx_l)
+        emit_local_get(buf, cnt_l)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, map_l)
         emit_i32_wrap_i64(buf)
         emit_local_get(buf, idx_l)
         emit_i32_wrap_i64(buf)
-        emit_i32_store(buf, 2, 4)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_local_get(buf, key_l)
+        emit_call(buf, eq_fi_md)
+        emit_i32_wrap_i64(buf)
+        emit_if_void(buf)
+        emit_else(buf)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, out_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        // #2683: as in Map::set, the kept key is owned by both maps.
+        if ctx.enable_rc {
+          emit_local_tee(buf, tmp_l)
+          emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+        emit_i64_store(buf, 3, 8)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, out_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_local_get(buf, map_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, idx_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 16)
+        // #2683: as in Map::set, the kept value is owned by both maps.
+        if ctx.enable_rc {
+          emit_local_tee(buf, tmp_l)
+          emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+        emit_i64_store(buf, 3, 16)
+        emit_local_get(buf, out_l)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, out_l)
+        emit_end(buf)
+        emit_local_get(buf, idx_l)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, idx_l)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_local_get(buf, new_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, out_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_store(buf, 2, 0)
+        // See the matching comment in Map::set above. idx_l is dead after the
+        // copy loop; out_l already holds the final count (just stored above),
+        // no need to re-load it.
+        if ctx.map_build_index_func_idx >= 0 {
+          emit_local_get(buf, out_l)
+          emit_i64_const(buf, 8)
+          emit_i64_ge_s(buf)
+          emit_if_void(buf)
+          emit_local_get(buf, new_l)
+          emit_local_get(buf, out_l)
+          emit_call(buf, ctx.map_build_index_func_idx)
+          emit_local_set(buf, idx_l)
+          emit_local_get(buf, new_l)
+          emit_i32_wrap_i64(buf)
+          emit_local_get(buf, idx_l)
+          emit_i32_wrap_i64(buf)
+          emit_i32_store(buf, 2, 4)
+          emit_end(buf)
+        } else {
+          ()
+        }
+      }
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+        cc_map_emit_unique_test(buf, map_l)
+        emit_if_void(buf)
+        cc_map_delete_in_place(buf, map_l, key_l, cnt_l, new_l, idx_l, out_l, tmp_l, ip_l, eq_fi_md, ctx)
+        emit_else(buf)
+        copy_path()
+        cc_map_release_ptr(buf, map_l, ctx)
         emit_end(buf)
       } else {
-        ()
+        copy_path()
       }
-      cc_map_release_temp_arg0(buf, Array::get(args, 0), map_l, ctx)
       cc_map_value_out(buf, new_l, ctx)
-      nl + 7
+      nl + 8
     }
     else if fname == "MapBuilder::new" {
       // #723-family fix: the builder used to be a FIXED 144-byte block
