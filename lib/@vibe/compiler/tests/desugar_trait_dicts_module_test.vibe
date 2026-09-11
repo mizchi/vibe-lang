@@ -428,15 +428,13 @@ test "a hoisted name whose local half is not a source identifier decodes to noth
 }
 
 /// The owner key each top-level statement would give a lambda hoisted out of
-/// it, in program order; `-` for a statement that names no owner.
+/// it, in program order. Every statement answers: one with no name to be known
+/// by answers with its POSITION.
 fn owner_keys(stmts: Array[Stmt]) -> String {
   let out: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
-    match hoisted_lambda_owner_of_stmt(Array::get(stmts, i)) {
-      Some(k) => Array::push(out, k),
-      None => Array::push(out, "-")
-    }
+    Array::push(out, hoisted_lambda_owner_of_stmt(Array::get(stmts, i), i))
     i = i + 1
   }
   String::join(out, ", ")
@@ -452,16 +450,43 @@ fn owner_keys(stmts: Array[Stmt]) -> String {
 // `__dst<n>` binding plus one `SLet` per binder, which is why the row below
 // reads `__dst1, pair_a, pair_b` rather than one pattern owner. So the arm
 // this finding is about is defensive rather than reachable through that
-// spelling today; it stays because `dlh_set_owner` has it, and the point of
-// this function is that the two cannot diverge. `-` marks the shapes whose
-// key is a POSITION rather than a name.
+// spelling today; it stays because the hoist has it.
+//
+// The round after found the other half: a statement with NO binder still gets
+// an owner from the recorder -- the anonymous `:s:<index>` -- while this
+// function answered `None`, so the break lane recorded nothing for it and left
+// the hoisted body at file 0. Both now go through `dlh_owner_class` and
+// `dlh_owner_key_of`, so there is one classification and one key spelling
+// rather than two that can cover different subsets. `:s:<n>` below is a
+// position, and the effect declaration and struct at 0 and 6 are the shapes
+// that have no name of their own.
 fn owner_shapes_src() -> String {
   "effect OLog {\n  Emit(String) -> Unit\n}\n\nlet (pair_a, pair_b) = (1, 2)\n\nlet plain = 3\n\nlet mut counter = 0\n\nstruct Marker {\n  v: Int\n}\n\ntest \"probe\" {\n  assert_true(true)\n}\n"
 }
 
 test "every top-level shape the hoist names an owner after answers with that owner" {
   let stmts = parse_program(lex(owner_shapes_src()))
-  inspect(owner_keys(stmts), content = "-, __dst1, pair_a, pair_b, plain, counter, -, :t:probe")
+  inspect(owner_keys(stmts), content = ":s:0, __dst1, pair_a, pair_b, plain, counter, :s:6, :t:probe")
+}
+
+// A statement with no name of its own is owned by its POSITION, and it must
+// have an owner at all: the recorder mints `:s:<index>` for it, and a consumer
+// that answered "no owner" recorded nothing and left whatever was hoisted out
+// of it at file 0.
+//
+// Measured while writing this, and it narrows the finding as filed: `let _ = 2`
+// is NOT the binderless case. The parser gives it a plain `SLet` whose name is
+// `_`, so it is owned by `_` like any other name. What actually reaches the
+// anonymous arm is a statement shape with no binding at all -- an effect, a
+// struct, an enum, a bare expression.
+test "a statement with no name of its own is owned by its position" {
+  let stmts = parse_program(lex("let plain = 1\n\nlet _ = 2\n\nlet after = 3\n"))
+  inspect(owner_keys(stmts), content = "plain, _, after")
+  // The reachable anonymous shapes, and the position is the identity: the same
+  // kind of statement at another index is a different owner, which is what
+  // keeps two of them from colliding.
+  let anon = parse_program(lex("struct A {\n  v: Int\n}\n\nlet named = 1\n\nstruct B {\n  v: Int\n}\n"))
+  inspect(owner_keys(anon), content = ":s:0, named, :s:2")
 }
 
 // #2631: what the module could NOT see while synthesizing a comparator.

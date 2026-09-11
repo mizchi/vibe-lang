@@ -16928,65 +16928,65 @@ let dlh_module_tag: Array[String] = [""]
 /// ~138 kB of bump heap per compile on the selfcompile KPI. A consumer that
 /// wants every owner up front calls this instead, and pays that only when it
 /// needs the index.
-export fn hoisted_lambda_owner_of_stmt(stmt: Stmt) -> Option[String] {
+export fn hoisted_lambda_owner_of_stmt(stmt: Stmt, idx: Int) -> String {
+  let (kind, name) = dlh_owner_class(stmt)
+  dlh_owner_key_of(kind, name, idx)
+}
+
+/// The owner KIND and name of `stmt`: 0 a plain name, 1 a test, 2 a bench, 3
+/// anonymous (a binderless pattern, or any other statement shape).
+///
+/// One classification, read by the hoist's recorder and by anyone who needs to
+/// build the key themselves. Two copies is what the earlier bugs were: a
+/// consumer that mirrored a SUBSET of these arms silently filed a hoisted body
+/// under the wrong module (`SLetPat` in Codex's round on #2623, then the
+/// binderless case the round after). A shape this one does not name cannot be
+/// named differently by the other.
+fn dlh_owner_class(stmt: Stmt) -> (Int, String) {
   match stmt {
-    SLet(_, _, name, _, _) => Some(name),
-    SLetMut(name, _, _) => Some(name),
-    STest(name, _) => Some(":t:\{name}"),
-    SBench(name, _) => Some(":b:\{name}"),
+    SLet(_, _, name, _, _) => (0, name),
+    SLetMut(name, _, _) => (0, name),
+    STest(name, _) => (1, name),
+    SBench(name, _) => (2, name),
     SLetPat(pat, _) => {
       let binders = empty_str_array()
       collect_pat_binders(pat, binders)
       if Array::length(binders) == 0 {
-        None
+        (3, "")
       } else {
-        Some(Array::get(binders, 0))
+        (0, Array::get(binders, 0))
       }
     },
-    _ => None
+    _ => (3, "")
+  }
+}
+
+/// The key for an owner classified by `dlh_owner_class`. The anonymous case
+/// needs the statement's index, which is why this takes one: `let _ = ..` has
+/// no name to be known by, so its position IS its identity.
+fn dlh_owner_key_of(kind: Int, name: String, idx: Int) -> String {
+  if kind == 1 {
+    ":t:\{name}"
+  } else if kind == 2 {
+    ":b:\{name}"
+  } else if kind == 3 {
+    dlh_anonymous_owner_key(idx)
+  } else {
+    name
   }
 }
 
 fn dlh_set_owner(stmt: Stmt, idx: Int) -> Unit {
   Array::set(dlh_owner_idx, 0, idx)
   Array::set(dlh_owner_kind, 0, 0)
-  match stmt {
-    SLet(_, _, name, _, _) => Array::set(dlh_owner_name, 0, name),
-    SLetMut(name, _, _) => Array::set(dlh_owner_name, 0, name),
-    STest(name, _) => {
-      Array::set(dlh_owner_kind, 0, 1)
-      Array::set(dlh_owner_name, 0, name)
-    },
-    SBench(name, _) => {
-      Array::set(dlh_owner_kind, 0, 2)
-      Array::set(dlh_owner_name, 0, name)
-    },
-    SLetPat(pat, _) => {
-      let binders = empty_str_array()
-      collect_pat_binders(pat, binders)
-      if Array::length(binders) == 0 {
-        Array::set(dlh_owner_kind, 0, 3)
-      } else {
-        Array::set(dlh_owner_name, 0, Array::get(binders, 0))
-      }
-    },
-    _ => Array::set(dlh_owner_kind, 0, 3)
-  }
+  let (kind, name) = dlh_owner_class(stmt)
+  Array::set(dlh_owner_kind, 0, kind)
+  Array::set(dlh_owner_name, 0, name)
 }
 
 /// The recorded owner as a key. Called once per lambda actually hoisted.
 fn dlh_owner_key() -> String {
-  let kind = Array::get(dlh_owner_kind, 0)
-  let name = Array::get(dlh_owner_name, 0)
-  if kind == 1 {
-    ":t:\{name}"
-  } else if kind == 2 {
-    ":b:\{name}"
-  } else if kind == 3 {
-    dlh_anonymous_owner_key(Array::get(dlh_owner_idx, 0))
-  } else {
-    name
-  }
+  dlh_owner_key_of(Array::get(dlh_owner_kind, 0), Array::get(dlh_owner_name, 0), Array::get(dlh_owner_idx, 0))
 }
 
 fn dlh_anonymous_owner_key(idx: Int) -> String {

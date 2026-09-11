@@ -426,6 +426,43 @@ fn lc_fresh_bytes_array() -> Array[Bytes] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
+/// #2388 (Codex round on #2623): run `oracle_apply_pass` on one module and
+/// record the keys it SYNTHESIZED into `synth_keys`.
+///
+/// Every pass, not just the trait-dict entry. `synth_keys` used to hold only
+/// what `desugar_trait_dicts_module` returned, so a helper minted by a LATER
+/// pass -- pass 7's `__stdin_provider_*_surface` is the measured case, appended
+/// to every module that references a stdin surface -- was never offered to the
+/// fold. The link then kept one copy per module while the keyed comparison
+/// counted them as ordinary `copies` alongside benign repeated markers, so
+/// `missing=0 content=0` could hold over a linked program that still carried
+/// duplicate definitions. A gate that cannot see its own blind spot reports
+/// the blind spot as success.
+///
+/// The diff is over the key SET rather than the tail, because a pass may
+/// insert rather than append (#2620 places a hoisted lambda next to its own
+/// declaration), and a tail diff would then attribute the wrong keys.
+fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], synth_keys: Array[String]) -> Unit with Exception {
+  let before: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(part) {
+    MutMap::set(before, oracle_stmt_key(Array::get(part, i)), 1)
+    i = i + 1
+  }
+  oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+  let mut j = 0
+  while j < Array::length(part) {
+    let key = oracle_stmt_key(Array::get(part, j))
+    if MutMap::has(before, key) {
+      ()
+    } else {
+      MutMap::set(before, key, 1)
+      Array::push(synth_keys, key)
+    }
+    j = j + 1
+  }
+}
+
 /// #2633: append the names of `src` not already in `dst`.
 fn lc_union_into(dst: Array[String], src: Array[String]) -> Unit {
   let mut i = 0
@@ -4008,10 +4045,14 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
       // carry two of them, so folding by name alone deletes one.
       if link_key_is_definition(key) {
         dup_defs = dup_defs + 1
+        // Every one, not just the first. `dup_defs` is compared against
+        // `linked_dups` -- the definition keys the LINK left duplicated -- and
+        // a count that differs by one with only the first name printed cannot
+        // say which key accounts for the difference.
         if String::length(first_dup_def) == 0 {
           first_dup_def = key
         } else {
-          ()
+          first_dup_def = String::concat(first_dup_def, String::concat(",", key))
         }
       } else {
         ()
@@ -4134,7 +4175,7 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
     }
     ki = ki + 1
   }
-  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" dup_defs=", String::concat(Int::to_string(dup_defs), String::concat(" first_dup_def=", String::concat(first_dup_def, String::concat(" first_copy=", String::concat(first_copy, String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))))))))
+  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" dup_defs=", String::concat(Int::to_string(dup_defs), String::concat(" dup_def_keys=", String::concat(first_dup_def, String::concat(" first_copy=", String::concat(first_copy, String::concat(" first_missing=", String::concat(first_missing, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))))))))
 }
 
 /// One step of the oracle: pass `k`. `a` is the whole-program state after
@@ -4306,6 +4347,11 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     Array::push(part, Array::get(c, si))
     si = si + 1
   }
+  // The keys the per-module run SYNTHESIZED, from EVERY pass -- the only keys
+  // the link may fold. A declaration the source wrote is never offered to it,
+  // so a definition the whole program legitimately carries twice cannot be
+  // collapsed.
+  let synth_keys = lc_fresh_string_array()
   // Everything before the trait-dict entry, per module.
   fi = 0
   while fi < file_count {
@@ -4316,7 +4362,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     }
     let mut j = 0
     while j < 4 {
-      oracle_apply_pass(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys)
+      lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys)
       j = j + 1
     }
     fi = fi + 1
@@ -4344,7 +4390,6 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_decl_u = lc_fresh_string_array()
   let ev_handled_u = lc_fresh_string_array()
   let ev_perf_u = lc_fresh_string_array()
-  let synth_keys = lc_fresh_string_array()
   fi = 0
   while fi < file_count {
     let part_entry = if fi == entry_fid {
@@ -4421,7 +4466,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
       } else {
         ()
       }
-      oracle_apply_pass(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+      lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys)
       j2 = j2 + 1
     }
     fi = fi + 1
@@ -4449,13 +4494,51 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // module disagrees" without saying how many or about what. Production keeps
   // the throw.
   let (linked, collisions) = link_fold_duplicate_definitions_report(trial, synth_keys, render)
+  // #2388 (Codex round on #2623): a definition key that still repeats in the
+  // LINKED program. `dup_defs` in the keyed line counts repeats in the WHOLE
+  // program -- legitimate ones the fold must not touch -- and says nothing
+  // about what the fold left behind. Without this, a helper some pass minted
+  // per module and never offered to the fold survives as an ordinary `copies`
+  // row and the line still reads `missing=0 content=0`.
+  let linked_dup_keys = lc_fresh_string_array()
+  let mut linked_dups = 0
+  let seen_def: MutMap[String, Int] = MutMap::new_string()
+  let mut ld = 0
+  while ld < Array::length(linked) {
+    let key = oracle_stmt_key(Array::get(linked, ld))
+    if link_key_is_definition(key) {
+      if MutMap::has(seen_def, key) {
+        // EXTRA OCCURRENCES, the same unit as the keyed line's `dup_defs`, so
+        // the two are directly comparable: equal means the link removed none
+        // of the definitions the whole program legitimately carries twice.
+        // Counted as distinct keys they read 4 against 5 and looked like a
+        // discrepancy -- `effect:Profiler` is declared THREE times.
+        linked_dups = linked_dups + 1
+        if lc_str_array_has(linked_dup_keys, key) {
+          ()
+        } else {
+          Array::push(linked_dup_keys, key)
+        }
+      } else {
+        MutMap::set(seen_def, key, 1)
+      }
+    } else {
+      ()
+    }
+    ld = ld + 1
+  }
   let head = String::concat(String::concat("FULL stmts=", Int::to_string(Array::length(a))), String::concat(" split=", Int::to_string(Array::length(trial))))
   let mid = String::concat(String::concat(" linked=", Int::to_string(Array::length(linked))), String::concat(" folded=", Int::to_string(Array::length(trial) - Array::length(linked))))
   let split_invisible = eq_invisible_nominals_list()
-  let tail = String::concat(String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", Int::to_string(Array::length(collisions)))), String::concat(String::concat(" invisible_whole=", Int::to_string(Array::length(whole_invisible))), String::concat(" invisible_split=", String::concat(Int::to_string(Array::length(split_invisible)), "\n"))))
+  let tail = String::concat(String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", Int::to_string(Array::length(collisions)))), String::concat(String::concat(" invisible_whole=", Int::to_string(Array::length(whole_invisible))), String::concat(String::concat(" invisible_split=", Int::to_string(Array::length(split_invisible))), String::concat(" linked_dups=", String::concat(Int::to_string(linked_dups), "\n")))))
   let ev_line = String::concat(String::concat(String::concat("EVIDENCE declared=", lc_set_cmp(ev_decl_w, ev_decl_u)), String::concat(" handled=", lc_set_cmp(ev_handled_w, ev_handled_u))), String::concat(" performed=", String::concat(lc_set_cmp(ev_perf_w, ev_perf_u), "\n")))
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
+  let mut ldi = 0
+  while ldi < Array::length(linked_dup_keys) && ldi < 20 {
+    collision_lines = String::concat(collision_lines, String::concat("  linked_dup ", String::concat(Array::get(linked_dup_keys, ldi), "\n")))
+    ldi = ldi + 1
+  }
   let mut coi = 0
   while coi < Array::length(collisions) && coi < 20 {
     collision_lines = String::concat(collision_lines, String::concat("  collision ", String::concat(Array::get(collisions, coi), "\n")))
@@ -4713,7 +4796,13 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
 /// file's name, not that a user's breakpoint moves.
 fn lc_dbg_file_of_fn(dbg_name_file: MutMap[String, Int], dbg_owner_file: MutMap[String, Int], name: String) -> Int {
   match MutMap::get(dbg_name_file, name) {
-    Some(fid) => fid,
+    Some(fid) => if fid < 0 {
+      // Ambiguous: two pre-prelude statements carry this name, so it places
+      // nothing. Falls through to 0 like an unknown name rather than picking.
+      0
+    } else {
+      fid
+    },
     None => match hoisted_lambda_owner_key(name) {
       Some(owner) => match MutMap::get(dbg_owner_file, owner) {
         Some(fid) => fid,
@@ -5951,13 +6040,14 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
       0
     }
     if dbg_prov_len > 0 {
-      match hoisted_lambda_owner_of_stmt(Array::get(stmts, __sbn_i)) {
-        Some(__sbn_owner) => {
-          Array::push(pre_prelude_owner_keys, __sbn_owner)
-          Array::push(pre_prelude_owner_files, __sbn_file)
-        },
-        None => ()
-      }
+      // EVERY statement, including the ones with no name to be known by. A
+      // binderless `let _ = ..` holding an effectful local lambda gets an
+      // anonymous owner from its POSITION (`:s:<idx>`), which is why the index
+      // is passed: the recorder mints exactly that key, and a consumer that
+      // recorded nothing for it left the hoisted body at file 0 (Codex round on
+      // #2623). Same statement list, same index, so the two agree.
+      Array::push(pre_prelude_owner_keys, hoisted_lambda_owner_of_stmt(Array::get(stmts, __sbn_i), __sbn_i))
+      Array::push(pre_prelude_owner_files, __sbn_file)
     } else {
       ()
     }
@@ -7629,7 +7719,22 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   if dbg_line_on {
     let mut dnf_i = 0
     while dnf_i < Array::length(pre_prelude_let_names) && dnf_i < Array::length(pre_prelude_let_files) {
-      MutMap::set(dbg_name_file, Array::get(pre_prelude_let_names, dnf_i), Array::get(pre_prelude_let_files, dnf_i))
+      // A repeat is AMBIGUOUS, not "the last one". The merge makes a source's
+      // top-level names unique per file, but a test or bench contributes
+      // `__test_<label>` / `__bench_<label>` built from its LABEL, which is not
+      // uniquified -- two modules with a test of the same label collide, and
+      // `MutMap::set` would hand both compiled functions the second one's file
+      // (Codex round on #2623). Mapping one of them through the other's newline
+      // table reports a breakpoint under the wrong file, which is worse than
+      // not placing it: `lc_dbg_file_of_fn` states file 0 as a PLACEMENT, and a
+      // wrong file id is a claim. Marked with a negative so the lookup can tell
+      // "ambiguous" from "absent" and refuse both the same way.
+      let __dnf_name = Array::get(pre_prelude_let_names, dnf_i)
+      if MutMap::has(dbg_name_file, __dnf_name) {
+        MutMap::set(dbg_name_file, __dnf_name, 0 - 1)
+      } else {
+        MutMap::set(dbg_name_file, __dnf_name, Array::get(pre_prelude_let_files, dnf_i))
+      }
       dnf_i = dnf_i + 1
     }
     let mut dof_i = 0
