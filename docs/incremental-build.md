@@ -278,9 +278,19 @@ samples all three on both lanes after all 17 prelude passes, which is where the
 real compile runs them, and compares the whole-program answer against the union
 of the per-module ones.
 
-Unlike the evidence facts above, these are interprocedural **fixpoints**, so the
-two lanes differ in both directions and the directions do not mean the same
-thing. Measured on `lib/@vibe/cli/entry.vibe`, 365 modules:
+Unlike the evidence facts above, all three are **interprocedural** — each reads
+the classification of callees that may live in another module — so the two lanes
+differ in both directions and the directions do not mean the same thing.
+
+Two of them iterate to a fixpoint (`compute_borrow_returning_names`'s `while
+changed`, `compute_may_return_view_fns`' callee-edge worklist).
+`compute_borrow_param_user_fns` does **not**: it is round 0 plus **one bounded
+transitive round** reading round 0's immutable snapshot, and deliberately stops
+there. That distinction constrains the link-time design below — closing it
+transitively would compute a larger borrow set than today's ABI, which is a
+behaviour change rather than the same answer computed differently.
+
+Measured on `lib/@vibe/cli/entry.vibe`, 365 modules:
 
 ```
 ANALYSIS dce_entry=0 borrow_ret=378/363:-15:MutSortedSet::delete+0:
@@ -315,15 +325,18 @@ can delete a generated helper outright. The oracle cannot reproduce either —
 so it reports the condition and prints `unmeasured` instead of counts when it
 holds. The closure numbers above are a `dce_entry=0` measurement: the same
 closure through `vibe build` would give different sets, though not a different
-conclusion, since neither transform makes an interprocedural fixpoint
+conclusion, since neither transform makes an interprocedural analysis
 decompose.
 
 So these phases do not decompose as written. What a module can compute alone is
 its own contribution; the disqualifications and the callee edges are the
 program's. That makes them the same shape as the evidence pass (#2633) — the
-module collects, the link unions and decides — with one difference that matters:
-an evidence disagreement produces two programs that cannot link, and a borrow
-disagreement produces two that link and disagree about ownership.
+module collects, the link unions and decides — with two differences that matter.
+An evidence disagreement produces two programs that cannot link, and a borrow
+disagreement produces two that link and disagree about ownership. And the link's
+closing step is not one shape: a fixpoint for the two analyses that iterate, and
+**exactly one** bounded transitive round for the borrow masks, because that is
+what the shipped ABI is.
 
 ## User-visible KPI contract
 
