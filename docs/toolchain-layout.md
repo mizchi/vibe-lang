@@ -17,7 +17,8 @@ Phases, in dependency order:
 2. [#2676](https://github.com/mizchi/vibe-lang/issues/2676) — one dependency
    lane on the root `index.vpkg` and `.vibe/store/` — **implemented**
 3. [#2677](https://github.com/mizchi/vibe-lang/issues/2677) — per-toolchain
-   stdlib, toolchain manifest, `vibe toolchain`, environment variables
+   stdlib, toolchain manifest, `vibe toolchain`, environment variables —
+   **implemented**
 4. [#2678](https://github.com/mizchi/vibe-lang/issues/2678) — prebuilt runner
    release assets, `vibe self update <version>`, release install path
 
@@ -39,13 +40,14 @@ launcher the way an installed toolchain runs it, from a scratch project:
 - `vibe run` / `test` / `bench` compile into `mktemp -t vibe-*` files under
   the OS temp dir. `vibe compile -o out.wasm` leaves `out.wasm.funcmap` next
   to the output; without `-o` the wasm lands next to the source.
-- `$VIBE_HOME/lib/@vibe/*` (the stdlib) is shared by every installed
-  toolchain and `rm -rf`-overwritten on each install, so two toolchains cannot
-  coexist correctly.
+- `$VIBE_HOME/lib/@vibe/*` (the stdlib) was shared by every installed
+  toolchain and `rm -rf`-overwritten on each install, so two toolchains could
+  not coexist (phase 3 moved the stdlib into each toolchain).
 - The only update path is `vibe self update --cli-wasm <local path>`.
   Releases publish the compiler wasm, module source, seed json, manifest and
   checksums, and no runner binary: `viberun` is built with cargo at install
-  time. There is no toolchain switch command.
+  time. There was no toolchain switch command (phase 3 added `vibe
+  toolchain`).
 - Six environment variables overlap: `VIBE_HOME`, `VIBE_LIB`, `VIBE_CACHE`,
   `VIBE_TEST_CACHE`, `VIBE_BUILD_CACHE_DIR`, `VIBE_TOOLCHAIN`.
 - Two dependency lanes coexisted: `docs/spec/stable-surface.md` §4 named a
@@ -72,7 +74,7 @@ $VIBE_HOME/
     lib/{lsp_server.js,symbol_index.js,graph_query.js}
     lib/{vibe_pkg.sh,parallel_warm_pool.sh,context-pack.md}
     lib/@vibe/{core,ast,parser,builtin,console,wit_runtime}
-                                      stdlib, PER TOOLCHAIN (today: shared)
+                                      stdlib, PER TOOLCHAIN
     manifest.json                     version, tag or ref, commit, installed_at,
                                       source (release | checkout), sha256 of
                                       runner and compiler wasm, wasmtime version

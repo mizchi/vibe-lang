@@ -13,8 +13,13 @@
 #   $VIBE_HOME/toolchain                      default toolchain name
 #   $VIBE_HOME/toolchains/<name>/bin/{vibe,viberun}
 #   $VIBE_HOME/toolchains/<name>/lib/{vibe-cli.wasm,vibe-cli.cwasm,lsp...}
-#   $VIBE_HOME/lib/@vibe/{core,ast,parser,prelude,wit_runtime}
+#   $VIBE_HOME/toolchains/<name>/lib/@vibe/{core,ast,parser,builtin,console,wit_runtime}
+#   $VIBE_HOME/toolchains/<name>/manifest.json
+#   $VIBE_HOME/lib/@scope/name                shared packages (`vibe pkg install`)
 #   $VIBE_HOME/cache/...
+#
+# Each toolchain carries its own stdlib (docs/toolchain-layout.md section 2,
+# #2677): installing a second one never touches the first.
 #
 # Usage:
 #   bash install/install.sh [--repo URL] [--ref REF] [--prefix DIR]
@@ -192,6 +197,12 @@ validate_toolchain_name() {
 }
 
 validate_toolchain_name "$TOOLCHAIN"
+# A pre-#755 flat install (bin/viberun next to lib/vibe-cli.wasm) cannot host
+# toolchains: its launcher and stdlib would shadow theirs. Refuse rather than
+# mix the two layouts (docs/toolchain-layout.md section 2, #2677).
+if [ -f "$VIBE_HOME/lib/vibe-cli.wasm" ] || [ -x "$VIBE_HOME/bin/viberun" ]; then
+  die "$VIBE_HOME holds a flat pre-#755 install (lib/vibe-cli.wasm, bin/viberun), which is no longer supported; remove it, or choose another --prefix, and run install/install.sh again"
+fi
 TC_DIR="$VIBE_HOME/toolchains/$TOOLCHAIN"
 mkdir -p "$TC_DIR/bin" "$TC_DIR/lib" "$VIBE_HOME/bin" "$VIBE_HOME/lib"
 
@@ -286,6 +297,46 @@ elif [ -f "$ROOT_DIR/scripts/gen_context_pack.sh" ]; then
   fi
 fi
 
+# 4b. toolchain manifest (docs/toolchain-layout.md section 2, #2677) --------
+# What this toolchain is, for `vibe version` and `vibe toolchain list`: one
+# `"key": "value"` per line so the launcher reads it with sed. Every field
+# degrades to "" rather than failing the install: a --runner/--cli-wasm
+# install on a minimal PATH (the curl bootstrap regression) has no git, no
+# date and no sha256 tool.
+file_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | sed 's/ .*//'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | sed 's/ .*//'
+  fi
+}
+json_safe() { printf '%s' "$1" | tr -d '"\\\n' 2>/dev/null || printf '%s' "$1" | sed 's/["\\]//g'; }
+launcher_version="$(sed -n 's/^VIBE_VERSION="\(.*\)"$/\1/p' "$ROOT_DIR/runtime/vibe" | sed -n '1p')"
+src_commit=""
+src_ref=""
+if command -v git >/dev/null 2>&1; then
+  src_commit="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  src_ref="$(git -C "$ROOT_DIR" symbolic-ref -q --short HEAD 2>/dev/null || git -C "$ROOT_DIR" describe --tags --exact-match 2>/dev/null || true)"
+fi
+installed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+runner_sha="$(file_sha256 "$TC_DIR/bin/viberun" 2>/dev/null || true)"
+cli_sha="$(file_sha256 "$TC_DIR/lib/vibe-cli.wasm" 2>/dev/null || true)"
+wasmtime_ver="$("$TC_DIR/bin/viberun" --version 2>/dev/null | sed -n '1p' || true)"
+{
+  printf '{\n'
+  printf '  "version": "%s",\n' "$(json_safe "$launcher_version")"
+  printf '  "toolchain": "%s",\n' "$(json_safe "$TOOLCHAIN")"
+  printf '  "source": "checkout",\n'
+  printf '  "ref": "%s",\n' "$(json_safe "$src_ref")"
+  printf '  "commit": "%s",\n' "$(json_safe "$src_commit")"
+  printf '  "installed_at": "%s",\n' "$(json_safe "$installed_at")"
+  printf '  "runner_sha256": "%s",\n' "$(json_safe "$runner_sha")"
+  printf '  "compiler_sha256": "%s",\n' "$(json_safe "$cli_sha")"
+  printf '  "wasmtime": "%s"\n' "$(json_safe "$wasmtime_ver")"
+  printf '}\n'
+} > "$TC_DIR/manifest.json"
+say "manifest -> $TC_DIR/manifest.json"
+
 # 5. dispatcher + default toolchain ----------------------------------------
 cat > "$VIBE_HOME/bin/vibe" <<'DISPATCH'
 #!/usr/bin/env bash
@@ -339,11 +390,13 @@ if [ "$SET_DEFAULT" = "1" ] || [ ! -f "$VIBE_HOME/toolchain" ]; then
   say "default toolchain -> $TOOLCHAIN"
 fi
 
-# 6. stdlib packages (shared, hash-verified) --------------------------------
-# The runtime-relevant standard library is materialized into $VIBE_HOME/lib --
-# the default VIBE_LIB resolution root (#751). Verification: the hash of the
-# materialized copy must equal the hash of the source package, computed by
-# the JUST-INSTALLED toolchain (`vibe hash`, ADR-0063 §5).
+# 6. stdlib packages (per toolchain, hash-verified) --------------------------
+# The runtime-relevant standard library is materialized into the toolchain's
+# own lib/ (docs/toolchain-layout.md section 2, #2677): the launcher puts
+# $TC_DIR/lib first in VIBE_LIB, ahead of the shared $VIBE_HOME/lib (#751),
+# so two toolchains never clobber each other's stdlib. Verification: the hash
+# of the materialized copy must equal the hash of the source package,
+# computed by the JUST-INSTALLED toolchain (`vibe hash`, ADR-0063 §5).
 if [ "$DO_STDLIB" = "1" ]; then
   # @vibe/wit_runtime is in this list because it is USER-FACING: #1324 removed
   # `Result` from the language, and a WIT-facing fallible export has to import
@@ -356,17 +409,13 @@ if [ "$DO_STDLIB" = "1" ]; then
   # is exactly what tests/integration/install/install_test.sh probes.
   for pkg in @vibe/core @vibe/ast @vibe/parser @vibe/builtin @vibe/console @vibe/wit_runtime; do
     src="$ROOT_DIR/lib/$pkg"
-    [ -f "$src/index.vpkg" ] || [ -f "$src/index.vibei" ] || { say "stdlib $pkg missing in checkout; skipped"; continue; }
+    [ -f "$src/index.vpkg" ] || { say "stdlib $pkg missing in checkout; skipped"; continue; }
     src_hash="$("$TC_DIR/bin/vibe" hash "$src" | awk '/^package /{print $2}')"
     [ -n "$src_hash" ] || die "stdlib hash computation failed for $pkg"
-    dest="$VIBE_HOME/lib/$pkg"
+    dest="$TC_DIR/lib/$pkg"
     rm -rf "$dest"
     mkdir -p "$dest"
-    if [ -f "$src/index.vpkg" ]; then
-      cp "$src/index.vpkg" "$dest/"
-    else
-      cp "$src/index.vibei" "$dest/"
-    fi
+    cp "$src/index.vpkg" "$dest/"
     for f in "$src"/*.vibe; do
       [ -e "$f" ] || continue
       case "$(basename "$f")" in

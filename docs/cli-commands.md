@@ -313,8 +313,10 @@ There is no `vibe init`; scaffolding is `vibe new`.
 | `pkg publish\|install\|add\|yank\|update` | Package registry operations |
 | `context-pack [--out FILE]` | Cheatsheet + verified golden examples as one file (#820) |
 | `lsp` | Start the stdio LSP server |
+| `toolchain list\|default <name>\|remove <name>` | Installed toolchains with the default marked; select the default; delete one, never the default (#2677) |
 | `self update [--cli-wasm <path>]` | Refresh the compiler wasm and rebuild the `.cwasm` |
-| `version` | Print toolchain versions |
+| `self uninstall [--purge]` | Remove `toolchains/`, `bin/`, `env` and `toolchain` under `$VIBE_HOME` (and the installer's rc line); `--purge` also `cache/`, `lib/`, `log/` |
+| `version` | Print the toolchain's version from its `manifest.json`, then the runner and compiler paths |
 
 `vibe help` prints the authoritative list; `runtime/vibe` is where it is
 defined, and `scripts/check_doc_commands.sh` compares every command shown in

@@ -52,20 +52,23 @@ bash install/install.sh \
   >/dev/null 2>&1
 VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
-# Toolchain layout (#755): the AOT artifact lives under toolchains/<name>/lib
-# (the flat path is the pre-toolchain layout, kept as a fallback assertion).
-[ -f "$VIBE_HOME/toolchains/main/lib/vibe-cli.cwasm" ] || [ -f "$VIBE_HOME/lib/vibe-cli.cwasm" ] \
-  || { echo "FAIL: .cwasm not generated" >&2; exit 1; }
+# Toolchain layout (#755, #2677): the AOT artifact and the stdlib live under
+# toolchains/<name>/lib; the shared $VIBE_HOME/lib is for `vibe pkg install`
+# only (docs/toolchain-layout.md section 2).
+tc_a="$VIBE_HOME/toolchains/main"
+[ -f "$tc_a/lib/vibe-cli.cwasm" ] || { echo "FAIL: .cwasm not generated" >&2; exit 1; }
 [ -f "$VIBE_HOME/toolchain" ] || { echo "FAIL: default toolchain file not written" >&2; exit 1; }
-[ -f "$VIBE_HOME/lib/@vibe/core/index.vpkg" ] || [ -f "$VIBE_HOME/lib/@vibe/core/index.vibei" ] || { echo "FAIL: stdlib @vibe/core not materialized" >&2; exit 1; }
+[ -f "$tc_a/lib/@vibe/core/index.vpkg" ] || { echo "FAIL: stdlib @vibe/core not materialized in the toolchain" >&2; exit 1; }
+[ ! -e "$VIBE_HOME/lib/@vibe" ] || { echo "FAIL: the stdlib landed in the shared \$VIBE_HOME/lib (must be per toolchain, #2677)" >&2; exit 1; }
 # @vibe/wit_runtime is user-facing (#1324): docs/effect-wit-mapping.md tells
 # users to import it for a WIT-facing fallible export, so an installed
 # toolchain that lacks it makes documented code fail to resolve.
-[ -f "$VIBE_HOME/lib/@vibe/wit_runtime/index.vpkg" ] || { echo "FAIL: stdlib @vibe/wit_runtime not materialized" >&2; exit 1; }
+[ -f "$tc_a/lib/@vibe/wit_runtime/index.vpkg" ] || { echo "FAIL: stdlib @vibe/wit_runtime not materialized" >&2; exit 1; }
 # @vibe/builtin is user-facing (#1949): chapter-01's first import form is
 # `import @vibe/console { println }`. A fresh install must ship it.
-[ -f "$VIBE_HOME/lib/@vibe/builtin/index.vpkg" ] || { echo "FAIL: stdlib @vibe/builtin not materialized" >&2; exit 1; }
-echo "ok: install produced launcher + .cwasm + default toolchain + stdlib"
+[ -f "$tc_a/lib/@vibe/builtin/index.vpkg" ] || { echo "FAIL: stdlib @vibe/builtin not materialized" >&2; exit 1; }
+[ -f "$tc_a/manifest.json" ] || { echo "FAIL: manifest.json not written" >&2; exit 1; }
+echo "ok: install produced launcher + .cwasm + default toolchain + per-toolchain stdlib + manifest"
 pass=$((pass + 1))
 
 proj="$WORK/proj"
@@ -84,7 +87,8 @@ check "vibe run app (import)" "42" "$(run_number "$proj/app.vibex")"
 
 # #1949: chapter-01 prelude import must work from a temp project with only
 # the installed toolchain. cd so repo lib/ is not the workspace lib, and
-# drop an inherited VIBE_LIB so resolution is $VIBE_HOME/lib.
+# drop an inherited VIBE_LIB so resolution is the launcher's own default:
+# the toolchain's stdlib, then the shared $VIBE_HOME/lib (#2677).
 printf 'import @vibe/console {\n  println\n}\nfn main allows Console {\n  println("42")\n}\n' > "$proj/prelude_hello.vibex"
 (
   cd "$proj"
@@ -400,6 +404,86 @@ check "vibe new --name exit" "0" "$rc"
 check "vibe new --name writes the given package name" "yes" "$(grep -qx 'name = @acme/app' "$WORK/scaffold_named/index.vpkg" && echo yes || echo no)"
 "$VIBE" new --name bogus "$WORK/scaffold_bad" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe new --name refuses a name that is not @scope/name" "yes" "$([ "$rc" != 0 ] && [ ! -e "$WORK/scaffold_bad" ] && echo yes || echo no)"
+
+# Two toolchains in one home (#2677, docs/toolchain-layout.md section 2): each
+# carries its own stdlib and manifest, so installing a second one never
+# touches the first's. The second install root is a minimal copy of this
+# checkout whose @vibe/console gains one observable function; the runner and
+# the compiler wasm are reused from the first toolchain.
+check "manifest.json names the toolchain" "yes" "$(grep -q '"toolchain": "main"' "$tc_a/manifest.json" && echo yes || echo no)"
+manifest_version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' "$tc_a/manifest.json")"
+# Capture the whole output before looking at its first line: under pipefail a
+# `| head -n 1` closes the pipe while the launcher is still printing, and the
+# SIGPIPE it takes fails the pipeline even when the line matched.
+version_line="$("$VIBE" version 2>/dev/null | sed -n '1p')"
+check "vibe version reports the manifest's version and toolchain" "yes" "$([ -n "$manifest_version" ] && printf '%s\n' "$version_line" | grep -qF "vibe $manifest_version (toolchain main" && echo yes || echo no)"
+root2="$WORK/root2"
+mkdir -p "$root2/install" "$root2/bootstrap" "$root2/runtime" "$root2/scripts" "$root2/lib/@vibe"
+cp "$ROOT_DIR/install/install.sh" "$root2/install/"
+cp "$ROOT_DIR/bootstrap/seed.json" "$root2/bootstrap/"
+cp "$ROOT_DIR/runtime/vibe" "$root2/runtime/"
+cp "$ROOT_DIR/scripts/vibe_pkg.sh" "$ROOT_DIR/scripts/parallel_warm_pool.sh" "$root2/scripts/"
+for pkg in core ast parser builtin console wit_runtime; do
+  cp -R "$ROOT_DIR/lib/@vibe/$pkg" "$root2/lib/@vibe/$pkg"
+done
+printf '\nfn toolchain_probe() -> Int\n' >> "$root2/lib/@vibe/console/index.vpkg"
+printf 'export fn toolchain_probe() -> Int {\n  2\n}\n' > "$root2/lib/@vibe/console/toolchain_probe.vibe"
+bash "$root2/install/install.sh" --__vibe-install-root "$root2" --toolchain probe \
+  --runner "$tc_a/bin/viberun" --cli-wasm "$tc_a/lib/vibe-cli.wasm" --no-link --no-modify-path \
+  > "$WORK/install_probe.log" 2>&1 && rc=0 || rc=$?
+check "a second toolchain installs next to the first" "0" "$rc"
+check "the first toolchain's stdlib is untouched by the second install" "yes" \
+  "$([ ! -e "$tc_a/lib/@vibe/console/toolchain_probe.vibe" ] && ! grep -q toolchain_probe "$tc_a/lib/@vibe/console/index.vpkg" && echo yes || echo no)"
+check "the first toolchain stays the default" "main" "$(cat "$VIBE_HOME/toolchain")"
+printf 'import @vibe/console { toolchain_probe }\nfn main allows Stdout { Stdout::write_stream("\\{toolchain_probe()}\\n") }\n' > "$proj/probe.vibex"
+check "the default toolchain does not see the second's stdlib" "yes" "$( ( cd "$proj" && "$VIBE" run probe.vibex ) >/dev/null 2>&1 && echo no || echo yes)"
+check "VIBE_TOOLCHAIN=probe runs the second toolchain's stdlib" "2" "$( ( cd "$proj" && VIBE_TOOLCHAIN=probe "$VIBE" run probe.vibex 2>/dev/null ) | grep -oE '[0-9]+' | head -1)"
+check "the second toolchain runs the base stdlib too" "42" "$( ( cd "$proj" && VIBE_TOOLCHAIN=probe "$VIBE" run prelude_hello.vibex 2>/dev/null ) | grep -oE '[0-9]+' | head -1)"
+# vibe toolchain: list marks the default; default switches without a
+# reinstall; remove refuses the default and deletes another.
+list_out="$("$VIBE" toolchain list 2>/dev/null || true)"
+check "vibe toolchain list marks the default" "yes" "$(printf '%s\n' "$list_out" | grep -qE '^\* main[[:space:]]' && printf '%s\n' "$list_out" | grep -qE '^  probe[[:space:]]' && echo yes || echo no)"
+"$VIBE" toolchain default probe >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe toolchain default probe exit" "0" "$rc"
+check "the default file now names probe" "probe" "$(cat "$VIBE_HOME/toolchain")"
+check "after the switch, vibe run uses the second toolchain" "2" "$(run_number_in "$proj" probe.vibex)"
+version_line="$("$VIBE" version 2>/dev/null | sed -n '1p')"
+check "after the switch, vibe version reports probe" "yes" "$(printf '%s\n' "$version_line" | grep -qF '(toolchain probe' && echo yes || echo no)"
+"$VIBE" toolchain remove probe >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe toolchain remove refuses the default" "yes" "$([ "$rc" != 0 ] && [ -d "$VIBE_HOME/toolchains/probe" ] && echo yes || echo no)"
+"$VIBE" toolchain default main >/dev/null 2>&1 && rc=0 || rc=$?
+check "switching back restores the first toolchain" "yes" "$([ "$rc" = 0 ] && ! ( cd "$proj" && "$VIBE" run probe.vibex ) >/dev/null 2>&1 && echo yes || echo no)"
+"$VIBE" toolchain remove probe >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe toolchain remove deletes a non-default toolchain" "yes" "$([ "$rc" = 0 ] && [ ! -e "$VIBE_HOME/toolchains/probe" ] && echo yes || echo no)"
+"$VIBE" toolchain default nope >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe toolchain default refuses an uninstalled name" "yes" "$([ "$rc" != 0 ] && [ "$(cat "$VIBE_HOME/toolchain")" = main ] && echo yes || echo no)"
+
+# The pre-#755 flat layout is refused, by the launcher and by the installer,
+# with a message naming the installer.
+flat="$WORK/flat"
+mkdir -p "$flat/bin" "$flat/lib"
+cp "$tc_a/bin/vibe" "$flat/bin/vibe"
+cp "$tc_a/bin/viberun" "$flat/bin/viberun"
+cp "$tc_a/lib/vibe-cli.wasm" "$flat/lib/vibe-cli.wasm"
+( env -u VIBE_HOME "$flat/bin/vibe" version ) > "$WORK/flat.out" 2>&1 && rc=0 || rc=$?
+check "a flat-layout launcher is refused, naming the installer" "yes" "$([ "$rc" != 0 ] && grep -q 'install/install.sh' "$WORK/flat.out" && echo yes || echo no)"
+VIBE_HOME="$flat" bash "$ROOT_DIR/install/install.sh" --__vibe-install-root "$ROOT_DIR" \
+  --runner "$tc_a/bin/viberun" --cli-wasm "$tc_a/lib/vibe-cli.wasm" --no-stdlib --no-link --no-modify-path \
+  > "$WORK/flat_install.out" 2>&1 && rc=0 || rc=$?
+check "the installer refuses a flat-layout VIBE_HOME" "yes" "$([ "$rc" != 0 ] && grep -q 'flat' "$WORK/flat_install.out" && [ ! -e "$flat/toolchains" ] && echo yes || echo no)"
+
+# self uninstall: --purge on a copy of the home removes everything; the plain
+# form keeps the shared cache/, lib/ and log/. Last, since it removes the
+# toolchain the rest of this file runs.
+cp -R "$VIBE_HOME" "$WORK/home2"
+VIBE_HOME="$WORK/home2" "$WORK/home2/bin/vibe" self uninstall --purge >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe self uninstall --purge exit" "0" "$rc"
+check "vibe self uninstall --purge leaves nothing" "yes" "$([ ! -e "$WORK/home2/toolchains" ] && [ ! -e "$WORK/home2/bin" ] && [ ! -e "$WORK/home2/cache" ] && [ ! -e "$WORK/home2/lib" ] && echo yes || echo no)"
+mkdir -p "$VIBE_HOME/lib/@keep" "$VIBE_HOME/cache/pkg"
+"$VIBE" self uninstall >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe self uninstall exit" "0" "$rc"
+check "vibe self uninstall removes toolchains, bin, env and the default file" "yes" "$([ ! -e "$VIBE_HOME/toolchains" ] && [ ! -e "$VIBE_HOME/bin" ] && [ ! -e "$VIBE_HOME/env" ] && [ ! -e "$VIBE_HOME/toolchain" ] && echo yes || echo no)"
+check "vibe self uninstall keeps cache and lib" "yes" "$([ -d "$VIBE_HOME/cache" ] && [ -d "$VIBE_HOME/lib/@keep" ] && echo yes || echo no)"
 
 echo "[test] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

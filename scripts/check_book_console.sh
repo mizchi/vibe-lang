@@ -81,9 +81,10 @@ run_transcript() {
     # The launcher's pass-cache is PERSISTENT ($VIBE_HOME/cache/test, keyed
     # on the compiled wasm's sha256); a warm cache answers
     # `ok <file> (cached)`, which is not the transcript the book shows.
-    # Point the cache inside this gate's own scratch tree so every run is a
-    # first run.
-    VIBE_TEST_CACHE="$workdir/tcache" \
+    # Point VIBE_HOME (and so the cache) at this gate's own scratch tree so
+    # every run is a first run; VIBE_LIB keeps the checkout's stdlib
+    # resolvable, since a checkout launcher does not set it (#2677).
+    VIBE_HOME="$workdir/home" VIBE_LIB="$ROOT_DIR/lib" \
       VIBE_RUNNER="$SHIM" VIBE_CLI_WASM="$STAGE2" VIBE_TEST_CLI_WASM="$STAGE2" \
       bash "$ROOT_DIR/runtime/vibe" test demo_test.vibe >transcript.actual 2>&1
   ) || rc=$?
