@@ -302,14 +302,29 @@ Only the counters distinguish the two directions, which is why
 context is what a real compile exposes.** The closure is a deliberate
 under-approximation, because the header scan returns a module's deps and its
 export *names* with no record of which deps a dep re-exports. So a type that
-reaches a module through `export ./b.vibe { Box }` is named there and its
-declaration is not in the context, and the comparison reports a difference with
-every edge resolved. That is the safe direction — an under-approximation can
-manufacture a difference but never hide one — and it is a *property*, not a
-hazard to remember: `prelude_module_oracle_test.vibe` uses exactly that
-re-export chain to make a module defer on demand, which is what the deferral
-fixture needs and what an `opaque` contract declaration does on the real
-closure.
+reaches a module through `export ./b.vibe { Box }` is named in that module with
+its declaration absent from the context, and the split lane takes a different
+path than an exact context would. `prelude_module_oracle_test.vibe` uses exactly
+that chain to make a module defer on demand, which is also what an `opaque`
+contract declaration does on the real closure.
+
+**The under-approximation is not one-sided, and this matters more than it
+sounds.** The older framing — "an under-approximation can only manufacture a
+difference, never hide one" — was true while a module that could not build a
+helper produced a `missing` row. It stopped being true when the link learned to
+MINT (#2634): a module that cannot see enough now **defers**, and
+`eq_mint_deferred_into` builds the helper against the concatenated program,
+which is the whole program. A module that under an exact context would have
+synthesized a *differing* helper can therefore defer instead and receive the
+whole-program one, and the comparison goes green over a difference that a real
+per-module compile would have had.
+
+So `missing=0 content=0` supports **"the linked program equals the
+whole-program one"** — which is the question a per-module driver actually has —
+and NOT "every module synthesized faithfully". `SYNTH deferred= minted=` is what
+separates them: it counts how much of the green is the link's work rather than
+the modules'. Read them together or the headline number claims more than it
+shows.
 
 ### How the comparator family closed (#2634) — 9 rows, now zero
 
