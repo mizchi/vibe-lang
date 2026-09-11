@@ -86,7 +86,11 @@ read, and every feature below is one the compiler itself depends on.
   rest of the 26 `@vibe/*` and 18 `@vibex/*` packages in the tree are the
   compiler's own dependencies, not part of the install.
 - `install/install.sh` is the curl entry point and is smoke-tested on multiple
-  operating systems by the `cli-install` workflow.
+  operating systems by the `cli-install` workflow. A release installs with
+  bash, curl and tar only (`--version X.Y.Z`, and `vibe self update` from an
+  installed toolchain: prebuilt runners ship per target, every asset is
+  verified against the release manifest before it is moved into place,
+  #2678); only an install from a checkout needs git, cargo and Node.js.
 
 ## Tooling
 
