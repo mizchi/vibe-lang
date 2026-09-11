@@ -244,9 +244,18 @@ byte sequence for the empty module (header + `array_count varint(0)`).
 `TypeExpr`: canonical bytes for each of the five tags, roundtrips
 through nesting, and the unknown-tag / truncated-input rejections.
 
-The `Pat` / `Expr` / `Stmt` encoders are not written yet; `Pat` and
-`Expr` additionally wait on the `f64` read primitive (#2651). Coverage
-for them lands with them.
+`lib/@vibe/compiler/tests/ast_binary_pat_test.vibe` covers `Pat`: every
+variant, `PFloat` across both signs and out to 1e300, nesting through
+all four recursive slots, and the unknown-tag / malformed-input
+rejections.
+
+The `Expr` and `Stmt` encoders are not written yet. Coverage for them
+lands with them.
+
+`f64` needed `Double::from_i64_bits_lohi` (#2651) before `Pat` could be
+written at all: writing the pattern was always exact, and reading it
+back through the single-`Int` `Double::from_i64_bits` could not express
+a negative double.
 
 Whenever a new variant is added:
 

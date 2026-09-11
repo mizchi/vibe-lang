@@ -6,8 +6,8 @@
 //# string, bool, span, magic header), a cursor over `Bytes` for reads,
 //# and the AST-level codecs built on them.
 //#
-//# Status: primitives complete + round-trip tested; `TypeExpr` complete
-//# + round-trip tested. `Pat` / `Expr` / `Stmt` are not written yet.
+//# Status: primitives complete + round-trip tested; `TypeExpr` and `Pat`
+//# complete + round-trip tested. `Expr` / `Stmt` are not written yet.
 //#
 //# The blocker recorded here before #2510 was that the spec still
 //# described the RETIRED MoonBit host's AST: its tag tables named
@@ -20,16 +20,15 @@
 //# (The count recorded one commit earlier said 27 statements; the
 //# enum has 26.)
 //#
-//# What `Pat` and `Expr` still wait on is the f64 READ primitive
-//# (#2651). `EFloat` / `PFloat` carry a `Double`; writing one exactly
-//# needs `Double::to_i64_bits_lo` / `_hi`, which exist, and reading it
-//# back needs a `lohi` counterpart, which does not — the single-`Int`
+//# `PFloat` and `EFloat` carry a `Double`, which needed a read primitive
+//# that did not exist until #2651: writing the pattern exactly works
+//# via `Double::to_i64_bits_lo` / `_hi`, but the single-`Int`
 //# `Double::from_i64_bits` cannot carry a 64-bit pattern through a
-//# 63-bit `Int`, so every negative double is out of its reach.
-//# `Double::to_string` + `Double::parse` is not a substitute: measured
-//# 2026-09-11, it drops a digit on 2.2250738585072014 and answers 0
-//# for 1e300 and 1e-300 (#2652). `TypeExpr` contains no `Double` at all, which
-//# is why it is the piece that lands first.
+//# 63-bit `Int`, so every negative double was out of its reach.
+//# `Double::from_i64_bits_lohi` is the counterpart, and `f64` on the
+//# wire is the same lo/hi pair. `Double::to_string` + `Double::parse`
+//# is not a substitute: measured, it drops a digit on
+//# 2.2250738585072014 and answers 0 for 1e300 and 1e-300 (#2652).
 //#
 //# This matters for #2510: the spec names this format as the source of
 //# truth for the on-disk per-file AST cache
@@ -39,7 +38,7 @@
 //# Imports
 
 import @vibe/ast {
-  TypeExpr
+  Pat, TypeExpr
 }
 
 //# Constants ===
@@ -566,6 +565,194 @@ export fn ast_binary_read_type_expr_array(r: AstBinaryReader) -> Array[TypeExpr]
   let mut i = 0
   while i < count {
     Array::push(out, ast_binary_read_type_expr(r))
+    i = i + 1
+  }
+  out
+}
+
+//# f64 ===
+//#
+//# The IEEE-754 binary64 pattern as two UNSIGNED 32-bit halves, low
+//# first. Not one varint: an `Int` is 63-bit, so the whole pattern does
+//# not fit in one (ADR-0055 Blocker-2) and every negative double would
+//# be unrepresentable. Each half fits comfortably.
+
+export fn ast_binary_write_f64(buf: Bytes, d: Double) -> Unit {
+  ast_binary_write_varint(buf, Double::to_i64_bits_lo(d))
+  ast_binary_write_varint(buf, Double::to_i64_bits_hi(d))
+}
+
+export fn ast_binary_read_f64_checked(r: AstBinaryReader) -> Double with Exception {
+  let lo = ast_binary_read_varint_checked(r)
+  let hi = ast_binary_read_varint_checked(r)
+  Double::from_i64_bits_lohi(lo, hi)
+}
+
+//# sleb128, reporting the malformed cases. Same shape and same reasons
+//# as `ast_binary_read_varint_checked`.
+export fn ast_binary_read_svarint_checked(r: AstBinaryReader) -> Int with Exception {
+  let mut result = 0
+  let mut shift = 0
+  let mut last_byte = 0
+  let mut more = true
+  while more {
+    if shift >= 64 {
+      throw("ast_binary: svarint exceeds 64 bits")
+    }
+    let b = ast_binary_read_byte_checked(r)
+    last_byte = b
+    result = result|((b&127)<<shift)
+    shift = shift + 7
+    if (b&128) == 0 {
+      more = false
+    } else {
+      ()
+    }
+  }
+  if shift < 64 && (last_byte&64) != 0 {
+    result|((0 - 1)<<shift)
+  } else {
+    result
+  }
+}
+
+export fn ast_binary_read_bool_checked(r: AstBinaryReader) -> Bool with Exception {
+  let b = ast_binary_read_byte_checked(r)
+  if b == 0 {
+    false
+  } else if b == 1 {
+    true
+  } else {
+    throw("ast_binary: bool byte is neither 0x00 nor 0x01")
+  }
+}
+
+//# Pat ===
+//#
+//# Declaration order of `Pat` in lib/@vibe/ast/index.vpkg, per
+//# docs/ast_binary_abi.md, and FROZEN the same way TypeExpr's are.
+
+export let AST_BINARY_TAG_P_WILD: Int = 1
+export let AST_BINARY_TAG_P_BIND: Int = 2
+export let AST_BINARY_TAG_P_INT: Int = 3
+export let AST_BINARY_TAG_P_FLOAT: Int = 4
+export let AST_BINARY_TAG_P_STRING: Int = 5
+export let AST_BINARY_TAG_P_BOOL: Int = 6
+export let AST_BINARY_TAG_P_CTOR: Int = 7
+export let AST_BINARY_TAG_P_TUPLE: Int = 8
+export let AST_BINARY_TAG_P_OR: Int = 9
+export let AST_BINARY_TAG_P_STRUCT: Int = 10
+
+export fn ast_binary_write_pat(buf: Bytes, p: Pat) -> Unit {
+  match p {
+    PWild => Bytes::push(buf, AST_BINARY_TAG_P_WILD)
+    PBind(name) => {
+      Bytes::push(buf, AST_BINARY_TAG_P_BIND)
+      ast_binary_write_string(buf, name)
+    }
+    PInt(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_P_INT)
+      ast_binary_write_svarint(buf, v)
+    }
+    PFloat(d) => {
+      Bytes::push(buf, AST_BINARY_TAG_P_FLOAT)
+      ast_binary_write_f64(buf, d)
+    }
+    PString(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_P_STRING)
+      ast_binary_write_string(buf, v)
+    }
+    PBool(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_P_BOOL)
+      ast_binary_write_bool(buf, v)
+    }
+    PCtor(name, args) => {
+      Bytes::push(buf, AST_BINARY_TAG_P_CTOR)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_pat_array(buf, args)
+    }
+    PTuple(items) => {
+      Bytes::push(buf, AST_BINARY_TAG_P_TUPLE)
+      ast_binary_write_pat_array(buf, items)
+    }
+    POr(l, r) => {
+      Bytes::push(buf, AST_BINARY_TAG_P_OR)
+      ast_binary_write_pat(buf, l)
+      ast_binary_write_pat(buf, r)
+    }
+    PStruct(name, fields) => {
+      Bytes::push(buf, AST_BINARY_TAG_P_STRUCT)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_varint(buf, Array::length(fields))
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fpat) = Array::get(fields, i)
+        ast_binary_write_string(buf, fname)
+        ast_binary_write_pat(buf, fpat)
+        i = i + 1
+      }
+    }
+  }
+}
+
+export fn ast_binary_write_pat_array(buf: Bytes, items: Array[Pat]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    ast_binary_write_pat(buf, Array::get(items, i))
+    i = i + 1
+  }
+}
+
+//# Fields bound in wire order before construction, for the reason
+//# `ast_binary_read_type_expr` gives.
+export fn ast_binary_read_pat(r: AstBinaryReader) -> Pat with Exception {
+  let tag = ast_binary_read_byte_checked(r)
+  if tag == AST_BINARY_TAG_P_WILD {
+    PWild
+  } else if tag == AST_BINARY_TAG_P_BIND {
+    PBind(ast_binary_read_string_checked(r))
+  } else if tag == AST_BINARY_TAG_P_INT {
+    PInt(ast_binary_read_svarint_checked(r))
+  } else if tag == AST_BINARY_TAG_P_FLOAT {
+    PFloat(ast_binary_read_f64_checked(r))
+  } else if tag == AST_BINARY_TAG_P_STRING {
+    PString(ast_binary_read_string_checked(r))
+  } else if tag == AST_BINARY_TAG_P_BOOL {
+    PBool(ast_binary_read_bool_checked(r))
+  } else if tag == AST_BINARY_TAG_P_CTOR {
+    let name = ast_binary_read_string_checked(r)
+    let args = ast_binary_read_pat_array(r)
+    PCtor(name, args)
+  } else if tag == AST_BINARY_TAG_P_TUPLE {
+    PTuple(ast_binary_read_pat_array(r))
+  } else if tag == AST_BINARY_TAG_P_OR {
+    let l = ast_binary_read_pat(r)
+    let rp = ast_binary_read_pat(r)
+    POr(l, rp)
+  } else if tag == AST_BINARY_TAG_P_STRUCT {
+    let name = ast_binary_read_string_checked(r)
+    let count = ast_binary_read_count_checked(r)
+    let fields: Array[(String, Pat)] = []
+    let mut i = 0
+    while i < count {
+      let fname = ast_binary_read_string_checked(r)
+      let fpat = ast_binary_read_pat(r)
+      Array::push(fields, (fname, fpat))
+      i = i + 1
+    }
+    PStruct(name, fields)
+  } else {
+    throw("ast_binary: unknown Pat tag " + Int::to_string(tag))
+  }
+}
+
+export fn ast_binary_read_pat_array(r: AstBinaryReader) -> Array[Pat] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[Pat] = []
+  let mut i = 0
+  while i < count {
+    Array::push(out, ast_binary_read_pat(r))
     i = i + 1
   }
   out

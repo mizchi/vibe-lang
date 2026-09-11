@@ -1,0 +1,132 @@
+//# Imports
+
+import ../ast_binary.vibe {
+  ast_binary_read_pat, ast_binary_reader_new, ast_binary_reader_remaining, ast_binary_write_pat
+}
+
+import @vibe/ast {
+  Pat
+}
+
+//# Functions
+
+fn enc(p: Pat) -> Bytes {
+  let b = Bytes::new()
+  ast_binary_write_pat(b, p)
+  b
+}
+
+fn bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  if Bytes::length(a) != Bytes::length(b) {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while ok && i < Bytes::length(a) {
+      ok = Bytes::get(a, i) == Bytes::get(b, i)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+/// Decode, re-encode, compare. Re-encoding is the assertion that carries
+/// weight: it proves the decoder rebuilt a tree the WRITER agrees with, field
+/// for field, without this test spelling out every nested shape by hand.
+fn roundtrips(p: Pat) -> Bool {
+  let written = enc(p)
+  handle {
+    let r = ast_binary_reader_new(written)
+    let back = ast_binary_read_pat(r)
+    bytes_eq(written, enc(back)) && ast_binary_reader_remaining(r) == 0
+  } with { Exception::Throw(_) => false }
+}
+
+fn decode_outcome(raw: Array[Int]) -> String {
+  handle {
+    let r = ast_binary_reader_new(Bytes::from_array(raw))
+    let p = ast_binary_read_pat(r)
+    match p {
+      PWild => "ok"
+      _ => "ok"
+    }
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn pow10(n: Int) -> Double {
+  let mut acc = 1.0
+  let mut i = 0
+  while i < n {
+    acc = acc * 10.0
+    i = i + 1
+  }
+  acc
+}
+
+//# Misc — Pat codec (docs/ast_binary_abi.md)
+
+test "ast_binary Pat: every variant roundtrips" {
+  assert(roundtrips(PWild))
+  assert(roundtrips(PBind("x")))
+  assert(roundtrips(PInt(0)))
+  assert(roundtrips(PInt(0 - 1)))
+  assert(roundtrips(PInt(4611686018427387903)))
+  assert(roundtrips(PString("")))
+  assert(roundtrips(PString("hello")))
+  assert(roundtrips(PBool(true)))
+  assert(roundtrips(PBool(false)))
+  assert(roundtrips(PCtor("Some", [PBind("v")])))
+  assert(roundtrips(PCtor("None", [])))
+  assert(roundtrips(PTuple([])))
+  assert(roundtrips(PTuple([PWild, PInt(1)])))
+  assert(roundtrips(POr(PInt(1), PInt(2))))
+  assert(roundtrips(PStruct("Pt", [("x", PInt(1)), ("y", PWild)])))
+  assert(roundtrips(PStruct("Empty", [])))
+}
+
+test "ast_binary Pat: PFloat carries the exact bit pattern, sign included" {
+  // The reason #2651 had to land before this file could exist: every one of
+  // these except the first is unreachable through `Double::from_i64_bits`,
+  // whose single `Int` cannot hold a 64-bit pattern.
+  assert(roundtrips(PFloat(0.0)))
+  assert(roundtrips(PFloat(1.5)))
+  assert(roundtrips(PFloat(0.0 - 1.5)))
+  assert(roundtrips(PFloat(0.1)))
+  assert(roundtrips(PFloat(0.0 - 0.1)))
+  assert(roundtrips(PFloat(3.141592653589793)))
+  assert(roundtrips(PFloat(2.2250738585072014)))
+  assert(roundtrips(PFloat(pow10(300))))
+  assert(roundtrips(PFloat(0.0 - pow10(300))))
+}
+
+test "ast_binary Pat: nesting roundtrips through every recursive slot" {
+  // PCtor args, PTuple items, POr both sides, PStruct field patterns -- each
+  // recursion point carries a different nested shape, so a reader that dropped
+  // one cannot pass by getting the others right.
+  let deep = PStruct("Outer", [
+    ("a", PCtor("Wrap", [PTuple([PInt(1), POr(PWild, PBind("b"))])])),
+    ("c", POr(PStruct("Inner", [("d", PFloat(0.0 - 2.5))]), PString("s")))
+  ])
+  assert(roundtrips(deep))
+}
+
+test "ast_binary Pat: an unknown tag is refused, not misread" {
+  assert(decode_outcome([1]) == "ok")
+  assert(decode_outcome([0]) == "ast_binary: unknown Pat tag 0")
+  assert(decode_outcome([11]) == "ast_binary: unknown Pat tag 11")
+  assert(decode_outcome([255]) == "ast_binary: unknown Pat tag 255")
+}
+
+test "ast_binary Pat: malformed input is refused, not answered" {
+  // No bytes at all.
+  assert(decode_outcome([]) == "ast_binary: unexpected end of input")
+  // PBool whose byte is neither 0 nor 1.
+  assert(decode_outcome([6, 2]) == "ast_binary: bool byte is neither 0x00 nor 0x01")
+  assert(decode_outcome([6, 1]) == "ok")
+  // PFloat with only one of its two halves.
+  assert(decode_outcome([4, 0]) == "ast_binary: unexpected end of input")
+  // PCtor whose element count exceeds the bytes left to hold it.
+  assert(decode_outcome([7, 1, 97, 5, 1]) == "ast_binary: array count exceeds remaining input")
+  // PStruct field count likewise.
+  assert(decode_outcome([10, 1, 97, 9, 1]) == "ast_binary: array count exceeds remaining input")
+}
