@@ -1,0 +1,66 @@
+name: Use compiler build
+description: >
+  Restore the stage2 wasm and the five generated compiler artifacts that the
+  compiler-build job produced once for this run, instead of rebuilding them.
+
+inputs:
+  stage2-dest:
+    description: >
+      Extra directory to copy stage2.wasm into, for jobs that address it by
+      their own path. Empty = leave it only at _build/_ci_shard_gen/stage2.wasm.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # The artifact carries workspace-relative paths (_build/_ci_shard_gen/... and
+    # lib/@vibe/compiler/...), so it unpacks onto the checkout in place.
+    - name: Download the compiler built by compiler-build
+      uses: actions/download-artifact@v4
+      with:
+        name: compiler-build
+        path: .
+
+    - name: Assert the compiler build is present and current
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Consumers read generations.sh's SIDE PRODUCTS by position, not just
+        # the wasm: experimental_typing_env_reuse_oracle.mjs opens
+        # `dirname(stage2)/cli_adapter_module_source.vibe`. Assert them here so
+        # a narrowed upload fails at the download, named, instead of three
+        # minutes later as an ENOENT inside an oracle (run 34577224982).
+        for f in _build/_ci_shard_gen/stage2.wasm \
+                 _build/_ci_shard_gen/cli_adapter_module_source.vibe \
+                 _build/_ci_shard_gen/generation.json; do
+          if [ ! -s "$f" ]; then
+            echo "::error::compiler-build did not deliver $f -- it must upload the whole _build/_ci_shard_gen directory" >&2
+            exit 1
+          fi
+        done
+        # The assertion is on the OUTCOME, not on the files existing. If
+        # ensure_generated regenerates here, the download bought nothing and
+        # this job silently pays ~100s of flatten -- the exact shape of waste
+        # this job layout exists to remove, so it is an error rather than a
+        # slow success. The artifacts are a pure function of (seed, compiler
+        # source) and both jobs read the same commit, so "stale" means the
+        # producer and this job disagree about one of them.
+        out="$(bash scripts/ensure_generated.sh 2>&1)"
+        printf '%s\n' "$out"
+        case "$out" in
+          *"up to date"*) ;;
+          *)
+            echo "stamp    = $(cat lib/@vibe/compiler/.generated.stamp 2>/dev/null || echo MISSING)"
+            echo "computed = $(bash scripts/ensure_generated.sh --print-fingerprint 2>/dev/null || echo FAILED)"
+            echo "::error::compiler-build's generated artifacts are stale in this job -- it regenerated them instead of reusing them. The two lines above are the stamp compiler-build wrote and the fingerprint this job computes; they must agree. Check that compiler-build uploads .generated.stamp (include-hidden-files: true) and that both jobs restore the same seed." >&2
+            exit 1
+            ;;
+        esac
+
+    - name: Place stage2 where this job addresses it
+      if: inputs.stage2-dest != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "${{ inputs.stage2-dest }}"
+        cp _build/_ci_shard_gen/stage2.wasm "${{ inputs.stage2-dest }}/stage2.wasm"

@@ -106,4 +106,5 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
 run_exec || { cat "$WORK/out" >&2; fail "a PASSING companion was rejected"; }
 echo "  ok  a passing companion is accepted"
 
+
 echo "[gate-self-tests-test] ok"

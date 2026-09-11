@@ -140,6 +140,22 @@ EOF
 # exact shape ("the check credited a proxy for the property") that this gate
 # was written to stop (#2248 review). Discovery is by glob, so a future
 # companion is run without anyone remembering to add it to a list.
+# SERIAL, AND IT HAS TO BE. The companions look embarrassingly parallel -- one
+# `bash` per file -- and running them over `xargs -P 4` did cut this from 159s
+# to about 80s of the late lane. It was also wrong: they SHARE THE WORKING
+# TREE. check_portable_boundary_test.sh mutates tracked files under
+# lib/@vibe/compiler/entry/source_compile/ and restores them with `git
+# checkout` between cases, and it refuses to run at all against a dirty tree.
+# Concurrently with check_compile_only_lanes_test.sh -- which reaches
+# ensure_generated.sh, and so reads the whole live lib/ tree -- that produced
+#   generate_bundle: seed could not flatten the live tree
+#   wasi_only/index.vpkg: contract violation: exported 'probe_raw' is not declared
+# on run 34577224982 and the same failure naming 'probe_tab' on 34578340183:
+# different probe names, because the interleaving differs. A gate whose answer
+# depends on the interleaving is not a gate.
+#
+# Whoever tries this again needs more than a faster loop: the companions would
+# each need their own tree, and then they would no longer be testing this one.
 failed_tests=""
 repaired=""
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
