@@ -12,7 +12,8 @@ const hashes = {
   bench_sha256: "bench",
 };
 
-// The report renders ONE representative row per size tier (大/中/小) plus
+// The report renders ONE representative row per size tier (Large/Medium/Small)
+// plus
 // coverage. These are the names it renders; a fixture that wants a row to
 // appear has to use them.
 const REP = {
@@ -86,10 +87,10 @@ test("advisory wall-time and calibration data are never rendered", () => {
 
 test("the three tiers render one representative row each, with a per-cell delta", () => {
   const report = render(flatSnapshot("current"), flatSnapshot("baseline"));
-  assert.match(report, /#### 大 — the compiler itself/);
-  assert.match(report, /#### 中 — a real program/);
-  assert.match(report, /#### 小 — micro/);
-  // 大: memory / code / bench, each carrying its OWN delta. A single trailing
+  assert.match(report, /#### Large — the compiler itself/);
+  assert.match(report, /#### Medium — a real program/);
+  assert.match(report, /#### Small — micro/);
+  // Large: memory / code / bench, each carrying its OWN delta. A single trailing
   // Δ column could not say which of the three moved.
   assert.match(report, /\| selfcompile \| 1000 B \(±0\) \| 2\.00 KiB \(±0\) \| 6\.84 KiB \(±0\) \|/);
   assert.match(report, /\| fib \| 648 B \(±0\) \| 0 B \(±0\) \|/);
@@ -208,7 +209,7 @@ const okScenario = {
 };
 const execOf = (scen) => ({ status: "ok", wasmtime: "47.0.2", scenarios: scen });
 
-test("the 中 row reads the representative scenario, and the output check survives the cut", () => {
+test("the Medium row reads the representative scenario, and the output check survives the cut", () => {
   const cur = flatSnapshot("current");
   const base = flatSnapshot("baseline");
   cur.exec = execOf({ [REP.medium]: okScenario, other: okScenario });
@@ -263,7 +264,7 @@ test("coverage leads the report, renders as main's, and degrades when absent", (
     const withCov = run([curP, join(dir, "missing.json"), covP]);
     assert.match(withCov, /#### Coverage \(selfhost suite — measured on main, not this PR\)/);
     // Coverage comes before the tiers.
-    assert.ok(withCov.indexOf("#### Coverage") < withCov.indexOf("#### 大"));
+    assert.ok(withCov.indexOf("#### Coverage") < withCov.indexOf("#### Large"));
     assert.match(withCov, /\| branch union \| 26,442 \| 45,986 \| 57\.50% \| \+0\.43pt 🎉 \|/);
     assert.match(withCov, /\| function union \| 12,950 \| 14,995 \| 86\.36% \| ±0 \|/);
     assert.match(withCov, /cases 582\/582 \(100%\) · measured at `covsha123` \(2026-08-15\)/);

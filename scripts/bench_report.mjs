@@ -3,8 +3,8 @@
 //
 //   node scripts/bench_report.mjs current.json [baseline.json] [coverage.json]
 //
-// FOUR sections, in this order: coverage, then one per SIZE TIER -- 大 the
-// compiler itself, 中 a real program, 小 a micro case -- with the axes
+// FOUR sections, in this order: coverage, then one per SIZE TIER -- Large the
+// compiler itself, Medium a real program, Small a micro case -- with the axes
 // (memory, code size, benchmark) as columns. One representative row per tier.
 //
 // The shape is deliberate. The report used to render every tracked series:
@@ -59,10 +59,10 @@ const cov = readJsonMaybe(covPath);
 // of these is a deliberate edit, and the drift line below still covers
 // everything that is not named here.
 //
-//   大  the compiler compiling itself -- the only workload at this scale
-//   中  expr_eval: the corpus's heaviest by fuel (~2.5x the next), an
-//       evaluator loop, so the most sensitive to a codegen regression
-//   小  fib / fib30: the smallest thing that still allocates nothing
+//   Large   the compiler compiling itself -- the only workload at this scale
+//   Medium  expr_eval: the corpus's heaviest by fuel (~2.5x the next), an
+//           evaluator loop, so the most sensitive to a codegen regression
+//   Small   fib / fib30: the smallest thing that still allocates nothing
 const REPRESENTATIVE = {
   largeBench: "parser_bench.vibe::parse_checker_vibe",
   medium: "expr_eval",
@@ -168,8 +168,8 @@ const wasmtimeChanged = !!(execBase?.scenarios && execCur?.wasmtime && execBase.
 const rendered = new Set();
 const show = (key) => { rendered.add(key); return true; };
 
-// --- 大: the compiler itself -------------------------------------------------
-lines.push("#### 大 — the compiler itself");
+// --- Large: the compiler itself -------------------------------------------------
+lines.push("#### Large — the compiler itself");
 lines.push("");
 lines.push("| subject | memory | code | bench (B/op) |");
 lines.push("|---|---:|---:|---:|");
@@ -181,11 +181,11 @@ lines.push(`| selfcompile | ${cell(fmtBytes, cur.selfcompile?.heap_ptr_bytes, ba
   `${cell(fmtBytes, cur.benches?.[REPRESENTATIVE.largeBench]?.bytes_per_op, base?.benches?.[REPRESENTATIVE.largeBench]?.bytes_per_op)} |`);
 lines.push("");
 
-// --- 中: a real program ------------------------------------------------------
+// --- Medium: a real program ------------------------------------------------------
 const medName = REPRESENTATIVE.medium;
 const medCur = execCur?.scenarios?.[medName];
 const medBase = execBase?.scenarios?.[medName];
-lines.push(`#### 中 — a real program (\`${medName}\`, bench/exec)`);
+lines.push(`#### Medium — a real program (\`${medName}\`, bench/exec)`);
 lines.push("");
 lines.push("| scenario | heap | code | fuel |");
 lines.push("|---|---:|---:|---:|");
@@ -197,8 +197,8 @@ lines.push(`| ${medName} | ${cell(fmtBytes, medCur?.linear?.heap_bytes, medBase?
   `${cell(fmtCount, medCur?.linear?.fuel, medBase?.linear?.fuel, !wasmtimeChanged)} |`);
 lines.push("");
 
-// --- 小: micro ---------------------------------------------------------------
-lines.push("#### 小 — micro");
+// --- Small: micro ---------------------------------------------------------------
+lines.push("#### Small — micro");
 lines.push("");
 lines.push("| case | code | B/op |");
 lines.push("|---|---:|---:|");

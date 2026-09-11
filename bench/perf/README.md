@@ -123,15 +123,15 @@ The `perf-metrics` job in `.github/workflows/ci.yml` runs on every PR and every 
   for human and LLM readers alike (the #1207/#1867 reports are the record).
   The readings stay in the `bench-data` snapshots for offline analysis.
 
-  **Four sections: coverage, then one per SIZE TIER** — 大 the compiler
-  itself, 中 a real program, 小 a micro case — with the axes (memory, code
+  **Four sections: coverage, then one per SIZE TIER** — Large the compiler
+  itself, Medium a real program, Small a micro case — with the axes (memory, code
   size, benchmark) as columns and **one representative row per tier**:
 
   | tier | memory | code | benchmark |
   |---|---|---|---|
-  | 大 | selfcompile `heap_ptr_bytes` | `stage2.wasm` | B/op `parse_checker_vibe` |
-  | 中 | `expr_eval` heap | `expr_eval` wasm | `expr_eval` fuel |
-  | 小 | — | `fib` wasm | B/op `fib30` |
+  | Large | selfcompile `heap_ptr_bytes` | `stage2.wasm` | B/op `parse_checker_vibe` |
+  | Medium | `expr_eval` heap | `expr_eval` wasm | `expr_eval` fuel |
+  | Small | — | `fib` wasm | B/op `fib30` |
 
   It used to render every tracked series instead: ~50 rows, of which ~48 read
   `±0` on an ordinary PR. A reader cannot find the row that moved in that, so
