@@ -101,8 +101,30 @@ fingerprint_inputs() {
     # generator produced -- the same stale-artifact failure this script exists to
     # remove, just relocated. This file counts as well: it decides what gets
     # hashed and how the artifacts are produced.
-    sha256sum "$SCRIPT_DIR/generate_bundle.sh" 2>/dev/null || echo "MISSING generate_bundle.sh"
-    sha256sum "${BASH_SOURCE[0]}" 2>/dev/null || echo "MISSING ensure_generated.sh"
+    #
+    # RECORDED UNDER A FIXED NAME, not under the path they were reached by.
+    # `sha256sum FILE` prints "<hash>  <FILE>", so these two lines used to put
+    # the CALLER'S SPELLING into the fingerprint: `bash scripts/ensure_generated.sh`
+    # and `bash "$ROOT_DIR/scripts/ensure_generated.sh"` (which
+    # build_compile_only.sh and build_cli_core.sh use) hashed identical bytes
+    # and produced different fingerprints. Measured on CI run 34590373673: the
+    # contracts and stage2-oracles jobs each restored the artifacts from
+    # compiler-build, passed the "up to date" assertion in use-compiler-build,
+    # and then regenerated all five anyway -- 128s and 131s, 187s of the
+    # contracts job's 202s -- with `.generated.inputs` showing one differing
+    # line whose hash was IDENTICAL on both sides and only the path spelling
+    # different. $SCRIPT_DIR is absolute, so that line also made the
+    # fingerprint depend on where the checkout lives; the CI cache key
+    # `gen-v1-${fp}` survived only because every runner uses the same path.
+    hash_as() {   # $1 = file to hash, $2 = the name to record it under
+      if [ -f "$1" ]; then
+        printf '%s  %s\n' "$(sha256sum <"$1" | cut -d' ' -f1)" "$2"
+      else
+        echo "MISSING $2"
+      fi
+    }
+    hash_as "$SCRIPT_DIR/generate_bundle.sh" scripts/generate_bundle.sh
+    hash_as "${BASH_SOURCE[0]}" scripts/ensure_generated.sh
     # Column 2 of the manifest is the path, relative to $COMPILER_DIR, with
     # ../../../ meaning repo root (see generate_bundle.sh).
     #
