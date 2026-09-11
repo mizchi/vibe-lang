@@ -4884,6 +4884,35 @@ fn stmt_type_rows(stmt: Stmt) -> (String, Array[String]) {
   (owner, out)
 }
 
+/// ADR-0088: the grade check over a statement list that is not the module
+/// loop's own -- a `module M { .. }` body. The parser refuses `module` blocks
+/// (#728), so this only reaches a synthesized tree, but the sibling
+/// collectors recurse and effect-row validity must not depend on where a
+/// declaration sits (Codex review on PR #2653). A binding contributes its
+/// own and nested rows, any other declaration its type rows.
+fn optional_grade_errors_in_stmts(stmts: Array[Stmt]) -> Array[EffectError] {
+  let errors = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SModule(_, _, body) => append_eff_errs(errors, optional_grade_errors_in_stmts(body)),
+      SLet(_, _, name, ty, body) => append_eff_errs(errors, optional_grade_errors(name, labels_union(fn_binding_effects(ty, body), nested_type_rows(ty, body)))),
+      SLetMut(name, ty, body) => append_eff_errs(errors, optional_grade_errors(name, labels_union(fn_binding_effects(ty, body), nested_type_rows(ty, body)))),
+      _ => {
+        let (owner, rows) = stmt_type_rows(stmt)
+        if String::length(owner) > 0 {
+          append_eff_errs(errors, optional_grade_errors(owner, rows))
+        } else {
+          ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  errors
+}
+
 /// ADR-0088: the labels of `labels` that carry the Optional grade on
 /// something that is not a host capability. Grades on `Exception`, `Async`
 /// and user effects are refused; the entry-admission and handler checks
@@ -5271,6 +5300,7 @@ export fn check_perform_effects_stmts_env(stmts: Array[Stmt], env: TypeEnv) -> A
     match stmt {
       SLet(_, _, name, ty, body) => append_eff_errs(errors, check_entry_declared_effects(name, ty, body)),
       SLetMut(name, ty, body) => append_eff_errs(errors, check_entry_declared_effects(name, ty, body)),
+      SModule(_, _, body) => append_eff_errs(errors, optional_grade_errors_in_stmts(body)),
       _ => {
         // ADR-0088: the grade check for the rows a non-binding declaration
         // writes (a type alias, struct fields, ..); a binding's rows are

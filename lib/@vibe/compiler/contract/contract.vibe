@@ -221,18 +221,25 @@ fn parse_opaque_type_params(tokens: Array[Token], pos: Int, name: String) -> (Ar
   }
 }
 
-/// ADR-0088: the index of an `allows` keyword at bracket depth 0 inside the
-/// signature `[start, end)`, or -1. The entry grant sits after the return
-/// type at depth 0; a parameter or a where-clause name spelled `allows` sits
-/// inside `(..)` / `{..}` and is not one. A declaration is a requirement the
-/// package publishes, so the keyword is refused here whatever the name
-/// (Codex review on PR #2653).
+/// ADR-0088: the index of the entry-grant keyword `allows` in the contract
+/// signature `[start, end)` (`start` is the function name), or -1. The clause
+/// can only follow the return type at bracket depth 0, so the name, the
+/// generic binder `[..]` and the parameter list `(..)` are skipped first:
+/// `allows` is contextual, not reserved, and `fn allows() -> Int` or a
+/// parameter named `allows` is an ordinary declaration. A row label or a
+/// return type spelled `allows` follows `with` / `+` / `->` and is not the
+/// clause either; a where-clause name sits inside `{..}`. A declaration is a
+/// requirement the package publishes, so the clause is refused here whatever
+/// the function's name (Codex review on PR #2653, two rounds).
 fn signature_allows_keyword_at(tokens: Array[Token], start: Int, end: Int) -> Int {
-  let mut i = start
+  let mut i = start + 1
   let mut depth = 0
+  let mut params_closed = false
+  let mut after_row_op = false
   let mut found = 0 - 1
   while i < end && found < 0 {
-    match Array::get(tokens, i) {
+    let tok = Array::get(tokens, i)
+    match tok {
       TLParen => {
         depth = depth + 1
       },
@@ -244,6 +251,11 @@ fn signature_allows_keyword_at(tokens: Array[Token], start: Int, end: Int) -> In
       },
       TRParen => {
         depth = depth - 1
+        if depth == 0 {
+          params_closed = true
+        } else {
+          ()
+        }
       },
       TRBracket => {
         depth = depth - 1
@@ -251,12 +263,18 @@ fn signature_allows_keyword_at(tokens: Array[Token], start: Int, end: Int) -> In
       TRBrace => {
         depth = depth - 1
       },
-      TIdent(kw) => if depth == 0 && kw == "allows" {
+      TIdent(kw) => if params_closed && depth == 0 && !after_row_op && kw == "allows" {
         found = i
       } else {
         ()
       },
       _ => ()
+    }
+    after_row_op = match tok {
+      TWith => true,
+      TPlus => true,
+      TThinArrow => true,
+      _ => false
     }
     i = i + 1
   }
