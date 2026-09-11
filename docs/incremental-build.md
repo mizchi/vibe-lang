@@ -296,9 +296,20 @@ difference that is not there.
   nothing private, no bodies.
 
 Only the counters distinguish the two directions, which is why
-`edges_unresolved` and `invisible_*` are reported rather than assumed:
-`edges_unresolved=0` says the closure the modules ran under is the whole
-closure, so a difference that survives it is the program's.
+`edges_unresolved` and `invisible_*` are reported rather than assumed.
+
+**`edges_unresolved=0` says no direct dependency edge was DROPPED — not that the
+context is what a real compile exposes.** The closure is a deliberate
+under-approximation, because the header scan returns a module's deps and its
+export *names* with no record of which deps a dep re-exports. So a type that
+reaches a module through `export ./b.vibe { Box }` is named there and its
+declaration is not in the context, and the comparison reports a difference with
+every edge resolved. That is the safe direction — an under-approximation can
+manufacture a difference but never hide one — and it is a *property*, not a
+hazard to remember: `prelude_module_oracle_test.vibe` uses exactly that
+re-export chain to make a module defer on demand, which is what the deferral
+fixture needs and what an `opaque` contract declaration does on the real
+closure.
 
 ### How the comparator family closed (#2634) — 9 rows, now zero
 
