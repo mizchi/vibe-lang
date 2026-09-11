@@ -625,6 +625,35 @@ export fn cc_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
   }
 }
 
+/// #2682: may a call to `f` return a value that ALIASES one of its
+/// arguments -- a borrowed view rather than a fresh owned value? The
+/// borrow-returning builtins (Array::get / Map::get / __index), the user fns
+/// that tail-reach one of them (borrow_ret_names), and the user fns the
+/// may-return-view analysis flagged (borrow_view_ret).
+fn cc_callee_may_return_view(f: String, ctx: CompileCtx) -> Bool {
+  is_borrow_ret_builtin(f) || bsearch_leftmost(ctx.borrow_ret_names, f) >= 0 || array_contains_str(ctx.borrow_view_ret, f)
+}
+
+/// #2682: does `e` produce a fresh OWNED heap value that no binding holds --
+/// a call whose callee cannot return a view (a user fn, a constructor, an
+/// owning builtin), or an array / tuple / record literal? A scalar, string
+/// or bump-allocated result is harmless to release (rc_drop ignores even
+/// values and fat pointers), so a call's return type need not be known. An
+/// ident is owned by its binding, a projection and a borrow-returning call
+/// are views, and everything else stays as it was (a leak at worst).
+fn cc_is_owned_temp(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    ECall(callee, _, _) => match callee {
+      EIdent(f, _) => !cc_callee_may_return_view(f, ctx),
+      _ => false
+    },
+    EArray(_) => true,
+    ETuple(_) => true,
+    ERecord(_, _, _) => true,
+    _ => false
+  }
+}
+
 /// Is `e` provably a scalar (Int/Bool) by structure alone — an int/bool literal,
 /// a bitwise/shift/comparison/logical binop, or a logical `!`? Conservative: no
 /// ident-slot/type lookup and no arith ops (+,-,*,/ can be Float). Used to route
@@ -2188,6 +2217,10 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
     let mut nl = next_local
     // Hoisted: one bsearch per CALL instead of one per argument.
     let cc_bmask = cc_borrow_mask(ctx, fname)
+    // #2682: the locals holding an OWNED temporary handed to a BORROWED
+    // position, released after the call (see cc_is_owned_temp).
+    let tmp_drops: Array[Int] = []
+    let callee_views = cc_callee_may_return_view(fname, ctx)
     let mut ci = 0
     while ci < Array::length(args) {
       let carg = Array::get(args, ci)
@@ -2222,6 +2255,23 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
       } else {
         ()
       }
+      // #2682: a borrowed position does not take ownership, so an owned
+      // temporary handed to it (`Array::length(build_arr(3))`,
+      // `Array::length(Array::map(xs, f))`) was dropped by nobody -- 84 B
+      // per call for a three-element array, its elements with it. Park the
+      // temporary and release it after the call. A callee that may return
+      // a view of its argument (a borrow-returning builtin such as
+      // Array::get, or a user fn in the borrow_ret / view_ret sets) keeps
+      // the old behaviour: its result aliases the temporary, so releasing
+      // it would be a use-after-free, and the leak is the safe side.
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && borrows_this && !callee_views && cc_is_owned_temp(carg, ctx) {
+        Array::push(local_names, "__argtmp")
+        emit_local_tee(buf, nl)
+        Array::push(tmp_drops, nl)
+        nl = nl + 1
+      } else {
+        ()
+      }
       ci = ci + 1
     }
     if needs_env {
@@ -2230,6 +2280,12 @@ fn cc_compile_resolved_call(buf: Bytes, fname: String, args: Array[Expr], local_
     emit_call(buf, fidx)
     if has_ret == 0 {
       emit_i64_const(buf, 0)
+    }
+    let mut ti = 0
+    while ti < Array::length(tmp_drops) {
+      emit_local_get(buf, Array::get(tmp_drops, ti))
+      emit_call(buf, ctx.rc_drop_func_idx)
+      ti = ti + 1
     }
     nl
   } else {
