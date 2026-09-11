@@ -4861,11 +4861,14 @@ fn edp_needing_names_tab(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExp
 /// #2386: the membership side of a name array, for a query that asks per
 /// call node rather than per name.
 fn edp_name_set(names: Array[String]) -> MutSet[String] {
-  // Pre-sized because the size is known. It is NOT where the cost is: measured
-  // on `selfcompile_kpi`, pre-sizing moved heap_ptr by 42 KB of the +1.68 MB
-  // these tables cost, so the growth reallocations were a guess and the
-  // entries themselves are the bill.
-  let s: MutSet[String] = MutSet::with_capacity(hash_string, eq_string, Array::length(names))
+  // Sized for the map's LOAD FACTOR, not for the entry count. `MutMap::set`
+  // rehashes to 2x when `(size + tombs + 1) * 10 > cap * 7`, so a capacity of
+  // exactly `n` still rebuilds the table at insertion `0.7n` and lands at
+  // `2n` slots -- which is why passing `n` measured the same as letting it
+  // grow from 16 (42 KB apart on `selfcompile_kpi`: 2700 + 5400 slots against
+  // 16 + 32 + ... + 4096). `ceil(10n/7)` is the smallest capacity at which the
+  // last insertion does not trip that test (Codex review on #2644).
+  let s: MutSet[String] = MutSet::with_capacity(hash_string, eq_string, Array::length(names) * 10 / 7 + 1)
   let mut i = 0
   while i < Array::length(names) {
     MutSet::add(s, Array::get(names, i))
