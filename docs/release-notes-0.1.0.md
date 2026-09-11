@@ -144,12 +144,6 @@ the edit that fixes them rather than an internal pass name.
 
 ## Known gaps
 
-- **The pinned seed must be published.** `bootstrap/seed.json` pins
-  `seed/entry-allows-2026-09-11` (#2654); its release is dispatched by hand
-  (`seed-release.yml`). Until it exists a cold checkout rebuilds the seed
-  from its source commit, which fetches `seed/cfg-spans-emission-2026-09-04`
-  and so needs that release published first (#2655). Publishing both closes
-  it.
 - **The Japanese book is a translation of all 20 chapters**, checked for
   identical program output by `pkf run check-tutorial-translation-parity`;
   English (`book/en/`) is canonical.
