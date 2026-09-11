@@ -153,4 +153,41 @@ for doc in $ROW_DOCS; do
   fi
 done
 
-echo "[install-hello-smoke] ok ($DOCS document one first program: $first_prog -- it compiles with no repo lib/ and prints what they claim; $row_first across $ROW_DOCS)"
+# 6. The launcher's `vibe new` scaffold is a first program too -- the one a
+# newcomer who never opens the docs gets -- and it is compiled by the toolchain
+# the launcher installs. It has lagged the surface syntax twice (#1429's braced
+# row, then #2654's entry keyword: every sweep keyed on file extensions and
+# runtime/vibe has none), each time surfacing only in the slow install smoke as
+# `vibe run scaffold` printing nothing. So it is scaffolded here, must name the
+# row the documents teach, and must compile and print what the documents claim.
+scaffold="$WORK/scaffold"
+if ! ( cd "$WORK" && bash "$ROOT_DIR/runtime/vibe" new "$scaffold" >/dev/null 2>&1 ) || [ ! -s "$scaffold/main.vibex" ]; then
+  echo "[install-hello-smoke] FAIL: \`runtime/vibe new\` produced no main.vibex" >&2
+  exit 1
+fi
+scaffold_row="$(grep -oE 'fn main allows [A-Za-z]+' "$scaffold/main.vibex" | head -1 || true)"
+if [ "$scaffold_row" != "$row_first" ]; then
+  echo "[install-hello-smoke] FAIL: the \`vibe new\` scaffold (runtime/vibe) does not teach the documented entry row." >&2
+  echo "  documents: $row_first" >&2
+  echo "  scaffold:  $(sed -n '1p' "$scaffold/main.vibex")" >&2
+  exit 1
+fi
+( cd "$scaffold" && \
+  VIBE_PREOPEN_DIR="$scaffold" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
+    --invoke cli_main "$compiler" "main.vibex" "main.wasm" "main" >/dev/null 2>&1 ) || true
+if [ ! -s "$scaffold/main.wasm" ]; then
+  echo "[install-hello-smoke] FAIL: the \`vibe new\` scaffold (runtime/vibe) does not compile" >&2
+  [ -s "$scaffold/main.wasm.diag" ] && sed 's/^/  /' "$scaffold/main.wasm.diag" >&2
+  exit 1
+fi
+scaffold_out="$(VIBE_PREOPEN_DIR="$scaffold" VIBE_RUNNER_EXIT_WITH_RESULT=1 \
+  bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke main "$scaffold/main.wasm" \
+  | tr -d '\r' | sed -n '1p')"
+scaffold_out="${scaffold_out%"${scaffold_out##*[![:space:]]}"}"
+if [ "$scaffold_out" != "$want" ]; then
+  echo "[install-hello-smoke] FAIL: the \`vibe new\` scaffold prints '$scaffold_out', the documents claim '$want'." >&2
+  exit 1
+fi
+
+echo "[install-hello-smoke] ok ($DOCS document one first program: $first_prog -- it compiles with no repo lib/ and prints what they claim; $row_first across $ROW_DOCS and the \`vibe new\` scaffold)"
