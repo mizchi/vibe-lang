@@ -79,6 +79,30 @@ for p in sorted(srcs):
     print(p)
 PY
 
+# THIS GATE IS NOT SELF-SUFFICIENT ON A COLD HEADER CACHE, and the workaround
+# lives in .github/workflows/ci.yml rather than here (#2645 follow-up).
+#
+# lib/@vibe/cli/dispatch.vibe has the largest import closure of the sources
+# below, and compiling it sits at the edge of what the compiler can do in one
+# wasm memory: on a cold checkout it traps with `RuntimeError: memory access
+# out of bounds` before producing a diagnostic. Reproduce by deleting
+# _build/vibe_selfhost_* and running this script -- exactly one source fails,
+# that one.
+#
+# Measured, so the next person does not repeat it:
+#   - the deps warm pass build_cli_core.sh uses (VIBE_DEPS=1, no codegen)
+#     populates the header cache (438 entries) and does NOT make it pass
+#   - VIBE_WASM_PRE_GROW_PAGES=65000 does not make it pass either
+#   - with both, it still failed from cold -- and the same compile then
+#     succeeded three times in a row a minute later with nothing changed
+#
+# So it is nondeterministic and memory-state dependent, which makes it a
+# COMPILER-side problem (the header retention stage2_oracles.sh describes for
+# the CLI core), not something this script can arrange around. Retrying here
+# would make the gate green by re-rolling, which is the one thing a gate must
+# not do. The workaround is ordering: ci.yml keeps this gate in the `core`
+# contract group, behind the gates whose compiles warm the cache.
+
 total=0
 skipped=0
 failed=0

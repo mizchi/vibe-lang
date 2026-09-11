@@ -108,7 +108,10 @@ fi
 # the `nix` binary itself; running `nix profile install` against it starts a
 # fresh manifest and would drop `nix` from PATH. A separate profile keeps both.
 NIX="$HOME/.nix-profile/bin/nix"
-PKF_VERSION="0.14.2"
+# Read from .github/pkfire-version so the hook, the composite action and the
+# pkspec workflow cannot drift apart -- they did: CI ran 0.16.0 while this said
+# 0.14.2 (#2645 follow-up). scripts/check_pkfire_pin.sh enforces the agreement.
+PKF_VERSION="$(tr -d '[:space:]' < "$PROJECT_DIR/.github/pkfire-version" 2>/dev/null || echo "0.14.2")"
 PKF_PROFILE="$HOME/.nix-profiles/pkfire"
 PKF_BIN="$PKF_PROFILE/bin/pkf"
 # Long-lived containers keep whatever the profile last held (the hook used to
