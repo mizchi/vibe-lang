@@ -429,8 +429,27 @@ bindings OUT of the threaded environment: they are a side lookup
 lambda's calls are collected only from the top-level statements whose
 free-variable list mentions it. Measured on the split CLI (RC output
 lane): the 045db6c compiler 21.6 s, the first cut a trap after 27 s, the
-fix 17.6 s. Pinned by `tests/lambda_param_consume_rc_test.vibe` (six
-shapes through bump / RC / RC-shadow).
+fix 17.6 s.
+
+The second lesson came from the gate's shadow fixture, which answered
+5,025,372,489 instead of 25,377,489 on the RC lane once top-level lambdas
+were classified: its `lookup(names, effs, name)` returned `Some` for a
+name it did not hold. The planner spelled a heap-classified parameter's
+annotation as the EMPTY TUPLE (`TyTuple([])`, a shape no source produces
+-- `()` parses to `TyUnit`), and `desugar_trait_dicts`, which runs AFTER
+`elaborate_heap_params`, seeded that as a composite eq shape for the
+parameter: `Array::get(names, i) == name` became
+`eq_for_typed(TyTuple([]))`, a trivially true tuple comparison. Annotate
+the parameters and the answer is right; local lambdas never reached
+`seed_var_types`, which is why the same marker had been harmless there.
+`linked_compile` read it too, as a tuple of arity 0 registered in
+`agg_local_slots`. The marker is a nominal now (`__rc_heap`): a name no
+type table knows is exactly what an unannotated parameter already is to
+those readers (`agg_info_of_type_name` answers 0), `type_expr_is_heap`
+recognises it, and `seed_var_types` skips it by name so no witness or
+comparator is ever looked up under it. Pinned by
+`tests/lambda_param_consume_rc_test.vibe` (seven shapes through bump / RC /
+RC-shadow, the `lookup` shape among them) and by the shadow fixture.
 
 **#2682 -- an owned temporary in a borrowed position.**
 `Array::length(build_arr(3))` handed a fresh array to a position that
@@ -471,9 +490,19 @@ result was the same. On the RC lane they are rc blocks now:
   loop-borrowed name) is retained as the array / tuple / record literals
   do.
 
-One rule that only shows on a recycled block: a `Map`'s index slot
-(vptr+4) must be zeroed at allocation, because rc_alloc hands back memory
-that still holds whatever the previous block wrote there. Pinned by
+Two rules only the measurement showed. A `Map`'s index slot (vptr+4) must
+be zeroed at allocation, because rc_alloc hands back memory that still
+holds whatever the previous block wrote there. And every Map builtin that
+reads or copies its map without releasing it has to be in
+`md_is_borrow_arg0_call`: `Map::delete`, `Map::values`, `Map::size` and the
+`Map::has` alias were not, so the planner handed them an OWNED reference
+that no lowering dropped -- invisible while maps were bump blocks, 48 B per
+iteration once they were rc blocks (`Map::keys` / `Map::get` / `Map::set`
+already were; `MapBuilder::freeze` stays an owning position, its lowering
+releases what it is handed). The same measurement found the map literal
+missing from `cc_is_owned_temp`: `Map::set(Map::new(), k, v)` hands a
+16-byte block to a borrowed position that nobody released (#2682's rule,
+now covering `EMap`). Pinned by
 `tests/map_builder_rc_test.vibe` (eight shapes -- a replaced value, a
 builder frozen twice, a builder grown past 8 entries with the frozen map
 indexed, a map in a struct captured by a closure, literals over views, a

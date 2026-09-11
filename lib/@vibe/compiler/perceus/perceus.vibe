@@ -1630,7 +1630,7 @@ export fn type_expr_is_heap(ot: Option[TypeExpr]) -> Bool {
         match t {
           TyTuple(_) => true,
           TyApp(_, _) => true,
-          TyName(n) => type_name_is_heap(n),
+          TyName(n) => n == inferred_heap_marker_name() || type_name_is_heap(n),
           TyFn(_, _, _) => false,
           TyUnit => false
         }
@@ -1708,8 +1708,30 @@ fn collect_ctor_names(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
+/// The annotation a parameter gets when the planner CLASSIFIES it heap
+/// (fill_params_from_calls). It says "an rc block", not a type, and every
+/// reader but type_expr_is_heap must treat it as no annotation at all. It
+/// used to be the empty tuple `TyTuple([])` -- a shape no source spells
+/// (`()` parses to TyUnit), which made it look private, but desugar_trait_dicts
+/// runs AFTER elaborate_heap_params and seed_var_types recorded it as a
+/// composite eq shape: `Array::get(names, i) == name` on a heap-classified
+/// string parameter became eq_for_typed(TyTuple([])), trivially true, and
+/// `lookup` in fixtures/rc_shadow_regression_test.vibe answered Some for a
+/// name it did not hold (#2681 follow-up; the RC lane only). linked_compile's
+/// agg_info_of_type_expr read the same annotation as a tuple of arity 0 and
+/// registered the parameter as an aggregate local. A nominal no type table
+/// knows is what an unannotated parameter already is to those readers:
+/// agg_info_of_type_name answers 0 for it, and seed_var_types skips it by
+/// name (desugar_trait_dict.vibe) so no witness or comparator is ever
+/// looked up under it.
 fn inferred_heap_type() -> TypeExpr {
-  TyTuple(array_empty())
+  TyName(inferred_heap_marker_name())
+}
+
+/// The marker's spelling, shared by name with desugar_trait_dict.vibe's
+/// seed_var_types (which cannot import this module).
+fn inferred_heap_marker_name() -> String {
+  "__rc_heap"
 }
 
 fn fill_lambda_params(name: String, efn: Expr, body: Expr, hctx: HeapInferCtx) -> Expr {
