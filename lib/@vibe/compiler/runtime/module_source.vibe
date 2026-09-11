@@ -5,7 +5,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/syntax {
-  lex_with_offsets, offset_to_line_col, parse_program, parse_program_spans
+  lex_with_offsets, offset_to_line_col, parse_program, parse_program_spans, set_compiler_spelled_type_params
 }
 
 //# Module source emission (port of host `emit-module-source`)
@@ -23,15 +23,27 @@ export let build_module_source_from_source: (String, String) -> String with Exce
   let tokens = lexed.0
   let starts = lexed.1
   let ends = lexed.2
-  let parsed = parse_program_spans(tokens, starts, ends)
-  let stmts = parsed.0
-  let span_start = parsed.1
-  let span_end = parsed.2
-  // Reachability over the full parse: `stmts` carries one bodyless `SImpl`
-  // per impl (so the impl text is emitted once), which hides every call an
-  // impl method makes. A helper only a method calls would otherwise be
-  // dropped and the flat source would not compile (#2516).
-  let full_stmts = parse_program(tokens)
+  // The input is the merged program the compiler printed itself
+  // (scripts/generate_bundle.sh pass 1, `merged_program_source_fs`), so a
+  // synthesized `__arr_equals__` helper arrives with the desugar's `__Vfp_`
+  // spelling on its formal -- the one binder parse_type_param_kind refuses in
+  // authored source (#2141 / #2474). Read it as the compiler's own for these
+  // two parses only; a parse that throws switches the refusal back on the
+  // way out (#2654).
+  set_compiler_spelled_type_params(true)
+  let (stmts, span_start, span_end, full_stmts) = handle {
+    let parsed = parse_program_spans(tokens, starts, ends)
+    // Reachability over the full parse: `stmts` carries one bodyless `SImpl`
+    // per impl (so the impl text is emitted once), which hides every call an
+    // impl method makes. A helper only a method calls would otherwise be
+    // dropped and the flat source would not compile (#2516).
+    let full = parse_program(tokens)
+    set_compiler_spelled_type_params(false)
+    (parsed.0, parsed.1, parsed.2, full)
+  } with { Exception::Throw(msg) => {
+    set_compiler_spelled_type_params(false)
+    throw(msg)
+  } }
   let keep = dce_keep_flags_via(stmts, full_stmts, [entry_name])
   let buf = StringBuilder::new()
   let mut i = 0
@@ -41,6 +53,19 @@ export let build_module_source_from_source: (String, String) -> String with Exce
       let e = Array::get(span_end, i)
       if e > s {
         let snippet = String::substring(source, s, e)
+        // The flat source this joins is compiled as authored text, whose
+        // parser refuses the compiler's spelling with a "rename it" no author
+        // can act on. A helper that kept it and is still reachable is refused
+        // here instead, by name (#2654): the four the merged compiler carries
+        // today are dead and dropped by the DCE above. The test is on the
+        // binder list of the parsed statement, never on its text: this very
+        // function's source spells the prefix inside a string literal and is
+        // itself a kept statement of the merged compiler.
+        if binds_compiler_spelled_type_param(Array::get(stmts, i)) {
+          throw(String::concat("module source for `", String::concat(entry_name, String::concat("`: a synthesized comparator whose type parameter keeps the compiler's `__Vfp_` spelling is reachable from the entry, and the flat source cannot carry it (its parser reads authored text): ", snippet_head(snippet)))))
+        } else {
+          ()
+        }
         StringBuilder::push(buf, snippet)
         let n = String::length(snippet)
         if n == 0 || String::char_code_at(snippet, n - 1) != '\n' {
@@ -51,6 +76,49 @@ export let build_module_source_from_source: (String, String) -> String with Exce
     i = i + 1
   }
   StringBuilder::freeze(buf)
+}
+
+/// Does a top-level binding's function carry a type parameter in the
+/// desugar's `__Vfp_` spelling? The synthesized comparators are top-level
+/// `let` / `fn` bindings of a lambda, so those two shapes are the whole
+/// question; a nested lambda cannot carry the spelling (the parser refuses
+/// it in authored source, and the desugar synthesizes at the top level).
+fn binds_compiler_spelled_type_param(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, expr) => fn_has_compiler_spelled_type_param(expr),
+    SFnDecl(_, _, expr, _, _) => fn_has_compiler_spelled_type_param(expr),
+    _ => false
+  }
+}
+
+fn fn_has_compiler_spelled_type_param(expr: Expr) -> Bool {
+  match expr {
+    EFn(tps, _, _, _, _, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(tps) {
+        if String::starts_with(Array::get(tps, i), "__Vfp_") {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+/// The first 96 bytes of a kept statement, for a message that names it.
+fn snippet_head(snippet: String) -> String {
+  let n = String::length(snippet)
+  let cut = if n > 96 {
+    96
+  } else {
+    n
+  }
+  String::substring(snippet, 0, cut)
 }
 
 /// debugger テーマ3 / M2: build a `.funcmap` sidecar text mapping each ENTRY-file

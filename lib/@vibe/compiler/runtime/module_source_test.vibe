@@ -4,6 +4,10 @@ import ./module_source.vibe {
   build_module_source_from_source
 }
 
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
 //# Misc
 
 test "module source keeps statements reachable from entry and drops unused" {
@@ -32,4 +36,64 @@ test "module source keeps #zero_alloc with its reachable function" {
   let src = "#zero_alloc\nfn cli_main() -> Int { 42 }\n"
   let out = build_module_source_from_source(src, "cli_main")
   assert(String::contains(out, "#zero_alloc\nfn cli_main"))
+}
+
+//# #2654: the merged program carries the compiler's own type-parameter spelling
+
+// generate_bundle.sh prints the merged compiler (pass 1) and hands it back to
+// this builder (pass 2). The desugar's synthesized `__arr_equals__` helpers
+// survive that print with their `__Vfp_`-spelled formals, which
+// parse_type_param_kind refuses in authored source. Measured with the 0ebddad
+// stage2 as the seed: four such helpers, all dead, and the seed refused its
+// own output.
+
+let marked_helper: String = "let __arr_equals__A1_T = [__Vfp_T](a: Array[__Vfp_T], b: Array[__Vfp_T]) -> Bool {\n  true\n}\n"
+
+test "#2654: a dead helper with the compiler's spelling is read and dropped" {
+  let src = String::concat(marked_helper, "let cli_main = () -> { 42 }\n")
+  let out = build_module_source_from_source(src, "cli_main")
+  assert(String::contains(out, "let cli_main = () -> { 42 }"))
+  assert(not(String::contains(out, "__Vfp_")))
+}
+
+test "#2654: a reachable helper with the compiler's spelling is refused by name" {
+  // The flat source would be compiled as authored text and refused with
+  // "rename it", which names no edit an author can make.
+  let src = String::concat(marked_helper, "let cli_main = () -> { __arr_equals__A1_T([1], [1]) }\n")
+  let msg = handle {
+    let _ = build_module_source_from_source(src, "cli_main")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(msg, "module source for `cli_main`"))
+  assert(String::contains(msg, "keeps the compiler's `__Vfp_` spelling"))
+  assert(String::contains(msg, "let __arr_equals__A1_T = [__Vfp_T]"))
+}
+
+test "#2654: a string literal spelled like a marked binder is not a marked binder" {
+  // Red-tested against the merged compiler: the builder's own source spells
+  // the prefix in a literal and is a kept statement, so a text test refused
+  // the compiler's bundle by reading itself.
+  let src = "let cli_main = () -> { String::length(\"[__Vfp_T](x)\") }\n"
+  let out = build_module_source_from_source(src, "cli_main")
+  assert(String::contains(out, "[__Vfp_T](x)"))
+}
+
+test "#2654: the builder's switch does not leak into an ordinary parse" {
+  let src = String::concat(marked_helper, "let cli_main = () -> { 42 }\n")
+  let _ = build_module_source_from_source(src, "cli_main")
+  let after = handle {
+    let _ = parse_program(lex(src))
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(after, "uses the reserved `__Vfp_` prefix"))
+  // A parse that throws inside the builder switches the refusal back on too.
+  let broken = String::concat(marked_helper, "let cli_main = () -> { (\n")
+  let _ = handle {
+    build_module_source_from_source(broken, "cli_main")
+  } with { Exception::Throw(_) => "" }
+  let again = handle {
+    let _ = parse_program(lex(src))
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(again, "uses the reserved `__Vfp_` prefix"))
 }

@@ -35,8 +35,10 @@ export fn parse_type_param_kind(tokens: Array[Token], pos: Int, name: String) ->
   // helpers are built as AST and never pass through here, so this is the one
   // place a USER binder could borrow the spelling and slip past that rule.
   // Every type-parameter collector (struct / enum / fn / lambda / impl) goes
-  // through this function.
-  if String::starts_with(name, "__Vfp_") {
+  // through this function. The one parse that reads such a binder
+  // legitimately -- the module-source builder re-reading the merged program
+  // the compiler printed itself -- says so first (`compiler_spelled_type_params`).
+  if String::starts_with(name, "__Vfp_") && !reads_compiler_spelled_type_params() {
     throw(String::concat("type parameter `", String::concat(name, "` uses the reserved `__Vfp_` prefix (compiler-generated type-variable spellings) -- rename it (#2141)")))
   } else {
     ()
@@ -252,6 +254,31 @@ fn note_qualified_pattern_ref(qualifier: String, variant: String) -> Unit {
   } else {
     Array::push(qualified_pattern_refs, (qualifier, variant))
   }
+}
+
+/// #2654: the module-source builder (`build_module_source_from_source`, the
+/// emit-module-source step of scripts/generate_bundle.sh) re-reads the merged
+/// program the compiler printed one step earlier, in which a synthesized
+/// `__arr_equals__` / `__map_equals__` helper keeps the desugar's `__Vfp_`
+/// spelling on its formal. parse_type_param_kind refuses that spelling in
+/// authored source (#2141 / #2474), so the builder switches this on around
+/// its parses and off again; every other parse keeps the refusal. Measured
+/// with the 0ebddad stage2 as the seed: the merged compiler carried four such
+/// helpers and the seed refused its own output. A log rather than a flag,
+/// like `qualified_pattern_refs` above (top-level bindings are immutable).
+let compiler_spelled_type_params: Array[Int] = Array::slice([0], 0, 0)
+
+export fn set_compiler_spelled_type_params(on: Bool) -> Unit {
+  Array::truncate(compiler_spelled_type_params, 0)
+  if on {
+    Array::push(compiler_spelled_type_params, 1)
+  } else {
+    ()
+  }
+}
+
+fn reads_compiler_spelled_type_params() -> Bool {
+  Array::length(compiler_spelled_type_params) > 0
 }
 
 /// #1508: `(test name, effect row text)` for every `test "n" with A + B { .. }`
