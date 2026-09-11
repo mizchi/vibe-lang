@@ -121,4 +121,37 @@ for job in $(awk '
   fi
 done
 
+# THE LANES MUST NOT WAIT FOR compiler-build.
+#
+# Measured on main, compiler-touching runs: the old layout (every job building
+# in-job, starting at t=0) finished in 858s; the shared-build layout finished in
+# 959s, because 30 jobs released in a burst behind this dependency reached only
+# 11 concurrent against 18 before -- median job start 365s against 3s -- and
+# compiler-gate (late) began at 489s and then ran 466s instead of 341s, having
+# never warmed its own header cache.
+#
+# So compiler-gate-lanes builds in-job on purpose. Re-adding the dependency
+# would restore that regression SILENTLY: CI would still be green, only slower,
+# which is the kind of change nobody notices for weeks. The decision is pinned
+# here rather than left in a comment.
+lanes_block="$(sed -n '/^  compiler-gate-lanes:$/,/^  [a-zA-Z0-9_-]*:$/p' "$workflow")"
+if [ -z "$lanes_block" ]; then
+  echo "[ci-compiler-gate-layout] FAIL: no compiler-gate-lanes job found -- the scan did not run" >&2
+  exit 1
+fi
+if grep -qE '^    needs:.*compiler-build' <<<"$lanes_block"; then
+  echo "[ci-compiler-gate-layout] compiler-gate-lanes declares 'needs: [compiler-build]'" >&2
+  echo "  The lanes build in-job on purpose: they are the critical path, and" >&2
+  echo "  waiting for the shared build measured 959s against 858s on main" >&2
+  echo "  (runs 34583809863 vs 34578957960). Drop the dependency." >&2
+  exit 1
+fi
+# ...and it must still be the job that BUILDS, not one that silently stopped.
+if ! grep -qF 'bash scripts/generations.sh build' <<<"$lanes_block"; then
+  echo "[ci-compiler-gate-layout] compiler-gate-lanes no longer builds stage2 in-job" >&2
+  echo "  Without the build the lanes run against no compiler at all, and the" >&2
+  echo "  header cache they exist to warm stays cold." >&2
+  exit 1
+fi
+
 echo "[ci-compiler-gate-layout] ok"
