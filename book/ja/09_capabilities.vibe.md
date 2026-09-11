@@ -79,10 +79,21 @@ fn greet(name: String) -> Unit allows Console {
 the caller -- write `with` here and grant the effect at the entry
 ```
 
-逆向きは古いコードに残っている綴りです: `fn main with Console`。今もコン
-パイルは通り、`vibe check` が `allows` への直し方を warning として報告し
-ます。コンパイラ自身のソースがこの綴りを離れた時点で、コンパイルされなく
-なります。
+逆向きも拒否されます。`main` には要求する相手 (呼び出し元) がいないので、
+そのヘッドの `with` は parse error になり、メッセージは読み取った row ごと
+修正後の綴りを示します:
+
+```vibe skip
+// skip: `with` on an entry point
+fn main with Console {
+  println("hi")
+}
+```
+
+```
+`fn main` is an entry point and grants its row, so the keyword is `allows`:
+write `fn main allows Console`
+```
 
 権限は操作ごとのままです。`allows Console::write_stream` は
 `Console::read_stream` を許可しません — 表示してよいプログラムが、それに

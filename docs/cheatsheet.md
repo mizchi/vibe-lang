@@ -2703,7 +2703,7 @@ let main = () -> Int { c }         // ok
 test "name" { .. }               // ok  -- the name must be a string literal
 test name { .. }                 // NG: expected test name string
 test "n" allows { Fs } { .. }    // NG: a braced row is not a spelling -- write `allows Fs`
-test "n" with { Fs } { .. }      // NG: the braced row was removed in #1429
+test "n" with Fs { .. }          // NG: a block grants its row -- write `allows Fs`
 ```
 
 **A named `test` / `bench` / `example` may write a row after its name**
@@ -2714,10 +2714,8 @@ Process, Profiler, Error, Exception }`; `Console` is the current name for the
 tty, the three older labels are legacy) rather than replacing it -- writing
 `allows Http` keeps the defaults `assert` needs, such as `Exception`. An
 anonymous `test { .. }` / `bench { .. }` cannot carry a row (there is no name
-to key it on). The legacy spelling `test "n" with ..` still parses, and
-`vibe check` reports it with the `allows` edit as a warning (the seed-compiled
-tests under `lib/**` still carry it, so the refusal lands after the bootstrap
-bump).
+to key it on). `test "n" with ..` is refused by the parser, which names the
+`allows` edit with the row it read.
 
 The row is admitted like `main`'s: what it names must be something the run
 can bring in -- a host capability, `Exception`, `Async`, or an effectset of

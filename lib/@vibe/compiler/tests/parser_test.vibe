@@ -746,14 +746,42 @@ fn parse_or_error(src: String) -> String {
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
 }
 
-test "ADR-0088: `fn main allows` is the entry's row, stored like `with`" {
-  // One representation: the legacy `with` spelling of the same grant parses
-  // to the identical program, so no consumer can tell the two apart.
+test "ADR-0088: `fn main allows` is the entry's row" {
   let allows = parse_or_error("fn main allows Fs::read_file {\n  1\n}")
-  let legacy = parse_or_error("fn main with Fs::read_file {\n  1\n}")
   assert(!String::starts_with(allows, "ERROR: "))
-  assert_eq(allows, legacy)
   assert(String::contains(allows, "Fs::read_file"))
+}
+
+test "ADR-0088 (#2654): `with` on an entry head is refused and names the whole `allows` edit" {
+  // The row is read before the refusal, so the message carries it: the
+  // reader gets one edit, not a keyword to change and then a row to write.
+  let bare = parse_or_error("fn main with Console {\n  1\n}")
+  assert(String::contains(bare, "`fn main` is an entry point and grants its row, so the keyword is `allows`"))
+  assert(String::contains(bare, "write `fn main allows Console`"))
+  let sig = parse_or_error("fn main() -> Int with Fs + Env {\n  0\n}")
+  assert(String::contains(sig, "write `fn main(..) -> .. allows Fs + Env`"))
+  let start = parse_or_error("fn _start() -> Int with Fs {\n  0\n}")
+  assert(String::contains(start, "`fn _start` is an entry point"))
+  let empty = parse_or_error("fn main with () {\n  ()\n}")
+  assert(String::contains(empty, "write `fn main allows ()`"))
+  // The braced row of #1429 on an entry gets the same one edit, not the
+  // `with A + B` rewrite that would be refused in turn.
+  let braced = parse_or_error("fn main with { Stdout } {\n  ()\n}")
+  assert(String::contains(braced, "write `fn main allows Stdout`"))
+  let block = parse_or_error("test \"a\" with Http {\n  assert(true)\n}")
+  assert(String::contains(block, "`test \"a\"` is an entry point"))
+  assert(String::contains(block, "write `test \"a\" allows Http`"))
+  let bench_msg = parse_or_error("bench \"b\" with Http + Exception {\n  ()\n}")
+  assert(String::contains(bench_msg, "write `bench \"b\" allows Http + Exception`"))
+  let example_msg = parse_or_error("example \"c\" with Console {\n  ()\n}")
+  assert(String::contains(example_msg, "write `example \"c\" allows Console`"))
+  // A called function's `with`, a `with` inside an entry's body and a `with`
+  // in a function type nested in the entry's signature are untouched; so is
+  // a bodyless contract declaration (contract_entry_row_test).
+  let called = parse_or_error("fn helper() -> Unit with Console {\n  println(\"x\")\n}\nfn main allows Console {\n  helper()\n  let v = handle { 1 } with { Ask::Get() => resume(1) }\n  ()\n}")
+  assert(!String::starts_with(called, "ERROR: "))
+  let nested = parse_or_error("fn main() -> (() -> Int with Fs) {\n  () -> 1\n}")
+  assert(!String::starts_with(nested, "ERROR: "))
 }
 
 test "ADR-0088: an explicit entry signature takes `allows` too" {
@@ -907,9 +935,6 @@ test "ADR-0088 (Codex on #2653): the printer keeps the rows of test, bench and e
   assert(String::contains(printed, "test \"y\" allows Fs::read_file + Exception {"))
   assert(String::contains(printed, "bench \"z\" allows () {"))
   assert(String::contains(printed, "test \"plain\" {"))
-  // The legacy keyword prints as the canonical one, and the rows survive a
-  // print -> parse -> print round trip.
-  let legacy = print_program(parse_program_preserving(lex("test \"w\" with Http {\n  assert(true)\n}\n")))
-  assert(String::contains(legacy, "test \"w\" allows Http {"))
+  // The rows survive a print -> parse -> print round trip.
   assert_eq(print_program(parse_program_preserving(lex(printed))), printed)
 }

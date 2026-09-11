@@ -844,8 +844,7 @@ name is a GRANT and the keyword is `allows` (ADR-0088), exactly as on
 `fn main allows ..`. The declared row widens the ambient default row that test
 execution supplies (`docs/spec/test-example-capabilities.md`); an anonymous
 `test { .. }` / `bench { .. }` cannot carry one, because the row is keyed on the
-name. The legacy `test "n" with ..` still parses and `vibe check` reports it
-with the `allows` edit.
+name. `test "n" with ..` is a parse error naming the `allows` edit.
 
 `example "name" { .. }` (#819) is a documentation example. It is compiled and
 RUN exactly like a test -- that is the point of the form: a doc sample that

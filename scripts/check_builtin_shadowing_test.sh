@@ -14,7 +14,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 # #2252: never inherit the knobs under test. Each case sets them explicitly.
-unset BUILTIN_SHADOW_ALLOWLIST BUILTIN_SHADOW_ROOT BUILTIN_SHADOW_EXPECTED_UNREADABLE || true
+unset BUILTIN_SHADOW_ALLOWLIST BUILTIN_SHADOW_ROOT BUILTIN_SHADOW_EXPECTED_UNREADABLE \
+      BUILTIN_SHADOW_NO_BATCH BUILTIN_SHADOW_FALLBACK_CAP || true
 
 GATE="$ROOT_DIR/scripts/check_builtin_shadowing.sh"
 WORK="$ROOT_DIR/_build/_builtin_shadowing_selftest"
@@ -147,26 +148,38 @@ else
 fi
 
 # --- 8. a compiler that cannot sweep a directory REFUSES, not grinds --------
-# Batch symbols is #2381; the committed seed predates it and reads a directory
-# as a file. The per-file fallback covers small trees (every case above runs
-# through it when this suite is handed a seed), but it must never silently
-# re-pay the ~17 minutes #2381 removed. Pinned with the seed explicitly and a
-# cap of 0, so the assertion does not depend on which compiler is ambient.
+# Batch symbols is #2381. This case used to hand the gate the committed seed
+# and lean on the seed predating #2381; since the bump to
+# entry-allows-2026-09-11 (#2654) every seed sweeps a directory, so the gate's
+# BUILTIN_SHADOW_NO_BATCH hook stands in for a compiler that cannot, and a
+# cap of 0 makes any tree too large. The per-file fallback must never silently
+# re-pay the ~17 minutes #2381 removed; the assertion depends on neither the
+# seed's age nor which compiler is ambient.
 fresh_tree "$TREE"; empty_allowlist "$ALLOW"
-if [ -s "$ROOT_DIR/bootstrap/seed/compiler.wasm" ]; then
-  if out="$(BUILTIN_SHADOW_STAGE2="$ROOT_DIR/bootstrap/seed/compiler.wasm" \
-            BUILTIN_SHADOW_FALLBACK_CAP=0 \
-            BUILTIN_SHADOW_ROOT="$TREE" BUILTIN_SHADOW_ALLOWLIST="$ALLOW" \
-            bash "$GATE" 2>&1)"; then
-    bad "past the fallback cap the gate passed instead of refusing: $out"
-  else
-    case "$out" in
-      *"fallback cap"*) ok "past the fallback cap the gate refuses, naming the fix" ;;
-      *) bad "refused, but not about the cap: $out" ;;
-    esac
-  fi
+if out="$(BUILTIN_SHADOW_NO_BATCH=1 BUILTIN_SHADOW_FALLBACK_CAP=0 run_gate "$TREE" "$ALLOW")"; then
+  bad "past the fallback cap the gate passed instead of refusing: $out"
 else
-  bad "no committed seed to pin the no-batch lane against"
+  case "$out" in
+    *"fallback cap"*) ok "past the fallback cap the gate refuses, naming the fix" ;;
+    *) bad "refused, but not about the cap: $out" ;;
+  esac
+fi
+
+# --- 9. under the cap, the per-file lane answers the same question ----------
+# Every case above takes the batch lane on a current compiler, so this is the
+# one case that still drives the fallback: the shadow of case 1, read one file
+# at a time, must be rejected and named exactly as the batch lane names it.
+fresh_tree "$TREE"; empty_allowlist "$ALLOW"
+printf 'export fn String::length(s: String) -> Int {\n  -1\n}\n' > "$TREE/shadow_fn.vibe"
+if ! grep -q 'fn String::length' "$TREE/shadow_fn.vibe"; then
+  bad "mutation 9 did not land"
+elif out="$(BUILTIN_SHADOW_NO_BATCH=1 BUILTIN_SHADOW_FALLBACK_CAP=50 run_gate "$TREE" "$ALLOW")"; then
+  bad "the per-file lane accepted a fn shadow: $out"
+else
+  case "$out" in
+    *"String::length"*) ok "the per-file lane rejects a fn shadow, and names it" ;;
+    *) bad "the per-file lane rejected, but did not name String::length: $out" ;;
+  esac
 fi
 
 echo "----"

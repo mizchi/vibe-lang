@@ -172,7 +172,7 @@ collision_count="$(find "$collision_dir" -name '*.json' -type f | wc -l | tr -d 
 # measured iteration traps.
 cat > "$proj/trapping_profile_bench.vibe" <<'EOF'
 let calls = [0]
-bench "trap_measurement" with Exception {
+bench "trap_measurement" allows Exception {
   let next = calls[0] + 1
   Array::set(calls, 0, next)
   if next > 1 { throw("measurement boom") }

@@ -28,7 +28,7 @@ fn first_located_check_error(source: String) -> String {
 }
 
 test "#1683: a declared user effect cannot escape main" {
-  let source = "effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Unit with Ask::Get + Stdout {\n  let x = perform Ask::Get()\n  println(\"\\{x}\")\n}\n"
+  let source = "effect Ask {\n  Get() -> Int\n}\n\nfn main() -> Unit allows Ask::Get + Stdout {\n  let x = perform Ask::Get()\n  println(\"\\{x}\")\n}\n"
   let msg = first_located_check_error(source)
   assert(String::contains(msg, "line 6:"))
   assert(String::contains(msg, "entry point 'main' cannot discharge { Ask::Get }"))
@@ -45,13 +45,13 @@ test "#1683: a missing user effect at main suggests handling, not widening" {
 }
 
 test "#1683: _start is also an entry boundary" {
-  let source = "effect Ask { Get() -> Int }\nfn _start() -> Int with Ask { perform Ask::Get() }\n"
+  let source = "effect Ask { Get() -> Int }\nfn _start() -> Int allows Ask { perform Ask::Get() }\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "entry point '_start' cannot discharge { Ask }"))
 }
 
 test "#1683: an unresolved entry row is rejected fail-closed" {
-  let msg = first_check_error("fn main() -> Int with e { 0 }\n")
+  let msg = first_check_error("fn main() -> Int allows e { 0 }\n")
   assert(String::contains(msg, "entry point 'main' has unresolved effect row { e }"))
   assert(String::contains(msg, "entry rows must be concrete"))
   assert(String::contains(msg, "close the entry row"))
@@ -59,7 +59,7 @@ test "#1683: an unresolved entry row is rejected fail-closed" {
 }
 
 test "#1683: a user effect named Fs is not admitted as the host provider at main" {
-  let source = "effect Fs {\n  Custom() -> Int\n}\n\nfn main() -> Int with Fs::Custom {\n  perform Fs::Custom()\n}\n"
+  let source = "effect Fs {\n  Custom() -> Int\n}\n\nfn main() -> Int allows Fs::Custom {\n  perform Fs::Custom()\n}\n"
   let msg = first_located_check_error(source)
   assert(String::contains(msg, "line 6:"))
   assert(String::contains(msg, "entry point 'main' cannot discharge { Fs::Custom }"))
@@ -70,7 +70,7 @@ test "#1683: a user effect named Fs is not admitted as the host provider at main
 }
 
 test "#1683: a user effect named Fs is not admitted as the host provider at _start" {
-  let source = "effect Fs { Custom() -> Int }\nfn _start() -> Int with Fs { perform Fs::Custom() }\n"
+  let source = "effect Fs { Custom() -> Int }\nfn _start() -> Int allows Fs { perform Fs::Custom() }\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "entry point '_start' cannot discharge { Fs::Custom }"))
 }
@@ -81,7 +81,7 @@ test "#1961: lexically handled operations require no provider" {
 }
 
 test "#1961: a user effect cannot impersonate an exact host provider operation" {
-  let source = "effect Fs { read_file(String) -> String }\nfn main() -> String with Fs::read_file {\n  perform Fs::read_file(\"x\")\n}\n"
+  let source = "effect Fs { read_file(String) -> String }\nfn main() -> String allows Fs::read_file {\n  perform Fs::read_file(\"x\")\n}\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "collides with a registry-owned host provider operation"))
   assert(String::contains(msg, "Fs::read_file"))
@@ -263,7 +263,7 @@ test "ADR-0088: allows Console::write_stream does not grant console input" {
 }
 
 test "#1961: ::-less user Console::Get is not a host-provider impersonation" {
-  let source = "effect Console { Get() -> Int }\nfn main() -> Int with Console::Get {\n  perform Console::Get()\n}\n"
+  let source = "effect Console { Get() -> Int }\nfn main() -> Int allows Console::Get {\n  perform Console::Get()\n}\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "Console::Get"))
   assert(String::contains(msg, "handle"))
@@ -384,12 +384,12 @@ test "#1683: an ordinary helper still receives the row-addition hint" {
 }
 
 test "#1683: host providers and runtime-owned effects remain valid at main" {
-  assert(first_check_error("fn main() -> Unit with Fs + Env + Stdout + Async + Exception { () }\n") == "")
-  assert(first_check_error("fn main() -> Unit with Fs { let _ = Fs::read_file(\"missing\"); () }\n") == "")
+  assert(first_check_error("fn main() -> Unit allows Fs + Env + Stdout + Async + Exception { () }\n") == "")
+  assert(first_check_error("fn main() -> Unit allows Fs { let _ = Fs::read_file(\"missing\"); () }\n") == "")
 }
 
 test "#1683: unrelated user Env operations do not shadow the host Env provider" {
-  let source = "effect Env { Get(String) -> String }\nfn main() -> String with Env { Env::get(\"VIBE_HOME\") }\n"
+  let source = "effect Env { Get(String) -> String }\nfn main() -> String allows Env { Env::get(\"VIBE_HOME\") }\n"
   assert(first_check_error(source) == "")
 }
 

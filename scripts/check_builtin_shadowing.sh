@@ -61,11 +61,12 @@ RUNNER="$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh"
 # does, so the gate needs no installed `vibe`.
 #
 # TWO LANES, because the compiler that answers is not always one that can sweep
-# a directory. Batch mode is #2381; the committed seed predates it and reads the
-# directory as a FILE (`EISDIR`), which comes back as an empty sweep. Measured
-# in CI: the `late` lane has no generation on disk, falls back to the seed, and
-# every case of this gate's own self-test failed there for that reason and no
-# other -- exactly the "a gate must not assume its environment" defect of #2252.
+# a directory. Batch mode is #2381; a compiler without it (every seed before
+# entry-allows-2026-09-11) reads the directory as a FILE (`EISDIR`), which
+# comes back as an empty sweep. Measured in CI: the `late` lane had no
+# generation on disk, fell back to such a seed, and every case of this gate's
+# own self-test failed there for that reason and no other -- exactly the "a
+# gate must not assume its environment" defect of #2252.
 #
 # So: probe once, then take the batch lane when it works and a per-file lane
 # when it does not. The per-file lane asks the same question of the same
@@ -87,17 +88,26 @@ sym_run() { # <input path> <output path> <with_path 0|1>
 SYMS="$WORK/syms.txt"
 FALLBACK_CAP="${BUILTIN_SHADOW_FALLBACK_CAP:-50}"
 
-sym_run "$SWEEP_ROOT" "$SYMS" 1
-
-# Did the batch lane actually work? A compiler without it leaves nothing and
-# an EISDIR diag. Distinguish that from a genuinely empty tree by asking
-# whether the root holds any source at all.
+# BUILTIN_SHADOW_NO_BATCH=1 is a test hook for check_builtin_shadowing_test.sh
+# only: it stands in for a compiler without batch symbols, so the per-file
+# lane and its cap stay pinned on whichever compiler is at hand. No compiler
+# in the tree lacks the batch lane any more (#2654 bumped the seed past
+# #2381), so nothing but the self-test sets it.
 batch_worked=1
-if [ ! -s "$SYMS" ] && [ -d "$SWEEP_ROOT" ]; then
-  if grep -q "EISDIR" "$SYMS.diag" 2>/dev/null; then
-    batch_worked=0
-  elif [ ! -s "$SYMS.diag" ]; then
-    batch_worked=0
+if [ "${BUILTIN_SHADOW_NO_BATCH:-0}" = "1" ]; then
+  : > "$SYMS"
+  batch_worked=0
+else
+  sym_run "$SWEEP_ROOT" "$SYMS" 1
+  # Did the batch lane actually work? A compiler without it leaves nothing and
+  # an EISDIR diag. Distinguish that from a genuinely empty tree by asking
+  # whether the root holds any source at all.
+  if [ ! -s "$SYMS" ] && [ -d "$SWEEP_ROOT" ]; then
+    if grep -q "EISDIR" "$SYMS.diag" 2>/dev/null; then
+      batch_worked=0
+    elif [ ! -s "$SYMS.diag" ]; then
+      batch_worked=0
+    fi
   fi
 fi
 

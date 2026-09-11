@@ -520,11 +520,11 @@ fn run() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = h
 EOF
 actionable_fail chunk-mixed run 'mixing stdin-provider imports with named host future/stream imports is not supported'
 cat >"$OUT/noncomponent.vibe" <<'EOF'
-fn main() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, 4); StdinStream::close(s); 0 }
+fn main() -> Int allows Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, 4); StdinStream::close(s); 0 }
 EOF
 actionable_fail noncomponent main 'requires an Async component entry named run'
 cat >"$OUT/gc.vibe" <<'EOF'
-fn main() -> Int with Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, 4); 0 }
+fn main() -> Int allows Stdin + Async { let s = Stdin::read_via_stream(); let _ = StdinStream::read_chunk(s, 4); 0 }
 EOF
 actionable_fail gc main 'StdinStream is unsupported on gc backend' gc
 cat >"$OUT/coverage.vibe" <<'EOF'
