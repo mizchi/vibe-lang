@@ -179,13 +179,13 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // 2026-09-10 on `lib/@vibe/cli/entry.vibe`, 365 modules, and recorded on
   // #2388):
   //
-  //   FULL stmts=9859 split=10015 linked=9858 folded=157 modules=365
-  //        collisions=0 invisible_whole=0 invisible_split=2 linked_dups=5
-  //     invisible PerceusActionKind
-  //     invisible TypeEnv
-  //   keyed missing=1 extra=0 copies=444 content=4 renames=0 dup_keys=451
+  //   CLOSURE files=365 edges=1415 unresolved=0
+  //   FULL stmts=9863 split=10006 linked=9857 folded=149 modules=365
+  //        collisions=0 invisible_whole=0 invisible_split=15 linked_dups=5
+  //   keyed missing=6 extra=0 copies=444 content=9 renames=0 dup_keys=451
   //         dup_defs=5 dup_def_keys=effect:Source,effect:Env,effect:ParseRecur,
   //                                 effect:Profiler,effect:Profiler
+  //         first_missing=let:MutMap::equals__N6_String__N3_Int
   //   EVIDENCE declared=6 handled=4 performed=3
   //   edges_unresolved=0
   //
@@ -195,27 +195,30 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // keys they read 4 against 5 and looked like a discrepancy, because
   // `effect:Profiler` is declared three times.
   //
-  // That is a CORRECTION to what this comment used to record. It read
-  // `missing=0 extra=0 content=0` at `modules=191` and called the split exact.
-  // Two things were wrong with it. The 191-module closure is not either CLI
-  // entry in the current tree (`entry.vibe` is 365, `main.vibex` 370), so it
-  // was a smaller program than "the compiler's own closure" implies. And that
-  // run gave each module EVERY OTHER FILE's exported surface, which no real
-  // compile sees; its green was the weaker claim, that no module needed
-  // anything the whole program did not have.
+  // Those numbers are the THIRD recorded here, and the two corrections are
+  // worth keeping because both were the same mistake: a context rule wider
+  // than a real compile, producing a green that meant less than it looked.
   //
-  // With each module's real import closure (#2388) the answer is not clean,
-  // and the difference is one cause: a synthesized comparator's BODY depends
-  // on how much of a field's type the synthesizing module can see, while its
-  // NAME -- the link's fold key -- does not. `invisible_whole=0
-  // invisible_split=2` measures exactly that: the whole program can see every
-  // nominal it compares, and the per-module run cannot see two of them
-  // (#2631).
-  // `lib/@vibe/compiler/perceus/index.vpkg` declares `opaque type
-  // PerceusActionKind`, so the materialized contract emits `a.kind == b.kind`
-  // where the whole program emits `PerceusActionKind::equals(a.kind, b.kind)`.
-  // The single collision is the same shape, and the fold REFUSING it is the
-  // fold working. docs/incremental-build.md, "What a module must see".
+  //   every other file      missing=1 content=4   (191-module entry: 0/0)
+  //   transitive closure    missing=1 content=4   invisible_split=2
+  //   one hop               missing=6 content=9   invisible_split=15
+  //
+  // The first gave each module every other file's surface. The second followed
+  // dependency edges transitively, which hands A the declarations of a module
+  // C that A's dependency B imports PRIVATELY -- 32017 reachable pairs against
+  // 1415 one-hop ones, 22x wider. Each narrowing uncovered differences the
+  // previous one was hiding, and the counters only mean what they say under
+  // the rule that matches a real compile.
+  //
+  // (The first also claimed 191 modules for "the compiler's own closure"; that
+  // is neither CLI entry in the current tree -- `entry.vibe` is 365,
+  // `main.vibex` 370.)
+  //
+  // `invisible_whole=0` throughout: a program that type-checks whole can see
+  // every nominal it compares. `invisible_split` is what each narrowing takes
+  // away, and #2631 made a comparator's body independent of it, which is why
+  // `collisions=0` survived the narrowing that took `invisible_split` from 2
+  // to 15. docs/incremental-build.md, "What a module must see".
   inspect(String::trim(Array::get(lines, 0)), content = "FULL stmts=11 split=11 linked=11 folded=0 modules=2 collisions=0 invisible_whole=0 invisible_split=0 linked_dups=0")
   // #2633: the facts `evidence_dict_pass` derives its migration set from,
   // sampled on both lanes immediately before that pass runs. A bare count means
@@ -249,11 +252,18 @@ test "the import closure the oracle runs under is the module's own, and places e
   Fs::write_file(helper_path, "export fn leaf() -> Int {\n  1\n}\n")
   Fs::write_file(mid_path, "import ./vibe_closure_shape_helper.vibe {\n  leaf\n}\n\nexport fn mid() -> Int {\n  leaf() + 1\n}\n")
   Fs::write_file(main_path, "import ./vibe_closure_shape_mid.vibe {\n  mid\n}\n\ntest \"chain\" {\n  inspect(mid(), content = \"2\")\n}\n")
-  // Three files in a chain main -> mid -> leaf. The closure is TRANSITIVE, so
-  // the edge count is 3 (main sees mid and leaf; mid sees leaf; leaf sees
-  // nothing) and not 2, which is what one hop would give. That distinction is
-  // the point: a module sees what its dependencies re-export.
-  inspect(String::trim(prelude_module_import_closure_report_fs(main_path)), content = "CLOSURE files=3 edges=3 unresolved=0")
+  // Three files in a chain main -> mid -> leaf. The closure is ONE HOP, so the
+  // edge count is 2 (main sees mid; mid sees leaf; leaf sees nothing) and not
+  // the 3 a transitive closure would give.
+  //
+  // This expectation is a CORRECTION. It read 3 and called transitivity the
+  // point, on the reasoning that a module sees what its dependencies
+  // re-export. But this chain uses plain imports: `mid` does not re-export
+  // `leaf`, so a real compile of `main` cannot see `leaf`'s declarations, and
+  // handing them to the split prelude is context no module has. An oracle that
+  // reports agreement because it was given unavailable context is the one
+  // failure mode that makes its green meaningless (Codex round on #2623).
+  inspect(String::trim(prelude_module_import_closure_report_fs(main_path)), content = "CLOSURE files=3 edges=2 unresolved=0")
   // The control, and the reason this test can fail: a program with no imports
   // at all has no edges. If the closure were quietly falling back to "every
   // other file" -- the rule this replaced -- a two-file program would report

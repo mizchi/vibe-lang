@@ -573,6 +573,24 @@ export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: S
   String::concat(String::concat(line, "edges_unresolved="), String::concat(Int::to_string(unresolved_edges), "\n"))
 }
 
+fn lc_fresh_int_row() -> Array[Int] {
+  []
+}
+
+fn lc_int_row_has(xs: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// #2388 measurement: the shape of the import closure the per-module oracle
 /// runs under, on its own. `files edges unresolved` -- the number of sources,
 /// the total size of the transitive closure, and the dependency edges that
@@ -607,11 +625,10 @@ export fn prelude_module_import_closure_report_fs(entry_path: String) -> String 
 /// `SReExport` as already resolved, so they cannot be read back off the merged
 /// program.
 ///
-/// Transitive rather than one hop: a module sees what its dependencies
-/// re-export, and what this feeds is declaration surface rather than a
-/// name-resolution decision. A dep naming a `.vpkg` contract expands to that
-/// group's sibling implementations, which are the sources the merge actually
-/// carries.
+/// ONE HOP. A dep naming a `.vpkg` contract expands to that group's sibling
+/// implementations, which are the sources the merge actually carries; nothing
+/// else is followed. See the note at the closure itself for why transitive is
+/// wrong here.
 ///
 /// The unresolved count is returned rather than swallowed. A dropped edge
 /// narrows a module's context, so it can only manufacture a `missing`, never
@@ -695,52 +712,44 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
     Array::push(direct, row)
     i = i + 1
   }
-  // Transitive closure: one BFS per source over the direct edges. Cycles are
-  // ordinary here (a `.vpkg` group's siblings import each other), so this
-  // marks-then-visits rather than recursing.
+  // DIRECT edges only -- a module's own imports, not its dependencies'.
+  //
+  // This used to close transitively, justified as "a module sees what its
+  // dependencies re-export". That is wrong as implemented (Codex round on
+  // #2623): when A imports B and B imports C PRIVATELY, a transitive closure
+  // hands A the declarations of C, which no real compile of A exposes. The
+  // oracle could then report agreement only because it was given context a
+  // module does not have -- the one failure mode that makes a green
+  // meaningless.
+  //
+  // Closing only across re-export edges would be the exact rule, and the
+  // loader's header scan does not distinguish them: it returns a module's deps
+  // and its export NAMES, with no record of which deps a dep re-exports. So
+  // this takes the safe side instead. Direct-only is an UNDER-approximation,
+  // and an under-approximation can only manufacture a difference, never hide
+  // one -- the same reason `unresolved` is reported rather than swallowed.
+  // Measured on the compiler's own CLI closure, and the transitivity was very
+  // much load-bearing -- 32017 reachable pairs against 1415 one-hop ones, 22x
+  // wider. Under it the split read `missing=1 content=4 invisible_split=2`;
+  // with real one-hop context it reads `missing=6 content=9
+  // invisible_split=15`. Every one of those extra differences was being hidden
+  // by context no module has.
   let out: Array[Array[Int]] = []
   i = 0
   while i < n {
-    let mark: Array[Bool] = []
-    let mut j = 0
-    while j < n {
-      Array::push(mark, false)
-      j = j + 1
-    }
-    let reach: Array[Int] = []
-    let queue: Array[Int] = []
-    let seed = Array::get(direct, i)
+    let row = lc_fresh_int_row()
+    let dr = Array::get(direct, i)
     let mut d = 0
-    while d < Array::length(seed) {
-      let at = Array::get(seed, d)
-      if Array::get(mark, at) {
+    while d < Array::length(dr) {
+      let at = Array::get(dr, d)
+      if at == i || lc_int_row_has(row, at) {
         ()
       } else {
-        Array::set(mark, at, true)
-        Array::push(reach, at)
-        Array::push(queue, at)
+        Array::push(row, at)
       }
       d = d + 1
     }
-    let mut head = 0
-    while head < Array::length(queue) {
-      let u = Array::get(queue, head)
-      head = head + 1
-      let du = Array::get(direct, u)
-      let mut e = 0
-      while e < Array::length(du) {
-        let at = Array::get(du, e)
-        if Array::get(mark, at) || at == i {
-          ()
-        } else {
-          Array::set(mark, at, true)
-          Array::push(reach, at)
-          Array::push(queue, at)
-        }
-        e = e + 1
-      }
-    }
-    Array::push(out, reach)
+    Array::push(out, row)
     i = i + 1
   }
   (out, unresolved)
