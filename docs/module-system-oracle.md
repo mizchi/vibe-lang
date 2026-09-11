@@ -40,21 +40,24 @@ key=value ヘッダー (ADR-0080)。`deps = { @scope/pkg : x.y.z }` が依存の
 宣言する唯一の場所で、`import @scope/pkg { .. }` は名前解決専用 (版数を
 運ばない)。旧 `version x.y.z` (`=` なし) は互換で受理される。
 
-**5. pin と update のワークフロー。** 2つのレイヤがあり、用途が違う:
+**5. Pins and updates.** Two layers, for two purposes:
 
-| やること | コマンド | 記録先 |
+| task | command | recorded in |
 |---|---|---|
-| 依存の宣言漏れ検査 | `vibe check --deps-missing <root>` | — (CI: compiler_gate 60) |
-| package hash の計算・書き戻し | `vibe hash --write <pkg_dir\|index.vpkg>` | `generated_hash` (idempotent) |
-| リモート依存の取得と固定 | `vibe fetch` (`vibe.deps` を読む) | `deps/` に vendor + `vibe.lock` |
+| declared-dependency check | `vibe check --deps-missing <root>` | — (CI: compiler_gate 60) |
+| package hash, computed and written back | `vibe hash --write <pkg_dir\|index.vpkg>` | `generated_hash` (idempotent) |
+| add a dependency and pin it | `vibe add <source-spec>` | the root `index.vpkg`: a `deps` entry plus `require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>`; the package itself in `.vibe/store/` |
+| restore the store from the pins | `vibe fetch` | `.vibe/store/` (the `$VIBE_HOME/cache/pkg/` cache first, else the pinned source; hash-verified either way) |
 
-`@scope/name` の解決順は `.vibe/store/` (pin 検証済み) → workspace `lib/` →
-`VIBE_LIB` の各 root (`:` 区切り、既定 `$VIBE_HOME/lib`)。lib/VIBE_LIB 解決は
-dev-mode の便宜であり、`VIBE_REQUIRE_PINS=1` では pin なし解決はエラーになる。
-`vibe fetch` / `vibe.lock` は **リモート vendoring MVP** (単一ファイル URL と
-git repo を `deps/` に取り込む経路、docs/install.md) であって、上の
-package 境界モデルとは別レイヤ — in-repo の `lib/@scope/pkg` は
-`vibe.lock` を使わない。
+`@scope/name` resolves in order: `.vibe/store/` (pin-verified) → the workspace
+`lib/` → each `VIBE_LIB` root (`:`-separated, default `$VIBE_HOME/lib`). The
+lib/VIBE_LIB steps are a dev-mode convenience; under `VIBE_REQUIRE_PINS=1` an
+unpinned resolution is an error. A store import is verified against the pins
+of the importer's owning `index.vpkg` (the nearest enclosing one, so the root
+manifest covers the whole project) as well as the importer's own head. This is
+the one dependency lane (#2676, [toolchain-layout.md](toolchain-layout.md)
+section 7); the earlier vendoring lane (`vibe.deps` / `vibe.lock` / `deps/`)
+is gone.
 
 **歴史的記述の扱い:** v1 仕様書 (`module-system.md`) は 2026-08 に削除した —
 `module {}` ブロック・`vibe.deps`/`vibe.lock` を唯一の依存モデルとする記述・

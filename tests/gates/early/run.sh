@@ -992,7 +992,7 @@ echo "[compiler-gate] 6j distribution pipeline: publish/cache/materialize (#754)
 jhome="$(mktemp -d)"
 jsrc="$jhome/src/@gate754/mathx"
 mkdir -p "$jsrc"
-printf 'version 1.0.0\n\nfn quad(x: Int) -> Int\n' > "$jsrc/index.vibei"
+printf 'name = @gate754/mathx\nversion = 1.0.0\n\nfn quad(x: Int) -> Int\n' > "$jsrc/index.vpkg"
 printf 'export fn quad(x: Int) -> Int { x * 4 }\n' > "$jsrc/impl.vibe"
 jdir="_build/_gate_pkg754"
 rm -rf "$jdir" ".vibe/store/@gate754"; mkdir -p "$jdir"
@@ -1043,13 +1043,13 @@ if ! grep -q "same-version republish rejected" "$jdir/pub2.log"; then
   cat "$jdir/pub2.log" >&2; exit 1
 fi
 # dishonest bump: surface grows but only the patch level is bumped
-printf 'version 1.0.1\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vibei"
+printf 'name = @gate754/mathx\nversion = 1.0.1\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vpkg"
 printf 'export fn quad(x: Int) -> Int { x * 4 }\nexport fn oct(x: Int) -> Int { x * 8 }\n' > "$jsrc/impl.vibe"
 if VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub3.log" 2>&1; then
   echo "[compiler-gate] FAIL: dishonest patch bump was accepted by publish (#754)" >&2; exit 1
 fi
 # honest minor bump passes (versions come from the directives, no env)
-printf 'version 1.1.0\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vibei"
+printf 'name = @gate754/mathx\nversion = 1.1.0\n\nfn quad(x: Int) -> Int\nfn oct(x: Int) -> Int\n' > "$jsrc/index.vpkg"
 if ! VIBE_HOME="$jhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$jsrc" > "$jdir/pub4.log" 2>&1; then
   echo "[compiler-gate] FAIL: honest minor bump was rejected by publish (#754)" >&2
   cat "$jdir/pub4.log" >&2; exit 1
@@ -1070,7 +1070,7 @@ krepo="$(mktemp -d)"
 kdir="_build/_gate_pkg755"
 rm -rf "$kdir"; mkdir -p "$kdir"
 mkdir -p "$krepo/packages/@gate755/hex"
-printf 'version 1.0.0\n\nfn hex_n(x: Int) -> Int\n' > "$krepo/packages/@gate755/hex/index.vibei"
+printf 'name = @gate755/hex\nversion = 1.0.0\n\nfn hex_n(x: Int) -> Int\n' > "$krepo/packages/@gate755/hex/index.vpkg"
 printf 'export fn hex_n(x: Int) -> Int { x + 6 }\n' > "$krepo/packages/@gate755/hex/impl.vibe"
 git -C "$krepo" init -q
 git -C "$krepo" add -A
@@ -1140,7 +1140,7 @@ echo "[compiler-gate] 6l registry transparency log + yank (#805)"
 lhome805="$(mktemp -d)"
 lsrc805="$lhome805/src/@gate805/logx"
 mkdir -p "$lsrc805"
-printf 'version 1.0.0\n\nfn triple(x: Int) -> Int\n' > "$lsrc805/index.vibei"
+printf 'name = @gate805/logx\nversion = 1.0.0\n\nfn triple(x: Int) -> Int\n' > "$lsrc805/index.vpkg"
 printf 'export fn triple(x: Int) -> Int { x * 3 }\n' > "$lsrc805/impl.vibe"
 ldir805="_build/_gate_pkg805"
 rm -rf "$ldir805"; mkdir -p "$ldir805"
@@ -1159,7 +1159,7 @@ fi
 cp "$lhome805/log/records.tsv" "$ldir805/log1.records"
 cp "$lhome805/log/head" "$ldir805/log1.head"
 # (2) a second publish extends the log; install verifies an inclusion proof
-printf 'version 1.1.0\n\nfn triple(x: Int) -> Int\nfn nona(x: Int) -> Int\n' > "$lsrc805/index.vibei"
+printf 'name = @gate805/logx\nversion = 1.1.0\n\nfn triple(x: Int) -> Int\nfn nona(x: Int) -> Int\n' > "$lsrc805/index.vpkg"
 printf 'export fn triple(x: Int) -> Int { x * 3 }\nexport fn nona(x: Int) -> Int { x * 9 }\n' > "$lsrc805/impl.vibe"
 if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$lsrc805" > "$ldir805/pub2.log" 2>&1; then
   echo "[compiler-gate] FAIL: publish of @gate805/logx@1.1.0 failed (#805)" >&2

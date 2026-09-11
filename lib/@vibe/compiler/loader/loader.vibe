@@ -79,6 +79,7 @@ import @vibe/compiler/contract {
   parse_contract_program,
   parse_contract_program_spans,
   replace_generated_hash_directive,
+  require_line_source_clause,
   semver_parts,
   verify_publish_bump,
   vpkg_shared_import_marker,
@@ -2696,7 +2697,8 @@ fn fill_require_pins_impl(source: String, repin: Bool, lenient: Bool) -> String 
             let store_version = extract_package_version(Fs::read_file(store_index))
             if require_constraint_satisfied(pver, store_version) {
               let (pkg_hash, _) = contract_package_hashes_fs(store_index)
-              StringBuilder::push(sb, "require \{pname} \{pver} = #\{pkg_hash}")
+              // #2676: keep the `from <source>` clause `vibe add` recorded.
+              StringBuilder::push(sb, String::concat("require \{pname} \{pver} = #\{pkg_hash}", require_line_source_clause(trimmed)))
               emitted = true
             } else if lenient {
               ()
@@ -2772,6 +2774,34 @@ export fn publish_check_fs(prev_contract_path: String, next_contract_path: Strin
   }
 }
 
+/// #2676: the require pins that apply to `path`: those of its owning
+/// contract (the nearest enclosing index.vpkg -- the project's manifest, or
+/// a store package's own contract for its impl files) followed by the
+/// importer's own head. The verifiers keep the LAST match for a name, so a
+/// pin the importer spells itself still wins over the manifest's. A
+/// contract is its own owner and contributes nothing twice; a file with no
+/// enclosing index.vpkg keeps exactly its own pins.
+fn with_owner_pins_fs(path: String, own: Array[(String, String, String)]) -> Array[(String, String, String)] with Exception + Fs {
+  let owner = nearest_vpkg_path_fs(path)
+  if owner == "" || owner == path {
+    own
+  } else {
+    let (owner_pins, _) = extract_require_pins(cache_read_source_fs(owner))
+    let merged = array_empty()
+    let mut i = 0
+    while i < Array::length(owner_pins) {
+      Array::push(merged, Array::get(owner_pins, i))
+      i = i + 1
+    }
+    let mut j = 0
+    while j < Array::length(own) {
+      Array::push(merged, Array::get(own, j))
+      j = j + 1
+    }
+    merged
+  }
+}
+
 /// #730 (D-2): verify a store-resolved package against the importer's require
 /// pin. The store is laid out BY NAME (.vibe/store/@scope/name/) and trusted
 /// only through this hash check, so any mirror/copy mechanism is fine.
@@ -2800,7 +2830,7 @@ fn verify_store_package_fs(importer: String, pins: Array[(String, String, String
   if pin_found {
     ()
   } else {
-    throw("no require pin for \{name} in \{importer} (add: require \{name} <x.y.z> = #<pkg-hash>; compute with `vibe hash`)")
+    throw("no require pin for \{name} in \{importer} or its index.vpkg (add: require \{name} <x.y.z> = #<pkg-hash> to the project's index.vpkg; `vibe add` writes it, `vibe hash` computes it)")
   }
   if pin_hash == "" {
     throw("unpinned require for \{name} in \{importer}: run `vibe fmt` (VIBE_FILL_PINS=1) to insert the pin from the store")
@@ -2880,7 +2910,18 @@ fn enforce_incoming_boundary_fs(importer: String, target: String) -> Unit with E
   if is_vpkg_companion_basename(path_basename(target)) {
     throw("cannot import test/bench companion as a module target: \{target}")
   } else ()
-  let target_owner = nearest_vpkg_path_fs(target)
+  // #2676: a contract path is its own owner by construction. Asking the
+  // filesystem instead answers the ENCLOSING owner while the contract does
+  // not exist yet -- for `import @acme/base` in a package hashed before its
+  // dependency is in the store, that is the project's root index.vpkg -- and
+  // the import was refused here as a boundary crossing ("target owner is
+  // index.vpkg") instead of reaching the resolution-time "not found" / pin
+  // diagnostics that name the edit.
+  let target_owner = if is_contract_ext(target) {
+    target
+  } else {
+    nearest_vpkg_path_fs(target)
+  }
   if target_owner == "" {
     ()
   } else if target == target_owner {
@@ -2967,7 +3008,13 @@ fn collect_sources_rec(path: String, sources: Array[(String, String)], visited: 
     let raw_source = cache_read_source_fs(path)
     // #730 (D-2): require pin lines are a leading directive, extracted and
     // blanked (offset-preserving) before anything parses the source.
-    let (pins, pin_blanked) = extract_require_pins(raw_source)
+    let (own_pins, pin_blanked) = extract_require_pins(raw_source)
+    // #2676: the pins a store import is verified against are the importer's
+    // own head PLUS those of its owning contract (the nearest enclosing
+    // index.vpkg, ADR-0070): a project's root index.vpkg is its manifest,
+    // and `vibe add` writes the pin there, not into every file that
+    // imports the package.
+    let pins = with_owner_pins_fs(path, own_pins)
     // #749: the facade MUST carry contract_facade_marker — every collected
     // source is re-ingested at the collect_source_groups_fs chokepoint, and
     // an unmarked facade re-enters desugar_contract_source_fs as if it were

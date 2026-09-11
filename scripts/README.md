@@ -84,7 +84,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   `bench_vibe_lsp.js`
 
 ## Check / lint / gate / repro
-- `check_lock_clean.sh`, `check_{bundle_sync,module_source_sync,portable_boundary}.sh`
+- `check_{bundle_sync,module_source_sync,portable_boundary}.sh`
 - `check_vibe_fmt.sh` (+ `vibe_fmt_allowlist.txt`) — CI-enforced `vibe fmt`
   gate (`vibe-fmt-check` job, required): every `lib/**/*.vibe` file must be a
   `vibe_fmt.sh --check` fixpoint unless listed in the allowlist, which now

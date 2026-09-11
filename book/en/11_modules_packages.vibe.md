@@ -139,10 +139,23 @@ registry nor the network has to be trusted between builds. `vibe hash`
 computes the value. Set `VIBE_REQUIRE_PINS=1` and an unpinned dependency
 becomes an error, which is what a release build should do.
 
-(`vibe.deps` is a different, coarser mechanism: it lists
-`<name> <url>` lines for `vibe add` / `vibe fetch` to vendor whole
-repositories into `deps/`. The `require` pin is the registry lane —
-per-package, content-addressed, checked by the compiler itself.)
+You rarely write that line by hand. `vibe add <source-spec>` fetches a
+package from its git source, installs it into your project's
+`.vibe/store/`, and writes the pin — with the source resolved to a
+commit — into the root `index.vpkg`:
+
+```bash
+vibe add github:acme/json@v1.4.0
+vibe add git:https://example.com/u/mono.git@^1.0#packages/@acme/json
+```
+
+```text
+require @acme/json 1.4.0 = #pkg:sha1:<40hex> from github:acme/json@<commit>
+```
+
+Commit `index.vpkg` and ignore `.vibe/`. On a fresh clone, `vibe fetch`
+restores the store from the pins — from the local cache or from the
+recorded source, verifying the hash either way.
 
 ## Publishing
 
@@ -151,7 +164,6 @@ When you are ready to hand a package to someone else:
 ```bash
 vibe pkg publish lib/@you/pkg     # version check, then append to the log
 vibe pkg install @you/pkg@1.0.0   # fetch and verify against the log
-vibe pkg add github:owner/repo/dir@ref
 vibe pkg yank @you/pkg@1.0.0      # withdraw a version
 vibe pkg update @you/pkg          # move to the newest, showing the contract diff
 ```

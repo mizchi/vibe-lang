@@ -276,8 +276,8 @@ frozen:
 | `vibe compile` / `vibe build [--release] <file>` | Produce a standalone `.wasm`. |
 | `vibe check [--single-file] [--json] <file>` | Type-check only. Located diagnostics (`line N:M:`) on **stdout**, one per line. **Clean = empty output + exit 0**; any diagnostic means exit 1. `--single-file` analyses one file without resolving imports (for unsaved editor buffers); `--json` exists in that mode only (#1567). |
 | `vibe test <file\|dir>` | Run test blocks. |
-| `vibe new` / `vibe add` | Initialize a project / add a dependency. |
-| `vibe fetch [--frozen]` / `vibe verify` | Fetch modules / verify the lock. |
+| `vibe new [--name @scope/name] <dir>` / `vibe add <source-spec>` | Scaffold a project / fetch a package into `.vibe/store/` and pin it in the root `index.vpkg`. |
+| `vibe fetch` | Restore `.vibe/store/` from the manifest's pins, hash-verified. |
 | `vibe lsp` | LSP server. |
 | `vibe type-at` / `vibe binding-at` | Editor integration primitives. Always exit 0 — they are queries, not verdicts. |
 | `vibe diagnostics` | **Deprecated** (#1567): `vibe check --single-file` is the successor. Kept with frozen behavior for existing editors — raw diagnostic lines (no `error: ` prefix), always exit 0. |
@@ -287,13 +287,16 @@ frozen:
 - **Distribution model**: a purpose-built wasmtime runner and the compiler wasm
   ship separately, `.cwasm` AOT compilation happens at install time, and the
   compiler updates independently of the runner.
-- **Module distribution**: distributed over git/URL with no central registry,
-  locked by content hash (`index.lock`), resolved against semver constraints
-  (`^` / `~` / `>=` / `x` / `*`).
-- File conventions: `*.vibe`, `index.vpkg` (the package contract, and the
-  public API boundary — ADR-0070), `index.lock`, `*_test.vibe`. `index.vibe` is
-  a facade, not a boundary, and `index.vibei` is legacy and no longer exists in
-  the repository.
+- **Module distribution**: distributed over git with no central registry and
+  pinned by content hash in the root `index.vpkg`
+  (`require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>`,
+  #2676). A `vibe add` ref may be a semver constraint (`^` / `~` / `>=` / `x` /
+  `*`); it resolves to a tag at add time, and the pin records the commit.
+- File conventions: `*.vibe`, `index.vpkg` (the package contract, the public
+  API boundary — ADR-0070 — and, at the project root, the manifest),
+  `*_test.vibe`. There is no lock file: the `require` line is the lock.
+  `index.vibe` is a facade, not a boundary, and `index.vibei` is legacy and no
+  longer exists in the repository.
 
 ---
 

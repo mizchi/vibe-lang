@@ -131,21 +131,29 @@
 #   vibe shell   [file.vibe]              interactive compiled REPL: declarations
 #                                         accumulate, each line recompiles+runs
 #                                         (type :help inside for commands)
-#   vibe new     <dir>                    scaffold a project: main.vibex, a
+#   vibe new     [--name @scope/name] <dir>
+#                                         scaffold a project: main.vibex, a
 #                                         root index.vpkg (the project marker
 #                                         and manifest) and a .gitignore
 #   vibe root                             print the project root
 #   vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too)
-#   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
-#   vibe fetch   [--frozen] [dir]        vendor git/URL deps from vibe.deps + lock
-#   vibe verify  [dir]                    re-check vendored deps against vibe.lock
+#   vibe add     <source-spec>            fetch a package into .vibe/store/ and
+#                                         pin it in the root index.vpkg
+#                                         (github:owner/repo[/dir]@<ref> or
+#                                         git:<url>@<ref>[#<dir>]; a semver
+#                                         constraint ref picks the highest tag)
+#   vibe fetch                            restore .vibe/store/ from the pins
+#                                         (cache first, else the pinned source)
 #   vibe pkg     publish <pkg_dir>        publish a package: semver gate, CAS,
 #                                         transparency-log record (#805)
 #   vibe pkg     install <name>@<ver> [--store] [--allow-yanked]
 #                                         materialize a published version
 #                                         (verifies the log inclusion proof)
-#   vibe pkg     add <source-spec> [#pkg:sha1:<hex>] [--store]
-#                                         fetch straight from git, hash-verified
+#   vibe pkg     add <source-spec> [#pkg:sha1:<hex>]
+#                                         fetch straight from git into
+#                                         $VIBE_HOME/lib, hash-verified (no
+#                                         manifest edit; `vibe add` is the
+#                                         project lane)
 #   vibe pkg     yank <name>@<ver>        mark a version yanked (append-only)
 #   vibe pkg     update <name> [--store]  switch to the newest non-yanked
 #                                         version, showing the contract diff
@@ -247,10 +255,11 @@ _sha256_file() {
 
 die() { echo "vibe: $*" >&2; exit 1; }
 
-# --- semver constraint resolution for git deps -------------------------------
-# A git ref of `#<constraint>` (^1.2, ~1.2.3, >=1.0, 1.x, *, ...) resolves to the
-# highest matching tag on the remote. A bare exact version (1.2.3) or any
-# non-semver string (a branch / commit / `v`-tag) is used literally.
+# --- semver constraint resolution for `vibe add` -----------------------------
+# A source spec's `@<ref>` may be a constraint (^1.2, ~1.2.3, >=1.0, 1.x, *,
+# ...); it resolves to the highest matching tag on the remote before the
+# fetch. A bare exact version (1.2.3) or any non-semver string (a branch /
+# commit / `v`-tag) is used literally.
 
 # Echo "MAJOR MINOR PATCH" for a version/tag (strips leading v, pre-release/build).
 ver_parts() {
@@ -344,22 +353,71 @@ EOF
 }
 # -----------------------------------------------------------------------------
 
-# Deterministic content digest of a vendored directory: hash each file as
-# "<relpath>\0<sha256>" over a sorted file list, then hash the stream. Lets
-# `vibe verify` detect tampering of a git dep (whose lock records a commit sha,
-# not a content hash) without needing the original .git. Vendor artifacts
-# (./deps/ and lock files) are excluded so the digest covers only the dep's own
-# source — they appear after the digest is taken (transitive resolution) and are
-# verified separately by recursing into their own lock.
-tree_digest() {
-  ( cd "$1" && find . -type f \
-        ! -path './.git/*' ! -path './deps/*' \
-        ! -name 'vibe.lock' ! -name 'vibe.lock.tmp' -print0 \
-      | LC_ALL=C sort -z \
-      | while IFS= read -r -d '' f; do
-          printf '%s\0' "$f"; sha256sum "$f" | cut -d' ' -f1
-        done \
-      | sha256sum | cut -d' ' -f1 )
+# The registry/store script (scripts/vibe_pkg.sh): the copy installed into
+# the toolchain lib/ first (standalone install, no checkout), the repo copy
+# when running from a checkout. `vibe pkg`, `vibe add` and `vibe fetch` all
+# go through it, handing over the launcher's own runner + compiler wasm via
+# VIBE_PKG_RUNNER/VIBE_PKG_CLI_WASM so the script needs no host runner of
+# its own.
+find_pkg_sh() {
+  local cand
+  for cand in "$TOOLCHAIN_DIR/lib/vibe_pkg.sh" "$SELF/../scripts/vibe_pkg.sh"; do
+    [ -f "$cand" ] && { printf '%s' "$cand"; return 0; }
+  done
+  die "vibe_pkg.sh not found (looked in $TOOLCHAIN_DIR/lib and the repo scripts/)"
+}
+
+# manifest_add_pin <index.vpkg> <name> <version> <pkg:sha1:hex> <pinned-spec>
+# Declare `<name> : <version>` in the header's `deps = { .. }` block
+# (replacing an entry for the same name, creating the block when the header
+# has none) and write the `require <name> <version> = #<hash> from <spec>`
+# pin line (replacing one for the same name). The header grammar is
+# scan_package_header's (lib/@vibe/compiler/contract/contract.vibe): a
+# directive starts at column 0, `description =` continues on `  #|` lines,
+# and the header ends at `generated_hash =` or at the first declaration. The
+# edit only has to be correct, not pretty: `vibe add` runs the formatter
+# afterwards, which puts both lines in canonical position.
+manifest_add_pin() {
+  local file="$1" name="$2" ver="$3" hash="$4" src="$5" tmp
+  tmp="$(mktemp -t vibe-manifest-XXXXXX)"
+  if awk -v name="$name" -v ver="$ver" -v hash="$hash" -v src="$src" '
+    function entry() { return "  " name " : " ver }
+    function pin() { return "require " name " " ver " = #" hash " from " src }
+    function flush_missing() {
+      if (!did_deps) { print "deps = {"; print entry(); print "}"; did_deps = 1 }
+      if (!did_pin) { print pin(); did_pin = 1 }
+    }
+    BEGIN { in_deps = 0; did_deps = 0; did_pin = 0; in_header = 1 }
+    {
+      line = $0
+      if (!in_header) { print line; next }
+      t = line; sub(/[[:space:]]+$/, "", t)
+      if (in_deps) {
+        if (t ~ /^[[:space:]]*}$/) { in_deps = 0; print line; next }
+        n = index(t, ":")
+        key = (n > 0) ? substr(t, 1, n - 1) : t
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+        if (key == name) next
+        print line; next
+      }
+      if (t == "deps = {}") { print "deps = {"; print entry(); print "}"; did_deps = 1; next }
+      if (t == "deps = {") { print line; print entry(); in_deps = 1; did_deps = 1; next }
+      if (t ~ /^require[[:space:]]/) {
+        split(t, r, /[[:space:]]+/)
+        if (r[2] == name) { if (!did_pin) { print pin(); did_pin = 1 }; next }
+        print line; next
+      }
+      if (t ~ /^generated_hash[[:space:]]*=/) { flush_missing(); in_header = 0; print line; next }
+      if (t ~ /^(name|version|main)([[:space:]]*=|[[:space:]])/ || t ~ /^description[[:space:]]*=/ || t ~ /^[[:space:]]+#\|/ || t == "") { print line; next }
+      flush_missing(); in_header = 0; print line
+    }
+    END { if (in_header) flush_missing() }
+  ' "$file" > "$tmp"; then
+    mv "$tmp" "$file"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 # Codex review (PR #1162): `context-pack` is pure shell (no wasm execution
@@ -932,7 +990,7 @@ display_path() {
 # looks like a path (a `/`, an extension, `.`/`..`, or a directory) -- so a
 # bare word such as a function name is never mistaken for one.
 case "${1:-help}" in
-  run|profile|compile|build|serve|check|type-at|doc-at|binding-at|symbols|escapes|rc-classify|rc-plan|allocs|deps|diagnostics|grep|fmt|normalize|test|bench|shell|lsp|hash|pkg)
+  run|profile|compile|build|serve|check|type-at|doc-at|binding-at|symbols|escapes|rc-classify|rc-plan|allocs|deps|diagnostics|grep|fmt|normalize|test|bench|shell|lsp|hash|pkg|add|fetch)
     rewritten=("$1"); shift
     prev=""; passthrough=0
     for a in "$@"; do
@@ -3011,9 +3069,22 @@ REPL_HELP
     exit 0
     ;;
   new)
-    # vibe new <dir>  — scaffold a starter project (main.vibex + empty vibe.deps)
-    [ "$#" -ge 1 ] || die "usage: vibe new <dir>"
+    # vibe new [--name @scope/name] <dir>  — scaffold a starter project
+    # (main.vibex, a root index.vpkg, .gitignore)
+    nname=""
+    if [ "${1:-}" = "--name" ]; then
+      nname="${2:-}"
+      [ -n "$nname" ] || die "usage: vibe new [--name @scope/name] <dir>"
+      shift 2
+    fi
+    [ "$#" -eq 1 ] || die "usage: vibe new [--name @scope/name] <dir>"
     ndir="$1"
+    if [ -n "$nname" ]; then
+      case "$nname" in
+        @*/*) ;;
+        *) die "vibe new: --name must be @scope/name (a package name), got: $nname" ;;
+      esac
+    fi
     [ -e "$ndir" ] && die "already exists: $ndir"
     mkdir -p "$ndir"
     # #1429 retired the braced effect row (`with { Stdout }`) and the
@@ -3033,179 +3104,117 @@ REPL_HELP
     # the manifest its dependencies are pinned in (docs/toolchain-layout.md,
     # #2675). Its header is written in the formatter's canonical shape so
     # `vibe fmt --check` on a fresh project is clean. The `@local` scope is
-    # the one `vibe pkg publish` refuses: a scaffold is not a published name.
+    # the one `vibe pkg publish` refuses: a scaffold is not a published name;
+    # `--name @scope/name` names a project that will be.
     pkg_name="$(basename -- "$ndir" | LC_ALL=C sed -e 's/[^A-Za-z0-9_-]/-/g')"
-    printf 'name = @local/%s\nversion = 0.1.0\ndescription =\n  #|%s, a vibe program\ndeps = {}\n\ngenerated_hash =\n' "$pkg_name" "$pkg_name" > "$ndir/index.vpkg"
+    [ -n "$nname" ] || nname="@local/$pkg_name"
+    printf 'name = %s\nversion = 0.1.0\ndescription =\n  #|%s, a vibe program\ndeps = {}\n\ngenerated_hash =\n' "$nname" "$pkg_name" > "$ndir/index.vpkg"
     # `.vibe/` holds only what the toolchain regenerates (build outputs, the
     # pinned store), so the whole directory is ignored.
     printf '.vibe/\n' > "$ndir/.gitignore"
     echo "created $ndir (run: vibe run $ndir/main.vibex)"
     ;;
   add)
-    # vibe add <name> <url> [project_dir]
-    # Append a dependency to <dir>/vibe.deps (creating it if needed) and fetch.
-    [ "$#" -ge 2 ] || die "usage: vibe add <name> <url> [project_dir]"
-    aname="$1"; aurl="$2"; adir="${3:-.}"
-    amanifest="$adir/vibe.deps"
-    mkdir -p "$adir"
-    # Skip if an identical name is already declared; else append.
-    if [ -f "$amanifest" ] && awk -v n="$aname" '$1==n {found=1} END{exit !found}' "$amanifest"; then
-      die "dependency '$aname' already declared in $amanifest"
+    # vibe add <source-spec>
+    # Fetch a package straight from git into the project's `.vibe/store/`
+    # and pin it in the root `index.vpkg` (docs/toolchain-layout.md section
+    # 7, #2676): the manifest gains a `deps` entry `<name> : <version>` and a
+    # `require <name> <version> = #pkg:sha1:<hex> from <pinned-spec>` line
+    # whose spec names the resolved COMMIT, so `vibe fetch` on a fresh clone
+    # restores the store from it without a registry. Name and version are
+    # the ones the fetched package's own index.vpkg declares. Specs:
+    #   github:owner/repo[/sub/dir]@<ref>
+    #   git:<url>@<ref>[#<sub/dir>]
+    # A semver constraint ref (^1.2, ~1.2.3, >=1.0, 1.x, *) resolves to the
+    # highest matching tag on the remote first; an exact tag, branch or
+    # commit passes through. The dispatch above already moved to the
+    # project root, so `index.vpkg` and `.vibe/store/` are the root's.
+    add_usage="usage: vibe add <source-spec>   (github:owner/repo[/dir]@<ref> | git:<url>@<ref>[#<dir>])"
+    [ "$#" -eq 1 ] || die "$add_usage"
+    aspec="$1"
+    case "$aspec" in -*) die "$add_usage" ;; esac
+    [ -f index.vpkg ] || die "vibe add: no index.vpkg at the project root ($PROJECT_ROOT); \`vibe new\` writes one (docs/toolchain-layout.md)"
+    # Split the spec into remote + ref (+ subdir) so a constraint ref can be
+    # resolved; the same split vibe_pkg.sh performs.
+    aremote=""; aref=""; ahead=""; atail=""
+    case "$aspec" in
+      github:*)
+        arest="${aspec#github:}"
+        case "$arest" in *@*) ;; *) die "vibe add: a github spec needs @<ref>: $aspec" ;; esac
+        aref="${arest##*@}"; apath="${arest%@*}"
+        aowner="${apath%%/*}"; arr="${apath#*/}"; arepo="${arr%%/*}"
+        [ -n "$aowner" ] && [ -n "$arepo" ] && [ "$arr" != "$apath" ] || die "vibe add: malformed github spec (owner/repo[/dir]@<ref>): $aspec"
+        aremote="https://github.com/$aowner/$arepo.git"
+        ahead="github:$apath@"
+        ;;
+      git:*)
+        arest="${aspec#git:}"
+        case "$arest" in *"#"*) atail="#${arest##*#}"; arest="${arest%#*}" ;; esac
+        case "$arest" in *@*) ;; *) die "vibe add: a git spec needs <url>@<ref>: $aspec" ;; esac
+        aref="${arest##*@}"; aremote="${arest%@*}"
+        [ -n "$aremote" ] || die "vibe add: malformed git spec (git:<url>@<ref>[#<dir>]): $aspec"
+        ahead="git:$aremote@"
+        ;;
+      *) die "vibe add: unknown source spec, expected github:owner/repo[/dir]@<ref> or git:<url>@<ref>[#<dir>]: $aspec" ;;
+    esac
+    [ -n "$aref" ] || die "vibe add: empty ref in $aspec"
+    command -v git >/dev/null 2>&1 || die "vibe add: git is required"
+    if is_constraint "$aref"; then
+      aresolved="$(resolve_git_constraint "$aremote" "$aref")"
+      [ -n "$aresolved" ] || die "vibe add: no tag on $aremote satisfies '$aref'"
+      echo "resolved $aref -> $aresolved"
+      aspec="$ahead$aresolved$atail"
     fi
-    printf '%s %s\n' "$aname" "$aurl" >> "$amanifest"
-    echo "added $aname -> $aurl ($amanifest)"
-    exec "$LAUNCHER" fetch "$adir"
+    pkg_sh="$(find_pkg_sh)" || exit 1
+    cli="$(pick_cli)"
+    aout="$(mktemp -t vibe-add-XXXXXX)"
+    if ! env VIBE_PKG_RUNNER="$RUNNER" VIBE_PKG_CLI_WASM="$cli" VIBE_HOME="$VIBE_HOME" \
+        bash "$pkg_sh" add "$aspec" --store > "$aout"; then
+      grep -v $'^added\t' "$aout" || true
+      rm -f "$aout"
+      die "vibe add: fetch failed for $aspec"
+    fi
+    grep -v $'^added\t' "$aout" || true
+    aline="$(grep $'^added\t' "$aout" | tail -n 1)"
+    rm -f "$aout"
+    [ -n "$aline" ] || die "vibe add: no 'added' record came back for $aspec"
+    IFS=$'\t' read -r _ aname aver ahash _ _ apinned <<EOF
+$aline
+EOF
+    manifest_add_pin index.vpkg "$aname" "$aver" "$ahash" "$apinned" \
+      || die "vibe add: could not write the pin into index.vpkg"
+    # The formatter puts the entry and the pin in canonical position; a
+    # header it declines to rewrite keeps the textual edit, which the loader
+    # reads all the same.
+    if ! "$LAUNCHER" fmt "$PROJECT_ROOT/index.vpkg" >/dev/null 2>&1; then
+      echo "note: vibe fmt declined to canonicalize index.vpkg; the pin was written as-is" >&2
+    fi
+    echo "added $aname $aver -> $(display_path "$PROJECT_ROOT/.vibe/store/$aname")"
+    echo "pinned in $(display_path "$PROJECT_ROOT/index.vpkg"): require $aname $aver = #$ahash from $apinned"
+    # The added package's own pins (its dependencies) are materialized the
+    # way `vibe fetch` would, so the project builds right after `vibe add`.
+    if ! env VIBE_PKG_RUNNER="$RUNNER" VIBE_PKG_CLI_WASM="$cli" VIBE_HOME="$VIBE_HOME" \
+        bash "$pkg_sh" fetch-pins index.vpkg --store; then
+      die "vibe add: $aname is installed and pinned, but a dependency of its own could not be fetched (see above)"
+    fi
     ;;
   fetch)
-    # vibe fetch [--frozen] [project_dir]
-    # Vendor remote (git/URL 分散) deps declared in <dir>/vibe.deps into
-    # <dir>/deps/ and write a content-addressed <dir>/vibe.lock. Each manifest
-    # line is `<name> <url>` (# comments allowed). Import a vendored dep with
-    # `import ./deps/<name>.vibe { ... }`. With --frozen, git deps are pinned to
-    # the commit recorded in the existing vibe.lock (reproducible builds).
-    frozen=0
-    while [ "$#" -gt 0 ] && case "$1" in --frozen) frozen=1; shift; true ;; *) false ;; esac; do :; done
-    dir="${1:-.}"
-    manifest="$dir/vibe.deps"
-    [ -f "$manifest" ] || die "no manifest: $manifest (declare deps as '<name> <url>' lines)"
-    cache="${VIBE_CACHE:-$VIBE_HOME/cache}"
-    mkdir -p "$cache" "$dir/deps"
-    lock="$dir/vibe.lock"
-    # Read any existing lock so --frozen can pin git deps to recorded commits.
-    locked_commit() { [ -f "$lock" ] && awk -v n="$1" '$1==n {print $3}' "$lock" | sed 's/^git://'; }
-    : > "$lock.tmp"
-    while read -r name url _rest || [ -n "$name" ]; do
-      case "$name" in ""|\#*) continue ;; esac
-      [ -n "$url" ] || die "manifest line for '$name' has no url"
-      case "$url" in
-        git+*)
-          # git dependency: `git+<remote>[#<ref>]`, vendored as a directory
-          # deps/<name>/; import e.g. `import ./deps/<name>/index.vibe`.
-          remote="${url#git+}"; ref=""
-          case "$remote" in *"#"*) ref="${remote##*#}"; remote="${remote%#*}" ;; esac
-          # With --frozen, the recorded commit (a full SHA, not a branch) wins
-          # over any manifest ref so the build reproduces exactly.
-          pinned=""
-          if [ "$frozen" = "1" ]; then
-            pinned="$(locked_commit "$name")"
-            [ -n "$pinned" ] || die "--frozen: no locked commit for '$name' (run 'vibe fetch' first)"
-            ref="$pinned"
-          fi
-          command -v git >/dev/null 2>&1 || die "git is required for git+ deps"
-          # A semver constraint ref (^1.2, ~1.2.3, >=1.0, 1.x, ...) resolves to
-          # the highest matching tag on the remote. Exact tags / branches /
-          # commits pass through literally. Skipped when --frozen (commit wins).
-          if [ -z "$pinned" ] && [ -n "$ref" ] && is_constraint "$ref"; then
-            resolved="$(resolve_git_constraint "$remote" "$ref")"
-            [ -n "$resolved" ] || die "no tag on $remote satisfies '$ref' (dep '$name')"
-            echo "resolved $name: $ref -> $resolved"
-            ref="$resolved"
-          fi
-          gtmp="$(mktemp -d -t vibe-git-XXXXXX)"
-          if [ -n "$pinned" ]; then
-            # A full SHA can't be reached by --branch/--depth 1; clone fully then
-            # check it out so a moved upstream HEAD still resolves the pin.
-            git clone --quiet "$remote" "$gtmp" || die "git clone failed: $remote"
-            ( cd "$gtmp" && git checkout --quiet "$pinned" ) \
-              || die "--frozen: locked commit $pinned not found in $remote"
-          elif [ -n "$ref" ]; then
-            git clone --quiet --depth 1 --branch "$ref" "$remote" "$gtmp" 2>/dev/null \
-              || git clone --quiet "$remote" "$gtmp" || die "git clone failed: $remote"
-            ( cd "$gtmp" && git checkout --quiet "$ref" 2>/dev/null ) || true
-          else
-            git clone --quiet --depth 1 "$remote" "$gtmp" || die "git clone failed: $remote"
-          fi
-          gsha="$( cd "$gtmp" && git rev-parse HEAD 2>/dev/null || echo unknown )"
-          rm -rf "$gtmp/.git"
-          gcache="$cache/git/$gsha"
-          rm -rf "$gcache"; mkdir -p "$gcache"; cp -R "$gtmp/." "$gcache/"
-          rm -rf "$dir/deps/$name"; mkdir -p "$dir/deps/$name"; cp -R "$gcache/." "$dir/deps/$name/"
-          rm -rf "$gtmp"
-          gtree="$(tree_digest "$dir/deps/$name")"
-          printf '%s\t%s\tgit:%s\ttree:%s\n' "$name" "$url" "$gsha" "$gtree" >> "$lock.tmp"
-          echo "fetched $name <- $url (git:${gsha:0:12})"
-          # Transitive resolution: if the git dep declares its own dependencies,
-          # vendor them under the dep's own deps/ (relative imports nest), unless
-          # disabled. Guard against runaway recursion with VIBE_FETCH_DEPTH.
-          if [ "${VIBE_NO_TRANSITIVE:-0}" != "1" ] && [ -f "$dir/deps/$name/vibe.deps" ]; then
-            depth="${VIBE_FETCH_DEPTH:-0}"
-            if [ "$depth" -lt "${VIBE_FETCH_MAX_DEPTH:-16}" ]; then
-              echo "  resolving transitive deps of $name"
-              fzarg=""; [ "$frozen" = "1" ] && [ -f "$dir/deps/$name/vibe.lock" ] && fzarg="--frozen"
-              VIBE_FETCH_DEPTH="$((depth + 1))" "$LAUNCHER" fetch $fzarg "$dir/deps/$name" >/dev/null \
-                || die "transitive fetch failed for $name"
-            else
-              die "transitive dependency depth exceeded at $name (cycle?)"
-            fi
-          fi
-          continue
-          ;;
-      esac
-      tmp="$(mktemp -t vibe-fetch-XXXXXX)"
-      case "$url" in
-        file://*) cp "${url#file://}" "$tmp" || die "fetch failed: $url" ;;
-        http://*|https://*) curl -fsSL "$url" -o "$tmp" || die "fetch failed: $url" ;;
-        *) cp "$url" "$tmp" || die "fetch failed (local path): $url" ;;
-      esac
-      sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
-      cp -f "$tmp" "$cache/$sha"
-      mkdir -p "$(dirname "$dir/deps/$name.vibe")"
-      cp -f "$cache/$sha" "$dir/deps/$name.vibe"
-      rm -f "$tmp"
-      printf '%s\t%s\tsha256:%s\n' "$name" "$url" "$sha" >> "$lock.tmp"
-      echo "fetched $name <- $url (sha256:${sha:0:12})"
-    done < "$manifest"
-    mv "$lock.tmp" "$lock"
-    echo "wrote $lock"
-    ;;
-  verify)
-    # vibe verify [dir]
-    # Re-check every vendored dep against the hash recorded in vibe.lock
-    # (supply-chain integrity). Single-file deps are checked by sha256; git
-    # deps by the recorded tree digest. Exits non-zero on any mismatch or
-    # missing vendored file. Recurses into nested locks of git deps.
-    vdir="${1:-.}"
-    vlock="$vdir/vibe.lock"
-    [ -f "$vlock" ] || die "no lock: $vlock (run 'vibe fetch' first)"
-    vfail=0; vok=0
-    while IFS=$'\t' read -r vname vurl vhash vtree _ || [ -n "$vname" ]; do
-      case "$vname" in ""|\#*) continue ;; esac
-      case "$vhash" in
-        sha256:*)
-          want="${vhash#sha256:}"; file="$vdir/deps/$vname.vibe"
-          if [ ! -f "$file" ]; then
-            echo "MISSING $vname ($file)" >&2; vfail=$((vfail+1)); continue
-          fi
-          got="$(sha256sum "$file" | cut -d' ' -f1)"
-          if [ "$got" = "$want" ]; then vok=$((vok+1))
-          else echo "TAMPERED $vname (sha256 ${got:0:12} != ${want:0:12})" >&2; vfail=$((vfail+1)); fi
-          ;;
-        git:*)
-          ddir="$vdir/deps/$vname"
-          if [ ! -d "$ddir" ]; then
-            echo "MISSING $vname ($ddir)" >&2; vfail=$((vfail+1)); continue
-          fi
-          case "$vtree" in
-            tree:*)
-              want="${vtree#tree:}"; got="$(tree_digest "$ddir")"
-              if [ "$got" = "$want" ]; then vok=$((vok+1))
-              else echo "TAMPERED $vname (tree ${got:0:12} != ${want:0:12})" >&2; vfail=$((vfail+1)); fi
-              ;;
-            *) echo "info: $vname predates tree digest; skipping content check" ;;
-          esac
-          # Verify the dep's own lock too, if it vendored transitive deps.
-          if [ -f "$ddir/vibe.lock" ]; then
-            "$LAUNCHER" verify "$ddir" || vfail=$((vfail+1))
-          fi
-          ;;
-        *) echo "info: $vname has unrecognized lock hash '$vhash'; skipping" ;;
-      esac
-    done < "$vlock"
-    if [ "$vfail" -eq 0 ]; then
-      echo "verified $vok dep(s) in $vlock"
-    else
-      die "integrity check failed for $vfail dep(s) in $vlock"
-    fi
+    # vibe fetch
+    # Restore `.vibe/store/` from the pins of the root index.vpkg: each
+    # `require ... = #pkg:sha1:<hex> from <source>` line is satisfied from
+    # the CAS under $VIBE_HOME/cache/pkg/ when the hash is cached, else
+    # fetched from its recorded (commit-pinned) source; the hash is verified
+    # either way and a mismatch fails closed before anything is copied. A
+    # store copy already at its pin is left alone, one that is not is
+    # replaced. Pins of the packages installed on the way are followed
+    # (transitive dependencies); a `@vibe/*` pin with no source resolves
+    # from the toolchain and is skipped.
+    [ "$#" -eq 0 ] || die "usage: vibe fetch   (restores .vibe/store/ from the pins in the root index.vpkg)"
+    [ -f index.vpkg ] || die "vibe fetch: no index.vpkg at the project root ($PROJECT_ROOT); \`vibe add <source-spec>\` records the pins this restores"
+    pkg_sh="$(find_pkg_sh)" || exit 1
+    cli="$(pick_cli)"
+    exec env VIBE_PKG_RUNNER="$RUNNER" VIBE_PKG_CLI_WASM="$cli" VIBE_HOME="$VIBE_HOME" \
+      bash "$pkg_sh" fetch-pins index.vpkg --store
     ;;
   lsp)
     # `vibe lsp --selfhost` (#lsp-selfhost): the self-hosted server
@@ -3268,7 +3277,7 @@ REPL_HELP
       wout="$(mktemp -t vibe-hash-write-XXXXXX)"
       env $(selector_clears_before VIBE_HASH_WRITE) VIBE_HASH_WRITE=1 "$RUNNER" "$cli" "$target" "$wout" __no_entry__ >/dev/null 2>&1 || true
       if [ ! -s "$wout" ] || [ -s "$wout.diag" ]; then
-        cat "$wout.diag" 2>/dev/null >&2 || true
+        cat "$wout.diag" >&2 2>/dev/null || true
         rm -f "$wout" "$wout.diag"
         die "hash write failed for $target"
       fi
@@ -3279,7 +3288,7 @@ REPL_HELP
       hout="$(mktemp -t vibe-hash-XXXXXX)"
       env $(selector_clears_before VIBE_HASH) VIBE_HASH=1 "$RUNNER" "$cli" "$target" "$hout" __no_entry__ >/dev/null 2>&1 || true
       if ! grep -q '^package ' "$hout" 2>/dev/null; then
-        cat "$hout.diag" 2>/dev/null >&2 || true
+        cat "$hout.diag" >&2 2>/dev/null || true
         rm -f "$hout" "$hout.diag"
         die "hash computation failed for $target"
       fi
@@ -3289,19 +3298,13 @@ REPL_HELP
     ;;
   pkg)
     # vibe pkg publish|install|add|yank|update — the registry lane
-    # (#754/#755/#805) over $VIBE_HOME/{cache,lib,log}. Delegates to
-    # vibe_pkg.sh: the copy installed into the toolchain lib/ first
-    # (standalone install, no checkout), the repo copy when running from a
-    # checkout. The launcher hands over its own runner + compiler wasm via
-    # VIBE_PKG_RUNNER/VIBE_PKG_CLI_WASM, so the script needs no repo-local
-    # node host runner. Distinct from `vibe add/fetch/verify` (the
-    # vibe.deps/vibe.lock vendoring lane): `vibe pkg` is the content-
-    # addressed @scope/name package lane (ADR-0065).
-    pkg_sh=""
-    for cand in "$TOOLCHAIN_DIR/lib/vibe_pkg.sh" "$SELF/../scripts/vibe_pkg.sh"; do
-      [ -f "$cand" ] && { pkg_sh="$cand"; break; }
-    done
-    [ -n "$pkg_sh" ] || die "vibe pkg: vibe_pkg.sh not found (looked in $TOOLCHAIN_DIR/lib and the repo scripts/)"
+    # (#754/#755/#805) over $VIBE_HOME/{cache,lib,log}: publishing, and
+    # installing into the global $VIBE_HOME/lib. Delegates to vibe_pkg.sh
+    # (find_pkg_sh). The project lane -- `vibe add` / `vibe fetch`, the
+    # pinned `.vibe/store/` -- goes through the same script; `vibe pkg add`
+    # writes no manifest, which is why a project's dependency is added with
+    # `vibe add` (#2676).
+    pkg_sh="$(find_pkg_sh)" || exit 1
     cli="$(pick_cli)"
     exec env VIBE_PKG_RUNNER="$RUNNER" VIBE_PKG_CLI_WASM="$cli" VIBE_HOME="$VIBE_HOME" \
       bash "$pkg_sh" "$@"

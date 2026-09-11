@@ -593,62 +593,27 @@ Path normalization rules:
 
 Resolution pipeline:
 
-1. Parse `module-ref` (`PathRef`/`HashRef`/`VersionRef`/`SymbolRef`).
-2. For `PathRef`, build `PathObj` and load source by `normalized` key.
-3. Resolve to hash:
-   - `PathRef`: compute content hash and store/read `__hash__/<hash>`.
-   - `HashRef`: read/verify `__hash__/<hash>`.
-   - `VersionRef`: lookup `__ref__/version/<name>` then resolve hash snapshot.
-   - `SymbolRef`: lookup `__ref__/symbol/<name>` then resolve hash snapshot.
-4. Rewrite import source to `HashRef` for compiled/eval paths.
-5. Bind imported symbols to local names.
+1. Parse the import: a relative path (`./x.vibe`), a package name
+   (`@scope/name`), or a hash literal (`#...`).
+2. A relative path resolves against the importer's directory and may not
+   cross a package boundary (`index.vpkg`, ADR-0070) inward.
+3. A package name resolves in order: the project's `.vibe/store/<name>/`,
+   verified against the `require` pin of the importer's owning `index.vpkg`
+   (the nearest enclosing one, so the root manifest covers the whole project)
+   or of the importer's own head; then the workspace `lib/<name>/`; then the
+   `VIBE_LIB` roots.
+4. Bind imported symbols to local names.
 
 Invariants:
-- Runtime evaluation uses locked hash refs only.
-- Missing required lock metadata or hash mismatch is a compile error.
-- Dependency updates are explicit workflow steps (`apply`/`check`/`fetch`/`update-lock`),
-  not implicit side effects during execution (`run`/`eval`).
-
-Current lock file:
-
-- `index.lock` (JSON object) is loaded from the resolved index root directory.
-  - `index.vdb` is checked first; when it includes lock payload
-    (`path`/`version`/`symbol`/`module`/`annotation` or `lock` object),
-    that payload is used as lock source.
-  - If `index.vdb` has no lock payload, loader falls back to `index.lock`.
-  - Legacy compatibility: if `index.lock` is absent and `vibe.lock` exists in the
-    same directory, loader reads `vibe.lock`.
-- Shape:
-  - `path`: `{ "<path-key>": "<hash>" }`
-  - `version`: `{ "<name>": "<hash>" }`
-  - `symbol`: `{ "<name>": "<hash>" }`
-  - `module`: `{ "<normalized-path>#<export-name>": "<normalized-export-hash>" }`
-  - `annotation`: `{ "<key>": "<note-text>" }`
-- `path` keys are written as lock-dir-relative paths (`./foo.vibe`) and resolved
-  to normalized absolute paths when loading (absolute keys are also accepted).
-- Root guard:
-  - index root is the nearest ancestor directory containing `index.vibe`
-    (fallback: entry directory).
-  - `index.vibe` must export version:
-    `export let version = "0.0.1"` (simple semver `x.y.z`).
-  - Path imports are rejected when resolved path escapes index root.
-  - `index.vibe` may define `export let module = record { <ns>: "<dir>" }` to map
-    namespace imports (for example `std/...`) under root.
-  - Default namespace mapping includes `builtin -> ./lib/@vibe/builtin`.
-- CLI:
-  - `vibe apply <entry>` resolves recursive path imports, updates `index.lock`,
-    injects prelude refs, and updates `index.vdb.graph_head`.
-    It also stores the graph snapshot object under `.vibe/objects/<graph-head>`.
-  - `vibe fetch <entry>` (or `vibe update-lock <entry>`) resolves recursive
-    path imports and updates `index.lock`.
-  - `fetch/update-lock` also injects prelude refs:
-    - `version.prelude = <normalized-prelude-hash>`
-    - `symbol."std/prelude" = <normalized-prelude-hash>`
-    and stores the normalized prelude module object under `.vibe/objects/`.
-  - `vibe check <entry...>` runs the same resolution/apply pipeline as `vibe apply`
-    before diagnostics.
-  - `vibe run/compile/test` require lock entries for path imports;
-    missing/mismatch emits import diagnostics and fails compile.
+- A store copy whose package hash differs from its pin is a compile error
+  (`pin mismatch`); a store import with no pin anywhere is a compile error
+  naming the manifest.
+- The pin is the `require @scope/name x.y.z = #pkg:sha1:<hex> from
+  <source>@<commit>` line in the root `index.vpkg`: `vibe add <source-spec>`
+  writes it and installs the package, `vibe fetch` restores the store from
+  it (#2676). There is no separate lock file.
+- Dependency updates are explicit workflow steps (`vibe add`, `vibe pkg
+  update`), not side effects of `run` / `test` / `build`.
 
 ## Trait and impl rules (current)
 

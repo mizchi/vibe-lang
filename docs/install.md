@@ -122,7 +122,9 @@ vibe build   <file.vibe> [-o <out>]   alias of compile
 vibe check   <file.vibe|file.vibex>   parse + typecheck (no output kept)
 vibe test    <file_test.vibe|dir>...  compile + run test {} blocks
                                       (a directory expands to *_test.vibe)
-vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
+vibe add     <source-spec>            fetch a package into .vibe/store/ and pin it
+                                      in the root index.vpkg
+vibe fetch                            restore .vibe/store/ from the pins
 vibe root                             print the project root (outermost index.vpkg)
 vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too)
 vibe lsp                              start the stdio LSP server (diagnostics)
@@ -137,48 +139,56 @@ An executable root is a `.vibex` file with exactly one `fn main`; its
 user-visible entry cannot be overridden. Arbitrary entry names remain an
 internal compiler/test-harness ABI only.
 
-## Dependencies (git/URL, MVP)
+## Dependencies
 
-Remote dependencies are vendored into the project (git/URL 分散 model). This is
-a **separate layer** from the in-repo package model — `vibe.lock` records
-vendored remote deps only; `lib/@scope/pkg` packages are bounded by
-`index.vpkg` and pinned through its `deps`/`generated_hash` header instead.
-The boundary/visibility/pinning rules live in one place:
+A dependency is a package: a directory with an `index.vpkg` (its contract and
+public API boundary, ADR-0070). The root `index.vpkg` of your project is the
+manifest, and pinned dependencies live in the project-local `.vibe/store/`
+([docs/toolchain-layout.md](toolchain-layout.md), #2676). The boundary,
+visibility and pinning rules live in one place:
 [docs/module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
 (#1269).
 
-Declare remote deps in `vibe.deps` (one `<name> <url>` per line; `#` comments
-allowed):
-
-```
-# vibe.deps
-mathlib  https://example.com/mathlib.vibe          # single-file URL
-mymod    git+https://example.com/u/mymod.git#v1.2   # git repo, pinned to a ref
-```
-
-Then vendor + lock them, and import via the vendored path:
+Add a dependency straight from its git source. The name and version are the
+ones the fetched package's own `index.vpkg` declares:
 
 ```bash
-vibe fetch                     # downloads into ./deps/, writes vibe.lock
+vibe add github:acme/json@v1.4.0     # a package at a repository root
+vibe add git:https://example.com/u/mono.git@^1.0#packages/@acme/json
+                                     # a subdirectory; ^1.0 resolves to the highest matching tag
 ```
 
-```vibe
-import ./deps/mathlib.vibe { add }        # single-file dep
-import ./deps/mymod/index.vibe { thing }  # git dep (vendored as a directory)
-fn main allows Stdout { Stdout::write_stream("\{add(40, 2)}\n") }
+`vibe add` fetches with git, hashes the package, installs it into
+`.vibe/store/<name>/`, and writes two things into the root `index.vpkg`: a
+`deps` entry, and a `require` pin recording the version, the content hash and
+the source resolved to a commit:
+
+```text
+deps = {
+  @acme/json : 1.4.0
+}
+require @acme/json 1.4.0 = #pkg:sha1:<40hex> from github:acme/json@<commit>
 ```
 
-`vibe fetch` records each dep's resolved identity in `vibe.lock` for
-reproducible builds:
+Import it by name (`import @acme/json { parse }`) and build as usual. The
+compiler re-checks the store copy against the pin on every build, so neither
+the network nor the transport has to be trusted between builds; a copy that
+does not hash to its pin is a build error.
 
-- **single-file** (`https://`, `file://`, local path): content-addressed by
-  sha256, cached under `$VIBE_HOME/cache/<sha256>`, vendored to
-  `./deps/<name>.vibe`.
-- **git** (`git+<remote>[#<ref>]`): cloned, checked out at `<ref>`, vendored as
-  a directory `./deps/<name>/`, and pinned to the resolved commit (`git:<sha>`).
+Commit `index.vpkg`; `.vibe/` is ignored. A fresh clone restores the store
+from the pins:
 
-This is an MVP of [docs/release-roadmap.md](release-roadmap.md) テーマ2 — seamless
-`import "<url>"` syntax and transitive resolution are tracked there.
+```bash
+vibe fetch                     # the cache under $VIBE_HOME/cache/pkg/ first, else the pinned source
+```
+
+The hash is verified either way, and a mismatch fails closed before anything
+is copied. The pins of the packages installed on the way are followed, so a
+dependency's own dependencies arrive with it. Standard-library packages
+(`@vibe/*`) resolve from the toolchain and need no pin.
+
+There is no lock file and no vendored `deps/` directory: the `require` line is
+the lock. Single-file URL dependencies are not supported.
 
 ## Editor support (LSP)
 

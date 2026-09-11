@@ -6,7 +6,7 @@
 //# the line-by-line copy produced.
 
 import @vibe/compiler/contract {
-  extract_require_pins
+  extract_require_pins, is_require_source_spec, require_line_source_clause
 }
 
 fn spaces(n: Int) -> String {
@@ -77,4 +77,65 @@ test "the last header line without a trailing newline" {
   let (pins, blanked) = extract_require_pins(src)
   assert_eq(Array::length(pins), 1)
   assert_eq(blanked, spaces(18))
+}
+
+//# #2676: the `from <source-spec>` clause records where `vibe add` fetched
+//# the package, so `vibe fetch` can restore the store on a fresh clone.
+
+let zero_pin: String = "#pkg:sha1:0000000000000000000000000000000000000000"
+
+test "#2676: a pinned require line with a from clause yields the pin and blanks whole" {
+  let line = String::concat("require @a/b 1.2.3 = ", String::concat(zero_pin, " from github:acme/json@0123abc"))
+  let src = String::concat(line, "\nfn main() -> Int {\n  1\n}\n")
+  let (pins, blanked) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 1)
+  let (rname, rver, rpin) = Array::get(pins, 0)
+  assert_eq(rname, "@a/b")
+  assert_eq(rver, "1.2.3")
+  assert_eq(rpin, "pkg:sha1:0000000000000000000000000000000000000000")
+  assert_eq(blanked, String::concat(spaces(String::length(line)), "\nfn main() -> Int {\n  1\n}\n"))
+}
+
+test "#2676: an unpinned require line may carry a from clause" {
+  let src = "require @a/b 1.2.3 from git:file:///srv/acme.git@0123abc#packages/@a/b\nfn f() -> Int {\n  2\n}\n"
+  let (pins, _) = extract_require_pins(src)
+  assert_eq(Array::length(pins), 1)
+  let (rname, _, rpin) = Array::get(pins, 0)
+  assert_eq(rname, "@a/b")
+  assert_eq(rpin, "")
+}
+
+test "#2676: a from clause without a ref, or with an unknown transport, is refused" {
+  let no_ref = handle {
+    let _ = extract_require_pins("require @a/b 1.2.3 from github:acme/json\n")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(no_ref, "require source must be"))
+  let bad_transport = handle {
+    let _ = extract_require_pins(String::concat("require @a/b 1.2.3 = ", String::concat(zero_pin, " from ftp://x@y\n")))
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(bad_transport, "require source must be"))
+  let dangling = handle {
+    let _ = extract_require_pins("require @a/b 1.2.3 from\n")
+    ""
+  } with { Exception::Throw(m) => m }
+  assert(String::contains(dangling, "malformed require line"))
+}
+
+test "#2676: is_require_source_spec accepts the two transports with a ref only" {
+  assert(is_require_source_spec("github:acme/json@0123abc"))
+  assert(is_require_source_spec("github:acme/json/packages/json@v1.2.0"))
+  assert(is_require_source_spec("git:https://example.com/acme.git@0123abc#packages/json"))
+  assert(!is_require_source_spec("github:acme/json"))
+  assert(!is_require_source_spec("git:@abc"))
+  assert(!is_require_source_spec("https://example.com/acme.git@abc"))
+  assert(!is_require_source_spec(""))
+}
+
+test "#2676: require_line_source_clause is the tail the fill lane re-attaches" {
+  assert_eq(require_line_source_clause("require @a/b 1.2.3 from github:acme/json@0123abc"), " from github:acme/json@0123abc")
+  assert_eq(require_line_source_clause(String::concat("require @a/b 1.2.3 = ", String::concat(zero_pin, "   from   git:x@y"))), " from git:x@y")
+  assert_eq(require_line_source_clause("require @a/b 1.2.3"), "")
+  assert_eq(require_line_source_clause(String::concat("require @a/b 1.2.3 = ", zero_pin)), "")
 }

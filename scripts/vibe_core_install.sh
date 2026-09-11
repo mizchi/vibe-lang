@@ -35,7 +35,7 @@ VIBE_HASH=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   "$dest/index.vpkg" "$out" __no_entry__ >/dev/null 2>&1 || true
 if ! grep -q '^package ' "$out" 2>/dev/null; then
   echo "vibe_core_install.sh: hash computation failed (CLI: $CLI)" >&2
-  cat "$out.diag" 2>/dev/null >&2 || true
+  cat "$out.diag" >&2 2>/dev/null || true
   exit 1
 fi
 echo "installed @vibe/core -> $dest"

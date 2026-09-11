@@ -136,10 +136,23 @@ require @vibe/core 0.2.0 = #pkg:sha1:<40hex>
 が計算します。`VIBE_REQUIRE_PINS=1` を設定すると pin の無い依存はエラーに
 なります。リリースビルドはそうあるべきです。
 
-(`vibe.deps` は別の、より粗い仕組みです: `vibe add` / `vibe fetch`
-がリポジトリごと `deps/` に vendor するための `<name> <url>` 行を並べます。
-`require` pin はレジストリのレーンで、パッケージ単位・内容アドレスで、
-コンパイラ自身が検査します。)
+この行を手で書くことはほとんどありません。`vibe add <source-spec>` が
+パッケージを git のソースから取得してプロジェクトの `.vibe/store/` に
+インストールし、ソースをコミットまで解決した pin をルートの `index.vpkg`
+に書き込みます:
+
+```bash
+vibe add github:acme/json@v1.4.0
+vibe add git:https://example.com/u/mono.git@^1.0#packages/@acme/json
+```
+
+```text
+require @acme/json 1.4.0 = #pkg:sha1:<40hex> from github:acme/json@<commit>
+```
+
+`index.vpkg` をコミットし、`.vibe/` は無視します。新しい clone では
+`vibe fetch` が pin から store を復元します — ローカルのキャッシュからでも
+記録されたソースからでも、どちらでもハッシュを検証したうえで。
 
 ## 公開する
 
@@ -148,7 +161,6 @@ require @vibe/core 0.2.0 = #pkg:sha1:<40hex>
 ```bash
 vibe pkg publish lib/@you/pkg     # バージョン検査の後、ログに追記
 vibe pkg install @you/pkg@1.0.0   # 取得してログと照合
-vibe pkg add github:owner/repo/dir@ref
 vibe pkg yank @you/pkg@1.0.0      # バージョンを取り下げる
 vibe pkg update @you/pkg          # 最新へ移動し、契約の差分を表示
 ```

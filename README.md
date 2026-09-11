@@ -135,11 +135,12 @@ help), plus a function-granularity interactive debugger
 
 ### Packages & dependencies
 
-Dependencies are distributed over git/URLs (Deno/Go style — no central
-registry) and pinned by content hash. Package boundaries, visibility, and
-pinning are specified in
-[docs/module-system-oracle.md](docs/module-system-oracle.md); installing and
-vendoring are covered in [docs/install.md](docs/install.md).
+Dependencies are distributed over git (Deno/Go style — no central registry)
+and pinned by content hash in the project's root `index.vpkg`. Package
+boundaries, visibility, and pinning are specified in
+[docs/module-system-oracle.md](docs/module-system-oracle.md); installing the
+toolchain and adding dependencies are covered in
+[docs/install.md](docs/install.md).
 
 ## Docs
 

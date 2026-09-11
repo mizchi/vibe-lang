@@ -317,10 +317,10 @@ A file that does not parse is skipped, not fatal: a repo sweep must not stop at
 the first work-in-progress file. The skip is reported on stderr
 (`warning: grep: skipped \`path\` because it could not be parsed`) so empty
 stdout still means no matches, not silently skipped input. Recursion skips
-`_build`, `node_modules`, `dist`, `target`, dot-directories, and `deps` (where
-`vibe fetch` vendors packages — and, since relative imports nest, each
-vendored package's own `deps` below that). Naming one of those directly still
-searches it: `vibe grep --pattern '…' deps` asks for exactly that.
+`_build`, `node_modules`, `dist`, `target`, dot-directories (which covers a
+project's `.vibe/` build outputs and store) and `deps` (a conventional
+vendoring directory). Naming one of those directly still searches it:
+`vibe grep --pattern '…' deps` asks for exactly that.
 
 ---
 

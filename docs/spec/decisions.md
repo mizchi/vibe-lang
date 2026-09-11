@@ -109,13 +109,12 @@ Status: accepted and moved from `TODO.md`.
 - Import cycle reporting is implemented for path imports:
   import graph cycles are diagnosed in `stage: "import"` with `import cycle:`
   messages.
-- Lock workflow is implemented in CLI/runtime flow:
-  `vibe fetch`/`vibe update-lock` maintain `index.lock`
-  (`path`/`version`/`symbol`/`module`/`annotation` maps), path imports are
-  validated against lock entries when enabled, and import diagnostics are
-  compile-fatal.
-  `index.vibe` root registry now requires
-  `export let version = "<semver>"` (simple `x.y.z` form).
+- Dependencies are pinned in the root `index.vpkg` header, one
+  `require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>` line
+  per package: `vibe add <source-spec>` writes it and installs the package
+  under `.vibe/store/`, `vibe fetch` restores the store from the pins, and the
+  loader verifies the store copy against the pin on every build (#2676). There
+  is no separate lock file. Import diagnostics are compile-fatal.
 - Scratch workflow alias resolution is fixed for local registry usage:
   persisted sources containing `import @vibe/builtin@<version>.vdb` resolve
   aliases from `VIBE_LIB_DIR` (fallback `$HOME/.vibe/lib`), and `.vdb` can

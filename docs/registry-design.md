@@ -11,11 +11,15 @@ vibe のパッケージ配布は「**require pin (content hash) が唯一の真�
 ## Phase 0 — git/GitHub 直接解決 (実装済み, #755)
 
 レジストリが存在しなくても、hash pin があれば任意の transport は信頼不要になる。
-`scripts/vibe_pkg.sh add` はそれを git に対して実装したもの:
+`scripts/vibe_pkg.sh add` はそれを git に対して実装したもので、launcher の
+2 つの動詞がその上に乗る (#2676): プロジェクトの `.vibe/store/` に入れて root
+`index.vpkg` に pin 行を書く `vibe add` と、`$VIBE_HOME/lib` に入れるだけの
+`vibe pkg add`:
 
 ```
-vibe_pkg.sh add github:owner/repo[/sub/dir]@<ref> [#pkg:sha1:<40hex>] [--store]
-vibe_pkg.sh add git:<url>@<ref>[#<sub/dir>]       [#pkg:sha1:<40hex>] [--store]
+vibe add github:owner/repo[/sub/dir]@<ref>           # .vibe/store + require ... from <source>@<commit>
+vibe add git:<url>@<ref>[#<sub/dir>]
+vibe pkg add <source-spec> [#pkg:sha1:<40hex>]       # $VIBE_HOME/lib, manifest は触らない
 ```
 
 - **fetch**: `github:` は `https://github.com/owner/repo.git` への sugar。ref は
@@ -146,7 +150,7 @@ toolchain の `lib/vibe_pkg.sh` に同梱されるので checkout 不要)。
 ### 実装済みの範囲と既知の gap
 
 - `vibe pkg update <name>` は最新の **non-yanked** version へ切り替え、切り替え
-  前に contract hash の変化と contract (index.vibei) の textual diff を表示
+  前に contract hash の変化と contract (index.vpkg) の textual diff を表示
   する。要件 4 の canonical な diff (contract_surface_lines の集合差分 +
   effect row の capability 分類) は compiler 側に shell から叩ける adapter
   mode がまだ無いため未実装 — adapter mode (`VIBE_SURFACE=1` 相当) の追加が
