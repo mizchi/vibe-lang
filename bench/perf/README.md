@@ -116,12 +116,38 @@ The `perf-metrics` job in `.github/workflows/ci.yml` runs on every PR and every 
   - **advisory** (wall time, noisy on shared runners): selfcompile `wall_ms`
     (median of 3) and `ns_p50` per tracked bench — recorded in the snapshot
     for history, **not rendered** in the report (below).
-- `scripts/bench_report.mjs current.json [baseline.json]` renders the
-  markdown comparison — **deterministic rows only**, flagged at ±2%. Advisory
-  wall times are deliberately absent: runner-speed variance swung every wall
-  row ±15-40% on unrelated PRs, which made the section noise for human and
-  LLM readers alike (the #1207/#1867 reports are the record). The readings
-  stay in the `bench-data` snapshots for offline analysis.
+- `scripts/bench_report.mjs current.json [baseline.json] [coverage.json]`
+  renders the markdown comparison — **deterministic rows only**, flagged at
+  ±2%. Advisory wall times are deliberately absent: runner-speed variance
+  swung every wall row ±15-40% on unrelated PRs, which made the section noise
+  for human and LLM readers alike (the #1207/#1867 reports are the record).
+  The readings stay in the `bench-data` snapshots for offline analysis.
+
+  **Four sections: coverage, then one per SIZE TIER** — Large the compiler
+  itself, Medium a real program, Small a micro case — with the axes (memory, code
+  size, benchmark) as columns and **one representative row per tier**:
+
+  | tier | memory | code | benchmark |
+  |---|---|---|---|
+  | Large | selfcompile `heap_ptr_bytes` | `stage2.wasm` | B/op `parse_checker_vibe` |
+  | Medium | `expr_eval` heap | `expr_eval` wasm | `expr_eval` fuel |
+  | Small | — | `fib` wasm | B/op `fib30` |
+
+  It used to render every tracked series instead: ~50 rows, of which ~48 read
+  `±0` on an ordinary PR. A reader cannot find the row that moved in that, so
+  the report got skipped rather than read.
+
+  The representatives are named constants (`REPRESENTATIVE` in the script),
+  never computed from the data — a row whose subject changes when the data
+  changes is not a series, and its Δ would be meaningless.
+
+  **Cutting to one row per tier does not create a blind spot**: the report
+  re-checks EVERY tracked metric, rendered or not, and emits one
+  `drift outside the rows above` line naming whatever passed ±2%. A flat run
+  says `no drift ≥±2% in any other tracked series` rather than staying silent,
+  so "nothing moved" and "nothing was checked" do not look alike. Correctness
+  lines (golden-output and gc-parity mismatches) survive every cut — they are
+  the loudest thing in the report by design.
 - **Per-PR**: the workflow upserts a sticky "📊 Perf report" comment on the
   PR (marker `<!-- vibe-perf-report -->`), comparing against the latest
   main snapshot. Pushing new commits updates the same comment.
@@ -172,9 +198,11 @@ serialized without fuel instrumentation). It composes with the existing
 
 ### Test coverage in the perf report (main-only measurement)
 
-The report's "Test coverage" section shows the selfhost suite's **union**
-rates (function / branch — each source function/branch counted once, #1556)
-with a percentage-point trend vs the previous measurement. The numbers come
+The report's "Coverage" section — first, because it is the only one that
+answers "is the suite still looking at the code" rather than "did a number
+move" — shows the selfhost suite's **union** rates (function / branch, each
+source function/branch counted once, #1556) with a percentage-point trend vs
+the previous measurement. The numbers come
 from ci.yml's `coverage-suite` job, which is **main-only** (it re-runs the
 whole test battery instrumented — too expensive per PR): after the ratchet
 gate it extracts a compact snapshot (`scripts/coverage_bench_snapshot.mjs`)

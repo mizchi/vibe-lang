@@ -582,3 +582,45 @@ test "the analyses refuse to answer where production would have run late DCE fir
   // a guard that suppressed the columns unconditionally could not pass this.
   inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "ANALYSIS dce_entry=0 borrow_ret=9/8:-1:main+0: borrow_fns=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe borrow_masks=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe#1 view_ret=2/1:-1:main+0:")
 }
+
+// #2642 review (Codex P2): `dtd_eq_deferred_requests`, `dtd_eq_deferred_types`
+// and `dtd_eq_typed_refusals` are process-global and nothing cleared them,
+// while their own doc comments said "since the last reset". They cannot be
+// reset per run like the other synthesis registries, because
+// `eq_mint_deferred_into` reads the REGISTRY at the link and needs the union
+// over one split run's modules -- which is also why every EARLIER program's
+// deferrals were still in it. So the reset is at the lane boundary:
+// `desugar_trait_dicts_with_typed_eq` (one program per call) and the per-module
+// driver, before its first module.
+//
+// Two reports, one process, and the first one defers. A re-export chain is what
+// makes it defer: `Box` reaches the module through `export ./b.vibe { Box }`,
+// so the module NAMES the type and cannot see its declaration -- the context is
+// each module's direct imports reduced to their exported form, and a re-export
+// boundary is not a declaration. That is the same shape as the `opaque` contract
+// in #2631, without needing a package on disk.
+//
+// Red-tested by removing both reset calls: the second report then reads
+// `typed_refused=1 deferred=1` -- the FIRST program's `Box[Int]`, carried into
+// a program that has no `Box` at all. `minted` stays 0 there because the link's
+// mint finds nothing to build it from, which is the point: the counters
+// describe a program that is not the one being measured.
+test "a report's deferrals are its own, not the previous report's" {
+  let b = "/tmp/vibe_defer_reset_b.vibe"
+  let c = "/tmp/vibe_defer_reset_c.vibe"
+  let a = "/tmp/vibe_defer_reset_a.vibe"
+  Fs::write_file(b, "export struct Box[T] {\n  v: T\n}\n\nexport fn make_box(n: Int) -> Box[Int] {\n  Box::{ v: n }\n}\n")
+  Fs::write_file(c, "export ./vibe_defer_reset_b.vibe {\n  Box, make_box\n}\n")
+  Fs::write_file(a, "import ./vibe_defer_reset_c.vibe {\n  make_box\n}\n\ntest \"t\" {\n  let p = make_box(1)\n  let q = make_box(1)\n  inspect(p == q, content = \"true\")\n}\n")
+  // The deferring program, and the line that says so: one request the whole
+  // program makes and the split does not, one row the typed channel refused,
+  // and the link minting the helper from the deferral.
+  inspect(String::trim(synth_line_of(prelude_module_full_oracle_report_fs(a, "__no_entry__"))), content = "SYNTH requests=1/0:-spec:A1_N3_BoxN3_Int+ typed_refused=0/1:-+A66_111_120_LN73_110_116_ZR deferred=1 minted=1 indirect=0")
+  // A second program in the same process, which defers nothing. Every column
+  // is zero, including the two the first report left behind.
+  let dep2 = "/tmp/vibe_defer_reset_dep2.vibe"
+  let main2 = "/tmp/vibe_defer_reset_main2.vibe"
+  Fs::write_file(dep2, "export fn twice(n: Int) -> Int {\n  n * 2\n}\n")
+  Fs::write_file(main2, "import ./vibe_defer_reset_dep2.vibe {\n  twice\n}\n\ntest \"t\" {\n  inspect(twice(2), content = \"4\")\n}\n")
+  inspect(String::trim(synth_line_of(prelude_module_full_oracle_report_fs(main2, "__no_entry__"))), content = "SYNTH requests=0 typed_refused=0 deferred=0 minted=0 indirect=0")
+}

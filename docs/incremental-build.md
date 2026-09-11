@@ -157,20 +157,20 @@ header scan (`load_or_parse_module_header_fs` — the same scan the FS typecheck
 lane plans module order with), with a dependency that names a `.vpkg` contract
 expanded to that package's sibling implementations. It has to come from the
 loader because the merge drops `SImport` / `SReExport` as already resolved, so
-the edges cannot be read back off the merged program. Four corrections were
-needed to land on that rule, and the counters only mean what they say under a
-rule that matches a real compile — they are set out with their measurements in
-[The context rule this holds under](#the-context-rule-this-holds-under) below.
+the edges cannot be read back off the merged program. The counters only mean
+what they say under a rule that matches a real compile; what that takes is
+[The context rule](#the-context-rule) below.
 
 **One hop, not transitive.** Closing transitively hands A the declarations of a
 module C that A's dependency B imports *privately* — context no real compile of
 A exposes. Closing only across re-export edges would be the exact rule, and the
 header scan does not distinguish them (it returns a module's deps and its export
-*names*, with no record of which deps a dep re-exports), so this takes the safe
-side: an under-approximation can only *manufacture* a difference, never hide
-one. `edges_unresolved` is reported for the same reason — a dropped edge narrows
-a module's context, but a closure built from every edge and one built from half
-of them otherwise look identical.
+*names*, with no record of which deps a dep re-exports), so this takes the
+narrower side. That narrowing is not free of consequences in either direction —
+[The context rule](#the-context-rule) below says what it can and cannot hide.
+`edges_unresolved` is reported for its own reason: a dropped edge narrows a
+module's context further, and a closure built from every edge and one built from
+half of them otherwise look identical.
 
 ### The four counters
 
@@ -186,9 +186,9 @@ unfolded that it should have folded.
 
 ### What a comparator may depend on
 
-`invisible_whole=0` is the load-bearing number, and it holds under every one of
-the four context rules below: a program that type-checks whole can see every
-nominal it compares.
+`invisible_whole=0` is the load-bearing number, and it does not depend on the
+context rule at all: a program that type-checks whole can see every nominal it
+compares.
 So a lane that sees fewer is the only one that can reach the question, and what
 it does there used to differ.
 
@@ -246,15 +246,20 @@ arguments are themselves whole-program computations
 from each module's own statements on the split side, so `content=0` covers them:
 the per-module computation produced the same rewrites.
 
-One thing it does **not** model, and it is not covered by that zero:
+Two passes read something besides the statements, and the dispatch takes both
+through a `PreludeEnv`: `linked_imports` for `lc_waiter_hooks_available`
+(pass 9, `await_poll_pass`) and the `iw_names` / `iw_wats` arrays
+`lc_extract_inline_wasm` fills (pass 8). A driver that has to PRODUCE the
+program needs both — those arrays are what carries an `inline_wasm` body to
+codegen, and `linked_imports` decides whether any linked import supplies the
+waiter hooks `await_poll_pass` lowers against.
 
-- **`await_poll_pass`** is modelled with an empty `linked_imports`, where
-  production passes the real list. So the oracle exercises that pass, but not
-  with production's input. Still unmeasured.
-
-This list had two entries when it was written. The validators were the other
-one, and they graduated: they are measured now, by the counter below rather
-than by `missing` / `content` / `renames`, which cannot see a diagnostic.
+The oracle's two lanes pass `prelude_env_none()`, and what that bounds is
+lane-specific. For the RC production lane it is faithful: that lane hands
+`compile_wasi_module_linked_impl_*` an empty `linked_imports` anyway, and the
+inline-wasm arrays are empty for any program without `inline_wasm`. For a lane
+that links real imports, or a program that uses `inline_wasm`, a measurement
+taken under `prelude_env_none()` is not evidence about that lane.
 
 None of this weakens the decomposition result for what it covers. It bounds it.
 
@@ -275,17 +280,12 @@ allocates, in the **dependency** of a two-file program, reads `validators=1`:
 the whole-program run walks it and the per-module union reports the same one
 diagnostic. The clean two-file control reads `0`.
 
-### The context rule this holds under
+### The context rule
 
-Four corrections to get right, and they are worth keeping because three were the
-same mistake and the fourth was its mirror image:
-
-| rule | reachable pairs | `missing` | `content` |
-|---|---:|---:|---:|
-| every other file | 132 860 | 1 | 4 |
-| transitive closure | 32 017 | 1 | 4 |
-| own direct imports | 1 415 | 6 | 9 |
-| **direct + package deps** | **11 342** | **0** | **0** |
+Three constraints. A rule that misses any of them produces counters that do not
+mean what they say, and it can miss in either direction: too wide and a green
+means less than it looks, too narrow and the comparison manufactures a
+difference that is not there.
 
 - A module sees what it **directly imports** — not what its dependencies import.
   A transitive closure hands A the declarations of a module its dependency
@@ -301,11 +301,34 @@ same mistake and the fourth was its mirror image:
   what a module sees is exactly the published surface: nothing transitive,
   nothing private, no bodies.
 
-The first three rules were too wide and produced greens that meant less than
-they looked; the fourth was too narrow and manufactured a difference that was
-not there. Both directions are errors, and only the counters distinguish them —
-which is why `edges_unresolved` and `invisible_*` are reported rather than
-assumed.
+Only the counters distinguish the two directions, which is why
+`edges_unresolved` and `invisible_*` are reported rather than assumed.
+
+**`edges_unresolved=0` says no direct dependency edge was DROPPED — not that the
+context is what a real compile exposes.** The closure is a deliberate
+under-approximation, because the header scan returns a module's deps and its
+export *names* with no record of which deps a dep re-exports. So a type that
+reaches a module through `export ./b.vibe { Box }` is named in that module with
+its declaration absent from the context, and the split lane takes a different
+path than an exact context would. `prelude_module_oracle_test.vibe` uses exactly
+that chain to make a module defer on demand, which is also what an `opaque`
+contract declaration does on the real closure.
+
+**The approximation can hide a difference as well as manufacture one.**
+Narrowing a module's context does not only restrict what it sees, it changes
+what it *does*: a module that cannot see enough **defers**, and
+`eq_mint_deferred_into` builds the helper at the link against the concatenated
+program — which is the whole program. So a module that would have synthesized a
+*differing* helper under an exact context receives the whole-program one
+instead, and the comparison is green over a difference a real per-module
+compile would have had.
+
+So `missing=0 content=0` supports **"the linked program equals the
+whole-program one"** — which is the question a per-module driver actually has —
+and NOT "every module synthesized faithfully". `SYNTH deferred= minted=` is what
+separates them: it counts how much of the green is the link's work rather than
+the modules'. Read them together or the headline number claims more than it
+shows.
 
 ### How the comparator family closed (#2634) — 9 rows, now zero
 
@@ -322,7 +345,7 @@ content  CbfTable::equals   AliasIdx::equals   ExportRenamePlan::equals
 
 #2631's sibling one level up. That issue was a comparator whose *body* depended
 on module visibility, and is fixed — which is why `collisions=0` survives a
-non-zero `invisible_split` under every context rule tried.
+non-zero `invisible_split`.
 
 **Measured which half of "never emits" it is**, because the two have different
 fixes: a module can fail to *record* the need, or record it and fail to emit.

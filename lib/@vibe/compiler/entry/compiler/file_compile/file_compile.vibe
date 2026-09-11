@@ -73,6 +73,7 @@ import @vibe/compiler/codegen/common_base {
 import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl_with_typed_offsets,
   compile_wasi_module_no_dce_impl_with_typed_offsets,
+  compile_wasi_module_rc_cached_impl_with_prov,
   compile_wasi_module_rc_cached_impl_with_typed_offsets,
   compile_wasi_module_rc_impl_with_typed_offsets,
   compile_wasi_module_rc_shadow_impl_with_typed_offsets,
@@ -817,9 +818,24 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
   // Closing only across re-export edges would be the exact rule, and the
   // loader's header scan does not distinguish them: it returns a module's deps
   // and its export NAMES, with no record of which deps a dep re-exports. So
-  // this takes the safe side instead. Direct-only is an UNDER-approximation,
-  // and an under-approximation can only manufacture a difference, never hide
-  // one -- the same reason `unresolved` is reported rather than swallowed.
+  // this takes the safe side instead: direct-only is an UNDER-approximation,
+  // and `unresolved` is reported rather than swallowed for the same reason.
+  //
+  // The approximation is NOT one-sided: it can hide a difference as well as
+  // manufacture one, so do not restore an "only manufactures" claim here.
+  // Narrowing a module's context changes the EXECUTION PATH, not just the
+  // inputs -- a module that cannot see enough defers, and
+  // `eq_mint_deferred_into` builds the helper at the link against the
+  // concatenated program, which is the whole program. A module that would have
+  // synthesized a DIFFERING helper under exact context receives the
+  // whole-program one instead, green over a real difference.
+  // `prelude_module_oracle_test.vibe` relies on exactly that to make a module
+  // defer on demand.
+  //
+  // So the oracle's zero supports "the LINKED program equals the whole-program
+  // one" -- the question a per-module driver has -- and not "every module
+  // synthesized faithfully". `SYNTH deferred=` / `minted=` separate the two by
+  // counting how much of the green is the link's work.
   // Measured on the compiler's own CLI closure, and the transitivity was very
   // much load-bearing -- 32017 reachable pairs against 1415 one-hop ones, 22x
   // wider. Under it the split read `missing=1 content=4 invisible_split=2`;
@@ -1498,6 +1514,45 @@ fn body_cache_guards_equal(a: CodegenBodyCache, b: CodegenBodyCache) -> Bool {
   Array::length(a.guard_meta) == 5 && bcc_int_lists_equal(a.guard_meta, b.guard_meta) && bcc_string_lists_equal(a.guard_synth_names, b.guard_synth_names) && bcc_int_lists_equal(a.guard_synth_stmts, b.guard_synth_stmts) && bcc_string_lists_equal(a.guard_import_names, b.guard_import_names) && bcc_string_lists_equal(a.guard_borrow_names, b.guard_borrow_names) && bcc_int_lists_equal(a.guard_borrow_masks, b.guard_borrow_masks) && bcc_string_lists_equal(a.guard_unmangled_names, b.guard_unmangled_names)
 }
 
+/// #2575 item 2: the ordinary lane's statement-to-module map, as a `DbgProv`.
+///
+/// This is the input `prelude_run_per_module` needs and no production compile
+/// could give it: `effect_lowering_prelude` takes only the merged statement
+/// array, so nothing downstream can split it by module.
+///
+/// It costs an expansion and no new merge work. `file_counts[i]` is how many
+/// merged top-level statements flat file `i` contributed, in merge order --
+/// `build_grouped_merged_stmts_counted` already produces it because the
+/// codegen body cache needs the same table -- so the per-statement ids are a
+/// run-length decode of something this lane holds either way.
+///
+/// `file_nls` is deliberately EMPTY. The per-file newline tables are the
+/// expensive half of the break lane's provenance (one offset array per source,
+/// rebased) and exist to map a LINE; a per-module prelude needs only which
+/// module a statement came from.
+///
+/// Alignment holds across `elaborate_heap_params`, which runs between this and
+/// the owner scan that reads it: that pass pushes exactly one statement per
+/// input statement, so the count and order it hands on are the merge's.
+/// `linked_compile_prov_inert_test.vibe` pins that, because an edit there
+/// would silently misalign every id rather than fail.
+fn ordinary_lane_dbg_prov(file_paths: Array[String], file_counts: Array[Int]) -> DbgProv {
+  let files = array_empty()
+  let stmt_file_id = array_empty()
+  let mut i = 0
+  while i < Array::length(file_paths) && i < Array::length(file_counts) {
+    Array::push(files, path_basename(Array::get(file_paths, i)))
+    let n = Array::get(file_counts, i)
+    let mut k = 0
+    while k < n {
+      Array::push(stmt_file_id, i)
+      k = k + 1
+    }
+    i = i + 1
+  }
+  DbgProv::{ files: files, file_nls: array_empty(), stmt_file_id: stmt_file_id }
+}
+
 export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -1506,6 +1561,10 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   let (float_offsets, tl_rels, tl_pluses, int_offsets, bool_offsets) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(file_paths, file_bases, clone_float_offsets))
   let (eq_offsets, eq_keys) = union_module_typed_eq_rows(file_paths, file_bases)
   let merged_stmts = rewrite_string_binops_stmts(merged_stmts_raw, tl_rels, tl_pluses, typed_lowering_binop_anchor)
+  // #2575 item 2. The binop rewrite above preserves the statement count (it
+  // rewrites in place), so the map built from the merge's counts still indexes
+  // `merged_stmts`.
+  let lane_prov = ordinary_lane_dbg_prov(file_paths, file_counts)
   // The key is independent of source CONTENT (the point is to hit after an
   // edit) but scoped to the entry PATH: two roots that share a conventional
   // entry name (`run`, `main`) must not share one artifact slot, or their
@@ -1517,7 +1576,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   }
   if cache_mode == "verify" {
     let fresh_out = codegen_body_cache_new()
-    let fresh = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+    let fresh = compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
     if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_in, fresh_out) {
       // Guard drift (an edit flipped a whole-program fact the guards pin)
       // is an EXPECTED cache miss, checked above against the fresh
@@ -1529,7 +1588,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
       // replay/sliced gates prove that recompile is byte-identical to the
       // first, so any difference here is attributable to the persisted
       // bodies being replayed.
-      let replayed = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+      let replayed = compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
       let fresh_n = Bytes::length(fresh)
       let rn = Bytes::length(replayed)
       if fresh_n != rn {
@@ -1558,7 +1617,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
     fresh
   } else {
     let cache_out = codegen_body_cache_new()
-    let bytes = compile_wasi_module_rc_cached_impl_with_typed_offsets(merged_stmts, entry_name, cache_in, cache_out, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+    let bytes = compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, cache_in, cache_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
     // Replayed entries are not re-recorded, so the refreshed artifact is
     // the new harvest plus the entries it replayed -- but ONLY when the
     // cache was actually consumed (its guards match the new harvest's).

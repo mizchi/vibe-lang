@@ -1,0 +1,114 @@
+import @vibe/compiler/codegen/common_base {
+  DbgProv, codegen_body_cache_new, empty_dbg_prov
+}
+
+import @vibe/compiler/codegen/wasi {
+  compile_wasi_module_rc_cached_impl_with_prov, compile_wasi_module_rc_cached_impl_with_typed_offsets
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+// #2575 item 2: the ordinary lane now carries the merged program's
+// statement-to-module map to codegen. `prelude_run_per_module` is measured
+// exact and cannot be CALLED by a production compile, because
+// `effect_lowering_prelude` takes only the merged statement array -- nothing
+// downstream can split it by module. Carrying the map is the prerequisite.
+//
+// Carrying it must change nothing until something reads it, and "must change
+// nothing" has exactly one honest test: compile the same program both ways and
+// compare the BYTES.
+//
+// WHAT THIS TEST DOES NOT COVER, measured rather than assumed. The owner-key
+// scan in `compile_wasi_module_linked_impl_with_typed_offsets` was gated on
+// `Array::length(prov.stmt_file_id) > 0` -- a PROXY for the break lane,
+// correct only while the break lane was the only caller filling provenance.
+// Filling it here would have switched that scan on for every ordinary compile
+// (one `hoisted_lambda_owner_of_stmt` plus two pushes per top-level statement,
+// ~9.9k of them on the compiler's own closure) with the arrays never read, so
+// the guard now tests `debug_break`. Reverting it to the proxy and re-running
+// this file still PASSES: the scan fills arrays nothing consumes, so it is
+// pure COST and byte-inert. The guard is therefore not pinned here and cannot
+// be -- where it shows up is the perf report's selfcompile allocation row.
+
+fn program_stmts(src: String) -> Array[Stmt] with Exception {
+  parse_program(lex(src))
+}
+
+/// The checker's typed-lowering tables, empty: this lane compiles a parsed
+/// program directly, so there are no offsets to thread. Named rather than
+/// spelled `[]` five times per call, which the formatter breaks across lines.
+fn no_ints() -> Array[Int] {
+  []
+}
+
+fn no_keys() -> Array[String] {
+  []
+}
+
+fn rc_plain(stmts: Array[Stmt]) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_typed_offsets(stmts, "main", codegen_body_cache_new(), codegen_body_cache_new(), no_ints(), no_ints(), no_ints(), no_ints(), no_keys())
+}
+
+fn rc_with_prov(stmts: Array[Stmt], prov: DbgProv) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_prov(stmts, "main", codegen_body_cache_new(), codegen_body_cache_new(), prov, no_ints(), no_ints(), no_ints(), no_ints(), no_keys())
+}
+
+fn src_two_modules() -> String {
+  "fn helper(n: Int) -> Int {\n  n + 1\n}\n\nstruct Pt {\n  x: Int;\n  y: Int\n} derive (Eq)\n\nfn main() -> Int {\n  let a = Pt::{ x: helper(1), y: 2 }\n  let b = Pt::{ x: 2, y: 2 }\n  if a == b {\n    helper(10)\n  } else {\n    0\n  }\n}\n"
+}
+
+/// A map shaped like the one `ordinary_lane_dbg_prov` builds: every statement
+/// attributed to one of two modules, split down the middle.
+fn two_module_prov(n: Int) -> DbgProv {
+  let ids: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(ids, if i < n / 2 {
+      0
+    } else {
+      1
+    })
+    i = i + 1
+  }
+  DbgProv::{ files: ["a.vibe", "b.vibe"], file_nls: [], stmt_file_id: ids }
+}
+
+test "carrying the statement-to-module map does not change a byte of the output" {
+  let stmts = program_stmts(src_two_modules())
+  let without = rc_plain(stmts)
+  let with_map = rc_with_prov(program_stmts(src_two_modules()), two_module_prov(Array::length(stmts)))
+  // Same length AND same bytes. Length alone would pass on a module that
+  // differed only in a function's contents, which is exactly what a wrongly
+  // enabled owner scan or a misread file id would produce.
+  inspect(Bytes::length(with_map) == Bytes::length(without), content = "true")
+  let mut i = 0
+  let mut first_diff = 0 - 1
+  while i < Bytes::length(without) && i < Bytes::length(with_map) {
+    if Bytes::get(with_map, i) != Bytes::get(without, i) && first_diff < 0 {
+      first_diff = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(first_diff, content = "-1")
+  // And the compile is not vacuously empty -- an entry that produced nothing
+  // would compare equal to itself and prove nothing.
+  inspect(Bytes::length(without) > 0, content = "true")
+}
+
+test "an empty map and a full one are the same compile" {
+  // The wrapper passes `empty_dbg_prov()`, so this pins that the two entries
+  // agree when the map carries nothing: a difference here would mean the new
+  // parameter changed the compile by existing rather than by its contents.
+  let stmts = program_stmts(src_two_modules())
+  let via_wrapper = rc_plain(stmts)
+  let via_empty = rc_with_prov(program_stmts(src_two_modules()), empty_dbg_prov())
+  inspect(Bytes::length(via_empty) == Bytes::length(via_wrapper), content = "true")
+}

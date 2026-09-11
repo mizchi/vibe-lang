@@ -21172,6 +21172,30 @@ export fn eq_mint_deferred_into(stmts: Array[Stmt]) -> Int {
   Array::length(stmts) - before
 }
 
+/// #2642 review (Codex P2): clear what a LANE recorded, at that lane's
+/// boundary.
+///
+/// These three arrays are process-global and nothing cleared them, while their
+/// own doc comments said "since the last reset". The other synthesis registries
+/// (`dtd_arr_eq_needed_keys`, `dtd_map_eq_needed_keys`,
+/// `dtd_eq_specializations`) are reset by `dtd_run` on every call, so they
+/// describe one run; a caller that wants the union over several modules unions
+/// the per-run lists itself. These cannot do that, because `eq_mint_deferred_into`
+/// reads the REGISTRY at the link and so needs it to accumulate across the
+/// modules of one split run -- which also means every earlier program's
+/// deferrals were still in it. A second oracle report in the same process
+/// therefore replayed the first program's instantiations against the second
+/// program's statements, and `deferred` / `minted` depended on test order.
+///
+/// So the reset is at the lane boundary rather than per run: the whole-program
+/// entry (`desugar_trait_dicts_with_typed_eq`, one program per call) and the
+/// per-module driver, before its first module.
+export fn eq_deferred_reset() -> Unit {
+  Array::truncate(dtd_eq_deferred_requests, 0)
+  Array::truncate(dtd_eq_deferred_types, 0)
+  Array::truncate(dtd_eq_typed_refusals, 0)
+}
+
 export fn eq_deferred_requests_list() -> Array[String] {
   let out = empty_str_array()
   let mut i = 0
@@ -21246,6 +21270,11 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
   Array::set(dtd_own_limit, 0, 0 - 1)
   Array::set(dtd_ctx_len, 0, 0)
   Array::set(dlh_module_tag, 0, "")
+  // One program per call, so this call's deferrals and refusals are this
+  // program's. The per-module entry deliberately does NOT reset: its caller
+  // wants the union across the modules of one split run, and resets once at
+  // that boundary (#2642 review, Codex P2).
+  eq_deferred_reset()
   dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
 }
 
