@@ -308,16 +308,14 @@ path than an exact context would. `prelude_module_oracle_test.vibe` uses exactly
 that chain to make a module defer on demand, which is also what an `opaque`
 contract declaration does on the real closure.
 
-**The under-approximation is not one-sided, and this matters more than it
-sounds.** The older framing — "an under-approximation can only manufacture a
-difference, never hide one" — was true while a module that could not build a
-helper produced a `missing` row. It stopped being true when the link learned to
-MINT (#2634): a module that cannot see enough now **defers**, and
-`eq_mint_deferred_into` builds the helper against the concatenated program,
-which is the whole program. A module that under an exact context would have
-synthesized a *differing* helper can therefore defer instead and receive the
-whole-program one, and the comparison goes green over a difference that a real
-per-module compile would have had.
+**The approximation can hide a difference as well as manufacture one.**
+Narrowing a module's context does not only restrict what it sees, it changes
+what it *does*: a module that cannot see enough **defers**, and
+`eq_mint_deferred_into` builds the helper at the link against the concatenated
+program — which is the whole program. So a module that would have synthesized a
+*differing* helper under an exact context receives the whole-program one
+instead, and the comparison is green over a difference a real per-module
+compile would have had.
 
 So `missing=0 content=0` supports **"the linked program equals the
 whole-program one"** — which is the question a per-module driver actually has —
