@@ -2889,7 +2889,34 @@ echo "[compiler-gate] self-discharging owner's closure-typed parameter ok (285)"
 # redundant with the cold one: a port that only passes the cold case is
 # silently permissive, which is worse than no gate.
 echo "[compiler-gate] 114/114 the ADR-0068 gate exists in the split CLI, cold and warm (#2305)"
-sc_cli="${VIBE_SPLIT_CLI_WASM:-_build/bench/selfhost_cli_core/index_stage1.wasm}"
+# WHICH compiler is this gate asking? The answer used to be "whatever
+# `_build/bench/selfhost_cli_core/index_stage1.wasm` happens to hold", with no
+# link to the stage2 the rest of the lane exercises. That path is written by
+# other tooling, so on a reused workspace this gate silently questioned a CLI
+# built from different sources -- twice in one session, and both times the
+# result said nothing about the tree under test:
+#
+#   - an artifact predating the `allows` landing could not parse the gate's
+#     OWN fixture, and answered `expected { but got ident` instead of the
+#     ADR-0068 diagnostic: a false RED;
+#   - the same mechanism can as easily produce a false GREEN, which is the
+#     dangerous direction -- a stale CLI that still refuses correctly while
+#     the current sources no longer do.
+#
+# CLAUDE.md states the rule this broke: a gate that asks the compiler a
+# question has to be TOLD which compiler, and the ones that pick for
+# themselves all pick the same wrong way.
+#
+# `VIBE_SPLIT_CLI_WASM` still overrides, because a caller naming an artifact
+# explicitly has taken responsibility for its provenance.
+sc_cache_dir="_build/_gate_split_cli_core"
+sc_cli="${VIBE_SPLIT_CLI_WASM:-}"
+if [ -z "$sc_cli" ]; then
+  sc_cli="$sc_cache_dir/index_stage1.wasm"
+  if gate_split_cli_cache_is_current "$ROOT_DIR/$sc_cache_dir" "$stage2_wasm"; then
+    echo "[compiler-gate] 114/114 reusing the split CLI core built from THIS stage2 (#2305)"
+  fi
+fi
 if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
   # BUILD it rather than skip (Codex review on #2313). The first version of
   # this section skipped when no split CLI core was present -- and `ci.yml`
@@ -2917,6 +2944,9 @@ if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
     echo "[compiler-gate] FAIL: split CLI core build produced no artifact for the #2305 gate" >&2
     exit 1
   fi
+  # The provenance record the reuse check above reads. Written only after the
+  # build succeeded, so a half-built cache is never mistaken for a match.
+  cp "$stage2_wasm" "$ROOT_DIR/$sc_built/base_stage2.wasm"
 fi
 if true; then
   case "$sc_cli" in /*) sc_abs="$sc_cli" ;; *) sc_abs="$ROOT_DIR/$sc_cli" ;; esac
