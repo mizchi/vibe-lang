@@ -172,32 +172,26 @@ test "a map that does not match the statement count is refused, not run" {
   inspect(render_in_order(a) == render_in_order(b), content = "true")
 }
 
-test "the per-module prelude produces the same declarations, with the same bodies" {
+test "the per-module prelude produces the same program, in the same order" {
   let a = program_stmts(two_module_src())
   let b = program_stmts(two_module_src())
   let n = Array::length(b)
   let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
   let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), split_in_half(n), print_stmt)
   // Not vacuous: the prelude synthesized something for the `derive (Eq)`, and
-  // it synthesized the same count on both lanes.
+  // the same count on both lanes.
   inspect(Array::length(a) > n, content = "true")
   inspect(Array::length(a) == Array::length(b), content = "true")
+  // The set, which is what the keyed oracle answers...
   inspect(render_sorted(a) == render_sorted(b), content = "true")
-}
-
-test "and places the synthesized ones per module, not at the end of the program" {
-  // The half the keyed oracle cannot see, named rather than left implicit.
-  // Whole-program: struct, helper, cmp_pts, main, THEN the synthesized
-  // comparator. Split: the comparator closes module 0's statements, so it
-  // lands before module 1's two.
-  let a = program_stmts(two_module_src())
-  let b = program_stmts(two_module_src())
-  let n = Array::length(b)
-  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
-  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), split_in_half(n), print_stmt)
+  // ...and the SEQUENCE, which it cannot. Concatenating the modules puts this
+  // at index 2 -- the synthesized comparator closes module 0, so it precedes
+  // module 1's two statements. The link's two-wave assembly puts every
+  // appended declaration after every un-appended one, by the pass that
+  // appended it, which is where the whole-program lane produces it.
   inspect(index_of_head(a, "let Pt::equals"), content = "4")
-  inspect(index_of_head(b, "let Pt::equals"), content = "2")
-  inspect(render_in_order(a) == render_in_order(b), content = "false")
+  inspect(index_of_head(b, "let Pt::equals"), content = "4")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
 }
 
 test "a module given no context lowers its `==` differently" {
