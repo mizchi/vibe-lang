@@ -64,7 +64,13 @@ import os, sys
 try:
     import yaml
 except ImportError:
-    sys.stderr.write("[pkfire-pin] FAIL: PyYAML is required to parse the workflows\n")
+    sys.stderr.write(
+        "[pkfire-pin] FAIL: PyYAML is required to parse the workflows.\n"
+        "  Install it with: python3 -m pip install pyyaml\n"
+        "  CI provisions it in the structural-lint job. This gate parses the\n"
+        "  workflows rather than scanning them, because four rounds of lexical\n"
+        "  approximation each missed a different case.\n"
+    )
     sys.exit(1)
 
 want = sys.argv[1]
