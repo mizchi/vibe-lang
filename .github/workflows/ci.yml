@@ -446,7 +446,17 @@ jobs:
 
   compiler-contracts:
     needs: [compiler-build]
-    name: compiler-gate (contracts)
+    name: compiler-gate (contracts ${{ matrix.group }})
+    # Ten independent contract gates used to run one after another in a single
+    # job: 357s of the job's 608s on run 34567587111, with the two heaviest
+    # (off-build typecheck 168s, compile-only lanes 142s) contributing most of
+    # it. They share nothing but the stage2 they are all pointed at, and that
+    # now arrives as an artifact, so a group costs a job start plus a download
+    # rather than another compiler build.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [core, typecheck, compile-only]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -472,24 +482,34 @@ jobs:
       - name: Use the compiler built once for this run
         uses: ./.github/actions/use-compiler-build
       - name: RC-is-default gate
+        if: matrix.group == 'core'
         run: RC_DEFAULT_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_rc_default.sh
       - name: Source-range contract gate
+        if: matrix.group == 'core'
         run: RANGE_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_source_range_contract.sh
       - name: Cheatsheet-signatures gate
+        if: matrix.group == 'core'
         run: CHEATSHEET_SIG_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_cheatsheet_signatures.sh
       - name: Builtin-shadowing gate
+        if: matrix.group == 'core'
         run: BUILTIN_SHADOW_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_builtin_shadowing.sh
       - name: Builtin-shadowing gate self-test
+        if: matrix.group == 'core'
         run: BUILTIN_SHADOW_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_builtin_shadowing_test.sh
       - name: Package sibling-scope gate
+        if: matrix.group == 'core'
         run: SIBLING_SCOPE_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_package_sibling_scope.sh
       - name: Declaration-scale gate
+        if: matrix.group == 'core'
         run: DECL_SCALE_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_declaration_scale.sh
       - name: CLI line-termination gate
+        if: matrix.group == 'core'
         run: CLI_NL_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_cli_line_termination.sh
       - name: Off-build typecheck gate
+        if: matrix.group == 'typecheck'
         run: VIBE_OFFBUILD_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_offbuild_typecheck.sh
       - name: Book skip-block gate
+        if: matrix.group == 'core'
         run: VIBE_SKIP_BLOCK_CLI_WASM="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_book_skip_blocks.sh
       # No examples typecheck here: check_examples_typecheck.sh was ALREADY
       # wired, via `pkf run ci-check-examples-typecheck` in compiler-examples,
@@ -497,6 +517,7 @@ jobs:
       # got wrong -- the reachability trace missed the task indirection. Nine
       # of the ten gates in this job were genuinely unrun; this one was not.
       - name: Compile-only lanes gate
+        if: matrix.group == 'compile-only'
         run: COMPILE_ONLY_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_compile_only_lanes.sh
 
   compiler-playground:
@@ -540,6 +561,27 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Cache viberun build
+        # install/install.sh builds runtime/viberun with `cargo build --release`
+        # unless target/release/viberun already exists. Uncached that is the
+        # whole step: on run 34567587111 this job spent ~215s there and printed
+        # nothing, while the check it exists for took 23s. The key is
+        # Cargo.lock + src, which does not move when the compiler changes, so
+        # unlike the compiler caches this one actually hits.
+        #
+        # actions/cache over target/, not Swatinem/rust-cache: rust-cache
+        # deliberately drops the workspace crate's own artifacts and keeps only
+        # dependencies, so the binary is relinked every run -- which is why
+        # perf-metrics still paid 104s with a cache step in place.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/viberun/target
+          key: viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          restore-keys: |
+            viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
       - name: Use the compiler built once for this run
         uses: ./.github/actions/use-compiler-build
       - name: Stage cached compiler
@@ -591,6 +633,27 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Cache viberun build
+        # install/install.sh builds runtime/viberun with `cargo build --release`
+        # unless target/release/viberun already exists. Uncached that is the
+        # whole step: on run 34567587111 this job spent ~215s there and printed
+        # nothing, while the check it exists for took 23s. The key is
+        # Cargo.lock + src, which does not move when the compiler changes, so
+        # unlike the compiler caches this one actually hits.
+        #
+        # actions/cache over target/, not Swatinem/rust-cache: rust-cache
+        # deliberately drops the workspace crate's own artifacts and keeps only
+        # dependencies, so the binary is relinked every run -- which is why
+        # perf-metrics still paid 104s with a cache step in place.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/viberun/target
+          key: viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          restore-keys: |
+            viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
       - name: Use the compiler built once for this run
         uses: ./.github/actions/use-compiler-build
       - name: examples/ type-check ratchet
@@ -909,7 +972,15 @@ jobs:
   # first CI run caught it.)
   gc-gate:
     needs: [compiler-build]
-    name: gc-gate
+    name: gc-gate (${{ matrix.group }})
+    # "wasm-gc heap accounting + validation" was 220s of this job's 274s of
+    # gate work, with the validator-parity and fixture steps adding ~55s after
+    # it. Splitting them puts both under the run's per-job budget instead of
+    # summing into one 500s job.
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [heap, validate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -965,6 +1036,7 @@ jobs:
         with:
           stage2-dest: _build/_ci_gc_gen
       - name: wasm-gc heap accounting + validation
+        if: matrix.group == 'heap'
         run: bash scripts/test_gc_heap_accounting.sh "$PWD/_build/_ci_gc_gen/stage2.wasm"
       # Runs HERE and not in a gate of its own for the same two reasons the job
       # exists: it needs wasm-tools (its oracle) and a stage2, both of which
@@ -974,6 +1046,7 @@ jobs:
       # names every proposal the output requires. Registering the pkf task
       # without this step would leave both measurements running nowhere.
       - name: wasm validator parity + feature-declaration scan
+        if: matrix.group == 'validate'
         run: bash scripts/test_wasm_validate_parity.sh "$PWD/_build/_ci_gc_gen/stage2.wasm"
       # #2156 review: until now NOTHING ran a test fixture on the wasm-gc
       # lane in CI. gc-gate built a stage2 and checked heap accounting and
@@ -988,6 +1061,7 @@ jobs:
       # there is no filename-pattern selection, a fixture is gc-covered only by
       # being named here.
       - name: wasm-gc runtime test fixtures
+        if: matrix.group == 'validate'
         run: |
           VIBE_TEST_CLI_WASM="$PWD/_build/_ci_gc_gen/stage2.wasm" VIBE_TEST_BACKEND=gc \
             bash scripts/vibe_test.sh \
@@ -1013,11 +1087,13 @@ jobs:
             fixtures/bytes_count_last_index_of_test.vibe \
             fixtures/bytes_compare_test.vibe
       - name: wasm-gc direct single-file import diagnostic
+        if: matrix.group == 'validate'
         run: bash scripts/test_gc_direct_import_diag.sh "$PWD/_build/_ci_gc_gen/stage2.wasm"
       # The fixture harness above is not the public command boundary. Keep a
       # separate regression for runtime/vibe's compile_to environment wiring:
       # VIBE_TEST_BACKEND=gc must retain filesystem module loading (#2376).
       - name: wasm-gc public test import resolution
+        if: matrix.group == 'validate'
         run: bash scripts/test_gc_launcher_import.sh "$PWD/_build/_ci_gc_gen/stage2.wasm"
 
   # The 467-file selfhost unit-test battery (#531/#535), weight-balanced into
@@ -1035,7 +1111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v5
       - name: Cache seed artifact
@@ -1072,10 +1148,10 @@ jobs:
           key: vibecache-v2-${{ hashFiles('lib/@vibe/compiler/cache/codegen_fingerprint.vibe') }}-shard${{ matrix.shard }}-${{ github.run_id }}
           restore-keys: |
             vibecache-v2-${{ hashFiles('lib/@vibe/compiler/cache/codegen_fingerprint.vibe') }}-shard${{ matrix.shard }}-
-      - name: Compiler unit-test runner (shard ${{ matrix.shard }}/4)
+      - name: Compiler unit-test runner (shard ${{ matrix.shard }}/8)
         run: |
           VIBE_STAGE2_WASM="$PWD/_build/_ci_shard_gen/stage2.wasm" \
-          VIBE_UNIT_TEST_SHARD="${{ matrix.shard }}/4" \
+          VIBE_UNIT_TEST_SHARD="${{ matrix.shard }}/8" \
             bash scripts/unit_test_runner.sh
 
   # Selfhost suite coverage gate (#535), main-only. Re-runs the entire
@@ -1088,7 +1164,18 @@ jobs:
   # most one merge late, never silently for good.
   coverage-suite:
     needs: [compiler-build]
-    name: coverage-suite (main only)
+    name: coverage-suite (main only, shard ${{ matrix.shard }})
+    # 691s and the longest step in the workflow: it alone set the run's wall
+    # clock at 891s while the required path finished at 615s (run
+    # 34567587111). It is already parallel inside the job -- vibe_test.sh fans
+    # out over min(4, nproc) -- so the only way down is more runners. Eight
+    # disjoint partitions of the same battery; the merge job below aggregates
+    # them and applies the ratchets, which is where they belong: a shard sees a
+    # subset, so every union metric it could compute is a lower bound.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # contents: write for the bench-data append below (same branch the perf
@@ -1118,11 +1205,71 @@ jobs:
           echo "$PWD/$dir" >> "$GITHUB_PATH"
       - name: Use the compiler built once for this run
         uses: ./.github/actions/use-compiler-build
-      - name: Selfhost suite coverage gate (#535)
+      - name: Selfhost suite coverage shard ${{ matrix.shard }}/8 (#535)
         # Relative path: coverage_suite.sh historically rebased $cli onto the
         # repo root (it now tolerates absolute paths too, but stay canonical).
         run: |
           VIBE_SUITE_CLI_WASM="_build/_ci_shard_gen/stage2.wasm" \
+          VIBE_COVERAGE_SHARD="${{ matrix.shard }}/8" \
+            bash scripts/coverage_suite.sh
+      - name: Stage coverage shard ${{ matrix.shard }}
+        # Staged into ONE directory rather than uploading two paths: with two,
+        # upload-artifact roots the archive at their common ancestor, so the
+        # layout the merge sees depends on where the inputs happen to live.
+        # This way the artifact is exactly {vibe_test.log, coverage/} and the
+        # merge's glob is a fact about this step, not about that rule.
+        run: |
+          set -euo pipefail
+          out=_build/coverage-shard-out
+          rm -rf "$out"
+          mkdir -p "$out/coverage"
+          cp _build/coverage/selfhost-suite/vibe_test.log "$out/vibe_test.log"
+          cp -a _build/vibe_test/coverage/. "$out/coverage/"
+      - name: Upload coverage shard ${{ matrix.shard }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          retention-days: 1
+          path: _build/coverage-shard-out
+          if-no-files-found: error
+  coverage-merge:
+    name: coverage-suite (merge)
+    # The ratchets live here, over the union of all eight shards. No compiler:
+    # the report is a pure function of the shard logs and the per-entry
+    # coverage JSON, so this is a download plus a python run.
+    needs: [coverage-suite]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Cache seed artifact
+        # The merge path needs no compiler, but coverage_suite.sh is one script
+        # and check_ci_seed_cache.sh judges the job, not the branch taken --
+        # deliberately, since no scanner can follow which branch runs.
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - name: Download coverage shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-shard-*
+          path: _build/coverage-shards
+      - name: Aggregate and gate (#535)
+        # VIBE_COVERAGE_MERGE_EXPECT makes a lost upload fail as a lost upload:
+        # a partial merge understates every union metric, and without this it
+        # would read as a coverage regression and get "explained" by lowering
+        # the ratchet.
+        run: |
+          VIBE_COVERAGE_MERGE_DIR=_build/coverage-shards \
+          VIBE_COVERAGE_MERGE_EXPECT=8 \
             bash scripts/coverage_suite.sh
       - name: Coverage summary (#1556)
         # Put the union rates on the run's summary page so the current value is
@@ -1352,9 +1499,26 @@ jobs:
       # so cargo re-fingerprints (and recompiles) the whole dependency tree
       # even on a cache hit.
       - name: Cache viberun build
-        uses: Swatinem/rust-cache@v2
+        # install/install.sh builds runtime/viberun with `cargo build --release`
+        # unless target/release/viberun already exists. Uncached that is the
+        # whole step: on run 34567587111 this job spent ~215s there and printed
+        # nothing, while the check it exists for took 23s. The key is
+        # Cargo.lock + src, which does not move when the compiler changes, so
+        # unlike the compiler caches this one actually hits.
+        #
+        # actions/cache over target/, not Swatinem/rust-cache: rust-cache
+        # deliberately drops the workspace crate's own artifacts and keeps only
+        # dependencies, so the binary is relinked every run -- which is why
+        # perf-metrics still paid 104s with a cache step in place.
+        uses: actions/cache@v4
         with:
-          workspaces: runtime/viberun
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/viberun/target
+          key: viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          restore-keys: |
+            viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
       - name: Use the compiler built once for this run
         uses: ./.github/actions/use-compiler-build
       - name: Build viberun (micro-bench runtime)

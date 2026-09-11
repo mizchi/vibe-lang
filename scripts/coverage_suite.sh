@@ -162,13 +162,72 @@ MIN_FUNCTION_UNION="${VIBE_SUITE_MIN_FUNCTION_UNION_RATE:-0}"
 MIN_BRANCH_UNION_HIT="${VIBE_SUITE_MIN_BRANCH_UNION_HIT:-26000}"
 MIN_BRANCH_UNION="${VIBE_SUITE_MIN_BRANCH_UNION_RATE:-57}"
 
-ALLOWLIST="$(mktemp -t vibe-coverage-entries-XXXXXX)"
-trap 'rm -f "$ALLOWLIST"' EXIT
-bash scripts/unit_test_runner.sh --list > "$ALLOWLIST"
+# SHARDING (#2645). This gate re-compiles the whole unit battery under
+# instrumentation: 691s of CI wall time on run 34567587111, and the single
+# longest step in the workflow -- it alone decided the run's wall clock, at
+# 891s against 615s for the required path. It is already parallel INSIDE the
+# job (vibe_test.sh fans out over min(4, nproc)), so the only way down is more
+# runners.
+#
+# Two extra modes, and the default -- run everything, aggregate, gate -- is
+# unchanged:
+#
+#   VIBE_COVERAGE_SHARD=i/N   run only the i-th of N entry partitions, write
+#                             the run log and per-entry coverage, and DO NOT
+#                             gate. A shard sees a subset, so its union rates
+#                             are meaningless; thresholds belong to the whole.
+#   VIBE_COVERAGE_MERGE_DIR=D aggregate the shards collected under D and gate
+#                             on the result. No compiler needed: the report is
+#                             a pure function of the run logs and the per-entry
+#                             coverage JSON.
+#
+# The merge is exactly the union the single job used to produce: the report
+# reads `ok|FAIL <entry>.vibe` lines from the log and one JSON per entry from
+# the coverage directory, and shards partition the entries, so concatenating
+# the logs and collecting the JSONs reconstructs the same inputs.
 OUT_DIR="_build/coverage/selfhost-suite"
 REPORT="$OUT_DIR/selfhost_suite.report.json"
 COV_DIR="_build/vibe_test/coverage"
 
+if [ -n "${VIBE_COVERAGE_MERGE_DIR:-}" ]; then
+  merge_dir="$VIBE_COVERAGE_MERGE_DIR"
+  [ -d "$merge_dir" ] || { echo "[coverage-suite] no such merge dir: $merge_dir" >&2; exit 1; }
+  rm -rf "$COV_DIR" "$OUT_DIR"
+  mkdir -p "$COV_DIR" "$OUT_DIR"
+  run_log="$OUT_DIR/vibe_test.log"
+  : >"$run_log"
+  shard_logs=0
+  for log in "$merge_dir"/*/vibe_test.log; do
+    [ -f "$log" ] || continue
+    cat "$log" >>"$run_log"
+    shard_logs=$((shard_logs + 1))
+  done
+  for d in "$merge_dir"/*/coverage; do
+    [ -d "$d" ] || continue
+    cp -a "$d/." "$COV_DIR/" 2>/dev/null || true
+  done
+  # Refuse rather than gate on a fraction: a merge that silently found one
+  # shard would report a coverage collapse that is really a plumbing failure,
+  # and the ratchet would be "explained" by lowering it.
+  want_shards="${VIBE_COVERAGE_MERGE_EXPECT:-0}"
+  if [ "$shard_logs" -eq 0 ]; then
+    echo "[coverage-suite] FAIL: no shard logs under $merge_dir" >&2
+    exit 1
+  fi
+  if [ "$want_shards" -gt 0 ] && [ "$shard_logs" -ne "$want_shards" ]; then
+    echo "[coverage-suite] FAIL: merged $shard_logs shard log(s), expected $want_shards" >&2
+    echo "  A partial merge understates every union metric -- that is a broken" >&2
+    echo "  upload, not a coverage regression." >&2
+    exit 1
+  fi
+  echo "[coverage-suite] merged $shard_logs shard(s) from $merge_dir"
+  python3 scripts/coverage_suite_report.py "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" "$MIN_BRANCH_UNION_HIT" "$MIN_BRANCH_UNION" "$MIN_FUNCTION_UNION_HIT" "$MIN_FUNCTION_UNION"
+  exit $?
+fi
+
+ALLOWLIST="$(mktemp -t vibe-coverage-entries-XXXXXX)"
+trap 'rm -f "$ALLOWLIST"' EXIT
+bash scripts/unit_test_runner.sh --list > "$ALLOWLIST"
 # Compiling CLI: explicit override > the generation built for this checkout.
 # Do not select the newest directory by mtime: a worktree can retain a stage2
 # from another revision, yielding stale coverage failures or false greens.
@@ -254,6 +313,36 @@ if [ "${#entries[@]}" -eq 0 ]; then
   exit 1
 fi
 
+# Round-robin over the full list, so the union of all N shards is exactly the
+# unsharded battery and the shards are disjoint -- the same property
+# unit_test_runner.sh's weight-balanced split guarantees, without a second
+# weights file to keep in step.
+if [ -n "${VIBE_COVERAGE_SHARD:-}" ]; then
+  case "$VIBE_COVERAGE_SHARD" in
+    */*) ;;
+    *) echo "[coverage-suite] FAIL: VIBE_COVERAGE_SHARD must be i/N (e.g. 0/8)" >&2; exit 2 ;;
+  esac
+  shard_i="${VIBE_COVERAGE_SHARD%%/*}"
+  shard_n="${VIBE_COVERAGE_SHARD##*/}"
+  if ! [ "$shard_i" -ge 0 ] 2>/dev/null || ! [ "$shard_n" -ge 1 ] 2>/dev/null \
+     || [ "$shard_i" -ge "$shard_n" ]; then
+    echo "[coverage-suite] FAIL: bad shard spec: $VIBE_COVERAGE_SHARD" >&2
+    exit 2
+  fi
+  sharded=()
+  idx=0
+  for e in "${entries[@]}"; do
+    if [ $((idx % shard_n)) -eq "$shard_i" ]; then sharded+=("$e"); fi
+    idx=$((idx + 1))
+  done
+  if [ "${#sharded[@]}" -eq 0 ]; then
+    echo "[coverage-suite] FAIL: shard $VIBE_COVERAGE_SHARD selected 0 of ${#entries[@]} entries" >&2
+    exit 1
+  fi
+  echo "[coverage-suite] shard $VIBE_COVERAGE_SHARD: ${#sharded[@]} of ${#entries[@]} entries"
+  entries=("${sharded[@]}")
+fi
+
 echo "[coverage-suite] cli=$cli entries=${#entries[@]}"
 rm -rf "$COV_DIR"
 mkdir -p "$OUT_DIR"
@@ -271,5 +360,13 @@ case "$cli" in
 esac
 VIBE_TEST_CLI_WASM="$cli_abs" bash scripts/vibe_test.sh --coverage "${entries[@]}" \
   | tee "$run_log" || true
+
+if [ -n "${VIBE_COVERAGE_SHARD:-}" ]; then
+  # A shard holds a partition, so every union metric it could compute is a
+  # lower bound on the real one. Gating here would either fail honest shards
+  # or need per-shard thresholds that mean nothing; the merge gates instead.
+  echo "[coverage-suite] shard $VIBE_COVERAGE_SHARD done: log=$run_log coverage=$COV_DIR (not gated; the merge gates)"
+  exit 0
+fi
 
 python3 scripts/coverage_suite_report.py "$run_log" "$COV_DIR" "$REPORT" "$MIN_POINT" "$MIN_LINE" "$MIN_BRANCH" "$MIN_FN_HIT" "$MIN_BRANCH_HIT" "$MIN_BRANCH_UNION_HIT" "$MIN_BRANCH_UNION" "$MIN_FUNCTION_UNION_HIT" "$MIN_FUNCTION_UNION"
