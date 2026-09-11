@@ -238,114 +238,168 @@ check "vibe shell declares + evaluates" "42" "$(printf '%s\n' "$shell_out" | sed
 check "vibe shell survives a bad line" "21" "$(printf '%s\n' "$shell_out" | sed -n 2p)"
 check "vibe shell reports the bad line" "yes" "$(grep -q 'error' "$shell_err" && echo yes || echo no)"
 
-# fetch: vendor a file:// dep, then run a program that imports it.
-fproj="$WORK/fproj"
-mkdir -p "$fproj"
-printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$WORK/mathlib_src.vibe"
-printf 'mathlib file://%s/mathlib_src.vibe\n' "$WORK" > "$fproj/vibe.deps"
-printf 'import ./deps/mathlib.vibe { add }\nfn main allows Stdout { Stdout::write_stream("\\{add(40, 2)}\\n") }\n' > "$fproj/app.vibex"
-"$VIBE" fetch "$fproj" >/dev/null 2>&1 && rc=0 || rc=$?
-check "vibe fetch exit" "0" "$rc"
-check "vibe fetch wrote lock" "yes" "$([ -s "$fproj/vibe.lock" ] && echo yes || echo no)"
-check "vibe fetch vendored dep" "yes" "$([ -s "$fproj/deps/mathlib.vibe" ] && echo yes || echo no)"
-check "vibe run vendored dep" "42" "$(run_number "$fproj/app.vibex")"
-
-# fetch: a git+ dependency from a local repo, vendored as a directory.
+# Dependencies (#2676, docs/toolchain-layout.md section 7): `vibe add
+# <source-spec>` fetches a package from a git source into the project's
+# `.vibe/store/` and pins it in the root index.vpkg (version, content hash,
+# commit-pinned source); `vibe fetch` restores the store from those pins on a
+# fresh clone, from the cache or from the source. Hermetic file:// repositories
+# stand in for GitHub.
+run_number_in() { # run_number_in <dir> <file>
+  ( cd "$1" && "$VIBE" run "$2" 2>/dev/null ) | grep -oE '[0-9]+' | head -1
+}
+git_commit_all() { # git_commit_all <dir> <message>
+  ( cd "$1" && git add -A && git -c user.email=t@t -c user.name=t commit -q -m "$2" )
+}
 if command -v git >/dev/null 2>&1; then
-  repo="$WORK/gitrepo"; mkdir -p "$repo"
-  printf 'export let triple = (x: Int) -> Int { x * 3 }\n' > "$repo/index.vibe"
-  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m init )
-  gproj="$WORK/gproj"; mkdir -p "$gproj"
-  printf 'mathgit git+file://%s\n' "$repo" > "$gproj/vibe.deps"
-  printf 'import ./deps/mathgit/index.vibe { triple }\nfn main allows Stdout { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$gproj/app.vibex"
-  "$VIBE" fetch "$gproj" >/dev/null 2>&1 && rc=0 || rc=$?
-  check "vibe fetch git+ exit" "0" "$rc"
-  check "vibe fetch git+ records commit" "yes" "$(grep -q 'git:' "$gproj/vibe.lock" && echo yes || echo no)"
-  check "vibe run git+ dep" "42" "$(run_number "$gproj/app.vibex")"
+  dep_repo="$WORK/dep_repo"
+  mkdir -p "$dep_repo/packages/@acme/mathx"
+  printf 'name = @acme/mathx\nversion = 1.0.0\ndescription =\n  #|fixture\ndeps = {}\n\ngenerated_hash =\n\nfn triple(x: Int) -> Int\n' > "$dep_repo/packages/@acme/mathx/index.vpkg"
+  printf 'export fn triple(x: Int) -> Int {\n  x * 3\n}\n' > "$dep_repo/packages/@acme/mathx/impl.vibe"
+  ( cd "$dep_repo" && git init -q )
+  git_commit_all "$dep_repo" mathx
+  ( cd "$dep_repo" && git tag v1.0.0 )
+  dep_commit="$(git -C "$dep_repo" rev-parse HEAD)"
+  dep_spec="git:file://$dep_repo@v1.0.0#packages/@acme/mathx"
 
-  # transitive: project -> A (git) -> B (git); A declares B in its own vibe.deps
-  rb="$WORK/rb"; mkdir -p "$rb"
-  printf 'export let base = (x: Int) -> Int { x * 10 }\n' > "$rb/index.vibe"
-  ( cd "$rb" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m b )
-  ra="$WORK/ra"; mkdir -p "$ra"
-  printf 'base git+file://%s\n' "$rb" > "$ra/vibe.deps"
-  printf 'import ./deps/base/index.vibe { base }\nexport let mid = (x: Int) -> Int { base(x) + 2 }\n' > "$ra/index.vibe"
-  ( cd "$ra" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m a )
-  tproj="$WORK/tproj"; mkdir -p "$tproj"
-  printf 'a git+file://%s\n' "$ra" > "$tproj/vibe.deps"
-  printf 'import ./deps/a/index.vibe { mid }\nfn main allows Stdout { Stdout::write_stream("\\{mid(4)}\\n") }\n' > "$tproj/app.vibex"
-  "$VIBE" fetch "$tproj" >/dev/null 2>&1 && rc=0 || rc=$?
-  check "vibe fetch transitive exit" "0" "$rc"
-  check "vibe fetch vendored nested dep" "yes" "$([ -s "$tproj/deps/a/deps/base/index.vibe" ] && echo yes || echo no)"
-  check "vibe run transitive dep tree" "42" "$(run_number "$tproj/app.vibex")"
+  dproj="$WORK/dproj"
+  "$VIBE" new "$dproj" >/dev/null 2>&1
+  printf 'import @acme/mathx { triple }\nfn main allows Stdout { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$dproj/main.vibex"
+  ( cd "$dproj" && "$VIBE" add "$dep_spec" ) > "$WORK/add.log" 2>&1 && rc=0 || rc=$?
+  check "vibe add exit" "0" "$rc"
+  check "vibe add installs into .vibe/store" "yes" "$([ -s "$dproj/.vibe/store/@acme/mathx/index.vpkg" ] && echo yes || echo no)"
+  check "vibe add pins version, hash and the commit-pinned source" "yes" \
+    "$(grep -qE '^require @acme/mathx 1\.0\.0 = #pkg:sha1:[0-9a-f]{40} from git:' "$dproj/index.vpkg" \
+       && grep -qF "from git:file://$dep_repo@$dep_commit#packages/@acme/mathx" "$dproj/index.vpkg" && echo yes || echo no)"
+  check "vibe add declares the dependency" "yes" "$(grep -qx '  @acme/mathx : 1.0.0' "$dproj/index.vpkg" && echo yes || echo no)"
+  ( cd "$dproj" && "$VIBE" fmt --check index.vpkg ) >/dev/null 2>&1 && rc=0 || rc=$?
+  check "the pin line round-trips through vibe fmt --check" "0" "$rc"
+  check "vibe run resolves the store package through the manifest pin" "42" "$(run_number_in "$dproj" main.vibex)"
+  check "vibe add writes only the manifest and the store" "yes" \
+    "$([ "$(ls -A "$dproj" | LC_ALL=C sort | tr '\n' ' ')" = ".gitignore .vibe index.vpkg main.vibex " ] && echo yes || echo no)"
 
-  # --frozen: pin to the lock's commit even after upstream moves on.
-  fzproj="$WORK/fzproj"; mkdir -p "$fzproj"
-  printf 'mathgit git+file://%s\n' "$repo" > "$fzproj/vibe.deps"
-  "$VIBE" fetch "$fzproj" >/dev/null 2>&1 && rc=0 || rc=$?
-  check "vibe fetch (pre-frozen) exit" "0" "$rc"
-  pinsha="$(awk '/^mathgit/{print $3}' "$fzproj/vibe.lock" | sed 's/git://')"
-  # Move the upstream repo forward so HEAD != the locked commit.
-  printf 'export let triple = (x: Int) -> Int { x * 4 }\n' > "$repo/index.vibe"
-  ( cd "$repo" && git add -A && git commit -q -m bump )
-  # Re-fetch with --frozen: must restore the *old* commit's source (x*3).
-  "$VIBE" fetch --frozen "$fzproj" >/dev/null 2>&1 && rc=0 || rc=$?
-  check "vibe fetch --frozen exit" "0" "$rc"
-  printf 'import ./deps/mathgit/index.vibe { triple }\nfn main allows Stdout { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$fzproj/app.vibex"
-  check "vibe fetch --frozen pins commit" "42" "$(run_number "$fzproj/app.vibex")"
-  newsha="$(awk '/^mathgit/{print $3}' "$fzproj/vibe.lock" | sed 's/git://')"
-  check "vibe fetch --frozen keeps lock sha" "$pinsha" "$newsha"
+  # A fresh clone carries the manifest and no store (`.vibe/` is ignored):
+  # `vibe fetch` restores it, first from the cache `vibe add` populated, then
+  # from the pinned source once the cache is wiped.
+  ( cd "$dproj" && git init -q )
+  git_commit_all "$dproj" app
+  clone1="$WORK/clone1"
+  git clone -q "$dproj" "$clone1"
+  check "a fresh clone has no store" "yes" "$([ ! -e "$clone1/.vibe" ] && echo yes || echo no)"
+  ( cd "$clone1" && "$VIBE" fetch ) > "$WORK/fetch1.log" 2>&1 && rc=0 || rc=$?
+  check "vibe fetch from the cache exit" "0" "$rc"
+  check "vibe fetch from the cache restores a running store" "42" "$(run_number_in "$clone1" main.vibex)"
+  rm -rf "$VIBE_HOME/cache/pkg"
+  clone2="$WORK/clone2"
+  git clone -q "$dproj" "$clone2"
+  ( cd "$clone2" && "$VIBE" fetch ) > "$WORK/fetch2.log" 2>&1 && rc=0 || rc=$?
+  check "vibe fetch from the pinned source exit" "0" "$rc"
+  check "vibe fetch from the pinned source restores a running store" "42" "$(run_number_in "$clone2" main.vibex)"
 
-  # verify: clean tree passes, tampering a vendored git dep is detected.
-  "$VIBE" verify "$gproj" >/dev/null 2>&1 && rc=0 || rc=$?
-  check "vibe verify clean exit" "0" "$rc"
-  printf 'export let triple = (x: Int) -> Int { x * 999 }\n' > "$gproj/deps/mathgit/index.vibe"
-  "$VIBE" verify "$gproj" >/dev/null 2>&1 && rc=0 || rc=$?
-  check "vibe verify detects tamper" "1" "$rc"
-  # verify recurses into transitive locks (clean tproj passes).
-  "$VIBE" verify "$tproj" >/dev/null 2>&1 && rc=0 || rc=$?
-  check "vibe verify transitive exit" "0" "$rc"
+  # A store copy that no longer hashes to its pin is refused by the build and
+  # replaced by `vibe fetch`; a source that does not hash to the pin is
+  # refused before anything is installed.
+  printf 'export fn triple(x: Int) -> Int {\n  x * 999\n}\n' > "$clone1/.vibe/store/@acme/mathx/impl.vibe"
+  ( cd "$clone1" && "$VIBE" run main.vibex ) > "$WORK/tamper.log" 2>&1 && rc=0 || rc=$?
+  check "a tampered store copy is refused by the build" "yes" "$([ "$rc" != 0 ] && grep -q 'pin mismatch' "$WORK/tamper.log" && echo yes || echo no)"
+  ( cd "$clone1" && "$VIBE" fetch ) >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe fetch replaces the tampered copy" "0" "$rc"
+  check "the replaced copy runs" "42" "$(run_number_in "$clone1" main.vibex)"
+  clone3="$WORK/clone3"
+  git clone -q "$dproj" "$clone3"
+  sed -i.bak -E 's/#pkg:sha1:[0-9a-f]{40}/#pkg:sha1:0000000000000000000000000000000000000000/' "$clone3/index.vpkg"
+  rm -f "$clone3/index.vpkg.bak"
+  ( cd "$clone3" && "$VIBE" fetch ) > "$WORK/fetch3.log" 2>&1 && rc=0 || rc=$?
+  check "vibe fetch refuses a source that does not hash to the pin" "yes" "$([ "$rc" != 0 ] && grep -q 'hash mismatch' "$WORK/fetch3.log" && echo yes || echo no)"
+  check "a refused fetch installs nothing" "yes" "$([ ! -e "$clone3/.vibe/store/@acme/mathx" ] && echo yes || echo no)"
 
-  # semver constraint: a git dep with tagged releases resolves `^1.0` to the
-  # highest matching tag (v1.2.0), not v2.0.0 and not the unmatched v1.3.0-only.
-  srepo="$WORK/srepo"; mkdir -p "$srepo"
-  ( cd "$srepo" && git init -q && git config user.email t@t && git config user.name t )
-  printf 'export let v = () -> Int { 100 }\n' > "$srepo/index.vibe"
-  ( cd "$srepo" && git add -A && git commit -q -m v1 && git tag v1.0.0 )
-  printf 'export let v = () -> Int { 120 }\n' > "$srepo/index.vibe"
-  ( cd "$srepo" && git add -A && git commit -q -m v12 && git tag v1.2.0 )
-  printf 'export let v = () -> Int { 200 }\n' > "$srepo/index.vibe"
-  ( cd "$srepo" && git add -A && git commit -q -m v2 && git tag v2.0.0 )
-  sproj="$WORK/sproj"; mkdir -p "$sproj"
-  printf 'semlib git+file://%s#^1.0\n' "$srepo" > "$sproj/vibe.deps"
-  printf 'import ./deps/semlib/index.vibe { v }\nfn main allows Stdout { Stdout::write_stream("\\{v()}\\n") }\n' > "$sproj/app.vibex"
-  "$VIBE" fetch "$sproj" >/dev/null 2>&1 && rc=0 || rc=$?
-  check "vibe fetch semver exit" "0" "$rc"
-  check "vibe fetch ^1.0 picks v1.2.0" "120" "$(run_number "$sproj/app.vibex")"
-  # An unsatisfiable constraint fails clearly.
-  printf 'semlib git+file://%s#^9.0\n' "$srepo" > "$sproj/vibe.deps"
-  "$VIBE" fetch "$sproj" >/dev/null 2>&1 && rc=0 || rc=$?
-  check "vibe fetch unsat constraint fails" "1" "$rc"
+  # A package that does not compile cannot be hashed, and the compiler's own
+  # diagnostic reaches stderr: `cat "$x.diag" 2>/dev/null >&2` sent the
+  # message to /dev/null (the redirections apply left to right), so every
+  # `vibe hash` / `vibe add` / `vibe pkg` failure showed only the generic line.
+  mkdir -p "$WORK/badpkg"
+  printf 'name = @acme/bad\nversion = 1.0.0\ndescription =\n  #|fixture\ndeps = {}\n\ngenerated_hash =\n\nfn broken(x: Int) -> Int\n' > "$WORK/badpkg/index.vpkg"
+  printf 'export fn broken(x: Int) -> Int {\n  x +\n}\n' > "$WORK/badpkg/impl.vibe"
+  ( cd "$WORK" && "$VIBE" hash badpkg ) > "$WORK/hash_bad.out" 2> "$WORK/hash_bad.err" && rc=0 || rc=$?
+  check "vibe hash on a package that does not compile fails" "yes" "$([ "$rc" != 0 ] && echo yes || echo no)"
+  check "vibe hash prints the compiler's diagnostic, not only the generic line" "yes" "$(grep -q 'unexpected token' "$WORK/hash_bad.err" && echo yes || echo no)"
+
+  # `@local` (what `vibe new` scaffolds) is not a published name.
+  ( cd "$dproj" && "$VIBE" pkg publish . ) > "$WORK/publish_local.log" 2>&1 && rc=0 || rc=$?
+  check "vibe pkg publish refuses the @local scope" "yes" "$([ "$rc" != 0 ] && grep -q '@local' "$WORK/publish_local.log" && echo yes || echo no)"
+
+  # A semver constraint ref resolves to the highest matching tag (v1.2.0 for
+  # ^1.0: not v2.0.0), and the pin records that release's version and commit.
+  sem_repo="$WORK/sem_repo"
+  mkdir -p "$sem_repo/packages/@acme/semlib"
+  ( cd "$sem_repo" && git init -q )
+  for sv in 1.0.0:100 1.2.0:120 2.0.0:200; do
+    printf 'name = @acme/semlib\nversion = %s\ndescription =\n  #|fixture\ndeps = {}\n\ngenerated_hash =\n\nfn v() -> Int\n' "${sv%%:*}" > "$sem_repo/packages/@acme/semlib/index.vpkg"
+    printf 'export fn v() -> Int {\n  %s\n}\n' "${sv##*:}" > "$sem_repo/packages/@acme/semlib/impl.vibe"
+    git_commit_all "$sem_repo" "v${sv%%:*}"
+    ( cd "$sem_repo" && git tag "v${sv%%:*}" )
+  done
+  sproj="$WORK/sproj"
+  "$VIBE" new "$sproj" >/dev/null 2>&1
+  printf 'import @acme/semlib { v }\nfn main allows Stdout { Stdout::write_stream("\\{v()}\\n") }\n' > "$sproj/main.vibex"
+  ( cd "$sproj" && "$VIBE" add "git:file://$sem_repo@^1.0#packages/@acme/semlib" ) > "$WORK/add_sem.log" 2>&1 && rc=0 || rc=$?
+  check "vibe add ^1.0 exit" "0" "$rc"
+  check "vibe add ^1.0 picks v1.2.0" "120" "$(run_number_in "$sproj" main.vibex)"
+  check "vibe add ^1.0 pins the resolved release" "yes" "$(grep -qE '^require @acme/semlib 1\.2\.0 = #pkg:sha1:[0-9a-f]{40} from git:.*@[0-9a-f]{40}#packages/@acme/semlib$' "$sproj/index.vpkg" && echo yes || echo no)"
+  ( cd "$sproj" && "$VIBE" add "git:file://$sem_repo@^9.0#packages/@acme/semlib" ) >/dev/null 2>&1 && rc=0 || rc=$?
+  check "vibe add with an unsatisfiable constraint fails" "yes" "$([ "$rc" != 0 ] && echo yes || echo no)"
+
+  # Transitive: the project pins @acme/mid, whose own index.vpkg pins
+  # @acme/base; `vibe add` follows that pin, and so does `vibe fetch` on a
+  # fresh clone.
+  base_repo="$WORK/base_repo"
+  mkdir -p "$base_repo/packages/@acme/base"
+  printf 'name = @acme/base\nversion = 1.0.0\ndescription =\n  #|fixture\ndeps = {}\n\ngenerated_hash =\n\nfn base(x: Int) -> Int\n' > "$base_repo/packages/@acme/base/index.vpkg"
+  printf 'export fn base(x: Int) -> Int {\n  x * 10\n}\n' > "$base_repo/packages/@acme/base/impl.vibe"
+  ( cd "$base_repo" && git init -q )
+  git_commit_all "$base_repo" base
+  ( cd "$base_repo" && git tag v1.0.0 )
+  # The mid package is authored the way a user would: `vibe add` its
+  # dependency in its own checkout, so its index.vpkg carries the pin.
+  mid_repo="$WORK/mid_repo"
+  mkdir -p "$mid_repo/packages/@acme/mid"
+  printf 'name = @acme/mid\nversion = 1.0.0\ndescription =\n  #|fixture\ndeps = {}\n\ngenerated_hash =\n\nfn mid(x: Int) -> Int\n' > "$mid_repo/packages/@acme/mid/index.vpkg"
+  printf 'import @acme/base { base }\n\nexport fn mid(x: Int) -> Int {\n  base(x) + 2\n}\n' > "$mid_repo/packages/@acme/mid/impl.vibe"
+  ( cd "$mid_repo/packages/@acme/mid" && "$VIBE" add "git:file://$base_repo@v1.0.0#packages/@acme/base" ) > "$WORK/add_base.log" 2>&1 && rc=0 || rc=$?
+  check "vibe add inside a package checkout pins in that package's index.vpkg" "yes" "$([ "$rc" = 0 ] && grep -q '^require @acme/base 1.0.0 = #pkg:sha1:' "$mid_repo/packages/@acme/mid/index.vpkg" && echo yes || echo no)"
+  rm -rf "$mid_repo/packages/@acme/mid/.vibe"
+  ( cd "$mid_repo" && git init -q )
+  git_commit_all "$mid_repo" mid
+  tproj="$WORK/tproj"
+  "$VIBE" new "$tproj" >/dev/null 2>&1
+  printf 'import @acme/mid { mid }\nfn main allows Stdout { Stdout::write_stream("\\{mid(4)}\\n") }\n' > "$tproj/main.vibex"
+  ( cd "$tproj" && "$VIBE" add "git:file://$mid_repo@HEAD#packages/@acme/mid" ) > "$WORK/add_mid.log" 2>&1 && rc=0 || rc=$?
+  check "vibe add of a package with its own pin exit" "0" "$rc"
+  check "vibe add follows the added package's pins" "yes" "$([ -s "$tproj/.vibe/store/@acme/base/index.vpkg" ] && echo yes || echo no)"
+  check "vibe run through a transitive store dependency" "42" "$(run_number_in "$tproj" main.vibex)"
+  ( cd "$tproj" && git init -q )
+  git_commit_all "$tproj" app
+  tclone="$WORK/tclone"
+  git clone -q "$tproj" "$tclone"
+  ( cd "$tclone" && "$VIBE" fetch ) > "$WORK/fetch_t.log" 2>&1 && rc=0 || rc=$?
+  check "vibe fetch follows transitive pins on a fresh clone" "42" "$([ "$rc" = 0 ] && run_number_in "$tclone" main.vibex)"
 else
-  echo "info: git not available; skipping git+ fetch assertions"
+  echo "info: git not available; skipping the dependency assertions"
 fi
-
-# add: `vibe add` appends to vibe.deps and fetches in one step
-aproj="$WORK/aproj"; mkdir -p "$aproj"
-printf 'export let inc = (x: Int) -> Int { x + 1 }\n' > "$WORK/inclib.vibe"
-"$VIBE" add inclib "file://$WORK/inclib.vibe" "$aproj" >/dev/null 2>&1 && rc=0 || rc=$?
-check "vibe add exit" "0" "$rc"
-check "vibe add wrote manifest + lock" "yes" "$([ -s "$aproj/vibe.deps" ] && [ -s "$aproj/vibe.lock" ] && echo yes || echo no)"
-printf 'import ./deps/inclib.vibe { inc }\nfn main allows Stdout { Stdout::write_stream("\\{inc(41)}\\n") }\n' > "$aproj/app.vibex"
-check "vibe run added dep" "42" "$(run_number "$aproj/app.vibex")"
 
 # new: scaffold a project and run it
 "$VIBE" new "$WORK/scaffold" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe new exit" "0" "$rc"
-# #2675: the scaffold is main.vibex + a root index.vpkg (the project marker and
-# manifest) + .gitignore; the vibe.deps file it used to write is gone.
-check "vibe new scaffolds main + index.vpkg + .gitignore" "yes" "$([ -s "$WORK/scaffold/main.vibex" ] && grep -qx 'name = @local/scaffold' "$WORK/scaffold/index.vpkg" && grep -qx '.vibe/' "$WORK/scaffold/.gitignore" && [ ! -e "$WORK/scaffold/vibe.deps" ] && echo yes || echo no)"
+# #2675: the scaffold is exactly main.vibex + a root index.vpkg (the project
+# marker and manifest) + .gitignore.
+check "vibe new scaffolds main + index.vpkg + .gitignore" "yes" "$([ -s "$WORK/scaffold/main.vibex" ] && grep -qx 'name = @local/scaffold' "$WORK/scaffold/index.vpkg" && grep -qx '.vibe/' "$WORK/scaffold/.gitignore" && [ "$(ls -A "$WORK/scaffold" | LC_ALL=C sort | tr '\n' ' ')" = ".gitignore index.vpkg main.vibex " ] && echo yes || echo no)"
 check "vibe run scaffold" "42" "$(run_number "$WORK/scaffold/main.vibex")"
+# #2676: `--name @scope/name` names a project that will be published; anything
+# else is refused before the directory is created.
+"$VIBE" new --name @acme/app "$WORK/scaffold_named" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe new --name exit" "0" "$rc"
+check "vibe new --name writes the given package name" "yes" "$(grep -qx 'name = @acme/app' "$WORK/scaffold_named/index.vpkg" && echo yes || echo no)"
+"$VIBE" new --name bogus "$WORK/scaffold_bad" >/dev/null 2>&1 && rc=0 || rc=$?
+check "vibe new --name refuses a name that is not @scope/name" "yes" "$([ "$rc" != 0 ] && [ ! -e "$WORK/scaffold_bad" ] && echo yes || echo no)"
 
 echo "[test] $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

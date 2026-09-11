@@ -15,7 +15,7 @@ Phases, in dependency order:
 1. [#2675](https://github.com/mizchi/vibe-lang/issues/2675) — project root
    discovery and `.vibe/build/` outputs (blocks the rest) — **implemented**
 2. [#2676](https://github.com/mizchi/vibe-lang/issues/2676) — one dependency
-   lane on the root `index.vpkg` and `.vibe/store/`
+   lane on the root `index.vpkg` and `.vibe/store/` — **implemented**
 3. [#2677](https://github.com/mizchi/vibe-lang/issues/2677) — per-toolchain
    stdlib, toolchain manifest, `vibe toolchain`, environment variables
 4. [#2678](https://github.com/mizchi/vibe-lang/issues/2678) — prebuilt runner
@@ -48,10 +48,12 @@ launcher the way an installed toolchain runs it, from a scratch project:
   time. There is no toolchain switch command.
 - Six environment variables overlap: `VIBE_HOME`, `VIBE_LIB`, `VIBE_CACHE`,
   `VIBE_TEST_CACHE`, `VIBE_BUILD_CACHE_DIR`, `VIBE_TOOLCHAIN`.
-- `docs/spec/stable-surface.md` §4 names the lock file `index.lock`; the
-  launcher writes `vibe.lock`. `scripts/vibe_pkg.sh` reads `index.vibei` at 22
-  sites and `index.vpkg` at none, so the registry lane does not accept a
-  current package.
+- Two dependency lanes coexisted: `docs/spec/stable-surface.md` §4 named a
+  lock file `index.lock` while the launcher wrote `vibe.lock` next to a
+  vendored `deps/` directory, and `scripts/vibe_pkg.sh` read `index.vibei` at
+  22 sites and `index.vpkg` at none, so the registry lane did not accept a
+  current package. Phase 2 retired the vendoring lane and ported the script
+  (section 7).
 
 ## 2. Global home: `$VIBE_HOME`
 

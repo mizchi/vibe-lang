@@ -75,9 +75,12 @@ read, and every feature below is one the compiler itself depends on.
 - **`index.vpkg` is the package contract and the public API boundary**
   (ADR-0070). Importing a file inside a package boundary is a compile error, and
   the legacy `index.vibei` is gone.
-- `vibe new` / `add` / `fetch --frozen` / `verify` / `pkg publish|install|yank`,
-  with content-hash locking (`index.lock`) and semver constraint resolution.
-  The registry slice is file-based with an RFC6962-shaped transparency log.
+- `vibe new` / `add <source-spec>` / `fetch` / `pkg publish|install|yank`:
+  a dependency is pinned by content hash in the root `index.vpkg`
+  (`require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>`) and
+  installed under `.vibe/store/`; a semver constraint in the ref resolves to a
+  tag at add time (#2676). The registry slice is file-based with an
+  RFC6962-shaped transparency log.
 - Six packages ship with the toolchain: `@vibe/core`, `@vibe/ast`,
   `@vibe/parser`, `@vibe/builtin`, `@vibe/console`, `@vibe/wit_runtime`. The
   rest of the 26 `@vibe/*` and 18 `@vibex/*` packages in the tree are the

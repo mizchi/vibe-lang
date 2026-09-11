@@ -209,17 +209,26 @@ The pre-#594 MoonBit-host `shell` variants (`--tui`, `--ai`, `--no-posix`)
 and the separate `shell-stdin` command were retired; `vibe shell` reads
 stdin line-oriented whenever stdin is not a tty.
 
-### fetch / verify
+### add / fetch
 
-Vendor the dependencies named in `vibe.deps` and synchronize the lock file.
-`vibe verify` re-checks already-vendored deps against `vibe.lock`.
+A dependency is a package pinned in the root `index.vpkg` and installed under
+`.vibe/store/` (#2676, [toolchain-layout.md](toolchain-layout.md)). `vibe add`
+fetches one from its git source, installs it, and writes the `deps` entry and
+the `require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>` pin;
+`vibe fetch` restores the store from those pins on a fresh clone, from the
+cache under `$VIBE_HOME/cache/pkg/` or from the pinned source, hash-verified
+either way.
 
 ```
-vibe fetch [--frozen] [dir]
-vibe verify [dir]
+vibe add github:owner/repo[/dir]@<ref>
+vibe add git:<url>@<ref>[#<dir>]
+vibe fetch
 ```
 
-There is no `vibe update-lock`; it was an alias and is gone.
+A `<ref>` may be a semver constraint (`^1.2`, `~1.2.3`, `>=1.0`, `1.x`); it
+resolves to the highest matching tag before the fetch. There is no
+`vibe verify`, no `vibe update-lock` and no lock file: the build verifies the
+store copy against the pin every time.
 
 ### Formatting (no `vibe fmt`)
 
@@ -281,7 +290,7 @@ vibe normalize --stdout <file.vibe>   # print the result (no write)
 
 ### new
 
-- `vibe new <dir>` -- Scaffold a project: `main.vibex`, a root `index.vpkg` (the project marker and manifest) and `.gitignore` (which ignores `.vibe/`, where builds and pinned dependencies land).
+- `vibe new [--name @scope/name] <dir>` -- Scaffold a project: `main.vibex`, a root `index.vpkg` (the project marker and manifest; `name = @local/<dir>` unless `--name` gives the package name) and `.gitignore` (which ignores `.vibe/`, where builds and pinned dependencies land).
 
 There is no `vibe init`; scaffolding is `vibe new`.
 
@@ -299,7 +308,8 @@ There is no `vibe init`; scaffolding is `vibe new`.
 | `hash [--write] <pkg_dir>` | Package content hash |
 | `root` | Print the project root: the outermost `index.vpkg` up from the current directory, not across `.git`; else the current directory (#2675) |
 | `clean [--all]` | Remove `.vibe/build/` (`--all`: the pinned `.vibe/store/` too) |
-| `add <name> <url> [dir]` | Add a dependency to `vibe.deps` and fetch it |
+| `add <source-spec>` | Fetch a package into `.vibe/store/` and pin it in the root `index.vpkg` |
+| `fetch` | Restore `.vibe/store/` from the pins in the root `index.vpkg` |
 | `pkg publish\|install\|add\|yank\|update` | Package registry operations |
 | `context-pack [--out FILE]` | Cheatsheet + verified golden examples as one file (#820) |
 | `lsp` | Start the stdio LSP server |

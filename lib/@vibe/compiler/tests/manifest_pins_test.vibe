@@ -1,0 +1,165 @@
+//# Imports
+
+import @vibe/compiler/loader {
+  collect_all_sources_fs, contract_package_hashes_fs, fill_require_pins_fs
+}
+
+//# #2676: the root index.vpkg is the project's manifest
+
+// A store import is verified against the pins of the importer's OWNING
+// contract (the nearest enclosing index.vpkg) as well as its own head.
+// Measured before the change: a pin in the root index.vpkg alone did not
+// resolve `import @x/y` from main.vibex ("no require pin"); only a pin in
+// the importing file's own head did, so `vibe add` had nowhere to write.
+//
+// The store package lives at the real `.vibe/store/` path (resolution is
+// cwd-relative and the unit battery runs from the repository root); the
+// scope is unique to this test and removed at the end of every test.
+
+let store_dir: String = ".vibe/store/@gate2676/pins"
+
+let store_index: String = ".vibe/store/@gate2676/pins/index.vpkg"
+
+let proj: String = "_build/vibe_2676_manifest_pins"
+
+let proj_main: String = "_build/vibe_2676_manifest_pins/main.vibe"
+
+let proj_manifest: String = "_build/vibe_2676_manifest_pins/index.vpkg"
+
+let zero_pin: String = "#pkg:sha1:0000000000000000000000000000000000000000"
+
+let mid_dir: String = "_build/vibe_2676_manifest_pins/mid"
+
+let mid_index: String = "_build/vibe_2676_manifest_pins/mid/index.vpkg"
+
+fn write_store_package() -> Unit with Fs {
+  Fs::mkdir_p(store_dir)
+  Fs::write_file(store_index, "name = @gate2676/pins\nversion = 1.0.0\ndescription =\n  #|fixture\ndeps = {}\n\ngenerated_hash =\n\nfn triple(x: Int) -> Int\n")
+  Fs::write_file(String::concat(store_dir, "/impl.vibe"), "export fn triple(x: Int) -> Int {\n  x * 3\n}\n")
+}
+
+fn store_pin() -> String with Exception + Fs {
+  let (pkg_hash, _) = contract_package_hashes_fs(store_index)
+  String::concat("#", pkg_hash)
+}
+
+fn write_project(manifest_pin: String, own_pin: String) -> Unit with Fs {
+  Fs::mkdir_p(proj)
+  let require_line = if manifest_pin == "" {
+    ""
+  } else {
+    String::concat("require @gate2676/pins 1.0.0 = ", String::concat(manifest_pin, " from git:file:///srv/fixture.git@0123abc#packages/@gate2676/pins\n"))
+  }
+  Fs::write_file(proj_manifest, String::concat("name = @local/app\nversion = 0.1.0\ndescription =\n  #|app\ndeps = {\n  @gate2676/pins : 1.0.0\n}\n", String::concat(require_line, "\ngenerated_hash =\n")))
+  let head = if own_pin == "" {
+    ""
+  } else {
+    String::concat("require @gate2676/pins 1.0.0 = ", String::concat(own_pin, "\n"))
+  }
+  Fs::write_file(proj_main, String::concat(head, "import @gate2676/pins { triple }\nexport let n = triple(14)\n"))
+}
+
+fn cleanup() -> Unit with Fs {
+  if Fs::exists(".vibe/store/@gate2676") {
+    Fs::remove(".vibe/store/@gate2676")
+  } else {
+    ()
+  }
+  if Fs::exists(proj) {
+    Fs::remove(proj)
+  } else {
+    ()
+  }
+}
+
+fn collect_verdict() -> String with Fs {
+  handle {
+    let sources = collect_all_sources_fs(proj_main)
+    let mut i = 0
+    let mut has_store = false
+    while i < Array::length(sources) {
+      let (path, _) = Array::get(sources, i)
+      if path == store_index {
+        has_store = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if has_store {
+      "ok"
+    } else {
+      "ok-without-store"
+    }
+  } with { Exception::Throw(m) => String::concat("err:", m) }
+}
+
+test "#2676: a pin in the owning index.vpkg verifies a store import from main" {
+  cleanup()
+  write_store_package()
+  write_project(store_pin(), "")
+  let verdict = collect_verdict()
+  assert_eq(verdict, "ok")
+  cleanup()
+}
+
+test "#2676: no pin in the manifest and none in the head is still refused, naming the manifest" {
+  cleanup()
+  write_store_package()
+  write_project("", "")
+  let verdict = collect_verdict()
+  assert(String::contains(verdict, "no require pin for @gate2676/pins"))
+  assert(String::contains(verdict, "index.vpkg"))
+  cleanup()
+}
+
+test "#2676: a wrong pin in the manifest is a mismatch, and the importer's own pin wins over it" {
+  cleanup()
+  write_store_package()
+  write_project(zero_pin, "")
+  let wrong = collect_verdict()
+  assert(String::contains(wrong, "pin mismatch for @gate2676/pins"))
+  write_project(zero_pin, store_pin())
+  let own_wins = collect_verdict()
+  assert_eq(own_wins, "ok")
+  write_project(store_pin(), zero_pin)
+  let own_loses = collect_verdict()
+  assert(String::contains(own_loses, "pin mismatch for @gate2676/pins"))
+  cleanup()
+}
+
+test "#2676: the fill lane keeps the from clause when it writes the pin" {
+  cleanup()
+  write_store_package()
+  let filled = fill_require_pins_fs("require @gate2676/pins 1.0.0 from git:file:///srv/fixture.git@0123abc\n")
+  assert_eq(filled, String::concat("require @gate2676/pins 1.0.0 = ", String::concat(store_pin(), " from git:file:///srv/fixture.git@0123abc\n")))
+  let repinned = fill_require_pins_fs(filled)
+  assert_eq(repinned, filled)
+  cleanup()
+}
+
+test "#2676: hashing a package whose dependency is not in the store yet is not a boundary crossing" {
+  cleanup()
+  // An enclosing contract above the ABSENT store package: a project's root
+  // index.vpkg sits above `.vibe/store/` in exactly this way. Measured before
+  // the change: `vibe add` hashed the fetched package from the project root,
+  // its `import @gate2676/pins` resolved to a store path that did not exist
+  // yet, the nearest enclosing index.vpkg was taken as that path's owner,
+  // and the hash was refused as "cannot import ... across a package
+  // boundary" -- so a package with a dependency could not be added at all.
+  Fs::mkdir_p(".vibe/store/@gate2676")
+  Fs::write_file(".vibe/store/@gate2676/index.vpkg", "name = @gate2676/root\nversion = 0.1.0\ndescription =\n  #|stands in for a project root manifest\ndeps = {}\n\ngenerated_hash =\n")
+  Fs::mkdir_p(mid_dir)
+  Fs::write_file(mid_index, String::concat("name = @gate2676/mid\nversion = 1.0.0\ndescription =\n  #|fixture\ndeps = {\n  @gate2676/pins : 1.0.0\n}\nrequire @gate2676/pins 1.0.0 = ", String::concat(zero_pin, " from git:file:///srv/fixture.git@0123abc#packages/@gate2676/pins\n\ngenerated_hash =\n\nfn six(x: Int) -> Int\n")))
+  Fs::write_file(String::concat(mid_dir, "/impl.vibe"), "import @gate2676/pins { triple }\n\nexport fn six(x: Int) -> Int {\n  triple(x) * 2\n}\n")
+  let verdict = handle {
+    let (pkg_hash, _) = contract_package_hashes_fs(mid_index)
+    if String::starts_with(pkg_hash, "pkg:sha1:") {
+      "ok"
+    } else {
+      String::concat("unexpected hash: ", pkg_hash)
+    }
+  } with { Exception::Throw(m) => String::concat("err:", m) }
+  assert_eq(verdict, "ok")
+  cleanup()
+}

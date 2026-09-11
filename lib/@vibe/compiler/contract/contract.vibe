@@ -2428,6 +2428,42 @@ export fn is_strict_semver(v: String) -> Bool {
   }
 }
 
+/// #2676: the `from <source-spec>` clause of a require line names where
+/// `vibe add` fetched the package: `github:owner/repo[/dir]@<commit>` or
+/// `git:<url>@<commit>[#<dir>]`. Only the shape is checked here (the
+/// launcher resolves and fetches it); a spec without a `@` has no ref and is
+/// refused, so a pin can never point at "whatever the branch is today".
+export fn is_require_source_spec(s: String) -> Bool {
+  let rest = if String::starts_with(s, "github:") {
+    String::substring(s, 7, String::length(s))
+  } else if String::starts_with(s, "git:") {
+    String::substring(s, 4, String::length(s))
+  } else {
+    ""
+  }
+  String::length(rest) > 0 && String::index_of(rest, "@") > 0
+}
+
+/// Whether the split fields of a require line end in a `from <spec>` clause
+/// (`require @n v from s` or `require @n v = #pin from s`).
+fn require_fields_have_source(fields: Array[String]) -> Bool {
+  let n = Array::length(fields)
+  (n == 5 && Array::get(fields, 3) == "from") || (n == 7 && Array::get(fields, 5) == "from")
+}
+
+/// #2676: the ` from <source-spec>` tail of a require line, "" when it has
+/// none. The fill-pins lane rewrites a require line to add or replace its
+/// pin and re-attaches this, so a source recorded by `vibe add` survives
+/// `vibe fmt` and `VIBE_FILL_PINS`.
+export fn require_line_source_clause(line: String) -> String {
+  let fields = split_fields(line)
+  if require_fields_have_source(fields) {
+    String::concat(" from ", Array::get(fields, Array::length(fields) - 1))
+  } else {
+    ""
+  }
+}
+
 export fn is_package_pin(h: String) -> Bool {
   if !String::starts_with(h, "#pkg:sha1:") {
     false
@@ -2619,8 +2655,20 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
     } else if String::starts_with(trimmed, "require ") {
       let fields = split_fields(trimmed)
       let nfields = Array::length(fields)
-      if nfields != 5 && nfields != 3 {
-        throw("malformed require line (expected: require @scope/name x.y.z [= #pkg:sha1:<40hex>]): \{trimmed}")
+      // Four shapes (#2676 added the `from` clause, which records where
+      // `vibe add` fetched the package from so `vibe fetch` can restore the
+      // store on a fresh clone; the source is commit-pinned):
+      //   require @scope/name x.y.z
+      //   require @scope/name x.y.z = #pkg:sha1:<40hex>
+      //   require @scope/name x.y.z from <source-spec>
+      //   require @scope/name x.y.z = #pkg:sha1:<40hex> from <source-spec>
+      let has_from = require_fields_have_source(fields)
+      let has_pin = nfields == 7 || (nfields == 5 && !has_from)
+      if nfields != 3 && nfields != 5 && nfields != 7 {
+        throw("malformed require line (expected: require @scope/name x.y.z [= #pkg:sha1:<40hex>] [from <source-spec>]): \{trimmed}")
+      } else ()
+      if nfields == 7 && !has_from {
+        throw("malformed require line (expected: require @scope/name x.y.z = #pkg:sha1:<40hex> from <source-spec>): \{trimmed}")
       } else ()
       let rname = Array::get(fields, 1)
       let rver = Array::get(fields, 2)
@@ -2630,10 +2678,10 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       if !is_strict_semver(rver) {
         throw("require version must be a strict semver triple (x.y.z or ^x.y.z): \{rver}")
       } else ()
-      // Unpinned (3-field) form: accepted at parse so `vibe fmt` can fill
-      // the pin offline from the store (D-3); the BUILD still refuses to
-      // resolve an unpinned package (hash-only, resolver-free).
-      let pin_hash = if nfields == 5 {
+      // Unpinned form: accepted at parse so `vibe fmt` can fill the pin
+      // offline from the store (D-3); the BUILD still refuses to resolve an
+      // unpinned package (hash-only, resolver-free).
+      let pin_hash = if has_pin {
         let eq = Array::get(fields, 3)
         let pin = Array::get(fields, 4)
         if eq == "=" {
@@ -2648,6 +2696,12 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       } else {
         ""
       }
+      if has_from {
+        let spec = Array::get(fields, nfields - 1)
+        if !is_require_source_spec(spec) {
+          throw("require source must be github:owner/repo[/dir]@<commit> or git:<url>@<commit>[#<dir>] (written by `vibe add`): \{spec}")
+        } else ()
+      } else ()
       Array::push(pins, (rname, rver, pin_hash))
       StringBuilder::push(sb, blank_of(line))
       blanked_any = true
