@@ -4401,6 +4401,38 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
   }
 }
 
+/// #2638: is THIS function view-returning, given the set decided so far?
+///
+/// The one cross-function read is `view_seen` (through `mrv_fresh`), plus
+/// `user_fns_srt` to tell a user-fn call from a builtin. Everything else is
+/// the function's own body and parameters.
+///
+/// Extracted because the whole-program driver and the per-module lane run
+/// DIFFERENT drivers and must not diverge on the DECISION. The worklist
+/// (#2386) re-walks a function only when one of its callees enters the set,
+/// through a reverse index over the whole program -- an index a module cannot
+/// hold, since the caller and the callee may live in different modules. The
+/// link therefore runs plain ROUNDS instead, which converge to the same set
+/// because the fixpoint is monotone. So what is shared here is the
+/// classification, not the loop around it; claiming one implementation serves
+/// both drivers would be false.
+///
+/// `bound` and `callees` are the caller's scratch rows: `bound` is truncated
+/// here, `callees` is appended to and read by a caller that maintains a
+/// reverse index (the worklist does; the round driver does not need one).
+fn mrv_classify_one(body: Expr, fps: Array[(String, Option[TypeExpr])], fresh_names: MutMap[String, Int], tainted: MutMap[String, Int], bound: Array[String], gen: Int, user_fns_srt: Array[String], view_seen: MutSet[String], callees: Array[String]) -> Bool {
+  Array::truncate(bound, 0)
+  let mut pi = 0
+  while pi < Array::length(fps) {
+    let (pn, _) = Array::get(fps, pi)
+    Array::push(bound, pn)
+    pi = pi + 1
+  }
+  let ret_view = [0]
+  let tail_fresh = mrv_fresh(body, fresh_names, tainted, bound, gen, user_fns_srt, view_seen, ret_view, callees)
+  !tail_fresh || Array::get(ret_view, 0) == 1
+}
+
 /// ADR-0092 borrow-inference: top-level functions whose RETURN VALUE may be
 /// an unowned interior view (a borrow-returning builtin result, a match
 /// payload, a global, a parameter, or anything reaching a return position
@@ -4472,17 +4504,8 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
       ()
     } else {
       gen = gen + 1
-      Array::truncate(bound, 0)
-      let fps = Array::get(fn_params, fi)
-      let mut pi = 0
-      while pi < Array::length(fps) {
-        let (pn, _) = Array::get(fps, pi)
-        Array::push(bound, pn)
-        pi = pi + 1
-      }
-      let ret_view = [0]
       let callees = array_empty()
-      let tail_fresh = mrv_fresh(Array::get(fn_bodies, fi), fresh_names, tainted, bound, gen, user_fns_srt, view_seen, ret_view, callees)
+      let is_view = mrv_classify_one(Array::get(fn_bodies, fi), Array::get(fn_params, fi), fresh_names, tainted, bound, gen, user_fns_srt, view_seen, callees)
       // Reverse edges from this walk (recorded once; later walks of the
       // same body see the same callees, so re-recording would only add
       // duplicate callers, which the `queued` mark absorbs anyway).
@@ -4495,7 +4518,7 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
         }
         ki = ki + 1
       }
-      if !tail_fresh || Array::get(ret_view, 0) == 1 {
+      if is_view {
         Array::push(view_set, fname)
         MutSet::add(view_seen, fname)
         match MutMap::get(callers_of, fname) {
@@ -4519,6 +4542,96 @@ export fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String] {
       }
     }
     wi = wi + 1
+  }
+  view_set
+}
+
+/// #2638: this module's own top-level function NAMES. `mrv_fresh` needs the
+/// whole program's set to tell a user-fn call from a builtin, and that set is
+/// a union -- so a module publishes its half. Body-free: one pass over the
+/// declaration forms.
+export fn mrv_declared_fn_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, fval) => match fval {
+        EFn(_, _, _, _, _, _) => Array::push(out, fname),
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2638: ONE ROUND of the may-return-view fixpoint over `stmts`, against the
+/// set decided so far. Returns whether it added anything.
+fn mrv_round(stmts: Array[Stmt], user_fns_srt: Array[String], view_set: Array[String], view_seen: MutSet[String], fresh_names: MutMap[String, Int], tainted: MutMap[String, Int], bound: Array[String], gen_cell: Array[Int]) -> Bool {
+  let mut changed = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, fname, _, fval) => match fval {
+        EFn(_, _, fps, _, _, fbody) =>
+        if MutSet::has(view_seen, fname) {
+          ()
+        } else {
+          Array::set(gen_cell, 0, Array::get(gen_cell, 0) + 1)
+          let callees = array_empty()
+          if mrv_classify_one(fbody, fps, fresh_names, tainted, bound, Array::get(gen_cell, 0), user_fns_srt, view_seen, callees) {
+            Array::push(view_set, fname)
+            MutSet::add(view_seen, fname)
+            changed = true
+          } else {
+            ()
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  changed
+}
+
+/// #2638: THE MAY-RETURN-VIEW LINK. The whole program's view set, as rounds
+/// the link drives across the modules.
+///
+/// Each round asks every module what it can add given the set so far, and
+/// repeats until no module adds anything. A module reads only its own bodies,
+/// that set, and `user_fn_names` -- the union the modules published.
+///
+/// ROUNDS, not the worklist: #2386 replaced rounds with a callee-edge worklist
+/// keyed on a reverse index over the whole program, and that index is exactly
+/// the cross-module edge (a caller in one module must be re-walked when a
+/// callee in another enters the set). A module cannot hold it. Rounds converge
+/// to the same set because the fixpoint is monotone, so the answer is
+/// unchanged and only the driver is. The whole-program pass keeps its
+/// worklist; this costs the rounds #2386 measured at ~0.32 s warm on the
+/// compiler closure, and it is paid on the oracle lane alone.
+export fn may_return_view_link_parts(parts: Array[Array[Stmt]], user_fn_names: Array[String]) -> Array[String] {
+  let user_fns_srt = sorted_names_of(user_fn_names)
+  let view_set = array_empty()
+  let view_seen = MutSet::new_string()
+  let fresh_names: MutMap[String, Int] = MutMap::new_string()
+  let tainted: MutMap[String, Int] = MutMap::new_string()
+  let bound = array_empty()
+  let gen_cell = [0]
+  let mut changed = true
+  while changed {
+    changed = false
+    let mut pi = 0
+    while pi < Array::length(parts) {
+      if mrv_round(Array::get(parts, pi), user_fns_srt, view_set, view_seen, fresh_names, tainted, bound, gen_cell) {
+        changed = true
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
   }
   view_set
 }

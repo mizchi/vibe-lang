@@ -381,13 +381,13 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // On the compiler's own CLI closure (365 modules, measured 2026-09-11 on
   // this change) the same line reads:
   //
-  //   ANALYSIS dce_entry=0 borrow_ret=379/364:-15:MutSortedSet::delete+0:
-  //            borrow_fns=2767/2688:-168:alloc_site_kind_dep_...+89:__arr_equals__N4_Expr
-  //            borrow_masks=2767/2688:-200:agg_expr_of_ident_exp_...#12+121:__arr_equals__N4_Expr#3
-  //            view_ret=2142/1957:-185:HashSet::size+0:
+  //   ANALYSIS dce_entry=0 borrow_ret=381/365:-16:MutSortedSet::delete+0:
+  //            borrow_fns=2772/2693:-168:alloc_site_kind_dep_...+89:__arr_equals__N4_Expr
+  //            borrow_masks=2772/2693:-200:agg_expr_of_ident_exp_...#12+121:__arr_equals__N4_Expr#3
+  //            view_ret=2144/1958:-186:HashSet::size+0:
   //
   // 89 functions take the borrowed ABI from their own module that the whole
-  // program refuses, and the net (2767 - 2688 = 79) hides every one of them
+  // program refuses, and the net (2772 - 2693 = 79) hides every one of them
   // behind the 168 the modules were conservative about. 121 against 89 on the
   // mask row is the other half: 32 functions are in BOTH sets under DIFFERENT
   // masks -- the names agree and the ABI does not, which a name-only
@@ -410,14 +410,14 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   //
   // #2638: and on that same closure the link columns read
   //
-  //   link_round0=2166/2169:-0:+0:   link_round0_occ=__arr_equals__N8_TypeExpr:1/2
-  //   link_round01=2767/2770:-0:+0:  link_round01_occ=__arr_equals__N8_TypeExpr:1/2
+  //   link_round0=2171/2174:-0:+0:   link_round0_occ=__arr_equals__N8_TypeExpr:1/2
+  //   link_round01=2772/2775:-0:+0:  link_round01_occ=__arr_equals__N8_TypeExpr:1/2
   //
   // -- ZERO missing and ZERO extra on both, names and masks alike. The first
   // is round 0 alone, linked from what each module publishes without
   // re-reading a body. The second is the WHOLE analysis: `link_round01` is
   // compared against the shipped `compute_borrow_param_user_fns` itself, not
-  // against a stand-in, so `2767` is the same 2767 the `borrow_fns` row above
+  // against a stand-in, so `2772` is the same 2772 the `borrow_fns` row above
   // reports for the whole-program lane.
   //
   // #2638: `borrow_ret` is the FIXPOINT, and it decomposes too -- as rounds
@@ -425,22 +425,43 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // set so far; it repeats until no module adds anything. On the closure that
   // takes `borrow_ret`'s 15 missing down to 4, with 0 extra:
   //
-  //   borrow_ret=379/364:-15:MutSortedSet::delete+0:
-  //   link_bret=379/375:-4:resolve_checked_path_fs_...+0:
+  //   borrow_ret=381/365:-16:MutSortedSet::delete+0:
+  //   link_bret=381/377:-4:resolve_checked_path_fs_...+0:
   //
   // The residue is ATTRIBUTED rather than guessed, by three controls that cost
   // one column each. Two of my own arguments about it were wrong and the
   // columns are what said so:
   //
-  //   link_bret_self=379                 the rule over the merged program: exact
+  //   link_bret_self=381                 the rule over the merged program: exact
   //   link_bret_seed=0/0                 both lanes seed identically
-  //   link_bret_cat=379/375:-4:...       the parts CONCATENATED, one round
-  //   link_bret_asm=379                  the same statements FOLDED: exact
+  //   link_bret_cat=381/377:-4:...       the parts CONCATENATED, one round
+  //   link_bret_asm=381                  the same statements FOLDED: exact
   //
   // `cat` equals `link_bret`, so splitting the rounds across 365 modules costs
   // NOTHING -- the fixpoint decomposes. `asm` is exact on the same statements
   // once the assembly folds them, so the 4 are lost to the 167 DUPLICATE
   // declarations the modules emit (`FULL split=10286 linked=10119 folded=167`).
+  //
+  // #2638: `view_ret` is the LAST of the four, and the same rounds close it:
+  //
+  //   view_ret=2144/1958:-186:HashSet::size+0:
+  //   link_view=2144/2137:-7:diag_fail_fast_...+0:
+  //   link_view_self=2144   link_view_asm=2144
+  //
+  // 186 missing down to 7, 0 extra, and BOTH controls exact -- so the 7 are
+  // the same duplicate-declaration residue as `link_bret`'s 4, measured rather
+  // than assumed to be the same cause. On the two-file repro `link_view=3` is
+  // a bare count where `view_ret=3/2:-1:via+0:`.
+  //
+  // This one keeps TWO drivers on purpose. #2386 replaced rounds with a
+  // callee-edge worklist keyed on a reverse index over the whole program, and
+  // that index IS the cross-module edge -- a caller in one module has to be
+  // re-walked when a callee in another enters the set, so no module can hold
+  // it. The link runs rounds instead (same monotone fixpoint, same set, the
+  // ~0.32 s #2386 measured, on the oracle lane only), and what is shared with
+  // the production worklist is `mrv_classify_one`, the DECISION. Saying "one
+  // implementation serves both" here would be false, and the comment on that
+  // function says so.
   //
   // That is worth stating plainly because it is new: duplicates are inert for
   // the borrow-PARAM analysis -- `link_round01_occ` reports one and the answer
@@ -463,7 +484,7 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // twice across the modules, because a program-level helper is synthesized
   // once per module that needs it. That is the `copies` shape this oracle
   // already counts, and the link folds it by key elsewhere.
-  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=7 borrow_fns=0 borrow_masks=0 view_ret=2/1:-1:helper_use_exp__tmp_vibe_full_oracle_helper_vibe+0: link_round0=0 link_round0_masks=0 link_round0_occ= link_round01=0 link_round01_masks=0 link_round01_occ= link_bret=7 link_bret_occ= link_bret_self=7 link_bret_asm=7 link_bret_seed=0/0 link_bret_cat=7")
+  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=7 borrow_fns=0 borrow_masks=0 view_ret=2/1:-1:helper_use_exp__tmp_vibe_full_oracle_helper_vibe+0: link_round0=0 link_round0_masks=0 link_round0_occ= link_round01=0 link_round01_masks=0 link_round01_occ= link_bret=7 link_bret_occ= link_bret_self=7 link_bret_asm=7 link_bret_seed=0/0 link_bret_cat=7 link_view=2/1:-1:helper_use_exp__tmp_vibe_full_oracle_helper_vibe+0: link_view_self=2 link_view_asm=2")
   // `missing=0 extra=0 content=0` is the property: every declaration the
   // whole-program prelude produced is produced by the module that owns it,
   // with the same body. `copies` is what remains after the link, and
@@ -636,7 +657,7 @@ test "the may_return and borrow analyses do not decompose per module, in both di
   // business: a tail call across the import, whose classification needs the
   // callee's round-0 mask. Round 0 is what this column covers, and the
   // remaining `-1:via` says exactly where the next slice is.
-  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=10/9:-1:via+0: borrow_fns=2/2:-1:via+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe borrow_masks=2/2:-1:via#1+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe#1 view_ret=3/2:-1:via+0: link_round0=1 link_round0_masks=1 link_round0_occ= link_round01=2 link_round01_masks=2 link_round01_occ= link_bret=10 link_bret_occ= link_bret_self=10 link_bret_asm=10 link_bret_seed=0/0 link_bret_cat=10")
+  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=10/9:-1:via+0: borrow_fns=2/2:-1:via+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe borrow_masks=2/2:-1:via#1+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe#1 view_ret=3/2:-1:via+0: link_round0=1 link_round0_masks=1 link_round0_occ= link_round01=2 link_round01_masks=2 link_round01_occ= link_bret=10 link_bret_occ= link_bret_self=10 link_bret_asm=10 link_bret_seed=0/0 link_bret_cat=10 link_view=3 link_view_self=3 link_view_asm=3")
   // The prelude itself still agrees on this program, so the difference above
   // is the analyses' and not a per-module prelude that already diverged.
   let lines = String::split(report, "\n")
@@ -663,14 +684,14 @@ test "the analyses refuse to answer where production would have run late DCE fir
   let main_path = "/tmp/vibe_dce_gate_main.vibe"
   Fs::write_file(helper_path, "export fn head_of(xs: Array[Int]) -> Int {\n  Array::get(xs, 0)\n}\n")
   Fs::write_file(main_path, "import ./vibe_dce_gate_helper.vibe {\n  head_of\n}\n\nfn main() -> Int {\n  head_of([1, 2, 3])\n}\n")
-  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(main_path, "main"))), content = "ANALYSIS dce_entry=1 borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured")
+  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(main_path, "main"))), content = "ANALYSIS dce_entry=1 borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured link_view=unmeasured link_view_self=unmeasured link_view_asm=unmeasured")
   // The control. `__no_entry__` is a name no program defines, so production
   // would not have run either transform and the sample point is its own. The
   // counts are live here rather than merely present -- this program shows the
   // unsound direction too (`+1:head_of_exp__...`, qualified by its own module
   // and disqualified by the whole program through the call site in `main`), so
   // a guard that suppressed the columns unconditionally could not pass this.
-  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "ANALYSIS dce_entry=0 borrow_ret=9/8:-1:main+0: borrow_fns=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe borrow_masks=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe#1 view_ret=2/1:-1:main+0: link_round0=0 link_round0_masks=0 link_round0_occ= link_round01=0 link_round01_masks=0 link_round01_occ= link_bret=9 link_bret_occ= link_bret_self=9 link_bret_asm=9 link_bret_seed=0/0 link_bret_cat=9")
+  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "ANALYSIS dce_entry=0 borrow_ret=9/8:-1:main+0: borrow_fns=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe borrow_masks=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe#1 view_ret=2/1:-1:main+0: link_round0=0 link_round0_masks=0 link_round0_occ= link_round01=0 link_round01_masks=0 link_round01_occ= link_bret=9 link_bret_occ= link_bret_self=9 link_bret_asm=9 link_bret_seed=0/0 link_bret_cat=9 link_view=2 link_view_self=2 link_view_asm=2")
 }
 
 // #2642 review (Codex P2): `dtd_eq_deferred_requests`, `dtd_eq_deferred_types`
