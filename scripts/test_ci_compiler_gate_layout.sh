@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workflow=".github/workflows/ci.yml"
+# Overridable so the committed self-test can point this at a MUTATED copy and
+# prove the guards can fail. Without that, the only thing CI ever asks is "does
+# the valid workflow pass?", which stays green when the extraction breaks --
+# the shape #2248 is in CLAUDE.md to prevent.
+workflow="${VIBE_CI_LAYOUT_WORKFLOW:-.github/workflows/ci.yml}"
 bootstrap="tests/gates/bootstrap/run.sh"
 
 require() {
@@ -228,7 +232,8 @@ except ImportError:
     sys.stderr.write("[ci-compiler-gate-layout] FAIL: PyYAML is required to read the job graph.\n")
     sys.exit(1)
 
-PARSING_GATES = ("test_ci_compiler_gate_layout.sh", "check_pkfire_pin.sh", "check_pkfire_pin_test.sh")
+PARSING_GATES = ("test_ci_compiler_gate_layout.sh", "test_ci_compiler_gate_layout_test.sh",
+                 "check_pkfire_pin.sh", "check_pkfire_pin_test.sh")
 
 with open(sys.argv[1], encoding="utf-8") as fh:
     doc = yaml.safe_load(fh)
