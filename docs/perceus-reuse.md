@@ -280,6 +280,65 @@ the RC lane's wall time is made of, and reuse buys allocation traffic, not
 wall. The lever for the ≤1.2× target is elsewhere (dup/drop traffic, the
 RC entry sequences), as the issue's last measurement already concluded.
 
+### Where reuse pays, and why the self-compile does not see it (2026-09-11)
+
+`bench/exec/tree_rebuild.vibe` is the pattern: a unique tree rebuilt by
+`match` through the shapes the tiers distinguish. Measured under viberun
+fuel (deterministic instruction cost; `VIBE_FUEL=1`) per shape, one
+variant per shape run in isolation, 12 rounds over depth-11 trees, with
+three compilers -- reuse disabled entirely (both tiers return -1, a
+scratch build), the branch base (slices 1-2), and this slice:
+
+| shape (rebuilds per round) | reuse off | branch base | this slice | rebuild allocation |
+|---|---:|---:|---:|---|
+| `only_tail`: constructor tail (3) | 18.31M / rebuild | 3.59M | 3.59M | 0 B (114,664 = the build alone) |
+| `only_shared`: same rebuild, source kept alive (3) | 18.92M | 9.43M | 9.43M | one fresh tree per shared rebuild |
+| `only_mirror`: constructor in an `if` branch (3) | 18.85M | 19.34M | 4.40M | 229,328 → 114,672 B |
+| `only_clamp`: one branch at another size (2) | 9.55M | 9.82M | 3.69M | token released on that path |
+| `only_weigh`: held bind, right spine only (3) | 1.86M | 1.86M | 1.82M | dominated by the `checksum` reads |
+
+A fused rebuild costs ~5x fewer instructions than the normal path
+(bind-time dups, recursive drop, free-list push, alloc, header init) and
+allocates nothing; a staged arm whose test fails costs the normal path plus
+the test (`only_mirror` on the branch base, +2.6%). The container shape
+decides everything (8 depth-8 trees, 12 rounds, 3 rebuild passes):
+
+| container shape | reuse off | fused | note |
+|---|---:|---:|---|
+| `only_chain8`: unique chains, no container | 69.9M | 25.8M | the reference |
+| `only_forest`: `Array::map(arr, incr)` | 74.8M | 30.7M | the element reaches the callback without a retain, so it is unique |
+| `only_forest_loop`: `Array::push(out, incr(Array::get(arr, i)))` | 74.9M | 77.8M | `Array::get` is a borrowed view; the owned argument position retains it, every root is shared, nothing reuses, the staging is pure cost |
+
+The compiler itself is written in the third shape: its sources hold 30
+`Array::map` calls against 43,587 `Array::get`, 11,523 index `while`
+loops and 8,418 `Array::set` (statements rewritten in place, `match
+Array::get(stmts, i)` 7,684 times). A pass receives its tree as a
+pattern-bound field of a statement that the statement array still owns,
+so the root of every rebuild is shared, the shared path dups the children,
+and the whole cascade below it allocates fresh. Measured on the RC-built
+compiler compiling the full closure (viberun fuel, cold isolated cache):
+reuse on vs the reuse-disabled build is **+0.38%** instructions
+(175.26G vs 174.60G) and +0.25% allocation -- the staging runs, the
+uniqueness test fails, and the fallback costs a little. Counted with a
+scratch build whose staging code increments a memory counter (verified on
+the exec shapes: the unique chains and the `Array::map` forest hit 147,168
+of 147,168, the index loop 0 of 147,168): the full-closure self-compile
+stages **2,637,481** uniqueness tests and **1,078** pass (0.04%).
+
+The profile of the same compile (`scripts/profile_compile.sh`, names
+build) puts the RC lane's cost where reuse cannot reach: `__rt_rc_dup`
+33.2% of CPU, `__rt_rc_drop` 3.1%, `__rt_rc_alloc` 3.1%. Even a perfect
+allocation-free compiler would move the ADR-0092 ratio by a few percent;
+the lever is the retain traffic -- borrowed reads the inference cannot
+prove (every `Array::get` result passed on, every pattern field consumed
+through a container it does not own) -- and the code shape that produces
+unique inputs (a consuming `map` / a move out of a container) which the
+compiler's own style does not use. Note in passing, found while measuring
+(not fixed here): the RC `Array::map` lowering never releases its input
+array -- 84 B leaked per call on a two-element array (measured
+`measure_heap.mjs`, 20,000 iterations: 1,680,188 B vs 376 B for the
+equivalent index loop).
+
 Pinned by `tests/perceus_reuse_plan_test.vibe` (plan rows, blocker
 semantics, ineligible shapes, the anywhere-consumer and held-bind rows),
 `tests/perceus_reuse_e2e_test.vibe` (bump/RC output agreement on the unique
