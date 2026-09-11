@@ -334,8 +334,30 @@ let main = () -> Int {
     let bm = MapBuilder::freeze(big)
     let bm2 = Map::set(bm, "k9", i + 9)
     let msum = Map::get(fm, "a") + Map::get(fm, "b") + Map::get(m3, "y") + Array::length(mv) + Array::length(mk) + Map::get(bm, "k4") + Map::get(bm2, "k9")
+    // ADR-0092 for maps: an accumulator `x = f(.., x, ..)` MOVES its current
+    // value into the call (the planner used to retain it and the assignment
+    // lowering drops nothing for a self-referential right-hand side, so
+    // every intermediate value leaked -- 864 B per iteration for nine sets
+    // on a map, 420 B for four Array::concat on an array). The map one also
+    // takes Map::set's in-place path. 2i + 23 per iteration.
+    let mut acc = Map::new()
+    let mut aj = 0
+    while aj < 10 {
+      acc = Map::set(acc, "a", i + aj)
+      acc = Map::set(acc, "b", aj)
+      aj = aj + 1
+    }
+    let mut xs_acc: Array[Int] = [
+    ]
+    xs_acc = Array::concat(xs_acc, [
+      i
+    ])
+    xs_acc = Array::concat(xs_acc, [
+      i + 1
+    ])
+    let asum = Map::get(acc, "a") + Map::get(acc, "b") + Map::size(acc) + Array::length(xs_acc) + Array::get(xs_acc, 1)
     total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if) + sumtri(w) + sumt(h)
-    total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum
+    total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum + asum
     i = i + 1
   }
   total

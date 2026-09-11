@@ -413,8 +413,8 @@ lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
 if [ -z "$lk_used" ]; then
   echo "[compiler-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
 fi
-if [ "$lk_result" != "7401070000" ]; then
-  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 7401070000)" >&2; exit 1
+if [ "$lk_result" != "7801510000" ]; then
+  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 7801510000)" >&2; exit 1
 fi
 # #2683: the bound is 4000 B. The fixture's steady state is a CONSTANT --
 # one parked block per size bin at loop exit, 3,204 B measured with the

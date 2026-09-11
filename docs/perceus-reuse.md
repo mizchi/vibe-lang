@@ -519,7 +519,8 @@ indexed, a map in a struct captured by a closure, literals over views, a
 builder held by an array and read through `MapBuilder::get`, a freeze
 through a projection -- bump / RC / RC-shadow agreement) and the
 `MapBuilder` / `Map` shape of `fixtures/rc_reclaim_leak_test.vibe`
-(`5i + 21` per iteration; the expected total moves to 7,401,070,000). The
+(`5i + 21` per iteration; the expected total moved to 7,401,070,000, and
+to 7,801,510,000 with the accumulator shapes below). The
 fixture's heap bound moves from 2,000 to 4,000 B: its steady state is a
 constant, one parked block per size bin at loop exit, measured 3,204 B
 with the indexed maps and the grown builder storage, while any leak
@@ -542,10 +543,78 @@ retains every entry it copies out of a source it borrows (a plain copy
 before), rc_drop walks a map's entries when it dies, and the index goes
 through rc_alloc. The peak does not fall because the compiler's own maps
 (type environments) live to the end of the compile, so reclaiming them
-buys nothing there and their headers cost 0.23%. The obvious next step is
-the map counterpart of ADR-0092 reuse: a `Map::set` whose source is
-uniquely held and never read again can update in place instead of copying
-and retaining -- the compiler's environment threading is that shape.
+buys nothing there and their headers cost 0.23%. The map counterpart of
+ADR-0092 reuse is the next section.
+
+### Map reuse: a uniquely held Map updates in place (ADR-0092 for maps)
+
+`Map::set` and `Map::delete` CONSUME their map now (they left
+`md_is_borrow_arg0_call`). On the RC lane the lowering reads the source's
+rc word: exactly one reference (`1 | 6 << 24` -- a saturated, immortal
+block fails the test) and the entry is replaced, appended or removed in
+place and the same block is the result; anything else takes the copy
+path, after which the consumed reference is released. In place, the
+capacity comes off the block's size word (rc_alloc hands back exactly the
+size asked for), a full block moves its entries into one of twice the
+capacity (no retains -- the old block's count is zeroed and it is released
+with its index), the side index is inserted into (`__rt_map_index_insert`,
+now on `CompileCtx`) while it stays at or under the half load
+`__rt_map_cap_for` sizes for and released and rebuilt otherwise, and a
+delete shifts the tail down and rebuilds the index or drops it under 8
+entries. The bump lane keeps the copy.
+
+Two things had to be true of the planner for that path to be reached. A
+container read after (or through a view around) a consuming use is
+already kept alive: `pctx_apply_borrow_retention` adds one owning use to
+any binding with a borrow occurrence, so the consuming use dups instead of
+moving and the scope end releases the initial reference (measured before
+the change: `let v = Array::get(xs, 1)` then `Array::concat(xs, ..)`,
+`Array::filter(xs, ..)` rejecting the viewed element, a user fn consuming
+`xs`, and `Array::length(xs)` after the consume all agree across bump /
+RC / shadow). So `let v = Map::get(m, k); let m2 = Map::set(m, k, x)`
+copies and `v` survives, while a source with no later reads moves.
+
+The accumulator did not reach it, and it leaked. `m = Map::set(m, k, v)`
+counts as an owning use of `m`, the planner retained it whenever `m` had
+any other use, the callee copied, and the assignment lowering -- which
+drops nothing for a self-referential right-hand side, on the assumption
+that the call consumed the old value -- left the old map with the
+reference the retain had kept: 864 B per iteration for nine sets on a
+map, 420 B for four `Array::concat` on an array, on the compiler before
+this change (the `let mut` accumulator pattern, any heap type, since
+#699). `x = f(.., x, ..)` with `x` at exactly one owning position and
+nowhere else in the right-hand side now MOVES that occurrence
+(`pe_self_reassign_moves` / `pe_use`): the old value is consumed and the
+binding takes the result, the binding's remaining count is topped back up
+by the one the move spent so its scope end still releases what it holds
+last, and the assignment lowering keeps its loop-carried dup off the same
+occurrence (`md_self_reassign_move_arg`). The move is withheld when the
+binding is a scalar, is itself a view, or when another binding still
+views it (`view_src`, recorded for borrow-returning calls and projections
+at their `let`; a view used only at borrowed positions keeps its initial
+count until its scope ends, which blocks the move for that whole scope --
+the safe side).
+
+Measured with viberun (RC lane, 20,000 iterations), before -> after:
+
+| shape | fuel | heap peak |
+|---|---:|---:|
+| a 21-step unique chain of `Map::set` through a consuming helper | 2,022,100,188 -> 499,280,141 (-75%) | 9,504 -> 2,480 B |
+| nine `m = Map::set(m, ..)` on a `let mut` inside the loop | 234,520,377 -> 149,420,287 (-36%) | 17,280,760 -> 840 B |
+| two `m = Map::set(m, ..)` on a `let mut` inside the loop | 19,420,266 -> 20,980,273 (+8%) | 960,496 -> 544 B |
+| four `xs = Array::concat(xs, [..])` on a `let mut` | 68,880,301 -> 62,480,229 (-9%) | 8,400,532 -> 700 B |
+
+The heap columns are the leak: every intermediate value, gone. The +8% on
+the two-set map is the unique test plus the in-place search on a map too
+small to have anything to save. Pinned by `tests/map_reuse_rc_test.vibe`
+(thirteen shapes through bump / RC / RC-shadow: unique and shared sources,
+growth past the index threshold, a replace through the index, deletes back
+under it, a view read before and one held across a consuming set, a source
+consumed twice, accumulators inside and outside loops, reads between
+reassignments, the array accumulator) and by the accumulator shapes of
+`fixtures/rc_reclaim_leak_test.vibe` (`2i + 23` per iteration; the
+expected total moves to 7,801,510,000), on which the compiler before the
+move keeps 28,723,336 B against the 4,000-byte bound.
 
 ### An FBIP-shaped rewrite of one pass, measured (2026-09-11)
 
