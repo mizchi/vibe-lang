@@ -14102,6 +14102,7 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
     } else {
       ()
     }
+    eq_deferred_request_record(eq_deferred_key_for_ty(fty))
     EBinOp("==", lhs, rhs, -1)
   }
 }
@@ -21036,6 +21037,7 @@ fn dtd_typed_eq_admitted_ty(boff: Int) -> Option[TypeExpr] {
         // "the split never asks for this helper" can be traced to a refusal
         // rather than guessed at.
         eq_typed_refusal_record(key)
+        eq_deferred_request_record(eq_deferred_key_for_ty(te))
         None
       },
       None => None
@@ -21045,6 +21047,56 @@ fn dtd_typed_eq_admitted_ty(boff: Int) -> Option[TypeExpr] {
 
 /// Type keys the typed-`==` channel had a row for and the pass refused.
 let dtd_eq_typed_refusals: Array[String] = empty_str_array()
+
+/// #2634: helpers a run KNEW it needed and could not build.
+///
+/// The four visibility sites all conflate two questions -- "does this `==`
+/// need a structural helper" and "can this module generate one" -- and answer
+/// both with silence. They are separable: needing is a property of the
+/// operand's type, which the checker supplies; building needs the leaf
+/// declarations, which only some module has.
+///
+/// This records the first without the second. It is the measurement that says
+/// whether a link could MINT what the modules could not: if the whole
+/// program's request set is contained in the union of the split's requests and
+/// its deferrals, then nothing is lost by a module declining to build -- the
+/// link has every instantiation it would need. If it is not contained, the
+/// need is being lost before anyone could record it, and a minting link would
+/// not be enough.
+let dtd_eq_deferred_requests: Array[String] = empty_str_array()
+
+/// The deferral key for a type: the same spelling `eq_synthesis_requests_list`
+/// uses, so the two sets are directly comparable. A shape with no key spells
+/// "" and is not recorded -- there would be nothing for a link to mint.
+fn eq_deferred_key_for_ty(t: TypeExpr) -> String {
+  match t {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      type_key(Array::get(args, 0))
+    } else {
+      ""
+    },
+    TyApp(_, _) => String::concat("spec:", type_key(t)),
+    _ => ""
+  }
+}
+
+fn eq_deferred_request_record(key: String) -> Unit {
+  if String::length(key) == 0 || str_array_contains(dtd_eq_deferred_requests, key) {
+    ()
+  } else {
+    Array::push(dtd_eq_deferred_requests, key)
+  }
+}
+
+export fn eq_deferred_requests_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_deferred_requests) {
+    Array::push(out, Array::get(dtd_eq_deferred_requests, i))
+    i = i + 1
+  }
+  out
+}
 
 fn eq_typed_refusal_record(key: String) -> Unit {
   if str_array_contains(dtd_eq_typed_refusals, key) {

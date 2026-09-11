@@ -322,6 +322,35 @@ site never learns its type — so it never reaches `eq_for_typed`'s `Array` arm
 and never records the helper it needs. None of the three is an `Option`, so the
 pair stays open.
 
+### Could a minting link close it?
+
+The four sites all conflate two questions — *does this `==` need a structural
+helper* and *can this module generate one* — and answer both with silence. They
+are separable: needing is a property of the operand's type, which the checker
+supplies; building needs the leaf declarations, which only some module has.
+
+Recording the first without the second gives the answer directly:
+
+```
+deferred=3   unmintable=2: A1_N6_OptionN3_Int  A1_N6_OptionN6_String
+```
+
+A **deferral** is a helper a module knew it needed and declined to build.
+**`unmintable`** counts what the whole program asks for that *no* module records
+in either form.
+
+| | |
+|---|---|
+| 3 of the 5 (`MutMap[String,Int]`, `MutMap[String,String]`, `MutSet[String]`) | **deferred** — a link with the union of requests and deferrals can mint them |
+| 2 of the 5 (`Array[Option[Int]]`, `Array[Option[String]]`) | **lost** — no module records the need at all, so no link could |
+
+So a minting link is the right design step and it closes three of the five rows.
+It is *not* sufficient: the `Option` pair's need disappears before any link could
+see it, and finding where is prerequisite rather than parallel work.
+
+The 3/2 split is the same one the cause analysis produced, from a counter that
+does not share its reasoning.
+
 **The evidence family — 6 rows.** `struct:__EvDict_Source` itself, plus the
 functions the whole-program evidence pass rewrote to take an explicit
 `__EvDict_Source` parameter and the call sites that thread a

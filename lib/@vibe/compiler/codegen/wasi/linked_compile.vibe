@@ -44,6 +44,7 @@ import @vibe/compiler/normalize {
   desugar_inspect_calls,
   desugar_trait_dicts_module,
   desugar_trait_dicts_with_typed_eq,
+  eq_deferred_requests_list,
   eq_invisible_nominals_list,
   eq_invisible_nominals_reset,
   eq_synthesis_requests_list,
@@ -4347,6 +4348,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let mut k = 0
   let ev_req_w = lc_fresh_string_array()
   let ev_ref_w = lc_fresh_string_array()
+  let ev_def_w = lc_fresh_string_array()
   while k < 15 {
     oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
     // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
@@ -4359,6 +4361,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     if k == 4 {
       lc_union_into(ev_req_w, eq_synthesis_requests_list())
       lc_union_into(ev_ref_w, eq_typed_refusals_list())
+      lc_union_into(ev_def_w, eq_deferred_requests_list())
     } else {
       ()
     }
@@ -4432,6 +4435,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // #2634: the union of the synthesis requests each module made.
   let ev_req_u = lc_fresh_string_array()
   let ev_ref_u = lc_fresh_string_array()
+  let ev_def_u = lc_fresh_string_array()
   // #2633: the union of what each module reports just before the evidence pass.
   let ev_decl_u = lc_fresh_string_array()
   let ev_handled_u = lc_fresh_string_array()
@@ -4492,6 +4496,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
     lc_union_into(ev_req_u, eq_synthesis_requests_list())
     lc_union_into(ev_ref_u, eq_typed_refusals_list())
+    lc_union_into(ev_def_u, eq_deferred_requests_list())
     let mut sy = 0
     while sy < Array::length(synthesized) {
       // The keys this module SYNTHESIZED, recorded before the rest of the
@@ -4583,7 +4588,38 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // #2634: does the per-module run ASK for the same helpers? A `missing` row
   // means the split emitted nothing; this says whether it never recorded the
   // need or recorded it and did not emit. Different causes, different fixes.
-  let req_line = String::concat(String::concat("SYNTH requests=", lc_set_cmp(ev_req_w, ev_req_u)), String::concat(" typed_refused=", String::concat(lc_set_cmp(ev_ref_w, ev_ref_u), "\n")))
+  // #2634: could a MINTING link close the gap? The split's requests plus what
+  // it knew it needed and could not build, against the whole program's
+  // requests. `mintable=0` means every helper the whole program asks for is
+  // either asked for or deferred by some module, so a link with the union has
+  // everything it needs. A non-zero count names a need that is LOST -- no
+  // module records it in either form, and no link could mint it.
+  let ev_req_covered = lc_fresh_string_array()
+  lc_union_into(ev_req_covered, ev_req_u)
+  lc_union_into(ev_req_covered, ev_def_u)
+  let mut mint_missing = 0
+  let mut mint_first = ""
+  let mut mi = 0
+  while mi < Array::length(ev_req_w) {
+    let n = Array::get(ev_req_w, mi)
+    if lc_str_array_has(ev_req_covered, n) {
+      ()
+    } else {
+      mint_missing = mint_missing + 1
+      if mint_first == "" {
+        mint_first = n
+      } else {
+        mint_first = String::concat(mint_first, String::concat(" ", n))
+      }
+    }
+    mi = mi + 1
+  }
+  let mint_names = if mint_first == "" {
+    ""
+  } else {
+    String::concat(":", mint_first)
+  }
+  let req_line = String::concat(String::concat(String::concat("SYNTH requests=", lc_set_cmp(ev_req_w, ev_req_u)), String::concat(" typed_refused=", lc_set_cmp(ev_ref_w, ev_ref_u))), String::concat(String::concat(" deferred=", Int::to_string(Array::length(ev_def_u))), String::concat(" unmintable=", String::concat(Int::to_string(mint_missing), String::concat(mint_names, "\n")))))
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
   let mut ldi = 0
