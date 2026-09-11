@@ -51,7 +51,7 @@ mkdir -p "$proj"
 # `boom` is defined on line 1, traps on integer divide-by-zero; main calls it.
 cat > "$proj/prog.vibex" <<'EOF'
 let boom = (x: Int) -> Int { x / 0 }
-fn main with () { let _ = boom(3); () }
+fn main allows () { let _ = boom(3); () }
 EOF
 
 # Run; it must trap (non-zero exit) and the stderr trace must annotate the `boom`

@@ -1981,7 +1981,9 @@ restore
 #
 # Round 50. The entry file's namespace list was written by hand as
 # Console|Env|Process|Socket|Http|Net. The real list --
-# capability_effect_name_list in lib/@vibe/parser/parser_base.vibe -- has TEN
+# standard_host_provider_resource_defaults in
+# lib/@vibe/compiler/core/standard_effect_policy.vibe (the parser's copy,
+# capability_effect_name_list, went with ADR-0088) -- has TEN
 # names: it also has Stdin, Stdout, Stderr and Profiler, which this boundary
 # could therefore use unseen, and it does NOT have Net. Measured: `fn f() ->
 # Int with Stdin { Stdin::read_char() }` compiles and the gate printed ok.
@@ -2033,14 +2035,14 @@ restore
 # so a copy in /tmp resolves every repository path against /tmp and fails for
 # an unrelated reason -- which is how the first draft of this case "passed".
 gate_tmp="scripts/.portable_boundary_reader_probe.$$.sh"
-sed 's/capability_effect_name_list/capability_effect_name_list_RENAMED/' "$gate" > "$gate_tmp"
-if ! grep -q 'capability_effect_name_list_RENAMED' "$gate_tmp"; then
+sed 's/standard_host_provider_resource_defaults/standard_host_provider_resource_defaults_RENAMED/' "$gate" > "$gate_tmp"
+if ! grep -q 'standard_host_provider_resource_defaults_RENAMED' "$gate_tmp"; then
   fail "case: the capability-reader mutation did not land -- it proves nothing"
 else
   out="$(bash "$gate_tmp" 2>&1)" && rc=0 || rc=$?
   if [ "$rc" -eq 0 ]; then
     fail "case: an unreadable capability list still passed the gate"
-  elif printf '%s' "$out" | grep -qF 'cannot read capability_effect_name_list'; then
+  elif printf '%s' "$out" | grep -qF 'cannot read standard_host_provider_resource_defaults'; then
     pass "case: an unreadable capability list fails closed, and says so"
   else
     fail "case: it failed closed but silently, which reads as unchecked: $out"

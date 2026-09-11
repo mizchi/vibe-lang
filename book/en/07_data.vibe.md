@@ -22,7 +22,7 @@ number of values positionally, an array holds many of one type, and a
 record is a struct you did not bother to name:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let t = (1, "two", true)
   println("t.0 = \{t.0}")
   let a = [
@@ -66,7 +66,7 @@ struct Point {
   x: Int; y: Int
 } derive (Eq, Ord, Show)
 
-fn main with Console {
+fn main allows Console {
   let p = Point::{
     x: 1, y: 2
   }
@@ -105,7 +105,7 @@ fn area(s: Shape) -> Int {
   }
 }
 
-fn main with Console {
+fn main allows Console {
   println("area(Circle(2)) = \{area(Circle(2))}")
   println("area(Rect(6, 7)) = \{area(Rect(6, 7))}")
 }
@@ -137,7 +137,7 @@ fn classify(n: Int) -> String {
   }
 }
 
-fn main with Console {
+fn main allows Console {
   println("classify(0) = \{classify(0)}")
   println("classify(2) = \{classify(2)}")
   println("classify(-5) = \{classify(-5)}")
@@ -180,7 +180,7 @@ let Version::{
   major: 0, minor: 3
 }
 
-fn main with Console {
+fn main allows Console {
   println("sum = \{left + right}, \{name} \{major}.\{minor}")
 }
 ```
@@ -194,7 +194,7 @@ or the `is` expression, which tests a pattern and binds its names for
 the branch that follows:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let (a, b) = (1, 2)
   println("a + b = \{a + b}")
   let opt = Some(41)

@@ -19,7 +19,7 @@ vibe のデータは2つの形のどちらかで、この区別は言語全体�
 配列は同じ型を多数持ち、レコードは名前を付けなかった構造体です:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let t = (1, "two", true)
   println("t.0 = \{t.0}")
   let a = [
@@ -63,7 +63,7 @@ struct Point {
   x: Int; y: Int
 } derive (Eq, Ord, Show)
 
-fn main with Console {
+fn main allows Console {
   let p = Point::{
     x: 1, y: 2
   }
@@ -102,7 +102,7 @@ fn area(s: Shape) -> Int {
   }
 }
 
-fn main with Console {
+fn main allows Console {
   println("area(Circle(2)) = \{area(Circle(2))}")
   println("area(Rect(6, 7)) = \{area(Rect(6, 7))}")
 }
@@ -132,7 +132,7 @@ fn classify(n: Int) -> String {
   }
 }
 
-fn main with Console {
+fn main allows Console {
   println("classify(0) = \{classify(0)}")
   println("classify(2) = \{classify(2)}")
   println("classify(-5) = \{classify(-5)}")
@@ -175,7 +175,7 @@ let Version::{
   major: 0, minor: 3
 }
 
-fn main with Console {
+fn main allows Console {
   println("sum = \{left + right}, \{name} \{major}.\{minor}")
 }
 ```
@@ -189,7 +189,7 @@ sum = 42, vibe 0.3
 束縛します:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let (a, b) = (1, 2)
   println("a + b = \{a + b}")
   let opt = Some(41)

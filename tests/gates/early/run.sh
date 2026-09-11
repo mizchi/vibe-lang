@@ -177,7 +177,7 @@ VEOF
 cat > "$dsdir/main.vibe" <<'VEOF'
 import ./dep.vibe { render }
 
-fn main with Console {
+fn main allows Console {
   println(render())
 }
 VEOF
@@ -210,14 +210,14 @@ echo "[compiler-gate] 4e OOB abort names the operation, index, and length (#2199
 oobdir="_build/_gate_arr_oob"
 rm -rf "$oobdir"; mkdir -p "$oobdir"
 cat > "$oobdir/main.vibe" <<'VEOF'
-fn main with Console {
+fn main allows Console {
   let xs = [1, 2, 3]
   println("before")
   println("\{Array::get(xs, 10)}")
 }
 VEOF
 cat > "$oobdir/bytes.vibe" <<'VEOF'
-fn main with Console {
+fn main allows Console {
   let b = Bytes::from_array([1, 2, 3])
   println("\{Bytes::get(b, 9)}")
 }
@@ -278,7 +278,7 @@ rm -rf "$hmdir"; mkdir -p "$hmdir"
 cat > "$hmdir/fill.vibe" <<'VEOF'
 import @vibe/core { struct MutMap }
 
-fn main with Console {
+fn main allows Console {
   let m: MutMap[String, Int] = MutMap::with_capacity_string(8)
   println("filling")
   let mut i = 0
@@ -793,7 +793,7 @@ if [ -s "$cdir2/ok.checkout.diag" ]; then
 fi
 # #2227: same pin head in a .vibex -- the script-head directive scan used to
 # read the pin's #pkg:sha1: as an unknown # directive before pin extraction.
-printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\n\nfn main with () {\n  let _ = triple(14)\n}\n' "$pin" > "$cdir2/ok_pin.vibex"
+printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\n\nfn main allows () {\n  let _ = triple(14)\n}\n' "$pin" > "$cdir2/ok_pin.vibex"
 rm -f "$cdir2/ok_pin.wasm" "$cdir2/ok_pin.wasm.diag"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -3587,7 +3587,7 @@ echo "[compiler-gate] 27f/27 print primitives on the FS lane (#929/#930)"
 ppdir="_build/_gate_print_prims"
 rm -rf "$ppdir"; mkdir -p "$ppdir"
 cat > "$ppdir/prints.vibe" <<'EOF'
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   println("hello gate")
   print("forty")
   print("two")
@@ -3625,7 +3625,7 @@ fn println(s: String) -> Unit with Stdout {
   print("S\n")
 }
 
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   println("ignored")
 }
 EOF

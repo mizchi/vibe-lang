@@ -1,0 +1,39 @@
+// ADR-0088: the row of a test / bench / example block is a GRANT and is
+// spelled `allows`, like `fn main allows ..`. It widens the ambient default
+// row; an effectset the file declares is one spelling at every block; and a
+// called function may require the optional grade and `perform?` itself.
+
+import @vibe/core {
+  Attempt
+}
+
+effectset ReadCaps = { Fs::read_file, Fs::exists }
+
+fn read_missing() -> Attempt[String, String] with Fs::read_file? {
+  perform? Fs::read_file("__vibe_missing_entry_allows_row_fixture__")
+}
+
+fn example_only_helper(n: Int) -> Int {
+  n + 1
+}
+
+test "a test grants its row with allows" allows Fs::read_file {
+  assert(!Fs::exists("__vibe_missing_entry_allows_row_fixture__"))
+}
+
+test "an effectset is one spelling at a block" allows ReadCaps {
+  assert(!Fs::exists("__vibe_missing_entry_allows_row_fixture__"))
+}
+
+test "a test artifact grants an optional requirement, so a host failure is Errored" allows Fs::read_file? {
+  match read_missing() {
+    Errored(message) => assert(String::contains(message, "fs_read_file failed")),
+    NotGranted => assert(false),
+    Granted(_) => assert(false)
+  }
+}
+
+example "an example takes the same row" allows Console {
+  println("example row: \{example_only_helper(41)}")
+  assert_eq(example_only_helper(41), 42)
+}

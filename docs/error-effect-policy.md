@@ -51,7 +51,7 @@ effectful callee の双方について `with ...` へ推移的に伝播する。
 
 ## Entry boundary
 
-`fn main with Exception { ... }` を許可する。未処理の例外が entry まで到達した場合、
+`fn main allows Exception { ... }` を許可する。未処理の例外が entry まで到達した場合、
 runtime が最外周 Error handler となり、診断付きの unsuccessful process outcome へ
 変換する。生の `WebAssembly.Exception` を公開 entry boundary の外へ漏らさない。
 

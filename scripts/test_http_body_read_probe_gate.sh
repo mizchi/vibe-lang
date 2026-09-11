@@ -335,7 +335,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_body_read_component
 }
 
-fn main() -> Int with Fs {
+fn main() -> Int allows Fs {
   let m = comp_emit_body_read_component("handler", [
     "method",
     "url",

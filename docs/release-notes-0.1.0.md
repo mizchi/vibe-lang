@@ -32,12 +32,15 @@ read, and every feature below is one the compiler itself depends on.
   part of the frozen surface (ADR-0016, ADR-0050).
 - **Capabilities are carried by the row, and authorized once.** A call site
   stays a plain function call; authority is settled at build → apply →
-  instantiate and is then invariant for the run (ADR-0075/0084/0088). The
-  two-clause form `with {A} allows {C}`, the optional grade `?`, and the
-  `Attempt[T, E]` that `perform?` returns landed over the #1961 series — they
-  are on the unstable surface and can still change. Non-interactive compilation
-  now lowers an unresolved optional operation to `NotGranted` on both backends;
-  production grant/preflight wiring remains future work (#2332).
+  instantiate and is then invariant for the run (ADR-0075/0084/0088). An
+  entry point **grants** its row and writes `allows` — `fn main allows
+  Console`, `test "n" allows Http` — while a called function **requires**
+  with `with`; `allows` on a called function is a compile error naming the
+  edit. The optional grade `?` (on a grant or on a requirement) and the
+  `Attempt[T, E]` that `perform?` returns are on the unstable surface and can
+  still change. Non-interactive compilation lowers an unresolved optional
+  operation to `NotGranted` on both backends; production grant/preflight
+  wiring remains future work (#2332).
 - **`Result` was removed** (#1324). Errors are the `Exception` effect, and
   `Error` is deprecated at the freeze in favour of it (ADR-0085).
 - **`String` is a byte string** with byte-offset indexing (ADR-0098), which is
@@ -49,8 +52,9 @@ read, and every feature below is one the compiler itself depends on.
   complement, literals up to 2^62-1 (#1877). Each backend previously wrapped at
   its own 62/63/64-bit boundary and silently disagreed, which is the worst
   failure shape this project recognizes.
-- **`fn main { ... }`** is the entry point, top-level is declarations only, and
-  a typo'd entry name is a compile error rather than a silently empty module
+- **`fn main { ... }`** is the entry point (`fn main allows Console { ... }`
+  when it needs the terminal), top-level is declarations only, and a typo'd
+  entry name is a compile error rather than a silently empty module
   (ADR-0069 Phase 1).
 - Syntax was narrowed where two spellings meant one thing: string interpolation
   is `\{expr}`, type-declaration bodies separate with `;`, top-level named
@@ -140,11 +144,22 @@ the edit that fixes them rather than an internal pass name.
 
 ## Known gaps
 
-- **The Japanese book covers 19 of the 20 doctest-checked chapters.** English
-  is canonical (`book/en/`); `book/ja/` is a translation, and the pair is
-  checked for identical program output by
-  `pkf run check-tutorial-translation-parity`. `01_getting_started` is
-  English-only.
+- **The legacy entry spelling still compiles.** `fn main with Console` and
+  `test "n" with Http` are read and reported by `vibe check` as a warning
+  naming the `allows` edit, because the committed seed compiles library
+  sources that carry them. The bootstrap bump that migrates those sources
+  turns the warning into the parse error (ADR-0088 §5,
+  [bootstrap.md](bootstrap.md) "Pending bump"); until it lands, a program
+  written with `with` on its entry is accepted with a warning rather than
+  refused.
+- **The pinned seed has no published release.** `bootstrap/seed.json` pins
+  `seed/cfg-spans-emission-2026-09-04`, and no release carries that tag, so a
+  cold checkout rebuilds the seed from its source commit before it can build
+  anything (measured 2026-09-11: the rebuild is the first half of a cold
+  `pkf run generation`). Publishing the seed release closes it.
+- **The Japanese book is a translation of all 20 chapters**, checked for
+  identical program output by `pkf run check-tutorial-translation-parity`;
+  English (`book/en/`) is canonical.
 - **Type errors carry no source position.** `let a: Int = "not an int"` is
   reported without a `line:col` on either lane, and `vibe check --single-file
   --json` answers with a synthetic `0:0` range. The checker's anchoring works;
@@ -156,6 +171,12 @@ the edit that fixes them rather than an internal pass name.
 
 ## Release checklist (owner)
 
+- [ ] Bootstrap bump carrying the `allows` entry keyword, then the migration
+      of the seed-compiled sources and the rejection of `fn main with ..`
+      (ADR-0088 §5) — the language a newcomer learns must be the one the
+      shipped compiler refuses to bend
+- [ ] `seed/cfg-spans-emission-2026-09-04` (or its successor) published as a
+      release, so `scripts/ensure_seed.sh` fetches instead of rebuilding
 - [ ] `0.1.0` tag
 - [ ] `VIBE_VERSION` bumped from `0.1.0-dev` to `0.1.0`
       (`scripts/build_release_assets.sh` fails the build if it does not match

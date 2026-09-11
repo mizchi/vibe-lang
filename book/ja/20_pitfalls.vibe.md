@@ -29,7 +29,7 @@ effect Ask {
   Get() -> Int
 }
 
-fn main with Exception {
+fn main allows Exception {
   let bump = (x: Int) -> Int {
     x + 1
   }
@@ -128,7 +128,7 @@ effect は `Exception`。effect の綴りとしての `Error` は deprecated
 
 ```vibe skip
 // skip: 出る診断を見せるための例 — `-1` は `println(...) - 1` とパースされる
-fn main with Console {
+fn main allows Console {
   let v = {
     println("failing")
     -1

@@ -48,7 +48,7 @@ bad() { echo "FAIL: $1" >&2; fail=$((fail + 1)); }
 #   line 3: let b = a + 2   (identifier-led -> breakable)
 #   line 4: let c = b + 3   (identifier-led -> breakable)
 P="$WORK/p.vibex"
-printf 'fn main with Stdout {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  Stdout::write_stream("\\{c}\\n")\n}\n' > "$P"
+printf 'fn main allows Stdout {\n  let a = 1\n  let b = a + 2\n  let c = b + 3\n  Stdout::write_stream("\\{c}\\n")\n}\n' > "$P"
 
 # 0. (#644) break at line 2, a bare-literal `let a = 1`. The literal value
 #    carries no offset of its own; the ELet statement offset (the `let`
@@ -120,7 +120,7 @@ fi
 #      — the per-file provenance + `vibe.dbgfiles` table disambiguate colliding
 #      line numbers across files.
 printf 'export let compute = (n: Int) -> Int {\n  let doubled = n + n\n  let plused = doubled + 5\n  plused\n}\n' > "$WORK/helper.vibe"
-printf 'import ./helper.vibe { compute }\nfn main with Stdout {\n  let r = compute(10)\n  Stdout::write_stream("\\{r}\\n")\n}\n' > "$WORK/main.vibex"
+printf 'import ./helper.vibe { compute }\nfn main allows Stdout {\n  let r = compute(10)\n  Stdout::write_stream("\\{r}\\n")\n}\n' > "$WORK/main.vibex"
 outh="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "helper.vibe:3" "$WORK/main.vibex" 2>&1 || true)"
 if printf '%s' "$outh" | grep -qF "breakpoint hit: helper.vibe:3"; then
   ok "multi-file: interior line in an IMPORTED module (helper.vibe:3) pauses"
@@ -151,7 +151,7 @@ fi
 #       (a wrong file id maps its offsets through the wrong newline table, so
 #       the pair the runner reports would not be helper2.vibe:11).
 printf 'effect HLog {\n  Emit(String) -> Unit\n}\n\nstruct Pt {\n  v: Int\n} derive (Eq)\n\nexport let compute2 = (n: Int) -> Int {\n  let bump = (a: Int) -> Int with HLog {\n    let stepped = a + 1\n    perform HLog::Emit("bump")\n    stepped\n  }\n  handle {\n    bump(n)\n  } with {\n    HLog::Emit(_m) => resume(0)\n  }\n}\n' > "$WORK/helper2.vibe"
-printf 'import ./helper2.vibe { compute2 }\nfn main with Stdout {\n  let r = compute2(10)\n  Stdout::write_stream("\\{r}\\n")\n}\n' > "$WORK/main2.vibex"
+printf 'import ./helper2.vibe { compute2 }\nfn main allows Stdout {\n  let r = compute2(10)\n  Stdout::write_stream("\\{r}\\n")\n}\n' > "$WORK/main2.vibex"
 outh2="$(VIBE_BREAK_AUTO=1 "$VIBE" run --break "helper2.vibe:11" "$WORK/main2.vibex" 2>&1 || true)"
 if printf '%s' "$outh2" | grep -qF "breakpoint hit: helper2.vibe:11"; then
   ok "multi-file: a line inside a HOISTED lambda in an imported module pauses (#2388)"

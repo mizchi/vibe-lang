@@ -13,7 +13,7 @@ every way to write a function.
 and bindings do not change once made.
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let x = 42
   let name = "vibe"
   let ratio = 0.5
@@ -31,7 +31,7 @@ the annotation when you want it documented or when inference has no
 opinion:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let x: Int = 42
   let d: Double = 3.14
   let b: Bool = true
@@ -70,7 +70,7 @@ vibe is immutable by default. When an algorithm wants a counter, `let
 mut` gives you one, and the block it lives in evaluates to a value:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let y = {
     let mut v = 0
     v += 1
@@ -118,7 +118,7 @@ let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
   x * 10 + y
 }
 
-fn main with Console {
+fn main allows Console {
   println("add(1, 2) = \{add(1, 2)}")
   println("fact(5) = \{fact(5)}")
   println("identity(7) = \{identity(7)}")
@@ -160,7 +160,7 @@ fn greet(name: String, times?: Int) -> String {
   "\{name} x\{n}"
 }
 
-fn main with Console {
+fn main allows Console {
   println(greet("hi"))
   println(greet("hi", 3))
 }
@@ -186,7 +186,7 @@ import @vibe/builtin {
   trait Iterator
 }
 
-fn main with Console {
+fn main allows Console {
   let xs = [1, 2, 3]
   let doubled = Iterator::map(xs, _ * 2)
   let total = Iterator::fold(xs, 0, _ + _)

@@ -53,7 +53,7 @@ fn report(e: Expr) -> String {
   }
 }
 
-fn main with Console {
+fn main allows Console {
   println(report(Add(Num(2), Mul(Num(4), Num(10)))))
   println(report(Div(Num(84), Num(2))))
   println(report(Div(Num(1), Add(Num(3), Num(-3)))))
@@ -81,7 +81,7 @@ fn main with Console {
 `String` です — 失敗はそこで止まります。
 → [エフェクト](08_effects.vibe.md)
 
-**`main` は自分に許されたことを宣言する。** `fn main with Console` は
+**`main` は自分に許されたことを宣言する。** `fn main allows Console` は
 端末への書き込み許可であり、このプログラムに許されているのは*それだけ*です。
 ファイルを読むこともソケットを開くこともできません。要求していないからです。
 → [ケーパビリティ](09_capabilities.vibe.md)

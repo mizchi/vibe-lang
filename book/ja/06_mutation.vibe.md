@@ -13,7 +13,7 @@ vibe は既定で不変で、ミューテーションは意図的に小さく作
 `let mut` は、そのブロックが終わるまで書き換え可能な束縛を作ります:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let y = {
     let mut v = 0
     v += 1
@@ -42,7 +42,7 @@ fn grow(xs: Array[Int]) -> Unit {
   Array::push(xs, 9)
 }
 
-fn main with Console {
+fn main allows Console {
   let xs = [
     1
   ]
@@ -72,7 +72,7 @@ fn bump(c: Counter) -> Unit {
   c.n = c.n + 1
 }
 
-fn main with Console {
+fn main allows Console {
   let c = Counter::{
     n: 10
   }

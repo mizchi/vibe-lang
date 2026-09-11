@@ -22,7 +22,7 @@ fn greet(name: String) -> Unit with Console {
   println("hi \{name}")
 }
 
-fn main with Console {
+fn main allows Console {
   greet("vibe")
 }
 ```
@@ -31,18 +31,20 @@ fn main with Console {
 hi vibe
 ```
 
-`greet` は端末に書くので `with Console` と宣言します。`main` は `greet` を
-呼ぶので `main` も宣言します。ケーパビリティが `main` に勝手に現れることは
-なく、呼び出しから推論された上で、あなたが書いたものと突き合わされます。
-シグネチャに書き忘れた関数はコンパイルされません。
+`greet` は端末に書くので `with Console` と宣言します。呼び出す側に対して
+ケーパビリティを**要求**しているのです。`main` は `greet` を呼びますが、
+`main` を呼ぶものは誰もいません。プログラムの起点なので、ケーパビリティを
+**付与**します: `allows Console`。ケーパビリティが `main` に勝手に現れる
+ことはなく、呼び出しから推論された上で、あなたが書いたものと突き合わされ
+ます。シグネチャに書き忘れた関数はコンパイルされません。
 
 `Console` が端末のケーパビリティです。`Stdin` / `Stdout` / `Stderr` はその
-一部を指す古いラベルで、まだ受け付けられます。`with Console` はこれらを
+一部を指す古いラベルで、まだ受け付けられます。`allows Console` はこれらを
 覆いますが、逆は成り立ちません。狭い方を求めれば狭い方が来ます。
 
 ```vibe skip
-// skip: `with Stdout` は `Console::` の操作に届かない
-fn main with Stdout {
+// skip: `allows Stdout` は `Console::` の操作に届かない
+fn main allows Stdout {
   Console::write_stream("x")
 }
 ```
@@ -50,44 +52,63 @@ fn main with Stdout {
 ```
 effect row mismatch for 'main': missing { Console::write_stream }
 (declared { Stdout }, requires { Console::write_stream, Stdout })
-hint: add 'with Console::write_stream + Stdout' to 'main'
+hint: add 'allows Console::write_stream + Stdout' to 'main'
 ```
 
-## `with` と `allows` は別の節
+## `with` は要求、`allows` は付与
 
-シグネチャは「何を発行するか」と「何を認可されているか」に分けられます。
+キーワードは 2 つ、row は 1 つです。呼ばれる関数には呼び出し元があり、row
+は呼び出し元に求めるもの — `with`。エントリポイントには呼び出し元がなく、
+権限は実行が持ち込みます。row は実行が付与するもの — `allows`。
+エントリポイントは `fn main`、`fn _start`、そして
+[12章](12_tests.vibe.md) の `test` / `bench` / `example` ブロックです。
 
-```vibe run
-fn main with () allows Console {
-  println("authority is a separate clause")
-}
-```
-
-```output
-authority is a separate clause
-```
-
-`with ()` は空の row で、代数的なものは何もありません。`allows Console` が
-権限です。1章の裸の `fn main with Console` は、同じものの短い書き方です。
-
-分割形を書いたら、ケーパビリティは `allows` に置く必要があります。`with` に
-置くと、どちらの節に属するかを教えられます。
+つまり `allows` はエントリポイントにだけ書きます。呼ばれる関数に書くと、
+コンパイラが直し方を教えます。
 
 ```vibe skip
-// skip: 分割シグネチャの `with` にケーパビリティを置いた例
-fn main() -> Int with Console allows Fs::read_file? {
-  0
+// skip: 呼ばれる関数に `allows` を書いた例
+fn greet(name: String) -> Unit allows Console {
+  println("hi \{name}")
 }
 ```
 
 ```
-`Console` is a capability effect and must appear in the `allows` clause,
-not `with` (ADR-0088, #1345)
+`allows` grants authority and is written on an entry point only (`fn main`,
+`fn _start`, `test`, `example`, `bench`); `greet` requires its effects from
+the caller -- write `with` here and grant the effect at the entry
 ```
+
+逆向きは古いコードに残っている綴りです: `fn main with Console`。今もコン
+パイルは通り、`vibe check` が `allows` への直し方を warning として報告し
+ます。コンパイラ自身のソースがこの綴りを離れた時点で、コンパイルされなく
+なります。
 
 権限は操作ごとのままです。`allows Console::write_stream` は
 `Console::read_stream` を許可しません — 表示してよいプログラムが、それに
 よって端末を読む権利まで得ることはありません。
+
+## ケーパビリティの束に名前を付ける
+
+複数のエントリポイントで同じ集合を付与するプログラムは、一度だけ名前を
+付けられます。`effectset` は row 項目の集合で、エントリは他の項目と同じ
+ように付与します。
+
+```vibe run
+effectset AppCaps = { Console, Fs::read_file }
+
+fn main allows AppCaps {
+  println("bundled")
+}
+```
+
+```output
+bundled
+```
+
+集合は検査の前に展開されるので、`allows AppCaps` は
+`allows Console + Fs::read_file` と厳密に同じです — それ以上でも以下でも
+ありません。
 
 ## 省略可能なケーパビリティ: `perform?`
 
@@ -101,7 +122,7 @@ capability は codegen 前に `NotGranted` へ固定されます。operation と
 評価されません。
 
 ```vibe run
-fn main() -> Int with () allows Console + Fs::read_file? {
+fn main() -> Int allows Console + Fs::read_file? {
   let a = perform? Fs::read_file("config.json")
   match a {
     NotGranted => 0,
@@ -114,6 +135,42 @@ fn main() -> Int with () allows Console + Fs::read_file? {
 ```output
 0
 ```
+
+省略可能な付与が必須の呼び出しの代わりになることはありません。
+`allows Fs::read_file?` のもとで `Fs::read_file("p")` と書くと拒否され、
+メッセージが 2 つの直し方を示します — `perform?` で呼ぶか、`?` なしで
+付与するか。
+
+呼ばれる関数も同じ形で省略可能な等級を**要求**でき、そのとき `perform?` は
+フォールバックのロジックがある場所に置けます。呼び出し側は
+`with Fs::read_file?` を付与のどちらの等級でも満たせます —
+`allows Fs::read_file` でも `allows Fs::read_file?` でも。必須の付与の方が
+強いからです。
+
+```vibe run
+import @vibe/core { Attempt }
+
+fn cached() -> Attempt[String, String] with Fs::read_file? {
+  perform? Fs::read_file("cache.json")
+}
+
+fn main allows Console + Fs::read_file? {
+  match cached() {
+    NotGranted => println("no cache"),
+    Errored(_) => println("cache failed"),
+    Granted(_) => println("cache hit")
+  }
+}
+```
+
+```output
+no cache
+```
+
+`?` はホストのケーパビリティにだけ付きます。自分で宣言したエフェクトへの
+`with Ask::Get?` や、`allows Exception?` は拒否されます — プログラムの外に
+それを差し止められる者がいないので、その等級は何についての主張でもない
+からです。
 
 固定済み解決表からの lowering は linear / wasm-gc の両 backend で共通です。
 `--allow-*`、BindingLock、対話 preflight を production に接続する作業は #2332 に残り、
@@ -131,6 +188,11 @@ fn main() -> Int with () allows Console + Fs::read_file? {
 `Effect::CamelCase` は perform する操作、`Effect::snake_case` は呼ぶ関数。
 これが規則で、`Fs::read_file(p)` が権限を要するのに普通の呼び出しに見える
 理由でもあります。
+
+エントリが付与できるのは実行が持ち込めるものだけです: ホストの
+ケーパビリティ、`Exception` (ランタイム境界が報告する失敗)、そして `Async`。
+自分で宣言したエフェクトには背後にホストがいないので付与できません —
+エントリに届く前に `handle` で処理します。
 
 ## 拒否すると実際に何が起きるか
 

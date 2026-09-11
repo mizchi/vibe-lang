@@ -809,7 +809,7 @@ forbid_foreign_effect_rows() { # <file> <label> [allow-list]
 # #1961), and the granted operation is then called plainly -- not through
 # `perform`:
 #
-#   fn main() -> String with () allows Fs::read_file { Fs::read_file("x") }
+#   fn main() -> String allows () allows Fs::read_file { Fs::read_file("x") }
 #
 # so it matched neither the row allow-list nor `perform (Fs|...)::`, and the
 # gate exited 0. Measured on preprocess_compile.vibe before this check.
@@ -820,8 +820,11 @@ forbid_foreign_effect_rows() { # <file> <label> [allow-list]
 # a real clause from English prose ("allows them to ..."); comment lines are
 # stripped first regardless.
 #
-# The capability need not be adjacent to the keyword. Both of these compile
-# (measured on a stage2 built from this checkout, `vibe test`):
+# The capability need not be adjacent to the keyword. Both of these lex as
+# a grant of `Fs::read_file` (the parser has since moved `allows` to entry
+# heads only, ADR-0088, so a called function spelled this way no longer
+# compiles -- the scan still has to see the shape, because a leak is a leak
+# whether or not the file would build):
 #
 #   fn probe() -> String with Exception allows
 #     Fs::read_file { ... }              # newline
@@ -900,11 +903,15 @@ require_line \
 # makes exactly one capability call today, `Fs::stat_token`.
 # The capability names are READ FROM THE COMPILER, not restated here. The
 # hand-written list said Console|Env|Process|Socket|Http|Net, and the real one
-# (capability_effect_name_list in lib/@vibe/parser/parser_base.vibe) has ten:
-# it also has Stdin, Stdout, Stderr and Profiler, which the entry file could
-# therefore use unseen, and it does NOT have Net. Enumerating a list that lives
-# somewhere else is the structure that produces that drift; reading it removes
-# the class rather than the four names.
+# (standard_host_provider_resource_defaults in
+# lib/@vibe/compiler/core/standard_effect_policy.vibe, the compiler's own
+# table of standard host providers) has ten: it also has Stdin, Stdout, Stderr
+# and Profiler, which the entry file could therefore use unseen, and it does
+# NOT have Net. Enumerating a list that lives somewhere else is the structure
+# that produces that drift; reading it removes the class rather than the four
+# names. (It used to be read from the parser's copy of the table,
+# capability_effect_name_list; ADR-0088 deleted that copy when `allows` moved
+# to entry heads, so the table is read at its one remaining home.)
 #
 # `Fs` is dropped from the derived list for this file alone: this entry does
 # file IO and declares it (`with Exception + Fs`), so banning it would be the
@@ -917,17 +924,19 @@ require_line \
 # before the check below runs. Exiting 1 with no message would be fail-closed
 # and SILENT, and silence is indistinguishable from unchecked -- the message is
 # the part that tells the next person what to repair.
+# Each table row is `("Provider", "Resource::Kind")`; the provider is the first
+# quoted name after the row's `(`.
 entry_capabilities="$(
-  { awk '/^let capability_effect_name_list/,/^\]/' \
-      "$ROOT_DIR/lib/@vibe/parser/parser_base.vibe" 2>/dev/null || true; } \
-  | { grep -oE '"[A-Za-z_][A-Za-z0-9_]*"' || true; } | tr -d '"' \
+  { awk '/^let standard_host_provider_resource_defaults/,/^\]/' \
+      "$ROOT_DIR/lib/@vibe/compiler/core/standard_effect_policy.vibe" 2>/dev/null || true; } \
+  | { grep -oE '\("[A-Za-z_][A-Za-z0-9_]*"' || true; } | tr -d '("' \
   | { grep -vx Fs || true; } | paste -sd'|' -
 )"
 entry_capability_count="$(printf '%s' "$entry_capabilities" | tr '|' '\n' | { grep -c . || true; })"
 if [ "$entry_capability_count" -lt 5 ]; then
-  echo "selfhost-portable-boundary: cannot read capability_effect_name_list from" >&2
-  echo "  lib/@vibe/parser/parser_base.vibe -- the gate would check the entry file" >&2
-  echo "  against an empty capability list and pass everything. Fix the reader in" >&2
+  echo "selfhost-portable-boundary: cannot read standard_host_provider_resource_defaults from" >&2
+  echo "  lib/@vibe/compiler/core/standard_effect_policy.vibe -- the gate would check the" >&2
+  echo "  entry file against an empty capability list and pass everything. Fix the reader in" >&2
   echo "  scripts/check_portable_boundary.sh rather than removing this guard." >&2
   exit 1
 fi

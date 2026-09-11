@@ -1,179 +1,79 @@
-# Test / Example capability と executable documentation 設計
+# Test, bench and example rows
 
-**Status:** Proposal — 一部実装済み (#1508)  
-**Related:** #819 (merged doctest compile), #1508 (test/bench effect row)
+**Status:** implemented (#1508, ADR-0088)
+**Related:** #819 (merged doctest compile), #1508 (test/bench effect row),
+ADR-0088 (`allows`, the entry grant)
 
-> **実装状況 (2026-08, #1508):** `test "name" with <row> { .. }` /
-> `bench "name" with <row> { .. }` は**実装済み**。ただし実装された意味論は
-> この文書の「明示時は row を完全に明示し `Exception` 必須」ではなく、
-> **宣言 row が ambient row (標準 effect policy の default 10 effect) を
-> 拡張する** — `with Http` が `Exception` や Stdout/Fs 系を黙って落とすと、
-> row を足すすべての test が既定値を全部書き直す羽目になるため
-> (決定の経緯は #1508 と 80f3088 のコミットメッセージ)。本文書の
-> 「省略時 `{ Exception }`」「明示時 `Exception` 必須」「`with ()` はエラー」は
-> **未実装の将来案**のまま。`example` / `for Symbol` / `DevEnv` bundle も未実装。
-> 無名 `test { .. }` / `bench { .. }` に row は書けない (row を対応付ける
-> 名前が無い)。
+## The rule
 
-## 目的
-
-テストと API 利用例を通常の Vibe コードとして型検査・実行し、必要な
-capability を宣言可能にする。Markdown fence の任意スクリプトを doctest
-として実行する方式だけに依存せず、API に紐付く利用例を言語構文として
-記述する。
-
-この設計は次を満たす。
-
-- test/example が必要とする capability を source 上で監査できる。
-- assertion failure のための `Exception` を test/example の基底 capability
-  として明示する。
-- よく使う開発用 capability は `DevEnv` bundle で簡潔に記述する。
-- example を対象 API に結び付け、API docs と実行可能な利用例を同期する。
-- `.vibe.md` の runnable block を一つの wasm module に統合コンパイルする際、
-  block 間の名前衝突を起こさない。
-
-## 構文
+A `test`, `bench` or `example` block is an entry point: nothing calls it, so
+the row written after its name is a **grant** and the keyword is `allows`,
+exactly as on `fn main allows ..`.
 
 ```vibe skip
-// doctest-skip: design sketch: `test ".." with <row>` is implemented (#1508, widening semantics) but `example .. for Symbol` is not
-test "test name" {
-  // body
+// doctest-skip: form catalogue, not a compilable program
+test "pure" {
+  assert_eq(1, 1)
 }
 
-test "test name" with Exception + Fs {
-  // body
+test "reads a fixture" allows Fs::read_file {
+  let _ = Fs::read_file("fixtures/input.txt")
+  assert(true)
 }
 
-example "example name" for Array::get with Exception {
-  let xs = [10, 20]
-  assert_eq(Array::get(xs, 0), 10)
+bench "http_get" allows Http {
+  let h = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
+  Http::close(h)
 }
-```
 
-`for` の対象は最初の版では fully-qualified symbol のみを受け入れる。
-曖昧な overload 解決や任意の式を `for` に置くことは許可しない。
-
-## Effect row の規則
-
-### 省略時
-
-`test "…" { … }` および `example "…" for Symbol { … }` の実効 row は
-`{ Exception }` である。省略は effect inference ではない。
-
-従って、例えば `Fs` を使う test は省略形では type error になり、必要な
-capability を宣言しなければならない。
-
-### 明示時
-
-`with` を書く場合、row は完全に明示する。`Exception` を省略することは
-エラーとする。
-
-```vibe skip
-// doctest-skip: design sketch: the strict explicit-row rules here (Exception mandatory, `with ()` rejected) are NOT implemented -- today a declared row widens the ambient default (#1508)
-// OK
-test "pure" with Exception { assert_eq(1, 1) }
-
-// OK
-test "reads fixture" with Exception + Fs { /* ... */ }
-
-// Error: an explicit test/example effect row must include Exception
-test "invalid" with () { assert_eq(1, 1) }
-```
-
-この規則により、test の failure / early-exit 経路も declaration から読める。
-`Exception` は test runtime が assertion failure を報告するための基底
-capability である。
-
-`with` は静的な effect contract であり、実行時の host authorization を
-単独で与えるものではない。test runner は declaration を要求として扱い、
-別途 sandbox / allowlist を適用する。たとえば `Fs` は fixture root に制限
-できる。
-
-## `DevEnv` bundle
-
-開発用 fixture や integration test で capability をすべて個別列挙する負担を
-下げるため、`DevEnv` を定義済み development capability bundle とする。
-
-```vibe skip
-// doctest-skip: design sketch: the `DevEnv` bundle is not implemented (`test ".." with <row>` itself is, #1508)
-test "local integration" with Exception + DevEnv {
-  // development fixture を使う
+example "add returns the sum" allows Console {
+  println("\{add(1, 2)}")
 }
 ```
 
-`DevEnv` は checker と runner が同じ定義を共有する bundle である。checker は
-これを concrete effect set に展開して通常の effect check を行い、runner は
-展開結果を capability policy と照合する。従って `DevEnv` は型検査をすり抜ける
-「万能 effect」ではない。
+## The row widens the ambient default
 
-bundle の正確な内容は stable な runner contract として文書化する。少なくとも
-network capability (`Http`) は含めない。network は常に `Http` を個別に
-宣言・承認する。
-
-`DevEnv` は test、example、doctest の development execution 用である。
-production の `vibe run` / `vibe build` では原則として reject し、必要なら
-明示的な development-only flag による opt-in を要求する。
-
-## `example` の意味論
-
-`example` は docs 向け metadata を持つ executable case である。
-
-- body は test と同じ型検査・effect check・runner 基盤で実行する。
-- `for Symbol` は解決されなければ compile error とする。
-- compiler は example の名前、対象 symbol、source span、宣言 row を registry
-  metadata に保存する。
-- docs generator は registry と source span を使って対象 API の documentation
-  に example を掲載できる。
-- `vibe test` は通常の test を実行する。example の実行は `vibe test --examples`
-  （名称は実装時に確定）および doctest gate で opt-in する。
-
-example は assertion を含んでよい。stdout を documentation output として検証
-する形式は将来の拡張とし、初期版は assertion failure と trap を failure とする。
-
-## Merged doctest compilation (#819)
-
-Markdown の `vibe run` fence は任意の script example として引き続き扱える。
-一方、API の利用例には `example` declaration を優先する。
-
-merged compilation では各 runnable fence を独立した generated wrapper にする。
-
-```vibe
-export let __doctest_a1b2c3 = () -> Unit {
-  let x = 1
-  ()
-}
-```
-
-wrapper ID は raw AST hash 単体ではなく、少なくとも次から作る stable identifier
-とする。
+Test execution supplies an ambient row -- the standard host providers plus
+`Exception` -- so that `assert` (which reports through `Exception`) and
+ordinary scaffolding need no declaration. The row a block declares **widens**
+that default; it does not replace it. `allows Http` therefore adds the one
+capability the default deliberately leaves out (network) and keeps
+everything else. The default is `test_bench_default_effects` in
+`lib/@vibe/compiler/core/standard_effect_policy.vibe`:
 
 ```text
-sha256(relative-document-path + fence-offset + normalized-AST)
+Fs, Env, Stdin, Stdout, Stderr, Console, Process, Profiler, Error, Exception
 ```
 
-同一内容の fence が複数あっても衝突しないためである。wrapper は文書内の順序で
-実行し、診断は generated identifier ではなく元の `path:line` に戻す。
+A declared row may name an effect, an operation (`Http::request`), or an
+`effectset` the program declares; the effectset is expanded before the block
+is checked. An anonymous `test { .. }` / `bench { .. }` cannot carry a row,
+because the row is keyed on the block's name.
 
-runnable fence は互いに独立した scope である。ある fence の definition を後続
-fence が参照することはできない。逐次依存する literate programming 用の構文が
-必要になった場合は、`vibe continue` 等の別機能として設計する。
+`Http` (and `Socket`) are absent from the default on purpose: a test that
+reaches the network says so at its head. `bench/http_bench.vibe` is the
+worked example (it needs `python3 tests/http_echo_server.py 18281`).
 
-fence 内の top-level `test` / `example` declaration は wrapper 内に入れず、merged
-source の top level に hoist して registry に登録する。`compile_fail` 等、隔離が
-必要な fence は merged compilation から opt-out する。
+## `example`
 
-## 実装段階
+`example "name" { .. }` (#819) is a documentation example: compiled and RUN
+like a test, so a sample that stopped compiling is caught by `vibe test`.
+The parser lowers it to a test, so it takes the same `allows` row and the
+same ambient default. An unused binding inside an example is not reported --
+sample code is read, not only executed.
 
-1. `STest` に optional effect-row metadata を追加し、parser / lowering / checker /
-   test registry を更新する。省略時 `{ Exception }`、明示時 `Exception` 必須を
-   実装する。
-2. test runner の declared-row-to-runtime-policy 照合と fixture sandbox を追加する。
-3. checker / runner 共有の `DevEnv` bundle を導入し、network を含まない展開内容を
-   runner contract に固定する。
-4. `SExample`、`for` target resolution、example registry metadata、`--examples` 実行
-   経路を追加する。
-5. `scripts/vibe_md.vibex` を wrapper / hoist 方式の merged compile に移行し、
-   source map と block 単位の failure report を追加する。
+## Legacy spelling
 
-各段階で parser fixture、effect rejection fixture、runner policy fixture、merged
-module の同名 block regression を追加する。
+`test "n" with ..` still parses. The committed seed compiles `lib/**` tests
+that carry it, so the rejection lands with the bootstrap bump that migrates
+those sources; until then `vibe check` reports the head with the `allows`
+edit as a non-fatal warning.
+
+## Not implemented
+
+- Binding an example to an API symbol (`example "n" for Array::get`) and a
+  docs generator that lifts examples into API documentation.
+- A stricter explicit-row mode (`allows ()` replacing the ambient default
+  rather than widening it) and a named development bundle such as `DevEnv`.
+  Both are open design questions; neither has an issue yet because nothing
+  in the tree needs them.

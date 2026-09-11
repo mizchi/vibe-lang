@@ -7,6 +7,7 @@ import @vibe/ast {
 import ./parser_base.vibe {
   _no_tb,
   _no_tp,
+  allows_outside_entry_error,
   binder_name_error,
   collect_effect_names,
   collect_import_path,
@@ -15,8 +16,10 @@ import ./parser_base.vibe {
   empty_import_items,
   empty_params,
   expect_tk,
+  is_entry_fn_name,
   is_tk,
   mode_block,
+  parse_allows_row,
   parse_binding_name,
   parse_binding_name_with_binder_context,
   parse_effect_row,
@@ -36,6 +39,7 @@ import ./parser_base.vibe {
   parse_type_impl,
   parse_type_param_kind,
   peek,
+  peek_is_allows,
   skip_braced_body,
   tk_name
 }
@@ -802,12 +806,26 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
   }
   let arrow = expect_tk(tokens, after_params, "->")
   let (ret_ty, ret_next) = parse_type_impl(tokens, arrow, 0)
-  let (eff_opt, eff_next) = match peek(tokens, ret_next) {
-    TWith => {
-      let (eff_names, en) = parse_effect_row(tokens, ret_next + 1)
+  // The row. `with` is a requirement and may follow any signature; `allows`
+  // is a grant and may follow an ENTRY signature only (`fn main() -> Int
+  // allows Console`, `fn _start() -> Int allows Fs`). On any other name the
+  // error leads with the edit rather than reading `allows` as a stray
+  // identifier and reporting "expected {".
+  let (eff_opt, eff_next) = if peek_is_allows(tokens, ret_next) {
+    if is_entry_fn_name(name) {
+      let (eff_names, en) = parse_allows_row(tokens, ret_next + 1)
       (Some(eff_names), en)
-    },
-    _ => (None, ret_next)
+    } else {
+      throw(allows_outside_entry_error(String::concat("`", String::concat(name, "`")), ret_next))
+    }
+  } else {
+    match peek(tokens, ret_next) {
+      TWith => {
+        let (eff_names, en) = parse_effect_row(tokens, ret_next + 1)
+        (Some(eff_names), en)
+      },
+      _ => (None, ret_next)
+    }
   }
   let reqs = Array::slice([EIdent("", 0 - 1)], 0, 0)
   let enss = Array::slice([EIdent("", 0 - 1)], 0, 0)
@@ -864,7 +882,7 @@ export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[
   parse_fn_signature_with_binder_context(tokens, pos, None, None)
 }
 
-/// ADR-0069 Phase 1: `fn main { ... }` / `fn main with Fs { ... }` — the ONE
+/// ADR-0069 Phase 1: `fn main { ... }` / `fn main allows Fs { ... }` — the ONE
 /// fn form allowed to omit the parens and all annotations. It is a pure sugar
 /// for `fn main() -> Unit [with <row>] { ... }`: the branch below builds the
 /// exact SFnDecl shape the general path would produce for that spelling
@@ -874,13 +892,20 @@ export fn parse_fn_signature(tokens: Array[Token], pos: Int) -> ((String, Array[
 fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   binder_capture_source(context, "main", pos, pos)
   // pos points at the `main` identifier; the caller verified the next token
-  // is `{` (body) or `with` (capability row then body).
-  let (eff_opt, body_start) = match peek(tokens, pos + 1) {
-    TWith => {
-      let (eff_names, en) = parse_effect_row(tokens, pos + 2)
-      (Some(eff_names), en)
-    },
-    _ => (None, pos + 1)
+  // is `{` (body), `allows` (the entry's grant, then body) or `with` (the
+  // legacy spelling of that grant, still read until the bootstrap bump
+  // migrates the seed-compiled sources; `vibe check` names the edit).
+  let (eff_opt, body_start) = if peek_is_allows(tokens, pos + 1) {
+    let (eff_names, en) = parse_allows_row(tokens, pos + 2)
+    (Some(eff_names), en)
+  } else {
+    match peek(tokens, pos + 1) {
+      TWith => {
+        let (eff_names, en) = parse_effect_row(tokens, pos + 2)
+        (Some(eff_names), en)
+      },
+      _ => (None, pos + 1)
+    }
   }
   let br = expect_tk(tokens, body_start, "{")
   let (body, end) = parse_impl_with_binder_context(tokens, starts, br, mode_block, context)
@@ -888,14 +913,16 @@ fn parse_fn_main_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, export
 }
 
 export fn parse_fn_stmt_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, exported: Bool, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
-  // ADR-0069 Phase 1: dispatch the `fn main {` / `fn main with <row> {` special form
-  // before the general signature parse (which requires `(`). `fn main(` still
-  // takes the general path, so an explicit signature keeps working.
+  // ADR-0069 Phase 1: dispatch the `fn main {` / `fn main allows <row> {`
+  // special form (and its legacy `fn main with <row> {` spelling) before the
+  // general signature parse (which requires `(`). `fn main(` still takes the
+  // general path, so an explicit signature keeps working.
   let is_main_special = match peek(tokens, pos) {
     TIdent(n0) => if n0 == "main" {
       match peek(tokens, pos + 1) {
         TLBrace => true,
         TWith => true,
+        TIdent(kw) => kw == "allows",
         _ => false
       }
     } else {

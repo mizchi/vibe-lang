@@ -70,10 +70,10 @@ pass=$((pass + 1))
 
 proj="$WORK/proj"
 mkdir -p "$proj"
-printf 'fn main with Stdout { Stdout::write_stream("42\\n") }\n' > "$proj/hello.vibex"
+printf 'fn main allows Stdout { Stdout::write_stream("42\\n") }\n' > "$proj/hello.vibex"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$proj/lib.vibe"
-printf 'import ./lib.vibe { add }\nfn main with Stdout { Stdout::write_stream("\\{add(20, 22)}\\n") }\n' > "$proj/app.vibex"
-printf 'fn main with () { let _ = nope + 1; () }\n' > "$proj/bad.vibex"
+printf 'import ./lib.vibe { add }\nfn main allows Stdout { Stdout::write_stream("\\{add(20, 22)}\\n") }\n' > "$proj/app.vibex"
+printf 'fn main allows () { let _ = nope + 1; () }\n' > "$proj/bad.vibex"
 printf 'test "ok" {\n  assert_eq(2 + 2, 4)\n}\n' > "$proj/pass_test.vibe"
 printf 'test "bad" {\n  assert_eq(2 + 2, 5)\n}\n' > "$proj/fail_test.vibe"
 
@@ -85,7 +85,7 @@ check "vibe run app (import)" "42" "$(run_number "$proj/app.vibex")"
 # #1949: chapter-01 prelude import must work from a temp project with only
 # the installed toolchain. cd so repo lib/ is not the workspace lib, and
 # drop an inherited VIBE_LIB so resolution is $VIBE_HOME/lib.
-printf 'import @vibe/console {\n  println\n}\nfn main with Console {\n  println("42")\n}\n' > "$proj/prelude_hello.vibex"
+printf 'import @vibe/console {\n  println\n}\nfn main allows Console {\n  println("42")\n}\n' > "$proj/prelude_hello.vibex"
 (
   cd "$proj"
   unset VIBE_LIB || true
@@ -232,7 +232,7 @@ fproj="$WORK/fproj"
 mkdir -p "$fproj"
 printf 'export let add = (a: Int, b: Int) -> Int { a + b }\n' > "$WORK/mathlib_src.vibe"
 printf 'mathlib file://%s/mathlib_src.vibe\n' "$WORK" > "$fproj/vibe.deps"
-printf 'import ./deps/mathlib.vibe { add }\nfn main with Stdout { Stdout::write_stream("\\{add(40, 2)}\\n") }\n' > "$fproj/app.vibex"
+printf 'import ./deps/mathlib.vibe { add }\nfn main allows Stdout { Stdout::write_stream("\\{add(40, 2)}\\n") }\n' > "$fproj/app.vibex"
 "$VIBE" fetch "$fproj" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe fetch exit" "0" "$rc"
 check "vibe fetch wrote lock" "yes" "$([ -s "$fproj/vibe.lock" ] && echo yes || echo no)"
@@ -246,7 +246,7 @@ if command -v git >/dev/null 2>&1; then
   ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m init )
   gproj="$WORK/gproj"; mkdir -p "$gproj"
   printf 'mathgit git+file://%s\n' "$repo" > "$gproj/vibe.deps"
-  printf 'import ./deps/mathgit/index.vibe { triple }\nfn main with Stdout { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$gproj/app.vibex"
+  printf 'import ./deps/mathgit/index.vibe { triple }\nfn main allows Stdout { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$gproj/app.vibex"
   "$VIBE" fetch "$gproj" >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe fetch git+ exit" "0" "$rc"
   check "vibe fetch git+ records commit" "yes" "$(grep -q 'git:' "$gproj/vibe.lock" && echo yes || echo no)"
@@ -262,7 +262,7 @@ if command -v git >/dev/null 2>&1; then
   ( cd "$ra" && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -q -m a )
   tproj="$WORK/tproj"; mkdir -p "$tproj"
   printf 'a git+file://%s\n' "$ra" > "$tproj/vibe.deps"
-  printf 'import ./deps/a/index.vibe { mid }\nfn main with Stdout { Stdout::write_stream("\\{mid(4)}\\n") }\n' > "$tproj/app.vibex"
+  printf 'import ./deps/a/index.vibe { mid }\nfn main allows Stdout { Stdout::write_stream("\\{mid(4)}\\n") }\n' > "$tproj/app.vibex"
   "$VIBE" fetch "$tproj" >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe fetch transitive exit" "0" "$rc"
   check "vibe fetch vendored nested dep" "yes" "$([ -s "$tproj/deps/a/deps/base/index.vibe" ] && echo yes || echo no)"
@@ -280,7 +280,7 @@ if command -v git >/dev/null 2>&1; then
   # Re-fetch with --frozen: must restore the *old* commit's source (x*3).
   "$VIBE" fetch --frozen "$fzproj" >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe fetch --frozen exit" "0" "$rc"
-  printf 'import ./deps/mathgit/index.vibe { triple }\nfn main with Stdout { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$fzproj/app.vibex"
+  printf 'import ./deps/mathgit/index.vibe { triple }\nfn main allows Stdout { Stdout::write_stream("\\{triple(14)}\\n") }\n' > "$fzproj/app.vibex"
   check "vibe fetch --frozen pins commit" "42" "$(run_number "$fzproj/app.vibex")"
   newsha="$(awk '/^mathgit/{print $3}' "$fzproj/vibe.lock" | sed 's/git://')"
   check "vibe fetch --frozen keeps lock sha" "$pinsha" "$newsha"
@@ -307,7 +307,7 @@ if command -v git >/dev/null 2>&1; then
   ( cd "$srepo" && git add -A && git commit -q -m v2 && git tag v2.0.0 )
   sproj="$WORK/sproj"; mkdir -p "$sproj"
   printf 'semlib git+file://%s#^1.0\n' "$srepo" > "$sproj/vibe.deps"
-  printf 'import ./deps/semlib/index.vibe { v }\nfn main with Stdout { Stdout::write_stream("\\{v()}\\n") }\n' > "$sproj/app.vibex"
+  printf 'import ./deps/semlib/index.vibe { v }\nfn main allows Stdout { Stdout::write_stream("\\{v()}\\n") }\n' > "$sproj/app.vibex"
   "$VIBE" fetch "$sproj" >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe fetch semver exit" "0" "$rc"
   check "vibe fetch ^1.0 picks v1.2.0" "120" "$(run_number "$sproj/app.vibex")"
@@ -325,7 +325,7 @@ printf 'export let inc = (x: Int) -> Int { x + 1 }\n' > "$WORK/inclib.vibe"
 "$VIBE" add inclib "file://$WORK/inclib.vibe" "$aproj" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe add exit" "0" "$rc"
 check "vibe add wrote manifest + lock" "yes" "$([ -s "$aproj/vibe.deps" ] && [ -s "$aproj/vibe.lock" ] && echo yes || echo no)"
-printf 'import ./deps/inclib.vibe { inc }\nfn main with Stdout { Stdout::write_stream("\\{inc(41)}\\n") }\n' > "$aproj/app.vibex"
+printf 'import ./deps/inclib.vibe { inc }\nfn main allows Stdout { Stdout::write_stream("\\{inc(41)}\\n") }\n' > "$aproj/app.vibex"
 check "vibe run added dep" "42" "$(run_number "$aproj/app.vibex")"
 
 # new: scaffold a project and run it

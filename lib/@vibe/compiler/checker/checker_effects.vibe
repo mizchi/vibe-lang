@@ -11,8 +11,6 @@ import @vibe/compiler/core {
   TypeExpr,
   canonical_builtin_name,
   canonical_exception_effect_name,
-  effect_row_allows_text,
-  effect_row_emitted_text,
   entry_cache_safe_effects,
   env_lookup,
   env_lookup_binding,
@@ -89,9 +87,16 @@ export enum EffectError {
   // separate from concrete effects so the fix-it never suggests handling a
   // type-level row variable as though it were an effect declaration.
   EEUnresolvedEntryEffectRow(String, String, Int);
-  EEUnauthorizedEntryOperation(String, String, String, Int);
-  EEUnauthorizedInstantiateAuthority(String);
   EEProviderOperationCollision(String);
+  // ADR-0088: the entry granted `Op?` (optional) and the body called `Op` as
+  // required. Fields: function name, operation, offset.
+  EEOptionalGrantForRequiredCall(String, String, Int);
+  // ADR-0088: an entry row names `Provider::op` for a standard host provider
+  // that owns no such operation. Fields: entry name, label.
+  EEUnknownProviderOperation(String, String);
+  // ADR-0088: `?` on a row label that is not a host capability. Fields:
+  // function name, label as written.
+  EEOptionalGradeNotCapability(String, String);
   EEAssignImmutable(String);
   // #1539: provider-owned stdin lifecycle operations cannot be transported as
   // values until generic higher-order effect flow is sound (#1536).
@@ -157,7 +162,10 @@ export fn effect_error_to_string(err: EffectError) -> String {
     // deterministic fix-it hint line targeting the enclosing declaration
     // (for a call-site leak that is the CALLER, not the callee).
     EEEffectRowMismatch(fname, missing, declared, required, off) => {
-      let head = if String::length(fname) > 0 {
+      let block = entry_block_display_name(fname)
+      let head = if String::length(block) > 0 {
+        String::concat("effect row mismatch for ", block)
+      } else if String::length(fname) > 0 {
         String::concat("effect row mismatch for '", String::concat(fname, "'"))
       } else {
         "effect row mismatch"
@@ -167,8 +175,18 @@ export fn effect_error_to_string(err: EffectError) -> String {
       } else {
         String::concat(" (no 'with' clause, requires { ", String::concat(required, " })"))
       }
+      // ADR-0088: an entry point (`main` / `_start`, a `test` / `bench` /
+      // `example` block) GRANTS its row, so the edit it is told is `allows`;
+      // a called function requires, so its edit stays `with`.
+      let entry_block = entry_block_display_name(fname)
       let hint = if String::length(fname) == 0 {
         String::concat("\nhint: add 'with ", String::concat(row_as_source(required), "' to the enclosing function"))
+      } else if String::length(entry_block) > 0 {
+        String::concat("\nhint: add 'allows ", String::concat(row_as_source(required), String::concat("' to ", entry_block)))
+      } else if is_program_entry_name(fname) && String::length(declared) == 0 {
+        String::concat("\nhint: declare 'fn ", String::concat(fname, String::concat(" allows ", String::concat(row_as_source(required), "'"))))
+      } else if is_program_entry_name(fname) {
+        String::concat("\nhint: add 'allows ", String::concat(row_as_source(required), String::concat("' to '", String::concat(fname, "'"))))
       } else if String::length(declared) == 0 {
         String::concat("\nhint: declare 'fn ", String::concat(fname, String::concat("(...) -> T with ", String::concat(row_as_source(required), "'"))))
       } else {
@@ -199,20 +217,37 @@ export fn effect_error_to_string(err: EffectError) -> String {
         body
       }
     },
-    EEUnauthorizedEntryOperation(entry_name, operation, allows, off) => {
-      let who = if is_program_entry_name(entry_name) {
-        String::concat("entry point '", String::concat(entry_name, "'"))
+    EEOptionalGrantForRequiredCall(fname, op, off) => {
+      // An entry GRANTS (`allows`), a called function REQUIRES (`with`).
+      let is_entry = is_program_entry_name(fname) || String::length(entry_block_display_name(fname)) > 0
+      let keyword = if is_entry {
+        "allows"
       } else {
-        String::concat("'", String::concat(entry_name, "'"))
+        "with"
       }
-      let body = String::concat(who, String::concat(" emits unhandled `", String::concat(operation, String::concat("` that is not authorized by `allows ", String::concat(allows, "`\nhint: handle the operation, or add it to the `allows` clause")))))
+      let verb = if is_entry {
+        "granted"
+      } else {
+        "declared"
+      }
+      let head = String::concat("`", String::concat(op, String::concat("` is ", String::concat(verb, String::concat(" as optional (`", String::concat(keyword, String::concat(" ", String::concat(op, String::concat("?`) but `", String::concat(fname, "` calls it as required"))))))))))
+      let hint = String::concat("\nhint: call it with `perform? ", String::concat(op, String::concat("(..)` and match the `Attempt`, or drop the `?` (`", String::concat(keyword, String::concat(" ", String::concat(op, "`)"))))))
+      let body = String::concat(head, hint)
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
         body
       }
     },
-    EEUnauthorizedInstantiateAuthority(label) => String::concat("allows `", String::concat(label, "` cannot be frozen as instantiate authority: it is not a registry-owned host provider operation")),
+    EEOptionalGradeNotCapability(fname, label) => {
+      let core = strip_authority_grade(label)
+      String::concat("`", String::concat(label, String::concat("` in the row of `", String::concat(fname, String::concat("`: `?` marks a host capability optional, and `", String::concat(core, String::concat("` is not one (it has no host provider)\nhint: drop the `?` -- `", String::concat(core, "` is required, handled or runtime-managed, never optional"))))))))
+    },
+    EEUnknownProviderOperation(entry_name, label) => {
+      let provider = effect_name_of_op(label)
+      let head = String::concat("entry point '", String::concat(entry_name, String::concat("' grants `", String::concat(label, String::concat("`, but the `", String::concat(provider, "` provider has no such operation"))))))
+      String::concat(head, String::concat("\nhint: grant the provider (`allows ", String::concat(provider, "`) or one of its operations")))
+    },
     EEProviderOperationCollision(operation) => String::concat("user effect operation `", String::concat(operation, "` collides with a registry-owned host provider operation; rename the user operation so it cannot impersonate provider authority")),
     EEAssignImmutable(name) => String::concat("cannot assign to immutable binding `", String::concat(name, "` (declare it with `let mut`)")),
     EEStdinProviderValueReference(name) => String::concat("stdin provider operations are direct-call-only; wrap `", String::concat(name, "` in an explicitly effectful function")),
@@ -2058,7 +2093,7 @@ fn effect_row_parse(eff: Option[String]) -> Option[Array[String]] {
     None => None,
     Some(s) => {
       let labels = array_empty()
-      let raw = String::split(effect_row_emitted_text(s), ",")
+      let raw = String::split(s, ",")
       let mut i = 0
       while i < Array::length(raw) {
         let label = canonical_exception_effect_name(String::trim(Array::get(raw, i)))
@@ -2204,7 +2239,14 @@ fn console_authorizes_legacy(labels: Array[String], eff_name: String) -> Bool {
 fn decl_authorizes_effect(labels: Array[String], eff_name: String) -> Bool {
   // All concrete label checks, including Async above, go through this same
   // exact-membership primitive rather than substring matching.
-  if effect_row_has_label(Some(labels), eff_name) {
+  if authority_is_optional(eff_name) {
+    // ADR-0088 graded subset: an OPTIONAL requirement (`with Fs::read_file?`
+    // on a callee) is satisfied by the same optional label or by the
+    // required grade of it -- Required is the join. The reverse (an optional
+    // grant for a required call) is the plain-label case below, where the
+    // `?` label never matches, and `optional_grant_for` names the edit.
+    effect_row_has_label(Some(labels), eff_name) || decl_authorizes_effect(labels, strip_authority_grade(eff_name))
+  } else if effect_row_has_label(Some(labels), eff_name) {
     true
   } else if console_authorizes_legacy(labels, eff_name) {
     true
@@ -2790,6 +2832,21 @@ fn is_program_entry_name(name: String) -> Bool {
   name == "main" || name == "_start"
 }
 
+/// The source spelling of a lowered `test` / `bench` block -- `test "x"` for
+/// the synthesized `__test_x` -- so a hint about its row names the block the
+/// reader wrote rather than the compiler's internal function. Empty for any
+/// other name.
+fn entry_block_display_name(fn_name: String) -> String {
+  let n = String::length(fn_name)
+  if String::starts_with(fn_name, "__test_") {
+    String::concat("test \"", String::concat(String::substring(fn_name, 7, n), "\""))
+  } else if String::starts_with(fn_name, "__bench_") {
+    String::concat("bench \"", String::concat(String::substring(fn_name, 8, n), "\""))
+  } else {
+    ""
+  }
+}
+
 // User declarations can legally reuse a provider spelling such as `Fs`.
 // Retain operation identity rather than only the effect name: the selfhost
 // linked program contains private `effect Env { Get ... }` declarations as
@@ -3073,7 +3130,10 @@ fn entry_unadmitted_labels(labels: Array[String]) -> Array[String] {
     let label = Array::get(labels, i)
     // Row variables are separated above so they receive the closed-row hint;
     // this list contains only concrete effects that lack an entry owner.
-    if !label_is_effect_var(label) && (entry_user_operation_requires_handler(label) || !is_entry_admitted_effect(label)) {
+    // The Optional grade is a property of the grant, not of the label's
+    // owner: classify `Fs::read_file?` as `Fs::read_file`.
+    let core = strip_authority_grade(label)
+    if !label_is_effect_var(label) && (entry_user_operation_requires_handler(core) || !is_entry_admitted_effect(core)) {
       Array::push(out, label)
     } else {
       ()
@@ -3098,10 +3158,31 @@ fn entry_handler_labels(labels: Array[String]) -> Array[String] {
   sort_labels(out)
 }
 
+fn optional_grant_for(declared: Array[String], missing: Array[String]) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(missing) && String::length(found) == 0 {
+    let m = Array::get(missing, i)
+    if effect_row_has_label(Some(declared), String::concat(m, "?")) {
+      found = m
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn make_contextual_row_error(fn_name: String, declared: Array[String], missing: Array[String], off: Int) -> EffectError {
   let unresolved = entry_unresolved_labels(missing)
   let bad = entry_unadmitted_labels(missing)
-  if is_program_entry_name(fn_name) && Array::length(unresolved) > 0 {
+  let optional_grant = optional_grant_for(declared, missing)
+  if String::length(optional_grant) > 0 {
+    // ADR-0088 strict grade match: an optional grant never authorizes a
+    // required call, and the edit is either the `perform?` form or the
+    // required grade -- not "add it to the row", which it already is.
+    EEOptionalGrantForRequiredCall(fn_name, optional_grant, off)
+  } else if is_program_entry_name(fn_name) && Array::length(unresolved) > 0 {
     EEUnresolvedEntryEffectRow(fn_name, join_labels(unresolved), off)
   } else if is_program_entry_name(fn_name) && Array::length(bad) > 0 {
     EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off)
@@ -3135,193 +3216,20 @@ fn first_expr_offset(root: Expr) -> Int {
   first
 }
 
-fn raw_fn_effect_string(ty: Option[TypeExpr], body: Expr) -> String {
-  match ty {
-    Some(TyFn(_, _, Some(s))) => s,
-    _ => match body {
-      EFn(_, _, _, _, Some(s), _) => s,
-      _ => ""
-    }
-  }
-}
-
-fn push_unique_label(out: Array[String], lab: String) -> Unit {
-  if String::length(lab) == 0 || effect_row_has_label(Some(out), lab) {
-    ()
-  } else {
-    Array::push(out, lab)
-  }
-}
-
-fn collect_unhandled_entry_ops(root: Expr) -> Array[String] {
-  let out = no_str_labels()
-  let stack = array_empty()
-  Array::push(stack, (root, no_str_labels()))
-  while Array::length(stack) > 0 {
-    let n = Array::length(stack)
-    let (expr, discharged) = Array::get(stack, n - 1)
-    Array::truncate(stack, n - 1)
-    match expr {
-      EHandle(body, arms) => {
-        let inner = labels_union(discharged, collect_handle_effects(arms))
-        Array::push(stack, (body, inner))
-        let mut ai = 0
-        while ai < Array::length(arms) {
-          let (_, arm_body) = Array::get(arms, ai)
-          Array::push(stack, (arm_body, discharged))
-          ai = ai + 1
-        }
-      },
-      EFn(_, _, _, _, _, _) => (),
-      ECall(callee, args, _) => {
-        match callee {
-          EIdent(name, _) => {
-            if name == "perform?" && Array::length(args) == 1 {
-              // Optional perform does not emit a required unhandled op.
-              // Walk only the operation arguments so the inner builtin is
-              // not counted as a required host call.
-              match Array::get(args, 0) {
-                ECall(_, opargs, _) => {
-                  let mut oi = 0
-                  while oi < Array::length(opargs) {
-                    Array::push(stack, (Array::get(opargs, oi), discharged))
-                    oi = oi + 1
-                  }
-                },
-                _ => ()
-              }
-            } else if name == "perform" && Array::length(args) == 1 {
-              match Array::get(args, 0) {
-                ECall(op_callee, _, _) => match op_callee {
-                  EIdent(op_name, _) => {
-                    if label_is_handled(op_name, discharged) {
-                      ()
-                    } else {
-                      push_unique_label(out, op_name)
-                    }
-                  },
-                  _ => ()
-                },
-                EIdent(op_name, _) => {
-                  if label_is_handled(op_name, discharged) {
-                    ()
-                  } else {
-                    push_unique_label(out, op_name)
-                  }
-                },
-                _ => ()
-              }
-              Array::push(stack, (callee, discharged))
-              let mut ai = 0
-              while ai < Array::length(args) {
-                Array::push(stack, (Array::get(args, ai), discharged))
-                ai = ai + 1
-              }
-            } else {
-              match builtin_call_effect(name) {
-                Some(eff) => {
-                  let op_label = builtin_call_op_label(name, eff)
-                  if label_is_handled(op_label, discharged) || label_is_handled(eff, discharged) {
-                    ()
-                  } else {
-                    push_unique_label(out, op_label)
-                  }
-                },
-                None => ()
-              }
-              Array::push(stack, (callee, discharged))
-              let mut pai = 0
-              while pai < Array::length(args) {
-                Array::push(stack, (Array::get(args, pai), discharged))
-                pai = pai + 1
-              }
-            }
-          },
-          _ => {
-            Array::push(stack, (callee, discharged))
-            let mut ai = 0
-            while ai < Array::length(args) {
-              Array::push(stack, (Array::get(args, ai), discharged))
-              ai = ai + 1
-            }
-          }
-        }
-      },
-      _ => {
-        let children = expr_children(expr)
-        let mut ci = 0
-        while ci < Array::length(children) {
-          Array::push(stack, (Array::get(children, ci), discharged))
-          ci = ci + 1
-        }
-      }
-    }
-  }
-  out
-}
-
-fn label_is_handled(label: String, handled: Array[String]) -> Bool {
-  if effect_row_has_label(Some(handled), label) {
-    true
-  } else {
-    let base = effect_name_of_op(label)
-    effect_row_has_label(Some(handled), base)
-  }
-}
-
-fn label_is_authorized(label: String, auth: Array[String]) -> Bool {
-  let mut i = 0
-  let mut ok = false
-  while i < Array::length(auth) {
-    if authority_covers_operation(Array::get(auth, i), label) {
-      ok = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  ok
-}
-
 fn check_entry_declared_effects(fn_name: String, ty: Option[TypeExpr], body: Expr) -> Array[EffectError] {
   let errors = array_empty()
-  let raw = raw_fn_effect_string(ty, body)
-  let allows = effect_row_allows_text(raw)
   let inspect_body = match body {
     EFn(_, _, _, _, _, fbody) => fbody,
     _ => body
   }
   let off = first_expr_offset(inspect_body)
-  if String::length(allows) > 0 {
-    let emitted = effect_row_labels(effect_row_parse(Some(raw)))
-    let auth = effect_row_labels(effect_row_parse(Some(allows)))
-    let mut ai = 0
-    while ai < Array::length(auth) {
-      let lab = Array::get(auth, ai)
-      if is_instantiate_authority(lab) {
-        ()
-      } else {
-        Array::push(errors, EEUnauthorizedInstantiateAuthority(lab))
-      }
-      ai = ai + 1
-    }
-    let unhandled = collect_unhandled_entry_ops(inspect_body)
-    let unresolved = entry_unresolved_labels(emitted)
-    if Array::length(unresolved) > 0 {
-      Array::push(errors, EEUnresolvedEntryEffectRow(fn_name, join_labels(unresolved), off))
-    } else {
-      let mut ui = 0
-      while ui < Array::length(unhandled) {
-        let lab = Array::get(unhandled, ui)
-        if label_is_authorized(lab, auth) {
-          ()
-        } else {
-          Array::push(errors, EEUnauthorizedEntryOperation(fn_name, lab, allows, off))
-        }
-        ui = ui + 1
-      }
-    }
-  } else if is_program_entry_name(fn_name) {
+  if is_program_entry_name(fn_name) {
+    // ADR-0088: the entry's row is its GRANT (`fn main allows ..`; the legacy
+    // `with` spelling reads the same). Every label must have an owner the run
+    // can bring in -- a standard host provider, or the entry / runtime policy
+    // (`Exception`, `Async`) -- because nothing above the entry could handle
+    // it. A user effect that reaches the boundary is rejected with the
+    // `handle` edit (#1683); a row variable has no caller to instantiate it.
     let labels = fn_binding_effects(ty, body)
     let unresolved = entry_unresolved_labels(labels)
     let bad = entry_unadmitted_labels(labels)
@@ -3332,7 +3240,19 @@ fn check_entry_declared_effects(fn_name: String, ty: Option[TypeExpr], body: Exp
         Array::push(errors, EEUndischargedEntryEffect(fn_name, join_labels(bad), join_labels(entry_handler_labels(bad)), off))
       }
     } else {
-      ()
+      // A grant is the run's contract, so an operation it names must exist:
+      // `allows Console::Get` on a program that declares no `effect Console`
+      // used to be admitted by the provider prefix alone and granted nothing.
+      let mut li = 0
+      while li < Array::length(labels) {
+        let core = strip_authority_grade(Array::get(labels, li))
+        if String::index_of(core, "::") >= 0 && has_standard_host_provider(core) && !entry_user_operation_requires_handler(core) && !standard_provider_owns_operation(core) {
+          Array::push(errors, EEUnknownProviderOperation(fn_name, core))
+        } else {
+          ()
+        }
+        li = li + 1
+      }
     }
   } else {
     ()
@@ -3418,7 +3338,7 @@ fn collect_handle_effects(arms: Array[(Pat, Expr)]) -> Array[String] {
 fn fn_binding_effects(ty: Option[TypeExpr], body: Expr) -> Array[String] {
   let sig = sig_type_effect_labels(ty)
   match body {
-    EFn(_, _, _, _, eff, _) => labels_union(sig, labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff))),
+    EFn(_, _, _, _, eff, _) => labels_union(sig, effect_row_labels(effect_row_parse(eff))),
     _ => sig
   }
 }
@@ -4026,7 +3946,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // sibling operation of the same effect is already
                     // authorized at operation granularity, e.g. `with {
                     // Ask::Other }` + a bare `perform Ask::Get`).
-                    if is_program_entry_name(fn_name) && !in_handle && !entry_allows_authority() && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                    if is_program_entry_name(fn_name) && !in_handle && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
                       Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
                     } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, required_op) {
                       Array::push(errors, make_contextual_row_error(fn_name, declared, [
@@ -4044,7 +3964,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 // above, just without an args list to look past.
                 EIdent(op_name, _) => {
                   let eff = effect_name_of_op(op_name)
-                  if is_program_entry_name(fn_name) && !in_handle && !entry_allows_authority() && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                  if is_program_entry_name(fn_name) && !in_handle && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
                     Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
                   } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
                     Array::push(errors, make_contextual_row_error(fn_name, declared, [
@@ -4491,23 +4411,9 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
   errors
 }
 
-fn effect_row_allows_labels(eff: Option[String]) -> Array[String] {
-  match eff {
-    None => no_str_labels(),
-    Some(s) => {
-      let allows = effect_row_allows_text(s)
-      if String::length(allows) == 0 {
-        no_str_labels()
-      } else {
-        effect_row_labels(effect_row_parse(Some(allows)))
-      }
-    }
-  }
-}
-
 fn sig_type_effect_labels(topt: Option[TypeExpr]) -> Array[String] {
   match topt {
-    Some(TyFn(_, _, eff)) => labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff)),
+    Some(TyFn(_, _, eff)) => effect_row_labels(effect_row_parse(eff)),
     _ => effect_row_labels(effect_row_parse(None))
   }
 }
@@ -4604,26 +4510,6 @@ fn current_ret_fn_rows() -> Array[String] {
   } else {
     array_empty()
   }
-}
-
-// #1961: when an entry row has `allows`, `check_entry_declared_effects`
-// already owns unhandled ⊆ authorized (handlers subtracted). The perform
-// walk must not also emit EEUndischargedEntryEffect for those ops — that
-// check cannot see lexical discharge without setting `in_handle`, which
-// would reopen #626 criterion 2.
-let entry_allows_authority_cell = array_empty()
-
-fn set_entry_allows_authority(on: Bool) -> Unit {
-  Array::truncate(entry_allows_authority_cell, 0)
-  Array::push(entry_allows_authority_cell, if on {
-    1
-  } else {
-    0
-  })
-}
-
-fn entry_allows_authority() -> Bool {
-  Array::length(entry_allows_authority_cell) > 0 && Array::get(entry_allows_authority_cell, 0) == 1
 }
 
 /// #1451 (struct-field position): rows declared by a STRUCT FIELD's type, keyed
@@ -4740,10 +4626,33 @@ fn lowered_test_ambient_effects(fn_name: String) -> Array[String] {
   }
 }
 
+/// ADR-0088: the labels of `labels` that carry the Optional grade on
+/// something that is not a host capability. Grades on `Exception`, `Async`
+/// and user effects are refused; the entry-admission and handler checks
+/// then see the plain label.
+fn optional_grade_errors(fn_name: String, labels: Array[String]) -> Array[EffectError] {
+  let errors = array_empty()
+  let mut i = 0
+  while i < Array::length(labels) {
+    let label = Array::get(labels, i)
+    if authority_is_optional(label) && !is_instantiate_authority(label) {
+      Array::push(errors, EEOptionalGradeNotCapability(fn_name, label))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  errors
+}
+
 fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body: Expr, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   let sig_labels = sig_type_effect_labels(ty)
-  set_entry_allows_authority(is_program_entry_name(fn_name) && String::length(effect_row_allows_text(raw_fn_effect_string(ty, body))) > 0)
-  match body {
+  // ADR-0088: `?` marks a host capability optional, on a grant or on a
+  // requirement. Anything else carrying the grade -- a user effect, the
+  // runtime's `Async`, the boundary's `Exception` -- has no host that could
+  // withhold it, so the grade would be a claim about nothing.
+  let grade_errors = optional_grade_errors(fn_name, labels_union(fn_binding_effects(ty, body), lowered_test_ambient_effects(fn_name)))
+  let walk_errors = match body {
     // #885: build the callback-parameter overlay for THIS binding's own
     // function value from its (possibly untyped, see merge_param_types_with_sig)
     // parameters, so a direct call to one of them inside the body is checked
@@ -4761,7 +4670,7 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
       // parameters up on its own.
       let merged_params = merge_param_types_with_sig(ty, params)
       let (ov_names, ov_effs) = build_param_overlay(merged_params, fn_names, fn_index)
-      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, labels_union(effect_row_labels(effect_row_parse(eff)), effect_row_allows_labels(eff)))), false, fn_names, fn_effs, fn_index, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
+      check_perform_effects_expr_tx_in(fn_name, fbody, labels_union(lowered_test_ambient_effects(fn_name), labels_union(sig_labels, effect_row_labels(effect_row_parse(eff)))), false, fn_names, fn_effs, fn_index, fn_param_effs, ov_names, ov_effs, throw_kind_bind_params(no_kind_binds(), merged_params))
     },
     _ => {
       // #1451: a non-EFn binding declares no arrow of its own; clear the cell so
@@ -4769,6 +4678,16 @@ fn check_perform_effects_binding_tx(fn_name: String, ty: Option[TypeExpr], body:
       set_ret_fn_rows(ret_fn_rows_from_sig(ty))
       check_perform_effects_expr_tx_in(fn_name, body, sig_labels, false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
     }
+  }
+  if Array::length(grade_errors) == 0 {
+    walk_errors
+  } else {
+    let mut wi = 0
+    while wi < Array::length(walk_errors) {
+      Array::push(grade_errors, Array::get(walk_errors, wi))
+      wi = wi + 1
+    }
+    grade_errors
   }
 }
 
@@ -4908,12 +4827,29 @@ fn test_ambient_effects(name: String) -> Array[String] {
   base
 }
 
+/// A `test` / `bench` block body under its ambient row (the policy default
+/// widened by the block's own `allows` row). The grade check runs on that
+/// row exactly as it does for a binding's declared row.
+fn check_perform_effects_block_tx(block_name: String, body: Expr, declared: Array[String], fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
+  let errors = optional_grade_errors(block_name, declared)
+  let walk = check_perform_effects_expr_tx_in(block_name, body, declared, false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
+  let mut wi = 0
+  while wi < Array::length(walk) {
+    Array::push(errors, Array::get(walk, wi))
+    wi = wi + 1
+  }
+  errors
+}
+
 fn check_perform_effects_stmt_tx(stmt: Stmt, fn_names: Array[String], fn_effs: Array[Array[String]], fn_index: MutMap[String, Int], fn_param_effs: Array[Array[Array[String]]]) -> Array[EffectError] {
   match stmt {
     SLet(_, _, name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_index, fn_param_effs),
     SLetMut(name, ty, body) => check_perform_effects_binding_tx(name, ty, body, fn_names, fn_effs, fn_index, fn_param_effs),
-    STest(tname, body) => check_perform_effects_expr_tx_in("", body, test_ambient_effects(tname), false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
-    SBench(bname, body) => check_perform_effects_expr_tx_in("", body, test_ambient_effects(bname), false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds()),
+    // The block's row is checked under the synthesized name the gc lane also
+    // uses (`__test_x`), so a diagnostic can name the block the reader wrote
+    // (`entry_block_display_name`) and its hint can say `allows`.
+    STest(tname, body) => check_perform_effects_block_tx(String::concat("__test_", tname), body, test_ambient_effects(tname), fn_names, fn_effs, fn_index, fn_param_effs),
+    SBench(bname, body) => check_perform_effects_block_tx(String::concat("__bench_", bname), body, test_ambient_effects(bname), fn_names, fn_effs, fn_index, fn_param_effs),
     SExpr(e) => check_perform_effects_expr_tx_in("", e, effect_row_labels(effect_row_parse(None)), false, fn_names, fn_effs, fn_index, fn_param_effs, no_str_labels(), no_ov_effs(), no_kind_binds())
     _ => array_empty()
   }

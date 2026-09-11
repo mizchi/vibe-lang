@@ -11,7 +11,7 @@ retired in #594; see `docs/archive/moonbit-retirement.md`).
 ```vibe
 // `println` is a builtin — no import — and it needs a tty capability, so the
 // entry declares one. A function that declares no row may not print (#2107).
-fn main with Console {
+fn main allows Console {
   println("hello world")
 }
 ```
@@ -1241,8 +1241,8 @@ The ordered default and cache-safe owners preserve their existing output.
 At a program entry (`main` or `_start`), the checker admits only the union of
 host-provider labels and entry/runtime-managed labels. A user effect such as
 `Ask` / `Ask::Get` must be discharged by `handle ... with Ask` before that
-boundary; adding it to `main`'s `with` row is rejected with a located diagnostic
-(#1683). Ordinary helper functions still fix a missing effect by adding it to
+boundary; adding it to `main`'s `allows` row is rejected with a located
+diagnostic (#1683). Ordinary helper functions still fix a missing effect by adding it to
 their row so callers can decide where to handle it. WIT mapping and handler
 behavior are unchanged. Provider spelling alone grants no authority:
 `Fs::Custom` from `effect Fs { Custom() -> Int }` is still a user operation and
@@ -1424,7 +1424,7 @@ Parse desugars `throw(x)` to `perform Exception::Throw(x)`; the printer
 re-sugars that shape back to `throw(x)`. Both spellings are the same
 effect-row demand: the function must declare `with Exception`, or an
 enclosing `handle .. with Exception` must discharge it. An exception
-that escapes `fn main with Exception` becomes a diagnosed abort at the
+that escapes `fn main allows Exception` becomes a diagnosed abort at the
 runtime boundary.
 
 The effect spelling **`Error` is retired** (#1461, #1501). Either place
@@ -1524,7 +1524,7 @@ let greet: (String) -> Unit with Logger = (name) -> {
 }
 
 // the handler arm prints, so the executable entry carries Stdout
-fn main with Stdout {
+fn main allows Stdout {
   handle { greet("world") } with {
     Logger::Log(msg) => {
       println(msg)
@@ -1757,6 +1757,14 @@ separate `ambiguous trait import alias` error.
 test "arithmetic" {
   assert_eq(1 + 1, 2)
   assert(eq("a", "a"))
+}
+
+// A test is an entry point: the row after its name is a GRANT, spelled
+// `allows` like `fn main allows ..` (ADR-0088). It widens the ambient row
+// test execution supplies (see "test / bench" under 落とし穴).
+test "reads a fixture" allows Fs::read_file {
+  let _ = Fs::read_file("fixtures/absent.txt")
+  assert(true)
 }
 
 // #819: a documentation example. Compiled and RUN like a test -- a doc sample
@@ -2692,30 +2700,36 @@ let main = () -> Int { c }         // ok
 
 ```vibe skip
 // doctest-skip: every NG line here is a form the parser rejects on purpose
-test "name" { .. }             // ok  — 名前は文字列リテラル必須
-test name { .. }               // NG: expected test name string
-test "n" with { Fs } { .. }    // NG: braced row は #1429 で削除 — `with Fs` と書く
+test "name" { .. }               // ok  — 名前は文字列リテラル必須
+test name { .. }                 // NG: expected test name string
+test "n" allows { Fs } { .. }    // NG: braced row は綴りではない — `allows Fs` と書く
+test "n" with { Fs } { .. }      // NG: braced row は #1429 で削除
 ```
 
-**名前付き `test` / `bench` は名前の後に effect row を書ける** (#1508)。宣言した
-row は ambient row (`{ Fs, Env, Console, Stdin, Stdout, Stderr, Process,
-Profiler, Error, Exception }`; `Console` が tty の現行名、旧三つは legacy) を**置換ではなく拡張**する — `with Http` を
-書いても `assert` に必要な `Exception` などの既定は残る。無名 `test { .. }` /
-`bench { .. }` には row を書けない (row を対応付ける名前が無い)。
+**名前付き `test` / `bench` / `example` は名前の後に row を書ける** (#1508)。
+test はエントリポイントなので、その row は **grant** で、キーワードは
+`fn main allows ..` と同じ `allows` (ADR-0088)。宣言した row は ambient row
+(`{ Fs, Env, Console, Stdin, Stdout, Stderr, Process, Profiler, Error,
+Exception }`; `Console` が tty の現行名、旧三つは legacy) を**置換ではなく
+拡張**する — `allows Http` を書いても `assert` に必要な `Exception` などの
+既定は残る。無名 `test { .. }` / `bench { .. }` には row を書けない (row を
+対応付ける名前が無い)。旧綴り `test "n" with ..` は今もパースされ、
+`vibe check` が `allows` への edit を warning で示す (seed-compiled な
+`lib/**` の test がまだこの綴りなので、拒否は bootstrap bump 後)。
 
 ```vibe
-// row は effect 名でも operation 粒度でも書ける
-test "declared row widens the ambient one" with Exception {
+// row は effect 名でも operation 粒度でも、effectset 名でも書ける
+test "declared row widens the ambient one" allows Exception {
   assert_eq(1 + 1, 2)
 }
 
-bench "http_get" with Http {
+bench "http_get" allows Http {
   let h = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
   let _ = Http::response_body(h)
   Http::close(h)
 }
 
-test "op-granular row" with Http::request + Http::close {
+test "op-granular row" allows Http::request + Http::close {
   let h = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
   Http::close(h)
   assert(true)

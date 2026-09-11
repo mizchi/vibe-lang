@@ -13,7 +13,7 @@ English version: [03_values_functions.vibe.md](../en/03_values_functions.vibe.md
 一度作られたら変わりません。
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let x = 42
   let name = "vibe"
   let ratio = 0.5
@@ -30,7 +30,7 @@ vibe 42 0.5 true
 明記したいとき、あるいは推論に手がかりがないときは注釈を書きます:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let x: Int = 42
   let d: Double = 3.14
   let b: Bool = true
@@ -68,7 +68,7 @@ vibe は既定で不変です。アルゴリズムがカウンタを欲しがる
 あり、それが住むブロックは値に評価されます:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let y = {
     let mut v = 0
     v += 1
@@ -116,7 +116,7 @@ let scaled: (x~: Int, y~: Int) -> Int = (x~, y~) -> {
   x * 10 + y
 }
 
-fn main with Console {
+fn main allows Console {
   println("add(1, 2) = \{add(1, 2)}")
   println("fact(5) = \{fact(5)}")
   println("identity(7) = \{identity(7)}")
@@ -157,7 +157,7 @@ fn greet(name: String, times?: Int) -> String {
   "\{name} x\{n}"
 }
 
-fn main with Console {
+fn main allows Console {
   println(greet("hi"))
   println(greet("hi", 3))
 }
@@ -182,7 +182,7 @@ import @vibe/builtin {
   trait Iterator
 }
 
-fn main with Console {
+fn main allows Console {
   let xs = [1, 2, 3]
   let doubled = Iterator::map(xs, _ * 2)
   let total = Iterator::fold(xs, 0, _ + _)

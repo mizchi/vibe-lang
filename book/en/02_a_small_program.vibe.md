@@ -53,7 +53,7 @@ fn report(e: Expr) -> String {
   }
 }
 
-fn main with Console {
+fn main allows Console {
   println(report(Add(Num(2), Mul(Num(4), Num(10)))))
   println(report(Div(Num(84), Num(2))))
   println(report(Div(Num(1), Add(Num(3), Num(-3)))))
@@ -82,7 +82,7 @@ compiler decides which. `report` deals with it, so `report` returns a
 plain `String` — the failure stops there.
 → [Effects](08_effects.vibe.md)
 
-**`main` says what it is allowed to do.** `fn main with Console` is
+**`main` says what it is allowed to do.** `fn main allows Console` is
 permission to write to the terminal, and it is the *only* thing this
 program may do. It cannot read a file or open a socket, because it never
 asked to.

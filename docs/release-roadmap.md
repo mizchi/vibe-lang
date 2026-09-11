@@ -51,6 +51,24 @@ someone else's first hour, not about compiler internals:
    (`vibe check` / `symbols` / `type-at` / `binding-at` / `deps` / `grep`).
 6. **Apache License 2.0.** The `0.1.0` tag is the first release usable by
    anyone but the author; it does not ship under MIT.
+7. **One entry spelling.** `fn main allows Console` / `test "n" allows Http`
+   is what every document teaches (ADR-0088). The compiler still reads the
+   legacy `with` on an entry with a warning until the bootstrap bump that
+   migrates the seed-compiled sources lands; the tag is cut after that bump,
+   with the legacy spelling refused.
+8. **The seed is fetchable.** The release tag that `bootstrap/seed.json` pins
+   exists, so a cold checkout does not rebuild the seed from source
+   (`scripts/ensure_seed.sh`'s rebuild fallback is for the window inside a
+   bump, not for a release).
+
+The seven open issues labelled `blocker` (2026-09-11) are compiler-internal:
+per-module synthesis and borrowed-ABI correctness on the incremental lane
+(#2638, #2631, #2633), effect-lowering consolidation (#2500), symbol
+interning (#2387), a memory KPI (#2509) and persisted incremental reuse
+(#1959). They block the 0.2.0 concurrency and formalization work, not the
+first-hour experience above; whether the incremental lane's two P1 bugs are
+in 0.1.0's promise is the owner's call, recorded here so it is made rather
+than assumed.
 
 ### What 0.2.0 holds
 

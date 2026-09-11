@@ -19,7 +19,7 @@ that offset — not a one-character `String`. Indices and lengths are
 byte counts.
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let s = "hello"
   println("s[0] = \{s[0]}")
   println("from_byte = \{String::from_byte(s[0])}")
@@ -65,7 +65,7 @@ struct Point {
   x: Int; y: Int
 } derive (Show)
 
-fn main with Console {
+fn main allows Console {
   let p = Point::{
     x: 3, y: 4
   }
@@ -102,7 +102,7 @@ Arithmetic that goes out of range **wraps**, as 63-bit two's complement,
 identically on every backend — so `max + 1` is `min`:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let max = 4611686018427387903
   println("max = \{max}")
   println("max + 1 = \{max + 1}")

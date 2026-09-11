@@ -427,7 +427,117 @@ export fn deprecated_warning_lines_visible(entry_source: String, dep_sources: Ar
     Array::push(out, Array::get(syntax_warnings, wi))
     wi = wi + 1
   }
+  let row_warnings = entry_row_spelling_warning_lines(entry_source)
+  let mut ri = 0
+  while ri < Array::length(row_warnings) {
+    Array::push(out, Array::get(row_warnings, ri))
+    ri = ri + 1
+  }
   out
+}
+
+//# Entry-row spelling (ADR-0088)
+
+/// The `with` of an entry head, if the head carries one: the first `with` at
+/// bracket depth 0 between `pos` and the body's `{`. A `with` inside a
+/// parenthesised function type (`fn main() -> (() -> Int with Fs) {`) sits
+/// at depth 1 and is never the row keyword. Stops at the body brace, at `=`
+/// (an inline-wasm body) and at end of input.
+fn entry_head_with_pos(tokens: Array[Token], pos: Int) -> Int {
+  let n = Array::length(tokens)
+  let mut depth = 0
+  let mut i = pos
+  let mut found = 0 - 1
+  let mut done = false
+  while !done && i < n {
+    match Array::get(tokens, i) {
+      TLParen => {
+        depth = depth + 1
+      },
+      TLBracket => {
+        depth = depth + 1
+      },
+      TRParen => {
+        depth = depth - 1
+      },
+      TRBracket => {
+        depth = depth - 1
+      },
+      TLBrace => {
+        done = true
+      },
+      TEq => {
+        done = true
+      },
+      TWith => if depth == 0 {
+        found = i
+        done = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn entry_row_warning_line(source: String, offset: Int, head: String, edit: String) -> String {
+  let (line, col) = offset_to_line_col(source, offset)
+  String::concat("warning: line ", String::concat(Int::to_string(line), String::concat(":col ", String::concat(Int::to_string(col), String::concat(": ", String::concat(head, String::concat(" is an entry point and grants its row, so the keyword is `allows`: write `", String::concat(edit, "` (a called function requires an effect from its caller with `with`; an entry has no caller)"))))))))
+}
+
+/// ADR-0088: an entry point (`fn main` / `fn _start`, a `test` / `bench` /
+/// `example` block) GRANTS its row, so the keyword is `allows`. The legacy
+/// `with` spelling still parses -- the committed seed compiles lib/**
+/// sources that carry it -- and this names the edit, one non-fatal line per
+/// head. Token-level like the handler-header scan above: the row keyword is
+/// found structurally between the head and its body `{`, so a `with` inside
+/// the body or in a nested function type is never blamed.
+export fn entry_row_spelling_warning_lines(source: String) -> Array[String] with Exception {
+  let out = dep_empty_strs()
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let n = Array::length(tokens)
+  let mut i = 0
+  while i < n {
+    match Array::get(tokens, i) {
+      TFn => match peek(tokens, i + 1) {
+        TIdent(name) => if name == "main" || name == "_start" {
+          let with_pos = entry_head_with_pos(tokens, i + 2)
+          if with_pos >= 0 {
+            Array::push(out, entry_row_warning_line(source, Array::get(starts, with_pos), String::concat("`fn ", String::concat(name, "`")), String::concat("fn ", String::concat(name, " allows ..."))))
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      TTest => push_block_row_warning(out, source, tokens, starts, i, "test"),
+      TBench => push_block_row_warning(out, source, tokens, starts, i, "bench"),
+      TExample => push_block_row_warning(out, source, tokens, starts, i, "example"),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `test "n" with ..` / `bench "n" with ..` / `example "n" with ..`: the row
+/// keyword sits directly after the name string.
+fn push_block_row_warning(out: Array[String], source: String, tokens: Array[Token], starts: Array[Int], pos: Int, kind: String) -> Unit {
+  match peek(tokens, pos + 1) {
+    TString(name) => match peek(tokens, pos + 2) {
+      TWith => {
+        let head = String::concat("`", String::concat(kind, String::concat(" \"", String::concat(name, "\"`"))))
+        let edit = String::concat(kind, String::concat(" \"", String::concat(name, "\" allows ...")))
+        Array::push(out, entry_row_warning_line(source, Array::get(starts, pos + 2), head, edit))
+      },
+      _ => ()
+    },
+    _ => ()
+  }
 }
 
 /// ADR-0100 (3) type aliases that live only in index.vpkg.

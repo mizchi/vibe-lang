@@ -32,7 +32,7 @@ import @vibe/concurrent {
   TaskGroup, TaskHandle
 }
 
-fn main with Console + Exception {
+fn main allows Console + Exception {
   let answer = TaskGroup::run((n) -> {
     let h = TaskGroup::spawn(n, () -> {
       21 * 2

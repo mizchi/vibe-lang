@@ -20,7 +20,7 @@ fn half(n: Int) -> Option[Int] {
   }
 }
 
-fn main with Console {
+fn main allows Console {
   let a = match half(10) {
     Some(v) => v,
     None => -1
@@ -62,7 +62,7 @@ fn sum_halves(a: Int, b: Int) -> Option[Int] {
   Some(x + y)
 }
 
-fn main with Console {
+fn main allows Console {
   println("sum_halves(4, 6) = \{sum_halves(4, 6)}")
   println("sum_halves(4, 3) = \{sum_halves(4, 3)}")
 }
@@ -96,7 +96,7 @@ fn sum_halves(a: Int, b: Int) -> Option[Int] {
   Some(x + y)
 }
 
-fn main with Console {
+fn main allows Console {
   println("sum_halves(4, 6) = \{sum_halves(4, 6)}")
   println("sum_halves(4, 3) = \{sum_halves(4, 3)}")
 }
@@ -124,7 +124,7 @@ fn double_or_zero(o: Option[Int]) -> Int {
   v * 2
 }
 
-fn main with Console {
+fn main allows Console {
   println("double_or_zero(Some(21)) = \{double_or_zero(Some(21))}")
   println("double_or_zero(None) = \{double_or_zero(None)}")
 }
@@ -156,7 +156,7 @@ fn half(n: Int) -> Option[Int] {
   }
 }
 
-fn main with Console {
+fn main allows Console {
   println("half(10) is Some(_) = \{half(10) is Some(_)}")
   println("half(3) is None = \{half(3) is None}")
 }

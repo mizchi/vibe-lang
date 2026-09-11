@@ -47,7 +47,7 @@ mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 cat >"$WORK/uncaught.vibe" <<'EOF'
-fn main() -> Unit with Exception {
+fn main() -> Unit allows Exception {
   throw("shell boom")
 }
 EOF
@@ -57,7 +57,7 @@ fn main() -> Unit {
 }
 EOF
 cat >"$WORK/explicit.vibe" <<'EOF'
-fn main() -> Unit with Process {
+fn main() -> Unit allows Process {
   vibe_process_exit_raw(7)
 }
 EOF

@@ -18,7 +18,7 @@ Building the runner from source needs `git`, `bash`, and `cargo`; pass
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 . "$HOME/.vibe/env"   # or restart the shell — ~/.vibe/bin is the PATH entry
 vibe version
-echo 'fn main with Console { println("42") }' > hello.vibex
+echo 'fn main allows Console { println("42") }' > hello.vibex
 vibe run hello.vibex        # -> 42
 ```
 
@@ -44,7 +44,7 @@ fn Point::manhattan(p: Point) -> Int {
   p.x + p.y
 }
 
-fn main with Console {
+fn main allows Console {
   // `handle` is where the row is discharged — no per-call unwrapping.
   let result = handle {
     safe_div(10, 2) + Point::manhattan(Point::{ x: 3, y: 4 })

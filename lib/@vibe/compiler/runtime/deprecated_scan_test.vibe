@@ -5,7 +5,7 @@
 //# Imports
 
 import ./deprecated_scan.vibe {
-  deprecated_warning_lines, deprecated_warning_lines_visible, legacy_handler_warning_lines
+  deprecated_warning_lines, deprecated_warning_lines_visible, entry_row_spelling_warning_lines, legacy_handler_warning_lines
 }
 
 //# Helpers
@@ -64,6 +64,55 @@ test "qualified handler set and effect rows do not emit migration warnings" {
   let row = "fn risky() -> Int with Exception { 1 }"
   assert_eq(Array::length(legacy_handler_warning_lines(canonical)), 0)
   assert_eq(Array::length(legacy_handler_warning_lines(row)), 0)
+}
+
+//# Entry-row spelling (ADR-0088)
+
+test "entry row: `fn main with` warns with the allows edit" {
+  let lines = entry_row_spelling_warning_lines("fn main with Console {\n  println(\"x\")\n}\n")
+  assert_eq(Array::length(lines), 1)
+  assert(contains(Array::get(lines, 0), "warning: line 1:col 9"))
+  assert(contains(Array::get(lines, 0), "`fn main` is an entry point and grants its row"))
+  assert(contains(Array::get(lines, 0), "write `fn main allows ...`"))
+}
+
+test "entry row: `fn main allows` and a called function's `with` do not warn" {
+  assert_eq(Array::length(entry_row_spelling_warning_lines("fn main allows Console {\n  println(\"x\")\n}\n")), 0)
+  let called = "fn helper() -> Unit with Console {\n  println(\"x\")\n}\nfn main allows Console {\n  helper()\n}\n"
+  assert_eq(Array::length(entry_row_spelling_warning_lines(called)), 0)
+}
+
+test "entry row: an explicit main signature and _start are entry heads too" {
+  let main_sig = entry_row_spelling_warning_lines("fn main() -> Int with Fs {\n  0\n}\n")
+  assert_eq(Array::length(main_sig), 1)
+  assert(contains(Array::get(main_sig, 0), "line 1:col 18"))
+  let start = entry_row_spelling_warning_lines("fn _start() -> Int with Fs {\n  0\n}\n")
+  assert_eq(Array::length(start), 1)
+  assert(contains(Array::get(start, 0), "`fn _start`"))
+}
+
+test "entry row: test, bench and example blocks warn on `with` and not on `allows`" {
+  let src = "test \"a\" with Http {\n  assert(true)\n}\nbench \"b\" with Http {\n  ()\n}\nexample \"c\" with Console {\n  ()\n}\n"
+  let lines = entry_row_spelling_warning_lines(src)
+  assert_eq(Array::length(lines), 3)
+  assert(contains(Array::get(lines, 0), "`test \"a\"` is an entry point"))
+  assert(contains(Array::get(lines, 0), "write `test \"a\" allows ...`"))
+  assert(contains(Array::get(lines, 1), "bench \"b\" allows ..."))
+  assert(contains(Array::get(lines, 2), "example \"c\" allows ..."))
+  assert_eq(Array::length(entry_row_spelling_warning_lines("test \"a\" allows Http {\n  assert(true)\n}\n")), 0)
+}
+
+test "entry row: a `with` inside the body or a nested function type is not the row keyword" {
+  let body = "fn main allows Console {\n  let v = handle { 1 } with { Ask::Get() => resume(1) }\n  ()\n}\n"
+  assert_eq(Array::length(entry_row_spelling_warning_lines(body)), 0)
+  let nested = "fn main() -> (() -> Int with Fs) {\n  () -> 1\n}\n"
+  assert_eq(Array::length(entry_row_spelling_warning_lines(nested)), 0)
+}
+
+test "entry row warning is included in the check warning lane" {
+  let lines = deprecated_warning_lines("fn main with Console {\n  println(\"x\")\n}\n", no_deps())
+  assert_eq(Array::length(lines), 1)
+  assert(contains(Array::get(lines, 0), "fn main allows ..."))
 }
 
 test "nested legacy handlers each emit one migration warning" {

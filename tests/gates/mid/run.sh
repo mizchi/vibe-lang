@@ -171,7 +171,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_memhost_realloc_fixture
 }
 
-fn main() -> Int with Fs {
+fn main() -> Int allows Fs {
   let m = comp_emit_memhost_realloc_fixture()
   Fs::write_bytes("_build/_gate_memhost_realloc/memhost.wasm", m)
   Bytes::length(m)
@@ -234,7 +234,7 @@ fn repeat(piece: String, count: Int) -> String {
   StringBuilder::freeze(out)
 }
 
-fn main() -> Int with Fs {
+fn main() -> Int allows Fs {
   let m = comp_emit_async_string_component("greet", "name", "hi")
   Fs::write_bytes("_build/_gate_async_string_component/component.wasm", m)
   let large = comp_emit_async_string_component("greet", "name", repeat("x", 1100))

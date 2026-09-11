@@ -738,124 +738,75 @@ test "#1429: `with ()` is the empty row and `with {}` is rejected" {
   assert(String::contains(braces, "removed in #1429"))
 }
 
-//# #1345 / ADR-0088: the `allows` clause
+//# ADR-0088: the `allows` row of an entry point
 
-test "#1961: `allows` is independent of `with`" {
-  let split = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with Log::Emit allows Fs::read_file = (x) -> { x }")))
+fn parse_or_error(src: String) -> String {
+  handle {
+    print_program(parse_program(lex(src)))
   } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  let flat = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with Log::Emit + Fs::read_file = (x) -> { x }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(!String::starts_with(split, "ERROR: "))
-  assert(split != flat)
-  assert(String::contains(split, "allows"))
-  assert(String::contains(split, "Log::Emit"))
-  assert(String::contains(split, "Fs::read_file"))
 }
 
-test "#1345: `with () allows C` is the capability-only row" {
-  let out = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with () allows Fs::read_file = (x) -> { x }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(!String::starts_with(out, "ERROR: "))
-  assert(String::contains(out, "allows Fs::read_file"))
+test "ADR-0088: `fn main allows` is the entry's row, stored like `with`" {
+  // One representation: the legacy `with` spelling of the same grant parses
+  // to the identical program, so no consumer can tell the two apart.
+  let allows = parse_or_error("fn main allows Fs::read_file {\n  1\n}")
+  let legacy = parse_or_error("fn main with Fs::read_file {\n  1\n}")
+  assert(!String::starts_with(allows, "ERROR: "))
+  assert_eq(allows, legacy)
+  assert(String::contains(allows, "Fs::read_file"))
 }
 
-test "#1345: `allows` works in type position too" {
-  // ADR-0088: the sugar is uniform across signature and type positions --
-  // there is one row grammar, not a declaration-only spelling.
-  let out = handle {
-    print_program(parse_program(lex("let g: ((Int) -> Int with Log::Emit allows Fs::read_file, Int) -> Int = (f, x) -> { f(x) }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(!String::starts_with(out, "ERROR: "))
-  assert(String::contains(out, "allows Fs::read_file"))
+test "ADR-0088: an explicit entry signature takes `allows` too" {
+  let main_sig = parse_or_error("fn main() -> Int allows Console + Fs::read_file? {\n  0\n}")
+  assert(!String::starts_with(main_sig, "ERROR: "))
+  assert(String::contains(main_sig, "Fs::read_file?"))
+  let start_sig = parse_or_error("fn _start() -> Int allows Fs {\n  0\n}")
+  assert(!String::starts_with(start_sig, "ERROR: "))
+  let empty = parse_or_error("fn main allows () {\n  ()\n}")
+  assert(!String::starts_with(empty, "ERROR: "))
 }
 
-test "#1345: `allows` is contextual, not reserved" {
-  // ADR-0088 chose a contextual keyword so user code keeping a binding named
-  // `allows` does not break. It is recognized only directly after a row.
-  let out = handle {
-    print_program(parse_program(lex("let allows = 7\nlet use_it = () -> { allows }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
+test "ADR-0088: test, bench and example heads take `allows`" {
+  let src = "test \"a\" allows Http {\n  assert(true)\n}\nbench \"b\" allows Http {\n  ()\n}\nexample \"c\" allows Console {\n  ()\n}"
+  assert(!String::starts_with(parse_or_error(src), "ERROR: "))
+}
+
+test "ADR-0088: `allows` on a called function names the `with` edit" {
+  let out = parse_or_error("fn helper() -> Int allows Fs {\n  1\n}")
+  assert(String::contains(out, "written on an entry point only"))
+  assert(String::contains(out, "`helper` requires its effects from the caller"))
+  assert(String::contains(out, "write `with` here"))
+}
+
+test "ADR-0088: `allows` in a function type names the `with` edit" {
+  let out = parse_or_error("let f: () -> Int allows Fs = () -> { 1 }")
+  assert(String::contains(out, "a function type requires its effects from the caller"))
+}
+
+test "ADR-0088: `with .. allows ..` is refused by name" {
+  let split = parse_or_error("fn main with () allows Console {\n  ()\n}")
+  assert(String::contains(split, "`with .. allows ..` is not a spelling"))
+  let typed = parse_or_error("let g: ((Int) -> Int with Log::Emit allows Fs::read_file, Int) -> Int = (f, x) -> { f(x) }")
+  assert(String::contains(typed, "`with .. allows ..` is not a spelling"))
+}
+
+test "ADR-0088: `allows` is contextual, not reserved" {
+  // A binding named `allows` keeps compiling: the word is recognized only
+  // where an entry row may begin.
+  let out = parse_or_error("let allows = 7\nlet use_it = () -> { allows }")
   assert(!String::starts_with(out, "ERROR: "))
   assert(String::contains(out, "let allows = 7"))
 }
 
-test "#1345: `allows` takes capability effects only" {
-  // ADR-0088 decision 1. The check runs at PARSE time because that is the
-  // only place the two clauses still exist -- they fold into one row
-  // immediately after, and nothing downstream can tell them apart again.
-  let ok = handle {
-    print_program(parse_program(lex("let f: () -> Int with Exception allows Fs = () -> { 1 }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(!String::starts_with(ok, "ERROR: "))
-  // an algebraic effect in `allows`
-  let alg = handle {
-    print_program(parse_program(lex("let f: () -> Int with () allows Log = () -> { 1 }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(alg, "not a capability effect"))
-  // a row variable in `allows` -- ADR-0088 rejects it because `allows`
-  // promises every item is a statically known capability
-  let rowvar = handle {
-    print_program(parse_program(lex("let f: [r]() -> Int with () allows r = () -> { 1 }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(rowvar, "not a capability effect"))
-}
-
-test "#1345: a core ambient effect in `allows` names the right clause" {
-  // `Exception`/`Exception[E]` get their own message rather than the generic
-  // "not a capability": the author wrote a real effect in the wrong clause,
-  // and the fix is to move it, not to reclassify it.
-  //
-  // #1461: spelled `Exception`, not the `Error` this case used to carry. The
-  // two named the SAME core ambient effect, but `Error` is no longer a
-  // spelling at all -- it now fails in parse_effect_item before the clause
-  // classification ever runs, which would silently retarget this case at the
-  // retirement message and leave ADR-0088's check untested.
-  let out = handle {
-    print_program(parse_program(lex("let f: () -> Int with () allows Exception = () -> { 1 }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(out, "core ambient effect"))
-  assert(String::contains(out, "`with` clause"))
-}
-
-test "#1345: the SPLIT `with` clause rejects capabilities, the bare one does not" {
-  // ADR-0088: "通常関数の裸 with(混在可)は恒久的に合法" -- the restriction is
-  // opt-in and starts only once the author writes `allows`.
-  let bare = handle {
-    print_program(parse_program(lex("let f: () -> Int with Fs = () -> { 1 }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(!String::starts_with(bare, "ERROR: "))
-  let split = handle {
-    print_program(parse_program(lex("let f: () -> Int with Fs allows Http = () -> { 1 }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(split, "must appear in the `allows` clause"))
-}
-
-test "#1345: classification uses the base effect name, and excludes Async" {
-  // A qualified operation classifies by its effect: `Fs::read_file` is a
-  // capability because `Fs` is.
-  let qualified = handle {
-    print_program(parse_program(lex("let f: () -> Int with () allows Fs::read_file = () -> { 1 }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(!String::starts_with(qualified, "ERROR: "))
-  // `Async` is builtin-tagged but is NOT a capability: it is ADR-0089's
-  // suspension effect, discharged by the runtime driver, with no resource
-  // kind to grant. Deriving the list from "is it builtin" would get this
-  // wrong, which is why it is written out.
-  let async_cap = handle {
-    print_program(parse_program(lex("let f: () -> Int with () allows Async = () -> { 1 }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(String::contains(async_cap, "not a capability effect"))
-}
-
-test "#1345: the `?` grade suffix parses on allows items" {
-  let out = handle {
-    print_program(parse_program(lex("let f: (Int) -> Int with () allows Fs::read_file? = (x) -> { x }")))
-  } with { Exception::Throw(e) => String::concat("ERROR: ", e) }
-  assert(!String::starts_with(out, "ERROR: "))
-  assert(String::contains(out, "allows Fs::read_file?"))
+test "ADR-0088: the `?` grade parses on a grant and on a requirement" {
+  let granted = parse_or_error("fn main allows Fs::read_file? {\n  0\n}")
+  assert(!String::starts_with(granted, "ERROR: "))
+  assert(String::contains(granted, "Fs::read_file?"))
+  // A called function may REQUIRE an optional capability; the checker decides
+  // what the grade may be attached to.
+  let required = parse_or_error("fn helper() -> Int with Fs::read_file? {\n  0\n}")
+  assert(!String::starts_with(required, "ERROR: "))
+  assert(String::contains(required, "Fs::read_file?"))
 }
 
 test "#1429: a parenthesized non-empty row is rejected by name" {

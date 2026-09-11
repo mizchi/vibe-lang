@@ -99,7 +99,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   compile_file_wasi_only
 }
 
-fn main() -> Int with Fs + Exception {
+fn main() -> Int allows Fs + Exception {
   let core = compile_file_wasi_only("$HANDLER_SRC", "__no_entry__")
   let comp = comp_emit_component_wasm_string_handler_async(core, "handler", "handler", [
     "method",
