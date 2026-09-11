@@ -401,6 +401,45 @@ survives the prelude unlowered where both other lanes rewrite it to
 load-bearing on that program, and the order test is measuring something the
 keyed comparison genuinely cannot see rather than something it already covers.
 
+#### Which passes are per-module safe (#2647 Codex round 3)
+
+Five passes were found unsafe **one at a time, by review**, which is the shape
+the repo's own guidance says to remove rather than keep patching. So here is the
+audit, and it is the thing to check against rather than rediscovering a pass per
+round. "Safe" means a module's partition answers the same question the whole
+program does; everything else either takes the answer from `PreludeEnv` or runs
+at the link.
+
+| # | pass | per-module | why |
+|---:|---|---|---|
+| — | `zero_alloc_check` | **whole-program** | interprocedural: `za_walk` walks callee bodies out of a table built from the statements it was handed |
+| 0 | `elaborate_heap_params` | safe | per-statement rewrite |
+| 1 | `desugar_inspect_calls` | safe | per-statement expansion |
+| 2 | `optional_perform_artifact_resolution` | **`PreludeEnv`** | grants ambient authority from a whole-program test-block scan — an AUTHORIZATION difference (ADR-0084/0088) |
+| 3 | `erase_railway_origin_markers` | safe | per-statement |
+| 4 | `desugar_trait_dicts_with_typed_eq` | **module entry** | takes the module's dependency interface (#2634) |
+| 5 | `unbox_tuple_loop_params` | safe | per-statement |
+| 6 | `rewrite_top_level_fn_alias_refs` | **`PreludeEnv`** | the alias map is global; an unrewritten call emits N args against a 0-param thunk = invalid wasm |
+| — | `lc_validate_stdin_provider_stmts` | safe | local to each statement's own expression; the union is the whole-program answer |
+| 7 | `lc_inject_stdin_surface_wrappers` | safe | gated on a presence scan and local to what it finds; duplicate wrappers are folded at the link |
+| 8 | `lc_extract_inline_wasm` | safe | accumulates into the caller's arrays; the union is the program's |
+| 9 | `await_poll_pass` | **`PreludeEnv`** | both its predicates (`host_future_*` called anywhere, waiter hooks available) are whole-program scans |
+| 10 | `rewrite_self_tail_calls` | safe | per function body |
+| 11 | `wrap_entry_exception_boundary` | safe | matches `entry_name`, which lives in one module |
+| 12 | `lc_inject_async_sleep_boundary` | **link** | needs the entry's `Async` row AND a boundary call anywhere; what it injects must be visible to 13/14, so it cannot be served by a precomputed fact |
+| 13 | `suspend_cps_pass` | **link** | must see what 12 injects |
+| 14 | `inline_direct_performs` | **link** | same |
+| 15 | `evidence_dict_pass` | **link** | whole-program union, and the dependence runs backwards along the import graph (#2633) |
+| 16 | `forin_discard_pass` | **link** | follows 15 to keep the order |
+
+So the cut is **0..11 per module, 12..16 at the link** — most of the prelude, and
+the half a per-module cache can reuse.
+
+This also corrects what `missing=0 content=0` was reported to mean. An authority
+resolution and a boundary injection are not declaration differences: the oracle
+was structurally unable to see four of the six unsafe passes, and its green said
+nothing about them either way.
+
 #### What the split path still costs a caller
 
 Codegen emits functions in statement order, so switching lanes permutes the

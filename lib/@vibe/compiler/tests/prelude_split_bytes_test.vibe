@@ -389,3 +389,35 @@ test "a map that revisits an earlier module refuses the split" {
   }, print_stmt)
   inspect(render_in_order(a) == render_in_order(b), content = "true")
 }
+
+/// A top-level function ALIAS declared in one module and called from another.
+/// The backend registers a non-`EFn` alias as a 0-parameter thunk, so a call
+/// that still targets the alias emits two arguments against it -- invalid wasm
+/// on every backend (`rewrite_top_level_fn_alias_refs`'s own doc comment).
+fn cross_module_alias_src() -> String {
+  "export fn real_add(a: Int, b: Int) -> Int {\n  a + b\n}\n\nexport let add_alias = real_add\n\nfn main() -> Int {\n  add_alias(1, 2)\n}\n"
+}
+
+test "an alias declared in another module is still retargeted" {
+  // #2647 Codex round 3. `rewrite_top_level_fn_alias_refs` builds its map from
+  // the statements it is handed and NO-OPS when it finds no alias, so the
+  // partition holding only the call leaves it pointing at the thunk. The map
+  // is a whole-program fact and travels in `PreludeEnv`.
+  //
+  // Map is explicit: `real_add` and the alias in module 0, `main` in module 1.
+  //
+  // Red-tested: with `facts_known` forced false, the split rendering keeps
+  // `add_alias(1, 2)` while the whole-program one reads `real_add(1, 2)`.
+  let a = program_stmts(cross_module_alias_src())
+  let b = program_stmts(cross_module_alias_src())
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: [0, 0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  // Not vacuous: the whole-program lane really does retarget the call.
+  inspect(String::contains(render_in_order(a), "real_add(1, 2)"), content = "true")
+  inspect(String::contains(render_in_order(a), "add_alias(1, 2)"), content = "false")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}

@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  apply_top_level_fn_alias_renames,
   bsearch_leftmost,
   builtin_registry,
   bytebuf_length,
@@ -14,6 +15,7 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  collect_top_level_fn_alias_renames,
   dce_stmts,
   exception_effect_labels_equal,
   executable_export_kept_bytes,
@@ -469,7 +471,28 @@ fn lc_fresh_bytes_array() -> Array[Bytes] {
 struct PreludeEnv {
   linked_imports: Array[(String, String, Int, Int)];
   iw_names: Array[String];
-  iw_wats: Array[String]
+  iw_wats: Array[String];
+  // #2647 Codex round 3: the WHOLE-PROGRAM facts three more passes read, which
+  // a module's partition cannot answer for itself. `facts_known` says whether
+  // the caller supplied them; false means "compute locally", which is what the
+  // oracle lanes want and what a production caller must never take.
+  //
+  //   pass 2  `optional_perform_artifact_resolution` grants ambient authority
+  //           when the program contains a test-like block. A module without
+  //           the test block lowers `perform?` in an imported helper to
+  //           NotGranted where the whole program grants it -- an
+  //           AUTHORIZATION difference decided by how the program was
+  //           partitioned, which ADR-0084/0088 forbid.
+  //   pass 6  `rewrite_top_level_fn_alias_refs` needs the alias map; see
+  //           `collect_top_level_fn_alias_renames`.
+  //   pass 9  `await_poll_pass` takes two predicates -- does the program call
+  //           `host_future_*`, and do linked imports or local defs supply the
+  //           waiter hooks -- BOTH scans of the whole program.
+  facts_known: Bool;
+  optional_resolution: Array[(String, String)];
+  alias_renames: Array[(String, String)];
+  calls_host_future: Bool;
+  waiter_hooks: Bool
 }
 
 fn prelude_env_none() -> PreludeEnv {
@@ -477,6 +500,11 @@ fn prelude_env_none() -> PreludeEnv {
     linked_imports: array_empty(),
     iw_names: lc_fresh_string_array(),
     iw_wats: lc_fresh_string_array(),
+    facts_known: false,
+    optional_resolution: array_empty(),
+    alias_renames: array_empty(),
+    calls_host_future: false,
+    waiter_hooks: false
   }
 }
 
@@ -3935,10 +3963,20 @@ export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, 
 fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
   {
     let st = prelude_split_stats_new()
+    // THE WHOLE-PROGRAM FACTS, taken here -- before the program is partitioned
+    // and while it is still the program (#2647 Codex round 3). Each one is a
+    // scan a module's partition would answer differently, and each difference
+    // is silent: an authority narrowed, a call left pointing at a thunk, a
+    // poll loop lowered for a program that does not call `host_future_*`.
     let env = PreludeEnv::{
       linked_imports: linked_imports,
       iw_names: iw_names,
-      iw_wats: iw_wats
+      iw_wats: iw_wats,
+      facts_known: true,
+      optional_resolution: optional_perform_artifact_resolution(stmts, entry_name, false, array_empty()),
+      alias_renames: collect_top_level_fn_alias_renames(stmts),
+      calls_host_future: lc_stmts_call_host_future(stmts),
+      waiter_hooks: lc_waiter_hooks_available(stmts, linked_imports)
     }
     let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, st, env)
     // A COLLISION IS AN ERROR HERE (#2647 Codex P1). `prelude_run_per_module`
@@ -4305,19 +4343,31 @@ fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_
     },
     1 => desugar_inspect_calls(stmts),
     2 => {
-      let res = optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
+      let res = if env.facts_known {
+        env.optional_resolution
+      } else {
+        optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
+      }
       lower_optional_performs(stmts, res)
     },
     3 => erase_railway_origin_markers(stmts),
     4 => desugar_trait_dicts_with_typed_eq(stmts, checker_eq_offsets, checker_eq_type_keys),
     5 => unbox_tuple_loop_params(stmts),
-    6 => rewrite_top_level_fn_alias_refs(stmts),
+    6 => if env.facts_known {
+      apply_top_level_fn_alias_renames(stmts, env.alias_renames)
+    } else {
+      rewrite_top_level_fn_alias_refs(stmts)
+    },
     7 => {
       let _ = lc_inject_stdin_surface_wrappers(stmts)
       ()
     },
     8 => lc_extract_inline_wasm(stmts, env.iw_names, env.iw_wats),
-    9 => await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, env.linked_imports)),
+    9 => if env.facts_known {
+      await_poll_pass(stmts, env.calls_host_future, env.waiter_hooks)
+    } else {
+      await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, env.linked_imports))
+    },
     10 => rewrite_self_tail_calls(stmts),
     11 => wrap_entry_exception_boundary(stmts, entry_name),
     12 => {
@@ -5060,30 +5110,28 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       Array::push(part, Array::get(synthesized, sy))
       sy = sy + 1
     }
+    // PASSES 5..11 PER MODULE. The cut is at 12, not 15 (#2647 Codex round 3).
+    //
+    // #2633 moved 15 and 16 to the link: `evidence_dict_pass` decides from a
+    // union over the whole program -- declared effects union every effect
+    // label a handle site names, and "zero performs ANYWHERE" -- and that
+    // dependence runs BACKWARDS along the import graph, so no module can make
+    // the decision its own way and have the results link.
+    //
+    // Pass 12 has the same shape and was missed: `lc_inject_async_sleep_boundary`
+    // fires only when the entry's row carries `Async` AND the program calls
+    // `sleep` / `host_future_*` / a host-stream op. Those two live in different
+    // modules routinely, so neither partition sees both and NO machinery is
+    // injected -- a program that links cleanly and suspends differently. It
+    // cannot be served by a precomputed fact the way 2, 6 and 9 are, because
+    // what it injects has to be visible to 13 and 14, so 12, 13 and 14 join 15
+    // and 16 at the link.
+    //
+    // What the split still buys: 0..11 is most of the prelude, and it is the
+    // half a per-module cache can reuse.
     let mut j2 = 5
-    while j2 < 17 {
-      if j2 == 15 {
-        // The per-module counterpart of the whole-program sample above: this
-        // module's facts after every pass preceding `evidence_dict_pass`.
-        let (evd, evh, evp) = evidence_module_facts(part)
-        lc_union_into(st.declared, evd)
-        lc_union_into(st.handled, evh)
-        lc_union_into(st.performed, evp)
-      } else {
-        ()
-      }
-      // #2633: passes 15 and 16 are NOT run per module. `evidence_dict_pass`
-      // decides from a union over the whole program -- declared effects union
-      // every effect label a handle site names, and "zero performs ANYWHERE" --
-      // and that dependence runs BACKWARDS along the import graph, so no module
-      // can make the decision its own way and have the results link. It runs
-      // once at the link instead, over the concatenated program, where the
-      // union is simply present. Pass 16 follows it there to keep the order.
-      if j2 == 15 || j2 == 16 {
-        ()
-      } else {
-        lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, st.diags, env)
-      }
+    while j2 < 12 {
+      lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, st.diags, env)
       // After pass 5, where production runs it.
       if j2 == 5 {
         lc_collect_stdin_provider_diag(part, st.diags)
@@ -5092,6 +5140,13 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       }
       j2 = j2 + 1
     }
+    // This module's facts after every pass it runs. The caller samples the
+    // whole lane at the SAME point (after pass 11), so the two are comparable;
+    // before this cut both sampled after 14.
+    let (evd, evh, evp) = evidence_module_facts(part)
+    lc_union_into(st.declared, evd)
+    lc_union_into(st.handled, evh)
+    lc_union_into(st.performed, evp)
     // #2575 item 4: this module's answer to the three analyses, from its own
     // statements alone -- the counterpart of the whole-lane sample the caller
     // takes, at the same point in the pass order. All three are
@@ -5178,9 +5233,13 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // instead of vanishing.
   let minted = eq_mint_deferred_into(trial)
   Array::set(st.counts, 0, minted)
-  // #2633: the whole-program phases, run once on the linked program.
-  oracle_apply_pass(15, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, st.diags, env)
-  oracle_apply_pass(16, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, st.diags, env)
+  // The whole-program phases, run once on the linked program: 12 and 15 read
+  // facts no module has, and 13, 14 and 16 follow them to keep the order.
+  let mut lj = 12
+  while lj < 17 {
+    oracle_apply_pass(lj, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, st.diags, env)
+    lj = lj + 1
+  }
   // LINK. Up to here `trial` is the modules concatenated, which holds one copy
   // of each program-level helper per module that needed it. Folding them is
   // what a per-module driver's link step does (#2575 item 3), and doing it
@@ -5321,7 +5380,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_req_w = lc_fresh_string_array()
   let ev_ref_w = lc_fresh_string_array()
   let ev_def_w = lc_fresh_string_array()
-  while k < 15 {
+  while k < 12 {
     oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, diag_w, prelude_env_none())
     // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
     // which is where a container comparator or a generic specialization is
