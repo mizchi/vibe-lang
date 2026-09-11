@@ -589,6 +589,51 @@ unchanged row — a vacuous experiment that read as a finding. The script now
 resolves the closure with the compiler's own `vibe deps` and refuses a leaf
 that is not in it.
 
+#### What a WARM build actually spends its time on (2026-09-11)
+
+The section above says a one-module-edit rebuild costs 93% of a cold build,
+and leaves open what is being repeated. #2510's fourth criterion assumed it
+was the front end: persist the per-file AST and a warm build stops re-parsing.
+It is not.
+
+A warm compile of the compiler's own closure (`codegen_lexer_test.vibe`, FS
+lane, cold run first into the same `VIBE_BUILD_CACHE_DIR`), profiled with
+`node --cpu-prof` through a stage2 built with `VIBE_WASM_NAMES=1` — without
+that flag every frame is `wasm-function[N]` and the profile says nothing:
+
+| area | share of 3.66s |
+|---|---:|
+| compiler/codegen | 28.7% |
+| runtime helpers (`__rt_*`) | 25.6% |
+| compiler/normalize | 11.5% |
+| host JS / other | 8.5% |
+| **parser** | **6.9%** |
+| core | 6.7% |
+| compiler/core | 5.7% |
+| compiler/perceus | 5.2% |
+| **compiler/loader** | **0.1%** |
+
+**The back end dominates**: codegen + normalize + perceus is 45.4%. The parser
+is 6.9%, which is the CEILING on what a perfect AST cache can remove from a
+warm build — and the loader, where such a cache has to live because it is the
+only lane with an `Fs` row, is 0.1%. That is the direct measurement behind the
+observation in #2668 that turning the AST cache on left the warm heap
+byte-identical: the code that consults it barely runs.
+
+(CPU share, not allocation; the KPI is allocation and the two are correlated
+rather than identical. N=1, which is enough for a structural read — a 0.1%
+area is not going to be the 30% that matters under a different sampling — and
+not enough to rank the 5-7% rows against each other.)
+
+**So criterion 5 is not reachable by caching parses.** What a warm build
+repeats is the back end running over the whole program, and the constraint on
+fixing that is already recorded above: a cached function body contains call
+immediates that depend on GLOBAL function index assignment, so a per-module
+body cache cannot replay a body into a build where indices moved. That is the
+problem to solve — index-independent bodies, or a relocation step at the link
+— and it is a different piece of work from anything #2510's first four
+criteria describe.
+
 #### What the split path still costs a caller
 
 Codegen emits functions in statement order, so switching lanes permutes the
