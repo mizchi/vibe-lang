@@ -10,6 +10,23 @@ import @vibe/compiler/entry/compiler/file_compile {
 // `inspect` (desugar_inspect_calls changes it) and calls across the import
 // (the alias and evidence passes see both sides) must agree on every pass.
 
+/// The report's `SYNTH ...` line, or "".
+fn synth_line_of(report: String) -> String {
+  let lines = String::split(report, "\n")
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "SYNTH ") {
+      out = line
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// The report's `EVIDENCE ...` line, or "" .
 fn evidence_line_of(report: String) -> String {
   let lines = String::split(report, "\n")
@@ -228,6 +245,13 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // says the pass's INPUTS decompose per module even though its decision does
   // not -- the decision is a union that runs backwards along the import graph.
   inspect(String::trim(evidence_line_of(report)), content = "EVIDENCE declared=2 handled=2 performed=2")
+  // #2634: whether the per-module run ASKS for the same synthesized helpers.
+  // A `missing` row says the split emitted nothing; this says whether it never
+  // recorded the need or recorded it and did not emit -- different causes with
+  // different fixes. On the compiler's own CLI closure this reads
+  // `requests=75/70:-A1_N6_OptionN3_Int+`: the split asks for five fewer, which
+  // is exactly the five missing comparator rows, so the need is never recorded.
+  inspect(String::trim(synth_line_of(report)), content = "SYNTH requests=0")
   // `missing=0 extra=0 content=0` is the property: every declaration the
   // whole-program prelude produced is produced by the module that owns it,
   // with the same body. `copies` is what remains after the link, and

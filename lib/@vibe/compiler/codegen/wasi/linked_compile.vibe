@@ -46,6 +46,7 @@ import @vibe/compiler/normalize {
   desugar_trait_dicts_with_typed_eq,
   eq_invisible_nominals_list,
   eq_invisible_nominals_reset,
+  eq_synthesis_requests_list,
   hoisted_lambda_owner_key,
   hoisted_lambda_owner_of_stmt,
   lift_match_scrutinees,
@@ -4336,8 +4337,21 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // is the property, not a statistic about it.
   eq_invisible_nominals_reset()
   let mut k = 0
+  let ev_req_w = lc_fresh_string_array()
   while k < 15 {
     oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
+    // which is where a container comparator or a generic specialization is
+    // requested AND emitted. The per-module side samples at the same point --
+    // after its own trait-dict pass -- so the two are comparable. Sampling the
+    // whole lane after all 17 passes instead would have compared a registry
+    // that kept accumulating against one that did not, and any difference
+    // would have been the sample points rather than the program.
+    if k == 4 {
+      lc_union_into(ev_req_w, eq_synthesis_requests_list())
+    } else {
+      ()
+    }
     k = k + 1
   }
   // #2633: sampled HERE, immediately before pass 15 (`evidence_dict_pass`) and
@@ -4405,6 +4419,8 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   }
   // The trait-dict entry with that interface, then the rest of the prelude,
   // per module.
+  // #2634: the union of the synthesis requests each module made.
+  let ev_req_u = lc_fresh_string_array()
   // #2633: the union of what each module reports just before the evidence pass.
   let ev_decl_u = lc_fresh_string_array()
   let ev_handled_u = lc_fresh_string_array()
@@ -4463,6 +4479,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
       vj = vj + 1
     }
     let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
+    lc_union_into(ev_req_u, eq_synthesis_requests_list())
     let mut sy = 0
     while sy < Array::length(synthesized) {
       // The keys this module SYNTHESIZED, recorded before the rest of the
@@ -4551,6 +4568,10 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let split_invisible = eq_invisible_nominals_list()
   let tail = String::concat(String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", Int::to_string(Array::length(collisions)))), String::concat(String::concat(" invisible_whole=", Int::to_string(Array::length(whole_invisible))), String::concat(String::concat(" invisible_split=", Int::to_string(Array::length(split_invisible))), String::concat(" linked_dups=", String::concat(Int::to_string(linked_dups), "\n")))))
   let ev_line = String::concat(String::concat(String::concat("EVIDENCE declared=", lc_set_cmp(ev_decl_w, ev_decl_u)), String::concat(" handled=", lc_set_cmp(ev_handled_w, ev_handled_u))), String::concat(" performed=", String::concat(lc_set_cmp(ev_perf_w, ev_perf_u), "\n")))
+  // #2634: does the per-module run ASK for the same helpers? A `missing` row
+  // means the split emitted nothing; this says whether it never recorded the
+  // need or recorded it and did not emit. Different causes, different fixes.
+  let req_line = String::concat("SYNTH requests=", String::concat(lc_set_cmp(ev_req_w, ev_req_u), "\n"))
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
   let mut ldi = 0
@@ -4570,7 +4591,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     ini = ini + 1
   }
   let line2 = String::concat(String::concat(line, collision_lines), invisible_lines)
-  String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), ev_line)
+  String::concat(String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), ev_line), req_line)
 }
 
 export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {

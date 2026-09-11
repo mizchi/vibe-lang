@@ -251,9 +251,20 @@ content  CbfTable::equals   AliasIdx::equals   ExportRenamePlan::equals
 
 This is #2631's sibling one level up. That issue was a comparator whose *body*
 depended on module visibility, and is fixed — which is why `collisions=0`
-survives `invisible_split=15`. These are comparators the split never emits at
-all, or emits over a different element set, because the module cannot see the
-declarations the helper is built from.
+survives `invisible_split=15`.
+
+**Measured which half of "never emits" it is**, because the two have different
+fixes: a module can fail to *record* the need, or record it and fail to emit.
+`SYNTH requests=75/70:-A1_N6_OptionN3_Int+` — the whole program asks for 75
+helpers, the union of the per-module runs for 70, and the five it does not ask
+for are exactly the five missing rows. **The need is never recorded.** A `==`
+site whose operand type the module cannot resolve takes a different arm, and
+nothing downstream can supply a helper nobody asked for.
+
+So this is not "the link should mint what the modules left out" — the link would
+have nothing to mint *from*. It is the same root cause as #2631 one step
+earlier: visibility changing the classification of an `==` site, where there it
+changed the emitted body and here it changes whether a request happens at all.
 
 **The evidence family — 6 rows.** `struct:__EvDict_Source` itself, plus the
 functions the whole-program evidence pass rewrote to take an explicit
