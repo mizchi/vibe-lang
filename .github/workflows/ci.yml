@@ -971,6 +971,24 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
+      - name: Provision PyYAML for the gates that parse the workflows
+        # DECLARED, NOT ASSUMED (Codex reviews of #2646 and #2648, and the
+        # #2252 rule that a gate must not assume the environment it runs in).
+        # check_pkfire_pin.sh and test_ci_compiler_gate_layout.sh both PARSE
+        # the workflows rather than scanning them, so both need a YAML parser.
+        #
+        # FIRST IN THE JOB, not next to the gate that prompted it. This step
+        # sat at position 18 while the layout gate ran at position 8, so on a
+        # runner without a preinstalled PyYAML the job died before its own
+        # declared dependency was installed. I had checked that the step was
+        # in the same JOB and not that it came FIRST -- presence instead of
+        # order, which is the bug check_ci_seed_cache.sh exists to catch.
+        # ubuntu-latest happens to ship PyYAML today -- measured: the gate and
+        # its 12 cases passed on run 34586469800 -- but "happens to ship" is
+        # how a gate ends up failing for a reason unrelated to its subject,
+        # which is how gates end up excused instead of fixed. Installing it
+        # here costs seconds and removes the assumption.
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - name: architecture-debt lint self-test
         run: bash scripts/lint_architecture_debt_test.sh
       - name: architecture-debt lint
@@ -999,16 +1017,6 @@ jobs:
         run: bash scripts/check_portable_boundary_test.sh
       - name: portable-boundary gate
         run: bash scripts/check_portable_boundary.sh
-      - name: Provision PyYAML for the pkfire pin gate
-        # DECLARED, NOT ASSUMED (Codex review of #2646, and the #2252 rule that
-        # a gate must not assume the environment it runs in). The gate parses
-        # the workflows rather than scanning them, so it needs a YAML parser.
-        # ubuntu-latest happens to ship PyYAML today -- measured: the gate and
-        # its 12 cases passed on run 34586469800 -- but "happens to ship" is
-        # how a gate ends up failing for a reason unrelated to its subject,
-        # which is how gates end up excused instead of fixed. Installing it
-        # here costs seconds and removes the assumption.
-        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - name: pkfire pin gate self-test
         run: bash scripts/check_pkfire_pin_test.sh
       - name: pkfire pin gate

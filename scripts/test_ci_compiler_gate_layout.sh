@@ -209,4 +209,61 @@ if ! grep -qF 'bash scripts/generations.sh build' <<<"$lanes_block"; then
   exit 1
 fi
 
+# A GATE THAT PARSES YAML MUST HAVE ITS PARSER INSTALLED FIRST.
+#
+# Twice this session the same shape: the dependency was in the right JOB and
+# not in the right ORDER. check_ci_seed_cache.sh exists because of it for the
+# seed; this is the same bug for PyYAML. The layout gate ran at step 8 while
+# the provisioning step sat at 18, so on a runner without a preinstalled
+# PyYAML the required structural-lint job died before installing its own
+# declared dependency -- and "the hosted image happens to ship it" is exactly
+# the assumption #2252 forbids.
+#
+# Presence is not order, so this checks order.
+if ! python3 - "$workflow" <<'PYEOF'
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write("[ci-compiler-gate-layout] FAIL: PyYAML is required to read the job graph.\n")
+    sys.exit(1)
+
+PARSING_GATES = ("test_ci_compiler_gate_layout.sh", "check_pkfire_pin.sh", "check_pkfire_pin_test.sh")
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+
+rc = 0
+for job_id, job in (doc.get("jobs") or {}).items():
+    if not isinstance(job, dict):
+        continue
+    steps = job.get("steps") or []
+    provision = None
+    for n, step in enumerate(steps):
+        if isinstance(step, dict) and "pyyaml" in str(step.get("run", "")).lower():
+            provision = n
+            break
+    for n, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        run = str(step.get("run", ""))
+        gate = next((g for g in PARSING_GATES if g in run), None)
+        if gate is None:
+            continue
+        if provision is None:
+            print(f"[ci-compiler-gate-layout] {job_id} runs {gate} but never provisions PyYAML",
+                  file=sys.stderr)
+            rc = 1
+        elif provision > n:
+            print(f"[ci-compiler-gate-layout] {job_id} runs {gate} at step {n} but provisions "
+                  f"PyYAML at step {provision} -- the gate dies before its dependency is installed",
+                  file=sys.stderr)
+            rc = 1
+sys.exit(rc)
+PYEOF
+then
+  echo "  Move the PyYAML step ahead of every gate that parses the workflows." >&2
+  exit 1
+fi
+
 echo "[ci-compiler-gate-layout] ok"
