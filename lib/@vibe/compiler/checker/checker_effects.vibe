@@ -4068,7 +4068,16 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                     // sibling operation of the same effect is already
                     // authorized at operation granularity, e.g. `with {
                     // Ask::Other }` + a bare `perform Ask::Get`).
-                    if is_entry_point_name(fn_name) && !in_handle && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                    //
+                    // `main` / `_start` only: a block's own `allows` row is
+                    // admitted up front (`entry_grant_errors`), and its ambient
+                    // default names every provider, so testing it here charged
+                    // a user effect that merely reuses a provider spelling
+                    // (`effect Console`, #1961) to the block. And a perform
+                    // whose qualified operation the enclosing `handle`
+                    // discharged (it is in `declared` by name) is not
+                    // undischarged, whatever the root row spells.
+                    if is_program_entry_name(fn_name) && !in_handle && !effect_row_has_label(Some(declared), op_name) && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
                       Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
                     } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, required_op) {
                       Array::push(errors, make_contextual_row_error(fn_name, declared, [
@@ -4086,7 +4095,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                 // above, just without an args list to look past.
                 EIdent(op_name, _) => {
                   let eff = effect_name_of_op(op_name)
-                  if is_entry_point_name(fn_name) && !in_handle && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
+                  if is_program_entry_name(fn_name) && !in_handle && !effect_row_has_label(Some(declared), op_name) && entry_user_operation_requires_handler(op_name) && decl_authorizes_op(root_declared, op_name) {
                     Array::push(errors, EEUndischargedEntryEffect(fn_name, op_name, effect_name_of_op(op_name), call_off))
                   } else if (!is_exception_effect_name(eff) || error_row_checked()) && !in_handle && !decl_authorizes_op(declared, op_name) {
                     Array::push(errors, make_contextual_row_error(fn_name, declared, [

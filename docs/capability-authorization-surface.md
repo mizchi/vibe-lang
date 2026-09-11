@@ -59,8 +59,8 @@ property of the declaration's position, not of the effect's class.
   and a `.vpkg` contract declaration write `with`. `allows` there is a parse
   error that names the edit — for a contract declaration whatever its name,
   since a package publishes requirements and a callable API function that
-  happens to be called `main` is not an entry point
-  (`parse_fn_signature_declaration`):
+  happens to be called `main` is not an entry point (the contract parser
+  refuses the keyword itself, `signature_allows_keyword_at`):
 
   ```text
   `allows` grants authority and is written on an entry point only (`fn main`,
