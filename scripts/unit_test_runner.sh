@@ -512,7 +512,7 @@ have_wasmtime=0
 command -v wasmtime >/dev/null 2>&1 && have_wasmtime=1
 total=0; fails=0; skips=0
 # Parallelism: the loop is embarrassingly parallel (each file compiles to its
-# own mktemp wasm; the persistent caches under _build/vibe_* are safe to share
+# own mktemp wasm; the persistent caches under .vibe/build/cache/vibe_* are safe to share
 # because the host runner writes them atomically via temp+rename). Default
 # min(4, nproc) -- the heavy compiler tests peak at a few GB of wasm memory
 # each, so unbounded -P would OOM small runners. VIBE_UNIT_TEST_JOBS=1 keeps
@@ -585,7 +585,7 @@ else
       : > "$results_dir/$key.skip"
       return 0
     fi
-    # Tests that touch persistent-cache state (_build/vibe_*) cannot share
+    # Tests that touch persistent-cache state (.vibe/build/cache/vibe_*) cannot share
     # the ambient cache with concurrent workers -- the cache-file counts /
     # contents they assert on shift underneath them (persistent_cache_test
     # flaked exactly this way on the first parallel run). They used to run in

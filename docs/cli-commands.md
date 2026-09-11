@@ -40,7 +40,7 @@ vibe build -o output.wasm <file.vibe>     # explicit output path
 
 - **`--release`** (default): Full compilation with `-Oz` optimization. Falls back to unoptimized if the optimizer does not support generated opcodes.
 - **`--debug`**: Uses a linked debug fast path that caches library WASM modules and only recompiles user code when sources change. Significantly faster for iterative development.
-- Output defaults to `<basename>.wasm` in the current directory.
+- Output defaults to `.vibe/build/out/<basename>.wasm` under the project root (#2675, [toolchain-layout.md](toolchain-layout.md)); `-o` chooses another path, relative to the directory you ran from.
 
 ### compile
 
@@ -281,7 +281,7 @@ vibe normalize --stdout <file.vibe>   # print the result (no write)
 
 ### new
 
-- `vibe new <dir>` -- Scaffold a starter project.
+- `vibe new <dir>` -- Scaffold a project: `main.vibex`, a root `index.vpkg` (the project marker and manifest) and `.gitignore` (which ignores `.vibe/`, where builds and pinned dependencies land).
 
 There is no `vibe init`; scaffolding is `vibe new`.
 
@@ -297,6 +297,8 @@ There is no `vibe init`; scaffolding is `vibe new`.
 | `deps [--direct] <file>` | Resolved import closure, dependency first |
 | `grep --pattern '<pat>' [paths]` | AST pattern search, with checker-backed filters |
 | `hash [--write] <pkg_dir>` | Package content hash |
+| `root` | Print the project root: the outermost `index.vpkg` up from the current directory, not across `.git`; else the current directory (#2675) |
+| `clean [--all]` | Remove `.vibe/build/` (`--all`: the pinned `.vibe/store/` too) |
 | `add <name> <url> [dir]` | Add a dependency to `vibe.deps` and fetch it |
 | `pkg publish\|install\|add\|yank\|update` | Package registry operations |
 | `context-pack [--out FILE]` | Cheatsheet + verified golden examples as one file (#820) |
@@ -308,9 +310,10 @@ There is no `vibe init`; scaffolding is `vibe new`.
 defined, and `scripts/check_doc_commands.sh` compares every command shown in
 this repository's documents against it.
 
-This table used to list `save`, `finalize`, `apply`, `explain-import`, `clean`,
+This table used to list `save`, `finalize`, `apply`, `explain-import`,
 `ide`, `lsif`, `expand` and `history reset`. The CLI answers `unknown command`
-to every one of them (measured 2026-08-20).
+to every one of them (measured 2026-08-20). `clean` was on that list too and
+came back in #2675 with the meaning above.
 
 ## Internal Commands
 
@@ -344,3 +347,4 @@ removed in #594; both are covered by piping into `vibe shell`.)
 | Variable | Description |
 |----------|-------------|
 | `VIBE_TEST_JOBS` | Default parallelism for `test` (max 16) |
+| `VIBE_BUILD_DIR` | Overrides `<root>/.vibe/build`, where every artifact and the compiler cache land (#2675) |

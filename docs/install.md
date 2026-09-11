@@ -117,12 +117,14 @@ bash install/install.sh --cli-wasm vibe-compiler-<tag>.wasm
 
 ```
 vibe run     <file.vibex> [-- args]   compile the fixed `main` entry then run
-vibe compile <file.vibe> -o <out>     compile to a .wasm
-vibe build   <file.vibe> -o <out>     alias of compile
+vibe compile <file.vibe> [-o <out>]   compile to a .wasm (default: .vibe/build/out/<name>.wasm)
+vibe build   <file.vibe> [-o <out>]   alias of compile
 vibe check   <file.vibe|file.vibex>   parse + typecheck (no output kept)
 vibe test    <file_test.vibe|dir>...  compile + run test {} blocks
                                       (a directory expands to *_test.vibe)
 vibe fetch   [project_dir]            vendor git/URL deps from vibe.deps + lock
+vibe root                             print the project root (outermost index.vpkg)
+vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too)
 vibe lsp                              start the stdio LSP server (diagnostics)
 vibe context-pack [--out FILE]        emit cheatsheet + verified golden examples
                                        as one file (AI-harness context, #820)

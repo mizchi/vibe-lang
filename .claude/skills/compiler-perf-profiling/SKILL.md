@@ -23,7 +23,7 @@ scripts/profile_compile.sh /tmp/gen/stage2.wasm foo.vibe 30
 
 ## 0.5 Control the persistent cache, or the numbers lie (#2393, #2394)
 
-The FS compile lane consults the persistent caches under `_build/vibe_*`.
+The FS compile lane consults the persistent caches under `.vibe/build/cache/vibe_*` (the committed seed, which predates #2675, still writes `_build/vibe_*`).
 Their key namespace (`persistent_cache_version_tag()`,
 `cache/persistent_cache.vibe`) embeds `codegen_fingerprint()` — a hash of
 the compiler SOURCES — so entries written by one compiler are invisible to a

@@ -49,7 +49,7 @@ fi
 # declarations (3000 and 5000 ok, 8000 not).
 #
 # Measure this ONLY on content that has never compiled before. One successful
-# compile writes a persistent `_build/vibe_selfhost_module_header_v2_*` row,
+# compile writes a persistent `.vibe/build/cache/vibe_selfhost_module_header_v2_*` row,
 # and from then on that exact source compiles on the default stack -- so
 # re-probing a file you already got through reports a ceiling several times
 # too high (this cost three wrong numbers in #2134 before the cache was

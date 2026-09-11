@@ -60,7 +60,8 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   `test_gc_selfbuild.sh`, `test_name_section.sh`, `test_simd_emit_wasmtime.sh`
 - **Host ABI / library / install:** `test_host_abi.js`, `test_vibe_library.sh`,
   `test_vibe_cli_install.sh`, `test_vibe_install_hello.sh` (#1949 first-program
-  smoke, no repo `lib/`), `test_wasm_vibe_wasmtime.sh`
+  smoke, no repo `lib/`), `test_vibe_root.sh` (#2675 project root and
+  `.vibe/build/` contract), `test_wasm_vibe_wasmtime.sh`
 - **Async / http / process:** `test_real_async_host.sh`, `test_wasi_http_p3_full_gate.sh`
 
 ## Coverage

@@ -39,7 +39,7 @@ if [ -n "$reuse" ] && [ -f "$reuse" ]; then
 else
   gen_json="$OUT_DIR/generation.json"
   echo "[rc-bootstrap] building whole compiler under RC (stage0 seed -> stage1 -> stage2 -> stage3)"
-  rm -f _build/vibe_selfhost_*.tsv
+  rm -f _build/vibe_selfhost_*.tsv .vibe/build/cache/vibe_selfhost_*.tsv
   bash scripts/generations.sh build --stage3 --out-dir "$OUT_DIR"
 fi
 

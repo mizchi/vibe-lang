@@ -136,7 +136,7 @@ require @vibe/core 0.2.0 = #pkg:sha1:<40hex>
 が計算します。`VIBE_REQUIRE_PINS=1` を設定すると pin の無い依存はエラーに
 なります。リリースビルドはそうあるべきです。
 
-(第1章の `vibe.deps` は別の、より粗い仕組みです: `vibe add` / `vibe fetch`
+(`vibe.deps` は別の、より粗い仕組みです: `vibe add` / `vibe fetch`
 がリポジトリごと `deps/` に vendor するための `<name> <url>` 行を並べます。
 `require` pin はレジストリのレーンで、パッケージ単位・内容アドレスで、
 コンパイラ自身が検査します。)

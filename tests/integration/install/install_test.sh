@@ -91,6 +91,17 @@ printf 'import @vibe/console {\n  println\n}\nfn main allows Console {\n  printl
   unset VIBE_LIB || true
   check "vibe run prelude import (no repo lib/)" "42" "$(run_number "$proj/prelude_hello.vibex")"
 )
+# #2675 (docs/toolchain-layout.md): everything the toolchain generates lands
+# under <root>/.vibe/build/. $proj has no index.vpkg, so the run above (cwd =
+# $proj) makes $proj its own root; the compiled program and the compiler's
+# cache must be there, and no `_build/` may appear anywhere in the project.
+check "vibe run artifact under .vibe/build/run" "yes" "$([ -s "$proj/.vibe/build/run/prelude_hello.wasm" ] && echo yes || echo no)"
+check "compiler cache under .vibe/build/cache" "yes" "$([ -n "$(find "$proj/.vibe/build/cache" -maxdepth 1 -name 'vibe_*' 2>/dev/null | head -1)" ] && echo yes || echo no)"
+check "no _build/ in the project" "yes" "$([ ! -e "$proj/_build" ] && echo yes || echo no)"
+# `vibe root` finds the scaffold's index.vpkg from a subdirectory.
+"$VIBE" new "$WORK/scaf" >/dev/null 2>&1 || true
+mkdir -p "$WORK/scaf/sub"
+check "vibe root from a subdirectory of a scaffold" "$(cd "$WORK/scaf" && pwd -P)" "$(cd "$WORK/scaf/sub" && "$VIBE" root 2>/dev/null || true)"
 
 # compile: produces a wasm
 "$VIBE" compile "$proj/hello.vibex" -o "$proj/hello.wasm" >/dev/null 2>&1 || true
@@ -331,7 +342,9 @@ check "vibe run added dep" "42" "$(run_number "$aproj/app.vibex")"
 # new: scaffold a project and run it
 "$VIBE" new "$WORK/scaffold" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe new exit" "0" "$rc"
-check "vibe new scaffolds main + deps" "yes" "$([ -s "$WORK/scaffold/main.vibex" ] && [ -f "$WORK/scaffold/vibe.deps" ] && echo yes || echo no)"
+# #2675: the scaffold is main.vibex + a root index.vpkg (the project marker and
+# manifest) + .gitignore; the vibe.deps file it used to write is gone.
+check "vibe new scaffolds main + index.vpkg + .gitignore" "yes" "$([ -s "$WORK/scaffold/main.vibex" ] && grep -qx 'name = @local/scaffold' "$WORK/scaffold/index.vpkg" && grep -qx '.vibe/' "$WORK/scaffold/.gitignore" && [ ! -e "$WORK/scaffold/vibe.deps" ] && echo yes || echo no)"
 check "vibe run scaffold" "42" "$(run_number "$WORK/scaffold/main.vibex")"
 
 echo "[test] $pass passed, $fail failed"

@@ -88,7 +88,7 @@ package 境界モデルとは別レイヤ — in-repo の `lib/@scope/pkg` は
 7. module source、contract、import target に symlink は使えない。
 8. **契約の透明型は package 内で ambient である (#1840)。** `index.vpkg` に
    透明に定義された struct / enum / type alias は、loader が
-   `_build/vibe_vpkg_types/` 配下へ content-keyed の実 source
+   `.vibe/build/vpkg_types/` 配下へ content-keyed の実 source
    (**materialized types module**、ownerless) として書き出し、facade は
    それを re-export、各 sibling implementation は directory-shared import
    prefix 経由でそれを import する。これにより enum constructor が sibling

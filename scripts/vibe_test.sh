@@ -566,7 +566,7 @@ PY
 }
 export -f vt_worker
 
-# Tests that INSPECT the shared persistent-cache state (_build/vibe_*) cannot
+# Tests that INSPECT the shared persistent-cache state (.vibe/build/cache/vibe_*) cannot
 # run while other workers' compiles are writing it -- the cache-file
 # counts/contents they assert on shift underneath them (same split as
 # unit_test_runner.sh). Anything with "cache" in its path runs in a

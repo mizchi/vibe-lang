@@ -86,7 +86,7 @@ PY
 # below, and compiling it sits at the edge of what the compiler can do in one
 # wasm memory: on a cold checkout it traps with `RuntimeError: memory access
 # out of bounds` before producing a diagnostic. Reproduce by deleting
-# _build/vibe_selfhost_* and running this script -- exactly one source fails,
+# .vibe/build/cache/vibe_selfhost_* and running this script -- exactly one source fails,
 # that one.
 #
 # Measured, so the next person does not repeat it:
