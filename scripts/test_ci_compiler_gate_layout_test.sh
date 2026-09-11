@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Red test for scripts/test_ci_compiler_gate_layout.sh (Codex review of #2648).
 #
-# CLAUDE.md #2248: "通ったゲートは、失敗できると分かるまで何も意味しない" --- a gate
-# that passed means nothing until it is known to be able to fail, and red tests
-# run by hand and written into a commit message do not survive the next edit.
-# The guards added in #2648 had exactly that status: verified once, locally,
-# with nothing to hold them.
+# CLAUDE.md #2248: a gate that passed means nothing until it is known to be able
+# to fail, and red tests run by hand and written into a commit message do not
+# survive the next edit. The guards added in #2648 had exactly that status:
+# verified once, locally, with nothing to hold them.
 #
 # Every case MUTATES a copy of the real workflow and asserts the gate exits
 # non-zero, and every mutation is verified to BIND IN YAML before the gate is
