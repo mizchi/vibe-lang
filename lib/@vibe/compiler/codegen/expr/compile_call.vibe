@@ -462,6 +462,7 @@ fn cc_ladder_names() -> Array[String] {
       "Double::ceil",
       "Double::floor",
       "Double::from_i64_bits",
+      "Double::from_i64_bits_lohi",
       "Double::max",
       "Double::min",
       "Double::parse",
@@ -3650,6 +3651,41 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_end(buf)
       emit_i64_const(buf, 0)
       nl
+    }
+    else if fname == "Double::from_i64_bits_lohi" {
+      // #2651: the read side of the lo/hi split, inverse of the two arms
+      // below. Inline for the same reason `Double::from_i64_bits` is -- this
+      // is a representation conversion, not a function-table call.
+      //
+      // Both halves are masked, which is not belt-and-braces. An unmasked
+      // `hi` shifts its own high bits off the top of the i64; an unmasked
+      // `lo` corrupts the high half through the `or`. Under RC each argument
+      // arrives tagged (`n<<1`), so it is untagged first.
+      let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      }
+      emit_i64_const(buf, 4294967295)
+      emit_i64_and(buf)
+      nl = ce(buf, Array::get(args, 1), local_names, nl, ctx, ld)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_shr_s(buf)
+      }
+      emit_i64_const(buf, 4294967295)
+      emit_i64_and(buf)
+      emit_i64_const(buf, 32)
+      emit_i64_shl(buf)
+      emit_i64_or(buf)
+      if ctx.enable_rc {
+        Array::push(local_names, "__lohi_bits")
+        Array::push(local_names, "__lohi_box")
+        emit_box_float(buf, ctx, nl, nl + 1)
+        nl + 2
+      } else {
+        nl
+      }
     }
     else if fname == "Double::to_i64_bits_lo" || fname == "Double::to_i64_bits_hi" {
       let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)

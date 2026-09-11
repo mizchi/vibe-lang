@@ -1,0 +1,80 @@
+//# Functions
+
+/// The write side already splits a `Double` into two unsigned 32-bit halves,
+/// because the whole 64-bit pattern does not fit vibe's 63-bit `Int`
+/// (ADR-0055 Blocker-2). This is the read side of that same split (#2651).
+fn roundtrips(d: Double) -> Bool {
+  let lo = Double::to_i64_bits_lo(d)
+  let hi = Double::to_i64_bits_hi(d)
+  Double::from_i64_bits_lohi(lo, hi) == d
+}
+
+fn pow10(n: Int) -> Double {
+  let mut acc = 1.0
+  let mut i = 0
+  while i < n {
+    acc = acc * 10.0
+    i = i + 1
+  }
+  acc
+}
+
+fn pow10_neg(n: Int) -> Double {
+  let mut acc = 1.0
+  let mut i = 0
+  while i < n {
+    acc = acc / 10.0
+    i = i + 1
+  }
+  acc
+}
+
+//# Misc — Double::from_i64_bits_lohi (#2651)
+
+test "every sign and magnitude round-trips through lo/hi" {
+  assert(roundtrips(0.0))
+  assert(roundtrips(1.0))
+  assert(roundtrips(1.5))
+  assert(roundtrips(0.1))
+  assert(roundtrips(3.141592653589793))
+  assert(roundtrips(2.2250738585072014))
+}
+
+test "NEGATIVE doubles round-trip -- the case the single-Int entry cannot reach" {
+  // -1.5 is 0xBFF8000000000000, which as a signed i64 is -4631600408533204992,
+  // below Int::min. Every one of these is out of `Double::from_i64_bits`'s
+  // reach for exactly that reason, which is why this file exists.
+  assert(roundtrips(0.0 - 1.5))
+  assert(roundtrips(0.0 - 1.0))
+  assert(roundtrips(0.0 - 0.1))
+  assert(roundtrips(0.0 - 3.141592653589793))
+  assert(roundtrips(0.0 - pow10(300)))
+}
+
+test "extreme magnitudes round-trip" {
+  assert(roundtrips(pow10(300)))
+  assert(roundtrips(pow10_neg(300)))
+  assert(roundtrips(pow10(15)))
+  assert(roundtrips(pow10_neg(15)))
+}
+
+test "the halves are the ones to_i64_bits_lo / _hi produce, in that order" {
+  // Order matters and is not commutative: swapping the arguments must NOT
+  // reconstruct the value. Asserted directly so an argument-order regression
+  // cannot hide behind a symmetric test (the #1899 lesson).
+  let d = 1.5
+  let lo = Double::to_i64_bits_lo(d)
+  let hi = Double::to_i64_bits_hi(d)
+  assert(Double::from_i64_bits_lohi(lo, hi) == d)
+  assert(lo != hi)
+  assert(Double::from_i64_bits_lohi(hi, lo) != d)
+}
+
+test "a zero high half is the small-magnitude case, not a degenerate one" {
+  // Subnormals and tiny values put all their information in `lo` or in the
+  // low bits of `hi`; a reconstruction that dropped `lo` would still answer
+  // correctly for 0.0, so these are the cases that catch it.
+  let tiny = pow10_neg(320)
+  assert(roundtrips(tiny))
+  assert(Double::to_i64_bits_hi(tiny) != Double::to_i64_bits_hi(0.0) || Double::to_i64_bits_lo(tiny) != 0)
+}
