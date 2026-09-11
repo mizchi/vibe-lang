@@ -49,7 +49,11 @@ if not lanes:
     sys.exit(1)
 required = lanes - EXEMPT
 
-CALLERS = ["Taskfile.pkl"]
+# The workflow is a caller too. Scanning only the Taskfile left the reverse of
+# the defect this gate exists for: a workflow step edited to
+# `compiler_gate.sh early mid late` drops the selftests lane from CI while both
+# guards stay green (#2650 review).
+CALLERS = ["Taskfile.pkl", ".github/workflows/ci.yml"]
 # An invocation with trailing words that are lane names. `--list` and a bare
 # call are not enumerations and are left alone.
 CALL = re.compile(r'compiler_gate\.sh((?:[ \t]+[a-z][a-z0-9_-]*)+)')
@@ -69,7 +73,8 @@ for path in CALLERS:
         # Prose mentions the script too ("// compiler_gate.sh runs it up front"),
         # and "runs it up front" is a run of lowercase words that the pattern
         # below would otherwise read as a lane list. A comment is not a caller.
-        if line.lstrip().startswith("//"):
+        # `//` in pkl, `#` in YAML and in a shell `run:` block.
+        if line.lstrip().startswith(("//", "#")):
             continue
         hit = CALL.search(line)
         if not hit:

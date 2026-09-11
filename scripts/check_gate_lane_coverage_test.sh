@@ -20,6 +20,8 @@ fresh() {
   rm -rf "$TMP/t"; mkdir -p "$TMP/t/tests/gates"
   cp "$ROOT_DIR/tests/gates/lib.sh" "$TMP/t/tests/gates/lib.sh"
   cp "$ROOT_DIR/Taskfile.pkl" "$TMP/t/Taskfile.pkl"
+  mkdir -p "$TMP/t/.github/workflows"
+  cp "$ROOT_DIR/.github/workflows/ci.yml" "$TMP/t/.github/workflows/ci.yml"
 }
 
 expect_reject() {  # $1 = label, $2 = substring the message must contain
@@ -96,4 +98,20 @@ p.write_text(s2)
 MUT4
 expect_reject "a tree with no GATE_LANES is rejected" "no GATE_LANES assignment"
 
-echo "check_gate_lane_coverage_test: ok (control + 4 cases)"
+# --- case 5: the WORKFLOW enumerates lanes and omits one -------------------
+# The reverse of case 1, and the reason this gate reads more than the Taskfile:
+# a workflow step edited to `compiler_gate.sh early mid late` drops the lane
+# from CI itself, where the Taskfile is untouched and case 1 stays green
+# (#2650 review).
+fresh
+python3 - "$TMP/t/.github/workflows/ci.yml" <<'MUT5' || fail "mutation did not bind: the workflow does not enumerate lanes"
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+old = "        run: bash scripts/compiler_gate.sh\n"
+assert old in s, "the lane step is not where the mutation expects it"
+p.write_text(s.replace(old, "        run: bash scripts/compiler_gate.sh early mid late\n", 1))
+assert "compiler_gate.sh early mid late" in p.read_text(), "mutation did not land"
+MUT5
+expect_reject "a workflow enumeration that omits a lane is rejected" "omits: selftests"
+
+echo "check_gate_lane_coverage_test: ok (control + 5 cases)"

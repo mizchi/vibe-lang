@@ -210,4 +210,37 @@ lane = next(n for n, st in enumerate(steps)
 assert prov > lane, f'not misordered: provision={prov} lane={lane}'
 "
 expect_reject "PyYAML provisioned after the selftests lane is rejected" "before its dependency is installed"
-echo "test_ci_compiler_gate_layout_test: ok (control + 12 cases)"
+# --- case 13: lanes selected POSITIONALLY, omitting the new one -----------
+# compiler_gate.sh takes lanes as arguments AND from $COMPILER_GATE_LANE, and
+# the ARGUMENTS win. Reading only the environment credited every invocation
+# without it as running all lanes, so this edit dropped the selftests lane from
+# CI with the gate still printing ok (#2650 review).
+#
+# The anchors avoid `${{ ... }}`: mutate's heredoc is unquoted, so a `$` in the
+# match text would be expanded by the shell before python ever saw it.
+mutate "
+$lanes_slice
+import re
+blk = re.sub(r'^ *COMPILER_GATE_LANE:.*\n', '', blk, count=1, flags=re.M)
+blk = blk.replace('        run: bash scripts/compiler_gate.sh', '        run: bash scripts/compiler_gate.sh early mid late', 1)
+s = s[:i] + blk + s[j:]
+" "positional lanes" "
+st = [x for x in doc['jobs']['compiler-gate-lanes']['steps'] if 'compiler_gate.sh' in str(x.get('run',''))][0]
+assert 'early mid late' in st['run'], st['run']
+assert 'COMPILER_GATE_LANE' not in str(st.get('env') or {}), st.get('env')
+"
+expect_reject "lanes selected positionally without the new lane is rejected" "runs nowhere in CI"
+
+# --- case 14: an invocation the scanner cannot read -----------------------
+# Silence and "unchecked" are the same output, and only one of them is a pass.
+mutate "
+$lanes_slice
+blk = blk.replace('        run: bash scripts/compiler_gate.sh', '        run: bash scripts/compiler_gate.sh \$LANES', 1)
+s = s[:i] + blk + s[j:]
+" "unreadable invocation" "
+st = [x for x in doc['jobs']['compiler-gate-lanes']['steps'] if 'compiler_gate.sh' in str(x.get('run',''))][0]
+assert 'LANES' in st['run'], st['run']
+"
+expect_reject "an invocation whose lane arguments are not literal is rejected" "cannot read"
+
+echo "test_ci_compiler_gate_layout_test: ok (control + 14 cases)"

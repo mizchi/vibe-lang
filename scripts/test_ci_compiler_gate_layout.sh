@@ -314,10 +314,41 @@ with open(sys.argv[1], encoding="utf-8") as fh:
     doc = yaml.safe_load(fh)
 jobs = doc.get("jobs") or {}
 
-# Which STEPS can run the selftests lane? A step running compiler_gate.sh runs
-# the lane named by COMPILER_GATE_LANE -- resolved through the job's matrix
-# when it is `${{ matrix.lane }}` -- or every lane when it names none.
+# Which STEPS can run the selftests lane?
+#
+# compiler_gate.sh picks its lanes in this order, and the FIRST one wins:
+#
+#   1. positional arguments   `compiler_gate.sh early mid late`
+#   2. $COMPILER_GATE_LANE
+#   3. every lane in GATE_LANES
+#
+# This used to read only (2) and (3), and credited any invocation without the
+# environment variable as running everything. So a step edited to
+# `bash scripts/compiler_gate.sh early mid late` would have been read as
+# running all lanes while running three, and the selftests lane would have
+# left CI with this gate still printing ok (#2650 review). The arguments are
+# parsed now, and an invocation this scanner cannot read is an ERROR rather
+# than a guess -- silence and "unchecked" are the same output otherwise.
+
+def tails(run_text):
+    """Every compiler_gate.sh invocation's argument text, one per call."""
+    found = []
+    for line in run_text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        idx = line.find("compiler_gate.sh")
+        while idx != -1:
+            tail = line[idx + len("compiler_gate.sh"):]
+            for sep in (";", "&&", "||", "|", ">", "<", "#"):
+                k = tail.find(sep)
+                if k != -1:
+                    tail = tail[:k]
+            found.append(tail)
+            idx = line.find("compiler_gate.sh", idx + 1)
+    return found
+
 runners = []          # (job_id, step_index)
+unreadable = []       # (job_id, step_index, why)
 for job_id, job in jobs.items():
     if not isinstance(job, dict):
         continue
@@ -327,17 +358,48 @@ for job_id, job in jobs.items():
     for n, step in enumerate(job.get("steps") or []):
         if not isinstance(step, dict):
             continue
-        if not any(t.endswith("compiler_gate.sh") for t in str(step.get("run", "")).split()):
+        run = str(step.get("run", ""))
+        if not any(t.endswith("compiler_gate.sh") for t in run.split()):
             continue
-        lane = str((step.get("env") or {}).get("COMPILER_GATE_LANE", "")).strip()
-        if "matrix.lane" in lane:
-            selected = matrix
-        elif lane:
-            selected = [lane]
+
+        positional = []
+        for tail in tails(run):
+            for tok in tail.split():
+                if any(ch in tok for ch in "$`\"'"):
+                    unreadable.append((job_id, n, f"argument {tok!r} is not a literal"))
+                elif tok == "--list":
+                    positional.append("__list__")      # prints and exits: runs no lane
+                elif tok.startswith("-"):
+                    unreadable.append((job_id, n, f"unknown flag {tok!r}"))
+                else:
+                    positional.append(tok)
+
+        if "__list__" in positional:
+            continue                                   # runs no lane at all
+        if positional:
+            selected = positional                      # (1) beats the environment
         else:
-            selected = None       # no lane pinned: compiler_gate.sh runs them all
+            lane = str((step.get("env") or {}).get("COMPILER_GATE_LANE", "")).strip()
+            if "matrix.lane" in lane:
+                selected = matrix                      # (2), through the matrix
+            elif "${{" in lane:
+                unreadable.append((job_id, n, f"COMPILER_GATE_LANE is {lane!r}"))
+                continue
+            elif lane:
+                selected = [lane]                      # (2)
+            else:
+                selected = None                        # (3) every lane
         if selected is None or LANE in selected:
             runners.append((job_id, n))
+
+if unreadable:
+    for job_id, n, why in unreadable:
+        print(f"[ci-compiler-gate-layout] {job_id} step {n} runs compiler_gate.sh in a way "
+              f"this gate cannot read: {why}", file=sys.stderr)
+    print("  Which lanes that step runs decides whether the gate self-test suite runs at "
+          "all, so an unreadable invocation fails rather than being assumed safe.",
+          file=sys.stderr)
+    sys.exit(1)
 
 if not runners:
     print(f"[ci-compiler-gate-layout] no workflow step runs the '{LANE}' lane -- the "
