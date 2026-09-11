@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, md_borrow_mask_of, md_consume_count_pre
+  collect_free_vars, md_borrow_mask_of, md_consume_count, md_consume_count_pre
 }
 
 import @vibe/core {
@@ -1704,35 +1704,149 @@ fn inferred_heap_type() -> TypeExpr {
 
 fn fill_lambda_params(name: String, efn: Expr, body: Expr, hctx: HeapInferCtx) -> Expr {
   match efn {
-    EFn(tps, bounds, params, ret, eff, fnbody) => {
+    EFn(_, _, _, _, _, _) => {
       let calls: Array[Array[Bool]] = []
       let esc = [false]
       let env0: Map[String, Bool] = Map::new()
       analyze_calls(name, body, env0, calls, esc, hctx)
-      if Array::get(esc, 0) || Array::length(calls) == 0 {
-        efn
-      } else {
-        let new_params = Array::slice(params, 0, 0)
-        let mut pi = 0
-        while pi < Array::length(params) {
-          let (pname, pty) = Array::get(params, pi)
-          let filled = match pty {
-            Some(_) => (pname, pty),
-            None =>
-            if all_calls_heap_at(pi, calls) {
-              (pname, Some(inferred_heap_type()))
-            } else {
-              (pname, pty)
-            }
+      fill_params_from_calls(efn, calls, esc)
+    },
+    _ => efn
+  }
+}
+
+/// Give every unannotated parameter of `efn` the inferred heap type when
+/// EVERY collected call passes a heap value at that position and the lambda
+/// never escapes as a value, OR (#2681) when the body itself CONSUMES the
+/// parameter at an owning position. The second test is what the scalar
+/// classification cannot afford to miss: a value the body hands to an
+/// owning position is released there whatever it is, so a heap argument
+/// needs the dups and the exit accounting a heap parameter gets, while a
+/// scalar handed the same treatment costs only guarded no-ops (rc_dup and
+/// rc_drop ignore even values and fat pointers). The consume count is the
+/// builtin-only view (`md_consume_count`: a user callee counts as owning),
+/// which over-approximates in the harmless direction -- the plan built
+/// later decides the actual dups and drops from the real borrow masks.
+fn fill_params_from_calls(efn: Expr, calls: Array[Array[Bool]], esc: Array[Bool]) -> Expr {
+  match efn {
+    EFn(tps, bounds, params, ret, eff, fnbody) => {
+      let calls_decide = !Array::get(esc, 0) && Array::length(calls) > 0
+      let new_params = Array::slice(params, 0, 0)
+      let mut changed = false
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, pty) = Array::get(params, pi)
+        let filled = match pty {
+          Some(_) => (pname, pty),
+          None =>
+          if (calls_decide && all_calls_heap_at(pi, calls)) || md_consume_count(fnbody, pname) > 0 {
+            changed = true
+            (pname, Some(inferred_heap_type()))
+          } else {
+            (pname, pty)
           }
-          Array::push(new_params, filled)
-          pi = pi + 1
         }
+        Array::push(new_params, filled)
+        pi = pi + 1
+      }
+      if changed {
         EFn(tps, bounds, new_params, ret, eff, fnbody)
+      } else {
+        efn
       }
     },
     _ => efn
   }
+}
+
+/// #2681: the same inference for a TOP-LEVEL `let f = (p) -> ..`. Only the
+/// ELet / ELetRec locals went through fill_lambda_params, so an unannotated
+/// parameter of a top-level lambda kept no type, the planner read it as a
+/// scalar and planned neither dups nor drops for it, and a heap argument
+/// consumed twice or more in the body (`(tys) -> consume(tys) + consume(tys)`)
+/// was released once more than it was retained -- the shadow lane's "drop of
+/// freed value". The calls are collected from every top-level statement's
+/// expressions (`top_level_call_scope`), with the top-level `let` bindings
+/// seeded into the environment so a heap constant passed by name counts as
+/// heap. A lambda used as a value anywhere escapes and is left alone, as
+/// before.
+fn fill_top_lambda_params(name: String, efn: Expr, scope: Array[Expr], env0: Map[String, Bool], hctx: HeapInferCtx) -> Expr {
+  match efn {
+    EFn(_, _, params, _, _, _) =>
+    if !params_have_unannotated(params) {
+      efn
+    } else {
+      let calls: Array[Array[Bool]] = []
+      let esc = [false]
+      let mut si = 0
+      while si < Array::length(scope) {
+        analyze_calls(name, Array::get(scope, si), env0, calls, esc, hctx)
+        si = si + 1
+      }
+      fill_params_from_calls(efn, calls, esc)
+    },
+    _ => efn
+  }
+}
+
+fn params_have_unannotated(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut pi = 0
+  let mut found = false
+  while pi < Array::length(params) && !found {
+    let (_, pty) = Array::get(params, pi)
+    match pty {
+      None => {
+        found = true
+      },
+      Some(_) => ()
+    }
+    pi = pi + 1
+  }
+  found
+}
+
+/// Every expression a top-level statement carries: the scope a top-level
+/// lambda's calls are collected from (#2681). Impl methods are top-level
+/// lets by the time the planner runs.
+fn top_level_call_scope(stmts: Array[Stmt], out: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, e) => Array::push(out, e),
+      SLetMut(_, _, e) => Array::push(out, e),
+      SExpr(e) => Array::push(out, e),
+      STest(_, e) => Array::push(out, e),
+      SBench(_, e) => Array::push(out, e),
+      SExample(_, e) => Array::push(out, e),
+      SLetPat(_, e) => Array::push(out, e),
+      SFnDecl(_, _, fv, _, _) => Array::push(out, fv),
+      SModule(_, _, inner) => top_level_call_scope(inner, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The top-level `let` bindings' heap-ness, the environment the top-level
+/// call analysis starts from (#2681): an annotated binding by its type, an
+/// unannotated one by its value.
+fn top_level_heap_env(stmts: Array[Stmt], hctx: HeapInferCtx) -> Map[String, Bool] {
+  let mut env: Map[String, Bool] = Map::new()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, ty, e) => {
+        let heap = match ty {
+          Some(_) => type_expr_is_heap(ty),
+          None => is_heap_value(e, env, hctx)
+        }
+        env = Map::set(env, n, heap)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  env
 }
 
 fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
@@ -2746,11 +2860,16 @@ export fn elaborate_heap_params(stmts: Array[Stmt]) -> Array[Stmt] {
     heap_fns: collect_heap_ret_fns(stmts),
   }
   let out = Array::slice(stmts, 0, 0)
+  // #2681: the scope and environment the top-level lambdas' calls are
+  // collected from, built once for the whole program.
+  let scope: Array[Expr] = []
+  top_level_call_scope(stmts, scope)
+  let top_env = top_level_heap_env(stmts, hctx)
   let mut i = 0
   while i < Array::length(stmts) {
     let s = Array::get(stmts, i)
     let s2 = match s {
-      SLet(a, b, n, t, e) => SLet(a, b, n, t, elaborate_rw(e, hctx)),
+      SLet(a, b, n, t, e) => SLet(a, b, n, t, elaborate_rw(fill_top_lambda_params(n, e, scope, top_env, hctx), hctx)),
       SExpr(e) => SExpr(elaborate_rw(e, hctx)),
       _ => s
     }
