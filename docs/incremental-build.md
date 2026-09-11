@@ -252,6 +252,31 @@ module's own `reexport_boundary` marker, one per module, which no link should
 merge. `dup_defs=5` equals `linked_dups=5`, so the link removed none of the
 definitions the program legitimately carries twice and left nothing unfolded.
 
+### What the oracle models, and what it does not
+
+The claim above is about the passes the oracle runs, and that is every pass in
+`effect_lowering_prelude` that **rewrites statements** — including the two whose
+arguments are themselves whole-program computations
+(`optional_perform_artifact_resolution` feeding `lower_optional_performs`,
+`lc_stmts_call_host_future` feeding `await_poll_pass`). Those are recomputed
+from each module's own statements on the split side, so `content=0` covers them:
+the per-module computation produced the same rewrites.
+
+Three things it does **not** model, and they are not covered by that zero:
+
+- **`zero_alloc_check`** and **`lc_validate_stdin_provider_stmts`** are
+  validators. They produce diagnostics rather than rewrites, so the declaration
+  comparison cannot see them at all. A per-module run sees less of the program
+  and could report differently — miss a violation, or report one the whole
+  program does not. That is a real question and an unmeasured one.
+- **`await_poll_pass`** is modelled with an empty `linked_imports`, where
+  production passes the real list. So the oracle exercises that pass, but not
+  with production's input.
+
+None of this weakens the decomposition result for what it covers. It bounds it:
+*the rewriting prelude is decomposable and measured exact; the validating prelude
+is not yet measured at all.*
+
 ### The context rule this holds under
 
 Four corrections to get right, and they are worth keeping because three were the
