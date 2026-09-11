@@ -416,8 +416,13 @@ fi
 if [ "$lk_result" != "7401070000" ]; then
   echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 7401070000)" >&2; exit 1
 fi
-if [ "$lk_used" -ge 2000 ]; then
-  echo "[compiler-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1
+# #2683: the bound is 4000 B. The fixture's steady state is a CONSTANT --
+# one parked block per size bin at loop exit, 3,204 B measured with the
+# MapBuilder / Map shapes (indexed maps, grown builder storage) -- while a
+# leak scales with N: the 16 B per iteration of a single unreleased empty
+# map is 320,000 B at N=20000, a full leak ~36,000,000 B.
+if [ "$lk_used" -ge 4000 ]; then
+  echo "[compiler-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 4000 (RC reclamation regressed; a per-iteration leak is >= 320000 at N=20000, ~36000000 == full leak)" >&2; exit 1
 fi
 rm -rf "$lkdir"
 echo "[compiler-gate] RC reclamation leak guard ok (heap_used=$lk_used B at N=20000)"

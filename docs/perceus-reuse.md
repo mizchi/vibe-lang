@@ -485,10 +485,15 @@ result was the same. On the RC lane they are rc blocks now:
   and storage freed); shared, every copied key and value is retained;
 - a key or value copied from one map into another is retained in both
   (`Map::set`, `Map::delete`, `Map::keys`, `Map::values`), a replaced key
-  the caller retained for storage is released, and a literal's value that
+  the caller retained for storage is released, a literal's value that
   is a borrowed view (a projection, a borrow-returning call, a
   loop-borrowed name) is retained as the array / tuple / record literals
-  do.
+  do, and a lowering that borrows its map releases an OWNED temporary
+  handed there (`Map::set(Map::new(), k, v)`, a nested `Map::set`, a
+  frozen builder) after its last read -- the #2682 rule, which the
+  resolved-call path applies to runtime-function builtins and these
+  inline arms apply themselves; `Map::get` / `MapBuilder::get` return a
+  view and keep the leak on the safe side.
 
 Two rules only the measurement showed. A `Map`'s index slot (vptr+4) must
 be zeroed at allocation, because rc_alloc hands back memory that still
@@ -509,8 +514,11 @@ indexed, a map in a struct captured by a closure, literals over views, a
 builder held by an array and read through `MapBuilder::get`, a freeze
 through a projection -- bump / RC / RC-shadow agreement) and the
 `MapBuilder` / `Map` shape of `fixtures/rc_reclaim_leak_test.vibe`
-(`5i + 21` per iteration; the expected total moves to 7,401,070,000 under
-the same 2,000-byte heap bound).
+(`5i + 21` per iteration; the expected total moves to 7,401,070,000). The
+fixture's heap bound moves from 2,000 to 4,000 B: its steady state is a
+constant, one parked block per size bin at loop exit, measured 3,204 B
+with the indexed maps and the grown builder storage, while any leak
+scales with N (16 B per iteration is 320,000 B at N = 20000).
 
 ### An FBIP-shaped rewrite of one pass, measured (2026-09-11)
 
