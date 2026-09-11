@@ -446,8 +446,13 @@ the parameters and the answer is right; local lambdas never reached
 `agg_local_slots`. The marker is a nominal now (`__rc_heap`): a name no
 type table knows is exactly what an unannotated parameter already is to
 those readers (`agg_info_of_type_name` answers 0), `type_expr_is_heap`
-recognises it, and `seed_var_types` skips it by name so no witness or
-comparator is ever looked up under it. Pinned by
+recognises it, `seed_var_types` skips it by name so no witness or
+comparator is ever looked up under it, and `annotate_params_from_sig`
+lets the trait's declared type overwrite it -- an impl method's parameter
+classified heap before that pass kept the marker, the method-level
+binder's `X` never reached it and `X::show(x)` lost its witness
+(`fixtures/trait_method_generic_test.vibe` trapped in the unit battery).
+Pinned by
 `tests/lambda_param_consume_rc_test.vibe` (seven shapes through bump / RC /
 RC-shadow, the `lookup` shape among them) and by the shadow fixture.
 

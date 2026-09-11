@@ -717,13 +717,23 @@ fn annotate_params_from_sig(params: Array[(String, Option[TypeExpr])], ptypes: A
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ann) = Array::get(params, i)
-    let new_ann = match ann {
-      Some(_) => ann,
-      None => if i < Array::length(ptypes) {
-        Some(Array::get(ptypes, i))
-      } else {
-        None
-      }
+    // `__rc_heap` is the planner's heap marker (see seed_var_types below):
+    // not an annotation the source wrote, so the trait's declared type
+    // still fills the slot -- an impl method's `x` classified heap before
+    // this pass ran kept the marker, the binder's `X` never reached it and
+    // `X::show(x)` lost its witness (fixtures/trait_method_generic_test.vibe
+    // trapped). The declared type carries the heap-ness anyway.
+    let unannotated = match ann {
+      Some(TyName(tn)) => tn == "__rc_heap",
+      Some(_) => false,
+      None => true
+    }
+    let new_ann = if !unannotated {
+      ann
+    } else if i < Array::length(ptypes) {
+      Some(Array::get(ptypes, i))
+    } else {
+      ann
     }
     Array::push(out, (pname, new_ann))
     i = i + 1
