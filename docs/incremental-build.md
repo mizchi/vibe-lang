@@ -232,19 +232,39 @@ still content-checks the bodies under it. That is not redundant with the above:
 it is what turns the next such divergence into a refusal instead of a silently
 kept body.
 
-### What remains
+### What remains — 15 rows, two families, nothing unattributed
 
-Two families, and the second only became visible once the context rule stopped
-being wider than a real compile.
+The counters name every differing declaration, not the first of each kind. That
+matters: "the first missing row is an evidence dictionary" was read as "they all
+are" once already. With all of them named, the residue splits cleanly.
 
-**The evidence-dictionary pass.** `struct:__EvDict_Source` is missing, and
-several `content` rows are functions the whole-program evidence pass rewrote to
-take an explicit `__EvDict_Source` parameter, threading a `record { Read: …,
-Exists: … }` at each call site, where the per-module run left `with Source` on
-the row. Neither lowering is wrong; they are two coherent ones, and a module
-that merely *defines* a function cannot choose between them. This produces no
-wrong answer at either granularity — it produces two programs that cannot link
-to each other.
+**The comparator family — 9 rows.** A synthesized comparator whose *existence*
+or shape depends on what the synthesizing module can see:
+
+```
+missing  MutMap::equals__N6_String__N3_Int      MutSet::equals__N6_String
+         MutMap::equals__N6_String__N6_String   __arr_equals__A1_N6_OptionN3_Int
+         __arr_equals__A1_N6_OptionN6_String
+content  CbfTable::equals   AliasIdx::equals   ExportRenamePlan::equals
+         StrTable::equals
+```
+
+This is #2631's sibling one level up. That issue was a comparator whose *body*
+depended on module visibility, and is fixed — which is why `collisions=0`
+survives `invisible_split=15`. These are comparators the split never emits at
+all, or emits over a different element set, because the module cannot see the
+declarations the helper is built from.
+
+**The evidence family — 6 rows.** `struct:__EvDict_Source` itself, plus the
+functions the whole-program evidence pass rewrote to take an explicit
+`__EvDict_Source` parameter and the call sites that thread a
+`record { Read: …, Exists: … }` into them (`resolve_import_path_probe`,
+`resolve_path_fs` in two modules, `resolve_existing_import_path`,
+`check_linked_file_source_groups`).
+
+Neither lowering is wrong; they are two coherent ones, and a module that merely
+*defines* a function cannot choose between them. This produces no wrong answer
+at either granularity — it produces two programs that cannot link to each other.
 
 The dependence runs **backwards along the import graph**: `effect Source` is
 declared and performed in `core/module_graph_path.vibe`, and handled in
@@ -257,17 +277,9 @@ performed=3`), sampled immediately before the pass runs. So the module collects,
 the link unions and decides, and the link rewrites — with the rewrite then
 cacheable per function keyed on (body fingerprint, migration set). #2633.
 
-**A helper a module cannot see enough to synthesize at all.** `first_missing` is
-now `let:MutMap::equals__N6_String__N3_Int`. This is #2631's sibling one level
-up: that one was a comparator whose *body* depended on what the module could
-see, and is fixed; this is a comparator whose *existence* does. With
-`invisible_split=15`, a module comparing a `Map[String, Int]` may not see the
-declarations needed to emit the helper, so the split emits nothing where the
-whole program emits a definition.
-
-Not every remaining row is attributed to one of these two yet. The counters name
-the first of each kind rather than all of them, and reading the rest out is the
-next measurement, not a conclusion available now.
+Three of the nine content rows were read as rendered diffs; the other six are
+classified by declaration name, which is why the excerpt block still prints the
+first three in full.
 
 ## User-visible KPI contract
 
