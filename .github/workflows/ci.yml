@@ -466,7 +466,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, typecheck, compile-only]
+        group: [core, compile-only]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -516,7 +516,22 @@ jobs:
         if: matrix.group == 'core'
         run: CLI_NL_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_cli_line_termination.sh
       - name: Off-build typecheck gate
-        if: matrix.group == 'typecheck'
+        # STAYS IN `core`, BEHIND THE GATES ABOVE. Measured: this gate compiles
+        # lib/@vibe/cli/dispatch.vibe, whose import closure needs a warm
+        # source-fingerprinted header cache -- the same effect
+        # tests/gates/bootstrap/stage2_oracles.sh documents for the CLI core
+        # ("header discovery for this import graph retains about 1.03 GB and
+        # the cold RC path traps before codegen"). On main the eight contract
+        # gates above it happened to warm that cache first. Given its own
+        # runner it ran cold and trapped with `RuntimeError: memory access out
+        # of bounds` on runs 34577224982 and 34578340183, and reproduces
+        # locally the moment _build/vibe_selfhost_* is removed -- exactly one
+        # failure, that file. VIBE_WASM_PRE_GROW_PAGES=65000 does not fix it.
+        #
+        # So the ordering that works is kept rather than rediscovered. The
+        # dependency is real and belongs to the gate, not to this file: making
+        # it survive a cold cache on its own is its own change.
+        if: matrix.group == 'core'
         run: VIBE_OFFBUILD_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_offbuild_typecheck.sh
       - name: Book skip-block gate
         if: matrix.group == 'core'

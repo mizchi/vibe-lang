@@ -17,11 +17,8 @@ set -euo pipefail
 ROOT_DIR="${VIBE_GATE_SELF_TEST_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$ROOT_DIR"
 
-# A DIRECTORY, not one file: the companions run concurrently below, so each
-# needs its own log and its own verdict file. One shared $WORK_LOG would have
-# workers overwriting the very output the failure report prints.
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vibe_gate_selftest.XXXXXX")"
-trap 'rm -rf "$WORK_DIR"' EXIT
+WORK_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe_gate_selftest.XXXXXX")"
+trap 'rm -f "$WORK_LOG"' EXIT
 
 ALLOWLIST="scripts/gate_self_test_allowlist.txt"
 FAILING="scripts/gate_self_test_failing.txt"
@@ -143,116 +140,49 @@ EOF
 # exact shape ("the check credited a proxy for the property") that this gate
 # was written to stop (#2248 review). Discovery is by glob, so a future
 # companion is run without anyone remembering to add it to a list.
+# SERIAL, AND IT HAS TO BE. The companions look embarrassingly parallel -- one
+# `bash` per file -- and running them over `xargs -P 4` did cut this from 159s
+# to about 80s of the late lane. It was also wrong: they SHARE THE WORKING
+# TREE. check_portable_boundary_test.sh mutates tracked files under
+# lib/@vibe/compiler/entry/source_compile/ and restores them with `git
+# checkout` between cases, and it refuses to run at all against a dirty tree.
+# Concurrently with check_compile_only_lanes_test.sh -- which reaches
+# ensure_generated.sh, and so reads the whole live lib/ tree -- that produced
+#   generate_bundle: seed could not flatten the live tree
+#   wasi_only/index.vpkg: contract violation: exported 'probe_raw' is not declared
+# on run 34577224982 and the same failure naming 'probe_tab' on 34578340183:
+# different probe names, because the interleaving differs. A gate whose answer
+# depends on the interleaving is not a gate.
+#
+# Whoever tries this again needs more than a faster loop: the companions would
+# each need their own tree, and then they would no longer be testing this one.
 failed_tests=""
 repaired=""
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
-  # The companions are INDEPENDENT of each other, so they run concurrently.
-  # Serially this was the single slowest section of the late lane -- 159s of
-  # the lane's 341s, measured on CI run 34567587111 -- for work that is one
-  # `bash` per file with nothing shared between them.
-  #
-  # "Nothing shared" is a property to protect, not to assume. The one coupling
-  # would be the five generated compiler artifacts -- ensure_generated.sh
-  # WRITES INTO lib/@vibe/compiler/, so two companions regenerating at once
-  # would interleave partial writes. Measured: exactly ONE companion reaches
-  # it (check_compile_only_lanes_test.sh, via build_compile_only.sh), so there
-  # is no race and nothing to serialize.
-  #
-  # An earlier revision generated once here to be safe. That was worse than
-  # doing nothing: ensure_generated.sh REMOVES THE STAMP before regenerating,
-  # so when this pre-warm failed -- and it does inside the late lane, whose
-  # earlier sections leave lib/ in a state the seed cannot flatten -- the
-  # `|| true` swallowed the error and left the tree stamp-less, which then
-  # failed the companion for real. Measured on run 34577224982.
-
-  # min(4, nproc) matches scripts/vibe_test.sh and scripts/unit_test_runner.sh:
-  # a few companions compile with the wasm compiler and peak at GBs, so an
-  # unbounded -P OOMs a 4-vCPU runner. VIBE_GATE_SELF_TESTS_JOBS=1 restores the
-  # serial order, which is what to set when a companion is suspected of
-  # sharing state with another.
-  gst_hw_jobs="$(nproc 2>/dev/null || echo 1)"
-  [ "$gst_hw_jobs" -gt 4 ] && gst_hw_jobs=4
-  GST_JOBS="${VIBE_GATE_SELF_TESTS_JOBS:-$gst_hw_jobs}"
-
-  gst_worker() {
-    gst_t="$1"
-    gst_base="${gst_t#scripts/}"
-    gst_log="$WORK_DIR/$gst_base.log"
-    if printf '%s\n' "$GST_FAILING_ALLOWED" | grep -qxF "$gst_base"; then
+  for t in scripts/check_*_test.sh scripts/lint_*_test.sh scripts/*_gate_test.sh; do
+    [ -e "$t" ] || continue
+    # Only companions OF a gate in this tree; an orphan is reported below.
+    [ -f "${t%_test.sh}.sh" ] || continue
+    base="${t#scripts/}"
+    if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then
       # A known-failing exemption is still RUN, because the interesting case is
       # that it starts passing: skipping it outright means a repaired test (or
       # one whose missing dependency arrived) stays permanently unexecuted, and
       # any later regression in it is invisible until someone edits the list by
       # hand (#2248 review). The ratchet has to notice its own entries going
       # stale, exactly as the no-test allowlist does.
-      if bash "$gst_t" >"$gst_log" 2>&1 \
-         && printf '%s\n' "$GST_FAILING_BROKEN" | grep -qxF "$gst_base"; then
-        printf 'repaired\n' >"$WORK_DIR/$gst_base.verdict"
-      else
-        printf 'ok\n' >"$WORK_DIR/$gst_base.verdict"
+      if bash "$t" >"$WORK_LOG" 2>&1 \
+         && printf '%s\n' "$failing_broken" | grep -qxF "$base"; then
+        repaired="$repaired $base"
       fi
-      return 0
-    fi
-    if bash "$gst_t" >"$gst_log" 2>&1; then
-      printf 'ok\n' >"$WORK_DIR/$gst_base.verdict"
-    else
-      printf 'failed\n' >"$WORK_DIR/$gst_base.verdict"
-    fi
-    return 0
-  }
-  export -f gst_worker
-  export WORK_DIR
-  GST_FAILING_ALLOWED="$failing_allowed"; export GST_FAILING_ALLOWED
-  GST_FAILING_BROKEN="$failing_broken"; export GST_FAILING_BROKEN
-
-  gst_list="$WORK_DIR/.companions"
-  : >"$gst_list"
-  for t in scripts/check_*_test.sh scripts/lint_*_test.sh scripts/*_gate_test.sh; do
-    [ -e "$t" ] || continue
-    # Only companions OF a gate in this tree; an orphan is reported below.
-    [ -f "${t%_test.sh}.sh" ] || continue
-    printf '%s\n' "$t" >>"$gst_list"
-  done
-  # `|| true`: a worker never exits non-zero (it records a verdict instead), so
-  # a non-zero here would be xargs itself, and the verdict files below are the
-  # answer either way.
-  xargs -P "$GST_JOBS" -I{} bash -c 'gst_worker "$@"' _ {} <"$gst_list" || true
-
-  # Collected in the companion order the serial loop used, so the report a
-  # reader compares against an older run is byte-identical when the verdicts
-  # are.
-  #
-  # EVERY worker records a terminal state, including `ok`, and a companion with
-  # no verdict file is a FAILURE rather than a pass (Codex review of #2645).
-  # An earlier revision wrote a file only for `repaired` and `failed`, so a
-  # worker that xargs could not launch -- or that was killed before it wrote --
-  # was indistinguishable from one that passed, and this gate could report
-  # green without having run a self-test it claims to cover. That is the exact
-  # shape it exists to stop: silence read as safety.
-  while IFS= read -r t; do
-    base="${t#scripts/}"
-    if [ ! -s "$WORK_DIR/$base.verdict" ]; then
-      failed_tests="$failed_tests $t"
-      echo "[gate-self-tests] --- $t ---" >&2
-      echo "  no verdict recorded: the worker did not run to completion" >&2
-      tail -20 "$WORK_DIR/$base.log" >&2 2>/dev/null || true
       continue
     fi
-    case "$(cat "$WORK_DIR/$base.verdict")" in
-      ok) ;;
-      repaired) repaired="$repaired $base" ;;
-      failed)
-        failed_tests="$failed_tests $t"
-        echo "[gate-self-tests] --- $t ---" >&2
-        tail -20 "$WORK_DIR/$base.log" >&2
-        ;;
-      *)
-        failed_tests="$failed_tests $t"
-        echo "[gate-self-tests] --- $t ---" >&2
-        echo "  unrecognised verdict: $(cat "$WORK_DIR/$base.verdict")" >&2
-        ;;
-    esac
-  done <"$gst_list"
+    if ! bash "$t" >"$WORK_LOG" 2>&1; then
+      failed_tests="$failed_tests $t"
+      echo "[gate-self-tests] --- $t ---" >&2
+      tail -20 "$WORK_LOG" >&2
+    fi
+  done
 fi
 
 rc=0

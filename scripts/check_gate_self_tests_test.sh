@@ -106,16 +106,5 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
 run_exec || { cat "$WORK/out" >&2; fail "a PASSING companion was rejected"; }
 echo "  ok  a passing companion is accepted"
 
-# A companion whose WORKER never finishes must not read as a pass (Codex review
-# of #2645). The companions run concurrently, and an earlier revision recorded
-# a file only for `repaired` and `failed` -- so a worker xargs could not launch,
-# or that was killed before it wrote, was indistinguishable from one that
-# passed. `kill -9 $PPID` reproduces exactly that: the companion destroys the
-# worker shell, so no verdict is ever recorded.
-printf '#!/usr/bin/env bash\nkill -9 $PPID\nexit 0\n' > "$WORK/scripts/check_thing_test.sh"
-if run_exec; then fail "a companion whose worker died was accepted"; fi
-grep -q "check_thing_test.sh" "$WORK/out" || fail "the missing-verdict failure did not name the companion"
-grep -q "no verdict recorded" "$WORK/out" || fail "the missing-verdict failure did not say why"
-echo "  ok  a companion whose worker dies without a verdict is rejected"
 
 echo "[gate-self-tests-test] ok"
