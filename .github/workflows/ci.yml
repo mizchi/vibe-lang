@@ -28,6 +28,95 @@ on:
 # All jobs start at t=0; nothing on the required path serializes behind
 # another job.
 jobs:
+  compiler-build:
+    name: compiler-build
+    # THE COMPILER IS BUILT ONCE PER RUN, HERE.
+    #
+    # Before #2645 fourteen jobs each ran ensure_generated.sh (~100-145s of
+    # flatten) and nine of them also ran generations.sh (~66-91s of
+    # seed -> stage1 -> stage2) -- the same two artifacts, from the same
+    # commit, fourteen times over, ~2700s of runner time per run. It did not
+    # buy wall time either: a consumer's download costs ~25s against a
+    # producer that finishes in ~200s, which is what the in-job build cost
+    # anyway. What it buys is that a SHARD is now cheap: adding a matrix entry
+    # costs a job start plus a download, not another compiler build, so the
+    # long gates below can be split until each one fits the run's budget.
+    #
+    # compiler-gate deliberately does NOT consume this. It is the seed ->
+    # stage3 fixpoint: it has to perform the build it is checking, and making
+    # it wait for a build it would redo anyway would put ~200s in front of it
+    # for nothing.
+    runs-on: ubuntu-latest
+    outputs:
+      fingerprint: ${{ steps.genfp.outputs.fp }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-vibe
+        with:
+          node-version: 24
+          wasmtime: 'true'
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          path: bootstrap/seed/compiler.wasm
+          key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - name: Generated compiler artifacts (fingerprint)
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
+      - name: Cache stage2 (keyed on seed + flat module source)
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 from committed flat module source
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
+            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Assert stage2 exists
+        # A missing stage2 has to fail HERE, named, rather than downstream in
+        # every consumer at once with the producer reported green.
+        run: |
+          set -euo pipefail
+          if [ ! -s _build/_ci_shard_gen/stage2.wasm ]; then
+            echo "::error::compiler-build produced no _build/_ci_shard_gen/stage2.wasm" >&2
+            exit 1
+          fi
+          ls -l _build/_ci_shard_gen/stage2.wasm
+      - name: Upload compiler build
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-build
+          # .generated.stamp is what makes ensure_generated a no-op in the
+          # consumers; without it every one of them regenerates.
+          include-hidden-files: true
+          retention-days: 1
+          path: |
+            _build/_ci_shard_gen/stage2.wasm
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+          if-no-files-found: error
+
   compiler-gate-preflight:
     name: compiler-gate (preflight)
     runs-on: ubuntu-latest
@@ -150,35 +239,9 @@ jobs:
           COMPILER_GATE_SKIP_PREFLIGHT: "1"
           COMPILER_GATE_SKIP_STAGE2_ORACLES: "1"
         run: bash scripts/compiler_gate.sh
-      - name: Stage stage2 for downstream gates (#821)
-        run: |
-          gen="$(ls -dt _build/selfhost/generations/*/ | head -1)"
-          mkdir -p _build/ci-artifacts
-          cp "${gen}stage2.wasm" _build/ci-artifacts/stage2.wasm
-      - name: Upload stage2 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: compiler-stage2
-          path: _build/ci-artifacts/stage2.wasm
-          if-no-files-found: error
-      - name: Upload generated compiler artifacts
-        # perf-metrics measures the bundle / module-source sizes and must not
-        # regenerate them (that regeneration is ~3.5 min of runner time this
-        # job has already spent). Downloaded into lib/@vibe/compiler/ there.
-        uses: actions/upload-artifact@v4
-        with:
-          name: compiler-generated
-          include-hidden-files: true
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          if-no-files-found: error
 
   compiler-stage2-oracles:
+    needs: [compiler-build]
     name: compiler-gate (stage2 oracles)
     runs-on: ubuntu-latest
     steps:
@@ -206,28 +269,6 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler fingerprint
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Restore generated compiler artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          key: gen-v1-${{ steps.genfp.outputs.fp }}
-      - name: Ensure generated compiler artifacts
-        run: bash scripts/ensure_generated.sh
-      - name: Restore cached stage2
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_shard_gen
-          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
       - name: Install wasmtime
         # #2184: must run BEFORE "Build stage2 on cache miss" -- the build's
         # validate step shells out to the wasmtime binary. Later steps (the
@@ -238,12 +279,6 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Build stage2 on cache miss
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          bash scripts/ensure_seed.sh
-          bash scripts/ensure_generated.sh
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
       - name: Install wasm-tools
         env:
           WASM_TOOLS_VERSION: "1.253.0"
@@ -252,6 +287,8 @@ jobs:
           curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASM_TOOLS_VERSION}/wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz
           cp "wasm-tools-${WASM_TOOLS_VERSION}-x86_64-linux/wasm-tools" "$PWD/compiler-tools/"
           echo "$PWD/compiler-tools" >> "$GITHUB_PATH"
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: Stage cached compiler
         run: |
           mkdir -p _build/selfhost/generations/ci-oracles
@@ -307,6 +344,7 @@ jobs:
         run: bash scripts/vibe_normalize_smoke.sh
 
   compiler-docs:
+    needs: [compiler-build]
     name: compiler-gate (docs)
     runs-on: ubuntu-latest
     steps:
@@ -334,23 +372,11 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler fingerprint
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Restore cached stage2
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_shard_gen
-          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      - name: Install wasmtime (cold stage2 build only)
-        # #2184: generations.sh's "validate stageN compiler -> sample" step
-        # shells out to a wasmtime BINARY, so the cold-cache build below needs
-        # it on PATH. A warm cache skips the build and never touches it --
-        # which is how this job passed until the first fingerprint-moving
-        # change ran it cold: the stage2 cache key includes the compiler-source
-        # fingerprint, so EVERY compiler-touching PR takes the cold path.
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
+      - name: Install wasmtime
+        # The gates below run compiled sample wasm through the wasmtime
+        # binary. It used to be conditioned on the in-job stage2 build being
+        # cold; that build now happens once in compiler-build, so the
+        # condition is gone and this is unconditional.
         env:
           WASMTIME_VERSION: v47.0.2
         run: |
@@ -358,12 +384,8 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Build stage2 on cache miss
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          bash scripts/ensure_seed.sh
-          bash scripts/ensure_generated.sh
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: Stage cached compiler
         run: |
           mkdir -p _build/selfhost/generations/ci-docs
@@ -423,6 +445,7 @@ jobs:
           FREEZE_STAGE2="${gen}stage2.wasm" bash scripts/check_freeze_surface.sh
 
   compiler-contracts:
+    needs: [compiler-build]
     name: compiler-gate (contracts)
     runs-on: ubuntu-latest
     steps:
@@ -446,70 +469,8 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler fingerprint
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      # The generated artifacts are needed by the GATES, not just by the stage2
-      # build -- check_offbuild_typecheck typechecks every off-manifest source,
-      # and several import `compiler_sources_bundle.vibe` /
-      # `cli_adapter_bundle.vibe` or implement `cache/index.vpkg`'s
-      # `codegen_fingerprint` declaration. Producing them only inside the
-      # cache-miss build below meant a stage2 cache HIT left them absent and the
-      # gate reported 20 real contract violations against a half-built tree.
-      # Cached and ensured unconditionally, exactly as compiler-gate-lanes does.
-      - name: Cache generated compiler artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          key: gen-v1-${{ steps.genfp.outputs.fp }}
-      - name: Ensure generated compiler artifacts
-        run: bash scripts/ensure_generated.sh
-      - name: Restore cached stage2
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_shard_gen
-          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      # No second wasmtime install: setup-vibe above runs with wasmtime: 'true',
-      # which installs the same pinned 47.0.2 (scripts/install_wasmtime_release.sh
-      # -> $HOME/.wasmtime/bin) and appends exactly that directory to PATH,
-      # unconditionally. generations.sh's stage validation shells out to that
-      # binary and finds it. A duplicate download would not even hedge the
-      # transient-failure risk it looks like it hedges: setup-vibe's own
-      # installer curls the same GitHub release, so a second one doubles the
-      # exposure of a required job rather than covering it.
-      #
-      # Known limit, stated rather than left to look proven: this is the only
-      # wasmtime-using job that relies on setup-vibe alone (every other one
-      # still carries the redundant install), and the cold path only runs on a
-      # stage2 cache MISS. A ci.yml-only commit does not move the generated
-      # fingerprint in the cache key, so the run that introduced this did not
-      # exercise it. The guarantee above is by construction -- install dir ==
-      # PATH entry, PATH step unconditional -- not by a cold CI run; the next
-      # compiler-source change moves the fingerprint and exercises it for real.
-      - name: Build stage2 on cache miss
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          bash scripts/ensure_seed.sh
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
-      # Every gate below is handed the stage2 EXPLICITLY, by path. None of them
-      # discovers one for itself: left to their own devices they take the
-      # newest generation on disk, else the committed seed, and both answer
-      # confidently about a compiler that does not contain the change
-      # (AGENTS.md, "which compiler answered"). That is also why this job does
-      # not use the `ls -dt _build/selfhost/generations/*/ | head -1` idiom the
-      # older jobs share.
-      - name: Assert the stage2 exists
-        run: |
-          set -euo pipefail
-          test -s _build/_ci_shard_gen/stage2.wasm \
-            || { echo "::error::no stage2 to hand the contract gates"; exit 1; }
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: RC-is-default gate
         run: RC_DEFAULT_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_rc_default.sh
       - name: Source-range contract gate
@@ -539,6 +500,7 @@ jobs:
         run: COMPILE_ONLY_STAGE2="$PWD/_build/_ci_shard_gen/stage2.wasm" bash scripts/check_compile_only_lanes.sh
 
   compiler-playground:
+    needs: [compiler-build]
     name: compiler-gate (playground)
     runs-on: ubuntu-latest
     steps:
@@ -566,23 +528,11 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler fingerprint
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Restore cached stage2
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_shard_gen
-          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      - name: Install wasmtime (cold stage2 build only)
-        # #2184: generations.sh's "validate stageN compiler -> sample" step
-        # shells out to a wasmtime BINARY, so the cold-cache build below needs
-        # it on PATH. A warm cache skips the build and never touches it --
-        # which is how this job passed until the first fingerprint-moving
-        # change ran it cold: the stage2 cache key includes the compiler-source
-        # fingerprint, so EVERY compiler-touching PR takes the cold path.
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
+      - name: Install wasmtime
+        # The gates below run compiled sample wasm through the wasmtime
+        # binary. It used to be conditioned on the in-job stage2 build being
+        # cold; that build now happens once in compiler-build, so the
+        # condition is gone and this is unconditional.
         env:
           WASMTIME_VERSION: v47.0.2
         run: |
@@ -590,12 +540,8 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Build stage2 on cache miss
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          bash scripts/ensure_seed.sh
-          bash scripts/ensure_generated.sh
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: Stage cached compiler
         run: |
           mkdir -p _build/selfhost/generations/ci-playground
@@ -615,6 +561,7 @@ jobs:
   # not the bootstrap fixpoint. Start it at t=0 from the same content-addressed
   # stage2 cache as fixture and unit-test shards.
   compiler-examples:
+    needs: [compiler-build]
     name: compiler-gate (examples)
     runs-on: ubuntu-latest
     steps:
@@ -626,42 +573,17 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler artifacts (fingerprint)
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Cache generated compiler artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          key: gen-v1-${{ steps.genfp.outputs.fp }}
-      - name: Ensure generated compiler artifacts
-        run: bash scripts/ensure_generated.sh
       - uses: ./.github/actions/setup-vibe
         with:
           node-version: 24
           wasmtime: 'true'
           pkfire: 'true'
           pkfire-cache: 'true'
-      - name: Cache stage2
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_shard_gen
-          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      - name: Install wasmtime (cold stage2 build only)
-        # #2184: generations.sh's "validate stageN compiler -> sample" step
-        # shells out to a wasmtime BINARY, so the cold-cache build below needs
-        # it on PATH. A warm cache skips the build and never touches it --
-        # which is how this job passed until the first fingerprint-moving
-        # change ran it cold: the stage2 cache key includes the compiler-source
-        # fingerprint, so EVERY compiler-touching PR takes the cold path.
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
+      - name: Install wasmtime
+        # The gates below run compiled sample wasm through the wasmtime
+        # binary. It used to be conditioned on the in-job stage2 build being
+        # cold; that build now happens once in compiler-build, so the
+        # condition is gone and this is unconditional.
         env:
           WASMTIME_VERSION: v47.0.2
         run: |
@@ -669,11 +591,8 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Build stage2
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
-            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: examples/ type-check ratchet
         run: pkf run ci-check-examples-typecheck
 
@@ -681,6 +600,7 @@ jobs:
   # Keeping the full-history checkout here removes about 50 seconds from the
   # compiler-gate critical path without weakening the fail-closed AST tier.
   review-regressions:
+    needs: [compiler-build]
     name: review-regressions
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -695,40 +615,15 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler artifacts (fingerprint)
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Cache generated compiler artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          key: gen-v1-${{ steps.genfp.outputs.fp }}
-      - name: Ensure generated compiler artifacts
-        run: bash scripts/ensure_generated.sh
       - uses: ./.github/actions/setup-vibe
         with:
           node-version: 24
           wasmtime: 'true'
-      - name: Cache stage2
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_shard_gen
-          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      - name: Install wasmtime (cold stage2 build only)
-        # #2184: generations.sh's "validate stageN compiler -> sample" step
-        # shells out to a wasmtime BINARY, so the cold-cache build below needs
-        # it on PATH. A warm cache skips the build and never touches it --
-        # which is how this job passed until the first fingerprint-moving
-        # change ran it cold: the stage2 cache key includes the compiler-source
-        # fingerprint, so EVERY compiler-touching PR takes the cold path.
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
+      - name: Install wasmtime
+        # The gates below run compiled sample wasm through the wasmtime
+        # binary. It used to be conditioned on the in-job stage2 build being
+        # cold; that build now happens once in compiler-build, so the
+        # condition is gone and this is unconditional.
         env:
           WASMTIME_VERSION: v47.0.2
         run: |
@@ -736,11 +631,8 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Build stage2
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
-            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: Stage compiler for the AST lint
         run: |
           mkdir -p _build/selfhost/generations/ci-review
@@ -763,6 +655,7 @@ jobs:
   # ci-required requires this matrix, and an empty/unknown lane fails
   # the dispatcher rather than running nothing.
   compiler-gate-lanes:
+    needs: [compiler-build]
     name: compiler-gate (${{ matrix.lane }})
     runs-on: ubuntu-latest
     strategy:
@@ -778,22 +671,6 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler artifacts (fingerprint)
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Cache generated compiler artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          key: gen-v1-${{ steps.genfp.outputs.fp }}
-      - name: Ensure generated compiler artifacts
-        run: bash scripts/ensure_generated.sh
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -805,17 +682,8 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Cache stage2 (keyed on seed + flat module source)
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_shard_gen
-          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      - name: Build stage2 from committed flat module source
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
-            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: Compiler-gate lane ${{ matrix.lane }}
         env:
           COMPILER_GATE_LANE: ${{ matrix.lane }}
@@ -1040,6 +908,7 @@ jobs:
   # it passed locally purely because this dev box had wasmtime on PATH — the
   # first CI run caught it.)
   gc-gate:
+    needs: [compiler-build]
     name: gc-gate
     runs-on: ubuntu-latest
     steps:
@@ -1051,27 +920,6 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler artifacts (fingerprint)
-        # The five generated artifacts are build outputs, not tracked files
-        # (scripts/ensure_generated.sh). Their fingerprint is a pure function of
-        # (seed, compiler source), so it also keys the stage2 cache below --
-        # which is what the committed flat module source used to do via
-        # hashFiles.
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Cache generated compiler artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          key: gen-v1-${{ steps.genfp.outputs.fp }}
-      - name: Ensure generated compiler artifacts
-        run: bash scripts/ensure_generated.sh
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -1099,18 +947,6 @@ jobs:
             cp "$PWD/gc-tools-cargo/bin/wasm-tools" "$PWD/gc-tools/"
           fi
           echo "$PWD/gc-tools" >> "$GITHUB_PATH"
-      - name: Cache stage2 (keyed on seed + flat module source)
-        # Same key shape as the unit-test shards: stage2 is a deterministic
-        # function of (seed, committed flat module source, runner).
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_gc_gen
-          key: stage2gc-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      - name: Build stage2 from committed flat module source
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe             bash scripts/generations.sh build --out-dir _build/_ci_gc_gen
       - name: Cache viberun build
         # test_gc_heap_accounting.sh rebuilds viberun only when its sources are
         # newer than the binary, so a warm cache turns the ~80s release build
@@ -1124,6 +960,10 @@ jobs:
           key: viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
           restore-keys: |
             viberun-v1-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
+        with:
+          stage2-dest: _build/_ci_gc_gen
       - name: wasm-gc heap accounting + validation
         run: bash scripts/test_gc_heap_accounting.sh "$PWD/_build/_ci_gc_gen/stage2.wasm"
       # Runs HERE and not in a gate of its own for the same two reasons the job
@@ -1189,6 +1029,7 @@ jobs:
   # in sync and that the build reaches the stage2==stage3 fixpoint) — so the
   # shards run concurrently with compiler-gate instead of behind it.
   unit-tests:
+    needs: [compiler-build]
     name: unit-tests (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     strategy:
@@ -1204,27 +1045,6 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler artifacts (fingerprint)
-        # The five generated artifacts are build outputs, not tracked files
-        # (scripts/ensure_generated.sh). Their fingerprint is a pure function of
-        # (seed, compiler source), so it also keys the stage2 cache below --
-        # which is what the committed flat module source used to do via
-        # hashFiles.
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Cache generated compiler artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          key: gen-v1-${{ steps.genfp.outputs.fp }}
-      - name: Ensure generated compiler artifacts
-        run: bash scripts/ensure_generated.sh
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -1236,20 +1056,8 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Cache stage2 (keyed on seed + flat module source)
-        # The stage2 build is a deterministic function of (seed, committed
-        # flat module source, runner). When neither changed since a previous
-        # run, restore it and skip the ~30s build entirely.
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_shard_gen
-          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      - name: Build stage2 from committed flat module source
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
-            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: Restore persistent compile cache
         # Content-keyed compiler cache (_build/vibe_selfhost_*, see
         # docs/build-cache.md): every row's key folds in the codegen
@@ -1279,6 +1087,7 @@ jobs:
   # never waits on it. An instrumentation-only miscompile is still caught at
   # most one merge late, never silently for good.
   coverage-suite:
+    needs: [compiler-build]
     name: coverage-suite (main only)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -1296,27 +1105,6 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler artifacts (fingerprint)
-        # The five generated artifacts are build outputs, not tracked files
-        # (scripts/ensure_generated.sh). Their fingerprint is a pure function of
-        # (seed, compiler source), so it also keys the stage2 cache below --
-        # which is what the committed flat module source used to do via
-        # hashFiles.
-        id: genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Cache generated compiler artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          key: gen-v1-${{ steps.genfp.outputs.fp }}
-      - name: Ensure generated compiler artifacts
-        run: bash scripts/ensure_generated.sh
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -1328,17 +1116,8 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Cache stage2 (keyed on seed + flat module source)
-        id: stage2-cache
-        uses: actions/cache@v4
-        with:
-          path: _build/_ci_shard_gen
-          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
-      - name: Build stage2 from committed flat module source
-        if: steps.stage2-cache.outputs.cache-hit != 'true'
-        run: |
-          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
-            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: Selfhost suite coverage gate (#535)
         # Relative path: coverage_suite.sh historically rebased $cli onto the
         # repo root (it now tolerates absolute paths too, but stay canonical).
@@ -1456,7 +1235,7 @@ jobs:
   # ever needs re-checking.
   wasi-p3-gate:
     name: wasi-p3-gate (wasmtime v47.0.2)
-    needs: [compiler-gate]
+    needs: [compiler-build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -1514,27 +1293,11 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Generated compiler artifacts (fingerprint)
-        id: p3genfp
-        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
-      - name: Cache generated compiler artifacts
-        uses: actions/cache@v4
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
         with:
-          path: |
-            lib/@vibe/compiler/compiler_sources_bundle.vibe
-            lib/@vibe/compiler/cli_adapter_bundle.vibe
-            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
-            lib/@vibe/compiler/_cli_adapter_module_source.vibe
-            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
-            lib/@vibe/compiler/.generated.stamp
-          key: gen-v1-${{ steps.p3genfp.outputs.fp }}
-      - name: Ensure generated compiler artifacts
-        run: bash scripts/ensure_generated.sh
-      - name: Download stage2 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: compiler-stage2
-          path: _build/ci-artifacts/
+          # Three env vars below address the compiler at this path.
+          stage2-dest: _build/ci-artifacts
       - name: WASI p3 guarantee gate
         env:
           VIBE_P3_GATE_REQUIRE_TOOLS: "1"
@@ -1564,7 +1327,7 @@ jobs:
   # wasi-p3-gate, is not on it.
   perf-metrics:
     name: perf-metrics
-    needs: [compiler-gate]
+    needs: [compiler-build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1580,21 +1343,6 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
-      - name: Download stage2 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: compiler-stage2
-          path: _build/_ci_shard_gen/
-      - name: Download generated compiler artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: compiler-generated
-          path: lib/@vibe/compiler/
-      - name: Generated compiler artifacts are the ones for this checkout
-        # The download is a plain file copy; this proves it matches the
-        # fingerprint of (seed, compiler source) in the checkout rather than
-        # silently measuring another commit's bundles.
-        run: bash scripts/ensure_generated.sh --check
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -1607,6 +1355,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: runtime/viberun
+      - name: Use the compiler built once for this run
+        uses: ./.github/actions/use-compiler-build
       - name: Build viberun (micro-bench runtime)
         run: cargo build --release --manifest-path runtime/viberun/Cargo.toml
       - name: Collect metrics
@@ -1695,12 +1445,16 @@ jobs:
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
     name: ci-required
-    needs: [compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-contracts, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
+    needs: [compiler-build, compiler-gate, compiler-gate-preflight, compiler-stage2-oracles, compiler-docs, compiler-contracts, compiler-playground, compiler-examples, review-regressions, compiler-gate-lanes, unit-tests, vibe-fmt-check, gc-gate, structural-lint]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs succeeded
         run: |
+          if [ "${{ needs.compiler-build.result }}" != "success" ]; then
+            echo "::error::compiler-build did not succeed (${{ needs.compiler-build.result }}) -- every job that consumes the shared compiler was skipped"
+            exit 1
+          fi
           if [ "${{ needs.compiler-gate.result }}" != "success" ]; then
             echo "::error::compiler-gate did not succeed (${{ needs.compiler-gate.result }})"
             exit 1

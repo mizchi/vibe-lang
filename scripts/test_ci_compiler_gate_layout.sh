@@ -74,16 +74,51 @@ require_stage2_builder_wasmtime() {
   local build_line
   setup_line="$(grep -nF 'uses: ./.github/actions/setup-vibe' <<<"$block" | head -1 | cut -d: -f1)"
   build_line="$(grep -nF 'scripts/generations.sh build' <<<"$block" | head -1 | cut -d: -f1)"
-  if [ -z "$build_line" ] || [ "$setup_line" -ge "$build_line" ]; then
+  if [ -z "$build_line" ] || [ -z "$setup_line" ] || [ "$setup_line" -ge "$build_line" ]; then
     echo "[ci-compiler-gate-layout] ${job} must set up wasmtime before its stage2 build" >&2
     exit 1
   fi
 }
 
-require_stage2_builder_wasmtime compiler-stage2-oracles
-require_stage2_builder_wasmtime compiler-docs
-require_stage2_builder_wasmtime compiler-playground
-require_stage2_builder_wasmtime compiler-examples
-require_stage2_builder_wasmtime review-regressions
+# #2184 belongs to whoever actually runs `generations.sh build`, and since
+# #2645 that is one job: compiler-build. The five gate jobs that used to build
+# their own stage2 now download the one it produces, so requiring a build step
+# of them would pin the layout this change removed.
+require_stage2_builder_wasmtime compiler-build
+
+# THE COMPILER IS BUILT ONCE (#2645). A job that consumes it must say so, or
+# actions/download-artifact races the producer and fails on a run where the
+# scheduler happens to start them together. `needs:` is the only thing that
+# orders them, so the two halves are required together: a job carrying the
+# composite action must declare the dependency, and a job declaring the
+# dependency must actually use the action.
+consumers="$(grep -n 'uses: ./.github/actions/use-compiler-build' "$workflow" | cut -d: -f1)"
+if [ -z "$consumers" ]; then
+  echo "[ci-compiler-gate-layout] no job uses ./.github/actions/use-compiler-build" >&2
+  echo "  The shared compiler build is how every gate job gets a stage2." >&2
+  exit 1
+fi
+for job in $(awk '
+  /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
+  /^[A-Za-z0-9_-]+:/ { if (!/^jobs:/) in_jobs = 0 }
+  in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { job = $1; sub(/:$/, "", job); print job }
+' "$workflow"); do
+  block="$(sed -n "/^  ${job}:\$/,/^  [a-zA-Z0-9_-]*:\$/p" "$workflow")"
+  uses_shared=0
+  needs_shared=0
+  grep -qF 'uses: ./.github/actions/use-compiler-build' <<<"$block" && uses_shared=1
+  grep -qE '^    needs:.*compiler-build' <<<"$block" && needs_shared=1
+  if [ "$uses_shared" = 1 ] && [ "$needs_shared" = 0 ]; then
+    echo "[ci-compiler-gate-layout] ${job} downloads the shared compiler build without 'needs: [compiler-build]'" >&2
+    echo "  Add it to the job -- download-artifact cannot wait on its own." >&2
+    exit 1
+  fi
+  if [ "$needs_shared" = 1 ] && [ "$uses_shared" = 0 ] && [ "$job" != "ci-required" ]; then
+    echo "[ci-compiler-gate-layout] ${job} declares 'needs: [compiler-build]' but never uses it" >&2
+    echo "  Either add '- uses: ./.github/actions/use-compiler-build' or drop the dependency;" >&2
+    echo "  waiting ~200s for an artifact the job ignores is pure latency." >&2
+    exit 1
+  fi
+done
 
 echo "[ci-compiler-gate-layout] ok"

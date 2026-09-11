@@ -1,0 +1,55 @@
+name: Use compiler build
+description: >
+  Restore the stage2 wasm and the five generated compiler artifacts that the
+  compiler-build job produced once for this run, instead of rebuilding them.
+
+inputs:
+  stage2-dest:
+    description: >
+      Extra directory to copy stage2.wasm into, for jobs that address it by
+      their own path. Empty = leave it only at _build/_ci_shard_gen/stage2.wasm.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # The artifact carries workspace-relative paths (_build/_ci_shard_gen/... and
+    # lib/@vibe/compiler/...), so it unpacks onto the checkout in place.
+    - name: Download the compiler built by compiler-build
+      uses: actions/download-artifact@v4
+      with:
+        name: compiler-build
+        path: .
+
+    - name: Assert the compiler build is present and current
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ ! -s _build/_ci_shard_gen/stage2.wasm ]; then
+          echo "::error::compiler-build did not deliver _build/_ci_shard_gen/stage2.wasm" >&2
+          exit 1
+        fi
+        # The assertion is on the OUTCOME, not on the files existing. If
+        # ensure_generated regenerates here, the download bought nothing and
+        # this job silently pays ~100s of flatten -- the exact shape of waste
+        # this job layout exists to remove, so it is an error rather than a
+        # slow success. The artifacts are a pure function of (seed, compiler
+        # source) and both jobs read the same commit, so "stale" means the
+        # producer and this job disagree about one of them.
+        out="$(bash scripts/ensure_generated.sh 2>&1)"
+        printf '%s\n' "$out"
+        case "$out" in
+          *"up to date"*) ;;
+          *)
+            echo "::error::compiler-build's generated artifacts are stale in this job -- it regenerated them instead of reusing them. Check that compiler-build uploads .generated.stamp (include-hidden-files: true) and that both jobs restore the same seed." >&2
+            exit 1
+            ;;
+        esac
+
+    - name: Place stage2 where this job addresses it
+      if: inputs.stage2-dest != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "${{ inputs.stage2-dest }}"
+        cp _build/_ci_shard_gen/stage2.wasm "${{ inputs.stage2-dest }}/stage2.wasm"
