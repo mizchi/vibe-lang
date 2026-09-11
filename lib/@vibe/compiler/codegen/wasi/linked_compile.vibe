@@ -480,14 +480,14 @@ fn prelude_env_none() -> PreludeEnv {
   }
 }
 
-fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], synth_keys: Array[String], tail: PreludeTail, env: PreludeEnv) -> Unit with Exception {
+fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], synth_keys: Array[String], tail: PreludeTail, errs: Array[String], env: PreludeEnv) -> Unit with Exception {
   let before: MutMap[String, Int] = MutMap::new_string()
   let mut i = 0
   while i < Array::length(part) {
     MutMap::set(before, oracle_stmt_key(Array::get(part, i)), 1)
     i = i + 1
   }
-  oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, env)
+  oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, errs, env)
   // The maximal NEW SUFFIX: what this pass APPENDED, as opposed to what it
   // inserted next to an existing declaration. The whole-program lane appends
   // at the end of the PROGRAM and the split lane at the end of a MODULE, so
@@ -3836,7 +3836,45 @@ fn lc_strip_subst_params(params: Array[(String, Option[TypeExpr])], formals: Arr
 /// count passes an empty closure so this returns false: a dropped edge narrows
 /// a module's context, and narrowing silently is worse than not splitting.
 fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
-  split.file_count > 0 && Array::length(split.stmt_file_id) == stmt_count && Array::length(split.import_closure) == split.file_count
+  if split.file_count <= 0 || Array::length(split.stmt_file_id) != stmt_count || Array::length(split.import_closure) != split.file_count {
+    false
+  } else {
+    // Every INDEX, not just the lengths (#2647 Codex P2). A `ModuleSplit` is
+    // publicly constructible, so the two out-of-range cases are reachable and
+    // neither is a refusal on its own: an out-of-range `stmt_file_id` reaches
+    // `Array::get(parts, id)` and TRAPS, and an out-of-range closure member is
+    // silently skipped by the context loop, which narrows that module's
+    // context -- the one failure mode that produces a wrong program rather
+    // than a slow one. Both become "not usable" here, which is the whole-
+    // program prelude.
+    let mut ok = true
+    let mut i = 0
+    while i < stmt_count {
+      let id = Array::get(split.stmt_file_id, i)
+      if id < 0 || id >= split.file_count {
+        ok = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    let mut fi = 0
+    while fi < split.file_count {
+      let row = Array::get(split.import_closure, fi)
+      let mut j = 0
+      while j < Array::length(row) {
+        let cj = Array::get(row, j)
+        if cj < 0 || cj >= split.file_count {
+          ok = false
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      fi = fi + 1
+    }
+    ok
+  }
 }
 
 /// The prelude, per module where the split allows it and whole-program
@@ -3862,13 +3900,41 @@ export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, 
       iw_wats: iw_wats
     }
     let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, st, env)
-    Array::truncate(stmts, 0)
-    let mut i = 0
-    while i < Array::length(linked) {
-      Array::push(stmts, Array::get(linked, i))
-      i = i + 1
+    // A COLLISION IS AN ERROR HERE (#2647 Codex P1). `prelude_run_per_module`
+    // links with the REPORTING fold, which keeps the first definition and
+    // records the conflict -- right for a measurement, which wants to know how
+    // many modules disagree and about what. Production must not pick a body:
+    // two modules that synthesized one declaration key with different bodies
+    // is a compile error, and the caller throws on the first message.
+    //
+    // NOT PINNED BY A PROGRAM, and that is not for want of trying: no program
+    // in this tree produces a collision (the compiler's own 365-module closure
+    // reads `collisions=0`, which is why the reporting fold exists at all). So
+    // this arm was red-tested by MUTATION instead -- `Array::push(collisions0,
+    // "RED_TEST_FAKE_COLLISION")` right after the fold, which makes the split
+    // entry return a non-empty error list and leave `stmts` at its original
+    // length; with this block removed it installs the linked program and
+    // reports nothing. Repeat that edit to re-check it.
+    if Array::length(st.collisions) > 0 {
+      Array::push(st.diags, link_collision_message(st.collisions))
+    } else {
+      ()
     }
-    st.diags
+    if Array::length(st.diags) > 0 {
+      // The whole-program path returns its errors with `stmts` half-rewritten
+      // and the caller throws on the first; leaving `stmts` untouched here is
+      // the same contract, reached without installing a program no one should
+      // compile.
+      st.diags
+    } else {
+      Array::truncate(stmts, 0)
+      let mut i = 0
+      while i < Array::length(linked) {
+        Array::push(stmts, Array::get(linked, i))
+        i = i + 1
+      }
+      st.diags
+    }
   } else {
     effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys)
   }
@@ -4171,7 +4237,21 @@ fn oracle_pass_name(k: Int) -> String {
   }
 }
 
-fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], env: PreludeEnv) -> Unit with Exception {
+/// One prelude pass, by index, with the ERRORS it returns collected into
+/// `errs` (#2647 Codex P1).
+///
+/// Three passes reject a program by RETURNING a message rather than throwing --
+/// `lc_inject_async_sleep_boundary` (12), `suspend_cps_pass` (13) and
+/// `evidence_dict_pass` (15) -- and this used to discard all three into `let _
+/// =`. For a measurement that compares declarations that is merely incomplete;
+/// for `effect_lowering_prelude_split`, whose return value IS the caller's
+/// error list, it is silently wrong: a program `effect_lowering_prelude`
+/// rejects would compile.
+///
+/// Pass 7 (`lc_inject_stdin_surface_wrappers`) stays discarded because the
+/// whole-program path discards it too; the point is to match that path, not to
+/// collect everything available.
+fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], errs: Array[String], env: PreludeEnv) -> Unit with Exception {
   match k {
     0 => {
       // elaborate_heap_params returns a fresh array; the oracle keeps every
@@ -4202,17 +4282,29 @@ fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_
     10 => rewrite_self_tail_calls(stmts),
     11 => wrap_entry_exception_boundary(stmts, entry_name),
     12 => {
-      let _ = lc_inject_async_sleep_boundary(stmts, entry_name)
-      ()
+      let sleep_msg = lc_inject_async_sleep_boundary(stmts, entry_name)
+      if sleep_msg != "" {
+        Array::push(errs, sleep_msg)
+      } else {
+        ()
+      }
     },
     13 => {
-      let _ = suspend_cps_pass(stmts)
-      ()
+      let scps_errs = suspend_cps_pass(stmts)
+      if Array::length(scps_errs) > 0 {
+        Array::push(errs, Array::get(scps_errs, 0))
+      } else {
+        ()
+      }
     },
     14 => inline_direct_performs(stmts),
     15 => {
-      let _ = evidence_dict_pass(stmts, entry_name)
-      ()
+      let edp_errs = evidence_dict_pass(stmts, entry_name)
+      if Array::length(edp_errs) > 0 {
+        Array::push(errs, Array::get(edp_errs, 0))
+      } else {
+        ()
+      }
     },
     _ => forin_discard_pass(stmts)
   }
@@ -4668,10 +4760,20 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
 /// foldable key actually repeats, never on the whole program (rendering a
 /// 4,567 statement program twice pushed the bump high-water to 3.6 GB,
 /// measured 2026-09-06).
+/// The refusal a synthesis collision earns, in ONE place: the throwing fold
+/// below raises it, and `effect_lowering_prelude_split` -- which links with the
+/// REPORTING fold, because a measurement wants every colliding key rather than
+/// the first -- reports it as the prelude error its caller throws (#2647 Codex
+/// P1). Two spellings of one refusal is how the two lanes come to disagree
+/// about whether a program compiles.
+fn link_collision_message(collisions: Array[String]) -> String {
+  String::concat("link: two different definitions of ", String::concat(Array::get(collisions, 0), String::concat(" -- a per-module synthesis collision, which a link that concatenates modules would resolve by silently keeping one of them; colliding keys: ", Int::to_string(Array::length(collisions)))))
+}
+
 export fn link_fold_duplicate_definitions(stmts: Array[Stmt], foldable_keys: Array[String], render: (Stmt) -> String) -> Array[Stmt] with Exception {
   let (out, collisions) = link_fold_duplicate_definitions_report(stmts, foldable_keys, render)
   if Array::length(collisions) > 0 {
-    throw(String::concat("link: two different definitions of ", String::concat(Array::get(collisions, 0), String::concat(" -- a per-module synthesis collision, which a link that concatenates modules would resolve by silently keeping one of them; colliding keys: ", Int::to_string(Array::length(collisions))))))
+    throw(link_collision_message(collisions))
   } else {
     ()
   }
@@ -4813,7 +4915,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     lc_collect_zero_alloc_diag(Array::get(parts, fi), st.diags)
     let mut j = 0
     while j < 4 {
-      lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, env)
+      lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, st.diags, env)
       j = j + 1
     }
     fi = fi + 1
@@ -4933,7 +5035,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       if j2 == 15 || j2 == 16 {
         ()
       } else {
-        lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, env)
+        lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, st.diags, env)
       }
       // After pass 5, where production runs it.
       if j2 == 5 {
@@ -5030,8 +5132,8 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   let minted = eq_mint_deferred_into(trial)
   Array::set(st.counts, 0, minted)
   // #2633: the whole-program phases, run once on the linked program.
-  oracle_apply_pass(15, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, env)
-  oracle_apply_pass(16, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, env)
+  oracle_apply_pass(15, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, st.diags, env)
+  oracle_apply_pass(16, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, st.diags, env)
   // LINK. Up to here `trial` is the modules concatenated, which holds one copy
   // of each program-level helper per module that needed it. Folding them is
   // what a per-module driver's link step does (#2575 item 3), and doing it
@@ -5167,7 +5269,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_ref_w = lc_fresh_string_array()
   let ev_def_w = lc_fresh_string_array()
   while k < 15 {
-    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, diag_w, prelude_env_none())
     // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
     // which is where a container comparator or a generic specialization is
     // requested AND emitted. The per-module side samples at the same point --
@@ -5200,7 +5302,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // program carries.
   let (ev_decl_w, ev_handled_w, ev_perf_w) = evidence_module_facts(a)
   while k < 17 {
-    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, diag_w, prelude_env_none())
     k = k + 1
   }
   // #2575 item 4: the three whole-program analyses `linked_compile` runs
@@ -5302,7 +5404,11 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   } else {
     String::concat(":", mint_first)
   }
-  let diag_line = String::concat("DIAGS validators=", String::concat(lc_set_cmp(diag_w, diag_u), "\n"))
+  // Renamed from `validators=` (#2647 Codex P1): it compared the two VALIDATOR
+  // diagnostics only, because the three passes that reject by returning a
+  // message were discarded. Both lanes collect all of them now, so the counter
+  // is the prelude's whole error list and the name says so.
+  let diag_line = String::concat("DIAGS prelude=", String::concat(lc_set_cmp(diag_w, diag_u), "\n"))
   let req_a = String::concat(String::concat("SYNTH requests=", lc_set_cmp(ev_req_w, ev_req_u)), String::concat(" typed_refused=", lc_set_cmp(ev_ref_w, ev_ref_u)))
   let req_b = String::concat(String::concat(" deferred=", Int::to_string(Array::length(ev_def_u))), String::concat(" minted=", Int::to_string(minted)))
   let req_c = String::concat(String::concat(" indirect=", Int::to_string(mint_missing)), String::concat(mint_names, "\n"))
@@ -5353,7 +5459,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
       Array::push(old_keys, oracle_stmt_key(Array::get(c, qi)))
       qi = qi + 1
     }
-    oracle_apply_pass(j, c, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+    oracle_apply_pass(j, c, entry_name, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
     file_of = oracle_realign(old_keys, file_of, c)
     j = j + 1
   }
@@ -5376,7 +5482,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
   // from `a` and limited to keys that existed before the pass (a
   // synthesized statement belongs to its own module's output, not to a
   // sibling's context).
-  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
   let pre_keys: MutMap[String, Int] = MutMap::new_string()
   let mut pk = 0
   while pk < Array::length(c) {
@@ -5460,7 +5566,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
         sy = sy + 1
       }
     } else {
-      oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+      oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
     }
     let mut oi = 0
     while oi < Array::length(part) {

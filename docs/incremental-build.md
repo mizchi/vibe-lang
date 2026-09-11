@@ -418,10 +418,38 @@ Array::length(stmt_file_id) == Array::length(stmts)
 Array::length(import_closure) == file_count
 ```
 
+Every **index** is checked too, not just the lengths: a `ModuleSplit` is
+publicly constructible, so an out-of-range `stmt_file_id` reaches `Array::get(
+parts, id)` and traps, and an out-of-range closure member is silently skipped by
+the context loop — which narrows that module's context, the one failure mode
+that produces a wrong program rather than a slow one. Both become "not usable",
+which is the whole-program prelude.
+
 A caller whose closure had unresolved edges passes an empty `import_closure`,
-which fails the third and takes the whole-program path. Narrowing a module's
-context silently is worse than not splitting at all — it is the one failure mode
-that produces a wrong program rather than a slow one.
+which fails the length check for the same reason. Narrowing a module's context
+silently is worse than not splitting at all.
+
+#### The split entry answers for the whole prelude, not part of it
+
+Two things the per-module driver would otherwise drop on the floor, because the
+driver grew out of a measurement and a measurement does not have to refuse
+anything:
+
+- **A collision is an error.** `prelude_run_per_module` links with the
+  *reporting* fold, which keeps the first definition and records the conflict —
+  right for a measurement, which wants every colliding key rather than the
+  first. Production must not pick a body, so the split entry turns a reported
+  collision into the same refusal `link_fold_duplicate_definitions` throws,
+  from one spelling shared by both.
+- **Three passes reject by returning a message**, not by throwing:
+  `lc_inject_async_sleep_boundary`, `suspend_cps_pass` and
+  `evidence_dict_pass`. The pass dispatch discarded all three into `let _ =`,
+  which for a declaration-comparing measurement is merely incomplete and for an
+  entry whose return value *is* the caller's error list is silently wrong: a
+  program the whole-program prelude rejects would compile. Both lanes collect
+  them now, which is also why the oracle's counter is `DIAGS prelude=` rather
+  than the `validators=` it used to be — it compared two validators because the
+  other three were thrown away.
 
 ### How the comparator family closed (#2634) — 9 rows, now zero
 

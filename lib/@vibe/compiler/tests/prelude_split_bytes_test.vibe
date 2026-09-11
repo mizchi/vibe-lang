@@ -256,3 +256,87 @@ test "the residual-order counter can fire" {
   // after the synthesized ones are removed.
   inspect(order_line_of(report), content = "ORDER residual=2 of=4")
 }
+
+/// A program `evidence_dict_pass` (pass 15) rejects:
+/// `fixtures/err_effect_handle_replay_removed.vibe`. A LIVE non-Error handle
+/// the pass cannot migrate is a hard compile error -- ineligible because
+/// `opaque` has a row-variable callee the pass cannot see through.
+fn rejected_by_evidence_src() -> String {
+  "effect Ask {\n  Get -> Int\n}\n\nfn opaque(n: Int) -> Int with e {\n  n\n}\n\nfn asker() -> Int with Ask {\n  let x = perform Ask::Get\n  opaque(x)\n}\n\nlet _start = () -> Int {\n  handle {\n    asker()\n  } with {\n    Ask::Get => resume(3)\n  }\n}\n"
+}
+
+/// The first error each entry reports, or "" -- the value the caller throws on.
+fn first_error(errs: Array[String]) -> String {
+  if Array::length(errs) == 0 {
+    ""
+  } else {
+    Array::get(errs, 0)
+  }
+}
+
+test "a program the evidence pass rejects is rejected on BOTH lanes" {
+  // #2647 Codex P1. Three prelude passes reject by RETURNING a message --
+  // `lc_inject_async_sleep_boundary` (12), `suspend_cps_pass` (13) and
+  // `evidence_dict_pass` (15) -- and `oracle_apply_pass` discarded all three.
+  // The split entry's return value IS the caller's error list, so discarding
+  // them meant a program the whole-program prelude rejects would COMPILE.
+  //
+  // Red-tested: with the three `let _ =` arms restored, the split side of this
+  // reads "" while the whole-program side reads the diagnostic.
+  //
+  // PASS 15 ONLY. The other two rejecting passes are the same three lines in
+  // the same `match`, but neither is pinned by a program here:
+  // `lc_inject_async_sleep_boundary` (12) needs `@vibe/concurrent`, which this
+  // single-parse lane cannot import, and the nested-handle program that
+  // `fixtures/err_effect_compound_nested_handle_suspend.vibe` uses for
+  // `suspend_cps_pass` (13) is refused BEFORE the prelude -- measured, the
+  // whole-program prelude returns no error for it, so a test built on it would
+  // assert nothing. Said here rather than left for a reader to assume from
+  // "the diagnostics are covered".
+  //
+  // `_start` rather than "main" is load-bearing: `evidence_dict_pass` takes the
+  // entry name and this program's entry is `_start`, so under the wrong name
+  // neither lane rejects and the test would pass while measuring nothing.
+  let a = program_stmts(rejected_by_evidence_src())
+  let b = program_stmts(rejected_by_evidence_src())
+  let n = Array::length(b)
+  let ea = effect_lowering_prelude(a, "_start", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let eb = effect_lowering_prelude_split(b, "_start", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), split_in_half(n), print_stmt)
+  inspect(String::length(first_error(ea)) > 0, content = "true")
+  inspect(first_error(ea) == first_error(eb), content = "true")
+}
+
+test "an out-of-range module id refuses the split rather than trapping" {
+  // #2647 Codex P2. A `ModuleSplit` is publicly constructible, so the lengths
+  // can be right while an id is not. `Array::get(parts, id)` would TRAP.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let n = Array::length(b)
+  let ids = half_ids(n)
+  Array::set(ids, 0, 7)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: ids,
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "an out-of-range closure member refuses the split rather than narrowing" {
+  // The other half of P2, and the worse one: the context loop SKIPS an
+  // out-of-range member, which narrows that module's context silently -- the
+  // one failure mode that produces a wrong program rather than a slow one.
+  // Here module 1 would lose its only view of `Pt` and leave `a == b`
+  // unlowered, exactly as the blind-closure test above shows.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let n = Array::length(b)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: half_ids(n),
+    import_closure: [[1], [9]]
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
