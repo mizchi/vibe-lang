@@ -5,9 +5,12 @@
 // checkout's codegen and runs under wasmtime (the printed entry return
 // value is the oracle, codegen_heap_e2e_test's convention). The shapes
 // cover the unique path (in-place reuse), the shared path (the source
-// value must stay intact), and a tracked-spine arm the narrow Phase 1
-// fusion declines (a spine let with a planned drop), where the interior
-// same-arity constructor consumes the token before the tail.
+// value must stay intact), a tracked-spine arm the narrow Phase 1 fusion
+// declines (a spine let with a planned drop), where the interior
+// same-arity constructor consumes the token before the tail, held binds
+// (consumed with further reads, or more than once), and consumers that
+// are not the arm's tail (a branch, a statement prefix), where the path
+// that runs no same-size constructor releases the token at arm end.
 
 import ./codegen_test_support.vibe {
   compile_wasi, compile_wasi_rc
@@ -133,31 +136,80 @@ test "a shared source survives a pure-borrow-bind rebuild untouched" {
   assert_bump_rc_agree(src, "borrow_bind_shared", "8010")
 }
 
-test "a bind both borrowed and consumed declines (mixed mode is refused)" {
+test "a held bind (borrowed and consumed) fuses and keeps its child alive" {
   // `a` is read by borrow-classified total AND consumed by the recursive
-  // incr2 -- consume count 1 with an extra borrow read. Only pure modes
-  // are admitted: a read sequenced AFTER the consume would be
-  // use-after-free on the unique path, and no ordering analysis exists,
-  // so the whole mixed class declines and takes the normal path. Exactly
-  // ONE uniqueness test remains (the Leaf arm's narrow fusion).
+  // incr2 -- consume count 1 with an extra borrow read. The first slices
+  // refused this mixed class (a read sequenced after the consume would be
+  // use-after-free on a raw transfer); it now fuses as a HELD bind: one
+  // reference for the consume plus a base reference released at arm end,
+  // so the child outlives every read. Both arms fuse -- TWO uniqueness
+  // tests.
   let src = String::concat(tree_prelude(), "let rec incr2: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total(a)\n      let a2 = incr2(a)\n      let b2 = incr2(b)\n      Pair(a2, b2)\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let t = build(3)\n  let r = incr2(t)\n  let z = incr2(Leaf(9))\n  total(r) * 100 + total(z)\n}")
   assert_bump_rc_agree(src, "borrow_and_consume", "1610")
   let rc_wasm = compile_wasi_rc(src, "main")
-  inspect(count_token_tests(rc_wasm), content = "1")
+  inspect(count_token_tests(rc_wasm), content = "2")
 }
 
-test "a borrow read AFTER the consume never fuses (use-after-free shape)" {
+test "a borrow read AFTER the consume fuses in held mode and still reads the live child" {
   // `swap(a)` consumes `a` (and, being itself a fused same-arity rebuild,
   // swaps the block IN PLACE when unique); `lv(a)` then reads the leftmost
-  // leaf. If the arm fused, the unique path's raw transfer would let that
-  // read see the freed-and-reused block -- the in-place swap makes the
-  // corruption DETERMINISTIC: lv would answer the right child's 7 instead
-  // of 3. The mixed-mode refusal keeps the arm on the normal path, where
-  // the container's reference holds `a` alive past the consume.
+  // leaf. A raw transfer would let that read see the freed-and-reused
+  // block -- the in-place swap makes the corruption DETERMINISTIC: lv
+  // would answer the right child's 7 instead of 3. Held mode gives `a` a
+  // second reference at staging, so swap's uniqueness test fails on the
+  // shared block (it allocates fresh, the source stays intact) and the
+  // read after the consume sees the original left child. use_after's
+  // Pair arm fuses (a held, b borrow-only) next to its Leaf arm and swap's
+  // two arms: FOUR uniqueness tests.
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec lv: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, _) => lv(a),\n    Leaf(v) => v\n  }\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\nlet swap: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => Pair(b, a),\n    Leaf(v) => Leaf(v)\n  }\n}\nlet use_after: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let x = swap(a)\n      let w = lv(a)\n      Pair(x, Leaf(w))\n    },\n    Leaf(v) => Leaf(v)\n  }\n}\nfn main() -> Int {\n  let r = use_after(Pair(Pair(Leaf(3), Leaf(7)), Leaf(1)))\n  let s = swap(Leaf(0))\n  total(r) + total(s)\n}"
   // r = Pair(swap(Pair(3,7)), Leaf(lv(original a))) = Pair(Pair(7,3), Leaf(3));
-  // total(r) = 13, total(s) = 0 -> 13. A fused arm would read w = 7 -> 17.
+  // total(r) = 13, total(s) = 0 -> 13. A raw transfer would read w = 7 -> 17.
   assert_bump_rc_agree(src, "borrow_after_consume", "13")
+  let rc_wasm = compile_wasi_rc(src, "main")
+  inspect(count_token_tests(rc_wasm), content = "4")
+}
+
+test "a doubly-consumed bind fuses in held mode: both consumers get a live child" {
+  // `a` is consumed twice by the owning `own` (consume count 2): the held
+  // bind holds two references for them plus the base one released at arm
+  // end, so the two parents each own the child exactly as on the normal
+  // path. The source `t` stays intact across the shared rebuild; `u`
+  // takes the unique path.
+  let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\nlet own: (Node) -> Node = (m) -> Pair(m, Leaf(0))\nlet dbl: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, _) => Pair(own(a), own(a)),\n    Leaf(v) => Leaf(v)\n  }\n}\nfn main() -> Int {\n  let t = Pair(Leaf(3), Leaf(4))\n  let r = dbl(t)\n  let u = dbl(Pair(Leaf(1), Leaf(2)))\n  total(t) * 1000 + total(r) * 10 + total(u)\n}"
+  // total(t) = 7; r = Pair(Pair(Leaf(3), Leaf(0)), Pair(Leaf(3), Leaf(0)))
+  // -> 6; u -> 2. 7000 + 60 + 2.
+  assert_bump_rc_agree(src, "double_consume", "7062")
+  // dbl's Pair arm fuses through the wide path (held bind), its Leaf arm
+  // narrowly; own and total have no rebuild arm.
+  let rc_wasm = compile_wasi_rc(src, "main")
+  inspect(count_token_tests(rc_wasm), content = "2")
+}
+
+test "a constructor in one branch consumes the token; the other branch releases it" {
+  // prune's Pair arm ends in an `if`: the then-branch rebuilds a same-size
+  // Pair (consuming the token), the else-branch builds a Leaf (a different
+  // size, so the token is still armed at arm end and must be released,
+  // not leaked). With d = 3 over a depth-5 tree both branches run on the
+  // unique path; the shared source `s` must stay intact.
+  let src = String::concat(tree_prelude(), "let rec prune: (Node, Int) -> Node = (n, d) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = prune(a, d - 1)\n      let b2 = prune(b, d - 1)\n      if d > 0 {\n        Pair(a2, b2)\n      } else {\n        Leaf(total(a2) + total(b2))\n      }\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nfn main() -> Int {\n  let r = prune(build(5), 3)\n  let s = build(3)\n  let r2 = prune(s, 1)\n  total(r) * 1000 + total(s) * 10 + total(r2)\n}")
+  // Every leaf becomes Leaf(2) or is summed into a Leaf, so total(prune(build(k), d))
+  // is 2^(k+1) for any d: 64 * 1000 + 8 * 10 + 16.
+  assert_bump_rc_agree(src, "branch_consumer", "64096")
+  // The Pair arm's consumer is a branch (wide path), the Leaf arm fuses
+  // narrowly: exactly two uniqueness tests.
+  let rc_wasm = compile_wasi_rc(src, "main")
+  inspect(count_token_tests(rc_wasm), content = "2")
+}
+
+test "a rebuild behind a statement prefix fuses" {
+  // The rebuild follows a side-effecting statement (no let spine to peel);
+  // the arm is admitted because the same-size constructor sits somewhere in
+  // the arm, and the token is consumed by that tail.
+  let src = String::concat(tree_prelude(), "let stamp: (Node, Array[Int]) -> Node = (n, log) -> {\n  match n {\n    Pair(a, b) => {\n      Array::push(log, total(a))\n      Pair(b, a)\n    },\n    Leaf(v) => Leaf(v)\n  }\n}\nfn main() -> Int {\n  let log: Array[Int] = []\n  let r = stamp(Pair(Leaf(1), Pair(Leaf(2), Leaf(3))), log)\n  let t = Pair(Leaf(5), Leaf(6))\n  let r2 = stamp(t, log)\n  let z = stamp(Leaf(9), log)\n  Array::get(log, 0) * 1000 + Array::get(log, 1) * 100 + total(r) + total(r2) + total(t) + total(z)\n}")
+  // log = [1, 5]; total(r) = 6, total(r2) = 11, total(t) = 11, total(z) = 9.
+  assert_bump_rc_agree(src, "stmt_prefix", "1537")
+  let rc_wasm = compile_wasi_rc(src, "main")
+  inspect(count_token_tests(rc_wasm), content = "2")
 }
 
 test "a sibling arm with a conditional return is never authorized by the eligible arm's plan row" {

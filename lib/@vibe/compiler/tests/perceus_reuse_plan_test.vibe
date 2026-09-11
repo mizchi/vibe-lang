@@ -38,17 +38,39 @@ test "rows carry the arity the codegen authorizes by" {
   assert(String::contains(plan, "walk n reuse_alloc:2 1"))
 }
 
-test "a pure-borrow bind pairs; a doubly-consumed bind does not" {
+test "a pure-borrow bind pairs, and so does a doubly-consumed one (held)" {
   // In reshape's Pair arm, `a` is only borrow-read (total3 is
-  // borrow-classified) -- consume count 0, admitted since the
-  // borrow-callee slice; the codegen compensates with a staging dup on
-  // the shared path and an arm-end drop. In dbl's arm `a` is consumed
-  // TWICE by the owning `own` -- no raw-transfer equivalent exists for
-  // dup-per-consume, so it must stay unpaired.
+  // borrow-classified) -- consume count 0, released at arm end. In dbl's
+  // arm `a` is consumed TWICE by the owning `own`: a HELD bind, kept alive
+  // for the whole arm with one reference per consume plus a base
+  // reference (the normal path's dup-per-consume model), so the pair is
+  // admitted where the first slices declined it.
   let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total3: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total3(a) + total3(b),\n    Leaf(v) => v\n  }\n}\nlet own: (Node) -> Node = (m) -> Pair(m, Leaf(0))\nlet rec reshape: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => {\n      let w = total3(a)\n      let b2 = reshape(b)\n      Pair(Leaf(w), b2)\n    },\n    _ => Leaf(1)\n  }\n}\nlet dbl: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, _) => Pair(own(a), own(a)),\n    _ => Leaf(1)\n  }\n}\nlet main: () -> Int = () -> {\n  match reshape(Leaf(0)) {\n    _ => match dbl(own(Leaf(1))) {\n      _ => 0\n    }\n  }\n}"
   let plan = plan_of(src)
   assert(String::contains(plan, "reshape n reuse_token:2 1"))
-  assert(!String::contains(plan, "dbl n reuse_token"))
+  assert(String::contains(plan, "dbl n reuse_token:2 1"))
+  // total3's Pair arm rebuilds nothing (its value is a sum), so it holds
+  // no same-arity constructor site and stays unpaired.
+  assert(!String::contains(plan, "total3 n reuse_token"))
+}
+
+test "a same-arity constructor anywhere in the arm pairs; a function call of that arity does not" {
+  // `prune`'s Pair arm ends in an `if` whose then-branch rebuilds a Pair
+  // and whose else-branch does not; `stamp`'s rebuild sits behind a
+  // statement prefix (no let spine to peel); `nest`'s consumer is a leaf of
+  // a nested match. None is the arm's let-spine tail, and each pairs: the
+  // codegen arms the token for the whole arm and releases it on a path
+  // where no site ran. `mk`'s Pair arm calls a two-argument FUNCTION -- a
+  // snake_case callee is not constructor-like, so it holds no site and
+  // stays unpaired (its Leaf arm is an ordinary arity-1 rebuild and pairs).
+  let src = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\nlet rec prune: (Node, Int) -> Node = (n, d) -> {\n  match n {\n    Pair(a, b) => {\n      let a2 = prune(a, d - 1)\n      let b2 = prune(b, d - 1)\n      if d > 0 {\n        Pair(a2, b2)\n      } else {\n        Leaf(total(a2) + total(b2))\n      }\n    },\n    Leaf(v) => Leaf(v + 1)\n  }\n}\nlet stamp: (Node, Array[Int]) -> Node = (n, log) -> {\n  match n {\n    Pair(a, b) => {\n      Array::push(log, 1)\n      Pair(b, a)\n    },\n    Leaf(v) => Leaf(v)\n  }\n}\nlet nest: (Node, Node) -> Node = (n, m) -> {\n  match n {\n    Pair(a, b) => match m {\n      Leaf(_) => Pair(b, a),\n      _ => Leaf(0)\n    },\n    Leaf(v) => Leaf(v)\n  }\n}\nlet pair2: (Node, Node) -> Node = (x, y) -> Pair(x, y)\nlet mk: (Node) -> Node = (n) -> {\n  match n {\n    Pair(a, b) => pair2(b, a),\n    Leaf(v) => Leaf(v)\n  }\n}\nlet main: () -> Int = () -> {\n  let log: Array[Int] = []\n  match nest(stamp(prune(mk(Pair(Leaf(1), Leaf(2))), 1), log), Leaf(0)) {\n    _ => 0\n  }\n}"
+  let plan = plan_of(src)
+  assert(String::contains(plan, "prune n reuse_token:2 1"))
+  assert(String::contains(plan, "prune n reuse_alloc:2 1"))
+  assert(String::contains(plan, "stamp n reuse_token:2 1"))
+  assert(String::contains(plan, "nest n reuse_token:2 1"))
+  assert(!String::contains(plan, "mk n reuse_token:2"))
+  assert(String::contains(plan, "mk n reuse_token:1 1"))
 }
 
 test "arms that keep the scrutinee alive or change arity stay unpaired" {

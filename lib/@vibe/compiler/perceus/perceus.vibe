@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, md_borrow_mask_of, md_consume_count_pre, md_shadow_zeroed_bmasks
+  collect_free_vars, md_borrow_mask_of, md_consume_count_pre
 }
 
 import @vibe/core {
@@ -2885,25 +2885,85 @@ export fn param_is_heap_in_body(name: String, otype: Option[TypeExpr], body: Exp
 //
 // Post-pass over the function body: every `match <ident>` whose scrutinee
 // has a planned drop is scanned for arms that (a) decompose the value with
-// an all-PBind/PWild `PCtor` pattern whose every PBind is consumed at most
-// once (consume 1 transfers raw; consume 0 -- a bind only borrow-read by
-// its uses, e.g. every callee borrow-classified -- is compensated by the
-// codegen and aliased binds decline), (b) never mention the scrutinee
-// again, (c) contain no control
-// transfer that could skip the arm's tail (return/break/continue/perform
-// -- a lambda's interior is exempt: its body runs in its own frame), and
-// (d) end (through any let spine) in a call of the SAME arity as the
-// pattern -- the same-size constructor rebuild FBIP targets. Such an arm
-// gets a PaReuseToken/PaReuseAlloc pair (arity in `extra`). Constructor-
-// ness and float-field layout are NOT known here (no ctor table in the
-// planner); the RC codegen re-validates both and quietly declines, so a
-// false candidate costs nothing and a printed pair in `vibe rc-plan` reads
-// as "candidate", never as a promise.
+// an all-PBind/PWild `PCtor` pattern none of whose binds is alias-bound
+// (every consume/borrow mix is admissible -- see reuse_bind_mode for how
+// the codegen keeps each bind's child alive), (b) never mention the
+// scrutinee again, (c) contain no control transfer that could skip the
+// arm's end (return/break/continue/perform -- a lambda's interior is
+// exempt: its body runs in its own frame), and (d) contain, ANYWHERE in
+// the arm outside lambda interiors, a call of a constructor-like name with
+// the SAME arity as the pattern -- the same-size constructor rebuild FBIP
+// targets. The site need not be the arm's tail: the codegen arms the
+// token for the whole arm, the first same-size constructor that runs
+// consumes it (a branch of an `if`/`match` tail, a site after a statement
+// prefix, an interior intermediate), and a path on which no site ran
+// releases the claimed block at arm end. Such an arm gets a
+// PaReuseToken/PaReuseAlloc pair (arity in `extra`). Constructor-ness and
+// float-field layout are NOT known here (no ctor table in the planner --
+// the constructor test is the spelling, see reuse_ctor_like); the RC
+// codegen re-validates both against the real table and quietly declines,
+// so a false candidate costs nothing and a printed pair in `vibe rc-plan`
+// reads as "candidate", never as a promise.
 
-fn reuse_spine_tail(e: Expr) -> Expr {
+/// Constructor-like callee: the last `::` segment starts with an uppercase
+/// letter (`Pair`, `Expr::ECall`, `Some`). Functions and methods are
+/// snake_case by convention, so this is the planner's only view of
+/// constructor-ness; the codegen's ctor table has the final say.
+fn reuse_ctor_like(f: String) -> Bool {
+  let n = String::length(f)
+  let mut i = 0
+  let mut start = 0
+  while i < n {
+    if String::char_code_at(f, i) == 58 {
+      start = i + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if start < n {
+    let c = String::char_code_at(f, start)
+    c >= 65 && c <= 90
+  } else {
+    false
+  }
+}
+
+/// Does `e` contain a call of a constructor-like name with exactly `arity`
+/// arguments? Lambda interiors are excluded: a lambda body compiles in its
+/// own frame with its own (empty) token state, so a site inside one can
+/// never consume this arm's token. Exported: the RC codegen's wide tier
+/// re-runs the same walk against its ctor table on the arm it fuses.
+export fn reuse_arm_has_ctor_site(e: Expr, arity: Int) -> Bool {
   match e {
-    ELet(_, _, lbody, _) => reuse_spine_tail(lbody),
-    _ => e
+    EFn(_, _, _, _, _, _) => false,
+    _ => {
+      let here = match e {
+        ECall(callee, args, _) => match callee {
+          EIdent(f, _) => Array::length(args) == arity && reuse_ctor_like(f),
+          _ => false
+        },
+        _ => false
+      }
+      if here {
+        true
+      } else {
+        let mark = expr_children_push(e)
+        let end = expr_children_top()
+        let mut i = mark
+        let mut found = false
+        while !found && i < end {
+          if reuse_arm_has_ctor_site(expr_child_at(i), arity) {
+            found = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        expr_children_pop(mark)
+        found
+      }
+    }
   }
 }
 
@@ -2991,15 +3051,19 @@ fn reuse_ident_occurrences(e: Expr, name: String) -> Int {
   }
 }
 
-/// The admission mode of one payload bind for the reuse fusion: 1 = pure
-/// consume (consumed exactly once and that consume is its ONLY occurrence),
-/// 0 = pure borrow (never consumed; every read precedes the arm-end
-/// release), -1 = inadmissible. A bind with one consume PLUS borrow reads
-/// is refused (PR #2416 review): the raw-transferred child dies at the
-/// consume, so a read sequenced after it -- later spine let, conditional --
-/// would be use-after-free on the unique path. The normal path never has
-/// this hazard (the container outlives the arm), so declining just takes
-/// the normal path. Exported: the narrow and wide codegen tiers re-run the
+/// The admission mode of one payload bind for the reuse fusion: 1 = raw
+/// transfer (consumed exactly once and that consume is its ONLY
+/// occurrence, so the consume itself releases the child), 0 = borrow-only
+/// (never consumed; the codegen releases the child at arm end), -1 = HELD:
+/// consumed once with further reads, or consumed two or more times. A held
+/// bind keeps its child alive for the WHOLE arm -- the wide tier gives it
+/// one reference per consume at staging (the normal path's dup-per-consume,
+/// see bind_match_pat) plus one base reference released at arm end, so a
+/// read sequenced after a consume can never see a freed child. That is the
+/// use-after-free PR #2416 found in a raw transfer with reads after the
+/// consume (13 became 17 in the pinned e2e case); it used to be refused by
+/// declining the whole class, and is now refused by construction. The
+/// narrow tier admits mode 1 only. Exported: both codegen tiers re-run the
 /// same predicate on the arm they fuse.
 export fn reuse_bind_mode(arm_body: Expr, bn: String, borrow_param_fns: Array[String], bmasks: Array[Int]) -> Int {
   let cc = md_consume_count_pre(arm_body, bn, borrow_param_fns, bmasks)
@@ -3012,36 +3076,22 @@ export fn reuse_bind_mode(arm_body: Expr, bn: String, borrow_param_fns: Array[St
   }
 }
 
-fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, borrow_param_fns: Array[String], borrow_param_masks: Array[Int], alias_names: Array[String]) -> Int {
+fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, alias_names: Array[String]) -> Int {
   match pat {
     PCtor(_, pargs) => {
       let arity = Array::length(pargs)
-      let tail = reuse_spine_tail(arm_body)
-      let tail_ok = match tail {
-        ECall(callee, targs, _) => match callee {
-          EIdent(_, _) => Array::length(targs) == arity,
-          _ => false
-        },
-        _ => false
-      }
-      if arity >= 1 && tail_ok && !reuse_arm_has_blocker(arm_body) {
-        let bmasks = md_shadow_zeroed_bmasks(arm_body, borrow_param_fns, borrow_param_masks)
+      if arity >= 1 && reuse_arm_has_ctor_site(arm_body, arity) && !reuse_arm_has_blocker(arm_body) {
         let mut ok = true
         let mut i = 0
         while ok && i < arity {
           match Array::get(pargs, i) {
-            // A payload bind is admitted at consume count 1 (ownership
-            // transfers raw and the single consume releases it) or 0 (pure
-            // borrow reads; the codegen compensates -- on the unique path
-            // the arm-end conditional drop releases the raw-transferred
-            // child, on the shared path the bind stays a borrowed view of
-            // the still-live block). 2+ declines: the normal path's
-            // dup-per-consume has no raw-transfer equivalent. An
-            // alias-bound name (PaAliasDup row anywhere in the fn) also
-            // declines -- aliasing can hide an extra owner the consume
-            // count does not see; name-keyed, so a same-named alias
-            // elsewhere declines conservatively.
-            PBind(bn) => if reuse_bind_mode(arm_body, bn, borrow_param_fns, bmasks) < 0 || name_in(alias_names, bn) {
+            // Every consume/borrow mix of a payload bind is admissible
+            // (reuse_bind_mode documents how the codegen keeps the child
+            // alive). Only an alias-bound name (PaAliasDup row anywhere in
+            // the fn) declines -- aliasing can hide an extra owner the
+            // consume count does not see; name-keyed, so a same-named
+            // alias elsewhere declines conservatively.
+            PBind(bn) => if name_in(alias_names, bn) {
               ok = false
             } else {
               ()
@@ -3066,7 +3116,7 @@ fn reuse_arm_candidate_arity(sname: String, pat: Pat, arm_body: Expr, borrow_par
   }
 }
 
-fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], alias_names: Array[String], actions: Array[PerceusAction], borrow_param_fns: Array[String], borrow_param_masks: Array[Int]) -> Unit {
+fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], alias_names: Array[String], actions: Array[PerceusAction]) -> Unit {
   match e {
     // A nested lambda's body plans in its OWN frame (compile_lambda builds
     // a separate plan whose post-pass pairs its matches there), exactly as
@@ -3082,7 +3132,7 @@ fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], alias_names: Array[
           let mut ai = 0
           while ai < Array::length(arms) {
             let (apat, abody) = Array::get(arms, ai)
-            let arity = reuse_arm_candidate_arity(sname, apat, abody, borrow_param_fns, borrow_param_masks, alias_names)
+            let arity = reuse_arm_candidate_arity(sname, apat, abody, alias_names)
             if arity >= 1 {
               pr_push_reuse(actions, PaReuseToken, sname, arity)
               pr_push_reuse(actions, PaReuseAlloc, sname, arity)
@@ -3100,7 +3150,7 @@ fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], alias_names: Array[
       let end = expr_children_top()
       let mut i = mark
       while i < end {
-        plan_reuse_pairs_walk(expr_child_at(i), drop_names, alias_names, actions, borrow_param_fns, borrow_param_masks)
+        plan_reuse_pairs_walk(expr_child_at(i), drop_names, alias_names, actions)
         i = i + 1
       }
       expr_children_pop(mark)
@@ -3110,7 +3160,7 @@ fn plan_reuse_pairs_walk(e: Expr, drop_names: Array[String], alias_names: Array[
       let end = expr_children_top()
       let mut i = mark
       while i < end {
-        plan_reuse_pairs_walk(expr_child_at(i), drop_names, alias_names, actions, borrow_param_fns, borrow_param_masks)
+        plan_reuse_pairs_walk(expr_child_at(i), drop_names, alias_names, actions)
         i = i + 1
       }
       expr_children_pop(mark)
@@ -3167,7 +3217,7 @@ fn pr_push_once(stamps: Array[Int], names: Array[String], id: Int, name: String)
   }
 }
 
-fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction], borrow_param_fns: Array[String], borrow_param_masks: Array[Int]) -> Unit {
+fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction]) -> Unit {
   let drop_names: Array[String] = []
   let alias_names: Array[String] = []
   pr_seen_begin()
@@ -3187,7 +3237,7 @@ fn plan_reuse_pairs(body: Expr, actions: Array[PerceusAction], borrow_param_fns:
     i = i + 1
   }
   if Array::length(drop_names) > 0 {
-    plan_reuse_pairs_walk(body, drop_names, alias_names, actions, borrow_param_fns, borrow_param_masks)
+    plan_reuse_pairs_walk(body, drop_names, alias_names, actions)
   } else {
     ()
   }
@@ -3307,7 +3357,7 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   // param-drop suffix -- out_param_drop_start's "drops from here on are the
   // params' own" contract only speaks about drops, and reuse rows are
   // neither drops nor dups, so every existing consumer skips them.
-  plan_reuse_pairs(body, ctx.actions, ctx.borrow_param_user, ctx.borrow_param_mask)
+  plan_reuse_pairs(body, ctx.actions)
   // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later
   // resets) its own actions array, while callers hold the returned plan
   // across subsequent plan builds.

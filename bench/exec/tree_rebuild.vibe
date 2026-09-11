@@ -1,0 +1,114 @@
+// bench/exec scenario: functional-but-in-place tree rebuilds (ADR-0092 /
+// #2389 Perceus reuse). Every transform below decomposes a unique tree with
+// `match` and rebuilds a same-size node; on the RC lane the reuse fusion
+// rewrites the block in place instead of drop + fresh alloc. The shapes are
+// the ones the fusion tiers distinguish:
+//   incr_tail   the constructor is the arm's tail (narrow fusion)
+//   mirror      the constructor sits in an `if` branch (wide fusion, the
+//               consumer is not the tail; both branches consume)
+//   clamp       one branch rebuilds at the SAME size, the other at a
+//               different size (the token is released on that path)
+//   weigh       a held bind: `l` is read (borrow) and stored (consume)
+//   incr_shared the SAME rebuild as incr_tail but the caller keeps the
+//               source alive, so every uniqueness test fails and the arm
+//               takes the shared path (dup + fresh alloc) -- the control
+// Deterministic output; see bench/exec/README.md.
+
+enum Tree {
+  Leaf(Int);
+  Node(Tree, Tree)
+}
+
+fn build(depth: Int, salt: Int) -> Tree {
+  if depth <= 0 {
+    Leaf((salt * 48271) % 2147483647 % 1000)
+  } else {
+    Node(build(depth - 1, salt * 2 + 1), build(depth - 1, salt * 3 + 2))
+  }
+}
+
+fn checksum(t: Tree, acc: Int) -> Int {
+  match t {
+    Leaf(v) => (acc * 31 + v) % 1000000007,
+    Node(l, r) => checksum(r, checksum(l, acc))
+  }
+}
+
+fn incr_tail(t: Tree) -> Tree {
+  match t {
+    Leaf(v) => Leaf((v + 1) % 1000),
+    Node(l, r) => {
+      let l2 = incr_tail(l)
+      let r2 = incr_tail(r)
+      Node(l2, r2)
+    }
+  }
+}
+
+fn mirror(t: Tree, d: Int) -> Tree {
+  match t {
+    Leaf(v) => Leaf((v + 3) % 1000),
+    Node(l, r) => {
+      let l2 = mirror(l, d + 1)
+      let r2 = mirror(r, d + 1)
+      if d % 2 == 0 {
+        Node(r2, l2)
+      } else {
+        Node(l2, r2)
+      }
+    }
+  }
+}
+
+fn clamp(t: Tree, d: Int) -> Tree {
+  match t {
+    Leaf(v) => Leaf((v + 7) % 1000),
+    Node(l, r) => {
+      let l2 = clamp(l, d - 1)
+      let r2 = clamp(r, d - 1)
+      if d > 0 {
+        Node(l2, r2)
+      } else {
+        Leaf(checksum(l2, checksum(r2, 0)) % 1000)
+      }
+    }
+  }
+}
+
+fn weigh(t: Tree) -> Tree {
+  match t {
+    Leaf(v) => Leaf((v + 11) % 1000),
+    Node(l, r) => {
+      let w = checksum(l, 0)
+      let r2 = weigh(r)
+      if w % 2 == 0 {
+        Node(l, r2)
+      } else {
+        Node(r2, l)
+      }
+    }
+  }
+}
+
+let main = () -> Int with Stdout {
+  let mut total = 0
+  let mut round = 1
+  while round <= 12 {
+    // unique chains: every rebuild's input dies at the rebuild
+    let a = incr_tail(incr_tail(incr_tail(build(11, round))))
+    total = (total + checksum(a, 0)) % 1000000007
+    let b = mirror(mirror(mirror(build(11, round + 100), 0), 1), 0)
+    total = (total + checksum(b, 0)) % 1000000007
+    let c = clamp(clamp(build(11, round + 200), 8), 6)
+    total = (total + checksum(c, 0)) % 1000000007
+    let e = weigh(weigh(weigh(build(11, round + 300))))
+    total = (total + checksum(e, 0)) % 1000000007
+    // shared control: `s` stays alive across the rebuild, so nothing reuses
+    let s = build(11, round + 400)
+    let u = incr_tail(incr_tail(incr_tail(s)))
+    total = (total + checksum(s, 0) + checksum(u, 0)) % 1000000007
+    round = round + 1
+  }
+  println(Int::to_string(total))
+  0
+}

@@ -143,92 +143,158 @@ Koka FP² の `fip`(fully in-place)注釈と同じ意味論であり、reuse が
   drop specialization の残り site 系統(match 内 drop 等)、KPI 再計測は
   各段で #1262 に記録。
 
-## Implementation notes (2026-08-30, #2389): plan-level pairing + wide fusion
+## Implementation notes (#2389): plan-level pairing + wide fusion
 
-The planner vocabulary landed. `PerceusActionKind` gained
+The planner vocabulary landed in PR #2411. `PerceusActionKind` gained
 `PaReuseToken`/`PaReuseAlloc` (pattern/constructor arity carried in the new
 `extra` field of the transparent `PerceusAction`), emitted as a post-pass of
 `build_perceus_plan_with_params_split` for every `match <ident>` whose
 scrutinee has a planned drop and whose arm (a) decomposes with an
-all-PBind/PWild `PCtor` pattern whose every bind is consumed exactly once
-AND owes the plan no action of its own, (b) never mentions the scrutinee
-again, (c) contains no control transfer that could skip the arm's tail
-(return/break/continue/perform; a lambda interior is exempt), and (d) ends
-through any let spine in a call of the same arity. `vibe rc-plan` prints the
-pair as `reuse_token:<arity>`/`reuse_alloc:<arity>` rows (the arity is the
-codegen's authorization key next to the name, and it joins the collapse key,
-so same-scrutinee arms of different arities stay distinguishable), planned
-on the SAME normalized body the RC codegen plans (shadow uniquify +
-scrutinee lift, so `match f() {..}` reports on its lifted `__m_scrut_N`);
-the bump and wasm-gc lanes ignore the kinds entirely.
+all-PBind/PWild `PCtor` pattern none of whose binds is alias-bound, (b)
+never mentions the scrutinee again, (c) contains no control transfer that
+could skip the arm's end (return/break/continue/perform; a lambda interior
+is exempt), and (d) contains, anywhere outside lambda interiors, a call of a
+constructor-like name (`reuse_ctor_like`: the last `::` segment is
+capitalized — the planner has no ctor table) with the SAME arity as the
+pattern. `vibe rc-plan` prints the pair as `reuse_token:<arity>` /
+`reuse_alloc:<arity>` rows (the arity is the codegen's authorization key
+next to the name, and it joins the collapse key, so same-scrutinee arms of
+different arities stay distinguishable), planned on the SAME normalized
+body the RC codegen plans (shadow uniquify + scrutinee lift, so `match f()
+{..}` reports on its lifted `__m_scrut_N`); the bump and wasm-gc lanes
+ignore the kinds entirely.
 
 The RC codegen consumes the candidates as the **wide fusion**
 (`mr_reuse_wide_eligible`/`mr_compile_reuse_arm_wide`,
-`compile_match.vibe`): where the Phase-1 narrow path declines because the
-arm's let spine carries planned RC actions (the compiler's own rebuild hot
-shape — tracked intermediates), the wide path stages the token with the
-SAME prelude as the narrow one (raw payload binds, shadow-lane probe,
-rc-word uniqueness test, flag set), then compiles the arm body through the
+`compile_match.vibe`): where the Phase-1 narrow path declines — a let spine
+carrying planned RC actions (the compiler's own rebuild hot shape: tracked
+intermediates), a constructor that is not the spine tail, a bind that is
+not a pure single consume — the wide path stages the token with the SAME
+prelude as the narrow one (raw payload binds, shadow-lane probe, rc-word
+uniqueness test, flag set), then compiles the arm body through the
 ORDINARY expression machinery with the token armed on the ctx stacks
-(`reuse_tok_locals`/`_arities`/`_emitted`), and `compile_call`'s
-constructor path allocates from the token at the first same-arity site —
-`token == 0` (shared path, or an earlier site consumed it) falls into the
-byte-identical fresh emission. The spine-tail constructor is the guaranteed
-consumer, so an armed token cannot leak, and an armed-but-never-emitted
-token is a compile-time error rather than a silent leak. The narrow path
-keeps precedence, so previously fused arms stay byte-identical.
+(`reuse_tok_locals`/`_arities`/`_emitted`). `compile_call`'s constructor
+path allocates from the innermost armed token of its field count at the
+first same-size site that RUNS — the spine tail, a branch of an
+`if`/`match` tail, a site after a statement prefix, an interior
+intermediate. `token == 0` (shared path, or an earlier site consumed it)
+falls into the byte-identical fresh emission. A path on which no site ran
+reaches the arm end with the token still armed; `mr_emit_token_release`
+then zeroes the block's field count (its children were transferred to the
+binds at staging) and hands the tagged pointer to `rc_drop`, which frees
+the shell alone onto its size bin exactly like a normal last drop. When the
+spine tail is itself a same-size constructor it is the guaranteed consumer,
+no release code is emitted, and a zero site count stays a compile-time
+error (eligibility and emission disagreeing), never a silent leak. The
+narrow path keeps precedence, so previously fused arms stay byte-identical.
 
 The plan row is keyed `(scrutinee name, arity)`, which cannot tell sibling
 arms apart — so BOTH fusion tiers re-run the planner's exported
 `reuse_arm_has_blocker` on the very arm they are about to fuse (PR #2411
 review): an eligible arm's row must never authorize a same-shape sibling
-whose `return` inside a spine-let value could skip the consuming tail and
-leak the claimed block. The blocker predicate's scope is direct
-perform/throw/return/break/continue only; a spine call whose callee
-unwinds internally is not blocked — every call can throw on this lane, so
-transitive blocking would reject every arm, and an unwind between the
-claim and the tail leaks without corrupting, the same window the narrow
+whose `return` inside a spine-let value could skip the arm end and leak the
+claimed block. The blocker predicate's scope is direct
+perform/throw/return/break/continue only; a spine call whose callee unwinds
+internally is not blocked — every call can throw on this lane, so
+transitive blocking would reject every arm, and an unwind between the claim
+and the arm end leaks without corrupting, the same window the narrow
 fusion's spine calls have always had and the "safe leak, never
 use-after-free" class ADR-0055 accepts on unwind paths.
 
-Per-bind admission (the borrow-callee slice, follow-up on the first #2389
-round): a payload bind is admitted at consume count **1** — ownership
-transfers raw and the single consume releases it — or **0**, a bind whose
-every use borrows (e.g. all its callees are borrow-classified, the shape
-the first slice declined and where the compiler's own arms mostly live).
-For a consume-0 bind the codegen compensates on both paths of the SAME
-compiled body: the shared path's staging dup gives the bind its own
-reference (a borrowed view would depend on the OTHER reference surviving
-the arm, which arm code can release — the scrutinee's ref is dropped at
-staging), and an unconditional arm-end drop releases that ref on the
-shared path and the raw-transferred child on the unique path, where
-nothing in the body consumes it and the token overwrite would otherwise
-leak it. Consume counts 2+ decline (dup-per-consume has no raw-transfer
-equivalent), as does an alias-bound name (aliasing can hide an owner the
-consume count does not see). The fusion inside a borrow-classified
-FUNCTION stays impossible by construction — its parameter carries no
-plan drop, so the scrutinee gate never opens on a block the caller owns.
+Per-bind accounting (`reuse_bind_mode`, shared by planner and both tiers):
+a **raw-transfer** bind (consumed exactly once, and that consume is its only
+occurrence) owns exactly the child on the unique path and one dup on the
+shared path, and its single consume releases it — this is what lets
+uniqueness cascade through a recursive rebuild. Every other bind is kept
+alive for the WHOLE arm: with `k` consumes it holds `k` references for them
+(the normal path's dup-per-consume, `bind_match_pat`'s model) plus one base
+reference released at arm end; on the unique path the raw child supplies
+the base and `k` dups the rest, on the shared path all `k + 1` are dups
+(the scrutinee's reference is dropped at staging, so a bind left as a
+borrowed view would depend on the OTHER reference surviving the arm, which
+arm code can release). `k = 0` is the **borrow-only** bind (every use
+borrows — e.g. all its callees are borrow-classified, where the compiler's
+own arms mostly live; PR #2416); `k ≥ 1` with further reads, or `k ≥ 2`,
+is a **held** bind. Held mode is what makes the mixed consume-plus-borrow
+class safe: PR #2416 measured it as a real deterministic use-after-free
+under a raw transfer (a borrow read after the consume saw the freed,
+in-place-reused block: 13 became 17), and declined it; now the base
+reference outlives every read, and the pinned case answers 13 with the
+arm fused. What still declines: an alias-bound name (aliasing can hide an
+owner the consume count does not see), a boxed-float SOURCE field (the raw
+payload binds bypass `bind_match_pat`'s `float_local_slots` registration),
+a nested sub-pattern, a control transfer, and an arm with no same-size
+constructor site. The fusion inside a borrow-classified FUNCTION stays
+impossible by construction — its parameter carries no plan drop, so the
+scrutinee gate never opens on a block the caller owns.
 
-One deliberate exclusion, measured against the compiler's own plan
-output rather than guessed:
-- **Scalar-payload rebuilds pair when the bind is consumed once, decline
-  when it is not.** Measured (this section previously claimed the
-  opposite): `Leaf(v) => Leaf(v + 1)` reads a consume count of 1 for `v`
-  and fuses — the raw transfer moves a tagged scalar exactly as it moves a
-  pointer, the shared-path dup no-ops on the even tag, and the
-  shared-source e2e proves the source tree intact. What declines is a
-  bind consumed zero times (unused, or reread through the scrutinee),
-  which without type knowledge is indistinguishable from an unused heap
-  payload that would leak on the unique path.
+A scalar payload needs no special case: `Leaf(v) => Leaf(v + 1)` reads a
+consume count of 1 for `v` and transfers raw (a tagged scalar moves exactly
+as a pointer does, the shared-path dup no-ops on the even tag), an unused
+scalar is borrow-only and its arm-end drop no-ops inside `rc_drop`.
+
+Measured on the flat self-compile source (`scripts/reuse_census.sh`, which
+classifies every constructor arm over a scrutinee with a planned drop by
+this checkout's own admission rule; 8,879 arms, 2026-09-11): the tail-only
+rule paired 1,326 arms. Now 1,830 pair — 1,405 with a constructor tail (the
+79 held-only arms among them, 73 consumed twice or more and 6 mixed, were
+declined before) and 425 with the consumer elsewhere (an `if` or `match`
+branch, behind a statement prefix, an interior site) — 250 of them through
+at least one held bind. What still declines: 6,654 arms hold no same-size
+constructor at all (a scalar or call result, an identity arm, a rebuild at
+another size), 201 use nested sub-patterns, 181 mention the scrutinee
+again, 13 carry a control transfer.
+
+One inherited limit: a value consumed in ONE branch only is not released
+on the other path. Measured for a let-bound intermediate — the planner's
+branch merge keeps the minimum remaining count, so its scope-end drop is
+lost (two `Leaf` blocks, 48 B per iteration, when the leak guard was first
+written that way) — and true by construction for a pattern bind on both
+lanes: the consume count is the branch maximum, and the reference paid for
+the consume (the normal path's bind-time dup, the fusion's held reference)
+is never released on the branch that does not consume. The fusion matches
+the normal path on that shape rather than improving it; per-path release
+is a separate planner change.
+
+Self-compile KPI for this slice, measured 2026-09-11 with the
+`selfcompile_kpi_rc_lane.sh` discipline (five interleaved rounds in ABBA
+order, cold isolated cache per run, the same input closure fed to all four
+compilers; branch base vs branch head, both RC-built and bump-built):
+
+| | branch base | branch head |
+|---|---:|---:|
+| rc/bump paired ratio, median of rounds | 3.220 (3.184–3.432) | 3.218 (3.090–3.510) |
+| RC-built stage2 wall, median | 16,704 ms | 16,680 ms |
+| bump-built stage2 wall, median | 5,187 ms | 5,184 ms |
+| RC-built stage2 heap_ptr high-water | 1,008,092,248 B | 1,009,526,520 B (+0.14%) |
+| bump-built stage2 heap_ptr high-water | 871,977,856 B | 873,094,544 B (+0.13%) |
+| RC-built stage2 size | 4,839,275 B | 4,882,987 B (+0.9%) |
+
+Flat within noise on wall (the pair ranges overlap; the per-round RC
+difference is −590..+113 ms, median +44 ms), a hair more allocation (the
+planner's site scans and the held-count arrays), and the staging code of
+the newly fused arms in the RC compiler's size. This is the third slice in
+a row to leave the ADR-0092 exit criterion where it was: after the
+allocator's bounded-walk and size-bin work, alloc/free churn is not what
+the RC lane's wall time is made of, and reuse buys allocation traffic, not
+wall. The lever for the ≤1.2× target is elsewhere (dup/drop traffic, the
+RC entry sequences), as the issue's last measurement already concluded.
 
 Pinned by `tests/perceus_reuse_plan_test.vibe` (plan rows, blocker
-semantics, ineligible shapes) and `tests/perceus_reuse_e2e_test.vibe`
-(bump/RC output agreement on the unique chain, the shared source surviving
-intact, the tracked-spine arm where an interior same-arity constructor
-consumes the token before the tail and the reused block is then dropped,
-and the sibling arm whose conditional return must never be authorized by
-another arm's plan row — the last two counting occurrences of the rc-word
-uniqueness-test constant in the RC wasm, with the bump wasm holding none).
+semantics, ineligible shapes, the anywhere-consumer and held-bind rows),
+`tests/perceus_reuse_e2e_test.vibe` (bump/RC output agreement on the unique
+chain, the shared source surviving intact, the tracked-spine arm where an
+interior same-arity constructor consumes the token before the tail, held
+binds including the 13-not-17 read-after-consume case and a double
+consume, a consumer in one branch with the other branch releasing the
+token, a rebuild behind a statement prefix, and the sibling arm whose
+conditional return must never be authorized by another arm's plan row —
+counting occurrences of the rc-word uniqueness-test constant in the RC
+wasm, with the bump wasm holding none), and the RC reclamation leak guard
+(`fixtures/rc_reclaim_leak_test.vibe`, `tests/gates/mid/run.sh` 40d),
+whose `widen0` runs the never-consuming branch 20,000 times — a missing
+release would leak one block per iteration against a 2,000-byte bound —
+and whose `hold` balances a held bind every iteration.
 
 ## Implementation notes (2026-08-03, #1262 continued)
 

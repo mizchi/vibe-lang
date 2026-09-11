@@ -104,6 +104,60 @@ let build_arr_if = (n: Int) -> Array[Int] {
   }
 }
 
+enum Tri {
+  L(Int);
+  N2(Tri, Tri);
+  N3(Tri, Tri, Tri)
+}
+
+let sumtri = (t: Tri) -> Int {
+  match t {
+    L(v) => v,
+    N2(a, b) => sumtri(a) + sumtri(b),
+    N3(a, b, c) => sumtri(a) + sumtri(b) + sumtri(c)
+  }
+}
+
+// ADR-0092 / #2389 reuse-token release guard. `widen0`'s N2 arm is a
+// plan-guided wide-reuse arm whose same-size constructor sits in the branch
+// this call never takes (d = 0); the other branch rebuilds at a DIFFERENT
+// size, so the block claimed at staging is still armed at arm end and must
+// be released there (mr_emit_token_release) -- or one 32-byte N2 leaks per
+// iteration and heap_used scales with N. Both binds are consumed on both
+// paths (held: one reference per consume plus a base reference released at
+// arm end), so the payloads balance whichever branch runs. Deliberately NOT
+// a shape that consumes a let-bound value in one branch only: the planner's
+// branch merge keeps the minimum remaining count, and such a value leaks on
+// the non-consuming path on the normal lane too (measured: two Leaf blocks,
+// 48 B per iteration), which would swamp this guard.
+let widen0 = (t: Tri, d: Int) -> Tri {
+  match t {
+    L(v) => L(v),
+    N2(a, b) => if d > 0 {
+      N2(a, b)
+    } else {
+      N3(a, b, L(0))
+    },
+    N3(a, b, c) => N3(a, b, c)
+  }
+}
+
+// ADR-0092 / #2389 held-bind guard: `l` is borrow-read (sumt is
+// borrow-classified) AND stored into the rebuilt Node -- consumed once with
+// a further read, so the wide fusion holds it (one reference for the
+// consume plus a base reference released at arm end); `r` is borrow-only.
+// Each iteration must balance to zero net references or the children
+// leak.
+let hold = (t: Tree) -> Tree {
+  match t {
+    Leaf(v) => Leaf(v),
+    Node(l, r) => {
+      let s = sumt(l)
+      Node(l, Leaf(s + sumt(r)))
+    }
+  }
+}
+
 let main = () -> Int {
   let mut total = 0
   let mut i = 0
@@ -162,7 +216,12 @@ let main = () -> Int {
     // #1915 mechanism 3 (see build_arr_if above): the if/else-tail builder's
     // result must also be reclaimed each iteration.
     let built_if = build_arr_if(3)
-    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if)
+    // ADR-0092 / #2389 (see widen0 / hold above): the branch that never
+    // consumes the token, and a held bind, each reclaimed every iteration.
+    // sumtri(w) = 2i + 1, sumt(h) = 3i + 1.
+    let w = widen0(N2(L(i), L(i + 1)), 0)
+    let h = hold(Node(Leaf(i), Leaf(i + 1)))
+    total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if) + sumtri(w) + sumt(h)
     i = i + 1
   }
   total
