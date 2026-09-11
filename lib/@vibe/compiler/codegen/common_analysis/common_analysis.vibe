@@ -3528,63 +3528,10 @@ fn bp_calls_round0_borrow_arms(arms: Array[(Pat, Expr)], round0_names: Array[Str
   found
 }
 
-/// ADR-0092 borrow-inference: for every top-level fn, which of its
-/// parameters are only ever READ. Each such position's ABI flips to
-/// borrowed, program-wide and in lockstep: the caller's plan counts an
-/// ident argument there as a free borrow (no transfer dup) and the callee's
-/// plan-site drop for that param is skipped (linked_compile).
-///
-/// Slice 1 (#1282) inferred position 0 only. This is the per-position
-/// generalization: a fn that consumes param0 but only reads param1 now gets
-/// param1 borrowed, and a fn all of whose params are read-only gets all of
-/// them. **Bit 0 of the result is exactly slice 1's set** -- same
-/// eligibility test, same disqualifiers -- which is what makes
-/// `mask & 1` a byte-identity differential against the previous compiler.
-///
-/// Eligibility is decided per position, all conservative:
-///   - the fn is a top-level `SLet` + `EFn`, and the position is < arity
-///     and < bmask_max_param()
-///   - that param's consume count in the body is 0 (only borrow-position
-///     uses: projections, borrow-arg0 builtin calls -- md_consume_count)
-///   - that param is not mut-captured by an inner closure
-///   - the fn body does not shadow it (a rebinding would make the consume
-///     count unreliable) -- approximated by md_consume_count only, which
-///     counts ANY bare mention; a shadowed rebind's value read would count
-///     as a consume and disqualify the position
-///   - no call anywhere passes a NON-IDENT argument at that position
-///     (ca_collect_nonident_args -- a fresh temp at a borrowed position has
-///     no owner left to release it)
-/// Whole-fn disqualifiers, which zero the mask outright:
-///   - the fn name is used as a VALUE anywhere in the program (indirect
-///     call sites cannot consult this set)
-///   - the caller passes it in `exclude` (the program entry and the
-///     conventional entry names: the host invokes them without consulting
-///     the set either)
-///
-/// Round 0 uses `md_consume_count` without a user borrow set and exactly
-/// preserves the original conservative result. One bounded transitive round
-/// then reads that immutable snapshot through `md_consume_count_pre`; it never
-/// consumes masks being decided in the same round. Only bodies that actually
-/// call a round-0 borrowed function are revisited. A local callee shadow zeros
-/// that function's mask before counting, preserving the owned-call fallback.
-/// This deliberately stops after one extra layer: deeper closure is a possible
-/// future worklist extension, while every intermediate result stays sound.
-///
-/// Returns the SORTED name array and fills `out_masks` aligned to it, so a
-/// single `bsearch_leftmost` on the names indexes straight into the masks.
-/// Ordinary entries have a non-zero inferred borrow mask. A source definition
-/// that shadows a compiler-owned accessor is retained with an authoritative
-/// zero mask when it consumes every parameter. Sorting and alignment happen
-/// here together -- a caller that sorted the names itself would silently
-/// misattribute every mask.
-export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {
-  let valued = array_empty()
-  let _ = ca_walk_stmts_valued(stmts, valued)
-  let nonident_fns = array_empty()
-  let nonident_pos = array_empty()
-  let _ = ca_walk_stmts_nonident_args(stmts, nonident_fns, nonident_pos)
-  // Fold the (callee, position) pairs into one mask per callee of the
-  // positions that must STAY owned, so both rounds share the same index.
+/// #2638: the (callee, position) pairs folded into one mask per callee, the
+/// way `compute_borrow_param_user_fns` folds them. Shared so a module's
+/// published facts and the whole program's are built by one function.
+fn bp_fold_nonident(nonident_fns: Array[String], nonident_pos: Array[Int]) -> MutMap[String, Int] {
   let nonident: MutMap[String, Int] = MutMap::new_string()
   let mut ni = 0
   while ni < Array::length(nonident_fns) {
@@ -3601,23 +3548,52 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
     }
     ni = ni + 1
   }
-  // #2386: membership only -- a set instead of two sorted copies queried by
-  // binary search per function (sorting `valued` was 0.09 s of a warm
-  // compiler-closure compile; the analysis never reads the order).
-  let valued_set: MutSet[String] = MutSet::new_string()
-  let mut vsi = 0
-  while vsi < Array::length(valued) {
-    MutSet::add(valued_set, Array::get(valued, vsi))
-    vsi = vsi + 1
+  nonident
+}
+
+/// #2638: membership over a name list. #2386's rationale applies -- the
+/// analysis never reads the order.
+fn bp_name_set(names: Array[String]) -> MutSet[String] {
+  let s: MutSet[String] = MutSet::new_string()
+  let mut i = 0
+  while i < Array::length(names) {
+    MutSet::add(s, Array::get(names, i))
+    i = i + 1
   }
-  let excluded_set: MutSet[String] = MutSet::new_string()
-  let mut esi = 0
-  while esi < Array::length(exclude) {
-    MutSet::add(excluded_set, Array::get(exclude, esi))
-    esi = esi + 1
+  s
+}
+
+/// #2638: the result shape every entry point here returns -- the SORTED names
+/// with `out_masks` filled aligned to them, so one `bsearch_leftmost` on the
+/// names indexes straight into the masks. Shared because a caller that sorted
+/// the names itself would silently misattribute every mask.
+fn bp_sorted_with_masks(names: Array[String], masks: MutMap[String, Int], out_masks: Array[Int]) -> Array[String] {
+  let names_srt = sorted_names_of(names)
+  let mut oi = 0
+  while oi < Array::length(names_srt) {
+    Array::push(out_masks, match MutMap::get(masks, Array::get(names_srt, oi)) {
+      Some(m) => m,
+      None => 0
+    })
+    oi = oi + 1
   }
-  let names = array_empty()
-  let masks: MutMap[String, Int] = MutMap::new_string()
+  names_srt
+}
+
+/// #2638: round 0 of ADR-0092's borrow inference, with the two facts that are
+/// UNIONS OVER THE WHOLE PROGRAM taken as parameters instead of derived here:
+/// the per-callee `nonident` disqualifier mask, and the names used as a VALUE.
+/// Everything else it reads is body-local.
+///
+/// One implementation serves three callers -- the production pass (which
+/// derives both unions from the merged program), the whole-program round-0
+/// reference, and a module publishing its body-local half with both unions
+/// EMPTY. That is what makes `round0 = local & ~owned_bits` a fact about this
+/// code rather than a claim about two loops that look alike.
+///
+/// Returns the source-shadow bits observed; appends to `names` and fills
+/// `masks`.
+fn bp_round0_scan(stmts: Array[Stmt], nonident: MutMap[String, Int], valued_set: MutSet[String], excluded_set: MutSet[String], names: Array[String], masks: MutMap[String, Int]) -> Int {
   // #2386: both rounds ask "is this parameter consumed anywhere in the
   // body?" through ONE md_consumed_any walk per body instead of one
   // md_consume_count walk per parameter. The rows are reused across bodies;
@@ -3627,10 +3603,6 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
   let bp_hits: Array[Int] = []
   let bp_no_fns: Array[String] = []
   let bp_no_masks: Array[Int] = []
-  // Source-owned compiler intrinsics need an authoritative entry even when
-  // their inferred mask is zero. Keep this as two scalar bits and collect it
-  // during the analysis' existing statement pass: no extra compiler-sized
-  // scan or per-function allocation is added.
   let mut source_shadow_mask = 0
   let mut si = 0
   while si < Array::length(stmts) {
@@ -3700,6 +3672,83 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
     }
     si = si + 1
   }
+  source_shadow_mask
+}
+
+/// ADR-0092 borrow-inference: for every top-level fn, which of its
+/// parameters are only ever READ. Each such position's ABI flips to
+/// borrowed, program-wide and in lockstep: the caller's plan counts an
+/// ident argument there as a free borrow (no transfer dup) and the callee's
+/// plan-site drop for that param is skipped (linked_compile).
+///
+/// Slice 1 (#1282) inferred position 0 only. This is the per-position
+/// generalization: a fn that consumes param0 but only reads param1 now gets
+/// param1 borrowed, and a fn all of whose params are read-only gets all of
+/// them. **Bit 0 of the result is exactly slice 1's set** -- same
+/// eligibility test, same disqualifiers -- which is what makes
+/// `mask & 1` a byte-identity differential against the previous compiler.
+///
+/// Eligibility is decided per position, all conservative:
+///   - the fn is a top-level `SLet` + `EFn`, and the position is < arity
+///     and < bmask_max_param()
+///   - that param's consume count in the body is 0 (only borrow-position
+///     uses: projections, borrow-arg0 builtin calls -- md_consume_count)
+///   - that param is not mut-captured by an inner closure
+///   - the fn body does not shadow it (a rebinding would make the consume
+///     count unreliable) -- approximated by md_consume_count only, which
+///     counts ANY bare mention; a shadowed rebind's value read would count
+///     as a consume and disqualify the position
+///   - no call anywhere passes a NON-IDENT argument at that position
+///     (ca_collect_nonident_args -- a fresh temp at a borrowed position has
+///     no owner left to release it)
+/// Whole-fn disqualifiers, which zero the mask outright:
+///   - the fn name is used as a VALUE anywhere in the program (indirect
+///     call sites cannot consult this set)
+///   - the caller passes it in `exclude` (the program entry and the
+///     conventional entry names: the host invokes them without consulting
+///     the set either)
+///
+/// Round 0 uses `md_consume_count` without a user borrow set and exactly
+/// preserves the original conservative result. One bounded transitive round
+/// then reads that immutable snapshot through `md_consume_count_pre`; it never
+/// consumes masks being decided in the same round. Only bodies that actually
+/// call a round-0 borrowed function are revisited. A local callee shadow zeros
+/// that function's mask before counting, preserving the owned-call fallback.
+/// This deliberately stops after one extra layer: deeper closure is a possible
+/// future worklist extension, while every intermediate result stays sound.
+///
+/// Returns the SORTED name array and fills `out_masks` aligned to it, so a
+/// single `bsearch_leftmost` on the names indexes straight into the masks.
+/// Ordinary entries have a non-zero inferred borrow mask. A source definition
+/// that shadows a compiler-owned accessor is retained with an authoritative
+/// zero mask when it consumes every parameter. Sorting and alignment happen
+/// here together -- a caller that sorted the names itself would silently
+/// misattribute every mask.
+export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {
+  let valued = array_empty()
+  let _ = ca_walk_stmts_valued(stmts, valued)
+  let nonident_fns = array_empty()
+  let nonident_pos = array_empty()
+  let _ = ca_walk_stmts_nonident_args(stmts, nonident_fns, nonident_pos)
+  // Fold the (callee, position) pairs into one mask per callee of the
+  // positions that must STAY owned, so both rounds share the same index.
+  let nonident = bp_fold_nonident(nonident_fns, nonident_pos)
+  // #2386: membership only -- a set instead of two sorted copies queried by
+  // binary search per function (sorting `valued` was 0.09 s of a warm
+  // compiler-closure compile; the analysis never reads the order).
+  let valued_set = bp_name_set(valued)
+  let excluded_set = bp_name_set(exclude)
+  let names = array_empty()
+  let masks: MutMap[String, Int] = MutMap::new_string()
+  // Round 0, factored out so the per-module lane runs the SAME scan with the
+  // two program-wide unions empty (#2638).
+  let source_shadow_mask = bp_round0_scan(stmts, nonident, valued_set, excluded_set, names, masks)
+  // Round 1 keeps its own scratch rows and its own cursor: round 0's live
+  // inside the scan now, and `bp_no_fns` / `bp_no_masks` were only ever
+  // round 0's.
+  let bp_names: Array[String] = []
+  let bp_hits: Array[Int] = []
+  let mut si = 0
   let round0_names = sorted_names_of(names)
   let round0_masks: Array[Int] = []
   let mut rmi = 0
@@ -3802,16 +3851,95 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
   } else {
     ()
   }
-  let names_srt = sorted_names_of(names)
-  let mut oi = 0
-  while oi < Array::length(names_srt) {
-    Array::push(out_masks, match MutMap::get(masks, Array::get(names_srt, oi)) {
-      Some(m) => m,
-      None => 0
-    })
-    oi = oi + 1
+  bp_sorted_with_masks(names, masks, out_masks)
+}
+
+/// #2638: the facts about THIS statement list that ADR-0092's borrow
+/// inference reads as a UNION over the whole program -- the names used as a
+/// VALUE, and the (callee, position) pairs a call site here disqualifies.
+///
+/// A module can compute both from its own statements and neither can be
+/// completed without every other module's, which is the whole asymmetry: the
+/// 88 functions a per-module run qualifies that the whole program refuses are
+/// callees whose disqualifying call site lives in another module.
+export fn compute_borrow_disqualifiers(stmts: Array[Stmt], out_valued: Array[String], out_nonident_fns: Array[String], out_nonident_pos: Array[Int]) -> Unit {
+  let _ = ca_walk_stmts_valued(stmts, out_valued)
+  let _ = ca_walk_stmts_nonident_args(stmts, out_nonident_fns, out_nonident_pos)
+}
+
+/// #2638: round 0 alone, over the whole program -- the reference the
+/// per-module link is measured against. `compute_borrow_param_user_fns` is
+/// this plus one bounded transitive round, and that round is the half that
+/// still needs callee edges to cross a module boundary.
+export fn compute_borrow_param_user_fns_round0(stmts: Array[Stmt], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {
+  let valued = array_empty()
+  let nonident_fns = array_empty()
+  let nonident_pos = array_empty()
+  compute_borrow_disqualifiers(stmts, valued, nonident_fns, nonident_pos)
+  let names = array_empty()
+  let masks: MutMap[String, Int] = MutMap::new_string()
+  let _ = bp_round0_scan(stmts, bp_fold_nonident(nonident_fns, nonident_pos), bp_name_set(valued), bp_name_set(exclude), names, masks)
+  bp_sorted_with_masks(names, masks, out_masks)
+}
+
+/// #2638: what a MODULE can publish -- the same scan with both program-wide
+/// unions EMPTY, so every mask is the body-local answer and nothing has been
+/// disqualified yet. The link removes what the unions say.
+export fn compute_borrow_param_local_masks(stmts: Array[Stmt], out_masks: Array[Int]) -> Array[String] {
+  let names = array_empty()
+  let masks: MutMap[String, Int] = MutMap::new_string()
+  let empty_nonident: MutMap[String, Int] = MutMap::new_string()
+  let empty_valued: MutSet[String] = MutSet::new_string()
+  let empty_excluded: MutSet[String] = MutSet::new_string()
+  let _ = bp_round0_scan(stmts, empty_nonident, empty_valued, empty_excluded, names, masks)
+  bp_sorted_with_masks(names, masks, out_masks)
+}
+
+/// #2638: THE LINK. Round 0 for the whole program, from the modules'
+/// body-local masks and the UNION of their disqualifiers, without re-reading
+/// a single body.
+///
+///   round0(f) = local(f) & ~owned_bits(f),  dropped when f is used as a
+///   value anywhere, when the caller excludes it, or when the mask is empty
+///
+/// That factorisation is the claim, and `bp_round0_scan` is why it holds: the
+/// scan pre-marks a position `owned_bits` disqualifies so the walk never asks
+/// about it, which skips work for that position but cannot change the answer
+/// for the ones it does ask. The oracle checks the claim against the
+/// whole-program reference rather than trusting this paragraph.
+///
+/// A name is NOT deduplicated here. A program may declare one twice, the
+/// whole-program scan pushes each occurrence and lets the last mask win, and
+/// `sorted_names_of` keeps both -- so the link mirrors that rather than
+/// tidying it, or the two answers would differ on exactly the programs the
+/// oracle's `dup_defs` counter exists for.
+export fn borrow_round0_link(local_names: Array[String], local_masks: Array[Int], valued: Array[String], nonident_fns: Array[String], nonident_pos: Array[Int], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {
+  let nonident = bp_fold_nonident(nonident_fns, nonident_pos)
+  let valued_set = bp_name_set(valued)
+  let excluded_set = bp_name_set(exclude)
+  let names = array_empty()
+  let masks: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(local_names) {
+    let nm = Array::get(local_names, i)
+    if MutSet::has(valued_set, nm) || MutSet::has(excluded_set, nm) {
+      ()
+    } else {
+      let owned_bits = match MutMap::get(nonident, nm) {
+        Some(m) => m,
+        None => 0
+      }
+      let mask = Array::get(local_masks, i)&(~owned_bits)
+      if mask != 0 {
+        Array::push(names, nm)
+        MutMap::set(masks, nm, mask)
+      } else {
+        ()
+      }
+    }
+    i = i + 1
   }
-  names_srt
+  bp_sorted_with_masks(names, masks, out_masks)
 }
 
 //# ADR-0092 borrow-inference: may-return-view analysis

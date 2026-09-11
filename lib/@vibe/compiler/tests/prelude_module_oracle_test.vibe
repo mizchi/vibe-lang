@@ -381,17 +381,22 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // On the compiler's own CLI closure (365 modules, measured 2026-09-11 on
   // this change) the same line reads:
   //
-  //   ANALYSIS dce_entry=0 borrow_ret=378/363:-15:MutSortedSet::delete+0:
-  //            borrow_fns=2706/2627:-167:alloc_site_kind_dep_...+88:__arr_equals__N4_Expr
-  //            borrow_masks=2706/2627:-197:agg_expr_of_ident_exp_...#12+118:__arr_equals__N4_Expr#3
-  //            view_ret=2123/1943:-180:HashSet::size+0:
+  //   ANALYSIS dce_entry=0 borrow_ret=379/364:-15:MutSortedSet::delete+0:
+  //            borrow_fns=2764/2685:-168:alloc_site_kind_dep_...+89:__arr_equals__N4_Expr
+  //            borrow_masks=2764/2685:-199:agg_expr_of_ident_exp_...#12+120:__arr_equals__N4_Expr#3
+  //            view_ret=2142/1957:-185:HashSet::size+0:
   //
-  // 88 functions take the borrowed ABI from their own module that the whole
-  // program refuses, and the net (2706 - 2627 = 79) hides every one of them
-  // behind the 167 the modules were conservative about. 118 against 88 on the
-  // mask row is the other half: 30 functions are in BOTH sets under DIFFERENT
+  // 89 functions take the borrowed ABI from their own module that the whole
+  // program refuses, and the net (2764 - 2685 = 79) hides every one of them
+  // behind the 168 the modules were conservative about. 120 against 89 on the
+  // mask row is the other half: 31 functions are in BOTH sets under DIFFERENT
   // masks -- the names agree and the ABI does not, which a name-only
   // comparison reports as agreement.
+  //
+  // Every count in this paragraph is the CORPUS's, and the corpus is the
+  // compiler's own sources: they move whenever `lib/` does, so read a
+  // different number here as a bigger compiler and not as a regression. The
+  // ones that carry a claim are the ZEROS below, which do not move.
   //
   // `dce_entry=0`, so these are the sets WITHOUT late DCE: the oracle runs
   // that closure under `__no_entry__`. A `vibe build` of the same closure
@@ -402,7 +407,25 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // `stmts` in the block above predates this change and is not re-measured
   // here: the corpus is the compiler's own closure, so the code doing the
   // measuring is inside what is being measured, and adding it moves the count.
-  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=7 borrow_fns=0 borrow_masks=0 view_ret=2/1:-1:helper_use_exp__tmp_vibe_full_oracle_helper_vibe+0:")
+  //
+  // #2638: and on that same closure the link column reads
+  //
+  //   link_round0=2162/2165:-0:+0: link_round0_occ=__arr_equals__N8_TypeExpr:1/2
+  //
+  // -- ZERO missing and ZERO extra. Round 0 for the whole program, computed
+  // by a link from what each module publishes and without re-reading a single
+  // body, is the whole-program answer. In particular all 89 of `borrow_fns`'
+  // unsound extras are gone: every one was a callee whose disqualifying call
+  // site lives in another module, and the union of `nonident` is a fact a
+  // module can publish.
+  //
+  // The three-entry size gap is NOT a membership difference, and
+  // `link_round0_occ` names it rather than leaving it as an unexplained
+  // three: `__arr_equals__N8_TypeExpr` occurs once in the whole program and
+  // twice across the modules, because a program-level helper is synthesized
+  // once per module that needs it. That is the `copies` shape this oracle
+  // already counts, and the link folds it by key elsewhere.
+  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=7 borrow_fns=0 borrow_masks=0 view_ret=2/1:-1:helper_use_exp__tmp_vibe_full_oracle_helper_vibe+0: link_round0=0 link_round0_masks=0 link_round0_occ=")
   // `missing=0 extra=0 content=0` is the property: every declaration the
   // whole-program prelude produced is produced by the module that owns it,
   // with the same body. `copies` is what remains after the link, and
@@ -558,7 +581,24 @@ test "the may_return and borrow analyses do not decompose per module, in both di
   // stripped: the name a module mints is what a link folds by, so a
   // measurement that matched on the bare name would be answering a question
   // the link does not ask.
-  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=10/9:-1:via+0: borrow_fns=2/2:-1:via+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe borrow_masks=2/2:-1:via#1+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe#1 view_ret=3/2:-1:via+0:")
+  // #2638: and the same line shows the FIX for the unsound half, on the same
+  // four functions. `borrow_fns=2/2:-1:via+1:head_of_exp__...` is the union
+  // lane -- each module answering alone and the answers merged. `link_round0`
+  // is a BARE COUNT: round 0 computed by a link from what each module
+  // PUBLISHES (its body-local masks, and its half of the two facts the
+  // inference reads as a program-wide union) equals the whole program's round
+  // 0 exactly, `head_of` included.
+  //
+  // That is the whole claim of the fix in four functions: the module never
+  // qualified `head_of` on its own account, it qualified it because it could
+  // not see `main`'s non-ident call site -- and the union of the
+  // disqualifiers is a fact a module can publish.
+  //
+  // `via` is still missing from `borrow_fns` because that is round ONE's
+  // business: a tail call across the import, whose classification needs the
+  // callee's round-0 mask. Round 0 is what this column covers, and the
+  // remaining `-1:via` says exactly where the next slice is.
+  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=10/9:-1:via+0: borrow_fns=2/2:-1:via+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe borrow_masks=2/2:-1:via#1+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe#1 view_ret=3/2:-1:via+0: link_round0=1 link_round0_masks=1 link_round0_occ=")
   // The prelude itself still agrees on this program, so the difference above
   // is the analyses' and not a per-module prelude that already diverged.
   let lines = String::split(report, "\n")
@@ -585,14 +625,14 @@ test "the analyses refuse to answer where production would have run late DCE fir
   let main_path = "/tmp/vibe_dce_gate_main.vibe"
   Fs::write_file(helper_path, "export fn head_of(xs: Array[Int]) -> Int {\n  Array::get(xs, 0)\n}\n")
   Fs::write_file(main_path, "import ./vibe_dce_gate_helper.vibe {\n  head_of\n}\n\nfn main() -> Int {\n  head_of([1, 2, 3])\n}\n")
-  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(main_path, "main"))), content = "ANALYSIS dce_entry=1 borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured")
+  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(main_path, "main"))), content = "ANALYSIS dce_entry=1 borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured")
   // The control. `__no_entry__` is a name no program defines, so production
   // would not have run either transform and the sample point is its own. The
   // counts are live here rather than merely present -- this program shows the
   // unsound direction too (`+1:head_of_exp__...`, qualified by its own module
   // and disqualified by the whole program through the call site in `main`), so
   // a guard that suppressed the columns unconditionally could not pass this.
-  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "ANALYSIS dce_entry=0 borrow_ret=9/8:-1:main+0: borrow_fns=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe borrow_masks=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe#1 view_ret=2/1:-1:main+0:")
+  inspect(String::trim(analysis_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "ANALYSIS dce_entry=0 borrow_ret=9/8:-1:main+0: borrow_fns=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe borrow_masks=0/1:-0:+1:head_of_exp__tmp_vibe_dce_gate_helper_vibe#1 view_ret=2/1:-1:main+0: link_round0=0 link_round0_masks=0 link_round0_occ=")
 }
 
 // #2642 review (Codex P2): `dtd_eq_deferred_requests`, `dtd_eq_deferred_types`
