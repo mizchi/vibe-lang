@@ -1,5 +1,8 @@
 import @vibe/compiler/entry/compiler/file_compile {
-  prelude_module_full_oracle_report_fs, prelude_module_import_closure_report_fs, prelude_module_oracle_report_fs
+  prelude_module_full_oracle_report_fs,
+  prelude_module_import_closure_report_fs,
+  prelude_module_oracle_report_fs,
+  prelude_ordinary_lane_prov_report_fs
 }
 
 //# Functions
@@ -9,6 +12,22 @@ import @vibe/compiler/entry/compiler/file_compile {
 // pass whether the two agree. A two-file program whose entry rewrites through
 // `inspect` (desugar_inspect_calls changes it) and calls across the import
 // (the alias and evidence passes see both sides) must agree on every pass.
+
+/// The value of `key` in a `PROV ...` line, up to the next space.
+fn prov_field(line: String, key: String) -> String {
+  let at = String::index_of(line, key)
+  if at < 0 {
+    ""
+  } else {
+    let rest = String::substring(line, at + String::length(key), String::length(line))
+    let sp = String::index_of(rest, " ")
+    if sp < 0 {
+      rest
+    } else {
+      String::substring(rest, 0, sp)
+    }
+  }
+}
 
 /// The report line starting with `prefix`, or "" .
 fn report_line_of(report: String, prefix: String) -> String {
@@ -35,6 +54,16 @@ fn evidence_line_of(report: String) -> String {
 /// The report's `ANALYSIS ...` line, or "" .
 fn analysis_line_of(report: String) -> String {
   report_line_of(report, "ANALYSIS ")
+}
+
+/// The report's `SYNTH ...` line, or "" .
+fn synth_line_of(report: String) -> String {
+  report_line_of(report, "SYNTH ")
+}
+
+/// The report's `DIAGS ...` line, or "" .
+fn diag_line_of(report: String) -> String {
+  report_line_of(report, "DIAGS ")
 }
 
 fn oracle_lines(report: String) -> Array[String] {
@@ -140,7 +169,7 @@ test "two files that each hoist a local lambda mint top-level names the other mo
   // link should merge. Measured by running the link
   // (`link_fold_duplicate_definitions`) over this program's per-module result:
   // it folds nothing, because there is no duplicated definition here.
-  inspect(keyed_line_of(report, "desugar_trait_dicts_with_typed_eq"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary first_missing= first_content=")
+  inspect(keyed_line_of(report, "desugar_trait_dicts_with_typed_eq"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
   // `evidence_dict_pass` synthesizes a dict struct per module the same way, so
   // its verdict is its keyed line too. It used to differ in CONTENT here: the
   // hoisted function was appended at the end of the merged program, the
@@ -149,7 +178,7 @@ test "two files that each hoist a local lambda mint top-level names the other mo
   // was threaded (`stmts=11 split=10`). With the hoist placing its output next
   // to its owner, the declarations agree and only the position of the one
   // synthesized struct is left.
-  inspect(keyed_line_of(report, "evidence_dict_pass"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary first_missing= first_content=")
+  inspect(keyed_line_of(report, "evidence_dict_pass"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
   // What the rest of the report says on this program, as measured.
   let statuses: Array[String] = []
   let lines = oracle_lines(report)
@@ -189,13 +218,17 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // 2026-09-10 on `lib/@vibe/cli/entry.vibe`, 365 modules, and recorded on
   // #2388):
   //
-  //   CLOSURE files=365 edges=1415 unresolved=0
-  //   FULL stmts=9863 split=10006 linked=9857 folded=149 modules=365
-  //        collisions=0 invisible_whole=0 invisible_split=15 linked_dups=5
-  //   keyed missing=6 extra=0 copies=444 content=9 renames=0 dup_keys=451
+  //   CLOSURE files=365 edges=11342 unresolved=0
+  //   FULL stmts=9876 split=10033 linked=9876 folded=157 modules=365
+  //        collisions=0 invisible_whole=0 invisible_split=8 linked_dups=5
+  //   SYNTH deferred=3 minted=5 indirect=2 -> keyed missing 6 becomes 1
+  //   SYNTH requests=75/70:-A1_N6_OptionN3_Int A1_N6_OptionN6_String
+  //                         spec:A2_N6_MutMapN6_StringN3_Int
+  //                         spec:A1_N6_MutSetN6_String
+  //                         spec:A2_N6_MutMapN6_StringN6_String+
+  //   keyed missing=0 extra=0 copies=444 content=0 renames=0 dup_keys=451
   //         dup_defs=5 dup_def_keys=effect:Source,effect:Env,effect:ParseRecur,
   //                                 effect:Profiler,effect:Profiler
-  //         first_missing=let:MutMap::equals__N6_String__N3_Int
   //   EVIDENCE declared=6 handled=4 performed=3
   //   edges_unresolved=0
   //
@@ -205,13 +238,28 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // keys they read 4 against 5 and looked like a discrepancy, because
   // `effect:Profiler` is declared three times.
   //
-  // Those numbers are the THIRD recorded here, and the two corrections are
-  // worth keeping because both were the same mistake: a context rule wider
-  // than a real compile, producing a green that meant less than it looked.
+  // `missing=0 extra=0 content=0 renames=0` with `linked` equal to `stmts`:
+  // compiling the compiler's own CLI closure PER MODULE and linking produces
+  // every declaration the whole-program prelude produces, name for name and
+  // body for body. That is the property #2575 item 2 exists to establish.
   //
-  //   every other file      missing=1 content=4   (191-module entry: 0/0)
-  //   transitive closure    missing=1 content=4   invisible_split=2
-  //   one hop               missing=6 content=9   invisible_split=15
+  // The context rule it holds under, which took four corrections to get right:
+  // a module sees what it DIRECTLY imports; a dependency naming a `.vpkg`
+  // contract reaches that package's sibling implementations; and every context
+  // statement is filtered to its EXPORTED form (`oracle_is_interface_stmt`),
+  // so what a module sees is exactly the published surface -- nothing
+  // transitive, nothing private.
+  //
+  // The corrections are worth keeping because three of the four were the same
+  // mistake -- a context rule wider than a real compile, producing a green that
+  // meant less than it looked -- and the fourth was the opposite, a rule
+  // narrower than a real compile, manufacturing a difference that was not
+  // there.
+  //
+  //   every other file          missing=1 content=4  (191-module entry: 0/0)
+  //   transitive closure        missing=1 content=4  invisible_split=2
+  //   one hop                   missing=6 content=9  invisible_split=15
+  //   one hop + package deps    missing=0 content=0  invisible_split=8
   //
   // The first gave each module every other file's surface. The second followed
   // dependency edges transitively, which hands A the declarations of a module
@@ -228,7 +276,16 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // every nominal it compares. `invisible_split` is what each narrowing takes
   // away, and #2631 made a comparator's body independent of it, which is why
   // `collisions=0` survived the narrowing that took `invisible_split` from 2
-  // to 15. docs/incremental-build.md, "What a module must see".
+  // to 15.
+  //
+  // 15 to 17 is a third thing: the recorder covered `eq_for_typed`'s `TyName`
+  // fallthrough and not its `TyApp` twin, so a GENERIC head declining silently
+  // was not counted. `MutMap` and `MutSet` are `type MutMap[K, V]` (opaque) in
+  // `@vibe/core/index.vpkg` and `export struct MutMap[K, V]` in `hashmap.vibe`
+  // -- the same shape as `PerceusActionKind`. Without the `TyApp` recorder the
+  // two looked like different mechanisms, which is a measurement covering one
+  // arm of a dispatch reporting the other arm as absence (#2634).
+  // docs/incremental-build.md, "What a module must see".
   inspect(String::trim(Array::get(lines, 0)), content = "FULL stmts=11 split=11 linked=11 folded=0 modules=2 collisions=0 invisible_whole=0 invisible_split=0 linked_dups=0")
   // #2633: the facts `evidence_dict_pass` derives its migration set from,
   // sampled on both lanes immediately before that pass runs. A bare count means
@@ -238,11 +295,71 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // says the pass's INPUTS decompose per module even though its decision does
   // not -- the decision is a union that runs backwards along the import graph.
   inspect(String::trim(evidence_line_of(report)), content = "EVIDENCE declared=2 handled=2 performed=2")
+  // #2634: whether the per-module run ASKS for the same synthesized helpers.
+  // A `missing` row says the split emitted nothing; this says whether it never
+  // recorded the need or recorded it and did not emit -- different causes with
+  // different fixes. On the compiler's own CLI closure the split asks for five
+  // fewer helpers, which is exactly the five missing comparator rows, so the
+  // need is never recorded.
+  //
+  // `typed_refused` is the channel one step before that: the checker HAD a type
+  // for an `==` site and the pass refused it, because
+  // `eq_ty_field_is_content_comparable` is an allow-list consulting declared
+  // registries. Whole program 0, split 3 -- `BinderAuthorityNodeKind`,
+  // `BinderSemanticRole` and `Stmt`, all already in the invisible list. A
+  // refused row means the site never learns its type, so it never reaches
+  // `eq_for_typed`'s `Array` arm and never records the helper it needs.
+  //
+  // `deferred` / `minted` / `indirect` are the link's MINTING step. A deferral
+  // is a helper a module knew it needed and declined to build -- needing and
+  // building are separable, and only the second wants the leaf declarations.
+  // `minted` is what the link then generated against the concatenated program,
+  // which has every declaration a module lacked by construction.
+  //
+  // On the compiler's own CLI closure: `deferred=3 minted=5 indirect=2`, and
+  // the keyed line's `missing` went 6 to 1 -- every comparator ABSENCE closed,
+  // leaving only `struct:__EvDict_Source` (#2633).
+  //
+  // `minted=5` from `deferred=3` is the fixpoint at work:
+  // `emit_recorded_structural_eq` loops, so generating the `MutMap` /
+  // `MutSet` specializations records their nested instantiations and generates
+  // those too -- which is how the two `Array[Option[*]]` helpers arrived.
+  //
+  // That corrects a prediction made here before the implementation existed.
+  // This counter was called `unmintable` and read as "no link could mint
+  // these"; both entries were minted. It measures what no module recorded
+  // DIRECTLY, which is weaker and more useful: a need that reaches the link
+  // only through another need.
+  inspect(String::trim(synth_line_of(report)), content = "SYNTH requests=0 typed_refused=0 deferred=0 minted=0 indirect=0")
+  // #2388: the VALIDATING passes, which produce diagnostics rather than
+  // rewrites and are therefore invisible to a comparison keyed on
+  // declarations. `0` here is both lanes silent on a clean program; the test
+  // below makes one fire, because a counter that has only ever read zero says
+  // nothing about whether it can read anything else.
+  inspect(String::trim(diag_line_of(report)), content = "DIAGS validators=0")
   // #2575 item 4: the three analyses `linked_compile` runs between the prelude
-  // and codegen, sampled on both lanes after all 17 passes. Agreement here is
-  // the CONTROL for the test below, which shows the same line reporting a
-  // difference: without one of the two, a bare count could mean either "the
-  // lanes agree" or "the instrument cannot tell them apart".
+  // and codegen. The whole lane samples them after all 17 passes -- production's
+  // point -- and the split lane after each module's own passes, which is the
+  // most a module can be given. `borrow_ret=7` is a bare count, so the line can
+  // still report agreement; the test below reports a difference on the same
+  // columns. Between them a reading means something: without both, a bare count
+  // could mean either "the lanes agree" or "the instrument cannot tell them
+  // apart".
+  //
+  // `view_ret` does NOT agree here, and that is this program specifically.
+  // Passes 15 and 16 (`evidence_dict_pass` and its successor) do not run per
+  // module at all -- they decide from a union over the whole program and run
+  // once at the link (#2633) -- so on a program with effects the module's own
+  // statements are still in pre-evidence form when it is sampled. `helper_use`
+  // handles `HLog`, the whole lane sees it rewritten and classifies it as
+  // view-returning, and the module does not. The gap is therefore the PASS
+  // COVERAGE, not the analysis, and this program cannot separate the two.
+  //
+  // The test below uses an effect-free fixture for exactly that reason: there
+  // passes 15 and 16 rewrite nothing, both lanes see the same statements, and
+  // the difference the line reports is the analyses' interprocedurality alone
+  // -- including the unsound direction, which is what the measurement exists
+  // to find.
   //
   // `borrow_fns=0` and `borrow_masks=0` are honest but vacuous on this
   // program -- no function of it qualifies for the borrowed ABI at all -- and
@@ -280,14 +397,14 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // `stmts` in the block above predates this change and is not re-measured
   // here: the corpus is the compiler's own closure, so the code doing the
   // measuring is inside what is being measured, and adding it moves the count.
-  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=7 borrow_fns=0 borrow_masks=0 view_ret=2")
+  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS dce_entry=0 borrow_ret=7 borrow_fns=0 borrow_masks=0 view_ret=2/1:-1:helper_use_exp__tmp_vibe_full_oracle_helper_vibe+0:")
   // `missing=0 extra=0 content=0` is the property: every declaration the
   // whole-program prelude produced is produced by the module that owns it,
   // with the same body. `copies` is what remains after the link, and
   // `first_copy` says what it is -- a number nobody could act on before,
   // because a helper the link folds and a marker that simply repeats both
   // landed in it and mean opposite things.
-  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary first_missing= first_content=")
+  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
 }
 
 // #2388: the context the full oracle runs each module under is that module's
@@ -329,6 +446,65 @@ test "the import closure the oracle runs under is the module's own, and places e
   inspect(String::trim(prelude_module_import_closure_report_fs(lone_b)), content = "CLOSURE files=1 edges=0 unresolved=0")
 }
 
+// #2388: the prelude's VALIDATORS -- `zero_alloc_check` and
+// `lc_validate_stdin_provider_stmts` -- produce diagnostics rather than
+// rewrites, so `missing` / `content` / `renames` are structurally blind to
+// them. A per-module run sees less of the program than a whole-program one and
+// could miss a violation or invent one, and nothing else in the report would
+// say so.
+//
+// On the compiler's own CLI closure this reads `validators=0`: both lanes
+// silent, which is agreement but not evidence the comparison can detect
+// anything. This makes one fire.
+test "a validator that fires is reported by both lanes, and a clean program by neither" {
+  let dep = "/tmp/vibe_diag_arm_dep.vibe"
+  let main_path = "/tmp/vibe_diag_arm_main.vibe"
+  // The violation lives in the DEPENDENCY: a `#zero_alloc` function whose body
+  // allocates. Whole-program the validator walks it; per module, only that
+  // module's own run does -- so agreement here is the claim, not the default.
+  Fs::write_file(dep, "enum Box {\n  MkBox(Int)\n}\n\n#zero_alloc\nexport fn hot(n: Int) -> Int {\n  let b = MkBox(n)\n  match b {\n    MkBox(v) => v + 1\n  }\n}\n")
+  Fs::write_file(main_path, "import ./vibe_diag_arm_dep.vibe {\n  hot\n}\n\ntest \"t\" {\n  inspect(hot(1), content = \"2\")\n}\n")
+  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "DIAGS validators=1")
+  // The control: the same two-file shape with nothing to report. Without it,
+  // a comparison that always answered `1` would pass the case above.
+  Fs::write_file(dep, "export fn calm(n: Int) -> Int {\n  n + 1\n}\n")
+  Fs::write_file(main_path, "import ./vibe_diag_arm_dep.vibe {\n  calm\n}\n\ntest \"t\" {\n  inspect(calm(1), content = \"2\")\n}\n")
+  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "DIAGS validators=0")
+}
+
+// #2575 item 2: the ORDINARY compile lane -- the one an `vibe build` takes, not
+// the break lane -- has to carry a statement to module map before a per-module
+// driver can exist at all.
+//
+// It did not, and silently: `merged_stmts_and_offsets` passed `array_empty()`
+// for that out-parameter and every production RC entry passes
+// `empty_dbg_prov()` downstream, so the map was COMPUTED AND DISCARDED on the
+// one path that matters. "Wire the per-module prelude" looked like a driver
+// problem and was a plumbing one.
+//
+// `ids` equal to `stmts` is the property: one module id per merged top-level
+// statement, aligned with the array codegen receives. On the compiler's own CLI
+// closure this reads `PROV stmts=9668 ids=9668 files=365` (fewer statements
+// than the oracle's `FULL` line because this is pre-prelude, before the passes
+// synthesize).
+test "the ordinary compile lane carries one module id per merged statement" {
+  let dep = "/tmp/vibe_prov_lane_dep.vibe"
+  let main_path = "/tmp/vibe_prov_lane_main.vibe"
+  Fs::write_file(dep, "export fn dep_one() -> Int {\n  1\n}\n\nexport fn dep_two() -> Int {\n  2\n}\n")
+  Fs::write_file(main_path, "import ./vibe_prov_lane_dep.vibe {\n  dep_one, dep_two\n}\n\nfn local_one() -> Int {\n  dep_one() + dep_two()\n}\n\ntest \"t\" {\n  inspect(local_one(), content = \"3\")\n}\n")
+  let report = String::trim(prelude_ordinary_lane_prov_report_fs(main_path))
+  // The counts are the claim, and they are compared to each other rather than
+  // to a literal: a map with one id per statement is the property, whatever the
+  // statement count happens to be. `files=2` pins that both modules are seen --
+  // a map of the right length over one file would satisfy the first check
+  // alone.
+  let n = prov_field(report, "ids=")
+  let m = prov_field(report, "stmts=")
+  inspect(n == m, content = "true")
+  inspect(String::contains(report, "files=2"), content = "true")
+  // And it is not vacuously zero: the program has statements.
+  inspect(n != "0", content = "true")
+}
 // #2575 item 4: the may_return / borrow analyses are the phases between the
 // prelude and codegen, and unlike the evidence facts (#2633) all three are
 // INTERPROCEDURAL -- each reads the classification of callees that may live in
@@ -374,9 +550,8 @@ test "the may_return and borrow analyses do not decompose per module, in both di
   // The prelude itself still agrees on this program, so the difference above
   // is the analyses' and not a per-module prelude that already diverged.
   let lines = String::split(report, "\n")
-  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary first_missing= first_content=")
+  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
 }
-
 // #2637 review (Codex P2): production runs `fold_const_bool_params` and
 // `dce_stmts` BETWEEN the prelude and the three analyses, gated on
 // `late_dce_has_entry` -- the merged program defining `entry_name`. A folded

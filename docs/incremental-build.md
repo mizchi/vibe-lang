@@ -152,11 +152,15 @@ links the per-module results and compares by declaration key
 (`prelude_module_full_oracle_report_fs`). What each file is given as *context*
 decides what its green means.
 
-That context is now each module's **own direct imports**, taken from the
-loader's header scan (`load_or_parse_module_header_fs` — the same scan the FS
-typecheck lane plans module order with). It has to come from the loader because
-the merge drops `SImport` / `SReExport` as already resolved, so the edges cannot
-be read back off the merged program.
+That context is each module's **own direct imports**, taken from the loader's
+header scan (`load_or_parse_module_header_fs` — the same scan the FS typecheck
+lane plans module order with), with a dependency that names a `.vpkg` contract
+expanded to that package's sibling implementations. It has to come from the
+loader because the merge drops `SImport` / `SReExport` as already resolved, so
+the edges cannot be read back off the merged program. Four corrections were
+needed to land on that rule, and the counters only mean what they say under a
+rule that matches a real compile — they are set out with their measurements in
+[The context rule this holds under](#the-context-rule-this-holds-under) below.
 
 **One hop, not transitive.** Closing transitively hands A the declarations of a
 module C that A's dependency B imports *privately* — context no real compile of
@@ -168,28 +172,7 @@ one. `edges_unresolved` is reported for the same reason — a dropped edge narro
 a module's context, but a closure built from every edge and one built from half
 of them otherwise look identical.
 
-### Three rules, three answers
-
-Each narrowing uncovered differences the previous one was hiding. That is the
-whole point of writing the rule down: the counters only mean what they say under
-a rule that matches a real compile.
-
-| context rule | reachable pairs | `missing` | `content` | `invisible_split` |
-|---|---:|---:|---:|---:|
-| every other file | 132 860 | 1 | 4 | — |
-| transitive closure | 32 017 | 1 | 4 | 2 |
-| **own direct imports** | **1 415** | **6** | **9** | **15** |
-
-`lib/@vibe/cli/entry.vibe`, 365 modules, `edges_unresolved=0`. The current line:
-
-```
-CLOSURE files=365 edges=1415 unresolved=0
-FULL stmts=9863 split=10006 linked=9857 folded=149 modules=365 collisions=0
-     invisible_whole=0 invisible_split=15 linked_dups=5
-keyed missing=6 extra=0 copies=444 content=9 renames=0 dup_keys=451 dup_defs=5
-  first_missing=let:MutMap::equals__N6_String__N3_Int
-EVIDENCE declared=6 handled=4 performed=3
-```
+### The four counters
 
 Four counters name what a green would otherwise hide. `invisible_whole` /
 `invisible_split` count the nominals each lane could **not** see while
@@ -203,8 +186,9 @@ unfolded that it should have folded.
 
 ### What a comparator may depend on
 
-`invisible_whole=0` is the load-bearing number, and it holds under every context
-rule above: a program that type-checks whole can see every nominal it compares.
+`invisible_whole=0` is the load-bearing number, and it holds under every one of
+the four context rules below: a program that type-checks whole can see every
+nominal it compares.
 So a lane that sees fewer is the only one that can reach the question, and what
 it does there used to differ.
 
@@ -232,19 +216,258 @@ still content-checks the bodies under it. That is not redundant with the above:
 it is what turns the next such divergence into a refusal instead of a silently
 kept body.
 
-### What remains
+### The per-module prelude reproduces the whole-program prelude exactly
 
-Two families, and the second only became visible once the context rule stopped
-being wider than a real compile.
+```
+CLOSURE files=365 edges=11342 unresolved=0
+FULL stmts=9876 split=10033 linked=9876 folded=157 modules=365 collisions=0
+     invisible_whole=0 invisible_split=8 linked_dups=5
+keyed missing=0 extra=0 copies=444 content=0 renames=0 dup_keys=451 dup_defs=5
+EVIDENCE declared=6 handled=4 performed=3
+```
 
-**The evidence-dictionary pass.** `struct:__EvDict_Source` is missing, and
-several `content` rows are functions the whole-program evidence pass rewrote to
-take an explicit `__EvDict_Source` parameter, threading a `record { Read: …,
-Exists: … }` at each call site, where the per-module run left `with Source` on
-the row. Neither lowering is wrong; they are two coherent ones, and a module
-that merely *defines* a function cannot choose between them. This produces no
-wrong answer at either granularity — it produces two programs that cannot link
-to each other.
+`lib/@vibe/cli/entry.vibe`, 365 modules. **`linked` equals `stmts`, and
+`missing`, `extra`, `content` and `renames` are all zero.** Compiling the
+compiler's own CLI closure per module and linking produces every declaration the
+whole-program prelude produces, name for name and body for body.
+
+`copies=444` is what remains after the link and is not a difference: each is a
+module's own `reexport_boundary` marker, one per module, which no link should
+merge. `dup_defs=5` equals `linked_dups=5`, so the link removed none of the
+definitions the program legitimately carries twice and left nothing unfolded.
+
+### What the oracle models, and what it does not
+
+The claim above is about the passes the oracle runs, and that is every pass in
+`effect_lowering_prelude` that **rewrites statements** — including the two whose
+arguments are themselves whole-program computations
+(`optional_perform_artifact_resolution` feeding `lower_optional_performs`,
+`lc_stmts_call_host_future` feeding `await_poll_pass`). Those are recomputed
+from each module's own statements on the split side, so `content=0` covers them:
+the per-module computation produced the same rewrites.
+
+One thing it does **not** model, and it is not covered by that zero:
+
+- **`await_poll_pass`** is modelled with an empty `linked_imports`, where
+  production passes the real list. So the oracle exercises that pass, but not
+  with production's input. Still unmeasured.
+
+This list had two entries when it was written. The validators were the other
+one, and they graduated: they are measured now, by the counter below rather
+than by `missing` / `content` / `renames`, which cannot see a diagnostic.
+
+None of this weakens the decomposition result for what it covers. It bounds it.
+
+**The validators are now measured too.** `zero_alloc_check` and
+`lc_validate_stdin_provider_stmts` produce diagnostics rather than rewrites, so
+`missing` / `content` / `renames` are structurally blind to them — a per-module
+run sees less of the program and could miss a violation or invent one with
+nothing else in the report saying so. A separate counter compares them:
+
+```
+DIAGS validators=0
+```
+
+Both lanes silent on the compiler's own closure. That is agreement, but a
+counter that has only ever read zero says nothing about whether it can read
+anything else — so a test makes one fire. A `#zero_alloc` function whose body
+allocates, in the **dependency** of a two-file program, reads `validators=1`:
+the whole-program run walks it and the per-module union reports the same one
+diagnostic. The clean two-file control reads `0`.
+
+### The context rule this holds under
+
+Four corrections to get right, and they are worth keeping because three were the
+same mistake and the fourth was its mirror image:
+
+| rule | reachable pairs | `missing` | `content` |
+|---|---:|---:|---:|
+| every other file | 132 860 | 1 | 4 |
+| transitive closure | 32 017 | 1 | 4 |
+| own direct imports | 1 415 | 6 | 9 |
+| **direct + package deps** | **11 342** | **0** | **0** |
+
+- A module sees what it **directly imports** — not what its dependencies import.
+  A transitive closure hands A the declarations of a module its dependency
+  imports *privately*.
+- A dependency naming a **`.vpkg` contract** reaches that package's sibling
+  implementations. This is not "siblings share scope" — they do not, and an
+  explicit relative import is required between them. It is that an import *of
+  the package* reaches what the package publishes, which its siblings implement.
+  Without it, a module importing `@vibe/compiler/runtime` got the contract and
+  not the sibling whose return types the prelude reads.
+- Every context statement is reduced to its **exported** form
+  (`oracle_is_interface_stmt` returns each declaration's `exported` flag). So
+  what a module sees is exactly the published surface: nothing transitive,
+  nothing private, no bodies.
+
+The first three rules were too wide and produced greens that meant less than
+they looked; the fourth was too narrow and manufactured a difference that was
+not there. Both directions are errors, and only the counters distinguish them —
+which is why `edges_unresolved` and `invisible_*` are reported rather than
+assumed.
+
+### How the comparator family closed (#2634) — 9 rows, now zero
+
+It was a synthesized comparator whose *existence* or *shape* depended on what
+the synthesizing module could see:
+
+```
+missing  MutMap::equals__N6_String__N3_Int      MutSet::equals__N6_String
+         MutMap::equals__N6_String__N6_String   __arr_equals__A1_N6_OptionN3_Int
+         __arr_equals__A1_N6_OptionN6_String
+content  CbfTable::equals   AliasIdx::equals   ExportRenamePlan::equals
+         StrTable::equals
+```
+
+#2631's sibling one level up. That issue was a comparator whose *body* depended
+on module visibility, and is fixed — which is why `collisions=0` survives a
+non-zero `invisible_split` under every context rule tried.
+
+**Measured which half of "never emits" it is**, because the two have different
+fixes: a module can fail to *record* the need, or record it and fail to emit.
+`SYNTH requests=75/70:-A1_N6_OptionN3_Int+` — the whole program asks for 75
+helpers, the union of the per-module runs for 70, and the five it does not ask
+for are exactly the five missing rows. **The need is never recorded.** A `==`
+site whose operand type the module cannot resolve takes a different arm, and
+nothing downstream can supply a helper nobody asked for.
+
+So this is not "the link should mint what the modules left out" — the link would
+have nothing to mint *from*. The instantiation set it would key on is precisely
+what the per-module run fails to produce.
+
+**All five, named:**
+
+```
+A1_N6_OptionN3_Int         Array[Option[Int]]
+A1_N6_OptionN6_String      Array[Option[String]]
+spec:A2_N6_MutMapN6_StringN3_Int      MutMap[String, Int]
+spec:A1_N6_MutSetN6_String            MutSet[String]
+spec:A2_N6_MutMapN6_StringN6_String   MutMap[String, String]
+```
+
+Every one is a **builtin or core generic at a concrete instantiation** —
+`Option`, `MutMap`, `MutSet`. No user-declared type appears.
+
+Three of the five are **#2631's mechanism exactly**:
+
+```
+lib/@vibe/core/index.vpkg:72     type MutMap[K, V]          ← opaque, generic
+lib/@vibe/core/hashmap.vibe:52   export struct MutMap[K, V] ← the real declaration
+```
+
+Opaque in the `.vpkg` contract, concrete in the sibling implementation — the
+`PerceusActionKind` shape. `MutSet` is the same.
+
+They did not *look* like it, and that was the instrument rather than the
+program. The invisible-nominal recorder sat on `eq_for_typed`'s `TyName`
+fallthrough; `MutMap[String, Int]` is a `TyApp`, which takes a generic-head arm,
+finds nothing in the generic-struct registry and declines *silently*. So the two
+sets looked disjoint and the same cause read as two. **A measurement that covers
+one arm of a dispatch reports the other arm as absence.** With the `TyApp`
+fallthrough recorded too, `invisible_split` goes 15 → 17 and the two new entries
+are exactly `MutMap[]` and `MutSet[]` — while `invisible_whole` stays **0**, so
+the arm is unreachable on the whole-program lane just like its twin.
+
+The remaining two, `Array[Option[Int]]` and `Array[Option[String]]`, are **not**
+explained by that. `Option` is a true builtin — there is no `enum Option`
+declaration anywhere under `lib/`, it is handled by a builtin arm rather than a
+declaration — and it does not appear among the invisible heads under either
+recorder.
+
+Three mechanisms are now ruled out for that pair, which is worth having even
+without the answer: it is not an invisible nominal, not an invisible generic
+head, and not a **typed-channel refusal**. That last one is a fourth silent
+consequence of visibility and is measured for its own sake:
+
+```
+SYNTH requests=75/70:-…+   typed_refused=0/3:-+BinderAuthorityNodeKind
+                                               BinderSemanticRole  Stmt
+```
+
+`dtd_typed_eq_admitted_ty` gates a row the checker supplied on
+`eq_ty_field_is_content_comparable`, an allow-list that consults declared
+registries. The whole program refuses **zero** rows; a per-module run refuses
+three, all of them already in the invisible list. A refused row means the `==`
+site never learns its type — so it never reaches `eq_for_typed`'s `Array` arm
+and never records the helper it needs. None of the three is an `Option`, so the
+pair stays open.
+
+### Could a minting link close it?
+
+The four sites all conflate two questions — *does this `==` need a structural
+helper* and *can this module generate one* — and answer both with silence. They
+are separable: needing is a property of the operand's type, which the checker
+supplies; building needs the leaf declarations, which only some module has.
+
+Recording the first without the second gives the answer directly:
+
+```
+deferred=3   unmintable=2: A1_N6_OptionN3_Int  A1_N6_OptionN6_String
+```
+
+A **deferral** is a helper a module knew it needed and declined to build.
+**`unmintable`** counts what the whole program asks for that *no* module records
+in either form.
+
+**The link now does it**, and it closes all five:
+
+```
+deferred=3   minted=5   indirect=2          keyed missing: 6 → 1
+```
+
+`eq_mint_deferred_into` replays the deferred needs against the **concatenated**
+program — which has every declaration a module lacked, by construction — and
+runs `emit_recorded_structural_eq`, the same generator the whole-program lane
+uses. Every comparator *absence* is gone; the one remaining `missing` row is
+`struct:__EvDict_Source`, which belongs to the evidence family.
+
+`minted=5` from `deferred=3` is the fixpoint at work: that generator loops, so
+minting the `MutMap` / `MutSet` specializations records their nested
+instantiations and mints those too — which is how the two `Array[Option[*]]`
+helpers arrived.
+
+**That corrects a prediction made here before the implementation existed.** The
+counter now called `indirect` was called `unmintable`, and read as *"no link
+could mint these"*; both were minted. It measures what no module recorded
+**directly**, which is weaker and more useful: a need that reaches the link only
+through another need. The 3/2 split was real; the conclusion drawn from it was
+not.
+
+### And the body differences close too
+
+Minting does not address a *different body* — nothing is absent there. But it is
+what made the fix available. The `TyApp` fallthrough now emits the **reference**
+and lets the link build it:
+
+```
+whole   MutMap::equals__N6_String__N3_Int(a.idx, b.idx)
+split   (a.idx == b.idx)          ← an aggregate, compared by reference
+```
+
+This is #2631's fix at the site #2631's fix did not reach, and it needed the
+minting step first: `n::equals` already existed under that name, but a generic
+instantiation's comparator is a *specialization* whose body a module that cannot
+see the head's fields cannot generate.
+
+```
+keyed content:  9 → 5
+```
+
+`CbfTable::equals`, `AliasIdx::equals`, `ExportRenamePlan::equals` and
+`StrTable::equals` are gone. **The comparator family is closed** — all nine
+rows, five absences and four bodies.
+
+**The evidence family — 6 rows.** `struct:__EvDict_Source` itself, plus the
+functions the whole-program evidence pass rewrote to take an explicit
+`__EvDict_Source` parameter and the call sites that thread a
+`record { Read: …, Exists: … }` into them (`resolve_import_path_probe`,
+`resolve_path_fs` in two modules, `resolve_existing_import_path`,
+`check_linked_file_source_groups`).
+
+Neither lowering is wrong; they are two coherent ones, and a module that merely
+*defines* a function cannot choose between them. This produces no wrong answer
+at either granularity — it produces two programs that cannot link to each other.
 
 The dependence runs **backwards along the import graph**: `effect Source` is
 declared and performed in `core/module_graph_path.vibe`, and handled in
@@ -257,17 +480,9 @@ performed=3`), sampled immediately before the pass runs. So the module collects,
 the link unions and decides, and the link rewrites — with the rewrite then
 cacheable per function keyed on (body fingerprint, migration set). #2633.
 
-**A helper a module cannot see enough to synthesize at all.** `first_missing` is
-now `let:MutMap::equals__N6_String__N3_Int`. This is #2631's sibling one level
-up: that one was a comparator whose *body* depended on what the module could
-see, and is fixed; this is a comparator whose *existence* does. With
-`invisible_split=15`, a module comparing a `Map[String, Int]` may not see the
-declarations needed to emit the helper, so the split emits nothing where the
-whole program emits a definition.
-
-Not every remaining row is attributed to one of these two yet. The counters name
-the first of each kind rather than all of them, and reading the rest out is the
-next measurement, not a conclusion available now.
+Three of the nine content rows were read as rendered diffs; the other six are
+classified by declaration name, which is why the excerpt block still prints the
+first three in full.
 
 ### The phases after the prelude (#2575 item 4)
 

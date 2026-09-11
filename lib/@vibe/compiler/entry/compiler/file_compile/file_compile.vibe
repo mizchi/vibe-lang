@@ -573,6 +573,65 @@ export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: S
   String::concat(String::concat(line, "edges_unresolved="), String::concat(Int::to_string(unresolved_edges), "\n"))
 }
 
+fn lc_fresh_str_row() -> Array[String] {
+  []
+}
+
+/// #2388: a dependency naming a `.vpkg` CONTRACT reaches that package's sibling
+/// implementations, because the contract is a surface and the merge carries the
+/// implementations.
+///
+/// This is not "siblings share scope" -- they do not, and an explicit relative
+/// import is required between them (`scripts/check_package_sibling_scope.sh`).
+/// It is that an import OF THE PACKAGE reaches everything the package's
+/// contract publishes, which is implemented next to it. Without this a module
+/// importing `@vibe/compiler/runtime` got the contract's materialized surface
+/// and not the sibling whose return types the prelude reads, which manufactured
+/// a difference the per-module lane does not really have.
+///
+/// NEAREST contract wins: a source under a deeper package belongs to that one,
+/// so `runtime/eval_loader/x.vibe` is not reached by importing `runtime`.
+fn oracle_expand_contract_dep(dep: String, own: Array[Int], flat: Array[(String, String)], contract_dirs: Array[String]) -> Array[Int] {
+  if !String::ends_with(dep, "/index.vpkg") {
+    own
+  } else {
+    let dir = String::substring(dep, 0, String::length(dep) - 11)
+    let out = lc_fresh_int_row()
+    let mut k = 0
+    while k < Array::length(own) {
+      Array::push(out, Array::get(own, k))
+      k = k + 1
+    }
+    let mut i = 0
+    while i < Array::length(flat) {
+      let (path, _) = Array::get(flat, i)
+      if String::starts_with(path, String::concat(dir, "/")) && oracle_nearest_contract_dir(path, contract_dirs) == dir && !lc_int_row_has(out, i) {
+        Array::push(out, i)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    out
+  }
+}
+
+/// The longest contract directory that is a prefix of `path`.
+fn oracle_nearest_contract_dir(path: String, contract_dirs: Array[String]) -> String {
+  let mut best = ""
+  let mut i = 0
+  while i < Array::length(contract_dirs) {
+    let d = Array::get(contract_dirs, i)
+    if String::starts_with(path, String::concat(d, "/")) && String::length(d) > String::length(best) {
+      best = d
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  best
+}
+
 fn lc_fresh_int_row() -> Array[Int] {
   []
 }
@@ -589,6 +648,25 @@ fn lc_int_row_has(xs: Array[Int], v: Int) -> Bool {
     i = i + 1
   }
   found
+}
+
+/// #2575 item 2: does the ORDINARY compile lane carry a usable statement to
+/// module map? `PROV stmts=<n> ids=<n> files=<n>`, where `ids` equal to `stmts`
+/// is the property -- one module id per merged top-level statement, aligned
+/// with the array codegen receives.
+///
+/// This exists because the answer used to be "no, and silently": the lane
+/// computed the map, passed `array_empty()` for it, and handed codegen an
+/// `empty_dbg_prov()`. Nothing said so. A per-module production driver is
+/// blocked on this and not on the driver, so it is worth a counter rather than
+/// a comment.
+export fn prelude_ordinary_lane_prov_report_fs(entry_path: String) -> String with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
+  let stmt_file_id: Array[Int] = []
+  let (merged, _, _, _, _, _) = merged_stmts_and_offsets_prov(source_groups, stmt_file_id)
+  let files = flatten_source_groups_local(source_groups)
+  String::concat(String::concat("PROV stmts=", Int::to_string(Array::length(merged))), String::concat(String::concat(" ids=", Int::to_string(Array::length(stmt_file_id))), String::concat(" files=", String::concat(Int::to_string(Array::length(files)), "\n"))))
 }
 
 /// #2388 measurement: the shape of the import closure the per-module oracle
@@ -653,6 +731,20 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
     }
     i = i + 1
   }
+  // Every `.vpkg` contract in the flat list, by its directory. An import names
+  // a PACKAGE; the declarations it publishes are implemented by that package's
+  // sibling sources, and it is those the merge carries.
+  let contract_dirs = lc_fresh_str_row()
+  i = 0
+  while i < n {
+    let (path, _) = Array::get(flat, i)
+    if String::ends_with(path, "/index.vpkg") {
+      Array::push(contract_dirs, String::substring(path, 0, String::length(path) - 11))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
   let group_members: MutMap[String, Array[Int]] = MutMap::new_string()
   let mut gi = 0
   let mut flat_at = 0
@@ -687,7 +779,7 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
       // are what the merge actually carries. Either way it resolves to a SET
       // of seats, and every one of them is an edge.
       let seats = match MutMap::get(index_of, dep) {
-        Some(found) => found,
+        Some(found) => oracle_expand_contract_dep(dep, found, flat, contract_dirs),
         None =>
         match MutMap::get(group_members, dep) {
           Some(members) => members,
@@ -783,10 +875,29 @@ fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])])
 /// (typed_lowering_binop_anchor), so
 /// both sides compute the anchor identically by construction.
 fn merged_stmts_and_offsets(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
+  merged_stmts_and_offsets_prov(source_groups, array_empty())
+}
+
+/// #2575 item 2: the same merge, keeping the per-statement MODULE id.
+///
+/// The ordinary lane computed that map and threw it away -- the out-parameter
+/// was `array_empty()` -- and then handed codegen an `empty_dbg_prov()`. So the
+/// information a per-module driver needs was being produced and discarded on
+/// the one path that matters, which is why "wire the per-module prelude" looked
+/// like a driver problem and is really a plumbing one.
+///
+/// `stmt_file_id_out` stays optional: a caller that does not want the map
+/// passes `array_empty()` and pays nothing. One `Int` per top-level statement
+/// when it does -- about 79 kB on the compiler's own closure, against a
+/// selfcompile heap of ~814 MiB.
+///
+/// The binop rewrite below does not change the statement count (the oracle's
+/// merge asserts exactly that), so the ids stay aligned with what it returns.
+fn merged_stmts_and_offsets_prov(source_groups: Array[(String, Array[(String, String)])], stmt_file_id_out: Array[Int]) -> (Array[Stmt], Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
-  let merged = build_grouped_merged_stmts_impl(source_groups, true, flat_paths, flat_bases, clone_float_offsets, array_empty())
+  let merged = build_grouped_merged_stmts_impl(source_groups, true, flat_paths, flat_bases, clone_float_offsets, stmt_file_id_out)
   let (floats, rels, pluses, int_renders, bool_renders) = split_typed_lowering_offsets(union_module_typed_lowering_with_clones(flat_paths, flat_bases, clone_float_offsets))
   // #2441: the typed-`==` rows ride the same disjoint offset spaces.
   let (eq_offs, eq_keys) = union_module_typed_eq_rows(flat_paths, flat_bases)

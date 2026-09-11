@@ -1,5 +1,13 @@
 import ./linked_compile.vibe {
-  wasi_memory_min_pages_for_heap
+  lc_dbg_file_of_fn_for, wasi_memory_min_pages_for_heap
+}
+
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+import @vibe/compiler/normalize {
+  hoisted_lambda_owner_key, hoisted_lambda_owner_of_stmt
 }
 
 test "wasi memory min pages keeps conservative floor" {
@@ -10,4 +18,81 @@ test "wasi memory min pages keeps conservative floor" {
 test "wasi memory min pages grows for large static data" {
   let above_floor = 64 * 65536 + 1
   assert(wasi_memory_min_pages_for_heap(above_floor) == 65)
+}
+
+// #2623 (Codex P2): the break lane places a compiled function in a source file
+// by name, and where the name is one the prelude SYNTHESIZED, by the owner key
+// encoded in it. Both indexes are built from pre-prelude snapshots, and both
+// key spaces contain a shape nothing uniquifies across modules: a test's or
+// bench's LABEL, which reaches the name index as `__test_<label>` and the owner
+// index as `:t:<label>`.
+//
+// The name index called that ambiguous and refused; the owner index took the
+// first. Neither "first" nor "last" is an answer -- the body was hoisted out of
+// exactly one of the two modules and this index cannot say which -- and the id
+// is not inert: `lc_dbg_file_of_fn`'s result selects the newline table the
+// function's lines are mapped through, so a wrong id reports the breakpoint
+// under the wrong file. 0 is the lookup stating it has no placement.
+//
+// `lc_dbg_file_of_fn_for` runs the real builder and the real lookup over the
+// two snapshots, so these cannot pass under a policy the compiler does not
+// have.
+
+/// A hoisted lambda's top-level name for `owner`, in the spelling
+/// `dlh_hoisted_name` mints (length-prefixed owner, then the counter, then the
+/// local name). Every test below decodes it with the compiler's own
+/// `hoisted_lambda_owner_key` before using it.
+fn hoisted_named(owner: String, local: String) -> String {
+  "__hoisted_lam_\{String::length(owner)}_\{owner}_0_\{local}"
+}
+
+fn owner_key_read_back(name: String) -> String {
+  match hoisted_lambda_owner_key(name) {
+    Some(o) => o,
+    None => "<not a hoisted name>"
+  }
+}
+
+test "break lane: two modules with a same-labelled test share one owner key" {
+  // The keys come from the classifier the hoist itself uses, on the statement
+  // shape two modules really contribute. The merged indices differ and the key
+  // does not: a test is keyed by its label, and the merge uniquifies names, not
+  // labels.
+  let owner_a = hoisted_lambda_owner_of_stmt(STest("t", EUnit), 3)
+  let owner_b = hoisted_lambda_owner_of_stmt(STest("t", EUnit), 11)
+  inspect(owner_a, content = ":t:t")
+  inspect(owner_a == owner_b, content = "true")
+}
+
+test "break lane: an owner key two modules share places no file" {
+  let owner = hoisted_lambda_owner_of_stmt(STest("t", EUnit), 3)
+  let name = hoisted_named(owner, "f")
+  // Self-check first: the lookup answers 0 for a name it does not recognise as
+  // a hoisted one too, so without this the test could pass while measuring
+  // nothing.
+  inspect(owner_key_read_back(name), content = ":t:t")
+  // Module A is file 1, module B is file 2. First-wins answers 1 and last-wins
+  // 2; both name a file the body may not be in.
+  inspect(lc_dbg_file_of_fn_for([], [], [owner, owner], [1, 2], name), content = "0")
+}
+
+test "break lane: an owner key only one module mints places that module's file" {
+  // The control. Same two modules, same shape, distinct labels -- so a guard
+  // that refused every owner unconditionally could not pass this, and the 0
+  // above is a refusal rather than a lookup that never places anything.
+  let owner_a = hoisted_lambda_owner_of_stmt(STest("a", EUnit), 3)
+  let owner_b = hoisted_lambda_owner_of_stmt(STest("b", EUnit), 11)
+  let name = hoisted_named(owner_b, "f")
+  inspect(owner_key_read_back(name), content = ":t:b")
+  inspect(lc_dbg_file_of_fn_for([], [], [owner_a, owner_b], [1, 2], name), content = "2")
+}
+
+test "break lane: a pre-prelude name two modules share places no file" {
+  // The same policy on the other index, pinned here because one function now
+  // builds both: a regression in it shows up in both key spaces at once.
+  inspect(lc_dbg_file_of_fn_for(["__test_t", "__test_t"], [1, 2], [], [], "__test_t"), content = "0")
+  inspect(lc_dbg_file_of_fn_for(["__test_a", "__test_b"], [1, 2], [], [], "__test_b"), content = "2")
+  // A name in neither index is absent, not ambiguous, and answers the same 0 --
+  // which is why the ambiguous marker is a negative and not a missing entry.
+  inspect(lc_dbg_file_of_fn_for(["__test_a"], [1], [], [], "__test_z"), content = "0")
 }

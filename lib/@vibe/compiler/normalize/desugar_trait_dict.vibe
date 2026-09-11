@@ -12651,6 +12651,39 @@ fn eq_name_is_invisible_nominal(n: String) -> Bool {
   !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
 }
 
+/// #2634: the synthesis REQUESTS a run made -- the container comparators and
+/// generic-struct specializations some `==` site asked for, by name.
+///
+/// Separate from what was emitted, because the two answer different halves of
+/// the same question. A per-module run that emits fewer helpers than the whole
+/// program either never RECORDED the need (the `==` site took a different arm
+/// for want of a visible type) or recorded it and failed to emit. The oracle
+/// sees only the second, and the fix is different for each.
+export fn eq_synthesis_requests_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_arr_eq_needed_keys) {
+    Array::push(out, Array::get(dtd_arr_eq_needed_keys, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(dtd_map_eq_needed_keys) {
+    Array::push(out, Array::get(dtd_map_eq_needed_keys, j))
+    j = j + 1
+  }
+  let mut k = 0
+  while k < Array::length(dtd_eq_specializations) {
+    let nm = String::concat("spec:", type_key(Array::get(dtd_eq_specializations, k)))
+    if str_array_contains(out, nm) {
+      ()
+    } else {
+      Array::push(out, nm)
+    }
+    k = k + 1
+  }
+  out
+}
+
 export fn eq_invisible_nominals_reset() -> Unit {
   Array::truncate(dtd_eq_invisible_nominals, 0)
 }
@@ -14053,7 +14086,63 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
   } else if str_array_contains(known_types, n) {
     ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
   } else {
-    EBinOp("==", lhs, rhs, -1)
+    // #2634: the `TyApp` twin of the `TyName` fallthrough this pass records
+    // above -- a GENERIC HEAD the statement list cannot see, declining
+    // silently. Recorded with a `[]` suffix so the two are distinguishable.
+    //
+    // Not recording it is what made `MutMap[String, Int]` look like a
+    // different mechanism from `PerceusActionKind`: both are `opaque` in a
+    // `.vpkg` contract and concrete in a sibling implementation, but only the
+    // non-generic one reached a recorder, so `invisible_split` listed one and
+    // not the other and the two sets looked disjoint. A measurement that
+    // covers one arm of a dispatch reports the arm it does not cover as
+    // absence.
+    if eq_name_is_invisible_nominal(n) && !str_array_contains(dtd_eq_invisible_nominals, String::concat(n, "[]")) {
+      Array::push(dtd_eq_invisible_nominals, String::concat(n, "[]"))
+    } else {
+      ()
+    }
+    eq_deferred_request_record_ty(eq_deferred_key_for_ty(fty), fty)
+    // #2634: emit the REFERENCE, and let the link mint the definition.
+    //
+    // This is the `TyApp` counterpart of #2631's fix, and it needed the link's
+    // minting step to exist first. #2631 could emit `n::equals` because that
+    // comparator already existed under that name; a generic instantiation's
+    // comparator is a SPECIALIZATION whose body this module cannot generate --
+    // it would need the head's fields, which is exactly what it cannot see. So
+    // the deferral above and this reference are two halves of one move: the
+    // module says what it needs, the link builds it from the concatenated
+    // program.
+    //
+    // The raw `==` this replaces compared an AGGREGATE BY REFERENCE, measured
+    // on the compiler's own closure as `(a.idx == b.idx)` where the whole
+    // program emitted `MutMap::equals__N6_String__N3_Int(a.idx, b.idx)`. Same
+    // name, two bodies -- the invariant a synthesized definition's name must
+    // determine its body, failing at a site #2631's fix did not reach.
+    //
+    // Unreachable on the whole-program lane (`invisible_whole=0` measured at
+    // this arm), so the rule is unconditional rather than lane-dependent.
+    //
+    // Guarded by the SAME predicate that decides whether to record, and the
+    // gate is why. The first cut guarded only on `args` being non-empty, so a
+    // marked FORMAL head applied to arguments (`__Vfp_F[Int]`) emitted
+    // `__Vfp_F::equals__N3_Int` -- a name nothing binds, which reached codegen
+    // as an internal compiler error on
+    // `fixtures/typecheck/formal_application_struct_field_reject.vibe`. A
+    // formal has no declaration to be invisible TO, so it must not take this
+    // arm; recording and emitting have to agree about that or the reference is
+    // minted for something the link cannot build either.
+    if eq_name_is_invisible_nominal(n) && Array::length(args) > 0 {
+      let canonical_args = for arg in args {
+        eq_expand_alias_ty(arg)
+      }
+      ECall(EIdent(generic_eq_name(n, canonical_args), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs, -1)
+    }
   }
 }
 
@@ -20978,11 +21067,140 @@ fn dtd_typed_eq_admitted_ty(boff: Int) -> Option[TypeExpr] {
       Some(te) => if !eq_ty_mentions_scope_formal(te) && eq_ty_field_is_content_comparable(te, empty_str_array()) {
         Some(te)
       } else {
+        // #2634: the checker HAD a type for this `==` site and the pass
+        // refused it. `eq_ty_field_is_content_comparable` is an allow-list
+        // that consults declared registries, so a module that cannot see a
+        // leaf's declaration refuses a row the whole program admits -- and the
+        // site then never learns its type, never reaches `eq_for_typed`'s
+        // `Array` arm, and never records the helper it needs. Recorded so that
+        // "the split never asks for this helper" can be traced to a refusal
+        // rather than guessed at.
+        eq_typed_refusal_record(key)
+        eq_deferred_request_record_ty(eq_deferred_key_for_ty(te), te)
         None
       },
       None => None
     }
   }
+}
+
+/// Type keys the typed-`==` channel had a row for and the pass refused.
+let dtd_eq_typed_refusals: Array[String] = empty_str_array()
+
+/// #2634: helpers a run KNEW it needed and could not build.
+///
+/// The four visibility sites all conflate two questions -- "does this `==`
+/// need a structural helper" and "can this module generate one" -- and answer
+/// both with silence. They are separable: needing is a property of the
+/// operand's type, which the checker supplies; building needs the leaf
+/// declarations, which only some module has.
+///
+/// This records the first without the second. It is the measurement that says
+/// whether a link could MINT what the modules could not: if the whole
+/// program's request set is contained in the union of the split's requests and
+/// its deferrals, then nothing is lost by a module declining to build -- the
+/// link has every instantiation it would need. If it is not contained, the
+/// need is being lost before anyone could record it, and a minting link would
+/// not be enough.
+let dtd_eq_deferred_requests: Array[String] = empty_str_array()
+
+/// The deferral key for a type: the same spelling `eq_synthesis_requests_list`
+/// uses, so the two sets are directly comparable. A shape with no key spells
+/// "" and is not recorded -- there would be nothing for a link to mint.
+fn eq_deferred_key_for_ty(t: TypeExpr) -> String {
+  match t {
+    TyApp("Array", args) => if Array::length(args) == 1 {
+      type_key(Array::get(args, 0))
+    } else {
+      ""
+    },
+    TyApp(_, _) => String::concat("spec:", type_key(t)),
+    _ => ""
+  }
+}
+
+/// The deferred types themselves, parallel to `dtd_eq_deferred_requests`. The
+/// key is what a measurement compares; the type is what a link would MINT from.
+let dtd_eq_deferred_types: Array[TypeExpr] = empty_type_exprs()
+
+fn eq_deferred_request_record_ty(key: String, t: TypeExpr) -> Unit {
+  if String::length(key) == 0 || str_array_contains(dtd_eq_deferred_requests, key) {
+    ()
+  } else {
+    Array::push(dtd_eq_deferred_requests, key)
+    Array::push(dtd_eq_deferred_types, t)
+  }
+}
+
+/// #2634: MINT, into `stmts`, every helper some module deferred and nobody
+/// built. This is the link step the deferrals exist for.
+///
+/// It is the same generator the whole-program run uses
+/// (`emit_recorded_structural_eq`, which loops to a fixpoint because generating
+/// one helper can record a nested instantiation), run against the CONCATENATED
+/// program -- so every declaration a module lacked is present here by
+/// construction. A module declining to build is then not a loss: it hands the
+/// need upward and the link, which can see everything, satisfies it.
+///
+/// Returns how many top-level statements were added. Zero means every deferred
+/// helper was already built by some module that could see enough.
+///
+/// The registries are reset against `stmts` first, so what gets emitted is
+/// decided by the linked program's declarations and not by whatever the last
+/// module left behind.
+export fn eq_mint_deferred_into(stmts: Array[Stmt]) -> Int {
+  let before = Array::length(stmts)
+  eq_known_types_reset(stmts)
+  let mut i = 0
+  while i < Array::length(dtd_eq_deferred_types) {
+    match Array::get(dtd_eq_deferred_types, i) {
+      TyApp("Array", args) => if Array::length(args) == 1 {
+        arr_eq_needed_record(Array::get(args, 0))
+      } else {
+        ()
+      },
+      TyApp(head, args) => if Array::length(args) > 0 {
+        generic_eq_record(head, args)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  emit_recorded_structural_eq(stmts)
+  Array::length(stmts) - before
+}
+
+export fn eq_deferred_requests_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_deferred_requests) {
+    Array::push(out, Array::get(dtd_eq_deferred_requests, i))
+    i = i + 1
+  }
+  out
+}
+
+fn eq_typed_refusal_record(key: String) -> Unit {
+  if str_array_contains(dtd_eq_typed_refusals, key) {
+    ()
+  } else {
+    Array::push(dtd_eq_typed_refusals, key)
+  }
+}
+
+/// The refusals since the last reset. Paired with `eq_synthesis_requests_list`:
+/// a helper the split never requests, whose type appears here on the split lane
+/// and not on the whole-program one, was refused rather than never typed.
+export fn eq_typed_refusals_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_typed_refusals) {
+    Array::push(out, Array::get(dtd_eq_typed_refusals, i))
+    i = i + 1
+  }
+  out
 }
 
 /// Whether a channel row's TypeExpr spells a formal that is lexically in
