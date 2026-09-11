@@ -379,6 +379,14 @@ caller keeps its; such a program never sees the unique path for that name,
 which is the honest price of shadowing an intrinsic with a source
 definition the planner reads.
 
+What the accounting costs the compiler itself (30 `Array::map` sites,
+the RC-built compiler compiling the flat compiler source, viberun fuel,
+same input): 1,178,199,286,771 → 1,177,029,188,108 instructions (−0.10%),
+1,837,225,668 → 1,835,120,428 B allocated (−0.11%), the RC-built stage2
+4,882,987 → 4,889,652 B (+0.14%). The bump lane's bytes are untouched; its
+`selfcompile_kpi` heap high-water moves 875,863,464 → 875,211,600 B (−0.07%,
+the #2680 inference).
+
 Pinned by `tests/hof_rc_ownership_test.vibe` (bump / RC / RC-shadow
 agreement on every builtin, shared and unique sources, a capturing closure
 used by three maps, a source-level `Array::map` shadowing the intrinsic),
