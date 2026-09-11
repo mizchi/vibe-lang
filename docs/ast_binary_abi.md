@@ -158,6 +158,32 @@ never re-uses old ones, and never reorders fields.
 | 0x0C | `String { value, span }` |
 | 0x0D | `Or { pats, span }` |
 
+> **The tag tables below specify the RETIRED HOST's AST, not this
+> compiler's** (found while starting #2510, 2026-09-11). They name
+> `Int` / `Float` / `Record` / `Map` / `Set` / `ArrayBuilder`, which is
+> MoonBit's `@core.Type`; the vibe compiler's type AST is `TypeExpr` =
+> `TyName` / `TyApp` / `TyFn` / `TyTuple` / `TyUnit`, and its
+> `Pat` / `Stmt` / `Expr` are 10 / 27 / 33 variants of their own shape.
+> Implementing this document as written would encode a shape the
+> compiler does not have.
+>
+> The header above already says the vibe implementation is "the sole
+> and authoritative one" — these tables were simply not updated with
+> it, which is the inconsistency to fix. They must be rewritten against
+> the real AST before any encoder is written, and rewritten ONCE: tag
+> assignment is the forward-compatibility contract this format
+> promises ("new variants get new tag numbers; existing consumers raise
+> `UnknownTag(...)` rather than misinterpreting"), and that only holds
+> if the numbering is decided deliberately rather than discovered
+> variant by variant.
+>
+> Nothing below is implemented, so nothing is broken by the mismatch
+> today — `ast_binary.vibe` stops at the primitives. The cost is
+> narrower and specific: #2510's on-disk prelude cache
+> (`~/.cache/vibe/prelude-<sha>.ast.bin`) names this format as its
+> source of truth, so the per-module prelude cache cannot be persisted
+> until the tables and the encoders exist.
+
 ### Type tags
 
 | Tag  | Variant |
