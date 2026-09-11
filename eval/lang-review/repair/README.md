@@ -58,6 +58,20 @@ silent ケースに診断が付くようになった場合も **FAIL する**。
 | 09 | `Stdout::write_stream()` (0引数) | **なし** — compile 成功、生成 wasm が不正で load 時に host が拒否 | 0 | 0 | 0 | 0 |
 | 10 | `Stdout::write_stream(42)` | **なし** — compile も実行も成功し、garbage を出力 | 0 | 0 | 0 | 0 |
 
+### Re-score 2026-09-11 (#2654, stage2 `entry-allows-2026-09-11`)
+
+Case 01 only. Its subject was the braced row's own diagnostic; since #2654 an
+entry head spelled `with` is refused as such (the row is still read, so the
+message names the whole edit), and the case now measures that diagnostic.
+`fixed.vibe` is `fn main allows Stdout {` and `diag.grep` pins the new text.
+
+| # | ケース | 診断 (要約) | L | A | C | 計 |
+|---|---|---|---|---|---|---|
+| 01 | braced effect row (#1429) | `line 1:9: ` `fn main` ` is an entry point and grants its row, so the keyword is ` `allows` `: write ` `fn main allows Stdout` | 1 | 1 | 2 | 4 |
+
+L moved 0 → 1: the position is the `with` token (line and column), not the
+declaration's start. The other nine rows are unchanged.
+
 mean = 26/10 = 2.6 → **repair_convergence = 3.6**
 
 ### 採点の根拠 (個別)
