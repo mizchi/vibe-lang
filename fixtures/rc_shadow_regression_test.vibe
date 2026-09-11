@@ -178,6 +178,36 @@ fn shape9_optional(x?: Array[Int]) -> Int {
   Array::length(x)
 }
 
+// Shape 10 (#2671): the Array higher-order lowerings over a SHARED array
+// of heap elements. Every callback OWNS its parameter, so each lowering
+// must retain what it hands over (or move it out of a unique array) and
+// release the array exactly once. Before the fix the callbacks consumed
+// elements the array still listed: filter / fold / a capturing map trapped
+// on a dup of a freed value, find's `Some(t)` payload and reverse on a drop
+// of a freed value. The map callback rebuilds its TFn (a reuse arm), which
+// on a unique block fires in place -- hence the source array is read last.
+// The parameter is annotated on purpose: an UNANNOTATED lambda parameter
+// consumed three or more times is released early (#2681, a separate,
+// pre-existing accounting bug this shape is not about).
+let shape10 = (tys: Array[Ty]) -> Int {
+  let kept = Array::filter(tys, (t) -> use_ty(t) == 1)
+  let folded = Array::fold(tys, 0, (acc, t) -> acc + use_ty(t))
+  let found = match Array::find(tys, (t) -> use_ty(t) == 1) {
+    Some(t) => use_ty(t) + 1,
+    None => 0
+  }
+  let rev = Array::reverse(tys)
+  let mapped = Array::map(tys, (t) -> match t {
+    TFn(ps, r) => TFn(ps, r),
+    _ => TInt
+  })
+  let cat = Array::concat(tys, rev)
+  let r1 = Array::get(rev, 1)
+  let m1 = Array::get(mapped, 1)
+  let t1 = Array::get(tys, 1)
+  Array::length(kept) + folded + found + use_ty(r1) + Array::length(mapped) + use_ty(m1) + Array::length(cat) + use_ty(t1)
+}
+
 let main = () -> Int {
   let names = ["a", "b", "c"]
   let effs = [[TInt], [TFn([TInt], TInt)], [TInt]]
@@ -204,6 +234,7 @@ let main = () -> Int {
     acc = acc + shape6(k)
     acc = acc + shape7()
     acc = acc + shape8(k)
+    acc = acc + shape10(tys)
     let borrowed = [10, 20, 30, 40]
     acc = acc + shape9_labeled(x=borrowed)
     acc = acc + Array::length(borrowed)

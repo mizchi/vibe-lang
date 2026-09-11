@@ -1,0 +1,148 @@
+//# Imports
+
+// #2671: ownership in the RC lowerings of the Array higher-order builtins
+// (map / filter / fold / iter_eager / any / all / find / reverse / concat).
+// Each consumes its array argument and calls a callback that OWNS its
+// parameter, so the RC lane owes the callback one reference per element
+// it hands over and owes the array exactly one release. The lowerings
+// used to do neither: a rebuilding callback found a SHARED element unique
+// and rewrote the caller's array in place (silently wrong), a consuming
+// callback freed an element the array still listed (use-after-free), and
+// the shell was never released (a leak per call).
+//
+// Every program runs through the bump lane, the RC lane and the RC
+// shadow-liveness lane (VIBE_RC=shadow: traps at the FIRST dup-of-freed or
+// drop-of-freed) of THIS checkout's codegen, under wasmtime; the printed
+// entry return value is the oracle (codegen_heap_e2e_test's convention).
+// The bump lane's value is pinned as a literal so a lane that answers
+// differently fails on its own line. The per-call leak is pinned by the
+// gate's reclamation guard (fixtures/rc_reclaim_leak_test.vibe).
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+//# Functions
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_hof_rc_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Stdout {
+  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
+  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  let shadow = run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow"))
+  inspect(bump, content = expected)
+  inspect(rc, content = expected)
+  inspect(shadow, content = expected)
+  0
+}
+
+/// A small enum tree, a rebuilding map callback (`incr`'s Node arm is a
+/// wide reuse arm: it fires in place when the block is unique), a
+/// borrow-classified checksum and a predicate over it.
+fn tree_prelude() -> String {
+  "enum Tree {\n  Leaf(Int);\n  Node(Tree, Tree)\n}\nfn incr(t: Tree) -> Tree {\n  match t {\n    Leaf(v) => Leaf(v + 1),\n    Node(l, r) => {\n      let l2 = incr(l)\n      let r2 = incr(r)\n      Node(l2, r2)\n    }\n  }\n}\nfn checksum(t: Tree, acc: Int) -> Int {\n  match t {\n    Leaf(v) => (acc * 31 + v) % 1000000007,\n    Node(l, r) => checksum(r, checksum(l, acc))\n  }\n}\nfn big(t: Tree) -> Bool {\n  checksum(t, 0) > 40\n}\n"
+}
+
+test "Array::map over a shared array leaves the source intact (#2671)" {
+  // The headline of #2671: `arr` stays live across the map, so its Node
+  // element is SHARED. The rebuilding callback (incr's Node arm is a wide
+  // reuse arm) used to find that block unique -- the lowering handed the
+  // element over without a retain -- and rewrote the caller's array in
+  // place: RC answered 1286800 (every source Node incremented) where the
+  // bump lane answers 1280400.
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1))]\n    let out = Array::map(arr, incr)\n    total = (total + checksum(Array::get(arr, 1), 0) + checksum(Array::get(out, 1), 0)) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "map_shared", "1280400")
+}
+
+test "Array::map over unique arrays moves the elements and reuses in place" {
+  // Fresh literals and map results are unique: the elements move out with
+  // no retain, the rebuilding callback sees a unique block and the reuse
+  // fusion fires, and the emptied shell is released without a walk.
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let out = Array::map([Leaf(i), Node(Leaf(i), Leaf(i + 1))], incr)\n    let out2 = Array::map(Array::map(out, incr), incr)\n    total = (total + checksum(Array::get(out2, 1), 0) + checksum(Array::get(out2, 0), 0)) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "map_unique", "676700")
+}
+
+test "Array::filter: kept elements are given, rejected ones released" {
+  // Shared source: the predicate borrows (lend), a kept element is retained
+  // for the result. Unique source: a kept element moves, a REJECTED element
+  // is the lowering's to release (cc_hof_discard), since the shell is freed
+  // without walking. Before the fix the shadow lane trapped on a dup of a
+  // freed value (the predicate consumed an element the array still listed).
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1)), Leaf(3)]\n    let kept = Array::filter(arr, big)\n    let kept_unique = Array::filter([Leaf(i), Node(Leaf(i), Leaf(i + 1)), Leaf(3)], big)\n    let mut ks = 0\n    let mut k = 0\n    while k < Array::length(kept) {\n      ks = (ks + checksum(Array::get(kept, k), 0)) % 1000000007\n      k = k + 1\n    }\n    total = (total + checksum(Array::get(arr, 1), 0) + Array::length(kept) + Array::length(kept_unique) + ks) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "filter_shared", "1293760")
+}
+
+test "Array::fold hands each element to a consuming callback exactly once" {
+  // RC agreed by luck before the fix (nothing read the freed blocks in
+  // time); the shadow lane trapped on a dup of a freed value.
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1)), Leaf(3)]\n    let folded = Array::fold(arr, 0, (acc: Int, t: Tree) -> Int { (acc + checksum(t, 0)) % 1000000007 })\n    let folded_unique = Array::fold([Leaf(i), Node(Leaf(i), Leaf(i + 1))], 0, (acc: Int, t: Tree) -> Int { (acc + checksum(t, 0)) % 1000000007 })\n    total = (total + checksum(Array::get(arr, 1), 0) + folded + folded_unique) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "fold_shared", "1951400")
+}
+
+test "Array::any / all / find lend elements and keep the array whole" {
+  // The predicates never move an element: each is retained before the
+  // owning callback call, and Some(found) takes a reference of its own.
+  // Before the fix a `Some(t) => checksum(t, 0)` arm read a freed payload
+  // (RC trapped; shadow: drop of freed value).
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1)), Leaf(3)]\n    let a = if Array::any(arr, big) { 1 } else { 0 }\n    let b = if Array::all(arr, big) { 10 } else { 0 }\n    let c = match Array::find(arr, big) {\n      Some(t) => checksum(t, 0),\n      None => 100\n    }\n    let d = match Array::find([Leaf(i), Node(Leaf(i), Leaf(i + 1))], big) {\n      Some(t) => checksum(t, 0),\n      None => 1000\n    }\n    total = (total + checksum(Array::get(arr, 1), 0) + a + b + c + d) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "predicates_shared", "730052")
+}
+
+test "Array::iter_eager consumes the array it walks" {
+  // `Iterator::iter` over an Array devirtualizes to this compiler-only
+  // name; the codegen lane here takes it directly (no checker).
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1)), Leaf(3)]\n    let mut acc = 0\n    Array::iter_eager(arr, (t: Tree) -> Unit { acc = (acc + checksum(t, 0)) % 1000000007 })\n    Array::iter_eager([Leaf(i), Node(Leaf(i), Leaf(i + 1))], (t: Tree) -> Unit { acc = (acc + checksum(t, 0)) % 1000000007 })\n    total = (total + checksum(Array::get(arr, 1), 0) + acc) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "iter_shared", "1951400")
+}
+
+test "Array::reverse moves or retains its elements by the rc word of the array" {
+  // No callback: unique input is moved element by element, a shared input
+  // is retained element by element and dropped normally at the end.
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1)), Leaf(3)]\n    let rv = Array::reverse(arr)\n    let rv2 = Array::reverse(Array::map(arr, incr))\n    total = (total + checksum(Array::get(arr, 1), 0) + checksum(Array::get(rv, 0), 0) + checksum(Array::get(rv2, 2), 0)) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "reverse_shared", "657700")
+}
+
+test "Array::concat retains the elements it copies and releases both inputs" {
+  // concat already retained each copied element; it never released its
+  // two consumed inputs (84 B per call on a two-element array). The
+  // release is the ordinary walking drop.
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1))]\n    let arr2: Array[Tree] = [Leaf(3)]\n    let cat = Array::concat(arr, arr2)\n    let cat2 = Array::concat(Array::map(arr, incr), cat)\n    total = (total + checksum(Array::get(arr, 1), 0) + checksum(Array::get(arr2, 0), 0) + checksum(Array::get(cat, 2), 0) + checksum(Array::get(cat2, 4), 0) + Array::length(cat2)) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "concat_shared", "639800")
+}
+
+test "a captured closure used by three maps is released by each lowering" {
+  // `f` captures `k`, so it is a real closure block; every lowering owns
+  // the callback reference it was handed and drops it after the loop (a
+  // bare fn value is even and rc_drop ignores it).
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let k = i % 5\n    let f = (t: Tree) -> Tree { match t { Leaf(v) => Leaf(v + k), Node(l, r) => Node(incr(l), r) } }\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1))]\n    let m1 = Array::map(arr, f)\n    let m2 = Array::map(m1, f)\n    let m3 = Array::map(arr, f)\n    total = (total + checksum(Array::get(arr, 1), 0) + checksum(Array::get(m1, 1), 0) + checksum(Array::get(m2, 1), 0) + checksum(Array::get(m3, 0), 0)) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "closure_reused", "1949900")
+}
+
+test "filter, fold and map chained on one shared array" {
+  // The program that crashed on the RC lane before the fix.
+  let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1)), Leaf(3)]\n    let kept = Array::filter(arr, big)\n    let folded = Array::fold(arr, 0, (acc: Int, t: Tree) -> Int { (acc + checksum(t, 0)) % 1000000007 })\n    let mapped = Array::map(kept, incr)\n    total = (total + checksum(Array::get(arr, 1), 0) + Array::length(kept) + folded + Array::length(mapped)) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "combined", "1295214")
+}
+
+test "a source-level Array::map (as @vibe/builtin declares one) keeps the caller's array" {
+  // `@vibe/builtin/array.vibe` declares `let Array::map = ..` as a
+  // borrow-only loop. The planner classifies that definition's first
+  // parameter as borrowed, so a program carrying it plans every
+  // `Array::map(xs, f)` call as a borrow (no dup), while this ladder still
+  // intercepts the name and consumes: the array was moved out from under
+  // the caller and `Array::push(xs, 4)` after the map answered length 1
+  // (the book's collections chapter, through `import @vibe/builtin`). The
+  // lowering now retains an argument the planner classified as borrowed.
+  // Per iteration 2i + 44; 48600 in all. The old RC lane answered 42600.
+  let src = "let Array::map = [A, B](xs: Array[A], f: (x: A) -> B) -> Array[B] {\n  let len = Array::length(xs)\n  let out = ArrayBuilder::new()\n  let mut i = 0\n  while i < len {\n    ArrayBuilder::push(out, f(Array::get(xs, i)))\n    i = i + 1\n  }\n  ArrayBuilder::freeze(out)\n}\nlet main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let xs = [i, i + 1, i + 2]\n    let doubled = Array::map(xs, (x: Int) -> Int { x * 2 })\n    Array::push(xs, 4)\n    total = total + Array::length(xs) * 10 + Array::get(doubled, 2)\n    i = i + 1\n  }\n  total\n}\n"
+  assert_lanes_agree(src, "source_shadowed_map", "48600")
+}

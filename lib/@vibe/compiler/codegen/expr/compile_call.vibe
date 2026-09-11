@@ -1435,6 +1435,181 @@ fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: 
   }
 }
 
+/// #2671: ownership for the inline lowerings that read an array's elements
+/// (Array::map / filter / fold / iter_eager / any / all / find / reverse /
+/// concat). Each consumes its array argument -- the planner counts the
+/// position as owning, so the caller's reference arrives here -- and the
+/// closure-taking ones call a callback that OWNS its parameter (a lambda
+/// always does; a top-level fn used as a value is excluded from the borrow
+/// classification, compute_borrow_param_user_fns). The RC lane therefore
+/// owes the callback one reference per element it hands over and owes the
+/// array exactly one release. The lowerings used to do neither: the
+/// callback consumed an element the array still listed (a use-after-free
+/// the shadow lane catches), a rebuilding callback found the element unique
+/// and rewrote the CALLER's array in place (silently wrong: bump 128004000,
+/// RC 128068000 on the same program), and the shell was never freed (84 B
+/// per call on a two-element array).
+///
+/// Two paths, decided once per array by its rc word (cc_hof_unique_test):
+/// UNIQUE -- the elements are moved out with no retain (a rebuilding
+/// callback then sees a unique block and the reuse fusion fires), and the
+/// shell is released with its length zeroed so rc_drop frees it and its
+/// grown buffer without walking the moved elements (cc_hof_release_moved);
+/// SHARED -- every element handed over is retained first (cc_hof_give), the
+/// other owner's view stays intact, and the array reference is dropped
+/// normally at the end. A lowering that never moves an element (the
+/// predicates any / all / find) retains every element it hands over and
+/// drops the array normally (cc_hof_release_walking). The callback
+/// reference is released after the loop either way -- a bare fn value is
+/// even and rc_drop ignores it. Every emission is RC-only; the bump lane's
+/// bytes are untouched.
+///
+/// The generic owning-position retain (cc_retain_stored_arg's rule) for an
+/// argument already sitting in `local_idx`, plus one rule of its own: when
+/// the PLANNER classified position `pos` of this callee as BORROWED, the
+/// caller passed its reference without a dup and expects it back intact,
+/// so the lowering takes a reference of its own here. That happens when
+/// the program carries a source definition of the same name -- `@vibe/builtin`
+/// declares `let Array::map = ..` as a borrow-only loop, so every program
+/// that imports the package plans its `Array::map(xs, f)` calls as borrows
+/// while this ladder still intercepts the name and consumes. Without the
+/// retain the array was moved out from under the caller (the book's
+/// `Array::push(xs, 4)` after a map answered length 1).
+fn cc_hof_retain_arg(buf: Bytes, carg: Expr, local_idx: Int, fname: String, pos: Int, ctx: CompileCtx) -> Unit with Exception {
+  let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
+  let planner_borrows = ctx.enable_rc && cc_bmask_has(md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask), pos)
+  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow || planner_borrows) {
+    if is_loop_borrow {
+      Array::push(ctx.loop_consumed_names, get_eident_name(carg))
+    } else {
+      ()
+    }
+    emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+  } else {
+    ()
+  }
+}
+
+/// uniq_l := 1 when the array block's rc word is exactly `1 | (5 << 24)`
+/// (one owner, class 5), else 0. A saturated (immortal) word lands on the
+/// shared path, where every step is a plain retain / release.
+fn cc_hof_unique_test(buf: Bytes, arr_l: Int, uniq_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc {
+    emit_local_get(buf, arr_l)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 4)
+    emit_i32_sub(buf)
+    emit_i32_load(buf, 2, 0)
+    emit_i32_const(buf, 83886081)
+    emit_i32_eq(buf)
+    emit_i64_extend_i32_u(buf)
+    emit_local_set(buf, uniq_l)
+  } else {
+    ()
+  }
+}
+
+/// Hand `elem_l` over to something that will own it (a consuming callback,
+/// the result array): on the shared path retain it first; on the unique
+/// path it moves.
+fn cc_hof_give(buf: Bytes, elem_l: Int, uniq_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc {
+    emit_local_get(buf, uniq_l)
+    emit_i64_eqz(buf)
+    emit_if_void(buf)
+    emit_rc_dup_guarded(buf, elem_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+    emit_end(buf)
+  } else {
+    ()
+  }
+}
+
+/// The unique path's release of an element the lowering is NOT handing over
+/// (Array::filter's rejected element): the array's reference to it is spent
+/// here, since the shell is freed without walking its elements.
+fn cc_hof_discard(buf: Bytes, elem_l: Int, uniq_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, uniq_l)
+    emit_i64_eqz(buf)
+    emit_i32_eqz(buf)
+    emit_if_void(buf)
+    emit_local_get(buf, elem_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    emit_end(buf)
+  } else {
+    ()
+  }
+}
+
+/// Release the callback reference (`fn_l` < 0: no callback).
+fn cc_hof_release_fn(buf: Bytes, fn_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && fn_l >= 0 {
+    emit_local_get(buf, fn_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+  } else {
+    ()
+  }
+}
+
+/// Release an array whose elements were moved out on the unique path: zero
+/// its length first so rc_drop frees the shell (and a grown buffer) without
+/// walking them; on the shared path the drop is the ordinary decrement.
+fn cc_hof_release_moved(buf: Bytes, arr_l: Int, uniq_l: Int, fn_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, uniq_l)
+    emit_i64_eqz(buf)
+    emit_i32_eqz(buf)
+    emit_if_void(buf)
+    emit_local_get(buf, arr_l)
+    emit_i64_const(buf, -2)
+    emit_i64_and(buf)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 0)
+    emit_i32_store(buf, 2, 4)
+    emit_end(buf)
+    emit_local_get(buf, arr_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    cc_hof_release_fn(buf, fn_l, ctx)
+  } else {
+    ()
+  }
+}
+
+/// Release an array none of whose elements were moved (the predicates): the
+/// ordinary drop walks and releases them.
+fn cc_hof_release_walking(buf: Bytes, arr_l: Int, fn_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, arr_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+    cc_hof_release_fn(buf, fn_l, ctx)
+  } else {
+    ()
+  }
+}
+
+/// Release the value a result slot holds before it is overwritten (the
+/// `None` a search lowering stages before its loop).
+fn cc_hof_release_slot(buf: Bytes, slot_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, slot_l)
+    emit_call(buf, ctx.rc_drop_func_idx)
+  } else {
+    ()
+  }
+}
+
+/// A predicate owns its parameter but the array keeps its element: retain
+/// before the call, unconditionally.
+fn cc_hof_lend(buf: Bytes, elem_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc {
+    emit_rc_dup_guarded(buf, elem_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+  } else {
+    ()
+  }
+}
+
 /// #664/#678: is `e` statically a known integer that must NOT be run through
 /// `__to_string`'s string-pointer heuristic (which misreads a large int as an
 /// empty string)? An Int literal, a bitwise/shift/mod expression (those
@@ -3830,6 +4005,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let slot_l = nl + 5
       let env_l = nl + 6
       let elem_l = nl + 7
+      let uniq_l = nl + 8
       Array::push(local_names, "__map_arr")
       Array::push(local_names, "__map_fn")
       Array::push(local_names, "__map_res")
@@ -3838,8 +4014,12 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__map_slot")
       Array::push(local_names, "__map_env")
       Array::push(local_names, "__map_elem")
+      Array::push(local_names, "__map_uniq")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
+      cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
       emit_local_get(buf, arr_l)
@@ -3858,6 +4038,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_local_get(buf, i_l)
       emit_call(buf, arr_get_fi)
       emit_local_set(buf, elem_l)
+      cc_hof_give(buf, elem_l, uniq_l, ctx)
       emit_local_get(buf, elem_l)
       emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
       emit_local_set(buf, elem_l)
@@ -3871,8 +4052,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_hof_release_moved(buf, arr_l, uniq_l, fn_l, ctx)
       emit_local_get(buf, res_l)
-      nl + 8
+      nl + 9
     }
     else if fname == "Array::filter" {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -3889,6 +4071,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let slot_l = nl + 5
       let env_l = nl + 6
       let elem_l = nl + 7
+      let uniq_l = nl + 8
       Array::push(local_names, "__filter_arr")
       Array::push(local_names, "__filter_fn")
       Array::push(local_names, "__filter_res")
@@ -3897,8 +4080,12 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__filter_slot")
       Array::push(local_names, "__filter_env")
       Array::push(local_names, "__filter_elem")
+      Array::push(local_names, "__filter_uniq")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
+      cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
       emit_local_get(buf, arr_l)
@@ -3917,13 +4104,17 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_local_get(buf, i_l)
       emit_call(buf, arr_get_fi)
       emit_local_set(buf, elem_l)
+      cc_hof_lend(buf, elem_l, ctx)
       emit_local_get(buf, elem_l)
       emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
+      cc_hof_give(buf, elem_l, uniq_l, ctx)
       emit_local_get(buf, res_l)
       emit_local_get(buf, elem_l)
       emit_call(buf, arr_push_fi)
+      emit_else(buf)
+      cc_hof_discard(buf, elem_l, uniq_l, ctx)
       emit_end(buf)
       emit_local_get(buf, i_l)
       emit_index_one(buf, ctx)
@@ -3932,8 +4123,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_hof_release_moved(buf, arr_l, uniq_l, fn_l, ctx)
       emit_local_get(buf, res_l)
-      nl + 8
+      nl + 9
     }
     else if fname == "Array::fold" {
       let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
@@ -3948,6 +4140,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let i_l = nl + 4
       let slot_l = nl + 5
       let env_l = nl + 6
+      let elem_l = nl + 7
+      let uniq_l = nl + 8
       Array::push(local_names, "__fold_arr")
       Array::push(local_names, "__fold_acc")
       Array::push(local_names, "__fold_fn")
@@ -3955,9 +4149,15 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__fold_i")
       Array::push(local_names, "__fold_slot")
       Array::push(local_names, "__fold_env")
+      Array::push(local_names, "__fold_elem")
+      Array::push(local_names, "__fold_uniq")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, acc_l)
       emit_local_set(buf, arr_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), acc_l, fname, 1, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 2), fn_l, fname, 2, ctx)
+      cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
       emit_local_set(buf, len_l)
@@ -3970,10 +4170,13 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_local_get(buf, len_l)
       emit_i64_ge_s(buf)
       emit_br_if(buf, 1)
-      emit_local_get(buf, acc_l)
       emit_local_get(buf, arr_l)
       emit_local_get(buf, i_l)
       emit_call(buf, arr_get_fi)
+      emit_local_set(buf, elem_l)
+      cc_hof_give(buf, elem_l, uniq_l, ctx)
+      emit_local_get(buf, acc_l)
+      emit_local_get(buf, elem_l)
       emit_closure_call_tail(buf, env_l, slot_l, 9, 2)
       emit_local_set(buf, acc_l)
       emit_local_get(buf, i_l)
@@ -3983,8 +4186,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_hof_release_moved(buf, arr_l, uniq_l, fn_l, ctx)
       emit_local_get(buf, acc_l)
-      nl + 7
+      nl + 9
     }
     else if !prefer_bound_call && fname == "Array::iter_eager" {
       let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
@@ -3997,14 +4201,21 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let i_l = nl + 3
       let slot_l = nl + 4
       let env_l = nl + 5
+      let elem_l = nl + 6
+      let uniq_l = nl + 7
       Array::push(local_names, "__iter_arr")
       Array::push(local_names, "__iter_fn")
       Array::push(local_names, "__iter_len")
       Array::push(local_names, "__iter_i")
       Array::push(local_names, "__iter_slot")
       Array::push(local_names, "__iter_env")
+      Array::push(local_names, "__iter_elem")
+      Array::push(local_names, "__iter_uniq")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
+      cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
       emit_local_set(buf, len_l)
@@ -4020,6 +4231,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_local_get(buf, arr_l)
       emit_local_get(buf, i_l)
       emit_call(buf, arr_get_fi)
+      emit_local_set(buf, elem_l)
+      cc_hof_give(buf, elem_l, uniq_l, ctx)
+      emit_local_get(buf, elem_l)
       emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
       emit_drop(buf)
       emit_local_get(buf, i_l)
@@ -4029,8 +4243,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_hof_release_moved(buf, arr_l, uniq_l, fn_l, ctx)
       emit_local_get(buf, i_l)
-      nl + 6
+      nl + 8
     }
     else if fname == "Array::reverse" {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -4042,11 +4257,17 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let res_l = nl + 1
       let len_l = nl + 2
       let i_l = nl + 3
+      let elem_l = nl + 4
+      let uniq_l = nl + 5
       Array::push(local_names, "__rev_arr")
       Array::push(local_names, "__rev_res")
       Array::push(local_names, "__rev_len")
       Array::push(local_names, "__rev_i")
+      Array::push(local_names, "__rev_elem")
+      Array::push(local_names, "__rev_uniq")
       emit_local_set(buf, arr_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
       emit_local_get(buf, arr_l)
@@ -4062,10 +4283,13 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_const(buf, 0)
       emit_i64_lt_s(buf)
       emit_br_if(buf, 1)
-      emit_local_get(buf, res_l)
       emit_local_get(buf, arr_l)
       emit_local_get(buf, i_l)
       emit_call(buf, arr_get_fi)
+      emit_local_set(buf, elem_l)
+      cc_hof_give(buf, elem_l, uniq_l, ctx)
+      emit_local_get(buf, res_l)
+      emit_local_get(buf, elem_l)
       emit_call(buf, arr_push_fi)
       emit_local_get(buf, i_l)
       emit_index_one(buf, ctx)
@@ -4074,8 +4298,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_hof_release_moved(buf, arr_l, uniq_l, 0 - 1, ctx)
       emit_local_get(buf, res_l)
-      nl + 4
+      nl + 6
     }
     else if fname == "Array::concat" {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -4098,6 +4323,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__cat_elem")
       emit_local_set(buf, b_l)
       emit_local_set(buf, a_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), a_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), b_l, fname, 1, ctx)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
       emit_local_get(buf, a_l)
@@ -4208,6 +4435,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_hof_release_walking(buf, a_l, 0 - 1, ctx)
+      cc_hof_release_walking(buf, b_l, 0 - 1, ctx)
       emit_local_get(buf, res_l)
       nl + 6
     }
@@ -4223,6 +4452,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let slot_l = nl + 4
       let env_l = nl + 5
       let res_l = nl + 6
+      let elem_l = nl + 7
       Array::push(local_names, "__any_arr")
       Array::push(local_names, "__any_fn")
       Array::push(local_names, "__any_len")
@@ -4230,8 +4460,11 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__any_slot")
       Array::push(local_names, "__any_env")
       Array::push(local_names, "__any_res")
+      Array::push(local_names, "__any_elem")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
       emit_local_set(buf, len_l)
@@ -4249,6 +4482,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_local_get(buf, arr_l)
       emit_local_get(buf, i_l)
       emit_call(buf, arr_get_fi)
+      emit_local_set(buf, elem_l)
+      cc_hof_lend(buf, elem_l, ctx)
+      emit_local_get(buf, elem_l)
       emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
@@ -4263,6 +4499,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_hof_release_walking(buf, arr_l, fn_l, ctx)
       emit_local_get(buf, res_l)
       // Under RC a Bool is a TAGGED scalar (n << 1: true=2, false=0); res_l holds
       // a raw 0/1 built from i64 consts, so tag it here. Without this the raw
@@ -4276,7 +4513,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
-      nl + 7
+      nl + 8
     }
     else if fname == "Array::all" {
       let (arr_len_fi, _, _) = resolve_func(ctx.func_table, "Array::length")
@@ -4290,6 +4527,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let slot_l = nl + 4
       let env_l = nl + 5
       let res_l = nl + 6
+      let elem_l = nl + 7
       Array::push(local_names, "__all_arr")
       Array::push(local_names, "__all_fn")
       Array::push(local_names, "__all_len")
@@ -4297,8 +4535,11 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__all_slot")
       Array::push(local_names, "__all_env")
       Array::push(local_names, "__all_res")
+      Array::push(local_names, "__all_elem")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
       emit_local_set(buf, len_l)
@@ -4316,6 +4557,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_local_get(buf, arr_l)
       emit_local_get(buf, i_l)
       emit_call(buf, arr_get_fi)
+      emit_local_set(buf, elem_l)
+      cc_hof_lend(buf, elem_l, ctx)
+      emit_local_get(buf, elem_l)
       emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
       emit_i32_wrap_i64(buf)
       emit_i64_extend_i32_s(buf)
@@ -4332,6 +4576,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_hof_release_walking(buf, arr_l, fn_l, ctx)
       emit_local_get(buf, res_l)
       // Under RC a Bool is a TAGGED scalar (n << 1); tag the raw 0/1 result so it
       // matches tagged Bool literals (see Array::any above). #776/hof_test.
@@ -4341,7 +4586,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
-      nl + 7
+      nl + 8
     }
     else if fname == "Array::find" {
       // #1065: `res_l` holds an `Option[T]`, NOT a raw scalar (unlike
@@ -4382,6 +4627,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let mut nl2 = nl + 8
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
       emit_local_set(buf, len_l)
@@ -4400,11 +4647,20 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_local_get(buf, i_l)
       emit_call(buf, arr_get_fi)
       emit_local_set(buf, elem_l)
+      cc_hof_lend(buf, elem_l, ctx)
       emit_local_get(buf, elem_l)
       emit_closure_call_tail(buf, env_l, slot_l, 9, 1)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
+      // The Some takes a reference of its own; the array keeps its element
+      // until the walking release below.
+      cc_hof_lend(buf, elem_l, ctx)
       nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__find_elem", -1)], -1), local_names, nl2, ctx, ld)
+      // The `None` staged in res_l before the loop is a 16-byte nullary
+      // block on the RC lane; overwriting it with the Some leaked it on
+      // every hit (measured 16 B per call, payload- and callback-
+      // independent). Release it first.
+      cc_hof_release_slot(buf, res_l, ctx)
       emit_local_set(buf, res_l)
       emit_br(buf, 2)
       emit_end(buf)
@@ -4415,6 +4671,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_hof_release_walking(buf, arr_l, fn_l, ctx)
       emit_local_get(buf, res_l)
       nl2
     }
@@ -5457,6 +5714,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         ()
       }
       nl2 = ce(buf, ECall(EIdent("Some", -1), [EIdent("__mbg_val", -1)], -1), local_names, nl2, ctx, ld)
+      // Same staged-`None` leak as Array::find's hit path (#2671): the
+      // nullary block res_l holds is released before the Some replaces it.
+      cc_hof_release_slot(buf, res_l, ctx)
       emit_local_set(buf, res_l)
       emit_br(buf, 2)
       emit_end(buf)

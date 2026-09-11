@@ -280,6 +280,157 @@ the RC lane's wall time is made of, and reuse buys allocation traffic, not
 wall. The lever for the ≤1.2× target is elsewhere (dup/drop traffic, the
 RC entry sequences), as the issue's last measurement already concluded.
 
+### Where reuse pays, and why the self-compile does not see it (2026-09-11)
+
+`bench/exec/tree_rebuild.vibe` is the pattern: a unique tree rebuilt by
+`match` through the shapes the tiers distinguish. Measured under viberun
+fuel (deterministic instruction cost; `VIBE_FUEL=1`) per shape, one
+variant per shape run in isolation, 12 rounds over depth-11 trees, with
+three compilers -- reuse disabled entirely (both tiers return -1, a
+scratch build), the branch base (slices 1-2), and this slice:
+
+| shape (rebuilds per round) | reuse off | branch base | this slice | rebuild allocation |
+|---|---:|---:|---:|---|
+| `only_tail`: constructor tail (3) | 18.31M / rebuild | 3.59M | 3.59M | 0 B (114,664 = the build alone) |
+| `only_shared`: same rebuild, source kept alive (3) | 18.92M | 9.43M | 9.43M | one fresh tree per shared rebuild |
+| `only_mirror`: constructor in an `if` branch (3) | 18.85M | 19.34M | 4.40M | 229,328 → 114,672 B |
+| `only_clamp`: one branch at another size (2) | 9.55M | 9.82M | 3.69M | token released on that path |
+| `only_weigh`: held bind, right spine only (3) | 1.86M | 1.86M | 1.82M | dominated by the `checksum` reads |
+
+A fused rebuild costs ~5x fewer instructions than the normal path
+(bind-time dups, recursive drop, free-list push, alloc, header init) and
+allocates nothing; a staged arm whose test fails costs the normal path plus
+the test (`only_mirror` on the branch base, +2.6%). The container shape
+decides everything (8 depth-8 trees, 12 rounds, 3 rebuild passes):
+
+| container shape | reuse off | fused | note |
+|---|---:|---:|---|
+| `only_chain8`: unique chains, no container | 69.9M | 25.8M | the reference |
+| `only_forest`: `Array::map(arr, incr)` | 74.8M | 30.7M | the element reaches the callback without a retain, so it is unique |
+| `only_forest_loop`: `Array::push(out, incr(Array::get(arr, i)))` | 74.9M | 77.8M | `Array::get` is a borrowed view; the owned argument position retains it, every root is shared, nothing reuses, the staging is pure cost |
+
+The compiler itself is written in the third shape: its sources hold 30
+`Array::map` calls against 43,587 `Array::get`, 11,523 index `while`
+loops and 8,418 `Array::set` (statements rewritten in place, `match
+Array::get(stmts, i)` 7,684 times). A pass receives its tree as a
+pattern-bound field of a statement that the statement array still owns,
+so the root of every rebuild is shared, the shared path dups the children,
+and the whole cascade below it allocates fresh. Measured on the RC-built
+compiler compiling the full closure (viberun fuel, cold isolated cache):
+reuse on vs the reuse-disabled build is **+0.38%** instructions
+(175.26G vs 174.60G) and +0.25% allocation -- the staging runs, the
+uniqueness test fails, and the fallback costs a little. Counted with a
+scratch build whose staging code increments a memory counter (verified on
+the exec shapes: the unique chains and the `Array::map` forest hit 147,168
+of 147,168, the index loop 0 of 147,168): the full-closure self-compile
+stages **2,637,481** uniqueness tests and **1,078** pass (0.04%).
+
+The profile of the same compile (`scripts/profile_compile.sh`, names
+build) puts the RC lane's cost where reuse cannot reach: `__rt_rc_dup`
+33.2% of CPU, `__rt_rc_drop` 3.1%, `__rt_rc_alloc` 3.1%. Even a perfect
+allocation-free compiler would move the ADR-0092 ratio by a few percent;
+the lever is the retain traffic -- borrowed reads the inference cannot
+prove (every `Array::get` result passed on, every pattern field consumed
+through a container it does not own) -- and the code shape that produces
+unique inputs (a consuming `map` / a move out of a container) which the
+compiler's own style does not use.
+
+### The HOF lowerings own what they are handed (#2671)
+
+Measuring the forest shape exposed that the RC lowerings of the Array
+higher-order builtins (`map` / `filter` / `fold` / `iter_eager` / `any` /
+`all` / `find` / `reverse` / `concat`) did no ownership accounting at all.
+Each consumes its array argument (the planner counts the position as
+owning) and calls a callback that OWNS its parameter, so the lane owes the
+callback one reference per element handed over and owes the array one
+release. The lowerings did neither: `Array::map` over an array the caller
+still held handed each element to the rebuilding callback without a
+retain, the callback found the block unique, the reuse fusion fired, and
+the CALLER's array was rewritten in place -- silently wrong (bump 1280400,
+RC 1286800 on the same program); `filter` / `fold` / a capturing `map`
+freed elements the array still listed (the shadow lane's dup-of-freed);
+`find`'s `Some(t)` and `reverse` read freed payloads; and no shell was
+ever released (84 B per `map` call on a two-element array).
+
+Fixed in the lowerings (`compile_call.vibe`, `cc_hof_*`): one rc-word test
+per array decides the path. UNIQUE -- the elements are moved out with no
+retain (a rebuilding callback sees a unique block and fuses), a rejected
+element is released by the lowering, and the shell is freed with its
+length zeroed so the walk skips the moved elements. SHARED -- every element
+handed over is retained first and the array is dropped normally at the
+end. The predicates (`any` / `all` / `find`) never move an element: retain
+per call, walking drop at the end; `concat` retains what it copies and
+releases both inputs; the callback reference is released after the loop
+either way. Two staged-`None` leaks fell out of the same measurement:
+`find` and `MapBuilder::get` initialise their result slot with a 16-byte
+nullary block and overwrote it on a hit.
+
+One more rule, found by the book's collections chapter: the lowering owns
+an argument only where the PLANNER planned an owning position. `@vibe/builtin`
+declares `let Array::map = ..` as a borrow-only loop, so a program that
+imports the package (the book does, for `trait Iterator`) plans every
+`Array::map(xs, f)` call as a borrow -- no dup, the caller expects `xs`
+back -- while the ladder still intercepts the name and consumes. The first
+cut moved the array out from under the caller (`Array::push(xs, 4)` after
+a map answered length 1). `cc_hof_retain_arg` now also retains an argument
+whose position the planner classified as borrowed
+(`md_borrow_mask_of`), so the lowering holds a reference of its own and the
+caller keeps its; such a program never sees the unique path for that name,
+which is the honest price of shadowing an intrinsic with a source
+definition the planner reads.
+
+Pinned by `tests/hof_rc_ownership_test.vibe` (bump / RC / RC-shadow
+agreement on every builtin, shared and unique sources, a capturing closure
+used by three maps, a source-level `Array::map` shadowing the intrinsic),
+the HOF shapes of `fixtures/rc_reclaim_leak_test.vibe`
+(the shell release, under the 2,000-byte bound) and shape 10 of
+`fixtures/rc_shadow_regression_test.vibe`. Three neighbours found on the
+way are filed, not fixed here: an unannotated lambda parameter consumed
+three times is released early (#2681, P0), an owned call result passed
+straight into a borrowed argument position is never released (#2682), and
+a `MapBuilder` is never reclaimed (#2683). A fourth, in the compiler rather
+than the lane, is fixed on the same branch: a bound `+` chain of 24
+operands ran the compiler out of memory because the trait-dict operand
+inference walked each operand twice per node (#2680).
+
+### An FBIP-shaped rewrite of one pass, measured (2026-09-11)
+
+The question behind #2389 was whether the compiler's own code could be
+moved toward the shape reuse rewards. One pass was rewritten to find out:
+`lift_match_scrutinees` (`normalize/normalize.vibe`), whose arms are
+already same-shape constructor rebuilds and whose child arrays were rebuilt
+with `for` comprehensions -- a comprehension reads each element through a
+borrow, so everything below an array boundary was shared and allocated
+fresh. The comprehensions became consuming `Array::map` helpers
+(`lms_exprs` / `lms_arms` / `lms_named`, closures capturing the counter),
+which after the ownership fix above move the elements out of a unique
+array. Measured on the flat-source RC-lane self-compile through two
+counter-instrumented RC-built compilers (the same input, cold, viberun
+fuel):
+
+| | fuel | allocated | output | staged | unique |
+|---|---:|---:|---|---:|---:|
+| before | 1,177,116,818,175 | 1,836,094,292 B | 4,978,430 B | 3,970,084 | 826 |
+| after | 1,177,155,083,233 (+0.003%) | 1,836,094,276 B | byte-identical | 3,970,084 | 826 |
+
+Neutral, and the counters say why: not one more uniqueness test passed.
+The pass never receives a unique tree. Its root is `get_slet_expr(pb_stmt)`
+-- a field of a statement the statement array still owns -- run through
+`uniquify_shadowed_bindings`, which hands back every unchanged subtree
+as is (structure sharing, by design), so a moving map finds shared arrays
+all the way down and takes the retaining path, exactly as the comprehension
+did. Uniqueness has to be produced upstream, by a pipeline that transfers
+its statement array from pass to pass (`let stmts = pass(stmts)`) instead
+of mutating it in place through borrowed reads (`pass(stmts)`, every desugar
+today), and that is a change to the pipeline's ownership, not to any one
+pass. The rewrite is not landed: it buys nothing yet, costs one closure
+block per array-bearing node, and under the committed seed -- whose
+`Array::map` still hands the callback elements the shared tree owns -- the
+FS-lane test harness traps in `expr_contains_exceptions` reading a freed
+node (the flat self-compile happens to produce identical bytes, the freed
+nodes not being reused before they are read). It is attached to the PR
+for the record.
+
 Pinned by `tests/perceus_reuse_plan_test.vibe` (plan rows, blocker
 semantics, ineligible shapes, the anywhere-consumer and held-bind rows),
 `tests/perceus_reuse_e2e_test.vibe` (bump/RC output agreement on the unique

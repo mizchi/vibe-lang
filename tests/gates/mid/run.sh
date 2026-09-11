@@ -413,8 +413,8 @@ lk_result="$(printf '%s' "$lk_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
 if [ -z "$lk_used" ]; then
   echo "[compiler-gate] FAIL: could not measure rc_reclaim_leak heap ($lk_json)" >&2; exit 1
 fi
-if [ "$lk_result" != "4200390000" ]; then
-  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 4200390000)" >&2; exit 1
+if [ "$lk_result" != "6400600000" ]; then
+  echo "[compiler-gate] FAIL: rc_reclaim_leak wrong result $lk_result (want 6400600000)" >&2; exit 1
 fi
 if [ "$lk_used" -ge 2000 ]; then
   echo "[compiler-gate] FAIL: rc_reclaim_leak heap_used=$lk_used >= 2000 (RC reclamation regressed; ~800000 == full leak)" >&2; exit 1
@@ -445,12 +445,12 @@ if [ ! -s "$shdir/shadow.wasm" ]; then
   exit 1
 fi
 sh_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$shdir/shadow.wasm" 2>&1 | tail -1)"
-if [ "$sh_out" != "25297489" ]; then
-  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25297489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
+if [ "$sh_out" != "25377489" ]; then
+  echo "[compiler-gate] FAIL: rc_shadow_regression got '$sh_out' (want 25377489). A trap here means an RC dup/drop accounting regression touched a freed block -- see fixtures/rc_shadow_regression_test.vibe for which shapes are covered and issue #715 for the debugging methodology." >&2
   exit 1
 fi
 rm -rf "$shdir"
-echo "[compiler-gate] RC shadow-liveness regression guard ok (25297489)"
+echo "[compiler-gate] RC shadow-liveness regression guard ok (25377489)"
 
 # 40f1a. #2427: the shadow table must not overlap the heap it describes.
 #        40f above proves the marks catch a real dup/drop-of-freed; this
