@@ -278,12 +278,31 @@ spec:A2_N6_MutMapN6_StringN6_String   MutMap[String, String]
 Every one is a **builtin or core generic at a concrete instantiation** —
 `Option`, `MutMap`, `MutSet`. No user-declared type appears.
 
-And they are **disjoint from the 15 invisible nominals**, which are all compiler
-AST and core types (`Expr`, `Stmt`, `Pat`, `Token`, `TypeEnv`, `Json`, …).
-`Option`, `MutMap` and `MutSet` are not among them. So this is a *different*
-mechanism from #2631 rather than the same one on the `TyApp` side, and saying
-which mechanism it is needs another measurement — the counters establish that
-the request is never made and what the five have in common, not yet why.
+Three of the five are **#2631's mechanism exactly**:
+
+```
+lib/@vibe/core/index.vpkg:72     type MutMap[K, V]          ← opaque, generic
+lib/@vibe/core/hashmap.vibe:52   export struct MutMap[K, V] ← the real declaration
+```
+
+Opaque in the `.vpkg` contract, concrete in the sibling implementation — the
+`PerceusActionKind` shape. `MutSet` is the same.
+
+They did not *look* like it, and that was the instrument rather than the
+program. The invisible-nominal recorder sat on `eq_for_typed`'s `TyName`
+fallthrough; `MutMap[String, Int]` is a `TyApp`, which takes a generic-head arm,
+finds nothing in the generic-struct registry and declines *silently*. So the two
+sets looked disjoint and the same cause read as two. **A measurement that covers
+one arm of a dispatch reports the other arm as absence.** With the `TyApp`
+fallthrough recorded too, `invisible_split` goes 15 → 17 and the two new entries
+are exactly `MutMap[]` and `MutSet[]` — while `invisible_whole` stays **0**, so
+the arm is unreachable on the whole-program lane just like its twin.
+
+The remaining two, `Array[Option[Int]]` and `Array[Option[String]]`, are **not**
+explained by that. `Option` is a true builtin — there is no `enum Option`
+declaration anywhere under `lib/`, it is handled by a builtin arm rather than a
+declaration — and it does not appear among the invisible heads. That cause is
+unmeasured, and this document is not going to guess a third reading for it.
 
 **The evidence family — 6 rows.** `struct:__EvDict_Source` itself, plus the
 functions the whole-program evidence pass rewrote to take an explicit
