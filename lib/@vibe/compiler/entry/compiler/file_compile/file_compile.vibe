@@ -1649,11 +1649,29 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
   // entry name (`run`, `main`) must not share one artifact slot, or their
   // concurrent stores race on the same temp file and one aborts.
   let artifact_key = String::concat("self-describing-", compact_string_fingerprint(entry_path))
-  let cache_in = match load_persistent_artifact("codegen-body-cache", entry_name, artifact_key) {
-    Some(stored) => decode_body_cache_artifact_for(stored, file_paths, file_fps, file_counts),
-    None => codegen_body_cache_new()
+  // `"off"` IS OFF (#2647 Codex round 5). It used to load the artifact, compile
+  // against it and store the result -- only `"verify"` was special-cased, so
+  // every other value behaved like `"on"` while reading as a bypass. The
+  // adapter only ever passes `"verify"` or `"on"`, so nothing in production
+  // changes; what this fixes is a caller that asks for no cache and gets one.
+  //
+  // A parity test between two compiles of the SAME program is the case that
+  // makes it matter: the first call populates the shared artifact under a key
+  // derived from the entry path, and the second can replay those bodies. A
+  // body-level difference between the lanes would then be cached away and the
+  // comparison would pass while measuring nothing.
+  let caching = cache_mode != "off"
+  let cache_in = if caching {
+    match load_persistent_artifact("codegen-body-cache", entry_name, artifact_key) {
+      Some(stored) => decode_body_cache_artifact_for(stored, file_paths, file_fps, file_counts),
+      None => codegen_body_cache_new()
+    }
+  } else {
+    codegen_body_cache_new()
   }
-  if cache_mode == "verify" {
+  if !caching {
+    compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_new(), lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
+  } else if cache_mode == "verify" {
     let fresh_out = codegen_body_cache_new()
     let fresh = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
     if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_in, fresh_out) {
