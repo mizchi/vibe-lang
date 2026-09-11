@@ -6528,9 +6528,16 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   let pre_prelude_let_files = lc_fresh_int_array()
   // The same, keyed by OWNER: what a lambda hoisted out of each statement
   // would name itself after (`hoisted_lambda_owner_of_stmt`, the hoist's own
-  // arms rather than a mirror of them here). Built only when there is
-  // provenance to attach -- the break lane -- so an ordinary compile pays
-  // nothing, which is why it is not folded into the name scan below.
+  // arms rather than a mirror of them here). Built for the BREAK LANE only --
+  // one `hoisted_lambda_owner_of_stmt` per top-level statement, ~9.9k of them
+  // on the compiler's own closure -- so an ordinary compile pays nothing.
+  //
+  // The condition is `debug_break` itself. It used to be "prov carries any
+  // stmt_file_id", which was a PROXY for the break lane and correct only while
+  // the break lane was the only caller that filled provenance. #2575 item 2
+  // gives the ordinary lane a real `stmt_file_id` (a per-module prelude needs
+  // it), and under the old guard that would have silently switched this scan on
+  // for every compile while `dbg_line_on` kept the arrays unread.
   let pre_prelude_owner_keys = lc_fresh_string_array()
   let pre_prelude_owner_files = lc_fresh_int_array()
   let dbg_prov_len = Array::length(prov.stmt_file_id)
@@ -6545,7 +6552,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
     } else {
       0
     }
-    if dbg_prov_len > 0 {
+    if debug_break {
       // EVERY statement, including the ones with no name to be known by. A
       // binderless `let _ = ..` holding an effectful local lambda gets an
       // anonymous owner from its POSITION (`:s:<idx>`), which is why the index
@@ -12152,8 +12159,29 @@ export fn compile_wasi_module_rc_cached_impl(stmts_in: Array[Stmt], entry_name: 
 /// call-result offsets (#2158), so the body-cached FS lane compiles the same
 /// program the ordinary rc lane does and their outputs stay byte-comparable.
 export fn compile_wasi_module_rc_cached_impl_with_typed_offsets(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_prov(stmts_in, entry_name, body_cache_in, body_cache_out, empty_dbg_prov(), checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+}
+
+/// #2575 item 2: the same RC production compile, given the merged program's
+/// statement-to-module map.
+///
+/// `prov` carries `files` (one basename per module) and `stmt_file_id` (one
+/// module id per merged PRE-PRELUDE top-level statement). It does NOT carry
+/// `file_nls` -- the per-file newline tables are the expensive half of the
+/// break lane's provenance and a per-module prelude has no use for them.
+///
+/// The map is what `prelude_run_per_module` needs and cannot currently be
+/// given: `effect_lowering_prelude` takes only the merged statement array, so
+/// no production compile can split it by module. Carrying it to codegen is the
+/// prerequisite, and it is INERT until something reads it -- every break-lane
+/// consumer is behind `dbg_line_on`, which requires `debug_break`, and the
+/// owner-key scan above now tests that flag rather than the presence of
+/// provenance. `linked_compile_prov_inert_test.vibe` pins the inertness the
+/// only way that settles it: the same program compiled both ways, byte for
+/// byte.
+export fn compile_wasi_module_rc_cached_impl_with_prov(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, empty_dbg_prov(), body_cache_in, body_cache_out, 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, prov, body_cache_in, body_cache_out, 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
 }
 
 /// Preserve the post-lowering AST for the explicit `no-dce` compile mode.
