@@ -11,7 +11,7 @@ English version: [04_control_flow.vibe.md](../en/04_control_flow.vibe.md)
 ## `if`
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let v = if 1 < 2 {
     "yes"
   } else {
@@ -44,7 +44,7 @@ fn find_first_neg(arr: Array[Int]) -> Int {
   return -1
 }
 
-fn main with Console {
+fn main allows Console {
   println("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}")
   println("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}")
 }
@@ -61,7 +61,7 @@ find_first_neg([1, 2]) = -1
 宣言し、`continue` が次の周の値を渡し、`break` が結果とともに終わらせます。
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let sum = loop (i = 0, acc = 0) {
     if i >= 10 {
       break acc
@@ -84,7 +84,7 @@ sum = 45
 `break` が取るのは単一の結果なので、2つ返したければタプルを返します:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let r = loop (i = 0, acc = 0) {
     if i >= 3 {
       break (acc, i)
@@ -105,7 +105,7 @@ r = (3, 3)
 名前を足すと添字が取れます:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let doubled = for x in [1, 2, 3] {
     x * 2
   }
@@ -135,7 +135,7 @@ fn pair(a: Int, b: Int) -> Int {
   a * 10 + b
 }
 
-fn main with Console {
+fn main allows Console {
   let trimmed_len = "  hi  " |> String::trim |> String::length
   let arr_len = [1, 2, 3] |> Array::length
   let mapped = [1, 2, 3] |> Iterator::map(_, _ * 2)

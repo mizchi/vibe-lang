@@ -16,6 +16,7 @@ import ./parser_base.vibe {
   expect_tk,
   has_qualified_pattern_refs,
   has_test_effect_rows,
+  parse_allows_row,
   parse_binding_name,
   parse_binding_name_with_binder_context,
   parse_derive_names,
@@ -40,6 +41,7 @@ import ./parser_base.vibe {
   parse_type_alias_stmt,
   parse_type_alias_stmt_with_binder_context,
   peek,
+  peek_is_allows,
   record_test_effect_row,
   skip_derive,
   take_qualified_pattern_refs,
@@ -88,18 +90,31 @@ fn empty_names() -> Array[String] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
 
-/// #1508: `with <row>` between the name and the body widens this test's ambient
-/// effect row (`docs/spec/test-example-capabilities.md`). The row is logged and
-/// folded into a trailing `STestEffectRows` marker rather than stored on
-/// `STest` -- see the marker's declaration in @vibe/ast for why.
+/// `allows <row>` between the name and the body widens this test's ambient
+/// effect row (`docs/spec/test-example-capabilities.md`, #1508). A test,
+/// bench or example is an entry point: nothing calls it, so its row is a
+/// GRANT and `allows` is the word (ADR-0088). The row is logged and folded
+/// into a trailing `STestEffectRows` marker rather than stored on `STest` --
+/// see the marker's declaration in @vibe/ast for why.
+///
+/// `with <row>` is the legacy spelling of the same grant. It is still read
+/// because the committed seed compiles lib/** tests that carry it; `vibe
+/// check` reports it with the `allows` edit, and the rejection lands with the
+/// bootstrap bump that migrates those sources.
 fn parse_test_row_suffix(tokens: Array[Token], name: String, pos: Int) -> Int with Exception {
-  match peek(tokens, pos) {
-    TWith => {
-      let (row, after) = parse_effect_row(tokens, pos + 1)
-      record_test_effect_row(name, row)
-      after
-    },
-    _ => pos
+  if peek_is_allows(tokens, pos) {
+    let (row, after) = parse_allows_row(tokens, pos + 1)
+    record_test_effect_row(name, row)
+    after
+  } else {
+    match peek(tokens, pos) {
+      TWith => {
+        let (row, after) = parse_effect_row(tokens, pos + 1)
+        record_test_effect_row(name, row)
+        after
+      },
+      _ => pos
+    }
   }
 }
 
@@ -124,7 +139,11 @@ fn parse_test_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: 
 fn parse_example_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TString(name) => {
-      let br = expect_tk(tokens, pos + 1, "{")
+      // An example is an entry point like a test and grants its row the same
+      // way (`example "n" allows Console { .. }`); the row is keyed on the
+      // name, which the STest lowering keeps.
+      let after_row = parse_test_row_suffix(tokens, name, pos + 1)
+      let br = expect_tk(tokens, after_row, "{")
       let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
       (SExample(name, body), end)
     },
@@ -906,6 +925,16 @@ fn zero_alloc_marker_ident(mode: String) -> String {
 /// parse_stmt_preserving) — used by the printer/normalize round-trip so
 /// `vibe normalize` re-emits `fn name(..) -> T where { .. } { .. }` instead
 /// of rewriting it to `let rec` form (ADR-0064 #727).
+///
+/// The parse's two logs -- the qualified-pattern refs and the `test` /
+/// `bench` / `example` rows (#1508, ADR-0088) -- are folded into their
+/// trailing markers at the end, exactly as `parse_program` folds them: this
+/// entry used to return without draining either, so the rows a block
+/// declared never reached the printer (`vibe normalize` dropped them) and
+/// leaked into the NEXT parse's marker instead (Codex review on PR #2653).
+/// `parse_program` runs its own fold after lowering, which then finds the
+/// logs already drained; the markers were appended last here and the
+/// lowerings keep statement order, so they stay last.
 export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exception {
   let cfg_active = cfg_scan_enabled(tokens)
   let b = ArrayBuilder::new()
@@ -960,7 +989,16 @@ export fn parse_program_preserving(tokens: Array[Token]) -> Array[Stmt] with Exc
       }
     }
   }
-  ArrayBuilder::freeze(b)
+  // Copied before the markers are appended, so the builder's frozen result
+  // is never pushed to -- and only when there is a marker to append: the
+  // common program has neither log, and the copy showed up as a +2% B/op
+  // drift on parser_bench's parse_deep_binop_chain.
+  let raw = ArrayBuilder::freeze(b)
+  if has_test_effect_rows() || has_qualified_pattern_refs() {
+    attach_qualified_pattern_refs(Array::slice(raw, 0, Array::length(raw)))
+  } else {
+    raw
+  }
 }
 
 /// #1455 step 3: fold the qualified-variant-pattern log this parse produced

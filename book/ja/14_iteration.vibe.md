@@ -15,7 +15,7 @@ import @vibe/builtin {
   trait Iterator
 }
 
-fn main with Console {
+fn main allows Console {
   let xs = [1, 2, 3, 4]
   let evens = Iterator::filter(xs, (n) -> {
     n % 2 == 0
@@ -55,7 +55,7 @@ import @vibe/builtin {
   trait Iterator
 }
 
-fn main with Console {
+fn main allows Console {
   let n = "  vibe  " |> String::trim |> String::length
   let xs = [1, 2, 3]
   let ys = xs |> Iterator::map(_, _ * 10)

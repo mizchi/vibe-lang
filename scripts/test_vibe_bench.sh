@@ -197,7 +197,7 @@ fn spin(n: Int) -> Int {
   while i < n { acc = acc + (i & 7); i = i + 1 }
   acc
 }
-fn main with () { let _ = spin(20000000) }
+fn main allows () { let _ = spin(20000000) }
 EOF
 run_profile="$WORK/run-profile.json"
 profile_run_out="$($VIBE profile "$proj/profile.vibex" --out "$run_profile" --interval-us 100 2>&1)"
@@ -264,7 +264,7 @@ fn work(n: Int) -> Int {
   while i < n { i = i + 1 }
   i
 }
-fn main() -> Unit with Exception {
+fn main() -> Unit allows Exception {
   let _ = work(20000000)
   throw("profiled boom")
 }

@@ -25,7 +25,7 @@ fn same_ints(a: Array[Int], b: Array[Int]) -> Bool {
   a == b
 }
 
-fn main with Console {
+fn main allows Console {
   println("lits = \{[1, 2] == [1, 2]}")
   let a = [
     1,
@@ -68,7 +68,7 @@ fn mk() -> Array[Int] {
   ]
 }
 
-fn main with Console {
+fn main allows Console {
   let pairs: Array[(Int, Int)] = [(1, 2)]
   let same: Array[(Int, Int)] = [(1, 2)]
   let other: Array[(Int, Int)] = [(1, 3)]
@@ -133,7 +133,7 @@ fn eq2[T: Eq](a: T, b: T) -> Bool {
   a == b
 }
 
-fn main with Console {
+fn main allows Console {
   println("Int    same = \{eq2(1, 1)}, differ = \{eq2(1, 2)}")
   println("String same = \{eq2("x", "x")}, differ = \{eq2("x", "y")}")
 }
@@ -151,7 +151,7 @@ call is **rejected**:
 // skip: this is a compile error, shown for the message it produces
 fn eq2[T: Eq](a: T, b: T) -> Bool { a == b }
 
-fn main with Console {
+fn main allows Console {
   println("\{eq2([1], [1])}")
 }
 ```

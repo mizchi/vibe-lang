@@ -96,38 +96,44 @@ test "#1961: provider ownership is exact operation identity" {
   assert(!standard_provider_owns_operation("Ask::Get"))
 }
 
-test "#1961: allows is not a second spelling of with" {
+test "ADR-0088: `with .. allows ..` is not a spelling" {
+  // The entry's row is ONE clause, `allows`. The split form ADR-0088 once
+  // proposed is refused by name so the reader learns the edit rather than
+  // "expected {".
   let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  perform Ask::Get()\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "Ask::Get"))
-  assert(String::contains(msg, "allows"))
-  assert(String::contains(msg, "authorized"))
+  assert(String::contains(msg, "`with .. allows ..` is not a spelling"))
+  assert(String::contains(msg, "allows A + B"))
 }
 
-test "#1961: lexically handled emit does not need allows authority" {
-  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with { Ask::Get() => resume(1) }\n}\n"
+test "ADR-0088: a user effect handled inside the entry needs no grant" {
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int allows Fs {\n  handle { perform Ask::Get() } with { Ask::Get() => resume(1) }\n}\n"
   assert_eq(first_check_error(source), "")
 }
 
-test "#1961: a handle that does not enclose the perform is not lexical" {
-  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  let x = perform Ask::Get()\n  handle { 0 } with { Ask::Get() => resume(1) }\n  x\n}\n"
+test "ADR-0088: a handle that does not enclose the perform is not lexical" {
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int allows Fs {\n  let x = perform Ask::Get()\n  handle { 0 } with { Ask::Get() => resume(1) }\n  x\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "emits unhandled `Ask::Get`"))
-  assert(String::contains(msg, "not authorized by `allows Fs`"))
+  assert(String::contains(msg, "entry point 'main' cannot discharge { Ask::Get }"))
+  assert(String::contains(msg, "handle ... with Ask"))
 }
 
-test "#1961: allows authorizes operations on a non-entry function" {
-  let source = "fn helper() -> Unit with () allows Console::write_stream {\n  Console::write_stream(\"hi\")\n}\nfn main() -> Int { 0 }\n"
-  assert_eq(first_check_error(source), "")
+test "ADR-0088: `allows` on a called function names the `with` edit" {
+  // A called function REQUIRES its effects from the caller; only an entry
+  // grants. The parser refuses the clause with the edit and the name.
+  let source = "fn helper() -> Unit allows Console::write_stream {\n  Console::write_stream(\"hi\")\n}\nfn main() -> Int { 0 }\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "written on an entry point only"))
+  assert(String::contains(msg, "`helper` requires its effects from the caller"))
+  assert(String::contains(msg, "write `with` here"))
 }
 
-test "#1961: allows on a non-entry function still rejects unauthorized ops" {
-  let source = "fn helper() -> String with () allows Console::write_stream {\n  Console::read_stream(0)\n}\nfn main() -> Int { 0 }\n"
+test "ADR-0088: a called function's `with` still rejects what it did not require" {
+  let source = "fn helper() -> String with Console::write_stream {\n  Console::read_stream(0)\n}\nfn main() -> Int { 0 }\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "helper"))
   assert(String::contains(msg, "Console::read_stream"))
-  assert(String::contains(msg, "allows"))
-  assert(String::contains(msg, "authorized"))
+  assert(String::contains(msg, "hint: add 'with"))
   assert(!String::contains(msg, "entry point"))
 }
 
@@ -141,25 +147,45 @@ test "#1961: instantiate freeze uses exact operation identity" {
   assert(!is_instantiate_authority("Ask::Get"))
 }
 
-test "#1961: allows Console::Get cannot be frozen as instantiate authority" {
-  let source = "fn main() -> Int with () allows Console::Get {\n  0\n}\n"
+test "ADR-0088: a grant of an operation the provider does not own is refused" {
+  // `Console::Get` is neither a Console operation nor a user-declared one:
+  // admitting it by the provider prefix would grant nothing and say so
+  // nowhere. `with Console::Get` used to be admitted exactly that way.
+  let source = "fn main() -> Int allows Console::Get {\n  0\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "Console::Get"))
-  assert(String::contains(msg, "instantiate"))
-  assert(!String::contains(msg, "host capability effect"))
+  assert(String::contains(msg, "grants `Console::Get`, but the `Console` provider has no such operation"))
+  assert(String::contains(msg, "hint: grant the provider (`allows Console`)"))
+  assert_eq(first_check_error("fn main() -> Int allows Console::write_stream {\n  0\n}\n"), "")
+  assert_eq(first_check_error("fn main() -> Int allows Console {\n  0\n}\n"), "")
 }
 
-test "#1961: optional allows does not authorize a required operation" {
-  let source = "fn main() -> String with () allows Fs::read_file? {\n  Fs::read_file(\"x\")\n}\n"
+test "ADR-0088: an optional grant does not authorize a required call" {
+  let source = "fn main() -> String allows Fs::read_file? {\n  Fs::read_file(\"x\")\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "Fs::read_file"))
-  assert(String::contains(msg, "allows"))
-  assert(String::contains(msg, "authorized"))
+  assert(String::contains(msg, "`Fs::read_file` is granted as optional (`allows Fs::read_file?`) but `main` calls it as required"))
+  assert(String::contains(msg, "perform? Fs::read_file(..)"))
+  assert(String::contains(msg, "drop the `?` (`allows Fs::read_file`)"))
 }
 
-test "#1961: required allows still authorizes the required operation" {
-  let source = "fn main() -> String with () allows Fs::read_file {\n  Fs::read_file(\"x\")\n}\n"
+test "ADR-0088: a required grant authorizes the required operation" {
+  let source = "fn main() -> String allows Fs::read_file {\n  Fs::read_file(\"x\")\n}\n"
   assert_eq(first_check_error(source), "")
+}
+
+test "ADR-0088: the entry's own row hint says allows, a called function's says with" {
+  let entry = first_check_error("fn main allows Console {\n  let _ = Fs::read_file(\"x\")\n  ()\n}\n")
+  assert(String::contains(entry, "hint: add 'allows Console + Fs::read_file' to 'main'"))
+  let bare = first_check_error("fn main {\n  let _ = Fs::read_file(\"x\")\n  ()\n}\n")
+  assert(String::contains(bare, "hint: declare 'fn main allows Fs::read_file'"))
+  let callee = first_check_error("fn helper() -> String {\n  Fs::read_file(\"x\")\n}\nfn main() -> Int { 0 }\n")
+  assert(String::contains(callee, "hint: declare 'fn helper(...) -> T with Fs::read_file'"))
+}
+
+test "ADR-0088: an effectset a program declares is one spelling at the entry" {
+  let source = "effectset AppCaps = { Console, Fs::read_file }\nfn main allows AppCaps {\n  let _ = Fs::read_file(\"x\")\n  println(\"ok\")\n}\n"
+  assert_eq(first_check_error(source), "")
+  let narrow = "effectset OutOnly = { Console::write_stream }\nfn main allows OutOnly {\n  let _ = Console::read_stream(0)\n  ()\n}\n"
+  assert(String::contains(first_check_error(narrow), "Console::read_stream"))
 }
 
 test "#1961: instantiate preflight rejects a required op the host did not grant" {
@@ -227,14 +253,13 @@ test "#1961: BindingLock freeze is Granted for required and NotGranted for optio
   assert(!is_instantiate_authority("Console::Get?"))
 }
 
-test "#1961: allows Console::write_stream does not grant console input" {
-  let out_ok = "fn main() -> Unit with () allows Console::write_stream {\n  Console::write_stream(\"hi\")\n}\n"
-  let in_bad = "fn main() -> String with () allows Console::write_stream {\n  Console::read_stream(0)\n}\n"
+test "ADR-0088: allows Console::write_stream does not grant console input" {
+  let out_ok = "fn main() -> Unit allows Console::write_stream {\n  Console::write_stream(\"hi\")\n}\n"
+  let in_bad = "fn main() -> String allows Console::write_stream {\n  Console::read_stream(0)\n}\n"
   assert_eq(first_check_error(out_ok), "")
   let msg = first_check_error(in_bad)
   assert(String::contains(msg, "Console::read_stream"))
-  assert(String::contains(msg, "allows"))
-  assert(String::contains(msg, "authorized"))
+  assert(String::contains(msg, "hint: add 'allows Console::read_stream + Console::write_stream' to 'main'"))
 }
 
 test "#1961: ::-less user Console::Get is not a host-provider impersonation" {
@@ -254,13 +279,13 @@ test "#2236: perform? on an optional allows reaches lowering" {
   // The checker owns the strict grade match; once the operation is optional,
   // it must leave the expression for the shared lowering pass instead of
   // rejecting a surface the compiler can emit.
-  let source = "fn main() -> Int with () allows Fs::read_file? {\n  let a = perform? Fs::read_file(\"x\")\n  0\n}\n"
+  let source = "fn main() -> Int allows Fs::read_file? {\n  let a = perform? Fs::read_file(\"x\")\n  0\n}\n"
   let msg = first_check_error(source)
   assert_eq(msg, "")
 }
 
 test "#2236 review: perform? rejects a source function shadowing a capability" {
-  let source = "fn Fs::read_file(path: String) -> String { path }\nfn main() -> Int with () allows Fs::read_file? {\n  let a = perform? Fs::read_file(\"x\")\n  0\n}\n"
+  let source = "fn Fs::read_file(path: String) -> String { path }\nfn main() -> Int allows Fs::read_file? {\n  let a = perform? Fs::read_file(\"x\")\n  0\n}\n"
   let msg = first_located_check_error(source)
   assert(String::contains(msg, "line 3:"))
   assert(String::contains(msg, "resolves to a source function"))
@@ -268,15 +293,16 @@ test "#2236 review: perform? rejects a source function shadowing a capability" {
 }
 
 test "#2236: an algebraic operation is still invalid in allows" {
-  // `perform?` lowering does not widen `allows`: algebraic operations remain
-  // rejected by the capability-classification check.
-  let source = "effect Ask { Get() -> Int }\nfn main() -> Int with () allows Ask::Get? {\n  let a = perform? Ask::Get()\n  0\n}\n"
+  // `perform?` lowering does not widen the grant: a user effect has no host
+  // provider, so the entry cannot grant it -- optional or not.
+  let source = "effect Ask { Get() -> Int }\nfn main() -> Int allows Ask::Get? {\n  let a = perform? Ask::Get()\n  0\n}\n"
   let msg = first_check_error(source)
-  assert(String::contains(msg, "is not a capability effect"))
+  assert(String::contains(msg, "entry point 'main' cannot discharge { Ask::Get? }"))
+  assert(String::contains(msg, "handle ... with Ask"))
 }
 
 test "#2236: multiple well-graded perform? expressions reach lowering" {
-  let source = "fn main() -> Int with () allows Fs::read_file? {\n  let a = perform? Fs::read_file(\"x\")\n  let b = perform? Fs::read_file(\"y\")\n  0\n}\n"
+  let source = "fn main() -> Int allows Fs::read_file? {\n  let a = perform? Fs::read_file(\"x\")\n  let b = perform? Fs::read_file(\"y\")\n  0\n}\n"
   let msg = first_check_error(source)
   assert_eq(msg, "")
 }
@@ -289,7 +315,7 @@ test "#2236: plain perform is untouched by perform? validation" {
 }
 
 test "#2236: nested well-graded perform? reaches lowering" {
-  let source = "fn use_it(a: Int) -> Int { a }\nfn main() -> Int with () allows Fs::read_file? {\n  let a = if true { perform? Fs::read_file(\"x\") } else { perform? Fs::read_file(\"y\") }\n  0\n}\n"
+  let source = "fn use_it(a: Int) -> Int { a }\nfn main() -> Int allows Fs::read_file? {\n  let a = if true { perform? Fs::read_file(\"x\") } else { perform? Fs::read_file(\"y\") }\n  0\n}\n"
   let msg = first_check_error(source)
   assert_eq(msg, "")
 }
@@ -310,42 +336,41 @@ test "#2236: perform? on a non-operation operand is rejected, not passed through
 }
 
 test "#2236 review: perform? requires an operation call, not a bare operation" {
-  let source = "fn main() -> Int with () allows Fs::read_file? {\n  let x = perform? Fs::read_file\n  0\n}\n"
+  let source = "fn main() -> Int allows Fs::read_file? {\n  let x = perform? Fs::read_file\n  0\n}\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "takes a capability-operation call"))
 }
 
 test "#1961: perform? cannot be used as the operation result type" {
-  let source = "fn main() -> String with () allows Fs::read_file? {\n  perform? Fs::read_file(\"x\")\n}\n"
+  let source = "fn main() -> String allows Fs::read_file? {\n  perform? Fs::read_file(\"x\")\n}\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "return type mismatch"))
   assert(String::contains(msg, "Attempt"))
 }
 
 test "#1961: perform? cannot unify with a scalar let-binding" {
-  let source = "fn main() -> Int with () allows Fs::read_file? {\n  let s: String = perform? Fs::read_file(\"x\")\n  0\n}\n"
+  let source = "fn main() -> Int allows Fs::read_file? {\n  let s: String = perform? Fs::read_file(\"x\")\n  0\n}\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "Attempt"))
 }
 
 test "#1961: perform? on a required allows is rejected" {
-  let source = "fn main() -> Int with () allows Fs::read_file {\n  let a = perform? Fs::read_file(\"x\")\n  0\n}\n"
+  let source = "fn main() -> Int allows Fs::read_file {\n  let a = perform? Fs::read_file(\"x\")\n  0\n}\n"
   let msg = first_check_error(source)
   assert(String::contains(msg, "perform?"))
   assert(String::contains(msg, "optional"))
 }
 
-test "#1961: transcript of handled / unhandled / impersonation diagnostics" {
-  let handled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  handle { perform Ask::Get() } with { Ask::Get() => resume(1) }\n}\n"
-  let unhandled = "effect Ask { Get() -> Int }\nfn main() -> Int with Ask::Get allows Fs {\n  perform Ask::Get()\n}\n"
-  let impersonation = "effect Fs { read_file(String) -> String }\nfn main() -> String with Fs::read_file {\n  perform Fs::read_file(\"x\")\n}\n"
+test "ADR-0088: transcript of handled / unhandled / impersonation diagnostics" {
+  let handled = "effect Ask { Get() -> Int }\nfn main() -> Int allows Fs {\n  handle { perform Ask::Get() } with { Ask::Get() => resume(1) }\n}\n"
+  let unhandled = "effect Ask { Get() -> Int }\nfn main() -> Int allows Fs {\n  perform Ask::Get()\n}\n"
+  let impersonation = "effect Fs { read_file(String) -> String }\nfn main() -> String allows Fs::read_file {\n  perform Fs::read_file(\"x\")\n}\n"
   let handled_msg = first_check_error(handled)
   let unhandled_msg = first_check_error(unhandled)
   let impersonation_msg = first_check_error(impersonation)
   assert_eq(handled_msg, "")
-  assert(String::contains(unhandled_msg, "emits unhandled `Ask::Get`"))
-  assert(String::contains(unhandled_msg, "not authorized by `allows Fs`"))
-  assert(String::contains(unhandled_msg, "handle the operation, or add it to the `allows` clause"))
+  assert(String::contains(unhandled_msg, "entry point 'main' cannot discharge { Ask::Get }"))
+  assert(String::contains(unhandled_msg, "handle ... with Ask"))
   assert(String::contains(impersonation_msg, "collides with a registry-owned host provider operation"))
   assert(String::contains(impersonation_msg, "Fs::read_file"))
 }
@@ -366,4 +391,158 @@ test "#1683: host providers and runtime-owned effects remain valid at main" {
 test "#1683: unrelated user Env operations do not shadow the host Env provider" {
   let source = "effect Env { Get(String) -> String }\nfn main() -> String with Env { Env::get(\"VIBE_HOME\") }\n"
   assert(first_check_error(source) == "")
+}
+
+//# ADR-0088: the Optional grade on a requirement
+
+test "ADR-0088: a called function may require an optional capability and use perform?" {
+  let source = "import @vibe/core { Attempt }\nfn cached() -> Attempt[String, String] with Fs::read_file? {\n  perform? Fs::read_file(\"cache.json\")\n}\nfn main allows Fs::read_file? {\n  let _ = cached()\n  ()\n}\n"
+  assert_eq(first_check_error(source), "")
+}
+
+test "ADR-0088: a required grant satisfies an optional requirement" {
+  let whole = "import @vibe/core { Attempt }\nfn cached() -> Attempt[String, String] with Fs::read_file? {\n  perform? Fs::read_file(\"cache.json\")\n}\nfn main allows Fs {\n  let _ = cached()\n  ()\n}\n"
+  assert_eq(first_check_error(whole), "")
+  let op = "import @vibe/core { Attempt }\nfn cached() -> Attempt[String, String] with Fs::read_file? {\n  perform? Fs::read_file(\"cache.json\")\n}\nfn main allows Fs::read_file {\n  let _ = cached()\n  ()\n}\n"
+  assert_eq(first_check_error(op), "")
+}
+
+test "ADR-0088: an optional grant does not satisfy a required requirement" {
+  let source = "fn load() -> String with Fs::read_file {\n  Fs::read_file(\"x\")\n}\nfn main allows Fs::read_file? {\n  let _ = load()\n  ()\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "`Fs::read_file` is granted as optional (`allows Fs::read_file?`) but `main` calls it as required"))
+}
+
+test "ADR-0088: an optional requirement does not authorize a plain call in its own body" {
+  let source = "fn load() -> String with Fs::read_file? {\n  Fs::read_file(\"x\")\n}\nfn main allows Fs {\n  let _ = load()\n  ()\n}\n"
+  let msg = first_check_error(source)
+  assert(String::contains(msg, "`Fs::read_file` is declared as optional (`with Fs::read_file?`) but `load` calls it as required"))
+  assert(String::contains(msg, "drop the `?` (`with Fs::read_file`)"))
+}
+
+test "ADR-0088: the grade is refused on anything but a host capability" {
+  let user = "effect Ask { Get() -> Int }\nfn ask() -> Int with Ask::Get? {\n  perform Ask::Get()\n}\nfn main() -> Int { 0 }\n"
+  let user_msg = first_check_error(user)
+  assert(String::contains(user_msg, "`Ask::Get?` in the row of `ask`: `?` marks a host capability optional, and `Ask::Get` is not one"))
+  let boundary = first_check_error("fn main allows Exception? {\n  ()\n}\n")
+  assert(String::contains(boundary, "`Exception?` in the row of `main`"))
+  let block = first_check_error("effect Ask { Get() -> Int }\ntest \"graded user effect\" allows Ask::Get? {\n  assert(true)\n}\n")
+  // The block is named as the reader wrote it, and its row is admitted first:
+  // a user effect cannot be granted at all, graded or not (the checker
+  // surfaces the first error, so the grade refusal is pinned on an admitted
+  // label below).
+  assert(String::contains(block, "entry point test \"graded user effect\" cannot discharge { Ask::Get? }"))
+  let block_boundary = first_check_error("test \"graded boundary\" allows Exception? {\n  assert(true)\n}\n")
+  assert(String::contains(block_boundary, "`Exception?` in the row of test \"graded boundary\""))
+}
+
+test "ADR-0088 (Codex on #2653): a block grant is admitted like main's" {
+  let user_op = "effect Ask { Get() -> Int }\ntest \"x\" allows Ask::Get {\n  let _ = perform Ask::Get()\n  assert(true)\n}\n"
+  let msg = first_check_error(user_op)
+  assert(String::contains(msg, "entry point test \"x\" cannot discharge { Ask::Get }"))
+  assert(String::contains(msg, "handle ... with Ask"))
+  assert(!String::contains(msg, "add 'allows"))
+  let bench_msg = first_check_error("effect Tick { Now() -> Int }\nbench \"b\" allows Tick {\n  let _ = perform Tick::Now()\n  ()\n}\n")
+  assert(String::contains(bench_msg, "entry point bench \"b\" cannot discharge { Tick }"))
+  assert(String::contains(bench_msg, "handle ... with Tick"))
+  let example_msg = first_check_error("effect Ask { Get() -> Int }\nexample \"e\" allows Ask::Get {\n  assert(true)\n}\n")
+  assert(String::contains(example_msg, "\"e\" cannot discharge { Ask::Get }"))
+  let row_var = first_check_error("test \"v\" allows e {\n  assert(true)\n}\n")
+  assert(String::contains(row_var, "entry point test \"v\" has unresolved effect row { e }"))
+  let unknown_op = first_check_error("test \"u\" allows Console::Get {\n  assert(true)\n}\n")
+  assert(String::contains(unknown_op, "entry point test \"u\" grants `Console::Get`, but the `Console` provider has no such operation"))
+  // What the run can bring in is still granted: a host operation, the
+  // boundary's `Exception`, an effectset of host operations.
+  let fine = "effectset ReadCaps = { Fs::read_file, Fs::exists }\ntest \"host\" allows Http::request + Exception {\n  assert(true)\n}\ntest \"set\" allows ReadCaps {\n  assert(!Fs::exists(\"nope\"))\n}\n"
+  assert_eq(first_check_error(fine), "")
+}
+
+test "ADR-0088 (Codex on #2653): a block's unhandled user effect gets the handle edit, not the allows edit" {
+  let msg = first_check_error("effect Ask { Get() -> Int }\ntest \"x\" {\n  let _ = perform Ask::Get()\n  assert(true)\n}\n")
+  assert(String::contains(msg, "entry point test \"x\" cannot discharge { Ask::Get }"))
+  assert(String::contains(msg, "handle ... with Ask"))
+  assert(!String::contains(msg, "add 'allows"))
+  let handled = "effect Ask { Get() -> Int }\ntest \"h\" {\n  let v = handle { perform Ask::Get() } with { Ask::Get() => resume(41) }\n  assert_eq(v, 41)\n}\n"
+  assert_eq(first_check_error(handled), "")
+  // A host capability outside the ambient default is a plain row mismatch,
+  // and the edit is the `allows` row.
+  let host = first_check_error("test \"n\" {\n  let h = Http::request(\"GET\", \"http://127.0.0.1:1/x\", \"\", \"\")\n  Http::close(h)\n}\n")
+  assert(String::contains(host, "effect row mismatch for test \"n\": missing { Http::"))
+  assert(String::contains(host, "to test \"n\""))
+}
+
+test "ADR-0088 (Codex on #2653): a provider-wide optional grant covers an optional operation requirement" {
+  let covered = "import @vibe/core { Attempt }\nfn cached() -> Attempt[String, String] with Fs::read_file? {\n  perform? Fs::read_file(\"cache.json\")\n}\nfn main allows Fs? {\n  let _ = cached()\n  ()\n}\n"
+  assert_eq(first_check_error(covered), "")
+  // Required is the join for the provider too.
+  let required = "fn probe() -> Unit with Fs? {\n  ()\n}\nfn main allows Fs {\n  probe()\n}\n"
+  assert_eq(first_check_error(required), "")
+  // A plain call under the provider-wide optional grant is refused, and the
+  // diagnostic quotes the grant as written.
+  let plain = first_check_error("fn main() -> String allows Fs? {\n  Fs::read_file(\"x\")\n}\n")
+  assert(String::contains(plain, "`Fs::read_file` is granted as optional (`allows Fs?`) but `main` calls it as required"))
+  assert(String::contains(plain, "drop the `?` (`allows Fs`)"))
+  // The reverse is not coverage: an operation-level optional grant does not
+  // reach a provider-wide optional requirement.
+  let reverse = first_check_error("fn probe() -> Unit with Fs? {\n  ()\n}\nfn main allows Fs::read_file? {\n  probe()\n}\n")
+  assert(String::contains(reverse, "missing { Fs? }"))
+}
+
+test "ADR-0088 (Codex on #2653): the grade check reaches every function-type row" {
+  let alias = first_check_error("effect Ask { Get() -> Int }\ntype Callback = () -> Int with Ask::Get?\nfn main() -> Int { 0 }\n")
+  assert(String::contains(alias, "`Ask::Get?` in the row of `Callback`"))
+  let param = first_check_error("effect Ask { Get() -> Int }\nfn run(cb: () -> Unit with Ask::Get?) -> Unit {\n  cb()\n}\nfn main() -> Int { 0 }\n")
+  assert(String::contains(param, "`Ask::Get?` in the row of `run`"))
+  let field = first_check_error("effect Ask { Get() -> Int }\nstruct Job {\n  run: () -> Unit with Ask::Get?\n}\nfn main() -> Int { 0 }\n")
+  assert(String::contains(field, "`Ask::Get?` in the row of `Job`"))
+  let ret = first_check_error("effect Ask { Get() -> Int }\nfn make() -> () -> Unit with Ask::Get? {\n  () -> { () }\n}\nfn main() -> Int { 0 }\n")
+  assert(String::contains(ret, "`Ask::Get?` in the row of `make`"))
+  let literal = first_check_error("effect Ask { Get() -> Int }\nfn main() -> Int {\n  let f = (cb: () -> Unit with Ask::Get?) -> Unit { cb() }\n  0\n}\n")
+  assert(String::contains(literal, "`Ask::Get?` in the row of `main`"))
+  // A host capability keeps the grade in every position.
+  let ok = "import @vibe/core { Attempt }\ntype Loader = () -> Attempt[String, String] with Fs::read_file?\nfn run(cb: Loader) -> Attempt[String, String] with Fs::read_file? {\n  cb()\n}\nfn main allows Fs::read_file? {\n  let _ = run(() -> { perform? Fs::read_file(\"x\") })\n  ()\n}\n"
+  assert_eq(first_check_error(ok), "")
+}
+
+test "ADR-0088 (Codex on #2653): perform? is refused where NotGranted cannot happen" {
+  // Directly in a block: a test artifact runs with full authority, so every
+  // optional grant resolves to `Granted` and the arm is dead.
+  let block = first_check_error("test \"x\" allows Fs::read_file? {\n  let _ = perform? Fs::read_file(\"x\")\n  assert(true)\n}\n")
+  assert(String::contains(block, "`perform? Fs::read_file` in test \"x\": a `test` / `bench` / `example` block runs with full authority"))
+  assert(String::contains(block, "move the `perform?` into a function that requires `with Fs::read_file?`"))
+  // Under a row that also grants the operation's provider as required:
+  // Required is the join, so the optional grade is absorbed.
+  let absorbed = first_check_error("fn main() -> Int allows Fs + Fs::read_file? {\n  let _ = perform? Fs::read_file(\"x\")\n  0\n}\n")
+  assert(String::contains(absorbed, "`perform? Fs::read_file` can never be `NotGranted` here: `main` grants `Fs` as required"))
+  assert(String::contains(absorbed, "grant `Fs::read_file?` without the required `Fs`"))
+  // The honest shapes still check: the optional grant alone, and a helper
+  // that requires the grade, called from a block that grants it.
+  assert_eq(first_check_error("fn main() -> Int allows Fs::read_file? {\n  let _ = perform? Fs::read_file(\"x\")\n  0\n}\n"), "")
+  let helper = "import @vibe/core { Attempt }\nfn read_missing() -> Attempt[String, String] with Fs::read_file? {\n  perform? Fs::read_file(\"x\")\n}\ntest \"h\" allows Fs::read_file? {\n  let _ = read_missing()\n  assert(true)\n}\n"
+  assert_eq(first_check_error(helper), "")
+}
+
+test "#1961: a provider-named user effect handled inside the entry is discharged" {
+  // The handle discharges `Fs::Custom` for its body, so the entry's `Fs`
+  // grant is not what authorizes the perform; the block form is the shape
+  // fixtures/effect_handle_resume.vibe takes as a generated test.
+  let at_main = "effect Fs { Custom() -> Int }\nfn main() -> Int allows Fs {\n  handle { perform Fs::Custom() } with { Fs::Custom() => resume(1) }\n}\n"
+  assert_eq(first_check_error(at_main), "")
+  let in_block = "effect Console { ReadLine -> String }\ntest \"h\" {\n  let n = handle { String::length(perform Console::ReadLine) } with { Console::ReadLine => resume(\"Alice\") }\n  assert_eq(n, 5)\n}\n"
+  assert_eq(first_check_error(in_block), "")
+  // A closure that requires the user effect on its own row is charged to
+  // its caller, not to the block (fixtures/effect_perform_basic.vibe).
+  let own_row = "effect Console { Print(String) -> Unit }\ntest \"c\" {\n  let greet = () -> Unit with Console {\n    perform Console::Print(\"hi\")\n  }\n  assert(true)\n}\n"
+  assert_eq(first_check_error(own_row), "")
+}
+
+test "ADR-0088 (Codex on #2653): the perform? grade edit names the row owner's keyword" {
+  // A called function REQUIRES, so its edit is `with`; telling it to write
+  // `allows` would only lead to the parse error that refuses it there.
+  let callee = first_check_error("import @vibe/core { Attempt }\nfn cached() -> Attempt[String, String] with () {\n  perform? Fs::read_file(\"x\")\n}\nfn main() -> Int { 0 }\n")
+  assert(String::contains(callee, "`perform? Fs::read_file` requires the optional grade: write `with Fs::read_file?` on `cached`"))
+  assert(String::contains(callee, "or call `Fs::read_file(..)` plainly"))
+  assert(!String::contains(callee, "allows"))
+  let entry = first_check_error("fn main() -> Int allows Console {\n  let _ = perform? Fs::read_file(\"x\")\n  0\n}\n")
+  assert(String::contains(entry, "write `allows Fs::read_file?` on `main`"))
 }

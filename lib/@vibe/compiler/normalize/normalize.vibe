@@ -27,7 +27,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/syntax {
-  Token, lex, parse_program_preserving, print_stmt
+  Token, lex, parse_program_preserving, print_stmt, register_block_rows
 }
 
 import @vibe/compiler/core {
@@ -366,6 +366,10 @@ fn stmt_section(stmt: Stmt) -> Int {
     SLetPat(_, _) => 2,
     STest(_, _) => 3,
     SBench(_, _) => 3,
+    // An example is a test that documents (#819); the preserving parse keeps
+    // the node, and without a section it fell to `_` and vanished from the
+    // normalized source (Codex review on PR #2653).
+    SExample(_, _) => 3,
     SExport(_) => 9,
     SExpr(_) => 9,
     _ => 9
@@ -1466,6 +1470,7 @@ fn fold_stmt(stmt: Stmt) -> Stmt {
     SLetMut(name, ty, body) => SLetMut(name, ty, fold_expr(body)),
     STest(n, body) => STest(n, fold_expr(body)),
     SBench(n, body) => SBench(n, fold_expr(body)),
+    SExample(n, body) => SExample(n, fold_expr(body)),
     SExpr(e) => SExpr(fold_expr(e)),
     SLetPat(p, body) => SLetPat(p, fold_expr(body)),
     _ => stmt
@@ -1927,6 +1932,7 @@ fn normalize_dot_calls_stmt(stmt: Stmt, struct_sets: Array[(String, Array[String
     SLetMut(name, ty, body) => SLetMut(name, ty, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
     STest(n, body) => STest(n, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
     SBench(n, body) => SBench(n, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
+    SExample(n, body) => SExample(n, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
     SExpr(e) => SExpr(normalize_dot_calls_expr(e, struct_sets, array_empty(), fn_returns)),
     SLetPat(p, body) => SLetPat(p, normalize_dot_calls_expr(body, struct_sets, array_empty(), fn_returns)),
     _ => stmt
@@ -2005,6 +2011,11 @@ export fn normalize_source(src: String) -> String with Exception {
   // (and their where-contracts) survive as SFnDecl and re-print in fn form
   // instead of being rewritten to `let rec` + inlined asserts.
   let stmts = parse_program_preserving(toks_cfg)
+  // ADR-0088: the rows of `test` / `bench` / `example` blocks travel in the
+  // program's trailing marker, and this renderer prints statement by
+  // statement -- register them so a block prints its `allows` row rather than
+  // silently dropping the authority it declared (Codex review on PR #2653).
+  register_block_rows(stmts)
   let kept = normalize_stmts(stmts)
   let sections = empty_strs()
   if Array::length(req_pins) > 0 {
@@ -2029,5 +2040,8 @@ export fn normalize_source(src: String) -> String with Exception {
     }
     s = s + 1
   }
-  String::concat(String::join(sections, "\n\n"), "\n")
+  let out = String::concat(String::join(sections, "\n\n"), "\n")
+  // Leave no rows behind for an unrelated statement printed later.
+  register_block_rows(Array::slice(stmts, 0, 0))
+  out
 }

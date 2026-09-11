@@ -18,7 +18,7 @@ English version: [05_types_strings.vibe.md](../en/05_types_strings.vibe.md)
 1文字の `String` ではありません。添字も長さもバイト数です。
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let s = "hello"
   println("s[0] = \{s[0]}")
   println("from_byte = \{String::from_byte(s[0])}")
@@ -64,7 +64,7 @@ struct Point {
   x: Int; y: Int
 } derive (Show)
 
-fn main with Console {
+fn main allows Console {
   let p = Point::{
     x: 3, y: 4
   }
@@ -99,7 +99,7 @@ pair = (2, 3)
 でも同一なので、`max + 1` は `min` です:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let max = 4611686018427387903
   println("max = \{max}")
   println("max + 1 = \{max + 1}")

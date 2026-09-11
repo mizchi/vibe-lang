@@ -24,7 +24,7 @@ fn risky(x: Int) -> Int with Exception {
   100 / x
 }
 
-fn main with Console {
+fn main allows Console {
   let safe = handle {
     risky(0)
   } with {
@@ -87,7 +87,7 @@ fn answer_of(q: String) -> Int with Ask {
   perform Ask::Value(q) + 1
 }
 
-fn main with Console {
+fn main allows Console {
   let v = handle {
     answer_of("life")
   } with {
@@ -127,7 +127,7 @@ fn apply_twice(f~: (Int) -> Int with e, x~: Int) -> Int with e {
   f(f(x))
 }
 
-fn main with Console {
+fn main allows Console {
   println("apply_twice = \{apply_twice(f=(n) -> n * 2, x=10)}")
 }
 ```

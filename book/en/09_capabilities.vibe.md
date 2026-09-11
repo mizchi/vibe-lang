@@ -21,7 +21,7 @@ fn greet(name: String) -> Unit with Console {
   println("hi \{name}")
 }
 
-fn main with Console {
+fn main allows Console {
   greet("vibe")
 }
 ```
@@ -30,19 +30,21 @@ fn main with Console {
 hi vibe
 ```
 
-`greet` writes to the terminal, so it says `with Console`. `main` calls
-`greet`, so `main` says it too. The capability does not appear at `main`
-by magic — it is inferred from the calls and then checked against what
-you wrote. A function whose signature omits it will not compile.
+`greet` writes to the terminal, so it says `with Console`: it *requires*
+the capability from whoever calls it. `main` calls `greet`, and nothing
+calls `main` — it is where the program starts, so it *grants* the
+capability: `allows Console`. The capability does not appear at `main` by
+magic — it is inferred from the calls and then checked against what you
+wrote. A function whose signature omits it will not compile.
 
 `Console` is the terminal capability. `Stdin` / `Stdout` / `Stderr` are
-older labels for parts of it that are still accepted; `with Console`
+older labels for parts of it that are still accepted; `allows Console`
 covers them, and they do not cover `Console`. Ask for the narrow one and
 you get the narrow one:
 
 ```vibe skip
-// skip: `with Stdout` does not reach a `Console::` operation
-fn main with Stdout {
+// skip: `allows Stdout` does not reach a `Console::` operation
+fn main allows Stdout {
   Console::write_stream("x")
 }
 ```
@@ -50,46 +52,62 @@ fn main with Stdout {
 ```
 effect row mismatch for 'main': missing { Console::write_stream }
 (declared { Stdout }, requires { Console::write_stream, Stdout })
-hint: add 'with Console::write_stream + Stdout' to 'main'
+hint: add 'allows Console::write_stream + Stdout' to 'main'
 ```
 
-## `with` and `allows` are different clauses
+## `with` requires, `allows` grants
 
-A signature can split into what it *emits* and what it is *authorized*
-for:
+Two keywords, one row. A called function has a caller, and the row is
+what it asks that caller for — `with`. An entry point has no caller: the
+run brings the authority in, and the row is what the run grants — `allows`.
+The entry points are `fn main`, `fn _start`, and the `test`, `bench` and
+`example` blocks of [chapter 12](12_tests.vibe.md).
 
-```vibe run
-fn main with () allows Console {
-  println("authority is a separate clause")
-}
-```
-
-```output
-authority is a separate clause
-```
-
-`with ()` is the empty row: nothing algebraic. `allows Console` is the
-authority. The bare `fn main with Console` from chapter 1 is the short
-form of the same thing.
-
-Once you write the split form, a capability has to be in `allows`. Put
-one in `with` and you are told which clause it belongs to:
+So `allows` is written on an entry point and nowhere else. On a called
+function the compiler names the edit:
 
 ```vibe skip
-// skip: a capability in `with` on a split signature
-fn main() -> Int with Console allows Fs::read_file? {
-  0
+// skip: `allows` on a called function
+fn greet(name: String) -> Unit allows Console {
+  println("hi \{name}")
 }
 ```
 
 ```
-`Console` is a capability effect and must appear in the `allows` clause,
-not `with` (ADR-0088, #1345)
+`allows` grants authority and is written on an entry point only (`fn main`,
+`fn _start`, `test`, `example`, `bench`); `greet` requires its effects from
+the caller -- write `with` here and grant the effect at the entry
 ```
+
+The other direction is a spelling that older code carries: `fn main with
+Console`. It still compiles, and `vibe check` reports it with the `allows`
+edit as a warning; it stops compiling once the compiler's own sources have
+moved off it.
 
 Authority stays per-operation. `allows Console::write_stream` does not
 grant `Console::read_stream` — a program that may print does not thereby
 acquire the right to read the terminal.
+
+## Naming a bundle of capabilities
+
+A program that grants the same set at several entry points can name it
+once. An `effectset` is a set of row items, and an entry grants it like any
+other item:
+
+```vibe run
+effectset AppCaps = { Console, Fs::read_file }
+
+fn main allows AppCaps {
+  println("bundled")
+}
+```
+
+```output
+bundled
+```
+
+The set is expanded before anything is checked, so `allows AppCaps` is
+exactly `allows Console + Fs::read_file` — no more, no less.
 
 ## Optional capability: `perform?`
 
@@ -102,7 +120,7 @@ unresolved optional capability to `NotGranted` before code generation. The
 operation and its arguments are not evaluated:
 
 ```vibe run
-fn main() -> Int with () allows Console + Fs::read_file? {
+fn main() -> Int allows Console + Fs::read_file? {
   let a = perform? Fs::read_file("config.json")
   match a {
     NotGranted => 0,
@@ -115,6 +133,39 @@ fn main() -> Int with () allows Console + Fs::read_file? {
 ```output
 0
 ```
+
+An optional grant never stands in for a required call: `Fs::read_file("p")`
+under `allows Fs::read_file?` is rejected, and the message offers the two
+edits — call it with `perform?`, or grant it without the `?`.
+
+A called function can *require* the optional grade the same way, and then
+`perform?` lives where the fallback logic lives. A caller satisfies
+`with Fs::read_file?` with either grade of the grant — `allows Fs::read_file`
+or `allows Fs::read_file?` — because a required grant is the stronger one:
+
+```vibe run
+import @vibe/core { Attempt }
+
+fn cached() -> Attempt[String, String] with Fs::read_file? {
+  perform? Fs::read_file("cache.json")
+}
+
+fn main allows Console + Fs::read_file? {
+  match cached() {
+    NotGranted => println("no cache"),
+    Errored(_) => println("cache failed"),
+    Granted(_) => println("cache hit")
+  }
+}
+```
+
+```output
+no cache
+```
+
+The `?` marks a host capability and nothing else: `with Ask::Get?` on an
+effect you declared, or `allows Exception?`, is refused — nobody outside the
+program could withhold those, so the grade would be a claim about nothing.
 
 The frozen-resolution lowering is shared by the linear and wasm-gc backends.
 Wiring `--allow-*`, BindingLock, and interactive preflight into production is
@@ -133,6 +184,11 @@ Both ride the row, and the spelling says which you are looking at:
 `Effect::CamelCase` is an operation you perform; `Effect::snake_case` is
 a function you call. That is the rule, and it is why `Fs::read_file(p)`
 reads like any other call even though it needs authority.
+
+An entry grants only what the run can bring in: the host capabilities,
+`Exception` (a failure the runtime boundary reports), and `Async`. An
+effect you declared yourself has no host behind it, so it cannot be
+granted — it is handled, with `handle`, before it reaches the entry.
 
 ## What denial actually does
 

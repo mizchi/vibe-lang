@@ -10,7 +10,7 @@ That is the whole idea, and it looks like this:
   the disk. If it could, the signature would say so.
 - `fn parse(s: String) -> Int with Exception` can fail. Callers either
   handle it or declare it too, and the compiler decides which.
-- `fn main with Console` may write to the terminal. It may not read a
+- `fn main allows Console` may write to the terminal. It may not read a
   file, because it never asked to.
 
 Most languages leave these facts in the body, where you find them by

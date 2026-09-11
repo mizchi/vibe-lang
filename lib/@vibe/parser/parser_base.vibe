@@ -1157,13 +1157,12 @@ fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with Excep
   }
 }
 
-/// #1345 / ADR-0088 / #1961: `?` is the Optional grade and is legal only on
-/// an `allows` item (`allows Fs::read_file?`). The checker treats `Op?` as
-/// not authorizing a required perform/call. `?` is still rejected on the
-/// `with` row so it cannot become a second emitted-effect spelling.
-///
-/// `allows` is independent authority: `with A allows C` is stored as the
-/// emitted row plus a `#allows` marker, not as `with A + C`.
+/// ADR-0088: `?` is the Optional grade. On an entry's `allows` row it marks a
+/// GRANT optional (`fn main allows Fs::read_file?`); on a called function's
+/// `with` row it marks a REQUIREMENT optional (`fn cached() -> .. with
+/// Fs::read_file?`), which a caller satisfies with either grade of the same
+/// label. The checker treats `Op?` as never authorizing a plain perform/call
+/// of `Op`, and refuses `?` on anything but a host capability.
 
 /// #1429: the braceless row `A + B`. Items are separated by `+` and the row
 /// ends at the first token that is not `+` -- which is why the separator is
@@ -1174,7 +1173,7 @@ fn parse_effect_item(tokens: Array[Token], pos: Int) -> (String, Int) with Excep
 /// with no lookahead. `+` is also already the language's "and another one"
 /// separator, in trait bounds (`[T: A + B]`).
 fn collect_effect_names_plus(tokens: Array[Token], pos: Int, acc: String) -> (String, Int) with Exception {
-  collect_effect_names_plus_grade(tokens, pos, acc, false)
+  collect_effect_names_plus_grade(tokens, pos, acc, true)
 }
 
 fn collect_allows_names_plus(tokens: Array[Token], pos: Int, acc: String) -> (String, Int) with Exception {
@@ -1241,177 +1240,67 @@ fn parse_effect_row_base(tokens: Array[Token], pos: Int) -> (String, Int) with E
   }
 }
 
-/// #1345 / ADR-0088: the effect row plus its optional `allows` clause.
+/// The row of an ENTRY POINT, introduced by the contextual keyword `allows`
+/// (`fn main allows Console + Fs::read_file?`, `test "n" allows Http { .. }`).
+/// `pos` is the token AFTER `allows`.
 ///
-///   fn main with Stdout allows Fs::Read[Cfg] + Http?
+/// An entry point has no caller to require effects from, so its row is a
+/// GRANT: `allows` names the authority the run brings in -- the host
+/// capabilities, `Exception` for a failure the runtime boundary may diagnose,
+/// `Async` for the runtime driver, or an `effectset` of those. The row is
+/// stored exactly like a `with` row (comma-joined labels), so every consumer
+/// -- entry admission, the Async / exception boundaries, WIT, the entry
+/// execution cache -- reads ONE representation and the two spellings cannot
+/// drift apart. What differs from `with` is where the clause may appear (an
+/// entry head only; see parse_fn_signature_with_binder_context and
+/// parse_test_row_suffix) and that the Optional grade `?` is legal on an item.
 ///
-/// `allows` is a CONTEXTUAL keyword, recognized only here -- directly after a
-/// row -- and deliberately not reserved: the ADR checked that no identifier in
-/// the repo is named `allows`, but reserving it would still break user code for
-/// no gain. The position is unambiguous because nothing else may follow a row:
-/// a declaration continues with `{`, a `let` with `=`, a type with `,`/`)`.
-///
-/// #1961: the clauses stay distinct. The emitted `with` row and the `allows`
-/// authority are stored as `emitted + "\\n#allows " + caps` so checker / WIT
-/// can recover both. They are not unioned into one row.
-///
-/// The classification check (ADR-0088 decision 1) DOES run -- see
-/// check_allows_clause_items / check_split_with_clause_items below.
-/// Operation-level `allows Console::write_stream` is distinct from
-/// `allows Console` (input+output). Still absent: the entry-point-only
-/// rule (`allows` is currently accepted anywhere a row may appear).
-
-/// #1345 / ADR-0088: the base effect NAME of a row item -- `Fs` for
-/// `Fs::read_file`, `Fs::Read[Cfg]` and plain `Fs`. Classification is a
-/// property of the effect, not of the operation or its resource kind.
-fn row_item_base_name(item: String) -> String {
-  let n = String::length(item)
-  let mut i = 0
-  let mut end = n
-  while i < n && end == n {
-    let c = String::char_code_at(item, i)
-    if c == ':' || c == '[' || c == '?' {
-      end = i
-    } else {
-      i = i + 1
-    }
-  }
-  String::substring(item, 0, end)
-}
-
-/// #1345 / ADR-0088: the effect labels that are CAPABILITIES (resource kind,
-/// resolved by a host/provider) as opposed to algebraic effects (discharged by
-/// an in-process handler) or core ambient effects.
-///
-/// PROVISIONAL. ADR-0084's three-way classification is the real home for this
-/// (#1343) and is unimplemented; this list is derived from ADR-0088's own
-/// definition applied to the effects the builtin registry actually tags, so
-/// the checker has something principled to reject against in the meantime.
-///
-/// This must hold exactly the labels the compiler's own
-/// `standard_host_provider_resource_defaults` calls standard host providers.
-/// The parser package must not depend on the compiler, so the two lists cannot
-/// share a definition; `capability_effect_names` exists so a test can compare
-/// them instead of a reader having to (#2110).
-///
-/// #1460: `Console` is the merged tty capability. Stdin/Stdout/Stderr are
-/// still listed because they are still declarable until the Phase 3 sweep;
-/// both spellings are capabilities, so `allows` accepts either meanwhile.
-///
-/// `Async` is deliberately EXCLUDED even though it is builtin-tagged: it is
-/// ADR-0089's suspension effect, discharged by the runtime driver, and it
-/// carries no resource kind to grant. Classifying it by "is it builtin" would
-/// get that wrong -- which is exactly why the list is written out rather than
-/// derived from the registry.
-let capability_effect_name_list: Array[String] = [
-  "Fs",
-  "Http",
-  "Socket",
-  "Env",
-  "Console",
-  "Stdin",
-  "Stdout",
-  "Stderr",
-  "Process",
-  "Profiler"
-]
-
-/// The capability labels above, as data. Exported so the compiler-side test
-/// that keeps this list and the standard host provider table in step can
-/// enumerate it rather than restate it (#2110).
-export fn capability_effect_names() -> Array[String] {
-  let out = Array::slice([""], 0, 0)
-  let mut i = 0
-  while i < Array::length(capability_effect_name_list) {
-    Array::push(out, Array::get(capability_effect_name_list, i))
-    i = i + 1
-  }
-  out
-}
-
-/// Is this effect a capability? See `capability_effect_name_list`.
-fn is_capability_effect_name(name: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(capability_effect_name_list) {
-    if Array::get(capability_effect_name_list, i) == name {
-      found = true
-      i = Array::length(capability_effect_name_list)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
-/// ADR-0088: `Error` / `Exception[E]`. Spelled here rather than imported from
-/// the compiler's exception_effect.vibe because the parser package must not
-/// depend on the compiler.
-fn is_core_ambient_effect_name(name: String) -> Bool {
-  name == "Error" || name == "Exception"
-}
-
-/// ADR-0088 decision 1: `allows` takes capability effects ONLY.
-fn check_allows_clause_items(caps: String) -> Unit with Exception {
-  let items = String::split(caps, ", ")
-  let mut i = 0
-  while i < Array::length(items) {
-    let item = Array::get(items, i)
-    if String::length(item) > 0 {
-      let base = row_item_base_name(item)
-      if !is_capability_effect_name(base) {
-        if is_core_ambient_effect_name(base) {
-          throw("`\{item}` is a core ambient effect and belongs in the `with` clause, not `allows` (ADR-0088)")
-        } else {
-          throw("`\{item}` is not a capability effect, so it cannot appear in `allows` -- `allows` promises every item is a statically known capability, which rules out algebraic effects and row variables. Write it in the `with` clause (ADR-0088, #1345)")
-        }
-      } else ()
-    } else ()
-    i = i + 1
+/// `allows` is CONTEXTUAL, deliberately not reserved: it is recognized only
+/// where an entry row may begin, so `let allows = 7` keeps compiling.
+/// `allows ()` spells the explicitly empty grant, like `with ()`.
+export fn parse_allows_row(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
+  match peek(tokens, pos) {
+    // #1514: blame the `{` itself, not the enclosing declaration's start.
+    TLBrace => throw("the braced row `allows { A, B }` is not a spelling -- write `allows A + B` (and `allows ()` for the empty row) at #\{pos}"),
+    TLParen => match peek(tokens, pos + 1) {
+      TRParen => ("", pos + 2),
+      _ => throw("`allows (` spells the EMPTY row `allows ()` and nothing else -- a parenthesised non-empty row is not a spelling. Write `allows A + B` at #\{pos}")
+    },
+    _ => collect_allows_names_plus(tokens, pos, "")
   }
 }
 
-/// ADR-0088 decision 1: the split `with` clause takes algebraic / core ambient
-/// / row variables ONLY. A bare `with` (no `allows`) stays permanently legal
-/// with anything in it -- the restriction is opt-in, and only applies once the
-/// author has chosen the split form.
-fn check_split_with_clause_items(row: String) -> Unit with Exception {
-  let items = String::split(row, ", ")
-  let mut i = 0
-  while i < Array::length(items) {
-    let item = Array::get(items, i)
-    if String::length(item) > 0 && is_capability_effect_name(row_item_base_name(item)) {
-      throw("`\{item}` is a capability effect and must appear in the `allows` clause, not `with` (ADR-0088, #1345)")
-    } else ()
-    i = i + 1
+/// Is `tokens[pos]` the contextual keyword `allows`?
+export fn peek_is_allows(tokens: Array[Token], pos: Int) -> Bool {
+  match peek(tokens, pos) {
+    TIdent(kw) => kw == "allows",
+    _ => false
   }
+}
+
+/// The program entry names whose `fn` head may carry an `allows` row. `test`
+/// / `bench` / `example` blocks are entry points too, parsed elsewhere.
+export fn is_entry_fn_name(name: String) -> Bool {
+  name == "main" || name == "_start"
+}
+
+/// The message for an `allows` written where only `with` may appear. It leads
+/// with the edit: `what` names the declaration ("`helper`") or the position
+/// ("a function type").
+export fn allows_outside_entry_error(what: String, pos: Int) -> String {
+  String::concat("`allows` grants authority and is written on an entry point only (`fn main`, `fn _start`, `test`, `example`, `bench`); ", String::concat(what, " requires its effects from the caller -- write `with` here and grant the effect at the entry at #\{pos}"))
 }
 
 export fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {
   let (row, after_row) = parse_effect_row_base(tokens, pos)
-  match peek(tokens, after_row) {
-    TIdent(kw) => if kw == "allows" {
-      let (caps, after_caps) = collect_allows_names_plus(tokens, after_row + 1, "")
-      // ADR-0088 decision 1's classification check. It runs HERE, at parse
-      // time, because this is the only place the split still exists: the two
-      // clauses fold into one row on the next line and nothing downstream can
-      // tell them apart again. That is affordable only because the predicate
-      // is name-level (capability list / `Error` / everything else), so it
-      // needs no scope or declaration knowledge -- when ADR-0084's real
-      // classification lands (#1343) this check moves to the checker along
-      // with the split.
-      check_split_with_clause_items(row)
-      check_allows_clause_items(caps)
-      let encoded = if String::length(caps) == 0 {
-        row
-      } else {
-        String::concat(row, String::concat("\n#allows ", caps))
-      }
-      (encoded, after_caps)
-    } else {
-      (row, after_row)
-    },
-    _ => (row, after_row)
+  if peek_is_allows(tokens, after_row) {
+    // `with A allows C` was ADR-0088's split form. A row is either a
+    // requirement (`with`, on a called function or a function type) or a
+    // grant (`allows`, on an entry head), never both -- so the combination
+    // is refused by name rather than falling into "expected {".
+    throw("`with .. allows ..` is not a spelling: an entry point writes its whole row as `allows A + B`, and a called function or a function type requires with `with A + B` at #\{after_row}")
+  } else {
+    (row, after_row)
   }
 }
 
@@ -1438,6 +1327,11 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
       TWith => {
         let effect_name_pair = parse_effect_row(tokens, rn + 1)
         (Some(effect_name_pair.0), effect_name_pair.1)
+      },
+      TIdent(kw) => if kw == "allows" {
+        throw(allows_outside_entry_error("a function type", rn))
+      } else {
+        (None, rn)
       },
       _ => (None, rn)
     }

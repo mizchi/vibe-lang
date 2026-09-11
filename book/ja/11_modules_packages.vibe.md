@@ -26,7 +26,7 @@ import ./support/mathx.vibe {
   triple
 }
 
-fn main with Console {
+fn main allows Console {
   println("triple(14) = \{triple(14)}")
 }
 ```
@@ -66,7 +66,7 @@ import @vibe/core {
   hex_encode, sha1
 }
 
-fn main with Console {
+fn main allows Console {
   println("length(sha1(\"vibe\")) = \{String::length(sha1("vibe"))}")
   println("hex_encode(\"hi\") = \{hex_encode("hi")}")
 }

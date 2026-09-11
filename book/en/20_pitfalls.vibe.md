@@ -30,7 +30,7 @@ effect Ask {
   Get() -> Int
 }
 
-fn main with Exception {
+fn main allows Exception {
   let bump = (x: Int) -> Int {
     x + 1
   }
@@ -131,7 +131,7 @@ onto the line above:
 
 ```vibe skip
 // skip: shown for the diagnostic — the `-1` parses as `println(...) - 1`
-fn main with Console {
+fn main allows Console {
   let v = {
     println("failing")
     -1

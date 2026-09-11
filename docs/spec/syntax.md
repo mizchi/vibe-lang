@@ -76,11 +76,14 @@ as true false do derive
 Context-sensitive syntax heads:
 
 ```text
-record map
+record map allows
 ```
 
 `map` is not a reserved keyword. `record` and `map` introduce collection
-literals only where the parser is expecting that literal head.
+literals only where the parser is expecting that literal head. `allows`
+(ADR-0088) is the row keyword of an entry point -- `fn main allows Console`,
+`test "n" allows Http` -- and is recognized only where an entry row may
+begin; `let allows = 7` keeps compiling.
 
 ### Literals
 
@@ -817,6 +820,10 @@ test "arithmetic" {
   assert_eq(1 + 1, 2)
 }
 
+test "hits the network" allows Http {
+  let _ = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
+}
+
 example "adding two numbers" {
   assert_eq(add(1, 2), 3)
 }
@@ -831,6 +838,14 @@ The test name is a STRING literal. A bare identifier
 name is always quoted. This section said both forms were accepted until it was
 measured against the compiler; nothing was checking it, because docs/spec/ was
 outside the doctest list.
+
+A `test`, `bench` or `example` is an entry point, so the row written after its
+name is a GRANT and the keyword is `allows` (ADR-0088), exactly as on
+`fn main allows ..`. The declared row widens the ambient default row that test
+execution supplies (`docs/spec/test-example-capabilities.md`); an anonymous
+`test { .. }` / `bench { .. }` cannot carry one, because the row is keyed on the
+name. The legacy `test "n" with ..` still parses and `vibe check` reports it
+with the `allows` edit.
 
 `example "name" { .. }` (#819) is a documentation example. It is compiled and
 RUN exactly like a test -- that is the point of the form: a doc sample that

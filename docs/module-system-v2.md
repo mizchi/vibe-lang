@@ -267,7 +267,7 @@ require @vibe/json ^2.0.1 = #31bb9c
 import @vibe/http { get }
 import @vibe/json { parse }
 
-fn main() -> Unit with Stdout + Net { ... }
+fn main() -> Unit allows Stdout + Net { ... }
 ```
 
 - 任意のエントリ `.vibe` の先頭に `require` を書ける。

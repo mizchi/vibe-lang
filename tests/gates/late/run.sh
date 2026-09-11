@@ -21,7 +21,7 @@ export VIBE_UNSTABLE=1
 
 
 # 41. ADR-0069 Phase 1: `fn main {}` sugar + entry/top-level hardening.
-#     (a) ok_fnmain: the paren-less/annotation-less `fn main with Stdout { .. }`
+#     (a) ok_fnmain: the paren-less/annotation-less `fn main allows Stdout { .. }`
 #         special form compiles as `let main: () -> Unit with Stdout` and the
 #         synthesized `_start` runs it (output contains 42).
 #     (b) bad_entry_typo: a nonexistent entry name is a COMPILE ERROR (it used
@@ -34,7 +34,7 @@ echo "[compiler-gate] 41/41 ADR-0069 fn main sugar + entry/top-level hardening"
 a69dir="_build/_gate_adr69"
 rm -rf "$a69dir"; mkdir -p "$a69dir"
 cat > "$a69dir/ok_fnmain.vibe" <<'EOF'
-fn main with Stdout {
+fn main allows Stdout {
   Stdout::write_stream("42\n")
 }
 EOF
@@ -4553,32 +4553,32 @@ res_case() {
 }
 res_case basic ok 'resource Posts : S3::Bucket
 
-fn main with Stdout {
+fn main allows Stdout {
   println("ok")
 }
 '
 res_case unqualified err 'resource Posts : Bucket
 
-fn main with Stdout {
+fn main allows Stdout {
   println("ok")
 }
 ' 'must be qualified'
 res_case duplicate err 'resource Posts : S3::Bucket
 resource Posts : S3::Table
 
-fn main with Stdout {
+fn main allows Stdout {
   println("ok")
 }
 ' 'already declared'
 res_case singleton err 'resource Home : Process::Root
 
-fn main with Stdout {
+fn main allows Stdout {
   println("ok")
 }
 ' 'singleton'
 res_case exported err 'export resource Posts : S3::Bucket
 
-fn main with Stdout {
+fn main allows Stdout {
   println("ok")
 }
 ' 'cannot be exported'
@@ -4587,7 +4587,7 @@ fn main with Stdout {
 # position, so nothing that used the name breaks.
 res_case as_name ok 'let resource = 1
 
-fn main with Stdout {
+fn main allows Stdout {
   println("ok")
 }
 '
@@ -4785,7 +4785,7 @@ en_case() {
 #    no way to WRITE a qualified reference to an imported constructor.
 en_case qualified ok 'import ./dep.vibe { Box, Mk, Nil }
 
-fn main with Stdout {
+fn main allows Stdout {
   let b = Box::Mk(7)
   let r = match b {
     Mk(n) => n,
@@ -4800,7 +4800,7 @@ fn main with Stdout {
 #    one: a hole in checking, not a message-quality complaint.
 en_case payload_checked err 'import ./dep.vibe { Box, Mk, Nil }
 
-fn main with Stdout {
+fn main allows Stdout {
   let b = Mk(7)
   match b {
     Mk(n) => println(String::concat(n, "!")),
@@ -4813,7 +4813,7 @@ fn main with Stdout {
 #    variant trapped at runtime instead.
 en_case exhaustive err 'import ./dep.vibe { Box, Mk }
 
-fn main with Stdout {
+fn main allows Stdout {
   let b = Mk(7)
   let r = match b {
     Mk(n) => n
@@ -4829,7 +4829,7 @@ fn main with Stdout {
 #    env_lookup that could not see the imported scheme.
 en_case parameterized ok 'import ./dep.vibe { Attempt, Got, Missed }
 
-fn main with Stdout {
+fn main allows Stdout {
   let a = Got(3)
   let r = match a {
     Got(v) => v,
@@ -4840,7 +4840,7 @@ fn main with Stdout {
 '
 en_case parameterized_qualified ok 'import ./dep.vibe { Attempt, Got, Missed }
 
-fn main with Stdout {
+fn main allows Stdout {
   let a = Attempt::Got(3)
   let r = match a {
     Attempt::Got(v) => v,
@@ -4868,7 +4868,7 @@ fn second() -> String {
   }
 }
 
-fn main with Stdout {
+fn main allows Stdout {
   println(String::concat(__to_string(first()), second()))
 }
 '
@@ -4880,7 +4880,7 @@ fn main with Stdout {
 #     `Box` is a real enum here, just not the one that owns `Missed`.
 en_case pattern_qualifier_wrong_enum err 'import ./dep.vibe { Attempt, Box, Got, Missed }
 
-fn main with Stdout {
+fn main allows Stdout {
   let a = Got(3)
   let r = match a {
     Got(v) => v,
@@ -4901,7 +4901,7 @@ fn shout(s: String) -> String with Log {
   s
 }
 
-fn main with Stdout {
+fn main allows Stdout {
   let r = handle {
     shout("hi")
   } with Log {
@@ -4924,7 +4924,7 @@ enum Color {
   Green
 }
 
-fn main with Stdout {
+fn main allows Stdout {
   let c = Red
   match c {
     Red => println("red"),
@@ -4943,7 +4943,7 @@ enum B {
   Mk(String)
 }
 
-fn main with Stdout {
+fn main allows Stdout {
   println("unreachable")
 }
 ' 'constructor name collision'
@@ -5399,7 +5399,7 @@ rm -rf "$inspdir"; mkdir -p "$inspdir"
 # the arguments already reference. With a fixed temp name this compared the
 # literal against ITSELF and passed; the assertion has to see "wrong".
 cat > "$inspdir/hygiene.vibe" <<'INSPH'
-fn main() -> Int with Stdout {
+fn main() -> Int allows Stdout {
   let __vibe_inspect_actual = "wrong"
   inspect(1, __vibe_inspect_actual)
   0
@@ -5473,7 +5473,7 @@ fn shout(v: Int, c: String) -> Unit with Stdout {
   println(c)
 }
 
-fn main() -> Int with Stdout {
+fn main() -> Int allows Stdout {
   match B(shout) {
     B(inspect) => {
       inspect(1, "SIDE EFFECT RAN")
@@ -6078,7 +6078,7 @@ echo "[compiler-gate] 107/107 the host runner's crash dump is opt-in (#2199)"
 cdbg="_build/_gate_crash_debug"
 rm -rf "$cdbg"; mkdir -p "$cdbg"
 cat > "$cdbg/oob.vibe" <<'CDBGEOF'
-fn main() -> Int with Console {
+fn main() -> Int allows Console {
   let xs = [1, 2, 3]
   println("get = \{Array::get(xs, 10)}")
   0
@@ -6153,7 +6153,7 @@ rm -rf "$uwdir"; mkdir -p "$uwdir"
 cat > "$uwdir/uses.vibe" <<'UWEOF'
 import @vibe/concurrent { TaskGroup }
 
-fn main() -> Int with Exception {
+fn main() -> Int allows Exception {
   TaskGroup::run((n) -> {
     let _t = TaskGroup::spawn(n, () -> { 7 })
     0
@@ -6233,8 +6233,8 @@ fi
 # package name. Both spellings are valid source the lexer accepts, so both were
 # a silent bypass; the gate now reads the PARSED import instead. Written with
 # printf rather than a heredoc so the tab survives being read back.
-printf 'import\t@vibe/concurrent { TaskGroup }\n\nfn main() -> Int with Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/tab.vibe"
-printf 'import  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int with Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/spaces.vibe"
+printf 'import\t@vibe/concurrent { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/tab.vibe"
+printf 'import  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/spaces.vibe"
 for uw_odd in tab spaces; do
   uw_odd_out="$(uw_check "$uwdir/$uw_odd.vibe" || true)"
   if ! printf '%s\n' "$uw_odd_out" | grep -qF 'VIBE_UNSTABLE=1'; then
@@ -6259,7 +6259,7 @@ import @vibe/core { array_empty } // @vibe/concurrent
 
 import @vibe/concurrent { TaskGroup }
 
-fn main() -> Int with Exception {
+fn main() -> Int allows Exception {
   TaskGroup::run((n) -> { 0 })
 }
 UWEOF
@@ -6285,7 +6285,7 @@ require @vibe/concurrent 0.0.1 = #pkg:sha1:0123456789abcdef0123456789abcdef01234
 
 import @vibe/concurrent { TaskGroup }
 
-fn main() -> Int with Exception {
+fn main() -> Int allows Exception {
   TaskGroup::run((n) -> { 0 })
 }
 UWEOF
@@ -6305,7 +6305,7 @@ fi
 # unrelated declaration. The location comes from the lexer now, so this and the
 # comment case above are the same rule rather than two patches (#2277 review).
 # The import here starts on line 5.
-printf 'fn helper() -> Int {\n  1\n}\n\nimport\n  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int with Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/multiline.vibe"
+printf 'fn helper() -> Int {\n  1\n}\n\nimport\n  @vibe/concurrent { TaskGroup }\n\nfn main() -> Int allows Exception {\n  TaskGroup::run((n) -> { 0 })\n}\n' > "$uwdir/multiline.vibe"
 uw_build "$uwdir/multiline.vibe" "$uwdir/multiline.wasm"
 if ! grep -qF 'line 5:' "$uwdir/multiline.wasm.diag" 2>/dev/null; then
   echo "[compiler-gate] FAIL: a multiline import declaration got the wrong line (#2277)" >&2
@@ -6545,7 +6545,7 @@ import ./worker.vibe {
   run_all
 }
 
-fn main() -> Int with Exception {
+fn main() -> Int allows Exception {
   run_all()
 }
 UWEOF
@@ -6776,7 +6776,7 @@ fn assert_eq(a: Int, b: Int) -> String {
   Int::to_string(a + b)
 }
 
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   println(assert_eq(1, 2))
 }
 ASEOF
@@ -6853,7 +6853,7 @@ fn use_param(assert_eq: (Int, Int) -> Int) -> Int {
   assert_eq(1, 2)
 }
 
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   match make_cmp() {
     assert_eq => println(Int::to_string(assert_eq(1, 2)))
   }
@@ -6906,7 +6906,7 @@ fi
 # `call_indirect` of a nonexistent closure -- #1095, exactly. That regression is
 # silent in every other case, so it gets its own probe.
 cat > "$asdir/lambda.vibe" <<'ASEOF'
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   let f = () -> Unit { assert_eq(1, 1) }
   f()
   let g = () -> Unit { assert_true(1 == 1) }
@@ -7056,7 +7056,7 @@ echo "[compiler-gate] 111/111 a binding named eq is the function that runs (#230
 eqdir="_build/_gate_eq_shadow"
 rm -rf "$eqdir"; mkdir -p "$eqdir"
 cat > "$eqdir/eq.vibe" <<'EQEOF'
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   let eq = (a: Int, b: Int) -> Int { a + b }
   println(Int::to_string(eq(1, 2)))
   let feq = (a: Double, b: Double) -> Double { a + b }
@@ -7067,7 +7067,7 @@ EQEOF
 # it only misfires under RC -- the production default -- so a non-RC probe would
 # pass while every shipped build was wrong.
 cat > "$eqdir/eqf.vibe" <<'EQEOF'
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   let eq = (a: Double, b: Double) -> Double { a + b }
   println(Double::to_string(eq(1.5, 2.5)))
 }
@@ -7101,7 +7101,7 @@ fi
 # take the INLINE path for the #705 reason the disjunct exists: a bound `eq`'s
 # string fallback reads OOB on Int values that resemble fat pointers.
 cat > "$eqdir/builtin.vibe" <<'EQEOF'
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   println(if eq(1, 2) { "y" } else { "n" })
   println(if eq(7, 7) { "y" } else { "n" })
   println(if eq(0.5, 0.5) { "y" } else { "n" })
@@ -7133,7 +7133,7 @@ fn eq(a: Int, b: Int) -> Int {
   a + b
 }
 
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   println(Int::to_string(eq(1, 2)))
 }
 EQEOF
@@ -7160,7 +7160,7 @@ fi
 cat > "$eqdir/withsemver.vibe" <<'EQEOF'
 import @vibe/semver { parse }
 
-fn main() -> Unit with Stdout {
+fn main() -> Unit allows Stdout {
   let _ = parse("1.0.0")
   println(if eq(7, 7) { "y" } else { "n" })
   println(if eq(1, 2) { "y" } else { "n" })

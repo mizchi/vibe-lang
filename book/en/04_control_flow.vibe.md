@@ -11,7 +11,7 @@ the reasons other languages need a mutable variable.
 ## `if`
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let v = if 1 < 2 {
     "yes"
   } else {
@@ -45,7 +45,7 @@ fn find_first_neg(arr: Array[Int]) -> Int {
   return -1
 }
 
-fn main with Console {
+fn main allows Console {
   println("find_first_neg([3, 1, -2, 5]) = \{find_first_neg([3, 1, -2, 5])}")
   println("find_first_neg([1, 2]) = \{find_first_neg([1, 2])}")
 }
@@ -63,7 +63,7 @@ parameters, `continue` supplies the next round's values, and `break`
 ends it with a result.
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let sum = loop (i = 0, acc = 0) {
     if i >= 10 {
       break acc
@@ -87,7 +87,7 @@ Since `break` takes a single result, returning two things means
 returning a tuple:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let r = loop (i = 0, acc = 0) {
     if i >= 3 {
       break (acc, i)
@@ -108,7 +108,7 @@ A `for-in` is an expression too, and it evaluates to the `Array` of its
 body's results. Add a name before the element to get the index:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let doubled = for x in [1, 2, 3] {
     x * 2
   }
@@ -139,7 +139,7 @@ fn pair(a: Int, b: Int) -> Int {
   a * 10 + b
 }
 
-fn main with Console {
+fn main allows Console {
   let trimmed_len = "  hi  " |> String::trim |> String::length
   let arr_len = [1, 2, 3] |> Array::length
   let mapped = [1, 2, 3] |> Iterator::map(_, _ * 2)

@@ -19,7 +19,7 @@ fn identity[T](x: T) -> T {
   x
 }
 
-fn main with Console {
+fn main allows Console {
   let b = Box::{
     v: 41
   }
@@ -38,7 +38,7 @@ explicitly with `Box[Int]::{ ... }` when inference has nothing to go on.
 A top-level `fn` annotates its parameters and return type in full,
 generic or not; inference fills in the call site, not the declaration.
 `main` is the one exception — it alone may leave the return type off,
-which is why `fn main with Console` parses and `fn shout(msg: String)
+which is why `fn main allows Console` parses and `fn shout(msg: String)
 with Console` does not.
 
 ## `derive` gives you the usual operations
@@ -50,7 +50,7 @@ enum Color {
   Red; Green; Blue
 } derive (Eq, Show)
 
-fn main with Console {
+fn main allows Console {
   println("eq = \{Color::Red == Color::Red}")
   println("neq = \{Color::Red == Color::Blue}")
   println("show = \{Color::Green}")
@@ -88,7 +88,7 @@ fn size_of[T: Measured](x: T) -> Int {
   T::measure(x)
 }
 
-fn main with Console {
+fn main allows Console {
   let xs = [
     1,
     2,

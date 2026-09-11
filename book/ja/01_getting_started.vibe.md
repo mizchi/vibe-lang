@@ -21,7 +21,7 @@ vibe version
 `hello.vibex` に置きます:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   println("hello, vibe")
 }
 ```
@@ -44,12 +44,14 @@ vibe run hello.vibex
 `index.vpkg` — [モジュールとパッケージ](11_modules_packages.vibe.md) —
 はその公開契約、つまりコンパイラが実装を照合する宣言の並びです。
 
-面白いのは `with Console` の方です。これは端末に書き込むための、この
+面白いのは `allows Console` の方です。これは端末に書き込むための、この
 プログラムの許可であり、必須です — 消せばコンパイルが通りません。
 この言語の一番大きな考えが、一番小さなプログラムに既に現れています。
-関数は自分に許されたことを宣言し、コンパイラはそれを守らせます。
+プログラムは自分に許されたことを宣言し、コンパイラはそれを守らせます。
 
-同じ形は失敗 (`with Exception`) にも、ファイル読み込み
+`main` はその許可を**付与**します。`main` を呼ぶものが無いからです。
+`main` が呼ぶ関数は、自分のシグネチャの `with Console` でそれを
+**要求**します。同じ形は失敗 (`with Exception`) にも、ファイル読み込み
 (`allows Fs::read_file`) にも出てきます。決着は
 [ケーパビリティ](09_capabilities.vibe.md)で付けます。
 

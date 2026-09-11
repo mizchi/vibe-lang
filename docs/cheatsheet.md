@@ -11,7 +11,7 @@ retired in #594; see `docs/archive/moonbit-retirement.md`).
 ```vibe
 // `println` is a builtin — no import — and it needs a tty capability, so the
 // entry declares one. A function that declares no row may not print (#2107).
-fn main with Console {
+fn main allows Console {
   println("hello world")
 }
 ```
@@ -1241,8 +1241,8 @@ The ordered default and cache-safe owners preserve their existing output.
 At a program entry (`main` or `_start`), the checker admits only the union of
 host-provider labels and entry/runtime-managed labels. A user effect such as
 `Ask` / `Ask::Get` must be discharged by `handle ... with Ask` before that
-boundary; adding it to `main`'s `with` row is rejected with a located diagnostic
-(#1683). Ordinary helper functions still fix a missing effect by adding it to
+boundary; adding it to `main`'s `allows` row is rejected with a located
+diagnostic (#1683). Ordinary helper functions still fix a missing effect by adding it to
 their row so callers can decide where to handle it. WIT mapping and handler
 behavior are unchanged. Provider spelling alone grants no authority:
 `Fs::Custom` from `effect Fs { Custom() -> Int }` is still a user operation and
@@ -1424,7 +1424,7 @@ Parse desugars `throw(x)` to `perform Exception::Throw(x)`; the printer
 re-sugars that shape back to `throw(x)`. Both spellings are the same
 effect-row demand: the function must declare `with Exception`, or an
 enclosing `handle .. with Exception` must discharge it. An exception
-that escapes `fn main with Exception` becomes a diagnosed abort at the
+that escapes `fn main allows Exception` becomes a diagnosed abort at the
 runtime boundary.
 
 The effect spelling **`Error` is retired** (#1461, #1501). Either place
@@ -1524,7 +1524,7 @@ let greet: (String) -> Unit with Logger = (name) -> {
 }
 
 // the handler arm prints, so the executable entry carries Stdout
-fn main with Stdout {
+fn main allows Stdout {
   handle { greet("world") } with {
     Logger::Log(msg) => {
       println(msg)
@@ -1757,6 +1757,14 @@ separate `ambiguous trait import alias` error.
 test "arithmetic" {
   assert_eq(1 + 1, 2)
   assert(eq("a", "a"))
+}
+
+// A test is an entry point: the row after its name is a GRANT, spelled
+// `allows` like `fn main allows ..` (ADR-0088). It widens the ambient row
+// test execution supplies (see "test / bench" under 落とし穴).
+test "reads a fixture" allows Fs::read_file {
+  let _ = Fs::read_file("fixtures/absent.txt")
+  assert(true)
 }
 
 // #819: a documentation example. Compiled and RUN like a test -- a doc sample
@@ -2692,44 +2700,64 @@ let main = () -> Int { c }         // ok
 
 ```vibe skip
 // doctest-skip: every NG line here is a form the parser rejects on purpose
-test "name" { .. }             // ok  — 名前は文字列リテラル必須
-test name { .. }               // NG: expected test name string
-test "n" with { Fs } { .. }    // NG: braced row は #1429 で削除 — `with Fs` と書く
+test "name" { .. }               // ok  -- the name must be a string literal
+test name { .. }                 // NG: expected test name string
+test "n" allows { Fs } { .. }    // NG: a braced row is not a spelling -- write `allows Fs`
+test "n" with { Fs } { .. }      // NG: the braced row was removed in #1429
 ```
 
-**名前付き `test` / `bench` は名前の後に effect row を書ける** (#1508)。宣言した
-row は ambient row (`{ Fs, Env, Console, Stdin, Stdout, Stderr, Process,
-Profiler, Error, Exception }`; `Console` が tty の現行名、旧三つは legacy) を**置換ではなく拡張**する — `with Http` を
-書いても `assert` に必要な `Exception` などの既定は残る。無名 `test { .. }` /
-`bench { .. }` には row を書けない (row を対応付ける名前が無い)。
+**A named `test` / `bench` / `example` may write a row after its name**
+(#1508). A test is an entry point, so the row is a **grant** and the keyword
+is `allows`, as on `fn main allows ..` (ADR-0088). The declared row
+**widens** the ambient row (`{ Fs, Env, Console, Stdin, Stdout, Stderr,
+Process, Profiler, Error, Exception }`; `Console` is the current name for the
+tty, the three older labels are legacy) rather than replacing it -- writing
+`allows Http` keeps the defaults `assert` needs, such as `Exception`. An
+anonymous `test { .. }` / `bench { .. }` cannot carry a row (there is no name
+to key it on). The legacy spelling `test "n" with ..` still parses, and
+`vibe check` reports it with the `allows` edit as a warning (the seed-compiled
+tests under `lib/**` still carry it, so the refusal lands after the bootstrap
+bump).
+
+The row is admitted like `main`'s: what it names must be something the run
+can bring in -- a host capability, `Exception`, `Async`, or an effectset of
+those. A user-declared effect (`test "x" allows Ask::Get`), a row variable,
+or an operation a provider does not own (`allows Console::Get`) is refused,
+with the `handle` edit for the user effect: nobody outside the program
+provides it, so granting it would only authorize a `perform` no handler
+catches. Nor can a block write `perform?` itself: a test artifact runs with
+full authority, so the `NotGranted` arm could never run -- put the
+`perform?` in a function that requires `with Op?` and call that.
 
 ```vibe
-// row は effect 名でも operation 粒度でも書ける
-test "declared row widens the ambient one" with Exception {
+// the row may name an effect, an operation, or an effectset
+test "declared row widens the ambient one" allows Exception {
   assert_eq(1 + 1, 2)
 }
 
-bench "http_get" with Http {
+bench "http_get" allows Http {
   let h = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
   let _ = Http::response_body(h)
   Http::close(h)
 }
 
-test "op-granular row" with Http::request + Http::close {
+test "op-granular row" allows Http::request + Http::close {
   let h = Http::request("GET", "http://127.0.0.1:18281/hello", "", "")
   Http::close(h)
   assert(true)
 }
 ```
 
-これで **`Http` を実際に呼ぶ test / bench が書ける** — network は ambient row に
-入っておらず明示宣言が必須、という設計はそのまま。クライアント系 builtin
-(`Http::request` / `response_status` / `response_header` / `response_body` /
-`close`) は bare file の直接綴りでも host import に落ちる (#1508 第2障壁の解消。
-実行例: `bench/http_bench.vibe`、要 `python3 tests/http_echo_server.py 18281`)。
-server 系 (`Http::listen` / `accept` / `respond`) は今も handler が必要。
-`handle { .. } with Http { _ => () }` で row を放電する古い回避策は、実 HTTP の
-test/bench にはもう不要。
+This is what makes **a test / bench that really calls `Http`** writable --
+the design is unchanged: the network is absent from the ambient row and must
+be declared. The client builtins (`Http::request` / `response_status` /
+`response_header` / `response_body` / `close`) lower to host imports even
+when spelled directly in a bare file (the second barrier of #1508, removed;
+runnable example: `bench/http_bench.vibe`, which needs `python3
+tests/http_echo_server.py 18281`). The server side (`Http::listen` /
+`accept` / `respond`) still needs a handler. The old workaround of
+discharging the row with `handle { .. } with Http { _ => () }` is no longer
+needed for a real HTTP test / bench.
 
 ### 引数
 

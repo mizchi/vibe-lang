@@ -17,7 +17,7 @@ import @vibe/builtin {
   trait Iterator
 }
 
-fn main with Console {
+fn main allows Console {
   let xs = [1, 2, 3]
   println("xs[0] = \{xs[0]}")
   println("length = \{Array::length(xs)}")
@@ -51,7 +51,7 @@ When you fill a collection once and then only read it, build it and
 freeze it. `ArrayBuilder::freeze` hands back an ordinary `Array`.
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let b = ArrayBuilder::new()
   ArrayBuilder::push(b, 10)
   ArrayBuilder::push(b, 20)
@@ -69,7 +69,7 @@ assembling a string with repeated concatenation is quadratic, while a
 builder is linear.
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let b = StringBuilder::new()
   StringBuilder::push(b, "hello ")
   StringBuilder::push(b, "vibe")
@@ -99,7 +99,7 @@ fn unwrap_or(o: Option[Int], fallback: Int) -> Int {
   }
 }
 
-fn main with Console {
+fn main allows Console {
   let m: MutMap[String, Int] = MutMap::new_string()
   MutMap::set(m, "a", 1)
   MutMap::set(m, "b", 2)

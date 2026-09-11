@@ -71,24 +71,70 @@ fn print_import_item(item: ImportItem) -> String {
 /// printer) printed `with { Error }`, so running both on one file flipped the
 /// spelling back and forth.
 fn print_effect_row(e: String) -> String {
-  let sep = "\n#allows "
-  let idx = String::index_of(e, sep)
-  if idx < 0 {
-    if String::length(e) == 0 {
-      " with ()"
-    } else {
-      String::concat(" with ", join(String::split(e, ", "), " + "))
-    }
+  print_row_with_keyword(e, "with")
+}
+
+/// The same row on an ENTRY declaration (`main` / `_start`), where the row is
+/// a grant and the keyword is `allows` (ADR-0088). One representation, two
+/// keywords decided by position -- the printer picks by the binding name, the
+/// same test the parser applied when it read the row.
+fn print_entry_row(e: String) -> String {
+  print_row_with_keyword(e, "allows")
+}
+
+fn print_row_with_keyword(e: String, keyword: String) -> String {
+  if String::length(e) == 0 {
+    String::concat(" ", String::concat(keyword, " ()"))
   } else {
-    let emitted = String::substring(e, 0, idx)
-    let allows = String::substring(e, idx + String::length(sep), String::length(e))
-    let with_part = if String::length(emitted) == 0 {
-      " with ()"
-    } else {
-      String::concat(" with ", join(String::split(emitted, ", "), " + "))
-    }
-    String::concat(with_part, String::concat(" allows ", join(String::split(allows, ", "), " + ")))
+    String::concat(" ", String::concat(keyword, String::concat(" ", join(String::split(e, ", "), " + "))))
   }
+}
+
+/// #1508 / ADR-0088: the rows of `test` / `bench` / `example` blocks are not
+/// on the block nodes but in the program's trailing `STestEffectRows` marker,
+/// so a per-statement printer cannot see them. `print_program` registers the
+/// marker's rows here before it prints and clears them after; a caller that
+/// prints statement by statement (`vibe normalize`) registers them the same
+/// way. A registered block prints its row as `allows ..` -- the canonical
+/// spelling, whichever keyword was read -- and `allows ()` for the explicitly
+/// empty row; an unregistered block prints no row. Before this the printer
+/// dropped every block row, so `vibe normalize` silently deleted the
+/// authority a block declared (Codex review on PR #2653).
+let printer_block_rows: Array[(String, String)] = Array::slice([("", "")], 0, 0)
+
+export fn register_block_rows(stmts: Array[Stmt]) -> Unit {
+  Array::truncate(printer_block_rows, 0)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STestEffectRows(rows) => {
+        let mut ri = 0
+        while ri < Array::length(rows) {
+          Array::push(printer_block_rows, Array::get(rows, ri))
+          ri = ri + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn block_row_suffix(name: String) -> String {
+  let mut i = 0
+  let mut out = ""
+  let mut found = false
+  while i < Array::length(printer_block_rows) && !found {
+    let (n, row) = Array::get(printer_block_rows, i)
+    if n == name {
+      out = print_entry_row(row)
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
 }
 
 /// Render a parser generic binder in parameter declaration order. Bounds are
@@ -653,7 +699,11 @@ export fn print_stmt(s: Stmt) -> String {
             None => "()"
           }
           let eff_str = match effect {
-            Some(e) => print_effect_row(e),
+            Some(e) => if name == "main" || name == "_start" {
+              print_entry_row(e)
+            } else {
+              print_effect_row(e)
+            },
             None => ""
           }
           let where_str = if Array::length(reqs) == 0 && Array::length(enss) == 0 {
@@ -850,9 +900,9 @@ export fn print_stmt(s: Stmt) -> String {
       }
       String::concat("import ", String::concat(path, String::concat(" { ", String::concat(join(parts, ", "), " }"))))
     },
-    STest(name, body) => String::concat("test \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
-    SExample(name, body) => String::concat("example \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
-    SBench(name, body) => String::concat("bench \"", String::concat(name, String::concat("\" { ", String::concat(print_expr(body), " }")))),
+    STest(name, body) => String::concat("test \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr(body), " }")))))),
+    SExample(name, body) => String::concat("example \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr(body), " }")))))),
+    SBench(name, body) => String::concat("bench \"", String::concat(name, String::concat("\"", String::concat(block_row_suffix(name), String::concat(" { ", String::concat(print_expr(body), " }")))))),
     SExpr(e) => print_expr(e),
     SExport(names) => String::concat("export { ", String::concat(join(names, ", "), " }")),
     SReExport(path, items) => {
@@ -922,6 +972,8 @@ fn needs_program_separator(stmt_text: String) -> Bool {
 
 export fn print_program(stmts: Array[Stmt]) -> String {
   let len = Array::length(stmts)
+  // The block rows live in the trailing marker; see register_block_rows.
+  register_block_rows(stmts)
   // O(N) build via ArrayBuilder (matching this file's join/escape_string idiom);
   // the previous `out = String::concat(out, ...)` per statement was O(N²) over
   // the total printed size, which dominates emit-module-source (issue #366).
@@ -947,5 +999,7 @@ export fn print_program(stmts: Array[Stmt]) -> String {
     }
     i = i + 1
   }
-  String::join(ArrayBuilder::freeze(b), "")
+  let out = String::join(ArrayBuilder::freeze(b), "")
+  Array::truncate(printer_block_rows, 0)
+  out
 }

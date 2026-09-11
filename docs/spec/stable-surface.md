@@ -329,12 +329,14 @@ that.
   concurrency model built on top of it, not the vocabulary.
 - **Component Model `#import` integration** (ADR-0021 Phase 2/3): CPS lowering
   of non-tail-resumptive handlers, capability effects.
-- **Capability authorization surface** (ADR-0088, `proposed`): the two-clause
-  `with {A} allows {C}` syntax (parser landed), the `?` grade for optional
-  capabilities, the `Attempt[T, E]` that `perform?` returns (the type and
-  `unwrap_or` / `is_granted` are in `@vibe/core`), and preflight authorization.
-  ADR-0043's `--allow-*` / `--deny-*` / `--profile` presets were not built as a
-  separate feature; they were absorbed into L1 of this resolution ladder.
+- **Capability authorization surface** (ADR-0088, `partial`): the `?` grade
+  for optional capabilities on an entry's `allows` row, the `Attempt[T, E]`
+  that `perform?` returns (the type and `unwrap_or` / `is_granted` are in
+  `@vibe/core`), and preflight authorization. The entry keyword itself --
+  `fn main allows ..`, `test "n" allows ..` -- is stable: it is the spelling
+  the book teaches. ADR-0043's `--allow-*` / `--deny-*` / `--profile` presets
+  were not built as a separate feature; they were absorbed into L1 of this
+  resolution ladder.
 - **`_start` capability declarations and the top-level effect rule**
   (ADR-0041/0042, `proposed`).
 - **The SIMD API** (`spec/simd-api-design.md`): the fused scan builtins

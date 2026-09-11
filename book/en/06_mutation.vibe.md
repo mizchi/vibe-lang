@@ -14,7 +14,7 @@ because from the outside there is no difference.
 `let mut` gives you a writable binding for the rest of its block:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   let y = {
     let mut v = 0
     v += 1
@@ -43,7 +43,7 @@ fn grow(xs: Array[Int]) -> Unit {
   Array::push(xs, 9)
 }
 
-fn main with Console {
+fn main allows Console {
   let xs = [
     1
   ]
@@ -73,7 +73,7 @@ fn bump(c: Counter) -> Unit {
   c.n = c.n + 1
 }
 
-fn main with Console {
+fn main allows Console {
   let c = Counter::{
     n: 10
   }

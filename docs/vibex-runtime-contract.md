@@ -106,7 +106,7 @@ AWS SDK、Http、proxy、in-memory mock のいずれでも実装できる。S3 �
 canonical entry は次の形である。
 
 ```vibe skip
-fn main with S3::Read[Posts] + Stdout::write {
+fn main allows S3::Read[Posts] + Stdout::write {
   ...
 }
 ```
@@ -148,7 +148,7 @@ fn load[B: S3::Bucket]() -> Bytes with S3::Read[B] {
   perform S3[B]::get_object("posts.json")
 }
 
-fn main with S3::Read[Posts] + Stdout::write {
+fn main allows S3::Read[Posts] + Stdout::write {
   Stdout::write(load[Posts]())
 }
 ```

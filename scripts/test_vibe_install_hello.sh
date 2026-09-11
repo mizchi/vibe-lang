@@ -20,7 +20,8 @@
 #      quickstart printed twice, and they had already drifted once.
 #   5. Every document that teaches a first program names the SAME entry row.
 #      Measured 2026-08-19: three of four said `fn main with Console` and
-#      docs/cheatsheet.md said `fn main with Stdout` -- the legacy label, in the
+#      docs/cheatsheet.md said `fn main with Stdout` (the row is spelled
+#      `fn main allows ..` since ADR-0088) -- the legacy label, in the
 #      one document CLAUDE.md tells you to read first. Both compile, so nothing
 #      failed; a reader just learned a different program from the reference than
 #      from the book. The shell-quickstart docs write their program inside
@@ -66,8 +67,20 @@ unset VIBE_LIB || true
 export VIBE_HOME="$WORK/empty-home"
 mkdir -p "$VIBE_HOME"
 
-bash "$ROOT_DIR/scripts/ensure_seed.sh"
-seed="$ROOT_DIR/bootstrap/seed/compiler.wasm"
+# Which compiler answers (AGENTS.md, "Which compiler answered?"): the
+# documented program is written for the compiler this checkout BUILDS, not
+# for the committed seed -- the entry spelling `fn main allows ..` (ADR-0088)
+# postdates the seed pinned at the time it landed. Resolve the checkout's
+# stage2 the way every other compiler probe does; the seed is the last
+# fallback and says so on stderr.
+#   INSTALL_HELLO_STAGE2=<path>  override; otherwise scripts/resolve_stage2.sh
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
+compiler="$(cd "$ROOT_DIR" && resolve_stage2 install-hello "${INSTALL_HELLO_STAGE2:-}")" || exit 1
+case "$compiler" in
+  /*) ;;
+  *) compiler="$ROOT_DIR/$compiler" ;;
+esac
+[ -s "$compiler" ] || { echo "[install-hello-smoke] FAIL: compiler wasm not found: $compiler" >&2; exit 1; }
 
 first_prog=""
 first_doc=""
@@ -96,7 +109,7 @@ for doc in $DOCS; do
   ( cd "$dir" && \
     VIBE_PREOPEN_DIR="$dir" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
       bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" \
-      --invoke cli_main "$seed" "hello.vibex" "hello.wasm" "main" >/dev/null 2>&1 ) || true
+      --invoke cli_main "$compiler" "hello.vibex" "hello.wasm" "main" >/dev/null 2>&1 ) || true
 
   if [ ! -s "$dir/hello.wasm" ]; then
     echo "[install-hello-smoke] FAIL: the first program in $doc does not compile" >&2
@@ -123,9 +136,9 @@ row_first=""
 row_first_doc=""
 for doc in $ROW_DOCS; do
   [ -f "$ROOT_DIR/$doc" ] || { echo "[install-hello-smoke] FAIL: no such document: $doc" >&2; exit 1; }
-  row="$(grep -oE 'fn main with [A-Za-z]+' "$ROOT_DIR/$doc" | head -1 || true)"
+  row="$(grep -oE 'fn main allows [A-Za-z]+' "$ROOT_DIR/$doc" | head -1 || true)"
   if [ -z "$row" ]; then
-    echo "[install-hello-smoke] FAIL: $doc teaches no \`fn main with <Row>\` program." >&2
+    echo "[install-hello-smoke] FAIL: $doc teaches no \`fn main allows <Row>\` program." >&2
     echo "  Every document a newcomer copies from must show one, so this check cannot be disabled by deleting the example." >&2
     exit 1
   fi

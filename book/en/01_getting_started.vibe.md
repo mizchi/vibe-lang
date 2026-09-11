@@ -21,7 +21,7 @@ standard library. The compiler itself is a wasm module.
 Put this in `hello.vibex`:
 
 ```vibe run
-fn main with Console {
+fn main allows Console {
   println("hello, vibe")
 }
 ```
@@ -44,14 +44,16 @@ source modules end in `.vibe`. Two more files appear later:
 [Modules and packages](11_modules_packages.vibe.md) — is its public
 contract, declarations the compiler checks the implementation against.
 
-The interesting part is `with Console`. It is the program's permission
+The interesting part is `allows Console`. It is the program's permission
 to write to the terminal, and it is required: delete it and the program
 does not compile. That is the language's one big idea, showing up in the
-smallest program it has — a function states what it is allowed to do,
+smallest program it has — a program states what it is allowed to do,
 and the compiler holds it to that.
 
-You will meet the same shape again for failure (`with Exception`) and
-for reading files (`allows Fs::read_file`).
+`main` *grants* that permission, because nothing calls `main`; a
+function that `main` calls *requires* it, with `with Console` on its own
+signature. You will meet the same shape again for failure
+(`with Exception`) and for reading files (`allows Fs::read_file`).
 [Capabilities](09_capabilities.vibe.md) is where it is finished.
 
 ## Ask the compiler questions

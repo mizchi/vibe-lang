@@ -140,7 +140,7 @@ let g3: (String) -> Int = (msg) -> {
 - `Exception` is checked: direct throws and transitive calls require declaration
   or handling. An empty effect row excludes an escaping exception, but not divergence
   or runtime traps.
-- `fn main with Exception` is allowed; the runtime boundary converts an
+- `fn main allows Exception` is allowed; the runtime boundary converts an
   escaping exception into a diagnosed unsuccessful process outcome.
 - The standard error model is the **effect row**: a fallible function returns
   its success type and declares the failure in its row —

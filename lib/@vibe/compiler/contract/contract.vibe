@@ -9,7 +9,16 @@ import @vibe/ast {
 }
 
 import @vibe/compiler/syntax {
-  Token, offset_to_line_col, parse_fn_signature, parse_stmt, parse_type, peek, print_stmt, print_type_expr, tk_name
+  Token,
+  allows_outside_entry_error,
+  offset_to_line_col,
+  parse_fn_signature,
+  parse_stmt,
+  parse_type,
+  peek,
+  print_stmt,
+  print_type_expr,
+  tk_name
 }
 
 // #741: consumed through the @vibe/core contract boundary (directory import
@@ -212,6 +221,66 @@ fn parse_opaque_type_params(tokens: Array[Token], pos: Int, name: String) -> (Ar
   }
 }
 
+/// ADR-0088: the index of the entry-grant keyword `allows` in the contract
+/// signature `[start, end)` (`start` is the function name), or -1. The clause
+/// can only follow the return type at bracket depth 0, so the name, the
+/// generic binder `[..]` and the parameter list `(..)` are skipped first:
+/// `allows` is contextual, not reserved, and `fn allows() -> Int` or a
+/// parameter named `allows` is an ordinary declaration. A row label or a
+/// return type spelled `allows` follows `with` / `+` / `->` and is not the
+/// clause either; a where-clause name sits inside `{..}`. A declaration is a
+/// requirement the package publishes, so the clause is refused here whatever
+/// the function's name (Codex review on PR #2653, two rounds).
+fn signature_allows_keyword_at(tokens: Array[Token], start: Int, end: Int) -> Int {
+  let mut i = start + 1
+  let mut depth = 0
+  let mut params_closed = false
+  let mut after_row_op = false
+  let mut found = 0 - 1
+  while i < end && found < 0 {
+    let tok = Array::get(tokens, i)
+    match tok {
+      TLParen => {
+        depth = depth + 1
+      },
+      TLBracket => {
+        depth = depth + 1
+      },
+      TLBrace => {
+        depth = depth + 1
+      },
+      TRParen => {
+        depth = depth - 1
+        if depth == 0 {
+          params_closed = true
+        } else {
+          ()
+        }
+      },
+      TRBracket => {
+        depth = depth - 1
+      },
+      TRBrace => {
+        depth = depth - 1
+      },
+      TIdent(kw) => if params_closed && depth == 0 && !after_row_op && kw == "allows" {
+        found = i
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    after_row_op = match tok {
+      TWith => true,
+      TPlus => true,
+      TThinArrow => true,
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
 export fn parse_contract_program(tokens: Array[Token]) -> (Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Exception {
   let (decls, opaques, stmts, _at, _dat) = parse_contract_program_spans(tokens)
   (decls, opaques, stmts)
@@ -366,6 +435,16 @@ export fn parse_contract_program_spans(tokens: Array[Token]) -> (Array[(String, 
         // SMT stage of #731).
         let (dhead, dsig, _, next) = parse_fn_signature(tokens, pos + 1)
         let (name, tps, tbs) = dhead
+        // ADR-0088: a declaration is a requirement the package publishes,
+        // never an entry, so the entry grant `allows` is refused here even on
+        // a `main` -- the signature parser admits it by name alone, because a
+        // source-file `fn main` IS the entry (Codex review on PR #2653).
+        let allows_at = signature_allows_keyword_at(tokens, pos + 1, next)
+        if allows_at >= 0 {
+          throw(allows_outside_entry_error(String::concat("the contract declaration `", String::concat(name, "`")), allows_at))
+        } else {
+          ()
+        }
         let (params, ret_ty, eff_opt) = dsig
         match peek(tokens, next) {
           TLBrace => throw("contract fn declaration '\{name}' must not have a body (#729)"),

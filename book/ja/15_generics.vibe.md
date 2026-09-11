@@ -18,7 +18,7 @@ fn identity[T](x: T) -> T {
   x
 }
 
-fn main with Console {
+fn main allows Console {
   let b = Box::{
     v: 41
   }
@@ -36,7 +36,7 @@ id = 42
 
 トップレベルの `fn` は、ジェネリックかどうかに関わらず引数と戻り値を
 完全に注釈します。推論が埋めるのは呼び出し側であって、宣言側ではありません。
-唯一の例外が `main` で、これだけは戻り値を省けます — `fn main with
+唯一の例外が `main` で、これだけは戻り値を省けます — `fn main allows
 Console` がパースされ、`fn shout(msg: String) with Console` がされない
 理由です。
 
@@ -49,7 +49,7 @@ enum Color {
   Red; Green; Blue
 } derive (Eq, Show)
 
-fn main with Console {
+fn main allows Console {
   println("eq = \{Color::Red == Color::Red}")
   println("neq = \{Color::Red == Color::Blue}")
   println("show = \{Color::Green}")
@@ -86,7 +86,7 @@ fn size_of[T: Measured](x: T) -> Int {
   T::measure(x)
 }
 
-fn main with Console {
+fn main allows Console {
   let xs = [
     1,
     2,
