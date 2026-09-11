@@ -1,0 +1,71 @@
+// #2510 criterion 5: what the per-module prelude costs in allocation, on a
+// real closure rather than a two-file toy.
+//
+// Compiles ONE root through the ordinary RC lane with the prelude split
+// either off or on, and prints the bump-heap delta for that compile.
+//
+//   vibe run scripts/prelude_split_memory.vibex -- <root.vibe> <entry> whole|split
+//
+// One lane per process, deliberately. Running both in one process would let
+// the first compile warm every persistent cache the second reads, and the
+// skill's own measured figure for that asymmetry (cold ~8.0s/1.46GB vs warm
+// ~4.7s/727MB) is larger than anything this is trying to see. The caller
+// gives each process its own VIBE_BUILD_CACHE_DIR; scripts/prelude_split_memory.sh
+// does that, alternates the order, and takes medians.
+//
+// `Profiler::heap_bytes` is a BUMP pointer, so a delta is bytes ALLOCATED in
+// the region, not bytes live at its end -- the allocator never frees. Report
+// it as allocation volume and nothing else: "the live set is bounded by the
+// edited module" is not a claim this instrument can make.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached, compile_file_fs_mode_rc_body_cached_split, ordinary_lane_split_shape
+}
+
+fn arg_at(i: Int, fallback: String) -> String with Env {
+  if i < Env::args_len() {
+    Env::args_get(i)
+  } else {
+    fallback
+  }
+}
+
+fn field(out: StringBuilder, name: String, value: String) -> Unit {
+  StringBuilder::push(out, name)
+  StringBuilder::push(out, value)
+}
+
+fn measure(root: String, entry: String, lane: String) -> Unit with Exception + Fs + Profiler::heap_bytes + Stdout {
+  // Report the split SHAPE before compiling. A run that reports one module
+  // measured nothing about a split: the lane fell back to the whole-program
+  // prelude, and the two lanes are then the same code. This is the same
+  // non-vacuity guard prelude_split_fs_lane_test.vibe carries, and it has to
+  // be here too -- a number is not evidence if the thing it names did not run.
+  let (modules, mapped) = ordinary_lane_split_shape(root)
+  let before = Profiler::heap_bytes()
+  let bytes = if lane == "split" {
+    compile_file_fs_mode_rc_body_cached_split(root, entry, "off", true)
+  } else {
+    compile_file_fs_mode_rc_body_cached(root, entry, "off")
+  }
+  let after = Profiler::heap_bytes()
+  // One line, fixed field order, greppable -- the CLI contract in CLAUDE.md.
+  let out = StringBuilder::new()
+  field(out, "prelude-split-memory lane=", lane)
+  field(out, " modules=", __to_string(modules))
+  field(out, " mapped=", __to_string(mapped))
+  field(out, " heap_delta=", __to_string(after - before))
+  field(out, " wasm_bytes=", __to_string(Bytes::length(bytes)))
+  println(StringBuilder::freeze(out))
+}
+
+fn main() -> Unit with Env + Exception + Fs + Profiler::heap_bytes + Stdout {
+  let root = arg_at(0, "")
+  let entry = arg_at(1, "main")
+  let lane = arg_at(2, "whole")
+  if String::length(root) == 0 {
+    println("usage: prelude_split_memory.vibex <root.vibe> <entry> whole|split")
+  } else {
+    measure(root, entry, lane)
+  }
+}
