@@ -164,9 +164,13 @@ import @vibe/compiler/codegen/builtin_bodies {
 
 import @vibe/compiler/codegen/common_analysis {
   bmask_has,
+  borrow_round0_link,
   collect_free_vars,
   collect_strings_stmts,
+  compute_borrow_disqualifiers,
+  compute_borrow_param_local_masks,
   compute_borrow_param_user_fns,
+  compute_borrow_param_user_fns_round0,
   compute_float_returning_names,
   compute_may_return_view_fns,
   count_lambda_sites_expr,
@@ -679,6 +683,26 @@ fn lc_union_into(dst: Array[String], src: Array[String]) -> Unit {
   }
 }
 
+/// #2638: append every entry, DUPLICATES INCLUDED. `lc_union_into` is the
+/// wrong tool for the link's inputs: the local masks are parallel arrays, and
+/// a program may declare one name twice -- the whole-program scan pushes each
+/// occurrence, so the link has to see each one too.
+fn lc_concat_into(dst: Array[String], src: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, Array::get(src, i))
+    i = i + 1
+  }
+}
+
+fn lc_concat_ints_into(dst: Array[Int], src: Array[Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    Array::push(dst, Array::get(src, i))
+    i = i + 1
+  }
+}
+
 fn lc_str_array_has(xs: Array[String], n: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -800,6 +824,69 @@ fn lc_set_cmp_counted(whole: Array[String], union: Array[String]) -> String {
   } else {
     String::concat(String::concat(Int::to_string(Array::length(whole)), String::concat("/", Int::to_string(Array::length(union)))), String::concat(String::concat(String::concat(":-", Int::to_string(missing)), String::concat(":", first_missing)), String::concat(String::concat("+", Int::to_string(extra)), String::concat(":", first_extra))))
   }
+}
+
+/// #2638: the first name whose OCCURRENCE COUNT differs between two lists,
+/// as `<name>:<whole>/<link>`, or "" when the two are the same multiset.
+///
+/// `lc_set_cmp_counted` compares MEMBERSHIP, so a name present in both lists a
+/// different number of times reads as `-0:+0:` with the sizes apart -- which
+/// is exactly what the link produces, because a per-module run synthesizes a
+/// program-level helper once per module that needs it and the whole-program
+/// run emits it once. Naming the multiset difference is what turns that gap
+/// from an unexplained three into a fact.
+fn lc_multiset_first_diff(whole: Array[String], link: Array[String]) -> String {
+  let seen: MutMap[String, Int] = MutMap::new_string()
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(whole) {
+    let n = Array::get(whole, i)
+    if MutMap::has(seen, n) {
+      ()
+    } else {
+      MutMap::set(seen, n, 1)
+      let wn = lc_count_occurrences(whole, n)
+      let ln = lc_count_occurrences(link, n)
+      if wn != ln && out == "" {
+        out = String::concat(n, String::concat(":", String::concat(Int::to_string(wn), String::concat("/", Int::to_string(ln)))))
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(link) {
+    let n = Array::get(link, j)
+    if MutMap::has(seen, n) {
+      ()
+    } else {
+      MutMap::set(seen, n, 1)
+      let wn = lc_count_occurrences(whole, n)
+      let ln = lc_count_occurrences(link, n)
+      if wn != ln && out == "" {
+        out = String::concat(n, String::concat(":", String::concat(Int::to_string(wn), String::concat("/", Int::to_string(ln)))))
+      } else {
+        ()
+      }
+    }
+    j = j + 1
+  }
+  out
+}
+
+fn lc_count_occurrences(xs: Array[String], n: String) -> Int {
+  let mut c = 0
+  let mut i = 0
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == n {
+      c = c + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  c
 }
 
 /// #2575 item 4: the borrow analysis answers with a NAME and a per-position
@@ -5365,6 +5452,16 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     lc_union_into(st.an_bfns, part_bfns)
     lc_union_into(st.an_pairs, lc_name_mask_pairs(part_bfns, part_bmask))
     lc_union_into(st.an_view, sorted_names_of(compute_may_return_view_fns(part)))
+    // #2638: and what this module would PUBLISH. Its body-local round-0 masks
+    // are computed with both program-wide unions empty, so nothing here is
+    // disqualified yet; its own half of those unions goes alongside. No body
+    // of another module is read on this path, which is what makes the link's
+    // answer below a per-module driver's answer rather than a re-run.
+    let part_local_masks = lc_fresh_int_array()
+    let part_local_names = compute_borrow_param_local_masks(part, part_local_masks)
+    lc_concat_into(st.an_local_names, part_local_names)
+    lc_concat_ints_into(st.an_local_masks, part_local_masks)
+    compute_borrow_disqualifiers(part, st.an_valued, st.an_nonident_fns, st.an_nonident_pos)
     fi = fi + 1
   }
   // ASSEMBLY (#2575 item 2 step 3). Concatenating the modules is the obvious
@@ -5531,6 +5628,17 @@ struct PreludeSplitStats {
   an_bfns: Array[String];
   an_pairs: Array[String];
   an_view: Array[String];
+  // #2638: what a per-module driver would PUBLISH rather than answer -- each
+  // module's body-local round-0 masks, and its half of the two facts the
+  // borrow inference reads as a union over the whole program. The link
+  // (`borrow_round0_link`) turns these into round 0 for the program without
+  // re-reading a body, and the caller compares that against the whole-program
+  // reference. Concatenated, not unioned: the masks are parallel arrays.
+  an_local_names: Array[String];
+  an_local_masks: Array[Int];
+  an_valued: Array[String];
+  an_nonident_fns: Array[String];
+  an_nonident_pos: Array[Int];
   counts: Array[Int]
 }
 
@@ -5552,6 +5660,11 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     an_bfns: lc_fresh_string_array(),
     an_pairs: lc_fresh_string_array(),
     an_view: lc_fresh_string_array(),
+    an_local_names: lc_fresh_string_array(),
+    an_local_masks: lc_fresh_int_array(),
+    an_valued: lc_fresh_string_array(),
+    an_nonident_fns: lc_fresh_string_array(),
+    an_nonident_pos: lc_fresh_int_array(),
     counts: [0, 0, 0]
   }
 }
@@ -5660,6 +5773,11 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let an_bret_w = sorted_names_of(compute_borrow_returning_names(a))
   let an_bmask_w = lc_fresh_int_array()
   let an_bfns_w = compute_borrow_param_user_fns(a, an_exclude, an_bmask_w)
+  // #2638: round 0 ALONE for the whole program. The reference the link below
+  // is measured against -- the split lane never sees this, it sees only what
+  // each module published.
+  let an_r0mask_w = lc_fresh_int_array()
+  let an_r0_w = compute_borrow_param_user_fns_round0(a, an_exclude, an_r0mask_w)
   let an_view_w = sorted_names_of(compute_may_return_view_fns(a))
   let whole_invisible = eq_invisible_nominals_list()
   eq_invisible_nominals_reset()
@@ -5680,6 +5798,14 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // order.
   let an_bret_u = st.an_bret
   let an_bfns_u = st.an_bfns
+  // #2638: THE LINK. Round 0 for the whole program from the modules'
+  // published facts -- their body-local masks and the union of their
+  // disqualifiers -- with no body of any module re-read. If this equals the
+  // whole-program reference, round 0 decomposes, and the 88 functions a
+  // per-module run qualifies that the whole program refuses are exactly what
+  // the union of `nonident` removes.
+  let an_r0mask_link = lc_fresh_int_array()
+  let an_r0_link = borrow_round0_link(st.an_local_names, st.an_local_masks, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, an_r0mask_link)
   let an_pairs_u = st.an_pairs
   let an_view_u = st.an_view
   let collisions = st.collisions
@@ -5745,9 +5871,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     "0"
   })
   let an_cols = if an_dce_entry {
-    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured"
+    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured"
   } else {
-    String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u))))
+    String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u)), String::concat(String::concat(" link_round0=", lc_set_cmp_counted(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round0_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_r0_w, an_r0mask_w), lc_name_mask_pairs(an_r0_link, an_r0mask_link))), String::concat(" link_round0_occ=", lc_multiset_first_diff(an_r0_w, an_r0_link)))))))
   }
   let an_line = String::concat(String::concat(an_head, an_cols), "\n")
   let line = String::concat(String::concat(head, mid), tail)
