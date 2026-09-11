@@ -450,7 +450,11 @@ test "the entry module is found, not assumed to be the last" {
 }
 
 import @vibe/compiler/normalize {
-  desugar_trait_dicts_module
+  ModuleTraitFacts,
+  collect_explicit_derived_op_names,
+  collect_trivial_wrapper_names,
+  desugar_trait_dicts_module,
+  desugar_trait_dicts_module_with_facts
 }
 
 test "the merge rename table survives every module, not just the first" {
@@ -478,4 +482,40 @@ test "the merge rename table survives every module, not just the first" {
   let m1 = program_stmts(src)
   let _ = desugar_trait_dicts_module(m1, [], "f1", no_ints(), no_keys())
   inspect(namespace_rename_originals_len() == recorded, content = "true")
+}
+
+/// A trivial identity wrapper in module 0 and its call in module 1.
+fn cross_module_wrapper_src() -> String {
+  "export fn apply(f: () -> Int) -> Int {\n  f()\n}\n\nfn main() -> Int {\n  apply(() -> Int {\n    7\n  })\n}\n"
+}
+
+test "an imported trivial wrapper is still inlined" {
+  // #2647 Codex round 7. `dtpw_collect_wrappers` scans only the module's OWN
+  // bodies, and a dependency's context is bodyless, so the caller partition
+  // could not see `apply` and left `apply(inner)` un-inlined -- which
+  // `dtd_run` documents as reaching a closure CRASH for a capturing effectful
+  // lambda. The whole-program wrapper set travels in `PreludeEnv`.
+  //
+  // Red-tested: with `trait_facts` forced to `module_trait_facts_none()`, the
+  // split rendering keeps `apply(` where the whole-program one does not.
+  let a = program_stmts(cross_module_wrapper_src())
+  let b = program_stmts(cross_module_wrapper_src())
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: [0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  // Not vacuous: the whole-program lane really does inline the wrapper away.
+  inspect(String::contains(render_in_order(a), "apply("), content = "false")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "the whole-program collectors find what a partition cannot" {
+  // The two facts, asserted directly: a wrapper and an explicit `T::op` are
+  // both visible to the whole-program collectors.
+  let w = collect_trivial_wrapper_names(program_stmts(cross_module_wrapper_src()))
+  inspect(Array::length(w) > 0, content = "true")
+  let ops = collect_explicit_derived_op_names(program_stmts("struct Pt {\n  x: Int\n}\n\nfn Pt::equals(a: Pt, b: Pt) -> Bool {\n  a.x == b.x\n}\n"))
+  inspect(Array::length(ops) > 0, content = "true")
 }

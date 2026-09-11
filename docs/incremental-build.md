@@ -427,7 +427,7 @@ split path, which is what step 3b is for.
 | 1 | `desugar_inspect_calls` | safe | per-statement expansion |
 | 2 | `optional_perform_artifact_resolution` + `lower_optional_performs` | **`PreludeEnv`** | TWO whole-program facts: the resolution grants ambient authority from a test-block scan (an AUTHORIZATION difference, ADR-0084/0088), and the source-shadow name set decides whether a `perform?` spelling names a SOURCE function rather than a capability |
 | 3 | `erase_railway_origin_markers` | safe | per-statement |
-| 4 | `desugar_trait_dicts_with_typed_eq` | **module entry** | takes the module's dependency interface (#2634) |
+| 4 | `desugar_trait_dicts_with_typed_eq` | **module entry + `PreludeEnv`** | takes the module's dependency interface (#2634), plus THREE whole-program facts it cannot derive from a partition — see below |
 | 5 | `unbox_tuple_loop_params` | safe | per-statement |
 | 6 | `rewrite_top_level_fn_alias_refs` | **`PreludeEnv`** | the alias map is global; an unrewritten call emits N args against a 0-param thunk = invalid wasm |
 | — | `lc_validate_stdin_provider_stmts` | safe | local to each statement's own expression; the union is the whole-program answer |
@@ -441,6 +441,32 @@ split path, which is what step 3b is for.
 | 14 | `inline_direct_performs` | **link** | same |
 | 15 | `evidence_dict_pass` | **link** | whole-program union, and the dependence runs backwards along the import graph (#2633) |
 | 16 | `forin_discard_pass` | **link** | follows 15 to keep the order |
+
+#### Pass 4 alone needed three more facts
+
+The trait-dict pass has produced four findings across this review, which is more
+than any other, and they are all the same shape — a whole-program read served
+from a partition:
+
+- the **merge rename table** (`namespace_rename_originals`), built per file
+  during the merge and cleared by `dtd_run`; per module that emptied it after
+  the first one, so later modules rendered `Local_dep_<path>` for `Local`. The
+  reset moved to the lane boundary;
+- the **trivial identity wrappers** (`apply(f) { f() }`). The whole-program pass
+  inlines `apply(inner)` to `inner()`, which `dtd_run` documents as the
+  workaround for a closure CRASH. `dtpw_collect_wrappers` scans only the
+  module's own bodies and a dependency's interface is bodyless, so the caller
+  partition left the call intact;
+- the **explicit `T::op` definitions**. A module DOWNSTREAM of a type's owner
+  can define `fn T::equals`; the owner sees neither it nor the dependent,
+  derives a default, and the link reports a collision on a program the
+  whole-program lane accepts.
+
+The last two travel in `ModuleTraitFacts`; the first is a reset-granularity fix.
+Worth recording that `oracle_interface_form`'s own doc comment names the
+trivial-wrapper inliner as the body-reading collector the bodyless interface
+blinds — the consequence was written down before the bug was found, and the
+audit still missed it.
 
 So the cut is **0..11 per module, 12..16 at the link** — most of the prelude, and
 the half a per-module cache can reuse.

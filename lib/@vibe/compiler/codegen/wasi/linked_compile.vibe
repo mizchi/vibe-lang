@@ -16,7 +16,6 @@ import @vibe/compiler/core {
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
   collect_top_level_fn_alias_renames,
-  namespace_rename_originals_reset,
   dce_stmts,
   exception_effect_labels_equal,
   executable_export_kept_bytes,
@@ -29,6 +28,7 @@ import @vibe/compiler/core {
   is_exception_effect_name,
   leb128_encode_s64,
   leb128_encode_u32,
+  namespace_rename_originals_reset,
   rewrite_import_alias_expr,
   rewrite_top_level_fn_alias_refs,
   sorted_names_of,
@@ -44,8 +44,12 @@ import @vibe/core {
 }
 
 import @vibe/compiler/normalize {
+  ModuleTraitFacts,
+  collect_explicit_derived_op_names,
+  collect_trivial_wrapper_names,
   desugar_inspect_calls,
   desugar_trait_dicts_module,
+  desugar_trait_dicts_module_with_facts,
   desugar_trait_dicts_with_typed_eq,
   eq_deferred_requests_list,
   eq_deferred_reset,
@@ -57,6 +61,7 @@ import @vibe/compiler/normalize {
   hoisted_lambda_owner_key,
   hoisted_lambda_owner_of_stmt,
   lift_match_scrutinees,
+  module_trait_facts_none,
   unbox_tuple_loop_params,
   uniquify_shadowed_bindings_fresh
 }
@@ -497,7 +502,10 @@ struct PreludeEnv {
   optional_source_names: Array[String];
   alias_renames: Array[(String, String)];
   calls_host_future: Bool;
-  waiter_hooks: Bool
+  waiter_hooks: Bool;
+  // #2647 Codex rounds 6-7: the two whole-program facts the TRAIT-DICT pass
+  // reads and a partition cannot supply. See `ModuleTraitFacts`.
+  trait_facts: ModuleTraitFacts
 }
 
 fn prelude_env_none() -> PreludeEnv {
@@ -510,7 +518,8 @@ fn prelude_env_none() -> PreludeEnv {
     optional_source_names: lc_fresh_string_array(),
     alias_renames: array_empty(),
     calls_host_future: false,
-    waiter_hooks: false
+    waiter_hooks: false,
+    trait_facts: module_trait_facts_none()
   }
 }
 
@@ -3983,7 +3992,11 @@ fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String,
       optional_source_names: collect_optional_perform_source_names(stmts),
       alias_renames: collect_top_level_fn_alias_renames(stmts),
       calls_host_future: lc_stmts_call_host_future(stmts),
-      waiter_hooks: lc_waiter_hooks_available(stmts, linked_imports)
+      waiter_hooks: lc_waiter_hooks_available(stmts, linked_imports),
+      trait_facts: ModuleTraitFacts::{
+        wrapper_names: collect_trivial_wrapper_names(stmts),
+        explicit_ops: collect_explicit_derived_op_names(stmts)
+      }
     }
     let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, st, env, 1)
     // A COLLISION IS AN ERROR HERE (#2647 Codex P1). `prelude_run_per_module`
@@ -5163,7 +5176,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       }
       vj = vj + 1
     }
-    let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
+    let synthesized = desugar_trait_dicts_module_with_facts(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys, env.trait_facts)
     lc_union_into(st.requests, eq_synthesis_requests_list())
     lc_union_into(st.refusals, eq_typed_refusals_list())
     lc_union_into(st.deferrals, eq_deferred_requests_list())
