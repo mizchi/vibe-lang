@@ -264,18 +264,27 @@ the per-module computation produced the same rewrites.
 
 Three things it does **not** model, and they are not covered by that zero:
 
-- **`zero_alloc_check`** and **`lc_validate_stdin_provider_stmts`** are
-  validators. They produce diagnostics rather than rewrites, so the declaration
-  comparison cannot see them at all. A per-module run sees less of the program
-  and could report differently — miss a violation, or report one the whole
-  program does not. That is a real question and an unmeasured one.
 - **`await_poll_pass`** is modelled with an empty `linked_imports`, where
   production passes the real list. So the oracle exercises that pass, but not
-  with production's input.
+  with production's input. Still unmeasured.
+None of this weakens the decomposition result for what it covers. It bounds it.
 
-None of this weakens the decomposition result for what it covers. It bounds it:
-*the rewriting prelude is decomposable and measured exact; the validating prelude
-is not yet measured at all.*
+**The validators are now measured too.** `zero_alloc_check` and
+`lc_validate_stdin_provider_stmts` produce diagnostics rather than rewrites, so
+`missing` / `content` / `renames` are structurally blind to them — a per-module
+run sees less of the program and could miss a violation or invent one with
+nothing else in the report saying so. A separate counter compares them:
+
+```
+DIAGS validators=0
+```
+
+Both lanes silent on the compiler's own closure. That is agreement, but a
+counter that has only ever read zero says nothing about whether it can read
+anything else — so a test makes one fire. A `#zero_alloc` function whose body
+allocates, in the **dependency** of a two-file program, reads `validators=1`:
+the whole-program run walks it and the per-module union reports the same one
+diagnostic. The clean two-file control reads `0`.
 
 ### The context rule this holds under
 

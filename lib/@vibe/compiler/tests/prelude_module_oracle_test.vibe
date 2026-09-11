@@ -10,6 +10,23 @@ import @vibe/compiler/entry/compiler/file_compile {
 // `inspect` (desugar_inspect_calls changes it) and calls across the import
 // (the alias and evidence passes see both sides) must agree on every pass.
 
+/// The report's `DIAGS ...` line, or "".
+fn diag_line_of(report: String) -> String {
+  let lines = String::split(report, "\n")
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "DIAGS ") {
+      out = line
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 /// The report's `SYNTH ...` line, or "".
 fn synth_line_of(report: String) -> String {
   let lines = String::split(report, "\n")
@@ -309,6 +326,12 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // DIRECTLY, which is weaker and more useful: a need that reaches the link
   // only through another need.
   inspect(String::trim(synth_line_of(report)), content = "SYNTH requests=0 typed_refused=0 deferred=0 minted=0 indirect=0")
+  // #2388: the VALIDATING passes, which produce diagnostics rather than
+  // rewrites and are therefore invisible to a comparison keyed on
+  // declarations. `0` here is both lanes silent on a clean program; the test
+  // below makes one fire, because a counter that has only ever read zero says
+  // nothing about whether it can read anything else.
+  inspect(String::trim(diag_line_of(report)), content = "DIAGS validators=0")
   // `missing=0 extra=0 content=0` is the property: every declaration the
   // whole-program prelude produced is produced by the module that owns it,
   // with the same body. `copies` is what remains after the link, and
@@ -355,4 +378,30 @@ test "the import closure the oracle runs under is the module's own, and places e
   Fs::write_file(lone_b, "test \"lone\" {\n  inspect(1, content = \"1\")\n}\n")
   let _ = lone_a
   inspect(String::trim(prelude_module_import_closure_report_fs(lone_b)), content = "CLOSURE files=1 edges=0 unresolved=0")
+}
+
+// #2388: the prelude's VALIDATORS -- `zero_alloc_check` and
+// `lc_validate_stdin_provider_stmts` -- produce diagnostics rather than
+// rewrites, so `missing` / `content` / `renames` are structurally blind to
+// them. A per-module run sees less of the program than a whole-program one and
+// could miss a violation or invent one, and nothing else in the report would
+// say so.
+//
+// On the compiler's own CLI closure this reads `validators=0`: both lanes
+// silent, which is agreement but not evidence the comparison can detect
+// anything. This makes one fire.
+test "a validator that fires is reported by both lanes, and a clean program by neither" {
+  let dep = "/tmp/vibe_diag_arm_dep.vibe"
+  let main_path = "/tmp/vibe_diag_arm_main.vibe"
+  // The violation lives in the DEPENDENCY: a `#zero_alloc` function whose body
+  // allocates. Whole-program the validator walks it; per module, only that
+  // module's own run does -- so agreement here is the claim, not the default.
+  Fs::write_file(dep, "enum Box {\n  MkBox(Int)\n}\n\n#zero_alloc\nexport fn hot(n: Int) -> Int {\n  let b = MkBox(n)\n  match b {\n    MkBox(v) => v + 1\n  }\n}\n")
+  Fs::write_file(main_path, "import ./vibe_diag_arm_dep.vibe {\n  hot\n}\n\ntest \"t\" {\n  inspect(hot(1), content = \"2\")\n}\n")
+  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "DIAGS validators=1")
+  // The control: the same two-file shape with nothing to report. Without it,
+  // a comparison that always answered `1` would pass the case above.
+  Fs::write_file(dep, "export fn calm(n: Int) -> Int {\n  n + 1\n}\n")
+  Fs::write_file(main_path, "import ./vibe_diag_arm_dep.vibe {\n  calm\n}\n\ntest \"t\" {\n  inspect(calm(1), content = \"2\")\n}\n")
+  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "DIAGS validators=0")
 }

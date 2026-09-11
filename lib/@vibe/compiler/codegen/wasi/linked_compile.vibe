@@ -467,6 +467,25 @@ fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checke
   }
 }
 
+/// #2388: the prelude's validating passes over one statement list. They return
+/// a message or "", and `effect_lowering_prelude` collects them into its error
+/// list -- so they are part of the prelude's OUTPUT and not visible in any
+/// comparison keyed on declarations.
+fn lc_collect_validator_diags(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let za = zero_alloc_check(stmts)
+  if za != "" && !lc_str_array_has(out, za) {
+    Array::push(out, za)
+  } else {
+    ()
+  }
+  let sp = lc_validate_stdin_provider_stmts(stmts)
+  if sp != "" && !lc_str_array_has(out, sp) {
+    Array::push(out, sp)
+  } else {
+    ()
+  }
+}
+
 /// #2633: append the names of `src` not already in `dst`.
 fn lc_union_into(dst: Array[String], src: Array[String]) -> Unit {
   let mut i = 0
@@ -4346,6 +4365,13 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // name that is not a type formal compares an aggregate by reference, so this
   // is the property, not a statistic about it.
   eq_invisible_nominals_reset()
+  // #2388: the VALIDATORS, which produce diagnostics rather than rewrites and
+  // are therefore invisible to a declaration comparison. Run on the whole
+  // program here and on each module below; a per-module run sees less and could
+  // miss a violation or invent one, and nothing else in this report would say
+  // so.
+  let diag_w = lc_fresh_string_array()
+  lc_collect_validator_diags(a, diag_w)
   let mut k = 0
   let ev_req_w = lc_fresh_string_array()
   let ev_ref_w = lc_fresh_string_array()
@@ -4435,6 +4461,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // per module.
   // #2634: the union of the synthesis requests each module made.
   let ev_req_u = lc_fresh_string_array()
+  let diag_u = lc_fresh_string_array()
   let ev_ref_u = lc_fresh_string_array()
   let ev_def_u = lc_fresh_string_array()
   // #2633: the union of what each module reports just before the evidence pass.
@@ -4508,6 +4535,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
       Array::push(part, Array::get(synthesized, sy))
       sy = sy + 1
     }
+    lc_collect_validator_diags(part, diag_u)
     let mut j2 = 5
     while j2 < 17 {
       if j2 == 15 {
@@ -4644,10 +4672,11 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   } else {
     String::concat(":", mint_first)
   }
+  let diag_line = String::concat("DIAGS validators=", String::concat(lc_set_cmp(diag_w, diag_u), "\n"))
   let req_a = String::concat(String::concat("SYNTH requests=", lc_set_cmp(ev_req_w, ev_req_u)), String::concat(" typed_refused=", lc_set_cmp(ev_ref_w, ev_ref_u)))
   let req_b = String::concat(String::concat(" deferred=", Int::to_string(Array::length(ev_def_u))), String::concat(" minted=", Int::to_string(minted)))
   let req_c = String::concat(String::concat(" indirect=", Int::to_string(mint_missing)), String::concat(mint_names, "\n"))
-  let req_line = String::concat(String::concat(req_a, req_b), req_c)
+  let req_line = String::concat(String::concat(String::concat(req_a, req_b), req_c), diag_line)
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
   let mut ldi = 0
