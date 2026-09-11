@@ -410,12 +410,22 @@ round. "Safe" means a module's partition answers the same question the whole
 program does; everything else either takes the answer from `PreludeEnv` or runs
 at the link.
 
+**This table had a wrong row within one round of being published**, which is
+worth stating before reading it: row 0 said "safe: per-statement rewrite" and it
+is neither — `elaborate_heap_params` builds `heap_fns` and `ctors` tables from
+the statements it sees, and it is not part of the prelude at all (the caller
+runs it, so the split path was running it a SECOND time, per module). A hand
+audit of 17 passes against cross-module dependence is not something to trust on
+its own; the rows below are the current best understanding, not a proof, and the
+validation this actually needs is **executing** a program compiled through the
+split path, which is what step 3b is for.
+
 | # | pass | per-module | why |
 |---:|---|---|---|
 | — | `zero_alloc_check` | **whole-program** | interprocedural: `za_walk` walks callee bodies out of a table built from the statements it was handed |
-| 0 | `elaborate_heap_params` | safe | per-statement rewrite |
+| 0 | `elaborate_heap_params` | **not in the prelude** | the caller runs it before `effect_lowering_prelude`, which never does; the split entry starts at pass 1. Per module it would also misclassify a heap value returned by an imported function |
 | 1 | `desugar_inspect_calls` | safe | per-statement expansion |
-| 2 | `optional_perform_artifact_resolution` | **`PreludeEnv`** | grants ambient authority from a whole-program test-block scan — an AUTHORIZATION difference (ADR-0084/0088) |
+| 2 | `optional_perform_artifact_resolution` + `lower_optional_performs` | **`PreludeEnv`** | TWO whole-program facts: the resolution grants ambient authority from a test-block scan (an AUTHORIZATION difference, ADR-0084/0088), and the source-shadow name set decides whether a `perform?` spelling names a SOURCE function rather than a capability |
 | 3 | `erase_railway_origin_markers` | safe | per-statement |
 | 4 | `desugar_trait_dicts_with_typed_eq` | **module entry** | takes the module's dependency interface (#2634) |
 | 5 | `unbox_tuple_loop_params` | safe | per-statement |
@@ -425,7 +435,7 @@ at the link.
 | 8 | `lc_extract_inline_wasm` | safe | accumulates into the caller's arrays; the union is the program's |
 | 9 | `await_poll_pass` | **`PreludeEnv`** | both its predicates (`host_future_*` called anywhere, waiter hooks available) are whole-program scans |
 | 10 | `rewrite_self_tail_calls` | safe | per function body |
-| 11 | `wrap_entry_exception_boundary` | safe | matches `entry_name`, which lives in one module |
+| 11 | `wrap_entry_exception_boundary` | safe | matches `entry_name`, which lives in one module — but WHICH module is derived (`lc_entry_module_of`), not assumed to be the last |
 | 12 | `lc_inject_async_sleep_boundary` | **link** | needs the entry's `Async` row AND a boundary call anywhere; what it injects must be visible to 13/14, so it cannot be served by a precomputed fact |
 | 13 | `suspend_cps_pass` | **link** | must see what 12 injects |
 | 14 | `inline_direct_performs` | **link** | same |

@@ -197,6 +197,7 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_record,
   codegen_body_cache_replay,
   codegen_body_cache_slot_index,
+  collect_optional_perform_source_names,
   compile_inline_wat_array_params,
   compute_agg_returning,
   ctor_sorted_index,
@@ -245,6 +246,7 @@ import @vibe/compiler/codegen/common_base {
   is_slet,
   lookup_ctor,
   lower_optional_performs,
+  lower_optional_performs_with_source_names,
   optional_perform_artifact_resolution,
   rc_shadow_base,
   rc_shadow_heap_start,
@@ -490,6 +492,7 @@ struct PreludeEnv {
   //           waiter hooks -- BOTH scans of the whole program.
   facts_known: Bool;
   optional_resolution: Array[(String, String)];
+  optional_source_names: Array[String];
   alias_renames: Array[(String, String)];
   calls_host_future: Bool;
   waiter_hooks: Bool
@@ -502,6 +505,7 @@ fn prelude_env_none() -> PreludeEnv {
     iw_wats: lc_fresh_string_array(),
     facts_known: false,
     optional_resolution: array_empty(),
+    optional_source_names: lc_fresh_string_array(),
     alias_renames: array_empty(),
     calls_host_future: false,
     waiter_hooks: false
@@ -3974,11 +3978,12 @@ fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String,
       iw_wats: iw_wats,
       facts_known: true,
       optional_resolution: optional_perform_artifact_resolution(stmts, entry_name, false, array_empty()),
+      optional_source_names: collect_optional_perform_source_names(stmts),
       alias_renames: collect_top_level_fn_alias_renames(stmts),
       calls_host_future: lc_stmts_call_host_future(stmts),
       waiter_hooks: lc_waiter_hooks_available(stmts, linked_imports)
     }
-    let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, st, env)
+    let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, st, env, 1)
     // A COLLISION IS AN ERROR HERE (#2647 Codex P1). `prelude_run_per_module`
     // links with the REPORTING fold, which keeps the first definition and
     // records the conflict -- right for a measurement, which wants to know how
@@ -4342,12 +4347,15 @@ fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_
       }
     },
     1 => desugar_inspect_calls(stmts),
-    2 => {
-      let res = if env.facts_known {
-        env.optional_resolution
-      } else {
-        optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
-      }
+    2 => if env.facts_known {
+      // BOTH halves are whole-program (#2647 Codex rounds 3 and 4): the
+      // resolution decides whether ambient authority is granted, and the
+      // source-shadow name set decides whether a `perform?` spelling names a
+      // SOURCE function rather than a registered capability. A partition
+      // answers each differently, and each wrong answer is silent.
+      lower_optional_performs_with_source_names(stmts, env.optional_resolution, env.optional_source_names)
+    } else {
+      let res = optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
       lower_optional_performs(stmts, res)
     },
     3 => erase_railway_origin_markers(stmts),
@@ -4959,8 +4967,70 @@ fn lc_analysis_exclude(entry_name: String) -> Array[String] {
   [entry_name, "main", "_start", "cli_main"]
 }
 
-fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats, env: PreludeEnv) -> Array[Stmt] with Exception {
-  let entry_fid = file_count - 1
+/// The module id of the statement declaring `entry_name`, falling back to the
+/// LAST module when no statement declares it.
+///
+/// The fallback is deliberate and is the previous behavior: `__no_entry__` (a
+/// library build, and what the oracle fixtures use) names no declaration, and
+/// handing the name to the last module is what every measurement on this line
+/// was taken under. Changing that too would move the oracle's answers for a
+/// reason unrelated to the bug, which is an entry declared in some module
+/// OTHER than the last one.
+fn lc_entry_module_of(c: Array[Stmt], c_file_id: Array[Int], entry_name: String, file_count: Int) -> Int {
+  if entry_name == "" {
+    file_count - 1
+  } else {
+    let mut i = 0
+    let mut found = 0 - 1
+    while i < Array::length(c) && i < Array::length(c_file_id) {
+      if found < 0 {
+        match Array::get(c, i) {
+          SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => if name == entry_name {
+            found = Array::get(c_file_id, i)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if found < 0 {
+      file_count - 1
+    } else {
+      found
+    }
+  }
+}
+
+/// `first_pass` is 0 for the ORACLE and 1 for the production split entry
+/// (#2647 Codex round 4). The two start from different programs: the oracle is
+/// handed a PRE-PRELUDE merge and has to run `elaborate_heap_params` itself,
+/// while `effect_lowering_prelude*` is called from
+/// `compile_wasi_module_linked_impl_*`, whose caller already ran it -- and
+/// `effect_lowering_prelude` itself never does (its first act is
+/// `zero_alloc_check`). Running pass 0 on the split path therefore ran it a
+/// SECOND time, per module, where the whole-program path runs it once on the
+/// whole program. Worse per module than whole-program twice: the pass builds
+/// its `heap_fns` and `ctors` tables from the statements it sees, so a caller
+/// partition cannot classify a heap value returned by an imported function and
+/// omits the annotation the merged run adds -- a different ownership
+/// classification reaching Perceus and codegen.
+fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats, env: PreludeEnv, first_pass: Int) -> Array[Stmt] with Exception {
+  // WHICH module owns the entry, derived rather than assumed (#2647 Codex
+  // round 4). This was `file_count - 1`, which is true of the merge -- a root's
+  // dependencies come first -- but nothing in `ModuleSplit` records it and
+  // nothing validates it. A split that puts the entry anywhere else passed the
+  // guard and then handed `entry_name` to the WRONG partition, so pass 11
+  // never wrapped the real entry and an `Exception`-row entry lowered
+  // differently from the whole-program path.
+  //
+  // -1 when no statement declares `entry_name` (`__no_entry__`, a library
+  // build): then no module is the entry module, which is what passing "" to
+  // every one of them already meant.
+  let entry_fid = lc_entry_module_of(c, c_file_id, entry_name, file_count)
   // #2575 item 4: the three analyses `linked_compile` runs between the prelude
   // and codegen are sampled per module here, and on the whole program by the
   // caller, at the same point in the pass order. `lc_analysis_exclude` is the
@@ -5010,7 +5080,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     // difference; `effect_lowering_prelude_split` runs the real check on the
     // whole program, where production runs it.
     lc_collect_zero_alloc_diag(Array::get(parts, fi), st.validator_diags)
-    let mut j = 0
+    let mut j = first_pass
     while j < 4 {
       lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, st.diags, env)
       j = j + 1
@@ -5452,7 +5522,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let whole_invisible = eq_invisible_nominals_list()
   eq_invisible_nominals_reset()
   let st = prelude_split_stats_new()
-  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, st, prelude_env_none())
+  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, st, prelude_env_none(), 0)
   let split_invisible = eq_invisible_nominals_list()
   let ev_req_u = st.requests
   let ev_ref_u = st.refusals

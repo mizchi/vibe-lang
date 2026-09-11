@@ -421,3 +421,30 @@ test "an alias declared in another module is still retargeted" {
   inspect(String::contains(render_in_order(a), "add_alias(1, 2)"), content = "false")
   inspect(render_in_order(a) == render_in_order(b), content = "true")
 }
+
+test "the entry module is found, not assumed to be the last" {
+  // #2647 Codex round 4. `entry_fid` was `file_count - 1`, which is true of
+  // the merge -- a root's dependencies come first -- and recorded nowhere in
+  // `ModuleSplit`. A split that puts the entry in an EARLIER module passed the
+  // guard and then handed `entry_name` to the wrong partition, so pass 11
+  // never wrapped the real entry.
+  //
+  // `main` here carries an `Exception` row, which is what
+  // `wrap_entry_exception_boundary` keys on, and it sits in module 0 while a
+  // helper follows it in module 1.
+  //
+  // Red-tested: with `entry_fid` back to `file_count - 1`, the split rendering
+  // loses the boundary the whole-program lane adds.
+  let src = "fn main() -> Int with Exception {\n  if 1 == 2 {\n    throw(\"x\")\n  } else {\n    ()\n  }\n  helper(1)\n}\n\nexport fn helper(n: Int) -> Int {\n  n + 1\n}\n"
+  let a = program_stmts(src)
+  let b = program_stmts(src)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: [0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  // Not vacuous: the whole-program lane really does wrap the entry.
+  inspect(String::contains(render_in_order(a), "__entry_err"), content = "true")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
