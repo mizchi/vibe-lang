@@ -5173,6 +5173,46 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
   }
 }
 
+/// A pre-prelude snapshot (`keys[i]` at `files[i]`) as the index
+/// `lc_dbg_file_of_fn` reads, under ONE collision policy: a repeat is
+/// AMBIGUOUS, marked with a negative so the lookup can tell it from absent.
+///
+/// Both of that function's indexes are built here, because both key spaces have
+/// a shape nothing uniquifies and the two rules drifted when they were written
+/// twice. The name index carries `__test_<label>` / `__bench_<label>`, built
+/// from a test's or bench's LABEL; the owner index carries `:t:<label>` /
+/// `:b:<label>`, built from the same label. Two modules with a test of the same
+/// label collide in each. "Last wins" hands both compiled functions the second
+/// module's file and "first wins" hands them the first's -- and a wrong file id
+/// is a CLAIM, mapped through the wrong module's newline table, whereas file 0
+/// is `lc_dbg_file_of_fn` admitting it has no placement. The owner index said
+/// "first wins: a merged program's top-level names are unique", which is true
+/// of the other two owner shapes (a plain name, uniquified by the merge;
+/// `:s:<tag>:<idx>`, by position) and not of the label ones (Codex P2 on
+/// #2623). One function, so a fix to one is a fix to both.
+fn lc_dbg_build_file_index(keys: Array[String], files: Array[Int]) -> MutMap[String, Int] {
+  let idx: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(keys) && i < Array::length(files) {
+    let k = Array::get(keys, i)
+    if MutMap::has(idx, k) {
+      MutMap::set(idx, k, 0 - 1)
+    } else {
+      MutMap::set(idx, k, Array::get(files, i))
+    }
+    i = i + 1
+  }
+  idx
+}
+
+/// `lc_dbg_file_of_fn` over the two pre-prelude snapshots the compile takes,
+/// for tests. It runs the real builder and the real lookup rather than a
+/// restatement of either, so a test written against it cannot pass under a
+/// policy the compiler does not have.
+export fn lc_dbg_file_of_fn_for(names: Array[String], name_files: Array[Int], owner_keys: Array[String], owner_files: Array[Int], name: String) -> Int {
+  lc_dbg_file_of_fn(lc_dbg_build_file_index(names, name_files), lc_dbg_build_file_index(owner_keys, owner_files), name)
+}
+
 /// Interior-line breakpoints: the source file a compiled function came from,
 /// looked up BY NAME (#2388).
 ///
@@ -5225,7 +5265,11 @@ fn lc_dbg_file_of_fn(dbg_name_file: MutMap[String, Int], dbg_owner_file: MutMap[
         // statements share this owner key (two modules with a same-labelled
         // test), so the hoisted body belongs to one of two files and this
         // places neither.
-        Some(fid) => fid,
+        Some(fid) => if fid < 0 {
+          0
+        } else {
+          fid
+        },
         None => 0
       },
       None => 0
@@ -8129,44 +8173,15 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // pre-prelude owner key -> file for the definitions the prelude synthesizes.
   // Built only in break mode; every other build leaves both empty and reads
   // neither.
-  let dbg_name_file: MutMap[String, Int] = MutMap::new_string()
-  let dbg_owner_file: MutMap[String, Int] = MutMap::new_string()
-  if dbg_line_on {
-    let mut dnf_i = 0
-    while dnf_i < Array::length(pre_prelude_let_names) && dnf_i < Array::length(pre_prelude_let_files) {
-      // A repeat is AMBIGUOUS, not "the last one". The merge makes a source's
-      // top-level names unique per file, but a test or bench contributes
-      // `__test_<label>` / `__bench_<label>` built from its LABEL, which is not
-      // uniquified -- two modules with a test of the same label collide, and
-      // `MutMap::set` would hand both compiled functions the second one's file
-      // (Codex round on #2623). Mapping one of them through the other's newline
-      // table reports a breakpoint under the wrong file, which is worse than
-      // not placing it: `lc_dbg_file_of_fn` states file 0 as a PLACEMENT, and a
-      // wrong file id is a claim. Marked with a negative so the lookup can tell
-      // "ambiguous" from "absent" and refuse both the same way.
-      let __dnf_name = Array::get(pre_prelude_let_names, dnf_i)
-      if MutMap::has(dbg_name_file, __dnf_name) {
-        MutMap::set(dbg_name_file, __dnf_name, 0 - 1)
-      } else {
-        MutMap::set(dbg_name_file, __dnf_name, Array::get(pre_prelude_let_files, dnf_i))
-      }
-      dnf_i = dnf_i + 1
-    }
-    let mut dof_i = 0
-    while dof_i < Array::length(pre_prelude_owner_keys) && dof_i < Array::length(pre_prelude_owner_files) {
-      // First wins: a merged program's top-level names are unique, so a repeat
-      // can only be a key two statements really share, and the earlier one is
-      // the one the hoist walked first.
-      let __dof_key = Array::get(pre_prelude_owner_keys, dof_i)
-      if MutMap::has(dbg_owner_file, __dof_key) {
-        ()
-      } else {
-        MutMap::set(dbg_owner_file, __dof_key, Array::get(pre_prelude_owner_files, dof_i))
-      }
-      dof_i = dof_i + 1
-    }
+  let dbg_name_file: MutMap[String, Int] = if dbg_line_on {
+    lc_dbg_build_file_index(pre_prelude_let_names, pre_prelude_let_files)
   } else {
-    ()
+    MutMap::new_string()
+  }
+  let dbg_owner_file: MutMap[String, Int] = if dbg_line_on {
+    lc_dbg_build_file_index(pre_prelude_owner_keys, pre_prelude_owner_files)
+  } else {
+    MutMap::new_string()
   }
   let dbg_line_import_idx = if dbg_line_on {
     let idx = next_import_idx
