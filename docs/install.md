@@ -78,6 +78,13 @@ content-addressed. A future `vibe toolchain` selector (rustup-style) only has
 to rewrite `$VIBE_HOME/toolchain` — `install/install.sh` names toolchains
 after the installed ref so several can coexist.
 
+This layout is being replaced. The decided target is
+[toolchain-layout.md](toolchain-layout.md) (ADR-0111, #2674): each toolchain
+carries its own stdlib, a project keeps everything the toolchain generates
+under `.vibe/build/`, dependencies are pinned in the root `index.vpkg`, and
+`vibe self update <version>` installs a release without a checkout. Until
+those phases land, this page describes what the installer does today.
+
 PATH policy: **`~/.vibe/bin` is the PATH entry** (the dispatcher lives
 there). The installer writes a sourceable `~/.vibe/env` (rustup's
 `~/.cargo/env` pattern) and, for a default-prefix install, appends
