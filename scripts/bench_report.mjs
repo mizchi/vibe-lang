@@ -238,18 +238,32 @@ if (missingReps.length) {
 // This is what makes one-row-per-tier safe: the report stays small when
 // everything is flat, and a regression in a series nobody chose to render
 // still arrives by name.
+// Keys from BOTH snapshots, current first, baseline's extras after. Iterating
+// `cur` alone means a series the current run did not produce at all is never
+// visited: `bench_metrics.sh` records nothing for a binary-size sample that
+// failed to compile or a tracked bench that parsed no row, so the series simply
+// vanishes rather than going null, and a scan over `cur` would then report the
+// rest as clean. Same class as the null-value case below, one level up -- an
+// absent KEY instead of an absent VALUE (#2643 review, Codex P2).
+const unionKeys = (a, b) => {
+  const out = Object.keys(a || {});
+  for (const k of Object.keys(b || {})) if (!(k in (a || {}))) out.push(k);
+  return out;
+};
+
 function* allMetrics() {
   yield ["selfcompile heap", "selfcompile.heap_ptr_bytes", cur.selfcompile?.heap_ptr_bytes, base?.selfcompile?.heap_ptr_bytes];
   for (const k of ["stage2_wasm", "cli_adapter_bundle", "compiler_sources_bundle", "module_source"]) {
     yield [k, `sizes.${k}`, cur.sizes?.[k], base?.sizes?.[k]];
   }
-  for (const [name, v] of Object.entries(cur.sizes?.samples || {})) {
-    yield [`sample ${name}`, `sizes.samples.${name}`, v, base?.sizes?.samples?.[name]];
+  for (const name of unionKeys(cur.sizes?.samples, base?.sizes?.samples)) {
+    yield [`sample ${name}`, `sizes.samples.${name}`, cur.sizes?.samples?.[name], base?.sizes?.samples?.[name]];
   }
-  for (const [label, v] of Object.entries(cur.benches || {})) {
-    yield [`B/op ${label}`, `benches.${label}`, v?.bytes_per_op, base?.benches?.[label]?.bytes_per_op];
+  for (const label of unionKeys(cur.benches, base?.benches)) {
+    yield [`B/op ${label}`, `benches.${label}`, cur.benches?.[label]?.bytes_per_op, base?.benches?.[label]?.bytes_per_op];
   }
-  for (const [name, s] of Object.entries(execCur?.scenarios || {})) {
+  for (const name of unionKeys(execCur?.scenarios, execBase?.scenarios)) {
+    const s = execCur?.scenarios?.[name] || {};
     const b = execBase?.scenarios?.[name];
     if (!wasmtimeChanged) {
       yield [`${name} fuel`, `exec.${name}.linear.fuel`, s.linear?.fuel, b?.linear?.fuel];

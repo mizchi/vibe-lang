@@ -176,6 +176,24 @@ test("a metric the baseline measured and this run did not is named, not counted 
   assert.doesNotMatch(report, /no drift ≥±2% in any other tracked series$/m);
 });
 
+test("a series the baseline had and this run omits ENTIRELY is named too", () => {
+  // One level up from the null-value case: `bench_metrics.sh` records nothing
+  // at all for a size sample that failed to compile or a bench that parsed no
+  // row, so the key vanishes rather than going null. Iterating `cur` alone
+  // would never visit it and would report the rest as clean.
+  const base = flatSnapshot("baseline");
+  const cur = flatSnapshot("current");
+  base.sizes.samples["fizzbuzz"] = 1208;
+  base.benches["parser_bench.vibe::parse_lexer_vibe"] = { bytes_per_op: 737280 };
+  base.exec = execOf({ [REP.medium]: okScenario, gone: okScenario });
+  cur.exec = execOf({ [REP.medium]: okScenario });
+  const report = render(cur, base);
+  assert.match(report, /measured on the baseline, absent here/);
+  assert.match(report, /sample fizzbuzz/);
+  assert.match(report, /B\/op parser_bench\.vibe::parse_lexer_vibe/);
+  assert.match(report, /gone heap/);
+});
+
 test("a representative cell with no value is named even when its scenario is ok", () => {
   const base = flatSnapshot("baseline");
   const cur = flatSnapshot("current");

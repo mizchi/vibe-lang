@@ -165,11 +165,12 @@ what they say under a rule that matches a real compile; what that takes is
 module C that A's dependency B imports *privately* — context no real compile of
 A exposes. Closing only across re-export edges would be the exact rule, and the
 header scan does not distinguish them (it returns a module's deps and its export
-*names*, with no record of which deps a dep re-exports), so this takes the safe
-side: an under-approximation can only *manufacture* a difference, never hide
-one. `edges_unresolved` is reported for the same reason — a dropped edge narrows
-a module's context, but a closure built from every edge and one built from half
-of them otherwise look identical.
+*names*, with no record of which deps a dep re-exports), so this takes the
+narrower side. That narrowing is not free of consequences in either direction —
+[The context rule](#the-context-rule) below says what it can and cannot hide.
+`edges_unresolved` is reported for its own reason: a dropped edge narrows a
+module's context further, and a closure built from every edge and one built from
+half of them otherwise look identical.
 
 ### The four counters
 
