@@ -92,34 +92,84 @@ require_stage2_builder_wasmtime compiler-build
 # orders them, so the two halves are required together: a job carrying the
 # composite action must declare the dependency, and a job declaring the
 # dependency must actually use the action.
-consumers="$(grep -n 'uses: ./.github/actions/use-compiler-build' "$workflow" | cut -d: -f1)"
-if [ -z "$consumers" ]; then
+# ASK THE YAML WHICH JOBS DEPEND ON compiler-build (Codex review of #2648).
+#
+# This used to test `^    needs:.*compiler-build`, which only sees the flow
+# form. The block form is equally valid and equally binding:
+#
+#     needs:
+#       - compiler-build
+#
+# and the regex does not match it, so a routine reformat could restore the
+# serialization regression with this gate still printing ok -- verified, it
+# did. That is the same mistake scripts/check_pkfire_pin.sh took four rounds
+# to stop making: a lexical approximation of a structural question. One round
+# is enough here.
+#
+# PyYAML is provisioned in the structural-lint job, which is where this gate
+# runs, and a missing parser is fatal rather than a pass.
+deps="$(python3 - "$workflow" <<'PYEOF' || echo "__PYFAIL__"
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write(
+        "[ci-compiler-gate-layout] FAIL: PyYAML is required to read the job graph.\n"
+        "  Install it with: python3 -m pip install pyyaml\n"
+    )
+    sys.exit(1)
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+
+for job_id, job in (doc.get("jobs") or {}).items():
+    if not isinstance(job, dict):
+        continue
+    needs = job.get("needs")
+    if needs is None:
+        needs = []
+    elif isinstance(needs, str):          # `needs: compiler-build`
+        needs = [needs]
+    uses = any(
+        isinstance(step, dict)
+        and str(step.get("uses", "")).strip() == "./.github/actions/use-compiler-build"
+        for step in (job.get("steps") or [])
+    )
+    print(f"{job_id}\t{'yes' if 'compiler-build' in needs else 'no'}\t{'yes' if uses else 'no'}")
+PYEOF
+)"
+if [ "$deps" = "__PYFAIL__" ]; then
+  echo "[ci-compiler-gate-layout] FAIL: could not read the job graph (see above)" >&2
+  exit 1
+fi
+
+# THE COMPILER IS BUILT ONCE (#2645). A job that consumes it must say so, or
+# actions/download-artifact races the producer and fails on a run where the
+# scheduler happens to start them together. `needs:` is the only thing that
+# orders them, so the two halves are required together: a job carrying the
+# composite action must declare the dependency, and a job declaring the
+# dependency must actually use the action.
+if ! awk -F'\t' '$3=="yes"{found=1} END{exit !found}' <<<"$deps"; then
   echo "[ci-compiler-gate-layout] no job uses ./.github/actions/use-compiler-build" >&2
   echo "  The shared compiler build is how every gate job gets a stage2." >&2
   exit 1
 fi
-for job in $(awk '
-  /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
-  /^[A-Za-z0-9_-]+:/ { if (!/^jobs:/) in_jobs = 0 }
-  in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { job = $1; sub(/:$/, "", job); print job }
-' "$workflow"); do
-  block="$(sed -n "/^  ${job}:\$/,/^  [a-zA-Z0-9_-]*:\$/p" "$workflow")"
-  uses_shared=0
-  needs_shared=0
-  grep -qF 'uses: ./.github/actions/use-compiler-build' <<<"$block" && uses_shared=1
-  grep -qE '^    needs:.*compiler-build' <<<"$block" && needs_shared=1
-  if [ "$uses_shared" = 1 ] && [ "$needs_shared" = 0 ]; then
+while IFS="$(printf '\t')" read -r job needs_shared uses_shared; do
+  [ -n "${job:-}" ] || continue
+  if [ "$uses_shared" = yes ] && [ "$needs_shared" = no ]; then
     echo "[ci-compiler-gate-layout] ${job} downloads the shared compiler build without 'needs: [compiler-build]'" >&2
     echo "  Add it to the job -- download-artifact cannot wait on its own." >&2
     exit 1
   fi
-  if [ "$needs_shared" = 1 ] && [ "$uses_shared" = 0 ] && [ "$job" != "ci-required" ]; then
+  if [ "$needs_shared" = yes ] && [ "$uses_shared" = no ] && [ "$job" != "ci-required" ]; then
     echo "[ci-compiler-gate-layout] ${job} declares 'needs: [compiler-build]' but never uses it" >&2
     echo "  Either add '- uses: ./.github/actions/use-compiler-build' or drop the dependency;" >&2
     echo "  waiting ~200s for an artifact the job ignores is pure latency." >&2
     exit 1
   fi
-done
+done <<EOF
+$deps
+EOF
 
 # THE LANES MUST NOT WAIT FOR compiler-build.
 #
@@ -139,7 +189,12 @@ if [ -z "$lanes_block" ]; then
   echo "[ci-compiler-gate-layout] FAIL: no compiler-gate-lanes job found -- the scan did not run" >&2
   exit 1
 fi
-if grep -qE '^    needs:.*compiler-build' <<<"$lanes_block"; then
+lanes_needs="$(awk -F'\t' '$1=="compiler-gate-lanes"{print $2}' <<<"$deps")"
+if [ -z "$lanes_needs" ]; then
+  echo "[ci-compiler-gate-layout] FAIL: compiler-gate-lanes is not in the job graph" >&2
+  exit 1
+fi
+if [ "$lanes_needs" = yes ]; then
   echo "[ci-compiler-gate-layout] compiler-gate-lanes declares 'needs: [compiler-build]'" >&2
   echo "  The lanes build in-job on purpose: they are the critical path, and" >&2
   echo "  waiting for the shared build measured 959s against 858s on main" >&2
