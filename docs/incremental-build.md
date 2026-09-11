@@ -539,6 +539,80 @@ into a build where indices moved — the stored form or the cache key has to
 account for index assignment. That constraint came out of this measurement; no
 amount of comparing declarations would have produced it.
 
+##### How far they actually move (#2669, 2026-09-11)
+
+The paragraph above says a body cannot be replayed "into a build where indices
+moved". How far they move was never measured, and measuring it splits the
+problem into two cases that behave nothing alike.
+
+`scripts/wasm_index_stability.mjs` compares two builds made with
+`VIBE_WASM_NAMES=1`, matching functions **by name** — matching them by index
+would assume the stability being measured. Corpus: the compiler's own closure
+(`codegen_lexer_test.vibe`, 190 resolved files, 4652 defined functions, 4286
+matched by name), compiled by the generation stage2 of `bef330a`. Leaf:
+`lib/@vibe/core/hex.vibe`, checked to be IN that closure — the first run of the
+neighbouring memory measurement edited a file that was not, and every row came
+back identical, a vacuous experiment that looked like a result. N=1 per cell,
+which is exact here rather than approximate: these are byte comparisons of a
+deterministic compile, not timings.
+
+| | body-only edit | one added function |
+|---|---:|---:|
+| index kept | 4286 (100%) | 216 (5.04%) |
+| index moved | 0 | 4070 (94.96%) |
+| distinct shift deltas | — | **1** (`+1`) |
+| LEB128 width-band crossings | 0 | 0 |
+| body byte-identical | 4285 (99.98%) | 1297 (30.26%) |
+| body differs, SAME length | 0 | 2988 (69.72%) |
+| body length changed | 1 (the edited fn) | 1 (the edited fn) |
+| relocation sites explained | — | 31256, **all `+1`** |
+| relocation sites unexplained | — | 0 |
+
+**A body-only edit moves nothing.** Adding a statement to a function changes
+that function's body and no other byte of the module: 4285 of 4286 bodies come
+back byte-identical and every index is unchanged. For this edit class the
+constraint does not apply at all — a body cache needs no relocation, no
+index-independent form and no stable assignment. That is the common edit.
+
+**Adding a function shifts every later index by exactly one.** Not a scatter:
+ONE distinct delta across 4070 moved functions, because the assignment is
+positional and a module's functions are contiguous. 30% of bodies are still
+byte-identical (they call nothing that moved); the rest differ at IDENTICAL
+length, so an in-place patch is arithmetically possible.
+
+**But not every relocation site is a `call` immediate.** Of the 31256 sites,
+31231 are call immediates and **25 are `i64.const`**: a first-class function
+value is emitted as `i64.const (idx*4+2)` (the index tagged once as a function
+reference, once as an `Int`). Both decode to a function index that moved `+1`,
+and both carry the same name on each side — but only the first announces itself
+by opcode. A relocation pass keyed on `call` would leave those 25 wrong, and
+wrong silently, which is the worst way for this to break. Verified rather than
+inferred: the tool decodes the constant back to an index and requires the NAME
+at that index to match on both sides before claiming it, so an ordinary integer
+that happens to be 2 mod 4 is not counted as a relocation site.
+
+Two limits on the above, both real:
+
+- **The width bands are luck at this size, not a property.**
+  `leb128_encode_u32` (`lib/@vibe/compiler/core/bytebuf.vibe`) is
+  minimal-width, so an immediate's byte count tracks the index magnitude: 1
+  byte below 128, 2 below 16384. Zero of the 4070 movers crossed a band here
+  only because the insertion landed above index 128 and the program never
+  reaches 16384. An edit inside a module whose functions sit below 128 moves a
+  callee across that edge, and every body calling it changes LENGTH — which is
+  the case an in-place patch cannot serve.
+- **An edit that reorders modules is not measured.** Adding one function to one
+  module keeps the module order, so the shift is uniform. Whether adding an
+  *import* (which can move a whole module in the order) keeps that property is
+  an open question, and the tool answers it for any two builds.
+
+`unexplained` is reported next to `explained` for a reason: "0 unexplained"
+means nothing on its own, and did not hold on the first run — the `i64.const`
+function values came back as 7 unexplained bodies until the decoder above was
+added. Red-tested by flipping one body byte the classifier cannot attribute (a
+local-declaration count, which has no preceding opcode), with the mutation
+confirmed to have landed first: `unexplained=1`, naming the function and offset.
+
 #### And what it costs in ALLOCATION — the #2510 criterion-5 KPI (2026-09-11)
 
 The section above bounds the split's cost in wall time. The KPI #2510 actually
