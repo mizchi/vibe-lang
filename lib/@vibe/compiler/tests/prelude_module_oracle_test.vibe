@@ -1,5 +1,8 @@
 import @vibe/compiler/entry/compiler/file_compile {
-  prelude_module_full_oracle_report_fs, prelude_module_import_closure_report_fs, prelude_module_oracle_report_fs
+  prelude_module_full_oracle_report_fs,
+  prelude_module_import_closure_report_fs,
+  prelude_module_oracle_report_fs,
+  prelude_ordinary_lane_prov_report_fs
 }
 
 //# Functions
@@ -9,6 +12,22 @@ import @vibe/compiler/entry/compiler/file_compile {
 // pass whether the two agree. A two-file program whose entry rewrites through
 // `inspect` (desugar_inspect_calls changes it) and calls across the import
 // (the alias and evidence passes see both sides) must agree on every pass.
+
+/// The value of `key` in a `PROV ...` line, up to the next space.
+fn prov_field(line: String, key: String) -> String {
+  let at = String::index_of(line, key)
+  if at < 0 {
+    ""
+  } else {
+    let rest = String::substring(line, at + String::length(key), String::length(line))
+    let sp = String::index_of(rest, " ")
+    if sp < 0 {
+      rest
+    } else {
+      String::substring(rest, 0, sp)
+    }
+  }
+}
 
 /// The report's `DIAGS ...` line, or "".
 fn diag_line_of(report: String) -> String {
@@ -404,4 +423,38 @@ test "a validator that fires is reported by both lanes, and a clean program by n
   Fs::write_file(dep, "export fn calm(n: Int) -> Int {\n  n + 1\n}\n")
   Fs::write_file(main_path, "import ./vibe_diag_arm_dep.vibe {\n  calm\n}\n\ntest \"t\" {\n  inspect(calm(1), content = \"2\")\n}\n")
   inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "DIAGS validators=0")
+}
+
+// #2575 item 2: the ORDINARY compile lane -- the one an `vibe build` takes, not
+// the break lane -- has to carry a statement to module map before a per-module
+// driver can exist at all.
+//
+// It did not, and silently: `merged_stmts_and_offsets` passed `array_empty()`
+// for that out-parameter and every production RC entry passes
+// `empty_dbg_prov()` downstream, so the map was COMPUTED AND DISCARDED on the
+// one path that matters. "Wire the per-module prelude" looked like a driver
+// problem and was a plumbing one.
+//
+// `ids` equal to `stmts` is the property: one module id per merged top-level
+// statement, aligned with the array codegen receives. On the compiler's own CLI
+// closure this reads `PROV stmts=9668 ids=9668 files=365` (fewer statements
+// than the oracle's `FULL` line because this is pre-prelude, before the passes
+// synthesize).
+test "the ordinary compile lane carries one module id per merged statement" {
+  let dep = "/tmp/vibe_prov_lane_dep.vibe"
+  let main_path = "/tmp/vibe_prov_lane_main.vibe"
+  Fs::write_file(dep, "export fn dep_one() -> Int {\n  1\n}\n\nexport fn dep_two() -> Int {\n  2\n}\n")
+  Fs::write_file(main_path, "import ./vibe_prov_lane_dep.vibe {\n  dep_one, dep_two\n}\n\nfn local_one() -> Int {\n  dep_one() + dep_two()\n}\n\ntest \"t\" {\n  inspect(local_one(), content = \"3\")\n}\n")
+  let report = String::trim(prelude_ordinary_lane_prov_report_fs(main_path))
+  // The counts are the claim, and they are compared to each other rather than
+  // to a literal: a map with one id per statement is the property, whatever the
+  // statement count happens to be. `files=2` pins that both modules are seen --
+  // a map of the right length over one file would satisfy the first check
+  // alone.
+  let n = prov_field(report, "ids=")
+  let m = prov_field(report, "stmts=")
+  inspect(n == m, content = "true")
+  inspect(String::contains(report, "files=2"), content = "true")
+  // And it is not vacuously zero: the program has statements.
+  inspect(n != "0", content = "true")
 }
