@@ -802,7 +802,28 @@ jobs:
   # ci-required requires this matrix, and an empty/unknown lane fails
   # the dispatcher rather than running nothing.
   compiler-gate-lanes:
-    needs: [compiler-build]
+    # NO `needs: [compiler-build]`, DELIBERATELY, AND THE LANES BUILD IN-JOB.
+    # This reverses #2641 for these three jobs only, on the measurement #2641
+    # could not make until main ran a compiler-touching change through the new
+    # layout (run 34583809863, 9793f25d, compiler-build genuinely cold at 168s):
+    #
+    #   old layout, compiler-touching (run 34578957960)   858s wall
+    #   new layout, compiler-touching (run 34583809863)   959s wall
+    #
+    # "Build once" cut JOB time hard (7879s -> 4971s) and lost WALL time on the
+    # path that matters most for compiler work, for two reasons that stack:
+    #
+    #   1. 30 jobs sat behind this dependency, released in a burst, and reached
+    #      only 11 concurrent where the old layout reached 18 -- median job
+    #      start 365s against 3s. compiler-gate (late) began at 489s.
+    #   2. A consumer downloads stage2 but never compiles anything on the way,
+    #      so it never warms the source-fingerprinted header cache for itself.
+    #      The late lane took 466s against 341s of the same work before.
+    #
+    # Building here costs one compiler build per lane in CPU and buys back both:
+    # the lanes start at t=0, and the flatten plus seed -> stage1 -> stage2 they
+    # run leaves the header cache warm for the fixtures that follow. The short
+    # jobs keep using compiler-build, where not building is pure win.
     name: compiler-gate (${{ matrix.lane }})
     runs-on: ubuntu-latest
     strategy:
@@ -829,8 +850,34 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
-      - name: Use the compiler built once for this run
-        uses: ./.github/actions/use-compiler-build
+      - name: Generated compiler artifacts (fingerprint)
+        id: genfp
+        run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Cache generated compiler artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            lib/@vibe/compiler/compiler_sources_bundle.vibe
+            lib/@vibe/compiler/cli_adapter_bundle.vibe
+            lib/@vibe/compiler/selfbuild_runtime_entry_bundle.vibe
+            lib/@vibe/compiler/_cli_adapter_module_source.vibe
+            lib/@vibe/compiler/cache/codegen_fingerprint.vibe
+            lib/@vibe/compiler/.generated.stamp
+            lib/@vibe/compiler/.generated.inputs
+          key: gen-v1-${{ steps.genfp.outputs.fp }}
+      - name: Ensure generated compiler artifacts
+        run: bash scripts/ensure_generated.sh
+      - name: Cache stage2 (keyed on seed + flat module source)
+        id: stage2-cache
+        uses: actions/cache@v4
+        with:
+          path: _build/_ci_shard_gen
+          key: stage2-v2-${{ steps.genfp.outputs.fp }}-${{ hashFiles('scripts/generations.sh', 'scripts/wasm_vibe_host_runner.js') }}
+      - name: Build stage2 from committed flat module source
+        if: steps.stage2-cache.outputs.cache-hit != 'true'
+        run: |
+          VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
+            bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
       - name: Compiler-gate lane ${{ matrix.lane }}
         env:
           COMPILER_GATE_LANE: ${{ matrix.lane }}
@@ -924,6 +971,24 @@ jobs:
           key: seed-artifact-${{ hashFiles('bootstrap/seed.json') }}
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
+      - name: Provision PyYAML for the gates that parse the workflows
+        # DECLARED, NOT ASSUMED (Codex reviews of #2646 and #2648, and the
+        # #2252 rule that a gate must not assume the environment it runs in).
+        # check_pkfire_pin.sh and test_ci_compiler_gate_layout.sh both PARSE
+        # the workflows rather than scanning them, so both need a YAML parser.
+        #
+        # FIRST IN THE JOB, not next to the gate that prompted it. This step
+        # sat at position 18 while the layout gate ran at position 8, so on a
+        # runner without a preinstalled PyYAML the job died before its own
+        # declared dependency was installed. I had checked that the step was
+        # in the same JOB and not that it came FIRST -- presence instead of
+        # order, which is the bug check_ci_seed_cache.sh exists to catch.
+        # ubuntu-latest happens to ship PyYAML today -- measured: the gate and
+        # its 12 cases passed on run 34586469800 -- but "happens to ship" is
+        # how a gate ends up failing for a reason unrelated to its subject,
+        # which is how gates end up excused instead of fixed. Installing it
+        # here costs seconds and removes the assumption.
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - name: architecture-debt lint self-test
         run: bash scripts/lint_architecture_debt_test.sh
       - name: architecture-debt lint
@@ -952,16 +1017,6 @@ jobs:
         run: bash scripts/check_portable_boundary_test.sh
       - name: portable-boundary gate
         run: bash scripts/check_portable_boundary.sh
-      - name: Provision PyYAML for the pkfire pin gate
-        # DECLARED, NOT ASSUMED (Codex review of #2646, and the #2252 rule that
-        # a gate must not assume the environment it runs in). The gate parses
-        # the workflows rather than scanning them, so it needs a YAML parser.
-        # ubuntu-latest happens to ship PyYAML today -- measured: the gate and
-        # its 12 cases passed on run 34586469800 -- but "happens to ship" is
-        # how a gate ends up failing for a reason unrelated to its subject,
-        # which is how gates end up excused instead of fixed. Installing it
-        # here costs seconds and removes the assumption.
-        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - name: pkfire pin gate self-test
         run: bash scripts/check_pkfire_pin_test.sh
       - name: pkfire pin gate
