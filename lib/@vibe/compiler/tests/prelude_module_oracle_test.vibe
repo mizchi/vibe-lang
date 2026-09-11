@@ -10,14 +10,14 @@ import @vibe/compiler/entry/compiler/file_compile {
 // `inspect` (desugar_inspect_calls changes it) and calls across the import
 // (the alias and evidence passes see both sides) must agree on every pass.
 
-/// The report's `EVIDENCE ...` line, or "" .
-fn evidence_line_of(report: String) -> String {
+/// The report line starting with `prefix`, or "" .
+fn report_line_of(report: String, prefix: String) -> String {
   let lines = String::split(report, "\n")
   let mut out = ""
   let mut i = 0
   while i < Array::length(lines) {
     let line = Array::get(lines, i)
-    if String::starts_with(line, "EVIDENCE ") {
+    if String::starts_with(line, prefix) {
       out = line
     } else {
       ()
@@ -25,6 +25,16 @@ fn evidence_line_of(report: String) -> String {
     i = i + 1
   }
   out
+}
+
+/// The report's `EVIDENCE ...` line, or "" .
+fn evidence_line_of(report: String) -> String {
+  report_line_of(report, "EVIDENCE ")
+}
+
+/// The report's `ANALYSIS ...` line, or "" .
+fn analysis_line_of(report: String) -> String {
+  report_line_of(report, "ANALYSIS ")
 }
 
 fn oracle_lines(report: String) -> Array[String] {
@@ -228,6 +238,43 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // says the pass's INPUTS decompose per module even though its decision does
   // not -- the decision is a union that runs backwards along the import graph.
   inspect(String::trim(evidence_line_of(report)), content = "EVIDENCE declared=2 handled=2 performed=2")
+  // #2575 item 4: the three analyses `linked_compile` runs between the prelude
+  // and codegen, sampled on both lanes after all 17 passes. Agreement here is
+  // the CONTROL for the test below, which shows the same line reporting a
+  // difference: without one of the two, a bare count could mean either "the
+  // lanes agree" or "the instrument cannot tell them apart".
+  //
+  // `borrow_fns=0` and `borrow_masks=0` are honest but vacuous on this
+  // program -- no function of it qualifies for the borrowed ABI at all -- and
+  // that is why they are not the pin this property rests on.
+  //
+  // Red-tested by dropping module 0 from the union: `view_ret` reads
+  // `2/0:-2:__hoisted_lam_48_helper_use_exp_..._0_f+0:` and names what went
+  // missing. `borrow_ret` does NOT move under that mutation and is the weakest
+  // column here on purpose -- `compute_borrow_returning_names` is SEEDED with
+  // the borrow-returning builtins, which every module's answer carries, so its
+  // union survives losing a module. Read it as a check that the seed agrees,
+  // not that the analysis decomposes.
+  //
+  // On the compiler's own CLI closure (365 modules, measured 2026-09-11 on
+  // this change) the same line reads:
+  //
+  //   ANALYSIS borrow_ret=378/363:-15:MutSortedSet::delete+0:
+  //            borrow_fns=2705/2626:-167:alloc_site_kind_dep_...+88:__arr_equals__N4_Expr
+  //            borrow_masks=2705/2626:-197:agg_expr_of_ident_exp_...#12+118:__arr_equals__N4_Expr#3
+  //            view_ret=2123/1943:-180:HashSet::size+0:
+  //
+  // 88 functions take the borrowed ABI from their own module that the whole
+  // program refuses, and the net (2705 - 2626 = 79) hides every one of them
+  // behind the 167 the modules were conservative about. 118 against 88 on the
+  // mask row is the other half: 30 functions are in BOTH sets under DIFFERENT
+  // masks -- the names agree and the ABI does not, which a name-only
+  // comparison reports as agreement.
+  //
+  // `stmts` in the block above predates this change and is not re-measured
+  // here: the corpus is the compiler's own closure, so the code doing the
+  // measuring is inside what is being measured, and adding it moves the count.
+  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS borrow_ret=7 borrow_fns=0 borrow_masks=0 view_ret=2")
   // `missing=0 extra=0 content=0` is the property: every declaration the
   // whole-program prelude produced is produced by the module that owns it,
   // with the same body. `copies` is what remains after the link, and
@@ -274,4 +321,50 @@ test "the import closure the oracle runs under is the module's own, and places e
   Fs::write_file(lone_b, "test \"lone\" {\n  inspect(1, content = \"1\")\n}\n")
   let _ = lone_a
   inspect(String::trim(prelude_module_import_closure_report_fs(lone_b)), content = "CLOSURE files=1 edges=0 unresolved=0")
+}
+
+// #2575 item 4: the may_return / borrow analyses are the phases between the
+// prelude and codegen, and unlike the evidence facts (#2633) they are
+// interprocedural FIXPOINTS. This is the program that shows they do not
+// decompose, in BOTH directions at once:
+//
+//   helper  head_of(xs: Array[Int]) -> Int     reads xs, never consumes it
+//           pick(xs: Array[String]) -> String  returns an interior view
+//   main    via(xs) = pick(xs)                 tail-calls ACROSS the import
+//           head_of(build())                   a non-ident argument, from HERE
+//
+// so that:
+//
+//   `via` is classified by the whole program and NOT by its own module, which
+//     cannot see that `pick` returns a view. The union is missing it. Sound:
+//     a module that cannot see a callee is conservative about it.
+//
+//   `head_of` is qualified for the borrowed ABI by ITS module and disqualified
+//     by the whole program, because `ca_collect_nonident_args` disqualifies a
+//     callee from a CALL SITE -- and the call site is in the other module. The
+//     union has a name the whole program does not. This is the UNSOUND
+//     direction: a per-module driver shipping this would hand a caller the
+//     borrowed ABI for a parameter the callee's own program says is consumed.
+//
+// `borrow_fns=2/2:-1:via+1:head_of_exp__...` is why the comparison is set
+// equality and not sizes: both lanes list exactly two functions and they are
+// DIFFERENT two. A comparison on sizes reports agreement here, which is the
+// one case this measurement exists to detect.
+test "the may_return and borrow analyses do not decompose per module, in both directions" {
+  let helper_path = "/tmp/vibe_analysis_oracle_helper.vibe"
+  let main_path = "/tmp/vibe_analysis_oracle_main.vibe"
+  Fs::write_file(helper_path, "export fn head_of(xs: Array[Int]) -> Int {\n  Array::get(xs, 0)\n}\n\nexport fn pick(xs: Array[String]) -> String {\n  Array::get(xs, 0)\n}\n")
+  Fs::write_file(main_path, "import ./vibe_analysis_oracle_helper.vibe {\n  head_of,\n  pick\n}\n\nfn build() -> Array[Int] {\n  [1, 2, 3]\n}\n\nfn via(xs: Array[String]) -> String {\n  pick(xs)\n}\n\ntest \"t\" {\n  let ss = [\"a\"]\n  inspect(String::concat(Int::to_string(head_of(build())), via(ss)), content = \"1a\")\n}\n")
+  let report = prelude_module_full_oracle_report_fs(main_path, "__no_entry__")
+  // `<whole>/<union>:-<missing count>:<first>+<extra count>:<first>`, and a
+  // bare count when the two sets agree. The export-rename suffix on
+  // `head_of` is the merge's, and it is in the expectation rather than
+  // stripped: the name a module mints is what a link folds by, so a
+  // measurement that matched on the bare name would be answering a question
+  // the link does not ask.
+  inspect(String::trim(analysis_line_of(report)), content = "ANALYSIS borrow_ret=10/9:-1:via+0: borrow_fns=2/2:-1:via+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe borrow_masks=2/2:-1:via#1+1:head_of_exp__tmp_vibe_analysis_oracle_helper_vibe#1 view_ret=3/2:-1:via+0:")
+  // The prelude itself still agrees on this program, so the difference above
+  // is the analyses' and not a per-module prelude that already diverged.
+  let lines = String::split(report, "\n")
+  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary first_missing= first_content=")
 }
