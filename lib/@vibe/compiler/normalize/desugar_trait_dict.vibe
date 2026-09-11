@@ -14103,7 +14103,36 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
       ()
     }
     eq_deferred_request_record_ty(eq_deferred_key_for_ty(fty), fty)
-    EBinOp("==", lhs, rhs, -1)
+    // #2634: emit the REFERENCE, and let the link mint the definition.
+    //
+    // This is the `TyApp` counterpart of #2631's fix, and it needed the link's
+    // minting step to exist first. #2631 could emit `n::equals` because that
+    // comparator already existed under that name; a generic instantiation's
+    // comparator is a SPECIALIZATION whose body this module cannot generate --
+    // it would need the head's fields, which is exactly what it cannot see. So
+    // the deferral above and this reference are two halves of one move: the
+    // module says what it needs, the link builds it from the concatenated
+    // program.
+    //
+    // The raw `==` this replaces compared an AGGREGATE BY REFERENCE, measured
+    // on the compiler's own closure as `(a.idx == b.idx)` where the whole
+    // program emitted `MutMap::equals__N6_String__N3_Int(a.idx, b.idx)`. Same
+    // name, two bodies -- the invariant a synthesized definition's name must
+    // determine its body, failing at a site #2631's fix did not reach.
+    //
+    // Unreachable on the whole-program lane (`invisible_whole=0` measured at
+    // this arm), so the rule is unconditional rather than lane-dependent.
+    if Array::length(args) > 0 {
+      let canonical_args = for arg in args {
+        eq_expand_alias_ty(arg)
+      }
+      ECall(EIdent(generic_eq_name(n, canonical_args), -1), Array::slice([
+        lhs,
+        rhs
+      ], 0, 2), -1)
+    } else {
+      EBinOp("==", lhs, rhs, -1)
+    }
   }
 }
 

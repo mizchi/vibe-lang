@@ -232,14 +232,22 @@ still content-checks the bodies under it. That is not redundant with the above:
 it is what turns the next such divergence into a refusal instead of a silently
 kept body.
 
-### What remains — 15 rows, two families, nothing unattributed
+### What remains — 6 rows, all one family
 
 The counters name every differing declaration, not the first of each kind. That
 matters: "the first missing row is an evidence dictionary" was read as "they all
-are" once already. With all of them named, the residue splits cleanly.
+are" once already. With all of them named, the residue is now entirely #2633's:
 
-**The comparator family — 9 rows.** A synthesized comparator whose *existence*
-or shape depends on what the synthesizing module can see:
+```
+missing  struct:__EvDict_Source
+content  resolve_import_path_probe          resolve_path_fs  (two modules)
+         resolve_existing_import_path       check_linked_file_source_groups
+```
+
+### How the comparator family closed (#2634) — 9 rows, now zero
+
+It was a synthesized comparator whose *existence* or *shape* depended on what
+the synthesizing module could see:
 
 ```
 missing  MutMap::equals__N6_String__N3_Int      MutSet::equals__N6_String
@@ -249,9 +257,9 @@ content  CbfTable::equals   AliasIdx::equals   ExportRenamePlan::equals
          StrTable::equals
 ```
 
-This is #2631's sibling one level up. That issue was a comparator whose *body*
-depended on module visibility, and is fixed — which is why `collisions=0`
-survives `invisible_split=15`.
+#2631's sibling one level up. That issue was a comparator whose *body* depended
+on module visibility, and is fixed — which is why `collisions=0` survives
+`invisible_split=17`.
 
 **Measured which half of "never emits" it is**, because the two have different
 fixes: a module can fail to *record* the need, or record it and fail to emit.
@@ -363,9 +371,29 @@ could mint these"*; both were minted. It measures what no module recorded
 through another need. The 3/2 split was real; the conclusion drawn from it was
 not.
 
-What remains of this family is the four `content` rows — comparators the split
-emits with a *different body*, which minting does not address because nothing is
-absent.
+### And the body differences close too
+
+Minting does not address a *different body* — nothing is absent there. But it is
+what made the fix available. The `TyApp` fallthrough now emits the **reference**
+and lets the link build it:
+
+```
+whole   MutMap::equals__N6_String__N3_Int(a.idx, b.idx)
+split   (a.idx == b.idx)          ← an aggregate, compared by reference
+```
+
+This is #2631's fix at the site #2631's fix did not reach, and it needed the
+minting step first: `n::equals` already existed under that name, but a generic
+instantiation's comparator is a *specialization* whose body a module that cannot
+see the head's fields cannot generate.
+
+```
+keyed content:  9 → 5
+```
+
+`CbfTable::equals`, `AliasIdx::equals`, `ExportRenamePlan::equals` and
+`StrTable::equals` are gone. **The comparator family is closed** — all nine
+rows, five absences and four bodies.
 
 **The evidence family — 6 rows.** `struct:__EvDict_Source` itself, plus the
 functions the whole-program evidence pass rewrote to take an explicit
