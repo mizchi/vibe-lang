@@ -482,6 +482,30 @@ and it is not closable without reproducing the trait-dict pass's whole-program
 discovery order inside each module, which is a dependency on one pass's
 traversal that is not worth taking.
 
+#### What the per-module lane costs before any cache (#2510)
+
+#2510 frames the work as "make the prelude per-module AND cache it", and sizes
+it against 1.3-1.5 s spent in `effect_lowering_prelude` on a warm compile. What
+it does not say is what the per-module decomposition costs on its own, which the
+FS-lane split now makes measurable. Compiler's own closure, `cache_mode = "off"`
+(a real bypass since #2647 round 5), a fresh `VIBE_BUILD_CACHE_DIR` per run,
+cold vs cold, three runs each:
+
+| lane | mean | min | max |
+|---|---:|---:|---:|
+| whole-program | 49,994 ms | 49,291 | 50,372 |
+| per-module (split) | 52,631 ms | 51,837 | 53,445 |
+
+**5.3% overhead.** Running 365 modules through passes 0..11 individually,
+building each module's interface context, and linking, costs about a twentieth
+more than one whole-program pass -- not the multiple that would force a cache to
+clear a deficit before winning anything. The decomposition is close to free, so
+the cache is upside rather than a rescue, and there is no schedule pressure to
+force pass 4 per-module if it turns out not to fit (see the audit above).
+
+This is a whole-compile wall time, so the prelude's own share of the change is
+smaller than the 5.3% suggests; it bounds the cost rather than attributing it.
+
 **The consequence for the cache (#2510) is the useful part.** A cached function
 body contains call immediates, and those depend on GLOBAL function index
 assignment. A per-module body cache therefore cannot store a body and replay it
