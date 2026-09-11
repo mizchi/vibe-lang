@@ -69,6 +69,47 @@ if run_gate; then fail "case 2: a call site with no version input was accepted -
 grep -q "installs 'latest'" "$TMP/out" || fail "case 2: the message does not say why it matters"
 echo "check_pkfire_pin_test: ok: case 2: a call site with no version input is rejected"
 
+# --- case 2b: a COMMENTED version input does not count (Codex review) ------
+# The aggregate-count version of this gate reported "ok (2 call site(s),
+# 2 pinned input(s))" for exactly this tree, while that action installed latest.
+scaffold
+python3 - "$TMP/tree/.github/workflows/pkfire-pkspec.yml" <<'PY2'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("          version: 0.14.2", "          # version: 0.14.2")
+open(p, "w").write(s)
+PY2
+grep -q '# version: 0.14.2' "$TMP/tree/.github/workflows/pkfire-pkspec.yml" || fail "case 2b: mutation did not land"
+grep -qE '^[[:space:]]*version: 0.14.2' "$TMP/tree/.github/workflows/pkfire-pkspec.yml" && fail "case 2b: a real input is still present"
+if run_gate; then
+  cat "$TMP/out" >&2
+  fail "case 2b: a COMMENTED version input was counted as a real one"
+fi
+grep -q "passes no 'version: 0.14.2' input" "$TMP/out" || fail "case 2b: the message does not name the call site's missing input"
+echo "check_pkfire_pin_test: ok: case 2b: a commented version input does not count"
+
+# --- case 2c: the input must belong to THIS call site ---------------------
+# Two call sites, one input between them: the count matches, the association
+# does not.
+scaffold
+python3 - "$TMP/tree/.github/workflows/pkfire-pkspec.yml" <<'PY2'
+import sys
+p = sys.argv[1]
+open(p, "w").write("""jobs:
+  lint:
+    steps:
+      - uses: mizchi/pkfire@v0.14.2
+      - uses: mizchi/pkfire@v0.14.2
+        with:
+          version: 0.14.2
+""")
+PY2
+if run_gate; then
+  cat "$TMP/out" >&2
+  fail "case 2c: a call site with no input of its own was accepted"
+fi
+echo "check_pkfire_pin_test: ok: case 2c: an input belonging to another step does not count"
+
 # --- case 3: the hook hardcodes a version instead of reading the file -----
 scaffold
 printf 'PKF_VERSION="0.14.2"\n' > "$TMP/tree/.claude/hooks/session-start.sh"
@@ -96,4 +137,4 @@ printf '\n# uses: mizchi/pkfire@vNOPE (prose, not a call site)\n' >> "$TMP/tree/
 run_gate || { cat "$TMP/out" >&2; fail "case 6: a commented-out example was counted as a call site"; }
 echo "check_pkfire_pin_test: ok: case 6: a commented example is not a call site"
 
-echo "check_pkfire_pin_test: ok (2 controls + 6 cases)"
+echo "check_pkfire_pin_test: ok (2 controls + 8 cases)"

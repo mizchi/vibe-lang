@@ -42,34 +42,57 @@ rc=0
 refs=0
 withs=0
 
-# Every `uses: mizchi/pkfire@<ref>` must name the pinned version.
-while IFS=: read -r file line rest; do
+# PER CALL SITE, not an aggregate count (Codex review of #2645). Comparing
+# "how many refs" against "how many version: lines anywhere" does not establish
+# that each step has its own input: deleting the input from one file and
+# leaving the YAML comment `# version: 0.14.2` behind kept the totals equal and
+# the gate green, while that action went back to installing latest.
+#
+# So each `uses:` is associated with ITS OWN step. The window runs from the
+# uses line to the next list item at the same or shallower indent, and a
+# `version:` only counts when it is a real key -- a commented line cannot match
+# an anchored `^[[:space:]]*version:`.
+scan="$( { grep -rlE '^[[:space:]]*(- )?uses:[[:space:]]*mizchi/pkfire@' .github 2>/dev/null || true; } | while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  awk -v want="$want" -v file="$f" '
+    function indent(s,   i) { match(s, /^[[:space:]]*/); return RLENGTH }
+    /^[[:space:]]*(- )?uses:[[:space:]]*mizchi\/pkfire@/ {
+      if (in_site) { printf "%s:%d:%s:%s\n", file, site_line, site_ref, (found ? "ok" : "missing") }
+      in_site = 1; found = 0; site_line = NR; site_indent = indent($0)
+      site_ref = $0; sub(/.*mizchi\/pkfire@/, "", site_ref); sub(/[[:space:]].*/, "", site_ref)
+      next
+    }
+    in_site && /^[[:space:]]*-[[:space:]]/ && indent($0) <= site_indent {
+      printf "%s:%d:%s:%s\n", file, site_line, site_ref, (found ? "ok" : "missing")
+      in_site = 0; next
+    }
+    in_site && $0 ~ ("^[[:space:]]*version:[[:space:]]*" want "[[:space:]]*$") { found = 1 }
+    END { if (in_site) printf "%s:%d:%s:%s\n", file, site_line, site_ref, (found ? "ok" : "missing") }
+  ' "$f"
+done )"
+
+while IFS=: read -r file line ref verdict; do
   [ -n "${file:-}" ] || continue
   refs=$((refs + 1))
-  ref="$(printf '%s' "$rest" | sed 's/.*mizchi\/pkfire@//; s/[[:space:]].*//')"
   if [ "$ref" != "v$want" ]; then
     echo "[pkfire-pin] FAIL: $file:$line pins the action at '$ref', $PIN_FILE says v$want" >&2
     rc=1
   fi
+  if [ "$verdict" = "ok" ]; then
+    withs=$((withs + 1))
+  else
+    echo "[pkfire-pin] FAIL: $file:$line passes no 'version: $want' input" >&2
+    rc=1
+  fi
 done <<EOF
-$(grep -rnE '^[[:space:]]*(- )?uses:[[:space:]]*mizchi/pkfire@' .github 2>/dev/null || true)
+$scan
 EOF
-
-# ...and each of those call sites must pass the release as an input, because
-# the ref alone does not select it.
-# `|| true` inside the pipeline: under `set -o pipefail` a grep that finds
-# nothing (or whose file is absent) makes the substitution fail and `set -e`
-# kills the script with no message at all -- which is how the "no call sites"
-# case first behaved. A gate that dies silently is worse than one that passes
-# wrongly, because nobody even sees a verdict.
-withs="$( { grep -rc "version:[[:space:]]*$want" .github/actions/setup-vibe/action.yml .github/workflows/pkfire-pkspec.yml 2>/dev/null || true; } | awk -F: '{s+=$2} END {print s+0}')"
 
 if [ "$refs" -eq 0 ]; then
   echo "[pkfire-pin] FAIL: found no 'uses: mizchi/pkfire@' at all -- the scan did not run" >&2
   exit 1
 fi
 if [ "$withs" -lt "$refs" ]; then
-  echo "[pkfire-pin] FAIL: $refs call site(s) but only $withs pass 'version: $want'" >&2
   echo "  Without the input the action installs 'latest' and the ref decides nothing." >&2
   rc=1
 fi

@@ -590,6 +590,17 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Toolchain identity for the viberun cache key
+        # THE STAMP INCLUDES rustc, SO THE KEY MUST TOO (Codex review of #2645).
+        # ensure_viberun.sh hashes `rustc --version` -- a binary built by a
+        # different toolchain is a different binary. But the key was a function
+        # of the manifests and sources only, so when ubuntu-latest advances its
+        # Rust the exact key still HITS, the restored stamp disagrees, the job
+        # rebuilds, and the immutable entry cannot be replaced: the same
+        # rebuild-forever trap the v1 -> v2 bump just fixed, recreated by the
+        # input I added to fix something else. The toolchain goes in the key.
+        id: rustc
+        run: echo "id=$(rustc --version | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache viberun build
         # KEY NAMESPACE v1 -> v2 ON PURPOSE (Codex review of #2645). The v1
         # entries were archived before scripts/ensure_viberun.sh existed, so
@@ -619,9 +630,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             runtime/viberun/target
-          key: viberun-v2-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          key: viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
           restore-keys: |
-            viberun-v2-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
+            viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
       - name: Ensure viberun matches the current sources
         # NOT `cargo build` directly. Cargo's fingerprint for a local package
         # is mtime-based, and actions/checkout writes every source with
@@ -684,6 +695,17 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
+      - name: Toolchain identity for the viberun cache key
+        # THE STAMP INCLUDES rustc, SO THE KEY MUST TOO (Codex review of #2645).
+        # ensure_viberun.sh hashes `rustc --version` -- a binary built by a
+        # different toolchain is a different binary. But the key was a function
+        # of the manifests and sources only, so when ubuntu-latest advances its
+        # Rust the exact key still HITS, the restored stamp disagrees, the job
+        # rebuilds, and the immutable entry cannot be replaced: the same
+        # rebuild-forever trap the v1 -> v2 bump just fixed, recreated by the
+        # input I added to fix something else. The toolchain goes in the key.
+        id: rustc
+        run: echo "id=$(rustc --version | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache viberun build
         # install/install.sh builds runtime/viberun with `cargo build --release`
         # unless target/release/viberun already exists. Uncached that is the
@@ -702,9 +724,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             runtime/viberun/target
-          key: viberun-v2-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          key: viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
           restore-keys: |
-            viberun-v2-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
+            viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
       - name: Ensure viberun matches the current sources
         # NOT `cargo build` directly. Cargo's fingerprint for a local package
         # is mtime-based, and actions/checkout writes every source with
@@ -1089,19 +1111,38 @@ jobs:
             cp "$PWD/gc-tools-cargo/bin/wasm-tools" "$PWD/gc-tools/"
           fi
           echo "$PWD/gc-tools" >> "$GITHUB_PATH"
+      - name: Toolchain identity for the viberun cache key
+        if: matrix.group == 'heap'
+        # THE STAMP INCLUDES rustc, SO THE KEY MUST TOO (Codex review of #2645).
+        # ensure_viberun.sh hashes `rustc --version` -- a binary built by a
+        # different toolchain is a different binary. But the key was a function
+        # of the manifests and sources only, so when ubuntu-latest advances its
+        # Rust the exact key still HITS, the restored stamp disagrees, the job
+        # rebuilds, and the immutable entry cannot be replaced: the same
+        # rebuild-forever trap the v1 -> v2 bump just fixed, recreated by the
+        # input I added to fix something else. The toolchain goes in the key.
+        id: rustc
+        run: echo "id=$(rustc --version | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache viberun build
-        # test_gc_heap_accounting.sh rebuilds viberun only when its sources are
-        # newer than the binary, so a warm cache turns the ~80s release build
-        # into a no-op.
+        # ONLY THE `heap` SHARD (Codex review of #2645). Both shards used to
+        # carry this step with the same key, but only `heap` runs
+        # test_gc_heap_accounting.sh, which is what calls ensure_viberun.sh and
+        # writes .viberun_srchash. `validate` is faster and has a
+        # `cargo install wasm-tools` fallback that populates ~/.cargo/registry,
+        # so on a cold key its post-job save could win and publish a v3 archive
+        # with NO stamp -- immutable, so every later consumer would rebuild
+        # forever. A job that writes this cache must be a job that produces the
+        # stamp.
+        if: matrix.group == 'heap'
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             runtime/viberun/target
-          key: viberun-v2-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          key: viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
           restore-keys: |
-            viberun-v2-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
+            viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
       - name: Use the compiler built once for this run
         uses: ./.github/actions/use-compiler-build
         with:
@@ -1569,6 +1610,17 @@ jobs:
       # plain restore keeps archived mtimes older than the fresh checkout's,
       # so cargo re-fingerprints (and recompiles) the whole dependency tree
       # even on a cache hit.
+      - name: Toolchain identity for the viberun cache key
+        # THE STAMP INCLUDES rustc, SO THE KEY MUST TOO (Codex review of #2645).
+        # ensure_viberun.sh hashes `rustc --version` -- a binary built by a
+        # different toolchain is a different binary. But the key was a function
+        # of the manifests and sources only, so when ubuntu-latest advances its
+        # Rust the exact key still HITS, the restored stamp disagrees, the job
+        # rebuilds, and the immutable entry cannot be replaced: the same
+        # rebuild-forever trap the v1 -> v2 bump just fixed, recreated by the
+        # input I added to fix something else. The toolchain goes in the key.
+        id: rustc
+        run: echo "id=$(rustc --version | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache viberun build
         # install/install.sh builds runtime/viberun with `cargo build --release`
         # unless target/release/viberun already exists. Uncached that is the
@@ -1587,9 +1639,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             runtime/viberun/target
-          key: viberun-v2-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          key: viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
           restore-keys: |
-            viberun-v2-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
+            viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
       - name: Use the compiler built once for this run
         uses: ./.github/actions/use-compiler-build
       - name: Build viberun (micro-bench runtime)
