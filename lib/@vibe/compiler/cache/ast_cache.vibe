@@ -1,0 +1,81 @@
+//# Imports
+
+import ./ast_binary.vibe {
+  ast_binary_read_module, ast_binary_reader_new, ast_binary_reader_remaining, ast_binary_write_module
+}
+
+import ./cache_underlying.vibe {
+  cache_ast_cache_enabled
+}
+
+import ./persistent_cache.vibe {
+  load_persistent_artifact, store_persistent_artifact
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+//# The per-file AST cache (#2510 criterion 4)
+
+/// One module's parse, stored as bytes and keyed by that module's source
+/// fingerprint, so a warm build loads the AST instead of lexing and parsing
+/// the text again.
+///
+/// Three files rather than one, deliberately:
+///
+///   - ast_binary.vibe    the FORMAT (docs/ast_binary_abi.md)
+///   - this file          the POLICY: the key, the flag, and what to do when
+///                        an entry does not decode
+///   - persistent_cache   the generic artifact lane -- the "VART1"
+///                        length-validated envelope and the atomic
+///                        tmp+rename publish (#1326), which this gets free
+///
+/// The key is `(kind, path, source_fingerprint)` through the artifact lane,
+/// so the compiler's own identity (the codegen fingerprint), the resolution
+/// env seed, and the ambient `#cfg` flag set are all already in the
+/// namespace -- see `persistent_cache_version_tag`. The cfg set matters here
+/// and not merely in principle: the parser KEEPS OR DROPS `#cfg`-gated
+/// statements by that set, so the same text under another set is a different
+/// AST. That is the same reason the in-memory memo in loader/header_cache
+/// carries the cfg alongside the source text.
+export fn ast_cache_enabled() -> Bool {
+  cache_ast_cache_enabled()
+}
+
+/// The stored AST for (path, fingerprint), or `None`.
+///
+/// EVERY failure answers `None` rather than throwing. A cache is an
+/// optimization: the cold lane below it produces the same AST, so an entry
+/// that does not decode costs a parse and nothing else. Throwing would turn a
+/// torn file -- which #1326 documents as something concurrent writers really
+/// do produce -- into a failed build.
+///
+/// Trailing bytes are a miss too. `ast_binary_read_module` stops when the
+/// statement array ends, so an entry whose tail is garbage would otherwise
+/// decode "successfully" into a PREFIX of the real module: a wrong answer
+/// rather than a miss, which is the one outcome a cache must never produce.
+export fn load_persistent_ast(path: String, source_fingerprint: String) -> Option[Array[Stmt]] with Exception + Fs {
+  match load_persistent_artifact("selfhost_ast_v1", path, source_fingerprint) {
+    None => None,
+    Some(bytes) => {
+      let r = ast_binary_reader_new(bytes)
+      handle {
+        let stmts = ast_binary_read_module(r)
+        if ast_binary_reader_remaining(r) == 0 {
+          Some(stmts)
+        } else {
+          None
+        }
+      } with { Exception::Throw(_msg) => None }
+    }
+  }
+}
+
+/// Store the AST for (path, fingerprint). The write goes through the artifact
+/// lane's tmp+rename publish, so a reader never observes a partial entry.
+export fn store_persistent_ast(path: String, source_fingerprint: String, stmts: Array[Stmt]) -> Unit with Exception + Fs {
+  let buf = Bytes::new()
+  ast_binary_write_module(buf, stmts)
+  store_persistent_artifact("selfhost_ast_v1", path, source_fingerprint, buf)
+}

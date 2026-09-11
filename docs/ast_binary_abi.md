@@ -3,7 +3,7 @@
 Stable binary encoding for the vibe surface-syntax AST — `Array[Stmt]` and
 the `Stmt` / `Expr` / `Pat` / `TypeExpr` trees underneath it, as declared
 in `lib/@vibe/ast/index.vpkg`. Implemented in
-`lib/@vibe/compiler/ast_binary.vibe`.
+`lib/@vibe/compiler/cache/ast_binary.vibe`.
 
 The format is the source of truth for the on-disk per-file AST cache
 (`~/.cache/vibe/prelude-<sha>.ast.bin`, #2510) and any other place where

@@ -1,14 +1,17 @@
 //# Imports
 
 import @vibe/compiler/cache {
+  ast_cache_enabled,
   cache_read_source_with_token_fs,
   compact_source_fingerprint_memo,
   fingerprint_file_fs,
+  load_persistent_ast,
   normalize_persistent_cache_text,
   package_index_deps_are_current,
   parse_persistent_module_header_text,
   persistent_module_header_cache_path,
-  persistent_module_header_text
+  persistent_module_header_text,
+  store_persistent_ast
 }
 
 import @vibe/core {
@@ -428,7 +431,7 @@ fn validate_import_names_fs(source: String, keyword: String, raw_path: String, r
 /// over the same statements, and a second pass would report the same error
 /// twice or, worse, differ from it.
 export fn module_reexport_deps_fs(path: String, source: String) -> Array[String] with Exception + Fs {
-  let stmts = parse_program_located_shared(path, source)
+  let stmts = parse_program_located_shared_fs(path, source)
   let base_dir = dir_of_path(path)
   let out = array_empty()
   let mut i = 0
@@ -735,6 +738,97 @@ export fn parse_program_located_shared(path: String, source: String) -> Array[St
   }
 }
 
+/// The persistent AST slot for (path, fingerprint) as a 0-or-1 element array.
+///
+/// An `Array` and not the `Option` the cache actually returns, because the
+/// CALLER sits next to the parser chain: #708's RC-lane `unreachable` in
+/// `tk_name` reproduces when `lex_with_offsets` / `parse_program_located` are
+/// compiled beside an `Option` match in the same function, which is why the
+/// cold lane in `load_or_parse_module_header_fs_impl` dispatches on a plain
+/// `mut` Bool too. The match lives here, where no parser call does, and the
+/// caller asks `Array::length`.
+fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[Stmt]] with Exception + Fs {
+  match load_persistent_ast(path, source_fingerprint) {
+    Some(stmts) => [stmts],
+    None => array_empty()
+  }
+}
+
+/// Put this module's STORED AST into the shared memo, if there is one.
+///
+/// The header pass is the only place every module passes through with an `Fs`
+/// row, and on a WARM run it returns from the module-header text cache
+/// without parsing -- so the memo stays empty and the merge, whose
+/// `parse_program_with_path` is pure and cannot reach a cache, parses all of
+/// them again. Measured before this: with the AST cache on, a warm compile's
+/// heap was byte-identical to one with it off, because the lane that stores
+/// ASTs and the lane that parses never met.
+///
+/// Load-or-nothing, deliberately. A miss must NOT fall through to a parse:
+/// this runs on the warm path, where the caller has already decided no parse
+/// is needed, and parsing here would add cold work to a warm build.
+fn ast_cache_prefetch_fs(path: String, source: String) -> Unit with Exception + Fs {
+  if !ast_cache_enabled() {
+    ()
+  } else {
+    let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
+    let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
+    if located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv()) >= 0 {
+      ()
+    } else {
+      let slot = ast_cache_slot_fs(path, compact_source_fingerprint_memo(path, source))
+      if Array::length(slot) == 1 {
+        located_parse_record(path, source, Array::get(slot, 0))
+      } else {
+        ()
+      }
+    }
+  }
+}
+
+/// `parse_program_located_shared`, with the per-file binary AST cache beneath
+/// it (#2510 criterion 4).
+///
+/// The layering matters, and it is what makes this cheap to adopt:
+///
+///   1. the in-memory memo answers first and touches no filesystem. Asking
+///      the persistent cache for a version this process already parsed would
+///      be a file read to rebuild an array it is holding.
+///   2. on a miss, the stored AST is loaded and RECORDED IN THE MEMO, so the
+///      pure `parse_program_located_shared` lane -- the typecheck walk, which
+///      has no `Fs` row and cannot call this -- reuses it exactly as if the
+///      parser had run. That sharing is what #2386 already arranged; this
+///      only changes where the array came from.
+///   3. on a cold miss the parser runs and its result is stored.
+///
+/// A decoded AST is the array the parser would have produced, which is the
+/// property `ast_binary_parse_equivalence_test.vibe` asserts against real
+/// compiler sources rather than against the codec itself.
+export fn parse_program_located_shared_fs(path: String, source: String) -> Array[Stmt] with Exception + Fs {
+  let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
+  let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
+  let memo_hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv()) >= 0
+  if memo_hit || !ast_cache_enabled() {
+    parse_program_located_shared(path, source)
+  } else {
+    let fingerprint = compact_source_fingerprint_memo(path, source)
+    let slot = ast_cache_slot_fs(path, fingerprint)
+    if Array::length(slot) == 1 {
+      let stmts = Array::get(slot, 0)
+      // The parser did NOT run, and the telemetry has to say so: a warm
+      // decode is the case this exists to create, and counting it as a parse
+      // would hide exactly the number worth watching.
+      Array::set(located_parse_memo_ran_parser, 0, false)
+      located_parse_record(path, source, stmts)
+      Array::slice(stmts, 0, Array::length(stmts))
+    } else {
+      let parsed = parse_program_located_shared(path, source)
+      store_persistent_ast(path, fingerprint, parsed)
+      parsed
+    }
+  }
+}
+
 export fn load_or_parse_module_header_fs_impl(path: String, source: String, parse_count: Int) -> (Array[String], Array[String], Int) with Exception + Fs {
   ingestion_pipeline_telemetry_add(10, 1)
   let cache_path = persistent_module_header_cache_path(path, compact_source_fingerprint_memo(path, source))
@@ -768,6 +862,9 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
   }
   if warm_ok {
     ingestion_pipeline_telemetry_add(11, 1)
+    // The header is warm, so nothing below parses -- which is exactly when
+    // the merge's pure parse has nothing to reuse. Hand it the stored AST.
+    ast_cache_prefetch_fs(path, source)
     (warm_deps, warm_exports, parse_count)
   } else {
     ingestion_pipeline_telemetry_add(12, 1)
@@ -871,7 +968,7 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
       // header is not parsed again for its check. `parse_count` still counts
       // headers computed from source -- the number its callers report as
       // header parse scans -- whether the memo answered or not.
-      let stmts = parse_program_located_shared(path, source)
+      let stmts = parse_program_located_shared_fs(path, source)
       (collect_import_deps_from_stmts(stmts, dir_of_path(path), path, source), collect_exports(stmts), parse_count + 1)
     }
     let deps = header_result.0
