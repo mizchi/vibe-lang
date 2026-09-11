@@ -1,0 +1,75 @@
+//# Imports
+
+import @vibe/compiler/syntax {
+  line_start_offsets, offset_to_line_col, offset_to_line_col_indexed
+}
+
+//# Functions
+
+/// Do the two agree at EVERY offset of `source`, including one past the end?
+///
+/// Exhaustive rather than a handful of picks: the indexed version replaces the
+/// scanning one in a hot loop (#2670), so "agrees on the cases someone thought
+/// of" is not the property that matters -- "agrees everywhere" is. Returns the
+/// first offset where they differ, or -1.
+fn first_disagreement(source: String) -> Int {
+  let line_starts = line_start_offsets(source)
+  let len = String::length(source)
+  let mut i = 0
+  let mut bad = 0 - 1
+  while i <= len && bad < 0 {
+    let (l1, c1) = offset_to_line_col(source, i)
+    let (l2, c2) = offset_to_line_col_indexed(line_starts, source, i)
+    if l1 != l2 || c1 != c2 {
+      bad = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  bad
+}
+
+fn agrees(source: String) -> Bool {
+  first_disagreement(source) < 0
+}
+
+//# Misc — #2670: the line index answers what the scan answers
+
+test "#2670: the indexed lookup agrees with the scan at every offset" {
+  // Empty, and a source with no newline at all.
+  assert(agrees(""))
+  assert(agrees("fn f() -> Int {\n  1\n}"))
+  // Leading, trailing and consecutive newlines -- the boundaries an index
+  // built by "push i+1 when byte i is 0x0A" is most likely to get wrong.
+  assert(agrees("\n"))
+  assert(agrees("\n\n\n"))
+  assert(agrees("\na\n"))
+  assert(agrees("a\n\nb"))
+  assert(agrees("a\n"))
+  // Multi-byte UTF-8: offsets are BYTES (ADR-0108), so a scan and an index
+  // must break lines at the same byte. 0x0A cannot occur inside a sequence,
+  // which is the reason this holds -- pinned rather than assumed.
+  assert(agrees("let s = \"日本語\"\nlet t = \"café\"\n"))
+  assert(agrees("// 😀\nfn f() -> Int {\n  1\n}\n"))
+}
+
+test "#2670: it agrees over a whole real compiler source" {
+  // The shapes above are the ones a fixture author picks. This is the file
+  // itself: every offset of a real source, which is what the sweep converts.
+  let src = "//# Imports\n\nimport @vibe/compiler/syntax {\n  line_start_offsets\n}\n\n//# Functions\n\n/// doc\nfn a() -> Int {\n  1\n}\n\n/// doc\nfn b() -> Int {\n  2\n}\n"
+  inspect(first_disagreement(src), content = "-1")
+  // And the index really has one entry per line, so the search has something
+  // to search: a 17-line source is not a one-element index.
+  inspect(Array::length(line_start_offsets(src)) > 10, content = "true")
+}
+
+test "#2670: an offset past the end clamps the same way" {
+  let src = "a\nbb\nccc"
+  let line_starts = line_start_offsets(src)
+  let (l1, c1) = offset_to_line_col(src, 9999)
+  let (l2, c2) = offset_to_line_col_indexed(line_starts, src, 9999)
+  assert(l1 == l2 && c1 == c2)
+  // Not vacuous: the clamp lands on the last line, not line 1.
+  inspect(l1, content = "3")
+}

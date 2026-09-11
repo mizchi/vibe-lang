@@ -350,6 +350,8 @@ let ingestion_telemetry_counters = []
 // helper call (selfbuild invokes this helper more than a thousand times).
 let ingestion_stamp_enabled_cell = []
 
+let ast_cache_enabled_cell = []
+
 fn ingestion_telemetry_enabled() -> Bool {
   Array::length(ingestion_telemetry_enabled_cell) > 0 && Array::get(ingestion_telemetry_enabled_cell, 0)
 }
@@ -549,6 +551,25 @@ export fn cache_ingestion_stamp_enabled() -> Bool {
     ()
   }
   Array::get(ingestion_stamp_enabled_cell, 0)
+}
+
+/// #2510 criterion 4: read the per-file binary AST cache instead of lexing
+/// and parsing a module's text again.
+///
+/// Opt-in while it is being measured, for the same reason the stamp flag
+/// above is: this changes what the compiler CONSUMES, so a defect in it is a
+/// defect in every build, and the evidence that it is safe is a cold-vs-warm
+/// output equivalence run rather than a passing unit test.
+///
+/// Read once into a cell like the stamp flag: the loader asks per module, and
+/// `Env::get` is a host call.
+export fn cache_ast_cache_enabled() -> Bool {
+  if Array::length(ast_cache_enabled_cell) == 0 {
+    Array::push(ast_cache_enabled_cell, read_env_discharged("VIBE_EXPERIMENTAL_AST_CACHE") == "1")
+  } else {
+    ()
+  }
+  Array::get(ast_cache_enabled_cell, 0)
 }
 
 export fn cache_fingerprint_file_fs_with_ingestion_stamp(path: String, stamp_path: String) -> String with Fs {

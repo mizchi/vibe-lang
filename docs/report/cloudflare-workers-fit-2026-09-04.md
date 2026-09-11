@@ -276,7 +276,7 @@ lines. Test files are another 79 k lines; the generated bundles 12 k.
 Seams that already exist and could carry a split:
 
 - `.vpkg` bodyless contracts are a stable module interface (ADR-0070).
-- `lib/@vibe/compiler/ast_binary.vibe` is a versioned binary AST encoding
+- `lib/@vibe/compiler/cache/ast_binary.vibe` is a versioned binary AST encoding
   designed for crossing a process boundary (`docs/ast_binary_abi.md`).
 - The checked-body transport and `checker/artifacts` (#1958) are a typed-IR
   artifact format, shadow-only today.

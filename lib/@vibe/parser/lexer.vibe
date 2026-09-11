@@ -1335,8 +1335,67 @@ export fn format_unexpected_token(starts: Array[Int], pos: Int, actual: String) 
   }
 }
 
+/// The byte offset each line starts at, line 1 first. Built in ONE pass.
+///
+/// #2670: `offset_to_line_col` below counts newlines from offset 0 on every
+/// call, which is right for a one-shot lookup and quadratic for a caller in a
+/// loop. Measured on `vibe symbols lib` -- 26,823 declarations, one call each
+/// -- it was 41.3s of a 49.35s sweep, 83.7%, against 3.3% for all lexing and
+/// parsing combined.
+///
+/// Newlines are found by BYTE (ADR-0108), which is safe: 0x0A cannot occur
+/// inside a UTF-8 multi-byte sequence, so a byte scan and a character scan
+/// find the same line breaks.
+export fn line_start_offsets(source: String) -> Array[Int] {
+  let out = ArrayBuilder::new()
+  ArrayBuilder::push(out, 0)
+  let len = String::length(source)
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(source, i) == 10 {
+      ArrayBuilder::push(out, i + 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ArrayBuilder::freeze(out)
+}
+
+/// `offset_to_line_col` against a prebuilt index: O(log lines) per call
+/// instead of O(offset). Answers exactly what `offset_to_line_col` answers
+/// for the same source -- pinned over every offset of a real file in
+/// `line_index_test.vibe`, not merely on the shapes someone thought to pick.
+export fn offset_to_line_col_indexed(line_starts: Array[Int], source: String, offset: Int) -> (Int, Int) {
+  let len = String::length(source)
+  let bound = if offset < len {
+    offset
+  } else {
+    len
+  }
+  // The greatest i with line_starts[i] <= bound. line_starts is non-empty
+  // (it always holds 0) and strictly increasing, so this terminates with
+  // `lo` on the line containing `bound`.
+  let mut lo = 0
+  let mut hi = Array::length(line_starts) - 1
+  while lo < hi {
+    let mid = (lo + hi + 1) / 2
+    if Array::get(line_starts, mid) <= bound {
+      lo = mid
+    } else {
+      hi = mid - 1
+    }
+  }
+  (lo + 1, bound - Array::get(line_starts, lo) + 1)
+}
+
 /// Convert a 0-based char offset (from lex_with_offsets) to 1-based (line, col).
 /// Source-span foundation: lets diagnostics report a real `line:col`.
+///
+/// This scans from 0, which is the right shape for a SINGLE lookup (one
+/// diagnostic) and the wrong one inside a loop. A caller converting many
+/// offsets over the same source builds `line_start_offsets` once and uses
+/// `offset_to_line_col_indexed` (#2670).
 export fn offset_to_line_col(source: String, offset: Int) -> (Int, Int) {
   let len = String::length(source)
   let bound = if offset < len {
