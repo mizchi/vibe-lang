@@ -1629,6 +1629,76 @@ fn cc_hof_release_slot(buf: Bytes, slot_l: Int, ctx: CompileCtx) -> Unit {
   }
 }
 
+/// #2683: allocate an RC-managed block for a Map (class 6), a MapBuilder
+/// handle (class 9) or a builder's storage (class 0, a leaf freed without a
+/// walk) on the RC lane. `push_payload` leaves the payload byte count on the
+/// stack as an i64; the block gets the 8-byte header (size word, then rc
+/// word `1 | class << 24`), and `ptr_l` ends up holding the UNTAGGED value
+/// pointer (base + 8) -- the address every Map lowering reads its fields
+/// from, and the address rc_drop's class arms expect. Tag it (`| 1`) when
+/// the value is handed out. Map and MapBuilder blocks used to be raw bump
+/// allocations in both lanes, even and invisible to the RC machinery: a
+/// MapBuilder leaked 144 B per `new`, every value stored in it with it, and
+/// the frozen Map on top (#2683). The bump lane keeps its raw allocation.
+export fn cc_map_alloc_rc(buf: Bytes, ptr_l: Int, class: Int, push_payload: () -> Unit, ctx: CompileCtx) -> Unit {
+  push_payload()
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_call(buf, ctx.rc_alloc_func_idx)
+  emit_local_set(buf, ptr_l)
+  emit_local_get(buf, ptr_l)
+  emit_i32_wrap_i64(buf)
+  push_payload()
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_i32_wrap_i64(buf)
+  emit_i32_store(buf, 2, 0)
+  emit_local_get(buf, ptr_l)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 1 + (class<<24))
+  emit_i32_store(buf, 2, 4)
+  emit_local_get(buf, ptr_l)
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_local_set(buf, ptr_l)
+  // A Map's side-index slot (vptr+4) must read as "no index" until an index
+  // is built: a block rc_alloc recycles is not zeroed.
+  if class == 6 {
+    emit_local_get(buf, ptr_l)
+    emit_i32_wrap_i64(buf)
+    emit_i32_const(buf, 0)
+    emit_i32_store(buf, 2, 4)
+  } else {
+    ()
+  }
+}
+
+/// #2683: hand a Map / MapBuilder value out of a lowering: tagged on the RC
+/// lane (an odd rc-block pointer the readers untag with `& -2`), raw on the
+/// bump lane.
+fn cc_map_value_out(buf: Bytes, ptr_l: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, ptr_l)
+  if ctx.enable_rc {
+    emit_i64_const(buf, 1)
+    emit_i64_or(buf)
+  } else {
+    ()
+  }
+}
+
+/// #2683: release a block a Map lowering holds through its UNTAGGED value
+/// pointer (a builder handle, a storage block): tag and drop.
+fn cc_map_release_ptr(buf: Bytes, ptr_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+    emit_local_get(buf, ptr_l)
+    emit_i64_const(buf, 1)
+    emit_i64_or(buf)
+    emit_call(buf, ctx.rc_drop_func_idx)
+  } else {
+    ()
+  }
+}
+
 /// A predicate owns its parameter but the array keeps its element: retain
 /// before the call, unconditionally.
 fn cc_hof_lend(buf: Bytes, elem_l: Int, ctx: CompileCtx) -> Unit {
@@ -4756,10 +4826,12 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let res_l = nl + 1
       let cnt_l = nl + 2
       let i_l = nl + 3
+      let tmp_l = nl + 4
       Array::push(local_names, "__keys_map")
       Array::push(local_names, "__keys_res")
       Array::push(local_names, "__keys_cnt")
       Array::push(local_names, "__keys_i")
+      Array::push(local_names, "__keys_tmp")
       emit_local_set(buf, map_l)
       emit_local_get(buf, map_l)
       emit_i64_const(buf, -2)
@@ -4789,6 +4861,14 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i64_load(buf, 3, 8)
+      // #2683: the key is now owned by the map AND the array (a scalar or
+      // string key makes this a guarded no-op).
+      if ctx.enable_rc {
+        emit_local_tee(buf, tmp_l)
+        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
       emit_call(buf, arr_push_fi)
       emit_local_get(buf, i_l)
       emit_i64_const(buf, 1)
@@ -4798,7 +4878,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_end(buf)
       emit_end(buf)
       emit_local_get(buf, res_l)
-      nl + 4
+      nl + 5
     }
     else if fname == "Map::values" {
       let (arr_new_fi, _, _) = resolve_func(ctx.func_table, "array_new")
@@ -4808,10 +4888,12 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let res_l = nl + 1
       let cnt_l = nl + 2
       let i_l = nl + 3
+      let tmp_l = nl + 4
       Array::push(local_names, "__values_map")
       Array::push(local_names, "__values_res")
       Array::push(local_names, "__values_cnt")
       Array::push(local_names, "__values_i")
+      Array::push(local_names, "__values_tmp")
       emit_local_set(buf, map_l)
       emit_local_get(buf, map_l)
       emit_i64_const(buf, -2)
@@ -4841,6 +4923,15 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i64_load(buf, 3, 16)
+      // #2683: the map keeps its value and the array takes a reference of
+      // its own (an RC map is dropped when its owner is; the array's walking
+      // drop must not free what the map still holds).
+      if ctx.enable_rc {
+        emit_local_tee(buf, tmp_l)
+        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
       emit_call(buf, arr_push_fi)
       emit_local_get(buf, i_l)
       emit_i64_const(buf, 1)
@@ -4850,7 +4941,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_end(buf)
       emit_end(buf)
       emit_local_get(buf, res_l)
-      nl + 4
+      nl + 5
     }
     else if fname == "Map::size" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -5010,6 +5101,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let new_l = nl + 4
       let idx_l = nl + 5
       let found_l = nl + 6
+      let tmp_l = nl + 7
       Array::push(local_names, "__ms_map")
       Array::push(local_names, "__ms_key")
       Array::push(local_names, "__ms_val")
@@ -5017,6 +5109,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__ms_new")
       Array::push(local_names, "__ms_idx")
       Array::push(local_names, "__ms_found")
+      Array::push(local_names, "__ms_tmp")
       emit_local_set(buf, val_l)
       emit_local_set(buf, key_l)
       emit_local_set(buf, map_l)
@@ -5029,21 +5122,34 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_load(buf, 2, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, cnt_l)
-      emit_global_get(buf, 0)
-      emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, new_l)
-      emit_global_get(buf, 0)
-      emit_local_get(buf, cnt_l)
-      emit_i64_const(buf, 1)
-      emit_i64_add(buf)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_const(buf, 8)
-      emit_i32_add(buf)
-      emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_heap_grow_after_heap_set(buf, ctx)
+      if ctx.enable_rc {
+        // #2683: an RC map block (class 6) sized for count + 1 entries.
+        cc_map_alloc_rc(buf, new_l, 6, () -> {
+          emit_local_get(buf, cnt_l)
+          emit_i64_const(buf, 1)
+          emit_i64_add(buf)
+          emit_i64_const(buf, 16)
+          emit_i64_mul(buf)
+          emit_i64_const(buf, 8)
+          emit_i64_add(buf)
+        }, ctx)
+      } else {
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, new_l)
+        emit_global_get(buf, 0)
+        emit_local_get(buf, cnt_l)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_add(buf)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
+      }
       emit_i64_const(buf, 0)
       emit_local_set(buf, idx_l)
       emit_i64_const(buf, 0)
@@ -5069,6 +5175,13 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i64_load(buf, 3, 8)
+      // #2683: the copied key is owned by both maps (see the value below).
+      if ctx.enable_rc {
+        emit_local_tee(buf, tmp_l)
+        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
       emit_i64_store(buf, 3, 8)
       emit_local_get(buf, map_l)
       emit_i32_wrap_i64(buf)
@@ -5093,6 +5206,14 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_store(buf, 3, 16)
       emit_i64_const(buf, 1)
       emit_local_set(buf, found_l)
+      // #2683: the key already present is kept; the caller's key was
+      // retained for storage and is not stored -- release it.
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+        emit_local_get(buf, key_l)
+        emit_call(buf, ctx.rc_drop_func_idx)
+      } else {
+        ()
+      }
       emit_else(buf)
       emit_local_get(buf, new_l)
       emit_i32_wrap_i64(buf)
@@ -5109,6 +5230,14 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i64_load(buf, 3, 16)
+      // #2683: the copied value is now owned by BOTH maps; the source map
+      // is borrowed here and keeps its reference.
+      if ctx.enable_rc {
+        emit_local_tee(buf, tmp_l)
+        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
       emit_i64_store(buf, 3, 16)
       emit_end(buf)
       emit_local_get(buf, idx_l)
@@ -5181,8 +5310,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
-      emit_local_get(buf, new_l)
-      nl + 7
+      cc_map_value_out(buf, new_l, ctx)
+      nl + 8
     }
     else if fname == "Map::delete" {
       // Copies every entry whose key doesn't match into a fresh block (same
@@ -5200,12 +5329,14 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let new_l = nl + 3
       let idx_l = nl + 4
       let out_l = nl + 5
+      let tmp_l = nl + 6
       Array::push(local_names, "__md_map")
       Array::push(local_names, "__md_key")
       Array::push(local_names, "__md_cnt")
       Array::push(local_names, "__md_new")
       Array::push(local_names, "__md_idx")
       Array::push(local_names, "__md_out")
+      Array::push(local_names, "__md_tmp")
       emit_local_set(buf, key_l)
       emit_local_set(buf, map_l)
       emit_local_get(buf, map_l)
@@ -5217,19 +5348,30 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_load(buf, 2, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, cnt_l)
-      emit_global_get(buf, 0)
-      emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, new_l)
-      emit_global_get(buf, 0)
-      emit_local_get(buf, cnt_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_const(buf, 8)
-      emit_i32_add(buf)
-      emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_heap_grow_after_heap_set(buf, ctx)
+      if ctx.enable_rc {
+        // #2683: an RC map block (class 6) sized for the old entry count.
+        cc_map_alloc_rc(buf, new_l, 6, () -> {
+          emit_local_get(buf, cnt_l)
+          emit_i64_const(buf, 16)
+          emit_i64_mul(buf)
+          emit_i64_const(buf, 8)
+          emit_i64_add(buf)
+        }, ctx)
+      } else {
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, new_l)
+        emit_global_get(buf, 0)
+        emit_local_get(buf, cnt_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_add(buf)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
+      }
       emit_i64_const(buf, 0)
       emit_local_set(buf, idx_l)
       emit_i64_const(buf, 0)
@@ -5268,6 +5410,13 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i64_load(buf, 3, 8)
+      // #2683: as in Map::set, the kept key is owned by both maps.
+      if ctx.enable_rc {
+        emit_local_tee(buf, tmp_l)
+        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
       emit_i64_store(buf, 3, 8)
       emit_local_get(buf, new_l)
       emit_i32_wrap_i64(buf)
@@ -5284,6 +5433,13 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_mul(buf)
       emit_i32_add(buf)
       emit_i64_load(buf, 3, 16)
+      // #2683: as in Map::set, the kept value is owned by both maps.
+      if ctx.enable_rc {
+        emit_local_tee(buf, tmp_l)
+        emit_rc_dup_guarded(buf, tmp_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      } else {
+        ()
+      }
       emit_i64_store(buf, 3, 16)
       emit_local_get(buf, out_l)
       emit_i64_const(buf, 1)
@@ -5323,8 +5479,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
-      emit_local_get(buf, new_l)
-      nl + 6
+      cc_map_value_out(buf, new_l, ctx)
+      nl + 7
     }
     else if fname == "MapBuilder::new" {
       // #723-family fix: the builder used to be a FIXED 144-byte block
@@ -5341,31 +5497,58 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // Map::set's output); the even, untagged handle value is invisible to
       // the RC machinery.
       let ptr_l = next_local
+      let st_l = next_local + 1
       Array::push(local_names, "__mb_ptr")
-      emit_global_get(buf, 0)
-      emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, ptr_l)
-      emit_global_get(buf, 0)
-      emit_i32_const(buf, 144)
-      emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_heap_grow_after_heap_set(buf, ctx)
-      emit_local_get(buf, ptr_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 0)
-      emit_i32_store(buf, 2, 0)
-      emit_local_get(buf, ptr_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 8)
-      emit_i32_store(buf, 2, 4)
-      emit_local_get(buf, ptr_l)
-      emit_i32_wrap_i64(buf)
-      emit_local_get(buf, ptr_l)
-      emit_i64_const(buf, 16)
-      emit_i64_add(buf)
-      emit_i64_store(buf, 3, 8)
-      emit_local_get(buf, ptr_l)
-      next_local + 1
+      Array::push(local_names, "__mb_st")
+      if ctx.enable_rc {
+        // #2683: the handle is an RC block of class 9 ([count][cap][storage
+        // value pointer]); its storage a separate class-0 leaf block sized
+        // for 8 entries. rc_drop's class-9 arm drops the stored values,
+        // releases the storage and frees the handle.
+        cc_map_alloc_rc(buf, ptr_l, 9, () -> {
+          emit_i64_const(buf, 16)
+        }, ctx)
+        cc_map_alloc_rc(buf, st_l, 0, () -> {
+          emit_i64_const(buf, 128)
+        }, ctx)
+        emit_local_get(buf, ptr_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 0)
+        emit_i32_store(buf, 2, 0)
+        emit_local_get(buf, ptr_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_store(buf, 2, 4)
+        emit_local_get(buf, ptr_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, st_l)
+        emit_i64_store(buf, 3, 8)
+      } else {
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, ptr_l)
+        emit_global_get(buf, 0)
+        emit_i32_const(buf, 144)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
+        emit_local_get(buf, ptr_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 0)
+        emit_i32_store(buf, 2, 0)
+        emit_local_get(buf, ptr_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_store(buf, 2, 4)
+        emit_local_get(buf, ptr_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, ptr_l)
+        emit_i64_const(buf, 16)
+        emit_i64_add(buf)
+        emit_i64_store(buf, 3, 8)
+      }
+      cc_map_value_out(buf, ptr_l, ctx)
+      next_local + 2
     }
     else if fname == "MapBuilder::set" {
       // Update-or-append: an existing key's value is updated in place (the
@@ -5444,6 +5627,21 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_call(buf, mbs_eq_fi)
       emit_i32_wrap_i64(buf)
       emit_if_void(buf)
+      // #2683: the value being replaced was owned by the builder; release
+      // it before the slot is overwritten (it used to leak).
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+        emit_local_get(buf, st_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, mi_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_call(buf, ctx.rc_drop_func_idx)
+      } else {
+        ()
+      }
       emit_local_get(buf, st_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, mi_l)
@@ -5455,6 +5653,14 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i64_store(buf, 3, 8)
       emit_i64_const(buf, 1)
       emit_local_set(buf, found_l)
+      // #2683: the stored key stays; the caller's key was retained for
+      // storage and is not stored -- release it.
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+        emit_local_get(buf, mk_l)
+        emit_call(buf, ctx.rc_drop_func_idx)
+      } else {
+        ()
+      }
       emit_br(buf, 2)
       emit_end(buf)
       emit_local_get(buf, mi_l)
@@ -5473,17 +5679,26 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_local_get(buf, cap_l)
       emit_i64_eq(buf)
       emit_if_void(buf)
-      emit_global_get(buf, 0)
-      emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, ns_l)
-      emit_global_get(buf, 0)
-      emit_local_get(buf, cap_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 32)
-      emit_i32_mul(buf)
-      emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_heap_grow_after_heap_set(buf, ctx)
+      if ctx.enable_rc {
+        // #2683: fresh class-0 storage of cap * 2 entries.
+        cc_map_alloc_rc(buf, ns_l, 0, () -> {
+          emit_local_get(buf, cap_l)
+          emit_i64_const(buf, 32)
+          emit_i64_mul(buf)
+        }, ctx)
+      } else {
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, ns_l)
+        emit_global_get(buf, 0)
+        emit_local_get(buf, cap_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 32)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
+      }
       emit_local_get(buf, ns_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, st_l)
@@ -5493,6 +5708,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_const(buf, 16)
       emit_i32_mul(buf)
       emit_memory_copy(buf)
+      // #2683: the entries moved; the old storage is a leaf block, freed
+      // without a walk (it used to be leaked under bump discipline).
+      cc_map_release_ptr(buf, st_l, ctx)
       emit_local_get(buf, mb_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, ns_l)
@@ -5544,9 +5762,21 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let fb_l = nl
       let fc_l = nl + 1
       let fm_l = nl + 2
+      let fi_l = nl + 3
+      let ft_l = nl + 4
       Array::push(local_names, "__mbf_b")
       Array::push(local_names, "__mbf_cnt")
       Array::push(local_names, "__mbf_map")
+      Array::push(local_names, "__mbf_i")
+      Array::push(local_names, "__mbf_tmp")
+      // #2683: the builder is consumed here (an owning position, so the
+      // caller's reference arrives), unless the planner planned the position
+      // as borrowed -- then take a reference of our own, as the HOF
+      // lowerings do (cc_hof_retain_arg). The TAGGED value is retained;
+      // the untagged pointer the reads use is derived after.
+      emit_local_set(buf, fb_l)
+      cc_hof_retain_arg(buf, Array::get(args, 0), fb_l, fname, 0, ctx)
+      emit_local_get(buf, fb_l)
       emit_i64_const(buf, -2)
       emit_i64_and(buf)
       emit_local_set(buf, fb_l)
@@ -5555,19 +5785,29 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_load(buf, 2, 0)
       emit_i64_extend_i32_u(buf)
       emit_local_set(buf, fc_l)
-      emit_global_get(buf, 0)
-      emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, fm_l)
-      emit_global_get(buf, 0)
-      emit_local_get(buf, fc_l)
-      emit_i32_wrap_i64(buf)
-      emit_i32_const(buf, 16)
-      emit_i32_mul(buf)
-      emit_i32_const(buf, 8)
-      emit_i32_add(buf)
-      emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_heap_grow_after_heap_set(buf, ctx)
+      if ctx.enable_rc {
+        cc_map_alloc_rc(buf, fm_l, 6, () -> {
+          emit_local_get(buf, fc_l)
+          emit_i64_const(buf, 16)
+          emit_i64_mul(buf)
+          emit_i64_const(buf, 8)
+          emit_i64_add(buf)
+        }, ctx)
+      } else {
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, fm_l)
+        emit_global_get(buf, 0)
+        emit_local_get(buf, fc_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_const(buf, 8)
+        emit_i32_add(buf)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
+      }
       emit_local_get(buf, fm_l)
       emit_i32_wrap_i64(buf)
       emit_local_get(buf, fc_l)
@@ -5586,9 +5826,68 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_const(buf, 16)
       emit_i32_mul(buf)
       emit_memory_copy(buf)
+      // #2683: the entries were copied. On the UNIQUE path (the handle's rc
+      // word is exactly `1 | 9 << 24`) they MOVE: the handle's count is
+      // zeroed so its release walks nothing, and the storage and handle are
+      // freed. On the shared path every copied value is retained (the
+      // builder keeps its references) and the handle is released normally.
+      if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
+        emit_local_get(buf, fb_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 4)
+        emit_i32_sub(buf)
+        emit_i32_load(buf, 2, 0)
+        emit_i32_const(buf, 1 + (9<<24))
+        emit_i32_eq(buf)
+        emit_if_void(buf)
+        emit_local_get(buf, fb_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 0)
+        emit_i32_store(buf, 2, 0)
+        emit_else(buf)
+        emit_i64_const(buf, 0)
+        emit_local_set(buf, fi_l)
+        emit_block_void(buf)
+        emit_loop_void(buf)
+        emit_local_get(buf, fi_l)
+        emit_local_get(buf, fc_l)
+        emit_i64_ge_s(buf)
+        emit_br_if(buf, 1)
+        emit_local_get(buf, fm_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, fi_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 8)
+        emit_local_set(buf, ft_l)
+        emit_rc_dup_guarded(buf, ft_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_local_get(buf, fm_l)
+        emit_i32_wrap_i64(buf)
+        emit_local_get(buf, fi_l)
+        emit_i32_wrap_i64(buf)
+        emit_i32_const(buf, 16)
+        emit_i32_mul(buf)
+        emit_i32_add(buf)
+        emit_i64_load(buf, 3, 16)
+        emit_local_set(buf, ft_l)
+        emit_rc_dup_guarded(buf, ft_l, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_local_get(buf, fi_l)
+        emit_i64_const(buf, 1)
+        emit_i64_add(buf)
+        emit_local_set(buf, fi_l)
+        emit_br(buf, 0)
+        emit_end(buf)
+        emit_end(buf)
+        emit_end(buf)
+        cc_map_release_ptr(buf, fb_l, ctx)
+      } else {
+        ()
+      }
       // See the matching comment in Map::set above. fb_l (the builder handle)
-      // is dead after the memory_copy -- reused here as scratch for the
-      // built index pointer.
+      // is dead after the memory_copy (and, on the RC lane, released above)
+      // -- reused here as scratch for the built index pointer.
       if ctx.map_build_index_func_idx >= 0 {
         emit_local_get(buf, fc_l)
         emit_i64_const(buf, 8)
@@ -5607,8 +5906,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
-      emit_local_get(buf, fm_l)
-      nl + 3
+      cc_map_value_out(buf, fm_l, ctx)
+      nl + 5
     }
     else if fname == "MapBuilder::has_key" {
       // #1310: O(n) scan over the handle-indirect storage (same layout

@@ -304,8 +304,38 @@ let main = () -> Int {
     // elements with it. The lowering parks the temporary and releases it
     // after the call. 3 + 2 per iteration.
     let tlen = Array::length(build_arr(3)) + Array::length(Array::map(ta, incr_tree))
+    // #2683 guard: a MapBuilder (a class-9 handle over a class-0 storage
+    // leaf), the Map it freezes and every Map that Map::set / Map::delete /
+    // Map::new produce (class 6, with a class-0 side index once a map holds
+    // 8 entries or more) are RC blocks. Each used to be a raw bump
+    // allocation -- 144 B per builder, 8 + 16 B per map entry, the index
+    // on top -- scaling heap_used with N. The keys are string literals
+    // (data-segment fat pointers, no allocation). 5i + 21 per iteration.
+    let mb = MapBuilder::new()
+    MapBuilder::set(mb, "a", i)
+    MapBuilder::set(mb, "b", i + 1)
+    MapBuilder::set(mb, "a", i + 2)
+    let fm = MapBuilder::freeze(mb)
+    let m1 = Map::set(Map::new(), "x", i)
+    let m2 = Map::set(m1, "y", i + 1)
+    let m3 = Map::delete(m2, "x")
+    let mv = Map::values(m2)
+    let mk = Map::keys(fm)
+    let big = MapBuilder::new()
+    MapBuilder::set(big, "k0", i)
+    MapBuilder::set(big, "k1", i + 1)
+    MapBuilder::set(big, "k2", i + 2)
+    MapBuilder::set(big, "k3", i + 3)
+    MapBuilder::set(big, "k4", i + 4)
+    MapBuilder::set(big, "k5", i + 5)
+    MapBuilder::set(big, "k6", i + 6)
+    MapBuilder::set(big, "k7", i + 7)
+    MapBuilder::set(big, "k8", i + 8)
+    let bm = MapBuilder::freeze(big)
+    let bm2 = Map::set(bm, "k9", i + 9)
+    let msum = Map::get(fm, "a") + Map::get(fm, "b") + Map::get(m3, "y") + Array::length(mv) + Array::length(mk) + Map::get(bm, "k4") + Map::get(bm2, "k9")
     total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if) + sumtri(w) + sumt(h)
-    total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen
+    total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum
     i = i + 1
   }
   total

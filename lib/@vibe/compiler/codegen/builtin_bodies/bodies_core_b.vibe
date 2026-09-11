@@ -4125,7 +4125,13 @@ export fn gen_map_index_insert_body() -> Bytes {
 /// local0=base, local1=count (params). Extra i64: local2=capacity,
 /// local3=bytes_needed (slots only, excludes the 8-byte header),
 /// local4=idx_ptr, local5=i, local6=key, local7=h, local8=mask. meta=(0,7).
-export fn gen_map_build_index_body(hash_fn_idx: Int, cap_fn_idx: Int, insert_fn_idx: Int, heap_grow_check_idx: Int) -> Bytes {
+///
+/// #2683: on the RC lane (`rc_alloc_idx >= 0`) the table is an RC leaf block
+/// (class 0, rc 1) allocated through rc_alloc, so the Map's class-6 rc_drop
+/// arm can push it onto its size bin with the entries block; the returned
+/// pointer is the block's value pointer, the same shape the callers store at
+/// vptr+4. The bump lane (`rc_alloc_idx < 0`) keeps the raw allocation.
+export fn gen_map_build_index_body(hash_fn_idx: Int, cap_fn_idx: Int, insert_fn_idx: Int, heap_grow_check_idx: Int, rc_alloc_idx: Int) -> Bytes {
   let b = bytebuf_new()
   let base_l = 0
   let count_l = 1
@@ -4143,17 +4149,42 @@ export fn gen_map_build_index_body(hash_fn_idx: Int, cap_fn_idx: Int, insert_fn_
   emit_i64_const(b, 8)
   emit_i64_mul(b)
   emit_local_set(b, bytes_l)
-  emit_global_get(b, 0)
-  emit_i64_extend_i32_u(b)
-  emit_local_set(b, idxptr_l)
-  emit_global_get(b, 0)
-  emit_local_get(b, bytes_l)
-  emit_i32_wrap_i64(b)
-  emit_i32_const(b, 8)
-  emit_i32_add(b)
-  emit_i32_add(b)
-  emit_global_set(b, 0)
-  emit_call(b, heap_grow_check_idx)
+  if rc_alloc_idx >= 0 {
+    // block = rc_alloc(slots + 8 (mask) + 8 (header)); size word, rc word 1
+    // (class 0); idx_ptr = block + 8.
+    emit_local_get(b, bytes_l)
+    emit_i64_const(b, 16)
+    emit_i64_add(b)
+    emit_call(b, rc_alloc_idx)
+    emit_local_set(b, idxptr_l)
+    emit_local_get(b, idxptr_l)
+    emit_i32_wrap_i64(b)
+    emit_local_get(b, bytes_l)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 16)
+    emit_i32_add(b)
+    emit_i32_store(b, 2, 0)
+    emit_local_get(b, idxptr_l)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 1)
+    emit_i32_store(b, 2, 4)
+    emit_local_get(b, idxptr_l)
+    emit_i64_const(b, 8)
+    emit_i64_add(b)
+    emit_local_set(b, idxptr_l)
+  } else {
+    emit_global_get(b, 0)
+    emit_i64_extend_i32_u(b)
+    emit_local_set(b, idxptr_l)
+    emit_global_get(b, 0)
+    emit_local_get(b, bytes_l)
+    emit_i32_wrap_i64(b)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_call(b, heap_grow_check_idx)
+  }
   emit_local_get(b, idxptr_l)
   emit_i32_wrap_i64(b)
   emit_i32_const(b, 8)

@@ -210,7 +210,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import ./compile_call.vibe {
-  cc_is_borrow_ret_call, cc_is_loop_borrowed_ident, compile_call
+  cc_is_borrow_ret_call, cc_is_loop_borrowed_ident, cc_map_alloc_rc, compile_call
 }
 
 import ./compile_expr_tail5.vibe {
@@ -487,18 +487,32 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
       }
     },
     EMap(fields) => {
+      // `Map::new()` and `Map::from_pairs(..)` both parse to this literal
+      // (#960). Layout: [count@0 (i32)][index@4 (i32, 0 = none)]
+      // [entries@8+16i: key, value] -- the same block Map::set and
+      // MapBuilder::freeze produce. #2683: on the RC lane it is an RC block
+      // of class 6 (rc_drop walks the entries and frees the index), handed
+      // out TAGGED like every other rc block; it used to be a raw bump
+      // allocation, even and invisible to the RC machinery, so no map was
+      // ever reclaimed. The bump lane keeps the raw allocation.
       let flen = Array::length(fields)
       let obj_size = 8 + flen * 2 * 8
       let ptr_local = next_local
       Array::push(local_names, "__map_ptr")
-      emit_global_get(buf, 0)
-      emit_i64_extend_i32_u(buf)
-      emit_local_set(buf, ptr_local)
-      emit_global_get(buf, 0)
-      emit_i32_const(buf, obj_size)
-      emit_i32_add(buf)
-      emit_global_set(buf, 0)
-      emit_heap_grow_after_heap_set(buf, ctx)
+      if ctx.enable_rc {
+        cc_map_alloc_rc(buf, ptr_local, 6, () -> {
+          emit_i64_const(buf, obj_size)
+        }, ctx)
+      } else {
+        emit_global_get(buf, 0)
+        emit_i64_extend_i32_u(buf)
+        emit_local_set(buf, ptr_local)
+        emit_global_get(buf, 0)
+        emit_i32_const(buf, obj_size)
+        emit_i32_add(buf)
+        emit_global_set(buf, 0)
+        emit_heap_grow_after_heap_set(buf, ctx)
+      }
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
       emit_i32_const(buf, flen)
@@ -523,11 +537,30 @@ export fn compile_expr_tail4(buf: Bytes, expr: Expr, local_names: Array[String],
         Array::push(local_names, "__map_val")
         emit_local_set(buf, val_local)
         nl_m = nl_m + 1
+        // #2683: the literal OWNS its values, so a value that is a borrowed
+        // view -- a projection, a borrow-returning call, a loop-borrowed
+        // name -- is retained, exactly as the array / tuple / record
+        // literals do (#704/#708/#706); an owned temporary moves in.
+        let val_is_proj = match val_expr {
+          EDot(_, _, _, _) => true,
+          _ => false
+        }
+        if ctx.enable_rc && (val_is_proj || cc_is_borrow_ret_call(val_expr, ctx) || cc_is_loop_borrowed_ident(val_expr, ctx)) {
+          emit_rc_dup_guarded(buf, val_local, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
         emit_local_get(buf, val_local)
         emit_i64_store(buf, 3, 8 + mi * 16 + 8)
         mi = mi + 1
       }
       emit_local_get(buf, ptr_local)
+      if ctx.enable_rc {
+        emit_i64_const(buf, 1)
+        emit_i64_or(buf)
+      } else {
+        ()
+      }
       nl_m
     },
     _ => compile_expr_tail5(buf, expr, local_names, next_local, ctx, ld, compile_expr)
