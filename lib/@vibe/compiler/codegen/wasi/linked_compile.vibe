@@ -181,7 +181,9 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
+  may_return_view_link_parts,
   md_is_borrow_arg0_call,
+  mrv_declared_fn_names,
   scope_tail_proj_root,
   stmts_contain_exceptions,
   unique_typed_lowering_offsets_in_stmts,
@@ -5470,6 +5472,9 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     // #2638: and this module's half of the borrow-returning SEED. The whole
     // program's is the OR, so it publishes like the disqualifiers above.
     Array::push(st.an_bret_shadow, borrow_ret_shadow_mask(part))
+    // #2638: and its own top-level fn NAMES -- `mrv_fresh` needs the program's
+    // set to tell a user-fn call from a builtin, and that set is a union.
+    lc_concat_into(st.an_mrv_names, mrv_declared_fn_names(part))
     fi = fi + 1
   }
   // #2638 PHASE B. Round 0 for the whole program is linkable now, from what
@@ -5509,6 +5514,9 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   }
   Array::push(st.an_bret_seed, ph_bshadow)
   lc_concat_into(st.an_bret_link, sorted_names_of(borrow_ret_link_parts(parts, ph_bshadow)))
+  // #2638: and the may-return-view set, the last of the four. Same link-driven
+  // rounds; the whole-program pass keeps its worklist (see the link's doc).
+  lc_concat_into(st.an_view_link, sorted_names_of(may_return_view_link_parts(parts, st.an_mrv_names)))
   lc_concat_into(st.an_r01_names, ph_r01)
   lc_concat_ints_into(st.an_r01_masks, ph_r01mask)
   // ASSEMBLY (#2575 item 2 step 3). Concatenating the modules is the obvious
@@ -5694,6 +5702,10 @@ struct PreludeSplitStats {
   // The OR the split lane actually seeded with, so the caller can compare it
   // against the whole program's instead of assuming they agree.
   an_bret_seed: Array[Int];
+  // #2638: the modules' declared fn names (a union), and the may-return-view
+  // set the link computed from them.
+  an_mrv_names: Array[String];
+  an_view_link: Array[String];
   // The module parts themselves, so the caller can run its own controls
   // against the SAME statements the split lane answered from.
   an_parts: Array[Array[Stmt]];
@@ -5732,6 +5744,8 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     an_shadow: lc_fresh_int_array(),
     an_bret_shadow: lc_fresh_int_array(),
     an_bret_seed: lc_fresh_int_array(),
+    an_mrv_names: lc_fresh_string_array(),
+    an_view_link: lc_fresh_string_array(),
     an_parts: [],
     an_bret_link: lc_fresh_string_array(),
     an_r01_names: lc_fresh_string_array(),
@@ -5848,6 +5862,13 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // the fixpoint failing to decompose. Without it the two causes are
   // indistinguishable, and "the analysis does not decompose" is the more
   // interesting and more wrong of the two.
+  // #2638: the same two controls for the view set -- the rule over the merged
+  // program, and over the split lane's ASSEMBLED output. `bret` needed them to
+  // tell a decomposition failure from a statement difference, and there is no
+  // reason to believe this analysis differs without measuring it.
+  let an_view_one: Array[Array[Stmt]] = []
+  Array::push(an_view_one, a)
+  let an_view_self = sorted_names_of(may_return_view_link_parts(an_view_one, mrv_declared_fn_names(a)))
   let an_bret_one: Array[Array[Stmt]] = []
   Array::push(an_bret_one, a)
   let an_bret_self = sorted_names_of(borrow_ret_link_parts(an_bret_one, borrow_ret_shadow_mask(a)))
@@ -5915,6 +5936,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let an_bret_cat_one: Array[Array[Stmt]] = []
   Array::push(an_bret_cat_one, an_bret_cat)
   let an_bret_catr = sorted_names_of(borrow_ret_link_parts(an_bret_cat_one, borrow_ret_shadow_mask(an_bret_cat)))
+  let an_view_asm_one: Array[Array[Stmt]] = []
+  Array::push(an_view_asm_one, linked)
+  let an_view_asm = sorted_names_of(may_return_view_link_parts(an_view_asm_one, mrv_declared_fn_names(linked)))
   let an_bret_asm_one: Array[Array[Stmt]] = []
   Array::push(an_bret_asm_one, linked)
   let an_bret_asm = sorted_names_of(borrow_ret_link_parts(an_bret_asm_one, borrow_ret_shadow_mask(linked)))
@@ -5985,12 +6009,12 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     "0"
   })
   let an_cols = if an_dce_entry {
-    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured"
+    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured link_view=unmeasured link_view_self=unmeasured link_view_asm=unmeasured"
   } else {
     String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u)), String::concat(String::concat(" link_round0=", lc_set_cmp_counted(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round0_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_r0_w, an_r0mask_w), lc_name_mask_pairs(an_r0_link, an_r0mask_link))), String::concat(String::concat(" link_round0_occ=", lc_multiset_first_diff(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round01=", lc_set_cmp_counted(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_round01_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), lc_name_mask_pairs(an_r01_link, an_r01mask_link))), String::concat(String::concat(" link_round01_occ=", lc_multiset_first_diff(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_bret=", lc_set_cmp_counted(an_bret_w, st.an_bret_link)), String::concat(String::concat(" link_bret_occ=", lc_multiset_first_diff(an_bret_w, st.an_bret_link)), String::concat(String::concat(" link_bret_self=", lc_set_cmp_counted(an_bret_w, an_bret_self)), String::concat(String::concat(" link_bret_asm=", lc_set_cmp_counted(an_bret_w, an_bret_asm)), String::concat(String::concat(" link_bret_seed=", String::concat(Int::to_string(match Array::length(st.an_bret_seed) {
       0 => 0 - 1,
       _ => Array::get(st.an_bret_seed, 0)
-    }), String::concat("/", Int::to_string(borrow_ret_shadow_mask(a))))), String::concat(" link_bret_cat=", lc_set_cmp_counted(an_bret_w, an_bret_catr))))))))))))))))
+    }), String::concat("/", Int::to_string(borrow_ret_shadow_mask(a))))), String::concat(String::concat(" link_bret_cat=", lc_set_cmp_counted(an_bret_w, an_bret_catr)), String::concat(String::concat(" link_view=", lc_set_cmp_counted(an_view_w, st.an_view_link)), String::concat(String::concat(" link_view_self=", lc_set_cmp_counted(an_view_w, an_view_self)), String::concat(" link_view_asm=", lc_set_cmp_counted(an_view_w, an_view_asm)))))))))))))))))))
   }
   let an_line = String::concat(String::concat(an_head, an_cols), "\n")
   let line = String::concat(String::concat(head, mid), tail)
