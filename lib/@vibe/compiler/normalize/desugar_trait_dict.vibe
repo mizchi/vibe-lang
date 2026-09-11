@@ -21276,6 +21276,9 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
   // that boundary (#2642 review, Codex P2).
   eq_deferred_reset()
   dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  // The lane is over: clear the merge rename table so a later compilation in
+  // this process cannot see stale entries (#2205, moved here in #2647 round 6).
+  namespace_rename_originals_reset()
 }
 
 /// #2388: the per-module entry. `own` is the module's statements, rewritten in
@@ -21410,12 +21413,22 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   eq_tuple_uid_reset()
   eq_known_types_reset(stmts)
   desugar_derives(stmts)
-  // #2205: the derive generators above are the only readers of the merge
-  // rename table; clear it so a LATER compilation in this process (e.g. a
-  // single-file lane, which runs no merge and therefore no reset) cannot see
-  // stale entries. A second run of this pass over the same program
-  // regenerates nothing and never reads the table.
-  namespace_rename_originals_reset()
+  // #2205's reset used to be HERE and is now at the LANE boundary
+  // (`desugar_trait_dicts_with_typed_eq`, and the per-module driver after its
+  // last module). Its purpose is unchanged -- the derive generators above are
+  // the only readers of the merge rename table, and a LATER compilation in this
+  // process must not see stale entries.
+  //
+  // What changed is granularity (#2647 Codex round 6). `dtd_run` runs ONCE
+  // whole-program but once PER MODULE on the split lane, so clearing here meant
+  // module 0 read the table and every module after it found it empty --
+  // rendering `Point_dep_<path>` instead of `Point` in derived `Show` / `Hash`
+  // output. The table is built by `record_namespace_rename_originals_for_file`
+  // during the MERGE, before any of this runs, so no module can rebuild it.
+  //
+  // This is the same defect as the deferral registries in round 1 of the same
+  // review: a process-global registry reset at per-run granularity, where the
+  // split lane needs lane granularity.
   derive_trait_namespace_operations(stmts)
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the

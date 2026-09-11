@@ -7,7 +7,7 @@ import @vibe/compiler/codegen/wasi {
 }
 
 import @vibe/compiler/core {
-  Stmt, sorted_names_of
+  Stmt, namespace_rename_originals_len, namespace_rename_originals_reset, record_namespace_rename_originals_for_file, sorted_names_of
 }
 
 import @vibe/compiler/syntax {
@@ -447,4 +447,35 @@ test "the entry module is found, not assumed to be the last" {
   // Not vacuous: the whole-program lane really does wrap the entry.
   inspect(String::contains(render_in_order(a), "__entry_err"), content = "true")
   inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+import @vibe/compiler/normalize {
+  desugar_trait_dicts_module
+}
+
+test "the merge rename table survives every module, not just the first" {
+  // #2647 Codex round 6. `record_namespace_rename_originals_for_file` populates
+  // the table during the MERGE, before any prelude pass, and the derived
+  // `Show` / `Hash` renderers read it to recover a private type's source
+  // spelling. `dtd_run` used to clear it -- once whole-program, but once PER
+  // MODULE on the split lane, so the first module consumed the table and every
+  // later one rendered the mangled `Local_dep_<path>`.
+  //
+  // Asserted on the TABLE rather than through a program that renders a mangled
+  // name: I tried two such programs (a private `derive (Show)` in the later
+  // module, then a colliding private type in both) and neither produced a
+  // rename in the output at all, so both were vacuous. The table's length is
+  // the property the fix is actually about.
+  namespace_rename_originals_reset()
+  let src = "struct Renamed {\n  v: Int\n}\n\nfn use_it() -> Int {\n  1\n}\n"
+  record_namespace_rename_originals_for_file("/tmp/vibe_rename_probe.vibe", program_stmts(src))
+  // Not vacuous: the merge really did record something for this file.
+  let recorded = namespace_rename_originals_len()
+  inspect(recorded > 0, content = "true")
+  let m0 = program_stmts(src)
+  let _ = desugar_trait_dicts_module(m0, [], "f0", no_ints(), no_keys())
+  inspect(namespace_rename_originals_len() == recorded, content = "true")
+  let m1 = program_stmts(src)
+  let _ = desugar_trait_dicts_module(m1, [], "f1", no_ints(), no_keys())
+  inspect(namespace_rename_originals_len() == recorded, content = "true")
 }
