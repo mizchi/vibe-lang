@@ -58,9 +58,11 @@ is an ADR-sized decision, not a slice-sized one.
   wrong for exactly the definitions the split created (#2618, #2620).
 - **A synthesized definition's NAME must determine its BODY.** The link folds
   per-module helpers by declaration key, so two modules that mint one name for
-  two different bodies leave the link a choice it cannot make correctly.
-  Measured (#2388): they do — see "What a module must see" below — and the fold
-  refuses rather than keeping one of them.
+  two different bodies leave the link a choice it cannot make correctly. A
+  comparator broke this — its body depended on how much of a field's type the
+  synthesizing module could see (#2631, fixed) — and the fold refusing such a
+  pair rather than keeping one of them is what caught it. See "What a module
+  must see" below.
 - A **missing required recheck is a failure.** Conservative over-invalidation is
   permitted but must be *visible* — reported as residual, never silently accepted
   as conformance.
@@ -170,46 +172,67 @@ module needed anything the whole program did not have.*
 loader reported was placed; the closure covers 32017 of the 132 860 ordered
 pairs a whole-program context would, about 24%):
 
-| | every other file | own import closure |
-|---|---:|---:|
-| statements (whole) | 9846 | 9849 |
-| split | 10002 | 10005 |
-| linked | 9845 | 9848 |
-| folded | 157 | 157 |
-| link collisions | 0 | **1** |
-| keyed `missing` | 1 | 1 |
-| keyed `content` | 4 | **6** |
+```
+FULL stmts=9853 split=10009 linked=9852 folded=157 modules=365 collisions=0
+     invisible_whole=0 invisible_split=2
+keyed missing=1 extra=0 copies=444 content=4 renames=0 dup_keys=451 dup_defs=5
+  first_missing=struct:__EvDict_Source
+```
 
-(The three-statement difference in the whole-program column is this slice's own
-new definitions: the compiler's closure contains the compiler.)
+Two counters name the two things a green here would otherwise hide.
+`invisible_whole` / `invisible_split` count the nominals each lane could **not**
+see while synthesizing a comparator — a declared struct or enum absent from the
+statements the pass was handed, as opposed to a scalar, a type formal, or the
+shape scanner's `?EqUnknown`. `collisions` counts the declaration keys under
+which two modules produced two different bodies.
 
-### The finding
+### What a comparator may depend on
 
-Both new differences have one cause, and it is not the closure being too
-narrow. A **synthesized comparator's body depends on how much of a field's type
-the synthesizing module can see, while its name — the link's fold key — does
-not.**
+`invisible_whole=0` is the load-bearing number: a program that type-checks whole
+can see every nominal it compares. So a lane that sees fewer is the only one
+that can reach the question, and what it does there used to differ.
 
 `lib/@vibe/compiler/perceus/index.vpkg` declares `opaque type
 PerceusActionKind` and a `struct PerceusAction` with a `kind:
-PerceusActionKind` field; `perceus.vibe` declares the real `export enum
-PerceusActionKind`. Compiled whole, the equality pass can see the enum and
-emits `PerceusActionKind::equals(a.kind, b.kind)`. Compiled per module, the
-materialized contract sees only the opaque type and emits `a.kind == b.kind`.
-Two bodies, one name. The same shape produces the run's single link collision,
-`let:__arr_equals__T2_N6_StringN7_TypeEnv`.
+PerceusActionKind` field; `perceus.vibe` declares the real `export enum`.
+Compiled whole, the equality pass saw the enum and emitted
+`PerceusActionKind::equals(a.kind, b.kind)`; compiled per module, the
+materialized contract saw only the opaque type and emitted `a.kind == b.kind` —
+a comparison of an aggregate **by reference**. Two bodies under one name, which
+is the roadmap invariant *a synthesized definition's name must determine its
+body* failing.
 
-This is why the link folds by a key a module reported as **synthesized** and
-content-checks the bodies under it: a link that concatenated modules would
-resolve this by keeping whichever copy came first, and the two are not
-interchangeable. The refusal is the fold working, not the fold failing.
+A nominal the statement list cannot see now takes the structural call too. The
+emitted call is a reference the link resolves against the module that declares
+the type, the same as any other cross-module call, and because the arm is
+unreachable on the whole-program lane the rule is unconditional rather than
+lane-dependent. `invisible_split` stays at 2 and should: those nominals are
+still invisible to the modules comparing them — what changed is that their
+invisibility no longer reaches the body.
 
-What it means for #2575 item 2: **the import closure is the right context rule,
-and it is not sufficient on its own.** A module that can see a field's type only
-as `opaque` must not synthesize a comparator for it — it has to emit a
-reference and let the module that can see the type provide the body. Until that
-holds, per-module synthesis is not a function of the declaration key, and the
-link cannot fold what per-module synthesis produces.
+The link still folds only by a key a module reported as **synthesized**, and
+still content-checks the bodies under it. That is not redundant with the above:
+it is what turns the next such divergence into a refusal instead of a silently
+kept body.
+
+### What remains, and it is not the context rule
+
+Every difference left is one cause: `missing=1` is `struct:__EvDict_Source`
+itself, and all 4 `content` rows are functions the whole-program evidence pass
+rewrote to take an explicit `__EvDict_Source` dictionary parameter, threading a
+`record { Read: …, Exists: … }` at each call site, where the per-module run left
+`with Source` on the row.
+
+Neither lowering is wrong; they are two coherent ones, and a module that merely
+*defines* a function cannot choose between them, because whether `Source` gets
+evidence-passed depends on what the rest of the program does with it. Unlike the
+comparator case this produces no wrong answer at either granularity — it
+produces two programs that cannot link to each other. Carrying the decision as
+interface data in the `.vpkg` contract is the direction (the same move #2510
+describes for the pass's other whole-program tables).
+
+So: **the import closure is the right context rule.** What is left is not about
+context at all.
 
 ## User-visible KPI contract
 
