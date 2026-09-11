@@ -3675,6 +3675,92 @@ fn bp_round0_scan(stmts: Array[Stmt], nonident: MutMap[String, Int], valued_set:
   source_shadow_mask
 }
 
+/// #2638: round 1 of ADR-0092's borrow inference -- the ONE bounded
+/// transitive round, over the COMPLETE round-0 snapshot it is handed.
+///
+/// Round 1 reads `round0_names` / `round0_masks` and never its own updates,
+/// and it only ever ADDS bits to the mask of the function it is scanning. So
+/// the module that DECLARES `f` computes `f`'s round-1 mask in full, given
+/// that snapshot -- which is what lets the per-module lane run this same scan
+/// against the LINKED round-0 table and the link merely overlay the results.
+/// One implementation serves both, so that is a fact about this code and not
+/// a claim about two loops that look alike.
+///
+/// Appends to `names` and updates `masks` in place.
+fn bp_round1_scan(stmts: Array[Stmt], round0_names: Array[String], round0_masks: Array[Int], nonident: MutMap[String, Int], valued_set: MutSet[String], excluded_set: MutSet[String], names: Array[String], masks: MutMap[String, Int]) -> Unit {
+  // Scratch rows reused across bodies; each use truncates first.
+  let bp_names: Array[String] = []
+  let bp_hits: Array[Int] = []
+  let mut si = 0
+  // One transitive step captures most of the useful wrapper chains while
+  // keeping the analysis bounded. Read only the complete round-0 snapshot;
+  // updates land in `masks` for the final result and never feed this round.
+  si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, fname, _, fval) => match fval {
+        EFn(_, _, fps, _, _, fbody) => if !MutSet::has(valued_set, fname) && !MutSet::has(excluded_set, fname) && bp_calls_round0_borrow(fbody, round0_names) {
+          let owned_bits = match MutMap::get(nonident, fname) {
+            Some(m) => m,
+            None => 0
+          }
+          let prev_mask = match MutMap::get(masks, fname) {
+            Some(m) => m,
+            None => 0
+          }
+          let mut mask = prev_mask
+          let body_masks = md_shadow_zeroed_bmasks(fbody, round0_names, round0_masks)
+          let mut pi = 0
+          let np = Array::length(fps)
+          let lim = if np < bmask_max_param() {
+            np
+          } else {
+            bmask_max_param()
+          }
+          Array::truncate(bp_names, 0)
+          Array::truncate(bp_hits, 0)
+          while pi < lim {
+            let (praw, _) = Array::get(fps, pi)
+            let pn = bp_param_base_name(praw)
+            Array::push(bp_names, pn)
+            Array::push(bp_hits, if !bmask_has(mask, pi) && pn != "" && !bmask_has(owned_bits, pi) {
+              0
+            } else {
+              1
+            })
+            pi = pi + 1
+          }
+          md_consumed_any(fbody, bp_names, round0_names, body_masks, bp_hits)
+          pi = 0
+          while pi < lim {
+            if Array::get(bp_hits, pi) == 0 && !is_mut_captured_in(fbody, Array::get(bp_names, pi)) {
+              mask = mask|(1<<pi)
+            } else {
+              ()
+            }
+            pi = pi + 1
+          }
+          if mask != prev_mask {
+            if prev_mask == 0 {
+              Array::push(names, fname)
+            } else {
+              ()
+            }
+            MutMap::set(masks, fname, mask)
+          } else {
+            ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+}
+
 /// ADR-0092 borrow-inference: for every top-level fn, which of its
 /// parameters are only ever READ. Each such position's ABI flips to
 /// borrowed, program-wide and in lockstep: the caller's plan counts an
@@ -3743,89 +3829,12 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
   // Round 0, factored out so the per-module lane runs the SAME scan with the
   // two program-wide unions empty (#2638).
   let source_shadow_mask = bp_round0_scan(stmts, nonident, valued_set, excluded_set, names, masks)
-  // Round 1 keeps its own scratch rows and its own cursor: round 0's live
-  // inside the scan now, and `bp_no_fns` / `bp_no_masks` were only ever
-  // round 0's.
-  let bp_names: Array[String] = []
-  let bp_hits: Array[Int] = []
-  let mut si = 0
-  let round0_names = sorted_names_of(names)
+  // Round 1, factored out the same way (#2638). The snapshot it reads is
+  // built here and handed in, because the per-module lane is handed the
+  // LINKED round-0 table instead of building one from its own module.
   let round0_masks: Array[Int] = []
-  let mut rmi = 0
-  while rmi < Array::length(round0_names) {
-    Array::push(round0_masks, match MutMap::get(masks, Array::get(round0_names, rmi)) {
-      Some(m) => m,
-      None => 0
-    })
-    rmi = rmi + 1
-  }
-  // One transitive step captures most of the useful wrapper chains while
-  // keeping the analysis bounded. Read only the complete round-0 snapshot;
-  // updates land in `masks` for the final result and never feed this round.
-  si = 0
-  while si < Array::length(stmts) {
-    match Array::get(stmts, si) {
-      SLet(_, _, fname, _, fval) => match fval {
-        EFn(_, _, fps, _, _, fbody) => if !MutSet::has(valued_set, fname) && !MutSet::has(excluded_set, fname) && bp_calls_round0_borrow(fbody, round0_names) {
-          let owned_bits = match MutMap::get(nonident, fname) {
-            Some(m) => m,
-            None => 0
-          }
-          let prev_mask = match MutMap::get(masks, fname) {
-            Some(m) => m,
-            None => 0
-          }
-          let mut mask = prev_mask
-          let body_masks = md_shadow_zeroed_bmasks(fbody, round0_names, round0_masks)
-          let mut pi = 0
-          let np = Array::length(fps)
-          let lim = if np < bmask_max_param() {
-            np
-          } else {
-            bmask_max_param()
-          }
-          Array::truncate(bp_names, 0)
-          Array::truncate(bp_hits, 0)
-          while pi < lim {
-            let (praw, _) = Array::get(fps, pi)
-            let pn = bp_param_base_name(praw)
-            Array::push(bp_names, pn)
-            Array::push(bp_hits, if !bmask_has(mask, pi) && pn != "" && !bmask_has(owned_bits, pi) {
-              0
-            } else {
-              1
-            })
-            pi = pi + 1
-          }
-          md_consumed_any(fbody, bp_names, round0_names, body_masks, bp_hits)
-          pi = 0
-          while pi < lim {
-            if Array::get(bp_hits, pi) == 0 && !is_mut_captured_in(fbody, Array::get(bp_names, pi)) {
-              mask = mask|(1<<pi)
-            } else {
-              ()
-            }
-            pi = pi + 1
-          }
-          if mask != prev_mask {
-            if prev_mask == 0 {
-              Array::push(names, fname)
-            } else {
-              ()
-            }
-            MutMap::set(masks, fname, mask)
-          } else {
-            ()
-          }
-        } else {
-          ()
-        },
-        _ => ()
-      },
-      _ => ()
-    }
-    si = si + 1
-  }
+  let round0_names = bp_sorted_with_masks(names, masks, round0_masks)
+  bp_round1_scan(stmts, round0_names, round0_masks, nonident, valued_set, excluded_set, names, masks)
   // A zero-mask entry is an ownership override, not a borrowed ABI. Callers
   // distinguish it by looking up the aligned mask instead of testing name
   // membership alone.
@@ -3885,13 +3894,20 @@ export fn compute_borrow_param_user_fns_round0(stmts: Array[Stmt], exclude: Arra
 /// #2638: what a MODULE can publish -- the same scan with both program-wide
 /// unions EMPTY, so every mask is the body-local answer and nothing has been
 /// disqualified yet. The link removes what the unions say.
-export fn compute_borrow_param_local_masks(stmts: Array[Stmt], out_masks: Array[Int]) -> Array[String] {
+export fn compute_borrow_param_local_masks(stmts: Array[Stmt], out_masks: Array[Int], out_shadow: Array[Int]) -> Array[String] {
   let names = array_empty()
   let masks: MutMap[String, Int] = MutMap::new_string()
   let empty_nonident: MutMap[String, Int] = MutMap::new_string()
   let empty_valued: MutSet[String] = MutSet::new_string()
   let empty_excluded: MutSet[String] = MutSet::new_string()
-  let _ = bp_round0_scan(stmts, empty_nonident, empty_valued, empty_excluded, names, masks)
+  // The source-shadow bits are this module's half of a UNION (the program
+  // shadows a compiler-owned accessor if ANY module does), so a module
+  // publishes them exactly like its other body-local facts and the link ORs
+  // them. Without this the link cannot reproduce the two zero-mask rows
+  // `compute_borrow_param_user_fns` appends, and the comparison would have to
+  // leave the tail off BOTH sides -- which hides whether the tail was empty or
+  // merely unmeasured.
+  Array::push(out_shadow, bp_round0_scan(stmts, empty_nonident, empty_valued, empty_excluded, names, masks))
   bp_sorted_with_masks(names, masks, out_masks)
 }
 
@@ -3938,6 +3954,138 @@ export fn borrow_round0_link(local_names: Array[String], local_masks: Array[Int]
       }
     }
     i = i + 1
+  }
+  bp_sorted_with_masks(names, masks, out_masks)
+}
+
+/// #2638: what a MODULE answers for round 1, given the LINKED round-0 table
+/// and the program-wide structures PREPARED ONCE by the caller.
+///
+/// This is the second phase of the protocol and the reason round 1 needs one:
+/// a module cannot build the round-0 table (round 0's disqualifiers are a
+/// union over the program), but once it is handed that table it can run round
+/// 1 on its own bodies alone, because the scan reads the snapshot and never
+/// another function's round-1 result.
+///
+/// The prepared arguments are why this takes them instead of deriving them:
+/// `nonident` is folded from EVERY call site in the program, and rebuilding it
+/// per module ran the compiler's own closure out of memory (365 folds of the
+/// whole program's pairs). A real driver ships these tables to a module once
+/// for the same reason.
+///
+/// The seed is this module's own slice of `r0`, one entry per DECLARATION
+/// rather than per table row. Round 0 pushed one row per qualifying
+/// declaration, so a name two modules both declare gets one seed in each and
+/// the link ends up with the number of copies the whole-program scan produced,
+/// instead of each module claiming both.
+fn bp_round1_local_prepared(stmts: Array[Stmt], round0_names: Array[String], round0_masks: Array[Int], r0: MutMap[String, Int], nonident: MutMap[String, Int], valued_set: MutSet[String], excluded_set: MutSet[String], out_names: Array[String], out_masks: Array[Int]) -> Unit {
+  let names = array_empty()
+  let masks: MutMap[String, Int] = MutMap::new_string()
+  let mut si = 0
+  while si < Array::length(stmts) {
+    match Array::get(stmts, si) {
+      SLet(_, _, fname, _, fval) => match fval {
+        EFn(_, _, _, _, _, _) => match MutMap::get(r0, fname) {
+          Some(m) => {
+            Array::push(names, fname)
+            MutMap::set(masks, fname, m)
+          },
+          None => ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  bp_round1_scan(stmts, round0_names, round0_masks, nonident, valued_set, excluded_set, names, masks)
+  let part_masks: Array[Int] = []
+  let part_names = bp_sorted_with_masks(names, masks, part_masks)
+  let mut oi = 0
+  while oi < Array::length(part_names) {
+    Array::push(out_names, Array::get(part_names, oi))
+    Array::push(out_masks, Array::get(part_masks, oi))
+    oi = oi + 1
+  }
+}
+
+/// #2638: PHASE B, whole. The program's round 0 AND round 1, from the linked
+/// round-0 table plus each module's own bodies -- an OVERLAY, not a fixpoint.
+///
+/// Every module in `parts` answers round 1 for the functions IT declares,
+/// reading only its own statements and the shared tables. Round 1 raises only
+/// the mask of the function it is scanning, and that function is declared by
+/// exactly one module, so the owning module's answer is final and the link
+/// merely overlays it. A name the round-0 table does not carry is pushed for
+/// the same reason the whole-program scan pushes it: its `prev_mask` was 0 and
+/// round 1 raised it.
+///
+/// Modules are visited in order, so a name two modules declare resolves
+/// last-wins exactly as the whole-program scan's single `masks` map does.
+///
+/// The program-wide folds happen ONCE here rather than per module. That is not
+/// a convenience: per module they cost 365 folds of every call site in the
+/// program and exhausted memory on the compiler's own closure.
+export fn borrow_round1_link_parts(parts: Array[Array[Stmt]], round0_names: Array[String], round0_masks: Array[Int], valued: Array[String], nonident_fns: Array[String], nonident_pos: Array[Int], exclude: Array[String], shadow: Int, out_masks: Array[Int]) -> Array[String] {
+  let nonident = bp_fold_nonident(nonident_fns, nonident_pos)
+  let valued_set = bp_name_set(valued)
+  let excluded_set = bp_name_set(exclude)
+  let r0: MutMap[String, Int] = MutMap::new_string()
+  let mut ri = 0
+  while ri < Array::length(round0_names) {
+    MutMap::set(r0, Array::get(round0_names, ri), Array::get(round0_masks, ri))
+    ri = ri + 1
+  }
+  let delta_names = array_empty()
+  let delta_masks: Array[Int] = []
+  let mut pi = 0
+  while pi < Array::length(parts) {
+    bp_round1_local_prepared(Array::get(parts, pi), round0_names, round0_masks, r0, nonident, valued_set, excluded_set, delta_names, delta_masks)
+    pi = pi + 1
+  }
+  let masks: MutMap[String, Int] = MutMap::new_string()
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(round0_names) {
+    let nm = Array::get(round0_names, i)
+    Array::push(names, nm)
+    MutMap::set(masks, nm, Array::get(round0_masks, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(delta_names) {
+    let nm = Array::get(delta_names, j)
+    match MutMap::get(masks, nm) {
+      Some(_) => (),
+      None => Array::push(names, nm)
+    }
+    MutMap::set(masks, nm, Array::get(delta_masks, j))
+    j = j + 1
+  }
+  // The same tail `compute_borrow_param_user_fns` appends, from the OR of what
+  // the modules published. A zero-mask entry is an ownership override, not a
+  // borrowed ABI.
+  if (shadow&1) != 0 {
+    match MutMap::get(masks, "Map::iter_get") {
+      Some(_) => (),
+      None => {
+        Array::push(names, "Map::iter_get")
+        MutMap::set(masks, "Map::iter_get", 0)
+      }
+    }
+  } else {
+    ()
+  }
+  if (shadow&2) != 0 {
+    match MutMap::get(masks, "Map::__iter_get_unchecked") {
+      Some(_) => (),
+      None => {
+        Array::push(names, "Map::__iter_get_unchecked")
+        MutMap::set(masks, "Map::__iter_get_unchecked", 0)
+      }
+    }
+  } else {
+    ()
   }
   bp_sorted_with_masks(names, masks, out_masks)
 }
