@@ -262,9 +262,28 @@ site whose operand type the module cannot resolve takes a different arm, and
 nothing downstream can supply a helper nobody asked for.
 
 So this is not "the link should mint what the modules left out" — the link would
-have nothing to mint *from*. It is the same root cause as #2631 one step
-earlier: visibility changing the classification of an `==` site, where there it
-changed the emitted body and here it changes whether a request happens at all.
+have nothing to mint *from*. The instantiation set it would key on is precisely
+what the per-module run fails to produce.
+
+**All five, named:**
+
+```
+A1_N6_OptionN3_Int         Array[Option[Int]]
+A1_N6_OptionN6_String      Array[Option[String]]
+spec:A2_N6_MutMapN6_StringN3_Int      MutMap[String, Int]
+spec:A1_N6_MutSetN6_String            MutSet[String]
+spec:A2_N6_MutMapN6_StringN6_String   MutMap[String, String]
+```
+
+Every one is a **builtin or core generic at a concrete instantiation** —
+`Option`, `MutMap`, `MutSet`. No user-declared type appears.
+
+And they are **disjoint from the 15 invisible nominals**, which are all compiler
+AST and core types (`Expr`, `Stmt`, `Pat`, `Token`, `TypeEnv`, `Json`, …).
+`Option`, `MutMap` and `MutSet` are not among them. So this is a *different*
+mechanism from #2631 rather than the same one on the `TyApp` side, and saying
+which mechanism it is needs another measurement — the counters establish that
+the request is never made and what the five have in common, not yet why.
 
 **The evidence family — 6 rows.** `struct:__EvDict_Source` itself, plus the
 functions the whole-program evidence pass rewrote to take an explicit
