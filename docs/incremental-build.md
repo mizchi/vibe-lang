@@ -245,15 +245,20 @@ arguments are themselves whole-program computations
 from each module's own statements on the split side, so `content=0` covers them:
 the per-module computation produced the same rewrites.
 
-One thing it does **not** model, and it is not covered by that zero:
+The pass dispatch takes production's non-statement inputs through a
+`PreludeEnv` — `linked_imports` for `lc_waiter_hooks_available` (pass 9,
+`await_poll_pass`) and the `iw_names` / `iw_wats` arrays `lc_extract_inline_wasm`
+fills (pass 8). Both used to be hard-coded empty there. That was harmless for a
+measurement comparing declarations and is not for a production driver:
+discarding the inline-wasm arrays loses every `inline_wasm` body, and an empty
+`linked_imports` answers "no waiter hooks" regardless of the program.
 
-- **`await_poll_pass`** is modelled with an empty `linked_imports`, where
-  production passes the real list. So the oracle exercises that pass, but not
-  with production's input. Still unmeasured.
-
-This list had two entries when it was written. The validators were the other
-one, and they graduated: they are measured now, by the counter below rather
-than by `missing` / `content` / `renames`, which cannot see a diagnostic.
+The oracle's own two lanes still pass `prelude_env_none()`, and for the RC
+production lane that is production-faithful — it hands
+`compile_wasi_module_linked_impl_*` an empty `linked_imports` anyway, and the
+inline-wasm arrays are empty for any program without `inline_wasm`. What
+changed is that a production caller can now supply the real values instead of
+the driver being unable to accept them.
 
 None of this weakens the decomposition result for what it covers. It bounds it.
 

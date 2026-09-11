@@ -447,14 +447,46 @@ fn lc_fresh_bytes_array() -> Array[Bytes] {
 /// The diff is over the key SET rather than the tail, because a pass may
 /// insert rather than append (#2620 places a hoisted lambda next to its own
 /// declaration), and a tail diff would then attribute the wrong keys.
-fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], synth_keys: Array[String]) -> Unit with Exception {
+/// #2575 item 2: the inputs the prelude's passes take BESIDES the statements.
+///
+/// Two passes read them, and the pass dispatch used to hard-code an empty
+/// value for both -- which is fine for a measurement that compares
+/// declarations and NOT for a production per-module driver:
+///
+///   pass 8  `lc_extract_inline_wasm(stmts, iw_names, iw_wats)` -- production
+///           COLLECTS the extracted module into the caller's arrays and hands
+///           them to codegen. Discarding them into fresh arrays loses every
+///           `inline_wasm` body.
+///   pass 9  `lc_waiter_hooks_available(stmts, linked_imports)` -- whether any
+///           linked import provides the waiter hooks decides how
+///           `await_poll_pass` lowers. Empty answers "no" regardless.
+///
+/// `prelude_env_none()` is the honest value where there is nothing to pass:
+/// the RC production lane hands `compile_wasi_module_linked_impl_*` an empty
+/// `linked_imports` anyway, so for THAT lane empty is production-faithful, and
+/// the inline-wasm arrays are empty for any program without `inline_wasm`.
+struct PreludeEnv {
+  linked_imports: Array[(String, String, Int, Int)];
+  iw_names: Array[String];
+  iw_wats: Array[String]
+}
+
+fn prelude_env_none() -> PreludeEnv {
+  PreludeEnv::{
+    linked_imports: array_empty(),
+    iw_names: lc_fresh_string_array(),
+    iw_wats: lc_fresh_string_array(),
+  }
+}
+
+fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], synth_keys: Array[String], env: PreludeEnv) -> Unit with Exception {
   let before: MutMap[String, Int] = MutMap::new_string()
   let mut i = 0
   while i < Array::length(part) {
     MutMap::set(before, oracle_stmt_key(Array::get(part, i)), 1)
     i = i + 1
   }
-  oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+  oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, env)
   let mut j = 0
   while j < Array::length(part) {
     let key = oracle_stmt_key(Array::get(part, j))
@@ -4008,7 +4040,7 @@ fn oracle_pass_name(k: Int) -> String {
   }
 }
 
-fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Unit with Exception {
+fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], env: PreludeEnv) -> Unit with Exception {
   match k {
     0 => {
       // elaborate_heap_params returns a fresh array; the oracle keeps every
@@ -4034,8 +4066,8 @@ fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_
       let _ = lc_inject_stdin_surface_wrappers(stmts)
       ()
     },
-    8 => lc_extract_inline_wasm(stmts, lc_fresh_string_array(), lc_fresh_string_array()),
-    9 => await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, array_empty())),
+    8 => lc_extract_inline_wasm(stmts, env.iw_names, env.iw_wats),
+    9 => await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, env.linked_imports)),
     10 => rewrite_self_tail_calls(stmts),
     11 => wrap_entry_exception_boundary(stmts, entry_name),
     12 => {
@@ -4501,7 +4533,7 @@ fn lc_analysis_exclude(entry_name: String) -> Array[String] {
   [entry_name, "main", "_start", "cli_main"]
 }
 
-fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats) -> Array[Stmt] with Exception {
+fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats, env: PreludeEnv) -> Array[Stmt] with Exception {
   let entry_fid = file_count - 1
   // #2575 item 4: the three analyses `linked_compile` runs between the prelude
   // and codegen are sampled per module here, and on the whole program by the
@@ -4546,7 +4578,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     lc_collect_zero_alloc_diag(Array::get(parts, fi), st.diags)
     let mut j = 0
     while j < 4 {
-      lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys)
+      lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, env)
       j = j + 1
     }
     fi = fi + 1
@@ -4661,7 +4693,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       if j2 == 15 || j2 == 16 {
         ()
       } else {
-        lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys)
+        lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, env)
       }
       // After pass 5, where production runs it.
       if j2 == 5 {
@@ -4704,8 +4736,8 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   let minted = eq_mint_deferred_into(trial)
   Array::set(st.counts, 0, minted)
   // #2633: the whole-program phases, run once on the linked program.
-  oracle_apply_pass(15, trial, entry_name, checker_eq_offsets, checker_eq_type_keys)
-  oracle_apply_pass(16, trial, entry_name, checker_eq_offsets, checker_eq_type_keys)
+  oracle_apply_pass(15, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, env)
+  oracle_apply_pass(16, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, env)
   // LINK. Up to here `trial` is the modules concatenated, which holds one copy
   // of each program-level helper per module that needed it. Folding them is
   // what a per-module driver's link step does (#2575 item 3), and doing it
@@ -4839,7 +4871,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_ref_w = lc_fresh_string_array()
   let ev_def_w = lc_fresh_string_array()
   while k < 15 {
-    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
     // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
     // which is where a container comparator or a generic specialization is
     // requested AND emitted. The per-module side samples at the same point --
@@ -4872,7 +4904,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // program carries.
   let (ev_decl_w, ev_handled_w, ev_perf_w) = evidence_module_facts(a)
   while k < 17 {
-    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
     k = k + 1
   }
   // #2575 item 4: the three whole-program analyses `linked_compile` runs
@@ -4910,7 +4942,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let whole_invisible = eq_invisible_nominals_list()
   eq_invisible_nominals_reset()
   let st = prelude_split_stats_new()
-  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, st)
+  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, st, prelude_env_none())
   let split_invisible = eq_invisible_nominals_list()
   let ev_req_u = st.requests
   let ev_ref_u = st.refusals
@@ -5023,7 +5055,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
       Array::push(old_keys, oracle_stmt_key(Array::get(c, qi)))
       qi = qi + 1
     }
-    oracle_apply_pass(j, c, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    oracle_apply_pass(j, c, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
     file_of = oracle_realign(old_keys, file_of, c)
     j = j + 1
   }
@@ -5046,7 +5078,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
   // from `a` and limited to keys that existed before the pass (a
   // synthesized statement belongs to its own module's output, not to a
   // sibling's context).
-  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
   let pre_keys: MutMap[String, Int] = MutMap::new_string()
   let mut pk = 0
   while pk < Array::length(c) {
@@ -5130,7 +5162,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
         sy = sy + 1
       }
     } else {
-      oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
+      oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
     }
     let mut oi = 0
     while oi < Array::length(part) {
