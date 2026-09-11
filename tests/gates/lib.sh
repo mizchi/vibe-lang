@@ -36,7 +36,7 @@ gate_status_out() {
 }
 
 # Known independently runnable lanes. `all` is the aggregator, not a file.
-GATE_LANES="bootstrap early mid late"
+GATE_LANES="bootstrap early mid late selftests"
 
 gate_lane_script() {
   local lane="$1"

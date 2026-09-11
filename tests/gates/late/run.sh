@@ -5999,10 +5999,20 @@ bash "$ROOT_DIR/scripts/check_selector_precedence.sh"
 # proved the fix lived only in a commit message, so the guarantee did not
 # survive the next edit. Every one of those five is now a case.
 bash "$ROOT_DIR/scripts/check_selector_precedence_test.sh"
-# The same rule, for every gate: a new one ships with a self-test that mutates
-# a real input and asserts the gate fails (ratcheted -- 18 predate the rule).
-bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
-bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"
+# The same rule, for every gate -- a new one ships with a self-test that mutates
+# a real input and asserts the gate fails -- is enforced by
+# check_gate_self_tests.sh, which now runs in its OWN workflow job
+# (`gate-self-tests` in .github/workflows/ci.yml) and not here.
+#
+# It ran every companion in the tree serially, which is 208s of real work, and
+# this lane is the whole CI critical path. Measured on main, run 34590373673:
+# 419s wall, of which compiler-gate (late) was 411s, of which that one script
+# was 208s -- half the run, spent on shell gates inside the compiler's lane.
+# Moving it to a job with no `needs` overlaps it with the lanes instead of
+# extending them. Same work, same serial order, ~208s earlier.
+#
+# scripts/test_ci_compiler_gate_layout.sh pins BOTH halves: a job must run it
+# and start at t=0, and it must not come back here.
 # ...and the two ways a self-test stops meaning anything without ever going
 # red: it depends on a tool CI does not have (ripgrep -- five of them did, and
 # were exempted rather than fixed), or its pattern quietly means something

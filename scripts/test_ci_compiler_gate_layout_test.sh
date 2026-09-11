@@ -39,8 +39,14 @@ $3
 PY
 }
 
+# The late lane the gate should read. A case that mutates it points this at a
+# copy; every other case leaves it on the real file.
+LATE="$ROOT_DIR/tests/gates/late/run.sh"
+SELFTESTS="$ROOT_DIR/tests/gates/selftests/run.sh"
+
 expect_reject() {  # $1 = label, $2 = substring the message must contain
-  if (cd "$ROOT_DIR" && VIBE_CI_LAYOUT_WORKFLOW="$TMP/ci.yml" bash "$GATE" >"$TMP/out" 2>&1); then
+  if (cd "$ROOT_DIR" && VIBE_CI_LAYOUT_WORKFLOW="$TMP/ci.yml" VIBE_CI_LAYOUT_LATE_GATE="$LATE" \
+      VIBE_CI_LAYOUT_SELFTESTS_GATE="$SELFTESTS" bash "$GATE" >"$TMP/out" 2>&1); then
     cat "$TMP/out" >&2
     fail "$1: the mutated workflow was ACCEPTED"
   fi
@@ -111,4 +117,97 @@ assert prov > gate, f'not misordered: provision={prov} gate={gate}'
 "
 expect_reject "PyYAML provisioned after the gate that needs it is rejected" "before its dependency is installed"
 
-echo "test_ci_compiler_gate_layout_test: ok (control + 6 cases)"
+
+# --- cases 7-8: the gate self-test suite must not return to the late lane ---
+# The lane is the critical path and the suite is 208s of shell. The rule reads
+# INVOCATIONS, not the name: the real late/run.sh carries a comment naming the
+# script (that is the standing control, case 8 makes it explicit) and a gate
+# that matched the name alone would fail on its own explanation.
+REAL_LATE="$ROOT_DIR/tests/gates/late/run.sh"
+
+cp "$REAL_LATE" "$TMP/late.sh"
+printf '\nbash "$ROOT_DIR/scripts/check_gate_self_tests.sh"\n' >> "$TMP/late.sh"
+grep -qE '^[^#]*\bbash\b[^#]*check_gate_self_tests' "$TMP/late.sh" \
+  || fail "mutation did not bind: the late lane still has no invocation"
+cp "$REAL" "$TMP/ci.yml"
+LATE="$TMP/late.sh"
+expect_reject "the late lane invoking the suite again is rejected" "invokes the gate self-test suite"
+
+cp "$REAL_LATE" "$TMP/late_comment.sh"
+printf '\n# bash "$ROOT_DIR/scripts/check_gate_self_tests.sh" -- moved, see ci.yml\n' \
+  >> "$TMP/late_comment.sh"
+grep -qF 'check_gate_self_tests.sh' "$TMP/late_comment.sh" \
+  || fail "mutation did not bind: the comment was not added"
+LATE="$TMP/late_comment.sh"
+if ! (cd "$ROOT_DIR" && VIBE_CI_LAYOUT_WORKFLOW="$TMP/ci.yml" VIBE_CI_LAYOUT_LATE_GATE="$LATE" \
+      VIBE_CI_LAYOUT_SELFTESTS_GATE="$SELFTESTS" bash "$GATE" >"$TMP/out" 2>&1); then
+  cat "$TMP/out" >&2
+  fail "a commented-out invocation was rejected -- the rule is matching the name, not the call"
+fi
+echo "test_ci_compiler_gate_layout_test: ok: a commented mention of the suite is not an invocation"
+LATE="$REAL_LATE"
+
+# --- case 9: the selftests lane stops invoking the suite -------------------
+# "Not in the late lane" is also true of a suite that was simply deleted --
+# the #2580 defect, where three gates went dark and no gate noticed.
+REAL_SELFTESTS="$ROOT_DIR/tests/gates/selftests/run.sh"
+cp "$REAL_SELFTESTS" "$TMP/selftests.sh"
+python3 - "$TMP/selftests.sh" <<'MUT9' || fail "mutation did not bind: the invocation is still there"
+import pathlib, sys, re
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+s = s.replace('bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"', 'true  # removed', 1)
+p.write_text(s)
+assert not re.search(r'^[^#]*\bbash\b[^#]*check_gate_self_tests\.sh', s, re.M), "still invoked"
+MUT9
+cp "$REAL" "$TMP/ci.yml"
+SELFTESTS="$TMP/selftests.sh"
+expect_reject "the selftests lane not invoking the suite is rejected" "does not invoke check_gate_self_tests.sh"
+SELFTESTS="$REAL_SELFTESTS"
+
+# --- case 10: the workflow stops selecting the lane -----------------------
+# A lane that exists but is never selected runs exactly as often as one that
+# was deleted, and reads as present to anyone grepping the tree.
+mutate "
+s = s.replace('        lane: [early, mid, late, selftests]', '        lane: [early, mid, late]', 1)
+" "lane dropped from the matrix" "
+m = doc['jobs']['compiler-gate-lanes']['strategy']['matrix']['lane']
+assert 'selftests' not in m, m
+"
+expect_reject "a workflow that never selects the selftests lane is rejected" "runs nowhere in CI"
+
+# --- case 11: the lane runs without a YAML parser -------------------------
+# check_pkfire_pin_test.sh is one of the companions and parses YAML. In the
+# late lane that was met only by the hosted image happening to ship one.
+mutate "
+$lanes_slice
+k0 = blk.index('      - name: Provision PyYAML')
+k1 = blk.index('      - name: Generated compiler artifacts', k0)
+step = blk[k0:k1]
+blk = blk.replace(step, '', 1)
+s = s[:i] + blk + s[j:]
+" "pyyaml step removed" "
+steps = doc['jobs']['compiler-gate-lanes']['steps']
+assert not any('pyyaml' in str(st.get('run','')).lower() for st in steps), 'still provisioned'
+"
+expect_reject "the selftests lane running with no YAML parser is rejected" "never provisions PyYAML"
+
+# --- case 12: the parser is provisioned, but too late ---------------------
+mutate "
+$lanes_slice
+k0 = blk.index('      - name: Provision PyYAML')
+k1 = blk.index('      - name: Generated compiler artifacts', k0)
+step = blk[k0:k1]
+blk = blk.replace(step, '', 1)
+marker = '        run: bash scripts/compiler_gate.sh'
+k = blk.index(marker) + len(marker) + 1
+blk = blk[:k] + step + blk[k:]
+s = s[:i] + blk + s[j:]
+" "pyyaml after the lane" "
+steps = doc['jobs']['compiler-gate-lanes']['steps']
+prov = next(n for n, st in enumerate(steps) if 'pyyaml' in str(st.get('run','')).lower())
+lane = next(n for n, st in enumerate(steps)
+            if any(t.endswith('compiler_gate.sh') for t in str(st.get('run','')).split()))
+assert prov > lane, f'not misordered: provision={prov} lane={lane}'
+"
+expect_reject "PyYAML provisioned after the selftests lane is rejected" "before its dependency is installed"
+echo "test_ci_compiler_gate_layout_test: ok (control + 12 cases)"

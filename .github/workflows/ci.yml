@@ -829,7 +829,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [early, mid, late]
+        # `selftests` is the gate self-test suite (check_gate_self_tests.sh:
+        # every companion `*_test.sh` in the tree, serially). It lived inside
+        # the late lane, and measured on run 34590373673 it was 208s of that
+        # lane's 411s -- while the lane's 411s WAS the whole 419s critical
+        # path. As its own lane it overlaps the other three instead of
+        # extending the longest one: same work, same serial order, ~208s
+        # earlier, one more runner.
+        #
+        # A LANE AND NOT A STANDALONE JOB, because three companions read the
+        # compiler out of the environment -- check_compile_only_lanes_test.sh
+        # and check_freeze_surface_test.sh take VIBE_STAGE2_WASM,
+        # check_book_console_test.sh takes VIBE_TEST_CLI_WASM. A job without
+        # them does not fail; it falls back to the committed SEED and answers
+        # green about a compiler that does not contain the change, which is
+        # the "which compiler answered?" hazard AGENTS.md opens with. Sharing
+        # this matrix makes the environment identical by construction rather
+        # than by a list someone has to keep right.
+        lane: [early, mid, late, selftests]
     steps:
       - uses: actions/checkout@v5
       - name: Cache seed artifact
@@ -850,6 +867,11 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
+      # The selftests lane runs check_pkfire_pin_test.sh, which parses YAML.
+      # In the late lane that dependency was met only by the hosted image
+      # happening to ship a parser -- the assumption #2252 forbids. 2s.
+      - name: Provision PyYAML for the companions that parse the workflows
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - name: Generated compiler artifacts (fingerprint)
         id: genfp
         run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
