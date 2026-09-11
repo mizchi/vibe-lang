@@ -1762,7 +1762,11 @@ enum EdpReadQuery {
   // linear scan each, and a callee that is NOT a user function (a builtin, a
   // local, an indirect target) pays the whole array before answering.
   RQOpaqueCall(MutSet[String], MutSet[String]);
-  RQCallsAny(Array[String]);
+  // #2386: MEMBERSHIP, like RQOpaqueCall. `edp_collect_performing_fns` folds
+  // this over every not-yet-member body on every round of its transitive
+  // closure, so the probe runs per call node of O(rounds x fns) walks against
+  // a set that is itself growing.
+  RQCallsAny(MutSet[String]);
   RQEdpBindsName(String);
   RQIdentUses(String);
   RQSafeClosureBindings(String, String, Array[String], Array[String], Array[String], Array[Array[String]]);
@@ -2004,7 +2008,7 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
       _ => 0
     },
     RQCallsAny(names) => match e {
-      ECall(EIdent(name, _), _, _) => if edp_str_array_contains(names, name) {
+      ECall(EIdent(name, _), _, _) => if MutSet::has(names, name) {
         1
       } else {
         0
@@ -2379,6 +2383,12 @@ fn edp_may_perform_fields(fields: Array[(String, Expr)], ename: String, perf_fns
 /// site is vacuous by construction and no reachability question is asked.
 fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, inert: MutSet[String], fn_names: MutSet[String]) -> Array[String] {
   let out = empty_str_array()
+  // #2386: the membership mirror of `out`, maintained at every push. `out`
+  // itself stays the result, because the caller reads it as a list. Grown
+  // rather than pre-sized: this holds the fns that perform ONE effect, which
+  // is normally a handful, and sizing it for `fn_defs` would allocate the
+  // whole program per effect.
+  let out_set: MutSet[String] = MutSet::new_string()
   // #1875 R3: this fixpoint used to call edp_find_fn_body (an O(defs) scan
   // allocating an Option) for every function on every round, and rebuild
   // the read-query object per probe -- 17MB of allocation for one analyzed
@@ -2413,10 +2423,11 @@ fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
     match Array::get(bodies, i) {
       Some(body) => if (edp_rq_fold(q_perform, body) > 0 || edp_rq_fold(q_opaque, body) > 0) && !Array::get(member, i) {
         Array::set(member, i, true)
-        if edp_str_array_contains(out, nm) {
+        if MutSet::has(out_set, nm) {
           ()
         } else {
           Array::push(out, nm)
+          MutSet::add(out_set, nm)
         }
       } else {
         ()
@@ -2430,16 +2441,18 @@ fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
   let mut si = 0
   while si < Array::length(fn_defs) {
     let (_, _, _, snm, _, _) = Array::get(fn_defs, si)
-    if !Array::get(member, si) && edp_str_array_contains(out, snm) {
+    if !Array::get(member, si) && MutSet::has(out_set, snm) {
       Array::set(member, si, true)
     } else {
       ()
     }
     si = si + 1
   }
-  // The query aliases `out`, so a name pushed mid-round is visible to the
-  // very next containment probe without rebuilding the query object.
-  let q_calls = RQCallsAny(out)
+  // The query aliases `out_set`, so a name added mid-round is visible to the
+  // very next containment probe without rebuilding the query object -- the
+  // property the array form had, kept because a `MutSet` is a mutable struct
+  // and the query holds the same one.
+  let q_calls = RQCallsAny(out_set)
   let mut grew = true
   let mut rounds = 0
   while grew && rounds < Array::length(fn_defs) + 1 {
@@ -2454,10 +2467,11 @@ fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
           Some(body2) => if edp_rq_fold(q_calls, body2) > 0 {
             let (_, _, _, nm2, _, _) = Array::get(fn_defs, j)
             Array::set(member, j, true)
-            if edp_str_array_contains(out, nm2) {
+            if MutSet::has(out_set, nm2) {
               ()
             } else {
               Array::push(out, nm2)
+              MutSet::add(out_set, nm2)
             }
             grew = true
           } else {
@@ -2477,11 +2491,6 @@ fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Boo
 /// reach arbitrary code, performs included.
 fn edp_callee_is_resolvable(nm: String, inert: MutSet[String], fn_names: MutSet[String]) -> Bool {
   nm == "perform" || nm == "resume" || edp_is_pure_builtin_call(nm) || edp_name_is_host_raw_shape(nm) || MutSet::has(inert, nm) || MutSet::has(fn_names, nm)
-}
-
-/// Does `expr` contain a call whose callee is a bare name in `names`?
-fn edp_body_calls_any(expr: Expr, names: Array[String]) -> Bool {
-  edp_rq_fold(RQCallsAny(names), expr) > 0
 }
 
 /// #2479: the dedup used to scan `out` per definition (O(fns²), 56 ms of a
