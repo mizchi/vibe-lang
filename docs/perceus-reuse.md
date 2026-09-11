@@ -525,6 +525,28 @@ constant, one parked block per size bin at loop exit, measured 3,204 B
 with the indexed maps and the grown builder storage, while any leak
 scales with N (16 B per iteration is 320,000 B at N = 20000).
 
+**What the compiler's own RC-lane self-compile pays for the three fixes**
+(the `selfcompile_kpi` protocol: the seed entry compiled by an RC-built
+stage2 of the PR base bca14ae and of the final tree, viberun fuel and
+allocation, three runs each, identical to the digit):
+
+| | base (bca14ae) | this branch | delta |
+|---|---:|---:|---:|
+| fuel | 1,177,029,188,611 | 1,194,445,790,779 | +1.48% |
+| bytes allocated | 1,835,120,428 | 1,839,410,132 | +0.23% |
+| heap peak | 1,835,229,036 | 1,839,518,828 | +0.23% |
+| RC stage2 size | 4,889,148 | 4,895,557 | +0.13% |
+
+The fuel is the price of maps that are accounted at all: `Map::set`
+retains every entry it copies out of a source it borrows (a plain copy
+before), rc_drop walks a map's entries when it dies, and the index goes
+through rc_alloc. The peak does not fall because the compiler's own maps
+(type environments) live to the end of the compile, so reclaiming them
+buys nothing there and their headers cost 0.23%. The obvious next step is
+the map counterpart of ADR-0092 reuse: a `Map::set` whose source is
+uniquely held and never read again can update in place instead of copying
+and retaining -- the compiler's environment threading is that shape.
+
 ### An FBIP-shaped rewrite of one pass, measured (2026-09-11)
 
 The question behind #2389 was whether the compiler's own code could be
