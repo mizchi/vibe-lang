@@ -246,20 +246,20 @@ arguments are themselves whole-program computations
 from each module's own statements on the split side, so `content=0` covers them:
 the per-module computation produced the same rewrites.
 
-The pass dispatch takes production's non-statement inputs through a
-`PreludeEnv` — `linked_imports` for `lc_waiter_hooks_available` (pass 9,
-`await_poll_pass`) and the `iw_names` / `iw_wats` arrays `lc_extract_inline_wasm`
-fills (pass 8). Both used to be hard-coded empty there. That was harmless for a
-measurement comparing declarations and is not for a production driver:
-discarding the inline-wasm arrays loses every `inline_wasm` body, and an empty
-`linked_imports` answers "no waiter hooks" regardless of the program.
+Two passes read something besides the statements, and the dispatch takes both
+through a `PreludeEnv`: `linked_imports` for `lc_waiter_hooks_available`
+(pass 9, `await_poll_pass`) and the `iw_names` / `iw_wats` arrays
+`lc_extract_inline_wasm` fills (pass 8). A driver that has to PRODUCE the
+program needs both — those arrays are what carries an `inline_wasm` body to
+codegen, and `linked_imports` decides whether any linked import supplies the
+waiter hooks `await_poll_pass` lowers against.
 
-The oracle's own two lanes still pass `prelude_env_none()`, and for the RC
-production lane that is production-faithful — it hands
+The oracle's two lanes pass `prelude_env_none()`, and what that bounds is
+lane-specific. For the RC production lane it is faithful: that lane hands
 `compile_wasi_module_linked_impl_*` an empty `linked_imports` anyway, and the
-inline-wasm arrays are empty for any program without `inline_wasm`. What
-changed is that a production caller can now supply the real values instead of
-the driver being unable to accept them.
+inline-wasm arrays are empty for any program without `inline_wasm`. For a lane
+that links real imports, or a program that uses `inline_wasm`, a measurement
+taken under `prelude_env_none()` is not evidence about that lane.
 
 None of this weakens the decomposition result for what it covers. It bounds it.
 
