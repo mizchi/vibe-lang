@@ -3,37 +3,44 @@
 //# Wire format spec: docs/ast_binary_abi.md (single source of truth).
 //#
 //# This file implements the byte-level primitives (varint, svarint,
-//# string, bool, span, magic header) and a cursor over `Bytes` for
-//# reads. The MoonBit host counterpart lives in
-//# src/core/serialize_binary.mbt + src/core/deserialize_binary.mbt
-//# and is byte-for-byte compatible on every primitive: a Bytes blob
-//# written by one side MUST round-trip cleanly through the other.
+//# string, bool, span, magic header), a cursor over `Bytes` for reads,
+//# and the AST-level codecs built on them.
 //#
-//# Status: primitives complete + round-trip tested. The AST-level
-//# encoders are NOT written, and the reason recorded here until #2647
-//# was stale: it said they were blocked on aligning this AST with the
-//# MoonBit host's `@core.Module` shape, and cited
-//# `src/core/serialize_binary.mbt` as "the MoonBit host counterpart"
-//# in the present tense. `src/` was retired in #594. There is no
-//# counterpart to stay byte-compatible with, so that blocker is gone.
+//# Status: primitives complete + round-trip tested; `TypeExpr` complete
+//# + round-trip tested. `Pat` / `Expr` / `Stmt` are not written yet.
 //#
-//# The REAL blocker is that `docs/ast_binary_abi.md` still specifies
-//# the retired host's AST: its tag tables name `Int` / `Float` /
-//# `Record` / `Map` / `Set` / `ArrayBuilder`, while this compiler's
-//# type AST is `TypeExpr` = TyName / TyApp / TyFn / TyTuple / TyUnit.
-//# Implementing that document would encode a shape this compiler does
-//# not have. The tables have to be rewritten against the real
-//# `TypeExpr` / `Pat` / `Stmt` / `Expr` (5 / 10 / 27 / 33 variants)
-//# before any encoder is written, because tag assignment is a
-//# FORWARD-COMPATIBILITY CONTRACT -- the format promises that a new
-//# variant takes a new tag and an old consumer raises `UnknownTag`
-//# rather than misreading, which only holds if the numbering is
-//# decided once and deliberately.
+//# The blocker recorded here before #2510 was that the spec still
+//# described the RETIRED MoonBit host's AST: its tag tables named
+//# `Int` / `Float` / `Record` / `Map` / `Set` / `ArrayBuilder`, so
+//# implementing the document would have encoded a shape this compiler
+//# does not have. That is fixed — the tables are now this compiler's
+//# `TypeExpr` / `Pat` / `Expr` / `Stmt` (5 / 10 / 33 / 26 variants),
+//# tagged in DECLARATION ORDER, and `scripts/check_ast_binary_tags.sh`
+//# holds them to `lib/@vibe/ast/index.vpkg` so they cannot drift back.
+//# (The count recorded one commit earlier said 27 statements; the
+//# enum has 26.)
 //#
-//# This matters for #2510: the doc names this format as the source of
-//# truth for the on-disk prelude AST cache
+//# What `Pat` and `Expr` still wait on is the f64 READ primitive
+//# (#2651). `EFloat` / `PFloat` carry a `Double`; writing one exactly
+//# needs `Double::to_i64_bits_lo` / `_hi`, which exist, and reading it
+//# back needs a `lohi` counterpart, which does not — the single-`Int`
+//# `Double::from_i64_bits` cannot carry a 64-bit pattern through a
+//# 63-bit `Int`, so every negative double is out of its reach.
+//# `Double::to_string` + `Double::parse` is not a substitute: measured
+//# 2026-09-11, it drops a digit on 2.2250738585072014 and answers 0
+//# for 1e300 and 1e-300 (#2652). `TypeExpr` contains no `Double` at all, which
+//# is why it is the piece that lands first.
+//#
+//# This matters for #2510: the spec names this format as the source of
+//# truth for the on-disk per-file AST cache
 //# (`~/.cache/vibe/prelude-<sha>.ast.bin`), so the per-module prelude
-//# cache cannot be persisted until the encoders exist.
+//# cache cannot be persisted until the codecs exist.
+
+//# Imports
+
+import @vibe/ast {
+  TypeExpr
+}
 
 //# Constants ===
 
@@ -49,12 +56,11 @@ export let AST_BINARY_MAGIC_T: Int = 84
 
 //# Encoder primitives ===
 
-//# LEB128 unsigned. Mirrors `write_varint` in
-//# src/core/serialize_binary.mbt. We avoid `leb128_encode_u32` from
-//# core/bytebuf because that one shifts via `((1<<25) - 1)` which
-//# silently clamps at 32 bits; the ABI requires 64-bit-clean output
-//# for any varint field (Stmt counts, string lengths). Spelled out
-//# the slow way so the bytes match across implementations bit-for-bit.
+//# LEB128 unsigned. We avoid `leb128_encode_u32` from core/bytebuf
+//# because that one shifts via `((1<<25) - 1)`, which silently clamps
+//# at 32 bits; the ABI requires 64-bit-clean output for any varint
+//# field (Stmt counts, string lengths). Spelled out the slow way so
+//# the bytes are exactly what docs/ast_binary_abi.md specifies.
 export fn ast_binary_write_varint(buf: Bytes, v: Int) -> Unit {
   let mut x = v
   let mut more = true
@@ -70,8 +76,7 @@ export fn ast_binary_write_varint(buf: Bytes, v: Int) -> Unit {
   }
 }
 
-//# Standard signed LEB128 (sleb128). Matches the encoder in
-//# src/core/serialize_binary.mbt. Arithmetic right shift keeps the
+//# Standard signed LEB128 (sleb128). Arithmetic right shift keeps the
 //# sign bit on the high end so the termination condition is
 //# value==0/no-sign or value==-1/sign-set.
 export fn ast_binary_write_svarint(buf: Bytes, v: Int) -> Unit {
@@ -105,8 +110,7 @@ export fn ast_binary_write_bool(buf: Bytes, b: Bool) -> Unit {
 //# UTF-8 encode a string and prefix with `varint(byte_count)`. vibe's
 //# `String::char_code_at` returns UTF-16 code units, so we have to
 //# (a) decode surrogate pairs back into code points, then (b) emit
-//# UTF-8 bytes. This is the inverse of what
-//# `@buffer.Buffer::write_string_utf8` does on the MoonBit side.
+//# UTF-8 bytes. `ast_binary_read_string` is the exact inverse.
 export fn ast_binary_write_string(buf: Bytes, s: String) -> Unit {
   // Encode UTF-8 into a scratch buffer first so we can prefix with
   // the byte count (not the char/code-unit count).
@@ -209,36 +213,52 @@ export fn ast_binary_read_byte(r: AstBinaryReader) -> Int {
   }
 }
 
-//# LEB128 unsigned. Mirrors `read_varint` on the MoonBit side.
+//# LEB128 unsigned.
+//#
+//# The end-of-input arm is not decoration: `ast_binary_read_byte`
+//# answers -1 past the end and `-1 & 128` is 128, so the continuation
+//# test alone NEVER terminates on a truncated varint. Stopping keeps
+//# the loop bounded; the value it then returns is not meaningful, so a
+//# decoder reading untrusted bytes calls the `_checked` reader below,
+//# which reports the truncation instead of answering.
 export fn ast_binary_read_varint(r: AstBinaryReader) -> Int {
   let mut result = 0
   let mut shift = 0
   let mut more = true
   while more {
-    let b = ast_binary_read_byte(r)
-    result = result|((b&127)<<shift)
-    if (b&128) == 0 {
+    if ast_binary_reader_remaining(r) <= 0 {
       more = false
     } else {
-      shift = shift + 7
+      let b = ast_binary_read_byte(r)
+      result = result|((b&127)<<shift)
+      if (b&128) == 0 {
+        more = false
+      } else {
+        shift = shift + 7
+      }
     }
   }
   result
 }
 
-//# sleb128. Sign-extends if the final byte has bit 6 set.
+//# sleb128. Sign-extends if the final byte has bit 6 set. Same
+//# end-of-input guard as `ast_binary_read_varint` above, same reason.
 export fn ast_binary_read_svarint(r: AstBinaryReader) -> Int {
   let mut result = 0
   let mut shift = 0
   let mut last_byte = 0
   let mut more = true
   while more {
-    let b = ast_binary_read_byte(r)
-    last_byte = b
-    result = result|((b&127)<<shift)
-    shift = shift + 7
-    if (b&128) == 0 {
+    if ast_binary_reader_remaining(r) <= 0 {
       more = false
+    } else {
+      let b = ast_binary_read_byte(r)
+      last_byte = b
+      result = result|((b&127)<<shift)
+      shift = shift + 7
+      if (b&128) == 0 {
+        more = false
+      }
     }
   }
   if shift < 64 && (last_byte&64) != 0 {
@@ -335,4 +355,162 @@ export fn ast_binary_read_header(r: AstBinaryReader) -> (Bool, Int) {
       (true, version)
     }
   }
+}
+
+//# Checked reads ===
+//#
+//# The primitives above answer for WELL-FORMED input. These report the
+//# malformed cases docs/ast_binary_abi.md requires a deserializer to
+//# raise on — unexpected EOF, a length that exceeds the remaining
+//# bytes, a present flag that is neither 0x00 nor 0x01. The AST-level
+//# codecs below read through these and never through the raw ones,
+//# because their input is a cache file: a file truncated by a crash or
+//# a full disk is the normal case, not the exotic one.
+
+export fn ast_binary_read_byte_checked(r: AstBinaryReader) -> Int with Exception {
+  if ast_binary_reader_remaining(r) <= 0 {
+    throw("ast_binary: unexpected end of input")
+  }
+  ast_binary_read_byte(r)
+}
+
+export fn ast_binary_read_varint_checked(r: AstBinaryReader) -> Int with Exception {
+  let mut result = 0
+  let mut shift = 0
+  let mut more = true
+  while more {
+    if shift >= 64 {
+      throw("ast_binary: varint exceeds 64 bits")
+    }
+    let b = ast_binary_read_byte_checked(r)
+    result = result|((b&127)<<shift)
+    if (b&128) == 0 {
+      more = false
+    } else {
+      shift = shift + 7
+    }
+  }
+  result
+}
+
+//# Validate the length prefix, then rewind and let the primitive do
+//# the UTF-8 decode. The rewind is what keeps one decoder: duplicating
+//# the decode here would be a second place for the surrogate handling
+//# to be wrong in.
+export fn ast_binary_read_string_checked(r: AstBinaryReader) -> String with Exception {
+  let start = r.pos
+  let byte_len = ast_binary_read_varint_checked(r)
+  if byte_len < 0 || ast_binary_reader_remaining(r) < byte_len {
+    throw("ast_binary: string length exceeds remaining input")
+  }
+  r.pos = start
+  ast_binary_read_string(r)
+}
+
+export fn ast_binary_read_optstr_checked(r: AstBinaryReader) -> Option[String] with Exception {
+  let tag = ast_binary_read_byte_checked(r)
+  if tag == 0 {
+    None
+  } else if tag == 1 {
+    Some(ast_binary_read_string_checked(r))
+  } else {
+    throw("ast_binary: optional-string present flag is neither 0x00 nor 0x01")
+  }
+}
+
+//# A count that exceeds the bytes left cannot be honest: every item of
+//# every tagged array costs at least its one tag byte. Checking it here
+//# turns a corrupt length into a cache miss instead of a loop that
+//# allocates until the heap is gone.
+export fn ast_binary_read_count_checked(r: AstBinaryReader) -> Int with Exception {
+  let count = ast_binary_read_varint_checked(r)
+  if count < 0 || count > ast_binary_reader_remaining(r) {
+    throw("ast_binary: array count exceeds remaining input")
+  }
+  count
+}
+
+//# TypeExpr ===
+//#
+//# Tags are the declaration order of `TypeExpr` in
+//# lib/@vibe/ast/index.vpkg, per docs/ast_binary_abi.md. They are
+//# FROZEN: a variant appended to the enum takes the next free tag, not
+//# the tag its declaration position would imply.
+
+export let AST_BINARY_TAG_TY_NAME: Int = 1
+export let AST_BINARY_TAG_TY_APP: Int = 2
+export let AST_BINARY_TAG_TY_FN: Int = 3
+export let AST_BINARY_TAG_TY_TUPLE: Int = 4
+export let AST_BINARY_TAG_TY_UNIT: Int = 5
+
+export fn ast_binary_write_type_expr(buf: Bytes, t: TypeExpr) -> Unit {
+  match t {
+    TyName(name) => {
+      Bytes::push(buf, AST_BINARY_TAG_TY_NAME)
+      ast_binary_write_string(buf, name)
+    }
+    TyApp(name, args) => {
+      Bytes::push(buf, AST_BINARY_TAG_TY_APP)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_type_expr_array(buf, args)
+    }
+    TyFn(params, ret, row) => {
+      Bytes::push(buf, AST_BINARY_TAG_TY_FN)
+      ast_binary_write_type_expr_array(buf, params)
+      ast_binary_write_type_expr(buf, ret)
+      ast_binary_write_optstr(buf, row)
+    }
+    TyTuple(items) => {
+      Bytes::push(buf, AST_BINARY_TAG_TY_TUPLE)
+      ast_binary_write_type_expr_array(buf, items)
+    }
+    TyUnit => Bytes::push(buf, AST_BINARY_TAG_TY_UNIT)
+  }
+}
+
+export fn ast_binary_write_type_expr_array(buf: Bytes, items: Array[TypeExpr]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    ast_binary_write_type_expr(buf, Array::get(items, i))
+    i = i + 1
+  }
+}
+
+//# Every multi-field arm binds its fields to `let`s in wire order
+//# before constructing. Passing the reads directly as constructor
+//# arguments would make the BYTE ORDER depend on argument evaluation
+//# order, which is exactly the kind of thing that reads correct and
+//# decodes garbage (#1899).
+export fn ast_binary_read_type_expr(r: AstBinaryReader) -> TypeExpr with Exception {
+  let tag = ast_binary_read_byte_checked(r)
+  if tag == AST_BINARY_TAG_TY_NAME {
+    TyName(ast_binary_read_string_checked(r))
+  } else if tag == AST_BINARY_TAG_TY_APP {
+    let name = ast_binary_read_string_checked(r)
+    let args = ast_binary_read_type_expr_array(r)
+    TyApp(name, args)
+  } else if tag == AST_BINARY_TAG_TY_FN {
+    let params = ast_binary_read_type_expr_array(r)
+    let ret = ast_binary_read_type_expr(r)
+    let row = ast_binary_read_optstr_checked(r)
+    TyFn(params, ret, row)
+  } else if tag == AST_BINARY_TAG_TY_TUPLE {
+    TyTuple(ast_binary_read_type_expr_array(r))
+  } else if tag == AST_BINARY_TAG_TY_UNIT {
+    TyUnit
+  } else {
+    throw("ast_binary: unknown TypeExpr tag " + Int::to_string(tag))
+  }
+}
+
+export fn ast_binary_read_type_expr_array(r: AstBinaryReader) -> Array[TypeExpr] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[TypeExpr] = []
+  let mut i = 0
+  while i < count {
+    Array::push(out, ast_binary_read_type_expr(r))
+    i = i + 1
+  }
+  out
 }
