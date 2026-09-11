@@ -4359,55 +4359,27 @@ fn link_key_is_definition(k: String) -> Bool {
   !(k == "expr" || k == "export" || k == "letpat" || k == "reexport_boundary" || k == "qualified_pattern_refs" || k == "test_effect_rows")
 }
 
-export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String) -> String with Exception {
+/// #2575 item 2: the per-module prelude driver, ONE implementation.
+///
+/// Split the merged program by module, run every pre-codegen pass on each
+/// module alone with its import closure as context, concatenate, mint what no
+/// module could build, run the whole-program-only passes once, and fold the
+/// per-module synthesis. Returns the linked statements.
+///
+/// Extracted from the oracle so that the oracle and any production caller
+/// cannot come to disagree about what "per module" means. That is not a
+/// hypothetical: nearly every defect on this line was a second implementation
+/// covering a different subset of the first (`lc_dbg_file_of_owner` mirroring
+/// the hoist's arms, the invisible-nominal recorder covering one arm of a
+/// dispatch, `synth_keys` covering one pass). A driver duplicated between a
+/// measurement and the thing it measures is that shape at the worst possible
+/// scale -- the measurement would certify a program the production lane does
+/// not produce.
+///
+/// `st` collects what a measurement wants and a compile ignores; a production
+/// caller passes a fresh one and reads nothing from it.
+fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats) -> Array[Stmt] with Exception {
   let entry_fid = file_count - 1
-  // #2631: which nominals each lane could not see. A raw `==` on a non-scalar
-  // name that is not a type formal compares an aggregate by reference, so this
-  // is the property, not a statistic about it.
-  eq_invisible_nominals_reset()
-  // #2388: the VALIDATORS, which produce diagnostics rather than rewrites and
-  // are therefore invisible to a declaration comparison. Run on the whole
-  // program here and on each module below; a per-module run sees less and could
-  // miss a violation or invent one, and nothing else in this report would say
-  // so.
-  let diag_w = lc_fresh_string_array()
-  lc_collect_validator_diags(a, diag_w)
-  let mut k = 0
-  let ev_req_w = lc_fresh_string_array()
-  let ev_ref_w = lc_fresh_string_array()
-  let ev_def_w = lc_fresh_string_array()
-  while k < 15 {
-    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
-    // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
-    // which is where a container comparator or a generic specialization is
-    // requested AND emitted. The per-module side samples at the same point --
-    // after its own trait-dict pass -- so the two are comparable. Sampling the
-    // whole lane after all 17 passes instead would have compared a registry
-    // that kept accumulating against one that did not, and any difference
-    // would have been the sample points rather than the program.
-    if k == 4 {
-      lc_union_into(ev_req_w, eq_synthesis_requests_list())
-      lc_union_into(ev_ref_w, eq_typed_refusals_list())
-      lc_union_into(ev_def_w, eq_deferred_requests_list())
-    } else {
-      ()
-    }
-    k = k + 1
-  }
-  // #2633: sampled HERE, immediately before pass 15 (`evidence_dict_pass`) and
-  // after every pass that precedes it. Sampling earlier would be vacuous --
-  // the modules partition the merged program, so any purely syntactic fact
-  // unions trivially -- and sampling later reads a program whose handles the
-  // evidence pass has already erased or migrated. The question is whether the
-  // passes BEFORE it leave each module carrying the same facts the whole
-  // program carries.
-  let (ev_decl_w, ev_handled_w, ev_perf_w) = evidence_module_facts(a)
-  while k < 17 {
-    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
-    k = k + 1
-  }
-  let whole_invisible = eq_invisible_nominals_list()
-  eq_invisible_nominals_reset()
   let parts: Array[Array[Stmt]] = []
   let mut fi = 0
   while fi < file_count {
@@ -4424,7 +4396,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // the link may fold. A declaration the source wrote is never offered to it,
   // so a definition the whole program legitimately carries twice cannot be
   // collapsed.
-  let synth_keys = lc_fresh_string_array()
+  let synth_keys = st.synth_keys
   // Everything before the trait-dict entry, per module.
   fi = 0
   while fi < file_count {
@@ -4460,14 +4432,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // The trait-dict entry with that interface, then the rest of the prelude,
   // per module.
   // #2634: the union of the synthesis requests each module made.
-  let ev_req_u = lc_fresh_string_array()
-  let diag_u = lc_fresh_string_array()
-  let ev_ref_u = lc_fresh_string_array()
-  let ev_def_u = lc_fresh_string_array()
   // #2633: the union of what each module reports just before the evidence pass.
-  let ev_decl_u = lc_fresh_string_array()
-  let ev_handled_u = lc_fresh_string_array()
-  let ev_perf_u = lc_fresh_string_array()
   fi = 0
   while fi < file_count {
     let part_entry = if fi == entry_fid {
@@ -4522,9 +4487,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
       vj = vj + 1
     }
     let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
-    lc_union_into(ev_req_u, eq_synthesis_requests_list())
-    lc_union_into(ev_ref_u, eq_typed_refusals_list())
-    lc_union_into(ev_def_u, eq_deferred_requests_list())
+    lc_union_into(st.requests, eq_synthesis_requests_list())
+    lc_union_into(st.refusals, eq_typed_refusals_list())
+    lc_union_into(st.deferrals, eq_deferred_requests_list())
     let mut sy = 0
     while sy < Array::length(synthesized) {
       // The keys this module SYNTHESIZED, recorded before the rest of the
@@ -4535,16 +4500,16 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
       Array::push(part, Array::get(synthesized, sy))
       sy = sy + 1
     }
-    lc_collect_validator_diags(part, diag_u)
+    lc_collect_validator_diags(part, st.diags)
     let mut j2 = 5
     while j2 < 17 {
       if j2 == 15 {
         // The per-module counterpart of the whole-program sample above: this
         // module's facts after every pass preceding `evidence_dict_pass`.
         let (evd, evh, evp) = evidence_module_facts(part)
-        lc_union_into(ev_decl_u, evd)
-        lc_union_into(ev_handled_u, evh)
-        lc_union_into(ev_perf_u, evp)
+        lc_union_into(st.declared, evd)
+        lc_union_into(st.handled, evh)
+        lc_union_into(st.performed, evp)
       } else {
         ()
       }
@@ -4581,6 +4546,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // what a module deferring rather than guessing buys: the need travels upward
   // instead of vanishing.
   let minted = eq_mint_deferred_into(trial)
+  Array::set(st.counts, 0, minted)
   // #2633: the whole-program phases, run once on the linked program.
   oracle_apply_pass(15, trial, entry_name, checker_eq_offsets, checker_eq_type_keys)
   oracle_apply_pass(16, trial, entry_name, checker_eq_offsets, checker_eq_type_keys)
@@ -4595,14 +4561,15 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // is the measurement's ANSWER, and stopping at the first would say "some
   // module disagrees" without saying how many or about what. Production keeps
   // the throw.
-  let (linked, collisions) = link_fold_duplicate_definitions_report(trial, synth_keys, render)
+  let (linked, collisions0) = link_fold_duplicate_definitions_report(trial, synth_keys, render)
+  lc_union_into(st.collisions, collisions0)
   // #2388 (Codex round on #2623): a definition key that still repeats in the
   // LINKED program. `dup_defs` in the keyed line counts repeats in the WHOLE
   // program -- legitimate ones the fold must not touch -- and says nothing
   // about what the fold left behind. Without this, a helper some pass minted
   // per module and never offered to the fold survives as an ordinary `copies`
   // row and the line still reads `missing=0 content=0`.
-  let linked_dup_keys = lc_fresh_string_array()
+  let linked_dup_keys = st.linked_dup_keys
   let mut linked_dups = 0
   let seen_def: MutMap[String, Int] = MutMap::new_string()
   let mut ld = 0
@@ -4629,8 +4596,110 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     }
     ld = ld + 1
   }
-  let head = String::concat(String::concat("FULL stmts=", Int::to_string(Array::length(a))), String::concat(" split=", Int::to_string(Array::length(trial))))
-  let mid = String::concat(String::concat(" linked=", Int::to_string(Array::length(linked))), String::concat(" folded=", Int::to_string(Array::length(trial) - Array::length(linked))))
+  Array::set(st.counts, 1, linked_dups)
+  Array::set(st.counts, 2, Array::length(trial))
+  linked
+}
+
+/// What `prelude_run_per_module` records on the way through. Arrays only, so
+/// the driver can fill them without returning a dozen values; `counts` is
+/// `[minted, linked_dups, split_len]`.
+struct PreludeSplitStats {
+  synth_keys: Array[String];
+  collisions: Array[String];
+  linked_dup_keys: Array[String];
+  diags: Array[String];
+  requests: Array[String];
+  refusals: Array[String];
+  deferrals: Array[String];
+  declared: Array[String];
+  handled: Array[String];
+  performed: Array[String];
+  counts: Array[Int]
+}
+
+fn prelude_split_stats_new() -> PreludeSplitStats {
+  PreludeSplitStats::{
+    synth_keys: lc_fresh_string_array(),
+    collisions: lc_fresh_string_array(),
+    linked_dup_keys: lc_fresh_string_array(),
+    diags: lc_fresh_string_array(),
+    requests: lc_fresh_string_array(),
+    refusals: lc_fresh_string_array(),
+    deferrals: lc_fresh_string_array(),
+    declared: lc_fresh_string_array(),
+    handled: lc_fresh_string_array(),
+    performed: lc_fresh_string_array(),
+    counts: [0, 0, 0]
+  }
+}
+
+export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String) -> String with Exception {
+  let entry_fid = file_count - 1
+  // #2631: which nominals each lane could not see. A raw `==` on a non-scalar
+  // name that is not a type formal compares an aggregate by reference, so this
+  // is the property, not a statistic about it.
+  eq_invisible_nominals_reset()
+  // #2388: the VALIDATORS, which produce diagnostics rather than rewrites and
+  // are therefore invisible to a declaration comparison. Run on the whole
+  // program here and on each module below; a per-module run sees less and could
+  // miss a violation or invent one, and nothing else in this report would say
+  // so.
+  let diag_w = lc_fresh_string_array()
+  lc_collect_validator_diags(a, diag_w)
+  let mut k = 0
+  let ev_req_w = lc_fresh_string_array()
+  let ev_ref_w = lc_fresh_string_array()
+  let ev_def_w = lc_fresh_string_array()
+  while k < 15 {
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
+    // which is where a container comparator or a generic specialization is
+    // requested AND emitted. The per-module side samples at the same point --
+    // after its own trait-dict pass -- so the two are comparable. Sampling the
+    // whole lane after all 17 passes instead would have compared a registry
+    // that kept accumulating against one that did not, and any difference
+    // would have been the sample points rather than the program.
+    if k == 4 {
+      lc_union_into(ev_req_w, eq_synthesis_requests_list())
+      lc_union_into(ev_ref_w, eq_typed_refusals_list())
+      lc_union_into(ev_def_w, eq_deferred_requests_list())
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  // #2633: sampled HERE, immediately before pass 15 (`evidence_dict_pass`) and
+  // after every pass that precedes it. Sampling earlier would be vacuous --
+  // the modules partition the merged program, so any purely syntactic fact
+  // unions trivially -- and sampling later reads a program whose handles the
+  // evidence pass has already erased or migrated. The question is whether the
+  // passes BEFORE it leave each module carrying the same facts the whole
+  // program carries.
+  let (ev_decl_w, ev_handled_w, ev_perf_w) = evidence_module_facts(a)
+  while k < 17 {
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    k = k + 1
+  }
+  let whole_invisible = eq_invisible_nominals_list()
+  eq_invisible_nominals_reset()
+  let st = prelude_split_stats_new()
+  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, st)
+  let split_invisible = eq_invisible_nominals_list()
+  let ev_req_u = st.requests
+  let ev_ref_u = st.refusals
+  let ev_def_u = st.deferrals
+  let ev_decl_u = st.declared
+  let ev_handled_u = st.handled
+  let ev_perf_u = st.performed
+  let diag_u = st.diags
+  let collisions = st.collisions
+  let linked_dup_keys = st.linked_dup_keys
+  let minted = Array::get(st.counts, 0)
+  let linked_dups = Array::get(st.counts, 1)
+  let trial_len = Array::get(st.counts, 2)
+  let head = String::concat(String::concat("FULL stmts=", Int::to_string(Array::length(a))), String::concat(" split=", Int::to_string(trial_len)))
+  let mid = String::concat(String::concat(" linked=", Int::to_string(Array::length(linked))), String::concat(" folded=", Int::to_string(trial_len - Array::length(linked))))
   let split_invisible = eq_invisible_nominals_list()
   let tail = String::concat(String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", Int::to_string(Array::length(collisions)))), String::concat(String::concat(" invisible_whole=", Int::to_string(Array::length(whole_invisible))), String::concat(String::concat(" invisible_split=", Int::to_string(Array::length(split_invisible))), String::concat(" linked_dups=", String::concat(Int::to_string(linked_dups), "\n")))))
   let ev_line = String::concat(String::concat(String::concat("EVIDENCE declared=", lc_set_cmp(ev_decl_w, ev_decl_u)), String::concat(" handled=", lc_set_cmp(ev_handled_w, ev_handled_u))), String::concat(" performed=", String::concat(lc_set_cmp(ev_perf_w, ev_perf_u), "\n")))
