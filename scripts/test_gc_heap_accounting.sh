@@ -17,8 +17,15 @@ fi
 }
 
 RUNNER="$ROOT_DIR/runtime/viberun/target/release/viberun"
-if [ ! -x "$RUNNER" ] || find runtime/viberun/src runtime/viberun/Cargo.toml runtime/viberun/Cargo.lock -newer "$RUNNER" -print -quit | grep -q .; then
-  cargo build --release --manifest-path runtime/viberun/Cargo.toml >/dev/null
+# `find -newer` was the wrong question. actions/checkout writes every source
+# with mtime = now and actions/cache restores target/ with its archived
+# mtimes, so the sources are ALWAYS newer than a restored binary and this
+# rebuilt ~80s on every CI run while the cache above bought nothing.
+# ensure_viberun.sh compares CONTENT instead, and still rebuilds when the
+# sources really changed.
+if ! bash "$ROOT_DIR/scripts/ensure_viberun.sh" >&2; then
+  echo "gc-heap-accounting: viberun build failed" >&2
+  exit 1
 fi
 
 WORK="$(mktemp -d "$ROOT_DIR/_build/gc_heap_accounting.XXXXXX")"

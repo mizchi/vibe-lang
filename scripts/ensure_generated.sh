@@ -42,6 +42,10 @@ COMPILER_DIR="lib/@vibe/compiler"
 MANIFEST="$COMPILER_DIR/compiler_sources_manifest.tsv"
 SEED="bootstrap/seed/compiler.wasm"
 STAMP="$COMPILER_DIR/.generated.stamp"
+# The input list the stamp's digest was taken over. Kept beside the stamp so it
+# travels with it (CI ships both in the compiler-build artifact), and named
+# without a .vibe extension so the fingerprint's own `find` cannot see it.
+INPUTS="$COMPILER_DIR/.generated.inputs"
 
 ARTIFACTS=(
   "$COMPILER_DIR/compiler_sources_bundle.vibe"
@@ -65,8 +69,12 @@ done
 # that selects the inputs, and the content of every input it names. A path that
 # the manifest lists but that is missing hashes as its own name, so a deletion
 # still moves the fingerprint rather than being silently skipped.
-compute_fingerprint() {
-  {
+# The LIST, so a staleness decision can name what moved. compute_fingerprint is
+# its digest and nothing else -- keeping them one function is what made the
+# "regenerated with a different fingerprint 1.1s later" case (run 34579840316,
+# and the same on 34567587111 before this job layout existed) unanswerable: the
+# only evidence was two hashes.
+fingerprint_inputs() {
     # The seed wasm, not just bootstrap/seed.json that pins it: a bootstrap bump
     # (generations.sh adopt) swaps the wasm in place, and that has to move the
     # fingerprint.
@@ -132,11 +140,15 @@ compute_fingerprint() {
       ! -name 'selfbuild_runtime_entry_bundle.vibe' \
       ! -name '_cli_adapter_module_source.vibe' \
       ! -name 'codegen_fingerprint.vibe' \
-      -print0 2>/dev/null | sort -z | xargs -0 sha256sum
-  } | sha256sum | cut -d' ' -f1
+      -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 sha256sum
 }
 
-FP="$(compute_fingerprint)"
+compute_fingerprint() {
+  fingerprint_inputs | sha256sum | cut -d' ' -f1
+}
+
+INPUTS_LIST="$(fingerprint_inputs)"
+FP="$(printf '%s\n' "$INPUTS_LIST" | sha256sum | cut -d' ' -f1)"
 
 if [ "$MODE" = "print" ]; then
   printf '%s\n' "$FP"
@@ -172,6 +184,25 @@ if [ "$MODE" = "ensure" ] && is_current; then
   exit 0
 fi
 
+# SAY WHAT MOVED. A regeneration costs ~130s, and twice now CI has taken that
+# cost inside a job that had just been told the artifacts were current -- once
+# 1.1 seconds after an `up to date` line, with no edit in between (runs
+# 34567587111 and 34579840316). All the evidence was two different hashes,
+# which is not enough to act on. If the stamped input list is present, the
+# difference against it IS the answer, so print it rather than leaving the next
+# person to reconstruct it from timestamps.
+if [ "$MODE" != "check" ] && [ -s "$INPUTS" ] && all_present; then
+  echo "[ensure-generated] inputs differ from the stamped set:" >&2
+  if diff_out="$(printf '%s\n' "$INPUTS_LIST" | diff "$INPUTS" - 2>/dev/null)"; then
+    echo "  (none -- the list is identical, so the digest moved for another reason;" >&2
+    echo "   that is a bug in compute_fingerprint, not a stale tree)" >&2
+  else
+    printf '%s\n' "$diff_out" | head -20 >&2
+    changed="$(printf '%s\n' "$diff_out" | grep -c '^[<>]' || true)"
+    echo "  ($changed differing line(s); < stamped, > now)" >&2
+  fi
+fi
+
 if [ ! -f "$SEED" ]; then
   bash "$SCRIPT_DIR/ensure_seed.sh"
 fi
@@ -196,10 +227,12 @@ done
 # Re-hash rather than reusing $FP: generation writes into the same tree the
 # fingerprint covers, so anything that perturbed an input mid-run must be caught
 # here instead of being stamped as current.
-FP_AFTER="$(compute_fingerprint)"
+FP_AFTER_LIST="$(fingerprint_inputs)"
+FP_AFTER="$(printf '%s\n' "$FP_AFTER_LIST" | sha256sum | cut -d' ' -f1)"
 if [ "$FP_AFTER" != "$FP" ]; then
   echo "[ensure-generated] FAIL: inputs changed during generation ($FP -> $FP_AFTER)" >&2
   exit 1
 fi
+printf '%s\n' "$FP_AFTER_LIST" > "$INPUTS"
 printf '%s\n' "$FP" > "$STAMP"
 echo "[ensure-generated] ok"

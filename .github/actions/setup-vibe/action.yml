@@ -52,6 +52,31 @@ runs:
       # MoonBit build (>= v0.12; v0.10.0 and below = retired Go implementation).
       # Keep in sync with pkfire-pkspec.yml and .claude/hooks/session-start.sh.
       uses: mizchi/pkfire@v0.14.2
+      with:
+        # The RELEASE to install. Without it the action resolves "latest" and
+        # the ref above decides nothing -- see the assertion below.
+        version: 0.14.2
+
+    - name: Assert the pinned pkfire is what got installed
+      if: inputs.pkfire == 'true'
+      shell: bash
+      # THE PIN DID NOT PIN. `uses: mizchi/pkfire@vX` names the ACTION's ref,
+      # not the pkf release it installs: the action resolves its version from
+      # an input, and with none passed it falls through to "latest". Measured
+      # on run 34567587111 -- ref v0.14.2, installed `pkfire@0.16.0`, on every
+      # job, silently. The `version:` input above is the fix; this step is what
+      # makes it stay fixed, including if that input is ever renamed upstream
+      # (an unknown input is a warning, not an error, so without this the pin
+      # would quietly go back to "latest").
+      run: |
+        set -euo pipefail
+        want="$(tr -d '[:space:]' < "$GITHUB_WORKSPACE/.github/pkfire-version")"
+        got="$(pkf version 2>/dev/null | tr -d '[:space:]')"
+        if [ "$got" != "$want" ]; then
+          echo "::error::pkfire pin not honoured: .github/pkfire-version says $want, installed $got. The action's version input is what selects the release; the ref alone does not." >&2
+          exit 1
+        fi
+        echo "[pkfire] pinned $want, installed $got"
 
     # pkfire content-addressed CAS cache. Use restore+save semantics so
     # cache hits short-circuit task replay even when inputs hash drifts;
