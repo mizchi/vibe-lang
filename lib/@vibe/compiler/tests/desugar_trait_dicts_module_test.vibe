@@ -486,6 +486,34 @@ fn invisible_probe(own_text: String, ctx_text: String) -> String with Exception 
   String::join(eq_invisible_nominals_list(), ", ")
 }
 
+/// The comparator `desugar_trait_dicts_module` synthesized for `name`, rendered.
+fn module_comparator(own_text: String, ctx_text: String, name: String) -> String with Exception {
+  let own = parse_program(lex(own_text))
+  let ctx = parse_program(lex(ctx_text))
+  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
+  render_named(synth, name)
+}
+
+// #2631: the body a module emits must NOT depend on how much of the field's
+// type that module can see, because the NAME is the comparator's identity at
+// the link. A module that saw `K` emitting `K::equals(a.kind, b.kind)` and one
+// that did not emitting `a.kind == b.kind` mint one name for two bodies, and a
+// link that concatenates keeps whichever came first -- with the raw `==`
+// comparing an aggregate by REFERENCE.
+//
+// Measured on the compiler's CLI closure, this took the per-module run's link
+// collisions from 1 to 0 and its content differences from 6 to 4 (#2388).
+test "the comparator a module synthesizes is the same whether or not it can see the field's type" {
+  let owner = "struct P {\n  kind: K\n} derive (Eq)\n\nexport fn use_p(a: P, b: P) -> Bool {\n  a == b\n}\n"
+  let kind_decl = "export enum K {\n  Ka;\n  Kb\n}\n"
+  let seen = module_comparator(owner, kind_decl, "P::equals")
+  let unseen = module_comparator(owner, "", "P::equals")
+  // Not merely equal: equal AND structural. Two raw `==` bodies would also be
+  // equal, and would be the defect rather than its absence.
+  inspect(String::contains(seen, "K::equals("), content = "true")
+  inspect(unseen == seen, content = "true")
+}
+
 test "a nominal the module cannot see is reported, and one it can see is not" {
   let owner = "struct P {\n  kind: K\n} derive (Eq)\n\nexport fn use_p(a: P, b: P) -> Bool {\n  a == b\n}\n"
   let kind_decl = "export enum K {\n  Ka;\n  Kb\n}\n"

@@ -13490,12 +13490,27 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       // `Unit` need no marker: their words are 0/1-sized, and a bit-different
       // pair can only be `false` vs `true`, which the fallback keeps unequal.
       EBinOp("==", EBinOp("+", lhs, EInt(0), -1), EBinOp("+", rhs, EInt(0), -1), -1)
-    } else {
-      if eq_name_is_invisible_nominal(n) && !str_array_contains(dtd_eq_invisible_nominals, n) {
-        Array::push(dtd_eq_invisible_nominals, n)
-      } else {
+    } else if eq_name_is_invisible_nominal(n) {
+      if str_array_contains(dtd_eq_invisible_nominals, n) {
         ()
+      } else {
+        Array::push(dtd_eq_invisible_nominals, n)
       }
+      // #2631: a declared struct or enum this statement list cannot see still
+      // gets the STRUCTURAL call, not a raw `==` on an aggregate. The name is
+      // the comparator's identity at the link, so the body a module emits must
+      // not depend on how much of the field's type that module happens to see
+      // -- otherwise two modules mint one name for two bodies and a link that
+      // concatenates keeps whichever came first.
+      //
+      // On the whole-program lane this arm is UNREACHABLE: measured on the
+      // compiler's own CLI closure, `invisible_whole=0`, because a program
+      // that type-checks whole can see every nominal it compares. It is the
+      // per-module lane that reaches it, and there the emitted call is a
+      // reference the link resolves against the module that declares the type
+      // -- the same shape as any other cross-module call.
+      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
+    } else {
       EBinOp("==", lhs, rhs, -1)
     },
     TyApp("Option", args) => if eq_builtin_head_owned_by_nonenum("Option") {
