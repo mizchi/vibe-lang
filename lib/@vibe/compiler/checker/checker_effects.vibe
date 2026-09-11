@@ -110,7 +110,10 @@ export enum EffectError {
   // source parser. EHandle does not retain its source effect name, so this
   // diagnostic deliberately names the structural problem instead.
   EEEmptyHandle;
-  EEPerformQuestionRequiresOptional(String, Int);
+  // ADR-0088: a `perform?` with no optional grant of its operation in scope.
+  // Fields: the function or block whose row would carry the grade, the
+  // operation, offset.
+  EEPerformQuestionRequiresOptional(String, String, Int);
   // ADR-0088: a `perform?` whose `NotGranted` arm cannot run. Fields: the
   // function or block, the operation, the REQUIRED label that absorbs the
   // optional grade ("" when the reason is the block's full authority), offset.
@@ -263,8 +266,17 @@ export fn effect_error_to_string(err: EffectError) -> String {
       String::concat("handle of effect '", String::concat(eff, String::concat("' can never fire: this body reaches no `perform ", tail)))
     },
     EEEmptyHandle => "handler must contain at least one arm; an empty handler cannot discharge an effect",
-    EEPerformQuestionRequiresOptional(operation, off) => {
-      let body = String::concat("`perform?` requires optional `allows ", String::concat(operation, "?`; write that grade, or use plain `perform`"))
+    EEPerformQuestionRequiresOptional(fname, operation, off) => {
+      // The edit names the keyword the row's owner takes: an entry GRANTS
+      // (`allows`), a called function REQUIRES (`with`) -- telling a called
+      // function to write `allows` would only lead to the parse error that
+      // refuses it there (Codex review on PR #2653).
+      let keyword = if is_entry_point_name(fname) {
+        "allows"
+      } else {
+        "with"
+      }
+      let body = String::concat("`perform? ", String::concat(operation, String::concat("` requires the optional grade: write `", String::concat(keyword, String::concat(" ", String::concat(operation, String::concat("?` on ", String::concat(row_owner_display_name(fname), String::concat(", or call `", String::concat(operation, "(..)` plainly"))))))))))
       if off >= 0 {
         String::concat(body, String::concat(" [@off=", String::concat(__to_string(off), "]")))
       } else {
@@ -4023,7 +4035,7 @@ fn check_perform_effects_expr_tx_in(fn_name: String, root: Expr, root_declared: 
                   } else if decl_authorizes_optional_op(declared, op_name) {
                     ()
                   } else {
-                    Array::push(errors, EEPerformQuestionRequiresOptional(op_name, call_off))
+                    Array::push(errors, EEPerformQuestionRequiresOptional(fn_name, op_name, call_off))
                   }
                 },
                 // The operand is not a recognizable operation call, as in
