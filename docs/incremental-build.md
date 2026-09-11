@@ -425,6 +425,15 @@ the context loop — which narrows that module's context, the one failure mode
 that produces a wrong program rather than a slow one. Both become "not usable",
 which is the whole-program prelude.
 
+And the map must be **non-decreasing**. The link partitions by module and emits
+the parts in module order, so a map that revisits an earlier module — `[0, 1,
+0]` — reorders the statements the source wrote. That was not hypothetical: the
+`ORDER residual=2 of=4` test above feeds exactly that shape, so the failure had
+a demonstration in this tree while the guard still accepted the input.
+Non-decreasing is what makes partition-by-module order-preserving, and it is
+what the merge produces anyway — the map is a run-length decode of per-file
+statement counts.
+
 A caller whose closure had unresolved edges passes an empty `import_closure`,
 which fails the length check for the same reason. Narrowing a module's context
 silently is worse than not splitting at all.
@@ -441,6 +450,16 @@ anything:
   first. Production must not pick a body, so the split entry turns a reported
   collision into the same refusal `link_fold_duplicate_definitions` throws,
   from one spelling shared by both.
+- **`zero_alloc_check` stays whole-program.** It is interprocedural — `za_walk`
+  walks callee bodies out of the table the check builds from the statements it
+  was handed — so a module's partition, which does not contain an imported
+  callee's body, reports that callee as not proven allocation-free. Run per
+  module it would REJECT a valid program, which is worse than a missing
+  diagnostic. The per-module run stays for the oracle, so `DIAGS prelude=` keeps
+  showing the difference rather than hiding it.
+  `lc_validate_stdin_provider_stmts`, by contrast, is purely local — it walks
+  each statement's own expression with no callee lookup — so the per-module
+  union equals the whole-program run and it stays per module.
 - **Three passes reject by returning a message**, not by throwing:
   `lc_inject_async_sleep_boundary`, `suspend_cps_pass` and
   `evidence_dict_pass`. The pass dispatch discarded all three into `let _ =`,

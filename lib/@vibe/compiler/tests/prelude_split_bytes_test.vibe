@@ -340,3 +340,52 @@ test "an out-of-range closure member refuses the split rather than narrowing" {
   }, print_stmt)
   inspect(render_in_order(a) == render_in_order(b), content = "true")
 }
+
+/// Two modules and a cross-module `#zero_alloc`: `hot` is marked and calls
+/// `helper`, which is allocation-free and lives in the OTHER module. The whole
+/// program proves it; a module's partition does not contain `helper`'s body.
+fn cross_module_zero_alloc_src() -> String {
+  "export fn helper(a: Int, b: Int) -> Int {\n  a + b\n}\n\n#zero_alloc\nfn hot(a: Int, b: Int) -> Int {\n  helper(a, b) * 2\n}\n\nfn main() -> Int {\n  hot(14, 14)\n}\n"
+}
+
+test "a `#zero_alloc` callee in another module does not become a rejection" {
+  // #2647 Codex round 2. `zero_alloc_check` is INTERPROCEDURAL: `za_walk`
+  // walks callee bodies out of the table `zero_alloc_check` builds from the
+  // statements it was handed. Run per module, the partition holding `hot` has
+  // no `helper` body, so it reports "not proven allocation-free" and the split
+  // entry REJECTS a program the whole-program prelude accepts -- worse than a
+  // missing diagnostic.
+  //
+  // The map is explicit rather than `split_in_half`: the `#zero_alloc` marker
+  // is its own statement and must stay with the `fn` it marks, so `helper`
+  // alone is module 0 and the marker, `hot` and `main` are module 1.
+  //
+  // Red-tested: with the whole-program check removed from the split entry,
+  // this reads `zero_alloc: ...` on the split side and "" on the other.
+  let a = program_stmts(cross_module_zero_alloc_src())
+  let b = program_stmts(cross_module_zero_alloc_src())
+  let ea = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let eb = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: [0, 1, 1, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  inspect(Array::length(ea), content = "0")
+  inspect(Array::length(eb), content = "0")
+}
+
+test "a map that revisits an earlier module refuses the split" {
+  // #2647 Codex round 2. The link partitions by module and emits the parts in
+  // module order, so `[0, 1, 0, 1]` REORDERS what the source wrote -- which is
+  // exactly what the residual test below demonstrates through the oracle
+  // entry, on this same shape. The production guard has to refuse it.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: [0, 1, 0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}

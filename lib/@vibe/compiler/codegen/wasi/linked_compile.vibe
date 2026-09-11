@@ -3849,6 +3849,7 @@ fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
     // program prelude.
     let mut ok = true
     let mut i = 0
+    let mut prev = 0 - 1
     while i < stmt_count {
       let id = Array::get(split.stmt_file_id, i)
       if id < 0 || id >= split.file_count {
@@ -3856,6 +3857,23 @@ fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
       } else {
         ()
       }
+      // NON-DECREASING (#2647 Codex round 2). The link partitions by module and
+      // emits the parts in module order, so a map that revisits an earlier
+      // module -- `[0, 1, 0]` -- REORDERS the statements the source wrote. That
+      // is not hypothetical: `prelude_split_bytes_test.vibe` feeds exactly that
+      // shape through the oracle entry and reads `ORDER residual=2 of=4`, so
+      // the failure had a demonstration in this tree while this guard still
+      // accepted the input.
+      //
+      // Non-decreasing is the property that makes partition-by-module
+      // order-preserving, and it is what the merge produces anyway: the map is
+      // a run-length decode of per-file statement counts.
+      if id < prev {
+        ok = false
+      } else {
+        ()
+      }
+      prev = id
       i = i + 1
     }
     let mut fi = 0
@@ -3893,6 +3911,29 @@ fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
 /// split path and is why it is named here rather than hidden behind a default.
 export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
   if module_split_usable(split, Array::length(stmts)) {
+    // WHOLE-PROGRAM, and first, exactly as `effect_lowering_prelude` runs it:
+    // the check is interprocedural, and it short-circuits the entire prelude
+    // when it fires. Running it per module instead REJECTS VALID CODE -- a
+    // `#zero_alloc` function whose allocation-free callee lives in another
+    // module reads "not proven allocation-free" from a partition that does not
+    // contain the callee's body (#2647 Codex round 2).
+    let za_msg = zero_alloc_check(stmts)
+    if za_msg != "" {
+      let only = lc_fresh_string_array()
+      Array::push(only, za_msg)
+      only
+    } else {
+      effect_lowering_prelude_split_checked(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render)
+    }
+  } else {
+    effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys)
+  }
+}
+
+/// The split prelude past the whole-program zero-allocation check, which its
+/// caller has already run.
+fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
+  {
     let st = prelude_split_stats_new()
     let env = PreludeEnv::{
       linked_imports: linked_imports,
@@ -3935,8 +3976,6 @@ export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, 
       }
       st.diags
     }
-  } else {
-    effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys)
   }
 }
 
@@ -4912,7 +4951,15 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     }
     // Before pass 0, where production runs it: `zero_alloc_check` is the first
     // thing `effect_lowering_prelude` does, on the body the source wrote.
-    lc_collect_zero_alloc_diag(Array::get(parts, fi), st.diags)
+    // The per-module answer, for the MEASUREMENT only (#2647 Codex round 2).
+    // `zero_alloc_check` is interprocedural -- `za_walk` walks callee bodies
+    // out of the `fn_names` / `fn_bodies` table built from the statements it
+    // was handed -- so a module's partition, which does not contain an
+    // imported callee's body, reports that callee as not proven
+    // allocation-free. Reported here so `DIAGS prelude=` keeps SHOWING that
+    // difference; `effect_lowering_prelude_split` runs the real check on the
+    // whole program, where production runs it.
+    lc_collect_zero_alloc_diag(Array::get(parts, fi), st.validator_diags)
     let mut j = 0
     while j < 4 {
       lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, st.diags, env)
@@ -5190,6 +5237,11 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
 /// `[minted, linked_dups, split_len]`.
 struct PreludeSplitStats {
   synth_keys: Array[String];
+  // Diagnostics from the per-module VALIDATOR runs, kept apart from `diags`
+  // because they are the measurement's answer and not the prelude's: the
+  // oracle unions both, and `effect_lowering_prelude_split` returns only
+  // `diags` (#2647 Codex round 2).
+  validator_diags: Array[String];
   tail: PreludeTail;
   collisions: Array[String];
   linked_dup_keys: Array[String];
@@ -5214,6 +5266,7 @@ struct PreludeSplitStats {
 fn prelude_split_stats_new() -> PreludeSplitStats {
   PreludeSplitStats::{
     synth_keys: lc_fresh_string_array(),
+    validator_diags: lc_fresh_string_array(),
     tail: prelude_tail_new(),
     collisions: lc_fresh_string_array(),
     linked_dup_keys: lc_fresh_string_array(),
@@ -5348,7 +5401,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_decl_u = st.declared
   let ev_handled_u = st.handled
   let ev_perf_u = st.performed
-  let diag_u = st.diags
+  let diag_u = lc_fresh_string_array()
+  lc_union_into(diag_u, st.diags)
+  lc_union_into(diag_u, st.validator_diags)
   // #2575 item 4: the split lane's answers to the same three analyses, one
   // union over the modules, taken by the driver at the same point in its pass
   // order.
