@@ -913,6 +913,46 @@ fn merged_stmts_and_offsets_prov(source_groups: Array[(String, Array[(String, St
 /// lets the rebased typed-lowering tables still name the right nodes. Kept
 /// byte-identical to `fs_compile`'s copy on purpose -- the two lanes must
 /// agree on what a module contains.
+/// #2621 review: the typed-lowering tables belong IN the artifact key.
+///
+/// The key is derived from `print_program(filtered)`, and
+/// `module_lane_filter_stmts` drops everything that is not a top-level function
+/// binding -- type aliases included. So two programs that differ only in a
+/// DROPPED declaration print identically:
+///
+///   type Value = Int      let render: (Value) -> String = (v) -> { __to_string(v) }
+///   type Value = Bool     let render: (Value) -> String = (v) -> { __to_string(v) }
+///
+/// The retained text is the same; the Int-render and Bool-render channels are
+/// not. On a shared `TypeDb`, the second compile would hit the first's artifact
+/// and emit the first program's lowering for the second program's types.
+///
+/// Folding the tables in costs one pass over three small Int arrays and makes
+/// the key a function of everything codegen actually reads, rather than of the
+/// text alone. Cheaper and narrower than hashing the whole checked input.
+fn typed_offsets_key(floats: Array[Int], ints: Array[Int], bools: Array[Int]) -> String {
+  let out = StringBuilder::new()
+  let mut k = 0
+  while k < 3 {
+    let table = if k == 0 {
+      floats
+    } else if k == 1 {
+      ints
+    } else {
+      bools
+    }
+    StringBuilder::push(out, "|")
+    let mut i = 0
+    while i < Array::length(table) {
+      StringBuilder::push(out, Int::to_string(Array::get(table, i)))
+      StringBuilder::push(out, ",")
+      i = i + 1
+    }
+    k = k + 1
+  }
+  StringBuilder::freeze(out)
+}
+
 fn module_lane_filter_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
   let filtered = array_empty()
   let mut i = 0
@@ -2081,7 +2121,7 @@ fn compile_file_fs_module_cached_slow(db: TypeDb, entry_path: String) -> (Bytes,
       let next_db = prepare_file_fs_from_source_groups_persistent_cached(db, entry_path, source_groups)
       let (merged_stmts, float_offsets, int_offsets, bool_offsets, _, _) = merged_stmts_and_offsets(source_groups)
       let filtered = module_lane_filter_stmts(merged_stmts)
-      let artifact_fingerprint = artifact_fingerprint_from_source(print_program(filtered))
+      let artifact_fingerprint = artifact_fingerprint_from_source(String::concat(print_program(filtered), typed_offsets_key(float_offsets, int_offsets, bool_offsets)))
       match db_load_artifact(next_db, entry_path, "module-typed", "", artifact_fingerprint) {
         Some(bytes) => (bytes, next_db),
         None => {

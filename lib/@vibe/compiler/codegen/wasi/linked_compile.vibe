@@ -556,6 +556,96 @@ fn lc_set_cmp(whole: Array[String], union: Array[String]) -> String {
   }
 }
 
+/// #2575 item 4: membership over a name set, as a map, so the comparison
+/// below is linear. `lc_str_array_has` is a scan, and these sets are 2700
+/// names each on the compiler's own closure.
+fn lc_name_index(names: Array[String]) -> MutMap[String, Int] {
+  let idx: MutMap[String, Int] = MutMap::new_string()
+  let mut i = 0
+  while i < Array::length(names) {
+    MutMap::set(idx, Array::get(names, i), 1)
+    i = i + 1
+  }
+  idx
+}
+
+/// #2575 item 4: `<count>` when the two sets agree, else
+/// `<whole>/<union>:-<missing count>:<first>+<extra count>:<first>`.
+///
+/// `lc_set_cmp`'s shape with both differences COUNTED. On the compiler's own
+/// closure the sizes alone read `2705/2626`, which invites subtraction -- and
+/// 79 is the NET, not the number of names each lane has that the other does
+/// not (167 and 88). The two directions mean opposite things here: a missing
+/// name is a module being conservative, an extra one is a module qualifying a
+/// function the whole program disqualified. A report that lets them cancel
+/// hides the unsound one behind the one that is merely slow.
+fn lc_set_cmp_counted(whole: Array[String], union: Array[String]) -> String {
+  let whole_idx = lc_name_index(whole)
+  let union_idx = lc_name_index(union)
+  let mut missing = 0
+  let mut first_missing = ""
+  let mut i = 0
+  while i < Array::length(whole) {
+    let n = Array::get(whole, i)
+    if MutMap::has(union_idx, n) {
+      ()
+    } else {
+      missing = missing + 1
+      if first_missing == "" {
+        first_missing = n
+      } else {
+        ()
+      }
+    }
+    i = i + 1
+  }
+  let mut extra = 0
+  let mut first_extra = ""
+  let mut j = 0
+  while j < Array::length(union) {
+    let n = Array::get(union, j)
+    if MutMap::has(whole_idx, n) {
+      ()
+    } else {
+      extra = extra + 1
+      if first_extra == "" {
+        first_extra = n
+      } else {
+        ()
+      }
+    }
+    j = j + 1
+  }
+  if missing == 0 && extra == 0 && Array::length(whole) == Array::length(union) {
+    Int::to_string(Array::length(whole))
+  } else {
+    String::concat(String::concat(Int::to_string(Array::length(whole)), String::concat("/", Int::to_string(Array::length(union)))), String::concat(String::concat(String::concat(":-", Int::to_string(missing)), String::concat(":", first_missing)), String::concat(String::concat("+", Int::to_string(extra)), String::concat(":", first_extra))))
+  }
+}
+
+/// #2575 item 4: the borrow analysis answers with a NAME and a per-position
+/// MASK, and the mask is what decides the ABI. Comparing names alone reports
+/// agreement for a function both lanes list under different masks, which is
+/// exactly the disagreement that matters, so pair them.
+fn lc_name_mask_pairs(names: Array[String], masks: Array[Int]) -> Array[String] {
+  let out = lc_fresh_string_array()
+  let mut i = 0
+  while i < Array::length(names) {
+    let m = if i < Array::length(masks) {
+      Int::to_string(Array::get(masks, i))
+    } else {
+      // The analysis returns the masks aligned to the sorted names, so a short
+      // list is a contract break rather than a missing entry. Reported instead
+      // of defaulted to 0: a 0 here reads as "borrows nothing", which is a
+      // real answer this lane would then be inventing.
+      "?"
+    }
+    Array::push(out, String::concat(Array::get(names, i), String::concat("#", m)))
+    i = i + 1
+  }
+  out
+}
+
 fn lc_fresh_string_array() -> Array[String] {
   ArrayBuilder::freeze(ArrayBuilder::new())
 }
@@ -4378,8 +4468,27 @@ fn link_key_is_definition(k: String) -> Bool {
 ///
 /// `st` collects what a measurement wants and a compile ignores; a production
 /// caller passes a fresh one and reads nothing from it.
+/// The functions the borrow-param analysis leaves alone: the program entry, and
+/// the three names a host or runtime may call directly.
+///
+/// ONE spelling, because three places ask the question -- production, and the
+/// oracle's two lanes, which compare their answers to each other. A list that
+/// drifted between them would let the EXCLUDE LIST, rather than the program,
+/// produce a difference, and the comparison exists to detect the program's.
+fn lc_analysis_exclude(entry_name: String) -> Array[String] {
+  [entry_name, "main", "_start", "cli_main"]
+}
+
 fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats) -> Array[Stmt] with Exception {
   let entry_fid = file_count - 1
+  // #2575 item 4: the three analyses `linked_compile` runs between the prelude
+  // and codegen are sampled per module here, and on the whole program by the
+  // caller, at the same point in the pass order. `lc_analysis_exclude` is the
+  // ONE spelling of the exclude list, and the same list on both lanes is
+  // deliberate: the real compile excludes by name regardless of module, so
+  // deriving it per module from `part_entry` would let the exclude list, rather
+  // than the program, produce a difference.
+  let an_exclude = lc_analysis_exclude(entry_name)
   let parts: Array[Array[Stmt]] = []
   let mut fi = 0
   while fi < file_count {
@@ -4527,6 +4636,18 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       }
       j2 = j2 + 1
     }
+    // #2575 item 4: this module's answer to the three analyses, from its own
+    // statements alone -- the counterpart of the whole-lane sample the caller
+    // takes, at the same point in the pass order. All three are
+    // INTERPROCEDURAL, so the two lanes can differ in EITHER direction and the
+    // directions do not mean the same thing; the caller's comment says which is
+    // which.
+    let part_bmask = lc_fresh_int_array()
+    let part_bfns = compute_borrow_param_user_fns(part, an_exclude, part_bmask)
+    lc_union_into(st.an_bret, sorted_names_of(compute_borrow_returning_names(part)))
+    lc_union_into(st.an_bfns, part_bfns)
+    lc_union_into(st.an_pairs, lc_name_mask_pairs(part_bfns, part_bmask))
+    lc_union_into(st.an_view, sorted_names_of(compute_may_return_view_fns(part)))
     fi = fi + 1
   }
   let trial: Array[Stmt] = []
@@ -4615,6 +4736,14 @@ struct PreludeSplitStats {
   declared: Array[String];
   handled: Array[String];
   performed: Array[String];
+  // #2575 item 4: the union of each module's answer to the three analyses that
+  // run between the prelude and codegen -- borrow-returning names, borrow-param
+  // functions, their name#mask pairs, and may-return-view names. The caller
+  // holds the whole-program side and compares.
+  an_bret: Array[String];
+  an_bfns: Array[String];
+  an_pairs: Array[String];
+  an_view: Array[String];
   counts: Array[Int]
 }
 
@@ -4630,12 +4759,35 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     declared: lc_fresh_string_array(),
     handled: lc_fresh_string_array(),
     performed: lc_fresh_string_array(),
+    an_bret: lc_fresh_string_array(),
+    an_bfns: lc_fresh_string_array(),
+    an_pairs: lc_fresh_string_array(),
+    an_view: lc_fresh_string_array(),
     counts: [0, 0, 0]
   }
 }
 
 export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String) -> String with Exception {
   let entry_fid = file_count - 1
+  // #2637 review (Codex P2): production runs `fold_const_bool_params` and
+  // `dce_stmts` BETWEEN the prelude and the three analyses sampled below, and
+  // `late_dce_has_entry` is the necessary condition for either
+  // (`compile_wasi_module_linked_impl_with_typed_offsets`). A folded constant
+  // Bool argument can delete a consuming branch and change a borrow MASK, and
+  // DCE can delete a generated helper outright, so a sample taken before them
+  // describes a program the real compile does not analyse.
+  //
+  // Read HERE, from the unmutated `a`, because production reads it before the
+  // prelude too -- the passes append and rewrite, so asking after them is a
+  // different question.
+  //
+  // The oracle cannot reproduce those transforms: `dce_stmts` is rooted at the
+  // ENTRY, and the split lane has no per-module entry -- every module's
+  // exports are roots for its dependents, so there is no module-local answer
+  // to root it at. So when the condition holds the four columns report
+  // `unmeasured` rather than a number: a count taken at the wrong point would
+  // read exactly like one taken at the right one.
+  let an_dce_entry = lc_defines_top_level(a, entry_name)
   // #2631: which nominals each lane could not see. A raw `==` on a non-scalar
   // name that is not a type formal compares an aggregate by reference, so this
   // is the property, not a statistic about it.
@@ -4681,6 +4833,38 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
     k = k + 1
   }
+  // #2575 item 4: the three whole-program analyses `linked_compile` runs
+  // between the prelude and codegen. Sampled HERE on both lanes -- after all
+  // 17 passes -- which is where the real compile runs them WHEN late DCE does
+  // not intervene; `an_dce_entry` above is that condition, and the line says
+  // which case it measured rather than leaving the reader to assume.
+  //
+  // Unlike the evidence facts above, all three are INTERPROCEDURAL -- each
+  // reads the classification of callees that may live in another module -- so
+  // the two lanes can differ in either direction and the directions do not
+  // mean the same thing.
+  //
+  // Two of them iterate to a fixpoint (`compute_borrow_returning_names`'s
+  // `while changed`, `compute_may_return_view_fns`' callee-edge worklist).
+  // `compute_borrow_param_user_fns` does NOT: it is round 0 plus ONE bounded
+  // transitive round reading round 0's immutable snapshot, and deliberately
+  // stops there (its contract in common_analysis.vibe). The distinction is
+  // not pedantry -- a link-time implementation that closed it transitively
+  // would compute a LARGER borrow set than today's ABI, which is a behaviour
+  // change rather than the same answer computed differently (Codex round on
+  // #2637).
+  //
+  //   whole has a name the union lacks -- a module was conservative about a
+  //     callee it cannot see. Slower, sound.
+  //   the union has a name whole lacks -- a module QUALIFIED a function the
+  //     whole program disqualified. `ca_collect_nonident_args` disqualifies a
+  //     callee from a CALL SITE, which may live in another module, so this
+  //     direction is reachable and it is the unsound one.
+  let an_exclude = lc_analysis_exclude(entry_name)
+  let an_bret_w = sorted_names_of(compute_borrow_returning_names(a))
+  let an_bmask_w = lc_fresh_int_array()
+  let an_bfns_w = compute_borrow_param_user_fns(a, an_exclude, an_bmask_w)
+  let an_view_w = sorted_names_of(compute_may_return_view_fns(a))
   let whole_invisible = eq_invisible_nominals_list()
   eq_invisible_nominals_reset()
   let st = prelude_split_stats_new()
@@ -4693,6 +4877,13 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_handled_u = st.handled
   let ev_perf_u = st.performed
   let diag_u = st.diags
+  // #2575 item 4: the split lane's answers to the same three analyses, one
+  // union over the modules, taken by the driver at the same point in its pass
+  // order.
+  let an_bret_u = st.an_bret
+  let an_bfns_u = st.an_bfns
+  let an_pairs_u = st.an_pairs
+  let an_view_u = st.an_view
   let collisions = st.collisions
   let linked_dup_keys = st.linked_dup_keys
   let minted = Array::get(st.counts, 0)
@@ -4746,6 +4937,17 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let req_b = String::concat(String::concat(" deferred=", Int::to_string(Array::length(ev_def_u))), String::concat(" minted=", Int::to_string(minted)))
   let req_c = String::concat(String::concat(" indirect=", Int::to_string(mint_missing)), String::concat(mint_names, "\n"))
   let req_line = String::concat(String::concat(String::concat(req_a, req_b), req_c), diag_line)
+  let an_head = String::concat("ANALYSIS dce_entry=", if an_dce_entry {
+    "1"
+  } else {
+    "0"
+  })
+  let an_cols = if an_dce_entry {
+    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured"
+  } else {
+    String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u))))
+  }
+  let an_line = String::concat(String::concat(an_head, an_cols), "\n")
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
   let mut ldi = 0
@@ -4765,7 +4967,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     ini = ini + 1
   }
   let line2 = String::concat(String::concat(line, collision_lines), invisible_lines)
-  String::concat(String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), ev_line), req_line)
+  String::concat(String::concat(String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), ev_line), an_line), req_line)
 }
 
 export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
@@ -5019,6 +5221,10 @@ fn lc_dbg_file_of_fn(dbg_name_file: MutMap[String, Int], dbg_owner_file: MutMap[
     },
     None => match hoisted_lambda_owner_key(name) {
       Some(owner) => match MutMap::get(dbg_owner_file, owner) {
+        // Ambiguous owners refuse exactly like ambiguous names: two pre-prelude
+        // statements share this owner key (two modules with a same-labelled
+        // test), so the hoisted body belongs to one of two files and this
+        // places neither.
         Some(fid) => fid,
         None => 0
       },
@@ -6429,12 +6635,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   // array_contains_str + __rt_eq/__rt_str_eq/__rt_arr_get traffic).
   let lc_borrow_param_mask = lc_fresh_int_array()
   let lc_borrow_param_user_srt = if lc_borrow_arg0_enabled {
-    compute_borrow_param_user_fns(stmts, [
-      entry_name,
-      "main",
-      "_start",
-      "cli_main"
-    ], lc_borrow_param_mask)
+    compute_borrow_param_user_fns(stmts, lc_analysis_exclude(entry_name), lc_borrow_param_mask)
   } else {
     lc_fresh_string_array()
   }

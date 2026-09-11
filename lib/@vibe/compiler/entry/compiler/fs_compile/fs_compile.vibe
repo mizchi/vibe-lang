@@ -572,6 +572,46 @@ export fn source_group_pruned_stmt_count(db: TypeDb, main_source: String, main_p
 /// #2437/#2449: lifted out of the reprint so the statement merge can be
 /// filtered directly. Selecting statements preserves every node offset, which
 /// is what lets the rebased typed-lowering tables still name the right nodes.
+/// #2621 review: the typed-lowering tables belong IN the artifact key.
+///
+/// The key is derived from `print_program(filtered)`, and
+/// `module_lane_filter_stmts` drops everything that is not a top-level function
+/// binding -- type aliases included. So two programs that differ only in a
+/// DROPPED declaration print identically:
+///
+///   type Value = Int      let render: (Value) -> String = (v) -> { __to_string(v) }
+///   type Value = Bool     let render: (Value) -> String = (v) -> { __to_string(v) }
+///
+/// The retained text is the same; the Int-render and Bool-render channels are
+/// not. On a shared `TypeDb`, the second compile would hit the first's artifact
+/// and emit the first program's lowering for the second program's types.
+///
+/// Folding the tables in costs one pass over three small Int arrays and makes
+/// the key a function of everything codegen actually reads, rather than of the
+/// text alone. Cheaper and narrower than hashing the whole checked input.
+fn typed_offsets_key(floats: Array[Int], ints: Array[Int], bools: Array[Int]) -> String {
+  let out = StringBuilder::new()
+  let mut k = 0
+  while k < 3 {
+    let table = if k == 0 {
+      floats
+    } else if k == 1 {
+      ints
+    } else {
+      bools
+    }
+    StringBuilder::push(out, "|")
+    let mut i = 0
+    while i < Array::length(table) {
+      StringBuilder::push(out, Int::to_string(Array::get(table, i)))
+      StringBuilder::push(out, ",")
+      i = i + 1
+    }
+    k = k + 1
+  }
+  StringBuilder::freeze(out)
+}
+
 fn module_lane_filter_stmts(stmts: Array[Stmt]) -> Array[Stmt] {
   let filtered = empty_stmt_array()
   let mut i = 0
@@ -634,7 +674,7 @@ export fn compile_with_modules_cached(db: TypeDb, main_source: String, main_path
   let ordered_sources = collect_inline_sources_ordered(main_path, main_source, sources)
   let (merged_stmts, float_offsets, int_offsets, bool_offsets, _, _) = merged_stmts_and_offsets_inline(ordered_sources)
   let filtered = module_lane_filter_stmts(merged_stmts)
-  let artifact_fingerprint = artifact_fingerprint_from_source(print_program(filtered))
+  let artifact_fingerprint = artifact_fingerprint_from_source(String::concat(print_program(filtered), typed_offsets_key(float_offsets, int_offsets, bool_offsets)))
   match db_load_artifact(next_db, main_path, "module-typed", "", artifact_fingerprint) {
     Some(bytes) => (bytes, next_db),
     None => {

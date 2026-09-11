@@ -1,0 +1,44 @@
+//# #2378 / #2624 review: the names whose BODY was deleted stay PUBLISHED.
+//
+// `lib/@vibe/builtin/string.vibe` deletes the `fn` body of every name the
+// builtin registry owns -- a definition there would replace the builtin for
+// every dependent program, which is what #2378 is about -- but it keeps the
+// name on its `export { }` list so the package still publishes it.
+//
+// Removing the declaration as well is a mistake that has been made once, in
+// #2624, for `String::equals` and `String::trim`: an ALIASED import broke with
+// "imported name 'String::equals' is not exported by '@vibe/builtin'", because
+// `bind_checked_imports` creates the local alias only when the export marker
+// exists. A plain `String::equals(..)` call kept working, so nothing in the
+// tree noticed -- which is why this file imports every one of them UNDER AN
+// ALIAS. A bare-name test would pass against the builtin registry whether or
+// not the package published anything.
+//
+// EIGHT of the eleven bodyless names are here. The three length intrinsics
+// (`String::unicode_length` / `utf16_length` / `utf8_length`) are left out
+// because importing any of them -- aliased or not -- is an internal compiler
+// error today: `(local, @call) reached code generation unresolved`. That is
+// #2630, found while writing this file, and these three join the list when it
+// lands.
+
+import @vibe/builtin {
+  String::contains as s_contains,
+  String::ends_with as s_ends_with,
+  String::equals as s_equals,
+  String::index_of as s_index_of,
+  String::last_index_of as s_last_index_of,
+  String::split as s_split,
+  String::starts_with as s_starts_with,
+  String::trim as s_trim
+}
+
+test "every bodyless intrinsic is importable under an alias" {
+  inspect(s_contains("hello", "ell"), content = "true")
+  inspect(s_ends_with("hello", "lo"), content = "true")
+  inspect(s_equals("ab", "ab"), content = "true")
+  inspect(s_index_of("hello world", "world"), content = "6")
+  inspect(s_last_index_of("aXbXc", "X"), content = "3")
+  inspect(Array::length(s_split("a,b,c", ",")), content = "3")
+  inspect(s_starts_with("hello", "he"), content = "true")
+  inspect(s_trim("  hi  "), content = "hi")
+}
