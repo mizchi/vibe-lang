@@ -1,0 +1,33 @@
+// #2640: `@vibe/core` declares its collections BODYLESS in its contract
+// (`type MutMap[K, V]`, `type MutSet[T]`), so a consumer sees them as
+// `CtNamed` -- indistinguishable, in the type representation, from a rigid
+// type parameter. They therefore landed in `head_kind`'s tolerated `0`
+// bucket, and `vibe check` accepted this program with NO diagnostic. It then
+// read the array's header as a hash table and trapped inside `find_index`:
+//
+//   trap: RuntimeError: null function or function signature mismatch
+//     at find_index_dep_lib__vibe_core_hashmap_vibe
+//
+// `Int` in the same position was always rejected (a builtin scalar reaches
+// `named_vs_scalar`), and so were `StringSet` (bodyless but NOT
+// parameterized), an imported concrete struct, and an array element
+// mismatch. The hole was exactly a PARAMETERIZED bodyless contract head.
+
+import @vibe/core {
+  struct MutSet
+}
+
+//# Functions
+
+fn takes_set(s: MutSet[String]) -> Bool {
+  MutSet::has(s, "x")
+}
+
+export let main = () -> Int {
+  let a: Array[String] = ["x"]
+  if takes_set(a) {
+    1
+  } else {
+    0
+  }
+}

@@ -952,6 +952,39 @@ send_check_reject "err_type_eq_marker_bound_struct.vibe" 'no impl `Eq` for `Pt`'
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'is a marker trait (declared with no methods)' "eqmarker2"
 send_check_reject "err_type_eq_marker_bound_struct.vibe" 'Give `Eq` at least one method' "eqmarker3"
 send_check_reject "err_type_ord_marker_bound_struct.vibe" 'no impl `Ord` for `Token`' "ordmarker"
+# #2640: `@vibe/core` declares its collections BODYLESS in its contract
+# (`type MutMap[K, V]`, `type MutSet[T]`), so a consumer sees them as
+# `CtNamed` -- indistinguishable, in the type representation, from a rigid
+# type parameter -- and they sat in `head_kind`'s tolerated `0` bucket. An
+# `Array[String]` passed where a `MutSet[String]` is declared checked CLEAN
+# and then trapped in `find_index`, reading the array header as a hash table.
+#
+# BOTH directions, because `head_kind` is consulted symmetrically
+# (`eh != 0 && ah != 0 && eh != ah`): a fix that gave only one side a certain
+# head would leave the other open and this row would not notice.
+send_check_reject "err_type_mutset_from_array.vibe" 'expected MutSet[String], got Array[String]' "cgenhead"
+send_check_reject "err_type_array_from_mutset.vibe" 'expected Array[String], got MutSet[String]' "cgenhead2"
+# The control, and the reason the two rows above cannot pass by rejecting the
+# type outright: the same heads used correctly -- including a function
+# polymorphic over the element, which is what the `0` bucket exists for --
+# must still compile AND run. (The compiler's own self-build is the same
+# claim at scale; `lib/@vibe` uses these two everywhere.)
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/contract_generic_head_ok.vibe "$senddir/cgenok.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$senddir/cgenok.wasm" ]; then
+  echo "[compiler-gate] FAIL: contract_generic_head_ok.vibe did not compile -- the #2640 head check over-rejects" >&2
+  cat "$senddir/cgenok.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cgenok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$senddir/cgenok.wasm" 2>&1)" || cgenok_out="<run failed> $cgenok_out"
+# The VALUE, not just the exit status: the fixture's arithmetic reads both
+# heads through four call sites, so 42 is what says they were all typed --
+# a run that merely exits 0 would pass while returning anything.
+if [ "$(printf '%s' "$cgenok_out" | tail -1)" != "42" ]; then
+  echo "[compiler-gate] FAIL: contract_generic_head_ok got '$cgenok_out' (want 42)" >&2
+  exit 1
+fi
 # #1090 review: bounds are enforced on the IMPORT (check_program_with_env /
 # FS) path too — a consumer importing a [T: Send] fn must not bypass it.
 cat > "$senddir/send_dep.vibe" <<'SENDDEP'
