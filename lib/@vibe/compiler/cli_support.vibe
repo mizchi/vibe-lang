@@ -866,38 +866,92 @@ fn registry_owns_name(name: String) -> Bool {
 ///
 /// Reported at the DEFINING file, which is where the edit goes. Measured
 /// against `lib/**`: zero rows today.
-export fn check_builtin_shadowing_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
-  let source = match checked_entry_source(input_path, source_groups) {
-    Some(snapshot) => snapshot,
-    None => return array_empty()
+/// One file's offending definitions, appended to `out`.
+///
+/// `label` is empty for the entry (its own warnings need no path prefix, like
+/// every other warning this lane emits) and the owning path otherwise, so a
+/// dependency's row says which file to edit.
+fn append_builtin_shadowing_warnings(out: Array[String], path: String, source: String, label: String) -> Unit with Exception {
+  let stmts = match checked_warning_stmts(path, source) {
+    Some(parsed) => parsed,
+    None => return ()
   }
-  match checked_warning_stmts(input_path, source) {
-    Some(stmts) => {
-      let out = array_empty()
-      let mut i = 0
-      while i < Array::length(stmts) {
-        match Array::get(stmts, i) {
-          SLet(_, _, name, _, value) => {
-            let qualified = String::index_of(name, "::") > 0
-            let is_fn_def = match value {
-              EFn(_, _, _, _, _, _) => true,
-              _ => false
-            }
-            if qualified && is_fn_def && registry_owns_name(name) {
-              let tail = String::concat("` -- a qualified definition of a builtin name replaces that builtin for the whole linked program, including files that never import it. Use a different name, or `let ", String::concat(name, " = <builtin>` if you mean to re-export it."))
-              Array::push(out, locate_type_error(source, String::concat("warning: rename `", String::concat(name, tail))))
-            } else {
-              ()
-            }
-          },
-          _ => ()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) => {
+        let qualified = String::index_of(name, "::") > 0
+        let is_fn_def = match value {
+          EFn(_, _, _, _, _, _) => true,
+          _ => false
         }
-        i = i + 1
-      }
-      out
-    },
-    None => array_empty()
+        if qualified && is_fn_def && registry_owns_name(name) {
+          let tail = String::concat("` -- a qualified definition of a builtin name replaces that builtin for the whole linked program, including files that never import it. Use a different name, or `let ", String::concat(name, " = <builtin>` if you mean to re-export it."))
+          let located = locate_type_error(source, String::concat("warning: rename `", String::concat(name, tail)))
+          Array::push(out, if String::length(label) == 0 {
+            located
+          } else {
+            String::concat(label, String::concat(": ", located))
+          })
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
   }
+}
+
+export fn check_builtin_shadowing_warnings_from_source_groups(input_path: String, source_groups: Array[(String, Array[(String, String)])]) -> Array[String] with Exception + Fs {
+  let out = array_empty()
+  // #2628 review: the WHOLE closure, not just the entry.
+  //
+  // Scanning only `input_path` missed the case #2378 is actually about.
+  // Measured: `dep.vibe` defines `String::index_of`, `main.vibe` imports only
+  // `unrelated_helper` from it -- `vibe check dep.vibe` warned, and `vibe check
+  // main.vibe` said `ok` while being the program that gets the wrong builtin.
+  // The definer is who must edit, but the caller is who is surprised, and the
+  // caller is who runs `vibe check` on their own entry.
+  //
+  // Each member is visited once, keyed by path: a file reachable through two
+  // groups must not warn twice.
+  let seen = array_empty()
+  let mut gi = 0
+  while gi < Array::length(source_groups) {
+    let (_group, members) = Array::get(source_groups, gi)
+    let mut mi = 0
+    while mi < Array::length(members) {
+      let (path, source) = Array::get(members, mi)
+      if str_array_contains_path(seen, path) {
+        ()
+      } else {
+        Array::push(seen, path)
+        append_builtin_shadowing_warnings(out, path, source, if path == input_path {
+          ""
+        } else {
+          path
+        })
+      }
+      mi = mi + 1
+    }
+    gi = gi + 1
+  }
+  out
+}
+
+fn str_array_contains_path(arr: Array[String], value: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == value {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 /// The same warnings, from source groups the caller already has. `vibe check`

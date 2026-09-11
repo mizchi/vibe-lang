@@ -2086,7 +2086,23 @@ if grep -qF 'rename `' "$bsdir/bare.out" 2>/dev/null; then
   echo "[compiler-gate] FAIL: a BARE definition was reported; export namespacing already scopes it (#2378)" >&2
   cat "$bsdir/bare.out" >&2; exit 1
 fi
-echo "[compiler-gate] qualified fn reported; value alias and bare name stay silent ok (#2378)"
+# The CROSS-FILE case, which is the one #2378 is actually about: the caller
+# imports only an unrelated name and still gets the override. Checking the
+# ENTRY has to report it, naming the dependency that has to be edited --
+# scanning the entry alone left `vibe check main.vibe` saying `ok` while
+# `main.vibe` was the program getting the wrong builtin (#2628 review).
+printf 'export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nexport fn unrelated_helper(n: Int) -> Int {\n  n + 1\n}\n' > "$bsdir/xdep.vibe"
+printf 'import ./xdep.vibe { unrelated_helper }\n\nexport fn run() -> Int {\n  unrelated_helper(1) + String::index_of("hello world", "world")\n}\n' > "$bsdir/xmain.vibe"
+bs_check "$bsdir/xmain.vibe" xmain
+if ! grep -qF 'rename `String::index_of`' "$bsdir/xmain.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: checking the ENTRY did not report a dependency's builtin override (#2378)" >&2
+  cat "$bsdir/xmain.out" "$bsdir/xmain.out.diag" 2>/dev/null >&2; exit 1
+fi
+if ! grep -qF 'xdep.vibe' "$bsdir/xmain.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the cross-file report does not name the file to edit (#2378)" >&2
+  cat "$bsdir/xmain.out" >&2; exit 1
+fi
+echo "[compiler-gate] qualified fn reported (own file and through an import); value alias and bare name stay silent ok (#2378)"
 
 # The rungs that stay a RUNTIME trap. These fire while GENERATING a comparator
 # for a generic shape, not at a comparison the program performs -- the

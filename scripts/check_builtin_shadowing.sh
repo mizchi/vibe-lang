@@ -181,50 +181,33 @@ fi
 # Declarations that BIND a value: KIND 12 (Function) and 13 (Variable). 13 is
 # the one a regex misses (`export let Fs::exists = exists`).
 awk '$3 == 12 || $3 == 13 { print $2 }' "$SYMS" | sort -u > "$WORK/declared.txt"
-comm -12 "$WORK/registry.txt" "$WORK/declared.txt" > "$WORK/found_raw.txt"
+comm -12 "$WORK/registry.txt" "$WORK/declared.txt" > "$WORK/found.txt"
 
-# A `test "X"` / `bench "X"` BLOCK is not a declaration of X.
+# NOT filtered: a `test "X"` / `bench "X"` BLOCK label reads as kind 12 here.
 #
 # `vibe symbols` gives a block its quoted label under kind 12 on purpose --
-# `symbol_spans.vibe`'s own header says "Tests/benches use Function (12) --
-# LSP has no Test kind" -- and this gate read those labels as definitions.
-# Measured before this filter: `lib/@vibe/builtin/int_test.vibe` contributed
-# `Int::popcount`, `Int::ctz` and `Int::clz` from `test "Int::popcount" { ... }`
-# and its two siblings, and all three sat on the allowlist with a reason
-# ("helper in ... a test file, so the override is scoped to that test program")
-# describing a shadow that does not exist. A gate that reports three things
-# that are not happening is a gate whose output nobody can read.
+# `symbol_spans.vibe`'s header says "Tests/benches use Function (12) -- LSP has
+# no Test kind" -- so four block labels sit on the allowlist describing shadows
+# that do not exist (`Int::popcount` / `Int::ctz` / `Int::clz` / `not`).
 #
-# The test is lexical and cheap: a block label's span starts INSIDE the quotes,
-# so the byte before START is `"`. No declaration's name can have one there --
-# `fn`, `let`, `export let` and `impl` all put an identifier character or a
-# space before the name. Only the handful of rows whose name the registry
-# already owns is inspected, so the cost is bounded by the intersection, not by
-# the 18k-row sweep.
-awk 'NR == FNR { want[$1] = 1; next } ($3 == 12 || $3 == 13) && ($2 in want) { print $1, $2, $4 }' \
-  "$WORK/found_raw.txt" "$SYMS" > "$WORK/cand_rows.txt"
-: > "$WORK/real.txt"
-while IFS=' ' read -r cand_path cand_name cand_start || [ -n "$cand_path" ]; do
-  [ -n "$cand_path" ] || continue
-  # A span at offset 0 has no preceding byte, so it cannot be a quoted label.
-  if [ "$cand_start" -gt 0 ] 2>/dev/null; then
-    prev="$(dd if="$cand_path" bs=1 skip=$((cand_start - 1)) count=1 2>/dev/null)"
-    [ "$prev" = '"' ] && continue
-  fi
-  printf '%s\n' "$cand_name" >> "$WORK/real.txt"
-done < "$WORK/cand_rows.txt"
-sort -u "$WORK/real.txt" -o "$WORK/real.txt"
-comm -12 "$WORK/found_raw.txt" "$WORK/real.txt" > "$WORK/found.txt"
-
-# Silence about a row this filter could not resolve would be indistinguishable
-# from "no shadowing". Every candidate row must have produced a verdict.
-if [ "$(wc -l < "$WORK/cand_rows.txt" | tr -d ' ')" -eq 0 ] && [ -s "$WORK/found_raw.txt" ]; then
-  echo "builtin-shadowing: FAIL: $(wc -l < "$WORK/found_raw.txt" | tr -d ' ') registry names are declared," >&2
-  echo "  but the test/bench-label filter matched no rows for any of them. That is an" >&2
-  echo "  unchecked tree, not a clean one." >&2
-  exit 1
-fi
-
+# #2626 tried to filter them lexically: a block label's span starts INSIDE the
+# quotes, so the byte before START is `"`. That is UNSOUND, and the Codex review
+# on #2626 found the counterexample. Measured:
+#
+#   export fn // "String::length"
+#   String::length(s: String) -> Int { -1 }
+#
+# `sym_emit` reports the first whole-word occurrence of the name within the
+# statement span, which here is the one inside the COMMENT -- span 14..28, `"`
+# on both sides. A real, program-wide builtin override read as a block label and
+# vanished: the gate said "ok (0 new)" where it had correctly named
+# `String::length` before. A false negative in this gate is the exact defect it
+# exists to catch, and it is strictly worse than four documented false
+# positives.
+#
+# Before/after is not decidable from the byte either, since the counterexample
+# is quoted on both sides. The distinction is an AST one and the tool does not
+# expose it yet -- see #2632. Until it does, the four rows stay allowlisted.
 # Allowlist: `<name> <reason...>`. A row with no reason is rejected -- an
 # unexplained exemption is how a list like this goes stale unnoticed.
 : > "$WORK/allowed.txt"
