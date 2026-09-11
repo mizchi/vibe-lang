@@ -68,7 +68,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_stdin_provider_shadow
 }
 
-fn main() -> Unit with Exception + Fs {
+fn main() -> Unit allows Exception + Fs {
   Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_shadow/generated.component.wasm", comp_emit_component_wasm_stdin_provider_shadow())
 }
 EOF

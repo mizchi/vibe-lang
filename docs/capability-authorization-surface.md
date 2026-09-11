@@ -83,11 +83,10 @@ property of the declaration's position, not of the effect's class.
 
 - The AST printer prints the row back with the keyword its position
   dictates — `allows` on `main` / `_start` and on a `test` / `bench` /
-  `example` block, `with` elsewhere — so `vibe normalize` canonicalizes a
-  legacy `with` on an entry and never drops a block's row (the block rows
-  travel in the parse's trailing `STestEffectRows` marker, which
-  `print_program` and the normalizer register with the printer before
-  printing; `register_block_rows`).
+  `example` block, `with` elsewhere — and `vibe normalize` never drops a
+  block's row (the block rows travel in the parse's trailing
+  `STestEffectRows` marker, which `print_program` and the normalizer
+  register with the printer before printing; `register_block_rows`).
 
 ### 2. What an entry may grant
 
@@ -172,23 +171,19 @@ naming the flag). A non-interactive compile today lowers an unresolved
 optional operation to `NotGranted` on both backends (#2236); the production
 wiring of the ladder is #2332.
 
-### 5. The legacy spelling and the bootstrap bump
+### 5. `with` on an entry is a parse error
 
-`fn main with ..`, `fn _start() -> T with ..`, and `test` / `bench` /
-`example` `"n" with ..` still parse, because the committed seed compiles
-sources that carry them: `lib/**` (the CLI's own `main.vibex`, the coverage
-tools, the compiler's test files), `scripts/vibe_opt.vibex`,
-`scripts/review_lint.vibex`, the scripts that compile a program through
-`scripts/vibe_run.sh`, and the component gates that pin the seed. `vibe
-check` reports each such head as a non-fatal `warning:` line naming the
-`allows` edit (`entry_row_spelling_warning_lines`, next to the `#deprecated`
-scan). The sequence, per docs/bootstrap.md "新機能の入れ方":
-
-1. this revision — the compiler reads both spellings; every source the
-   checkout's own stage2 compiles is on `allows`;
-2. a bootstrap bump whose seed contains this compiler;
-3. the seed-compiled sources move to `allows`, the warning becomes the parse
-   error, and the `with` arm of the entry parsers is deleted.
+`fn main with ..`, `fn _start() -> T with ..` and `test` / `bench` /
+`example` `"n" with ..` are refused by the parser, which names the whole
+edit: `` `fn main` is an entry point and grants its row, so the keyword is
+`allows`: write `fn main allows Console` ``. The row is read before the
+refusal, braced or not, so the message carries the row as it must be written
+rather than a keyword to change and then a row to rewrite
+(`entry_with_row_message`). A bodyless `.vpkg` declaration keeps `with` on
+any name, `main` included: it is a requirement its importers see, never an
+entry. The compiler's own sources spell their entries `allows` since the
+bootstrap bump to `seed/entry-allows-2026-09-11` (#2654), the first seed
+that reads the keyword.
 
 ## Consequences
 

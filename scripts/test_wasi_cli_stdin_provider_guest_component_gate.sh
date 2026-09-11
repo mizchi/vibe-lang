@@ -50,7 +50,7 @@ import @vibe/compiler/entry/source_compile/wasi_only {
   comp_emit_component_wasm_async_stdin_provider_fixture
 }
 
-fn main() -> Unit with Exception + Fs {
+fn main() -> Unit allows Exception + Fs {
   Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/drain.component.wasm", comp_emit_component_wasm_async_stdin_provider_fixture(0))
   Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/early-close.component.wasm", comp_emit_component_wasm_async_stdin_provider_fixture(1))
   Fs::write_bytes("_build/bench/wasi_cli_stdin_provider_guest/odd-wire.component.wasm", comp_emit_component_wasm_async_stdin_provider_fixture(2))

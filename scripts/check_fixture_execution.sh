@@ -68,10 +68,10 @@ case "${1:-}" in
 esac
 
 # A `test` block opens as `test {`, `test "name" {`, or -- since #1508 -- with
-# an effect row: `test with Row {` / `test "name" with Row {`. Matching the
-# keyword plus one of those three continuations keeps identifiers that merely
-# start with "test" (`test_helper = ...`) out of the set.
-TEST_BLOCK_RE='^[[:space:]]*test([[:space:]]+"|[[:space:]]*\{|[[:space:]]+with[[:space:]])'
+# an effect row: `test allows Row {` / `test "name" allows Row {`. Matching
+# the keyword plus one of those three continuations keeps identifiers that
+# merely start with "test" (`test_helper = ...`) out of the set.
+TEST_BLOCK_RE='^[[:space:]]*test([[:space:]]+"|[[:space:]]*\{|[[:space:]]+allows[[:space:]])'
 
 # --- the accounted-for sets -------------------------------------------------
 unit_list="$(bash scripts/unit_test_runner.sh --list)"

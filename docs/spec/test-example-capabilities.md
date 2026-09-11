@@ -116,12 +116,12 @@ The parser lowers it to a test, so it takes the same `allows` row and the
 same ambient default. An unused binding inside an example is not reported --
 sample code is read, not only executed.
 
-## Legacy spelling
+## `with` on a block
 
-`test "n" with ..` still parses. The committed seed compiles `lib/**` tests
-that carry it, so the rejection lands with the bootstrap bump that migrates
-those sources; until then `vibe check` reports the head with the `allows`
-edit as a non-fatal warning.
+`test "n" with ..` is a parse error. A block is an entry point and grants
+its row, so the parser refuses the requirement keyword and names the edit
+with the row it read: ``write `test "n" allows Http` ``. `bench` and
+`example` are refused the same way.
 
 ## Not implemented
 

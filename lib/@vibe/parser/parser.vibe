@@ -13,6 +13,7 @@ import ./parser_base.vibe {
   collect_import_path,
   empty_fields,
   empty_import_items,
+  entry_with_row_message,
   expect_tk,
   has_qualified_pattern_refs,
   has_test_effect_rows,
@@ -20,7 +21,6 @@ import ./parser_base.vibe {
   parse_binding_name,
   parse_binding_name_with_binder_context,
   parse_derive_names,
-  parse_effect_row,
   parse_effect_stmt,
   parse_effect_stmt_with_binder_context,
   parse_enum_stmt,
@@ -97,11 +97,9 @@ fn empty_names() -> Array[String] {
 /// into a trailing `STestEffectRows` marker rather than stored on `STest` --
 /// see the marker's declaration in @vibe/ast for why.
 ///
-/// `with <row>` is the legacy spelling of the same grant. It is still read
-/// because the committed seed compiles lib/** tests that carry it; `vibe
-/// check` reports it with the `allows` edit, and the rejection lands with the
-/// bootstrap bump that migrates those sources.
-fn parse_test_row_suffix(tokens: Array[Token], name: String, pos: Int) -> Int with Exception {
+/// `with <row>` here is refused with the `allows` edit (#2654); `kind` names
+/// the block for the message ("test", "bench", "example").
+fn parse_test_row_suffix(tokens: Array[Token], kind: String, name: String, pos: Int) -> Int with Exception {
   if peek_is_allows(tokens, pos) {
     let (row, after) = parse_allows_row(tokens, pos + 1)
     record_test_effect_row(name, row)
@@ -109,9 +107,8 @@ fn parse_test_row_suffix(tokens: Array[Token], name: String, pos: Int) -> Int wi
   } else {
     match peek(tokens, pos) {
       TWith => {
-        let (row, after) = parse_effect_row(tokens, pos + 1)
-        record_test_effect_row(name, row)
-        after
+        let edit = String::concat(kind, String::concat(" \"", String::concat(name, "\"")))
+        throw(entry_with_row_message(tokens, pos, String::concat("`", String::concat(edit, "`")), edit))
       },
       _ => pos
     }
@@ -121,7 +118,7 @@ fn parse_test_row_suffix(tokens: Array[Token], name: String, pos: Int) -> Int wi
 fn parse_test_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TString(name) => {
-      let after_row = parse_test_row_suffix(tokens, name, pos + 1)
+      let after_row = parse_test_row_suffix(tokens, "test", name, pos + 1)
       let br = expect_tk(tokens, after_row, "{")
       let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
       (STest(name, body), end)
@@ -142,7 +139,7 @@ fn parse_example_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, contex
       // An example is an entry point like a test and grants its row the same
       // way (`example "n" allows Console { .. }`); the row is keyed on the
       // name, which the STest lowering keeps.
-      let after_row = parse_test_row_suffix(tokens, name, pos + 1)
+      let after_row = parse_test_row_suffix(tokens, "example", name, pos + 1)
       let br = expect_tk(tokens, after_row, "{")
       let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
       (SExample(name, body), end)
@@ -154,7 +151,7 @@ fn parse_example_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, contex
 fn parse_bench_stmt(tokens: Array[Token], starts: Array[Int], pos: Int, context: Option[ParserBinderContext]) -> (Stmt, Int) with Exception {
   match peek(tokens, pos) {
     TString(name) => {
-      let after_row = parse_test_row_suffix(tokens, name, pos + 1)
+      let after_row = parse_test_row_suffix(tokens, "bench", name, pos + 1)
       let br = expect_tk(tokens, after_row, "{")
       let (body, end) = parse_impl_with_binder_context(tokens, starts, br, parser_mode_block, context);
       (SBench(name, body), end)

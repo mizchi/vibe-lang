@@ -141,36 +141,6 @@ bootstrap bump は最低限、以下を満たす。
 つまり「新機能を実装する commit」と「compiler source が新機能を使い始める
 commit」は分ける。これにより、常に固定 seed から HEAD を復元できる。
 
-### Pending bump: the entry row keyword `allows` (ADR-0088)
-
-Step 1 of the sequence above landed for the entry-point row: the compiler
-reads `fn main allows Console` / `test "n" allows Http` and still reads the
-legacy `with` spelling on an entry, because the committed seed compiles
-sources that carry it. Everything the checkout's own stage2 compiles is
-already on `allows` (the book, README, cheatsheet, fixtures, the gate
-scripts, the eval corpora). Waiting on the next bump, spelled `with` on
-purpose until then:
-
-- `lib/**` -- `lib/@vibe/cli/main.vibex`, the coverage tools under
-  `lib/@vibe/cli/`, and every `test "n" with ..` block in a library test
-  (`vibe test` runs them on the seed by default);
-- `scripts/*.vibex` (`vibe_opt.vibex`, `review_lint.vibex`, `vibe_md.vibex`,
-  `vibe_book.vibex`, ...), which `scripts/build_vibe_opt.sh`,
-  `scripts/vibe_run.sh` and the `resolve`-then-seed fallbacks compile;
-- the component gates that pin the seed (`scripts/test_*_component_gate.sh`,
-  `scripts/test_wasi_cli_stdin_provider_*`), `scripts/vibe_run_smoke.sh`,
-  `scripts/test_vibe_run_single_invoke.sh`, `scripts/vibe_md_guard_test.sh`,
-  `scripts/test_vibe_linemap.sh` (installs through `install.sh`, which may
-  fall back to the seed);
-- `eval/lang-review/repair/01_braced_effect_row/`, whose subject is the
-  braced `with` row's own diagnostic.
-
-`vibe check` reports each such head with a non-fatal `warning:` naming the
-`allows` edit. After the bump: migrate the list above, turn the warning into
-the parse error, and delete the `TWith` arms of `parse_fn_main_stmt`,
-`parse_fn_signature_with_binder_context` (entry names) and
-`parse_test_row_suffix`.
-
 ## Seed artifact 配布 (GitHub Release, #1000 part 2)
 
 seed バイナリ (~1.4MB) を bootstrap bump のたびに git commit で丸ごと

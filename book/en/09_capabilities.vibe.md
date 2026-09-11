@@ -79,10 +79,21 @@ fn greet(name: String) -> Unit allows Console {
 the caller -- write `with` here and grant the effect at the entry
 ```
 
-The other direction is a spelling that older code carries: `fn main with
-Console`. It still compiles, and `vibe check` reports it with the `allows`
-edit as a warning; it stops compiling once the compiler's own sources have
-moved off it.
+The other direction is refused too. `main` has no caller to require
+anything from, so `with` on its head is a parse error, and the message
+carries the row it read so the edit is complete:
+
+```vibe skip
+// skip: `with` on an entry point
+fn main with Console {
+  println("hi")
+}
+```
+
+```
+`fn main` is an entry point and grants its row, so the keyword is `allows`:
+write `fn main allows Console`
+```
 
 Authority stays per-operation. `allows Console::write_stream` does not
 grant `Console::read_stream` — a program that may print does not thereby

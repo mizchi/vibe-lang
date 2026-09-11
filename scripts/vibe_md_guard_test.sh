@@ -150,7 +150,7 @@ mkdir -p "$PROBE"
 cat > "$PROBE/kind.vibe" <<'VIBE'
 import @vibe/core { type MutMap }
 
-fn main with Console {
+fn main allows Console {
   let m: MutMap[String, Int] = MutMap::new_string()
   MutMap::set(m, "a", 1)
   println("size = \{MutMap::size(m)}")

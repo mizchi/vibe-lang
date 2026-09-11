@@ -281,8 +281,8 @@ fn reads_compiler_spelled_type_params() -> Bool {
   Array::length(compiler_spelled_type_params) > 0
 }
 
-/// #1508: `(test name, effect row text)` for every `test "n" with A + B { .. }`
-/// / `bench "n" with .. { .. }` this parse saw. Same log-then-fold-into-a-marker
+/// #1508: `(test name, effect row text)` for every `test "n" allows A + B { .. }`
+/// / `bench "n" allows .. { .. }` this parse saw. Same log-then-fold-into-a-marker
 /// shape as `qualified_pattern_refs` above, and for the same reason: the row has
 /// nowhere to live on `STest` / `SBench` without widening ~200 read sites.
 let test_effect_rows: Array[(String, String)] = Array::slice([("", "")], 0, 0)
@@ -1316,6 +1316,45 @@ export fn is_entry_fn_name(name: String) -> Bool {
 /// ("a function type").
 export fn allows_outside_entry_error(what: String, pos: Int) -> String {
   String::concat("`allows` grants authority and is written on an entry point only (`fn main`, `fn _start`, `test`, `example`, `bench`); ", String::concat(what, " requires its effects from the caller -- write `with` here and grant the effect at the entry at #\{pos}"))
+}
+
+/// The message for a `with` written at the row position of an ENTRY head
+/// (`pos` is the `with` token). An entry has no caller to require an effect
+/// from, so its row is a grant and the keyword is `allows` (ADR-0088, #2654).
+/// The row is read first -- braced or not -- so the message names the whole
+/// edit (`fn main allows Console + Fs`) rather than a keyword to change and
+/// then a row to rewrite; the split form `with .. allows ..` and a
+/// parenthesised non-empty row keep their own diagnostics. `head` names the
+/// entry for the reader ("`fn main`", "`test \"n\"`"), `edit` is the head as
+/// it must be written ("fn main", "fn main(..) -> ..", "test \"n\"").
+export fn entry_with_row_message(tokens: Array[Token], pos: Int, head: String, edit: String) -> String with Exception {
+  let (row, _after) = match peek(tokens, pos + 1) {
+    TLBrace => collect_effect_names(tokens, pos + 2, ""),
+    _ => parse_effect_row(tokens, pos + 1)
+  }
+  let spelled = if String::length(row) == 0 {
+    "()"
+  } else {
+    row_plus_spelling(row)
+  }
+  String::concat(head, String::concat(" is an entry point and grants its row, so the keyword is `allows`: write `", String::concat(edit, String::concat(" allows ", String::concat(spelled, "` (a called function requires an effect from its caller with `with`; an entry has no caller) at #\{pos}")))))
+}
+
+/// The comma-joined row (`"A, B"`, the stored form) back in its source
+/// spelling (`A + B`).
+fn row_plus_spelling(row: String) -> String {
+  let parts = String::split(row, ", ")
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(parts) {
+    out = if i == 0 {
+      Array::get(parts, i)
+    } else {
+      String::concat(out, String::concat(" + ", Array::get(parts, i)))
+    }
+    i = i + 1
+  }
+  out
 }
 
 export fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with Exception {

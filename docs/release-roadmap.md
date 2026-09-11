@@ -52,10 +52,9 @@ someone else's first hour, not about compiler internals:
 6. **Apache License 2.0.** The `0.1.0` tag is the first release usable by
    anyone but the author; it does not ship under MIT.
 7. **One entry spelling.** `fn main allows Console` / `test "n" allows Http`
-   is what every document teaches (ADR-0088). The compiler still reads the
-   legacy `with` on an entry with a warning until the bootstrap bump that
-   migrates the seed-compiled sources lands; the tag is cut after that bump,
-   with the legacy spelling refused.
+   is what every document teaches and the only spelling the compiler reads
+   (ADR-0088): `with` on an entry is a parse error naming the edit, since the
+   bootstrap bump to `seed/entry-allows-2026-09-11` (#2654).
 8. **The seed is fetchable.** The release tag that `bootstrap/seed.json` pins
    exists, so a cold checkout does not rebuild the seed from source
    (`scripts/ensure_seed.sh`'s rebuild fallback is for the window inside a

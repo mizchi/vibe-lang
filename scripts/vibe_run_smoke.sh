@@ -10,7 +10,7 @@ mkdir -p "$WORK"
 trap 'rm -rf "$WORK" "$ROOT_DIR/_build/vibe_run"' EXIT
 
 # single-file executable root
-printf 'fn main with Stdout {\n  let xs = [1, 2, 3, 4]\n  let total = Array::fold(xs, 0, _ + _)\n  Stdout::write_stream("\\{total}\\n")\n}\n' > "$WORK/prog.vibex"
+printf 'fn main allows Stdout {\n  let xs = [1, 2, 3, 4]\n  let total = Array::fold(xs, 0, _ + _)\n  Stdout::write_stream("\\{total}\\n")\n}\n' > "$WORK/prog.vibex"
 out="$(bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/prog.vibex" | tr -dc '0-9\n' | grep -E '.' | head -1)"
 if [ "$out" != "10" ]; then
   echo "[vibe-run-smoke] FAIL single-file: expected 10, got '$out'" >&2; exit 1
@@ -18,7 +18,7 @@ fi
 
 # multi-file (FS import resolution)
 printf 'export let dbl = (x: Int) -> Int { x * 2 }\n' > "$WORK/lib.vibe"
-printf 'import ./lib.vibe { dbl }\nfn main with Stdout { Stdout::write_stream("\\{dbl(21)}\\n") }\n' > "$WORK/m2.vibex"
+printf 'import ./lib.vibe { dbl }\nfn main allows Stdout { Stdout::write_stream("\\{dbl(21)}\\n") }\n' > "$WORK/m2.vibex"
 out2="$(bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/m2.vibex" | tr -dc '0-9\n' | grep -E '.' | head -1)"
 if [ "$out2" != "42" ]; then
   echo "[vibe-run-smoke] FAIL multi-file: expected 42, got '$out2'" >&2; exit 1
@@ -76,7 +76,7 @@ check_explains missing_effect_row \
 
 # A parse error, which is reported by an earlier phase.
 check_explains parse_error \
-  'fn main() -> Unit with () {
+  'fn main() -> Unit allows () {
   let x = (
 }
 ' \
@@ -86,7 +86,7 @@ check_explains parse_error \
 # `format_check_report` both frame it that way so `grep -c '^error: '` is an
 # exact count; prefixing every relayed line would make this program look like
 # two errors.
-printf 'fn helper() -> Unit with () {\n  println("hi")\n}\nfn main() -> Unit with Stdout {\n  helper()\n}\n' > "$WORK/hint_shape.vibex"
+printf 'fn helper() -> Unit with () {\n  println("hi")\n}\nfn main() -> Unit allows Stdout {\n  helper()\n}\n' > "$WORK/hint_shape.vibex"
 hint_err="$WORK/hint_shape.err"
 if bash "$ROOT_DIR/scripts/vibe_run.sh" "$WORK/hint_shape.vibex" > /dev/null 2> "$hint_err"; then
   echo "[vibe-run-smoke] FAIL hint_shape: a program that does not compile exited 0" >&2; exit 1

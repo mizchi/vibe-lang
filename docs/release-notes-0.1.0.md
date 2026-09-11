@@ -144,19 +144,12 @@ the edit that fixes them rather than an internal pass name.
 
 ## Known gaps
 
-- **The legacy entry spelling still compiles.** `fn main with Console` and
-  `test "n" with Http` are read and reported by `vibe check` as a warning
-  naming the `allows` edit, because the committed seed compiles library
-  sources that carry them. The bootstrap bump that migrates those sources
-  turns the warning into the parse error (ADR-0088 §5,
-  [bootstrap.md](bootstrap.md) "Pending bump"); until it lands, a program
-  written with `with` on its entry is accepted with a warning rather than
-  refused.
-- **The pinned seed has no published release.** `bootstrap/seed.json` pins
-  `seed/cfg-spans-emission-2026-09-04`, and no release carries that tag, so a
-  cold checkout rebuilds the seed from its source commit before it can build
-  anything (measured 2026-09-11: the rebuild is the first half of a cold
-  `pkf run generation`). Publishing the seed release closes it.
+- **The pinned seed must be published.** `bootstrap/seed.json` pins
+  `seed/entry-allows-2026-09-11` (#2654); its release is dispatched by hand
+  (`seed-release.yml`). Until it exists a cold checkout rebuilds the seed
+  from its source commit, which fetches `seed/cfg-spans-emission-2026-09-04`
+  and so needs that release published first (#2655). Publishing both closes
+  it.
 - **The Japanese book is a translation of all 20 chapters**, checked for
   identical program output by `pkf run check-tutorial-translation-parity`;
   English (`book/en/`) is canonical.
