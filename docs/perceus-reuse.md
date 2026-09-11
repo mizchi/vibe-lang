@@ -256,6 +256,30 @@ is never released on the branch that does not consume. The fusion matches
 the normal path on that shape rather than improving it; per-path release
 is a separate planner change.
 
+Self-compile KPI for this slice, measured 2026-09-11 with the
+`selfcompile_kpi_rc_lane.sh` discipline (five interleaved rounds in ABBA
+order, cold isolated cache per run, the same input closure fed to all four
+compilers; branch base vs branch head, both RC-built and bump-built):
+
+| | branch base | branch head |
+|---|---:|---:|
+| rc/bump paired ratio, median of rounds | 3.220 (3.184–3.432) | 3.218 (3.090–3.510) |
+| RC-built stage2 wall, median | 16,704 ms | 16,680 ms |
+| bump-built stage2 wall, median | 5,187 ms | 5,184 ms |
+| RC-built stage2 heap_ptr high-water | 1,008,092,248 B | 1,009,526,520 B (+0.14%) |
+| bump-built stage2 heap_ptr high-water | 871,977,856 B | 873,094,544 B (+0.13%) |
+| RC-built stage2 size | 4,839,275 B | 4,882,987 B (+0.9%) |
+
+Flat within noise on wall (the pair ranges overlap; the per-round RC
+difference is −590..+113 ms, median +44 ms), a hair more allocation (the
+planner's site scans and the held-count arrays), and the staging code of
+the newly fused arms in the RC compiler's size. This is the third slice in
+a row to leave the ADR-0092 exit criterion where it was: after the
+allocator's bounded-walk and size-bin work, alloc/free churn is not what
+the RC lane's wall time is made of, and reuse buys allocation traffic, not
+wall. The lever for the ≤1.2× target is elsewhere (dup/drop traffic, the
+RC entry sequences), as the issue's last measurement already concluded.
+
 Pinned by `tests/perceus_reuse_plan_test.vibe` (plan rows, blocker
 semantics, ineligible shapes, the anywhere-consumer and held-bind rows),
 `tests/perceus_reuse_e2e_test.vibe` (bump/RC output agreement on the unique
