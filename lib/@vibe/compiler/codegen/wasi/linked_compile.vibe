@@ -182,6 +182,7 @@ import @vibe/compiler/codegen/common_base {
   FuncTable,
   LambdaTable,
   LineMapState,
+  ModuleSplit,
   agg_info_of_type_expr,
   append_hidden_attempt_constructors,
   await_poll_pass,
@@ -3743,6 +3744,55 @@ fn lc_strip_subst_params(params: Array[(String, Option[TypeExpr])], formals: Arr
   out
 }
 
+/// Whether this split can be run, checked against the statements it claims to
+/// describe. Every arm FAILS OPEN to the whole-program prelude, which is slower
+/// and right; the failure this refuses is a per-module run over a map that does
+/// not match the program, which attributes statements to the wrong modules
+/// SILENTLY and produces a wrong program rather than an error.
+///
+/// The closure arm is the caller's refusal channel. `oracle_import_closure`
+/// reports how many edges it could not resolve, and a caller with a non-zero
+/// count passes an empty closure so this returns false: a dropped edge narrows
+/// a module's context, and narrowing silently is worse than not splitting.
+fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
+  split.file_count > 0 && Array::length(split.stmt_file_id) == stmt_count && Array::length(split.import_closure) == split.file_count
+}
+
+/// The prelude, per module where the split allows it and whole-program
+/// otherwise.
+///
+/// On the split path `stmts` is REPLACED IN PLACE by the linked result, because
+/// every caller holds the array and reads it after the prelude returns. The
+/// validators' messages are the error list, exactly as the whole-program path
+/// collects them.
+///
+/// `render` is a parameter for the same reason the oracle entries take one:
+/// the link CONTENT-CHECKS two definitions that share a declaration key before
+/// folding them, which needs a statement printer, and that lives in
+/// `@vibe/parser` -- not a dependency of this package, and not one it should
+/// acquire. A production caller has to supply it, which is a real cost of the
+/// split path and is why it is named here rather than hidden behind a default.
+export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
+  if module_split_usable(split, Array::length(stmts)) {
+    let st = prelude_split_stats_new()
+    let env = PreludeEnv::{
+      linked_imports: linked_imports,
+      iw_names: iw_names,
+      iw_wats: iw_wats
+    }
+    let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, st, env)
+    Array::truncate(stmts, 0)
+    let mut i = 0
+    while i < Array::length(linked) {
+      Array::push(stmts, Array::get(linked, i))
+      i = i + 1
+    }
+    st.diags
+  } else {
+    effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys)
+  }
+}
+
 export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Array[String] with Exception {
   let errs = lc_fresh_string_array()
   // ADR-0091 Phase 1: enforce `#zero_alloc` markers before any lowering
@@ -4205,6 +4255,66 @@ fn oracle_strip_counters(s: String) -> String {
 /// renames=<same key, fresh-name renames only> dup_keys=<statements the
 /// comparison cannot speak for, because their key repeats in `a`>` plus the
 /// first missing key and the first content-differing key.
+/// #2575 item 2 step 3: the SHAPE of the order difference, which the positional
+/// count on the keyed line cannot express.
+///
+/// `order_diff` counts positions, and at scale nearly every position differs --
+/// which reads as "the linked program is scrambled" and is not what happens.
+/// Each module's synthesized helpers close THAT MODULE rather than the program,
+/// so every statement after the first module's helpers is SHIFTED, and a
+/// positional comparison reports one shift once per statement after it.
+///
+/// So delete the synthesized declarations from both sequences and compare what
+/// is left. `residual=0` says the statements the source wrote are in the same
+/// order on both lanes and the only thing that moved is where the synthesized
+/// ones sit; a non-zero residual says something the source wrote moved too,
+/// which is a different and much worse claim.
+fn oracle_order_residual(a: Array[Stmt], linked: Array[Stmt], synth_keys: Array[String]) -> (Int, Int) {
+  let synth: MutMap[String, Int] = MutMap::new_string()
+  let mut si = 0
+  while si < Array::length(synth_keys) {
+    MutMap::set(synth, Array::get(synth_keys, si), 1)
+    si = si + 1
+  }
+  let left = oracle_keys_without(a, synth)
+  let right = oracle_keys_without(linked, synth)
+  let lim = if Array::length(left) < Array::length(right) {
+    Array::length(left)
+  } else {
+    Array::length(right)
+  }
+  let mut diff = if Array::length(left) > Array::length(right) {
+    Array::length(left) - Array::length(right)
+  } else {
+    Array::length(right) - Array::length(left)
+  }
+  let mut i = 0
+  while i < lim {
+    if Array::get(left, i) == Array::get(right, i) {
+      ()
+    } else {
+      diff = diff + 1
+    }
+    i = i + 1
+  }
+  (diff, Array::length(left))
+}
+
+fn oracle_keys_without(stmts: Array[Stmt], drop: MutMap[String, Int]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let key = oracle_stmt_key(Array::get(stmts, i))
+    if MutMap::has(drop, key) {
+      ()
+    } else {
+      Array::push(out, key)
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> String) -> String {
   let wmap: MutMap[String, Int] = MutMap::new_string()
   let mut dup_defs = 0
@@ -4256,6 +4366,50 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
       None => ()
     }
     ki = ki + 1
+  }
+  // #2575 item 2 step 3: ORDER, which everything else on this line is blind
+  // to. The comparison above is keyed, so a declaration that MOVED reads
+  // identical -- and the two lanes do place things differently: the split lane
+  // appends a module's synthesized helpers at the end of THAT MODULE's
+  // statements, the whole-program lane appends every one at the end of the
+  // program. Same declarations, same bodies, different positions.
+  //
+  // `order_diff` counts the positions whose key differs, plus the length
+  // excess if the two differ in length; `order_first` is the first such
+  // position, or -1 when the sequences agree. A driver that wants the split
+  // path to be a drop-in has to drive this to 0, and it is not 0 today --
+  // pinned on a two-module program by `prelude_split_bytes_test.vibe`.
+  let mut order_diff = 0
+  let mut order_first = 0 - 1
+  let order_lim = if Array::length(a) < Array::length(trial) {
+    Array::length(a)
+  } else {
+    Array::length(trial)
+  }
+  let mut oix = 0
+  while oix < order_lim {
+    if oracle_stmt_key(Array::get(a, oix)) == oracle_stmt_key(Array::get(trial, oix)) {
+      ()
+    } else {
+      order_diff = order_diff + 1
+      if order_first < 0 {
+        order_first = oix
+      } else {
+        ()
+      }
+    }
+    oix = oix + 1
+  }
+  let order_excess = if Array::length(a) > Array::length(trial) {
+    Array::length(a) - Array::length(trial)
+  } else {
+    Array::length(trial) - Array::length(a)
+  }
+  order_diff = order_diff + order_excess
+  if order_first < 0 && order_excess > 0 {
+    order_first = order_lim
+  } else {
+    ()
   }
   let seen: MutMap[String, Int] = MutMap::new_string()
   let mut extra = 0
@@ -4368,7 +4522,7 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
     }
     ki = ki + 1
   }
-  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" dup_defs=", String::concat(Int::to_string(dup_defs), String::concat(" dup_def_keys=", String::concat(first_dup_def, String::concat(" first_copy=", String::concat(first_copy, String::concat(" missing_keys=", String::concat(first_missing, String::concat(" content_keys=", String::concat(content_keys, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))))))))))
+  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" order_diff=", String::concat(Int::to_string(order_diff), String::concat(" order_first=", String::concat(Int::to_string(order_first), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" dup_defs=", String::concat(Int::to_string(dup_defs), String::concat(" dup_def_keys=", String::concat(first_dup_def, String::concat(" first_copy=", String::concat(first_copy, String::concat(" missing_keys=", String::concat(first_missing, String::concat(" content_keys=", String::concat(content_keys, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))))))))))))))
 }
 
 /// One step of the oracle: pass `k`. `a` is the whole-program state after
@@ -5041,7 +5195,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     ini = ini + 1
   }
   let line2 = String::concat(String::concat(line, collision_lines), invisible_lines)
-  String::concat(String::concat(String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), ev_line), an_line), req_line)
+  let (order_residual, order_residual_len) = oracle_order_residual(a, linked, st.synth_keys)
+  let order_line = String::concat(String::concat("  ORDER residual=", Int::to_string(order_residual)), String::concat(" of=", String::concat(Int::to_string(order_residual_len), "\n")))
+  String::concat(String::concat(String::concat(String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), order_line), ev_line), an_line), req_line)
 }
 
 export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {

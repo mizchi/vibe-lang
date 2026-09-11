@@ -330,6 +330,74 @@ separates them: it counts how much of the green is the link's work rather than
 the modules'. Read them together or the headline number claims more than it
 shows.
 
+### And it says nothing about ORDER (#2575 item 2, step 3)
+
+Every column above is keyed, so a declaration that **moved** reads identical.
+The two lanes really do place things differently: the split lane appends a
+module's synthesized helpers at the end of *that module's* statements, and the
+whole-program lane appends every one at the end of the program. Same
+declarations, same bodies, different indices.
+
+`order_diff` / `order_first` on the keyed line measure exactly that —
+`order_diff` counts the positions whose declaration key differs (plus the length
+excess), `order_first` is the first of them, or `-1` when the sequences agree.
+`prelude_split_bytes_test.vibe` pins it on a two-module program with the
+declarations in agreement: the derived `Pt::equals` is statement **4**
+whole-program and statement **2** split, and the rendered programs differ while
+the rendered *multisets* do not.
+
+**A positional count is not the shape of the difference, though, and reading it
+as one gets the answer badly wrong.** On the compiler's own 365-module closure
+it reads `order_diff=9869` out of 9908 statements, which says "the linked
+program is scrambled" — and that is not what happens. Each module's synthesized
+helpers close *that module* instead of the program, so every statement after the
+first module's helpers is SHIFTED, and a positional comparison charges one shift
+once per statement after it.
+
+`ORDER residual=` is the counter that separates the two: delete the synthesized
+declarations from both sequences and compare what is left.
+
+```
+ORDER residual=0 of=9698
+```
+
+**Zero.** All 9698 statements the source wrote are in the same order on both
+lanes; the entire `order_diff` is the 210 synthesized declarations changing
+places. `residual` reads 0 on every real split, so a test makes it fire:
+interleaving the module map — statement 0 to module 0, statement 1 to module 1,
+statement 2 back to module 0 — makes grouping by module reorder the source, and
+it reads `ORDER residual=2 of=4`.
+
+That test also pins the negative direction, because a byte comparison that
+cannot fail proves nothing: with the closure narrowed to `[[], []]` the second
+module cannot see `Pt`, its `a == b` survives the prelude unlowered where both
+other lanes rewrite it to `Pt::equals(a, b)`, and the multisets differ too. So
+the closure is load-bearing on this program, and the order test above is
+measuring something the keyed comparison genuinely cannot see rather than
+something it already covers.
+
+**So `effect_lowering_prelude_split` is still not a drop-in, for a much smaller
+reason than the raw count suggests.** Codegen emits functions in statement
+order, so a caller that switches lanes moves every synthesized helper from the
+end of the program to the end of its own module — and everything after the
+first of them shifts. The program is the same declarations in the same relative
+source order; the emitted wasm's layout is not the same layout. Whether the
+*behavior* is identical is a further question that neither the keyed columns nor
+either order counter answers. The split path is therefore gated behind a
+`ModuleSplit` the caller must build, and every guard on it **fails open** to the
+whole-program prelude:
+
+```
+file_count > 0
+Array::length(stmt_file_id) == Array::length(stmts)
+Array::length(import_closure) == file_count
+```
+
+A caller whose closure had unresolved edges passes an empty `import_closure`,
+which fails the third and takes the whole-program path. Narrowing a module's
+context silently is worse than not splitting at all — it is the one failure
+mode that produces a wrong program rather than a slow one.
+
 ### How the comparator family closed (#2634) — 9 rows, now zero
 
 It was a synthesized comparator whose *existence* or *shape* depended on what

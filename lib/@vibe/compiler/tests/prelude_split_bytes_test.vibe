@@ -1,0 +1,264 @@
+import @vibe/compiler/codegen/common_base {
+  ModuleSplit
+}
+
+import @vibe/compiler/codegen/wasi {
+  effect_lowering_prelude, effect_lowering_prelude_split, prelude_module_full_oracle_line
+}
+
+import @vibe/compiler/core {
+  Stmt, sorted_names_of
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+// #2575 item 2, step 3: does the per-module prelude produce the same PROGRAM,
+// not merely the same declarations?
+//
+// Everything measured on this line so far compares declarations BY KEY --
+// `prelude_module_full_oracle_line` links the per-module results and diffs the
+// keyed set, reporting `missing` / `extra` / `content` / `renames`. So
+// `missing=0 content=0` on the compiler's own 365-module closure establishes
+// that the linked program holds the same declarations with the same bodies,
+// and NOT that it is the same program: statement ORDER, and anything a later
+// phase derives from position, is outside what that comparison can see.
+//
+// Asked directly here, the answer is that ORDER DIFFERS and the declarations
+// do not. The split lane emits a module's synthesized helpers at the end of
+// THAT MODULE's statements; the whole-program lane emits every synthesized
+// helper at the end of the program. Same set, same bodies, different
+// positions. That is the cost of the split path, measured rather than
+// assumed, and the reason a caller cannot treat it as byte-for-byte
+// interchangeable with the whole-program prelude.
+//
+// Rendering rather than compiling to wasm: `print_stmt` is the same function
+// the oracle's keyed comparison uses for bodies, so a difference here is a
+// difference the oracle would have to explain, and the comparison stays inside
+// a unit test.
+
+fn program_stmts(src: String) -> Array[Stmt] with Exception {
+  parse_program(lex(src))
+}
+
+fn no_ints() -> Array[Int] {
+  []
+}
+
+fn no_keys() -> Array[String] {
+  []
+}
+
+fn no_links() -> Array[(String, String, Int, Int)] {
+  []
+}
+
+/// The statements in order, rendered. Order is the half the keyed comparison
+/// does not check.
+fn render_in_order(stmts: Array[Stmt]) -> String {
+  String::join(rendered(stmts), "\n")
+}
+
+fn rendered(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(out, print_stmt(Array::get(stmts, i)))
+    i = i + 1
+  }
+  out
+}
+
+/// The same statements as a SET: order removed, bodies kept. What the keyed
+/// oracle answers, reproduced here so the two questions can be asked of one
+/// program and told apart.
+fn render_sorted(stmts: Array[Stmt]) -> String {
+  String::join(sorted_names_of(rendered(stmts)), "\n")
+}
+
+/// Where the declaration whose rendering starts with `prefix` sits, or -1.
+fn index_of_head(stmts: Array[Stmt], prefix: String) -> Int {
+  let r = rendered(stmts)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(r) {
+    if found < 0 && String::starts_with(Array::get(r, i), prefix) {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Two modules' worth of statements in one parse. `Pt` is declared in the
+/// first half and compared in the second, so the second module can only lower
+/// its `==` through what its context gives it -- which is what makes the
+/// closure load-bearing here (the last test below turns it off and the answer
+/// changes).
+///
+/// `export` is not decoration: a module's context is its dependencies reduced
+/// to their EXPORTED form (`oracle_is_interface_stmt`), so an unexported `Pt`
+/// would be invisible to the second module and its `a == b` would survive the
+/// prelude unlowered.
+fn two_module_src() -> String {
+  "export struct Pt {\n  x: Int;\n  y: Int\n} derive (Eq)\n\nexport fn helper(n: Int) -> Int {\n  n + 1\n}\n\nfn cmp_pts(a: Pt, b: Pt) -> Bool {\n  a == b\n}\n\nfn main() -> Int {\n  let p = Pt::{ x: helper(1), y: 2 }\n  let q = Pt::{ x: 2, y: 2 }\n  if cmp_pts(p, q) {\n    helper(10)\n  } else {\n    0\n  }\n}\n"
+}
+
+fn half_ids(n: Int) -> Array[Int] {
+  let ids: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(ids, if i < n / 2 {
+      0
+    } else {
+      1
+    })
+    i = i + 1
+  }
+  ids
+}
+
+/// The first half of the statements to module 0 and the rest to module 1, each
+/// seeing the other -- the shape `ordinary_lane_dbg_prov` plus a resolved
+/// two-module closure produces.
+fn split_in_half(n: Int) -> ModuleSplit {
+  ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: half_ids(n),
+    import_closure: [[1], [0]]
+  }
+}
+
+/// The same split with neither module importing the other.
+fn split_blind(n: Int) -> ModuleSplit {
+  ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: half_ids(n),
+    import_closure: [[], []]
+  }
+}
+
+test "an unusable split falls back to the whole-program prelude" {
+  // The guard, first: file_count 0 must take the whole-program path, and both
+  // runs must then agree exactly -- ORDER included, which the split path does
+  // not. Without this the tests below could pass by never splitting at all.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let ea = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let eb = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 0,
+    stmt_file_id: [],
+    import_closure: []
+  }, print_stmt)
+  inspect(Array::length(ea) == Array::length(eb), content = "true")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "a map that does not match the statement count is refused, not run" {
+  // The fail-open arm that matters most: a map of the wrong length would
+  // attribute statements to the wrong modules silently. It must take the
+  // whole-program path instead, so the orders agree.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 2,
+    stmt_file_id: [0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "the per-module prelude produces the same declarations, with the same bodies" {
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let n = Array::length(b)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), split_in_half(n), print_stmt)
+  // Not vacuous: the prelude synthesized something for the `derive (Eq)`, and
+  // it synthesized the same count on both lanes.
+  inspect(Array::length(a) > n, content = "true")
+  inspect(Array::length(a) == Array::length(b), content = "true")
+  inspect(render_sorted(a) == render_sorted(b), content = "true")
+}
+
+test "and places the synthesized ones per module, not at the end of the program" {
+  // The half the keyed oracle cannot see, named rather than left implicit.
+  // Whole-program: struct, helper, cmp_pts, main, THEN the synthesized
+  // comparator. Split: the comparator closes module 0's statements, so it
+  // lands before module 1's two.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let n = Array::length(b)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), split_in_half(n), print_stmt)
+  inspect(index_of_head(a, "let Pt::equals"), content = "4")
+  inspect(index_of_head(b, "let Pt::equals"), content = "2")
+  inspect(render_in_order(a) == render_in_order(b), content = "false")
+}
+
+test "a module given no context lowers its `==` differently" {
+  // The closure is load-bearing, and this is the proof: with `[[], []]` the
+  // second module cannot see `Pt`, so `cmp_pts` keeps a bare `a == b` where
+  // both the whole-program lane and the full-context split lower it to
+  // `Pt::equals(a, b)`. A DECLARATION difference, so it is one the keyed
+  // oracle would also catch -- which is why the test above, where the
+  // declarations agree and only the order moves, is measuring something the
+  // oracle cannot.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let n = Array::length(b)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), split_blind(n), print_stmt)
+  inspect(render_sorted(a) == render_sorted(b), content = "false")
+  inspect(String::contains(render_in_order(a), "Pt::equals(a, b)"), content = "true")
+  inspect(String::contains(render_in_order(b), "Pt::equals(a, b)"), content = "false")
+}
+
+/// The `ORDER residual=` line of a full-oracle report.
+fn order_line_of(report: String) -> String {
+  let lines = String::split(report, "\n")
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(lines) {
+    if String::contains(Array::get(lines, i), "ORDER residual=") {
+      found = String::trim(Array::get(lines, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "the residual-order counter can fire" {
+  // `ORDER residual=` reads 0 on every real split, and a counter that has only
+  // ever read 0 says nothing about whether it can read anything else. This
+  // makes it fire: an INTERLEAVED map -- statement 0 to module 0, statement 1
+  // to module 1, statement 2 back to module 0 -- means grouping by module
+  // reorders the statements the SOURCE wrote, which is the difference
+  // `residual` exists to separate from a synthesized helper changing places.
+  //
+  // The two parses are deliberate: a pass may drop what it replaces, so a
+  // trial sharing nodes with the whole-program side corrupts its rendering.
+  let a = program_stmts(two_module_src())
+  let c = program_stmts(two_module_src())
+  let n = Array::length(c)
+  let ids: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(ids, i - i / 2 * 2)
+    i = i + 1
+  }
+  let report = prelude_module_full_oracle_line(a, c, ids, 2, "main", no_ints(), no_keys(), [
+    [1],
+    [0]
+  ], print_stmt)
+  // Two of the four source statements land at a different index once the map
+  // interleaves them; `of=4` is how many statements the comparison covers
+  // after the synthesized ones are removed.
+  inspect(order_line_of(report), content = "ORDER residual=2 of=4")
+}
