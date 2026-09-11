@@ -3934,8 +3934,117 @@ fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
       }
       fi = fi + 1
     }
+    // TRANSITIVELY CLOSED, or not usable (#2647 Codex round 9).
+    //
+    // A production closure is DIRECT EDGES ONLY, and it has to be: closing it
+    // transitively hands a module the declarations of its dependencies'
+    // PRIVATE imports, which no real compile of that module exposes.
+    // `oracle_import_closure` says so at length and takes the under-
+    // approximation deliberately -- and says, correctly, that it "can hide a
+    // difference as well as manufacture one".
+    //
+    // That is a fair trade for a MEASUREMENT and not for CODEGEN. When A
+    // imports B and B re-exports C's bounded generic, A's partition never sees
+    // C's trait, so the witness argument is not added at A's call while C's
+    // generic is rewritten to require it: an arity-mismatched call, or invalid
+    // wasm. Closing only across re-export edges would be the exact rule, and
+    // the loader's header scan cannot express it -- it returns a module's deps
+    // and its export NAMES, with no record of which deps a dep re-exports.
+    //
+    // So this asks the question the closure CAN answer: is everything
+    // reachable from a module already something that module names directly? If
+    // it is, no re-export can be hiding behind an edge. Two modules that see
+    // each other pass; A -> B -> C where A does not name C does not.
+    if ok && !lc_closure_self_contained(split.import_closure) {
+      ok = false
+    } else {
+      ()
+    }
     ok
   }
+}
+
+fn lc_row_holds(row: Array[Int], v: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(row) {
+    if Array::get(row, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+//# One step suffices: requiring every module's row to already contain
+//# everything its own deps reach means, applied to every module, that the
+//# relation is transitively closed.
+export fn lc_closure_self_contained(closure: Array[Array[Int]]) -> Bool {
+  let n = Array::length(closure)
+  let mut ok = true
+  let mut i = 0
+  while ok && i < n {
+    let row = Array::get(closure, i)
+    let mut j = 0
+    while ok && j < Array::length(row) {
+      let dep_row = Array::get(closure, Array::get(row, j))
+      let mut k = 0
+      while ok && k < Array::length(dep_row) {
+        let reach = Array::get(dep_row, k)
+        if reach == i || lc_row_holds(row, reach) {
+          ()
+        } else {
+          ok = false
+        }
+        k = k + 1
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
+}
+
+//# Does any EXPORTED function omit its return annotation?
+//#
+//# A dependency reaches another module as an INTERFACE: `oracle_interface_form`
+//# keeps the declaration and replaces the body with `EUnit`. That is right for
+//# everything a context is needed for -- names, types, trait shapes -- and
+//# wrong for exactly one thing. `collect_fn_returns` derives a function's
+//# return SENTINEL from the body's TAIL when the declaration carries no `ret`,
+//# so erasing the body makes an unannotated exported function that returns a
+//# pull closure stop looking like one: a caller's `for x in make_pull()` keeps
+//# the array-oriented `EForIn` and traps applying it (#2647 Codex round 9).
+//#
+//# Declined syntactically rather than fixed by carrying the checker's inferred
+//# shape into the interface. The interface form is built from statements
+//# alone, and reaching for the checker's inference would make this entry
+//# depend on a phase it runs before.
+export fn lc_exported_fn_without_return_annotation(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, _, _, value) => if exported {
+        match value {
+          EFn(_, _, _, ret, _, _) => match ret {
+            None => {
+              found = true
+            },
+            Some(_) => ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// The prelude, per module where the split allows it and whole-program
@@ -3953,7 +4062,7 @@ fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
 /// acquire. A production caller has to supply it, which is a real cost of the
 /// split path and is why it is named here rather than hidden behind a default.
 export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
-  if module_split_usable(split, Array::length(stmts)) {
+  if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) {
     // WHOLE-PROGRAM, and first, exactly as `effect_lowering_prelude` runs it:
     // the check is interprocedural, and it short-circuits the entire prelude
     // when it fires. Running it per module instead REJECTS VALID CODE -- a

@@ -3,7 +3,11 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/codegen/wasi {
-  effect_lowering_prelude, effect_lowering_prelude_split, prelude_module_full_oracle_line
+  effect_lowering_prelude,
+  effect_lowering_prelude_split,
+  lc_closure_self_contained,
+  lc_exported_fn_without_return_annotation,
+  prelude_module_full_oracle_line
 }
 
 import @vibe/compiler/core {
@@ -562,4 +566,108 @@ test "a module lowering that throws does not leak its trait facts into the next 
   let victim = program_stmts("fn apply(g: (Int) -> Int) -> Int {\n  g(1)\n}\n\nfn pick(x: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  apply(pick)\n}\n")
   desugar_trait_dicts_with_typed_eq(victim, no_ints(), no_keys())
   inspect(String::contains(render_in_order(victim), "apply(pick)"), content = "true")
+}
+
+fn closure_of(rows: Array[String]) -> Array[Array[Int]] {
+  let out: Array[Array[Int]] = []
+  let mut i = 0
+  while i < Array::length(rows) {
+    let row: Array[Int] = []
+    let text = Array::get(rows, i)
+    let mut j = 0
+    while j < String::length(text) {
+      let c = String::char_code_at(text, j)
+      if c >= 48 && c <= 57 {
+        Array::push(row, c - 48)
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    Array::push(out, row)
+    i = i + 1
+  }
+  out
+}
+
+test "the closure guard accepts what it should and rejects what it should not" {
+  inspect(lc_closure_self_contained(closure_of(["1", "2", ""])), content = "false")
+  inspect(lc_closure_self_contained(closure_of(["12", "2", ""])), content = "true")
+  inspect(lc_closure_self_contained(closure_of(["1", "0"])), content = "true")
+  inspect(lc_closure_self_contained(closure_of(["", ""])), content = "true")
+  inspect(lc_closure_self_contained(closure_of(["1", "2", "3", ""])), content = "false")
+}
+
+test "an exported lambda with no return annotation is refused the split" {
+  // #2647 Codex round 9. `oracle_interface_form` erases a dependency's bodies
+  // to `EUnit`, and `collect_fn_returns` reads the return SENTINEL off the
+  // body tail when the declaration carries no `ret` -- so the shape is gone
+  // exactly for the values that need the body to state it. A caller's
+  // `for x in make_pull()` then keeps the array-oriented `EForIn` and traps.
+  //
+  // A LAMBDA-VALUED export, not `export fn`: measured, `fn` REQUIRES its
+  // return annotation (`export fn f() { 1 }` is `expected -> but got {`), so
+  // `ret = None` is unreachable from `fn` syntax. `export let f = () -> { .. }`
+  // is the only spelling that produces it, which is also the only spelling
+  // this guard needs to catch.
+  let unannotated = "export let make_it = () -> {\n  1\n}\n"
+  inspect(lc_exported_fn_without_return_annotation(program_stmts(unannotated)), content = "true")
+  // The same value with the binding annotated does NOT trip it.
+  let annotated = "export let make_it: () -> Int = () -> {\n  1\n}\n"
+  inspect(lc_exported_fn_without_return_annotation(program_stmts(annotated)), content = "false")
+  // A private binding is not a dependency interface, so it is not this
+  // predicate's business -- only exports cross a module boundary.
+  let private_unannotated = "let make_it = () -> {\n  1\n}\n"
+  inspect(lc_exported_fn_without_return_annotation(program_stmts(private_unannotated)), content = "false")
+  // An ordinary `fn`, which always carries its annotation, is unaffected.
+  let plain = "export fn make_it() -> Int {\n  1\n}\n"
+  inspect(lc_exported_fn_without_return_annotation(program_stmts(plain)), content = "false")
+}
+
+/// Three modules where module 0's lowering needs module 2's declaration: `Pt`
+/// is declared last and compared first, so a module that cannot see it leaves
+/// `a == b` unlowered where the whole-program lane rewrites it.
+fn three_module_src() -> String {
+  "fn cmp(a: Pt, b: Pt) -> Bool {\n  a == b\n}\n\nfn mid() -> Int {\n  1\n}\n\nexport struct Pt {\n  x: Int\n} derive (Eq)\n"
+}
+
+fn three_module_ids() -> Array[Int] with Exception {
+  let ids: Array[Int] = []
+  let n = Array::length(program_stmts(three_module_src()))
+  let mut i = 0
+  while i < n {
+    Array::push(ids, if i >= 2 {
+      2
+    } else {
+      i
+    })
+    i = i + 1
+  }
+  ids
+}
+
+test "a closure that is not transitively closed declines the split end to end" {
+  // `["1", "2", ""]` is A -> B -> C where A does not name C -- what a
+  // re-export facade looks like from a direct-edges-only closure. Module 0
+  // reaches `Pt` through module 1 without naming it, so a per-module run would
+  // lower module 0 with `Pt` out of scope.
+  //
+  // Red-tested, and it discriminates: with `lc_closure_self_contained` removed
+  // from `module_split_usable` this test FAILS, because the split then runs on
+  // the narrowed closure and module 0's `a == b` survives unlowered.
+  //
+  // I first wrote this comment claiming the opposite -- that the program
+  // renders identically either way, so equality could not tell them apart.
+  // That was measured on the SELF-CONTAINED closure, where the split legitimately
+  // runs and agrees; it says nothing about this one. The mutation is what
+  // settled it.
+  let a = program_stmts(three_module_src())
+  let b = program_stmts(three_module_src())
+  let _ = effect_lowering_prelude(a, "__no_entry__", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "__no_entry__", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    file_count: 3,
+    stmt_file_id: three_module_ids(),
+    import_closure: closure_of(["1", "2", ""])
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
 }
