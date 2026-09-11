@@ -206,6 +206,7 @@ import @vibe/compiler/codegen/common_base {
   empty_dbg_prov,
   erase_railway_origin_markers,
   evidence_dict_pass,
+  evidence_module_facts,
   expr_tag,
   fn_type_param_types,
   forin_discard_pass,
@@ -423,6 +424,69 @@ fn lc_fresh_bool_array() -> Array[Bool] {
 
 fn lc_fresh_bytes_array() -> Array[Bytes] {
   ArrayBuilder::freeze(ArrayBuilder::new())
+}
+
+/// #2633: append the names of `src` not already in `dst`.
+fn lc_union_into(dst: Array[String], src: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(src) {
+    let n = Array::get(src, i)
+    if lc_str_array_has(dst, n) {
+      ()
+    } else {
+      Array::push(dst, n)
+    }
+    i = i + 1
+  }
+}
+
+fn lc_str_array_has(xs: Array[String], n: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) && !found {
+    if Array::get(xs, i) == n {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2633: `<count>` when the two sets agree, else
+/// `<whole>/<union>:-<missing>+<extra>` naming the first of each difference.
+/// Set equality and not counts: two sets of the same size can still differ, and
+/// a comparison that could not tell them apart would report agreement for the
+/// one case this exists to detect.
+fn lc_set_cmp(whole: Array[String], union: Array[String]) -> String {
+  let mut missing = ""
+  let mut i = 0
+  while i < Array::length(whole) {
+    let n = Array::get(whole, i)
+    if !lc_str_array_has(union, n) && missing == "" {
+      missing = n
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut extra = ""
+  let mut j = 0
+  while j < Array::length(union) {
+    let n = Array::get(union, j)
+    if !lc_str_array_has(whole, n) && extra == "" {
+      extra = n
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  if missing == "" && extra == "" && Array::length(whole) == Array::length(union) {
+    Int::to_string(Array::length(whole))
+  } else {
+    String::concat(String::concat(Int::to_string(Array::length(whole)), String::concat("/", Int::to_string(Array::length(union)))), String::concat(String::concat(":-", missing), String::concat("+", extra)))
+  }
 }
 
 fn lc_fresh_string_array() -> Array[String] {
@@ -4212,6 +4276,18 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // is the property, not a statistic about it.
   eq_invisible_nominals_reset()
   let mut k = 0
+  while k < 15 {
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
+    k = k + 1
+  }
+  // #2633: sampled HERE, immediately before pass 15 (`evidence_dict_pass`) and
+  // after every pass that precedes it. Sampling earlier would be vacuous --
+  // the modules partition the merged program, so any purely syntactic fact
+  // unions trivially -- and sampling later reads a program whose handles the
+  // evidence pass has already erased or migrated. The question is whether the
+  // passes BEFORE it leave each module carrying the same facts the whole
+  // program carries.
+  let (ev_decl_w, ev_handled_w, ev_perf_w) = evidence_module_facts(a)
   while k < 17 {
     oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys)
     k = k + 1
@@ -4264,6 +4340,10 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   }
   // The trait-dict entry with that interface, then the rest of the prelude,
   // per module.
+  // #2633: the union of what each module reports just before the evidence pass.
+  let ev_decl_u = lc_fresh_string_array()
+  let ev_handled_u = lc_fresh_string_array()
+  let ev_perf_u = lc_fresh_string_array()
   let synth_keys = lc_fresh_string_array()
   fi = 0
   while fi < file_count {
@@ -4331,6 +4411,16 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     }
     let mut j2 = 5
     while j2 < 17 {
+      if j2 == 15 {
+        // The per-module counterpart of the whole-program sample above: this
+        // module's facts after every pass preceding `evidence_dict_pass`.
+        let (evd, evh, evp) = evidence_module_facts(part)
+        lc_union_into(ev_decl_u, evd)
+        lc_union_into(ev_handled_u, evh)
+        lc_union_into(ev_perf_u, evp)
+      } else {
+        ()
+      }
       oracle_apply_pass(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys)
       j2 = j2 + 1
     }
@@ -4363,6 +4453,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let mid = String::concat(String::concat(" linked=", Int::to_string(Array::length(linked))), String::concat(" folded=", Int::to_string(Array::length(trial) - Array::length(linked))))
   let split_invisible = eq_invisible_nominals_list()
   let tail = String::concat(String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", Int::to_string(Array::length(collisions)))), String::concat(String::concat(" invisible_whole=", Int::to_string(Array::length(whole_invisible))), String::concat(" invisible_split=", String::concat(Int::to_string(Array::length(split_invisible)), "\n"))))
+  let ev_line = String::concat(String::concat(String::concat("EVIDENCE declared=", lc_set_cmp(ev_decl_w, ev_decl_u)), String::concat(" handled=", lc_set_cmp(ev_handled_w, ev_handled_u))), String::concat(" performed=", String::concat(lc_set_cmp(ev_perf_w, ev_perf_u), "\n")))
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
   let mut coi = 0
@@ -4377,7 +4468,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     ini = ini + 1
   }
   let line2 = String::concat(String::concat(line, collision_lines), invisible_lines)
-  String::concat(line2, oracle_keyed_line(a, linked, render))
+  String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), ev_line)
 }
 
 export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {

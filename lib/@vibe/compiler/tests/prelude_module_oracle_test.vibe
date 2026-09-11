@@ -9,6 +9,24 @@ import @vibe/compiler/entry/compiler/file_compile {
 // pass whether the two agree. A two-file program whose entry rewrites through
 // `inspect` (desugar_inspect_calls changes it) and calls across the import
 // (the alias and evidence passes see both sides) must agree on every pass.
+
+/// The report's `EVIDENCE ...` line, or "" .
+fn evidence_line_of(report: String) -> String {
+  let lines = String::split(report, "\n")
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    if String::starts_with(line, "EVIDENCE ") {
+      out = line
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn oracle_lines(report: String) -> Array[String] {
   let lines = String::split(report, "\n")
   let out: Array[String] = []
@@ -192,6 +210,14 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // The single collision is the same shape, and the fold REFUSING it is the
   // fold working. docs/incremental-build.md, "What a module must see".
   inspect(String::trim(Array::get(lines, 0)), content = "FULL stmts=11 split=11 linked=11 folded=0 modules=2 collisions=0 invisible_whole=0 invisible_split=0")
+  // #2633: the facts `evidence_dict_pass` derives its migration set from,
+  // sampled on both lanes immediately before that pass runs. A bare count means
+  // the whole-program set and the union of the per-module sets are EQUAL; a
+  // difference prints `<whole>/<union>:-<missing>+<extra>`. Equal here and on
+  // the compiler's own closure (`declared=6 handled=4 performed=3`) is what
+  // says the pass's INPUTS decompose per module even though its decision does
+  // not -- the decision is a union that runs backwards along the import graph.
+  inspect(String::trim(evidence_line_of(report)), content = "EVIDENCE declared=2 handled=2 performed=2")
   // `missing=0 extra=0 content=0` is the property: every declaration the
   // whole-program prelude produced is produced by the module that owns it,
   // with the same body. `copies` is what remains after the link, and
