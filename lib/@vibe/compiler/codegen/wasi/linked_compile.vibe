@@ -5609,6 +5609,17 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // is the measurement's ANSWER, and stopping at the first would say "some
   // module disagrees" without saying how many or about what. Production keeps
   // the throw.
+  // #2638 FOURTH CONTROL, and the one that settles what the other three left
+  // open. `trial` is the parts concatenated WITH passes 12-16 and the mint
+  // applied, but BEFORE the fold; `linked` is the same thing folded. So
+  // `trial` vs `linked` isolates the FOLD, and `trial` vs the raw parts
+  // isolates the LINK-ONLY PASSES. Measured because the obvious reading of the
+  // first three controls -- that the duplicates cost the residue -- turned out
+  // to be wrong: filtering the parts to what the fold keeps changed nothing.
+  let an_bret_trial_one: Array[Array[Stmt]] = []
+  Array::push(an_bret_trial_one, trial)
+  lc_concat_into(st.an_bret_trial, sorted_names_of(borrow_ret_link_parts(an_bret_trial_one, borrow_ret_shadow_mask(trial))))
+  lc_concat_into(st.an_view_trial, sorted_names_of(may_return_view_link_parts(an_bret_trial_one, mrv_declared_fn_names(trial))))
   let (linked, collisions0) = link_fold_duplicate_definitions_report(trial, synth_keys, render)
   lc_union_into(st.collisions, collisions0)
   // #2388 (Codex round on #2623): a definition key that still repeats in the
@@ -5702,6 +5713,10 @@ struct PreludeSplitStats {
   // The OR the split lane actually seeded with, so the caller can compare it
   // against the whole program's instead of assuming they agree.
   an_bret_seed: Array[Int];
+  // #2638: the two fixpoints over `trial` -- concatenated, link-passes applied,
+  // NOT folded. Isolates the fold from the link-only passes.
+  an_bret_trial: Array[String];
+  an_view_trial: Array[String];
   // #2638: the modules' declared fn names (a union), and the may-return-view
   // set the link computed from them.
   an_mrv_names: Array[String];
@@ -5744,6 +5759,8 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     an_shadow: lc_fresh_int_array(),
     an_bret_shadow: lc_fresh_int_array(),
     an_bret_seed: lc_fresh_int_array(),
+    an_bret_trial: lc_fresh_string_array(),
+    an_view_trial: lc_fresh_string_array(),
     an_mrv_names: lc_fresh_string_array(),
     an_view_link: lc_fresh_string_array(),
     an_parts: [],
@@ -6009,12 +6026,12 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     "0"
   })
   let an_cols = if an_dce_entry {
-    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured link_view=unmeasured link_view_self=unmeasured link_view_asm=unmeasured"
+    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured link_view=unmeasured link_view_self=unmeasured link_view_asm=unmeasured link_bret_trial=unmeasured link_view_trial=unmeasured"
   } else {
     String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u)), String::concat(String::concat(" link_round0=", lc_set_cmp_counted(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round0_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_r0_w, an_r0mask_w), lc_name_mask_pairs(an_r0_link, an_r0mask_link))), String::concat(String::concat(" link_round0_occ=", lc_multiset_first_diff(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round01=", lc_set_cmp_counted(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_round01_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), lc_name_mask_pairs(an_r01_link, an_r01mask_link))), String::concat(String::concat(" link_round01_occ=", lc_multiset_first_diff(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_bret=", lc_set_cmp_counted(an_bret_w, st.an_bret_link)), String::concat(String::concat(" link_bret_occ=", lc_multiset_first_diff(an_bret_w, st.an_bret_link)), String::concat(String::concat(" link_bret_self=", lc_set_cmp_counted(an_bret_w, an_bret_self)), String::concat(String::concat(" link_bret_asm=", lc_set_cmp_counted(an_bret_w, an_bret_asm)), String::concat(String::concat(" link_bret_seed=", String::concat(Int::to_string(match Array::length(st.an_bret_seed) {
       0 => 0 - 1,
       _ => Array::get(st.an_bret_seed, 0)
-    }), String::concat("/", Int::to_string(borrow_ret_shadow_mask(a))))), String::concat(String::concat(" link_bret_cat=", lc_set_cmp_counted(an_bret_w, an_bret_catr)), String::concat(String::concat(" link_view=", lc_set_cmp_counted(an_view_w, st.an_view_link)), String::concat(String::concat(" link_view_self=", lc_set_cmp_counted(an_view_w, an_view_self)), String::concat(" link_view_asm=", lc_set_cmp_counted(an_view_w, an_view_asm)))))))))))))))))))
+    }), String::concat("/", Int::to_string(borrow_ret_shadow_mask(a))))), String::concat(String::concat(" link_bret_cat=", lc_set_cmp_counted(an_bret_w, an_bret_catr)), String::concat(String::concat(" link_view=", lc_set_cmp_counted(an_view_w, st.an_view_link)), String::concat(String::concat(" link_view_self=", lc_set_cmp_counted(an_view_w, an_view_self)), String::concat(String::concat(" link_view_asm=", lc_set_cmp_counted(an_view_w, an_view_asm)), String::concat(String::concat(" link_bret_trial=", lc_set_cmp_counted(an_bret_w, st.an_bret_trial)), String::concat(" link_view_trial=", lc_set_cmp_counted(an_view_w, st.an_view_trial)))))))))))))))))))))
   }
   let an_line = String::concat(String::concat(an_head, an_cols), "\n")
   let line = String::concat(String::concat(head, mid), tail)
