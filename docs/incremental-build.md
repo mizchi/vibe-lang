@@ -539,6 +539,56 @@ into a build where indices moved — the stored form or the cache key has to
 account for index assignment. That constraint came out of this measurement; no
 amount of comparing declarations would have produced it.
 
+#### And what it costs in ALLOCATION — the #2510 criterion-5 KPI (2026-09-11)
+
+The section above bounds the split's cost in wall time. The KPI #2510 actually
+states is about memory: *the live set is bounded by the edited module plus
+interfaces.* That had never been measured. It is now, by
+`scripts/prelude_split_memory.sh` (protocol in its header) driving
+`scripts/prelude_split_memory.vibex`.
+
+Corpus: the compiler's own closure (`codegen_lexer_test.vibe`, 190 resolved
+files, a split the lane really builds — 191 modules, 4728 statements mapped,
+asserted per run so no row can be vacuous). `cache_mode = "off"`, one lane per
+process, a fresh `VIBE_BUILD_CACHE_DIR` per lane. `heap_delta` is
+`Profiler::heap_bytes`, a bump pointer, so it is **bytes allocated across the
+compile, not bytes live at its end** — the allocator never frees, and no
+instrument here can report a live set. N=1 per cell because the figure is
+deterministic: every row below reproduced to the byte across separate runs.
+
+| lane | cold | after a one-module edit | unchanged (warm) |
+|---|---:|---:|---:|
+| whole-program | 821,534,940 | 765,264,132 | 510,478,340 |
+| per-module (split) | 938,747,492 | 882,476,684 | 627,625,364 |
+| **split − whole** | **+117,212,552** | **+117,212,552** | **+117,147,024** |
+
+**The split costs a flat ~117 MB and recovers none of it** — +14.3% cold,
++15.3% on the edit it exists for, +22.9% warm. The two left-hand deltas are
+equal *to the byte*, which is the shape of the cost: one interface context
+built per module, paid once per module, independent of what changed. The
+emitted wasm is byte-identical in every row (4,025,394), so this is a price for
+decomposition, not a behavior difference.
+
+**So criterion 5 is not met, and the split alone cannot meet it.** A one-module
+edit rebuild costs 765 MB against a cold 821 MB — 93% of a cold build — so
+almost nothing is being reused across processes to begin with. Nothing persists
+a module's prelude: there is no per-module prelude artifact anywhere under
+`lib/@vibe/compiler/cache/`, so a new process re-runs all 191 module preludes
+whatever changed, and the split adds its ~117 MB on top of that.
+
+That re-orders the remaining work. The per-file binary AST (#2510's fourth
+bullet) is not the last item on the list; it is the **prerequisite that makes
+the split pay for itself**. Until a per-module artifact survives the process,
+turning the split on is a straight loss, which is why it stays behind its
+`use_split` argument rather than becoming the default.
+
+One measurement note, because it nearly produced a false result. The first run
+of this experiment edited `cache/header_codec.vibe`, which is **not** in this
+corpus's closure, and every "leaf-edited" row came back byte-identical to the
+unchanged row — a vacuous experiment that read as a finding. The script now
+resolves the closure with the compiler's own `vibe deps` and refuses a leaf
+that is not in it.
+
 #### What the split path still costs a caller
 
 Codegen emits functions in statement order, so switching lanes permutes the

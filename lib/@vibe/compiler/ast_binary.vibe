@@ -306,6 +306,34 @@ export fn ast_binary_read_header(r: AstBinaryReader) -> (Bool, Int) {
   }
 }
 
+//# The checked twin of `ast_binary_read_header`, for a decoder reading
+//# UNTRUSTED bytes (#2647 Codex round 13). The raw one parses the version
+//# with `ast_binary_read_varint`, which has no range guard at all: its
+//# `shift` grows without bound and `(b & 127) << shift` wraps silently, so
+//# a corrupt blob carrying the right magic could present a version this
+//# build then accepted. Every other field `ast_binary_read_module` reads
+//# goes through the `_checked` family; the version had no reason to be the
+//# exception.
+//#
+//# `ast_binary_read_header` stays exactly as it was -- raw and checked
+//# twins are how every other primitive in this file is spelled, and the
+//# raw one is what a caller that already trusts its bytes wants.
+export fn ast_binary_read_header_checked(r: AstBinaryReader) -> (Bool, Int) with Exception {
+  if ast_binary_reader_remaining(r) < 4 {
+    (false, 0)
+  } else {
+    let v = ast_binary_read_byte_checked(r)
+    let a = ast_binary_read_byte_checked(r)
+    let s = ast_binary_read_byte_checked(r)
+    let t = ast_binary_read_byte_checked(r)
+    if v != AST_BINARY_MAGIC_V || a != AST_BINARY_MAGIC_A || s != AST_BINARY_MAGIC_S || t != AST_BINARY_MAGIC_T {
+      (false, 0)
+    } else {
+      (true, ast_binary_read_varint_checked(r))
+    }
+  }
+}
+
 //# Checked reads ===
 //#
 //# The primitives above answer for WELL-FORMED input. These report the
@@ -326,9 +354,13 @@ export fn ast_binary_read_byte_checked(r: AstBinaryReader) -> Int with Exception
 export fn ast_binary_read_varint_checked(r: AstBinaryReader) -> Int with Exception {
   let mut result = 0
   let mut shift = 0
+  let mut bytes_read = 0
+  let mut last_payload = 0
   let mut more = true
   while more {
     let b = ast_binary_read_byte_checked(r)
+    bytes_read = bytes_read + 1
+    last_payload = b&127
     // A vibe `Int` is 63-bit, so bits 0..62 are all that can be represented:
     // nine bytes' worth. A tenth byte shifts its payload into positions that
     // WRAP rather than raise (#2647 Codex round 12) -- ULEB128 for 2^64
@@ -347,6 +379,20 @@ export fn ast_binary_read_varint_checked(r: AstBinaryReader) -> Int with Excepti
     } else {
       shift = shift + 7
     }
+  }
+  // CANONICAL form only: a multi-byte encoding whose last group is empty
+  // says nothing the shorter encoding does not (#2647 Codex round 13).
+  // `ast_binary_write_varint` never emits one -- it stops as soon as the
+  // remaining value is zero -- so this rejects only input no encoder of
+  // this format produces.
+  //
+  // The range guard above does NOT cover it, which is the point: the
+  // padding groups are EMPTY, so `(b & 127) != 0` never fires, and a
+  // version field spelled `0x81 0x00` decodes as 1 and is accepted as
+  // supported. One spelling per value is what stops two implementations
+  // from disagreeing about the same bytes.
+  if bytes_read > 1 && last_payload == 0 {
+    throw("ast_binary: varint is not in canonical form")
   }
   result
 }
@@ -597,11 +643,24 @@ export fn ast_binary_read_svarint_checked(r: AstBinaryReader) -> Int with Except
   let mut more = true
   while more {
     let b = ast_binary_read_byte_checked(r)
-    // Same 63-bit limit as the unsigned reader, with the sign taken into
-    // account: past bit 62 a byte can only be repeating the sign, so its
-    // payload must be all-zero (non-negative) or all-one (negative). Anything
-    // else is a value this `Int` cannot hold, and shifting it in wraps.
-    if shift >= 63 && (b&127) != 0 && (b&127) != 127 {
+    // Past bit 62 a byte can only repeat the sign ALREADY ACCUMULATED in
+    // bit 62 -- 127 when that bit is set, 0 when it is not.
+    //
+    // Accepting either value unconditionally was the hole (#2647 Codex
+    // round 13). With bit 62 clear, a final 127 is admitted, its payload
+    // shifts into positions a 63-bit `Int` does not have and wraps away,
+    // and `shift` then reaches 70 -- so the sign-extension arm below is
+    // SKIPPED and the decoder answers 0. Measured on nine 0x80 bytes then
+    // 0x7f: 0, for a value the format cannot hold. svarint carries `EInt`
+    // and `PInt` literals and the byte-offset slots on `EIdent` / `ELet` /
+    // `ELetMut` / `ECall` / `EBinOp` / `EDot`, so that is a changed literal
+    // or a diagnostic pointing at the wrong place, not a miss.
+    let sign_pad = if (result>>62)&1 == 1 {
+      127
+    } else {
+      0
+    }
+    if shift >= 63 && (b&127) != sign_pad {
       throw("ast_binary: svarint exceeds the representable Int range")
     }
     if shift >= 70 {
@@ -1858,7 +1917,7 @@ export fn ast_binary_write_module(buf: Bytes, stmts: Array[Stmt]) -> Unit {
 }
 
 export fn ast_binary_read_module(r: AstBinaryReader) -> Array[Stmt] with Exception {
-  let (ok, version) = ast_binary_read_header(r)
+  let (ok, version) = ast_binary_read_header_checked(r)
   if ok {
     ()
   } else {

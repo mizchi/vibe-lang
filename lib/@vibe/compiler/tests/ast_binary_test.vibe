@@ -6,7 +6,30 @@ import ../ast_binary.vibe {
   ast_binary_write_optstr, ast_binary_write_span, ast_binary_write_header,
   ast_binary_reader_new, ast_binary_read_byte, ast_binary_read_varint, ast_binary_read_svarint,
   ast_binary_read_bool, ast_binary_read_string, ast_binary_read_optstr, ast_binary_read_span,
-  ast_binary_read_header
+  ast_binary_read_header, ast_binary_read_header_checked, ast_binary_read_module,
+  ast_binary_read_svarint_checked, ast_binary_read_varint_checked
+}
+
+//# Functions
+
+/// Assert the MESSAGE, not merely that something was refused: a decoder that
+/// threw for the wrong reason would pass a bare "it refused" check.
+fn svarint_outcome(raw: Array[Int]) -> String {
+  handle {
+    __to_string(ast_binary_read_svarint_checked(ast_binary_reader_new(Bytes::from_array(raw))))
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn varint_outcome(raw: Array[Int]) -> String {
+  handle {
+    __to_string(ast_binary_read_varint_checked(ast_binary_reader_new(Bytes::from_array(raw))))
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn module_outcome(raw: Array[Int]) -> String {
+  handle {
+    __to_string(Array::length(ast_binary_read_module(ast_binary_reader_new(Bytes::from_array(raw)))))
+  } with { Exception::Throw(msg) => msg }
 }
 
 //# Misc — parity tests against docs/ast_binary_abi.md
@@ -232,10 +255,12 @@ test "ast_binary: header bad magic rejected" {
   }
 }
 
-//# Cross-impl parity: this byte sequence MUST be produced by the
-//# MoonBit `serialize_module_binary(Module { stmts: [] })` —
-//# header (5 bytes) + array_count varint(0) (1 byte) = 6 bytes
-//# total: 'v','A','S','T', version=1, count=0.
+//# The empty module's bytes, pinned so any implementation of
+//# docs/ast_binary_abi.md can be checked against them: header (5 bytes) +
+//# array_count varint(0) (1 byte) = 6 total, 'v','A','S','T', version=1,
+//# count=0. This used to cite the MoonBit host's `serialize_module_binary`
+//# as the producer; that host was retired in #594, so the citation named
+//# something that no longer exists.
 test "ast_binary: empty-module canonical bytes" {
   let expected = Bytes::new()
   Bytes::push(expected, AST_BINARY_MAGIC_V)
@@ -254,4 +279,58 @@ test "ast_binary: empty-module canonical bytes" {
     assert(Bytes::get(actual, i) == Bytes::get(expected, i))
     i = i + 1
   }
+}
+
+//# Misc — what a CORRUPT blob must not be able to say (#2647 Codex round 13)
+
+test "ast_binary: svarint padding must repeat the sign already accumulated" {
+  // Nine 0x80 bytes then 0x7f. The range guard used to admit a final 127
+  // whatever the accumulated sign was; its payload then shifted into
+  // positions a 63-bit `Int` does not have, `shift` reached 70, and the
+  // sign-extension arm was skipped -- so this answered 0 for a value the
+  // format cannot represent. Measured before the fix: "0".
+  assert_eq(svarint_outcome([128, 128, 128, 128, 128, 128, 128, 128, 128, 127]), "ast_binary: svarint exceeds the representable Int range")
+  // The control at the boundary, so the guard cannot pass by refusing
+  // everything long: -2^62 IS representable, and its canonical encoding is
+  // eight 0x80 bytes then 0x40 -- nine bytes reaching bit 62.
+  assert_eq(svarint_outcome([128, 128, 128, 128, 128, 128, 128, 128, 64]), "-4611686018427387904")
+  // And the ordinary short forms still decode.
+  assert_eq(svarint_outcome([127]), "-1")
+  assert_eq(svarint_outcome([1]), "1")
+}
+
+test "ast_binary: a varint must be in canonical form" {
+  // `0x81 0x00` is 1 spelled in two bytes. The RANGE guard cannot see it --
+  // the padding group is empty, so `(b & 127) != 0` never fires -- which is
+  // why reading the version through the checked reader alone would not have
+  // closed this.
+  assert_eq(varint_outcome([129, 0]), "ast_binary: varint is not in canonical form")
+  // Canonical multi-byte encodings are untouched: 128 is [0x80, 0x01].
+  assert_eq(varint_outcome([128, 1]), "128")
+  // A single 0x00 is the canonical encoding of 0, not a padded anything.
+  assert_eq(varint_outcome([0]), "0")
+  assert_eq(varint_outcome([1]), "1")
+}
+
+test "ast_binary: the module decoder reads its version through the checked reader" {
+  // Magic + version 1 + count 0 -- the empty module, accepted.
+  assert_eq(module_outcome([118, 65, 83, 84, 1, 0]), "0")
+  // Magic + a PADDED version 1 + count 0. The raw header reader answers
+  // `version == 1` and the blob used to decode as an empty AST -- a wrong
+  // answer rather than a cache miss.
+  assert_eq(module_outcome([118, 65, 83, 84, 129, 0, 0]), "ast_binary: varint is not in canonical form")
+  // An unsupported version is still reported as one.
+  assert_eq(module_outcome([118, 65, 83, 84, 2, 0]), "ast_binary: unsupported version 2")
+  // Bad magic is still bad magic.
+  assert_eq(module_outcome([0, 0, 0, 0, 1, 0]), "ast_binary: bad magic")
+}
+
+test "ast_binary: the checked header twin answers like the raw one on good input" {
+  let buf = Bytes::new()
+  ast_binary_write_header(buf)
+  let (ok, v) = handle {
+    ast_binary_read_header_checked(ast_binary_reader_new(buf))
+  } with { Exception::Throw(_msg) => (false, 0) }
+  assert(ok)
+  assert(v == AST_BINARY_VERSION)
 }

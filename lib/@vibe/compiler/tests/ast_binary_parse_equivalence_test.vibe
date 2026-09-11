@@ -1,0 +1,138 @@
+//# Imports
+
+import ../ast_binary.vibe {
+  ast_binary_read_module, ast_binary_reader_new, ast_binary_reader_remaining, ast_binary_write_module
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+import @vibe/ast {
+  Stmt
+}
+
+import @vibe/compiler/contract {
+  extract_require_pins, parse_contract_program
+}
+
+//# Functions
+
+fn rendered(stmts: Array[Stmt]) -> String {
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    StringBuilder::push(out, print_stmt(Array::get(stmts, i)))
+    StringBuilder::push(out, "\n")
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Parse -> encode -> decode -> render, against parse -> render.
+///
+/// This is the question the 44 round-trip tests do NOT answer. Those compare
+/// the codec with itself -- encode, decode, re-encode, same bytes -- so they
+/// are blind to anything the codec drops CONSISTENTLY: a writer that discards
+/// a field encodes nothing for it, decodes to `None`, and re-encodes to the
+/// same bytes. They are also limited to the ASTs someone thought to build by
+/// hand.
+///
+/// Comparing against the PARSER closes both. The left side never goes near
+/// the codec, so a dropped field has nothing to hide behind; and real
+/// compiler sources carry shapes no fixture author would think to write.
+///
+/// Measured, on `ast_binary_write_stmt`'s `SLet` arm writing `None` for the
+/// type annotation instead of `ty`:
+///
+///   ast_binary_stmt_test.vibe               ok    (9 tests, all blind)
+///   this file                               FAIL  (on the real sources)
+///
+/// Two limits, stated rather than left to be discovered:
+///
+///   - `print_stmt` is a RENDERER, so this is a necessary and not a
+///     sufficient condition. A field it does not print, this cannot see.
+///   - A wire format that departs from docs/ast_binary_abi.md while its own
+///     reader inverts it EXACTLY passes this unharmed, because both sides
+///     end at the same AST. That was the shape of the double-encoding string
+///     writer (#2647 rounds 11-12), and what catches that is the
+///     canonical-byte assertion in ast_binary_type_expr_test.vibe, which
+///     pins the bytes on the wire rather than the round trip.
+///
+/// So this does not replace either of the other two kinds. It covers the one
+/// they leave open.
+fn survives(src: String) -> Bool with Exception {
+  survives_stmts(parse_program(lex(src)))
+}
+
+fn survives_stmts(parsed: Array[Stmt]) -> Bool with Exception {
+  let buf = Bytes::new()
+  ast_binary_write_module(buf, parsed)
+  let r = ast_binary_reader_new(buf)
+  let back = handle {
+    ast_binary_read_module(r)
+  } with { Exception::Throw(_) => [] }
+  Array::length(back) == Array::length(parsed) &&
+  rendered(back) == rendered(parsed) &&
+  ast_binary_reader_remaining(r) == 0
+}
+
+fn survives_file(path: String) -> Bool with Exception + Fs {
+  survives(Fs::read_file(path))
+}
+
+/// A `.vpkg` needs BOTH of the loader's two departures from an ordinary
+/// source, or it does not parse at all: the header is not vibe syntax
+/// (`name = @vibe/ast`), so the directives are blanked to spaces first (byte
+/// length preserved, so offsets never shift), and the declarations below it
+/// are BODYLESS, which `parse_program` rejects outright -- `expected { but
+/// got fn`. `parse_contract_program` is the grammar the contract lane uses.
+fn survives_contract(path: String) -> Bool with Exception + Fs {
+  let (_pins, blanked) = extract_require_pins(Fs::read_file(path))
+  let (_decls, _opaques, stmts) = parse_contract_program(lex(blanked))
+  survives_stmts(stmts)
+}
+
+//# Misc — the codec against the PARSER, not against itself
+
+test "a decoded AST renders identically to a parsed one, on real sources" {
+  // Real compiler sources rather than hand-written fixtures: they carry
+  // constructs nobody would think to write a fixture for.
+  assert(survives_file("lib/@vibe/compiler/ast_binary.vibe"))
+  assert(survives_file("lib/@vibe/builtin/bool.vibe"))
+  assert(survives_file("lib/@vibe/compiler/cache/header_codec.vibe"))
+  // A contract: bodyless declarations, a Stmt shape no implementation file has.
+  assert(survives_contract("lib/@vibe/ast/index.vpkg"))
+}
+
+test "a decoded AST renders identically on the shapes a fixture would miss" {
+  // Non-ASCII in identifiers and literals -- the case the double-encoding
+  // string writer got wrong while every round trip agreed.
+  assert(survives("fn f() -> String {\n  \"日本語 café 😀\"\n}\n"))
+  // A lambda-valued binding: the one shape whose `ret` slot is genuinely
+  // None, since a bare `fn` demands a return annotation.
+  assert(survives("let f = () -> {\n  1\n}\n"))
+  // The same slots populated: exported, a bounded type formal, an annotated
+  // return, and an effect row.
+  assert(survives("export fn g[T: Eq](a: T, b: T) -> Bool with Exception {\n  a == b\n}\n"))
+  // Float literals, which carry the f64 pattern as the lo/hi varint pair.
+  assert(survives("let a = 1.5\n\nlet b = 0.0 - 2.25\n"))
+  // A named struct pattern. Field SHORTHAND is the only spelling the parser
+  // accepts here -- `parser_base.vibe` pushes `(fname, PBind(fname))` for
+  // every field, so `P::{ x: 0, y: b }` is `expected => but got int`. The
+  // sub-pattern slot `PStruct` carries is reached by destructuring instead,
+  // which is the next case; the round-trip tests build the rest by hand.
+  assert(survives("struct P {\n  x: Int;\n  y: Int\n}\n\nfn h(p: P) -> Int {\n  match p {\n    P::{ x, y } => x + y\n  }\n}\n"))
+  // Destructuring: a nested tuple pattern, so the sub-patterns are not all
+  // plain binders.
+  assert(survives("let ((a, b), c) = ((1, 2), 3)\n"))
+  // An or-pattern, a literal arm and a wildcard.
+  assert(survives("fn k(v: Int) -> Int {\n  match v {\n    1 | 2 => 0\n    _ => 1\n  }\n}\n"))
+  // An effect declaration: the operation is a CamelCase constructor, not a
+  // function, so it is its own Stmt shape.
+  assert(survives("export effect Log {\n  Emit(String) -> Unit\n}\n"))
+  // An import with an alias and a re-export: two distinct Stmt tags that a
+  // file-at-a-time cache has to tell apart.
+  assert(survives("import ./dep.vibe {\n  a as b\n}\n"))
+  assert(survives("export ./dep.vibe {\n  a, b\n}\n"))
+}
