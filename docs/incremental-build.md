@@ -301,8 +301,26 @@ the arm is unreachable on the whole-program lane just like its twin.
 The remaining two, `Array[Option[Int]]` and `Array[Option[String]]`, are **not**
 explained by that. `Option` is a true builtin — there is no `enum Option`
 declaration anywhere under `lib/`, it is handled by a builtin arm rather than a
-declaration — and it does not appear among the invisible heads. That cause is
-unmeasured, and this document is not going to guess a third reading for it.
+declaration — and it does not appear among the invisible heads under either
+recorder.
+
+Three mechanisms are now ruled out for that pair, which is worth having even
+without the answer: it is not an invisible nominal, not an invisible generic
+head, and not a **typed-channel refusal**. That last one is a fourth silent
+consequence of visibility and is measured for its own sake:
+
+```
+SYNTH requests=75/70:-…+   typed_refused=0/3:-+BinderAuthorityNodeKind
+                                               BinderSemanticRole  Stmt
+```
+
+`dtd_typed_eq_admitted_ty` gates a row the checker supplied on
+`eq_ty_field_is_content_comparable`, an allow-list that consults declared
+registries. The whole program refuses **zero** rows; a per-module run refuses
+three, all of them already in the invisible list. A refused row means the `==`
+site never learns its type — so it never reaches `eq_for_typed`'s `Array` arm
+and never records the helper it needs. None of the three is an `Option`, so the
+pair stays open.
 
 **The evidence family — 6 rows.** `struct:__EvDict_Source` itself, plus the
 functions the whole-program evidence pass rewrote to take an explicit

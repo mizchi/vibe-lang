@@ -21027,11 +21027,44 @@ fn dtd_typed_eq_admitted_ty(boff: Int) -> Option[TypeExpr] {
       Some(te) => if !eq_ty_mentions_scope_formal(te) && eq_ty_field_is_content_comparable(te, empty_str_array()) {
         Some(te)
       } else {
+        // #2634: the checker HAD a type for this `==` site and the pass
+        // refused it. `eq_ty_field_is_content_comparable` is an allow-list
+        // that consults declared registries, so a module that cannot see a
+        // leaf's declaration refuses a row the whole program admits -- and the
+        // site then never learns its type, never reaches `eq_for_typed`'s
+        // `Array` arm, and never records the helper it needs. Recorded so that
+        // "the split never asks for this helper" can be traced to a refusal
+        // rather than guessed at.
+        eq_typed_refusal_record(key)
         None
       },
       None => None
     }
   }
+}
+
+/// Type keys the typed-`==` channel had a row for and the pass refused.
+let dtd_eq_typed_refusals: Array[String] = empty_str_array()
+
+fn eq_typed_refusal_record(key: String) -> Unit {
+  if str_array_contains(dtd_eq_typed_refusals, key) {
+    ()
+  } else {
+    Array::push(dtd_eq_typed_refusals, key)
+  }
+}
+
+/// The refusals since the last reset. Paired with `eq_synthesis_requests_list`:
+/// a helper the split never requests, whose type appears here on the split lane
+/// and not on the whole-program one, was refused rather than never typed.
+export fn eq_typed_refusals_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_typed_refusals) {
+    Array::push(out, Array::get(dtd_eq_typed_refusals, i))
+    i = i + 1
+  }
+  out
 }
 
 /// Whether a channel row's TypeExpr spells a formal that is lexically in
