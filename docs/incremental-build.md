@@ -232,16 +232,52 @@ still content-checks the bodies under it. That is not redundant with the above:
 it is what turns the next such divergence into a refusal instead of a silently
 kept body.
 
-### What remains — 6 rows, all one family
-
-The counters name every differing declaration, not the first of each kind. That
-matters: "the first missing row is an evidence dictionary" was read as "they all
-are" once already. With all of them named, the residue is now entirely #2633's:
+### What remains — one row
 
 ```
-missing  struct:__EvDict_Source
-content  resolve_import_path_probe          resolve_path_fs  (two modules)
-         resolve_existing_import_path       check_linked_file_source_groups
+CLOSURE files=365 edges=1415 unresolved=0
+FULL stmts=9873 split=10022 linked=9873 folded=149 modules=365 collisions=0
+     invisible_whole=0 invisible_split=17 linked_dups=5
+keyed missing=0 extra=0 copies=444 content=1 renames=0 dup_keys=451 dup_defs=5
+  content_keys=let:check_linked_file_source_groups_exp_…_cli_support_vibe
+EVIDENCE declared=6 handled=4 performed=3
+```
+
+**`linked` equals `stmts` exactly, and `missing=0`.** Compiling the compiler's
+own CLI closure per module and linking produces every declaration the
+whole-program prelude produces, name for name, with one body differing.
+
+That one:
+
+```
+whole   Array::set(__exn_kind_cell, 0, "String")
+split   Array::set(__exn_kind_cell, 0, "")
+```
+
+The **exception-kind cell**. The whole program knows the thrown payload's type;
+a module throwing a value it obtained from elsewhere does not. It is the same
+shape as the two families already closed — a whole-program table a module cannot
+reproduce alone — and the same answer should apply: the module records what it
+knows, the link decides. `throw_kind_cell` is one of the tables #2510 lists for
+exactly this treatment.
+
+### How the evidence family closed (#2633) — 6 rows, now zero
+
+`evidence_dict_pass` decides from a union over the whole program: *declared
+effects ∪ every effect label a handle site names*, and *zero performs anywhere*.
+That dependence runs **backwards along the import graph** — `effect Source` is
+declared and performed in `core/module_graph_path.vibe` and handled in
+`loader/loader.vibe`, which imports core and not the reverse — so no module can
+make the decision its own way and have the results link.
+
+Its **inputs** decompose, measured: the union of the per-module (declared,
+handled, performed) facts equals the whole-program facts, sampled immediately
+before the pass runs. So the pass simply moves: it runs **once at the link**,
+over the concatenated program, where the union is present rather than
+reconstructed. Pass 16 follows it there to keep the order.
+
+```
+keyed missing:  1 → 0        content:  5 → 1
 ```
 
 ### How the comparator family closed (#2634) — 9 rows, now zero

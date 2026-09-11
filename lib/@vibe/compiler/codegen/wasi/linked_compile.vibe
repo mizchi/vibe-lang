@@ -4520,7 +4520,18 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
       } else {
         ()
       }
-      lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys)
+      // #2633: passes 15 and 16 are NOT run per module. `evidence_dict_pass`
+      // decides from a union over the whole program -- declared effects union
+      // every effect label a handle site names, and "zero performs ANYWHERE" --
+      // and that dependence runs BACKWARDS along the import graph, so no module
+      // can make the decision its own way and have the results link. It runs
+      // once at the link instead, over the concatenated program, where the
+      // union is simply present. Pass 16 follows it there to keep the order.
+      if j2 == 15 || j2 == 16 {
+        ()
+      } else {
+        lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys)
+      }
       j2 = j2 + 1
     }
     fi = fi + 1
@@ -4542,6 +4553,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // what a module deferring rather than guessing buys: the need travels upward
   // instead of vanishing.
   let minted = eq_mint_deferred_into(trial)
+  // #2633: the whole-program phases, run once on the linked program.
+  oracle_apply_pass(15, trial, entry_name, checker_eq_offsets, checker_eq_type_keys)
+  oracle_apply_pass(16, trial, entry_name, checker_eq_offsets, checker_eq_type_keys)
   // LINK. Up to here `trial` is the modules concatenated, which holds one copy
   // of each program-level helper per module that needed it. Folding them is
   // what a per-module driver's link step does (#2575 item 3), and doing it
