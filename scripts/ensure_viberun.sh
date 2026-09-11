@@ -36,20 +36,45 @@ for arg in "$@"; do
   esac
 done
 
+# POSIX only -- no sha256sum, no -print0/sort -z/xargs -0 (Codex review of
+# #2645). test_gc_heap_accounting.sh now calls this unconditionally, and that
+# script is reachable from the public `pkf run test-gc-heap-accounting` task,
+# so a GNU-only helper would break the gate on stock macOS before it checked
+# anything. The probe-by-RUNNING idiom is ensure_seed.sh's, for its reason: a
+# shim that is on PATH but dies on a glibc mismatch passes `command -v` and
+# then fails every call.
+hash_stdin() {
+  if sha256sum </dev/null >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif shasum -a 256 </dev/null >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    echo "[ensure-viberun] FAIL: sha256sum or shasum is required" >&2
+    return 1
+  fi
+}
+
 # Hashed from inside the crate so the value is a function of the CONTENT, not
 # of where the checkout happens to live: an absolute path in the digest would
-# make every runner disagree with every other one.
+# make every runner disagree with every other one. The path is folded in beside
+# each file's digest so a pure rename still moves the hash.
 src_hash() {
   (
     cd "$CRATE"
     {
-      find src -type f -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 -r sha256sum
-      sha256sum Cargo.toml Cargo.lock 2>/dev/null || echo "MISSING manifest"
+      find src -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+        printf '%s ' "$f"
+        hash_stdin < "$f"
+      done
+      for m in Cargo.toml Cargo.lock; do
+        printf '%s ' "$m"
+        if [ -f "$m" ]; then hash_stdin < "$m"; else echo "MISSING"; fi
+      done
       # The toolchain is an input too: the same sources built by a different
       # rustc are a different binary, and a cache restored across a runner
       # image bump would otherwise read as current.
       rustc --version 2>/dev/null || echo "no rustc"
-    } | sha256sum | cut -d' ' -f1
+    } | hash_stdin
   )
 }
 

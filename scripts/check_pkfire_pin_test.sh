@@ -110,6 +110,43 @@ if run_gate; then
 fi
 echo "check_pkfire_pin_test: ok: case 2c: an input belonging to another step does not count"
 
+# --- case 2d: the key must live under `with:` (Codex review) --------------
+# A step carrying `env:` with a version passed the step-window check while the
+# action had no with.version at all, so it installed latest.
+scaffold
+python3 - "$TMP/tree/.github/workflows/pkfire-pkspec.yml" <<'PY2'
+import sys
+open(sys.argv[1], "w").write("""jobs:
+  lint:
+    steps:
+      - uses: mizchi/pkfire@v0.14.2
+        env:
+          version: 0.14.2
+""")
+PY2
+if run_gate; then
+  cat "$TMP/out" >&2
+  fail "case 2d: a version under env: was accepted as the action input"
+fi
+echo "check_pkfire_pin_test: ok: case 2d: a version outside with: does not count"
+
+# --- case 2e: control -- the same value under `with:` IS accepted ----------
+scaffold
+python3 - "$TMP/tree/.github/workflows/pkfire-pkspec.yml" <<'PY2'
+import sys
+open(sys.argv[1], "w").write("""jobs:
+  lint:
+    steps:
+      - uses: mizchi/pkfire@v0.14.2
+        env:
+          SOMETHING: 1
+        with:
+          version: 0.14.2
+""")
+PY2
+run_gate || { cat "$TMP/out" >&2; fail "case 2e: a correctly nested with.version was rejected"; }
+echo "check_pkfire_pin_test: ok: case 2e: with: nesting is what the gate accepts"
+
 # --- case 3: the hook hardcodes a version instead of reading the file -----
 scaffold
 printf 'PKF_VERSION="0.14.2"\n' > "$TMP/tree/.claude/hooks/session-start.sh"
@@ -137,4 +174,4 @@ printf '\n# uses: mizchi/pkfire@vNOPE (prose, not a call site)\n' >> "$TMP/tree/
 run_gate || { cat "$TMP/out" >&2; fail "case 6: a commented-out example was counted as a call site"; }
 echo "check_pkfire_pin_test: ok: case 6: a commented example is not a call site"
 
-echo "check_pkfire_pin_test: ok (2 controls + 8 cases)"
+echo "check_pkfire_pin_test: ok (2 controls + 10 cases)"

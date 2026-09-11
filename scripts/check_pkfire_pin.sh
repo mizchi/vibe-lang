@@ -58,7 +58,7 @@ scan="$( { grep -rlE '^[[:space:]]*(- )?uses:[[:space:]]*mizchi/pkfire@' .github
     function indent(s,   i) { match(s, /^[[:space:]]*/); return RLENGTH }
     /^[[:space:]]*(- )?uses:[[:space:]]*mizchi\/pkfire@/ {
       if (in_site) { printf "%s:%d:%s:%s\n", file, site_line, site_ref, (found ? "ok" : "missing") }
-      in_site = 1; found = 0; site_line = NR; site_indent = indent($0)
+      in_site = 1; found = 0; with_indent = -1; site_line = NR; site_indent = indent($0)
       site_ref = $0; sub(/.*mizchi\/pkfire@/, "", site_ref); sub(/[[:space:]].*/, "", site_ref)
       next
     }
@@ -66,7 +66,16 @@ scan="$( { grep -rlE '^[[:space:]]*(- )?uses:[[:space:]]*mizchi/pkfire@' .github
       printf "%s:%d:%s:%s\n", file, site_line, site_ref, (found ? "ok" : "missing")
       in_site = 0; next
     }
-    in_site && $0 ~ ("^[[:space:]]*version:[[:space:]]*" want "[[:space:]]*$") { found = 1 }
+    # The key must be nested under the step OWN `with:` mapping (Codex review of
+    # #2645). Matching any suitably indented `version:` in the step window let
+    # `env:` satisfy it -- a step with `env: { version: 0.14.2 }` and no
+    # `with.version` passed, while the action installed latest.
+    in_site && /^[[:space:]]*with:[[:space:]]*$/ { with_indent = indent($0); next }
+    in_site && with_indent >= 0 && /^[[:space:]]*[A-Za-z_-]+:/ && indent($0) <= with_indent {
+      with_indent = -1   # a sibling key ended the with: mapping
+    }
+    in_site && with_indent >= 0 && indent($0) > with_indent \
+      && $0 ~ ("^[[:space:]]*version:[[:space:]]*" want "[[:space:]]*$") { found = 1 }
     END { if (in_site) printf "%s:%d:%s:%s\n", file, site_line, site_ref, (found ? "ok" : "missing") }
   ' "$f"
 done )"
