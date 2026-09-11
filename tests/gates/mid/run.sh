@@ -396,7 +396,7 @@ if [ "$sh_out" != "42" ]; then
   exit 1
 fi
 echo "[compiler-gate] RC user-shadowed builtin name ok (#1746)"
-echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume+builder-return+hof-shell)"
+echo "[compiler-gate] 40d/40 RC reclamation leak guard (tuple+cell+closure+enum+loop-consume+builder-return)"
 lkdir="_build/_gate_rc_leak"
 rm -rf "$lkdir"; mkdir -p "$lkdir"
 VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
