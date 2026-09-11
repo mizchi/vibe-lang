@@ -51,6 +51,18 @@ is an ADR-sized decision, not a slice-sized one.
 
 **Safety**
 
+- **A synthesized top-level definition carries the module that owns it, and a
+  consumer reads that owner rather than inferring it from a position.** A
+  per-module prelude places each module's synthesized helpers among its own
+  statements, so a positional guess about which file a definition came from is
+  wrong for exactly the definitions the split created (#2618, #2620).
+- **A synthesized definition's NAME must determine its BODY.** The link folds
+  per-module helpers by declaration key, so two modules that mint one name for
+  two different bodies leave the link a choice it cannot make correctly. A
+  comparator broke this — its body depended on how much of a field's type the
+  synthesizing module could see (#2631, fixed) — and the fold refusing such a
+  pair rather than keeping one of them is what caught it. See "What a module
+  must see" below.
 - A **missing required recheck is a failure.** Conservative over-invalidation is
   permitted but must be *visible* — reported as residual, never silently accepted
   as conformance.
@@ -131,6 +143,131 @@ namespace v19, TDRE5, interface-v2, artifact-input traces, planner decisions,
 reuse, CLI, or a persistent cache namespace. Decoded values establish canonical
 bytes, not a checker invocation. Runtime retains v2 bytes only in an opaque,
 in-memory successful `ModuleOutcome`; it does not publish or persist them.
+
+## What a module must see (#2388, #2575 item 2)
+
+The per-module prelude is measured by an oracle that runs every pre-codegen
+pass twice over the same program: once whole, once on each file alone, then
+links the per-module results and compares by declaration key
+(`prelude_module_full_oracle_report_fs`). What each file is given as *context*
+decides what its green means.
+
+That context is now each module's **own direct imports**, taken from the
+loader's header scan (`load_or_parse_module_header_fs` — the same scan the FS
+typecheck lane plans module order with). It has to come from the loader because
+the merge drops `SImport` / `SReExport` as already resolved, so the edges cannot
+be read back off the merged program.
+
+**One hop, not transitive.** Closing transitively hands A the declarations of a
+module C that A's dependency B imports *privately* — context no real compile of
+A exposes. Closing only across re-export edges would be the exact rule, and the
+header scan does not distinguish them (it returns a module's deps and its export
+*names*, with no record of which deps a dep re-exports), so this takes the safe
+side: an under-approximation can only *manufacture* a difference, never hide
+one. `edges_unresolved` is reported for the same reason — a dropped edge narrows
+a module's context, but a closure built from every edge and one built from half
+of them otherwise look identical.
+
+### Three rules, three answers
+
+Each narrowing uncovered differences the previous one was hiding. That is the
+whole point of writing the rule down: the counters only mean what they say under
+a rule that matches a real compile.
+
+| context rule | reachable pairs | `missing` | `content` | `invisible_split` |
+|---|---:|---:|---:|---:|
+| every other file | 132 860 | 1 | 4 | — |
+| transitive closure | 32 017 | 1 | 4 | 2 |
+| **own direct imports** | **1 415** | **6** | **9** | **15** |
+
+`lib/@vibe/cli/entry.vibe`, 365 modules, `edges_unresolved=0`. The current line:
+
+```
+CLOSURE files=365 edges=1415 unresolved=0
+FULL stmts=9863 split=10006 linked=9857 folded=149 modules=365 collisions=0
+     invisible_whole=0 invisible_split=15 linked_dups=5
+keyed missing=6 extra=0 copies=444 content=9 renames=0 dup_keys=451 dup_defs=5
+  first_missing=let:MutMap::equals__N6_String__N3_Int
+EVIDENCE declared=6 handled=4 performed=3
+```
+
+Four counters name what a green would otherwise hide. `invisible_whole` /
+`invisible_split` count the nominals each lane could **not** see while
+synthesizing a comparator — a declared struct or enum absent from the statements
+the pass was handed, as opposed to a scalar, a type formal, or the shape
+scanner's `?EqUnknown`. `collisions` counts declaration keys under which two
+modules produced two different bodies. `linked_dups` counts definition keys the
+link left duplicated; it equals the keyed line's `dup_defs`, so the link removed
+none of the definitions the program legitimately carries twice and left nothing
+unfolded that it should have folded.
+
+### What a comparator may depend on
+
+`invisible_whole=0` is the load-bearing number, and it holds under every context
+rule above: a program that type-checks whole can see every nominal it compares.
+So a lane that sees fewer is the only one that can reach the question, and what
+it does there used to differ.
+
+`lib/@vibe/compiler/perceus/index.vpkg` declares `opaque type
+PerceusActionKind` and a `struct PerceusAction` with a `kind:
+PerceusActionKind` field; `perceus.vibe` declares the real `export enum`.
+Compiled whole, the equality pass saw the enum and emitted
+`PerceusActionKind::equals(a.kind, b.kind)`; compiled per module, the
+materialized contract saw only the opaque type and emitted `a.kind == b.kind` —
+a comparison of an aggregate **by reference**. Two bodies under one name, which
+is the roadmap invariant *a synthesized definition's name must determine its
+body* failing.
+
+A nominal the statement list cannot see now takes the structural call too. The
+emitted call is a reference the link resolves against the module that declares
+the type, the same as any other cross-module call, and because the arm is
+unreachable on the whole-program lane the rule is unconditional rather than
+lane-dependent. `invisible_split` is unaffected by the fix and should be: those
+nominals are still invisible to the modules comparing them — what changed is
+that their invisibility no longer reaches the body. That is why `collisions=0`
+survived the narrowing that took `invisible_split` from 2 to 15.
+
+The link still folds only by a key a module reported as **synthesized**, and
+still content-checks the bodies under it. That is not redundant with the above:
+it is what turns the next such divergence into a refusal instead of a silently
+kept body.
+
+### What remains
+
+Two families, and the second only became visible once the context rule stopped
+being wider than a real compile.
+
+**The evidence-dictionary pass.** `struct:__EvDict_Source` is missing, and
+several `content` rows are functions the whole-program evidence pass rewrote to
+take an explicit `__EvDict_Source` parameter, threading a `record { Read: …,
+Exists: … }` at each call site, where the per-module run left `with Source` on
+the row. Neither lowering is wrong; they are two coherent ones, and a module
+that merely *defines* a function cannot choose between them. This produces no
+wrong answer at either granularity — it produces two programs that cannot link
+to each other.
+
+The dependence runs **backwards along the import graph**: `effect Source` is
+declared and performed in `core/module_graph_path.vibe`, and handled in
+`loader/loader.vibe`, which imports core and not the reverse. So carrying the
+decision as interface data on *dependencies* cannot work — a dependency's
+contract cannot hold a decision that depends on its dependents. What decomposes
+is the *inputs*: measured, the union of the per-module (declared, handled,
+performed) facts equals the whole-program facts (`EVIDENCE declared=6 handled=4
+performed=3`), sampled immediately before the pass runs. So the module collects,
+the link unions and decides, and the link rewrites — with the rewrite then
+cacheable per function keyed on (body fingerprint, migration set). #2633.
+
+**A helper a module cannot see enough to synthesize at all.** `first_missing` is
+now `let:MutMap::equals__N6_String__N3_Int`. This is #2631's sibling one level
+up: that one was a comparator whose *body* depended on what the module could
+see, and is fixed; this is a comparator whose *existence* does. With
+`invisible_split=15`, a module comparing a `Map[String, Int]` may not see the
+declarations needed to emit the helper, so the split emits nothing where the
+whole program emits a definition.
+
+Not every remaining row is attributed to one of these two yet. The counters name
+the first of each kind rather than all of them, and reading the rest out is the
+next measurement, not a conclusion available now.
 
 ## User-visible KPI contract
 

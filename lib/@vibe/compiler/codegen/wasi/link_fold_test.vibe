@@ -1,0 +1,146 @@
+import ./linked_compile.vibe {
+  link_fold_duplicate_definitions, link_fold_duplicate_definitions_report
+}
+
+import @vibe/compiler/core {
+  Stmt
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+// #2388 / #2575 item 3: the link step of a per-module prelude folds the
+// program-level helpers each module synthesized for itself. Every case here is
+// about what it must NOT do, because a link that folds too much resolves two
+// different definitions by silently keeping one -- the failure #2618's owner
+// key exists to prevent, one level up.
+
+/// The statements of `src`, appended to `out`.
+fn add(out: Array[Stmt], src: String) -> Unit with Exception {
+  let parsed = parse_program(lex(src))
+  let mut i = 0
+  while i < Array::length(parsed) {
+    Array::push(out, Array::get(parsed, i))
+    i = i + 1
+  }
+}
+
+/// The names the fold left, in order.
+fn names(stmts: Array[Stmt]) -> String {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => Array::push(out, n),
+      SEffectDef(_, n, _, _) => Array::push(out, String::concat("effect ", n)),
+      _ => Array::push(out, "?")
+    }
+    i = i + 1
+  }
+  String::join(out, ", ")
+}
+
+test "two modules that synthesized the same helper leave one" {
+  let stmts: Array[Stmt] = []
+  add(stmts, "let keep = 1\n")
+  add(stmts, "let __arr_equals__A1_N3_Int = 2\n")
+  add(stmts, "let __arr_equals__A1_N3_Int = 2\n")
+  add(stmts, "let tail = 3\n")
+  let folded = link_fold_duplicate_definitions(stmts, [
+    "let:__arr_equals__A1_N3_Int"
+  ], print_stmt)
+  inspect(names(folded), content = "keep, __arr_equals__A1_N3_Int, tail")
+}
+
+// The case that made the by-name fold unsound, measured on the compiler's own
+// closure: `FULL stmts=4774 ... linked=4772`, two statements SHORT, because
+// two definition keys repeat in the whole program (`effect:Source` first) and
+// a fold keyed on names alone deleted one of each. Restricting the fold to the
+// keys a module reported as SYNTHESIZED makes that unreachable rather than
+// guarded -- the caller never offers a source declaration.
+test "a definition the program legitimately carries twice is not offered, so it survives" {
+  let stmts: Array[Stmt] = []
+  add(stmts, "effect Source {\n  Read(String) -> String\n}\n")
+  add(stmts, "effect Source {\n  Read(String) -> String\n}\n")
+  // The link is told only about a synthesized helper, which is not here.
+  let folded = link_fold_duplicate_definitions(stmts, [
+    "let:__arr_equals__A1_N3_Int"
+  ], print_stmt)
+  inspect(names(folded), content = "effect Source, effect Source")
+  // And with no foldable key at all, nothing folds.
+  inspect(names(link_fold_duplicate_definitions(stmts, [], print_stmt)), content = "effect Source, effect Source")
+}
+
+/// The message, or `no throw`.
+fn fold_throws(stmts: Array[Stmt], keys: Array[String]) -> String {
+  handle {
+    let out = link_fold_duplicate_definitions(stmts, keys, print_stmt)
+    String::concat("no throw: ", names(out))
+  } with { Exception::Throw(m) => m }
+}
+
+// The safety property. Two definitions sharing a name whose bodies DIFFER are
+// not a copy; folding them keeps one body and drops the other, with nothing
+// said. At link time that is the worst available outcome and a miss is free,
+// so this refuses.
+test "two different definitions under one synthesized name are refused, not folded" {
+  let stmts: Array[Stmt] = []
+  add(stmts, "let __arr_equals__A1_N3_Int = 2\n")
+  add(stmts, "let __arr_equals__A1_N3_Int = 99\n")
+  let msg = fold_throws(stmts, ["let:__arr_equals__A1_N3_Int"])
+  inspect(String::contains(msg, "two different definitions of let:__arr_equals__A1_N3_Int"), content = "true")
+  // The control: identical bodies under the same key fold instead of throwing,
+  // so the refusal is the content check and not the fold refusing everything.
+  let same: Array[Stmt] = []
+  add(same, "let __arr_equals__A1_N3_Int = 2\n")
+  add(same, "let __arr_equals__A1_N3_Int = 2\n")
+  inspect(fold_throws(same, ["let:__arr_equals__A1_N3_Int"]), content = "no throw: __arr_equals__A1_N3_Int")
+}
+
+// #2388: the REPORTING half. Measured on the compiler's own CLI closure, the
+// per-module run collides on exactly one key
+// (`let:__arr_equals__T2_N6_StringN7_TypeEnv`) -- a number that only means
+// something because the fold reports every collision instead of stopping at
+// the first. A run that stopped at one could not tell a single systematic
+// cause from a dozen unrelated ones, which is the whole question at this
+// granularity.
+test "the reporting fold names every colliding key, not just the first" {
+  let stmts: Array[Stmt] = []
+  add(stmts, "let __arr_equals__A1_N3_Int = 2\n")
+  add(stmts, "let __arr_equals__A1_N3_Int = 99\n")
+  add(stmts, "let __arr_equals__A1_N6_String = 3\n")
+  add(stmts, "let __arr_equals__A1_N6_String = 77\n")
+  let (out, collisions) = link_fold_duplicate_definitions_report(stmts, [
+    "let:__arr_equals__A1_N3_Int",
+    "let:__arr_equals__A1_N6_String"
+  ], print_stmt)
+  inspect(String::join(collisions, ", "), content = "let:__arr_equals__A1_N3_Int, let:__arr_equals__A1_N6_String")
+  // A colliding key still folds to ONE statement -- the report is out of band,
+  // so the caller decides whether to refuse. Keeping both would make the
+  // reported count and the returned program disagree about what happened.
+  inspect(names(out), content = "__arr_equals__A1_N3_Int, __arr_equals__A1_N6_String")
+}
+
+// The two halves cannot drift, because the throwing one is a wrapper: it
+// throws exactly when the report is non-empty, and names the report's first
+// key. Pinned in both directions so a later edit that inlines one of them has
+// to keep them agreeing.
+test "the throwing fold refuses exactly when the reporting fold has something to report" {
+  let differ: Array[Stmt] = []
+  add(differ, "let __arr_equals__A1_N3_Int = 2\n")
+  add(differ, "let __arr_equals__A1_N3_Int = 99\n")
+  let (_, dc) = link_fold_duplicate_definitions_report(differ, [
+    "let:__arr_equals__A1_N3_Int"
+  ], print_stmt)
+  inspect(Array::length(dc) > 0, content = "true")
+  inspect(String::contains(fold_throws(differ, ["let:__arr_equals__A1_N3_Int"]), "two different definitions of let:__arr_equals__A1_N3_Int"), content = "true")
+  let same: Array[Stmt] = []
+  add(same, "let __arr_equals__A1_N3_Int = 2\n")
+  add(same, "let __arr_equals__A1_N3_Int = 2\n")
+  let (_, sc) = link_fold_duplicate_definitions_report(same, [
+    "let:__arr_equals__A1_N3_Int"
+  ], print_stmt)
+  inspect(Array::length(sc), content = "0")
+  inspect(fold_throws(same, ["let:__arr_equals__A1_N3_Int"]), content = "no throw: __arr_equals__A1_N3_Int")
+}

@@ -9,8 +9,11 @@ import @vibe/compiler/codegen/common_base {
   bcc_int_lists_equal,
   bcc_string_lists_equal,
   codegen_body_cache_filter_src_below,
+  codegen_body_cache_find,
+  codegen_body_cache_find_at,
   codegen_body_cache_from_bytes,
   codegen_body_cache_new,
+  codegen_body_cache_slot_index,
   codegen_body_cache_to_bytes
 }
 
@@ -289,4 +292,137 @@ test "persisted body cache: verify survives an entry edit; on matches a fresh co
   Fs::write_bytes(main_path, string_to_bytes(main_source3))
   let bytes5 = compile_file_fs_mode_rc_body_cached(main_path, "run", "verify")
   assert(Bytes::length(bytes5) > 0)
+}
+
+// #2388 step 3 follow-up: the body loop asked `codegen_body_cache_find` once
+// per function, and that function scans the whole cache -- quadratic in the
+// function count, on the lane whose purpose is a cheap warm compile.
+// `codegen_body_cache_slot_index` + `codegen_body_cache_find_at` answer in one
+// read. The scan is the ORACLE here, not a second implementation to eyeball:
+// the two must agree on every key, including the ones no entry holds.
+
+/// A cache carrying only `fn_indices` -- the lookup reads nothing else.
+fn cache_with_indices(indices: Array[Int]) -> CodegenBodyCache {
+  let c = codegen_body_cache_new()
+  let mut i = 0
+  while i < Array::length(indices) {
+    Array::push(c.fn_indices, Array::get(indices, i))
+    i = i + 1
+  }
+  c
+}
+
+/// Every key in [0, key_count) on which the indexed lookup disagrees with the
+/// scan, as `key:scan/indexed`. Empty means they agree over the whole key
+/// space the table is built for.
+fn lookup_disagreements(c: CodegenBodyCache, key_count: Int) -> String {
+  let idx = codegen_body_cache_slot_index(c, key_count)
+  let out: Array[String] = []
+  let mut k = 0
+  while k < key_count {
+    let a = codegen_body_cache_find(c, k)
+    let b = codegen_body_cache_find_at(idx, k)
+    if a == b {
+      ()
+    } else {
+      Array::push(out, "\{k}:\{a}/\{b}")
+    }
+    k = k + 1
+  }
+  String::join(out, ", ")
+}
+
+test "the indexed body-cache lookup answers exactly what the scan answers" {
+  // Out of order, with a gap at 3 and 7, so a table that merely counted up
+  // would disagree.
+  let c = cache_with_indices([5, 0, 9, 2, 6, 1, 8, 4])
+  inspect(lookup_disagreements(c, 12), content = "")
+  // Spot-checks, so a `lookup_disagreements` that silently compared nothing
+  // would not pass this test: the slot is the POSITION in the cache.
+  let idx = codegen_body_cache_slot_index(c, 12)
+  inspect(codegen_body_cache_find_at(idx, 5), content = "0")
+  inspect(codegen_body_cache_find_at(idx, 4), content = "7")
+  inspect(codegen_body_cache_find_at(idx, 3), content = "-1")
+}
+
+// The table is sized by the CALLER's key space, so an entry outside it is
+// unreachable rather than dropped -- the scan cannot return it either without
+// being asked with a key the caller never uses. Sizing the table from the
+// cache instead would let one absurd index in a torn artifact turn a lookup
+// into an allocation the scan never made.
+test "the table covers the caller's key space and answers -1 beyond it" {
+  let c = cache_with_indices([5, 0, 9, 2])
+  let idx = codegen_body_cache_slot_index(c, 6)
+  inspect(Array::length(idx), content = "6")
+  inspect(lookup_disagreements(c, 6), content = "")
+  // 9 is in the cache and outside the key space: the table says -1, and the
+  // body loop never asks (its keys are function indices below num_user_funcs).
+  inspect(codegen_body_cache_find(c, 9), content = "2")
+  inspect(codegen_body_cache_find_at(idx, 9), content = "-1")
+  // A cache whose only index is absurd costs one Int per KEY, not per index.
+  let absurd = cache_with_indices([1099511627776])
+  inspect(Array::length(codegen_body_cache_slot_index(absurd, 4)), content = "4")
+}
+
+test "a duplicate function index resolves to the first entry, as the scan does" {
+  // Two entries for function 4; the scan returns the first, so the table must
+  // not let the later one overwrite it.
+  let c = cache_with_indices([4, 1, 4, 0])
+  inspect(lookup_disagreements(c, 8), content = "")
+  let idx = codegen_body_cache_slot_index(c, 8)
+  inspect(codegen_body_cache_find_at(idx, 4), content = "0")
+}
+
+test "an empty cache answers -1 through both lookups" {
+  let empty = codegen_body_cache_new()
+  inspect(lookup_disagreements(empty, 5), content = "")
+  inspect(codegen_body_cache_find_at(codegen_body_cache_slot_index(empty, 5), 0), content = "-1")
+}
+
+// The one shape on which the two lookups CANNOT agree: a cache carrying a
+// negative function index. The scan finds it (a plain equality test); a
+// direct-address table has no slot for it. Measured -- this test read
+// `-1:0/-1` before the decoder refused such a cache.
+//
+// A function index is a position in the program's function list, so a negative
+// one is not a function and the entry is not a body any compile could replay.
+// Refusing the whole cache is this artifact's established rule (#2388: a stale
+// entry may cause a miss, never a wrong body), and it is what makes the
+// equivalence above hold for every cache the system can load rather than for
+// every cache someone might hand-build.
+test "a persisted cache carrying a negative function index is refused" {
+  let bad = cache_with_indices([0 - 1, 2])
+  // The other arrays must be the right length or the decoder refuses for that
+  // reason instead, which would prove nothing about the index check.
+  let mut i = 0
+  while i < 2 {
+    Array::push(bad.fn_src_stmts, 0 - 1)
+    Array::push(bad.fn_bodies, Bytes::from_array([]))
+    Array::push(bad.fn_meta_i32, 0)
+    Array::push(bad.fn_meta_i64, 0)
+    Array::push(bad.fn_meta_v128, 0)
+    i = i + 1
+  }
+  let refused = match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(bad)) {
+    Some(_) => "accepted",
+    None => "refused"
+  }
+  inspect(refused, content = "refused")
+  // The control: the same cache with the index made non-negative decodes, so
+  // the refusal above is the index check and not the round trip failing.
+  let ok = cache_with_indices([1, 2])
+  i = 0
+  while i < 2 {
+    Array::push(ok.fn_src_stmts, 0 - 1)
+    Array::push(ok.fn_bodies, Bytes::from_array([]))
+    Array::push(ok.fn_meta_i32, 0)
+    Array::push(ok.fn_meta_i64, 0)
+    Array::push(ok.fn_meta_v128, 0)
+    i = i + 1
+  }
+  let accepted = match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(ok)) {
+    Some(_) => "accepted",
+    None => "refused"
+  }
+  inspect(accepted, content = "accepted")
 }

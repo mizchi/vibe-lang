@@ -3,7 +3,12 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/normalize {
-  desugar_trait_dicts, desugar_trait_dicts_module
+  desugar_trait_dicts,
+  desugar_trait_dicts_module,
+  eq_invisible_nominals_list,
+  eq_invisible_nominals_reset,
+  hoisted_lambda_owner_key,
+  hoisted_lambda_owner_of_stmt
 }
 
 import @vibe/compiler/syntax {
@@ -301,4 +306,256 @@ test "the owner, the counter and the local name join into one name unambiguously
   // Without the length in front, the first and the third read the same:
   // `__hoisted_lam_foo_0_bar_1_baz`.
   inspect(hoisted_names(stmts), content = "__hoisted_lam_3_foo_0_bar_1_baz, __hoisted_lam_9_foo_0_bar_0_first, __hoisted_lam_9_foo_0_bar_1_baz")
+}
+
+/// What every hoisted name in `stmts` decodes back to, in program order.
+/// `<none>` for a name the decoder refuses.
+fn hoisted_owners(stmts: Array[Stmt]) -> String {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => if String::starts_with(n, "__hoisted_lam_") {
+        match hoisted_lambda_owner_key(n) {
+          Some(owner) => Array::push(out, owner),
+          None => Array::push(out, "<none>")
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  String::join(out, ", ")
+}
+
+// #2388: the name carries the owner so that a consumer which sees only the
+// name can READ IT BACK -- a table keyed by the pre-prelude declarations does
+// not contain a function the prelude synthesized. These two corpora are the
+// ones the minter's own tests above pin as adversarial, so decoding them
+// exercises the length prefix rather than a happy path: four owners a spelling
+// rewrite would fold into two, and the join whose extent is decidable only
+// from the length.
+test "a hoisted name decodes back to the owner it was minted from" {
+  let stmts = parse_program(lex(collide_src()))
+  desugar_trait_dicts(stmts)
+  inspect(hoisted_owners(stmts), content = "Wrapper::scaled, Wrapper__scaled, test_probe, :t:probe")
+}
+
+test "the ambiguously joined names decode to the owners their lengths declare" {
+  let stmts = parse_program(lex(ambiguous_join_src()))
+  desugar_trait_dicts(stmts)
+  inspect(hoisted_owners(stmts), content = "foo, foo_0_bar, foo_0_bar")
+}
+
+/// `Some(owner)` rendered, or `<none>`.
+fn decoded(name: String) -> String {
+  match hoisted_lambda_owner_key(name) {
+    Some(owner) => owner,
+    None => "<none>"
+  }
+}
+
+// The decoder fails closed: a caller that attributed a synthesized definition
+// to a partially decoded owner would be silently wrong, which is the collision
+// the owner key exists to prevent, one level down. Every malformed shape is
+// `<none>`, and the well-formed one next to them says the refusals are not
+// simply a decoder that never answers.
+test "a name that does not carry a well-formed owner decodes to nothing" {
+  inspect(decoded("__hoisted_lam_3_foo_0_f"), content = "foo")
+  // Not a hoisted name at all.
+  inspect(decoded("plain_name"), content = "<none>")
+  inspect(decoded("__hoisted_lam"), content = "<none>")
+  // Nothing after the prefix, and a prefix that is not a digit run.
+  inspect(decoded("__hoisted_lam_"), content = "<none>")
+  inspect(decoded("__hoisted_lam_foo_0_f"), content = "<none>")
+  // A digit run that no `_` closes.
+  inspect(decoded("__hoisted_lam_3"), content = "<none>")
+  // A length the name cannot hold, and one that runs to the very end -- there
+  // is then no `_` to open the counter, so the owner's extent is unconfirmed.
+  inspect(decoded("__hoisted_lam_99_foo_0_f"), content = "<none>")
+  inspect(decoded("__hoisted_lam_3_foo"), content = "<none>")
+  // An empty owner: `dlh_owner_key` never returns one.
+  inspect(decoded("__hoisted_lam_0__0_f"), content = "<none>")
+  // A digit run long enough to wrap a 63-bit accumulator, which would
+  // otherwise decode to a small (or negative) length and answer with a slice
+  // of the name.
+  inspect(decoded("__hoisted_lam_99999999999999999999999_foo_0_f"), content = "<none>")
+}
+
+// Codex P2 on #2623: validating only the length-prefixed owner accepted
+// `__hoisted_lam_3_foo_bad` and answered `foo`. That name is reachable -- a
+// helper synthesized for a user type spelled `__hoisted_lam_3_foo_bad` starts
+// with this prefix and is in no pre-prelude name table -- so a consumer would
+// have filed it under whatever module declares `foo`. The whole minted
+// grammar is checked now: `_<counter>_<local name>` must follow the owner.
+test "a hoisted name whose counter or local name is missing decodes to nothing" {
+  // The finding's own input.
+  inspect(decoded("__hoisted_lam_3_foo_bad"), content = "<none>")
+  // No counter digits at all between the two underscores.
+  inspect(decoded("__hoisted_lam_3_foo__f"), content = "<none>")
+  // A counter with nothing after it, and a counter no `_` closes.
+  inspect(decoded("__hoisted_lam_3_foo_0_"), content = "<none>")
+  inspect(decoded("__hoisted_lam_3_foo_0"), content = "<none>")
+  // The control: the same shape, complete, still decodes.
+  inspect(decoded("__hoisted_lam_3_foo_0_f"), content = "foo")
+  inspect(decoded("__hoisted_lam_3_foo_12_local"), content = "foo")
+}
+
+// Codex P2 on #2623, round 2: after the counter was checked, ANY non-empty
+// remainder was still taken as a local name. The local half comes from an
+// `ELet` binder, so it is a source identifier -- `__hoisted_lam_3_foo_0_x::equals`
+// is not a name this compiler minted, and answering `foo` for it files a helper
+// synthesized for a user type spelled `__hoisted_lam_3_foo_0_x` under whatever
+// module declares `foo`.
+//
+// The lesson, and why the decoder now carries the grammar as a comment: checking
+// it a piece at a time was wrong twice. These cases walk the local-name rule
+// itself rather than the two inputs that were reported.
+test "a hoisted name whose local half is not a source identifier decodes to nothing" {
+  // Qualified -- the finding's own input, and the shape a derived helper takes.
+  inspect(decoded("__hoisted_lam_3_foo_0_x::equals"), content = "<none>")
+  // Digit-initial, which no binder can be.
+  inspect(decoded("__hoisted_lam_3_foo_0_1bad"), content = "<none>")
+  // A character that is legal in neither position.
+  inspect(decoded("__hoisted_lam_3_foo_0_a-b"), content = "<none>")
+  inspect(decoded("__hoisted_lam_3_foo_0_a.b"), content = "<none>")
+  // The controls: every character class a binder may actually use.
+  inspect(decoded("__hoisted_lam_3_foo_0_a"), content = "foo")
+  inspect(decoded("__hoisted_lam_3_foo_0__leading_underscore"), content = "foo")
+  inspect(decoded("__hoisted_lam_3_foo_0_A9_z"), content = "foo")
+}
+
+/// The owner key each top-level statement would give a lambda hoisted out of
+/// it, in program order. Every statement answers: one with no name to be known
+/// by answers with its POSITION.
+fn owner_keys(stmts: Array[Stmt]) -> String {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(out, hoisted_lambda_owner_of_stmt(Array::get(stmts, i), i))
+    i = i + 1
+  }
+  String::join(out, ", ")
+}
+
+// Codex P2 on #2623: a consumer that indexes definitions BY OWNER used to
+// mirror the hoist's arms, and the mirror covered `SLet` / `STest` / `SBench`
+// but not `SLetPat`. `hoisted_lambda_owner_of_stmt` is the hoist's own arms in
+// one place, so a consumer cannot cover a different subset of them.
+//
+// Measured while writing this: a top-level `let (a, b) = (1, 2)` does not
+// reach the hoist as an `SLetPat` at all -- the parser lowers it to a
+// `__dst<n>` binding plus one `SLet` per binder, which is why the row below
+// reads `__dst1, pair_a, pair_b` rather than one pattern owner. So the arm
+// this finding is about is defensive rather than reachable through that
+// spelling today; it stays because the hoist has it.
+//
+// The round after found the other half: a statement with NO binder still gets
+// an owner from the recorder -- the anonymous `:s:<index>` -- while this
+// function answered `None`, so the break lane recorded nothing for it and left
+// the hoisted body at file 0. Both now go through `dlh_owner_class` and
+// `dlh_owner_key_of`, so there is one classification and one key spelling
+// rather than two that can cover different subsets. `:s:<n>` below is a
+// position, and the effect declaration and struct at 0 and 6 are the shapes
+// that have no name of their own.
+fn owner_shapes_src() -> String {
+  "effect OLog {\n  Emit(String) -> Unit\n}\n\nlet (pair_a, pair_b) = (1, 2)\n\nlet plain = 3\n\nlet mut counter = 0\n\nstruct Marker {\n  v: Int\n}\n\ntest \"probe\" {\n  assert_true(true)\n}\n"
+}
+
+test "every top-level shape the hoist names an owner after answers with that owner" {
+  let stmts = parse_program(lex(owner_shapes_src()))
+  inspect(owner_keys(stmts), content = ":s:0, __dst1, pair_a, pair_b, plain, counter, :s:6, :t:probe")
+}
+
+// A statement with no name of its own is owned by its POSITION, and it must
+// have an owner at all: the recorder mints `:s:<index>` for it, and a consumer
+// that answered "no owner" recorded nothing and left whatever was hoisted out
+// of it at file 0.
+//
+// Measured while writing this, and it narrows the finding as filed: `let _ = 2`
+// is NOT the binderless case. The parser gives it a plain `SLet` whose name is
+// `_`, so it is owned by `_` like any other name. What actually reaches the
+// anonymous arm is a statement shape with no binding at all -- an effect, a
+// struct, an enum, a bare expression.
+test "a statement with no name of its own is owned by its position" {
+  let stmts = parse_program(lex("let plain = 1\n\nlet _ = 2\n\nlet after = 3\n"))
+  inspect(owner_keys(stmts), content = "plain, _, after")
+  // The reachable anonymous shapes, and the position is the identity: the same
+  // kind of statement at another index is a different owner, which is what
+  // keeps two of them from colliding.
+  let anon = parse_program(lex("struct A {\n  v: Int\n}\n\nlet named = 1\n\nstruct B {\n  v: Int\n}\n"))
+  inspect(owner_keys(anon), content = ":s:0, named, :s:2")
+}
+
+// #2631: what the module could NOT see while synthesizing a comparator.
+//
+// `eq_for_typed` emits a structural `K::equals(a.kind, b.kind)` when `K` is a
+// declared type in the statements the pass was given, and a raw `a.kind ==
+// b.kind` when it is not. The second compares an AGGREGATE BY REFERENCE, and
+// nothing in the emitted body says which of the two happened -- the two
+// comparators have the same name. That is what makes per-module synthesis not
+// a function of the declaration key, and the link fold's collision the only
+// thing standing between it and a silently kept wrong body.
+//
+// Measured on the compiler's CLI closure (#2388): the whole-program lane
+// admits none of these, and the per-module lane admits exactly
+// `PerceusActionKind` and `TypeEnv` -- both declared behind an `opaque` line in
+// a `.vpkg` contract whose sibling implementation declares the real enum.
+fn invisible_probe(own_text: String, ctx_text: String) -> String with Exception {
+  let own = parse_program(lex(own_text))
+  let ctx = parse_program(lex(ctx_text))
+  eq_invisible_nominals_reset()
+  let _ = desugar_trait_dicts_module(own, ctx, "", [], [])
+  String::join(eq_invisible_nominals_list(), ", ")
+}
+
+/// The comparator `desugar_trait_dicts_module` synthesized for `name`, rendered.
+fn module_comparator(own_text: String, ctx_text: String, name: String) -> String with Exception {
+  let own = parse_program(lex(own_text))
+  let ctx = parse_program(lex(ctx_text))
+  let synth = desugar_trait_dicts_module(own, ctx, "", [], [])
+  render_named(synth, name)
+}
+
+// #2631: the body a module emits must NOT depend on how much of the field's
+// type that module can see, because the NAME is the comparator's identity at
+// the link. A module that saw `K` emitting `K::equals(a.kind, b.kind)` and one
+// that did not emitting `a.kind == b.kind` mint one name for two bodies, and a
+// link that concatenates keeps whichever came first -- with the raw `==`
+// comparing an aggregate by REFERENCE.
+//
+// Measured on the compiler's CLI closure, this took the per-module run's link
+// collisions from 1 to 0 and its content differences from 6 to 4 (#2388).
+test "the comparator a module synthesizes is the same whether or not it can see the field's type" {
+  let owner = "struct P {\n  kind: K\n} derive (Eq)\n\nexport fn use_p(a: P, b: P) -> Bool {\n  a == b\n}\n"
+  let kind_decl = "export enum K {\n  Ka;\n  Kb\n}\n"
+  let seen = module_comparator(owner, kind_decl, "P::equals")
+  let unseen = module_comparator(owner, "", "P::equals")
+  // Not merely equal: equal AND structural. Two raw `==` bodies would also be
+  // equal, and would be the defect rather than its absence.
+  inspect(String::contains(seen, "K::equals("), content = "true")
+  inspect(unseen == seen, content = "true")
+}
+
+test "a nominal the module cannot see is reported, and one it can see is not" {
+  let owner = "struct P {\n  kind: K\n} derive (Eq)\n\nexport fn use_p(a: P, b: P) -> Bool {\n  a == b\n}\n"
+  let kind_decl = "export enum K {\n  Ka;\n  Kb\n}\n"
+  // The module sees only its own struct: `K` is a name it cannot resolve to a
+  // declaration, so the comparator it synthesizes falls to the raw `==`.
+  inspect(invisible_probe(owner, ""), content = "K")
+  // The SAME module with `K`'s declaration in its context reports nothing --
+  // so the report is about visibility and not about the struct, and a checker
+  // that simply always reported would fail here.
+  inspect(invisible_probe(owner, kind_decl), content = "")
+  // A type FORMAL is not an invisible nominal: it has no declaration to be
+  // invisible to, and refusing it would reject every bounded generic. This is
+  // the control that keeps the predicate from degenerating into "not declared
+  // here".
+  let generic = "struct Holder[T] {\n  item: T\n} derive (Eq)\n"
+  inspect(invisible_probe(generic, ""), content = "")
+  // And a scalar field never reports, whatever the context.
+  let scalar = "struct S {\n  n: Int;\n  s: String\n} derive (Eq)\n"
+  inspect(invisible_probe(scalar, ""), content = "")
 }

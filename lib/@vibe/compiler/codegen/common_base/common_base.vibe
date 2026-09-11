@@ -305,8 +305,14 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
   }
 }
 
-/// Position of `fn_index` in the cache, or -1. Linear scan: a slice holds at
-/// most the whole program's function count, and this runs once per function.
+/// Position of `fn_index` in the cache, or -1. Linear scan.
+///
+/// The body loop no longer calls this -- running it once per function is
+/// quadratic, which is what `codegen_body_cache_slot_index` below replaced.
+/// It stays as the REFERENCE: the table is tested against this, key by key,
+/// so the fast lookup has an oracle rather than a second implementation
+/// nobody compares it to. Callers with a handful of lookups can use it
+/// directly and skip building a table.
 export fn codegen_body_cache_find(cache: CodegenBodyCache, fn_index: Int) -> Int {
   let n = Array::length(cache.fn_indices)
   let mut i = 0
@@ -319,6 +325,64 @@ export fn codegen_body_cache_find(cache: CodegenBodyCache, fn_index: Int) -> Int
     }
   }
   found
+}
+
+/// #2388 step 3 follow-up: the same lookup in one read.
+///
+/// `codegen_body_cache_find` scans the whole cache per function, and the body
+/// loop calls it once per function -- quadratic in the function count, on the
+/// replay lane whose whole purpose is to make a warm compile cheap. #2388's
+/// prefix-stability probe counted 4,214 function bodies in the compiler's own
+/// closure, so a fully populated cache answers 4,214 questions with ~8.9
+/// million comparisons.
+///
+/// The key is a function INDEX, dense in [0, key_count), so a direct-address
+/// table answers each question in one read. `slot_of[k]` is the cache slot
+/// holding function k, or -1. FIRST occurrence wins, exactly like the scan: an
+/// entry is written only into a slot that is still -1.
+///
+/// The table is sized by the CALLER's key space, not by the largest index the
+/// cache happens to carry. `key_count` is what the caller can ask about --
+/// `num_user_funcs` at the body loop -- so the table is one Int per function
+/// and an entry outside that range is simply left out, unreachable rather than
+/// dropped: the scan cannot return it either without being asked with a key
+/// the caller never uses. Sizing it from the cache instead would let a torn or
+/// hand-built artifact carrying one absurd index (`2^40`) turn a lookup into
+/// an allocation the scan never made.
+///
+/// So the contract is exact and bounded: for every key in [0, key_count), this
+/// answers what `codegen_body_cache_find` answers, and
+/// `codegen_body_cache_find_at` answers -1 outside it.
+export fn codegen_body_cache_slot_index(cache: CodegenBodyCache, key_count: Int) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut j = 0
+  while j < key_count {
+    Array::push(out, 0 - 1)
+    j = j + 1
+  }
+  let n = Array::length(cache.fn_indices)
+  let mut i = 0
+  while i < n {
+    let k = Array::get(cache.fn_indices, i)
+    if k >= 0 && k < key_count && Array::get(out, k) < 0 {
+      Array::set(out, k, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The cache slot holding `fn_index`, or -1. Same answer as
+/// `codegen_body_cache_find` for every key inside the table's range -- pinned
+/// against it as the oracle -- and -1 outside it.
+export fn codegen_body_cache_find_at(slot_index: Array[Int], fn_index: Int) -> Int {
+  if fn_index < 0 || fn_index >= Array::length(slot_index) {
+    0 - 1
+  } else {
+    Array::get(slot_index, fn_index)
+  }
 }
 
 /// Append function `fn_index`'s just-finished codegen output to `cache`.
@@ -1002,7 +1066,25 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
     let fn_n = Array::length(out.fn_indices)
     let lam_n = Array::length(out.lam_owner)
     let guard_n = Array::length(out.guard_meta)
-    if p < 0 || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) {
+    // A function index is a position in the program's function list, so a
+    // NEGATIVE one is not a function and the entry holding it is not a body
+    // this compile could replay. Refusing the whole cache is the established
+    // rule for this artifact (#2388: a stale entry may cause a miss, never a
+    // wrong body), and it is also what keeps `codegen_body_cache_slot_index`
+    // exactly equivalent to the scan it replaces -- a direct-address table
+    // has no slot for a negative key, so a cache that carried one would make
+    // the two lookups disagree.
+    let mut fni = 0
+    let mut fn_index_negative = false
+    while fni < fn_n {
+      if Array::get(out.fn_indices, fni) < 0 {
+        fn_index_negative = true
+      } else {
+        ()
+      }
+      fni = fni + 1
+    }
+    if p < 0 || fn_index_negative || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) {
       None
     } else {
       Some(out)

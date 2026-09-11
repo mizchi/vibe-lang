@@ -8,7 +8,11 @@ import @vibe/compiler/core {
   TypeExpr,
   dce_keep_flags,
   effect_row_emitted_text,
+  expr_child_at,
   expr_children,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
   is_exception_effect_name,
   is_exception_throw_handler_name,
   is_exception_throw_operation,
@@ -1347,6 +1351,88 @@ fn edp_higher_order_block_owner(effect_defs: Array[(String, Array[(String, Array
     i = i + 1
   }
   hit
+}
+
+/// #2633: the three facts `evidence_dict_pass` derives its migration set from,
+/// collected over ONE statement list -- the effects it declares, the effects it
+/// handles, and the effects it performs. Each returned list is sorted-free but
+/// deduplicated, in first-appearance order.
+///
+/// The pass itself cannot run per module: its `vhe_names` is *declared effects
+/// union every effect label a handle site names*, and its vacuous-handle
+/// elimination asks whether an effect has zero performs ANYWHERE. Both are
+/// unions over the whole program. Worse, they run BACKWARDS along the import
+/// graph -- `effect Source` is declared and performed in
+/// `core/module_graph_path.vibe`, and handled in `loader/loader.vibe`, which
+/// imports core and not the other way round -- so no context built from a
+/// module's own imports can supply them.
+///
+/// What IS per-module is collecting the facts. This exists so the link can
+/// union them and derive the same migration set from the same inputs, and so
+/// that claim can be MEASURED against the whole-program collection rather than
+/// assumed.
+export fn evidence_module_facts(stmts: Array[Stmt]) -> (Array[String], Array[String], Array[String]) {
+  let declared = empty_str_array()
+  let defs = edp_collect_effect_defs(stmts)
+  let mut i = 0
+  while i < Array::length(defs) {
+    let (name, _) = Array::get(defs, i)
+    if edp_str_array_contains(declared, name) {
+      ()
+    } else {
+      Array::push(declared, name)
+    }
+    i = i + 1
+  }
+  let handled = empty_str_array()
+  edp_collect_handle_effect_names(stmts, handled)
+  let performed = empty_str_array()
+  let mut j = 0
+  while j < Array::length(stmts) {
+    match Array::get(stmts, j) {
+      // EXACTLY the statement forms `edp_program_user_performs` walks, which
+      // is what makes this the pass's input and not a better one. It has no
+      // `SLetPat` arm; adding one here would let the report claim the inputs
+      // decompose while measuring a set the pass never derives (Codex round on
+      // #2623).
+      //
+      // The pass's omission is its own question -- a `perform` under a
+      // top-level pattern binding would read as "zero performs anywhere" and
+      // erase that effect's handlers. Measured, top-level `let (a, b) = ..`
+      // does not reach the prelude as `SLetPat` (the parser lowers it to a
+      // `__dst<n>` binding plus one `SLet` per binder), so the arm is
+      // unreachable through that spelling today.
+      SLet(_, _, _, _, e) => emf_performed_expr(e, performed),
+      SLetMut(_, _, e) => emf_performed_expr(e, performed),
+      SExpr(e) => emf_performed_expr(e, performed),
+      STest(_, e) => emf_performed_expr(e, performed),
+      SBench(_, e) => emf_performed_expr(e, performed),
+      _ => ()
+    }
+    j = j + 1
+  }
+  (declared, handled, performed)
+}
+
+/// Every effect a `perform` under `expr` names. Generic over the node shape
+/// (`expr_children_push` / `expr_child_at`), because the question is "does any
+/// node anywhere below here perform E" and a hand-written arm per constructor
+/// is a list that goes stale the next time one is added.
+fn emf_performed_expr(expr: Expr, out: Array[String]) -> Unit {
+  let e = edp_user_perform_effect_of(expr)
+  if String::length(e) > 0 && !edp_str_array_contains(out, e) {
+    Array::push(out, e)
+  } else {
+    ()
+  }
+  let mark = expr_children_push(expr)
+  let top = expr_children_top()
+  let mut i = mark
+  while i < top {
+    emf_performed_expr(expr_child_at(i), out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
 }
 
 export fn evidence_dict_pass(stmts: Array[Stmt], entry_name: String) -> Array[String] {

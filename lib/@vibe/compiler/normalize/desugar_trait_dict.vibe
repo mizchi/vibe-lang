@@ -11444,6 +11444,15 @@ fn field_show_expr(fname: String, fty: TypeExpr, known_types: Array[String]) -> 
 // binding it would change a working program).
 let dtd_type_param_names: Array[String] = empty_str_array()
 
+// #2631 measurement (non-behavioural): the non-scalar `TyName`s that reach
+// `eq_for_typed`'s raw-`==` fallthrough while NOT being a type formal. Those
+// are nominals the statement list handed to the pass cannot see -- the whole
+// program can see every one of them, so on that lane this set is expected to
+// be EMPTY, and a per-module run is where it fills up. Recorded rather than
+// reasoned about because "expected to be empty" is exactly the kind of claim
+// this repo has been wrong about before.
+let dtd_eq_invisible_nominals: Array[String] = empty_str_array()
+
 // ---- #2141: the LEXICAL type-parameter scope during the rewrite ----
 //
 // `dtd_type_param_names` is a program-wide UNION minus declared type names, so
@@ -12614,6 +12623,53 @@ fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
   }
 }
 
+/// #2631: clear the invisible-nominal record. Deliberately NOT part of
+/// `eq_known_types_reset`, which runs once per pass entry -- the caller decides
+/// which span of compilation it wants the answer for (the whole program, or one
+/// module), and folding it into the pass reset would only ever report the last
+/// one.
+/// #2631: `n` reached `eq_for_typed`'s raw-`==` fallthrough as a NOMINAL the
+/// statement list could not see -- as opposed to the three things that legally
+/// land there.
+///
+///  - a scalar, where `==` is the right answer;
+///  - a type FORMAL, which cannot have a comparator because it has no type
+///    yet. `dtd_type_param_names` holds the names the program binds as type
+///    parameters, and `scope_formal_mark_prefix` marks one that a re-spelling
+///    already resolved to a formal (`__Vfp_E` and friends are formals by
+///    construction, #2141);
+///  - `?EqUnknown`, the shape scanner's explicit "no answer", spelled so that
+///    no identifier can collide with it.
+///
+/// What is left is a declared struct or enum that some OTHER module declares.
+/// A raw `==` on that compares an aggregate by REFERENCE, so this predicate is
+/// the defect's shape rather than a statistic about it. Measured on the
+/// compiler's CLI closure: the whole-program lane admits none of these, and a
+/// per-module lane admits exactly the ones behind an `opaque` contract
+/// declaration (#2631).
+fn eq_name_is_invisible_nominal(n: String) -> Bool {
+  !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
+}
+
+export fn eq_invisible_nominals_reset() -> Unit {
+  Array::truncate(dtd_eq_invisible_nominals, 0)
+}
+
+/// The non-scalar type names that reached `eq_for_typed`'s raw-`==`
+/// fallthrough without being a type formal, since the last reset: nominals the
+/// statement list could not see. A raw `==` on such a name compares an
+/// aggregate by reference, so a non-empty list is the #2631 defect and an
+/// empty one is its absence -- reported rather than assumed.
+export fn eq_invisible_nominals_list() -> Array[String] {
+  let out = empty_str_array()
+  let mut i = 0
+  while i < Array::length(dtd_eq_invisible_nominals) {
+    Array::push(out, Array::get(dtd_eq_invisible_nominals, i))
+    i = i + 1
+  }
+  out
+}
+
 fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_known_types, 0)
   Array::truncate(dtd_eq_generic_types, 0)
@@ -13434,6 +13490,26 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       // `Unit` need no marker: their words are 0/1-sized, and a bit-different
       // pair can only be `false` vs `true`, which the fallback keeps unequal.
       EBinOp("==", EBinOp("+", lhs, EInt(0), -1), EBinOp("+", rhs, EInt(0), -1), -1)
+    } else if eq_name_is_invisible_nominal(n) {
+      if str_array_contains(dtd_eq_invisible_nominals, n) {
+        ()
+      } else {
+        Array::push(dtd_eq_invisible_nominals, n)
+      }
+      // #2631: a declared struct or enum this statement list cannot see still
+      // gets the STRUCTURAL call, not a raw `==` on an aggregate. The name is
+      // the comparator's identity at the link, so the body a module emits must
+      // not depend on how much of the field's type that module happens to see
+      // -- otherwise two modules mint one name for two bodies and a link that
+      // concatenates keeps whichever came first.
+      //
+      // On the whole-program lane this arm is UNREACHABLE: measured on the
+      // compiler's own CLI closure, `invisible_whole=0`, because a program
+      // that type-checks whole can see every nominal it compares. It is the
+      // per-module lane that reaches it, and there the emitted call is a
+      // reference the link resolves against the module that declares the type
+      // -- the same shape as any other cross-module call.
+      ECall(EIdent(qualified_name(n, "equals"), -1), Array::slice([lhs, rhs], 0, 2), -1)
     } else {
       EBinOp("==", lhs, rhs, -1)
     },
@@ -16835,46 +16911,82 @@ let dlh_module_tag: Array[String] = [""]
 /// `[A-Za-z_][A-Za-z0-9_]*` possibly joined by `::`, so it can never START with
 /// a colon, and `test_foo` -- which a top-level `let test_foo` could also spell
 /// -- becomes `:t:foo`.
-fn dlh_set_owner(stmt: Stmt, idx: Int) -> Unit {
-  Array::set(dlh_owner_idx, 0, idx)
-  Array::set(dlh_owner_kind, 0, 0)
+/// #2388: the owner key a lambda hoisted out of `stmt` carries, or `None` for
+/// a top-level statement that binds no name -- whose key is a POSITION
+/// (`dlh_anonymous_owner_key`) and so cannot be looked up by name.
+///
+/// The SAME arms `dlh_set_owner` records and `dlh_owner_key` spells, in one
+/// place, so a consumer that indexes definitions BY OWNER does not mirror them
+/// -- the break lane's file index did, and its mirror covered `SLet` / `STest`
+/// / `SBench` but not `SLetPat`, so a lambda hoisted out of a top-level
+/// pattern binding resolved to no owner at all (Codex P2 on #2623).
+///
+/// `dlh_set_owner` deliberately does NOT call this: it stores the kind and the
+/// raw name and lets `dlh_owner_key` build the string only when a lambda is
+/// actually hoisted. A compile of the compiler walks ~4,600 top-level
+/// statements and hoists none, and building one key string per statement cost
+/// ~138 kB of bump heap per compile on the selfcompile KPI. A consumer that
+/// wants every owner up front calls this instead, and pays that only when it
+/// needs the index.
+export fn hoisted_lambda_owner_of_stmt(stmt: Stmt, idx: Int) -> String {
+  let (kind, name) = dlh_owner_class(stmt)
+  dlh_owner_key_of(kind, name, idx)
+}
+
+/// The owner KIND and name of `stmt`: 0 a plain name, 1 a test, 2 a bench, 3
+/// anonymous (a binderless pattern, or any other statement shape).
+///
+/// One classification, read by the hoist's recorder and by anyone who needs to
+/// build the key themselves. Two copies is what the earlier bugs were: a
+/// consumer that mirrored a SUBSET of these arms silently filed a hoisted body
+/// under the wrong module (`SLetPat` in Codex's round on #2623, then the
+/// binderless case the round after). A shape this one does not name cannot be
+/// named differently by the other.
+fn dlh_owner_class(stmt: Stmt) -> (Int, String) {
   match stmt {
-    SLet(_, _, name, _, _) => Array::set(dlh_owner_name, 0, name),
-    SLetMut(name, _, _) => Array::set(dlh_owner_name, 0, name),
-    STest(name, _) => {
-      Array::set(dlh_owner_kind, 0, 1)
-      Array::set(dlh_owner_name, 0, name)
-    },
-    SBench(name, _) => {
-      Array::set(dlh_owner_kind, 0, 2)
-      Array::set(dlh_owner_name, 0, name)
-    },
+    SLet(_, _, name, _, _) => (0, name),
+    SLetMut(name, _, _) => (0, name),
+    STest(name, _) => (1, name),
+    SBench(name, _) => (2, name),
     SLetPat(pat, _) => {
       let binders = empty_str_array()
       collect_pat_binders(pat, binders)
       if Array::length(binders) == 0 {
-        Array::set(dlh_owner_kind, 0, 3)
+        (3, "")
       } else {
-        Array::set(dlh_owner_name, 0, Array::get(binders, 0))
+        (0, Array::get(binders, 0))
       }
     },
-    _ => Array::set(dlh_owner_kind, 0, 3)
+    _ => (3, "")
   }
 }
 
-/// The recorded owner as a key. Called once per lambda actually hoisted.
-fn dlh_owner_key() -> String {
-  let kind = Array::get(dlh_owner_kind, 0)
-  let name = Array::get(dlh_owner_name, 0)
+/// The key for an owner classified by `dlh_owner_class`. The anonymous case
+/// needs the statement's index, which is why this takes one: `let _ = ..` has
+/// no name to be known by, so its position IS its identity.
+fn dlh_owner_key_of(kind: Int, name: String, idx: Int) -> String {
   if kind == 1 {
     ":t:\{name}"
   } else if kind == 2 {
     ":b:\{name}"
   } else if kind == 3 {
-    dlh_anonymous_owner_key(Array::get(dlh_owner_idx, 0))
+    dlh_anonymous_owner_key(idx)
   } else {
     name
   }
+}
+
+fn dlh_set_owner(stmt: Stmt, idx: Int) -> Unit {
+  Array::set(dlh_owner_idx, 0, idx)
+  Array::set(dlh_owner_kind, 0, 0)
+  let (kind, name) = dlh_owner_class(stmt)
+  Array::set(dlh_owner_kind, 0, kind)
+  Array::set(dlh_owner_name, 0, name)
+}
+
+/// The recorded owner as a key. Called once per lambda actually hoisted.
+fn dlh_owner_key() -> String {
+  dlh_owner_key_of(Array::get(dlh_owner_kind, 0), Array::get(dlh_owner_name, 0), Array::get(dlh_owner_idx, 0))
 }
 
 fn dlh_anonymous_owner_key(idx: Int) -> String {
@@ -16898,9 +17010,147 @@ fn dlh_anonymous_owner_key(idx: Int) -> String {
 /// declarations are legal. With the length in front, the owner's extent is
 /// decidable and the rest is unambiguous on its own -- the counter is digits
 /// and a local name can never begin with one.
+/// The prefix `dlh_hoisted_name` mints and `hoisted_lambda_owner_key` reads
+/// back. One spelling, so the minter and the decoder cannot drift apart.
+let dlh_hoisted_prefix: String = "__hoisted_lam_"
+
 fn dlh_hoisted_name(idx: Int, name: String) -> String {
   let owner = dlh_owner_key()
-  "__hoisted_lam_\{String::length(owner)}_\{owner}_\{idx}_\{name}"
+  "\{dlh_hoisted_prefix}\{String::length(owner)}_\{owner}_\{idx}_\{name}"
+}
+
+/// #2388: the owner key encoded in a hoisted lambda's top-level name, or
+/// `None` when `name` is not one of those names.
+///
+/// A hoisted lambda is a synthesized TOP-LEVEL definition that belongs to
+/// exactly one module -- the declaration it came out of. Where the merged
+/// program can place it next to that declaration, its position says so
+/// (`dlh_place_after_owners`). Where a consumer sees only the NAME -- a table
+/// keyed by the pre-prelude declarations, which a synthesized function is by
+/// definition not in -- the owner is read back out of the name instead. This
+/// is the inverse of `dlh_hoisted_name`.
+///
+/// The grammar it accepts, written out, because checking it piecemeal was
+/// wrong twice (Codex P2 on #2623, two rounds -- first the counter and local
+/// name were not checked at all, then any non-empty remainder was taken as a
+/// local name):
+///
+/// ```text
+/// __hoisted_lam_ <digits> _ <owner: exactly <digits> bytes> _ <digits> _ <local>
+/// local ::= [A-Za-z_] [A-Za-z0-9_]*
+/// ```
+///
+/// Every part is checked. The owner needs no grammar of its own because its
+/// extent is length-prefixed -- that is what lets it hold `::` (an impl
+/// method) or a leading `:` (the `:t:` / `:b:` / `:s:` forms) while the rest
+/// stays unambiguous. The LOCAL name does need one: it comes from an
+/// `ELet(name, ..)` binder, so it is a source identifier and can be neither
+/// qualified nor digit-initial.
+///
+/// Both mistakes were reachable rather than hypothetical, and by the same
+/// route: a helper synthesized for a user type whose name starts with this
+/// prefix (`__hoisted_lam_3_foo_bad`, `__hoisted_lam_3_foo_0_x`) is in no
+/// pre-prelude name table, so it reaches this decoder, and answering `foo`
+/// files it under whatever module declares `foo`.
+///
+/// Fails closed. A name that does not match the whole grammar is `None`, not
+/// a partial answer: a caller that attributed a synthesized definition to a
+/// half-decoded owner would be silently wrong (#2618's collision, one level
+/// down), whereas `None` leaves the caller on whatever rule it already had.
+export fn hoisted_lambda_owner_key(name: String) -> Option[String] {
+  if String::starts_with(name, dlh_hoisted_prefix) {
+    let n = String::length(name)
+    let start = String::length(dlh_hoisted_prefix)
+    let digits_end = dlh_digit_run_end(name, start, n)
+    let owner_len = dlh_owner_len_at(name, start, digits_end, n)
+    // An owner is never empty: `dlh_owner_key` returns either a declaration's
+    // name or a `:t:` / `:b:` / `:s:` form.
+    if owner_len <= 0 {
+      None
+    } else {
+      let owner_start = digits_end + 1
+      let owner_end = owner_start + owner_len
+      let ctr_start = owner_end + 1
+      let ctr_end = dlh_digit_run_end(name, ctr_start, n)
+      let local_start = ctr_end + 1
+      if owner_end >= n || String::char_code_at(name, owner_end) != 95 {
+        None
+      } else if ctr_end == ctr_start || ctr_end >= n || String::char_code_at(name, ctr_end) != 95 {
+        None
+      } else if !dlh_is_local_name(name, local_start, n) {
+        None
+      } else {
+        Some(String::substring(name, owner_start, owner_end))
+      }
+    }
+  } else {
+    None
+  }
+}
+
+/// Whether `[i, n)` is a source identifier: `[A-Za-z_] [A-Za-z0-9_]*`, and not
+/// empty. The local half of a hoisted name is an `ELet` binder, so a remainder
+/// that is qualified (`x::equals`) or digit-initial (`1bad`) is not one this
+/// compiler minted.
+fn dlh_is_local_name(s: String, i: Int, n: Int) -> Bool {
+  if i >= n {
+    false
+  } else {
+    let c0 = String::char_code_at(s, i)
+    if !((c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) || c0 == 95) {
+      false
+    } else {
+      let mut j = i + 1
+      let mut ok = true
+      while j < n {
+        let c = String::char_code_at(s, j)
+        if (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 {
+          j = j + 1
+        } else {
+          ok = false
+          j = n
+        }
+      }
+      ok
+    }
+  }
+}
+
+/// The index just past the digit run starting at `i`.
+fn dlh_digit_run_end(s: String, i: Int, n: Int) -> Int {
+  let mut j = i
+  while j < n && String::char_code_at(s, j) >= 48 && String::char_code_at(s, j) <= 57 {
+    j = j + 1
+  }
+  j
+}
+
+/// The owner length a hoisted name's prefix declares, or -1 when the prefix is
+/// not a digit run followed by `_`, or declares a length the name cannot hold.
+/// Bounded by the name's own length while it accumulates, so a long digit run
+/// can never overflow into a wrapped (negative, or spuriously small) value.
+fn dlh_owner_len_at(s: String, i: Int, end: Int, n: Int) -> Int {
+  if end == i || end >= n || String::char_code_at(s, end) != 95 {
+    0 - 1
+  } else {
+    let mut acc = 0
+    let mut j = i
+    let mut overflow = false
+    while j < end {
+      acc = acc * 10 + (String::char_code_at(s, j) - 48)
+      if acc > n {
+        overflow = true
+        j = end
+      } else {
+        j = j + 1
+      }
+    }
+    if overflow {
+      0 - 1
+    } else {
+      acc
+    }
+  }
 }
 
 fn dlh_hoist_expr(expr: Expr, hoisted: Array[Stmt], ctr: Array[Int]) -> Expr {
