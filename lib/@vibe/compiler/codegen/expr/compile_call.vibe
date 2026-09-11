@@ -1703,6 +1703,23 @@ fn cc_map_release_ptr(buf: Bytes, ptr_l: Int, ctx: CompileCtx) -> Unit {
   }
 }
 
+/// #2683: a Map / MapBuilder lowering BORROWS its first argument, so an
+/// OWNED temporary handed there -- a literal, a call that returns a fresh
+/// map, a frozen builder (`Map::set(Map::new(), k, v)`) -- is nobody's to
+/// release: the #2682 rule, which the resolved-call path applies to the
+/// runtime-function builtins and these inline lowerings must apply
+/// themselves (16 B per call measured on the reclaim fixture). `ptr_l`
+/// holds the UNTAGGED pointer the lowering read from; re-tag and drop it
+/// after the last read. Not for a lowering that returns a view of the map
+/// (Map::get, MapBuilder::get), where the leak stays the safe side.
+fn cc_map_release_temp_arg0(buf: Bytes, arg0: Expr, ptr_l: Int, ctx: CompileCtx) -> Unit {
+  if ctx.enable_rc && cc_is_owned_temp(arg0, ctx) {
+    cc_map_release_ptr(buf, ptr_l, ctx)
+  } else {
+    ()
+  }
+}
+
 /// A predicate owns its parameter but the array keeps its element: retain
 /// before the call, unconditionally.
 fn cc_hof_lend(buf: Bytes, elem_l: Int, ctx: CompileCtx) -> Unit {
@@ -4881,6 +4898,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_map_release_temp_arg0(buf, Array::get(args, 0), map_l, ctx)
       emit_local_get(buf, res_l)
       nl + 5
     }
@@ -4944,13 +4962,16 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_br(buf, 0)
       emit_end(buf)
       emit_end(buf)
+      cc_map_release_temp_arg0(buf, Array::get(args, 0), map_l, ctx)
       emit_local_get(buf, res_l)
       nl + 5
     }
     else if fname == "Map::size" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
       let map_l = nl
+      let cnt_l = nl + 1
       Array::push(local_names, "__size_map")
+      Array::push(local_names, "__size_cnt")
       emit_local_set(buf, map_l)
       emit_local_get(buf, map_l)
       emit_i64_const(buf, -2)
@@ -4970,7 +4991,10 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
-      nl + 1
+      emit_local_set(buf, cnt_l)
+      cc_map_release_temp_arg0(buf, Array::get(args, 0), map_l, ctx)
+      emit_local_get(buf, cnt_l)
+      nl + 2
     }
     else if fname == "Map::get" {
       let mut nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
@@ -5085,6 +5109,10 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
+      // i_l is dead after the scan: park the answer there across the release.
+      emit_local_set(buf, i_l)
+      cc_map_release_temp_arg0(buf, Array::get(args, 0), map_l, ctx)
+      emit_local_get(buf, i_l)
       nl + 5
     }
     else if fname == "Map::remove" {
@@ -5314,6 +5342,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
+      cc_map_release_temp_arg0(buf, Array::get(args, 0), map_l, ctx)
       cc_map_value_out(buf, new_l, ctx)
       nl + 8
     }
@@ -5483,6 +5512,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
+      cc_map_release_temp_arg0(buf, Array::get(args, 0), map_l, ctx)
       cc_map_value_out(buf, new_l, ctx)
       nl + 7
     }
@@ -5756,6 +5786,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_i32_wrap_i64(buf)
       emit_i32_store(buf, 2, 0)
       emit_end(buf)
+      cc_map_release_temp_arg0(buf, Array::get(args, 0), mb_l, ctx)
       emit_i64_const(buf, 0)
       nl + 9
     }
@@ -5985,6 +6016,10 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       } else {
         ()
       }
+      // mi_l is dead after the scan: park the answer there across the release.
+      emit_local_set(buf, mi_l)
+      cc_map_release_temp_arg0(buf, Array::get(args, 0), mb_l, ctx)
+      emit_local_get(buf, mi_l)
       nl + 5
     }
     else if fname == "MapBuilder::get" {
