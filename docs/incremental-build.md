@@ -157,10 +157,9 @@ header scan (`load_or_parse_module_header_fs` — the same scan the FS typecheck
 lane plans module order with), with a dependency that names a `.vpkg` contract
 expanded to that package's sibling implementations. It has to come from the
 loader because the merge drops `SImport` / `SReExport` as already resolved, so
-the edges cannot be read back off the merged program. Four corrections were
-needed to land on that rule, and the counters only mean what they say under a
-rule that matches a real compile — they are set out with their measurements in
-[The context rule this holds under](#the-context-rule-this-holds-under) below.
+the edges cannot be read back off the merged program. The counters only mean
+what they say under a rule that matches a real compile; what that takes is
+[The context rule](#the-context-rule) below.
 
 **One hop, not transitive.** Closing transitively hands A the declarations of a
 module C that A's dependency B imports *privately* — context no real compile of
@@ -186,9 +185,9 @@ unfolded that it should have folded.
 
 ### What a comparator may depend on
 
-`invisible_whole=0` is the load-bearing number, and it holds under every one of
-the four context rules below: a program that type-checks whole can see every
-nominal it compares.
+`invisible_whole=0` is the load-bearing number, and it does not depend on the
+context rule at all: a program that type-checks whole can see every nominal it
+compares.
 So a lane that sees fewer is the only one that can reach the question, and what
 it does there used to differ.
 
@@ -275,17 +274,12 @@ allocates, in the **dependency** of a two-file program, reads `validators=1`:
 the whole-program run walks it and the per-module union reports the same one
 diagnostic. The clean two-file control reads `0`.
 
-### The context rule this holds under
+### The context rule
 
-Four corrections to get right, and they are worth keeping because three were the
-same mistake and the fourth was its mirror image:
-
-| rule | reachable pairs | `missing` | `content` |
-|---|---:|---:|---:|
-| every other file | 132 860 | 1 | 4 |
-| transitive closure | 32 017 | 1 | 4 |
-| own direct imports | 1 415 | 6 | 9 |
-| **direct + package deps** | **11 342** | **0** | **0** |
+Three constraints. A rule that misses any of them produces counters that do not
+mean what they say, and it can miss in either direction: too wide and a green
+means less than it looks, too narrow and the comparison manufactures a
+difference that is not there.
 
 - A module sees what it **directly imports** — not what its dependencies import.
   A transitive closure hands A the declarations of a module its dependency
@@ -301,11 +295,10 @@ same mistake and the fourth was its mirror image:
   what a module sees is exactly the published surface: nothing transitive,
   nothing private, no bodies.
 
-The first three rules were too wide and produced greens that meant less than
-they looked; the fourth was too narrow and manufactured a difference that was
-not there. Both directions are errors, and only the counters distinguish them —
-which is why `edges_unresolved` and `invisible_*` are reported rather than
-assumed.
+Only the counters distinguish the two directions, which is why
+`edges_unresolved` and `invisible_*` are reported rather than assumed:
+`edges_unresolved=0` says the closure the modules ran under is the whole
+closure, so a difference that survives it is the program's.
 
 ### How the comparator family closed (#2634) — 9 rows, now zero
 
@@ -322,7 +315,7 @@ content  CbfTable::equals   AliasIdx::equals   ExportRenamePlan::equals
 
 #2631's sibling one level up. That issue was a comparator whose *body* depended
 on module visibility, and is fixed — which is why `collisions=0` survives a
-non-zero `invisible_split` under every context rule tried.
+non-zero `invisible_split`.
 
 **Measured which half of "never emits" it is**, because the two have different
 fixes: a module can fail to *record* the need, or record it and fail to emit.

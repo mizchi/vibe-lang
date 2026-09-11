@@ -45,6 +45,7 @@ import @vibe/compiler/normalize {
   desugar_trait_dicts_module,
   desugar_trait_dicts_with_typed_eq,
   eq_deferred_requests_list,
+  eq_deferred_reset,
   eq_invisible_nominals_list,
   eq_invisible_nominals_reset,
   eq_mint_deferred_into,
@@ -467,17 +468,38 @@ fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checke
   }
 }
 
-/// #2388: the prelude's validating passes over one statement list. They return
-/// a message or "", and `effect_lowering_prelude` collects them into its error
-/// list -- so they are part of the prelude's OUTPUT and not visible in any
-/// comparison keyed on declarations.
-fn lc_collect_validator_diags(stmts: Array[Stmt], out: Array[String]) -> Unit {
+/// #2388: the prelude's validating passes. They return a message or "", and
+/// `effect_lowering_prelude` collects them into its error list -- so they are
+/// part of the prelude's OUTPUT and not visible in any comparison keyed on
+/// declarations.
+///
+/// TWO functions, at two points, because production runs them at two points and
+/// a validator reads the program in front of it. They were one call collecting
+/// both, taken before pass 0 on the whole lane and after pass 4 on the split
+/// lane, so the two lanes were reading DIFFERENT programs and `DIAGS
+/// validators` could differ for the sample point rather than for what a module
+/// can see (#2642 review, Codex P2).
+///
+/// Stated as alignment, not as a measured bug: three shapes were probed for one
+/// that answers differently at the two points -- a `#zero_alloc` fn beside a
+/// lambda-hoisting fn, one beside a `derive (Eq)` struct, and one whose own body
+/// compares two structs -- and all three read the same under both. The change is
+/// still right (production's order is the one the oracle is supposed to model,
+/// and matching it costs nothing), but nothing here is pinned by a program that
+/// distinguishes them.
+fn lc_collect_zero_alloc_diag(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let za = zero_alloc_check(stmts)
   if za != "" && !lc_str_array_has(out, za) {
     Array::push(out, za)
   } else {
     ()
   }
+}
+
+/// The other one, and it belongs AFTER pass 5: `effect_lowering_prelude`
+/// validates the provider surface once the merged AST carries canonical import
+/// value names and qualified type heads, and `unbox_tuple_loop_params` has run.
+fn lc_collect_stdin_provider_diag(stmts: Array[Stmt], out: Array[String]) -> Unit {
   let sp = lc_validate_stdin_provider_stmts(stmts)
   if sp != "" && !lc_str_array_has(out, sp) {
     Array::push(out, sp)
@@ -4489,6 +4511,11 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // deriving it per module from `part_entry` would let the exclude list, rather
   // than the program, produce a difference.
   let an_exclude = lc_analysis_exclude(entry_name)
+  // This lane's boundary: the deferral and refusal registries accumulate across
+  // the modules below, which is what `eq_mint_deferred_into` reads at the link,
+  // so they are cleared HERE rather than per module. Without it they also
+  // carried every earlier program's entries (#2642 review, Codex P2).
+  eq_deferred_reset()
   let parts: Array[Array[Stmt]] = []
   let mut fi = 0
   while fi < file_count {
@@ -4514,6 +4541,9 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     } else {
       ""
     }
+    // Before pass 0, where production runs it: `zero_alloc_check` is the first
+    // thing `effect_lowering_prelude` does, on the body the source wrote.
+    lc_collect_zero_alloc_diag(Array::get(parts, fi), st.diags)
     let mut j = 0
     while j < 4 {
       lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys)
@@ -4609,7 +4639,6 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       Array::push(part, Array::get(synthesized, sy))
       sy = sy + 1
     }
-    lc_collect_validator_diags(part, st.diags)
     let mut j2 = 5
     while j2 < 17 {
       if j2 == 15 {
@@ -4633,6 +4662,12 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
         ()
       } else {
         lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys)
+      }
+      // After pass 5, where production runs it.
+      if j2 == 5 {
+        lc_collect_stdin_provider_diag(part, st.diags)
+      } else {
+        ()
       }
       j2 = j2 + 1
     }
@@ -4798,7 +4833,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // miss a violation or invent one, and nothing else in this report would say
   // so.
   let diag_w = lc_fresh_string_array()
-  lc_collect_validator_diags(a, diag_w)
+  lc_collect_zero_alloc_diag(a, diag_w)
   let mut k = 0
   let ev_req_w = lc_fresh_string_array()
   let ev_ref_w = lc_fresh_string_array()
@@ -4816,6 +4851,13 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
       lc_union_into(ev_req_w, eq_synthesis_requests_list())
       lc_union_into(ev_ref_w, eq_typed_refusals_list())
       lc_union_into(ev_def_w, eq_deferred_requests_list())
+    } else {
+      ()
+    }
+    // After pass 5, where production runs it, and where the split lane samples
+    // it too.
+    if k == 5 {
+      lc_collect_stdin_provider_diag(a, diag_w)
     } else {
       ()
     }
