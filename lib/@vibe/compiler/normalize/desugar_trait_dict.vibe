@@ -2395,6 +2395,13 @@ fn dtd_tuple_index_of(field: String) -> Option[Int] {
 fn dtd_binop_builtin_operand_type(bl: Expr, br: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[String] {
   let lt = dtd_type_name_or_empty(bl, struct_sets, var_types, fn_returns)
   let rt = dtd_type_name_or_empty(br, struct_sets, var_types, fn_returns)
+  dtd_builtin_arith_agreement(lt, rt)
+}
+
+/// The operand-type test of dtd_binop_builtin_operand_type on two ALREADY
+/// inferred operand names, so a caller that has both in hand (the `+` arm of
+/// infer_arg_type_name) does not infer them a second time (#2680).
+fn dtd_builtin_arith_agreement(lt: String, rt: String) -> Option[String] {
   if lt == rt && dtd_is_builtin_arith_type(lt) {
     Some(lt)
   } else {
@@ -2431,19 +2438,20 @@ fn infer_arg_type_name(arg: Expr, struct_sets: Array[(String, Array[String])], v
     // types the concat rewrite below and lets a `let u = a + "x"` binding
     // record u -> String for downstream `u + ...`. Other `+` operands stay
     // None (no behavior change for numeric/unknown).
+    // Each operand is inferred ONCE. The String test used to infer both
+    // operands and then hand them to dtd_binop_builtin_operand_type, which
+    // inferred both again -- four walks per `+` node, two of each child, so
+    // a left-nested chain cost 2^n walks: `let y = x + x + ... ` with 23
+    // operands compiled in 5.3 s and 24 ran the compiler out of memory
+    // (#2680). The tail position and an unbound chain never reach this
+    // inference, which is why only the bound spelling crashed.
     EBinOp(bop, bl, br, _) => if bop == "+" {
-      let lstr = match infer_arg_type_name(bl, struct_sets, var_types, fn_returns) {
-        Some(t) => t == "String",
-        None => false
-      }
-      let rstr = match infer_arg_type_name(br, struct_sets, var_types, fn_returns) {
-        Some(t) => t == "String",
-        None => false
-      }
-      if lstr || rstr {
+      let lt = dtd_type_name_or_empty(bl, struct_sets, var_types, fn_returns)
+      let rt = dtd_type_name_or_empty(br, struct_sets, var_types, fn_returns)
+      if lt == "String" || rt == "String" {
         Some("String")
       } else {
-        dtd_binop_builtin_operand_type(bl, br, struct_sets, var_types, fn_returns)
+        dtd_builtin_arith_agreement(lt, rt)
       }
     } else if bop == "-" || bop == "*" || bop == "/" {
       dtd_binop_builtin_operand_type(bl, br, struct_sets, var_types, fn_returns)
