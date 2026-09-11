@@ -4618,7 +4618,7 @@ fn head_kind(t: Type) -> Int {
     // builtin receiver checks (`Array::get(record { a: 1 }, 0)` etc.) pass
     // and codegen reads the record layout as the wrong representation.
     CtRecord(_) => 14,
-    CtNamed(name, _) => if name == "MutList" {
+    CtNamed(name, nargs) => if name == "MutList" {
       15
     } else if name == "Attempt" {
       // #1961 / ADR-0088: `perform?` yields `Attempt[T, E]`, a compiler-owned
@@ -4655,7 +4655,7 @@ fn head_kind(t: Type) -> Int {
       // Array sites needed it. Here both directions need a head, so the head is
       // where it belongs.
       18
-    } else if name == "MutMap" {
+    } else if name == "MutMap" && Array::length(nargs) > 0 {
       // #2640: `@vibe/core`'s collections are declared BODYLESS in its
       // contract (`type MutMap[K, V]`, `type MutSet[T]`), so a consumer sees
       // them as `CtNamed` and they landed in the tolerated `0` bucket --
@@ -4670,12 +4670,29 @@ fn head_kind(t: Type) -> Int {
       //
       // Same treatment as MutList / Attempt / Map / FrozenArray above, for the
       // same reason: their runtime representation is compiler-owned, so a
-      // certain head is what the check needs. This is an allow-list and that
-      // is a proxy for the property (a `CtNamed` that is a declared nominal
-      // rather than a type parameter in scope); the general fix needs the
-      // scope `head_kind` does not have, and is the same root as #2631/#2634.
+      // certain head is what the check needs.
+      //
+      // APPLIED ONLY, and that is the load-bearing half (Codex review on
+      // #2644's successor). A type formal may be NAMED `MutSet`: shadowing is
+      // legal, these names are not reserved, and
+      // `resolve_type_expr_core_shadowed` gives a bare shadowed formal
+      // `CtNamed(name, [])` -- the same representation. Classifying by the
+      // string alone would make `struct Cell[MutSet] { value: MutSet }`
+      // behave differently from the identical declaration spelled `T`, whose
+      // tolerance is what the `0` bucket exists for. An APPLIED occurrence is
+      // not that case: the contract declares both heads WITH parameters
+      // (`type MutMap[K, V]`, `type MutSet[T]`), and a shadowed formal with
+      // arity resolves to `CtApplied`, not here. So the arity is the property
+      // and the name is not asked to carry it alone.
+      //
+      // The four entries above are unguarded and carry the same latent
+      // exposure; narrowing them is a separate change with its own
+      // measurement, not a drive-by.
       19
-    } else if name == "MutSet" {
+    } else if name == "MutSet" && Array::length(nargs) > 0 {
+      // Its own kind, not MutMap's: sharing one would make `MutMap[K, V]` and
+      // `MutSet[T]` equal to `head_differ`, and then only `nominal_head_conflict`
+      // stands between them. Two heads, two kinds.
       20
     } else {
       0

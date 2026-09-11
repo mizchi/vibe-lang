@@ -964,6 +964,10 @@ send_check_reject "err_type_ord_marker_bound_struct.vibe" 'no impl `Ord` for `To
 # head would leave the other open and this row would not notice.
 send_check_reject "err_type_mutset_from_array.vibe" 'expected MutSet[String], got Array[String]' "cgenhead"
 send_check_reject "err_type_array_from_mutset.vibe" 'expected Array[String], got MutSet[String]' "cgenhead2"
+# And against EACH OTHER: the two heads get separate kinds, so this pair is
+# caught by `head_differ` rather than falling through to
+# `nominal_head_conflict`. A shared kind would pass every other row here.
+send_check_reject "err_type_mutmap_from_mutset.vibe" 'expected MutMap[String, Int], got MutSet[String]' "cgenhead3"
 # The control, and the reason the two rows above cannot pass by rejecting the
 # type outright: the same heads used correctly -- including a function
 # polymorphic over the element, which is what the `0` bucket exists for --
@@ -983,6 +987,34 @@ cgenok_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runne
 # a run that merely exits 0 would pass while returning anything.
 if [ "$(printf '%s' "$cgenok_out" | tail -1)" != "42" ]; then
   echo "[compiler-gate] FAIL: contract_generic_head_ok got '$cgenok_out' (want 42)" >&2
+  exit 1
+fi
+# The SHADOWING pin (Codex review): a type formal may be NAMED `MutSet` --
+# shadowing is legal, these names are not reserved, and a bare shadowed formal
+# resolves to `CtNamed("MutSet", [])`, the same representation the contract
+# head has. The head check keys on ARITY so the string is never asked to carry
+# that distinction alone.
+#
+# This row is a PIN, not a discriminating test, and the difference is worth
+# stating: measured, it compiles and runs to 42 against a stage2 built WITHOUT
+# the arity guard as well. Seven shapes were tried to find a program where the
+# unguarded classification changes the answer -- a bare formal field, an
+# un-instantiated struct literal, an anonymous record against a uniquely
+# matched struct, a bare-struct annotation -- and none diverged from the same
+# declaration spelled `T`. So the guard is a narrowing that costs nothing and
+# closes a mechanism that is real in `resolve_type_expr_core_shadowed`, and
+# this row holds the behaviour still rather than proving it.
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  fixtures/contract_generic_head_shadowed_formal.vibe "$senddir/cgenshadow.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$senddir/cgenshadow.wasm" ]; then
+  echo "[compiler-gate] FAIL: a type formal named MutSet no longer compiles -- the #2640 head check classifies shadowed formals" >&2
+  cat "$senddir/cgenshadow.wasm.diag" 2>/dev/null >&2 || true
+  exit 1
+fi
+cgenshadow_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$senddir/cgenshadow.wasm" 2>&1)" || cgenshadow_out="<run failed> $cgenshadow_out"
+if [ "$(printf '%s' "$cgenshadow_out" | tail -1)" != "42" ]; then
+  echo "[compiler-gate] FAIL: contract_generic_head_shadowed_formal got '$cgenshadow_out' (want 42)" >&2
   exit 1
 fi
 # #1090 review: bounds are enforced on the IMPORT (check_program_with_env /
