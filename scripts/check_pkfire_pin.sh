@@ -42,46 +42,96 @@ rc=0
 refs=0
 withs=0
 
-# PER CALL SITE, not an aggregate count (Codex review of #2645). Comparing
-# "how many refs" against "how many version: lines anywhere" does not establish
-# that each step has its own input: deleting the input from one file and
-# leaving the YAML comment `# version: 0.14.2` behind kept the totals equal and
-# the gate green, while that action went back to installing latest.
+# ASK THE YAML, DO NOT APPROXIMATE IT (Codex, 4th round on this gate).
 #
-# So each `uses:` is associated with ITS OWN step. The window runs from the
-# uses line to the next list item at the same or shallower indent, and a
-# `version:` only counts when it is a real key -- a commented line cannot match
-# an anchored `^[[:space:]]*version:`.
-scan="$( { grep -rlE '^[[:space:]]*(- )?uses:[[:space:]]*mizchi/pkfire@' .github 2>/dev/null || true; } | while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  awk -v want="$want" -v file="$f" '
-    function indent(s,   i) { match(s, /^[[:space:]]*/); return RLENGTH }
-    /^[[:space:]]*(- )?uses:[[:space:]]*mizchi\/pkfire@/ {
-      if (in_site) { printf "%s:%d:%s:%s\n", file, site_line, site_ref, (found ? "ok" : "missing") }
-      in_site = 1; found = 0; site_line = NR; site_indent = indent($0)
-      site_ref = $0; sub(/.*mizchi\/pkfire@/, "", site_ref); sub(/[[:space:]].*/, "", site_ref)
-      next
-    }
-    in_site && /^[[:space:]]*-[[:space:]]/ && indent($0) <= site_indent {
-      printf "%s:%d:%s:%s\n", file, site_line, site_ref, (found ? "ok" : "missing")
-      in_site = 0; next
-    }
-    in_site && $0 ~ ("^[[:space:]]*version:[[:space:]]*" want "[[:space:]]*$") { found = 1 }
-    END { if (in_site) printf "%s:%d:%s:%s\n", file, site_line, site_ref, (found ? "ok" : "missing") }
-  ' "$f"
-done )"
+# Three rounds of lexical refinement each fixed one case and left the next:
+#   aggregate counts  -> a neighbouring step's input satisfied the total
+#   per-step window   -> `env: { version: ... }` satisfied the window
+#   with: + indent    -> a BLOCK SCALAR containing the text `version: 0.14.2`
+#                        satisfied the indent check, because YAML reads it as
+#                        string content and a scanner cannot tell the difference
+#
+# Each round was the same mistake at a finer grain: writing a lexical
+# approximation of a structural question. So this parses the file and asks
+# whether `with.version` is a real mapping entry of the step that carries the
+# `uses:`. Comments, block scalars, env:, and neighbouring steps all stop being
+# special cases -- the parser already knows.
+#
+# A missing PyYAML is FATAL, not a pass: a gate that degrades quietly when its
+# dependency is absent is the failure mode this whole file exists to prevent.
+scan="$(python3 - "$want" <<'PYEOF' || echo "__PYFAIL__"
+import os, sys
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write(
+        "[pkfire-pin] FAIL: PyYAML is required to parse the workflows.\n"
+        "  Install it with: python3 -m pip install pyyaml\n"
+        "  CI provisions it in the structural-lint job. This gate parses the\n"
+        "  workflows rather than scanning them, because four rounds of lexical\n"
+        "  approximation each missed a different case.\n"
+    )
+    sys.exit(1)
 
-while IFS=: read -r file line ref verdict; do
+want = sys.argv[1]
+
+def steps_of(node):
+    """Every `steps:` list anywhere in the document (jobs.*.steps, runs.steps)."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "steps" and isinstance(v, list):
+                yield v
+            else:
+                yield from steps_of(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from steps_of(v)
+
+for root, _, files in os.walk(".github"):
+    for name in sorted(files):
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        path = os.path.join(root, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+        except Exception as exc:                      # noqa: BLE001
+            sys.stderr.write(f"[pkfire-pin] FAIL: cannot parse {path}: {exc}\n")
+            sys.exit(1)
+        for steps in steps_of(doc):
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                uses = step.get("uses")
+                if not isinstance(uses, str) or not uses.startswith("mizchi/pkfire@"):
+                    continue
+                ref = uses.split("@", 1)[1].strip()
+                with_map = step.get("with")
+                # A real mapping entry: not block-scalar text, not env:, not a
+                # neighbour's input. `is` a dict is the whole check.
+                if isinstance(with_map, dict) and str(with_map.get("version", "")).strip() == want:
+                    verdict = "ok"
+                else:
+                    verdict = "missing"
+                print(f"{path}:{ref}:{verdict}")
+PYEOF
+)"
+if [ "$scan" = "__PYFAIL__" ]; then
+  echo "[pkfire-pin] FAIL: the workflow scan could not run (see above)" >&2
+  exit 1
+fi
+
+while IFS=: read -r file ref verdict; do
   [ -n "${file:-}" ] || continue
   refs=$((refs + 1))
   if [ "$ref" != "v$want" ]; then
-    echo "[pkfire-pin] FAIL: $file:$line pins the action at '$ref', $PIN_FILE says v$want" >&2
+    echo "[pkfire-pin] FAIL: $file pins the action at '$ref', $PIN_FILE says v$want" >&2
     rc=1
   fi
   if [ "$verdict" = "ok" ]; then
     withs=$((withs + 1))
   else
-    echo "[pkfire-pin] FAIL: $file:$line passes no 'version: $want' input" >&2
+    echo "[pkfire-pin] FAIL: $file passes no 'with.version: $want' to mizchi/pkfire" >&2
     rc=1
   fi
 done <<EOF

@@ -109,9 +109,10 @@ fi
 # fresh manifest and would drop `nix` from PATH. A separate profile keeps both.
 NIX="$HOME/.nix-profile/bin/nix"
 # Read from .github/pkfire-version so the hook, the composite action and the
-# pkspec workflow cannot drift apart -- they did: CI ran 0.16.0 while this said
-# 0.14.2 (#2645 follow-up). scripts/check_pkfire_pin.sh enforces the agreement.
-PKF_VERSION="$(tr -d '[:space:]' < "$PROJECT_DIR/.github/pkfire-version" 2>/dev/null || echo "0.14.2")"
+# pkspec workflow cannot drift apart -- they did: the refs all said v0.14.2
+# while CI actually ran 0.16.0, because the ref does not select the release
+# (#2645 follow-up). scripts/check_pkfire_pin.sh enforces the agreement.
+PKF_VERSION="$(tr -d '[:space:]' < "$PROJECT_DIR/.github/pkfire-version" 2>/dev/null || echo "0.16.0")"
 PKF_PROFILE="$HOME/.nix-profiles/pkfire"
 PKF_BIN="$PKF_PROFILE/bin/pkf"
 # Long-lived containers keep whatever the profile last held (the hook used to
@@ -162,6 +163,21 @@ if [ -x "$PKF_BIN" ]; then
     if (cd "$PROJECT_DIR" && "$PKF_BIN" hooks install >/dev/null 2>&1); then
       echo "[session-start] pkf git hooks installed"
     fi
+  fi
+fi
+
+# scripts/check_pkfire_pin.sh PARSES the workflow YAML rather than scanning it
+# (four rounds of lexical approximation each missed a different case), so it
+# needs PyYAML. CI provisions it in the structural-lint job; this is the same
+# declaration for the local side, so a contributor who runs the gate or its
+# self-test directly is not stopped by a dependency nobody declared. It is a
+# no-op once present, and a failure here is a warning rather than fatal: the
+# gate itself says what to install, and nothing else in the toolchain needs it.
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  if python3 -m pip install --quiet --disable-pip-version-check pyyaml >/dev/null 2>&1; then
+    echo "[session-start] PyYAML installed (scripts/check_pkfire_pin.sh parses the workflows)"
+  else
+    echo "[session-start] WARNING: PyYAML missing and pip install failed; scripts/check_pkfire_pin.sh will refuse to run" >&2
   fi
 fi
 
