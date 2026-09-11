@@ -333,11 +333,50 @@ the lever is the retain traffic -- borrowed reads the inference cannot
 prove (every `Array::get` result passed on, every pattern field consumed
 through a container it does not own) -- and the code shape that produces
 unique inputs (a consuming `map` / a move out of a container) which the
-compiler's own style does not use. Note in passing, found while measuring
-(not fixed here): the RC `Array::map` lowering never releases its input
-array -- 84 B leaked per call on a two-element array (measured
-`measure_heap.mjs`, 20,000 iterations: 1,680,188 B vs 376 B for the
-equivalent index loop).
+compiler's own style does not use.
+
+### The HOF lowerings own what they are handed (#2671)
+
+Measuring the forest shape exposed that the RC lowerings of the Array
+higher-order builtins (`map` / `filter` / `fold` / `iter_eager` / `any` /
+`all` / `find` / `reverse` / `concat`) did no ownership accounting at all.
+Each consumes its array argument (the planner counts the position as
+owning) and calls a callback that OWNS its parameter, so the lane owes the
+callback one reference per element handed over and owes the array one
+release. The lowerings did neither: `Array::map` over an array the caller
+still held handed each element to the rebuilding callback without a
+retain, the callback found the block unique, the reuse fusion fired, and
+the CALLER's array was rewritten in place -- silently wrong (bump 1280400,
+RC 1286800 on the same program); `filter` / `fold` / a capturing `map`
+freed elements the array still listed (the shadow lane's dup-of-freed);
+`find`'s `Some(t)` and `reverse` read freed payloads; and no shell was
+ever released (84 B per `map` call on a two-element array).
+
+Fixed in the lowerings (`compile_call.vibe`, `cc_hof_*`): one rc-word test
+per array decides the path. UNIQUE -- the elements are moved out with no
+retain (a rebuilding callback sees a unique block and fuses), a rejected
+element is released by the lowering, and the shell is freed with its
+length zeroed so the walk skips the moved elements. SHARED -- every element
+handed over is retained first and the array is dropped normally at the
+end. The predicates (`any` / `all` / `find`) never move an element: retain
+per call, walking drop at the end; `concat` retains what it copies and
+releases both inputs; the callback reference is released after the loop
+either way. Two staged-`None` leaks fell out of the same measurement:
+`find` and `MapBuilder::get` initialise their result slot with a 16-byte
+nullary block and overwrote it on a hit.
+
+Pinned by `tests/hof_rc_ownership_test.vibe` (bump / RC / RC-shadow
+agreement on every builtin, shared and unique sources, a capturing closure
+used by three maps), the HOF shapes of `fixtures/rc_reclaim_leak_test.vibe`
+(the shell release, under the 2,000-byte bound) and shape 10 of
+`fixtures/rc_shadow_regression_test.vibe`. Three neighbours found on the
+way are filed, not fixed here: an unannotated lambda parameter consumed
+three times is released early (#2681, P0), an owned call result passed
+straight into a borrowed argument position is never released (#2682), and
+a `MapBuilder` is never reclaimed (#2683). A fourth, in the compiler rather
+than the lane, is fixed on the same branch: a bound `+` chain of 24
+operands ran the compiler out of memory because the trait-dict operand
+inference walked each operand twice per node (#2680).
 
 Pinned by `tests/perceus_reuse_plan_test.vibe` (plan rows, blocker
 semantics, ineligible shapes, the anywhere-consumer and held-bind rows),

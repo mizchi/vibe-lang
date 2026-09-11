@@ -158,6 +158,39 @@ let hold = (t: Tree) -> Tree {
   }
 }
 
+// #2671 HOF ownership guards. Each Array higher-order lowering (map /
+// filter / fold / any / all / find / reverse / concat) consumes the array it
+// is handed and owns the callback reference, so on the RC lane it must
+// release the shell exactly once -- emptied on the unique path (elements
+// moved out), walked on the shared path (elements retained as they are
+// handed over) -- and drop the callback after the loop. Before the fix no
+// lowering released anything: one shell per call (plus the callback block
+// for a capturing closure) leaked, scaling heap_used with N.
+let incr_tree = (t: Tree) -> Tree {
+  match t {
+    Leaf(v) => Leaf(v + 1),
+    Node(l, r) => {
+      let l2 = incr_tree(l)
+      let r2 = incr_tree(r)
+      Node(l2, r2)
+    }
+  }
+}
+
+let is_leaf = (t: Tree) -> Bool {
+  match t {
+    Leaf(_) => true,
+    Node(_, _) => false
+  }
+}
+
+let is_node = (t: Tree) -> Bool {
+  match t {
+    Leaf(_) => false,
+    Node(_, _) => true
+  }
+}
+
 let main = () -> Int {
   let mut total = 0
   let mut i = 0
@@ -221,7 +254,52 @@ let main = () -> Int {
     // sumtri(w) = 2i + 1, sumt(h) = 3i + 1.
     let w = widen0(N2(L(i), L(i + 1)), 0)
     let h = hold(Node(Leaf(i), Leaf(i + 1)))
+    // #2671 (see incr_tree / is_leaf / is_node above). `ta` stays live
+    // across every call, so each lowering takes the SHARED path; the
+    // map-of-map and the literal-fed filter take the UNIQUE path (elements
+    // moved out, the rejected Node discarded, the emptied shell released).
+    // Per iteration: sumt(ta1) = 2i+1, sumt(hm21) = 2i+5, |hf| = |hf2| = 1,
+    // hfold = 3i+1, hfind = 2i+1, sumt(hrev0) = 2i+1, |hcat| = 4,
+    // hany + hall = 1 -- 11i + 16 in all. Accumulated in a second statement:
+    // a `+` chain of 24 or more operands under a binding is compiled in
+    // exponential time by desugar_trait_dict's operand-type inference and
+    // runs the compiler out of memory (see the `dtd_binop_builtin_operand_type`
+    // note there).
+    let ta: Array[Tree] = [
+      Leaf(i),
+      Node(Leaf(i), Leaf(i + 1))
+    ]
+    let hm = Array::map(ta, incr_tree)
+    let hm2 = Array::map(hm, incr_tree)
+    let hf = Array::filter(ta, is_leaf)
+    let hf2 = Array::filter([
+      Leaf(i),
+      Node(Leaf(i), Leaf(i + 1))
+    ], is_leaf)
+    let hfold = Array::fold(ta, 0, (acc: Int, t: Tree) -> Int {
+      acc + sumt(t)
+    })
+    let hfind = match Array::find(ta, is_node) {
+      Some(t) => sumt(t),
+      None => 0
+    }
+    let hrev = Array::reverse(ta)
+    let hcat = Array::concat(ta, hrev)
+    let hany = if Array::any(ta, is_node) {
+      1
+    } else {
+      0
+    }
+    let hall = if Array::all(ta, is_node) {
+      1
+    } else {
+      0
+    }
+    let ta1 = Array::get(ta, 1)
+    let hm21 = Array::get(hm2, 1)
+    let hrev0 = Array::get(hrev, 0)
     total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if) + sumtri(w) + sumt(h)
+    total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall
     i = i + 1
   }
   total
