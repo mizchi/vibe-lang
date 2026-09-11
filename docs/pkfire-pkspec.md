@@ -49,12 +49,12 @@ Highlights (post-#594 selfhost-only):
 
 | Task           | Behaviour                          | Notes                                |
 |----------------|------------------------------------|--------------------------------------|
-| `fmt`          | `true` (no-op placeholder)         | fmt 未移植 (#594)           |
-| `test`         | `bash scripts/compiler_gate.sh`| operation gate — commit 前の主チェック |
+| `fmt`          | `true` (no-op placeholder)         | fmt not ported (#594)       |
+| `test`         | `bash scripts/compiler_gate.sh`| operation gate — the main pre-commit check |
 | `test-local`   | affected tests via `flaker`        | fast inner loop                      |
 | `run`          | `bash scripts/vibe_run.sh $@`      | `acceptsArgs` — pass via `--`        |
 | `release-check`| `deps { compiler-gate }`           | sign-off: bundle/module-source sync + seed→stage1→stage2→stage3 fixpoint + compile/run validation |
-| `info` / `check` / `test-update` | legacy `moon …`  | MoonBit host 依存で #594 以降は無効。検証は `test` / `release-check` / `vibe check` を使う |
+| `info` / `check` / `test-update` | legacy `moon …`  | depended on the MoonBit host, so dead since #594. Verify with `test` / `release-check` / `vibe check` |
 
 Two helper factories keep the file readable:
 

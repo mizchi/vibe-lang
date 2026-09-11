@@ -166,6 +166,21 @@ if [ -x "$PKF_BIN" ]; then
   fi
 fi
 
+# scripts/check_pkfire_pin.sh PARSES the workflow YAML rather than scanning it
+# (four rounds of lexical approximation each missed a different case), so it
+# needs PyYAML. CI provisions it in the structural-lint job; this is the same
+# declaration for the local side, so a contributor who runs the gate or its
+# self-test directly is not stopped by a dependency nobody declared. It is a
+# no-op once present, and a failure here is a warning rather than fatal: the
+# gate itself says what to install, and nothing else in the toolchain needs it.
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  if python3 -m pip install --quiet --disable-pip-version-check pyyaml >/dev/null 2>&1; then
+    echo "[session-start] PyYAML installed (scripts/check_pkfire_pin.sh parses the workflows)"
+  else
+    echo "[session-start] WARNING: PyYAML missing and pip install failed; scripts/check_pkfire_pin.sh will refuse to run" >&2
+  fi
+fi
+
 # The five generated compiler artifacts are build outputs, not tracked files
 # (scripts/ensure_generated.sh), and lib/@vibe/compiler/compiler.vibe IMPORTS
 # three of them -- so a fresh clone cannot typecheck the compiler, and `vibe
