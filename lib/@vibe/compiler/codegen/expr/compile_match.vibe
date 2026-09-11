@@ -12,6 +12,10 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
   is_borrow_ret_builtin,
   leb128_encode_s64,
   leb128_encode_u32
@@ -597,17 +601,20 @@ fn mr_binds_before(pargs: Array[Pat], idx: Int) -> Int {
 }
 
 //# ADR-0092 / #2389: plan-guided WIDE reuse. The narrow fusion above needs
-//# an action-free let spine; the wide path lifts that restriction by
-//# compiling the arm body through the ORDINARY machinery with the token
-//# armed on the ctx stacks, and letting compile_call's constructor path
-//# consume it at the first same-arity allocation. The spine-tail
-//# constructor is the guaranteed consumer (the planner refused arms with
-//# any control transfer that could skip it, and the eligibility check
-//# below re-proves that on the very arm being fused -- the plan row's
-//# (name, arity) key cannot tell sibling arms apart), so an armed token
-//# cannot leak; an interior same-arity constructor consuming it first is equally
-//# sound -- the token is just a same-size block, and consuming zeroes the
-//# local so later sites allocate fresh.
+//# an action-free let spine and a constructor tail; the wide path lifts
+//# both by compiling the arm body through the ORDINARY machinery with the
+//# token armed on the ctx stacks, and letting compile_call's constructor
+//# path consume it at the first same-size allocation that RUNS -- the
+//# spine tail, a branch of an `if`/`match` tail, a site after a statement
+//# prefix, or an interior intermediate (the token is just a same-size
+//# block, and consuming zeroes the local so later sites allocate fresh).
+//# A path on which no site ran releases the claimed block at arm end
+//# (mr_emit_token_release), so an armed token cannot leak; the planner
+//# refused arms with any control transfer that could skip that arm end,
+//# and the eligibility check below re-proves it on the very arm being
+//# fused -- the plan row's (name, arity) key cannot tell sibling arms
+//# apart. When the spine tail itself is a same-size constructor it is the
+//# guaranteed consumer and no release code is emitted.
 
 /// Does the Perceus plan carry a PaReuseToken candidate for (name, arity)?
 fn mr_reuse_plan_has(ctx: CompileCtx, name: String, arity: Int) -> Bool {
@@ -624,66 +631,116 @@ fn mr_reuse_plan_has(ctx: CompileCtx, name: String, arity: Int) -> Bool {
   found
 }
 
-/// Wide-fusion eligibility: everything mr_reuse_eligible requires EXCEPT
-/// the action-free let spine and the target ctor's float exclusion -- the
-/// tail constructor compiles through compile_call's ordinary path, whose
-/// stores are byte-identical between a fresh block and a reused one. The
-/// SOURCE pattern's float exclusion stays (the raw payload binds below
-/// bypass bind_match_pat's float_local_slots registration). Additionally
-/// gated on the plan's PaReuseToken candidate AND on re-running the
+/// Is there a constructor call of `arity` fields anywhere in `e` that this
+/// arm's armed token can feed -- a site compile_call's constructor path
+/// compiles (ident callee in the ctor table, same field count, positional
+/// args)? Lambda interiors are excluded: a lambda body compiles in its own
+/// frame with its own (empty) token state. The ctor-table twin of the
+/// planner's spelling-based reuse_arm_has_ctor_site.
+fn mr_has_ctor_site(e: Expr, arity: Int, ctx: CompileCtx) -> Bool with Exception {
+  if is_efn(e) {
+    false
+  } else {
+    let here = if expr_tag(e) == 8 {
+      let callee = get_ecall_callee(e)
+      if is_eident(callee) {
+        let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
+        ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(e)) == arity
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+    if here {
+      true
+    } else {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      let mut found = false
+      while !found && i < end {
+        if mr_has_ctor_site(expr_child_at(i), arity, ctx) {
+          found = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+/// Is the arm's let-spine tail a same-size constructor call -- the
+/// consumer that runs on every non-unwinding path, so the arm needs no
+/// token release code?
+fn mr_tail_is_ctor_site(body: Expr, arity: Int, ctx: CompileCtx) -> Bool with Exception {
+  let mr_tail = mr_spine_tail(body)
+  if expr_tag(mr_tail) == 8 {
+    let callee = get_ecall_callee(mr_tail)
+    if is_eident(callee) {
+      let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
+      ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(mr_tail)) == arity
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+/// Wide-fusion eligibility: the staged scrutinee (top of
+/// ctx.reuse_scrutinee_names) is this match's own bare-ident scrutinee,
+/// the plan carries a PaReuseToken candidate for (name, arity), the arm
+/// pattern is `PCtor` over PBind/PWild args whose binds are not
+/// alias-bound and whose SOURCE fields are not boxed floats (the raw
+/// payload binds below bypass bind_match_pat's float_local_slots
+/// registration; the target constructor compiles through compile_call's
+/// ordinary path, whose stores are byte-identical between a fresh block
+/// and a reused one, so it needs no float exclusion), the arm never
+/// mentions the scrutinee, contains no control transfer (re-running the
 /// planner's own `reuse_arm_has_blocker` on THIS arm: the plan row is
 /// keyed (name, arity), which cannot distinguish sibling arms, so an
 /// eligible arm's row must never authorize a same-shape sibling whose
-/// `return` could skip the consuming tail and leak the claimed block.
-/// Returns the pattern arity, or -1.
+/// `return` could skip the arm end and leak the claimed block), and holds
+/// a same-size constructor site somewhere outside lambda interiors. Every
+/// bind mode is admissible (mr_compile_reuse_arm_wide keeps a held bind's
+/// child alive). Returns the pattern arity, or -1.
 fn mr_reuse_wide_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) -> Int with Exception {
-  let mr_tail = mr_spine_tail(body)
-  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) && expr_tag(mr_tail) == 8 {
+  if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && ctx.rc_alloc_func_idx >= 0 && Array::length(ctx.reuse_scrutinee_names) > 0 && is_pctor(p) && is_eident(scrutinee) {
     let sname = Array::get(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
     let pargs = get_pctor_args(p)
     let arity = Array::length(pargs)
-    if get_eident_name(scrutinee) == sname && mr_reuse_plan_has(ctx, sname, arity) && !reuse_arm_has_blocker(body) {
-      let callee = get_ecall_callee(mr_tail)
-      if arity >= 1 && is_eident(callee) {
-        let ci = ctor_table_index_of(ctx.ctor_table, get_eident_name(callee))
-        let src_ci = ctor_table_index_of(ctx.ctor_table, get_pctor_name(p))
-        if ci >= 0 && src_ci >= 0 && Array::get(ctx.ctor_table.field_counts, ci) == arity && Array::length(get_ecall_args(mr_tail)) == arity {
-          let mut shape_ok = true
-          let mr_bmasks = md_shadow_zeroed_bmasks(body, ctx.borrow_param_user, ctx.borrow_param_mask)
-          let mut fj = 0
-          while fj < arity {
-            let pa = Array::get(pargs, fj)
-            if ctor_field_is_float(ctx, src_ci, fj) {
+    if arity >= 1 && get_eident_name(scrutinee) == sname && mr_reuse_plan_has(ctx, sname, arity) && !reuse_arm_has_blocker(body) && mr_has_ctor_site(body, arity, ctx) {
+      let src_ci = ctor_table_index_of(ctx.ctor_table, get_pctor_name(p))
+      if src_ci >= 0 {
+        let mut shape_ok = true
+        let mut fj = 0
+        while fj < arity {
+          let pa = Array::get(pargs, fj)
+          if ctor_field_is_float(ctx, src_ci, fj) {
+            shape_ok = false
+          } else if is_pbind(pa) {
+            // An alias-bound name declines: aliasing can hide an owner the
+            // consume count doesn't see.
+            if array_contains_str(ctx.rc_alias_dup_names, get_pbind_name(pa)) {
               shape_ok = false
-            } else if is_pbind(pa) {
-              // Mode 1 (pure consume: the raw transfer's single consume is
-              // the bind's only occurrence) or mode 0 (pure borrow: the
-              // staging dups it on the shared path and the arm end drops
-              // it on both). A mixed consume-plus-borrow bind is refused
-              // -- a read sequenced after the consume would be
-              // use-after-free on the unique path (PR #2416 review) --
-              // and so is an alias-bound name: aliasing can hide an owner
-              // the consume count doesn't see.
-              let __wbn = get_pbind_name(pa)
-              if reuse_bind_mode(body, __wbn, ctx.borrow_param_user, mr_bmasks) < 0 || array_contains_str(ctx.rc_alias_dup_names, __wbn) {
-                shape_ok = false
-              } else {
-                ()
-              }
-            } else if is_pwild(pa) {
-              ()
             } else {
-              shape_ok = false
+              ()
             }
-            fj = fj + 1
-          }
-          let __no_params: Array[String] = []
-          let __no_fns: Array[String] = []
-          if shape_ok && !array_contains_str(collect_free_vars(body, __no_params, __no_fns), sname) {
-            arity
+          } else if is_pwild(pa) {
+            ()
           } else {
-            0 - 1
+            shape_ok = false
           }
+          fj = fj + 1
+        }
+        let __no_params: Array[String] = []
+        let __no_fns: Array[String] = []
+        if shape_ok && !array_contains_str(collect_free_vars(body, __no_params, __no_fns), sname) {
+          arity
         } else {
           0 - 1
         }
@@ -698,41 +755,54 @@ fn mr_reuse_wide_eligible(p: Pat, body: Expr, scrutinee: Expr, ctx: CompileCtx) 
   }
 }
 
-/// Compile a wide-eligible arm: the token-staging prelude is byte-for-byte
-/// the narrow path's steps 1-3 (raw payload binds; the shadow-lane
-/// dup+drop probe; the rc-word uniqueness test that either keeps the block
-/// as `__reuse_tk` -- dropping PWild children we now own -- or dups the
+/// Compile a wide-eligible arm: the token-staging prelude is the narrow
+/// path's steps 1-3 (raw payload binds; the shadow-lane dup+drop probe;
+/// the rc-word uniqueness test that either keeps the block as
+/// `__reuse_tk` -- dropping PWild children we now own -- or dups the
 /// PBind payloads, releases the shared reference, and zeroes the token;
-/// the flag set so the staging ELet skips its scope-end drop). The body
-/// then compiles through the ORDINARY expression machinery with the token
-/// armed on the ctx stacks; compile_call's constructor path consumes it.
-/// A token no site could consume is a compile-time error -- by
-/// construction the spine-tail constructor consumes it, so this throwing
-/// means the eligibility and the emission disagree, never a user error.
+/// the flag set so the staging ELet skips its scope-end drop), plus the
+/// per-bind references a held bind needs (below). The body then compiles
+/// through the ORDINARY expression machinery with the token armed on the
+/// ctx stacks; compile_call's constructor path consumes it at the first
+/// same-size site that runs, and the arm end releases whatever is still
+/// owed: a held or borrow-only bind's base reference, and -- unless the
+/// spine tail is itself the consumer -- an unconsumed token.
+///
+/// Per-bind accounting, by mode (reuse_bind_mode): a raw-transfer bind
+/// (mode 1) owns exactly the child on the unique path and one dup on the
+/// shared path, and its single consume releases it. Every other bind
+/// keeps its child alive for the WHOLE arm: with `k` consumes it holds
+/// `k` references for them -- the normal path's dup-per-consume,
+/// bind_match_pat's model -- plus one base reference released at arm end.
+/// On the unique path the raw child supplies the base and `k` dups the
+/// rest; on the shared path all `k + 1` are dups (the scrutinee's own
+/// reference is dropped at staging, so a bind left as a borrowed view
+/// would depend on the OTHER reference surviving the arm, which arm code
+/// can release). `k = 0` is the borrow-only bind (reads only); a held
+/// bind's read sequenced after its consume sees a child the base
+/// reference still holds, never a freed one.
 fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int, flag_local: Int, arity: Int, local_names: Array[String], ctx: CompileCtx, ld: Int, ce: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   let pargs = get_pctor_args(pat)
-  // Per-bind consume counts (0 or 1, eligibility guarantees it), indexed by
-  // PATTERN position. A consume-1 bind's raw-transferred ref is released by
-  // its one consume; a consume-0 bind's is released by the arm-end
-  // conditional drop below (unique path) or never taken (shared path: the
-  // bind stays a borrowed view of the block the other reference keeps
-  // alive, exactly like bind_match_pat's dup-per-consume model with n=0).
+  // Per-bind held count, indexed by PATTERN position: -1 = raw transfer
+  // (no arm-end release), k >= 0 = the bind's consume count, with a base
+  // reference released at arm end. PWild positions carry -1 (their
+  // children are dropped at staging on the unique path, and never bound).
   let __wcc_bmasks = md_shadow_zeroed_bmasks(body, ctx.borrow_param_user, ctx.borrow_param_mask)
-  let bind_consumes: Array[Int] = []
-  let mut has_borrow_bind = false
+  let held: Array[Int] = []
+  let mut any_held = false
   let mut ci = 0
   while ci < arity {
     let cpa = Array::get(pargs, ci)
     if is_pbind(cpa) {
-      let __cn = reuse_bind_mode(body, get_pbind_name(cpa), ctx.borrow_param_user, __wcc_bmasks)
-      Array::push(bind_consumes, __cn)
-      if __cn == 0 {
-        has_borrow_bind = true
+      let __bn = get_pbind_name(cpa)
+      if reuse_bind_mode(body, __bn, ctx.borrow_param_user, __wcc_bmasks) == 1 {
+        Array::push(held, 0 - 1)
       } else {
-        ()
+        Array::push(held, md_consume_count_pre(body, __bn, ctx.borrow_param_user, __wcc_bmasks))
+        any_held = true
       }
     } else {
-      Array::push(bind_consumes, 0 - 1)
+      Array::push(held, 0 - 1)
     }
     ci = ci + 1
   }
@@ -786,18 +856,34 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
     }
     wj = wj + 1
   }
+  // Unique path: a held bind's raw child is its base reference; give it
+  // one more per consume.
+  let mut hj = 0
+  while hj < arity {
+    if is_pbind(Array::get(pargs, hj)) && Array::get(held, hj) > 0 {
+      emit_rc_dup_guarded_n(buf, tk - mr_bind_count(pargs) + mr_binds_before(pargs, hj), Array::get(held, hj), ctx.rc_shadow, ctx.rc_dup_func_idx)
+    } else {
+      ()
+    }
+    hj = hj + 1
+  }
   emit_else(buf)
   let mut dj = 0
   while dj < arity {
     if is_pbind(Array::get(pargs, dj)) {
-      // EVERY bind is dup'd into ownership on the shared path -- including
-      // a consume-0 one. The scrutinee's reference is dropped right below,
-      // so a bind left as a borrowed view would depend on the OTHER
-      // reference surviving the whole arm, which arm code can release (a
-      // container the arm mutates, say). Owning the ref makes the bind
-      // self-sufficient; the arm-end drop below releases it on both paths.
+      // Shared path: EVERY bind is dup'd into ownership -- one reference
+      // for a raw-transfer bind (its consume releases it), and for a held
+      // or borrow-only bind the base reference plus one per consume. The
+      // scrutinee's reference is dropped right below, so nothing may stay
+      // a borrowed view of the block.
       let nbinds_before = mr_binds_before(pargs, dj)
-      emit_rc_dup_guarded(buf, tk - mr_bind_count(pargs) + nbinds_before, ctx.rc_shadow, ctx.rc_dup_func_idx)
+      let __hk = Array::get(held, dj)
+      let __ndups = if __hk >= 0 {
+        __hk + 1
+      } else {
+        1
+      }
+      emit_rc_dup_guarded_n(buf, tk - mr_bind_count(pargs) + nbinds_before, __ndups, ctx.rc_shadow, ctx.rc_dup_func_idx)
     } else {
       ()
     }
@@ -810,20 +896,20 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
   emit_end(buf)
   emit_i64_const(buf, 1)
   emit_local_set(buf, flag_local)
+  let tail_consumes = mr_tail_is_ctor_site(body, arity, ctx)
   Array::push(ctx.reuse_tok_locals, tk)
   Array::push(ctx.reuse_tok_arities, arity)
   Array::push(ctx.reuse_tok_emitted, 0)
   let nl2 = ce(buf, body, local_names, Array::length(local_names), ctx, ld)
-  // Arm-end release of every consume-0 bind's owned ref (raw-transferred on
-  // the unique path, dup'd on the shared path -- both exactly one). Nothing
-  // in the body consumed it; without this the token overwrite leaks the
-  // child on the unique path. Emitted after the body value, which stays on
-  // the wasm stack untouched (rc_drop returns nothing). A scalar payload
-  // no-ops inside rc_drop (even tag).
-  if has_borrow_bind {
+  // Arm-end release of every held / borrow-only bind's base reference
+  // (raw-transferred on the unique path, dup'd on the shared path -- both
+  // exactly one). Emitted after the body value, which stays on the wasm
+  // stack untouched (rc_drop returns nothing). A scalar payload no-ops
+  // inside rc_drop (even tag).
+  if any_held {
     let mut fj = 0
     while fj < arity {
-      if is_pbind(Array::get(pargs, fj)) && Array::get(bind_consumes, fj) == 0 {
+      if is_pbind(Array::get(pargs, fj)) && Array::get(held, fj) >= 0 {
         emit_local_get(buf, tk - mr_bind_count(pargs) + mr_binds_before(pargs, fj))
         emit_call(buf, ctx.rc_drop_func_idx)
       } else {
@@ -839,12 +925,51 @@ fn mr_compile_reuse_arm_wide(buf: Bytes, body: Expr, pat: Pat, scrut_local: Int,
   Array::truncate(ctx.reuse_tok_locals, __rt_at)
   Array::truncate(ctx.reuse_tok_arities, __rt_at)
   Array::truncate(ctx.reuse_tok_emitted, __rt_at)
-  if __rt_emitted == 0 {
-    throw("internal: ADR-0092 wide reuse armed a token no constructor site consumed -- eligibility and emission disagree")
+  if tail_consumes {
+    // The spine-tail constructor runs on every non-unwinding path and is
+    // compiled by compile_call with this token on top of the stack, so a
+    // zero site count means the eligibility and the emission disagree --
+    // a compile-time error, never a silent leak.
+    if __rt_emitted == 0 {
+      throw("internal: ADR-0092 wide reuse armed a token its constructor tail did not consume -- eligibility and emission disagree")
+    } else {
+      ()
+    }
   } else {
-    ()
+    // The consumer sits in a branch, behind a statement prefix, or inside
+    // a nested arm that may have built its constructor inline (the narrow
+    // fusion allocates on its own), so some path can reach the arm end
+    // with the token still armed. Release it there.
+    mr_emit_token_release(buf, tk, ctx)
   }
   nl2
+}
+
+/// Release an unconsumed reuse token at arm end: `tk` is still the block
+/// base when no same-size constructor ran on this path. The block's
+/// children were transferred to the payload binds at staging (and PWild
+/// children dropped), so zero the field count and let rc_drop free the
+/// shell alone: at rc 1 it walks `count` class-1 fields (gen_rc_drop_body)
+/// and then pushes the block onto its size bin exactly as a normal last
+/// drop would. On the shared path and after a consumer `tk` is 0 and this
+/// is a no-op. Emitted after the arm's value, which stays on the wasm
+/// stack.
+fn mr_emit_token_release(buf: Bytes, tk: Int, ctx: CompileCtx) -> Unit {
+  emit_local_get(buf, tk)
+  emit_i64_eqz(buf)
+  emit_i32_eqz(buf)
+  emit_if_void(buf)
+  emit_local_get(buf, tk)
+  emit_i32_wrap_i64(buf)
+  emit_i32_const(buf, 0)
+  emit_i32_store(buf, 2, 12)
+  emit_local_get(buf, tk)
+  emit_i64_const(buf, 8)
+  emit_i64_add(buf)
+  emit_i64_const(buf, 1)
+  emit_i64_or(buf)
+  emit_call(buf, ctx.rc_drop_func_idx)
+  emit_end(buf)
 }
 
 /// Emit `n` guarded rc_dups of `local_idx` (one per owning consume of a matched
