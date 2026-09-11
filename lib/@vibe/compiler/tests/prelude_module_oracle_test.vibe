@@ -169,7 +169,7 @@ test "two files that each hoist a local lambda mint top-level names the other mo
   // link should merge. Measured by running the link
   // (`link_fold_duplicate_definitions`) over this program's per-module result:
   // it folds nothing, because there is no duplicated definition here.
-  inspect(keyed_line_of(report, "desugar_trait_dicts_with_typed_eq"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
+  inspect(keyed_line_of(report, "desugar_trait_dicts_with_typed_eq"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 order_diff=0 order_first=-1 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
   // `evidence_dict_pass` synthesizes a dict struct per module the same way, so
   // its verdict is its keyed line too. It used to differ in CONTENT here: the
   // hoisted function was appended at the end of the merged program, the
@@ -178,7 +178,12 @@ test "two files that each hoist a local lambda mint top-level names the other mo
   // was threaded (`stmts=11 split=10`). With the hoist placing its output next
   // to its owner, the declarations agree and only the position of the one
   // synthesized struct is left.
-  inspect(keyed_line_of(report, "evidence_dict_pass"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
+  //
+  // `order_diff=6 order_first=4` is that position, now measured rather than
+  // described: six statements sit at a different index on the split side,
+  // starting at index 4. Everything else on the line is keyed and so cannot
+  // see it (#2575 item 2 step 3).
+  inspect(keyed_line_of(report, "evidence_dict_pass"), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 order_diff=6 order_first=4 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
   // What the rest of the report says on this program, as measured.
   let statuses: Array[String] = []
   let lines = oracle_lines(report)
@@ -336,7 +341,7 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // declarations. `0` here is both lanes silent on a clean program; the test
   // below makes one fire, because a counter that has only ever read zero says
   // nothing about whether it can read anything else.
-  inspect(String::trim(diag_line_of(report)), content = "DIAGS validators=0")
+  inspect(String::trim(diag_line_of(report)), content = "DIAGS prelude=0")
   // #2575 item 4: the three analyses `linked_compile` runs between the prelude
   // and codegen. The whole lane samples them after all 17 passes -- production's
   // point -- and the split lane after each module's own passes, which is the
@@ -404,7 +409,14 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // `first_copy` says what it is -- a number nobody could act on before,
   // because a helper the link folds and a marker that simply repeats both
   // landed in it and mean opposite things.
-  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
+  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 order_diff=0 order_first=-1 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
+  // #2575 item 2 step 3: the SHAPE of the order difference, which the
+  // positional `order_diff` cannot express. With the synthesized declarations
+  // removed from both sequences, `residual=0` says the statements the SOURCE
+  // wrote are in the same order on both lanes -- the only thing that moves is
+  // where the synthesized ones sit. A non-zero residual would be the much
+  // worse claim, that the split lane reorders the program itself.
+  inspect(String::trim(Array::get(lines, 2)), content = "ORDER residual=0 of=11")
 }
 
 // #2388: the context the full oracle runs each module under is that module's
@@ -464,12 +476,12 @@ test "a validator that fires is reported by both lanes, and a clean program by n
   // module's own run does -- so agreement here is the claim, not the default.
   Fs::write_file(dep, "enum Box {\n  MkBox(Int)\n}\n\n#zero_alloc\nexport fn hot(n: Int) -> Int {\n  let b = MkBox(n)\n  match b {\n    MkBox(v) => v + 1\n  }\n}\n")
   Fs::write_file(main_path, "import ./vibe_diag_arm_dep.vibe {\n  hot\n}\n\ntest \"t\" {\n  inspect(hot(1), content = \"2\")\n}\n")
-  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "DIAGS validators=1")
+  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "DIAGS prelude=1")
   // The control: the same two-file shape with nothing to report. Without it,
   // a comparison that always answered `1` would pass the case above.
   Fs::write_file(dep, "export fn calm(n: Int) -> Int {\n  n + 1\n}\n")
   Fs::write_file(main_path, "import ./vibe_diag_arm_dep.vibe {\n  calm\n}\n\ntest \"t\" {\n  inspect(calm(1), content = \"2\")\n}\n")
-  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "DIAGS validators=0")
+  inspect(String::trim(diag_line_of(prelude_module_full_oracle_report_fs(main_path, "__no_entry__"))), content = "DIAGS prelude=0")
 }
 
 // #2575 item 2: the ORDINARY compile lane -- the one an `vibe build` takes, not
@@ -550,7 +562,7 @@ test "the may_return and borrow analyses do not decompose per module, in both di
   // The prelude itself still agrees on this program, so the difference above
   // is the analyses' and not a per-module prelude that already diverged.
   let lines = String::split(report, "\n")
-  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
+  inspect(String::trim(Array::get(lines, 1)), content = "keyed missing=0 extra=0 copies=1 content=0 renames=0 order_diff=0 order_first=-1 dup_keys=2 dup_defs=0 dup_def_keys= first_copy=reexport_boundary missing_keys= content_keys= first_content=")
 }
 // #2637 review (Codex P2): production runs `fold_const_bool_params` and
 // `dce_stmts` BETWEEN the prelude and the three analyses, gated on

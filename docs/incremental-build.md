@@ -330,6 +330,284 @@ separates them: it counts how much of the green is the link's work rather than
 the modules'. Read them together or the headline number claims more than it
 shows.
 
+### ORDER, which the keyed columns cannot see (#2575 item 2, step 3)
+
+Every column above is keyed, so a declaration that **moved** reads identical.
+`order_diff` / `order_first` compare the two key SEQUENCES positionally —
+`order_diff` counts the positions whose key differs (plus the length excess),
+`order_first` is the first of them, or `-1` when the sequences agree.
+
+Concatenating the per-module results puts them badly out of order. A module's
+appended helpers close *that module*, so they precede the next module's source
+statements, while the whole-program lane appends every one at the end of the
+program. On the compiler's own closure that read `order_diff=9869` of 9908
+statements — which looks like "the linked program is scrambled" and is not what
+happens. Each appended helper SHIFTS everything after it, and a positional
+comparison charges one shift once per statement after it.
+
+`ORDER residual=` is the counter that separates a shift from a reordering:
+delete the synthesized declarations from both sequences and compare what is
+left. It read `residual=0` even then — every statement the source wrote was
+already in the same order on both lanes.
+
+#### The link assembles in two waves
+
+So the link does not concatenate. Wave 1 is every statement no pass appended —
+what the source wrote, plus what a pass inserted next to an existing declaration
+(#2620 places a hoisted lambda next to its own) — in module order, which is the
+merged program's own order. Wave 2 is the appended ones, by the pass that
+appended them, module order within.
+
+Telling the two apart is the whole trick, and the only local test that works is
+the **maximal new suffix** after each pass: an index comparison against the
+pre-pass length is wrong the moment a pass inserts and appends in one run.
+
+Measured on the compiler's own 365-module closure:
+
+```
+                       order_diff   order_first   ORDER residual
+concatenated                 9869            24         0 of 9698
+two waves                     212          9700         0 of 9701
+```
+
+`order_first=9700` with 9701 source statements is the result: **no difference
+occurs before the end of the source program.** What is left is the ~213
+synthesized helpers permuted among themselves in the tail — one pass emits
+almost all of them, and it discovers them in a global traversal on one lane and
+module by module on the other. They are top-level definitions that forward
+reference freely, so the permutation is inert; closing it would mean reproducing
+one pass's internal discovery order, which is not worth what it would cost to
+depend on.
+
+`missing=0 extra=0 content=0 renames=0` hold throughout, so the two waves moved
+only declarations whose placement the lanes disagreed on and nothing the source
+wrote.
+
+#### The counters are red-tested
+
+`ORDER residual=` reads 0 on every real split, and a counter that has only ever
+read 0 says nothing about whether it can read anything else. Interleaving the
+module map — statement 0 to module 0, statement 1 to module 1, statement 2 back
+to module 0 — makes grouping by module reorder the source, and it reads `ORDER
+residual=2 of=4`.
+
+`prelude_split_bytes_test.vibe` pins the byte-level claim on a two-module
+program, both directions. The positive: same declarations, same bodies, same
+ORDER, with the derived `Pt::equals` at index 4 on both lanes where
+concatenation put it at 2. The negative that makes it non-vacuous: with the
+closure narrowed to `[[], []]` the second module cannot see `Pt`, its `a == b`
+survives the prelude unlowered where both other lanes rewrite it to
+`Pt::equals(a, b)`, and the declaration multisets differ too. So the closure is
+load-bearing on that program, and the order test is measuring something the
+keyed comparison genuinely cannot see rather than something it already covers.
+
+#### Which passes are per-module safe (#2647 Codex round 3)
+
+Five passes were found unsafe **one at a time, by review**, which is the shape
+the repo's own guidance says to remove rather than keep patching. So here is the
+audit, and it is the thing to check against rather than rediscovering a pass per
+round. "Safe" means a module's partition answers the same question the whole
+program does; everything else either takes the answer from `PreludeEnv` or runs
+at the link.
+
+**This table had a wrong row within one round of being published**, which is
+worth stating before reading it: row 0 said "safe: per-statement rewrite" and it
+is neither — `elaborate_heap_params` builds `heap_fns` and `ctors` tables from
+the statements it sees, and it is not part of the prelude at all (the caller
+runs it, so the split path was running it a SECOND time, per module). A hand
+audit of 17 passes against cross-module dependence is not something to trust on
+its own; the rows below are the current best understanding, not a proof, and the
+validation this actually needs is **executing** a program compiled through the
+split path, which is what step 3b is for.
+
+| # | pass | per-module | why |
+|---:|---|---|---|
+| — | `zero_alloc_check` | **whole-program** | interprocedural: `za_walk` walks callee bodies out of a table built from the statements it was handed |
+| 0 | `elaborate_heap_params` | **not in the prelude** | the caller runs it before `effect_lowering_prelude`, which never does; the split entry starts at pass 1. Per module it would also misclassify a heap value returned by an imported function |
+| 1 | `desugar_inspect_calls` | safe | per-statement expansion |
+| 2 | `optional_perform_artifact_resolution` + `lower_optional_performs` | **`PreludeEnv`** | TWO whole-program facts: the resolution grants ambient authority from a test-block scan (an AUTHORIZATION difference, ADR-0084/0088), and the source-shadow name set decides whether a `perform?` spelling names a SOURCE function rather than a capability |
+| 3 | `erase_railway_origin_markers` | safe | per-statement |
+| 4 | `desugar_trait_dicts_with_typed_eq` | **module entry + `PreludeEnv`** | takes the module's dependency interface (#2634), plus THREE whole-program facts it cannot derive from a partition — see below |
+| 5 | `unbox_tuple_loop_params` | safe | per-statement |
+| 6 | `rewrite_top_level_fn_alias_refs` | **`PreludeEnv`** | the alias map is global; an unrewritten call emits N args against a 0-param thunk = invalid wasm |
+| — | `lc_validate_stdin_provider_stmts` | safe | local to each statement's own expression; the union is the whole-program answer |
+| 7 | `lc_inject_stdin_surface_wrappers` | safe | gated on a presence scan and local to what it finds; duplicate wrappers are folded at the link |
+| 8 | `lc_extract_inline_wasm` | safe | accumulates into the caller's arrays; the union is the program's |
+| 9 | `await_poll_pass` | **`PreludeEnv`** | both its predicates (`host_future_*` called anywhere, waiter hooks available) are whole-program scans |
+| 10 | `rewrite_self_tail_calls` | safe | per function body |
+| 11 | `wrap_entry_exception_boundary` | safe | matches `entry_name`, which lives in one module — but WHICH module is derived (`lc_entry_module_of`), not assumed to be the last |
+| 12 | `lc_inject_async_sleep_boundary` | **link** | needs the entry's `Async` row AND a boundary call anywhere; what it injects must be visible to 13/14, so it cannot be served by a precomputed fact |
+| 13 | `suspend_cps_pass` | **link** | must see what 12 injects |
+| 14 | `inline_direct_performs` | **link** | same |
+| 15 | `evidence_dict_pass` | **link** | whole-program union, and the dependence runs backwards along the import graph (#2633) |
+| 16 | `forin_discard_pass` | **link** | follows 15 to keep the order |
+
+#### Pass 4 alone needed three more facts
+
+The trait-dict pass has produced four findings across this review, which is more
+than any other, and they are all the same shape — a whole-program read served
+from a partition:
+
+- the **merge rename table** (`namespace_rename_originals`), built per file
+  during the merge and cleared by `dtd_run`; per module that emptied it after
+  the first one, so later modules rendered `Local_dep_<path>` for `Local`. The
+  reset moved to the lane boundary;
+- the **trivial identity wrappers** (`apply(f) { f() }`). The whole-program pass
+  inlines `apply(inner)` to `inner()`, which `dtd_run` documents as the
+  workaround for a closure CRASH. `dtpw_collect_wrappers` scans only the
+  module's own bodies and a dependency's interface is bodyless, so the caller
+  partition left the call intact;
+- the **explicit `T::op` definitions**. A module DOWNSTREAM of a type's owner
+  can define `fn T::equals`; the owner sees neither it nor the dependent,
+  derives a default, and the link reports a collision on a program the
+  whole-program lane accepts.
+
+The last two travel in `ModuleTraitFacts`; the first is a reset-granularity fix.
+Worth recording that `oracle_interface_form`'s own doc comment names the
+trivial-wrapper inliner as the body-reading collector the bodyless interface
+blinds — the consequence was written down before the bug was found, and the
+audit still missed it.
+
+So the cut is **0..11 per module, 12..16 at the link** — most of the prelude, and
+the half a per-module cache can reuse.
+
+This also corrects what `missing=0 content=0` was reported to mean. An authority
+resolution and a boundary injection are not declaration differences: the oracle
+was structurally unable to see four of the six unsafe passes, and its green said
+nothing about them either way.
+
+#### Measured in the EMITTED WASM (#2575 item 2, step 3b)
+
+Everything above compares statement arrays. The FS lane can now compile a
+program both ways, so the question can be asked of the wasm. On the compiler's
+own closure, with the body cache genuinely off:
+
+```
+function=2   code=9368/5778988   data=0   export=0   element=0   name=658
+9250 functions, 477 differing, 18 of them at a different SIZE
+```
+
+The 19 that moved, by name:
+
+```
+BinderAuthorityNodeKind::equals   __arr_equals__N3_Pat
+BinderSemanticRole::equals        __arr_equals__T2_N6_StringN3_Pat
+__arr_equals__N8_TypeExpr         __arr_equals__N4_Expr        …
+```
+
+**All 19 are synthesized comparator helpers, at the end of the function list, in
+a different order.** The other 458 differing functions are their CALLERS: a
+callee at a different index changes the `call` immediate, same encoded width,
+which is why 459 of 477 differ at identical size and why the difference is
+spread across the whole index space. Data, exports and the element table are
+byte-identical.
+
+So this is the `order_diff` the two-wave assembly reduced from 9869 to 212,
+surviving DCE and the link down to 19 functions. It is layout, not meaning —
+and it is not closable without reproducing the trait-dict pass's whole-program
+discovery order inside each module, which is a dependency on one pass's
+traversal that is not worth taking.
+
+#### What the per-module lane costs before any cache (#2510)
+
+#2510 frames the work as "make the prelude per-module AND cache it", and sizes
+it against 1.3-1.5 s spent in `effect_lowering_prelude` on a warm compile. What
+it does not say is what the per-module decomposition costs on its own, which the
+FS-lane split now makes measurable. Compiler's own closure, `cache_mode = "off"`
+(a real bypass since #2647 round 5), a fresh `VIBE_BUILD_CACHE_DIR` per run,
+cold vs cold, three runs each:
+
+| lane | mean | min | max |
+|---|---:|---:|---:|
+| whole-program | 49,994 ms | 49,291 | 50,372 |
+| per-module (split) | 52,631 ms | 51,837 | 53,445 |
+
+**5.3% overhead.** Running 365 modules through passes 0..11 individually,
+building each module's interface context, and linking, costs about a twentieth
+more than one whole-program pass -- not the multiple that would force a cache to
+clear a deficit before winning anything. The decomposition is close to free, so
+the cache is upside rather than a rescue, and there is no schedule pressure to
+force pass 4 per-module if it turns out not to fit (see the audit above).
+
+This is a whole-compile wall time, so the prelude's own share of the change is
+smaller than the 5.3% suggests; it bounds the cost rather than attributing it.
+
+**The consequence for the cache (#2510) is the useful part.** A cached function
+body contains call immediates, and those depend on GLOBAL function index
+assignment. A per-module body cache therefore cannot store a body and replay it
+into a build where indices moved — the stored form or the cache key has to
+account for index assignment. That constraint came out of this measurement; no
+amount of comparing declarations would have produced it.
+
+#### What the split path still costs a caller
+
+Codegen emits functions in statement order, so switching lanes permutes the
+synthesized tail and changes the emitted wasm's layout, even though the program
+is the same declarations with the same bodies in the same source order. Whether
+the *behavior* is identical is a further question that neither the keyed columns
+nor either order counter answers.
+
+The split path is therefore gated behind a `ModuleSplit` the caller must build,
+and every guard on it **fails open** to the whole-program prelude:
+
+```
+file_count > 0
+Array::length(stmt_file_id) == Array::length(stmts)
+Array::length(import_closure) == file_count
+```
+
+Every **index** is checked too, not just the lengths: a `ModuleSplit` is
+publicly constructible, so an out-of-range `stmt_file_id` reaches `Array::get(
+parts, id)` and traps, and an out-of-range closure member is silently skipped by
+the context loop — which narrows that module's context, the one failure mode
+that produces a wrong program rather than a slow one. Both become "not usable",
+which is the whole-program prelude.
+
+And the map must be **non-decreasing**. The link partitions by module and emits
+the parts in module order, so a map that revisits an earlier module — `[0, 1,
+0]` — reorders the statements the source wrote. That was not hypothetical: the
+`ORDER residual=2 of=4` test above feeds exactly that shape, so the failure had
+a demonstration in this tree while the guard still accepted the input.
+Non-decreasing is what makes partition-by-module order-preserving, and it is
+what the merge produces anyway — the map is a run-length decode of per-file
+statement counts.
+
+A caller whose closure had unresolved edges passes an empty `import_closure`,
+which fails the length check for the same reason. Narrowing a module's context
+silently is worse than not splitting at all.
+
+#### The split entry answers for the whole prelude, not part of it
+
+Two things the per-module driver would otherwise drop on the floor, because the
+driver grew out of a measurement and a measurement does not have to refuse
+anything:
+
+- **A collision is an error.** `prelude_run_per_module` links with the
+  *reporting* fold, which keeps the first definition and records the conflict —
+  right for a measurement, which wants every colliding key rather than the
+  first. Production must not pick a body, so the split entry turns a reported
+  collision into the same refusal `link_fold_duplicate_definitions` throws,
+  from one spelling shared by both.
+- **`zero_alloc_check` stays whole-program.** It is interprocedural — `za_walk`
+  walks callee bodies out of the table the check builds from the statements it
+  was handed — so a module's partition, which does not contain an imported
+  callee's body, reports that callee as not proven allocation-free. Run per
+  module it would REJECT a valid program, which is worse than a missing
+  diagnostic. The per-module run stays for the oracle, so `DIAGS prelude=` keeps
+  showing the difference rather than hiding it.
+  `lc_validate_stdin_provider_stmts`, by contrast, is purely local — it walks
+  each statement's own expression with no callee lookup — so the per-module
+  union equals the whole-program run and it stays per module.
+- **Three passes reject by returning a message**, not by throwing:
+  `lc_inject_async_sleep_boundary`, `suspend_cps_pass` and
+  `evidence_dict_pass`. The pass dispatch discarded all three into `let _ =`,
+  which for a declaration-comparing measurement is merely incomplete and for an
+  entry whose return value *is* the caller's error list is silently wrong: a
+  program the whole-program prelude rejects would compile. Both lanes collect
+  them now, which is also why the oracle's counter is `DIAGS prelude=` rather
+  than the `validators=` it used to be — it compared two validators because the
+  other three were thrown away.
+
 ### How the comparator family closed (#2634) — 9 rows, now zero
 
 It was a synthesized comparator whose *existence* or *shape* depended on what

@@ -409,6 +409,39 @@ fn validate_import_names_fs(source: String, keyword: String, raw_path: String, r
   } else ()
 }
 
+/// The subset of a module's resolved deps that it RE-EXPORTS, as opposed to
+/// importing privately (#2658).
+///
+/// `collect_import_deps_from_stmts` below has had this distinction in hand
+/// since it was written -- separate `SImport` and `SReExport` arms -- and
+/// discards it one line later by pushing both into one `deps` array. That is
+/// right for its own callers, which want "what does this module depend on".
+/// A consumer that needs to know what a module's DEPENDENTS can see through
+/// it needs the other half, and until now had to assume the worst.
+///
+/// Resolution goes through the same `resolve_checked_path_fs` the dep scan
+/// uses, so this cannot drift from what the loader actually resolves -- the
+/// reason it lives here rather than being re-derived from source text by the
+/// caller that wants it.
+///
+/// Name validation is deliberately NOT repeated: the dep scan already ran it
+/// over the same statements, and a second pass would report the same error
+/// twice or, worse, differ from it.
+export fn module_reexport_deps_fs(path: String, source: String) -> Array[String] with Exception + Fs {
+  let stmts = parse_program_located_shared(path, source)
+  let base_dir = dir_of_path(path)
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SReExport(raw_path, _) => Array::push(out, resolve_checked_path_fs(base_dir, raw_path, path, source, "export")),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn collect_import_deps_from_stmts(stmts: Array[Stmt], base_dir: String, self_path: String, source: String) -> Array[String] with Exception + Fs {
   let deps = array_empty()
   let mut i = 0

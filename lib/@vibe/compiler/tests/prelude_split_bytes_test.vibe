@@ -1,0 +1,685 @@
+import @vibe/compiler/codegen/common_base {
+  ModuleSplit
+}
+
+import @vibe/compiler/codegen/wasi {
+  effect_lowering_prelude,
+  effect_lowering_prelude_split,
+  lc_closure_self_contained,
+  lc_exported_fn_without_return_annotation,
+  prelude_module_full_oracle_line
+}
+
+import @vibe/compiler/core {
+  Stmt, namespace_rename_originals_len, namespace_rename_originals_reset, record_namespace_rename_originals_for_file, sorted_names_of
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program, print_stmt
+}
+
+// #2575 item 2, step 3: does the per-module prelude produce the same PROGRAM,
+// not merely the same declarations?
+//
+// Everything measured on this line so far compares declarations BY KEY --
+// `prelude_module_full_oracle_line` links the per-module results and diffs the
+// keyed set, reporting `missing` / `extra` / `content` / `renames`. So
+// `missing=0 content=0` on the compiler's own 365-module closure establishes
+// that the linked program holds the same declarations with the same bodies,
+// and NOT that it is the same program: statement ORDER, and anything a later
+// phase derives from position, is outside what that comparison can see.
+//
+// Asked directly here, the answer is that ORDER DIFFERS and the declarations
+// do not. The split lane emits a module's synthesized helpers at the end of
+// THAT MODULE's statements; the whole-program lane emits every synthesized
+// helper at the end of the program. Same set, same bodies, different
+// positions. That is the cost of the split path, measured rather than
+// assumed, and the reason a caller cannot treat it as byte-for-byte
+// interchangeable with the whole-program prelude.
+//
+// Rendering rather than compiling to wasm: `print_stmt` is the same function
+// the oracle's keyed comparison uses for bodies, so a difference here is a
+// difference the oracle would have to explain, and the comparison stays inside
+// a unit test.
+
+fn program_stmts(src: String) -> Array[Stmt] with Exception {
+  parse_program(lex(src))
+}
+
+fn no_ints() -> Array[Int] {
+  []
+}
+
+fn no_keys() -> Array[String] {
+  []
+}
+
+fn no_links() -> Array[(String, String, Int, Int)] {
+  []
+}
+
+/// The statements in order, rendered. Order is the half the keyed comparison
+/// does not check.
+fn render_in_order(stmts: Array[Stmt]) -> String {
+  String::join(rendered(stmts), "\n")
+}
+
+fn rendered(stmts: Array[Stmt]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    Array::push(out, print_stmt(Array::get(stmts, i)))
+    i = i + 1
+  }
+  out
+}
+
+/// The same statements as a SET: order removed, bodies kept. What the keyed
+/// oracle answers, reproduced here so the two questions can be asked of one
+/// program and told apart.
+fn render_sorted(stmts: Array[Stmt]) -> String {
+  String::join(sorted_names_of(rendered(stmts)), "\n")
+}
+
+/// Where the declaration whose rendering starts with `prefix` sits, or -1.
+fn index_of_head(stmts: Array[Stmt], prefix: String) -> Int {
+  let r = rendered(stmts)
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(r) {
+    if found < 0 && String::starts_with(Array::get(r, i), prefix) {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Two modules' worth of statements in one parse. `Pt` is declared in the
+/// first half and compared in the second, so the second module can only lower
+/// its `==` through what its context gives it -- which is what makes the
+/// closure load-bearing here (the last test below turns it off and the answer
+/// changes).
+///
+/// `export` is not decoration: a module's context is its dependencies reduced
+/// to their EXPORTED form (`oracle_is_interface_stmt`), so an unexported `Pt`
+/// would be invisible to the second module and its `a == b` would survive the
+/// prelude unlowered.
+fn two_module_src() -> String {
+  "export struct Pt {\n  x: Int;\n  y: Int\n} derive (Eq)\n\nexport fn helper(n: Int) -> Int {\n  n + 1\n}\n\nfn cmp_pts(a: Pt, b: Pt) -> Bool {\n  a == b\n}\n\nfn main() -> Int {\n  let p = Pt::{ x: helper(1), y: 2 }\n  let q = Pt::{ x: 2, y: 2 }\n  if cmp_pts(p, q) {\n    helper(10)\n  } else {\n    0\n  }\n}\n"
+}
+
+fn half_ids(n: Int) -> Array[Int] {
+  let ids: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(ids, if i < n / 2 {
+      0
+    } else {
+      1
+    })
+    i = i + 1
+  }
+  ids
+}
+
+/// The first half of the statements to module 0 and the rest to module 1, each
+/// seeing the other -- the shape `ordinary_lane_dbg_prov` plus a resolved
+/// two-module closure produces.
+fn split_in_half(n: Int) -> ModuleSplit {
+  ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: half_ids(n),
+    import_closure: [[1], [0]]
+  }
+}
+
+/// The same split with neither module importing the other.
+fn split_blind(n: Int) -> ModuleSplit {
+  ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: half_ids(n),
+    import_closure: [[], []]
+  }
+}
+
+test "an unusable split falls back to the whole-program prelude" {
+  // The guard, first: file_count 0 must take the whole-program path, and both
+  // runs must then agree exactly -- ORDER included, which the split path does
+  // not. Without this the tests below could pass by never splitting at all.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let ea = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let eb = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 0,
+    stmt_file_id: [],
+    import_closure: []
+  }, print_stmt)
+  inspect(Array::length(ea) == Array::length(eb), content = "true")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "a map that does not match the statement count is refused, not run" {
+  // The fail-open arm that matters most: a map of the wrong length would
+  // attribute statements to the wrong modules silently. It must take the
+  // whole-program path instead, so the orders agree.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: [0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "the per-module prelude produces the same program, in the same order" {
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let n = Array::length(b)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), split_in_half(n), print_stmt)
+  // Not vacuous: the prelude synthesized something for the `derive (Eq)`, and
+  // the same count on both lanes.
+  inspect(Array::length(a) > n, content = "true")
+  inspect(Array::length(a) == Array::length(b), content = "true")
+  // The set, which is what the keyed oracle answers...
+  inspect(render_sorted(a) == render_sorted(b), content = "true")
+  // ...and the SEQUENCE, which it cannot. Concatenating the modules puts this
+  // at index 2 -- the synthesized comparator closes module 0, so it precedes
+  // module 1's two statements. The link's two-wave assembly puts every
+  // appended declaration after every un-appended one, by the pass that
+  // appended it, which is where the whole-program lane produces it.
+  inspect(index_of_head(a, "let Pt::equals"), content = "4")
+  inspect(index_of_head(b, "let Pt::equals"), content = "4")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "a module given no context lowers its `==` differently" {
+  // The closure is load-bearing, and this is the proof: with `[[], []]` the
+  // second module cannot see `Pt`, so `cmp_pts` keeps a bare `a == b` where
+  // both the whole-program lane and the full-context split lower it to
+  // `Pt::equals(a, b)`. A DECLARATION difference, so it is one the keyed
+  // oracle would also catch -- which is why the test above, where the
+  // declarations agree and only the order moves, is measuring something the
+  // oracle cannot.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let n = Array::length(b)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), split_blind(n), print_stmt)
+  inspect(render_sorted(a) == render_sorted(b), content = "false")
+  inspect(String::contains(render_in_order(a), "Pt::equals(a, b)"), content = "true")
+  inspect(String::contains(render_in_order(b), "Pt::equals(a, b)"), content = "false")
+}
+
+/// The `ORDER residual=` line of a full-oracle report.
+fn order_line_of(report: String) -> String {
+  let lines = String::split(report, "\n")
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(lines) {
+    if String::contains(Array::get(lines, i), "ORDER residual=") {
+      found = String::trim(Array::get(lines, i))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "the residual-order counter can fire" {
+  // `ORDER residual=` reads 0 on every real split, and a counter that has only
+  // ever read 0 says nothing about whether it can read anything else. This
+  // makes it fire: an INTERLEAVED map -- statement 0 to module 0, statement 1
+  // to module 1, statement 2 back to module 0 -- means grouping by module
+  // reorders the statements the SOURCE wrote, which is the difference
+  // `residual` exists to separate from a synthesized helper changing places.
+  //
+  // The two parses are deliberate: a pass may drop what it replaces, so a
+  // trial sharing nodes with the whole-program side corrupts its rendering.
+  let a = program_stmts(two_module_src())
+  let c = program_stmts(two_module_src())
+  let n = Array::length(c)
+  let ids: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(ids, i - i / 2 * 2)
+    i = i + 1
+  }
+  let report = prelude_module_full_oracle_line(a, c, ids, 2, "main", no_ints(), no_keys(), [
+    [1],
+    [0]
+  ], print_stmt)
+  // Two of the four source statements land at a different index once the map
+  // interleaves them; `of=4` is how many statements the comparison covers
+  // after the synthesized ones are removed.
+  inspect(order_line_of(report), content = "ORDER residual=2 of=4")
+}
+
+/// A program `evidence_dict_pass` (pass 15) rejects:
+/// `fixtures/err_effect_handle_replay_removed.vibe`. A LIVE non-Error handle
+/// the pass cannot migrate is a hard compile error -- ineligible because
+/// `opaque` has a row-variable callee the pass cannot see through.
+fn rejected_by_evidence_src() -> String {
+  "effect Ask {\n  Get -> Int\n}\n\nfn opaque(n: Int) -> Int with e {\n  n\n}\n\nfn asker() -> Int with Ask {\n  let x = perform Ask::Get\n  opaque(x)\n}\n\nlet _start = () -> Int {\n  handle {\n    asker()\n  } with {\n    Ask::Get => resume(3)\n  }\n}\n"
+}
+
+/// The first error each entry reports, or "" -- the value the caller throws on.
+fn first_error(errs: Array[String]) -> String {
+  if Array::length(errs) == 0 {
+    ""
+  } else {
+    Array::get(errs, 0)
+  }
+}
+
+test "a program the evidence pass rejects is rejected on BOTH lanes" {
+  // #2647 Codex P1. Three prelude passes reject by RETURNING a message --
+  // `lc_inject_async_sleep_boundary` (12), `suspend_cps_pass` (13) and
+  // `evidence_dict_pass` (15) -- and `oracle_apply_pass` discarded all three.
+  // The split entry's return value IS the caller's error list, so discarding
+  // them meant a program the whole-program prelude rejects would COMPILE.
+  //
+  // Red-tested: with the three `let _ =` arms restored, the split side of this
+  // reads "" while the whole-program side reads the diagnostic.
+  //
+  // PASS 15 ONLY. The other two rejecting passes are the same three lines in
+  // the same `match`, but neither is pinned by a program here:
+  // `lc_inject_async_sleep_boundary` (12) needs `@vibe/concurrent`, which this
+  // single-parse lane cannot import, and the nested-handle program that
+  // `fixtures/err_effect_compound_nested_handle_suspend.vibe` uses for
+  // `suspend_cps_pass` (13) is refused BEFORE the prelude -- measured, the
+  // whole-program prelude returns no error for it, so a test built on it would
+  // assert nothing. Said here rather than left for a reader to assume from
+  // "the diagnostics are covered".
+  //
+  // `_start` rather than "main" is load-bearing: `evidence_dict_pass` takes the
+  // entry name and this program's entry is `_start`, so under the wrong name
+  // neither lane rejects and the test would pass while measuring nothing.
+  let a = program_stmts(rejected_by_evidence_src())
+  let b = program_stmts(rejected_by_evidence_src())
+  let n = Array::length(b)
+  let ea = effect_lowering_prelude(a, "_start", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let eb = effect_lowering_prelude_split(b, "_start", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), split_in_half(n), print_stmt)
+  inspect(String::length(first_error(ea)) > 0, content = "true")
+  inspect(first_error(ea) == first_error(eb), content = "true")
+}
+
+test "an out-of-range module id refuses the split rather than trapping" {
+  // #2647 Codex P2. A `ModuleSplit` is publicly constructible, so the lengths
+  // can be right while an id is not. `Array::get(parts, id)` would TRAP.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let n = Array::length(b)
+  let ids = half_ids(n)
+  Array::set(ids, 0, 7)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: ids,
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "an out-of-range closure member refuses the split rather than narrowing" {
+  // The other half of P2, and the worse one: the context loop SKIPS an
+  // out-of-range member, which narrows that module's context silently -- the
+  // one failure mode that produces a wrong program rather than a slow one.
+  // Here module 1 would lose its only view of `Pt` and leave `a == b`
+  // unlowered, exactly as the blind-closure test above shows.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let n = Array::length(b)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: half_ids(n),
+    import_closure: [[1], [9]]
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+/// Two modules and a cross-module `#zero_alloc`: `hot` is marked and calls
+/// `helper`, which is allocation-free and lives in the OTHER module. The whole
+/// program proves it; a module's partition does not contain `helper`'s body.
+fn cross_module_zero_alloc_src() -> String {
+  "export fn helper(a: Int, b: Int) -> Int {\n  a + b\n}\n\n#zero_alloc\nfn hot(a: Int, b: Int) -> Int {\n  helper(a, b) * 2\n}\n\nfn main() -> Int {\n  hot(14, 14)\n}\n"
+}
+
+test "a `#zero_alloc` callee in another module does not become a rejection" {
+  // #2647 Codex round 2. `zero_alloc_check` is INTERPROCEDURAL: `za_walk`
+  // walks callee bodies out of the table `zero_alloc_check` builds from the
+  // statements it was handed. Run per module, the partition holding `hot` has
+  // no `helper` body, so it reports "not proven allocation-free" and the split
+  // entry REJECTS a program the whole-program prelude accepts -- worse than a
+  // missing diagnostic.
+  //
+  // The map is explicit rather than `split_in_half`: the `#zero_alloc` marker
+  // is its own statement and must stay with the `fn` it marks, so `helper`
+  // alone is module 0 and the marker, `hot` and `main` are module 1.
+  //
+  // Red-tested: with the whole-program check removed from the split entry,
+  // this reads `zero_alloc: ...` on the split side and "" on the other.
+  let a = program_stmts(cross_module_zero_alloc_src())
+  let b = program_stmts(cross_module_zero_alloc_src())
+  let ea = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let eb = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: [0, 1, 1, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  inspect(Array::length(ea), content = "0")
+  inspect(Array::length(eb), content = "0")
+}
+
+test "a map that revisits an earlier module refuses the split" {
+  // #2647 Codex round 2. The link partitions by module and emits the parts in
+  // module order, so `[0, 1, 0, 1]` REORDERS what the source wrote -- which is
+  // exactly what the residual test below demonstrates through the oracle
+  // entry, on this same shape. The production guard has to refuse it.
+  let a = program_stmts(two_module_src())
+  let b = program_stmts(two_module_src())
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: [0, 1, 0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+/// A top-level function ALIAS declared in one module and called from another.
+/// The backend registers a non-`EFn` alias as a 0-parameter thunk, so a call
+/// that still targets the alias emits two arguments against it -- invalid wasm
+/// on every backend (`rewrite_top_level_fn_alias_refs`'s own doc comment).
+fn cross_module_alias_src() -> String {
+  "export fn real_add(a: Int, b: Int) -> Int {\n  a + b\n}\n\nexport let add_alias = real_add\n\nfn main() -> Int {\n  add_alias(1, 2)\n}\n"
+}
+
+test "an alias declared in another module is still retargeted" {
+  // #2647 Codex round 3. `rewrite_top_level_fn_alias_refs` builds its map from
+  // the statements it is handed and NO-OPS when it finds no alias, so the
+  // partition holding only the call leaves it pointing at the thunk. The map
+  // is a whole-program fact and travels in `PreludeEnv`.
+  //
+  // Map is explicit: `real_add` and the alias in module 0, `main` in module 1.
+  //
+  // Red-tested: with `facts_known` forced false, the split rendering keeps
+  // `add_alias(1, 2)` while the whole-program one reads `real_add(1, 2)`.
+  let a = program_stmts(cross_module_alias_src())
+  let b = program_stmts(cross_module_alias_src())
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: [0, 0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  // Not vacuous: the whole-program lane really does retarget the call.
+  inspect(String::contains(render_in_order(a), "real_add(1, 2)"), content = "true")
+  inspect(String::contains(render_in_order(a), "add_alias(1, 2)"), content = "false")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "the entry module is found, not assumed to be the last" {
+  // #2647 Codex round 4. `entry_fid` was `file_count - 1`, which is true of
+  // the merge -- a root's dependencies come first -- and recorded nowhere in
+  // `ModuleSplit`. A split that puts the entry in an EARLIER module passed the
+  // guard and then handed `entry_name` to the wrong partition, so pass 11
+  // never wrapped the real entry.
+  //
+  // `main` here carries an `Exception` row, which is what
+  // `wrap_entry_exception_boundary` keys on, and it sits in module 0 while a
+  // helper follows it in module 1.
+  //
+  // Red-tested: with `entry_fid` back to `file_count - 1`, the split rendering
+  // loses the boundary the whole-program lane adds.
+  let src = "fn main() -> Int with Exception {\n  if 1 == 2 {\n    throw(\"x\")\n  } else {\n    ()\n  }\n  helper(1)\n}\n\nexport fn helper(n: Int) -> Int {\n  n + 1\n}\n"
+  let a = program_stmts(src)
+  let b = program_stmts(src)
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: [0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  // Not vacuous: the whole-program lane really does wrap the entry.
+  inspect(String::contains(render_in_order(a), "__entry_err"), content = "true")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+import @vibe/compiler/normalize {
+  ModuleTraitFacts,
+  collect_explicit_derived_op_names,
+  collect_trivial_wrapper_names,
+  desugar_trait_dicts_module,
+  desugar_trait_dicts_module_with_facts,
+  desugar_trait_dicts_with_typed_eq
+}
+
+test "the merge rename table survives every module, not just the first" {
+  // #2647 Codex round 6. `record_namespace_rename_originals_for_file` populates
+  // the table during the MERGE, before any prelude pass, and the derived
+  // `Show` / `Hash` renderers read it to recover a private type's source
+  // spelling. `dtd_run` used to clear it -- once whole-program, but once PER
+  // MODULE on the split lane, so the first module consumed the table and every
+  // later one rendered the mangled `Local_dep_<path>`.
+  //
+  // Asserted on the TABLE rather than through a program that renders a mangled
+  // name: I tried two such programs (a private `derive (Show)` in the later
+  // module, then a colliding private type in both) and neither produced a
+  // rename in the output at all, so both were vacuous. The table's length is
+  // the property the fix is actually about.
+  namespace_rename_originals_reset()
+  let src = "struct Renamed {\n  v: Int\n}\n\nfn use_it() -> Int {\n  1\n}\n"
+  record_namespace_rename_originals_for_file("/tmp/vibe_rename_probe.vibe", program_stmts(src))
+  // Not vacuous: the merge really did record something for this file.
+  let recorded = namespace_rename_originals_len()
+  inspect(recorded > 0, content = "true")
+  let m0 = program_stmts(src)
+  let _ = desugar_trait_dicts_module(m0, [], "f0", no_ints(), no_keys())
+  inspect(namespace_rename_originals_len() == recorded, content = "true")
+  let m1 = program_stmts(src)
+  let _ = desugar_trait_dicts_module(m1, [], "f1", no_ints(), no_keys())
+  inspect(namespace_rename_originals_len() == recorded, content = "true")
+}
+
+/// A trivial identity wrapper in module 0 and its call in module 1.
+fn cross_module_wrapper_src() -> String {
+  "export fn apply(f: () -> Int) -> Int {\n  f()\n}\n\nfn main() -> Int {\n  apply(() -> Int {\n    7\n  })\n}\n"
+}
+
+test "an imported trivial wrapper is still inlined" {
+  // #2647 Codex round 7. `dtpw_collect_wrappers` scans only the module's OWN
+  // bodies, and a dependency's context is bodyless, so the caller partition
+  // could not see `apply` and left `apply(inner)` un-inlined -- which
+  // `dtd_run` documents as reaching a closure CRASH for a capturing effectful
+  // lambda. The whole-program wrapper set travels in `PreludeEnv`.
+  //
+  // Red-tested: with `trait_facts` forced to `module_trait_facts_none()`, the
+  // split rendering keeps `apply(` where the whole-program one does not.
+  let a = program_stmts(cross_module_wrapper_src())
+  let b = program_stmts(cross_module_wrapper_src())
+  let _ = effect_lowering_prelude(a, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "main", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 2,
+    stmt_file_id: [0, 1],
+    import_closure: [[1], [0]]
+  }, print_stmt)
+  // Not vacuous: the whole-program lane really does inline the wrapper away.
+  inspect(String::contains(render_in_order(a), "apply("), content = "false")
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}
+
+test "the whole-program collectors find what a partition cannot" {
+  // The two facts, asserted directly: a wrapper and an explicit `T::op` are
+  // both visible to the whole-program collectors.
+  let w = collect_trivial_wrapper_names(program_stmts(cross_module_wrapper_src()))
+  inspect(Array::length(w) > 0, content = "true")
+  let ops = collect_explicit_derived_op_names(program_stmts("struct Pt {\n  x: Int\n}\n\nfn Pt::equals(a: Pt, b: Pt) -> Bool {\n  a.x == b.x\n}\n"))
+  inspect(Array::length(ops) > 0, content = "true")
+}
+
+fn no_stmts() -> Array[Stmt] {
+  []
+}
+
+/// A program whose lowering THROWS: a declared field holding a function has no
+/// structural comparator, so `==` on it is refused at compile time (#2475,
+/// mirroring fixtures/structural_eq_untyped_empty_fn_field_refused.vibe). The
+/// refusal is reported by `eq_refusals_report` at the very end of `dtd_run`,
+/// which is what makes it useful here -- the whole rewrite runs, and the throw
+/// lands after it.
+fn eq_refusal_src() -> String {
+  "struct F {\n  f: () -> Int\n} derive (Eq)\n\nfn mk1() -> () -> Int {\n  () -> {\n    1\n  }\n}\n\nexport fn _start() -> Int {\n  let left = []\n  Array::push(left, F::{\n    f: mk1()\n  })\n  let right = []\n  Array::push(right, F::{\n    f: mk1()\n  })\n  if left == right {\n    1\n  } else {\n    0\n  }\n}\n"
+}
+
+test "a module lowering that throws does not leak its trait facts into the next program" {
+  // #2647 Codex round 8. The per-module entry sets the whole-program facts on
+  // the way in and clears them on the way out -- but `dtd_run` ends in
+  // `eq_refusals_report`, which THROWS, so the clear at the bottom is skipped.
+  // The whole-program entry resets five other cells on entry and used to reset
+  // these none, so it inherited whatever a failed compile left behind. In a
+  // process that compiles more than once that is a silent miscompile, not a
+  // stale diagnostic: a leftover trivial-wrapper name rewrites `apply(pick)`
+  // in the NEXT program into `pick()`.
+  let refusing = program_stmts(eq_refusal_src())
+  let threw = handle {
+    let _ = desugar_trait_dicts_module_with_facts(refusing, no_stmts(), "m", no_ints(), no_keys(), ModuleTraitFacts::{
+      wrapper_names: ["apply"],
+      explicit_ops: []
+    })
+    false
+  } with { Exception::Throw(_) => true }
+  // Not vacuous: the module lowering really did throw. Without this the test
+  // would pass on a program that simply returned and cleared the facts itself.
+  inspect(threw, content = "true")
+  // `apply` here is NOT a trivial wrapper -- its body calls with an argument,
+  // where a trivial wrapper's body is a bare `g()` -- so nothing in THIS
+  // program can put it in the wrapper set. Only a fact left behind by the
+  // failed compile above can.
+  let victim = program_stmts("fn apply(g: (Int) -> Int) -> Int {\n  g(1)\n}\n\nfn pick(x: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  apply(pick)\n}\n")
+  desugar_trait_dicts_with_typed_eq(victim, no_ints(), no_keys())
+  inspect(String::contains(render_in_order(victim), "apply(pick)"), content = "true")
+}
+
+fn closure_of(rows: Array[String]) -> Array[Array[Int]] {
+  let out: Array[Array[Int]] = []
+  let mut i = 0
+  while i < Array::length(rows) {
+    let row: Array[Int] = []
+    let text = Array::get(rows, i)
+    let mut j = 0
+    while j < String::length(text) {
+      let c = String::char_code_at(text, j)
+      if c >= 48 && c <= 57 {
+        Array::push(row, c - 48)
+      } else {
+        ()
+      }
+      j = j + 1
+    }
+    Array::push(out, row)
+    i = i + 1
+  }
+  out
+}
+
+test "the closure guard accepts what it should and rejects what it should not" {
+  inspect(lc_closure_self_contained(closure_of(["1", "2", ""])), content = "false")
+  inspect(lc_closure_self_contained(closure_of(["12", "2", ""])), content = "true")
+  inspect(lc_closure_self_contained(closure_of(["1", "0"])), content = "true")
+  inspect(lc_closure_self_contained(closure_of(["", ""])), content = "true")
+  inspect(lc_closure_self_contained(closure_of(["1", "2", "3", ""])), content = "false")
+}
+
+test "an exported lambda with no return annotation is refused the split" {
+  // #2647 Codex round 9. `oracle_interface_form` erases a dependency's bodies
+  // to `EUnit`, and `collect_fn_returns` reads the return SENTINEL off the
+  // body tail when the declaration carries no `ret` -- so the shape is gone
+  // exactly for the values that need the body to state it. A caller's
+  // `for x in make_pull()` then keeps the array-oriented `EForIn` and traps.
+  //
+  // A LAMBDA-VALUED export, not `export fn`: measured, `fn` REQUIRES its
+  // return annotation (`export fn f() { 1 }` is `expected -> but got {`), so
+  // `ret = None` is unreachable from `fn` syntax. `export let f = () -> { .. }`
+  // is the only spelling that produces it, which is also the only spelling
+  // this guard needs to catch.
+  let unannotated = "export let make_it = () -> {\n  1\n}\n"
+  inspect(lc_exported_fn_without_return_annotation(program_stmts(unannotated)), content = "true")
+  // The same value with the binding annotated does NOT trip it.
+  let annotated = "export let make_it: () -> Int = () -> {\n  1\n}\n"
+  inspect(lc_exported_fn_without_return_annotation(program_stmts(annotated)), content = "false")
+  // A private binding is not a dependency interface, so it is not this
+  // predicate's business -- only exports cross a module boundary.
+  let private_unannotated = "let make_it = () -> {\n  1\n}\n"
+  inspect(lc_exported_fn_without_return_annotation(program_stmts(private_unannotated)), content = "false")
+  // An ordinary `fn`, which always carries its annotation, is unaffected.
+  let plain = "export fn make_it() -> Int {\n  1\n}\n"
+  inspect(lc_exported_fn_without_return_annotation(program_stmts(plain)), content = "false")
+}
+
+/// Three modules where module 0's lowering needs module 2's declaration: `Pt`
+/// is declared last and compared first, so a module that cannot see it leaves
+/// `a == b` unlowered where the whole-program lane rewrites it.
+fn three_module_src() -> String {
+  "fn cmp(a: Pt, b: Pt) -> Bool {\n  a == b\n}\n\nfn mid() -> Int {\n  1\n}\n\nexport struct Pt {\n  x: Int\n} derive (Eq)\n"
+}
+
+fn three_module_ids() -> Array[Int] with Exception {
+  let ids: Array[Int] = []
+  let n = Array::length(program_stmts(three_module_src()))
+  let mut i = 0
+  while i < n {
+    Array::push(ids, if i >= 2 {
+      2
+    } else {
+      i
+    })
+    i = i + 1
+  }
+  ids
+}
+
+test "a closure that is not transitively closed declines the split end to end" {
+  // `["1", "2", ""]` is A -> B -> C where A does not name C -- what a
+  // re-export facade looks like from a direct-edges-only closure. Module 0
+  // reaches `Pt` through module 1 without naming it, so a per-module run would
+  // lower module 0 with `Pt` out of scope.
+  //
+  // Red-tested, and it discriminates: with `lc_closure_self_contained` removed
+  // from `module_split_usable` this test FAILS, because the split then runs on
+  // the narrowed closure and module 0's `a == b` survives unlowered.
+  //
+  // I first wrote this comment claiming the opposite -- that the program
+  // renders identically either way, so equality could not tell them apart.
+  // That was measured on the SELF-CONTAINED closure, where the split legitimately
+  // runs and agrees; it says nothing about this one. The mutation is what
+  // settled it.
+  let a = program_stmts(three_module_src())
+  let b = program_stmts(three_module_src())
+  let _ = effect_lowering_prelude(a, "__no_entry__", no_links(), no_keys(), no_keys(), no_ints(), no_keys())
+  let _ = effect_lowering_prelude_split(b, "__no_entry__", no_links(), no_keys(), no_keys(), no_ints(), no_keys(), ModuleSplit::{
+    closure_exact: false,
+    file_count: 3,
+    stmt_file_id: three_module_ids(),
+    import_closure: closure_of(["1", "2", ""])
+  }, print_stmt)
+  inspect(render_in_order(a) == render_in_order(b), content = "true")
+}

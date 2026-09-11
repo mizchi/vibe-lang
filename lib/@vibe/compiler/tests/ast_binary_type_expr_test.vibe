@@ -1,0 +1,288 @@
+//# Imports
+
+import ../ast_binary.vibe {
+  AST_BINARY_TAG_TY_APP, AST_BINARY_TAG_TY_FN, AST_BINARY_TAG_TY_NAME, AST_BINARY_TAG_TY_TUPLE,
+  AST_BINARY_TAG_TY_UNIT, ast_binary_read_type_expr, ast_binary_reader_new,
+  ast_binary_reader_remaining, ast_binary_write_type_expr
+}
+
+import @vibe/ast {
+  TypeExpr
+}
+
+//# Functions
+
+fn enc(t: TypeExpr) -> Bytes {
+  let b = Bytes::new()
+  ast_binary_write_type_expr(b, t)
+  b
+}
+
+fn bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  if Bytes::length(a) != Bytes::length(b) {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while ok && i < Bytes::length(a) {
+      ok = Bytes::get(a, i) == Bytes::get(b, i)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+/// Decode, re-encode, compare. Re-encoding is the assertion that carries
+/// weight: it proves the decoder rebuilt a tree the WRITER agrees with,
+/// field for field, without this test having to spell out every nested
+/// shape by hand.
+fn roundtrips(t: TypeExpr) -> Bool {
+  let written = enc(t)
+  handle {
+    let r = ast_binary_reader_new(written)
+    let back = ast_binary_read_type_expr(r)
+    bytes_eq(written, enc(back)) && ast_binary_reader_remaining(r) == 0
+  } with { Exception::Throw(_) => false }
+}
+
+/// "ok" when the bytes decode, otherwise the rejection message. Tests
+/// assert the MESSAGE, not merely that something was refused: a decoder
+/// that threw for the wrong reason would pass a bare "it refused" check.
+fn decode_outcome(raw: Array[Int]) -> String {
+  handle {
+    let r = ast_binary_reader_new(Bytes::from_array(raw))
+    let t = ast_binary_read_type_expr(r)
+    match t {
+      TyUnit => "ok"
+      _ => "ok"
+    }
+  } with { Exception::Throw(msg) => msg }
+}
+
+//# Misc — TypeExpr codec (docs/ast_binary_abi.md)
+
+test "ast_binary TypeExpr: tags are the enum's declaration order" {
+  assert(AST_BINARY_TAG_TY_NAME == 1)
+  assert(AST_BINARY_TAG_TY_APP == 2)
+  assert(AST_BINARY_TAG_TY_FN == 3)
+  assert(AST_BINARY_TAG_TY_TUPLE == 4)
+  assert(AST_BINARY_TAG_TY_UNIT == 5)
+}
+
+test "ast_binary TypeExpr: canonical bytes" {
+  // TyUnit -> [0x05]
+  assert(bytes_eq(enc(TyUnit), Bytes::from_array([5])))
+  // TyName("Int") -> tag, len, 'I' 'n' 't'
+  assert(bytes_eq(enc(TyName("Int")), Bytes::from_array([1, 3, 73, 110, 116])))
+  // TyTuple([]) -> tag, count 0
+  assert(bytes_eq(enc(TyTuple([])), Bytes::from_array([4, 0])))
+  // TyApp("Array", [TyName("Int")]) -> tag, "Array", count 1, TyName("Int")
+  assert(bytes_eq(enc(TyApp("Array", [TyName("Int")])), Bytes::from_array([
+    2,
+    5,
+    65,
+    114,
+    114,
+    97,
+    121,
+    1,
+    1,
+    3,
+    73,
+    110,
+    116
+  ])))
+  // TyFn([TyName("Int")], TyUnit, None) -> tag, params, ret, optstr None
+  assert(bytes_eq(enc(TyFn([TyName("Int")], TyUnit, None)), Bytes::from_array([
+    3,
+    1,
+    1,
+    3,
+    73,
+    110,
+    116,
+    5,
+    0
+  ])))
+  // TyFn([], TyUnit, Some("Fs")) -> tag, count 0, ret, optstr Some "Fs"
+  assert(bytes_eq(enc(TyFn([], TyUnit, Some("Fs"))), Bytes::from_array([
+    3,
+    0,
+    5,
+    1,
+    2,
+    70,
+    115
+  ])))
+}
+
+test "ast_binary TypeExpr: a non-ASCII name goes out as its OWN bytes" {
+  // #2647 Codex rounds 11-12, and the assertion 44 round-trip tests could not
+  // make. A vibe `String` IS a byte string (ADR-0098), so `é` is the two
+  // bytes C3 A9 and must reach the wire as those two bytes.
+  //
+  // The encoder used to run UTF-16 surrogate logic over them and re-encode
+  // each BYTE as UTF-8, emitting C3 83 C2 A9 -- the UTF-8 for `Ã©`, four
+  // bytes with a declared length of 4. The reader did the exact inverse, so
+  // every round trip agreed while the bytes violated the format and any other
+  // implementation would have read the wrong string.
+  //
+  // Only a CANONICAL-BYTE assertion can see that: a transformation undone by
+  // its own inverse is invisible to a round trip.
+  assert(bytes_eq(enc(TyName("é")), Bytes::from_array([1, 2, 195, 169])))
+  // Three- and four-byte sequences likewise: declared length is the BYTE
+  // count, and the payload is the source's own bytes.
+  assert(bytes_eq(enc(TyName("日")), Bytes::from_array([1, 3, 230, 151, 165])))
+  assert(bytes_eq(enc(TyName("😀")), Bytes::from_array([
+    1,
+    4,
+    240,
+    159,
+    152,
+    128
+  ])))
+  // And the length prefix really is bytes, not characters.
+  assert(Bytes::get(enc(TyName("é")), 1) == 2)
+  assert(Bytes::get(enc(TyName("😀")), 1) == 4)
+}
+
+test "ast_binary TypeExpr: every variant roundtrips" {
+  assert(roundtrips(TyUnit))
+  assert(roundtrips(TyName("Int")))
+  assert(roundtrips(TyName("")))
+  assert(roundtrips(TyApp("Array", [TyName("Int")])))
+  assert(roundtrips(TyApp("Map", [TyName("String"), TyName("Int")])))
+  assert(roundtrips(TyApp("Opaque", [])))
+  assert(roundtrips(TyTuple([])))
+  assert(roundtrips(TyTuple([TyName("Int"), TyUnit])))
+  assert(roundtrips(TyFn([], TyUnit, None)))
+  assert(roundtrips(TyFn([TyName("Int")], TyName("Bool"), Some("Exception + Fs"))))
+}
+
+test "ast_binary TypeExpr: nesting roundtrips through every recursive slot" {
+  // TyApp args, TyTuple items, TyFn params, TyFn ret -- each recursion
+  // point carries a different nested shape so a reader that dropped one
+  // of them cannot pass by getting the others right.
+  let deep = TyFn([
+    TyApp("Array", [
+      TyTuple([TyName("String"), TyApp("Option", [TyName("Int")])])
+    ])
+  ], TyTuple([TyFn([TyUnit], TyName("Int"), Some("Async")), TyUnit]), Some("Fs"))
+  assert(roundtrips(deep))
+}
+
+test "ast_binary TypeExpr: a declared length that cuts a UTF-8 sequence is refused" {
+  // Codex round 9. `byte_len = 1` carrying a 0xF0 lead passes the
+  // remaining-length check -- one byte IS available -- and the raw decoder
+  // then reads three continuation bytes out of the NEXT field, returning a
+  // garbage character AND leaving the cursor three bytes out, so every field
+  // after it is read from the wrong offset.
+  let cut = "ast_binary: string is not well-formed UTF-8 within its declared length"
+  assert(decode_outcome([1, 1, 240]) == cut)
+  // The same lead WITH its three continuation bytes actually present, so what
+  // is being rejected is the declared BOUND and not end-of-input.
+  assert(decode_outcome([1, 1, 240, 159, 152, 128]) == cut)
+  // A bare continuation byte cannot start a sequence.
+  assert(decode_outcome([1, 1, 128]) == cut)
+  // 0xF8..0xFF are never valid lead bytes.
+  assert(decode_outcome([1, 1, 248]) == cut)
+  // A lead whose continuation is present but is not a continuation byte.
+  assert(decode_outcome([1, 2, 194, 65]) == cut)
+  // Declared honestly, the very same four bytes decode.
+  assert(decode_outcome([1, 4, 240, 159, 152, 128]) == "ok")
+}
+
+test "ast_binary TypeExpr: non-scalar UTF-8 is refused, not decoded" {
+  // #2647 Codex round 10. Sequence length and continuation-byte masks alone
+  // accept encodings that are not Unicode scalar values: each decodes to
+  // SOMETHING, so accepting them means a corrupt cache string is decoded
+  // rather than missed.
+  let bad = "ast_binary: string is not well-formed UTF-8 within its declared length"
+  // Overlong NUL (C0 80) -- U+0000 written in two bytes.
+  assert(decode_outcome([1, 2, 192, 128]) == bad)
+  // Overlong three-byte form (E0 80 80).
+  assert(decode_outcome([1, 3, 224, 128, 128]) == bad)
+  // A surrogate code point (ED A0 80) -- never a scalar value.
+  assert(decode_outcome([1, 3, 237, 160, 128]) == bad)
+  // Above U+10FFFF, both spellings: an F5 lead, and F4 with a too-high
+  // first continuation.
+  assert(decode_outcome([1, 4, 245, 128, 128, 128]) == bad)
+  assert(decode_outcome([1, 4, 244, 144, 128, 128]) == bad)
+  // The controls sit exactly at the boundaries these reject, so the check
+  // cannot be passing by refusing everything multibyte.
+  assert(decode_outcome([1, 2, 194, 169]) == "ok")
+  assert(decode_outcome([1, 3, 237, 159, 191]) == "ok")
+  assert(decode_outcome([1, 4, 244, 143, 191, 191]) == "ok")
+}
+
+test "ast_binary TypeExpr: non-ASCII names roundtrip" {
+  // Four-byte (non-BMP) first: it is the only case that exercises the
+  // surrogate-pair path on BOTH sides of the round trip.
+  assert(roundtrips(TyName("😀")))
+  assert(roundtrips(TyApp("Box", [TyName("🎌"), TyName("日本語")])))
+  assert(roundtrips(TyName("日本語")))
+  assert(roundtrips(TyApp("Box", [TyName("café")])))
+  assert(roundtrips(TyFn([], TyUnit, Some("λ"))))
+}
+
+test "ast_binary TypeExpr: an unknown tag is refused, not misread" {
+  assert(decode_outcome([5]) == "ok")
+  assert(decode_outcome([0]) == "ast_binary: unknown TypeExpr tag 0")
+  assert(decode_outcome([6]) == "ast_binary: unknown TypeExpr tag 6")
+  assert(decode_outcome([255]) == "ast_binary: unknown TypeExpr tag 255")
+}
+
+test "ast_binary TypeExpr: truncated input is refused, not answered" {
+  // No bytes at all.
+  assert(decode_outcome([]) == "ast_binary: unexpected end of input")
+  // TyName with a length prefix but no string body.
+  assert(decode_outcome([1]) == "ast_binary: unexpected end of input")
+  // TyName claiming 5 bytes with 1 present.
+  assert(decode_outcome([1, 5, 97]) == "ast_binary: string length exceeds remaining input")
+  // TyApp whose element count exceeds the bytes left to hold it: one
+  // byte remains, the count claims five. (A count byte here has to be a
+  // COMPLETE varint -- 200 has its continuation bit set, so it would
+  // report end-of-input and never reach the count guard at all.)
+  assert(decode_outcome([2, 1, 97, 5, 5]) == "ast_binary: array count exceeds remaining input")
+  assert(decode_outcome([2, 1, 97, 1, 5]) == "ok")
+  // TyFn whose optstr present flag is missing.
+  assert(decode_outcome([3, 0, 5]) == "ast_binary: unexpected end of input")
+  // TyFn whose optstr present flag is neither 0x00 nor 0x01.
+  assert(decode_outcome([3, 0, 5, 2]) == "ast_binary: optional-string present flag is neither 0x00 nor 0x01")
+}
+
+test "ast_binary TypeExpr: a truncated varint is refused rather than spun on" {
+  // 0x80 is "continue" with nothing following it. The raw reader stops
+  // at end-of-input; the checked one this codec uses says so.
+  assert(decode_outcome([2, 128]) == "ast_binary: unexpected end of input")
+}
+
+test "ast_binary: a varint past the 63-bit Int range is refused" {
+  // #2647 Codex round 12. ULEB128 for 2^64 is 0x80 nine times then 0x02. The
+  // tenth byte's payload shifts into positions a 63-bit `Int` cannot hold and
+  // WRAPS, producing zero -- and zero used as a count made a malformed cache
+  // decode as an empty AST rather than missing.
+  let over = "ast_binary: varint exceeds the representable Int range"
+  // TyApp, name "a", then an element count of 2^64.
+  assert(decode_outcome([
+    2,
+    1,
+    97,
+    128,
+    128,
+    128,
+    128,
+    128,
+    128,
+    128,
+    128,
+    128,
+    2
+  ]) == over)
+  // The largest count a 63-bit Int holds is 2^62-1; nine bytes of payload
+  // reach bit 62, and that is accepted as far as the range check goes (it is
+  // then refused for exceeding the bytes remaining, which is the next guard).
+  assert(decode_outcome([2, 1, 97, 255, 255, 255, 255, 255, 255, 255, 255, 127]) == "ast_binary: array count exceeds remaining input")
+  // A one-byte count still works, so the guard is not refusing everything.
+  assert(decode_outcome([2, 1, 97, 1, 5]) == "ok")
+}

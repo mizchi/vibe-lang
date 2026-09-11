@@ -1,0 +1,95 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached, compile_file_fs_mode_rc_body_cached_split, ordinary_lane_closure_edges, ordinary_lane_split_shape
+}
+
+// #2575 item 2 step 3b: the question every other check on this line has been
+// unable to ask.
+//
+// `prelude_module_full_oracle_line` compares DECLARATIONS by key.
+// `prelude_split_bytes_test.vibe` compares RENDERED STATEMENTS. Neither
+// codegens, so neither can see a pass whose output difference is not a
+// declaration difference -- an authority narrowed, a boundary not injected, a
+// call left pointing at a thunk. Four of the six unsafe passes found on #2647
+// were invisible to both, and every one of them was found by reading code
+// rather than by a test.
+//
+// This compiles a REAL two-file program through the ordinary RC lane both ways
+// and compares the WASM. It is the check that subsumes reading: a pass that
+// lowers differently per module changes these bytes.
+
+fn write_two_file_program(tag: String) -> String with Exception + Fs {
+  // Flat /tmp paths with a relative import, as the other FS-lane tests do:
+  // there is no directory-creating `Fs` builtin.
+  let helper = String::concat("/tmp/vibe_split_fs_helper_", String::concat(tag, ".vibe"))
+  let main = String::concat("/tmp/vibe_split_fs_main_", String::concat(tag, ".vibe"))
+  // Deliberately exercises what the audit found: a derived comparator whose
+  // type is declared in the other module, a cross-module call, and an
+  // `Exception`-row entry (pass 11's boundary).
+  Fs::write_file(helper, "export struct Pt {\n  x: Int;\n  y: Int\n} derive (Eq)\n\nexport fn bump(n: Int) -> Int {\n  n + 1\n}\n\nexport fn same(a: Pt, b: Pt) -> Bool {\n  a == b\n}\n")
+  Fs::write_file(main, String::concat("import ./vibe_split_fs_helper_", String::concat(tag, ".vibe {\n  Pt, bump, same\n}\n\nfn main() -> Int with Exception {\n  let p = Pt::{ x: bump(1), y: 2 }\n  let q = Pt::{ x: 2, y: 2 }\n  if same(p, q) {\n    bump(10)\n  } else {\n    0\n  }\n}\n")))
+  main
+}
+
+test "the FS lane compiles the same wasm with the prelude split on" {
+  let main = write_two_file_program("on")
+  // NOT VACUOUS, and this is the assertion that keeps it so: the lane really
+  // does build a usable two-module split for this program. Without it, a
+  // `module_split_none()` fallback would make the byte comparison below pass
+  // while measuring nothing at all.
+  let (modules, mapped) = ordinary_lane_split_shape(main)
+  inspect(modules, content = "2")
+  inspect(mapped > 0, content = "true")
+  // `"off"` is a REAL bypass as of #2647 Codex round 5, and this comparison is
+  // why it had to become one. It used to load the shared artifact, compile
+  // against it and store the result, so the whole-program call here populated
+  // the cache and the split call could REPLAY those whole-program bodies -- a
+  // body-level difference between the lanes would have been cached away and
+  // this test would have passed while measuring nothing.
+  let whole = compile_file_fs_mode_rc_body_cached(main, "main", "off")
+  let split = compile_file_fs_mode_rc_body_cached_split(main, "main", "off", true)
+  // A real program, not an empty module.
+  inspect(Bytes::length(whole) > 1000, content = "true")
+  inspect(Bytes::length(whole) == Bytes::length(split), content = "true")
+  inspect(whole == split, content = "true")
+}
+
+test "use_split false is the ordinary lane" {
+  // The control. Without it the test above could pass by never splitting.
+  let main = write_two_file_program("off")
+  let a = compile_file_fs_mode_rc_body_cached(main, "main", "off")
+  let b = compile_file_fs_mode_rc_body_cached_split(main, "main", "off", false)
+  inspect(a == b, content = "true")
+}
+
+fn write_reexport_chain(tag: String) -> String with Exception + Fs {
+  // C declares, B RE-EXPORTS it, A uses it without naming C. This is the
+  // shape a direct-edges-only closure cannot describe: A's partition needs
+  // C's declarations and never names C.
+  let c = String::concat("/tmp/vibe_rx_c_", String::concat(tag, ".vibe"))
+  let b = String::concat("/tmp/vibe_rx_b_", String::concat(tag, ".vibe"))
+  let a = String::concat("/tmp/vibe_rx_a_", String::concat(tag, ".vibe"))
+  Fs::write_file(c, "export struct Pt {\n  x: Int\n} derive (Eq)\n\nexport fn mk(v: Int) -> Pt {\n  Pt::{ x: v }\n}\n")
+  Fs::write_file(b, String::concat("export ./vibe_rx_c_", String::concat(tag, ".vibe {\n  Pt, mk\n}\n")))
+  Fs::write_file(a, String::concat("import ./vibe_rx_b_", String::concat(tag, ".vibe {\n  Pt, mk\n}\n\nfn main() -> Int {\n  if mk(1) == mk(1) {\n    1\n  } else {\n    0\n  }\n}\n")))
+  a
+}
+
+test "the production closure follows a re-export edge" {
+  // #2658. A imports B; B re-exports C. The exact closure gives A three edges
+  // across the program (A->B, A->C, B->C); a direct-edges-only closure gives
+  // two, and A's partition would be lowered without C's `Pt` in scope.
+  //
+  // Asserted on the closure SHAPE, not on bytes: both closures fail open to
+  // the same program, so a byte comparison cannot tell them apart -- the same
+  // reason the round-9 control had to test its predicate directly.
+  let entry = write_reexport_chain("edges")
+  inspect(ordinary_lane_closure_edges(entry), content = "3")
+}
+
+test "the re-export chain still compiles identically with the split on" {
+  let entry = write_reexport_chain("bytes")
+  let whole = compile_file_fs_mode_rc_body_cached(entry, "main", "off")
+  let split = compile_file_fs_mode_rc_body_cached_split(entry, "main", "off", true)
+  inspect(Bytes::length(whole) > 1000, content = "true")
+  inspect(whole == split, content = "true")
+}

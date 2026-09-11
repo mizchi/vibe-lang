@@ -319,4 +319,33 @@ if ! cmp -s "$WORK/as_only.expected.vibe" "$WORK/as_only.got.vibe"; then
   exit 1
 fi
 
-echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628 + import sort/wrap + enum/struct guard + nested-call block newlines + from-identifier guard + is-ctor guard + return-handle guard + as-only guard)"
+# EXTENSION GUARD (#2647). This formatter rewrites whatever it is handed, so a
+# non-vibe file passed by mistake is silently mangled and the command still
+# succeeds -- measured: a markdown file came back with `### Heading (5 x)`
+# turned into `###Heading(5x)`, which broke the gate that read it.
+cat > "$WORK/not_vibe.md" <<'EOF'
+### TypeExpr tags (5 variants)
+
+| 0x01 | `TyName(String)` |
+EOF
+cp "$WORK/not_vibe.md" "$WORK/not_vibe.before.md"
+set +e
+bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$WORK/not_vibe.md" > "$WORK/ext.out" 2>&1
+ext_status=$?
+set -e
+if [ "$ext_status" -eq 0 ]; then
+  echo "[vibe-fmt-smoke] FAIL: formatting a .md file succeeded instead of being refused" >&2
+  exit 1
+fi
+if ! cmp -s "$WORK/not_vibe.before.md" "$WORK/not_vibe.md"; then
+  echo "[vibe-fmt-smoke] FAIL: the refused .md file was modified anyway" >&2
+  diff "$WORK/not_vibe.before.md" "$WORK/not_vibe.md" >&2 || true
+  exit 1
+fi
+grep -q "refusing to format a non-vibe file" "$WORK/ext.out" || {
+  echo "[vibe-fmt-smoke] FAIL: refusal did not say why" >&2
+  cat "$WORK/ext.out" >&2
+  exit 1
+}
+
+echo "[vibe-fmt-smoke] ok (canonical + idempotent + --check + paths #628 + import sort/wrap + enum/struct guard + nested-call block newlines + from-identifier guard + is-ctor guard + return-handle guard + as-only guard + extension guard)"

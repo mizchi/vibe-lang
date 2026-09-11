@@ -1,0 +1,201 @@
+//# Imports
+
+import ../ast_binary.vibe {
+  ast_binary_read_module, ast_binary_read_stmt, ast_binary_reader_new, ast_binary_reader_remaining,
+  ast_binary_write_module, ast_binary_write_stmt
+}
+
+import @vibe/ast {
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
+}
+
+//# Functions
+
+fn enc(st: Stmt) -> Bytes {
+  let b = Bytes::new()
+  ast_binary_write_stmt(b, st)
+  b
+}
+
+fn bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  if Bytes::length(a) != Bytes::length(b) {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while ok && i < Bytes::length(a) {
+      ok = Bytes::get(a, i) == Bytes::get(b, i)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn roundtrips(st: Stmt) -> Bool {
+  let written = enc(st)
+  handle {
+    let r = ast_binary_reader_new(written)
+    let back = ast_binary_read_stmt(r)
+    bytes_eq(written, enc(back)) && ast_binary_reader_remaining(r) == 0
+  } with { Exception::Throw(_) => false }
+}
+
+fn item(name: String) -> ImportItem {
+  ImportItem::{
+    kind: None,
+    name: name,
+    alias: None
+  }
+}
+
+fn kinded_item(k: ImportKind, name: String, alias: String) -> ImportItem {
+  ImportItem::{
+    kind: Some(k),
+    name: name,
+    alias: Some(alias)
+  }
+}
+
+//# Misc — Stmt codec (docs/ast_binary_abi.md)
+
+test "ast_binary Stmt: bindings and declarations roundtrip" {
+  assert(roundtrips(SLet(true, true, "f", Some(TyName("Int")), EInt(1))))
+  assert(roundtrips(SLet(false, false, "g", None, EUnit)))
+  assert(roundtrips(SLetMut("m", Some(TyName("Int")), EInt(0))))
+  assert(roundtrips(SLetMut("m", None, EInt(0))))
+  assert(roundtrips(SExternLet("x", TyName("Int"))))
+  assert(roundtrips(STypeAlias(true, "AL", ["V"], TyApp("Array", [TyName("V")]))))
+  assert(roundtrips(SAliasDecl("a", "b")))
+  assert(roundtrips(SResource("Posts", "S3::Bucket")))
+  assert(roundtrips(SExpr(EInt(1))))
+  assert(roundtrips(SLetPat(PTuple([PBind("a"), PWild]), ETuple([
+    EInt(1),
+    EInt(2)
+  ]))))
+}
+
+test "ast_binary Stmt: type declarations roundtrip" {
+  assert(roundtrips(SEnum(true, "Opt", ["T"], [
+    ("Some", [TyName("T")]),
+    ("None", [])
+  ], ["Eq"])))
+  assert(roundtrips(SEnum(false, "Bare", [], [], [])))
+  assert(roundtrips(SSuberror(true, "E", [("Bad", [TyName("String")])])))
+  assert(roundtrips(SStruct(true, "Pt", [("x", TyName("Int"))], ["Eq"], ["x"], [
+    "T"
+  ])))
+  assert(roundtrips(SStruct(false, "Empty", [], [], [], [])))
+  assert(roundtrips(SImpl(["T"], [("T", ["Eq"])], "Show", TyApp("Box", [
+    TyName("T")
+  ]))))
+  assert(roundtrips(SImpl([], [], "Eq", TyName("Int"))))
+}
+
+test "ast_binary Stmt: trait and effect declarations roundtrip" {
+  // STrait carries the widest field list in the AST: six slots, two of them
+  // nested arrays of arrays.
+  assert(roundtrips(STrait(true, "Show", ["Eq"], [
+    ("show", [TyName("Self")], TyName("String"))
+  ], [("show", ["U"], [("U", ["Eq", "Ord"])])], ["T"])))
+  assert(roundtrips(STrait(false, "Marker", [], [], [], [])))
+  assert(roundtrips(SEffectDef(true, "Log", ["T"], [
+    ("Emit", [TyName("String")], TyUnit)
+  ])))
+  assert(roundtrips(SEffectSet(true, "IO", ["Fs", "Console::write"])))
+}
+
+test "ast_binary Stmt: import and export forms roundtrip" {
+  assert(roundtrips(SImport("./dep.vibe", [
+    item("a"),
+    kinded_item(ImportStruct, "Pt", "P")
+  ])))
+  assert(roundtrips(SImport("@vibe/core", [])))
+  assert(roundtrips(SReExport("./dep.vibe", [
+    kinded_item(ImportTrait, "Show", "S")
+  ])))
+  assert(roundtrips(SExport(["a", "b"])))
+  assert(roundtrips(SReExportSourceBoundary(["local"], ["published"])))
+  // Every ImportKind, so a tag swap in that enum cannot pass.
+  assert(roundtrips(SImport("./k.vibe", [
+    kinded_item(ImportType, "T", "T2"),
+    kinded_item(ImportStruct, "S", "S2"),
+    kinded_item(ImportEnum, "E", "E2"),
+    kinded_item(ImportEffect, "F", "F2"),
+    kinded_item(ImportTrait, "R", "R2")
+  ])))
+}
+
+test "ast_binary Stmt: markers, test forms and fn declarations roundtrip" {
+  assert(roundtrips(STest("t", EUnit)))
+  assert(roundtrips(SBench("b", EUnit)))
+  assert(roundtrips(SExample("e", EUnit)))
+  assert(roundtrips(SQualifiedPatternRefs([("Color", "Red")])))
+  assert(roundtrips(STestEffectRows([("t", "Fs + Exception")])))
+  assert(roundtrips(SFnDecl(true, "f", EFn([], [], [], Some(TyName("Int")), None, EInt(1)), [
+    EBool(true)
+  ], [EBool(true)])))
+  assert(roundtrips(SFnDecl(false, "g", EFn([], [], [], None, None, EUnit), [], [
+  ])))
+}
+
+test "ast_binary Stmt: SModule nests statements recursively" {
+  assert(roundtrips(SModule(true, "M", [])))
+  assert(roundtrips(SModule(true, "M", [
+    SLet(true, false, "a", None, EInt(1)),
+    SModule(false, "Inner", [SExpr(EUnit)])
+  ])))
+}
+
+test "ast_binary: a whole module roundtrips through the file layout" {
+  // magic + version + array<Stmt>, which is what the on-disk cache stores.
+  let program: Array[Stmt] = [
+    SImport("./dep.vibe", [item("Pt")]),
+    SStruct(true, "Pt", [("x", TyName("Int")), ("y", TyName("Int"))], ["Eq"], [], [
+    ]),
+    SFnDecl(true, "same", EFn([], [], [
+      ("a", Some(TyName("Pt"))),
+      ("b", Some(TyName("Pt")))
+    ], Some(TyName("Bool")), None, EBinOp("==", EIdent("a", 0 - 1), EIdent("b", 0 - 1), 0 - 1)), [
+    ], []),
+    SExpr(EFloat(0.0 - 2.5))
+  ]
+  let buf = Bytes::new()
+  ast_binary_write_module(buf, program)
+  let r = ast_binary_reader_new(buf)
+  let back = handle {
+    ast_binary_read_module(r)
+  } with { Exception::Throw(_) => [] }
+  assert(Array::length(back) == 4)
+  // Re-encode and compare: the strongest statement that the tree survived.
+  let buf2 = Bytes::new()
+  ast_binary_write_module(buf2, back)
+  assert(bytes_eq(buf, buf2))
+  assert(ast_binary_reader_remaining(r) == 0)
+}
+
+test "ast_binary: a module with bad magic or a wrong version is refused" {
+  let bad = Bytes::from_array([120, 65, 83, 84, 1, 0])
+  let msg = handle {
+    let r = ast_binary_reader_new(bad)
+    let _ = ast_binary_read_module(r)
+    "ok"
+  } with { Exception::Throw(m) => m }
+  assert(msg == "ast_binary: bad magic")
+  // Right magic, version 2.
+  let wrong_version = Bytes::from_array([118, 65, 83, 84, 2, 0])
+  let msg2 = handle {
+    let r2 = ast_binary_reader_new(wrong_version)
+    let _ = ast_binary_read_module(r2)
+    "ok"
+  } with { Exception::Throw(m) => m }
+  assert(msg2 == "ast_binary: unsupported version 2")
+}
+
+test "ast_binary Stmt: an unknown tag is refused, not misread" {
+  let outcome = handle {
+    let r = ast_binary_reader_new(Bytes::from_array([27]))
+    let _ = ast_binary_read_stmt(r)
+    "ok"
+  } with { Exception::Throw(m) => m }
+  assert(outcome == "ast_binary: unknown Stmt tag 27")
+}

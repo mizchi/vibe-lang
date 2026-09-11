@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  apply_top_level_fn_alias_renames,
   bsearch_leftmost,
   builtin_registry,
   bytebuf_length,
@@ -14,6 +15,7 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  collect_top_level_fn_alias_renames,
   dce_stmts,
   exception_effect_labels_equal,
   executable_export_kept_bytes,
@@ -26,6 +28,7 @@ import @vibe/compiler/core {
   is_exception_effect_name,
   leb128_encode_s64,
   leb128_encode_u32,
+  namespace_rename_originals_reset,
   rewrite_import_alias_expr,
   rewrite_top_level_fn_alias_refs,
   sorted_names_of,
@@ -41,8 +44,12 @@ import @vibe/core {
 }
 
 import @vibe/compiler/normalize {
+  ModuleTraitFacts,
+  collect_explicit_derived_op_names,
+  collect_trivial_wrapper_names,
   desugar_inspect_calls,
   desugar_trait_dicts_module,
+  desugar_trait_dicts_module_with_facts,
   desugar_trait_dicts_with_typed_eq,
   eq_deferred_requests_list,
   eq_deferred_reset,
@@ -54,6 +61,7 @@ import @vibe/compiler/normalize {
   hoisted_lambda_owner_key,
   hoisted_lambda_owner_of_stmt,
   lift_match_scrutinees,
+  module_trait_facts_none,
   unbox_tuple_loop_params,
   uniquify_shadowed_bindings_fresh
 }
@@ -182,6 +190,7 @@ import @vibe/compiler/codegen/common_base {
   FuncTable,
   LambdaTable,
   LineMapState,
+  ModuleSplit,
   agg_info_of_type_expr,
   append_hidden_attempt_constructors,
   await_poll_pass,
@@ -194,6 +203,7 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_record,
   codegen_body_cache_replay,
   codegen_body_cache_slot_index,
+  collect_optional_perform_source_names,
   compile_inline_wat_array_params,
   compute_agg_returning,
   ctor_sorted_index,
@@ -242,6 +252,8 @@ import @vibe/compiler/codegen/common_base {
   is_slet,
   lookup_ctor,
   lower_optional_performs,
+  lower_optional_performs_with_source_names,
+  module_split_none,
   optional_perform_artifact_resolution,
   rc_shadow_base,
   rc_shadow_heap_start,
@@ -468,7 +480,32 @@ fn lc_fresh_bytes_array() -> Array[Bytes] {
 struct PreludeEnv {
   linked_imports: Array[(String, String, Int, Int)];
   iw_names: Array[String];
-  iw_wats: Array[String]
+  iw_wats: Array[String];
+  // #2647 Codex round 3: the WHOLE-PROGRAM facts three more passes read, which
+  // a module's partition cannot answer for itself. `facts_known` says whether
+  // the caller supplied them; false means "compute locally", which is what the
+  // oracle lanes want and what a production caller must never take.
+  //
+  //   pass 2  `optional_perform_artifact_resolution` grants ambient authority
+  //           when the program contains a test-like block. A module without
+  //           the test block lowers `perform?` in an imported helper to
+  //           NotGranted where the whole program grants it -- an
+  //           AUTHORIZATION difference decided by how the program was
+  //           partitioned, which ADR-0084/0088 forbid.
+  //   pass 6  `rewrite_top_level_fn_alias_refs` needs the alias map; see
+  //           `collect_top_level_fn_alias_renames`.
+  //   pass 9  `await_poll_pass` takes two predicates -- does the program call
+  //           `host_future_*`, and do linked imports or local defs supply the
+  //           waiter hooks -- BOTH scans of the whole program.
+  facts_known: Bool;
+  optional_resolution: Array[(String, String)];
+  optional_source_names: Array[String];
+  alias_renames: Array[(String, String)];
+  calls_host_future: Bool;
+  waiter_hooks: Bool;
+  // #2647 Codex rounds 6-7: the two whole-program facts the TRAIT-DICT pass
+  // reads and a partition cannot supply. See `ModuleTraitFacts`.
+  trait_facts: ModuleTraitFacts
 }
 
 fn prelude_env_none() -> PreludeEnv {
@@ -476,17 +513,44 @@ fn prelude_env_none() -> PreludeEnv {
     linked_imports: array_empty(),
     iw_names: lc_fresh_string_array(),
     iw_wats: lc_fresh_string_array(),
+    facts_known: false,
+    optional_resolution: array_empty(),
+    optional_source_names: lc_fresh_string_array(),
+    alias_renames: array_empty(),
+    calls_host_future: false,
+    waiter_hooks: false,
+    trait_facts: module_trait_facts_none()
   }
 }
 
-fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], synth_keys: Array[String], env: PreludeEnv) -> Unit with Exception {
+fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], synth_keys: Array[String], tail: PreludeTail, errs: Array[String], env: PreludeEnv) -> Unit with Exception {
   let before: MutMap[String, Int] = MutMap::new_string()
   let mut i = 0
   while i < Array::length(part) {
     MutMap::set(before, oracle_stmt_key(Array::get(part, i)), 1)
     i = i + 1
   }
-  oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, env)
+  oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, errs, env)
+  // The maximal NEW SUFFIX: what this pass APPENDED, as opposed to what it
+  // inserted next to an existing declaration. The whole-program lane appends
+  // at the end of the PROGRAM and the split lane at the end of a MODULE, so
+  // the suffix is exactly the set whose placement the two lanes disagree on;
+  // an inserted statement (#2620 places a hoisted lambda next to its own
+  // declaration) lands at the same relative position on both and must NOT be
+  // moved. Scanning back from the end is the only local test that tells them
+  // apart -- an index comparison against the pre-pass length is wrong the
+  // moment a pass inserts and appends in one run.
+  let mut tj = Array::length(part) - 1
+  let suffix: Array[String] = []
+  while tj >= 0 && !MutMap::has(before, oracle_stmt_key(Array::get(part, tj))) {
+    Array::push(suffix, oracle_stmt_key(Array::get(part, tj)))
+    tj = tj - 1
+  }
+  let mut sj = Array::length(suffix) - 1
+  while sj >= 0 {
+    prelude_tail_record(tail, Array::get(suffix, sj), k)
+    sj = sj - 1
+  }
   let mut j = 0
   while j < Array::length(part) {
     let key = oracle_stmt_key(Array::get(part, j))
@@ -497,6 +561,67 @@ fn lc_apply_pass_recording(k: Int, part: Array[Stmt], part_entry: String, checke
       Array::push(synth_keys, key)
     }
     j = j + 1
+  }
+}
+
+/// Which pass APPENDED a synthesized declaration, keyed by its declaration key.
+///
+/// #2575 item 2 step 3: the whole-program lane appends every one at the end of
+/// the PROGRAM, in pass order; the split lane appends at the end of the MODULE,
+/// so a module's pass-5 helper precedes the next module's source statements.
+/// Same declarations, different positions -- which is what `order_diff` on the
+/// keyed line measures and what this exists to remove. The link re-assembles by
+/// pass rank so the two lanes agree, and a key with no rank is a statement the
+/// source wrote or a pass inserted in place: it keeps its position.
+struct PreludeTail {
+  keys: Array[String];
+  passes: Array[Int]
+}
+
+fn prelude_tail_new() -> PreludeTail {
+  PreludeTail::{ keys: lc_fresh_string_array(), passes: lc_fresh_int_array() }
+}
+
+/// The pass that appended `key`, or -1 when none did. One entry per key by
+/// construction (`MutMap::set` replaces), so the lookup is the answer and not
+/// the first of several.
+fn prelude_tail_rank_of(tail_rank: MutMap[String, Int], key: String) -> Int {
+  match MutMap::get(tail_rank, key) {
+    Some(rank) => rank,
+    None => 0 - 1
+  }
+}
+
+fn prelude_tail_record(tail: PreludeTail, key: String, pass: Int) -> Unit {
+  // The LOWEST pass wins, not the first writer. Two modules can both append
+  // one helper -- it is one declaration after the fold -- and the whole-program
+  // lane emits it at the EARLIEST pass that needs it, because that pass runs
+  // over the whole program and finds every site at once. The per-module loop is
+  // modules outer, passes inner, so "first writer" is the lowest MODULE and
+  // gets the rank wrong whenever a later module needs a helper at an earlier
+  // pass than an earlier module did.
+  //
+  // MEASURED: no effect on the compiler's own closure -- `order_diff` reads 212
+  // either way, because the helpers that repeat across modules there all repeat
+  // at one pass. It is kept because the alternative is right only by accident
+  // of this corpus, not because it fixed a number.
+  let mut i = 0
+  let mut at = 0 - 1
+  while i < Array::length(tail.keys) {
+    if at < 0 && Array::get(tail.keys, i) == key {
+      at = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if at < 0 {
+    Array::push(tail.keys, key)
+    Array::push(tail.passes, pass)
+  } else if pass < Array::get(tail.passes, at) {
+    Array::set(tail.passes, at, pass)
+  } else {
+    ()
   }
 }
 
@@ -3743,6 +3868,296 @@ fn lc_strip_subst_params(params: Array[(String, Option[TypeExpr])], formals: Arr
   out
 }
 
+/// Whether this split can be run, checked against the statements it claims to
+/// describe. Every arm FAILS OPEN to the whole-program prelude, which is slower
+/// and right; the failure this refuses is a per-module run over a map that does
+/// not match the program, which attributes statements to the wrong modules
+/// SILENTLY and produces a wrong program rather than an error.
+///
+/// The closure arm is the caller's refusal channel. `oracle_import_closure`
+/// reports how many edges it could not resolve, and a caller with a non-zero
+/// count passes an empty closure so this returns false: a dropped edge narrows
+/// a module's context, and narrowing silently is worse than not splitting.
+fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
+  if split.file_count <= 0 || Array::length(split.stmt_file_id) != stmt_count || Array::length(split.import_closure) != split.file_count {
+    false
+  } else {
+    // Every INDEX, not just the lengths (#2647 Codex P2). A `ModuleSplit` is
+    // publicly constructible, so the two out-of-range cases are reachable and
+    // neither is a refusal on its own: an out-of-range `stmt_file_id` reaches
+    // `Array::get(parts, id)` and TRAPS, and an out-of-range closure member is
+    // silently skipped by the context loop, which narrows that module's
+    // context -- the one failure mode that produces a wrong program rather
+    // than a slow one. Both become "not usable" here, which is the whole-
+    // program prelude.
+    let mut ok = true
+    let mut i = 0
+    let mut prev = 0 - 1
+    while i < stmt_count {
+      let id = Array::get(split.stmt_file_id, i)
+      if id < 0 || id >= split.file_count {
+        ok = false
+      } else {
+        ()
+      }
+      // NON-DECREASING (#2647 Codex round 2). The link partitions by module and
+      // emits the parts in module order, so a map that revisits an earlier
+      // module -- `[0, 1, 0]` -- REORDERS the statements the source wrote. That
+      // is not hypothetical: `prelude_split_bytes_test.vibe` feeds exactly that
+      // shape through the oracle entry and reads `ORDER residual=2 of=4`, so
+      // the failure had a demonstration in this tree while this guard still
+      // accepted the input.
+      //
+      // Non-decreasing is the property that makes partition-by-module
+      // order-preserving, and it is what the merge produces anyway: the map is
+      // a run-length decode of per-file statement counts.
+      if id < prev {
+        ok = false
+      } else {
+        ()
+      }
+      prev = id
+      i = i + 1
+    }
+    let mut fi = 0
+    while fi < split.file_count {
+      let row = Array::get(split.import_closure, fi)
+      let mut j = 0
+      while j < Array::length(row) {
+        let cj = Array::get(row, j)
+        if cj < 0 || cj >= split.file_count {
+          ok = false
+        } else {
+          ()
+        }
+        j = j + 1
+      }
+      fi = fi + 1
+    }
+    // TRANSITIVELY CLOSED, or not usable (#2647 Codex round 9).
+    //
+    // A production closure is DIRECT EDGES ONLY, and it has to be: closing it
+    // transitively hands a module the declarations of its dependencies'
+    // PRIVATE imports, which no real compile of that module exposes.
+    // `oracle_import_closure` says so at length and takes the under-
+    // approximation deliberately -- and says, correctly, that it "can hide a
+    // difference as well as manufacture one".
+    //
+    // That is a fair trade for a MEASUREMENT and not for CODEGEN. When A
+    // imports B and B re-exports C's bounded generic, A's partition never sees
+    // C's trait, so the witness argument is not added at A's call while C's
+    // generic is rewritten to require it: an arity-mismatched call, or invalid
+    // wasm. Closing only across re-export edges would be the exact rule, and
+    // the loader's header scan cannot express it -- it returns a module's deps
+    // and its export NAMES, with no record of which deps a dep re-exports.
+    //
+    // So this asks the question the closure CAN answer: is everything
+    // reachable from a module already something that module names directly? If
+    // it is, no re-export can be hiding behind an edge. Two modules that see
+    // each other pass; A -> B -> C where A does not name C does not.
+    // Self-containment is a SUFFICIENT condition, not the rule (#2658). The
+    // rule is that a module sees its direct imports plus what those RE-EXPORT,
+    // and an exact re-export closure does NOT satisfy self-containment: A's
+    // row holds C, re-exported through B, but not C's own private imports.
+    //
+    // So a caller that built the closure from the loader's re-export relation
+    // says so, and one that did not gets the conservative test -- everything
+    // reachable must already be named, which no re-export can hide behind.
+    // `closure_exact` rides the split because that is what already threads
+    // from the producer through every layer to here; a parallel parameter
+    // would have to be added to a 22-argument signature and its callers to
+    // say the same thing.
+    if ok && !split.closure_exact && !lc_closure_self_contained(split.import_closure) {
+      ok = false
+    } else {
+      ()
+    }
+    ok
+  }
+}
+
+fn lc_row_holds(row: Array[Int], v: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(row) {
+    if Array::get(row, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+//# One step suffices: requiring every module's row to already contain
+//# everything its own deps reach means, applied to every module, that the
+//# relation is transitively closed.
+export fn lc_closure_self_contained(closure: Array[Array[Int]]) -> Bool {
+  let n = Array::length(closure)
+  let mut ok = true
+  let mut i = 0
+  while ok && i < n {
+    let row = Array::get(closure, i)
+    let mut j = 0
+    while ok && j < Array::length(row) {
+      let dep_row = Array::get(closure, Array::get(row, j))
+      let mut k = 0
+      while ok && k < Array::length(dep_row) {
+        let reach = Array::get(dep_row, k)
+        if reach == i || lc_row_holds(row, reach) {
+          ()
+        } else {
+          ok = false
+        }
+        k = k + 1
+      }
+      j = j + 1
+    }
+    i = i + 1
+  }
+  ok
+}
+
+//# Does any EXPORTED function omit its return annotation?
+//#
+//# A dependency reaches another module as an INTERFACE: `oracle_interface_form`
+//# keeps the declaration and replaces the body with `EUnit`. That is right for
+//# everything a context is needed for -- names, types, trait shapes -- and
+//# wrong for exactly one thing. `collect_fn_returns` derives a function's
+//# return SENTINEL from the body's TAIL when the declaration carries no `ret`,
+//# so erasing the body makes an unannotated exported function that returns a
+//# pull closure stop looking like one: a caller's `for x in make_pull()` keeps
+//# the array-oriented `EForIn` and traps applying it (#2647 Codex round 9).
+//#
+//# Declined syntactically rather than fixed by carrying the checker's inferred
+//# shape into the interface. The interface form is built from statements
+//# alone, and reaching for the checker's inference would make this entry
+//# depend on a phase it runs before.
+export fn lc_exported_fn_without_return_annotation(stmts: Array[Stmt]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, _, _, value) => if exported {
+        match value {
+          EFn(_, _, _, ret, _, _) => match ret {
+            None => {
+              found = true
+            },
+            Some(_) => ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The prelude, per module where the split allows it and whole-program
+/// otherwise.
+///
+/// On the split path `stmts` is REPLACED IN PLACE by the linked result, because
+/// every caller holds the array and reads it after the prelude returns. The
+/// validators' messages are the error list, exactly as the whole-program path
+/// collects them.
+///
+/// `render` is a parameter for the same reason the oracle entries take one:
+/// the link CONTENT-CHECKS two definitions that share a declaration key before
+/// folding them, which needs a statement printer, and that lives in
+/// `@vibe/parser` -- not a dependency of this package, and not one it should
+/// acquire. A production caller has to supply it, which is a real cost of the
+/// split path and is why it is named here rather than hidden behind a default.
+export fn effect_lowering_prelude_split(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
+  if module_split_usable(split, Array::length(stmts)) && !lc_exported_fn_without_return_annotation(stmts) {
+    // WHOLE-PROGRAM, and first, exactly as `effect_lowering_prelude` runs it:
+    // the check is interprocedural, and it short-circuits the entire prelude
+    // when it fires. Running it per module instead REJECTS VALID CODE -- a
+    // `#zero_alloc` function whose allocation-free callee lives in another
+    // module reads "not proven allocation-free" from a partition that does not
+    // contain the callee's body (#2647 Codex round 2).
+    let za_msg = zero_alloc_check(stmts)
+    if za_msg != "" {
+      let only = lc_fresh_string_array()
+      Array::push(only, za_msg)
+      only
+    } else {
+      effect_lowering_prelude_split_checked(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render)
+    }
+  } else {
+    effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys)
+  }
+}
+
+/// The split prelude past the whole-program zero-allocation check, which its
+/// caller has already run.
+fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Array[String] with Exception {
+  {
+    let st = prelude_split_stats_new()
+    // THE WHOLE-PROGRAM FACTS, taken here -- before the program is partitioned
+    // and while it is still the program (#2647 Codex round 3). Each one is a
+    // scan a module's partition would answer differently, and each difference
+    // is silent: an authority narrowed, a call left pointing at a thunk, a
+    // poll loop lowered for a program that does not call `host_future_*`.
+    let env = PreludeEnv::{
+      linked_imports: linked_imports,
+      iw_names: iw_names,
+      iw_wats: iw_wats,
+      facts_known: true,
+      optional_resolution: optional_perform_artifact_resolution(stmts, entry_name, false, array_empty()),
+      optional_source_names: collect_optional_perform_source_names(stmts),
+      alias_renames: collect_top_level_fn_alias_renames(stmts),
+      calls_host_future: lc_stmts_call_host_future(stmts),
+      waiter_hooks: lc_waiter_hooks_available(stmts, linked_imports),
+      trait_facts: ModuleTraitFacts::{
+        wrapper_names: collect_trivial_wrapper_names(stmts),
+        explicit_ops: collect_explicit_derived_op_names(stmts)
+      }
+    }
+    let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, st, env, 1)
+    // A COLLISION IS AN ERROR HERE (#2647 Codex P1). `prelude_run_per_module`
+    // links with the REPORTING fold, which keeps the first definition and
+    // records the conflict -- right for a measurement, which wants to know how
+    // many modules disagree and about what. Production must not pick a body:
+    // two modules that synthesized one declaration key with different bodies
+    // is a compile error, and the caller throws on the first message.
+    //
+    // NOT PINNED BY A PROGRAM, and that is not for want of trying: no program
+    // in this tree produces a collision (the compiler's own 365-module closure
+    // reads `collisions=0`, which is why the reporting fold exists at all). So
+    // this arm was red-tested by MUTATION instead -- `Array::push(collisions0,
+    // "RED_TEST_FAKE_COLLISION")` right after the fold, which makes the split
+    // entry return a non-empty error list and leave `stmts` at its original
+    // length; with this block removed it installs the linked program and
+    // reports nothing. Repeat that edit to re-check it.
+    if Array::length(st.collisions) > 0 {
+      Array::push(st.diags, link_collision_message(st.collisions))
+    } else {
+      ()
+    }
+    if Array::length(st.diags) > 0 {
+      // The whole-program path returns its errors with `stmts` half-rewritten
+      // and the caller throws on the first; leaving `stmts` untouched here is
+      // the same contract, reached without installing a program no one should
+      // compile.
+      st.diags
+    } else {
+      Array::truncate(stmts, 0)
+      let mut i = 0
+      while i < Array::length(linked) {
+        Array::push(stmts, Array::get(linked, i))
+        i = i + 1
+      }
+      st.diags
+    }
+  }
+}
+
 export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked_imports: Array[(String, String, Int, Int)], iw_names: Array[String], iw_wats: Array[String], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Array[String] with Exception {
   let errs = lc_fresh_string_array()
   // ADR-0091 Phase 1: enforce `#zero_alloc` markers before any lowering
@@ -4040,7 +4455,21 @@ fn oracle_pass_name(k: Int) -> String {
   }
 }
 
-fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], env: PreludeEnv) -> Unit with Exception {
+/// One prelude pass, by index, with the ERRORS it returns collected into
+/// `errs` (#2647 Codex P1).
+///
+/// Three passes reject a program by RETURNING a message rather than throwing --
+/// `lc_inject_async_sleep_boundary` (12), `suspend_cps_pass` (13) and
+/// `evidence_dict_pass` (15) -- and this used to discard all three into `let _
+/// =`. For a measurement that compares declarations that is merely incomplete;
+/// for `effect_lowering_prelude_split`, whose return value IS the caller's
+/// error list, it is silently wrong: a program `effect_lowering_prelude`
+/// rejects would compile.
+///
+/// Pass 7 (`lc_inject_stdin_surface_wrappers`) stays discarded because the
+/// whole-program path discards it too; the point is to match that path, not to
+/// collect everything available.
+fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], errs: Array[String], env: PreludeEnv) -> Unit with Exception {
   match k {
     0 => {
       // elaborate_heap_params returns a fresh array; the oracle keeps every
@@ -4054,34 +4483,61 @@ fn oracle_apply_pass(k: Int, stmts: Array[Stmt], entry_name: String, checker_eq_
       }
     },
     1 => desugar_inspect_calls(stmts),
-    2 => {
+    2 => if env.facts_known {
+      // BOTH halves are whole-program (#2647 Codex rounds 3 and 4): the
+      // resolution decides whether ambient authority is granted, and the
+      // source-shadow name set decides whether a `perform?` spelling names a
+      // SOURCE function rather than a registered capability. A partition
+      // answers each differently, and each wrong answer is silent.
+      lower_optional_performs_with_source_names(stmts, env.optional_resolution, env.optional_source_names)
+    } else {
       let res = optional_perform_artifact_resolution(stmts, entry_name, false, array_empty())
       lower_optional_performs(stmts, res)
     },
     3 => erase_railway_origin_markers(stmts),
     4 => desugar_trait_dicts_with_typed_eq(stmts, checker_eq_offsets, checker_eq_type_keys),
     5 => unbox_tuple_loop_params(stmts),
-    6 => rewrite_top_level_fn_alias_refs(stmts),
+    6 => if env.facts_known {
+      apply_top_level_fn_alias_renames(stmts, env.alias_renames)
+    } else {
+      rewrite_top_level_fn_alias_refs(stmts)
+    },
     7 => {
       let _ = lc_inject_stdin_surface_wrappers(stmts)
       ()
     },
     8 => lc_extract_inline_wasm(stmts, env.iw_names, env.iw_wats),
-    9 => await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, env.linked_imports)),
+    9 => if env.facts_known {
+      await_poll_pass(stmts, env.calls_host_future, env.waiter_hooks)
+    } else {
+      await_poll_pass(stmts, lc_stmts_call_host_future(stmts), lc_waiter_hooks_available(stmts, env.linked_imports))
+    },
     10 => rewrite_self_tail_calls(stmts),
     11 => wrap_entry_exception_boundary(stmts, entry_name),
     12 => {
-      let _ = lc_inject_async_sleep_boundary(stmts, entry_name)
-      ()
+      let sleep_msg = lc_inject_async_sleep_boundary(stmts, entry_name)
+      if sleep_msg != "" {
+        Array::push(errs, sleep_msg)
+      } else {
+        ()
+      }
     },
     13 => {
-      let _ = suspend_cps_pass(stmts)
-      ()
+      let scps_errs = suspend_cps_pass(stmts)
+      if Array::length(scps_errs) > 0 {
+        Array::push(errs, Array::get(scps_errs, 0))
+      } else {
+        ()
+      }
     },
     14 => inline_direct_performs(stmts),
     15 => {
-      let _ = evidence_dict_pass(stmts, entry_name)
-      ()
+      let edp_errs = evidence_dict_pass(stmts, entry_name)
+      if Array::length(edp_errs) > 0 {
+        Array::push(errs, Array::get(edp_errs, 0))
+      } else {
+        ()
+      }
     },
     _ => forin_discard_pass(stmts)
   }
@@ -4205,6 +4661,66 @@ fn oracle_strip_counters(s: String) -> String {
 /// renames=<same key, fresh-name renames only> dup_keys=<statements the
 /// comparison cannot speak for, because their key repeats in `a`>` plus the
 /// first missing key and the first content-differing key.
+/// #2575 item 2 step 3: the SHAPE of the order difference, which the positional
+/// count on the keyed line cannot express.
+///
+/// `order_diff` counts positions, and at scale nearly every position differs --
+/// which reads as "the linked program is scrambled" and is not what happens.
+/// Each module's synthesized helpers close THAT MODULE rather than the program,
+/// so every statement after the first module's helpers is SHIFTED, and a
+/// positional comparison reports one shift once per statement after it.
+///
+/// So delete the synthesized declarations from both sequences and compare what
+/// is left. `residual=0` says the statements the source wrote are in the same
+/// order on both lanes and the only thing that moved is where the synthesized
+/// ones sit; a non-zero residual says something the source wrote moved too,
+/// which is a different and much worse claim.
+fn oracle_order_residual(a: Array[Stmt], linked: Array[Stmt], synth_keys: Array[String]) -> (Int, Int) {
+  let synth: MutMap[String, Int] = MutMap::new_string()
+  let mut si = 0
+  while si < Array::length(synth_keys) {
+    MutMap::set(synth, Array::get(synth_keys, si), 1)
+    si = si + 1
+  }
+  let left = oracle_keys_without(a, synth)
+  let right = oracle_keys_without(linked, synth)
+  let lim = if Array::length(left) < Array::length(right) {
+    Array::length(left)
+  } else {
+    Array::length(right)
+  }
+  let mut diff = if Array::length(left) > Array::length(right) {
+    Array::length(left) - Array::length(right)
+  } else {
+    Array::length(right) - Array::length(left)
+  }
+  let mut i = 0
+  while i < lim {
+    if Array::get(left, i) == Array::get(right, i) {
+      ()
+    } else {
+      diff = diff + 1
+    }
+    i = i + 1
+  }
+  (diff, Array::length(left))
+}
+
+fn oracle_keys_without(stmts: Array[Stmt], drop: MutMap[String, Int]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let key = oracle_stmt_key(Array::get(stmts, i))
+    if MutMap::has(drop, key) {
+      ()
+    } else {
+      Array::push(out, key)
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> String) -> String {
   let wmap: MutMap[String, Int] = MutMap::new_string()
   let mut dup_defs = 0
@@ -4256,6 +4772,50 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
       None => ()
     }
     ki = ki + 1
+  }
+  // #2575 item 2 step 3: ORDER, which everything else on this line is blind
+  // to. The comparison above is keyed, so a declaration that MOVED reads
+  // identical -- and the two lanes do place things differently: the split lane
+  // appends a module's synthesized helpers at the end of THAT MODULE's
+  // statements, the whole-program lane appends every one at the end of the
+  // program. Same declarations, same bodies, different positions.
+  //
+  // `order_diff` counts the positions whose key differs, plus the length
+  // excess if the two differ in length; `order_first` is the first such
+  // position, or -1 when the sequences agree. A driver that wants the split
+  // path to be a drop-in has to drive this to 0, and it is not 0 today --
+  // pinned on a two-module program by `prelude_split_bytes_test.vibe`.
+  let mut order_diff = 0
+  let mut order_first = 0 - 1
+  let order_lim = if Array::length(a) < Array::length(trial) {
+    Array::length(a)
+  } else {
+    Array::length(trial)
+  }
+  let mut oix = 0
+  while oix < order_lim {
+    if oracle_stmt_key(Array::get(a, oix)) == oracle_stmt_key(Array::get(trial, oix)) {
+      ()
+    } else {
+      order_diff = order_diff + 1
+      if order_first < 0 {
+        order_first = oix
+      } else {
+        ()
+      }
+    }
+    oix = oix + 1
+  }
+  let order_excess = if Array::length(a) > Array::length(trial) {
+    Array::length(a) - Array::length(trial)
+  } else {
+    Array::length(trial) - Array::length(a)
+  }
+  order_diff = order_diff + order_excess
+  if order_first < 0 && order_excess > 0 {
+    order_first = order_lim
+  } else {
+    ()
   }
   let seen: MutMap[String, Int] = MutMap::new_string()
   let mut extra = 0
@@ -4368,7 +4928,7 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
     }
     ki = ki + 1
   }
-  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" dup_defs=", String::concat(Int::to_string(dup_defs), String::concat(" dup_def_keys=", String::concat(first_dup_def, String::concat(" first_copy=", String::concat(first_copy, String::concat(" missing_keys=", String::concat(first_missing, String::concat(" content_keys=", String::concat(content_keys, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))))))))))
+  String::concat("  keyed missing=", String::concat(Int::to_string(missing), String::concat(" extra=", String::concat(Int::to_string(extra), String::concat(" copies=", String::concat(Int::to_string(copies), String::concat(" content=", String::concat(Int::to_string(content), String::concat(" renames=", String::concat(Int::to_string(renames), String::concat(" order_diff=", String::concat(Int::to_string(order_diff), String::concat(" order_first=", String::concat(Int::to_string(order_first), String::concat(" dup_keys=", String::concat(Int::to_string(dup_keys), String::concat(" dup_defs=", String::concat(Int::to_string(dup_defs), String::concat(" dup_def_keys=", String::concat(first_dup_def, String::concat(" first_copy=", String::concat(first_copy, String::concat(" missing_keys=", String::concat(first_missing, String::concat(" content_keys=", String::concat(content_keys, String::concat(" first_content=", String::concat(first_content, "\n"))))))))))))))))))))))))))))
 }
 
 /// One step of the oracle: pass `k`. `a` is the whole-program state after
@@ -4433,10 +4993,20 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
 /// foldable key actually repeats, never on the whole program (rendering a
 /// 4,567 statement program twice pushed the bump high-water to 3.6 GB,
 /// measured 2026-09-06).
+/// The refusal a synthesis collision earns, in ONE place: the throwing fold
+/// below raises it, and `effect_lowering_prelude_split` -- which links with the
+/// REPORTING fold, because a measurement wants every colliding key rather than
+/// the first -- reports it as the prelude error its caller throws (#2647 Codex
+/// P1). Two spellings of one refusal is how the two lanes come to disagree
+/// about whether a program compiles.
+fn link_collision_message(collisions: Array[String]) -> String {
+  String::concat("link: two different definitions of ", String::concat(Array::get(collisions, 0), String::concat(" -- a per-module synthesis collision, which a link that concatenates modules would resolve by silently keeping one of them; colliding keys: ", Int::to_string(Array::length(collisions)))))
+}
+
 export fn link_fold_duplicate_definitions(stmts: Array[Stmt], foldable_keys: Array[String], render: (Stmt) -> String) -> Array[Stmt] with Exception {
   let (out, collisions) = link_fold_duplicate_definitions_report(stmts, foldable_keys, render)
   if Array::length(collisions) > 0 {
-    throw(String::concat("link: two different definitions of ", String::concat(Array::get(collisions, 0), String::concat(" -- a per-module synthesis collision, which a link that concatenates modules would resolve by silently keeping one of them; colliding keys: ", Int::to_string(Array::length(collisions))))))
+    throw(link_collision_message(collisions))
   } else {
     ()
   }
@@ -4533,8 +5103,70 @@ fn lc_analysis_exclude(entry_name: String) -> Array[String] {
   [entry_name, "main", "_start", "cli_main"]
 }
 
-fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats, env: PreludeEnv) -> Array[Stmt] with Exception {
-  let entry_fid = file_count - 1
+/// The module id of the statement declaring `entry_name`, falling back to the
+/// LAST module when no statement declares it.
+///
+/// The fallback is deliberate and is the previous behavior: `__no_entry__` (a
+/// library build, and what the oracle fixtures use) names no declaration, and
+/// handing the name to the last module is what every measurement on this line
+/// was taken under. Changing that too would move the oracle's answers for a
+/// reason unrelated to the bug, which is an entry declared in some module
+/// OTHER than the last one.
+fn lc_entry_module_of(c: Array[Stmt], c_file_id: Array[Int], entry_name: String, file_count: Int) -> Int {
+  if entry_name == "" {
+    file_count - 1
+  } else {
+    let mut i = 0
+    let mut found = 0 - 1
+    while i < Array::length(c) && i < Array::length(c_file_id) {
+      if found < 0 {
+        match Array::get(c, i) {
+          SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => if name == entry_name {
+            found = Array::get(c_file_id, i)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if found < 0 {
+      file_count - 1
+    } else {
+      found
+    }
+  }
+}
+
+/// `first_pass` is 0 for the ORACLE and 1 for the production split entry
+/// (#2647 Codex round 4). The two start from different programs: the oracle is
+/// handed a PRE-PRELUDE merge and has to run `elaborate_heap_params` itself,
+/// while `effect_lowering_prelude*` is called from
+/// `compile_wasi_module_linked_impl_*`, whose caller already ran it -- and
+/// `effect_lowering_prelude` itself never does (its first act is
+/// `zero_alloc_check`). Running pass 0 on the split path therefore ran it a
+/// SECOND time, per module, where the whole-program path runs it once on the
+/// whole program. Worse per module than whole-program twice: the pass builds
+/// its `heap_fns` and `ctors` tables from the statements it sees, so a caller
+/// partition cannot classify a heap value returned by an imported function and
+/// omits the annotation the merged run adds -- a different ownership
+/// classification reaching Perceus and codegen.
+fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats, env: PreludeEnv, first_pass: Int) -> Array[Stmt] with Exception {
+  // WHICH module owns the entry, derived rather than assumed (#2647 Codex
+  // round 4). This was `file_count - 1`, which is true of the merge -- a root's
+  // dependencies come first -- but nothing in `ModuleSplit` records it and
+  // nothing validates it. A split that puts the entry anywhere else passed the
+  // guard and then handed `entry_name` to the WRONG partition, so pass 11
+  // never wrapped the real entry and an `Exception`-row entry lowered
+  // differently from the whole-program path.
+  //
+  // -1 when no statement declares `entry_name` (`__no_entry__`, a library
+  // build): then no module is the entry module, which is what passing "" to
+  // every one of them already meant.
+  let entry_fid = lc_entry_module_of(c, c_file_id, entry_name, file_count)
   // #2575 item 4: the three analyses `linked_compile` runs between the prelude
   // and codegen are sampled per module here, and on the whole program by the
   // caller, at the same point in the pass order. `lc_analysis_exclude` is the
@@ -4575,10 +5207,18 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     }
     // Before pass 0, where production runs it: `zero_alloc_check` is the first
     // thing `effect_lowering_prelude` does, on the body the source wrote.
-    lc_collect_zero_alloc_diag(Array::get(parts, fi), st.diags)
-    let mut j = 0
+    // The per-module answer, for the MEASUREMENT only (#2647 Codex round 2).
+    // `zero_alloc_check` is interprocedural -- `za_walk` walks callee bodies
+    // out of the `fn_names` / `fn_bodies` table built from the statements it
+    // was handed -- so a module's partition, which does not contain an
+    // imported callee's body, reports that callee as not proven
+    // allocation-free. Reported here so `DIAGS prelude=` keeps SHOWING that
+    // difference; `effect_lowering_prelude_split` runs the real check on the
+    // whole program, where production runs it.
+    lc_collect_zero_alloc_diag(Array::get(parts, fi), st.validator_diags)
+    let mut j = first_pass
     while j < 4 {
-      lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, env)
+      lc_apply_pass_recording(j, Array::get(parts, fi), part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, st.diags, env)
       j = j + 1
     }
     fi = fi + 1
@@ -4657,7 +5297,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       }
       vj = vj + 1
     }
-    let synthesized = desugar_trait_dicts_module(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys)
+    let synthesized = desugar_trait_dicts_module_with_facts(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys, env.trait_facts)
     lc_union_into(st.requests, eq_synthesis_requests_list())
     lc_union_into(st.refusals, eq_typed_refusals_list())
     lc_union_into(st.deferrals, eq_deferred_requests_list())
@@ -4668,33 +5308,36 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       // declaration the source wrote is never offered to it, so a definition
       // the whole program legitimately carries twice cannot be collapsed.
       Array::push(synth_keys, oracle_stmt_key(Array::get(synthesized, sy)))
+      // Rank 4: `desugar_trait_dicts_module` is the trait-dict pass, and what
+      // it RETURNS is what the whole-program entry appends at the end of the
+      // program. Its own in-place growth (the trait namespace operations, put
+      // right after their trait) is not in this array and keeps its position.
+      prelude_tail_record(st.tail, oracle_stmt_key(Array::get(synthesized, sy)), 4)
       Array::push(part, Array::get(synthesized, sy))
       sy = sy + 1
     }
+    // PASSES 5..11 PER MODULE. The cut is at 12, not 15 (#2647 Codex round 3).
+    //
+    // #2633 moved 15 and 16 to the link: `evidence_dict_pass` decides from a
+    // union over the whole program -- declared effects union every effect
+    // label a handle site names, and "zero performs ANYWHERE" -- and that
+    // dependence runs BACKWARDS along the import graph, so no module can make
+    // the decision its own way and have the results link.
+    //
+    // Pass 12 has the same shape and was missed: `lc_inject_async_sleep_boundary`
+    // fires only when the entry's row carries `Async` AND the program calls
+    // `sleep` / `host_future_*` / a host-stream op. Those two live in different
+    // modules routinely, so neither partition sees both and NO machinery is
+    // injected -- a program that links cleanly and suspends differently. It
+    // cannot be served by a precomputed fact the way 2, 6 and 9 are, because
+    // what it injects has to be visible to 13 and 14, so 12, 13 and 14 join 15
+    // and 16 at the link.
+    //
+    // What the split still buys: 0..11 is most of the prelude, and it is the
+    // half a per-module cache can reuse.
     let mut j2 = 5
-    while j2 < 17 {
-      if j2 == 15 {
-        // The per-module counterpart of the whole-program sample above: this
-        // module's facts after every pass preceding `evidence_dict_pass`.
-        let (evd, evh, evp) = evidence_module_facts(part)
-        lc_union_into(st.declared, evd)
-        lc_union_into(st.handled, evh)
-        lc_union_into(st.performed, evp)
-      } else {
-        ()
-      }
-      // #2633: passes 15 and 16 are NOT run per module. `evidence_dict_pass`
-      // decides from a union over the whole program -- declared effects union
-      // every effect label a handle site names, and "zero performs ANYWHERE" --
-      // and that dependence runs BACKWARDS along the import graph, so no module
-      // can make the decision its own way and have the results link. It runs
-      // once at the link instead, over the concatenated program, where the
-      // union is simply present. Pass 16 follows it there to keep the order.
-      if j2 == 15 || j2 == 16 {
-        ()
-      } else {
-        lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, env)
-      }
+    while j2 < 12 {
+      lc_apply_pass_recording(j2, part, part_entry, checker_eq_offsets, checker_eq_type_keys, synth_keys, st.tail, st.diags, env)
       // After pass 5, where production runs it.
       if j2 == 5 {
         lc_collect_stdin_provider_diag(part, st.diags)
@@ -4703,6 +5346,13 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       }
       j2 = j2 + 1
     }
+    // This module's facts after every pass it runs. The caller samples the
+    // whole lane at the SAME point (after pass 11), so the two are comparable;
+    // before this cut both sampled after 14.
+    let (evd, evh, evp) = evidence_module_facts(part)
+    lc_union_into(st.declared, evd)
+    lc_union_into(st.handled, evh)
+    lc_union_into(st.performed, evp)
     // #2575 item 4: this module's answer to the three analyses, from its own
     // statements alone -- the counterpart of the whole-lane sample the caller
     // takes, at the same point in the pass order. All three are
@@ -4717,16 +5367,70 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     lc_union_into(st.an_view, sorted_names_of(compute_may_return_view_fns(part)))
     fi = fi + 1
   }
+  // ASSEMBLY (#2575 item 2 step 3). Concatenating the modules is the obvious
+  // thing and produces the whole program's declarations in a DIFFERENT ORDER:
+  // a module's appended helpers close that module, so they precede the next
+  // module's source statements, while the whole-program lane appends every one
+  // at the end of the program in pass order.
+  //
+  // So assemble in two waves. Wave 1 is every statement no pass appended --
+  // what the source wrote, plus what a pass inserted next to an existing
+  // declaration -- in module order, which is the merged program's own order.
+  // Wave 2 is the appended ones, by PASS RANK first and module order within,
+  // which is the order the whole-program lane produces them in.
+  //
+  // Measured on the compiler's own 365-module closure:
+  //
+  //                        order_diff   order_first   ORDER residual
+  //   concatenated               9869            24       0 of 9698
+  //   two waves                   212          9700       0 of 9701
+  //
+  // `order_first=9700` with 9701 source statements: no difference occurs
+  // before the end of the SOURCE program. What is left is the ~213 synthesized
+  // helpers permuted among themselves in the tail -- one pass emits almost all
+  // of them and discovers them in a global traversal on one lane and module by
+  // module on the other. They are top-level definitions that forward reference
+  // freely, so the permutation is inert. `missing=0 extra=0 content=0
+  // renames=0` hold throughout, so this moves only declarations whose placement
+  // the lanes disagreed on and nothing the source wrote.
+  let tail_rank: MutMap[String, Int] = MutMap::new_string()
+  let mut tk = 0
+  while tk < Array::length(st.tail.keys) {
+    MutMap::set(tail_rank, Array::get(st.tail.keys, tk), Array::get(st.tail.passes, tk))
+    tk = tk + 1
+  }
+  let buckets: Array[Array[Stmt]] = []
+  let mut bi = 0
+  while bi < 18 {
+    Array::push(buckets, array_empty())
+    bi = bi + 1
+  }
   let trial: Array[Stmt] = []
   fi = 0
   while fi < file_count {
     let part = Array::get(parts, fi)
     let mut oi = 0
     while oi < Array::length(part) {
-      Array::push(trial, Array::get(part, oi))
+      let cur = Array::get(part, oi)
+      let rank = prelude_tail_rank_of(tail_rank, oracle_stmt_key(cur))
+      if rank < 0 {
+        Array::push(trial, cur)
+      } else {
+        Array::push(Array::get(buckets, rank), cur)
+      }
       oi = oi + 1
     }
     fi = fi + 1
+  }
+  bi = 0
+  while bi < 18 {
+    let bucket = Array::get(buckets, bi)
+    let mut bj = 0
+    while bj < Array::length(bucket) {
+      Array::push(trial, Array::get(bucket, bj))
+      bj = bj + 1
+    }
+    bi = bi + 1
   }
   // MINT (#2634). Before the fold: every helper some module knew it needed and
   // declined to build, generated here against the CONCATENATED program -- which
@@ -4735,9 +5439,13 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // instead of vanishing.
   let minted = eq_mint_deferred_into(trial)
   Array::set(st.counts, 0, minted)
-  // #2633: the whole-program phases, run once on the linked program.
-  oracle_apply_pass(15, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, env)
-  oracle_apply_pass(16, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, env)
+  // The whole-program phases, run once on the linked program: 12 and 15 read
+  // facts no module has, and 13, 14 and 16 follow them to keep the order.
+  let mut lj = 12
+  while lj < 17 {
+    oracle_apply_pass(lj, trial, entry_name, checker_eq_offsets, checker_eq_type_keys, st.diags, env)
+    lj = lj + 1
+  }
   // LINK. Up to here `trial` is the modules concatenated, which holds one copy
   // of each program-level helper per module that needed it. Folding them is
   // what a per-module driver's link step does (#2575 item 3), and doing it
@@ -4786,6 +5494,12 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   }
   Array::set(st.counts, 1, linked_dups)
   Array::set(st.counts, 2, Array::length(trial))
+  // The lane is over (#2647 Codex round 6). The merge rename table is built
+  // per file BEFORE the prelude and read by every module's derive generators,
+  // so it is cleared once here rather than inside `dtd_run` -- where a
+  // per-module driver would have emptied it after the first module and left
+  // every later one rendering `Point_dep_<path>` for `Point`.
+  namespace_rename_originals_reset()
   linked
 }
 
@@ -4794,6 +5508,12 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
 /// `[minted, linked_dups, split_len]`.
 struct PreludeSplitStats {
   synth_keys: Array[String];
+  // Diagnostics from the per-module VALIDATOR runs, kept apart from `diags`
+  // because they are the measurement's answer and not the prelude's: the
+  // oracle unions both, and `effect_lowering_prelude_split` returns only
+  // `diags` (#2647 Codex round 2).
+  validator_diags: Array[String];
+  tail: PreludeTail;
   collisions: Array[String];
   linked_dup_keys: Array[String];
   diags: Array[String];
@@ -4817,6 +5537,8 @@ struct PreludeSplitStats {
 fn prelude_split_stats_new() -> PreludeSplitStats {
   PreludeSplitStats::{
     synth_keys: lc_fresh_string_array(),
+    validator_diags: lc_fresh_string_array(),
+    tail: prelude_tail_new(),
     collisions: lc_fresh_string_array(),
     linked_dup_keys: lc_fresh_string_array(),
     diags: lc_fresh_string_array(),
@@ -4870,8 +5592,8 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_req_w = lc_fresh_string_array()
   let ev_ref_w = lc_fresh_string_array()
   let ev_def_w = lc_fresh_string_array()
-  while k < 15 {
-    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+  while k < 12 {
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, diag_w, prelude_env_none())
     // #2634: sampled right after pass 4 (`desugar_trait_dicts_with_typed_eq`),
     // which is where a container comparator or a generic specialization is
     // requested AND emitted. The per-module side samples at the same point --
@@ -4904,7 +5626,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // program carries.
   let (ev_decl_w, ev_handled_w, ev_perf_w) = evidence_module_facts(a)
   while k < 17 {
-    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+    oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, diag_w, prelude_env_none())
     k = k + 1
   }
   // #2575 item 4: the three whole-program analyses `linked_compile` runs
@@ -4942,7 +5664,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let whole_invisible = eq_invisible_nominals_list()
   eq_invisible_nominals_reset()
   let st = prelude_split_stats_new()
-  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, st, prelude_env_none())
+  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, st, prelude_env_none(), 0)
   let split_invisible = eq_invisible_nominals_list()
   let ev_req_u = st.requests
   let ev_ref_u = st.refusals
@@ -4950,7 +5672,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let ev_decl_u = st.declared
   let ev_handled_u = st.handled
   let ev_perf_u = st.performed
-  let diag_u = st.diags
+  let diag_u = lc_fresh_string_array()
+  lc_union_into(diag_u, st.diags)
+  lc_union_into(diag_u, st.validator_diags)
   // #2575 item 4: the split lane's answers to the same three analyses, one
   // union over the modules, taken by the driver at the same point in its pass
   // order.
@@ -5006,7 +5730,11 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   } else {
     String::concat(":", mint_first)
   }
-  let diag_line = String::concat("DIAGS validators=", String::concat(lc_set_cmp(diag_w, diag_u), "\n"))
+  // Renamed from `validators=` (#2647 Codex P1): it compared the two VALIDATOR
+  // diagnostics only, because the three passes that reject by returning a
+  // message were discarded. Both lanes collect all of them now, so the counter
+  // is the prelude's whole error list and the name says so.
+  let diag_line = String::concat("DIAGS prelude=", String::concat(lc_set_cmp(diag_w, diag_u), "\n"))
   let req_a = String::concat(String::concat("SYNTH requests=", lc_set_cmp(ev_req_w, ev_req_u)), String::concat(" typed_refused=", lc_set_cmp(ev_ref_w, ev_ref_u)))
   let req_b = String::concat(String::concat(" deferred=", Int::to_string(Array::length(ev_def_u))), String::concat(" minted=", Int::to_string(minted)))
   let req_c = String::concat(String::concat(" indirect=", Int::to_string(mint_missing)), String::concat(mint_names, "\n"))
@@ -5041,7 +5769,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     ini = ini + 1
   }
   let line2 = String::concat(String::concat(line, collision_lines), invisible_lines)
-  String::concat(String::concat(String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), ev_line), an_line), req_line)
+  let (order_residual, order_residual_len) = oracle_order_residual(a, linked, st.synth_keys)
+  let order_line = String::concat(String::concat("  ORDER residual=", Int::to_string(order_residual)), String::concat(" of=", String::concat(Int::to_string(order_residual_len), "\n")))
+  String::concat(String::concat(String::concat(String::concat(String::concat(line2, oracle_keyed_line(a, linked, render)), order_line), ev_line), an_line), req_line)
 }
 
 export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
@@ -5055,7 +5785,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
       Array::push(old_keys, oracle_stmt_key(Array::get(c, qi)))
       qi = qi + 1
     }
-    oracle_apply_pass(j, c, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+    oracle_apply_pass(j, c, entry_name, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
     file_of = oracle_realign(old_keys, file_of, c)
     j = j + 1
   }
@@ -5078,7 +5808,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
   // from `a` and limited to keys that existed before the pass (a
   // synthesized statement belongs to its own module's output, not to a
   // sibling's context).
-  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+  oracle_apply_pass(k, a, entry_name, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
   let pre_keys: MutMap[String, Int] = MutMap::new_string()
   let mut pk = 0
   while pk < Array::length(c) {
@@ -5162,7 +5892,7 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
         sy = sy + 1
       }
     } else {
-      oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, prelude_env_none())
+      oracle_apply_pass(k, part, part_entry, checker_eq_offsets, checker_eq_type_keys, lc_fresh_string_array(), prelude_env_none())
     }
     let mut oi = 0
     while oi < Array::length(part) {
@@ -6538,7 +7268,22 @@ fn lc_late_dce_roots(stmts: Array[Stmt], entry_name: String) -> Array[String] {
 /// `compile_wasi_module_linked_impl` below forwards an empty one, which is the
 /// fail-closed default: an empty table classifies nothing, so those lanes keep
 /// the pre-#2158 syntactic answer byte for byte.
+/// The printer the split path needs, for a caller on the whole-program path.
+/// `module_split_none()` fails `module_split_usable`, so the split path is not
+/// reached and this is never called. It is NOT a printer and must not become
+/// one -- a caller that wants the split path passes a real one.
+fn lc_render_unused(_s: Stmt) -> String {
+  ""
+}
+
 export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_linked_impl_with_split(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, module_split_none(), lc_render_unused)
+}
+
+/// #2575 item 2 step 3b: the same compile, given a `ModuleSplit`. The prelude
+/// runs per module where the split describes the statements and whole-program
+/// otherwise, and every guard fails open -- see `effect_lowering_prelude_split`.
+export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_name: String, srcs: Array[(String, String)], linked_imports: Array[(String, String, Int, Int)], library_mode: Bool, enable_rc: Bool, coverage: Bool, debug_trace: Bool, debug_break: Bool, rc_shadow: Bool, enable_late_dce: Bool, prov: DbgProv, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, slice_lo: Int, slice_hi: Int, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Bytes with Exception {
   // #1536(c)/#1511(b): the whole effect-lowering prefix lives in
   // effect_lowering_prelude (shared verbatim with `vibe check`); a first
   // error there is exactly the throw each pass used to raise inline here.
@@ -6616,7 +7361,7 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
     }
     __sbn_i = __sbn_i + 1
   }
-  let prelude_errs = effect_lowering_prelude(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys)
+  let prelude_errs = effect_lowering_prelude_split(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render)
   if Array::length(prelude_errs) > 0 {
     throw(Array::get(prelude_errs, 0))
   } else {
@@ -12212,8 +12957,22 @@ export fn compile_wasi_module_rc_cached_impl_with_typed_offsets(stmts_in: Array[
 /// only way that settles it: the same program compiled both ways, byte for
 /// byte.
 export fn compile_wasi_module_rc_cached_impl_with_prov(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String]) -> Bytes with Exception {
+  compile_wasi_module_rc_cached_impl_with_split(stmts_in, entry_name, body_cache_in, body_cache_out, prov, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, module_split_none(), lc_render_unused)
+}
+
+/// #2575 item 2 step 3b: the RC production compile with the module split wired
+/// in.
+///
+/// `elaborate_heap_params` runs HERE, once on the merged program, and the
+/// prelude's per-module loop starts at pass 1 for exactly that reason (#2647
+/// Codex round 4). It pushes one statement per input statement, so
+/// `split.stmt_file_id` -- built from the MERGE's counts, before this call --
+/// still indexes the array the prelude receives.
+/// `linked_compile_prov_inert_test.vibe` pins that alignment, because an edit
+/// there would silently misattribute every statement rather than fail.
+export fn compile_wasi_module_rc_cached_impl_with_split(stmts_in: Array[Stmt], entry_name: String, body_cache_in: CodegenBodyCache, body_cache_out: CodegenBodyCache, prov: DbgProv, checker_float_call_offsets: Array[Int], checker_int_render_offsets: Array[Int], checker_bool_render_offsets: Array[Int], checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], split: ModuleSplit, render: (Stmt) -> String) -> Bytes with Exception {
   let stmts = elaborate_heap_params(stmts_in)
-  compile_wasi_module_linked_impl_with_typed_offsets(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, prov, body_cache_in, body_cache_out, 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys)
+  compile_wasi_module_linked_impl_with_split(stmts, entry_name, array_empty(), array_empty(), false, true, false, false, false, false, true, prov, body_cache_in, body_cache_out, 0, 0 - 1, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, split, render)
 }
 
 /// Preserve the post-lowering AST for the explicit `no-dce` compile mode.

@@ -61,19 +61,22 @@ import @vibe/compiler/codegen {
 import @vibe/compiler/codegen/common_base {
   CodegenBodyCache,
   DbgProv,
+  ModuleSplit,
   bcc_int_lists_equal,
   bcc_string_lists_equal,
   codegen_body_cache_filter_src_below,
   codegen_body_cache_from_bytes,
   codegen_body_cache_merge,
   codegen_body_cache_new,
-  codegen_body_cache_to_bytes
+  codegen_body_cache_to_bytes,
+  module_split_none
 }
 
 import @vibe/compiler/codegen/wasi {
   compile_wasi_module_impl_with_typed_offsets,
   compile_wasi_module_no_dce_impl_with_typed_offsets,
   compile_wasi_module_rc_cached_impl_with_prov,
+  compile_wasi_module_rc_cached_impl_with_split,
   compile_wasi_module_rc_cached_impl_with_typed_offsets,
   compile_wasi_module_rc_impl_with_typed_offsets,
   compile_wasi_module_rc_shadow_impl_with_typed_offsets,
@@ -93,7 +96,8 @@ import @vibe/compiler/loader {
   artifact_input_trace_resolution_context_fingerprint_fs,
   collect_source_groups_fs,
   load_or_parse_module_header_fs,
-  load_persistent_source_group_fingerprint_if_valid
+  load_persistent_source_group_fingerprint_if_valid,
+  module_reexport_deps_fs
 }
 
 import @vibe/compiler/checker {
@@ -863,6 +867,166 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
   (out, unresolved)
 }
 
+fn eic_dir_of(path: String) -> String {
+  let mut cut = 0 - 1
+  let mut i = 0
+  while i < String::length(path) {
+    if String::char_code_at(path, i) == 47 {
+      cut = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if cut < 0 {
+    ""
+  } else {
+    String::substring(path, 0, cut)
+  }
+}
+
+fn eic_row_holds(row: Array[Int], v: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(row) {
+    if Array::get(row, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Is flat index `jpath` reached through one of `re_paths` -- a module's
+/// RE-EXPORTED deps?
+///
+/// The directory arm mirrors `oracle_expand_contract_dep`: a dep naming a
+/// `.vpkg` contract expands to that package's sibling implementations, and it
+/// is those the merge carries, so a re-exported contract has to admit its
+/// siblings or the edge disappears exactly where packages are involved.
+fn eic_reexport_admits(re_paths: Array[String], jpath: String) -> Bool {
+  let mut ok = false
+  let mut i = 0
+  while !ok && i < Array::length(re_paths) {
+    let rp = Array::get(re_paths, i)
+    if rp == jpath {
+      ok = true
+    } else if String::ends_with(rp, "/index.vpkg") && eic_dir_of(rp) == eic_dir_of(jpath) {
+      ok = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// Everything reachable from `start` across RE-EXPORT edges, accumulated into
+/// `row`. Worklist rather than recursion because a re-export cycle is a
+/// legal shape and would not otherwise terminate.
+fn eic_add_reexport_reach(reexport_rows: Array[Array[Int]], start: Int, self_i: Int, row: Array[Int]) -> Unit {
+  let pending: Array[Int] = []
+  let seen: Array[Int] = []
+  Array::push(pending, start)
+  let mut head = 0
+  while head < Array::length(pending) {
+    let at = Array::get(pending, head)
+    head = head + 1
+    if eic_row_holds(seen, at) {
+      ()
+    } else {
+      Array::push(seen, at)
+      let rr = Array::get(reexport_rows, at)
+      let mut k = 0
+      while k < Array::length(rr) {
+        let next = Array::get(rr, k)
+        if next != self_i && !eic_row_holds(row, next) {
+          Array::push(row, next)
+        } else {
+          ()
+        }
+        Array::push(pending, next)
+        k = k + 1
+      }
+    }
+  }
+}
+
+/// The closure a PRODUCTION split needs (#2658): a module's direct imports,
+/// plus everything reachable from them across RE-EXPORT edges only.
+///
+/// `oracle_import_closure` is direct-edges-only and explains why at length.
+/// That under-approximation is right for a MEASUREMENT and wrong for codegen:
+/// a module that imports B and cannot see what B re-exports from C lowers a
+/// call to C's bounded generic without the witness argument C's rewritten
+/// generic requires (#2647 Codex round 9).
+///
+/// Closing over ALL edges instead is wrong in both directions. It hands a
+/// module its dependencies' PRIVATE imports, which no real compile of it
+/// exposes -- and, the reason it matters here rather than only for the
+/// oracle, it gives every module the whole program's declarations, which is
+/// precisely the live set #2494 exists to bound. The re-export closure is the
+/// point that is both correct and minimal.
+///
+/// The re-export subset comes from the LOADER (`module_reexport_deps_fs`),
+/// not from re-reading source text here, so it cannot drift from what the
+/// loader actually resolves.
+fn exact_import_closure(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Exception + Fs {
+  let (direct, unresolved) = oracle_import_closure(source_groups)
+  let flat = flatten_source_groups_local(source_groups)
+  let n = Array::length(flat)
+  if Array::length(direct) != n {
+    (direct, unresolved)
+  } else {
+    // Which of each module's direct edges are RE-EXPORT edges. Derived by
+    // testing the oracle's already-expanded indices against the loader's
+    // resolved re-export paths, so contract expansion is not re-implemented.
+    let reexport_rows: Array[Array[Int]] = []
+    let mut i = 0
+    while i < n {
+      let (path, source) = Array::get(flat, i)
+      let re_paths = module_reexport_deps_fs(path, source)
+      let row: Array[Int] = []
+      let dr = Array::get(direct, i)
+      let mut d = 0
+      while d < Array::length(dr) {
+        let j = Array::get(dr, d)
+        let (jpath, _) = Array::get(flat, j)
+        if eic_reexport_admits(re_paths, jpath) {
+          Array::push(row, j)
+        } else {
+          ()
+        }
+        d = d + 1
+      }
+      Array::push(reexport_rows, row)
+      i = i + 1
+    }
+    let out: Array[Array[Int]] = []
+    i = 0
+    while i < n {
+      let row: Array[Int] = []
+      let dr = Array::get(direct, i)
+      let mut d = 0
+      while d < Array::length(dr) {
+        let j = Array::get(dr, d)
+        if j != i && !eic_row_holds(row, j) {
+          Array::push(row, j)
+        } else {
+          ()
+        }
+        eic_add_reexport_reach(reexport_rows, j, i, row)
+        d = d + 1
+      }
+      Array::push(out, row)
+      i = i + 1
+    }
+    (out, unresolved)
+  }
+}
+
 fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
@@ -1553,7 +1717,103 @@ fn ordinary_lane_dbg_prov(file_paths: Array[String], file_counts: Array[Int]) ->
   DbgProv::{ files: files, file_nls: array_empty(), stmt_file_id: stmt_file_id }
 }
 
+/// #2575 item 2 step 3b: the ordinary FS lane's `ModuleSplit`, or an unusable
+/// one.
+///
+/// `stmt_file_id` is the same run-length decode `ordinary_lane_dbg_prov` does,
+/// over the same `file_counts`, so the two describe one partition of one
+/// array.
+///
+/// The closure comes from `oracle_import_closure`, and TWO conditions make this
+/// return `module_split_none()` -- which is the whole-program prelude:
+///
+///   * `unresolved > 0`. A dropped edge narrows a module's context, and
+///     narrowing silently is the one failure that produces a wrong program
+///     rather than a slow one.
+///   * the closure's length disagrees with the merge's file count. The closure
+///     is indexed by FLAT SOURCE and this lane by MERGED FILE ID; they are the
+///     same space only because the merge keeps one file entry per flat source.
+///     If that ever stops holding, every row would be read for the wrong
+///     module -- quietly meaningless rather than wrong in a way anyone sees.
+///
+/// `use_split` is a parameter rather than an env read: production lanes stay
+/// Env-free (the #634 layering note), and `cache_mode` is the established shape
+/// for a decision the CLI adapter makes and passes down.
+fn ordinary_lane_module_split(file_paths: Array[String], file_counts: Array[Int], source_groups: Array[(String, Array[(String, String)])], use_split: Bool) -> ModuleSplit with Exception + Fs {
+  if !use_split {
+    module_split_none()
+  } else {
+    let (closure, unresolved) = exact_import_closure(source_groups)
+    if unresolved > 0 || Array::length(closure) != Array::length(file_paths) {
+      module_split_none()
+    } else {
+      let stmt_file_id = array_empty()
+      let mut i = 0
+      while i < Array::length(file_paths) && i < Array::length(file_counts) {
+        let n = Array::get(file_counts, i)
+        let mut k = 0
+        while k < n {
+          Array::push(stmt_file_id, i)
+          k = k + 1
+        }
+        i = i + 1
+      }
+      ModuleSplit::{
+        closure_exact: true,
+        file_count: Array::length(file_paths),
+        stmt_file_id: stmt_file_id,
+        import_closure: closure
+      }
+    }
+  }
+}
+
+/// Total edges in the closure the PRODUCTION split would build for this entry
+/// (#2658). Exported so a test can tell an exact re-export closure from a
+/// direct-edges-only one, which byte comparison cannot: both fail open to the
+/// same program, so only the SHAPE distinguishes them.
+export fn ordinary_lane_closure_edges(entry_path: String) -> Int with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let (closure, unresolved) = exact_import_closure(source_groups)
+  if unresolved > 0 {
+    0 - 1
+  } else {
+    let mut edges = 0
+    let mut i = 0
+    while i < Array::length(closure) {
+      edges = edges + Array::length(Array::get(closure, i))
+      i = i + 1
+    }
+    edges
+  }
+}
+
+/// The shape of the split this lane WOULD build for `entry_path`: the module
+/// count and the number of statements mapped, or `(0, 0)` when the split is
+/// not usable and the lane falls back to the whole-program prelude.
+///
+/// Exported because a byte-equality test between the two lanes is VACUOUS if
+/// the split path is never taken, and "I checked by mutating the source" is not
+/// a property a test can keep. A caller can also use it to ask whether a given
+/// root would split at all.
+export fn ordinary_lane_split_shape(entry_path: String) -> (Int, Int) with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let (_, file_paths, _, file_counts, _, _) = build_grouped_merged_stmts_counted(source_groups)
+  let split = ordinary_lane_module_split(file_paths, file_counts, source_groups, true)
+  (split.file_count, Array::length(split.stmt_file_id))
+}
+
+/// The ordinary RC lane with the per-module prelude selectable (#2575 item 2
+/// step 3b). `use_split` false is byte-for-byte the lane below it.
+export fn compile_file_fs_mode_rc_body_cached_split(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool) -> Bytes with Exception + Fs {
+  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, use_split)
+}
+
 export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Exception + Fs {
+  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false)
+}
+
+fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -1565,18 +1825,37 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
   // rewrites in place), so the map built from the merge's counts still indexes
   // `merged_stmts`.
   let lane_prov = ordinary_lane_dbg_prov(file_paths, file_counts)
+  let lane_split = ordinary_lane_module_split(file_paths, file_counts, source_groups, use_split)
   // The key is independent of source CONTENT (the point is to hit after an
   // edit) but scoped to the entry PATH: two roots that share a conventional
   // entry name (`run`, `main`) must not share one artifact slot, or their
   // concurrent stores race on the same temp file and one aborts.
   let artifact_key = String::concat("self-describing-", compact_string_fingerprint(entry_path))
-  let cache_in = match load_persistent_artifact("codegen-body-cache", entry_name, artifact_key) {
-    Some(stored) => decode_body_cache_artifact_for(stored, file_paths, file_fps, file_counts),
-    None => codegen_body_cache_new()
+  // `"off"` IS OFF (#2647 Codex round 5). It used to load the artifact, compile
+  // against it and store the result -- only `"verify"` was special-cased, so
+  // every other value behaved like `"on"` while reading as a bypass. The
+  // adapter only ever passes `"verify"` or `"on"`, so nothing in production
+  // changes; what this fixes is a caller that asks for no cache and gets one.
+  //
+  // A parity test between two compiles of the SAME program is the case that
+  // makes it matter: the first call populates the shared artifact under a key
+  // derived from the entry path, and the second can replay those bodies. A
+  // body-level difference between the lanes would then be cached away and the
+  // comparison would pass while measuring nothing.
+  let caching = cache_mode != "off"
+  let cache_in = if caching {
+    match load_persistent_artifact("codegen-body-cache", entry_name, artifact_key) {
+      Some(stored) => decode_body_cache_artifact_for(stored, file_paths, file_fps, file_counts),
+      None => codegen_body_cache_new()
+    }
+  } else {
+    codegen_body_cache_new()
   }
-  if cache_mode == "verify" {
+  if !caching {
+    compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_new(), lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
+  } else if cache_mode == "verify" {
     let fresh_out = codegen_body_cache_new()
-    let fresh = compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+    let fresh = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
     if Array::length(cache_in.fn_indices) > 0 && body_cache_guards_equal(cache_in, fresh_out) {
       // Guard drift (an edit flipped a whole-program fact the guards pin)
       // is an EXPECTED cache miss, checked above against the fresh
@@ -1588,7 +1867,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
       // replay/sliced gates prove that recompile is byte-identical to the
       // first, so any difference here is attributable to the persisted
       // bodies being replayed.
-      let replayed = compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+      let replayed = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, cache_in, codegen_body_cache_new(), lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
       let fresh_n = Bytes::length(fresh)
       let rn = Bytes::length(replayed)
       if fresh_n != rn {
@@ -1617,7 +1896,7 @@ export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: St
     fresh
   } else {
     let cache_out = codegen_body_cache_new()
-    let bytes = compile_wasi_module_rc_cached_impl_with_prov(merged_stmts, entry_name, cache_in, cache_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+    let bytes = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, cache_in, cache_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
     // Replayed entries are not re-recorded, so the refreshed artifact is
     // the new harvest plus the entries it replayed -- but ONLY when the
     // cache was actually consumed (its guards match the new harvest's).

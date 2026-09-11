@@ -1,0 +1,154 @@
+//# Imports
+
+import ../ast_binary.vibe {
+  ast_binary_read_expr, ast_binary_reader_new, ast_binary_reader_remaining, ast_binary_write_expr
+}
+
+import @vibe/ast {
+  Expr, Pat, TypeExpr
+}
+
+//# Functions
+
+fn enc(e: Expr) -> Bytes {
+  let b = Bytes::new()
+  ast_binary_write_expr(b, e)
+  b
+}
+
+fn bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  if Bytes::length(a) != Bytes::length(b) {
+    false
+  } else {
+    let mut ok = true
+    let mut i = 0
+    while ok && i < Bytes::length(a) {
+      ok = Bytes::get(a, i) == Bytes::get(b, i)
+      i = i + 1
+    }
+    ok
+  }
+}
+
+fn roundtrips(e: Expr) -> Bool {
+  let written = enc(e)
+  handle {
+    let r = ast_binary_reader_new(written)
+    let back = ast_binary_read_expr(r)
+    bytes_eq(written, enc(back)) && ast_binary_reader_remaining(r) == 0
+  } with { Exception::Throw(_) => false }
+}
+
+fn decode_outcome(raw: Array[Int]) -> String {
+  handle {
+    let r = ast_binary_reader_new(Bytes::from_array(raw))
+    let e = ast_binary_read_expr(r)
+    match e {
+      EUnit => "ok"
+      _ => "ok"
+    }
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn u() -> Expr {
+  EUnit
+}
+
+//# Misc — Expr codec (docs/ast_binary_abi.md)
+
+test "ast_binary Expr: leaves and scalars roundtrip" {
+  assert(roundtrips(EUnit))
+  assert(roundtrips(EInt(0)))
+  assert(roundtrips(EInt(0 - 4611686018427387903)))
+  assert(roundtrips(EFloat(0.0 - 1.5)))
+  assert(roundtrips(EString("")))
+  assert(roundtrips(EString("日本語😀")))
+  assert(roundtrips(EBool(true)))
+  assert(roundtrips(EBool(false)))
+  assert(roundtrips(EIdent("x", 0 - 1)))
+  assert(roundtrips(EIdent("y", 42)))
+}
+
+test "ast_binary Expr: the byte-offset slots survive, negatives included" {
+  // -1 is the desugar-synthesized marker on every one of these, so a codec
+  // that wrote them as unsigned would corrupt exactly the synthesized nodes.
+  assert(roundtrips(ELet("a", EInt(1), EUnit, 0 - 1)))
+  assert(roundtrips(ELetMut("a", EInt(1), EUnit, 0 - 1)))
+  assert(roundtrips(ECall(EIdent("f", 0 - 1), [EInt(1)], 0 - 1)))
+  assert(roundtrips(EBinOp("+", EInt(1), EInt(2), 0 - 1)))
+  assert(roundtrips(EDot(EIdent("r", 3), "f", 0 - 1, 0 - 1)))
+  assert(roundtrips(EDot(EIdent("r", 3), "f", 7, 9)))
+}
+
+test "ast_binary Expr: every container variant roundtrips" {
+  assert(roundtrips(ETuple([])))
+  assert(roundtrips(ETuple([EInt(1), EUnit])))
+  assert(roundtrips(EArray([EInt(1), EInt(2)])))
+  assert(roundtrips(ERecord("Pt", [("x", EInt(1))], [TyName("Int")])))
+  assert(roundtrips(ERecord("Anon", [], [])))
+  assert(roundtrips(EMap([("k", EString("v"))])))
+  assert(roundtrips(EContinue([EInt(1)])))
+  assert(roundtrips(EStringInterp(["a", "b"])))
+  assert(roundtrips(ELoop([("i", EInt(0))], EUnit)))
+}
+
+test "ast_binary Expr: binding and control forms roundtrip" {
+  assert(roundtrips(EIf(EBool(true), EInt(1), EInt(2))))
+  assert(roundtrips(ELetRec("f", EUnit, EUnit)))
+  assert(roundtrips(EAssign("a", EInt(1), EUnit)))
+  assert(roundtrips(EAssignOp("a", "+", EInt(1), EUnit)))
+  assert(roundtrips(ESeq(EInt(1), EInt(2))))
+  assert(roundtrips(EWhile(EBool(false), EUnit)))
+  assert(roundtrips(EForIn("x", None, EArray([]), EUnit)))
+  assert(roundtrips(EForIn("x", Some("i"), EArray([]), EUnit)))
+  assert(roundtrips(EUnaryOp("-", EInt(1))))
+  assert(roundtrips(EReturn(EInt(1))))
+  assert(roundtrips(EBreak(None)))
+  assert(roundtrips(EBreak(Some(EInt(1)))))
+  assert(roundtrips(ESpread(EArray([]))))
+  assert(roundtrips(ELabeledArg("l", "p", EInt(1))))
+}
+
+test "ast_binary Expr: match, handle and fn roundtrip" {
+  assert(roundtrips(EMatch(EInt(1), [(PWild, EUnit), (PInt(1), EInt(2))])))
+  assert(roundtrips(EHandle(EUnit, [(PCtor("Throw", [PBind("m")]), EUnit)])))
+  // Every EFn slot populated: type params, bounds, annotated and unannotated
+  // params, a return type, an effect row, and a body.
+  assert(roundtrips(EFn(["T"], [("T", ["Eq"])], [
+    ("a", Some(TyName("Int"))),
+    ("b", None)
+  ], Some(TyName("Bool")), Some("Exception"), EBool(true))))
+  // ... and every optional slot empty, which is the shape a bare lambda has.
+  assert(roundtrips(EFn([], [], [], None, None, EUnit)))
+}
+
+test "ast_binary Expr: nesting roundtrips through the deep slots" {
+  let deep = EFn([], [], [("f", None)], None, None, EMatch(ECall(EIdent("g", 0 - 1), [
+    ETuple([EInt(1), EFloat(0.0 - 0.5)])
+  ], 12), [
+    (PStruct("Pt", [("x", PInt(1))]), ESeq(EReturn(EUnit), EUnit)),
+    (PWild, EHandle(ELoop([("i", EInt(0))], EBreak(Some(EInt(3)))), [
+      (PWild, EUnit)
+    ]))
+  ]))
+  assert(roundtrips(deep))
+}
+
+test "ast_binary Expr: an unknown tag is refused, not misread" {
+  assert(decode_outcome([33]) == "ok")
+  assert(decode_outcome([0]) == "ast_binary: unknown Expr tag 0")
+  assert(decode_outcome([34]) == "ast_binary: unknown Expr tag 34")
+  assert(decode_outcome([255]) == "ast_binary: unknown Expr tag 255")
+}
+
+test "ast_binary Expr: malformed input is refused, not answered" {
+  assert(decode_outcome([]) == "ast_binary: unexpected end of input")
+  // EBool with a byte that is neither 0 nor 1.
+  assert(decode_outcome([4, 7]) == "ast_binary: bool byte is neither 0x00 nor 0x01")
+  // EFloat with one of its two halves missing.
+  assert(decode_outcome([2, 0]) == "ast_binary: unexpected end of input")
+  // EBreak whose optional flag is neither 0 nor 1.
+  assert(decode_outcome([28, 9]) == "ast_binary: optional present flag is neither 0x00 nor 0x01")
+  // ETuple whose element count exceeds the bytes left to hold it.
+  assert(decode_outcome([6, 9, 33]) == "ast_binary: array count exceeds remaining input")
+}

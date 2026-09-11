@@ -2245,6 +2245,17 @@ export fn record_namespace_rename_originals_for_file(path: String, stmts: Array[
   let _ = collect_private_ctor_renames(path, stmts, type_renames, namespace_suffix_box, exported)
 }
 
+/// How many merge renames are recorded. The table is keyed mangled -> original
+/// and `namespace_rename_original` is identity for anything absent, so a caller
+/// that does not already know the mangled spelling cannot tell an EMPTY table
+/// from one that simply has no entry for its name. That distinction is the
+/// whole property behind #2647 round 6 -- the table is built by the merge and
+/// must survive every module of a per-module prelude -- so it needs an
+/// observable form.
+export fn namespace_rename_originals_len() -> Int {
+  Array::length(namespace_rename_originals)
+}
+
 fn record_namespace_rename_original(original: String, mangled: String) -> Unit {
   Array::push(namespace_rename_originals, (mangled, original))
 }
@@ -3756,6 +3767,20 @@ export fn apply_export_renames_stmts(stmts: Array[Stmt], renames: Array[(String,
 /// alias def itself stays: it is inert once nothing refers to it, and its
 /// export flag keeps the wasm export surface unchanged.
 export fn rewrite_top_level_fn_alias_refs(stmts: Array[Stmt]) -> Unit {
+  apply_top_level_fn_alias_renames(stmts, collect_top_level_fn_alias_renames(stmts))
+}
+
+/// The (alias -> final EFn name) renames `rewrite_top_level_fn_alias_refs`
+/// derives, WITHOUT applying them.
+///
+/// Split out for the per-module prelude (#2647 Codex round 3). The map is a
+/// WHOLE-PROGRAM fact: the alias declaration and the call through it routinely
+/// live in different modules, and a partition holding only the call has no
+/// alias to find, so the rewrite silently does nothing -- and an unrewritten
+/// call through a non-`EFn` alias emits N arguments against the 0-parameter
+/// thunk the backend registers, which is invalid wasm on every backend. So the
+/// map is collected once on the merged program and handed to every module.
+export fn collect_top_level_fn_alias_renames(stmts: Array[Stmt]) -> Array[(String, String)] {
   let fn_names = empty_strings()
   let alias_names = empty_strings()
   let alias_targets = empty_strings()
@@ -3775,7 +3800,7 @@ export fn rewrite_top_level_fn_alias_refs(stmts: Array[Stmt]) -> Unit {
     i = i + 1
   }
   if Array::length(alias_names) == 0 {
-    ()
+    empty_aliases()
   } else {
     let renames = empty_aliases()
     let mut ai = 0
@@ -3812,23 +3837,29 @@ export fn rewrite_top_level_fn_alias_refs(stmts: Array[Stmt]) -> Unit {
       }
       ai = ai + 1
     }
-    if Array::length(renames) == 0 {
-      ()
-    } else {
-      let ram = aliasidx_build(renames)
-      let mut si = 0
-      while si < Array::length(stmts) {
-        match Array::get(stmts, si) {
-          SLet(exported, is_rec, name, ty, body) => Array::set(stmts, si, SLet(exported, is_rec, name, ty, rewrite_alias_expr_ix(body, ram))),
-          SLetMut(name, ty, body) => Array::set(stmts, si, SLetMut(name, ty, rewrite_alias_expr_ix(body, ram))),
-          STest(name, body) => Array::set(stmts, si, STest(name, rewrite_alias_expr_ix(body, ram))),
-          SBench(name, body) => Array::set(stmts, si, SBench(name, rewrite_alias_expr_ix(body, ram))),
-          SExpr(body) => Array::set(stmts, si, SExpr(rewrite_alias_expr_ix(body, ram))),
-          SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_alias_expr_ix(body, ram))),
-          _ => ()
-        }
-        si = si + 1
+    renames
+  }
+}
+
+/// Apply a rename map collected by `collect_top_level_fn_alias_renames`,
+/// possibly from a LARGER program than `stmts`.
+export fn apply_top_level_fn_alias_renames(stmts: Array[Stmt], renames: Array[(String, String)]) -> Unit {
+  if Array::length(renames) == 0 {
+    ()
+  } else {
+    let ram = aliasidx_build(renames)
+    let mut si = 0
+    while si < Array::length(stmts) {
+      match Array::get(stmts, si) {
+        SLet(exported, is_rec, name, ty, body) => Array::set(stmts, si, SLet(exported, is_rec, name, ty, rewrite_alias_expr_ix(body, ram))),
+        SLetMut(name, ty, body) => Array::set(stmts, si, SLetMut(name, ty, rewrite_alias_expr_ix(body, ram))),
+        STest(name, body) => Array::set(stmts, si, STest(name, rewrite_alias_expr_ix(body, ram))),
+        SBench(name, body) => Array::set(stmts, si, SBench(name, rewrite_alias_expr_ix(body, ram))),
+        SExpr(body) => Array::set(stmts, si, SExpr(rewrite_alias_expr_ix(body, ram))),
+        SLetPat(pat, body) => Array::set(stmts, si, SLetPat(pat, rewrite_alias_expr_ix(body, ram))),
+        _ => ()
       }
+      si = si + 1
     }
   }
 }

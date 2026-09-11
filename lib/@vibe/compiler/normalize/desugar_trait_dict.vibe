@@ -11267,6 +11267,111 @@ fn qualified_name(tname: String, method: String) -> String {
   String::concat(tname, String::concat("::", method))
 }
 
+/// Whole-program facts a per-module `desugar_trait_dicts_module` cannot derive
+/// from its own partition (#2647 Codex rounds 6-7).
+///
+///   `wrapper_names`   trivial identity wrappers (`apply(f) { f() }`). The
+///                     whole-program pass rewrites `apply(inner)` to `inner()`,
+///                     which `dtd_run` documents as the required workaround for
+///                     a closure crash path. `dtpw_collect_wrappers` scans only
+///                     the module's OWN bodies, and the dependency context is
+///                     bodyless by construction, so a caller partition would
+///                     leave the wrapper call intact and reach the crash.
+///   `explicit_ops`    `T::equals` / `T::to_string` / … a module DOWNSTREAM of
+///                     the type's owner defines explicitly. The owner sees
+///                     neither the definition nor the dependent, derives a
+///                     default, and the link reports a collision against a
+///                     program the whole-program lane accepts.
+export struct ModuleTraitFacts {
+  wrapper_names: Array[String];
+  explicit_ops: Array[String]
+}
+
+export fn module_trait_facts_none() -> ModuleTraitFacts {
+  ModuleTraitFacts::{
+    wrapper_names: array_empty(),
+    explicit_ops: array_empty()
+  }
+}
+
+let dtd_facts_wrappers: Array[String] = []
+
+let dtd_facts_explicit_ops: Array[String] = []
+
+fn dtd_facts_set(facts: ModuleTraitFacts) -> Unit {
+  Array::truncate(dtd_facts_wrappers, 0)
+  Array::truncate(dtd_facts_explicit_ops, 0)
+  let mut i = 0
+  while i < Array::length(facts.wrapper_names) {
+    Array::push(dtd_facts_wrappers, Array::get(facts.wrapper_names, i))
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(facts.explicit_ops) {
+    Array::push(dtd_facts_explicit_ops, Array::get(facts.explicit_ops, j))
+    j = j + 1
+  }
+}
+
+/// Does the SOURCE define this derived operation -- here or anywhere in the
+/// program? Distinct from `top_level_fn_exists`, which also answers "have we
+/// already emitted this generated helper"; widening THAT would suppress a
+/// helper the module genuinely needs, so only the derive-suppression sites
+/// consult the whole-program set.
+fn dtd_source_op_defined(stmts: Array[Stmt], fname: String) -> Bool {
+  top_level_fn_exists(stmts, fname) || str_array_contains(dtd_facts_explicit_ops, fname)
+}
+
+/// Every trivial identity wrapper in `stmts`, with no own-region limit -- the
+/// whole-program half of `dtpw_collect_wrappers`.
+export fn collect_trivial_wrapper_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, params, _, _, body)) => if Array::length(params) == 1 {
+        let (pname, _) = Array::get(params, 0)
+        let stripped = dlh_strip_tilde(pname)
+        match body {
+          ECall(callee, args, _) => match callee {
+            EIdent(cn, _) => if cn == stripped && Array::length(args) == 0 {
+              Array::push(out, name)
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Every top-level `T::op` the SOURCE defines, for the derived operations the
+/// suppression checks ask about.
+export fn collect_explicit_derived_op_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, EFn(_, _, _, _, _, _)) => if String::contains(name, "::") {
+        Array::push(out, name)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
 fn top_level_fn_exists(stmts: Array[Stmt], fname: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -15863,7 +15968,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // `derive(Hash)` also needs the structural `to_string`: a Hash type's
         // stable Map-key string is its structural representation (#638), so
         // generate `to_string` for Show OR Hash.
-        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(name, "to_string")) {
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(name, "to_string")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_show_fn(name, fields, known_types))
           derived_renderer_record(name)
@@ -15873,7 +15978,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // #694 Layer 1: `derive(Hash)` -> structural `T::hash_key` (delegates to
         // the recursive `to_string`), so the method-bearing `Hash` witness at a
         // `get_by(m, T::{..})` call site resolves to a stable structural key.
-        if str_array_contains(derives, "Hash") && !top_level_fn_exists(stmts, qualified_name(name, "hash_key")) {
+        if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(name, "hash_key")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_hash_key_fn(name))
         } else {
@@ -15889,13 +15994,13 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
-        if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(name, "compare")) {
+        if str_array_contains(derives, "Ord") && !dtd_source_op_defined(stmts, qualified_name(name, "compare")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_compare_fn(name, fields))
         } else {
           ()
         }
-        if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(name, "default")) {
+        if str_array_contains(derives, "Default") && !dtd_source_op_defined(stmts, qualified_name(name, "default")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_default_fn(name, fields, known_types))
         } else {
@@ -15905,7 +16010,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // `==` dispatch below always resolves; structural equality is the
         // sensible default for any struct, and a struct never relied on the old
         // pointer-identity `==` (which was silently always-false).
-        if !top_level_fn_exists(stmts, qualified_name(name, "equals")) {
+        if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_eq_fn(name, fields, known_types))
         } else {
@@ -15915,14 +16020,14 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
       SEnum(_, ename, decl_tparams, variants0, derives) => {
         // #2141: same re-spelling as the SStruct arm, for payload types.
         let variants = subst_variant_formals(variants0, decl_tparams)
-        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !top_level_fn_exists(stmts, qualified_name(ename, "to_string")) {
+        if (str_array_contains(derives, "Show") || str_array_contains(derives, "Hash")) && !dtd_source_op_defined(stmts, qualified_name(ename, "to_string")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_show_fn(ename, variants, known_types))
           derived_renderer_record(ename)
         } else {
           ()
         }
-        if str_array_contains(derives, "Hash") && !top_level_fn_exists(stmts, qualified_name(ename, "hash_key")) {
+        if str_array_contains(derives, "Hash") && !dtd_source_op_defined(stmts, qualified_name(ename, "hash_key")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_hash_key_fn(ename))
         } else {
@@ -15942,13 +16047,13 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         }
-        if str_array_contains(derives, "Ord") && !top_level_fn_exists(stmts, qualified_name(ename, "compare")) {
+        if str_array_contains(derives, "Ord") && !dtd_source_op_defined(stmts, qualified_name(ename, "compare")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_compare_fn(ename, variants, known_types))
         } else {
           ()
         }
-        if str_array_contains(derives, "Default") && !top_level_fn_exists(stmts, qualified_name(ename, "default")) {
+        if str_array_contains(derives, "Default") && !dtd_source_op_defined(stmts, qualified_name(ename, "default")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_default_fn(ename, variants, known_types))
         } else {
@@ -15956,7 +16061,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         }
         // Generate `E::equals` for every enum (same rationale as structs), so
         // the `==` dispatch resolves enum operands too.
-        if !top_level_fn_exists(stmts, qualified_name(ename, "equals")) {
+        if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
         } else {
@@ -20762,6 +20867,16 @@ fn dtpw_expr_binds_name(expr: Expr, name: String) -> Bool {
 /// shadowing scan below is bounded the same way for the same reason.
 fn dtpw_collect_wrappers(stmts: Array[Stmt]) -> Array[String] {
   let out = array_empty()
+  // The whole-program set first (#2647 Codex round 7). The scan below is
+  // limited to the module's OWN bodies, and a dependency's interface is
+  // bodyless, so an imported wrapper is invisible here -- and leaving its call
+  // un-inlined reaches the closure crash `dtd_run` documents this rewrite as
+  // the workaround for.
+  let mut wi = 0
+  while wi < Array::length(dtd_facts_wrappers) {
+    Array::push(out, Array::get(dtd_facts_wrappers, wi))
+    wi = wi + 1
+  }
   let own_end = dtd_own_end(stmts)
   let mut i = 0
   while i < own_end {
@@ -21270,12 +21385,25 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
   Array::set(dtd_own_limit, 0, 0 - 1)
   Array::set(dtd_ctx_len, 0, 0)
   Array::set(dlh_module_tag, 0, "")
+  // A whole program carries no per-module facts (#2647 Codex round 8). Cleared
+  // on ENTRY rather than trusted to have been cleared on the way out, because
+  // `dtd_run` ends in `eq_refusals_report`, which THROWS: a module lowering
+  // that hits a structural-`==` refusal skips the per-module entry's own clear
+  // and leaves these cells populated. Since both entries now set them before
+  // any reader runs, no exceptional-exit cleanup is needed anywhere -- there is
+  // no path into `dtpw_collect_wrappers` or `dtd_source_op_defined` that does
+  // not pass through one of the two. Left stale, a wrapper name from a FAILED
+  // compile rewrites `apply(pick)` in the next program to `pick()`.
+  dtd_facts_set(module_trait_facts_none())
   // One program per call, so this call's deferrals and refusals are this
   // program's. The per-module entry deliberately does NOT reset: its caller
   // wants the union across the modules of one split run, and resets once at
   // that boundary (#2642 review, Codex P2).
   eq_deferred_reset()
   dtd_run(stmts, typed_eq_offsets, typed_eq_keys)
+  // The lane is over: clear the merge rename table so a later compilation in
+  // this process cannot see stale entries (#2205, moved here in #2647 round 6).
+  namespace_rename_originals_reset()
 }
 
 /// #2388: the per-module entry. `own` is the module's statements, rewritten in
@@ -21297,6 +21425,15 @@ export fn desugar_trait_dicts_with_typed_eq(stmts: Array[Stmt], typed_eq_offsets
 /// the declaration that owns it and so is already module-unique; pass "" to
 /// number the nameless ones by position, as the whole-program entry does.
 export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String]) -> Array[Stmt] with Exception {
+  desugar_trait_dicts_module_with_facts(own, ctx, module_tag, typed_eq_offsets, typed_eq_keys, module_trait_facts_none())
+}
+
+/// The same entry given the whole-program facts a partition cannot derive
+/// (#2647 Codex rounds 6-7). See `ModuleTraitFacts`. The five-argument form
+/// above passes none, which is right for a MEASUREMENT and wrong for a
+/// production driver -- a caller that means to compile passes real ones.
+export fn desugar_trait_dicts_module_with_facts(own: Array[Stmt], ctx: Array[Stmt], module_tag: String, typed_eq_offsets: Array[Int], typed_eq_keys: Array[String], facts: ModuleTraitFacts) -> Array[Stmt] with Exception {
+  dtd_facts_set(facts)
   let stmts: Array[Stmt] = []
   let mut i = 0
   while i < Array::length(own) {
@@ -21333,6 +21470,7 @@ export fn desugar_trait_dicts_module(own: Array[Stmt], ctx: Array[Stmt], module_
   Array::set(dtd_own_limit, 0, 0 - 1)
   Array::set(dtd_ctx_len, 0, 0)
   Array::set(dlh_module_tag, 0, "")
+  dtd_facts_set(module_trait_facts_none())
   synthesized
 }
 
@@ -21410,12 +21548,22 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   eq_tuple_uid_reset()
   eq_known_types_reset(stmts)
   desugar_derives(stmts)
-  // #2205: the derive generators above are the only readers of the merge
-  // rename table; clear it so a LATER compilation in this process (e.g. a
-  // single-file lane, which runs no merge and therefore no reset) cannot see
-  // stale entries. A second run of this pass over the same program
-  // regenerates nothing and never reads the table.
-  namespace_rename_originals_reset()
+  // #2205's reset used to be HERE and is now at the LANE boundary
+  // (`desugar_trait_dicts_with_typed_eq`, and the per-module driver after its
+  // last module). Its purpose is unchanged -- the derive generators above are
+  // the only readers of the merge rename table, and a LATER compilation in this
+  // process must not see stale entries.
+  //
+  // What changed is granularity (#2647 Codex round 6). `dtd_run` runs ONCE
+  // whole-program but once PER MODULE on the split lane, so clearing here meant
+  // module 0 read the table and every module after it found it empty --
+  // rendering `Point_dep_<path>` instead of `Point` in derived `Show` / `Hash`
+  // output. The table is built by `record_namespace_rename_originals_for_file`
+  // during the MERGE, before any of this runs, so no module can rebuild it.
+  //
+  // This is the same defect as the deferral registries in round 1 of the same
+  // review: a process-global registry reset at per-run granularity, where the
+  // split lane needs lane granularity.
   derive_trait_namespace_operations(stmts)
   // Flatten supertrait methods into each trait so `[T: B]` (for `trait B: A`)
   // dispatches both B's and A's methods through one witness dictionary. When the
