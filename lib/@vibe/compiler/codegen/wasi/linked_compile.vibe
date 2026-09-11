@@ -4402,6 +4402,25 @@ fn link_key_is_definition(k: String) -> Bool {
 
 export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String) -> String with Exception {
   let entry_fid = file_count - 1
+  // #2637 review (Codex P2): production runs `fold_const_bool_params` and
+  // `dce_stmts` BETWEEN the prelude and the three analyses sampled below, and
+  // `late_dce_has_entry` is the necessary condition for either
+  // (`compile_wasi_module_linked_impl_with_typed_offsets`). A folded constant
+  // Bool argument can delete a consuming branch and change a borrow MASK, and
+  // DCE can delete a generated helper outright, so a sample taken before them
+  // describes a program the real compile does not analyse.
+  //
+  // Read HERE, from the unmutated `a`, because production reads it before the
+  // prelude too (line 6138, against the prelude's 6205) -- the passes append
+  // and rewrite, so asking after them is a different question.
+  //
+  // The oracle cannot reproduce those transforms: `dce_stmts` is rooted at the
+  // ENTRY, and the split lane has no per-module entry -- every module's
+  // exports are roots for its dependents, so there is no module-local answer
+  // to root it at. So when the condition holds the four columns report
+  // `unmeasured` rather than a number: a count taken at the wrong point would
+  // read exactly like one taken at the right one.
+  let an_dce_entry = lc_defines_top_level(a, entry_name)
   // #2631: which nominals each lane could not see. A raw `==` on a non-scalar
   // name that is not a type formal compares an aggregate by reference, so this
   // is the property, not a statistic about it.
@@ -4425,8 +4444,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   }
   // #2575 item 4: the three whole-program analyses `linked_compile` runs
   // between the prelude and codegen. Sampled HERE on both lanes -- after all
-  // 17 passes -- because that is where the real compile runs them, over the
-  // program the prelude leaves behind.
+  // 17 passes -- which is where the real compile runs them WHEN late DCE does
+  // not intervene; `an_dce_entry` above is that condition, and the line says
+  // which case it measured rather than leaving the reader to assume.
   //
   // Unlike the evidence facts above, these are interprocedural FIXPOINTS, so
   // the two lanes can differ in either direction and the directions do not
@@ -4662,7 +4682,17 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let split_invisible = eq_invisible_nominals_list()
   let tail = String::concat(String::concat(String::concat(" modules=", Int::to_string(file_count)), String::concat(" collisions=", Int::to_string(Array::length(collisions)))), String::concat(String::concat(" invisible_whole=", Int::to_string(Array::length(whole_invisible))), String::concat(String::concat(" invisible_split=", Int::to_string(Array::length(split_invisible))), String::concat(" linked_dups=", String::concat(Int::to_string(linked_dups), "\n")))))
   let ev_line = String::concat(String::concat(String::concat("EVIDENCE declared=", lc_set_cmp(ev_decl_w, ev_decl_u)), String::concat(" handled=", lc_set_cmp(ev_handled_w, ev_handled_u))), String::concat(" performed=", String::concat(lc_set_cmp(ev_perf_w, ev_perf_u), "\n")))
-  let an_line = String::concat(String::concat(String::concat("ANALYSIS borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(" view_ret=", String::concat(lc_set_cmp_counted(an_view_w, an_view_u), "\n"))))
+  let an_head = String::concat("ANALYSIS dce_entry=", if an_dce_entry {
+    "1"
+  } else {
+    "0"
+  })
+  let an_cols = if an_dce_entry {
+    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured"
+  } else {
+    String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u))))
+  }
+  let an_line = String::concat(String::concat(an_head, an_cols), "\n")
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
   let mut ldi = 0

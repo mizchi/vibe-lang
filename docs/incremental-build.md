@@ -283,9 +283,9 @@ two lanes differ in both directions and the directions do not mean the same
 thing. Measured on `lib/@vibe/cli/entry.vibe`, 365 modules:
 
 ```
-ANALYSIS borrow_ret=378/363:-15:MutSortedSet::delete+0:
-         borrow_fns=2705/2626:-167:alloc_site_kind_dep_...+88:__arr_equals__N4_Expr
-         borrow_masks=2705/2626:-197:agg_expr_of_ident_exp_...#12+118:__arr_equals__N4_Expr#3
+ANALYSIS dce_entry=0 borrow_ret=378/363:-15:MutSortedSet::delete+0:
+         borrow_fns=2706/2627:-167:alloc_site_kind_dep_...+88:__arr_equals__N4_Expr
+         borrow_masks=2706/2627:-197:agg_expr_of_ident_exp_...#12+118:__arr_equals__N4_Expr#3
          view_ret=2123/1943:-180:HashSet::size+0:
 ```
 
@@ -300,11 +300,23 @@ ANALYSIS borrow_ret=378/363:-15:MutSortedSet::delete+0:
   parameter the program says is consumed. 88 of them, and this is the unsound
   direction.
 
-The net (2705 − 2626 = 79) hides all 88 behind the 167, which is why both
+The net (2706 − 2627 = 79) hides all 88 behind the 167, which is why both
 directions are counted rather than subtracted. The mask row is the same question
 one level finer: 118 against 88 means 30 functions are in **both** sets under
 **different** masks — the names agree and the ABI does not, which a comparison on
 names alone reports as agreement.
+
+`dce_entry` is the sample point's own caveat. Production runs
+`fold_const_bool_params` and `dce_stmts` between the prelude and these
+analyses, gated on the merged program defining `entry_name`; a folded constant
+`Bool` argument can delete a consuming branch and change a borrow mask, and DCE
+can delete a generated helper outright. The oracle cannot reproduce either —
+`dce_stmts` is rooted at the entry and the split lane has no per-module entry —
+so it reports the condition and prints `unmeasured` instead of counts when it
+holds. The closure numbers above are a `dce_entry=0` measurement: the same
+closure through `vibe build` would give different sets, though not a different
+conclusion, since neither transform makes an interprocedural fixpoint
+decompose.
 
 So these phases do not decompose as written. What a module can compute alone is
 its own contribution; the disqualifications and the callee edges are the
