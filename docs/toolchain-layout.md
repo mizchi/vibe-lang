@@ -13,7 +13,7 @@ the ADR row moves to `accepted`, and this file is deleted.
 Phases, in dependency order:
 
 1. [#2675](https://github.com/mizchi/vibe-lang/issues/2675) — project root
-   discovery and `.vibe/build/` outputs (blocks the rest)
+   discovery and `.vibe/build/` outputs (blocks the rest) — **implemented**
 2. [#2676](https://github.com/mizchi/vibe-lang/issues/2676) — one dependency
    lane on the root `index.vpkg` and `.vibe/store/`
 3. [#2677](https://github.com/mizchi/vibe-lang/issues/2677) — per-toolchain

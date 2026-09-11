@@ -39,10 +39,10 @@ vibe run hello.vibex
 The `.vibex` extension marks an *executable root*: a file with exactly
 one `fn main`, which other files cannot import — and which therefore
 exports nothing (ADR-0075). Reusable
-source modules end in `.vibe`. Two more files appear later:
-`vibe.deps` below is project metadata, and a package's `index.vpkg` —
-[Modules and packages](11_modules_packages.vibe.md) — is its public
-contract, declarations the compiler checks the implementation against.
+source modules end in `.vibe`. One more file appears below:
+`index.vpkg`, a project's manifest, which is also a package's public
+contract — [Modules and packages](11_modules_packages.vibe.md) —
+declarations the compiler checks the implementation against.
 
 The interesting part is `allows Console`. It is the program's permission
 to write to the terminal, and it is required: delete it and the program
@@ -83,12 +83,12 @@ cd myapp
 vibe run main.vibex
 ```
 
-`vibe new` writes two files: `main.vibex`, the entry point, and
-`vibe.deps`, where `vibe add` records URL dependencies to vendor
-(one `<name> <url>` per line). That is the whole scaffold — a
-package contract (`index.vpkg`) is something you add when you have
-something to publish, and [Modules and packages](11_modules_packages.vibe.md)
-picks that up. You do not need any of it for a single file, which is why
-this chapter did not start there.
+`vibe new` writes three files: `main.vibex`, the entry point;
+`index.vpkg`, the project's manifest, which also marks the project root
+so every `vibe` command finds it from any subdirectory; and
+`.gitignore`, which ignores `.vibe/` — the directory where builds and
+pinned dependencies land. [Modules and packages](11_modules_packages.vibe.md)
+explains the manifest. You do not need any of it for a single file, which
+is why this chapter did not start there.
 
 Next: [A small program](02_a_small_program.vibe.md).

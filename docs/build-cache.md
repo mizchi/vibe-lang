@@ -1,7 +1,8 @@
 # Build cache layering & GC policy
 
 This note covers the **incremental build cache** the compiler writes
-under `_build/vibe_*`, how its fingerprints relate to the ADR-0004
+under `.vibe/build/cache/vibe_*` at the project root
+([toolchain-layout.md](toolchain-layout.md), #2675), how its fingerprints relate to the ADR-0004
 content-address *identity* layer, and how to reclaim disk. It is the resolution
 record for #631 (cache GC) and #633 (hash-layer clarification).
 
@@ -13,10 +14,10 @@ vibe uses content hashing for two unrelated purposes. They are intentionally
 | Layer | Purpose | Hash | Where |
 |-------|---------|------|-------|
 | **Identity** (ADR-0004) | Content-addressed modules — `HashRef` (runtime), `VersionRef`, `SymbolRef` (user-facing). A stable, collision-resistant name for a definition's content. | **SHA1** (cryptographic). `lib/@vibe/core/sha1.vibe` (@vibe/core package) implements it with known-answer vectors. | identity / distributed refs |
-| **Build cache** | A fast key for "have I already compiled exactly this input with exactly this compiler?" Only ever compared for equality within one machine's `_build`; a miss just recompiles. | **`compact_string_fingerprint`** — a non-cryptographic double-polynomial rolling hash `"len:h1:h2"` (h1/h2 31-bit, distinct large primes → ~62 effective bits). | `lib/@vibe/compiler/cache/persistent_cache.vibe` |
+| **Build cache** | A fast key for "have I already compiled exactly this input with exactly this compiler?" Only ever compared for equality within one project's `.vibe/build/cache`; a miss just recompiles. | **`compact_string_fingerprint`** — a non-cryptographic double-polynomial rolling hash `"len:h1:h2"` (h1/h2 31-bit, distinct large primes → ~62 effective bits). | `lib/@vibe/compiler/cache/persistent_cache.vibe` |
 
 **Why two hashes, not one.** The build cache is a pure performance optimization
-on the local `_build` tree: a forged collision can at worst return a stale
+on the local `.vibe/build/cache` tree: a forged collision can at worst return a stale
 artifact for *your own* next build, never corrupt a published identity. A
 non-cryptographic rolling hash is therefore the right tradeoff — cheap to
 compute over large merged sources, and collisions (simultaneous match of `len`,
@@ -50,7 +51,7 @@ v10 | cg-<codegen_fingerprint()>
 
 Cache entries are **content-addressed and append-only**: a store overwrites only
 the exact same key, and a source/codegen change produces a *new* key, leaving the
-prior file as an orphan. Nothing deletes orphans in place, so `_build/vibe_*`
+prior file as an orphan. Nothing deletes orphans in place, so `.vibe/build/cache/vibe_*`
 grows monotonically over a long editing session.
 
 This is deliberate — automatic mid-build GC would need a per-build reachable-set
@@ -58,12 +59,15 @@ mark-sweep and risks evicting entries a concurrent build still wants. Instead,
 reclaiming is an **explicit, first-class command**:
 
 ```bash
-pkf run cache-clean              # delete every _build/vibe_* cache entry
+vibe clean                       # a project: remove .vibe/build entirely
+pkf run cache-clean              # this repository: delete every persistent-cache entry
 bash scripts/cache_clean.sh -n   # dry-run: report what would be reclaimed
 ```
 
-`scripts/cache_clean.sh` removes only `_build/vibe_*` files (the persistent cache);
-generation builds, fixtures, and everything else under `_build` are untouched. A
+`scripts/cache_clean.sh` removes only the persistent-cache files
+(`.vibe/build/cache/vibe_*`, plus the `_build/vibe_*` rows the committed seed
+still writes until the next bootstrap bump); generation builds, fixtures, the
+vpkg type stubs and everything else are untouched. A
 full rebuild simply repopulates the cache. Because the key already version-tags
 on every codegen change, a clean is never *required* for correctness — only to
 reclaim disk.
@@ -124,7 +128,7 @@ stronger cross-build reachability problem described above.
 |-------|------|-----|---------------|
 | Seed artifact | `bootstrap/seed/compiler.wasm` | hash of `bootstrap/seed.json` | pinned release asset; the manifest hash IS its identity |
 | Shard stage2 | `_build/_ci_shard_gen/` | hash of seed manifest + committed flat module source + generations/runner scripts | the stage2 build is a deterministic function of exactly those inputs; on any compiler change the flat source changes and the key misses |
-| Persistent compile cache | `_build/vibe_selfhost_*` | hash of `cache/codegen_fingerprint.vibe` (per shard) | every cache row already folds the codegen fingerprint into its own key (see above), so rows from another compiler version are ignored on lookup — restoring can never serve a stale artifact |
+| Persistent compile cache | `.vibe/build/cache/vibe_selfhost_*` (and the seed's `_build/vibe_selfhost_*` until the next bootstrap bump) | hash of `cache/codegen_fingerprint.vibe` (per shard) | every cache row already folds the codegen fingerprint into its own key (see above), so rows from another compiler version are ignored on lookup — restoring can never serve a stale artifact |
 
 The unit-test battery itself is split across parallel matrix jobs with
 `VIBE_UNIT_TEST_SHARD=i/N`; the partition is weight-balanced from

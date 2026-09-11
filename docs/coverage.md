@@ -222,7 +222,7 @@ VIBE_COV_SHOW_BRANCH_GAPS=1 scripts/coverage_corpus.sh
 
 corpus は base self-compile / RC-stress に加えて以下のワークロードを束ねる:
 - **cache-orch**: `compiler_sources_manifest.tsv` を持つコンパイラツリーと
-  複数 import の example を、`_build/vibe_selfhost_*` の各キャッシュファイルを
+  複数 import の example を、`.vibe/build/cache/vibe_selfhost_*` の各キャッシュファイルを
   選択的に無効化しながら繰り返し compile する。これにより
   persistent-cache の read 経路（`parse_persistent_*_cache` /
   `matches_cached_file_spec` / `scan_header_*` / `serialize_type` 等、

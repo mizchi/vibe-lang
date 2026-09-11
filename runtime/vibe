@@ -10,6 +10,22 @@
 #     update` can refresh the compiler wasm (+ .cwasm) without touching the
 #     runner.
 #
+# Project root and build directory (docs/toolchain-layout.md, #2675):
+#   * the PROJECT ROOT is the outermost directory with an `index.vpkg` walking
+#     up from the invoking directory, not crossing a directory that contains
+#     `.git`; with no `index.vpkg` in sight it is the invoking directory.
+#     `vibe root` prints it.
+#   * every verb that drives the compiler runs it with cwd = the project root
+#     (that is where `.vibe/store/`, the workspace `lib/` and the persistent
+#     cache resolve from), and rewrites the relative paths it was given, so
+#     `vibe run main.vibex` from a subdirectory compiles `sub/main.vibex`
+#     against ONE cache at the root. Compiled programs still execute from the
+#     invoking directory.
+#   * everything the toolchain generates lands under `<root>/.vibe/build/`
+#     (`cache/` = the compiler's persistent cache, `run/`, `test/`, `bench/`,
+#     `out/`), never in a `_build/` and never next to a source file.
+#     VIBE_BUILD_DIR overrides the directory; `vibe clean` removes it.
+#
 # Subcommands:
 #   vibe run     <file.vibex> [-- args]   compile fixed `main`, then run
 #   vibe run --trace <file.vibex>         run + print the function-call trace
@@ -29,10 +45,11 @@
 #                                         attribution (top N sites) to stderr
 #   vibe profile <file.vibex> [--out FILE] [--interval-us N]
 #                                         capture a Wasmtime guest CPU profile
-#   vibe compile <file.vibe> -o <out>     compile to a .wasm
+#   vibe compile <file.vibe> [-o <out>]   compile to a .wasm (default:
+#                                         .vibe/build/out/<name>.wasm)
 #   vibe compile --wit <file.vibe>        emit the WIT world for the file's
 #                                         effect surface (docs/effect-wit-mapping.md)
-#   vibe build   <file.vibe> -o <out>     alias of compile
+#   vibe build   <file.vibe> [-o <out>]   alias of compile
 #   vibe compile|build --minify ...       post-optimize the output with the
 #                                         standalone vibe-opt.wasm artifact
 #                                         (scripts/build_vibe_opt.sh, #1107)
@@ -114,7 +131,11 @@
 #   vibe shell   [file.vibe]              interactive compiled REPL: declarations
 #                                         accumulate, each line recompiles+runs
 #                                         (type :help inside for commands)
-#   vibe new     <dir>                    scaffold a starter project
+#   vibe new     <dir>                    scaffold a project: main.vibex, a
+#                                         root index.vpkg (the project marker
+#                                         and manifest) and a .gitignore
+#   vibe root                             print the project root
+#   vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too)
 #   vibe add     <name> <url> [dir]       add a dependency to vibe.deps + fetch
 #   vibe fetch   [--frozen] [dir]        vendor git/URL deps from vibe.deps + lock
 #   vibe verify  [dir]                    re-check vendored deps against vibe.lock
@@ -856,6 +877,93 @@ condense_test_trap() {
   fi
 }
 
+# --- Project root and build directory (docs/toolchain-layout.md, #2675) ------
+#
+# The compiler resolves `.vibe/store/`, the workspace `lib/` and its own
+# persistent cache relative to ITS cwd, so the launcher makes that cwd the
+# project root for every verb that drives the compiler. The rule: walk up from
+# the invoking directory; the root is the OUTERMOST directory with an
+# `index.vpkg` (a workspace with `lib/@scope/name/` packages is one project
+# with one build directory), never crossing a directory that contains `.git`
+# (a package checked out inside another project is its own project); with no
+# `index.vpkg` in sight the invoking directory is the root (a stray `.vibex`
+# or a `vibe check` on one file must still work without creating a project).
+#
+# VIBE_INVOKE_DIR is internal plumbing for the one re-exec in this file
+# (`profile` -> `run`): it carries the directory the USER invoked from through
+# the `cd` below, so the compiled program still runs there.
+INVOKE_DIR="${VIBE_INVOKE_DIR:-$(pwd -P)}"
+project_root() {
+  local d="$INVOKE_DIR" found=""
+  while :; do
+    [ -f "$d/index.vpkg" ] && found="$d"
+    [ -e "$d/.git" ] && break
+    [ "$d" = "/" ] && break
+    d="$(dirname "$d")"
+  done
+  printf '%s' "${found:-$INVOKE_DIR}"
+}
+PROJECT_ROOT="$(project_root)"
+BUILD_DIR="${VIBE_BUILD_DIR:-$PROJECT_ROOT/.vibe/build}"
+case "$BUILD_DIR" in /*) ;; *) BUILD_DIR="$INVOKE_DIR/$BUILD_DIR" ;; esac
+# The invoking directory as seen from the root ("" at the root itself).
+INVOKE_REL="${INVOKE_DIR#"$PROJECT_ROOT"}"; INVOKE_REL="${INVOKE_REL#/}"
+# A path the user typed, as the compiler (cwd = root) must see it.
+root_rel() {
+  local p="$1"
+  case "$p" in
+    /*) printf '%s' "$p" ;;
+    .) printf '%s' "${INVOKE_REL:-.}" ;;
+    *) p="${p#./}"; printf '%s' "${INVOKE_REL:+$INVOKE_REL/}$p" ;;
+  esac
+}
+# A generated path, for messages: relative to the root when it is under it.
+display_path() {
+  case "$1" in
+    "$PROJECT_ROOT"/*) printf '%s' "${1#"$PROJECT_ROOT"/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+# Rewrite the relative path arguments of a compiler-driving verb and move to
+# the root. Guest argv after a literal `--` is never touched. A value that
+# follows an OUTPUT flag is rewritten whether or not it exists yet; a value
+# that follows a flag whose argument is never a path is left alone; any other
+# positional is rewritten when it names an existing file or directory and
+# looks like a path (a `/`, an extension, `.`/`..`, or a directory) -- so a
+# bare word such as a function name is never mistaken for one.
+case "${1:-help}" in
+  run|profile|compile|build|serve|check|type-at|doc-at|binding-at|symbols|escapes|rc-classify|rc-plan|allocs|deps|diagnostics|grep|fmt|normalize|test|bench|shell|lsp|hash|pkg)
+    rewritten=("$1"); shift
+    prev=""; passthrough=0
+    for a in "$@"; do
+      if [ "$passthrough" = 1 ]; then rewritten+=("$a"); continue; fi
+      if [ "$a" = "--" ]; then passthrough=1; rewritten+=("$a"); prev=""; continue; fi
+      case "$prev" in
+        -o|--output|--out|--guest-profile|--adapter|--cli-wasm|--changed)
+          rewritten+=("$(root_rel "$a")"); prev=""; continue ;;
+        --break|--fn|--pattern|--where|--where-row|--entry|--addr|--port|--iters|--warmup|--interval-us|--jobs|--guest-profile-interval-us|--mem-sample|--alloc-site|--toolchain)
+          rewritten+=("$a"); prev=""; continue ;;
+      esac
+      case "$a" in
+        --guest-profile=*) rewritten+=("--guest-profile=$(root_rel "${a#--guest-profile=}")"); prev="" ;;
+        -*) rewritten+=("$a"); prev="$a" ;;
+        *)
+          looks_like_path=0
+          case "$a" in */*|*.*) looks_like_path=1 ;; *) [ -d "$INVOKE_DIR/$a" ] && looks_like_path=1 ;; esac
+          if [ "$looks_like_path" = 1 ] && [ -e "$INVOKE_DIR/$a" ]; then
+            rewritten+=("$(root_rel "$a")")
+          else
+            rewritten+=("$a")
+          fi
+          prev=""
+          ;;
+      esac
+    done
+    set -- "${rewritten[@]}"
+    cd "$PROJECT_ROOT"
+    ;;
+esac
+
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   profile)
@@ -876,7 +984,12 @@ case "$cmd" in
     fi
     profile_args=()
     while IFS= read -r profile_arg; do profile_args+=("$profile_arg"); done < <(sed -n '6,$p' "$profile_plan")
-    exec "$0" run --guest-profile="$profile_out" --guest-profile-interval-us="$profile_interval" \
+    # The plan's paths are root-relative (this launcher already moved to the
+    # root); hand the re-exec absolute ones so it does not rewrite them again,
+    # and carry the invoking directory so the profiled program runs there.
+    case "$profile_src" in /*) ;; *) profile_src="$PWD/$profile_src" ;; esac
+    case "$profile_out" in /*) ;; *) profile_out="$PWD/$profile_out" ;; esac
+    VIBE_INVOKE_DIR="$INVOKE_DIR" exec "$0" run --guest-profile="$profile_out" --guest-profile-interval-us="$profile_interval" \
       "$profile_src" -- ${profile_args[@]+"${profile_args[@]}"}
     ;;
   run)
@@ -932,8 +1045,13 @@ case "$cmd" in
     [ "$#" -ge 1 ] && [ "$1" = "--" ] && shift 1
     extra_args=("$@")
     [ -f "$src" ] || die "not found: $src"
-    out="$(mktemp -t vibe-run-XXXXXX.wasm)"
-    trap 'rm -f "$out" "$out.funcmap"' EXIT
+    # The compiled program and its `.funcmap` sidecar live under the build
+    # directory and are overwritten on every run (docs/toolchain-layout.md).
+    out="$BUILD_DIR/run/$(basename "${src%.vibex}").wasm"
+    mkdir -p "$BUILD_DIR/run"
+    # The runner executes from the invoking directory (see the root block
+    # above), so a profile path it receives must not depend on cwd.
+    case "$guest_profile" in ''|/*) ;; *) guest_profile="$PWD/$guest_profile" ;; esac
     # `--alloc-site` reuses the break-mode codegen (statement-boundary `dbg_line`
     # hooks) WITHOUT any breakpoints — the runner attributes heap growth per line.
     # So compile with break instrumentation if either `--break` or `--alloc-site`.
@@ -1010,8 +1128,8 @@ case "$cmd" in
     rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
     annotate_run_stream "$out.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
     annot_pid=$!
-    env $trace_env $break_env $mem_env $alloc_env ${profile_env[@]+"${profile_env[@]}"} $funcmap_env $breakfile_env "$RUNNER" "$out" \
-      ${extra_args[@]+"${extra_args[@]}"} 2>"$rerr_fifo" || status=$?
+    ( cd "$INVOKE_DIR" && exec env $trace_env $break_env $mem_env $alloc_env ${profile_env[@]+"${profile_env[@]}"} $funcmap_env $breakfile_env "$RUNNER" "$out" \
+      ${extra_args[@]+"${extra_args[@]}"} ) 2>"$rerr_fifo" || status=$?
     wait "$annot_pid" 2>/dev/null || true
     rm -f "$rerr_fifo"
     exit "$status"
@@ -1048,7 +1166,9 @@ case "$cmd" in
       # #537: emit the WIT world for the file's effect surface (exported
       # functions -> world exports, their `with { E }` rows -> world imports).
       # Contract: docs/effect-wit-mapping.md.
-      [ -n "$out" ] || out="${src%.vibe}.wit"
+      if [ -z "$out" ]; then
+        out="$BUILD_DIR/out/$(basename "${src%.vibe}").wit"
+      fi
       cli="$(pick_cli)"
       mkdir -p "$(dirname "$out")"
       rm -f "$out" "$out.diag"
@@ -1063,13 +1183,15 @@ case "$cmd" in
         die "wit generation failed: $src"
       fi
       rm -f "$out.diag"
-      echo "wit $src -> $out"
+      echo "wit $src -> $(display_path "$out")"
       exit 0
     fi
     if [ -z "$out" ]; then
+      # No `-o`: the artifact goes under the build directory, never next to
+      # the source (docs/toolchain-layout.md, #2675).
       case "$src" in
-        *.vibex) out="${src%.vibex}.wasm" ;;
-        *) out="${src%.vibe}.wasm" ;;
+        *.vibex) out="$BUILD_DIR/out/$(basename "${src%.vibex}").wasm" ;;
+        *) out="$BUILD_DIR/out/$(basename "${src%.vibe}").wasm" ;;
       esac
     fi
     maybe_warm_frontend_cache "$jobs" "$src"
@@ -1119,7 +1241,7 @@ case "$cmd" in
         "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
       fi
     fi
-    echo "compiled $src -> $out"
+    echo "compiled $src -> $(display_path "$out")"
     ;;
   serve)
     # #537: serve a wasi-http P3 handler. The compiler (VIBE_SERVE_COMPONENT=1)
@@ -1148,7 +1270,7 @@ case "$cmd" in
     done
     [ -n "$src" ] || die "no input file"
     [ -f "$src" ] || die "not found: $src"
-    [ -n "$out" ] || out="${src%.vibe}.component.wasm"
+    [ -n "$out" ] || out="$BUILD_DIR/out/$(basename "${src%.vibe}").component.wasm"
     # 1. handler component + WIT sidecar (compiler artifact step)
     cli="$(pick_cli)"
     mkdir -p "$(dirname "$out")"
@@ -1163,7 +1285,7 @@ case "$cmd" in
       die "serve: handler componentization failed: $src"
     fi
     rm -f "$out.diag"
-    echo "component $src -> $out"
+    echo "component $src -> $(display_path "$out")"
     [ "$no_run" = "1" ] && exit 0
     # 2. P3 HTTP adapter (imports `handler`, exports wasi:http/handler@0.3)
     #
@@ -2413,7 +2535,14 @@ PY
       update_iter=0
       while :; do
         update_iter=$((update_iter + 1))
-        out="$(mktemp -t vibe-test-XXXXXX.wasm)"
+        # The compiled test module mirrors the source path under the build
+        # directory (`.vibe/build/test/a/b_test.wasm`), which keeps parallel
+        # files apart and leaves the artifact for inspection.
+        case "$src" in
+          /*) out="$BUILD_DIR/test/_abs${src%.vibe}.wasm" ;;
+          *) out="$BUILD_DIR/test/${src%.vibe}.wasm" ;;
+        esac
+        mkdir -p "$(dirname "$out")"
         meta="$out.testmeta"
         rm -f "$meta"
         # `__no_entry__` makes the compiler emit a `_start` that runs every
@@ -2468,7 +2597,7 @@ PY
         terr="$(mktemp -t vibe-testerr-XXXXXX)"
         tout="$(mktemp -t vibe-testout-XXXXXX)"
         rc=0
-        "$RUNNER" "$out" >"$tout" 2>"$terr" || rc=1
+        ( cd "$INVOKE_DIR" && exec "$RUNNER" "$out" ) >"$tout" 2>"$terr" || rc=1
         if [ "$rc" = "0" ]; then
           [ -s "$tout" ] && cat "$tout"
           [ -s "$terr" ] && cat "$terr" >&2
@@ -2481,7 +2610,7 @@ PY
           if [ -n "$key" ]; then
             mkdir -p "$tcache" && : > "$tcache/$key.pass"
           fi
-          rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
+          rm -f "$terr" "$tout"
           return 0
         fi
         # Failed. --update: try to patch the stale snapshot and loop; a
@@ -2491,7 +2620,7 @@ PY
         # ping-ponging) fails loudly instead of looping forever.
         if [ "$update" = "1" ] && [ "$update_iter" -lt "$update_max" ] && _test_try_update_patch "$src" "$tout"; then
           update_patches=$((update_patches + 1))
-          rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
+          rm -f "$terr" "$tout"
           continue
         fi
         # Replay the test's own stdout verbatim (its debug output, the
@@ -2515,7 +2644,7 @@ PY
         condense_test_trap "$terr" "$out.funcmap" "$(basename "$src")" "$pre_abort" "$src"
         [ -s "$tout" ] && { grep -vx "assert failed: aborting" "$tout" || true; } | sed 's/^/       /'
         _test_record fail "$n_tests" "$n_tests_exact"
-        rm -f "$out" "$out.funcmap" "$meta" "$terr" "$tout"
+        rm -f "$terr" "$tout"
         return 1
       done
     }
@@ -2642,8 +2771,8 @@ PY
       || die "bench: --guest-profile must not be empty"
     [ -n "$bsrc" ] || die "usage: vibe bench <file.vibe> [--iters N] [--warmup N]"
     [ -f "$bsrc" ] || die "not found: $bsrc"
-    out="$(mktemp -t vibe-bench-XXXXXX.wasm)"
-    trap 'rm -f "$out"' EXIT
+    out="$BUILD_DIR/bench/$(basename "${bsrc%.vibe}").wasm"
+    mkdir -p "$BUILD_DIR/bench"
     # VIBE_BENCH_BACKEND=gc was documented as switching `vibe bench` to the
     # wasm-gc backend, but nothing read it: benches asked for gc and silently
     # got linear, with no way to tell from the output. That is what made the
@@ -2677,10 +2806,12 @@ PY
     [ -n "$warmup" ] && bench_env+=("VIBE_BENCH_WARMUP=$warmup")
     if [ -n "$guest_profile_dir" ]; then
       mkdir -p "$guest_profile_dir" || die "cannot create guest profile directory: $guest_profile_dir"
+      # The runner executes from the invoking directory; hand it an absolute path.
+      guest_profile_dir="$(cd "$guest_profile_dir" && pwd -P)"
       bench_env+=("VIBE_BENCH_GUEST_PROFILE_DIR=$guest_profile_dir")
       bench_env+=("VIBE_GUEST_PROFILE_INTERVAL_US=$guest_profile_interval")
     fi
-    env "${bench_env[@]}" "$RUNNER" --bench "$out"
+    ( cd "$INVOKE_DIR" && exec env "${bench_env[@]}" "$RUNNER" --bench "$out" )
     ;;
   shell)
     # #805: `vibe shell [file.vibe]` — minimal compiled REPL.
@@ -2752,7 +2883,7 @@ PY
         printf '}\n'
       } > "$f"
       if compile_to "$f" "$w" "__repl_main__" "" "" 1 2>"$err1"; then
-        "$RUNNER" "$w" || rc=$?
+        ( cd "$INVOKE_DIR" && exec "$RUNNER" "$w" ) || rc=$?
         [ "$rc" -ne 0 ] && echo "vibe shell: runtime error (exit $rc)" >&2
         return 0
       fi
@@ -2766,7 +2897,7 @@ PY
       } > "$f"
       if compile_to "$f" "$w" "__repl_main__" "" "" 1 2>/dev/null; then
         echo "vibe shell: non-Int value; evaluated for effects only (use :type to inspect)" >&2
-        "$RUNNER" "$w" || rc=$?
+        ( cd "$INVOKE_DIR" && exec "$RUNNER" "$w" ) || rc=$?
         [ "$rc" -ne 0 ] && echo "vibe shell: runtime error (exit $rc)" >&2
         return 0
       fi
@@ -2898,7 +3029,16 @@ REPL_HELP
     # the surface syntax; scripts/test_vibe_install_hello.sh now pins it to
     # the program README.md and docs/install.md teach.
     printf 'fn main allows Console {\n  println("42")\n}\n' > "$ndir/main.vibex"
-    printf '# vibe dependencies: one `<name> <url>` per line (see `vibe add`).\n' > "$ndir/vibe.deps"
+    # The root `index.vpkg` is the project marker (`vibe root` finds it) and
+    # the manifest its dependencies are pinned in (docs/toolchain-layout.md,
+    # #2675). Its header is written in the formatter's canonical shape so
+    # `vibe fmt --check` on a fresh project is clean. The `@local` scope is
+    # the one `vibe pkg publish` refuses: a scaffold is not a published name.
+    pkg_name="$(basename -- "$ndir" | LC_ALL=C sed -e 's/[^A-Za-z0-9_-]/-/g')"
+    printf 'name = @local/%s\nversion = 0.1.0\ndescription =\n  #|%s, a vibe program\ndeps = {}\n\ngenerated_hash =\n' "$pkg_name" "$pkg_name" > "$ndir/index.vpkg"
+    # `.vibe/` holds only what the toolchain regenerates (build outputs, the
+    # pinned store), so the whole directory is ignored.
+    printf '.vibe/\n' > "$ndir/.gitignore"
     echo "created $ndir (run: vibe run $ndir/main.vibex)"
     ;;
   add)
@@ -3223,6 +3363,35 @@ REPL_HELP
         ;;
       *) die "usage: vibe self update --cli-wasm <path>" ;;
     esac
+    ;;
+  root)
+    [ "$#" -eq 0 ] || die "usage: vibe root"
+    printf '%s\n' "$PROJECT_ROOT"
+    ;;
+  clean)
+    # `vibe clean` removes the build directory; `--all` also drops the
+    # pinned store, which `vibe fetch` restores from the pins.
+    clean_all=0
+    for clean_arg in "$@"; do
+      case "$clean_arg" in
+        --all) clean_all=1 ;;
+        *) die "usage: vibe clean [--all]" ;;
+      esac
+    done
+    cleaned=""
+    if [ -e "$BUILD_DIR" ]; then
+      rm -rf "$BUILD_DIR"
+      cleaned="$cleaned $(display_path "$BUILD_DIR")"
+    fi
+    if [ "$clean_all" = 1 ] && [ -e "$PROJECT_ROOT/.vibe/store" ]; then
+      rm -rf "$PROJECT_ROOT/.vibe/store"
+      cleaned="$cleaned .vibe/store"
+    fi
+    if [ -n "$cleaned" ]; then
+      echo "cleaned:$cleaned"
+    else
+      echo "nothing to clean under $PROJECT_ROOT"
+    fi
     ;;
   help|--help|-h)
     # Content-anchored (not fixed line numbers): print the whole Subcommands

@@ -139,7 +139,7 @@ registry nor the network has to be trusted between builds. `vibe hash`
 computes the value. Set `VIBE_REQUIRE_PINS=1` and an unpinned dependency
 becomes an error, which is what a release build should do.
 
-(`vibe.deps` from chapter 1 is a different, coarser mechanism: it lists
+(`vibe.deps` is a different, coarser mechanism: it lists
 `<name> <url>` lines for `vibe add` / `vibe fetch` to vendor whole
 repositories into `deps/`. The `require` pin is the registry lane —
 per-package, content-addressed, checked by the compiler itself.)

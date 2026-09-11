@@ -48,30 +48,30 @@ acc_run() {
 }
 base=$(bash scripts/coverage_acc_tool_run.sh stat "$ACC" | cut -d' ' -f1)
 
-rm -f _build/vibe_selfhost_* 2>/dev/null || true
+rm -f .vibe/build/cache/vibe_selfhost_* 2>/dev/null || true
 acc_run                                                        # 1. cold: writes all caches
 acc_run                                                        # 2. fully warm: all cache hits
 # 3. drop source-groups + source-list caches, KEEP manifest-header cache ->
 #    collect_source_groups_fs falls through to try_collect_manifest_source_groups_fs
 #    which loads the WARM header cache (matches_cached_file_spec validates each row).
-rm -f _build/vibe_selfhost_source_groups_* 2>/dev/null || true
+rm -f .vibe/build/cache/vibe_selfhost_source_groups_* 2>/dev/null || true
 acc_run
 # 4. mutate a leaf source so its fingerprint no longer matches the cached spec
 #    (matches_cached_file_spec false branch / cache-invalidation path).
-rm -f _build/vibe_selfhost_source_groups_* 2>/dev/null || true
+rm -f .vibe/build/cache/vibe_selfhost_source_groups_* 2>/dev/null || true
 printf '\nexport let a_extra: () -> Int = () -> { 7 }\n' >> "$P/a.vibe"
 acc_run
 # 5. drop only the manifest-header cache, keep dep/header caches -> rebuild header
 #    rows fresh (collect_needed_paths_and_manifest_headers + store path).
-rm -f _build/vibe_selfhost_manifest_headers_* _build/vibe_selfhost_source_groups_* 2>/dev/null || true
+rm -f .vibe/build/cache/vibe_selfhost_manifest_headers_* .vibe/build/cache/vibe_selfhost_source_groups_* 2>/dev/null || true
 acc_run
 # 6. warm again after the rebuild (header cache hit on the mutated tree).
-rm -f _build/vibe_selfhost_source_groups_* 2>/dev/null || true
+rm -f .vibe/build/cache/vibe_selfhost_source_groups_* 2>/dev/null || true
 acc_run
 # 7. drop type-env caches -> recheck with warm source/dep caches.
-rm -f _build/vibe_selfhost_type_env_* _build/vibe_selfhost_source_groups_* 2>/dev/null || true
+rm -f .vibe/build/cache/vibe_selfhost_type_env_* .vibe/build/cache/vibe_selfhost_source_groups_* 2>/dev/null || true
 acc_run
-rm -f _build/vibe_selfhost_* 2>/dev/null || true
+rm -f .vibe/build/cache/vibe_selfhost_* 2>/dev/null || true
 
 read -r now tot < <(bash scripts/coverage_acc_tool_run.sh stat "$ACC")
 scaled=$(( (now * 10000 + tot / 2) / tot ))

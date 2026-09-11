@@ -62,17 +62,20 @@ fn remove_typecheck_fs_cache(path: String, source: String, fingerprint: String) 
 }
 
 fn vpkg_types_stub_path_from_text(text: String) -> String {
-  let marker = "_build/vibe_vpkg_types/"
+  let marker = ".vibe/build/vpkg_types/"
   let idx = String::index_of(text, marker)
   if idx < 0 {
     ""
   } else {
-    let rest = text[idx: String::length(text)]
-    let end = String::index_of(rest, ".vibe")
+    // The extension is searched AFTER the marker: the marker itself begins
+    // with `.vibe/` (the project-local build directory, #2675), and a search
+    // from the marker's start would answer `.vibe` -- a directory.
+    let after = text[idx + String::length(marker): String::length(text)]
+    let end = String::index_of(after, ".vibe")
     if end < 0 {
       ""
     } else {
-      rest[0: end + 5]
+      String::concat(marker, after[0: end + 5])
     }
   }
 }
@@ -163,7 +166,7 @@ test "db_typecheck_fs: types stub missing from the seeded set is still inserted 
   let err = typecheck_seeded_without_stub(vpkg_path, vpkg_ingested, impl_path, main_path)
   assert(!String::contains(err, "type_db: missing resolved dependency environment"))
   assert(err == "")
-  assert(String::starts_with(stub_path, "_build/vibe_vpkg_types/"))
+  assert(String::starts_with(stub_path, ".vibe/build/vpkg_types/"))
 }
 
 test "db_typecheck_fs: adding an extra vpkg export still inserts the types stub (#1921)" {
@@ -180,7 +183,7 @@ test "db_typecheck_fs: adding an extra vpkg export still inserts the types stub 
 }
 
 /// compiler_sources_manifest.tsv is a fixed source set: it lists the
-/// contract and its impls, never the generated `_build/vibe_vpkg_types/`
+/// contract and its impls, never the generated `.vibe/build/vpkg_types/`
 /// stub. That is the vibe-check hole for any compiler file whose closure
 /// reaches `@vibe/compiler/core`.
 test "collect_source_groups_fs: manifest collection injects the types stub (#1921)" {
@@ -194,7 +197,7 @@ test "collect_source_groups_fs: manifest collection injects the types stub (#192
   assert(String::contains(paths, vpkg_path))
   assert(String::contains(paths, impl_path))
   assert(String::contains(paths, main_path))
-  assert(String::contains(paths, "_build/vibe_vpkg_types/"))
+  assert(String::contains(paths, ".vibe/build/vpkg_types/"))
   handle {
     let mut db = db_new()
     let mut gi = 0

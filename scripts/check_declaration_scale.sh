@@ -11,7 +11,7 @@
 # same ceiling to ~5000.
 #
 # EVERY RUN GENERATES UNIQUE CONTENT, and that is load-bearing. A successful
-# compile writes a persistent `_build/vibe_selfhost_module_header_v2_*` row
+# compile writes a persistent `.vibe/build/cache/vibe_selfhost_module_header_v2_*` row
 # keyed by source content, and afterwards that exact source compiles on the
 # default stack. A fixed corpus would therefore pass forever after its own
 # first green run -- including with the fix reverted. That effect is what made

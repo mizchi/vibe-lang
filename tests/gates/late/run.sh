@@ -8645,13 +8645,13 @@ echo "[compiler-gate] an unsupported contract statement is refused by both lanes
 # CONTRACT, not the generated module it was materialized into (#2317).
 #
 # A `.vpkg` whose contract declares transparent types is materialized into
-# `_build/vibe_vpkg_types/types_<fingerprint>.vibe` (#1840), and the checker
+# `.vibe/build/vpkg_types/types_<fingerprint>.vibe` (#1840), and the checker
 # walks THAT. So `derive(Foo)` on a contract struct reported
-# `_build/vibe_vpkg_types/types_114_….vibe: unknown trait: Foo` -- the reader
+# `.vibe/build/vpkg_types/types_114_….vibe: unknown trait: Foo` -- the reader
 # is sent to a build artifact to go edit, and the file they wrote is not
 # named at all. Measured before this, same fixture:
 #
-#   full lane    _build/vibe_vpkg_types/types_114_…vibe: unknown trait: Foo
+#   full lane    .vibe/build/vpkg_types/types_114_…vibe: unknown trait: Foo
 #   buffer lane  line 11:10: unknown trait: Foo
 #
 # The stub's name is a fingerprint of (contract path, generated text), so it
@@ -8726,8 +8726,8 @@ fi
 # but no declaration markers and therefore keeps its own path AND its own line
 # together. That is the shape every stub written before those markers has.
 locmarker="$dpvdir/nomarker"
-mkdir -p "$locmarker/_build/vibe_vpkg_types"
-locstub="_build/vibe_vpkg_types/types_nomarkerprobe.vibe"
+mkdir -p "$locmarker/.vibe/build/vpkg_types"
+locstub=".vibe/build/vpkg_types/types_nomarkerprobe.vibe"
 rm -f "$locstub"
 printf '// vibe: vpkg contract types module (#1840)\n// vibe: generated from %s/pkg/index.vpkg\nstruct T {\n  a: Int\n}\n\nstruct Box[T] {\n  b: T\n}\n\nfn main() -> Int {\n  0\n}\n' "$dpvdir" > "$locstub"
 rm -f "$dpvdir/nomarker.out" "$dpvdir/nomarker.out.diag"
@@ -8790,7 +8790,7 @@ if printf '%s\n' "$spoof_report" | grep -qF 'NOT_THIS_FILE'; then
   exit 1
 fi
 # ...including one NESTED under the generated directory. Prefix plus extension
-# alone still accepts `_build/vibe_vpkg_types/types_fake/source.vibe`, which is
+# alone still accepts `.vibe/build/vpkg_types/types_fake/source.vibe`, which is
 # an ordinary file someone wrote; the loader only ever produces a single
 # `types_<fingerprint>.vibe` basename there (Codex review on #2324).
 # The fixture has to sit at the REAL relative path, because the predicate reads
@@ -8799,7 +8799,7 @@ fi
 # tests/gates/lib.sh, which sets it to `_build/_gate_lane_gen/stage2.wasm`).
 # Only the `types_fake/` subdirectory is created and removed; the real generated
 # stubs alongside it are untouched.
-nesteddir="_build/vibe_vpkg_types/types_fake"
+nesteddir=".vibe/build/vpkg_types/types_fake"
 rm -rf "$nesteddir"; mkdir -p "$nesteddir"
 cat > "$nesteddir/source.vibe" <<'DPVEOF'
 // vibe: vpkg contract types module (#1840)
