@@ -6,8 +6,8 @@
 //# string, bool, span, magic header), a cursor over `Bytes` for reads,
 //# and the AST-level codecs built on them.
 //#
-//# Status: primitives complete + round-trip tested; `TypeExpr` and `Pat`
-//# complete + round-trip tested. `Expr` / `Stmt` are not written yet.
+//# Status: complete. All four trees -- `TypeExpr`, `Pat`, `Expr`,
+//# `Stmt` -- encode and round-trip, over the primitives below.
 //#
 //# The blocker recorded here before #2510 was that the spec still
 //# described the RETIRED MoonBit host's AST: its tag tables named
@@ -38,7 +38,7 @@
 //# Imports
 
 import @vibe/ast {
-  Pat, TypeExpr
+  Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr
 }
 
 //# Constants ===
@@ -756,4 +756,1111 @@ export fn ast_binary_read_pat_array(r: AstBinaryReader) -> Array[Pat] with Excep
     i = i + 1
   }
   out
+}
+
+//# Shared array shapes ===
+//#
+//# Named once rather than inlined per arm: the count prefix and the
+//# element order are the format, and a second spelling of either is a
+//# second thing to keep in step with docs/ast_binary_abi.md.
+
+fn ast_binary_write_string_array(buf: Bytes, items: Array[String]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    ast_binary_write_string(buf, Array::get(items, i))
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_string_array(r: AstBinaryReader) -> Array[String] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[String] = []
+  let mut i = 0
+  while i < count {
+    Array::push(out, ast_binary_read_string_checked(r))
+    i = i + 1
+  }
+  out
+}
+
+fn ast_binary_write_opt_type_expr(buf: Bytes, t: Option[TypeExpr]) -> Unit {
+  match t {
+    None => Bytes::push(buf, 0)
+    Some(v) => {
+      Bytes::push(buf, 1)
+      ast_binary_write_type_expr(buf, v)
+    }
+  }
+}
+
+fn ast_binary_read_opt_type_expr(r: AstBinaryReader) -> Option[TypeExpr] with Exception {
+  let tag = ast_binary_read_byte_checked(r)
+  if tag == 0 {
+    None
+  } else if tag == 1 {
+    Some(ast_binary_read_type_expr(r))
+  } else {
+    throw("ast_binary: optional present flag is neither 0x00 nor 0x01")
+  }
+}
+
+fn ast_binary_write_opt_expr(buf: Bytes, e: Option[Expr]) -> Unit {
+  match e {
+    None => Bytes::push(buf, 0)
+    Some(v) => {
+      Bytes::push(buf, 1)
+      ast_binary_write_expr(buf, v)
+    }
+  }
+}
+
+fn ast_binary_read_opt_expr(r: AstBinaryReader) -> Option[Expr] with Exception {
+  let tag = ast_binary_read_byte_checked(r)
+  if tag == 0 {
+    None
+  } else if tag == 1 {
+    Some(ast_binary_read_expr(r))
+  } else {
+    throw("ast_binary: optional present flag is neither 0x00 nor 0x01")
+  }
+}
+
+fn ast_binary_write_expr_array(buf: Bytes, items: Array[Expr]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    ast_binary_write_expr(buf, Array::get(items, i))
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_expr_array(r: AstBinaryReader) -> Array[Expr] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[Expr] = []
+  let mut i = 0
+  while i < count {
+    Array::push(out, ast_binary_read_expr(r))
+    i = i + 1
+  }
+  out
+}
+
+fn ast_binary_write_string_expr_array(buf: Bytes, items: Array[(String, Expr)]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (k, v) = Array::get(items, i)
+    ast_binary_write_string(buf, k)
+    ast_binary_write_expr(buf, v)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_string_expr_array(r: AstBinaryReader) -> Array[(String, Expr)] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[(String, Expr)] = []
+  let mut i = 0
+  while i < count {
+    let k = ast_binary_read_string_checked(r)
+    let v = ast_binary_read_expr(r)
+    Array::push(out, (k, v))
+    i = i + 1
+  }
+  out
+}
+
+fn ast_binary_write_pat_expr_array(buf: Bytes, items: Array[(Pat, Expr)]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (p, v) = Array::get(items, i)
+    ast_binary_write_pat(buf, p)
+    ast_binary_write_expr(buf, v)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_pat_expr_array(r: AstBinaryReader) -> Array[(Pat, Expr)] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[(Pat, Expr)] = []
+  let mut i = 0
+  while i < count {
+    let p = ast_binary_read_pat(r)
+    let v = ast_binary_read_expr(r)
+    Array::push(out, (p, v))
+    i = i + 1
+  }
+  out
+}
+
+fn ast_binary_write_bounds(buf: Bytes, items: Array[(String, Array[String])]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (k, vs) = Array::get(items, i)
+    ast_binary_write_string(buf, k)
+    ast_binary_write_string_array(buf, vs)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_bounds(r: AstBinaryReader) -> Array[(String, Array[String])] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[(String, Array[String])] = []
+  let mut i = 0
+  while i < count {
+    let k = ast_binary_read_string_checked(r)
+    let vs = ast_binary_read_string_array(r)
+    Array::push(out, (k, vs))
+    i = i + 1
+  }
+  out
+}
+
+fn ast_binary_write_params(buf: Bytes, items: Array[(String, Option[TypeExpr])]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (k, t) = Array::get(items, i)
+    ast_binary_write_string(buf, k)
+    ast_binary_write_opt_type_expr(buf, t)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_params(r: AstBinaryReader) -> Array[(String, Option[TypeExpr])] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[(String, Option[TypeExpr])] = []
+  let mut i = 0
+  while i < count {
+    let k = ast_binary_read_string_checked(r)
+    let t = ast_binary_read_opt_type_expr(r)
+    Array::push(out, (k, t))
+    i = i + 1
+  }
+  out
+}
+
+//# Expr ===
+//#
+//# Declaration order of `Expr` in lib/@vibe/ast/index.vpkg, per
+//# docs/ast_binary_abi.md, FROZEN the same way the others are.
+
+export let AST_BINARY_TAG_E_INT: Int = 1
+export let AST_BINARY_TAG_E_FLOAT: Int = 2
+export let AST_BINARY_TAG_E_STRING: Int = 3
+export let AST_BINARY_TAG_E_BOOL: Int = 4
+export let AST_BINARY_TAG_E_IDENT: Int = 5
+export let AST_BINARY_TAG_E_TUPLE: Int = 6
+export let AST_BINARY_TAG_E_ARRAY: Int = 7
+export let AST_BINARY_TAG_E_RECORD: Int = 8
+export let AST_BINARY_TAG_E_IF: Int = 9
+export let AST_BINARY_TAG_E_LET: Int = 10
+export let AST_BINARY_TAG_E_LET_REC: Int = 11
+export let AST_BINARY_TAG_E_LET_MUT: Int = 12
+export let AST_BINARY_TAG_E_ASSIGN: Int = 13
+export let AST_BINARY_TAG_E_ASSIGN_OP: Int = 14
+export let AST_BINARY_TAG_E_SEQ: Int = 15
+export let AST_BINARY_TAG_E_MATCH: Int = 16
+export let AST_BINARY_TAG_E_HANDLE: Int = 17
+export let AST_BINARY_TAG_E_WHILE: Int = 18
+export let AST_BINARY_TAG_E_LOOP: Int = 19
+export let AST_BINARY_TAG_E_FOR_IN: Int = 20
+export let AST_BINARY_TAG_E_CALL: Int = 21
+export let AST_BINARY_TAG_E_BIN_OP: Int = 22
+export let AST_BINARY_TAG_E_UNARY_OP: Int = 23
+export let AST_BINARY_TAG_E_FN: Int = 24
+export let AST_BINARY_TAG_E_DOT: Int = 25
+export let AST_BINARY_TAG_E_LABELED_ARG: Int = 26
+export let AST_BINARY_TAG_E_RETURN: Int = 27
+export let AST_BINARY_TAG_E_BREAK: Int = 28
+export let AST_BINARY_TAG_E_CONTINUE: Int = 29
+export let AST_BINARY_TAG_E_MAP: Int = 30
+export let AST_BINARY_TAG_E_SPREAD: Int = 31
+export let AST_BINARY_TAG_E_STRING_INTERP: Int = 32
+export let AST_BINARY_TAG_E_UNIT: Int = 33
+
+export fn ast_binary_write_expr(buf: Bytes, e: Expr) -> Unit {
+  match e {
+    EInt(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_INT)
+      ast_binary_write_svarint(buf, v)
+    }
+    EFloat(d) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_FLOAT)
+      ast_binary_write_f64(buf, d)
+    }
+    EString(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_STRING)
+      ast_binary_write_string(buf, v)
+    }
+    EBool(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_BOOL)
+      ast_binary_write_bool(buf, v)
+    }
+    EIdent(name, off) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_IDENT)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_svarint(buf, off)
+    }
+    ETuple(items) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_TUPLE)
+      ast_binary_write_expr_array(buf, items)
+    }
+    EArray(items) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_ARRAY)
+      ast_binary_write_expr_array(buf, items)
+    }
+    ERecord(name, fields, targs) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_RECORD)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_string_expr_array(buf, fields)
+      ast_binary_write_type_expr_array(buf, targs)
+    }
+    EIf(c, t, f) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_IF)
+      ast_binary_write_expr(buf, c)
+      ast_binary_write_expr(buf, t)
+      ast_binary_write_expr(buf, f)
+    }
+    ELet(name, v, body, off) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_LET)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_expr(buf, v)
+      ast_binary_write_expr(buf, body)
+      ast_binary_write_svarint(buf, off)
+    }
+    ELetRec(name, v, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_LET_REC)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_expr(buf, v)
+      ast_binary_write_expr(buf, body)
+    }
+    ELetMut(name, v, body, off) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_LET_MUT)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_expr(buf, v)
+      ast_binary_write_expr(buf, body)
+      ast_binary_write_svarint(buf, off)
+    }
+    EAssign(name, v, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_ASSIGN)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_expr(buf, v)
+      ast_binary_write_expr(buf, body)
+    }
+    EAssignOp(target, op, v, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_ASSIGN_OP)
+      ast_binary_write_string(buf, target)
+      ast_binary_write_string(buf, op)
+      ast_binary_write_expr(buf, v)
+      ast_binary_write_expr(buf, body)
+    }
+    ESeq(a, b) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_SEQ)
+      ast_binary_write_expr(buf, a)
+      ast_binary_write_expr(buf, b)
+    }
+    EMatch(scrut, arms) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_MATCH)
+      ast_binary_write_expr(buf, scrut)
+      ast_binary_write_pat_expr_array(buf, arms)
+    }
+    EHandle(body, arms) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_HANDLE)
+      ast_binary_write_expr(buf, body)
+      ast_binary_write_pat_expr_array(buf, arms)
+    }
+    EWhile(c, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_WHILE)
+      ast_binary_write_expr(buf, c)
+      ast_binary_write_expr(buf, body)
+    }
+    ELoop(params, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_LOOP)
+      ast_binary_write_string_expr_array(buf, params)
+      ast_binary_write_expr(buf, body)
+    }
+    EForIn(vname, iname, it, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_FOR_IN)
+      ast_binary_write_string(buf, vname)
+      ast_binary_write_optstr(buf, iname)
+      ast_binary_write_expr(buf, it)
+      ast_binary_write_expr(buf, body)
+    }
+    ECall(callee, args, off) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_CALL)
+      ast_binary_write_expr(buf, callee)
+      ast_binary_write_expr_array(buf, args)
+      ast_binary_write_svarint(buf, off)
+    }
+    EBinOp(op, l, r, off) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_BIN_OP)
+      ast_binary_write_string(buf, op)
+      ast_binary_write_expr(buf, l)
+      ast_binary_write_expr(buf, r)
+      ast_binary_write_svarint(buf, off)
+    }
+    EUnaryOp(op, operand) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_UNARY_OP)
+      ast_binary_write_string(buf, op)
+      ast_binary_write_expr(buf, operand)
+    }
+    EFn(tparams, bounds, params, ret, row, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_FN)
+      ast_binary_write_string_array(buf, tparams)
+      ast_binary_write_bounds(buf, bounds)
+      ast_binary_write_params(buf, params)
+      ast_binary_write_opt_type_expr(buf, ret)
+      ast_binary_write_optstr(buf, row)
+      ast_binary_write_expr(buf, body)
+    }
+    EDot(recv, field, off, foff) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_DOT)
+      ast_binary_write_expr(buf, recv)
+      ast_binary_write_string(buf, field)
+      ast_binary_write_svarint(buf, off)
+      ast_binary_write_svarint(buf, foff)
+    }
+    ELabeledArg(label, param, v) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_LABELED_ARG)
+      ast_binary_write_string(buf, label)
+      ast_binary_write_string(buf, param)
+      ast_binary_write_expr(buf, v)
+    }
+    EReturn(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_RETURN)
+      ast_binary_write_expr(buf, v)
+    }
+    EBreak(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_BREAK)
+      ast_binary_write_opt_expr(buf, v)
+    }
+    EContinue(args) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_CONTINUE)
+      ast_binary_write_expr_array(buf, args)
+    }
+    EMap(entries) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_MAP)
+      ast_binary_write_string_expr_array(buf, entries)
+    }
+    ESpread(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_SPREAD)
+      ast_binary_write_expr(buf, v)
+    }
+    EStringInterp(parts) => {
+      Bytes::push(buf, AST_BINARY_TAG_E_STRING_INTERP)
+      ast_binary_write_string_array(buf, parts)
+    }
+    EUnit => Bytes::push(buf, AST_BINARY_TAG_E_UNIT)
+  }
+}
+
+//# Fields bound in wire order before construction, for the reason
+//# `ast_binary_read_type_expr` gives.
+export fn ast_binary_read_expr(r: AstBinaryReader) -> Expr with Exception {
+  let tag = ast_binary_read_byte_checked(r)
+  if tag == AST_BINARY_TAG_E_INT {
+    EInt(ast_binary_read_svarint_checked(r))
+  } else if tag == AST_BINARY_TAG_E_FLOAT {
+    EFloat(ast_binary_read_f64_checked(r))
+  } else if tag == AST_BINARY_TAG_E_STRING {
+    EString(ast_binary_read_string_checked(r))
+  } else if tag == AST_BINARY_TAG_E_BOOL {
+    EBool(ast_binary_read_bool_checked(r))
+  } else if tag == AST_BINARY_TAG_E_IDENT {
+    let name = ast_binary_read_string_checked(r)
+    let off = ast_binary_read_svarint_checked(r)
+    EIdent(name, off)
+  } else if tag == AST_BINARY_TAG_E_TUPLE {
+    ETuple(ast_binary_read_expr_array(r))
+  } else if tag == AST_BINARY_TAG_E_ARRAY {
+    EArray(ast_binary_read_expr_array(r))
+  } else if tag == AST_BINARY_TAG_E_RECORD {
+    let name = ast_binary_read_string_checked(r)
+    let fields = ast_binary_read_string_expr_array(r)
+    let targs = ast_binary_read_type_expr_array(r)
+    ERecord(name, fields, targs)
+  } else if tag == AST_BINARY_TAG_E_IF {
+    let c = ast_binary_read_expr(r)
+    let t = ast_binary_read_expr(r)
+    let f = ast_binary_read_expr(r)
+    EIf(c, t, f)
+  } else if tag == AST_BINARY_TAG_E_LET {
+    let name = ast_binary_read_string_checked(r)
+    let v = ast_binary_read_expr(r)
+    let body = ast_binary_read_expr(r)
+    let off = ast_binary_read_svarint_checked(r)
+    ELet(name, v, body, off)
+  } else if tag == AST_BINARY_TAG_E_LET_REC {
+    let name = ast_binary_read_string_checked(r)
+    let v = ast_binary_read_expr(r)
+    let body = ast_binary_read_expr(r)
+    ELetRec(name, v, body)
+  } else if tag == AST_BINARY_TAG_E_LET_MUT {
+    let name = ast_binary_read_string_checked(r)
+    let v = ast_binary_read_expr(r)
+    let body = ast_binary_read_expr(r)
+    let off = ast_binary_read_svarint_checked(r)
+    ELetMut(name, v, body, off)
+  } else if tag == AST_BINARY_TAG_E_ASSIGN {
+    let name = ast_binary_read_string_checked(r)
+    let v = ast_binary_read_expr(r)
+    let body = ast_binary_read_expr(r)
+    EAssign(name, v, body)
+  } else if tag == AST_BINARY_TAG_E_ASSIGN_OP {
+    let target = ast_binary_read_string_checked(r)
+    let op = ast_binary_read_string_checked(r)
+    let v = ast_binary_read_expr(r)
+    let body = ast_binary_read_expr(r)
+    EAssignOp(target, op, v, body)
+  } else if tag == AST_BINARY_TAG_E_SEQ {
+    let a = ast_binary_read_expr(r)
+    let b = ast_binary_read_expr(r)
+    ESeq(a, b)
+  } else if tag == AST_BINARY_TAG_E_MATCH {
+    let scrut = ast_binary_read_expr(r)
+    let arms = ast_binary_read_pat_expr_array(r)
+    EMatch(scrut, arms)
+  } else if tag == AST_BINARY_TAG_E_HANDLE {
+    let body = ast_binary_read_expr(r)
+    let arms = ast_binary_read_pat_expr_array(r)
+    EHandle(body, arms)
+  } else if tag == AST_BINARY_TAG_E_WHILE {
+    let c = ast_binary_read_expr(r)
+    let body = ast_binary_read_expr(r)
+    EWhile(c, body)
+  } else if tag == AST_BINARY_TAG_E_LOOP {
+    let params = ast_binary_read_string_expr_array(r)
+    let body = ast_binary_read_expr(r)
+    ELoop(params, body)
+  } else if tag == AST_BINARY_TAG_E_FOR_IN {
+    let vname = ast_binary_read_string_checked(r)
+    let iname = ast_binary_read_optstr_checked(r)
+    let it = ast_binary_read_expr(r)
+    let body = ast_binary_read_expr(r)
+    EForIn(vname, iname, it, body)
+  } else if tag == AST_BINARY_TAG_E_CALL {
+    let callee = ast_binary_read_expr(r)
+    let args = ast_binary_read_expr_array(r)
+    let off = ast_binary_read_svarint_checked(r)
+    ECall(callee, args, off)
+  } else if tag == AST_BINARY_TAG_E_BIN_OP {
+    let op = ast_binary_read_string_checked(r)
+    let l = ast_binary_read_expr(r)
+    let rr = ast_binary_read_expr(r)
+    let off = ast_binary_read_svarint_checked(r)
+    EBinOp(op, l, rr, off)
+  } else if tag == AST_BINARY_TAG_E_UNARY_OP {
+    let op = ast_binary_read_string_checked(r)
+    let operand = ast_binary_read_expr(r)
+    EUnaryOp(op, operand)
+  } else if tag == AST_BINARY_TAG_E_FN {
+    let tparams = ast_binary_read_string_array(r)
+    let bounds = ast_binary_read_bounds(r)
+    let params = ast_binary_read_params(r)
+    let ret = ast_binary_read_opt_type_expr(r)
+    let row = ast_binary_read_optstr_checked(r)
+    let body = ast_binary_read_expr(r)
+    EFn(tparams, bounds, params, ret, row, body)
+  } else if tag == AST_BINARY_TAG_E_DOT {
+    let recv = ast_binary_read_expr(r)
+    let field = ast_binary_read_string_checked(r)
+    let off = ast_binary_read_svarint_checked(r)
+    let foff = ast_binary_read_svarint_checked(r)
+    EDot(recv, field, off, foff)
+  } else if tag == AST_BINARY_TAG_E_LABELED_ARG {
+    let label = ast_binary_read_string_checked(r)
+    let param = ast_binary_read_string_checked(r)
+    let v = ast_binary_read_expr(r)
+    ELabeledArg(label, param, v)
+  } else if tag == AST_BINARY_TAG_E_RETURN {
+    EReturn(ast_binary_read_expr(r))
+  } else if tag == AST_BINARY_TAG_E_BREAK {
+    EBreak(ast_binary_read_opt_expr(r))
+  } else if tag == AST_BINARY_TAG_E_CONTINUE {
+    EContinue(ast_binary_read_expr_array(r))
+  } else if tag == AST_BINARY_TAG_E_MAP {
+    EMap(ast_binary_read_string_expr_array(r))
+  } else if tag == AST_BINARY_TAG_E_SPREAD {
+    ESpread(ast_binary_read_expr(r))
+  } else if tag == AST_BINARY_TAG_E_STRING_INTERP {
+    EStringInterp(ast_binary_read_string_array(r))
+  } else if tag == AST_BINARY_TAG_E_UNIT {
+    EUnit
+  } else {
+    throw("ast_binary: unknown Expr tag " + Int::to_string(tag))
+  }
+}
+
+//# ImportKind / ImportItem ===
+
+export let AST_BINARY_TAG_IMPORT_TYPE: Int = 1
+export let AST_BINARY_TAG_IMPORT_STRUCT: Int = 2
+export let AST_BINARY_TAG_IMPORT_ENUM: Int = 3
+export let AST_BINARY_TAG_IMPORT_EFFECT: Int = 4
+export let AST_BINARY_TAG_IMPORT_TRAIT: Int = 5
+
+fn ast_binary_write_import_kind(buf: Bytes, k: ImportKind) -> Unit {
+  match k {
+    ImportType => Bytes::push(buf, AST_BINARY_TAG_IMPORT_TYPE)
+    ImportStruct => Bytes::push(buf, AST_BINARY_TAG_IMPORT_STRUCT)
+    ImportEnum => Bytes::push(buf, AST_BINARY_TAG_IMPORT_ENUM)
+    ImportEffect => Bytes::push(buf, AST_BINARY_TAG_IMPORT_EFFECT)
+    ImportTrait => Bytes::push(buf, AST_BINARY_TAG_IMPORT_TRAIT)
+  }
+}
+
+fn ast_binary_read_import_kind(r: AstBinaryReader) -> ImportKind with Exception {
+  let tag = ast_binary_read_byte_checked(r)
+  if tag == AST_BINARY_TAG_IMPORT_TYPE {
+    ImportType
+  } else if tag == AST_BINARY_TAG_IMPORT_STRUCT {
+    ImportStruct
+  } else if tag == AST_BINARY_TAG_IMPORT_ENUM {
+    ImportEnum
+  } else if tag == AST_BINARY_TAG_IMPORT_EFFECT {
+    ImportEffect
+  } else if tag == AST_BINARY_TAG_IMPORT_TRAIT {
+    ImportTrait
+  } else {
+    throw("ast_binary: unknown ImportKind tag " + Int::to_string(tag))
+  }
+}
+
+//# A struct, so no tag of its own: `opt<ImportKind> string optstr`.
+fn ast_binary_write_import_items(buf: Bytes, items: Array[ImportItem]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let it = Array::get(items, i)
+    match it.kind {
+      None => Bytes::push(buf, 0)
+      Some(k) => {
+        Bytes::push(buf, 1)
+        ast_binary_write_import_kind(buf, k)
+      }
+    }
+    ast_binary_write_string(buf, it.name)
+    ast_binary_write_optstr(buf, it.alias)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_import_items(r: AstBinaryReader) -> Array[ImportItem] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[ImportItem] = []
+  let mut i = 0
+  while i < count {
+    let flag = ast_binary_read_byte_checked(r)
+    let kind = if flag == 0 {
+      None
+    } else if flag == 1 {
+      Some(ast_binary_read_import_kind(r))
+    } else {
+      throw("ast_binary: optional present flag is neither 0x00 nor 0x01")
+    }
+    let name = ast_binary_read_string_checked(r)
+    let alias = ast_binary_read_optstr_checked(r)
+    Array::push(out, ImportItem::{
+      kind: kind,
+      name: name,
+      alias: alias
+    })
+    i = i + 1
+  }
+  out
+}
+
+//# Stmt field shapes ===
+
+fn ast_binary_write_ctors(buf: Bytes, items: Array[(String, Array[TypeExpr])]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (n, ts) = Array::get(items, i)
+    ast_binary_write_string(buf, n)
+    ast_binary_write_type_expr_array(buf, ts)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_ctors(r: AstBinaryReader) -> Array[(String, Array[TypeExpr])] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[(String, Array[TypeExpr])] = []
+  let mut i = 0
+  while i < count {
+    let n = ast_binary_read_string_checked(r)
+    let ts = ast_binary_read_type_expr_array(r)
+    Array::push(out, (n, ts))
+    i = i + 1
+  }
+  out
+}
+
+fn ast_binary_write_fields(buf: Bytes, items: Array[(String, TypeExpr)]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (n, t) = Array::get(items, i)
+    ast_binary_write_string(buf, n)
+    ast_binary_write_type_expr(buf, t)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_fields(r: AstBinaryReader) -> Array[(String, TypeExpr)] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[(String, TypeExpr)] = []
+  let mut i = 0
+  while i < count {
+    let n = ast_binary_read_string_checked(r)
+    let t = ast_binary_read_type_expr(r)
+    Array::push(out, (n, t))
+    i = i + 1
+  }
+  out
+}
+
+fn ast_binary_write_sigs(buf: Bytes, items: Array[(String, Array[TypeExpr], TypeExpr)]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (n, ps, ret) = Array::get(items, i)
+    ast_binary_write_string(buf, n)
+    ast_binary_write_type_expr_array(buf, ps)
+    ast_binary_write_type_expr(buf, ret)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_sigs(r: AstBinaryReader) -> Array[(String, Array[TypeExpr], TypeExpr)] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[(String, Array[TypeExpr], TypeExpr)] = []
+  let mut i = 0
+  while i < count {
+    let n = ast_binary_read_string_checked(r)
+    let ps = ast_binary_read_type_expr_array(r)
+    let ret = ast_binary_read_type_expr(r)
+    Array::push(out, (n, ps, ret))
+    i = i + 1
+  }
+  out
+}
+
+fn ast_binary_write_method_generics(buf: Bytes, items: Array[(String, Array[String], Array[(String, Array[String])])]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (n, tps, bs) = Array::get(items, i)
+    ast_binary_write_string(buf, n)
+    ast_binary_write_string_array(buf, tps)
+    ast_binary_write_bounds(buf, bs)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_method_generics(r: AstBinaryReader) -> Array[(String, Array[String], Array[(String, Array[String])])] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[(String, Array[String], Array[(String, Array[String])])] = []
+  let mut i = 0
+  while i < count {
+    let n = ast_binary_read_string_checked(r)
+    let tps = ast_binary_read_string_array(r)
+    let bs = ast_binary_read_bounds(r)
+    Array::push(out, (n, tps, bs))
+    i = i + 1
+  }
+  out
+}
+
+fn ast_binary_write_string_pairs(buf: Bytes, items: Array[(String, String)]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    let (a, b) = Array::get(items, i)
+    ast_binary_write_string(buf, a)
+    ast_binary_write_string(buf, b)
+    i = i + 1
+  }
+}
+
+fn ast_binary_read_string_pairs(r: AstBinaryReader) -> Array[(String, String)] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[(String, String)] = []
+  let mut i = 0
+  while i < count {
+    let a = ast_binary_read_string_checked(r)
+    let b = ast_binary_read_string_checked(r)
+    Array::push(out, (a, b))
+    i = i + 1
+  }
+  out
+}
+
+//# Stmt ===
+//#
+//# Declaration order of `Stmt` in lib/@vibe/ast/index.vpkg, per
+//# docs/ast_binary_abi.md, FROZEN the same way the others are.
+
+export let AST_BINARY_TAG_S_LET: Int = 1
+export let AST_BINARY_TAG_S_LET_MUT: Int = 2
+export let AST_BINARY_TAG_S_ENUM: Int = 3
+export let AST_BINARY_TAG_S_SUBERROR: Int = 4
+export let AST_BINARY_TAG_S_STRUCT: Int = 5
+export let AST_BINARY_TAG_S_TYPE_ALIAS: Int = 6
+export let AST_BINARY_TAG_S_TRAIT: Int = 7
+export let AST_BINARY_TAG_S_IMPL: Int = 8
+export let AST_BINARY_TAG_S_EXTERN_LET: Int = 9
+export let AST_BINARY_TAG_S_IMPORT: Int = 10
+export let AST_BINARY_TAG_S_TEST: Int = 11
+export let AST_BINARY_TAG_S_BENCH: Int = 12
+export let AST_BINARY_TAG_S_EXAMPLE: Int = 13
+export let AST_BINARY_TAG_S_EXPR: Int = 14
+export let AST_BINARY_TAG_S_EXPORT: Int = 15
+export let AST_BINARY_TAG_S_RE_EXPORT: Int = 16
+export let AST_BINARY_TAG_S_ALIAS_DECL: Int = 17
+export let AST_BINARY_TAG_S_RE_EXPORT_SOURCE_BOUNDARY: Int = 18
+export let AST_BINARY_TAG_S_QUALIFIED_PATTERN_REFS: Int = 19
+export let AST_BINARY_TAG_S_TEST_EFFECT_ROWS: Int = 20
+export let AST_BINARY_TAG_S_LET_PAT: Int = 21
+export let AST_BINARY_TAG_S_MODULE: Int = 22
+export let AST_BINARY_TAG_S_EFFECT_DEF: Int = 23
+export let AST_BINARY_TAG_S_EFFECT_SET: Int = 24
+export let AST_BINARY_TAG_S_RESOURCE: Int = 25
+export let AST_BINARY_TAG_S_FN_DECL: Int = 26
+
+export fn ast_binary_write_stmt(buf: Bytes, st: Stmt) -> Unit {
+  match st {
+    SLet(exported, is_rec, name, ty, v) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_LET)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_bool(buf, is_rec)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_opt_type_expr(buf, ty)
+      ast_binary_write_expr(buf, v)
+    }
+    SLetMut(name, ty, v) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_LET_MUT)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_opt_type_expr(buf, ty)
+      ast_binary_write_expr(buf, v)
+    }
+    SEnum(exported, name, tps, ctors, derives) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_ENUM)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_string_array(buf, tps)
+      ast_binary_write_ctors(buf, ctors)
+      ast_binary_write_string_array(buf, derives)
+    }
+    SSuberror(exported, name, ctors) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_SUBERROR)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_ctors(buf, ctors)
+    }
+    SStruct(exported, name, fields, derives, muts, tps) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_STRUCT)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_fields(buf, fields)
+      ast_binary_write_string_array(buf, derives)
+      ast_binary_write_string_array(buf, muts)
+      ast_binary_write_string_array(buf, tps)
+    }
+    STypeAlias(exported, name, tps, target) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_TYPE_ALIAS)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_string_array(buf, tps)
+      ast_binary_write_type_expr(buf, target)
+    }
+    STrait(exported, name, supers, methods, generics, header) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_TRAIT)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_string_array(buf, supers)
+      ast_binary_write_sigs(buf, methods)
+      ast_binary_write_method_generics(buf, generics)
+      ast_binary_write_string_array(buf, header)
+    }
+    SImpl(tps, bounds, trait_name, target) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_IMPL)
+      ast_binary_write_string_array(buf, tps)
+      ast_binary_write_bounds(buf, bounds)
+      ast_binary_write_string(buf, trait_name)
+      ast_binary_write_type_expr(buf, target)
+    }
+    SExternLet(name, ty) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_EXTERN_LET)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_type_expr(buf, ty)
+    }
+    SImport(source, items) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_IMPORT)
+      ast_binary_write_string(buf, source)
+      ast_binary_write_import_items(buf, items)
+    }
+    STest(name, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_TEST)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_expr(buf, body)
+    }
+    SBench(name, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_BENCH)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_expr(buf, body)
+    }
+    SExample(name, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_EXAMPLE)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_expr(buf, body)
+    }
+    SExpr(v) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_EXPR)
+      ast_binary_write_expr(buf, v)
+    }
+    SExport(names) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_EXPORT)
+      ast_binary_write_string_array(buf, names)
+    }
+    SReExport(source, items) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_RE_EXPORT)
+      ast_binary_write_string(buf, source)
+      ast_binary_write_import_items(buf, items)
+    }
+    SAliasDecl(alias, source) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_ALIAS_DECL)
+      ast_binary_write_string(buf, alias)
+      ast_binary_write_string(buf, source)
+    }
+    SReExportSourceBoundary(local, publication) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_RE_EXPORT_SOURCE_BOUNDARY)
+      ast_binary_write_string_array(buf, local)
+      ast_binary_write_string_array(buf, publication)
+    }
+    SQualifiedPatternRefs(pairs) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_QUALIFIED_PATTERN_REFS)
+      ast_binary_write_string_pairs(buf, pairs)
+    }
+    STestEffectRows(pairs) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_TEST_EFFECT_ROWS)
+      ast_binary_write_string_pairs(buf, pairs)
+    }
+    SLetPat(p, v) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_LET_PAT)
+      ast_binary_write_pat(buf, p)
+      ast_binary_write_expr(buf, v)
+    }
+    SModule(exported, name, body) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_MODULE)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_stmt_array(buf, body)
+    }
+    SEffectDef(exported, name, tps, ops) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_EFFECT_DEF)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_string_array(buf, tps)
+      ast_binary_write_sigs(buf, ops)
+    }
+    SEffectSet(exported, name, members) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_EFFECT_SET)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_string_array(buf, members)
+    }
+    SResource(name, kind_path) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_RESOURCE)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_string(buf, kind_path)
+    }
+    SFnDecl(exported, name, fn_value, requires, ensures) => {
+      Bytes::push(buf, AST_BINARY_TAG_S_FN_DECL)
+      ast_binary_write_bool(buf, exported)
+      ast_binary_write_string(buf, name)
+      ast_binary_write_expr(buf, fn_value)
+      ast_binary_write_expr_array(buf, requires)
+      ast_binary_write_expr_array(buf, ensures)
+    }
+  }
+}
+
+export fn ast_binary_write_stmt_array(buf: Bytes, items: Array[Stmt]) -> Unit {
+  ast_binary_write_varint(buf, Array::length(items))
+  let mut i = 0
+  while i < Array::length(items) {
+    ast_binary_write_stmt(buf, Array::get(items, i))
+    i = i + 1
+  }
+}
+
+//# Fields bound in wire order before construction, for the reason
+//# `ast_binary_read_type_expr` gives.
+export fn ast_binary_read_stmt(r: AstBinaryReader) -> Stmt with Exception {
+  let tag = ast_binary_read_byte_checked(r)
+  if tag == AST_BINARY_TAG_S_LET {
+    let exported = ast_binary_read_bool_checked(r)
+    let is_rec = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let ty = ast_binary_read_opt_type_expr(r)
+    let v = ast_binary_read_expr(r)
+    SLet(exported, is_rec, name, ty, v)
+  } else if tag == AST_BINARY_TAG_S_LET_MUT {
+    let name = ast_binary_read_string_checked(r)
+    let ty = ast_binary_read_opt_type_expr(r)
+    let v = ast_binary_read_expr(r)
+    SLetMut(name, ty, v)
+  } else if tag == AST_BINARY_TAG_S_ENUM {
+    let exported = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let tps = ast_binary_read_string_array(r)
+    let ctors = ast_binary_read_ctors(r)
+    let derives = ast_binary_read_string_array(r)
+    SEnum(exported, name, tps, ctors, derives)
+  } else if tag == AST_BINARY_TAG_S_SUBERROR {
+    let exported = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let ctors = ast_binary_read_ctors(r)
+    SSuberror(exported, name, ctors)
+  } else if tag == AST_BINARY_TAG_S_STRUCT {
+    let exported = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let fields = ast_binary_read_fields(r)
+    let derives = ast_binary_read_string_array(r)
+    let muts = ast_binary_read_string_array(r)
+    let tps = ast_binary_read_string_array(r)
+    SStruct(exported, name, fields, derives, muts, tps)
+  } else if tag == AST_BINARY_TAG_S_TYPE_ALIAS {
+    let exported = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let tps = ast_binary_read_string_array(r)
+    let target = ast_binary_read_type_expr(r)
+    STypeAlias(exported, name, tps, target)
+  } else if tag == AST_BINARY_TAG_S_TRAIT {
+    let exported = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let supers = ast_binary_read_string_array(r)
+    let methods = ast_binary_read_sigs(r)
+    let generics = ast_binary_read_method_generics(r)
+    let header = ast_binary_read_string_array(r)
+    STrait(exported, name, supers, methods, generics, header)
+  } else if tag == AST_BINARY_TAG_S_IMPL {
+    let tps = ast_binary_read_string_array(r)
+    let bounds = ast_binary_read_bounds(r)
+    let trait_name = ast_binary_read_string_checked(r)
+    let target = ast_binary_read_type_expr(r)
+    SImpl(tps, bounds, trait_name, target)
+  } else if tag == AST_BINARY_TAG_S_EXTERN_LET {
+    let name = ast_binary_read_string_checked(r)
+    let ty = ast_binary_read_type_expr(r)
+    SExternLet(name, ty)
+  } else if tag == AST_BINARY_TAG_S_IMPORT {
+    let source = ast_binary_read_string_checked(r)
+    let items = ast_binary_read_import_items(r)
+    SImport(source, items)
+  } else if tag == AST_BINARY_TAG_S_TEST {
+    let name = ast_binary_read_string_checked(r)
+    let body = ast_binary_read_expr(r)
+    STest(name, body)
+  } else if tag == AST_BINARY_TAG_S_BENCH {
+    let name = ast_binary_read_string_checked(r)
+    let body = ast_binary_read_expr(r)
+    SBench(name, body)
+  } else if tag == AST_BINARY_TAG_S_EXAMPLE {
+    let name = ast_binary_read_string_checked(r)
+    let body = ast_binary_read_expr(r)
+    SExample(name, body)
+  } else if tag == AST_BINARY_TAG_S_EXPR {
+    SExpr(ast_binary_read_expr(r))
+  } else if tag == AST_BINARY_TAG_S_EXPORT {
+    SExport(ast_binary_read_string_array(r))
+  } else if tag == AST_BINARY_TAG_S_RE_EXPORT {
+    let source = ast_binary_read_string_checked(r)
+    let items = ast_binary_read_import_items(r)
+    SReExport(source, items)
+  } else if tag == AST_BINARY_TAG_S_ALIAS_DECL {
+    let alias = ast_binary_read_string_checked(r)
+    let source = ast_binary_read_string_checked(r)
+    SAliasDecl(alias, source)
+  } else if tag == AST_BINARY_TAG_S_RE_EXPORT_SOURCE_BOUNDARY {
+    let local = ast_binary_read_string_array(r)
+    let publication = ast_binary_read_string_array(r)
+    SReExportSourceBoundary(local, publication)
+  } else if tag == AST_BINARY_TAG_S_QUALIFIED_PATTERN_REFS {
+    SQualifiedPatternRefs(ast_binary_read_string_pairs(r))
+  } else if tag == AST_BINARY_TAG_S_TEST_EFFECT_ROWS {
+    STestEffectRows(ast_binary_read_string_pairs(r))
+  } else if tag == AST_BINARY_TAG_S_LET_PAT {
+    let p = ast_binary_read_pat(r)
+    let v = ast_binary_read_expr(r)
+    SLetPat(p, v)
+  } else if tag == AST_BINARY_TAG_S_MODULE {
+    let exported = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let body = ast_binary_read_stmt_array(r)
+    SModule(exported, name, body)
+  } else if tag == AST_BINARY_TAG_S_EFFECT_DEF {
+    let exported = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let tps = ast_binary_read_string_array(r)
+    let ops = ast_binary_read_sigs(r)
+    SEffectDef(exported, name, tps, ops)
+  } else if tag == AST_BINARY_TAG_S_EFFECT_SET {
+    let exported = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let members = ast_binary_read_string_array(r)
+    SEffectSet(exported, name, members)
+  } else if tag == AST_BINARY_TAG_S_RESOURCE {
+    let name = ast_binary_read_string_checked(r)
+    let kind_path = ast_binary_read_string_checked(r)
+    SResource(name, kind_path)
+  } else if tag == AST_BINARY_TAG_S_FN_DECL {
+    let exported = ast_binary_read_bool_checked(r)
+    let name = ast_binary_read_string_checked(r)
+    let fn_value = ast_binary_read_expr(r)
+    let requires = ast_binary_read_expr_array(r)
+    let ensures = ast_binary_read_expr_array(r)
+    SFnDecl(exported, name, fn_value, requires, ensures)
+  } else {
+    throw("ast_binary: unknown Stmt tag " + Int::to_string(tag))
+  }
+}
+
+export fn ast_binary_read_stmt_array(r: AstBinaryReader) -> Array[Stmt] with Exception {
+  let count = ast_binary_read_count_checked(r)
+  let out: Array[Stmt] = []
+  let mut i = 0
+  while i < count {
+    Array::push(out, ast_binary_read_stmt(r))
+    i = i + 1
+  }
+  out
+}
+
+//# Module ===
+//#
+//# `magic 'vAST' + version + array<Stmt>`, the whole file layout.
+
+export fn ast_binary_write_module(buf: Bytes, stmts: Array[Stmt]) -> Unit {
+  ast_binary_write_header(buf)
+  ast_binary_write_stmt_array(buf, stmts)
+}
+
+export fn ast_binary_read_module(r: AstBinaryReader) -> Array[Stmt] with Exception {
+  let (ok, version) = ast_binary_read_header(r)
+  if ok {
+    ()
+  } else {
+    throw("ast_binary: bad magic")
+  }
+  if version == AST_BINARY_VERSION {
+    ()
+  } else {
+    throw("ast_binary: unsupported version " + Int::to_string(version))
+  }
+  ast_binary_read_stmt_array(r)
 }

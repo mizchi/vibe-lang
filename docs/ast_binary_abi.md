@@ -244,18 +244,23 @@ byte sequence for the empty module (header + `array_count varint(0)`).
 `TypeExpr`: canonical bytes for each of the five tags, roundtrips
 through nesting, and the unknown-tag / truncated-input rejections.
 
-`lib/@vibe/compiler/tests/ast_binary_pat_test.vibe` covers `Pat`: every
-variant, `PFloat` across both signs and out to 1e300, nesting through
-all four recursive slots, and the unknown-tag / malformed-input
-rejections.
+`lib/@vibe/compiler/tests/ast_binary_pat_test.vibe` covers `Pat`,
+`ast_binary_expr_test.vibe` covers `Expr`, and `ast_binary_stmt_test.vibe`
+covers `Stmt` plus `ImportKind` / `ImportItem` and the whole-module file
+layout: every variant, nesting through every recursive slot, and the
+unknown-tag / malformed-input rejections each tree can produce.
 
-The `Expr` and `Stmt` encoders are not written yet. Coverage for them
-lands with them.
+**All four trees are implemented.** `ast_binary_write_module` /
+`ast_binary_read_module` are the file layout above end to end — magic,
+version, `array<Stmt>` — and the module test asserts a re-encode is
+byte-identical to the original, which is the strongest available statement
+that the tree survived the trip.
 
-`f64` needed `Double::from_i64_bits_lohi` (#2651) before `Pat` could be
-written at all: writing the pattern was always exact, and reading it
-back through the single-`Int` `Double::from_i64_bits` could not express
-a negative double.
+`f64` needed `Double::from_i64_bits_lohi` (#2651) before `Pat` or `Expr`
+could be written at all: writing the pattern was always exact, and reading
+it back through the single-`Int` `Double::from_i64_bits` could not express
+a negative double. The `PFloat` and `EFloat` tests carry both signs out to
+1e300 for that reason.
 
 Whenever a new variant is added:
 
