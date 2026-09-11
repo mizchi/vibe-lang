@@ -38,22 +38,31 @@ fi
 # Split into job blocks: a job header is exactly two spaces of indent at the
 # top level of `jobs:`. awk, not a YAML parser, because the property being
 # checked is textual and the gate must run with nothing installed.
+# ORDER MATTERS, not mere presence (Codex review of #2645). A job whose first
+# script invocation comes BEFORE its cache step has already paid the fetch --
+# or the ~5 minute rebuild -- by the time the cache is restored, and a
+# presence-only check calls that clean. So the violation is recorded at the
+# first script line seen while `has_cache` is still 0, and a later
+# `seed-artifact-` cannot retract it.
 missing="$(awk '
+  function flush() { if (job != "" && bad) print job }
   /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
-  /^[A-Za-z0-9_-]+:/ { if (!/^jobs:/) { if (job != "" && uses_scripts && !has_cache) print job; in_jobs = 0; job = "" } }
+  /^[A-Za-z0-9_-]+:/ { if (!/^jobs:/) { flush(); in_jobs = 0; job = "" } }
   !in_jobs { next }
   /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
-    if (job != "" && uses_scripts && !has_cache) print job
+    flush()
     job = $1; sub(/:$/, "", job)
-    uses_scripts = 0; has_cache = 0
+    bad = 0; has_cache = 0
     next
   }
   job == "" { next }
-  /bash[[:space:]]+scripts\// { uses_scripts = 1 }
-  /bash[[:space:]]+tests\//   { uses_scripts = 1 }
-  /pkf[[:space:]]+run/        { uses_scripts = 1 }
-  /seed-artifact-/            { has_cache = 1 }
-  END { if (job != "" && uses_scripts && !has_cache) print job }
+  # The cache line is read FIRST on its own line, so a step that both restores
+  # the cache and runs a script on later lines is still ordered correctly.
+  /seed-artifact-/ { has_cache = 1; next }
+  /bash[[:space:]]+scripts\// || /bash[[:space:]]+tests\// || /pkf[[:space:]]+run/ {
+    if (!has_cache) bad = 1
+  }
+  END { flush() }
 ' "$WORKFLOW")"
 
 # Refuse to answer rather than pass when the scan found no jobs at all: an
@@ -65,13 +74,16 @@ scanned="$(awk '
   in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { n++ }
   END { print n + 0 }
 ' "$WORKFLOW")"
-if [ "$scanned" -lt 2 ]; then
+# One job is a legitimate workflow; ZERO means the scan found nothing, which is
+# the case that must not read as "no offending jobs". (The threshold was 2 and
+# refused a single-job workflow -- caught by this gate's own Red test.)
+if [ "$scanned" -lt 1 ]; then
   echo "[ci-seed-cache] FAIL: found $scanned job headers in $WORKFLOW -- the scan did not run" >&2
   exit 1
 fi
 
 if [ -n "$missing" ]; then
-  echo "[ci-seed-cache] FAIL: jobs that run repository scripts with no seed cache:" >&2
+  echo "[ci-seed-cache] FAIL: jobs that run a repository script before restoring the seed:" >&2
   printf '  %s\n' $missing >&2
   echo "  Add, before the first step that touches the compiler:" >&2
   echo "      - name: Cache seed artifact" >&2
@@ -81,8 +93,9 @@ if [ -n "$missing" ]; then
   echo "          key: seed-artifact-\${{ hashFiles('bootstrap/seed.json') }}" >&2
   echo "      - name: Ensure seed artifact" >&2
   echo "        run: bash scripts/ensure_seed.sh" >&2
-  echo "  Without it the job rebuilds the pinned seed from source (~5 min)" >&2
-  echo "  whenever its release tag is not published." >&2
+  echo "  It must come BEFORE the first step that runs a repository script:" >&2
+  echo "  by the time a later cache step restores it, the script has already" >&2
+  echo "  fetched -- or rebuilt from source, ~5 min -- the pinned seed." >&2
   exit 1
 fi
 

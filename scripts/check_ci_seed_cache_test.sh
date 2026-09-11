@@ -93,6 +93,57 @@ if ! VIBE_CI_SEED_CACHE_WORKFLOW="$TMP/inert.yml" bash "$GATE" >"$TMP/case3.out"
 fi
 echo "check_ci_seed_cache_test: ok: case 3: a job that runs no repository script passes"
 
+# --- case 3b: ORDER, not presence (Codex review of #2645) ---------------------
+# A job that runs a repository script BEFORE its cache step has already paid
+# the fetch or the rebuild; a presence-only check called that clean.
+cat > "$TMP/late-cache.yml" <<'YML'
+name: CI
+on:
+  push:
+jobs:
+  cache-too-late:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Lint before the seed is restored
+        run: bash scripts/check_something.sh
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          key: seed-artifact-abc
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+YML
+if VIBE_CI_SEED_CACHE_WORKFLOW="$TMP/late-cache.yml" bash "$GATE" >"$TMP/case3b.out" 2>&1; then
+  fail "case 3b: a job that runs a script before its cache step was accepted"
+fi
+grep -q 'cache-too-late' "$TMP/case3b.out" || fail "case 3b: the message does not name the offending job"
+# ...and the same job with the two halves swapped is accepted, so the case is
+# about ORDER and not about the file simply containing both lines.
+cat > "$TMP/early-cache.yml" <<'YML'
+name: CI
+on:
+  push:
+jobs:
+  cache-in-time:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache seed artifact
+        uses: actions/cache@v4
+        with:
+          key: seed-artifact-abc
+      - name: Ensure seed artifact
+        run: bash scripts/ensure_seed.sh
+      - name: Lint after the seed is restored
+        run: bash scripts/check_something.sh
+YML
+if ! VIBE_CI_SEED_CACHE_WORKFLOW="$TMP/early-cache.yml" bash "$GATE" >"$TMP/case3b2.out" 2>&1; then
+  cat "$TMP/case3b2.out" >&2
+  fail "case 3b: the correctly ordered control was rejected"
+fi
+echo "check_ci_seed_cache_test: ok: case 3b: the cache must PRECEDE the first script invocation"
+
 # --- case 4: an unreadable shape REFUSES instead of passing -------------------
 # Silence is not safety: a workflow the scan cannot parse must fail, not read
 # as "no offending jobs".
@@ -109,4 +160,4 @@ if VIBE_CI_SEED_CACHE_WORKFLOW="$TMP/does-not-exist.yml" bash "$GATE" >/dev/null
 fi
 echo "check_ci_seed_cache_test: ok: case 5: a missing workflow is fatal"
 
-echo "check_ci_seed_cache_test: ok (control + 5 cases)"
+echo "check_ci_seed_cache_test: ok (control + 6 cases)"

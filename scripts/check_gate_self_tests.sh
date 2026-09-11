@@ -188,10 +188,14 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
       if bash "$gst_t" >"$gst_log" 2>&1 \
          && printf '%s\n' "$GST_FAILING_BROKEN" | grep -qxF "$gst_base"; then
         printf 'repaired\n' >"$WORK_DIR/$gst_base.verdict"
+      else
+        printf 'ok\n' >"$WORK_DIR/$gst_base.verdict"
       fi
       return 0
     fi
-    if ! bash "$gst_t" >"$gst_log" 2>&1; then
+    if bash "$gst_t" >"$gst_log" 2>&1; then
+      printf 'ok\n' >"$WORK_DIR/$gst_base.verdict"
+    else
       printf 'failed\n' >"$WORK_DIR/$gst_base.verdict"
     fi
     return 0
@@ -217,15 +221,35 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
   # Collected in the companion order the serial loop used, so the report a
   # reader compares against an older run is byte-identical when the verdicts
   # are.
+  #
+  # EVERY worker records a terminal state, including `ok`, and a companion with
+  # no verdict file is a FAILURE rather than a pass (Codex review of #2645).
+  # An earlier revision wrote a file only for `repaired` and `failed`, so a
+  # worker that xargs could not launch -- or that was killed before it wrote --
+  # was indistinguishable from one that passed, and this gate could report
+  # green without having run a self-test it claims to cover. That is the exact
+  # shape it exists to stop: silence read as safety.
   while IFS= read -r t; do
     base="${t#scripts/}"
-    [ -f "$WORK_DIR/$base.verdict" ] || continue
+    if [ ! -s "$WORK_DIR/$base.verdict" ]; then
+      failed_tests="$failed_tests $t"
+      echo "[gate-self-tests] --- $t ---" >&2
+      echo "  no verdict recorded: the worker did not run to completion" >&2
+      tail -20 "$WORK_DIR/$base.log" >&2 2>/dev/null || true
+      continue
+    fi
     case "$(cat "$WORK_DIR/$base.verdict")" in
+      ok) ;;
       repaired) repaired="$repaired $base" ;;
       failed)
         failed_tests="$failed_tests $t"
         echo "[gate-self-tests] --- $t ---" >&2
         tail -20 "$WORK_DIR/$base.log" >&2
+        ;;
+      *)
+        failed_tests="$failed_tests $t"
+        echo "[gate-self-tests] --- $t ---" >&2
+        echo "  unrecognised verdict: $(cat "$WORK_DIR/$base.verdict")" >&2
         ;;
     esac
   done <"$gst_list"
