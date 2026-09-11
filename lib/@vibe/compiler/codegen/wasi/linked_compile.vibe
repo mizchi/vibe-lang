@@ -165,6 +165,7 @@ import @vibe/compiler/codegen/builtin_bodies {
 import @vibe/compiler/codegen/common_analysis {
   bmask_has,
   borrow_round0_link,
+  borrow_round1_link_parts,
   collect_free_vars,
   collect_strings_stmts,
   compute_borrow_disqualifiers,
@@ -5458,12 +5459,36 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     // of another module is read on this path, which is what makes the link's
     // answer below a per-module driver's answer rather than a re-run.
     let part_local_masks = lc_fresh_int_array()
-    let part_local_names = compute_borrow_param_local_masks(part, part_local_masks)
+    let part_shadow = lc_fresh_int_array()
+    let part_local_names = compute_borrow_param_local_masks(part, part_local_masks, part_shadow)
+    lc_concat_ints_into(st.an_shadow, part_shadow)
     lc_concat_into(st.an_local_names, part_local_names)
     lc_concat_ints_into(st.an_local_masks, part_local_masks)
     compute_borrow_disqualifiers(part, st.an_valued, st.an_nonident_fns, st.an_nonident_pos)
     fi = fi + 1
   }
+  // #2638 PHASE B. Round 0 for the whole program is linkable now, from what
+  // the loop above published -- so hand that table BACK to every module and
+  // let each answer ROUND 1 for its own declarations. Two phases and no
+  // fixpoint, which is the protocol a per-module driver would actually run
+  // rather than a re-derivation of the whole-program pass.
+  //
+  // The link, not a module, owns round 0: a module cannot build it, because
+  // round 0's disqualifiers are a union over the program. Round 1 is the
+  // opposite -- given the table it is a map over bodies, since the scan reads
+  // the snapshot and never another function's round-1 result.
+  let ph_r0mask = lc_fresh_int_array()
+  let ph_r0 = borrow_round0_link(st.an_local_names, st.an_local_masks, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, ph_r0mask)
+  let mut ph_shadow = 0
+  let mut shi = 0
+  while shi < Array::length(st.an_shadow) {
+    ph_shadow = ph_shadow|Array::get(st.an_shadow, shi)
+    shi = shi + 1
+  }
+  let ph_r01mask = lc_fresh_int_array()
+  let ph_r01 = borrow_round1_link_parts(parts, ph_r0, ph_r0mask, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, ph_shadow, ph_r01mask)
+  lc_concat_into(st.an_r01_names, ph_r01)
+  lc_concat_ints_into(st.an_r01_masks, ph_r01mask)
   // ASSEMBLY (#2575 item 2 step 3). Concatenating the modules is the obvious
   // thing and produces the whole program's declarations in a DIFFERENT ORDER:
   // a module's appended helpers close that module, so they precede the next
@@ -5639,6 +5664,13 @@ struct PreludeSplitStats {
   an_valued: Array[String];
   an_nonident_fns: Array[String];
   an_nonident_pos: Array[Int];
+  // #2638: each module's source-shadow bits, a union like the two above.
+  an_shadow: Array[Int];
+  // #2638 phase B's ANSWER: the program's round 0 and round 1, linked from
+  // the modules' published facts plus each module's own bodies. Filled by
+  // `prelude_run_per_module`, which is where the parts live.
+  an_r01_names: Array[String];
+  an_r01_masks: Array[Int];
   counts: Array[Int]
 }
 
@@ -5665,6 +5697,9 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     an_valued: lc_fresh_string_array(),
     an_nonident_fns: lc_fresh_string_array(),
     an_nonident_pos: lc_fresh_int_array(),
+    an_shadow: lc_fresh_int_array(),
+    an_r01_names: lc_fresh_string_array(),
+    an_r01_masks: lc_fresh_int_array(),
     counts: [0, 0, 0]
   }
 }
@@ -5806,6 +5841,10 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // the union of `nonident` removes.
   let an_r0mask_link = lc_fresh_int_array()
   let an_r0_link = borrow_round0_link(st.an_local_names, st.an_local_masks, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, an_r0mask_link)
+  // #2638 phase B's answer, computed by the split lane itself (it owns the
+  // module parts) and only READ here for the comparison.
+  let an_r01_link = st.an_r01_names
+  let an_r01mask_link = st.an_r01_masks
   let an_pairs_u = st.an_pairs
   let an_view_u = st.an_view
   let collisions = st.collisions
@@ -5871,9 +5910,9 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     "0"
   })
   let an_cols = if an_dce_entry {
-    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured"
+    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured"
   } else {
-    String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u)), String::concat(String::concat(" link_round0=", lc_set_cmp_counted(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round0_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_r0_w, an_r0mask_w), lc_name_mask_pairs(an_r0_link, an_r0mask_link))), String::concat(" link_round0_occ=", lc_multiset_first_diff(an_r0_w, an_r0_link)))))))
+    String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u)), String::concat(String::concat(" link_round0=", lc_set_cmp_counted(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round0_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_r0_w, an_r0mask_w), lc_name_mask_pairs(an_r0_link, an_r0mask_link))), String::concat(String::concat(" link_round0_occ=", lc_multiset_first_diff(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round01=", lc_set_cmp_counted(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_round01_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), lc_name_mask_pairs(an_r01_link, an_r01mask_link))), String::concat(" link_round01_occ=", lc_multiset_first_diff(an_bfns_w, an_r01_link))))))))))
   }
   let an_line = String::concat(String::concat(an_head, an_cols), "\n")
   let line = String::concat(String::concat(head, mid), tail)
