@@ -51,6 +51,27 @@ case "$src" in
   *) src_rel="$src" ;;
 esac
 [ -f "$ROOT_DIR/$src_rel" ] || { echo "vibe_fmt.sh: not found: $src_rel" >&2; exit 2; }
+# EXTENSION GUARD. This formatter is a vibe CST-token formatter; handed
+# anything else it happily rewrites the file as though it were vibe source.
+# Measured the hard way (#2647): `bash scripts/vibe_fmt.sh docs/ast_binary_abi.md`
+# silently turned `### TypeExpr tags (5 variants)` into
+# `###TypeExpr tags(5variants)` and `| 0x01 |` into `|0x01|`, which broke the
+# gate that reads those tables and took CI red -- with a local gate run that
+# had passed BEFORE the formatting.
+#
+# Same shape as the ONE-file guard above: the command succeeded, so nothing
+# said anything until a different check disagreed.
+case "$src_rel" in
+  *.vibe|*.vibex|*.vpkg) ;;
+  *)
+    echo "vibe_fmt.sh: refusing to format a non-vibe file: $src_rel" >&2
+    echo "  this is a vibe CST formatter; it rewrites whatever it is given" >&2
+    echo "  (accepts .vibe, .vibex, .vpkg)" >&2
+    exit 2
+    ;;
+esac
+
+
 
 # `|| exit 2` -- NOT the bare assignment this used to be. Under `set -e` a
 # failed formatter build killed this script with exit 1 and nothing on
