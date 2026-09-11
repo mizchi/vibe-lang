@@ -38,10 +38,12 @@ const flatSnapshot = (commit) => ({
   commit,
   date: "2026-08-11",
   selfcompile: { heap_ptr_bytes: 1000, wall_ms_median: 100 },
-  sizes: { stage2_wasm: 2048, samples: { [REP.smallSample]: 648 } },
+  sizes: { stage2_wasm: 2048, cli_adapter_bundle: 4096, samples: { [REP.smallSample]: 648 } },
   benches: {
     [REP.largeBench]: { ns_p50: 5000, bytes_per_op: 7000 },
     [REP.smallBench]: { ns_p50: 5000, bytes_per_op: 0 },
+    // A non-representative series, so the drift scan has something to scan.
+    "alloc_bench.vibe::build_100": { ns_p50: 5000, bytes_per_op: 100 },
   },
   calibration: { label: "build_100", ns_p50: 10000, ...hashes },
 });
@@ -125,7 +127,7 @@ test("a representative missing from the snapshot is named, not rendered as flat"
   delete cur.benches[REP.largeBench];
   delete cur.sizes.samples[REP.smallSample];
   const report = render(cur, flatSnapshot("baseline"));
-  assert.match(report, /representative missing from this snapshot/);
+  assert.match(report, /no value in this snapshot for/);
   assert.match(report, new RegExp(REP.largeBench.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(report, /sample fib/);
 });
@@ -146,9 +148,46 @@ test("drift in an UNRENDERED series is named rather than hidden by the cut", () 
   assert.match(report, /B\/op alloc_bench\.vibe::build_100 \+100\.00% ⚠️/);
 });
 
-test("a flat run says so instead of leaving the reader to assume it", () => {
+test("a flat run says so, and says how many series it actually compared", () => {
   const report = render(flatSnapshot("current"), flatSnapshot("baseline"));
-  assert.match(report, /no drift ≥±2% in any other tracked series/);
+  assert.match(report, /no drift ≥±2% in the \d+ other tracked series compared/);
+});
+
+// --- lost instrumentation must not read as agreement -------------------------
+
+test("a metric the baseline measured and this run did not is named, not counted clean", () => {
+  // `bench_metrics.sh` scrapes fuel/memory out of the runner's stderr, so a
+  // scenario that RAN FINE but printed no `vibe::fuel` line is stored as null
+  // under an `ok` status. Skipping it (pctOf -> null) and then printing "no
+  // drift" claims a clean scan over something never measured.
+  const base = flatSnapshot("baseline");
+  const cur = flatSnapshot("current");
+  base.exec = execOf({ [REP.medium]: okScenario, other: okScenario });
+  cur.exec = execOf({
+    [REP.medium]: okScenario,
+    other: { ...okScenario, linear: { ...okScenario.linear, fuel: null, heap_bytes: null } },
+  });
+  const report = render(cur, base);
+  assert.match(report, /measured on the baseline, absent here \(2\)/);
+  assert.match(report, /other fuel/);
+  assert.match(report, /other heap/);
+  // and the scan must not describe itself as clean over them
+  assert.doesNotMatch(report, /no drift ≥±2% in any other tracked series$/m);
+});
+
+test("a representative cell with no value is named even when its scenario is ok", () => {
+  const base = flatSnapshot("baseline");
+  const cur = flatSnapshot("current");
+  base.exec = execOf({ [REP.medium]: okScenario });
+  cur.exec = execOf({ [REP.medium]: { ...okScenario, linear: { ...okScenario.linear, fuel: null } } });
+  const report = render(cur, base);
+  assert.match(report, /no value in this snapshot for: expr_eval fuel/);
+});
+
+test("zero comparable series still says so rather than dropping the line", () => {
+  const bare = { commit: "c", selfcompile: { heap_ptr_bytes: 1 }, sizes: {}, benches: {} };
+  const report = render(bare, { commit: "b", date: "2026-08-11", selfcompile: { heap_ptr_bytes: 1 }, sizes: {}, benches: {} });
+  assert.match(report, /no other tracked series to compare/);
 });
 
 test("a rendered representative is not repeated in the drift line", () => {
@@ -157,7 +196,7 @@ test("a rendered representative is not repeated in the drift line", () => {
   cur.selfcompile.heap_ptr_bytes = 1030;
   const report = render(cur, base);
   assert.doesNotMatch(report, /drift outside the rows above/);
-  assert.match(report, /no drift ≥±2% in any other tracked series/);
+  assert.match(report, /no drift ≥±2% in the \d+ other tracked series compared/);
 });
 
 // --- exec corpus -------------------------------------------------------------

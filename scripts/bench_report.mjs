@@ -208,17 +208,28 @@ lines.push(`| ${REPRESENTATIVE.smallSample} | ${cell(fmtBytes, cur.sizes?.sample
   `${cell(fmtBytes, cur.benches?.[REPRESENTATIVE.smallBench]?.bytes_per_op, base?.benches?.[REPRESENTATIVE.smallBench]?.bytes_per_op)} |`);
 lines.push("");
 
-// A representative the snapshot does not carry renders "–", which reads like
-// "no change" at a glance. Say it instead: a missing representative means the
-// report is measuring less than its headings claim.
+// A representative with no VALUE renders "– (–)", which reads like "no change"
+// at a glance. Say it instead: the row's heading promises a number, so a blank
+// one means the report is measuring less than it claims.
+//
+// Checked per CELL, not per object. A scenario can be present and `ok` while
+// the metric inside it is null -- `bench_metrics.sh` scrapes fuel and memory
+// out of the runner's stderr, so a runner that ran fine but printed no
+// `vibe::fuel` line stores null under an `ok` status (#2643 review, Codex P2).
 const missingReps = [];
-if (cur.selfcompile?.heap_ptr_bytes == null) missingReps.push("selfcompile heap");
-if (cur.benches?.[REPRESENTATIVE.largeBench] == null) missingReps.push(REPRESENTATIVE.largeBench);
-if (execCur?.scenarios && medCur == null) missingReps.push(`exec scenario ${medName}`);
-if (cur.sizes?.samples && cur.sizes.samples[REPRESENTATIVE.smallSample] == null) missingReps.push(`sample ${REPRESENTATIVE.smallSample}`);
-if (cur.benches && Object.keys(cur.benches).length && cur.benches[REPRESENTATIVE.smallBench] == null) missingReps.push(REPRESENTATIVE.smallBench);
+const repCell = (label, v) => { if (v == null) missingReps.push(label); };
+repCell("selfcompile heap", cur.selfcompile?.heap_ptr_bytes);
+repCell("stage2.wasm", cur.sizes?.stage2_wasm);
+repCell(`B/op ${REPRESENTATIVE.largeBench}`, cur.benches?.[REPRESENTATIVE.largeBench]?.bytes_per_op);
+if (execCur?.scenarios) {
+  repCell(`${medName} heap`, medCur?.linear?.heap_bytes);
+  repCell(`${medName} wasm`, medCur?.linear?.wasm_bytes);
+  if (!wasmtimeChanged) repCell(`${medName} fuel`, medCur?.linear?.fuel);
+}
+repCell(`sample ${REPRESENTATIVE.smallSample}`, cur.sizes?.samples?.[REPRESENTATIVE.smallSample]);
+repCell(`B/op ${REPRESENTATIVE.smallBench}`, cur.benches?.[REPRESENTATIVE.smallBench]?.bytes_per_op);
 if (missingReps.length) {
-  lines.push(`> ⚠️ representative missing from this snapshot: ${missingReps.join(", ")} — the row above is blank, not flat`);
+  lines.push(`> ⚠️ no value in this snapshot for: ${missingReps.join(" · ")} — the cell above is blank, not flat`);
   lines.push("");
 }
 
@@ -251,16 +262,35 @@ function* allMetrics() {
   }
 }
 const drifted = [];
+const unmeasured = [];
+let compared = 0;
 for (const [label, key, c, b] of allMetrics()) {
   if (rendered.has(key)) continue;
+  // The baseline had a number and this run does not. That is lost
+  // instrumentation, not agreement -- `pctOf` returns null for it, and
+  // counting that as a clean scan is exactly how "nothing moved" and "nothing
+  // was checked" come to look alike (#2643 review, Codex P2).
+  if (c == null && b != null) { unmeasured.push(label); continue; }
   const pct = pctOf(c, b);
-  if (pct != null && Math.abs(pct) >= 2) drifted.push(`${label} ${fmtPct(pct)}`);
+  if (pct == null) continue;
+  compared += 1;
+  if (Math.abs(pct) >= 2) drifted.push(`${label} ${fmtPct(pct)}`);
 }
 if (drifted.length) {
   lines.push(`> drift outside the rows above (±2% threshold, ${drifted.length}): ${drifted.join(" · ")}`);
   lines.push("");
+} else if (compared) {
+  lines.push(`> no drift ≥±2% in the ${compared} other tracked series compared`);
+  lines.push("");
 } else if (base) {
-  lines.push("> no drift ≥±2% in any other tracked series");
+  // Zero comparable series is its own answer, and dropping the line here would
+  // reintroduce the ambiguity this scan exists to remove: a reader cannot tell
+  // an absent line from a clean one.
+  lines.push("> no other tracked series to compare");
+  lines.push("");
+}
+if (unmeasured.length) {
+  lines.push(`> ⚠️ measured on the baseline, absent here (${unmeasured.length}): ${unmeasured.join(" · ")} — instrumentation gap, not agreement`);
   lines.push("");
 }
 
