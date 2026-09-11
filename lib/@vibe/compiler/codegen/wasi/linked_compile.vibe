@@ -47,6 +47,7 @@ import @vibe/compiler/normalize {
   eq_deferred_requests_list,
   eq_invisible_nominals_list,
   eq_invisible_nominals_reset,
+  eq_mint_deferred_into,
   eq_synthesis_requests_list,
   eq_typed_refusals_list,
   hoisted_lambda_owner_key,
@@ -4535,6 +4536,12 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     }
     fi = fi + 1
   }
+  // MINT (#2634). Before the fold: every helper some module knew it needed and
+  // declined to build, generated here against the CONCATENATED program -- which
+  // has every declaration a module lacked, by construction. Measured, this is
+  // what a module deferring rather than guessing buys: the need travels upward
+  // instead of vanishing.
+  let minted = eq_mint_deferred_into(trial)
   // LINK. Up to here `trial` is the modules concatenated, which holds one copy
   // of each program-level helper per module that needed it. Folding them is
   // what a per-module driver's link step does (#2575 item 3), and doing it
@@ -4588,12 +4595,16 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // #2634: does the per-module run ASK for the same helpers? A `missing` row
   // means the split emitted nothing; this says whether it never recorded the
   // need or recorded it and did not emit. Different causes, different fixes.
-  // #2634: could a MINTING link close the gap? The split's requests plus what
-  // it knew it needed and could not build, against the whole program's
-  // requests. `mintable=0` means every helper the whole program asks for is
-  // either asked for or deferred by some module, so a link with the union has
-  // everything it needs. A non-zero count names a need that is LOST -- no
-  // module records it in either form, and no link could mint it.
+  // #2634: helpers the whole program asks for that NO module records in either
+  // form -- neither requested nor deferred.
+  //
+  // This counter was called `unmintable` and read as "no link could mint
+  // these". That reading was WRONG, and the implementation disproved it:
+  // `emit_recorded_structural_eq` loops to a fixpoint, so minting a deferred
+  // specialization records its nested instantiations and mints those too.
+  // Both entries here were recovered that way. What it actually measures is
+  // what no module recorded DIRECTLY, which is a weaker and more useful thing:
+  // a need that reaches the link only through another need.
   let ev_req_covered = lc_fresh_string_array()
   lc_union_into(ev_req_covered, ev_req_u)
   lc_union_into(ev_req_covered, ev_def_u)
@@ -4619,7 +4630,10 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   } else {
     String::concat(":", mint_first)
   }
-  let req_line = String::concat(String::concat(String::concat("SYNTH requests=", lc_set_cmp(ev_req_w, ev_req_u)), String::concat(" typed_refused=", lc_set_cmp(ev_ref_w, ev_ref_u))), String::concat(String::concat(" deferred=", Int::to_string(Array::length(ev_def_u))), String::concat(" unmintable=", String::concat(Int::to_string(mint_missing), String::concat(mint_names, "\n")))))
+  let req_a = String::concat(String::concat("SYNTH requests=", lc_set_cmp(ev_req_w, ev_req_u)), String::concat(" typed_refused=", lc_set_cmp(ev_ref_w, ev_ref_u)))
+  let req_b = String::concat(String::concat(" deferred=", Int::to_string(Array::length(ev_def_u))), String::concat(" minted=", Int::to_string(minted)))
+  let req_c = String::concat(String::concat(" indirect=", Int::to_string(mint_missing)), String::concat(mint_names, "\n"))
+  let req_line = String::concat(String::concat(req_a, req_b), req_c)
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
   let mut ldi = 0

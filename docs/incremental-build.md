@@ -339,17 +339,33 @@ A **deferral** is a helper a module knew it needed and declined to build.
 **`unmintable`** counts what the whole program asks for that *no* module records
 in either form.
 
-| | |
-|---|---|
-| 3 of the 5 (`MutMap[String,Int]`, `MutMap[String,String]`, `MutSet[String]`) | **deferred** — a link with the union of requests and deferrals can mint them |
-| 2 of the 5 (`Array[Option[Int]]`, `Array[Option[String]]`) | **lost** — no module records the need at all, so no link could |
+**The link now does it**, and it closes all five:
 
-So a minting link is the right design step and it closes three of the five rows.
-It is *not* sufficient: the `Option` pair's need disappears before any link could
-see it, and finding where is prerequisite rather than parallel work.
+```
+deferred=3   minted=5   indirect=2          keyed missing: 6 → 1
+```
 
-The 3/2 split is the same one the cause analysis produced, from a counter that
-does not share its reasoning.
+`eq_mint_deferred_into` replays the deferred needs against the **concatenated**
+program — which has every declaration a module lacked, by construction — and
+runs `emit_recorded_structural_eq`, the same generator the whole-program lane
+uses. Every comparator *absence* is gone; the one remaining `missing` row is
+`struct:__EvDict_Source`, which belongs to the evidence family.
+
+`minted=5` from `deferred=3` is the fixpoint at work: that generator loops, so
+minting the `MutMap` / `MutSet` specializations records their nested
+instantiations and mints those too — which is how the two `Array[Option[*]]`
+helpers arrived.
+
+**That corrects a prediction made here before the implementation existed.** The
+counter now called `indirect` was called `unmintable`, and read as *"no link
+could mint these"*; both were minted. It measures what no module recorded
+**directly**, which is weaker and more useful: a need that reaches the link only
+through another need. The 3/2 split was real; the conclusion drawn from it was
+not.
+
+What remains of this family is the four `content` rows — comparators the split
+emits with a *different body*, which minting does not address because nothing is
+absent.
 
 **The evidence family — 6 rows.** `struct:__EvDict_Source` itself, plus the
 functions the whole-program evidence pass rewrote to take an explicit

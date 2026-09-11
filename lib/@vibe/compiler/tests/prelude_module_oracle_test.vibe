@@ -197,18 +197,18 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // #2388):
   //
   //   CLOSURE files=365 edges=1415 unresolved=0
-  //   FULL stmts=9863 split=10006 linked=9857 folded=149 modules=365
+  //   FULL stmts=9873 split=10021 linked=9872 folded=149 modules=365
   //        collisions=0 invisible_whole=0 invisible_split=17 linked_dups=5
   //     invisible MutMap[]   invisible MutSet[]   (generic heads, #2634)
-  //   SYNTH deferred=3 unmintable=2:A1_N6_OptionN3_Int A1_N6_OptionN6_String
+  //   SYNTH deferred=3 minted=5 indirect=2 -> keyed missing 6 becomes 1
   //   SYNTH requests=75/70:-A1_N6_OptionN3_Int A1_N6_OptionN6_String
   //                         spec:A2_N6_MutMapN6_StringN3_Int
   //                         spec:A1_N6_MutSetN6_String
   //                         spec:A2_N6_MutMapN6_StringN6_String+
-  //   keyed missing=6 extra=0 copies=444 content=9 renames=0 dup_keys=451
+  //   keyed missing=1 extra=0 copies=444 content=9 renames=0 dup_keys=451
   //         dup_defs=5 dup_def_keys=effect:Source,effect:Env,effect:ParseRecur,
   //                                 effect:Profiler,effect:Profiler
-  //         first_missing=let:MutMap::equals__N6_String__N3_Int
+  //         missing_keys=struct:__EvDict_Source
   //   EVIDENCE declared=6 handled=4 performed=3
   //   edges_unresolved=0
   //
@@ -275,19 +275,27 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // refused row means the site never learns its type, so it never reaches
   // `eq_for_typed`'s `Array` arm and never records the helper it needs.
   //
-  // `deferred` and `unmintable` answer the design question those three
-  // findings raise: could a link MINT what no module could build? A deferral
+  // `deferred` / `minted` / `indirect` are the link's MINTING step. A deferral
   // is a helper a module knew it needed and declined to build -- needing and
   // building are separable, and only the second wants the leaf declarations.
-  // `unmintable` counts what the whole program asks for that NO module records
-  // in either form, so no link could mint it.
+  // `minted` is what the link then generated against the concatenated program,
+  // which has every declaration a module lacked by construction.
   //
-  // On the compiler's own CLI closure: `deferred=3 unmintable=2`. The three
-  // deferrals are exactly the `MutMap` / `MutSet` specializations, so a minting
-  // link closes those; the two unmintable are exactly the `Array[Option[*]]`
-  // pair, whose need is LOST before any link could see it. The 3/2 split is the
-  // same one the cause analysis found, from an independent counter.
-  inspect(String::trim(synth_line_of(report)), content = "SYNTH requests=0 typed_refused=0 deferred=0 unmintable=0")
+  // On the compiler's own CLI closure: `deferred=3 minted=5 indirect=2`, and
+  // the keyed line's `missing` went 6 to 1 -- every comparator ABSENCE closed,
+  // leaving only `struct:__EvDict_Source` (#2633).
+  //
+  // `minted=5` from `deferred=3` is the fixpoint at work:
+  // `emit_recorded_structural_eq` loops, so generating the `MutMap` /
+  // `MutSet` specializations records their nested instantiations and generates
+  // those too -- which is how the two `Array[Option[*]]` helpers arrived.
+  //
+  // That corrects a prediction made here before the implementation existed.
+  // This counter was called `unmintable` and read as "no link could mint
+  // these"; both entries were minted. It measures what no module recorded
+  // DIRECTLY, which is weaker and more useful: a need that reaches the link
+  // only through another need.
+  inspect(String::trim(synth_line_of(report)), content = "SYNTH requests=0 typed_refused=0 deferred=0 minted=0 indirect=0")
   // `missing=0 extra=0 content=0` is the property: every declaration the
   // whole-program prelude produced is produced by the module that owns it,
   // with the same body. `copies` is what remains after the link, and
