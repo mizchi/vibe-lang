@@ -5999,10 +5999,20 @@ bash "$ROOT_DIR/scripts/check_selector_precedence.sh"
 # proved the fix lived only in a commit message, so the guarantee did not
 # survive the next edit. Every one of those five is now a case.
 bash "$ROOT_DIR/scripts/check_selector_precedence_test.sh"
-# The same rule, for every gate: a new one ships with a self-test that mutates
-# a real input and asserts the gate fails (ratcheted -- 18 predate the rule).
-bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
-bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"
+# The same rule, for every gate -- a new one ships with a self-test that mutates
+# a real input and asserts the gate fails -- is enforced by
+# check_gate_self_tests.sh, which now runs in its OWN workflow job
+# (`gate-self-tests` in .github/workflows/ci.yml) and not here.
+#
+# It ran every companion in the tree serially, which is 208s of real work, and
+# this lane is the whole CI critical path. Measured on main, run 34590373673:
+# 419s wall, of which compiler-gate (late) was 411s, of which that one script
+# was 208s -- half the run, spent on shell gates inside the compiler's lane.
+# Moving it to a job with no `needs` overlaps it with the lanes instead of
+# extending them. Same work, same serial order, ~208s earlier.
+#
+# scripts/test_ci_compiler_gate_layout.sh pins BOTH halves: a job must run it
+# and start at t=0, and it must not come back here.
 # ...and the two ways a self-test stops meaning anything without ever going
 # red: it depends on a tool CI does not have (ripgrep -- five of them did, and
 # were exempted rather than fixed), or its pattern quietly means something
@@ -7409,178 +7419,6 @@ if ! grep -qF 'inherits' "$ihdir/only.out.diag" 2>/dev/null; then
 fi
 rm -rf "$ihdir"
 echo "[compiler-gate] inherited and physical unstable imports are each reported, each in its own words ok (#2289)"
-
-# 114/114. The ADR-0068 gate exists in the SPLIT CLI, and its cached lane
-#          cannot be used to get around it (#2305).
-# Gate 108 covers the boundary on the shipped adapter, but it drives stage2
-# through VIBE_CLI_WASM, so it cannot see lib/@vibe/cli/ by construction --
-# stage2 is compiled from the flat adapter source and contains none of it.
-# Measured before this landed, on a stage1 CLI core built from the tree:
-# `check` returned 0 with no diagnostic both when the ENTRY imports
-# @vibe/concurrent and when a SIBLING does, while the adapter refuses both.
-#
-# The cached lane is the sharp half. `compile_file_fs_mode_cached` returns on
-# a persistent-artifact hit before it loads anything, so the closure record is
-# empty and the gate answers "clean" -- build once WITH the opt-in, drop it,
-# and the artifact came out anyway. That is why the warm case below is not
-# redundant with the cold one: a port that only passes the cold case is
-# silently permissive, which is worse than no gate.
-echo "[compiler-gate] 114/114 the ADR-0068 gate exists in the split CLI, cold and warm (#2305)"
-sc_cli="${VIBE_SPLIT_CLI_WASM:-_build/bench/selfhost_cli_core/index_stage1.wasm}"
-if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
-  # BUILD it rather than skip (Codex review on #2313). The first version of
-  # this section skipped when no split CLI core was present -- and `ci.yml`
-  # never builds one, so the required late shard took the skip branch every
-  # time and this regression tested nothing where it mattered. A skip branch
-  # with an honest message is still a skip branch if it is the only one CI
-  # ever reaches.
-  #
-  # The lane already has a stage2, which is all `build_cli_core.sh` needs as a
-  # base compiler, so the gate can supply its own input: one compile of
-  # lib/@vibe/cli/main.vibex, not a bootstrap.
-  echo "[compiler-gate] 114/114 building the split CLI core (no artifact at $sc_cli) (#2305)"
-  sc_built="_build/_gate_split_cli_core"
-  rm -rf "$sc_built"
-  if ! VIBE_CLI_CORE_BASE_COMPILER="$stage2_wasm" \
-       VIBE_CLI_CORE_STAGE_TIMEOUT_SEC="${VIBE_CLI_CORE_STAGE_TIMEOUT_SEC:-1500}" \
-       VIBE_CLI_CORE_OUT_DIR="$sc_built" \
-       bash scripts/build_cli_core.sh >"$sc_built.log" 2>&1; then
-    echo "[compiler-gate] FAIL: could not build the split CLI core for the #2305 gate" >&2
-    tail -20 "$sc_built.log" >&2 || true
-    exit 1
-  fi
-  sc_cli="$sc_built/index_stage1.wasm"
-  if [ ! -s "$ROOT_DIR/$sc_cli" ] && [ ! -s "$sc_cli" ]; then
-    echo "[compiler-gate] FAIL: split CLI core build produced no artifact for the #2305 gate" >&2
-    exit 1
-  fi
-fi
-if true; then
-  case "$sc_cli" in /*) sc_abs="$sc_cli" ;; *) sc_abs="$ROOT_DIR/$sc_cli" ;; esac
-  scdir="_build/_gate_split_cli_unstable"
-  rm -rf "$scdir"; mkdir -p "$scdir"
-  cat > "$scdir/worker.vibe" <<'SCEOF'
-import @vibe/concurrent { TaskGroup }
-
-export fn work() -> Int {
-  7
-}
-SCEOF
-  cat > "$scdir/main.vibex" <<'SCEOF'
-import ./worker.vibe { work }
-
-fn main() -> Unit with Stdout {
-  println(Int::to_string(work()))
-}
-SCEOF
-  sc_run() {
-    env -u VIBE_UNSTABLE "$@" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
-      build "$scdir/main.vibex" -o "$scdir/b.wasm" 2>&1 || true
-  }
-  # 1. cold, no opt-in: refused, and it must name the SIBLING that spells the
-  #    import -- the entry pre-check alone cannot see that file.
-  rm -f "$scdir/b.wasm"
-  sc_cold="$(sc_run)"
-  if [ -s "$scdir/b.wasm" ]; then
-    echo "[compiler-gate] FAIL: the split CLI built an unstable dependency with no opt-in (#2305)" >&2
-    printf '%s\n' "$sc_cold" >&2
-    exit 1
-  fi
-  if ! printf '%s\n' "$sc_cold" | grep -qF 'worker.vibe'; then
-    echo "[compiler-gate] FAIL: the split CLI's rejection does not name the sibling that imports it (#2305)" >&2
-    printf '%s\n' "$sc_cold" >&2
-    exit 1
-  fi
-  # 2. WITH the opt-in it builds, and warms whatever cache the lane keeps.
-  rm -f "$scdir/b.wasm"
-  sc_optin="$(env VIBE_UNSTABLE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
-    build "$scdir/main.vibex" -o "$scdir/b.wasm" 2>&1 || true)"
-  if [ ! -s "$scdir/b.wasm" ]; then
-    echo "[compiler-gate] FAIL: VIBE_UNSTABLE=1 did not let the split CLI build (#2305)" >&2
-    printf '%s\n' "$sc_optin" >&2
-    exit 1
-  fi
-  # 3. warm, opt-in removed: still refused. This is the case a naive port
-  #    passes cold and fails here.
-  rm -f "$scdir/b.wasm"
-  sc_warm="$(sc_run)"
-  if [ -s "$scdir/b.wasm" ]; then
-    echo "[compiler-gate] FAIL: a warm artifact cache let the split CLI skip the ADR-0068 gate (#2305)" >&2
-    printf '%s\n' "$sc_warm" >&2
-    exit 1
-  fi
-  # 4. ...and a program with no unstable import still builds, cold and warm,
-  #    so the guard is not simply refusing everything.
-  printf 'fn main() -> Unit with Stdout {\n  println("ok")\n}\n' > "$scdir/clean.vibex"
-  for round in cold warm; do
-    rm -f "$scdir/c.wasm"
-    sc_clean="$(env -u VIBE_UNSTABLE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
-      build "$scdir/clean.vibex" -o "$scdir/c.wasm" 2>&1 || true)"
-    if [ ! -s "$scdir/c.wasm" ]; then
-      echo "[compiler-gate] FAIL: the split CLI stopped building a clean program ($round) (#2305)" >&2
-      printf '%s\n' "$sc_clean" >&2
-      exit 1
-    fi
-  done
-  rm -rf "$scdir"
-  echo "[compiler-gate] the split CLI refuses an unstable dependency cold AND warm, and still builds clean programs ok (#2305)"
-fi
-
-# 127/127 (#2513). The #cfg flag set reaches IMPORTED modules through the split
-# CLI. This dispatcher (lib/@vibe/cli/dispatch.vibe) never passes through
-# cli_adapter's cli_main, so the process-wide flag configuration has to be made
-# in both entries: gate 40g (mid lane) covers the adapter, this covers the
-# dispatcher, on the split CLI core section 114 just built or was handed.
-# Three builds on one cache directory -- dev, release, dev -- the third proving
-# that a flag switch is a cache miss, not a replay; then a no-flag build must be
-# refused (the guarded `f` is then in neither arm), so the section also fails
-# if something starts enabling every flag.
-echo "[compiler-gate] 127/127 #cfg flags reach imported modules through the split CLI (#2513)"
-cfsdir="_build/_gate_split_cli_cfg"
-rm -rf "$cfsdir"; mkdir -p "$cfsdir"
-cat > "$cfsdir/dep.vibe" <<'SCEOF'
-#cfg(dev)
-export fn f(x: Int) -> Int { x + 100 }
-
-#cfg(release)
-export fn f(x: Int) -> Int { x + 1 }
-SCEOF
-cat > "$cfsdir/main.vibex" <<'SCEOF'
-import ./dep.vibe { f }
-
-fn main() -> Unit with Stdout {
-  println(Int::to_string(f(1)))
-}
-SCEOF
-cfs_got=""
-for cfs_flag in dev release dev; do
-  rm -f "$cfsdir/b.wasm"
-  env VIBE_CFG="$cfs_flag" VIBE_BUILD_CACHE_DIR="$cfsdir/cache" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-    bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
-    build "$cfsdir/main.vibex" -o "$cfsdir/b.wasm" >/dev/null 2>&1 || true
-  if [ -s "$cfsdir/b.wasm" ]; then
-    cfs_got="$cfs_got $(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh "$cfsdir/b.wasm" 2>&1 | tail -1)"
-  else
-    cfs_got="$cfs_got nocompile"
-  fi
-done
-if [ "$cfs_got" != " 101 2 101" ]; then
-  echo "[compiler-gate] FAIL: #cfg through the split CLI (dev, release, warm dev) answered '$cfs_got', want ' 101 2 101' (#2513)" >&2
-  exit 1
-fi
-rm -f "$cfsdir/b.wasm"
-env -u VIBE_CFG VIBE_BUILD_CACHE_DIR="$cfsdir/cache" VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$sc_abs" \
-  build "$cfsdir/main.vibex" -o "$cfsdir/b.wasm" >/dev/null 2>&1 || true
-if [ -s "$cfsdir/b.wasm" ]; then
-  echo "[compiler-gate] FAIL: with no VIBE_CFG the split CLI built a program whose only f is #cfg-guarded (#2513)" >&2
-  exit 1
-fi
-rm -rf "$cfsdir"
-echo "[compiler-gate] #cfg flags reach imported modules through the split CLI, and a flag switch is a cache miss ok (#2513)"
 
 # 115/115. `vibe lsp` publishDiagnostics carries the ADR-0068 opt-in (#2297).
 # Section 108 covers the boundary on `vibe check --single-file`, in both its

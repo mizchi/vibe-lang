@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workflow=".github/workflows/ci.yml"
+# Overridable so the committed self-test can point this at a MUTATED copy and
+# prove the guards can fail. Without that, the only thing CI ever asks is "does
+# the valid workflow pass?", which stays green when the extraction breaks --
+# the shape #2248 is in CLAUDE.md to prevent.
+workflow="${VIBE_CI_LAYOUT_WORKFLOW:-.github/workflows/ci.yml}"
 bootstrap="tests/gates/bootstrap/run.sh"
+# Same reason as the workflow override above: the late-lane rule below is
+# untestable unless the self-test can hand it a mutated copy.
+late_gate="${VIBE_CI_LAYOUT_LATE_GATE:-tests/gates/late/run.sh}"
+selftests_gate="${VIBE_CI_LAYOUT_SELFTESTS_GATE:-tests/gates/selftests/run.sh}"
 
 require() {
   local pattern="$1"
@@ -228,7 +236,8 @@ except ImportError:
     sys.stderr.write("[ci-compiler-gate-layout] FAIL: PyYAML is required to read the job graph.\n")
     sys.exit(1)
 
-PARSING_GATES = ("test_ci_compiler_gate_layout.sh", "check_pkfire_pin.sh", "check_pkfire_pin_test.sh")
+PARSING_GATES = ("test_ci_compiler_gate_layout.sh", "test_ci_compiler_gate_layout_test.sh",
+                 "check_pkfire_pin.sh", "check_pkfire_pin_test.sh")
 
 with open(sys.argv[1], encoding="utf-8") as fh:
     doc = yaml.safe_load(fh)
@@ -263,6 +272,165 @@ sys.exit(rc)
 PYEOF
 then
   echo "  Move the PyYAML step ahead of every gate that parses the workflows." >&2
+  exit 1
+fi
+
+# THE GATE SELF-TEST SUITE RUNS BESIDE THE COMPILER LANES, NOT INSIDE ONE.
+#
+# check_gate_self_tests.sh runs all 27 companions serially: 208s, measured from
+# the per-line log timestamps of run 34590373673. It lived in the late lane,
+# whose 411s WAS the whole 419s critical path, so half of every CI run was one
+# shell script waiting behind the compiler gate for no reason.
+#
+# Both halves are required, because either alone is satisfiable by the wrong
+# thing: "not in the late lane" is also true of a suite that runs NOWHERE (the
+# #2580 defect -- three gates went dark and no gate noticed), and "a lane runs
+# it" is also true of a lane the workflow never selects.
+late_self_tests="$(grep -nE '^[^#]*\bbash\b[^#]*check_gate_self_tests' "$late_gate" || true)"
+if [ -n "$late_self_tests" ]; then
+  echo "[ci-compiler-gate-layout] $late_gate invokes the gate self-test suite:" >&2
+  printf '%s\n' "$late_self_tests" >&2
+  echo "  That suite is 208s and this lane is the critical path (411s of a 419s" >&2
+  echo "  run, 34590373673). It runs in the 'selftests' lane instead." >&2
+  exit 1
+fi
+if ! grep -qE '^[^#]*\bbash\b[^#]*check_gate_self_tests\.sh' "$selftests_gate"; then
+  echo "[ci-compiler-gate-layout] $selftests_gate does not invoke check_gate_self_tests.sh" >&2
+  echo "  Without it the gate self-test ratchet runs nowhere -- the #2580 defect," >&2
+  echo "  where three gates went dark and no gate noticed." >&2
+  exit 1
+fi
+if ! python3 - "$workflow" <<'PYEOF'
+import sys
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write("[ci-compiler-gate-layout] FAIL: PyYAML is required to read the job graph.\n")
+    sys.exit(1)
+
+LANE = "selftests"
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+jobs = doc.get("jobs") or {}
+
+# Which STEPS can run the selftests lane?
+#
+# compiler_gate.sh picks its lanes in this order, and the FIRST one wins:
+#
+#   1. positional arguments   `compiler_gate.sh early mid late`
+#   2. $COMPILER_GATE_LANE
+#   3. every lane in GATE_LANES
+#
+# This used to read only (2) and (3), and credited any invocation without the
+# environment variable as running everything. So a step edited to
+# `bash scripts/compiler_gate.sh early mid late` would have been read as
+# running all lanes while running three, and the selftests lane would have
+# left CI with this gate still printing ok (#2650 review). The arguments are
+# parsed now, and an invocation this scanner cannot read is an ERROR rather
+# than a guess -- silence and "unchecked" are the same output otherwise.
+
+def tails(run_text):
+    """Every compiler_gate.sh invocation's argument text, one per call."""
+    found = []
+    for line in run_text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        idx = line.find("compiler_gate.sh")
+        while idx != -1:
+            tail = line[idx + len("compiler_gate.sh"):]
+            for sep in (";", "&&", "||", "|", ">", "<", "#"):
+                k = tail.find(sep)
+                if k != -1:
+                    tail = tail[:k]
+            found.append(tail)
+            idx = line.find("compiler_gate.sh", idx + 1)
+    return found
+
+runners = []          # (job_id, step_index)
+unreadable = []       # (job_id, step_index, why)
+for job_id, job in jobs.items():
+    if not isinstance(job, dict):
+        continue
+    matrix = ((job.get("strategy") or {}).get("matrix") or {}).get("lane") or []
+    if isinstance(matrix, str):
+        matrix = [matrix]
+    for n, step in enumerate(job.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        run = str(step.get("run", ""))
+        if not any(t.endswith("compiler_gate.sh") for t in run.split()):
+            continue
+
+        positional = []
+        for tail in tails(run):
+            for tok in tail.split():
+                if any(ch in tok for ch in "$`\"'"):
+                    unreadable.append((job_id, n, f"argument {tok!r} is not a literal"))
+                elif tok == "--list":
+                    positional.append("__list__")      # prints and exits: runs no lane
+                elif tok.startswith("-"):
+                    unreadable.append((job_id, n, f"unknown flag {tok!r}"))
+                else:
+                    positional.append(tok)
+
+        if "__list__" in positional:
+            continue                                   # runs no lane at all
+        if positional:
+            selected = positional                      # (1) beats the environment
+        else:
+            lane = str((step.get("env") or {}).get("COMPILER_GATE_LANE", "")).strip()
+            if "matrix.lane" in lane:
+                selected = matrix                      # (2), through the matrix
+            elif "${{" in lane:
+                unreadable.append((job_id, n, f"COMPILER_GATE_LANE is {lane!r}"))
+                continue
+            elif lane:
+                selected = [lane]                      # (2)
+            else:
+                selected = None                        # (3) every lane
+        if selected is None or LANE in selected:
+            runners.append((job_id, n))
+
+if unreadable:
+    for job_id, n, why in unreadable:
+        print(f"[ci-compiler-gate-layout] {job_id} step {n} runs compiler_gate.sh in a way "
+              f"this gate cannot read: {why}", file=sys.stderr)
+    print("  Which lanes that step runs decides whether the gate self-test suite runs at "
+          "all, so an unreadable invocation fails rather than being assumed safe.",
+          file=sys.stderr)
+    sys.exit(1)
+
+if not runners:
+    print(f"[ci-compiler-gate-layout] no workflow step runs the '{LANE}' lane -- the "
+          "208s gate self-test suite runs nowhere in CI, which is the #2580 defect",
+          file=sys.stderr)
+    sys.exit(1)
+
+# ...and that step needs a YAML parser, because the suite runs
+# check_pkfire_pin_test.sh. In the late lane this was met only by the hosted
+# image happening to ship one, which is the assumption #2252 forbids.
+rc = 0
+for job_id, n in runners:
+    steps = jobs[job_id].get("steps") or []
+    provision = next(
+        (k for k, st in enumerate(steps)
+         if isinstance(st, dict) and "pyyaml" in str(st.get("run", "")).lower()),
+        None,
+    )
+    if provision is None:
+        print(f"[ci-compiler-gate-layout] {job_id} runs the '{LANE}' lane but never "
+              "provisions PyYAML -- check_pkfire_pin_test.sh parses YAML",
+              file=sys.stderr)
+        rc = 1
+    elif provision > n:
+        print(f"[ci-compiler-gate-layout] {job_id} runs the '{LANE}' lane at step {n} but "
+              f"provisions PyYAML at step {provision} -- the gate dies before its "
+              "dependency is installed", file=sys.stderr)
+        rc = 1
+sys.exit(rc)
+PYEOF
+then
   exit 1
 fi
 

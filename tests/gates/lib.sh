@@ -36,7 +36,7 @@ gate_status_out() {
 }
 
 # Known independently runnable lanes. `all` is the aggregator, not a file.
-GATE_LANES="bootstrap early mid late"
+GATE_LANES="bootstrap early mid late selftests"
 
 gate_lane_script() {
   local lane="$1"
@@ -47,6 +47,20 @@ gate_lane_script() {
 # Prefer an explicit VIBE_STAGE2_WASM, then the freshest generations/ tree
 # left by the bootstrap lane, then a unit-test-style build from the
 # committed flat module source (no stage3, same as the CI unit shards).
+# EXPORTS the answer, it does not merely assign it (#2650 review). A lane
+# spawns child processes that ask the same question for themselves, and two of
+# them read it out of the ENVIRONMENT: check_compile_only_lanes.sh takes
+# COMPILE_ONLY_STAGE2 then VIBE_STAGE2_WASM, and check_freeze_surface.sh the
+# same. With `stage2_wasm` a plain shell variable they saw nothing, fell through
+# to "newest generation on disk, else the committed seed", and certified a
+# compiler the lane had not built -- silently, because that fallback is a
+# successful run. CI masked it: the workflow exports VIBE_STAGE2_WASM for the
+# lanes, so only the independently runnable path was wrong, which is the path
+# `COMPILER_GATE_LANE=selftests bash scripts/compiler_gate.sh` takes.
+#
+# Exported in all three resolution branches, so the lane and everything under
+# it agree on one compiler however it was found. Where the caller already set
+# it, this is a no-op.
 gate_resolve_stage2() {
   if [ -n "${VIBE_STAGE2_WASM:-}" ]; then
     stage2_wasm="$VIBE_STAGE2_WASM"
@@ -54,11 +68,13 @@ gate_resolve_stage2() {
       echo "[compiler-gate] FAIL: VIBE_STAGE2_WASM=$stage2_wasm does not exist" >&2
       exit 1
     fi
+    export VIBE_STAGE2_WASM="$stage2_wasm"
     return 0
   fi
   latest_gen="$(ls -dt _build/selfhost/generations/*/ 2>/dev/null | head -1 || true)"
   if [ -n "$latest_gen" ] && [ -f "${latest_gen}stage2.wasm" ]; then
     stage2_wasm="${latest_gen}stage2.wasm"
+    export VIBE_STAGE2_WASM="$stage2_wasm"
     return 0
   fi
   mkdir -p _build/_gate_lane_gen
@@ -72,4 +88,5 @@ gate_resolve_stage2() {
     echo "[compiler-gate] FAIL: lane stage2 build produced no wasm" >&2
     exit 1
   fi
+  export VIBE_STAGE2_WASM="$stage2_wasm"
 }

@@ -829,7 +829,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [early, mid, late]
+        # `selftests` is the gate self-test suite (check_gate_self_tests.sh:
+        # every companion `*_test.sh` in the tree, serially). It lived inside
+        # the late lane, and measured on run 34590373673 it was 208s of that
+        # lane's 411s -- while the lane's 411s WAS the whole 419s critical
+        # path. As its own lane it overlaps the other three instead of
+        # extending the longest one: same work, same serial order, ~208s
+        # earlier, one more runner.
+        #
+        # A LANE AND NOT A STANDALONE JOB, because three companions read the
+        # compiler out of the environment -- check_compile_only_lanes_test.sh
+        # and check_freeze_surface_test.sh take VIBE_STAGE2_WASM,
+        # check_book_console_test.sh takes VIBE_TEST_CLI_WASM. A job without
+        # them does not fail; it falls back to the committed SEED and answers
+        # green about a compiler that does not contain the change, which is
+        # the "which compiler answered?" hazard AGENTS.md opens with. Sharing
+        # this matrix makes the environment identical by construction rather
+        # than by a list someone has to keep right.
+        lane: [early, mid, late, selftests]
     steps:
       - uses: actions/checkout@v5
       - name: Cache seed artifact
@@ -850,6 +867,11 @@ jobs:
           dir="wasmtime-${WASMTIME_VERSION}-x86_64-linux"
           curl -sSL --fail --retry 5 --retry-delay 2 --retry-all-errors "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/${dir}.tar.xz" | tar -xJ
           echo "$PWD/$dir" >> "$GITHUB_PATH"
+      # The selftests lane runs check_pkfire_pin_test.sh, which parses YAML.
+      # In the late lane that dependency was met only by the hosted image
+      # happening to ship a parser -- the assumption #2252 forbids. 2s.
+      - name: Provision PyYAML for the companions that parse the workflows
+        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
       - name: Generated compiler artifacts (fingerprint)
         id: genfp
         run: echo "fp=$(bash scripts/ensure_generated.sh --print-fingerprint)" >> "$GITHUB_OUTPUT"
@@ -997,7 +1019,15 @@ jobs:
         run: bash scripts/lint_review_regressions_test.sh
       - name: compiler-gate registry self-test
         run: bash scripts/check_gate_registry_test.sh
-      - name: compiler-gate CI layout self-test
+      - name: compiler-gate CI layout self-test (mutation tests)
+        # Red tests for the guards below, COMMITTED rather than run by hand.
+        # CLAUDE.md #2248: a gate that passed means nothing until it is known to
+        # be able to fail, and a red test recorded only in a commit message does
+        # not survive the next edit. Without this, CI only ever asks "does the
+        # valid workflow pass?", which stays green when the YAML extraction
+        # breaks and the guards quietly stop guarding.
+        run: bash scripts/test_ci_compiler_gate_layout_test.sh
+      - name: compiler-gate CI layout
         run: bash scripts/test_ci_compiler_gate_layout.sh
       - name: doc path-citation lint self-test
         run: bash scripts/check_doc_path_citations_test.sh
@@ -1033,6 +1063,21 @@ jobs:
         # REBUILDS the seed (~5 min) whenever its release tag is unpublished --
         # which is what four jobs were doing on run 34567587111 (#2645).
         run: bash scripts/check_ci_seed_cache.sh
+      # The five generated artifacts are keyed on a fingerprint, and so is the
+      # gen-v1 CI cache. This asserts the fingerprint does not depend on how
+      # ensure_generated.sh was invoked -- it did, and two jobs regenerated all
+      # five (128s, 131s) after downloading them (#2650). ~2.5s.
+      # A caller that enumerates compiler-gate lanes must name them all: the
+      # `selftests` lane reached CI and not Taskfile.pkl's post-generation-gate,
+      # so `pkf run full-gate` silently stopped running the ratchet (#2650).
+      - name: gate-lane-coverage gate self-test
+        run: bash scripts/check_gate_lane_coverage_test.sh
+      - name: gate-lane-coverage gate
+        run: bash scripts/check_gate_lane_coverage.sh
+      - name: generated-fingerprint gate self-test
+        run: bash scripts/check_generated_fingerprint_test.sh
+      - name: generated-fingerprint gate
+        run: bash scripts/check_generated_fingerprint.sh
       - name: gate-wiring gate self-test
         run: bash scripts/check_gate_wiring_test.sh
       - name: gate-wiring gate

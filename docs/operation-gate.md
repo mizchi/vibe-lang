@@ -91,8 +91,13 @@ The old `pkf run selfhost-trial-gate` compatibility alias was removed in
 That task checks the following together:
 
 - `generation-gate`: fixed seed -> stage1 -> stage2 -> stage3
-- `post-generation-gate` (`scripts/compiler_gate.sh early mid late`): the
-  non-bootstrap sign-off lanes, using the stage produced by `generation-gate`
+- `post-generation-gate` (`scripts/compiler_gate.sh early mid late selftests`):
+  the non-bootstrap sign-off lanes, using the stage produced by
+  `generation-gate`. The enumeration must name every lane in `GATE_LANES`
+  except `bootstrap`, which `generation-gate` already ran;
+  `scripts/check_gate_lane_coverage.sh` enforces that, after `selftests` was
+  added to CI and to `GATE_LANES` but not here, which silently dropped the
+  gate self-test ratchet from this path alone (#2650)
 
 The old host-comparison lanes (`test-selfhost-corpus-gate` / `perf-kpi` /
 `rss-kpi` / component parity) were retired with their scripts when the

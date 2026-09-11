@@ -80,6 +80,7 @@ done
 # gate-wiring: reaches tests/gates/early/run.sh
 # gate-wiring: reaches tests/gates/mid/run.sh
 # gate-wiring: reaches tests/gates/late/run.sh
+# gate-wiring: reaches tests/gates/selftests/run.sh
 for lane in "${selected[@]}"; do
   script="$(gate_lane_script "$lane")"
   if [ ! -f "$script" ]; then
