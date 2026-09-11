@@ -1,5 +1,5 @@
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_rc_body_cached, compile_file_fs_mode_rc_body_cached_split, ordinary_lane_split_shape
+  compile_file_fs_mode_rc_body_cached, compile_file_fs_mode_rc_body_cached_split, ordinary_lane_closure_edges, ordinary_lane_split_shape
 }
 
 // #2575 item 2 step 3b: the question every other check on this line has been
@@ -59,4 +59,37 @@ test "use_split false is the ordinary lane" {
   let a = compile_file_fs_mode_rc_body_cached(main, "main", "off")
   let b = compile_file_fs_mode_rc_body_cached_split(main, "main", "off", false)
   inspect(a == b, content = "true")
+}
+
+fn write_reexport_chain(tag: String) -> String with Exception + Fs {
+  // C declares, B RE-EXPORTS it, A uses it without naming C. This is the
+  // shape a direct-edges-only closure cannot describe: A's partition needs
+  // C's declarations and never names C.
+  let c = String::concat("/tmp/vibe_rx_c_", String::concat(tag, ".vibe"))
+  let b = String::concat("/tmp/vibe_rx_b_", String::concat(tag, ".vibe"))
+  let a = String::concat("/tmp/vibe_rx_a_", String::concat(tag, ".vibe"))
+  Fs::write_file(c, "export struct Pt {\n  x: Int\n} derive (Eq)\n\nexport fn mk(v: Int) -> Pt {\n  Pt::{ x: v }\n}\n")
+  Fs::write_file(b, String::concat("export ./vibe_rx_c_", String::concat(tag, ".vibe {\n  Pt, mk\n}\n")))
+  Fs::write_file(a, String::concat("import ./vibe_rx_b_", String::concat(tag, ".vibe {\n  Pt, mk\n}\n\nfn main() -> Int {\n  if mk(1) == mk(1) {\n    1\n  } else {\n    0\n  }\n}\n")))
+  a
+}
+
+test "the production closure follows a re-export edge" {
+  // #2658. A imports B; B re-exports C. The exact closure gives A three edges
+  // across the program (A->B, A->C, B->C); a direct-edges-only closure gives
+  // two, and A's partition would be lowered without C's `Pt` in scope.
+  //
+  // Asserted on the closure SHAPE, not on bytes: both closures fail open to
+  // the same program, so a byte comparison cannot tell them apart -- the same
+  // reason the round-9 control had to test its predicate directly.
+  let entry = write_reexport_chain("edges")
+  inspect(ordinary_lane_closure_edges(entry), content = "3")
+}
+
+test "the re-export chain still compiles identically with the split on" {
+  let entry = write_reexport_chain("bytes")
+  let whole = compile_file_fs_mode_rc_body_cached(entry, "main", "off")
+  let split = compile_file_fs_mode_rc_body_cached_split(entry, "main", "off", true)
+  inspect(Bytes::length(whole) > 1000, content = "true")
+  inspect(whole == split, content = "true")
 }

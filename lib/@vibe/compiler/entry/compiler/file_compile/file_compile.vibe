@@ -96,7 +96,8 @@ import @vibe/compiler/loader {
   artifact_input_trace_resolution_context_fingerprint_fs,
   collect_source_groups_fs,
   load_or_parse_module_header_fs,
-  load_persistent_source_group_fingerprint_if_valid
+  load_persistent_source_group_fingerprint_if_valid,
+  module_reexport_deps_fs
 }
 
 import @vibe/compiler/checker {
@@ -866,6 +867,166 @@ fn oracle_import_closure(source_groups: Array[(String, Array[(String, String)])]
   (out, unresolved)
 }
 
+fn eic_dir_of(path: String) -> String {
+  let mut cut = 0 - 1
+  let mut i = 0
+  while i < String::length(path) {
+    if String::char_code_at(path, i) == 47 {
+      cut = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if cut < 0 {
+    ""
+  } else {
+    String::substring(path, 0, cut)
+  }
+}
+
+fn eic_row_holds(row: Array[Int], v: Int) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while !found && i < Array::length(row) {
+    if Array::get(row, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Is flat index `jpath` reached through one of `re_paths` -- a module's
+/// RE-EXPORTED deps?
+///
+/// The directory arm mirrors `oracle_expand_contract_dep`: a dep naming a
+/// `.vpkg` contract expands to that package's sibling implementations, and it
+/// is those the merge carries, so a re-exported contract has to admit its
+/// siblings or the edge disappears exactly where packages are involved.
+fn eic_reexport_admits(re_paths: Array[String], jpath: String) -> Bool {
+  let mut ok = false
+  let mut i = 0
+  while !ok && i < Array::length(re_paths) {
+    let rp = Array::get(re_paths, i)
+    if rp == jpath {
+      ok = true
+    } else if String::ends_with(rp, "/index.vpkg") && eic_dir_of(rp) == eic_dir_of(jpath) {
+      ok = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ok
+}
+
+/// Everything reachable from `start` across RE-EXPORT edges, accumulated into
+/// `row`. Worklist rather than recursion because a re-export cycle is a
+/// legal shape and would not otherwise terminate.
+fn eic_add_reexport_reach(reexport_rows: Array[Array[Int]], start: Int, self_i: Int, row: Array[Int]) -> Unit {
+  let pending: Array[Int] = []
+  let seen: Array[Int] = []
+  Array::push(pending, start)
+  let mut head = 0
+  while head < Array::length(pending) {
+    let at = Array::get(pending, head)
+    head = head + 1
+    if eic_row_holds(seen, at) {
+      ()
+    } else {
+      Array::push(seen, at)
+      let rr = Array::get(reexport_rows, at)
+      let mut k = 0
+      while k < Array::length(rr) {
+        let next = Array::get(rr, k)
+        if next != self_i && !eic_row_holds(row, next) {
+          Array::push(row, next)
+        } else {
+          ()
+        }
+        Array::push(pending, next)
+        k = k + 1
+      }
+    }
+  }
+}
+
+/// The closure a PRODUCTION split needs (#2658): a module's direct imports,
+/// plus everything reachable from them across RE-EXPORT edges only.
+///
+/// `oracle_import_closure` is direct-edges-only and explains why at length.
+/// That under-approximation is right for a MEASUREMENT and wrong for codegen:
+/// a module that imports B and cannot see what B re-exports from C lowers a
+/// call to C's bounded generic without the witness argument C's rewritten
+/// generic requires (#2647 Codex round 9).
+///
+/// Closing over ALL edges instead is wrong in both directions. It hands a
+/// module its dependencies' PRIVATE imports, which no real compile of it
+/// exposes -- and, the reason it matters here rather than only for the
+/// oracle, it gives every module the whole program's declarations, which is
+/// precisely the live set #2494 exists to bound. The re-export closure is the
+/// point that is both correct and minimal.
+///
+/// The re-export subset comes from the LOADER (`module_reexport_deps_fs`),
+/// not from re-reading source text here, so it cannot drift from what the
+/// loader actually resolves.
+fn exact_import_closure(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Array[Int]], Int) with Exception + Fs {
+  let (direct, unresolved) = oracle_import_closure(source_groups)
+  let flat = flatten_source_groups_local(source_groups)
+  let n = Array::length(flat)
+  if Array::length(direct) != n {
+    (direct, unresolved)
+  } else {
+    // Which of each module's direct edges are RE-EXPORT edges. Derived by
+    // testing the oracle's already-expanded indices against the loader's
+    // resolved re-export paths, so contract expansion is not re-implemented.
+    let reexport_rows: Array[Array[Int]] = []
+    let mut i = 0
+    while i < n {
+      let (path, source) = Array::get(flat, i)
+      let re_paths = module_reexport_deps_fs(path, source)
+      let row: Array[Int] = []
+      let dr = Array::get(direct, i)
+      let mut d = 0
+      while d < Array::length(dr) {
+        let j = Array::get(dr, d)
+        let (jpath, _) = Array::get(flat, j)
+        if eic_reexport_admits(re_paths, jpath) {
+          Array::push(row, j)
+        } else {
+          ()
+        }
+        d = d + 1
+      }
+      Array::push(reexport_rows, row)
+      i = i + 1
+    }
+    let out: Array[Array[Int]] = []
+    i = 0
+    while i < n {
+      let row: Array[Int] = []
+      let dr = Array::get(direct, i)
+      let mut d = 0
+      while d < Array::length(dr) {
+        let j = Array::get(dr, d)
+        if j != i && !eic_row_holds(row, j) {
+          Array::push(row, j)
+        } else {
+          ()
+        }
+        eic_add_reexport_reach(reexport_rows, j, i, row)
+        d = d + 1
+      }
+      Array::push(out, row)
+      i = i + 1
+    }
+    (out, unresolved)
+  }
+}
+
 fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
@@ -1582,7 +1743,7 @@ fn ordinary_lane_module_split(file_paths: Array[String], file_counts: Array[Int]
   if !use_split {
     module_split_none()
   } else {
-    let (closure, unresolved) = oracle_import_closure(source_groups)
+    let (closure, unresolved) = exact_import_closure(source_groups)
     if unresolved > 0 || Array::length(closure) != Array::length(file_paths) {
       module_split_none()
     } else {
@@ -1598,11 +1759,32 @@ fn ordinary_lane_module_split(file_paths: Array[String], file_counts: Array[Int]
         i = i + 1
       }
       ModuleSplit::{
+        closure_exact: true,
         file_count: Array::length(file_paths),
         stmt_file_id: stmt_file_id,
         import_closure: closure
       }
     }
+  }
+}
+
+/// Total edges in the closure the PRODUCTION split would build for this entry
+/// (#2658). Exported so a test can tell an exact re-export closure from a
+/// direct-edges-only one, which byte comparison cannot: both fail open to the
+/// same program, so only the SHAPE distinguishes them.
+export fn ordinary_lane_closure_edges(entry_path: String) -> Int with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let (closure, unresolved) = exact_import_closure(source_groups)
+  if unresolved > 0 {
+    0 - 1
+  } else {
+    let mut edges = 0
+    let mut i = 0
+    while i < Array::length(closure) {
+      edges = edges + Array::length(Array::get(closure, i))
+      i = i + 1
+    }
+    edges
   }
 }
 

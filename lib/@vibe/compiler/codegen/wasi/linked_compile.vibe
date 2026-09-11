@@ -3955,7 +3955,19 @@ fn module_split_usable(split: ModuleSplit, stmt_count: Int) -> Bool {
     // reachable from a module already something that module names directly? If
     // it is, no re-export can be hiding behind an edge. Two modules that see
     // each other pass; A -> B -> C where A does not name C does not.
-    if ok && !lc_closure_self_contained(split.import_closure) {
+    // Self-containment is a SUFFICIENT condition, not the rule (#2658). The
+    // rule is that a module sees its direct imports plus what those RE-EXPORT,
+    // and an exact re-export closure does NOT satisfy self-containment: A's
+    // row holds C, re-exported through B, but not C's own private imports.
+    //
+    // So a caller that built the closure from the loader's re-export relation
+    // says so, and one that did not gets the conservative test -- everything
+    // reachable must already be named, which no re-export can hide behind.
+    // `closure_exact` rides the split because that is what already threads
+    // from the producer through every layer to here; a parallel parameter
+    // would have to be added to a 22-argument signature and its callers to
+    // say the same thing.
+    if ok && !split.closure_exact && !lc_closure_self_contained(split.import_closure) {
       ok = false
     } else {
       ()
