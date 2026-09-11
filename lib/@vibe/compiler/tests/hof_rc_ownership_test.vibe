@@ -132,3 +132,17 @@ test "filter, fold and map chained on one shared array" {
   let src = String::concat(tree_prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let arr: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1)), Leaf(3)]\n    let kept = Array::filter(arr, big)\n    let folded = Array::fold(arr, 0, (acc: Int, t: Tree) -> Int { (acc + checksum(t, 0)) % 1000000007 })\n    let mapped = Array::map(kept, incr)\n    total = (total + checksum(Array::get(arr, 1), 0) + Array::length(kept) + folded + Array::length(mapped)) % 1000000007\n    i = i + 1\n  }\n  total\n}\n")
   assert_lanes_agree(src, "combined", "1295214")
 }
+
+test "a source-level Array::map (as @vibe/builtin declares one) keeps the caller's array" {
+  // `@vibe/builtin/array.vibe` declares `let Array::map = ..` as a
+  // borrow-only loop. The planner classifies that definition's first
+  // parameter as borrowed, so a program carrying it plans every
+  // `Array::map(xs, f)` call as a borrow (no dup), while this ladder still
+  // intercepts the name and consumes: the array was moved out from under
+  // the caller and `Array::push(xs, 4)` after the map answered length 1
+  // (the book's collections chapter, through `import @vibe/builtin`). The
+  // lowering now retains an argument the planner classified as borrowed.
+  // Per iteration 2i + 44; 48600 in all. The old RC lane answered 42600.
+  let src = "let Array::map = [A, B](xs: Array[A], f: (x: A) -> B) -> Array[B] {\n  let len = Array::length(xs)\n  let out = ArrayBuilder::new()\n  let mut i = 0\n  while i < len {\n    ArrayBuilder::push(out, f(Array::get(xs, i)))\n    i = i + 1\n  }\n  ArrayBuilder::freeze(out)\n}\nlet main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 200 {\n    let xs = [i, i + 1, i + 2]\n    let doubled = Array::map(xs, (x: Int) -> Int { x * 2 })\n    Array::push(xs, 4)\n    total = total + Array::length(xs) * 10 + Array::get(doubled, 2)\n    i = i + 1\n  }\n  total\n}\n"
+  assert_lanes_agree(src, "source_shadowed_map", "48600")
+}

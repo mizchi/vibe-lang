@@ -365,9 +365,24 @@ either way. Two staged-`None` leaks fell out of the same measurement:
 `find` and `MapBuilder::get` initialise their result slot with a 16-byte
 nullary block and overwrote it on a hit.
 
+One more rule, found by the book's collections chapter: the lowering owns
+an argument only where the PLANNER planned an owning position. `@vibe/builtin`
+declares `let Array::map = ..` as a borrow-only loop, so a program that
+imports the package (the book does, for `trait Iterator`) plans every
+`Array::map(xs, f)` call as a borrow -- no dup, the caller expects `xs`
+back -- while the ladder still intercepts the name and consumes. The first
+cut moved the array out from under the caller (`Array::push(xs, 4)` after
+a map answered length 1). `cc_hof_retain_arg` now also retains an argument
+whose position the planner classified as borrowed
+(`md_borrow_mask_of`), so the lowering holds a reference of its own and the
+caller keeps its; such a program never sees the unique path for that name,
+which is the honest price of shadowing an intrinsic with a source
+definition the planner reads.
+
 Pinned by `tests/hof_rc_ownership_test.vibe` (bump / RC / RC-shadow
 agreement on every builtin, shared and unique sources, a capturing closure
-used by three maps), the HOF shapes of `fixtures/rc_reclaim_leak_test.vibe`
+used by three maps, a source-level `Array::map` shadowing the intrinsic),
+the HOF shapes of `fixtures/rc_reclaim_leak_test.vibe`
 (the shell release, under the 2,000-byte bound) and shape 10 of
 `fixtures/rc_shadow_regression_test.vibe`. Three neighbours found on the
 way are filed, not fixed here: an unannotated lambda parameter consumed
@@ -377,6 +392,44 @@ a `MapBuilder` is never reclaimed (#2683). A fourth, in the compiler rather
 than the lane, is fixed on the same branch: a bound `+` chain of 24
 operands ran the compiler out of memory because the trait-dict operand
 inference walked each operand twice per node (#2680).
+
+### An FBIP-shaped rewrite of one pass, measured (2026-09-11)
+
+The question behind #2389 was whether the compiler's own code could be
+moved toward the shape reuse rewards. One pass was rewritten to find out:
+`lift_match_scrutinees` (`normalize/normalize.vibe`), whose arms are
+already same-shape constructor rebuilds and whose child arrays were rebuilt
+with `for` comprehensions -- a comprehension reads each element through a
+borrow, so everything below an array boundary was shared and allocated
+fresh. The comprehensions became consuming `Array::map` helpers
+(`lms_exprs` / `lms_arms` / `lms_named`, closures capturing the counter),
+which after the ownership fix above move the elements out of a unique
+array. Measured on the flat-source RC-lane self-compile through two
+counter-instrumented RC-built compilers (the same input, cold, viberun
+fuel):
+
+| | fuel | allocated | output | staged | unique |
+|---|---:|---:|---|---:|---:|
+| before | 1,177,116,818,175 | 1,836,094,292 B | 4,978,430 B | 3,970,084 | 826 |
+| after | 1,177,155,083,233 (+0.003%) | 1,836,094,276 B | byte-identical | 3,970,084 | 826 |
+
+Neutral, and the counters say why: not one more uniqueness test passed.
+The pass never receives a unique tree. Its root is `get_slet_expr(pb_stmt)`
+-- a field of a statement the statement array still owns -- run through
+`uniquify_shadowed_bindings`, which hands back every unchanged subtree
+as is (structure sharing, by design), so a moving map finds shared arrays
+all the way down and takes the retaining path, exactly as the comprehension
+did. Uniqueness has to be produced upstream, by a pipeline that transfers
+its statement array from pass to pass (`let stmts = pass(stmts)`) instead
+of mutating it in place through borrowed reads (`pass(stmts)`, every desugar
+today), and that is a change to the pipeline's ownership, not to any one
+pass. The rewrite is not landed: it buys nothing yet, costs one closure
+block per array-bearing node, and under the committed seed -- whose
+`Array::map` still hands the callback elements the shared tree owns -- the
+FS-lane test harness traps in `expr_contains_exceptions` reading a freed
+node (the flat self-compile happens to produce identical bytes, the freed
+nodes not being reused before they are read). It is attached to the PR
+for the record.
 
 Pinned by `tests/perceus_reuse_plan_test.vibe` (plan rows, blocker
 semantics, ineligible shapes, the anywhere-consumer and held-bind rows),

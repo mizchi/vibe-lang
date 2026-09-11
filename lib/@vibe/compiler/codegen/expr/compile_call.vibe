@@ -1465,10 +1465,20 @@ fn cc_retain_stored_arg(buf: Bytes, carg: Expr, local_names: Array[String], nl: 
 /// bytes are untouched.
 ///
 /// The generic owning-position retain (cc_retain_stored_arg's rule) for an
-/// argument already sitting in `local_idx`.
-fn cc_hof_retain_arg(buf: Bytes, carg: Expr, local_idx: Int, ctx: CompileCtx) -> Unit with Exception {
+/// argument already sitting in `local_idx`, plus one rule of its own: when
+/// the PLANNER classified position `pos` of this callee as BORROWED, the
+/// caller passed its reference without a dup and expects it back intact,
+/// so the lowering takes a reference of its own here. That happens when
+/// the program carries a source definition of the same name -- `@vibe/builtin`
+/// declares `let Array::map = ..` as a borrow-only loop, so every program
+/// that imports the package plans its `Array::map(xs, f)` calls as borrows
+/// while this ladder still intercepts the name and consumes. Without the
+/// retain the array was moved out from under the caller (the book's
+/// `Array::push(xs, 4)` after a map answered length 1).
+fn cc_hof_retain_arg(buf: Bytes, carg: Expr, local_idx: Int, fname: String, pos: Int, ctx: CompileCtx) -> Unit with Exception {
   let is_loop_borrow = ctx.enable_rc && cc_is_loop_borrowed_ident(carg, ctx)
-  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow) {
+  let planner_borrows = ctx.enable_rc && cc_bmask_has(md_borrow_mask_of(fname, ctx.borrow_param_user, ctx.borrow_param_mask), pos)
+  if ctx.enable_rc && (cc_is_projection(carg) || cc_is_borrow_ret_call(carg, ctx) || is_loop_borrow || planner_borrows) {
     if is_loop_borrow {
       Array::push(ctx.loop_consumed_names, get_eident_name(carg))
     } else {
@@ -4007,8 +4017,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__map_uniq")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
-      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, ctx)
-      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
       cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
@@ -4073,8 +4083,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__filter_uniq")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
-      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, ctx)
-      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
       cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
@@ -4144,9 +4154,9 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       emit_local_set(buf, fn_l)
       emit_local_set(buf, acc_l)
       emit_local_set(buf, arr_l)
-      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, ctx)
-      cc_hof_retain_arg(buf, Array::get(args, 1), acc_l, ctx)
-      cc_hof_retain_arg(buf, Array::get(args, 2), fn_l, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), acc_l, fname, 1, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 2), fn_l, fname, 2, ctx)
       cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
@@ -4203,8 +4213,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__iter_uniq")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
-      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, ctx)
-      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
       cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
@@ -4256,7 +4266,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__rev_elem")
       Array::push(local_names, "__rev_uniq")
       emit_local_set(buf, arr_l)
-      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
       cc_hof_unique_test(buf, arr_l, uniq_l, ctx)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
@@ -4313,8 +4323,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__cat_elem")
       emit_local_set(buf, b_l)
       emit_local_set(buf, a_l)
-      cc_hof_retain_arg(buf, Array::get(args, 0), a_l, ctx)
-      cc_hof_retain_arg(buf, Array::get(args, 1), b_l, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 0), a_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), b_l, fname, 1, ctx)
       emit_call(buf, arr_new_fi)
       emit_local_set(buf, res_l)
       emit_local_get(buf, a_l)
@@ -4453,8 +4463,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__any_elem")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
-      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, ctx)
-      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
       emit_local_set(buf, len_l)
@@ -4528,8 +4538,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       Array::push(local_names, "__all_elem")
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
-      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, ctx)
-      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
       emit_local_set(buf, len_l)
@@ -4617,8 +4627,8 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       let mut nl2 = nl + 8
       emit_local_set(buf, fn_l)
       emit_local_set(buf, arr_l)
-      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, ctx)
-      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 0), arr_l, fname, 0, ctx)
+      cc_hof_retain_arg(buf, Array::get(args, 1), fn_l, fname, 1, ctx)
       emit_local_get(buf, arr_l)
       emit_call(buf, arr_len_fi)
       emit_local_set(buf, len_l)
