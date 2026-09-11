@@ -39,4 +39,9 @@ gate_resolve_stage2
 echo "[compiler-gate] selftests: every gate self-test, serially"
 bash "$ROOT_DIR/scripts/check_gate_self_tests.sh"
 bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"
+# The gate LIBRARY's own helpers. check_gate_self_tests.sh discovers companions
+# by globbing scripts/, so anything under tests/gates/ is invisible to it --
+# and `gate_split_cli_cache_is_current` decides WHICH compiler the #2305 lane
+# questions, which is exactly the kind of answer that must not go unchecked.
+bash "$ROOT_DIR/tests/gates/lib_test.sh"
 echo "[compiler-gate] gate self-tests ok (#2248)"
