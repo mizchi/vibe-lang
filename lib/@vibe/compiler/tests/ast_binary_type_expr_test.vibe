@@ -116,6 +116,36 @@ test "ast_binary TypeExpr: canonical bytes" {
   ])))
 }
 
+test "ast_binary TypeExpr: a non-ASCII name goes out as its OWN bytes" {
+  // #2647 Codex rounds 11-12, and the assertion 44 round-trip tests could not
+  // make. A vibe `String` IS a byte string (ADR-0098), so `é` is the two
+  // bytes C3 A9 and must reach the wire as those two bytes.
+  //
+  // The encoder used to run UTF-16 surrogate logic over them and re-encode
+  // each BYTE as UTF-8, emitting C3 83 C2 A9 -- the UTF-8 for `Ã©`, four
+  // bytes with a declared length of 4. The reader did the exact inverse, so
+  // every round trip agreed while the bytes violated the format and any other
+  // implementation would have read the wrong string.
+  //
+  // Only a CANONICAL-BYTE assertion can see that: a transformation undone by
+  // its own inverse is invisible to a round trip.
+  assert(bytes_eq(enc(TyName("é")), Bytes::from_array([1, 2, 195, 169])))
+  // Three- and four-byte sequences likewise: declared length is the BYTE
+  // count, and the payload is the source's own bytes.
+  assert(bytes_eq(enc(TyName("日")), Bytes::from_array([1, 3, 230, 151, 165])))
+  assert(bytes_eq(enc(TyName("😀")), Bytes::from_array([
+    1,
+    4,
+    240,
+    159,
+    152,
+    128
+  ])))
+  // And the length prefix really is bytes, not characters.
+  assert(Bytes::get(enc(TyName("é")), 1) == 2)
+  assert(Bytes::get(enc(TyName("😀")), 1) == 4)
+}
+
 test "ast_binary TypeExpr: every variant roundtrips" {
   assert(roundtrips(TyUnit))
   assert(roundtrips(TyName("Int")))
@@ -225,4 +255,34 @@ test "ast_binary TypeExpr: a truncated varint is refused rather than spun on" {
   // 0x80 is "continue" with nothing following it. The raw reader stops
   // at end-of-input; the checked one this codec uses says so.
   assert(decode_outcome([2, 128]) == "ast_binary: unexpected end of input")
+}
+
+test "ast_binary: a varint past the 63-bit Int range is refused" {
+  // #2647 Codex round 12. ULEB128 for 2^64 is 0x80 nine times then 0x02. The
+  // tenth byte's payload shifts into positions a 63-bit `Int` cannot hold and
+  // WRAPS, producing zero -- and zero used as a count made a malformed cache
+  // decode as an empty AST rather than missing.
+  let over = "ast_binary: varint exceeds the representable Int range"
+  // TyApp, name "a", then an element count of 2^64.
+  assert(decode_outcome([
+    2,
+    1,
+    97,
+    128,
+    128,
+    128,
+    128,
+    128,
+    128,
+    128,
+    128,
+    128,
+    2
+  ]) == over)
+  // The largest count a 63-bit Int holds is 2^62-1; nine bytes of payload
+  // reach bit 62, and that is accepted as far as the range check goes (it is
+  // then refused for exceeding the bytes remaining, which is the next guard).
+  assert(decode_outcome([2, 1, 97, 255, 255, 255, 255, 255, 255, 255, 255, 127]) == "ast_binary: array count exceeds remaining input")
+  // A one-byte count still works, so the guard is not refusing everything.
+  assert(decode_outcome([2, 1, 97, 1, 5]) == "ok")
 }

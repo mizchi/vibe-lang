@@ -106,51 +106,28 @@ export fn ast_binary_write_bool(buf: Bytes, b: Bool) -> Unit {
   }
 }
 
-//# UTF-8 encode a string and prefix with `varint(byte_count)`. vibe's
-//# `String::char_code_at` returns UTF-16 code units, so we have to
-//# (a) decode surrogate pairs back into code points, then (b) emit
-//# UTF-8 bytes. `ast_binary_read_string` is the exact inverse.
+//# `varint(byte_count)` followed by the string's OWN bytes.
+//#
+//# A vibe `String` IS a byte string, indexed by byte offset (ADR-0098), so
+//# `String::length` is a byte count and `String::char_code_at` answers a
+//# BYTE. Copying them is the whole encoder.
+//#
+//# This used to run UTF-16 surrogate-pair logic over those bytes and
+//# re-encode each one as UTF-8 (#2647 Codex rounds 11-12): the two bytes of
+//# `é`, C3 A9, went out as C3 83 C2 A9 -- the UTF-8 for `Ã©`. The reader
+//# performed the exact inverse, so every round-trip test passed while the
+//# bytes on the wire violated the documented format, and any other
+//# implementation reading them would have got the wrong string. A round trip
+//# through one implementation cannot see a transformation its own inverse
+//# undoes; that is what made 44 passing tests miss this.
 export fn ast_binary_write_string(buf: Bytes, s: String) -> Unit {
-  // Encode UTF-8 into a scratch buffer first so we can prefix with
-  // the byte count (not the char/code-unit count).
-  let scratch = Bytes::new()
   let len = String::length(s)
+  ast_binary_write_varint(buf, len)
   let mut i = 0
   while i < len {
-    let unit = String::char_code_at(s, i)
-    let mut code_point = unit
-    let is_high_surrogate = unit >= 55296 && unit < 56320
-    if is_high_surrogate && (i + 1) < len {
-      let low = String::char_code_at(s, i + 1)
-      let is_low = low >= 56320 && low < 57344
-      if is_low {
-        code_point = ((unit - 55296)<<10) + (low - 56320) + 65536
-        i = i + 1
-      }
-    }
-    if code_point < 128 {
-      Bytes::push(scratch, code_point)
-    } else {
-      if code_point < 2048 {
-        Bytes::push(scratch, 192|(code_point>>6))
-        Bytes::push(scratch, 128|(code_point&63))
-      } else {
-        if code_point < 65536 {
-          Bytes::push(scratch, 224|(code_point>>12))
-          Bytes::push(scratch, 128|((code_point>>6)&63))
-          Bytes::push(scratch, 128|(code_point&63))
-        } else {
-          Bytes::push(scratch, 240|(code_point>>18))
-          Bytes::push(scratch, 128|((code_point>>12)&63))
-          Bytes::push(scratch, 128|((code_point>>6)&63))
-          Bytes::push(scratch, 128|(code_point&63))
-        }
-      }
-    }
+    Bytes::push(buf, String::char_code_at(s, i))
     i = i + 1
   }
-  ast_binary_write_varint(buf, Bytes::length(scratch))
-  Bytes::append(buf, scratch)
 }
 
 //# Optional string: 0x00 = None, 0x01 followed by string.
@@ -272,52 +249,25 @@ export fn ast_binary_read_bool(r: AstBinaryReader) -> Bool {
   b == 1
 }
 
-//# Decode the varint length-prefixed UTF-8 string back into a vibe
-//# `String`. We assemble characters via char arithmetic; vibe's
-//# `String::concat` joins single-character strings.
+//# The inverse: `varint(byte_count)` then that many bytes, taken verbatim
+//# into a `String`, which is what a vibe `String` already is (ADR-0098).
+//#
+//# `ast_binary_utf8_span_ok` has already established the span is well-formed
+//# UTF-8 for anything read through `ast_binary_read_string_checked`, so this
+//# does not re-validate; a caller reading untrusted bytes through the raw
+//# reader gets the bytes it was given.
 export fn ast_binary_read_string(r: AstBinaryReader) -> String {
   let byte_len = ast_binary_read_varint(r)
-  let end = r.pos + byte_len
-  // O(N) build via StringBuilder; the previous `out = String::concat(out, c)`
-  // per character was O(L²) over the string length, paid on every string when
-  // loading a cached AST (issue #366).
   let out = StringBuilder::new()
-  while r.pos < end {
-    let b0 = ast_binary_read_byte(r)
-    let mut code_point = 0
-    if b0 < 128 {
-      code_point = b0
+  let mut i = 0
+  while i < byte_len {
+    let b = ast_binary_read_byte(r)
+    if b < 0 {
+      ()
     } else {
-      if (b0&224) == 192 {
-        let b1 = ast_binary_read_byte(r)
-        code_point = ((b0&31)<<6)|(b1&63)
-      } else {
-        if (b0&240) == 224 {
-          let b1 = ast_binary_read_byte(r)
-          let b2 = ast_binary_read_byte(r)
-          code_point = ((b0&15)<<12)|((b1&63)<<6)|(b2&63)
-        } else {
-          let b1 = ast_binary_read_byte(r)
-          let b2 = ast_binary_read_byte(r)
-          let b3 = ast_binary_read_byte(r)
-          code_point = ((b0&7)<<18)|((b1&63)<<12)|((b2&63)<<6)|(b3&63)
-        }
-      }
+      StringBuilder::push(out, String::from_byte(b))
     }
-    // Re-encode as UTF-16 surrogate pair if needed, then build a 1-char string.
-    if code_point >= 65536 {
-      let high = 55296 + ((code_point - 65536)>>10)
-      let low = 56320 + ((code_point - 65536)&1023)
-      // vibe doesn't expose a primitive char-from-code-point that handles
-      // surrogates; we round-trip through Bytes which is UTF-16-aware in
-      // the runtime. This branch is unused by the prelude (ASCII-only)
-      // so we keep the slow path explicit and tested by the cross-impl
-      // fixture once non-BMP characters get added.
-      StringBuilder::push(out, String::from_char_code(high))
-      StringBuilder::push(out, String::from_char_code(low))
-    } else {
-      StringBuilder::push(out, String::from_char_code(code_point))
-    }
+    i = i + 1
   }
   StringBuilder::freeze(out)
 }
@@ -378,10 +328,19 @@ export fn ast_binary_read_varint_checked(r: AstBinaryReader) -> Int with Excepti
   let mut shift = 0
   let mut more = true
   while more {
-    if shift >= 64 {
-      throw("ast_binary: varint exceeds 64 bits")
-    }
     let b = ast_binary_read_byte_checked(r)
+    // A vibe `Int` is 63-bit, so bits 0..62 are all that can be represented:
+    // nine bytes' worth. A tenth byte shifts its payload into positions that
+    // WRAP rather than raise (#2647 Codex round 12) -- ULEB128 for 2^64
+    // decoded as zero, and zero used as a statement count made a malformed
+    // cache read as an empty AST, which is a silent wrong answer rather than
+    // a miss. Anything at or past bit 63 must therefore be empty.
+    if shift >= 63 && (b&127) != 0 {
+      throw("ast_binary: varint exceeds the representable Int range")
+    }
+    if shift >= 70 {
+      throw("ast_binary: varint is longer than 10 bytes")
+    }
     result = result|((b&127)<<shift)
     if (b&128) == 0 {
       more = false
@@ -637,10 +596,17 @@ export fn ast_binary_read_svarint_checked(r: AstBinaryReader) -> Int with Except
   let mut last_byte = 0
   let mut more = true
   while more {
-    if shift >= 64 {
-      throw("ast_binary: svarint exceeds 64 bits")
-    }
     let b = ast_binary_read_byte_checked(r)
+    // Same 63-bit limit as the unsigned reader, with the sign taken into
+    // account: past bit 62 a byte can only be repeating the sign, so its
+    // payload must be all-zero (non-negative) or all-one (negative). Anything
+    // else is a value this `Int` cannot hold, and shifting it in wraps.
+    if shift >= 63 && (b&127) != 0 && (b&127) != 127 {
+      throw("ast_binary: svarint exceeds the representable Int range")
+    }
+    if shift >= 70 {
+      throw("ast_binary: svarint is longer than 10 bytes")
+    }
     last_byte = b
     result = result|((b&127)<<shift)
     shift = shift + 7
