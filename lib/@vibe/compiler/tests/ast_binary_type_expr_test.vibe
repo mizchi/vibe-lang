@@ -141,7 +141,32 @@ test "ast_binary TypeExpr: nesting roundtrips through every recursive slot" {
   assert(roundtrips(deep))
 }
 
+test "ast_binary TypeExpr: a declared length that cuts a UTF-8 sequence is refused" {
+  // Codex round 9. `byte_len = 1` carrying a 0xF0 lead passes the
+  // remaining-length check -- one byte IS available -- and the raw decoder
+  // then reads three continuation bytes out of the NEXT field, returning a
+  // garbage character AND leaving the cursor three bytes out, so every field
+  // after it is read from the wrong offset.
+  let cut = "ast_binary: string is not well-formed UTF-8 within its declared length"
+  assert(decode_outcome([1, 1, 240]) == cut)
+  // The same lead WITH its three continuation bytes actually present, so what
+  // is being rejected is the declared BOUND and not end-of-input.
+  assert(decode_outcome([1, 1, 240, 159, 152, 128]) == cut)
+  // A bare continuation byte cannot start a sequence.
+  assert(decode_outcome([1, 1, 128]) == cut)
+  // 0xF8..0xFF are never valid lead bytes.
+  assert(decode_outcome([1, 1, 248]) == cut)
+  // A lead whose continuation is present but is not a continuation byte.
+  assert(decode_outcome([1, 2, 194, 65]) == cut)
+  // Declared honestly, the very same four bytes decode.
+  assert(decode_outcome([1, 4, 240, 159, 152, 128]) == "ok")
+}
+
 test "ast_binary TypeExpr: non-ASCII names roundtrip" {
+  // Four-byte (non-BMP) first: it is the only case that exercises the
+  // surrogate-pair path on BOTH sides of the round trip.
+  assert(roundtrips(TyName("😀")))
+  assert(roundtrips(TyApp("Box", [TyName("🎌"), TyName("日本語")])))
   assert(roundtrips(TyName("日本語")))
   assert(roundtrips(TyApp("Box", [TyName("café")])))
   assert(roundtrips(TyFn([], TyUnit, Some("λ"))))

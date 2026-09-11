@@ -393,15 +393,71 @@ export fn ast_binary_read_varint_checked(r: AstBinaryReader) -> Int with Excepti
   result
 }
 
-//# Validate the length prefix, then rewind and let the primitive do
-//# the UTF-8 decode. The rewind is what keeps one decoder: duplicating
-//# the decode here would be a second place for the surrogate handling
-//# to be wrong in.
+//# Is `[at, at+len)` well-formed UTF-8 whose every sequence ENDS inside
+//# the range?
+//#
+//# This exists because checking the declared length is not enough. The
+//# raw decoder reads a lead byte's continuation bytes without re-testing
+//# the bound, so a string declaring ONE byte and carrying a `0xF0` lead
+//# makes it consume three bytes of the NEXT field -- the decode
+//# "succeeds", returns a garbage character, and leaves the cursor three
+//# bytes out, so every field after it is read from the wrong offset.
+//# That is a silent wrong answer from a corrupt cache file, which is
+//# the one failure this format must not have.
+//#
+//# So the bytes are established well-formed BEFORE they are decoded,
+//# rather than while. That keeps a single decoder -- duplicating the
+//# decode here would be a second place for the surrogate handling to be
+//# wrong in -- and makes the validator independently testable.
+fn ast_binary_utf8_span_ok(b: Bytes, at: Int, len: Int) -> Bool {
+  let end = at + len
+  let mut i = at
+  let mut ok = true
+  while ok && i < end {
+    let b0 = Bytes::get(b, i)
+    // Continuation bytes (0b10xxxxxx) and the never-valid 0xF8..0xFF
+    // both fall through to -1: neither can start a sequence.
+    let need = if b0 < 128 {
+      0
+    } else if (b0&224) == 192 {
+      1
+    } else if (b0&240) == 224 {
+      2
+    } else if (b0&248) == 240 {
+      3
+    } else {
+      0 - 1
+    }
+    if need < 0 || (i + need) >= end {
+      ok = false
+    } else {
+      let mut k = 1
+      while ok && k <= need {
+        if (Bytes::get(b, i + k)&192) != 128 {
+          ok = false
+        } else {
+          ()
+        }
+        k = k + 1
+      }
+      i = i + need + 1
+    }
+  }
+  ok
+}
+
+//# Validate the length prefix AND the bytes it covers, then rewind and
+//# let the primitive do the decode.
 export fn ast_binary_read_string_checked(r: AstBinaryReader) -> String with Exception {
   let start = r.pos
   let byte_len = ast_binary_read_varint_checked(r)
   if byte_len < 0 || ast_binary_reader_remaining(r) < byte_len {
     throw("ast_binary: string length exceeds remaining input")
+  }
+  if ast_binary_utf8_span_ok(r.bytes, r.pos, byte_len) {
+    ()
+  } else {
+    throw("ast_binary: string is not well-formed UTF-8 within its declared length")
   }
   r.pos = start
   ast_binary_read_string(r)
