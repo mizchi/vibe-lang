@@ -68,6 +68,8 @@ import @vibe/compiler/normalize {
 
 import @vibe/compiler/perceus {
   PerceusAction,
+  borrow_ret_link_parts,
+  borrow_ret_shadow_mask,
   build_perceus_plan,
   build_perceus_plan_pinned_split,
   build_perceus_plan_with_params,
@@ -5465,6 +5467,9 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     lc_concat_into(st.an_local_names, part_local_names)
     lc_concat_ints_into(st.an_local_masks, part_local_masks)
     compute_borrow_disqualifiers(part, st.an_valued, st.an_nonident_fns, st.an_nonident_pos)
+    // #2638: and this module's half of the borrow-returning SEED. The whole
+    // program's is the OR, so it publishes like the disqualifiers above.
+    Array::push(st.an_bret_shadow, borrow_ret_shadow_mask(part))
     fi = fi + 1
   }
   // #2638 PHASE B. Round 0 for the whole program is linkable now, from what
@@ -5487,6 +5492,23 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   }
   let ph_r01mask = lc_fresh_int_array()
   let ph_r01 = borrow_round1_link_parts(parts, ph_r0, ph_r0mask, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, ph_shadow, ph_r01mask)
+  // #2638: and the borrow-returning set, as a fixpoint over the MODULES. This
+  // one genuinely iterates at the link -- whether a module can classify `f`
+  // depends on a callee in another module having entered the set, which is
+  // only known after that module's round.
+  let mut ph_bshadow = 0
+  let mut bsi = 0
+  while bsi < Array::length(st.an_bret_shadow) {
+    ph_bshadow = ph_bshadow|Array::get(st.an_bret_shadow, bsi)
+    bsi = bsi + 1
+  }
+  let mut apx = 0
+  while apx < Array::length(parts) {
+    Array::push(st.an_parts, Array::get(parts, apx))
+    apx = apx + 1
+  }
+  Array::push(st.an_bret_seed, ph_bshadow)
+  lc_concat_into(st.an_bret_link, sorted_names_of(borrow_ret_link_parts(parts, ph_bshadow)))
   lc_concat_into(st.an_r01_names, ph_r01)
   lc_concat_ints_into(st.an_r01_masks, ph_r01mask)
   // ASSEMBLY (#2575 item 2 step 3). Concatenating the modules is the obvious
@@ -5666,6 +5688,16 @@ struct PreludeSplitStats {
   an_nonident_pos: Array[Int];
   // #2638: each module's source-shadow bits, a union like the two above.
   an_shadow: Array[Int];
+  // #2638: the same for the borrow-RETURNING seed, and that analysis' linked
+  // answer (a fixpoint the link drives across the modules).
+  an_bret_shadow: Array[Int];
+  // The OR the split lane actually seeded with, so the caller can compare it
+  // against the whole program's instead of assuming they agree.
+  an_bret_seed: Array[Int];
+  // The module parts themselves, so the caller can run its own controls
+  // against the SAME statements the split lane answered from.
+  an_parts: Array[Array[Stmt]];
+  an_bret_link: Array[String];
   // #2638 phase B's ANSWER: the program's round 0 and round 1, linked from
   // the modules' published facts plus each module's own bodies. Filled by
   // `prelude_run_per_module`, which is where the parts live.
@@ -5698,6 +5730,10 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     an_nonident_fns: lc_fresh_string_array(),
     an_nonident_pos: lc_fresh_int_array(),
     an_shadow: lc_fresh_int_array(),
+    an_bret_shadow: lc_fresh_int_array(),
+    an_bret_seed: lc_fresh_int_array(),
+    an_parts: [],
+    an_bret_link: lc_fresh_string_array(),
     an_r01_names: lc_fresh_string_array(),
     an_r01_masks: lc_fresh_int_array(),
     counts: [0, 0, 0]
@@ -5806,6 +5842,15 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   //     direction is reachable and it is the unsound one.
   let an_exclude = lc_analysis_exclude(entry_name)
   let an_bret_w = sorted_names_of(compute_borrow_returning_names(a))
+  // #2638 CONTROL. The same link, handed the whole program as a SINGLE part.
+  // If this is a bare count the link's iteration is exact and any residue in
+  // `link_bret` comes from the parts being different statements -- not from
+  // the fixpoint failing to decompose. Without it the two causes are
+  // indistinguishable, and "the analysis does not decompose" is the more
+  // interesting and more wrong of the two.
+  let an_bret_one: Array[Array[Stmt]] = []
+  Array::push(an_bret_one, a)
+  let an_bret_self = sorted_names_of(borrow_ret_link_parts(an_bret_one, borrow_ret_shadow_mask(a)))
   let an_bmask_w = lc_fresh_int_array()
   let an_bfns_w = compute_borrow_param_user_fns(a, an_exclude, an_bmask_w)
   // #2638: round 0 ALONE for the whole program. The reference the link below
@@ -5843,6 +5888,36 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let an_r0_link = borrow_round0_link(st.an_local_names, st.an_local_masks, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, an_r0mask_link)
   // #2638 phase B's answer, computed by the split lane itself (it owns the
   // module parts) and only READ here for the comparison.
+  // #2638 SECOND CONTROL. The link over the ASSEMBLED program -- what the
+  // split lane actually produces after folding the modules' 167 duplicate
+  // declarations. Between this and `link_bret_self` the residue in
+  // `link_bret` is attributed: if this is a bare count, splitting the rounds
+  // across 365 parts is what costs it; if it carries the same residue, the
+  // parts' STATEMENTS do, and the fixpoint is exonerated either way only by
+  // saying which.
+  // #2638 THIRD CONTROL. The parts CONCATENATED into one part -- same
+  // statements as `link_bret` sees, same duplicates, but ONE round structure
+  // instead of 365. Against `link_bret_asm` (the same statements FOLDED) this
+  // says whether the residue is the 167 duplicate declarations or the
+  // splitting of the rounds. Two arguments predicted different answers here,
+  // so it is measured rather than reasoned.
+  let an_bret_cat: Array[Stmt] = []
+  let mut bci = 0
+  while bci < Array::length(st.an_parts) {
+    let bp = Array::get(st.an_parts, bci)
+    let mut bcj = 0
+    while bcj < Array::length(bp) {
+      Array::push(an_bret_cat, Array::get(bp, bcj))
+      bcj = bcj + 1
+    }
+    bci = bci + 1
+  }
+  let an_bret_cat_one: Array[Array[Stmt]] = []
+  Array::push(an_bret_cat_one, an_bret_cat)
+  let an_bret_catr = sorted_names_of(borrow_ret_link_parts(an_bret_cat_one, borrow_ret_shadow_mask(an_bret_cat)))
+  let an_bret_asm_one: Array[Array[Stmt]] = []
+  Array::push(an_bret_asm_one, linked)
+  let an_bret_asm = sorted_names_of(borrow_ret_link_parts(an_bret_asm_one, borrow_ret_shadow_mask(linked)))
   let an_r01_link = st.an_r01_names
   let an_r01mask_link = st.an_r01_masks
   let an_pairs_u = st.an_pairs
@@ -5910,9 +5985,12 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     "0"
   })
   let an_cols = if an_dce_entry {
-    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured"
+    " borrow_ret=unmeasured borrow_fns=unmeasured borrow_masks=unmeasured view_ret=unmeasured link_round0=unmeasured link_round0_masks=unmeasured link_round0_occ=unmeasured link_round01=unmeasured link_round01_masks=unmeasured link_round01_occ=unmeasured link_bret=unmeasured link_bret_occ=unmeasured link_bret_self=unmeasured link_bret_asm=unmeasured link_bret_seed=unmeasured link_bret_cat=unmeasured"
   } else {
-    String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u)), String::concat(String::concat(" link_round0=", lc_set_cmp_counted(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round0_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_r0_w, an_r0mask_w), lc_name_mask_pairs(an_r0_link, an_r0mask_link))), String::concat(String::concat(" link_round0_occ=", lc_multiset_first_diff(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round01=", lc_set_cmp_counted(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_round01_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), lc_name_mask_pairs(an_r01_link, an_r01mask_link))), String::concat(" link_round01_occ=", lc_multiset_first_diff(an_bfns_w, an_r01_link))))))))))
+    String::concat(String::concat(String::concat(" borrow_ret=", lc_set_cmp_counted(an_bret_w, an_bret_u)), String::concat(" borrow_fns=", lc_set_cmp_counted(an_bfns_w, an_bfns_u))), String::concat(String::concat(" borrow_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), an_pairs_u)), String::concat(String::concat(" view_ret=", lc_set_cmp_counted(an_view_w, an_view_u)), String::concat(String::concat(" link_round0=", lc_set_cmp_counted(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round0_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_r0_w, an_r0mask_w), lc_name_mask_pairs(an_r0_link, an_r0mask_link))), String::concat(String::concat(" link_round0_occ=", lc_multiset_first_diff(an_r0_w, an_r0_link)), String::concat(String::concat(" link_round01=", lc_set_cmp_counted(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_round01_masks=", lc_set_cmp_counted(lc_name_mask_pairs(an_bfns_w, an_bmask_w), lc_name_mask_pairs(an_r01_link, an_r01mask_link))), String::concat(String::concat(" link_round01_occ=", lc_multiset_first_diff(an_bfns_w, an_r01_link)), String::concat(String::concat(" link_bret=", lc_set_cmp_counted(an_bret_w, st.an_bret_link)), String::concat(String::concat(" link_bret_occ=", lc_multiset_first_diff(an_bret_w, st.an_bret_link)), String::concat(String::concat(" link_bret_self=", lc_set_cmp_counted(an_bret_w, an_bret_self)), String::concat(String::concat(" link_bret_asm=", lc_set_cmp_counted(an_bret_w, an_bret_asm)), String::concat(String::concat(" link_bret_seed=", String::concat(Int::to_string(match Array::length(st.an_bret_seed) {
+      0 => 0 - 1,
+      _ => Array::get(st.an_bret_seed, 0)
+    }), String::concat("/", Int::to_string(borrow_ret_shadow_mask(a))))), String::concat(" link_bret_cat=", lc_set_cmp_counted(an_bret_w, an_bret_catr))))))))))))))))
   }
   let an_line = String::concat(String::concat(an_head, an_cols), "\n")
   let line = String::concat(String::concat(head, mid), tail)

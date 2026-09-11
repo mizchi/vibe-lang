@@ -972,6 +972,73 @@ fn strip_wrappers_for_borrow_ret(e: Expr) -> Expr {
 /// The two Map iterator accessors have source-ownership guards in both linear
 /// and GC codegen. If source binds either exact name, its body -- not the
 /// compiler intrinsic -- determines whether the result is borrowed.
+/// #2638: ONE ROUND of the borrow-returning fixpoint over `stmts`, against
+/// the set decided so far. Returns whether it added anything.
+///
+/// The fixpoint is MONOTONE -- `known` only grows and the loop runs to
+/// quiescence -- so the least fixed point does not depend on the order bodies
+/// are visited in. That is what lets the link drive the rounds across modules:
+/// each round it asks every module what IT can add given the current set, and
+/// unions the answers. A module reads only its own bodies plus that set, and
+/// the answer is the whole program's because the modules partition it.
+///
+/// One implementation serves both the whole-program pass and the per-module
+/// lane, so `tail_is_borrow_ret_safe` is not re-stated anywhere.
+fn bret_round(stmts: Array[Stmt], known: Array[String], known_set: MutSet[String]) -> Bool {
+  let mut changed = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, value) =>
+      if !MutSet::has(known_set, name) {
+        match value {
+          EFn(_, _, _, _, _, body) => {
+            // A function is borrow-returning only if its (wrapper-stripped)
+            // top-level shape is itself a call/if/match reaching a known
+            // borrow-return name on every branch -- a BARE identifier tail
+            // at the *top level* (an identity-like function) is NOT eligible
+            // here even though tail_is_borrow_ret_safe accepts a bare ident
+            // as a safe fallback *inside* an if/match branch (e.g. peek's
+            // `else TEof`). This keeps `let f = (x) -> T { x }` (a genuine
+            // passthrough of a normally-owned argument) from being
+            // misclassified as a Array::get-style borrowed view.
+            let top = strip_wrappers_for_borrow_ret(body)
+            let eligible_shape = match top {
+              ECall(_, _, _) => true,
+              EIf(_, _, _) => true,
+              EMatch(_, _) => true,
+              _ => false
+            }
+            if eligible_shape {
+              // #1915: the spine bindings resolve bare ident branch tails
+              // to the values they name (see tail_is_borrow_ret_safe).
+              let sp_names: Array[String] = []
+              let sp_vals: Array[Expr] = []
+              let sp_excluded: Array[String] = []
+              let _ = collect_spine_let_vals(body, sp_names, sp_vals, sp_excluded)
+              if tail_is_borrow_ret_safe(known_set, top, sp_names, sp_vals, sp_excluded) {
+                Array::push(known, name)
+                MutSet::add(known_set, name)
+                changed = true
+              } else {
+                ()
+              }
+            } else {
+              ()
+            }
+          },
+          _ => ()
+        }
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  changed
+}
+
 /// Return a two-bit mask in one statement scan: bit 0 is the checked accessor,
 /// bit 1 is the unchecked accessor. This runs on every linked compile, so do
 /// not scan the compiler-sized statement array once per builtin seed.
@@ -1034,56 +1101,62 @@ export fn compute_borrow_returning_names(stmts: Array[Stmt]) -> Array[String] {
   }
   let mut changed = true
   while changed {
+    changed = bret_round(stmts, known, known_set)
+  }
+  known
+}
+
+/// #2638: this module's half of the borrow-returning SEED -- the two bits
+/// saying whether the program's own source shadows a shadowable borrow-ret
+/// builtin. The whole program's answer is the OR, so a module publishes its
+/// bits like any other body-local fact.
+export fn borrow_ret_shadow_mask(stmts: Array[Stmt]) -> Int {
+  source_owned_shadowable_borrow_mask(stmts)
+}
+
+/// #2638: THE BORROW-RETURNING LINK. The whole program's borrow-returning set,
+/// run as a fixpoint over the MODULES rather than over one statement array.
+///
+/// Each round asks every module what it can add given the set decided so far,
+/// and the round repeats until no module adds anything. A module reads only
+/// its own bodies and that set -- it never sees another module's statements --
+/// and the result is the whole program's because the modules partition it and
+/// the fixpoint is monotone (least fixed point, independent of visit order).
+///
+/// This is the shape #2638 calls "the module collects, the link decides", and
+/// unlike the borrow-param analysis it genuinely needs the ITERATION at the
+/// link: whether a module can classify `f` depends on whether a callee in
+/// another module entered the set, which is only known after that module's
+/// round.
+///
+/// `shadow_mask` is the OR of what the modules published, so the seed is the
+/// program's and not any one module's.
+export fn borrow_ret_link_parts(parts: Array[Array[Stmt]], shadow_mask: Int) -> Array[String] {
+  let builtin_names = borrow_ret_builtin_names()
+  let known: Array[String] = []
+  let known_set = MutSet::new_string()
+  let mut seed_i = 0
+  while seed_i < Array::length(builtin_names) {
+    let builtin_name = Array::get(builtin_names, seed_i)
+    if !source_owns_shadowable_borrow_builtin(shadow_mask, builtin_name) {
+      Array::push(known, builtin_name)
+      MutSet::add(known_set, builtin_name)
+    } else {
+      ()
+    }
+    seed_i = seed_i + 1
+  }
+  let mut changed = true
+  while changed {
     changed = false
-    let mut i = 0
-    while i < Array::length(stmts) {
-      match Array::get(stmts, i) {
-        SLet(_, _, name, _, value) =>
-        if !MutSet::has(known_set, name) {
-          match value {
-            EFn(_, _, _, _, _, body) => {
-              // A function is borrow-returning only if its (wrapper-stripped)
-              // top-level shape is itself a call/if/match reaching a known
-              // borrow-return name on every branch -- a BARE identifier tail
-              // at the *top level* (an identity-like function) is NOT eligible
-              // here even though tail_is_borrow_ret_safe accepts a bare ident
-              // as a safe fallback *inside* an if/match branch (e.g. peek's
-              // `else TEof`). This keeps `let f = (x) -> T { x }` (a genuine
-              // passthrough of a normally-owned argument) from being
-              // misclassified as a Array::get-style borrowed view.
-              let top = strip_wrappers_for_borrow_ret(body)
-              let eligible_shape = match top {
-                ECall(_, _, _) => true,
-                EIf(_, _, _) => true,
-                EMatch(_, _) => true,
-                _ => false
-              }
-              if eligible_shape {
-                // #1915: the spine bindings resolve bare ident branch tails
-                // to the values they name (see tail_is_borrow_ret_safe).
-                let sp_names: Array[String] = []
-                let sp_vals: Array[Expr] = []
-                let sp_excluded: Array[String] = []
-                let _ = collect_spine_let_vals(body, sp_names, sp_vals, sp_excluded)
-                if tail_is_borrow_ret_safe(known_set, top, sp_names, sp_vals, sp_excluded) {
-                  Array::push(known, name)
-                  MutSet::add(known_set, name)
-                  changed = true
-                } else {
-                  ()
-                }
-              } else {
-                ()
-              }
-            },
-            _ => ()
-          }
-        } else {
-          ()
-        },
-        _ => ()
+    let mut pi = 0
+    while pi < Array::length(parts) {
+      if bret_round(Array::get(parts, pi), known, known_set) {
+        changed = true
+      } else {
+        ()
       }
-      i = i + 1
+      pi = pi + 1
     }
   }
   known
