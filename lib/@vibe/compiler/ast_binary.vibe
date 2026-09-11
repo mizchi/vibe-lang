@@ -414,28 +414,61 @@ fn ast_binary_utf8_span_ok(b: Bytes, at: Int, len: Int) -> Bool {
   let mut ok = true
   while ok && i < end {
     let b0 = Bytes::get(b, i)
-    // Continuation bytes (0b10xxxxxx) and the never-valid 0xF8..0xFF
-    // both fall through to -1: neither can start a sequence.
+    // Sequence length AND the legal first-continuation range for this lead.
+    // The prefix masks alone are not enough (#2647 Codex round 10): they
+    // accept `C0 80` (an overlong NUL), `ED A0 80` (a surrogate code point,
+    // which is not a scalar value) and `F5 80 80 80` (above U+10FFFF). Each
+    // decodes to something, so accepting them means a corrupt cache string
+    // is DECODED rather than missed.
     let need = if b0 < 128 {
       0
-    } else if (b0&224) == 192 {
+    } else if b0 >= 194 && b0 <= 223 {
       1
-    } else if (b0&240) == 224 {
+    } else if b0 >= 224 && b0 <= 239 {
       2
-    } else if (b0&248) == 240 {
+    } else if b0 >= 240 && b0 <= 244 {
       3
     } else {
+      // 0x80..0xC1 (continuation bytes and the two overlong 2-byte leads)
+      // and 0xF5..0xFF (beyond U+10FFFF) can never start a sequence.
       0 - 1
     }
     if need < 0 || (i + need) >= end {
       ok = false
     } else {
+      // The first continuation byte carries the range restriction; the rest
+      // are plain 0x80..0xBF.
+      let lo_bound = if b0 == 224 {
+        160
+      } else if b0 == 237 {
+        128
+      } else if b0 == 240 {
+        144
+      } else {
+        128
+      }
+      let hi_bound = if b0 == 237 {
+        159
+      } else if b0 == 244 {
+        143
+      } else {
+        191
+      }
       let mut k = 1
       while ok && k <= need {
-        if (Bytes::get(b, i + k)&192) != 128 {
-          ok = false
+        let c = Bytes::get(b, i + k)
+        if k == 1 {
+          if c < lo_bound || c > hi_bound {
+            ok = false
+          } else {
+            ()
+          }
         } else {
-          ()
+          if c < 128 || c > 191 {
+            ok = false
+          } else {
+            ()
+          }
         }
         k = k + 1
       }
@@ -585,6 +618,14 @@ export fn ast_binary_write_f64(buf: Bytes, d: Double) -> Unit {
 export fn ast_binary_read_f64_checked(r: AstBinaryReader) -> Double with Exception {
   let lo = ast_binary_read_varint_checked(r)
   let hi = ast_binary_read_varint_checked(r)
+  // Both halves are UNSIGNED 32-BIT by definition, and a corrupt cache can
+  // encode anything a varint can hold (#2647 Codex round 11).
+  // `Double::from_i64_bits_lohi` masks each half to 32 bits, so an out-of-range
+  // value would silently reconstruct a DIFFERENT literal instead of missing
+  // the cache -- the same class of wrong answer the UTF-8 bound fixes.
+  if lo < 0 || lo > 4294967295 || hi < 0 || hi > 4294967295 {
+    throw("ast_binary: f64 half is not an unsigned 32-bit value")
+  }
   Double::from_i64_bits_lohi(lo, hi)
 }
 

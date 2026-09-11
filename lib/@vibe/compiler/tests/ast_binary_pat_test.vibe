@@ -130,3 +130,16 @@ test "ast_binary Pat: malformed input is refused, not answered" {
   // PStruct field count likewise.
   assert(decode_outcome([10, 1, 97, 9, 1]) == "ast_binary: array count exceeds remaining input")
 }
+
+test "ast_binary Pat: an f64 half wider than 32 bits is refused" {
+  // #2647 Codex round 11. `Double::from_i64_bits_lohi` masks each half to 32
+  // bits, so an out-of-range half from a corrupt cache would silently rebuild
+  // a DIFFERENT literal rather than missing the cache.
+  let bad = "ast_binary: f64 half is not an unsigned 32-bit value"
+  // 4294967296 (2^32) as a varint is 80 80 80 80 10.
+  assert(decode_outcome([4, 128, 128, 128, 128, 16, 0]) == bad)
+  assert(decode_outcome([4, 0, 128, 128, 128, 128, 16]) == bad)
+  // 4294967295 (2^32-1) is the largest legal half, and is accepted.
+  assert(decode_outcome([4, 255, 255, 255, 255, 15, 0]) == "ok")
+  assert(decode_outcome([4, 0, 0]) == "ok")
+}

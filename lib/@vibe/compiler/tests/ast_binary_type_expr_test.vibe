@@ -162,6 +162,29 @@ test "ast_binary TypeExpr: a declared length that cuts a UTF-8 sequence is refus
   assert(decode_outcome([1, 4, 240, 159, 152, 128]) == "ok")
 }
 
+test "ast_binary TypeExpr: non-scalar UTF-8 is refused, not decoded" {
+  // #2647 Codex round 10. Sequence length and continuation-byte masks alone
+  // accept encodings that are not Unicode scalar values: each decodes to
+  // SOMETHING, so accepting them means a corrupt cache string is decoded
+  // rather than missed.
+  let bad = "ast_binary: string is not well-formed UTF-8 within its declared length"
+  // Overlong NUL (C0 80) -- U+0000 written in two bytes.
+  assert(decode_outcome([1, 2, 192, 128]) == bad)
+  // Overlong three-byte form (E0 80 80).
+  assert(decode_outcome([1, 3, 224, 128, 128]) == bad)
+  // A surrogate code point (ED A0 80) -- never a scalar value.
+  assert(decode_outcome([1, 3, 237, 160, 128]) == bad)
+  // Above U+10FFFF, both spellings: an F5 lead, and F4 with a too-high
+  // first continuation.
+  assert(decode_outcome([1, 4, 245, 128, 128, 128]) == bad)
+  assert(decode_outcome([1, 4, 244, 144, 128, 128]) == bad)
+  // The controls sit exactly at the boundaries these reject, so the check
+  // cannot be passing by refusing everything multibyte.
+  assert(decode_outcome([1, 2, 194, 169]) == "ok")
+  assert(decode_outcome([1, 3, 237, 159, 191]) == "ok")
+  assert(decode_outcome([1, 4, 244, 143, 191, 191]) == "ok")
+}
+
 test "ast_binary TypeExpr: non-ASCII names roundtrip" {
   // Four-byte (non-BMP) first: it is the only case that exercises the
   // surrogate-pair path on BOTH sides of the round trip.
