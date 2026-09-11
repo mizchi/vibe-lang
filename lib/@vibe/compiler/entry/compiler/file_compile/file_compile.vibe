@@ -105,6 +105,7 @@ import @vibe/compiler/runtime {
   db_store_artifact,
   db_typecheck,
   db_typecheck_fs,
+  module_plan_data_fs,
   module_typed_lowering_offsets_for_path,
   parse_program_with_path,
   split_typed_lowering_offsets,
@@ -511,13 +512,14 @@ fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, St
 export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String, pass_limit: Int) -> String with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
-  let (a, _, _, _) = prelude_oracle_merge(source_groups)
+  let (a, _, _, _, _) = prelude_oracle_merge(source_groups)
   let mut report = ""
   let mut k = 0
   while k <= pass_limit {
-    let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups)
+    let (c, files, file_paths, c_file_id, eq) = prelude_oracle_merge(source_groups)
     let (eq_offs, eq_keys) = eq
-    report = String::concat(report, prelude_pass_module_oracle_step(k, a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, print_stmt))
+    let (dep_ids, _plan_unmatched, _files_unmatched) = oracle_dependency_closure_fs(entry_path, file_paths)
+    report = String::concat(report, prelude_pass_module_oracle_step(k, a, c, c_file_id, Array::length(files), dep_ids, entry_name, eq_offs, eq_keys, print_stmt))
     k = k + 1
   }
   report
@@ -531,13 +533,154 @@ export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String
 export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: String) -> String with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
-  let (a, _, _, _) = prelude_oracle_merge(source_groups)
-  let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups)
+  let (a, _, _, _, _) = prelude_oracle_merge(source_groups)
+  let (c, files, file_paths, c_file_id, eq) = prelude_oracle_merge(source_groups)
   let (eq_offs, eq_keys) = eq
-  prelude_module_full_oracle_line(a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, print_stmt)
+  let (dep_ids, plan_unmatched, files_unmatched) = oracle_dependency_closure_fs(entry_path, file_paths)
+  String::concat(prelude_module_full_oracle_line(a, c, c_file_id, Array::length(files), dep_ids, entry_name, eq_offs, eq_keys, print_stmt), String::concat("  graph plan_unmatched=", String::concat(__to_string(plan_unmatched), String::concat(" files_unmatched=", String::concat(__to_string(files_unmatched), "\n")))))
 }
 
-fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {
+/// #2388: what each merged file may SEE, as merge file ids.
+///
+/// The module-mode oracles used to hand a module the interface of every other
+/// file in the closure, which is wider than any real per-module compile: a
+/// dependency could read declarations from the entry that imports it. The edge
+/// set that answers it is already computed on every FS compile --
+/// `module_plan_data_fs` returns each module's resolved DIRECT dependency
+/// paths, the same sequence `project_exact_dependency_envs` projects
+/// environments onto -- so this maps those paths onto the merge's file ids and
+/// closes them transitively.
+///
+/// Returns `(dep_ids, plan_unmatched, files_unmatched)`. The two counts are
+/// reported by the callers rather than swallowed: a plan path the merge has no
+/// file for, or a merged file the plan never named, means the two views
+/// disagree and the context is not the one this claims to build.
+fn oracle_dependency_closure_fs(entry_path: String, files: Array[String]) -> (Array[Array[Int]], Int, Int) with Exception + Fs {
+  let (order, _ranks, ordered_deps, _sources) = module_plan_data_fs(entry_path)
+  let n = Array::length(files)
+  // Direct edges, as ids.
+  let direct: Array[Array[Int]] = []
+  let mut i = 0
+  while i < n {
+    Array::push(direct, [])
+    i = i + 1
+  }
+  let mut plan_unmatched = 0
+  let mut pi = 0
+  while pi < Array::length(order) {
+    let owner = oracle_file_index_of(files, Array::get(order, pi))
+    if owner < 0 {
+      plan_unmatched = plan_unmatched + 1
+    } else {
+      let deps = Array::get(ordered_deps, pi)
+      let row = Array::get(direct, owner)
+      let mut di = 0
+      while di < Array::length(deps) {
+        let dep = oracle_file_index_of(files, Array::get(deps, di))
+        if dep < 0 {
+          plan_unmatched = plan_unmatched + 1
+        } else if oracle_int_contains(row, dep) {
+          ()
+        } else {
+          Array::push(row, dep)
+        }
+        di = di + 1
+      }
+    }
+    pi = pi + 1
+  }
+  let mut files_unmatched = 0
+  let mut fi = 0
+  while fi < n {
+    if oracle_plan_names_path(order, Array::get(files, fi)) {
+      ()
+    } else {
+      files_unmatched = files_unmatched + 1
+    }
+    fi = fi + 1
+  }
+  // Transitive closure per file: a module sees what its dependencies expose,
+  // which includes what THEY import (a re-exported name, a type it returns).
+  let closure: Array[Array[Int]] = []
+  fi = 0
+  while fi < n {
+    let seen: Array[Int] = []
+    let queue: Array[Int] = []
+    let mut qs = 0
+    let start = Array::get(direct, fi)
+    let mut si = 0
+    while si < Array::length(start) {
+      Array::push(queue, Array::get(start, si))
+      si = si + 1
+    }
+    while qs < Array::length(queue) {
+      let cur = Array::get(queue, qs)
+      qs = qs + 1
+      if oracle_int_contains(seen, cur) || cur == fi {
+        ()
+      } else {
+        Array::push(seen, cur)
+        let nexts = Array::get(direct, cur)
+        let mut ni = 0
+        while ni < Array::length(nexts) {
+          Array::push(queue, Array::get(nexts, ni))
+          ni = ni + 1
+        }
+      }
+    }
+    Array::push(closure, seen)
+    fi = fi + 1
+  }
+  (closure, plan_unmatched, files_unmatched)
+}
+
+fn oracle_file_index_of(files: Array[String], path: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < Array::length(files) {
+    if found < 0 && Array::get(files, i) == path {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn oracle_plan_names_path(order: Array[String], path: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(order) {
+    if Array::get(order, i) == path {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn oracle_int_contains(arr: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The merge the module-mode oracles split. Returns the merged statements, the
+/// per-file display names, the per-file FULL PATHS (the merge's own `files`
+/// array holds basenames -- `index.vibe` is not a key, this closure has many),
+/// the per-statement file id, and the typed-`==` rows.
+fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
@@ -550,7 +693,7 @@ fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])])
   } else {
     ()
   }
-  (stmts, files, stmt_file_id, (eq_offs, eq_keys))
+  (stmts, files, flat_paths, stmt_file_id, (eq_offs, eq_keys))
 }
 
 /// #2391: the merge every offsets-consuming linear FS lane shares -- each file

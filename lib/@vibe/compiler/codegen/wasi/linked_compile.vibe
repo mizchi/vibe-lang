@@ -3620,6 +3620,30 @@ export fn effect_lowering_prelude(stmts: Array[Stmt], entry_name: String, linked
 /// a program onto `impl:Eq`, and a key that repeats is skipped by the content
 /// comparison -- so a per-module run could drop or change an implementation and
 /// still read `missing=0 content=0` (Codex P1 on #2622).
+/// Whether module `fi` may see module `cj`: `dep_ids[fi]` is fi's dependency
+/// closure as merge file ids. A file the caller could not place in the plan
+/// gets an empty row, which means it sees NOTHING rather than everything --
+/// a missing edge must narrow the context, never widen it, or the oracle
+/// answers about a module that had more than a driver would give it.
+fn oracle_ids_contain(dep_ids: Array[Array[Int]], fi: Int, cj: Int) -> Bool {
+  if fi < 0 || fi >= Array::length(dep_ids) {
+    false
+  } else {
+    let row = Array::get(dep_ids, fi)
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(row) {
+      if Array::get(row, i) == cj {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
 fn oracle_type_key(t: TypeExpr) -> String {
   match t {
     TyName(n) => n,
@@ -4073,7 +4097,7 @@ fn oracle_keyed_line(a: Array[Stmt], trial: Array[Stmt], render: (Stmt) -> Strin
 /// Returns `FULL stmts=<whole> split=<trial>` plus the keyed line, which is the
 /// verdict: per-module synthesis lands at each module's position and repeats a
 /// program-level helper per module, so position and count are not the answer.
-export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
+export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, dep_ids: Array[Array[Int]], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
   let entry_fid = file_count - 1
   let mut k = 0
   while k < 17 {
@@ -4143,27 +4167,21 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
     let ctx: Array[Stmt] = []
     let mut cj = 0
     while cj < file_count {
-      // Every other file, which is WIDER than a real per-module compile sees.
-      // Two narrower rules were built and measured (Codex P1 on #2622), and
-      // neither holds at this granularity:
+      // This module's DEPENDENCY CLOSURE, not every other file: the edge set
+      // comes from `module_plan_data_fs`, the same resolved direct
+      // dependencies the check lane projects environments onto, closed
+      // transitively and mapped onto merge file ids by the caller.
       //
-      //  - "only files merged before this one" (dependencies precede
-      //    dependents) reports a false difference, because a `.vpkg`
-      //    contract is MATERIALIZED into a generated types file that the
-      //    merge lays FIRST, ahead of the implementation whose declarations
-      //    its own derives need: `PerceusAction::equals` then compares
-      //    `a.kind == b.kind` instead of calling `PerceusActionKind::equals`.
-      //  - grouping files into packages first does not exist to be had:
-      //    `collect_source_groups_fs` returns ONE group (`recursive`, 191
-      //    files) for the compiler closure, so there is no package partition
-      //    to split on.
-      //
-      // Exact import edges would settle it, and the merge drops `SImport`
-      // ("Skips SImport, SReExport (already resolved)"), so they have to come
-      // from the loader. That is filed on #2388 as what the per-module driver
-      // needs first, and until then this oracle's green is the weaker claim:
-      // no module needed anything the whole program did not have.
-      if cj == fi {
+      // It used to be every other file, which let a dependency read
+      // declarations from the entry that imports it (Codex P1 on #2622). Two
+      // cheaper rules were tried before the edges were available and both
+      // failed: "only files merged before this one" reports a FALSE
+      // difference, because a `.vpkg` contract is materialized into a
+      // generated types file the merge lays ahead of the implementation its
+      // own derives read (`PerceusAction::equals`); and there is no package
+      // partition to group on -- `collect_source_groups_fs` returns ONE group
+      // for the compiler closure.
+      if cj == fi || !oracle_ids_contain(dep_ids, fi, cj) {
         ()
       } else {
         let other = Array::get(ifaces, cj)
@@ -4208,7 +4226,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   String::concat(line, oracle_keyed_line(a, trial, render))
 }
 
-export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
+export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, dep_ids: Array[Array[Int]], entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], render: (Stmt) -> String) -> String with Exception {
   let entry_fid = file_count - 1
   let mut file_of = c_file_id
   let mut j = 0
@@ -4296,10 +4314,8 @@ export fn prelude_pass_module_oracle_step(k: Int, a: Array[Stmt], c: Array[Stmt]
       let ctx: Array[Stmt] = []
       let mut cj = 0
       while cj < file_count {
-        // Every other file -- wider than a real per-module compile sees; the
-        // full-sequence oracle above records the two narrower rules that were
-        // measured and why neither holds at file granularity.
-        if cj == fi {
+        // This module's dependency closure, as above.
+        if cj == fi || !oracle_ids_contain(dep_ids, fi, cj) {
           ()
         } else {
           let other = Array::get(ifaces, cj)
