@@ -85,7 +85,7 @@ if run_gate; then
   cat "$TMP/out" >&2
   fail "case 2b: a COMMENTED version input was counted as a real one"
 fi
-grep -q "passes no 'version: 0.14.2' input" "$TMP/out" || fail "case 2b: the message does not name the call site's missing input"
+grep -q "passes no 'with.version: 0.14.2'" "$TMP/out" || fail "case 2b: the message does not name the call site's missing input"
 echo "check_pkfire_pin_test: ok: case 2b: a commented version input does not count"
 
 # --- case 2c: the input must belong to THIS call site ---------------------
@@ -147,6 +147,46 @@ PY2
 run_gate || { cat "$TMP/out" >&2; fail "case 2e: a correctly nested with.version was rejected"; }
 echo "check_pkfire_pin_test: ok: case 2e: with: nesting is what the gate accepts"
 
+# --- case 2f: a BLOCK SCALAR containing the text is not an input (Codex) ---
+# The indentation-only check could not tell `version: 0.14.2` inside another
+# input's block scalar from the input itself; YAML can, because it is string
+# content rather than a mapping entry. This is the case that made the gate a
+# parser instead of a scanner.
+scaffold
+python3 - "$TMP/tree/.github/workflows/pkfire-pkspec.yml" <<'PY2'
+import sys
+open(sys.argv[1], "w").write("""jobs:
+  lint:
+    steps:
+      - uses: mizchi/pkfire@v0.14.2
+        with:
+          release-notes: |
+            version: 0.14.2
+""")
+PY2
+if run_gate; then
+  cat "$TMP/out" >&2
+  fail "case 2f: a version inside a block scalar was counted as the action input"
+fi
+echo "check_pkfire_pin_test: ok: case 2f: block-scalar text is not a with.version"
+
+# --- case 2g: control -- a real input beside a decoy block scalar ----------
+scaffold
+python3 - "$TMP/tree/.github/workflows/pkfire-pkspec.yml" <<'PY2'
+import sys
+open(sys.argv[1], "w").write("""jobs:
+  lint:
+    steps:
+      - uses: mizchi/pkfire@v0.14.2
+        with:
+          release-notes: |
+            version: 9.9.9
+          version: 0.14.2
+""")
+PY2
+run_gate || { cat "$TMP/out" >&2; fail "case 2g: a real with.version beside a decoy was rejected"; }
+echo "check_pkfire_pin_test: ok: case 2g: a real input is still found beside a decoy"
+
 # --- case 3: the hook hardcodes a version instead of reading the file -----
 scaffold
 printf 'PKF_VERSION="0.14.2"\n' > "$TMP/tree/.claude/hooks/session-start.sh"
@@ -174,4 +214,4 @@ printf '\n# uses: mizchi/pkfire@vNOPE (prose, not a call site)\n' >> "$TMP/tree/
 run_gate || { cat "$TMP/out" >&2; fail "case 6: a commented-out example was counted as a call site"; }
 echo "check_pkfire_pin_test: ok: case 6: a commented example is not a call site"
 
-echo "check_pkfire_pin_test: ok (2 controls + 10 cases)"
+echo "check_pkfire_pin_test: ok (2 controls + 12 cases)"
