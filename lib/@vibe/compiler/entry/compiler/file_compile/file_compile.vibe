@@ -564,7 +564,42 @@ export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: S
   let module_paths: Array[String] = []
   let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups, module_paths)
   let (eq_offs, eq_keys) = eq
-  let (import_closure, unresolved_edges) = oracle_import_closure(source_groups)
+  // #2633: the closure PRODUCTION uses (`ordinary_lane_module_split`), not the
+  // direct-edge-only one. The oracle answers "does the per-module lane
+  // reproduce the whole-program one", and the per-module lane production runs
+  // has direct imports plus re-export chains, taken from the loader via
+  // `module_reexport_deps_fs`.
+  //
+  // The objection recorded in `oracle_import_closure` is against a TRANSITIVE
+  // closure -- A imports B, B imports C privately, and a transitive closure
+  // hands A the declarations of C, which no real compile of A exposes. It does
+  // not reach this one: direct plus RE-EXPORT edges only is exactly what a real
+  // compile of that module sees, so this is not context a module lacks.
+  //
+  // Measured on `lib/@vibe/cli/entry.vibe`, 369 modules (2026-09-12), the two
+  // closures side by side:
+  //
+  //                        direct-only   exact
+  //   keyed content                  1       0
+  //   unresolved_exp                83       0
+  //   invisible_split                8       2
+  //   zero (modules given none)     37      30
+  //   decls handed out         121 981 167 382
+  //   seen (denominator)        25 556  25 556
+  //   missing / extra / collisions 0/0/0   0/0/0
+  //
+  // `content` reaching 0 is the per-module lane reproducing the whole-program
+  // prelude exactly. The row that closed was
+  // `parse_contract_program_spans`, whose thrown payload's type comes through
+  // `fn_returns` from `allows_outside_entry_error` -- declared in
+  // `@vibe/parser/parser_base.vibe` and reaching `contract.vibe` via a
+  // RE-EXPORT. It was recorded on #2633 three times as the `__exn_kind_cell`
+  // family (#2510's); the shape is that, the cause was this closure.
+  //
+  // The direct-only figures are a stricter lower bound on what a module needs.
+  // That signal is kept HERE, in writing, rather than by measuring a lane
+  // production does not run.
+  let (import_closure, unresolved_edges) = exact_import_closure(source_groups)
   // The closure is indexed by FLAT SOURCE, the oracle by MERGED FILE ID. They
   // are the same space only because the merge keeps one file entry per flat
   // source; if that ever stops holding, every row would be read for the wrong
@@ -687,7 +722,9 @@ export fn prelude_ordinary_lane_prov_report_fs(entry_path: String) -> String wit
 /// real import graph.
 export fn prelude_module_import_closure_report_fs(entry_path: String) -> String with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
-  let (closure, unresolved) = oracle_import_closure(source_groups)
+  // #2633: the closure the full oracle ACTUALLY runs under, so this report
+  // cannot describe a different one than the lane it is named for.
+  let (closure, unresolved) = exact_import_closure(source_groups)
   let mut edges = 0
   let mut i = 0
   while i < Array::length(closure) {

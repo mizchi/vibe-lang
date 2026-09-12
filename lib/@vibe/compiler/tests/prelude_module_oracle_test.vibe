@@ -620,6 +620,24 @@ test "the import closure the oracle runs under is the module's own, and places e
   Fs::write_file(lone_b, "test \"lone\" {\n  inspect(1, content = \"1\")\n}\n")
   let _ = lone_a
   inspect(String::trim(prelude_module_import_closure_report_fs(lone_b)), content = "CLOSURE files=1 edges=0 unresolved=0")
+  // #2633: the same chain, except `mid` RE-EXPORTS `leaf` instead of importing
+  // it privately. Now a real compile of `main` DOES see `leaf`'s declarations,
+  // so the closure carries the extra edge and this reads 3 where the private
+  // chain above reads 2.
+  //
+  // This pair is what makes the pin discriminating. The oracle used to run on
+  // a direct-edge-only closure, which answers 2 for BOTH chains -- so the case
+  // above could not tell the two closures apart, and adopting the one
+  // production uses would have passed it unchanged. A re-export is the only
+  // shape where "direct" and "exact" differ, so it is the only shape that
+  // tests which one is wired.
+  let rx_leaf = "/tmp/vibe_closure_rx_leaf.vibe"
+  let rx_mid = "/tmp/vibe_closure_rx_mid.vibe"
+  let rx_main = "/tmp/vibe_closure_rx_main.vibe"
+  Fs::write_file(rx_leaf, "export fn leaf() -> Int {\n  1\n}\n")
+  Fs::write_file(rx_mid, "export ./vibe_closure_rx_leaf.vibe {\n  leaf\n}\n")
+  Fs::write_file(rx_main, "import ./vibe_closure_rx_mid.vibe {\n  leaf\n}\n\ntest \"rx\" {\n  inspect(leaf(), content = \"1\")\n}\n")
+  inspect(String::trim(prelude_module_import_closure_report_fs(rx_main)), content = "CLOSURE files=3 edges=3 unresolved=0")
 }
 
 // #2388: the prelude's VALIDATORS -- `zero_alloc_check` and
@@ -803,8 +821,18 @@ test "a report's deferrals are its own, not the previous report's" {
   let c = "/tmp/vibe_defer_reset_c.vibe"
   let a = "/tmp/vibe_defer_reset_a.vibe"
   Fs::write_file(b, "export struct Box[T] {\n  v: T\n}\n\nexport fn make_box(n: Int) -> Box[Int] {\n  Box::{ v: n }\n}\n")
-  Fs::write_file(c, "export ./vibe_defer_reset_b.vibe {\n  Box, make_box\n}\n")
-  Fs::write_file(a, "import ./vibe_defer_reset_c.vibe {\n  make_box\n}\n\ntest \"t\" {\n  let p = make_box(1)\n  let q = make_box(1)\n  inspect(p == q, content = \"true\")\n}\n")
+  // #2633: `c` imports `Box` PRIVATELY and re-exposes only a function
+  // returning `Box[Int]`, so `a` cannot see `Box` under ANY closure.
+  //
+  // This program used to re-export `Box` from `c`, which deferred only because
+  // the oracle ran on a direct-edge-only closure. Once it runs on the closure
+  // production uses, a re-export edge puts `b` in `a`'s closure, `a` sees `Box`
+  // and generates the specialization itself: `deferred=0 minted=0`, and this
+  // test silently stopped having a deferral to check the reset of. A private
+  // chain is the shape that defers for a reason the closure cannot remove --
+  // and it reproduces the SAME line, so the expectation below is unchanged.
+  Fs::write_file(c, "import ./vibe_defer_reset_b.vibe {\n  Box, make_box\n}\n\nexport fn mk(n: Int) -> Box[Int] {\n  make_box(n)\n}\n")
+  Fs::write_file(a, "import ./vibe_defer_reset_c.vibe {\n  mk\n}\n\ntest \"t\" {\n  let p = mk(1)\n  let q = mk(1)\n  inspect(p == q, content = \"true\")\n}\n")
   // The deferring program, and the line that says so: one request the whole
   // program makes and the split does not, one row the typed channel refused,
   // and the link minting the helper from the deferral.
