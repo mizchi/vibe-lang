@@ -1,0 +1,57 @@
+import ./codegen_test_support.vibe {
+  compile_wasi_gc
+}
+import @vibex/wasm_parser {
+  get_code_body_range, module_code, module_exports, module_imports
+}
+import @vibex/wasm_runtime {
+  disassemble
+}
+
+// Inspect the requested export's decoded instructions. Searching raw bytes or
+// every function would let an immediate or an unrelated helper satisfy a claim.
+fn struct_instructions(source: String, entry: String) -> String with Exception {
+  let wasm = compile_wasi_gc(source, entry)
+  let mut imported_functions = 0
+  for imp in module_imports(wasm) {
+    let (_, _, kind, _) = imp
+    if kind == 0 {
+      imported_functions = imported_functions + 1
+    }
+  }
+  let mut function_index = -1
+  for exp in module_exports(wasm) {
+    let (name, kind, index) = exp
+    if name == entry && kind == 0 {
+      function_index = index
+    }
+  }
+  assert_true(function_index >= imported_functions)
+  let (offset, size, _) = Array::get(module_code(wasm), function_index - imported_functions)
+  let (start, end_pos) = get_code_body_range(wasm, offset, size)
+  assert_true(start >= 0)
+  let instructions: Array[String] = []
+  for instruction in disassemble(wasm, start, end_pos) {
+    assert_true(!String::starts_with(instruction, "??"))
+    if String::starts_with(instruction, "struct.") {
+      Array::push(instructions, instruction)
+    }
+  }
+  String::join(instructions, "\n")
+}
+
+test "gc struct construction" {
+  inspect(struct_instructions("struct Pair { a: Int; b: Int }\nexport fn main() -> Int { let pair = Pair::{ a: 1, b: 2 }; pair.a + pair.b }", "main"), "struct.new\nstruct.get\nstruct.get")
+}
+
+test "gc struct field projection" {
+  inspect(struct_instructions("struct Pair { a: Int; b: Int }\nexport fn main() -> Int { let pair = Pair::{ a: 1, b: 2 }; pair.a }", "main"), "struct.new\nstruct.get")
+}
+
+test "gc struct field mutation" {
+  inspect(struct_instructions("struct Counter { mut a: Int }\nexport fn main() -> Int { let counter = Counter::{ a: 1 }; counter.a = 3; counter.a }", "main"), "struct.new\nstruct.set\nstruct.get")
+}
+
+test "scalar code does not acquire struct instructions from runtime helpers" {
+  inspect(struct_instructions("export fn main() -> Int { 42 }", "main"), "")
+}

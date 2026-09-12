@@ -1256,7 +1256,7 @@ poison / quarantine を実際に機能させる条件である。
 - **コールドキャッシュ必須**: `VIBE_BUILD_CACHE_DIR` を毎回まっさらにする。
   温かい永続キャッシュだと同じバイナリ・同じ入力でも落ちない (仕事量が
   激減するため)。
-- **重い入力必須**: `codegen_lexer_test.vibe` は落ちるが `fixtures/hello.vibe`
+- **重い入力必須**: `codegen_lexer_test.vibe` は落ちるが `fixtures/hello_test.vibe`
   は落ちない。入力の最小化は「コンパイラ本体を引き込む重さ」が必要条件
   なので、劇的には縮まらない。
 
@@ -1447,7 +1447,7 @@ Bytes 値は偶数 (raw アドレス) なので rc_drop は触らない — 現�
 ## 実装メモ (#1262): 再現を 830 MB → 1 KB に縮めた + 発生箇所の絞り込み
 
 前節の「次の一手」(バイナリ後付けで `__rt_rc_alloc` に free list head の
-健全性チェックを挿す) を実行した。結果、**発現が `fixtures/hello.vibe` で
+健全性チェックを挿す) を実行した。結果、**発現が `fixtures/hello_test.vibe` で
 数秒・heap 1 KB 地点まで縮んだ**。
 
 ### 使った計装 (すべてバイナリ後付け = heap 中立)
@@ -1466,7 +1466,7 @@ Bytes 値は偶数 (raw アドレス) なので rc_drop は触らない — 現�
 
 ### 得られた事実
 
-1. **普遍的かつ早期**。`fixtures/hello.vibe` でも
+1. **普遍的かつ早期**。`fixtures/hello_test.vibe` でも
    `lib/@vibe/compiler/tests/codegen_lexer_test.vibe` でも、
    **同じ場所** (`heap_ptr` ≈ 59.8–60 KB、heap 使用量 1 KB 程度) で発火する。
    830 MB まで走らせる必要はもうない。
@@ -1533,7 +1533,7 @@ D=$(mktemp -d); mkdir -p $D/cache
 VIBE_RC_FL_WINDOW=1 VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   VIBE_BUILD_CACHE_DIR=$D/cache \
   node scripts/wasm_vibe_host_runner.js --invoke cli_main \
-  _build/inst_rc_assert.wasm fixtures/hello.vibe $D/out.wasm __no_entry__
+  _build/inst_rc_assert.wasm fixtures/hello_test.vibe $D/out.wasm __no_entry__
 ```
 
 ## 訂正 (#1262): 直前2節の「premature free」「1 KB 再現」は **poison マーカーの誤検出**
@@ -1556,7 +1556,7 @@ VIBE_RC_FL_WINDOW=1 VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw 
   バイトコードは隣接する別オブジェクトで、ヘッダ境界の読み違い。
 - ❌ 「free list 上のメモリが生きたコードから書かれている (premature free)」
   → 主要な根拠が poison マーカーだったので、**未確認に戻す**。
-- ❌ 「`fixtures/hello.vibe` で heap 1 KB 地点に縮んだ」
+- ❌ 「`fixtures/hello_test.vibe` で heap 1 KB 地点に縮んだ」
   → poison を masking すると `hello.vibe` は**素通りする**。1 KB 再現は消滅。
 - ❌ 「`resolution_env_seed` / `external_lib_roots` が犯人」
   → 上と同じ理由で無効。あれは「最初に解放される任意のブロック」だった。
@@ -1569,7 +1569,7 @@ size を読む前に poison を落とすようにした (runner 側の表示も�
 
 `VIBE_RC_POISON_MASK=1073741824` で走らせ直すと:
 
-- `fixtures/hello.vibe` — **通る** (発火しない)
+- `fixtures/hello_test.vibe` — **通る** (発火しない)
 - `codegen_lexer_test.vibe` — 発火する。ただし場所は heap 805 MB 地点
 
 ```

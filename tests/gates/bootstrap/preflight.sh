@@ -10,7 +10,7 @@ echo "[compiler-gate] 0/3 builtin parity (#415 B-3)"
 bash scripts/check_builtin_parity.sh
 bash scripts/check_gate_registry.sh
 bash scripts/check_inline_builtin_capture.sh
-node scripts/generate_runtime_fixture_tests.test.mjs
+node scripts/check_fixture_snapshots.test.mjs
 bash scripts/check_fixture_execution.sh
 bash scripts/vibe_fmt_parse_guard_test.sh
 

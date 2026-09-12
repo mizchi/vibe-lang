@@ -1706,10 +1706,7 @@ echo "[compiler-gate] gc-lane call/to_string regressions ok"
 #      shape -- the handled body has no unsafe construct, so both performs
 #      inline directly into the tail-resumptive arm instead of going through
 #      replay. This gate now pins the FIXED output (3013 == 1000*3 +
-#      (5+5+3)) as a regression lock: fixtures/effect_*.vibe with `__DATA__`
-#      are not otherwise wired into any automated harness today
-#      (generate_runtime_fixture_tests.mjs explicitly excludes `perform`/
-#      `handle` sources).
+#      (5+5+3)) as a regression lock for this effect-wrapper lowering path.
 echo "[compiler-gate] 40l/40 handle-replay side-effect corruption regression guard (M2/#817)"
 m2dir="_build/_gate_effect_replay_m2"
 rm -rf "$m2dir"; mkdir -p "$m2dir"

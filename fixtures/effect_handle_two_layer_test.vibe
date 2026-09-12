@@ -1,0 +1,32 @@
+// Two-layer effect: Db + Cache as independent capabilities
+
+effect Db {
+  Query(String) -> String
+}
+
+effect Cache {
+  Get(String) -> String;
+  Set(String, String) -> Unit
+}
+
+// Service layer uses both effects
+
+// cache miss → db query → "Alice"
+
+test "effect handle two layer" {
+  let result = handle {
+    handle {
+      // Layer 1: check cache
+      let cached = perform Cache::Get("user:1")
+      if String::equals(cached, "") {
+        // Layer 2: cache miss → query db
+        let data = perform Db::Query("SELECT name FROM users")
+        perform Cache::Set("user:1", data)
+        data
+      } else {
+        cached
+      }
+    } with { Cache::Get(_key) => resume(""); Cache::Set(_key, _val) => resume(0) }
+  } with { Db::Query(_sql) => resume("Alice") }
+  inspect(String::length(result), "5")
+}
