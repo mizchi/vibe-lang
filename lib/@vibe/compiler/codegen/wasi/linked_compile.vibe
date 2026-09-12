@@ -5601,10 +5601,25 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     // edges it is the claim that matters: no module needed anything IT
     // IMPORTS did not have.
     //
-    // Transitive, because a module sees what its dependencies re-export, and
-    // what this feeds is declaration surface rather than a name-resolution
-    // decision. An index out of range is a caller that built the closure over
-    // a different file space, which would silently hand a module some other
+    // DIRECT edges only, and deliberately so -- this comment used to say
+    // "transitive, because a module sees what its dependencies re-export",
+    // which is the justification `oracle_import_closure` itself now calls
+    // wrong as implemented: when A imports B and B imports C PRIVATELY, a
+    // transitive closure hands A the declarations of C, which no real compile
+    // of A exposes. The closure was narrowed; this sentence was not, and it
+    // sat at the one place a reader consults about what a module can see.
+    //
+    // The cost is measured and reported rather than hidden: on the compiler's
+    // closure, 83 exported cross-module names are used by a module the
+    // direct-only rule did not give them to (the `CTX unresolved_exp` /
+    // `exp_outside` counters). Closing across RE-EXPORT edges only would be
+    // the exact rule, and the loader's header scan cannot express it -- it
+    // returns a module's deps and its export names, with no record of which
+    // deps a dep re-exports. So the gap is a known under-approximation
+    // awaiting loader data, not a bug in this loop.
+    //
+    // An index out of range is a caller that built the closure over a
+    // different file space, which would silently hand a module some other
     // module's context, so it is refused rather than defaulted.
     if Array::length(import_closure) != file_count {
       throw(String::concat("prelude oracle: the import closure has ", String::concat(Int::to_string(Array::length(import_closure)), String::concat(" rows for ", String::concat(Int::to_string(file_count), " modules")))))
