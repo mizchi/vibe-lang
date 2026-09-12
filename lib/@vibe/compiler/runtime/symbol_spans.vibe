@@ -13,19 +13,32 @@
 //   6  Method         `impl Trait for T` (named after T)
 //   10 Enum           `enum`, `suberror`
 //   11 Interface      `trait`
-//   12 Function       `fn`, `test`, `bench`, let-bound functions
+//   12 Function       `fn`, let-bound functions
 //   13 Variable       other `let` / `let mut`
 //   23 Struct         `struct`
 //   24 Event          `effect`
 //   26 TypeParameter  `type` alias
+//   27 Test           a `test "X"` block (v2, #2632 -- not an LSP kind)
+//   28 Bench          a `bench "X"` block (v2, #2632 -- not an LSP kind)
+//
+// Legend v2 (2026-09-12, #2632): a `test` / `bench` block used to be reported
+// under its quoted label as Function (12), which left no consumer able to
+// tell a block label from a real declaration of the same spelling
+// (`test "Int::popcount"` read as a definition of `Int::popcount` to
+// scripts/check_builtin_shadowing.sh). 27 and 28 are outside LSP's SymbolKind
+// range on purpose; `lib/@vibe/lsp` maps them back to Function (12) at the
+// protocol boundary, where the client has no Test kind either.
 //
 // Why this beats the LSP server's previous line-regex scan: declarations are
 // taken from the real parsed AST, so multi-line declarations, declarations not
 // starting at column 0, and names that merely look like keywords inside strings
 // or comments are handled correctly — only actual declaration nodes count. The
-// name's source offset is recovered by a whole-word scan SCOPED to that
-// statement's parse span (from parse_program_spans), so a name that also appears
-// elsewhere in the statement body cannot be mis-located.
+// name's source offset is the TOKEN that spells it -- the identifier token, or
+// the `A::b` identifier run, scanned from the statement's own parse span (from
+// parse_program_spans) -- so a copy of the name inside a comment or a string
+// literal, which the lexer never tokenizes as an identifier, cannot win
+// (#2632: `export fn // "String::length"` on one line and `String::length(..)`
+// on the next used to report the copy inside the comment).
 //
 // FALLBACK (honest): a name whose offset cannot be recovered within its span is
 // simply omitted (never a crash). A genuine lex/parse failure on the source
@@ -45,22 +58,10 @@ import @vibe/core {
 }
 
 import @vibe/compiler/syntax {
-  collect_doc_comments, lex_with_offsets, line_start_offsets, offset_to_line_col_indexed, parse_program_spans
+  Token, collect_doc_comments, lex_with_offsets, line_start_offsets, offset_to_line_col_indexed, parse_program_spans
 }
 
 //# Functions
-
-/// True when `source[off]` is NOT an identifier char (or off out of range) — a
-/// word boundary. Used to match a declaration name as a whole word.
-fn sym_is_boundary_at(source: String, off: Int) -> Bool {
-  if off < 0 || off >= String::length(source) {
-    true
-  } else {
-    let c = String::char_code_at(source, off)
-    let is_id = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
-    !is_id
-  }
-}
 
 /// A fresh single-cell mutable Int array holding `v` (a poor-man's mutable box),
 /// built via slice+push so the cell is a heap array supporting Array::set.
@@ -74,35 +75,166 @@ fn sym_empty_items() -> Array[(String, Int, Int, Int)] {
   array_empty()
 }
 
-/// Find the first whole-word occurrence of `name` in `source[from..hi)` and, when
-/// found, push `(name, kind, off, off+len)` and advance `floor` past it (so a
-/// later sibling declaration in the same window keeps scanning forward). No-op
-/// when the name cannot be located in the window.
-fn sym_emit(out: Array[(String, Int, Int, Int)], source: String, name: String, kind: Int, floor: Array[Int], hi: Int) -> Unit {
-  let nlen = String::length(name)
-  if nlen == 0 {
-    ()
-  } else {
-    let limit = if hi > String::length(source) {
-      String::length(source)
+/// Lower bound over the (sorted) token start offsets: the first token index
+/// whose start is >= `off`.
+fn sym_first_token_at(starts: Array[Int], off: Int) -> Int {
+  let mut lo = 0
+  let mut hi = Array::length(starts)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if Array::get(starts, mid) < off {
+      lo = mid + 1
     } else {
-      hi
+      hi = mid
     }
-    let mut i = Array::get(floor, 0)
-    if i < 0 {
-      i = 0
+  }
+  lo
+}
+
+fn sym_ident_is(t: Token, name: String) -> Bool {
+  match t {
+    TIdent(s) => s == name,
+    _ => false
+  }
+}
+
+fn sym_is_double_colon(t: Token) -> Bool {
+  match t {
+    TDoubleColon => true,
+    _ => false
+  }
+}
+
+/// Does the token run starting at `k` spell `parts`, the `::`-split name --
+/// `TIdent(p0)`, then `TDoubleColon TIdent(p1)` per further part? The index
+/// of the run's last token when it does, -1 otherwise.
+fn sym_match_name_at(tokens: Array[Token], k: Int, parts: Array[String]) -> Int {
+  let n = Array::length(tokens)
+  let nparts = Array::length(parts)
+  let mut at = k
+  let mut j = 0
+  let mut ok = true
+  while ok && j < nparts {
+    if j > 0 {
+      if at < n && sym_is_double_colon(Array::get(tokens, at)) {
+        at = at + 1
+      } else {
+        ok = false
+      }
     } else {
       ()
     }
+    if ok {
+      if at < n && sym_ident_is(Array::get(tokens, at), Array::get(parts, j)) {
+        j = j + 1
+        if j < nparts {
+          at = at + 1
+        } else {
+          ()
+        }
+      } else {
+        ok = false
+      }
+    } else {
+      ()
+    }
+  }
+  if ok {
+    at
+  } else {
+    -1
+  }
+}
+
+/// Find the first TOKEN occurrence of `name` in [floor, hi) -- the identifier
+/// token, or the `A::b` identifier run, that spells it -- and, when found,
+/// push `(name, kind, start, end)` and advance `floor` past it (so a later
+/// sibling declaration in the same window keeps scanning forward). No-op
+/// when the name cannot be located in the window. A comment or a string
+/// literal holding the same spelling is one token of another kind, so it
+/// can never be the match (#2632).
+fn sym_emit(out: Array[(String, Int, Int, Int)], tokens: Array[Token], starts: Array[Int], ends: Array[Int], name: String, kind: Int, floor: Array[Int], hi: Int) -> Unit {
+  if String::length(name) == 0 {
+    ()
+  } else {
+    let parts = String::split(name, "::")
+    let ntok = Array::length(tokens)
+    let mut k = sym_first_token_at(starts, Array::get(floor, 0))
     let mut found = false
-    while !found && i + nlen <= limit {
-      if String::substring(source, i, i + nlen) == name && sym_is_boundary_at(source, i - 1) && sym_is_boundary_at(source, i + nlen) {
-        Array::push(out, (name, kind, i, i + nlen))
-        Array::set(floor, 0, i + nlen)
+    while !found && k < ntok && Array::get(starts, k) < hi {
+      let last = sym_match_name_at(tokens, k, parts)
+      if last >= 0 && Array::get(ends, last) <= hi {
+        Array::push(out, (name, kind, Array::get(starts, k), Array::get(ends, last)))
+        Array::set(floor, 0, Array::get(ends, last))
         found = true
       } else {
-        i = i + 1
+        k = k + 1
       }
+    }
+  }
+}
+
+fn sym_is_block_keyword(t: Token, keyword: String) -> Bool {
+  match t {
+    TTest => keyword == "test",
+    TBench => keyword == "bench",
+    _ => false
+  }
+}
+
+fn sym_string_is(t: Token, text: String) -> Bool {
+  match t {
+    TString(s) => s == text,
+    _ => false
+  }
+}
+
+/// A `test "X"` / `bench "X"` block: its span is the label's text inside the
+/// quotes (the string literal token after the keyword), or the keyword itself
+/// when the label is empty (the parser rejects an unnamed block; `test ""` is
+/// the stand-in, and the keyword is the stable outline name for it, #1944).
+/// Kind 27 / 28, not Function: a block label is not a declaration of the
+/// spelling it carries (#2632).
+fn sym_emit_block(out: Array[(String, Int, Int, Int)], tokens: Array[Token], starts: Array[Int], ends: Array[Int], label: String, keyword: String, kind: Int, floor: Array[Int], hi: Int) -> Unit {
+  let ntok = Array::length(tokens)
+  let mut k = sym_first_token_at(starts, Array::get(floor, 0))
+  let mut found = false
+  while !found && k < ntok && Array::get(starts, k) < hi {
+    if sym_is_block_keyword(Array::get(tokens, k), keyword) {
+      if String::length(label) == 0 {
+        Array::push(out, (keyword, kind, Array::get(starts, k), Array::get(ends, k)))
+        Array::set(floor, 0, Array::get(ends, k))
+        found = true
+      } else if k + 1 < ntok && sym_string_is(Array::get(tokens, k + 1), label) {
+        let s = Array::get(starts, k + 1)
+        let e = Array::get(ends, k + 1)
+        Array::push(out, (label, kind, s + 1, e - 1))
+        Array::set(floor, 0, e)
+        found = true
+      } else {
+        k = k + 1
+      }
+    } else {
+      k = k + 1
+    }
+  }
+}
+
+/// Advance `floor` past the first `for` keyword token in [floor, hi): an
+/// `impl Trait for T` is named after `T`, and the token after `for` is where
+/// `T` is spelled -- so a trait that happens to share the target's name
+/// (`impl T for T`) cannot be mistaken for it.
+fn sym_skip_past_for(tokens: Array[Token], starts: Array[Int], ends: Array[Int], floor: Array[Int], hi: Int) -> Unit {
+  let ntok = Array::length(tokens)
+  let mut k = sym_first_token_at(starts, Array::get(floor, 0))
+  let mut done = false
+  while !done && k < ntok && Array::get(starts, k) < hi {
+    match Array::get(tokens, k) {
+      TFor => {
+        Array::set(floor, 0, Array::get(ends, k))
+        done = true
+      },
+      _ => k = k + 1
     }
   }
 }
@@ -116,49 +248,39 @@ fn sym_let_kind(body: Expr) -> Int {
   }
 }
 
-/// Stable outline name for a test/bench: the quoted name, or the keyword when
-/// the parser handed back an empty string (unnamed `test { }` / `bench { }`
-/// are rejected; `test ""` is the stand-in). Omitting would leave a hole.
-fn sym_block_name(name: String, keyword: String) -> String {
-  if String::length(name) == 0 {
-    keyword
-  } else {
-    name
-  }
-}
-
 /// Emit the symbol for one statement within the window [floor, hi). SModule emits
 /// the module name (kind 2 = Module) then recurses into its body, threading the
 /// SAME advancing floor so nested declarations are located in source order.
-/// Tests/benches use Function (12) -- LSP has no Test kind. An `impl Trait for T`
-/// is one Method (6) named after T: SImpl carries no method children
-/// (`parse_program_spans` skips the body).
-fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], source: String, stmt: Stmt, floor: Array[Int], hi: Int) -> Unit {
+/// Tests/benches are 27 / 28 (see the header). An `impl Trait for T` is one
+/// Method (6) named after T, located after the `for` token: SImpl carries no
+/// method children (`parse_program_spans` skips the body).
+fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], tokens: Array[Token], starts: Array[Int], ends: Array[Int], stmt: Stmt, floor: Array[Int], hi: Int) -> Unit {
   match stmt {
-    SLet(_, _, name, _, body) => sym_emit(out, source, name, sym_let_kind(body), floor, hi),
-    SFnDecl(_, name, _, _, _) => sym_emit(out, source, name, 12, floor, hi),
-    SLetMut(name, _, _) => sym_emit(out, source, name, 13, floor, hi),
-    SEnum(_, name, _, _, _) => sym_emit(out, source, name, 10, floor, hi),
-    SSuberror(_, name, _) => sym_emit(out, source, name, 10, floor, hi),
-    SStruct(_, name, _, _, _, _) => sym_emit(out, source, name, 23, floor, hi),
-    STypeAlias(_, name, _, _) => sym_emit(out, source, name, 26, floor, hi),
-    STrait(_, name, _, _, _, _) => sym_emit(out, source, name, 11, floor, hi),
+    SLet(_, _, name, _, body) => sym_emit(out, tokens, starts, ends, name, sym_let_kind(body), floor, hi),
+    SFnDecl(_, name, _, _, _) => sym_emit(out, tokens, starts, ends, name, 12, floor, hi),
+    SLetMut(name, _, _) => sym_emit(out, tokens, starts, ends, name, 13, floor, hi),
+    SEnum(_, name, _, _, _) => sym_emit(out, tokens, starts, ends, name, 10, floor, hi),
+    SSuberror(_, name, _) => sym_emit(out, tokens, starts, ends, name, 10, floor, hi),
+    SStruct(_, name, _, _, _, _) => sym_emit(out, tokens, starts, ends, name, 23, floor, hi),
+    STypeAlias(_, name, _, _) => sym_emit(out, tokens, starts, ends, name, 26, floor, hi),
+    STrait(_, name, _, _, _, _) => sym_emit(out, tokens, starts, ends, name, 11, floor, hi),
     SImpl(_, _, _, target) => {
       let type_name = match target {
         TyName(name) => name,
         TyApp(name, _) => name,
         _ => ""
       }
-      sym_emit(out, source, type_name, 6, floor, hi)
+      sym_skip_past_for(tokens, starts, ends, floor, hi)
+      sym_emit(out, tokens, starts, ends, type_name, 6, floor, hi)
     },
-    SEffectDef(_, name, _, _) => sym_emit(out, source, name, 24, floor, hi),
-    STest(name, _) => sym_emit(out, source, sym_block_name(name, "test"), 12, floor, hi),
-    SBench(name, _) => sym_emit(out, source, sym_block_name(name, "bench"), 12, floor, hi),
+    SEffectDef(_, name, _, _) => sym_emit(out, tokens, starts, ends, name, 24, floor, hi),
+    STest(name, _) => sym_emit_block(out, tokens, starts, ends, name, "test", 27, floor, hi),
+    SBench(name, _) => sym_emit_block(out, tokens, starts, ends, name, "bench", 28, floor, hi),
     SModule(_, name, body) => {
-      sym_emit(out, source, name, 2, floor, hi)
+      sym_emit(out, tokens, starts, ends, name, 2, floor, hi)
       let mut j = 0
       while j < Array::length(body) {
-        sym_walk_stmt(out, source, Array::get(body, j), floor, hi)
+        sym_walk_stmt(out, tokens, starts, ends, Array::get(body, j), floor, hi)
         j = j + 1
       }
     },
@@ -168,8 +290,9 @@ fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], source: String, stmt: Stmt
 
 /// Collect declaration symbols. Steps:
 ///   1. lex + parse with per-statement spans (parse_program_spans).
-///   2. for each top-level statement, scan its own [start, end) span for the
-///      declaration name and emit (name, kind, start, end); SModule recurses.
+///   2. for each top-level statement, scan the TOKENS of its own [start, end)
+///      span for the declaration name and emit (name, kind, start, end);
+///      SModule recurses.
 /// AST-accurate (see file header).
 fn symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with Exception {
   {
@@ -189,7 +312,7 @@ fn symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with Exce
         String::length(source)
       }
       let floor = sym_box_int(lo)
-      sym_walk_stmt(out, source, Array::get(span_stmts, i), floor, hi)
+      sym_walk_stmt(out, tokens, starts, ends, Array::get(span_stmts, i), floor, hi)
       i = i + 1
     }
     out

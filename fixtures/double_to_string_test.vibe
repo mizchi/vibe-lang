@@ -1,103 +1,627 @@
-// #744 regression: `__to_string(Double)` (and thus string interpolation of a
-// Double) used to stringify the raw f64 bit pattern as an integer —
-// `"\{42.0}"` printed "4631107791820423168". Now a statically-floatish
-// argument takes a synthesized fixed-precision formatter: exact integer part,
-// 15 fractional digits with trailing zeros trimmed.
+// #2652: `Double::to_string` is shortest-round-trip and `Double::parse` is
+// correctly rounded, on every lane (the gate runs this file on bump, RC and
+// gc).
+//
+// Before this, the formatter was a fixed 15-digit fraction over
+// `Double::to_int`: `2.2250738585072014` printed as `2.225073858507201`,
+// `1e300` as `0` and `-1e300` as `-0` -- silently, on values whose bits were
+// fine (P0). The expected strings below are JavaScript's `Number::toString`
+// answers (the same shortest digits Ryu produces), taken on 2026-09-12 for
+// the value with exactly these bits; the parse table expects the bits
+// `Number(s)` yields. `Double::from_i64_bits_lohi` (#2651) makes the inputs
+// exact, so a case cannot drift with the formatter under test.
+//
+// The one deliberate difference from JavaScript: negative zero prints `-0`
+// (JavaScript prints `0`), because that is the value held and the spelling
+// that reads back as -0.0.
 
-test "interpolated double literals" {
-  assert("\{0.0}" == "0")
-  assert("\{42.0}" == "42")
-  assert("\{3.14}" == "3.14")
-  assert("\{-1.5}" == "-1.5")
-  assert("\{0.0125}" == "0.0125")
-}
-
-test "to_string of float-typed locals" {
-  let x = 1.25 / 100.0
-  assert(__to_string(x) == "0.0125")
-  let y = 2.5 * 2.0
-  assert("value=\{y}" == "value=5")
-}
-
-// The dispatch is SHAPE-based (float literal / float-tracked local slot /
-// float arithmetic / the to_double conversion builtins / annotated float
-// param). A bare USER-function call result is not tracked — bind it through
-// float arithmetic (`* 1.0`) or pass it to a Double-annotated param before
-// interpolating.
-let fmt_param = (v: Double) -> String {
-  "\{v}"
-}
-
-test "to_string of float call results" {
-  assert("\{Int::to_double(7)}" == "7")
-  let scale = (v: Double, by: Double) -> Double {
-    v * by
+fn parse_desc(s: String) -> String {
+  match Double::parse(s) {
+    None => "None",
+    Some(d) => if d != d {
+      "NaN"
+    } else {
+      "\{Double::to_i64_bits_hi(d)}:\{Double::to_i64_bits_lo(d)}"
+    }
   }
-  assert(fmt_param(scale(1.5, 3.0)) == "4.5")
 }
 
-// Separate bug found while testing this: LAMBDA params annotated
-// Float/Double were never seeded into float_local_slots (only top-level fn
-// params were, after the rc_float_param_eq fix), so a local closure's
-// `v * by` compiled as an INTEGER multiply of the f64 bits.
-test "local lambda float params compute float math" {
-  let scale2 = (v: Double, by: Double) -> Double {
-    v * by
+fn pow10(n: Int) -> Double {
+  let mut r = 1.0
+  let mut i = 0
+  while i < n {
+    r = r * 10.0
+    i = i + 1
   }
-  assert(eq(scale2(1.5, 3.0), 4.5))
-  assert(eq(scale2(0.5, 0.25), 0.125))
+  r
 }
 
-test "negative fraction and carry" {
-  assert("\{-0.25}" == "-0.25")
-  // 0.1 + 0.2 = 0.30000000000000004 in f64; 15-digit rounding trims it back.
-  let z = 0.1 + 0.2
-  assert("\{z}" == "0.3")
+test "#2652 the values the issue measured" {
+  inspect(Double::to_string(0.0), content = "0")
+  inspect(Double::to_string(1.5), content = "1.5")
+  inspect(Double::to_string(0.0 - 1.5), content = "-1.5")
+  inspect(Double::to_string(0.1), content = "0.1")
+  inspect(Double::to_string(3.141592653589793), content = "3.141592653589793")
+  inspect(Double::to_string(2.2250738585072014), content = "2.2250738585072014")
+  // `pow10(300)` by repeated multiplication is one ulp above 1e300 (the
+  // issue's own "computed" input carries the same bits, lo = 2281731485), and
+  // JavaScript prints that value exactly this way; the exact 1e300 is in the
+  // bit-pattern table below.
+  inspect(Double::to_string(pow10(300)), content = "1.0000000000000002e+300")
+  inspect(Double::to_string(0.0 - pow10(300)), content = "-1.0000000000000002e+300")
+  inspect(Double::to_string(1.0 / pow10(300)), content = "9.999999999999999e-301")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2281731484, 2117592124)), content = "1e+300")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2281731484, 4265075772)), content = "-1e+300")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3271095129, 27618847)), content = "1e-300")
+  inspect(Double::to_string(0.1 + 0.2), content = "0.30000000000000004")
+  inspect(Double::to_string(1.0 / 3.0), content = "0.3333333333333333")
+  inspect(Double::to_string(pow10(300) * pow10(300)), content = "Infinity")
+  inspect(Double::to_string(0.0 - pow10(300) * pow10(300)), content = "-Infinity")
+  inspect(Double::to_string(0.0 / 0.0), content = "NaN")
+  inspect(Double::to_string(0.0 * (0.0 - 1.0)), content = "-0")
 }
 
-// #1153/#1185: an explicitly `: Double`/`: Float`-ANNOTATED local `let` was
-// the one shape missing from the "dispatch is SHAPE-based" list above.
-// `let x: Double = e` parses to the ascription marker
-// `((__asc: Double) -> __asc)(e)` (parser_expr_dispatch's ascribe_wrap) --
-// expr_is_floatish's ECall case never recognized this wrapper (it already
-// did for `Bool`, #815, just never extended to Double/Float), so an
-// annotated Double local's slot was invisible to float_local_slots. Under
-// RC a float is a BOXED heap value (#704): `__to_string`/interpolation
-// read the boxed pointer as a plain Int (garbage output, #1153), and `==`
-// between two such misclassified slots fell through to the generic `eq`
-// fallback, which compares the two distinct boxes by pointer rather than
-// unboxing and comparing values (silently `false` for equal doubles,
-// #1185). A SINGLE annotated operand paired with a literal/unannotated one
-// was unaffected (the literal/unannotated side's own correct
-// classification was enough for the `||` dispatch to still route
-// correctly) -- only two independently-annotated operands together
-// triggered #1185.
-test "to_string of an annotated Double local" {
-  let d: Double = 3.14
-  assert(__to_string(d) == "3.14")
-  assert("d = \{d}" == "d = 3.14")
+test "#2652 the formatter reaches interpolation and __to_string" {
+  let x = 2.2250738585072014
+  let big = pow10(21)
+  inspect("\{x}", content = "2.2250738585072014")
+  inspect("\{big}", content = "1e+21")
+  inspect("\{pow10(20)}", content = "100000000000000000000")
+  inspect(__to_string(1.0 / pow10(7)), content = "1e-7")
+  inspect(__to_string(1.0 / pow10(6)), content = "0.000001")
+  inspect(0.5, content = "0.5")
+  inspect(1.0, content = "1")
 }
 
-test "== between two independently-annotated Double locals" {
-  let a: Double = 1.0
-  let b: Double = 1.0
-  assert(a == b)
-  let c: Double = 1.0
-  assert(c == 1.0)
-  let e = 1.0
-  assert(a == e)
+test "#2652 shortest round-trip digits agree with JavaScript on 230 doubles" {
+inspect(Double::to_string(Double::from_i64_bits_lohi(0, 0)), content = "0")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 2147483648)), content = "-0")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1073217536)), content = "1.5")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 3220701184)), content = "-1.5")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2576980378, 1069128089)), content = "0.1")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1413754136, 1074340347)), content = "3.141592653589793")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2246822048, 1073859827)), content = "2.2250738585072014")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2281731484, 2117592124)), content = "1e+300")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2281731484, 4265075772)), content = "-1e+300")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3271095129, 27618847)), content = "1e-300")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3605196624, 1145772772)), content = "1e+21")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2025163840, 1142271773)), content = "100000000000000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2114239706, 1142605114)), content = "123456789012345680000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(858993460, 1070805811)), content = "0.30000000000000004")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1431655765, 1070945621)), content = "0.3333333333333333")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1, 0)), content = "5e-324")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4294967295, 2146435071)), content = "1.7976931348623157e+308")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1048576)), content = "2.2250738585072014e-308")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2696277389, 1051772663)), content = "0.000001")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2596056904, 1048238066)), content = "1e-7")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3256126350, 1010217090)), content = "1.23e-18")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1072693248)), content = "1")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1079574528)), content = "100")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(105764242, 1149300943)), content = "1e+22")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3353430774, 1152724226)), content = "1e+23")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1128267776)), content = "9007199254740992")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1717986918, 1074882150)), content = "4.35")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1128267776)), content = "9007199254740992")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1, 1128267776)), content = "9007199254740994")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2296604913, 1055193269)), content = "0.00001")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2696277389, 1051772663)), content = "0.000001")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1071644672)), content = "0.5")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1070596096)), content = "0.25")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(446676599, 1079958831)), content = "123.456")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(640942080, 1124887541)), content = "1000000000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(937459712, 1128383353)), content = "10000000000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2245566464, 1131820119)), content = "100000000000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3605196623, 1145772772)), content = "999999999999999900000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1, 1072693248)), content = "1.0000000000000002")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4294967295, 1072693247)), content = "0.9999999999999999")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1, 0)), content = "5e-324")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2, 0)), content = "1e-323")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1, 0)), content = "5e-324")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1, 0)), content = "5e-324")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3, 0)), content = "1.5e-323")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1048576)), content = "2.2250738585072014e-308")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 2097152)), content = "4.450147717014403e-308")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 2145386496)), content = "8.98846567431158e+307")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 2146435072)), content = "Infinity")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 4293918720)), content = "-Infinity")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1018030080, 1752461816)), content = "1.4924797400435585e+195")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(694167616, 231376896)), content = "3.1085027181397597e-242")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1370370816, 66284288)), content = "1.2453404269362264e-289")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(890177280, 2397297408)), content = "-6.098368095362647e-237")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3525060608, 238320768)), content = "3.0723299798982556e-240")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1487457024, 87345216)), content = "1.3975787180714102e-283")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3105241856, 2686472960)), content = "-6.087583394441237e-154")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3047893760, 3765715712)), content = "-4.346646056227213e+156")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2173713536, 2040649600)), content = "7.906873558271171e+277")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2635930624, 3388054528)), content = "-1.6085090050880104e+48")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2216923904, 2968614400)), content = "-6.176590536673729e-73")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1756627712, 2114484992)), content = "1.2808124834299474e+299")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1390863360, 645598976)), content = "2.5582741825984584e-123")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4035369216, 1186877696)), content = "6.148900600522023e+32")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3733235968, 2932171008)), content = "-2.2009843878875844e-83")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1440457984, 2448857568)), content = "-3.907800538889097e-222")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3457075200, 2977499360)), content = "-2.2670603019181812e-70")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2132322048, 2786509312)), content = "-3.361959458316492e-125")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1280112440, 1669443328)), content = "2.135591536377945e+171")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1989172992, 2765985536)), content = "-4.1687387069165167e-131")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(625258304, 2210637568)), content = "-1.5754643998302795e-290")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1453773368, 2651087360)), content = "-4.424422490594071e-164")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3426658816, 2133686784)), content = "4.042803644607095e+304")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3266365952, 4123204096)), content = "-1.835588979787725e+259")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(921785600, 700267072)), content = "1.24449701494533e-107")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1538639168, 2085223680)), content = "5.065280293381435e+290")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2398741376, 870676544)), content = "1.068851915541855e-58")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(517152832, 4037607424)), content = "-4.968058260473973e+234")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(768785208, 3866481408)), content = "-3.709335421552735e+185")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3910124288, 57916160)), content = "4.942901129738108e-292")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2649703424, 1087439872)), content = "17424.0096395649")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(478186496, 3246435552)), content = "-34970627.56276703")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(976391168, 1718979584)), content = "3.662197050049782e+185")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(955311616, 1308068864)), content = "3.9676411604921075e+67")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4085912064, 1659455232)), content = "2.9811187592163064e+168")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1473901056, 2250736128)), content = "-5.1801977986464475e-279")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2848369920, 2035147328)), content = "2.0692923419691367e+276")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2977176832, 1627043072)), content = "1.4667075059471218e+159")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(874483008, 3386156288)), content = "-4.714378244434276e+47")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(105154784, 2978660352)), content = "-4.8447883748335794e-70")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(832336832, 559106112)), content = "3.7699829842324734e-148")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1256491776, 3503940352)), content = "-3.0694172307988913e+81")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4054519296, 1404670784)), content = "2.1339186092409802e+95")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3419500800, 1101512256)), content = "199172197.90906525")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1432191744, 1825329216)), content = "1.2200571808031182e+216")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4110222336, 3698902016)), content = "-2.8801001432007225e+137")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(926123008, 3493544960)), content = "-3.157144064096107e+78")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2590508032, 883278848)), content = "4.438355941119763e-55")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2103332736, 2316893696)), content = "-5.079584102052044e-260")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(903450624, 3285643264)), content = "-6611285178113327000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3915501568, 190001152)), content = "4.089237887454384e-254")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2860584960, 106524672)), content = "4.4843408478478496e-278")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3888205824, 161722368)), content = "3.126112918915547e-262")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3149128448, 645263424)), content = "2.0741897042583036e-123")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3835896320, 4153312256)), content = "-7.871701660742592e+267")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3973159424, 623298368)), content = "1.0269134507933431e-129")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2860562944, 297421312)), content = "2.8409166546280044e-223")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4178926080, 607611392)), content = "3.221357993717089e-134")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(342325760, 1648790016)), content = "2.5958733995221653e+165")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1596055864, 2373202944)), content = "-7.397111986574769e-244")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(213752064, 4207382784)), content = "-2.7377848199255445e+283")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1755965760, 2089296128)), content = "7.524602526511155e+291")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3145331712, 111286464)), content = "1.0208763926806268e-276")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3559158784, 3366073344)), content = "-7.928584656789322e+41")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3247074816, 1901114368)), content = "6.797897674311817e+237")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1142237056, 2607135488)), content = "-1.0725109370506562e-176")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3415716352, 1365993728)), content = "1.6640275453852968e+84")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(872344832, 163390016)), content = "9.252110237542566e-262")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3805822080, 1522890048)), content = "1.8592501702244602e+129")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(760552448, 2932448256)), content = "-2.6365149310322508e-83")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(146510592, 2846455296)), content = "-5.420582579013449e-108")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1779459840, 2893052672)), content = "-1.2345000073321825e-94")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1757045312, 3141169664)), content = "-2.1875054956398336e-23")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1630465600, 4059872768)), content = "-1.1978334981720557e+241")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3971132416, 568818176)), content = "2.3501028580120676e-145")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2750327808, 2802101248)), content = "-1.0006721728670505e-120")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1019915264, 1321249792)), content = "2.3013015476729687e+71")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(229026880, 2991369216)), content = "-2.1269979623959858e-66")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2791926272, 2343029760)), content = "-1.622907461457421e-252")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3496919040, 1237627584)), content = "2.363322890933169e+47")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(468287488, 2439241728)), content = "-6.711821861484055e-225")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1206992896, 2782568448)), content = "-2.458280952904824e-126")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1792732928, 3139303936)), content = "-6.199009149838173e-24")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1162985280, 3948951296)), content = "-1.6658653023624668e+209")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3489265152, 780685888)), content = "1.5649412488786852e-84")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3786349056, 3849183232)), content = "-3.8739635449634886e+180")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4027389952, 1070616320)), content = "0.2548220009088027")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1950659072, 3736156160)), content = "-1.3760673148130985e+148")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3180927232, 1724521336)), content = "1.4199382854120673e+187")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1199401280, 1812701440)), content = "2.9066364820051726e+212")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1477521920, 1721669632)), content = "2.0799367367416413e+186")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(942680384, 2895858688)), content = "-8.178889595121075e-94")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3174216704, 307845312)), content = "2.8048164924990076e-220")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1094957888, 2189979136)), content = "-1.8677221118456137e-296")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(396420664, 1864136192)), content = "1.6855668098109528e+227")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4033200384, 1019620928)), content = "6.156374962958448e-16")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(355836992, 1397672256)), content = "2.0067988059669885e+93")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2937007872, 705498936)), content = "3.9594882565460717e-106")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(574062400, 3995760384)), content = "-4.7831740111712035e+222")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2094025216, 3335379456)), content = "-1.210923537648854e+33")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1019513728, 2216894208)), content = "-9.81040598059367e-289")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3487858176, 3012830464)), content = "-3.133995071143321e-60")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3846453248, 2454728192)), content = "-1.7904148804150337e-220")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2696299776, 3283254528)), content = "-1332221755024277500")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1351510272, 370633984)), content = "2.9886640186661373e-202")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2228800512, 3974351872)), content = "-3.41227256470724e+216")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2643879680, 212454464)), content = "1.1530211532177663e-247")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2814260992, 2709581568)), content = "-2.648631391009968e-147")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4058957568, 3535257344)), content = "-3.023229790053753e+90")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2921371392, 3820949248)), content = "-3.0006785267067823e+172")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1810156288, 3815988992)), content = "-1.1696928673667718e+171")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(789007936, 2924355072)), content = "-1.2111716524865204e-85")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(591285632, 2221203712)), content = "-1.7139649539251012e-287")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2812763616, 1427430976)), content = "7.30302861242679e+101")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3682251264, 3503503360)), content = "-2.278789867335659e+81")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1542711872, 1191999296)), content = "1.8475377230277715e+34")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(774393088, 1396073728)), content = "7.298955429389441e+92")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2931768576, 320443648)), content = "1.1595202364763952e-216")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(305791232, 2006811904)), content = "1.5229499506832591e+268")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2855837184, 3872662528)), content = "-2.1908390964195966e+187")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1685061632, 1122909002)), content = "265920000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1713366595, 1046651873)), content = "3.472e-8")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2853696632, 1005517453)), content = "5.248e-20")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3221225472, 1103652594)), content = "818800000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1097322039, 1040982049)), content = "8.1856e-10")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1587419913, 1074842409)), content = "4.1984")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1096047544)), content = "5336800")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1101223724)), content = "162240000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3670070857, 1061337665)), content = "0.00057152")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2627541012, 1036639306)), content = "4.704e-11")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2144047674, 1075167048)), content = "5.4368")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(314310656, 1124078110)), content = "565440000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2718957568, 1124495938)), content = "789760000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1089579520)), content = "72352")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2673187645, 1072213419)), content = "0.7712")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4218551238, 1067815909)), content = "0.042144")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2650800128, 1115951595)), content = "2758400000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2670723072, 1123986188)), content = "539520000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3768089585, 1010836739)), content = "1.7504e-18")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1135429840, 1047069582)), content = "4.6592e-8")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3436518693, 1018759836)), content = "3.4752e-16")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4066320487, 1040362353)), content = "5.4336e-10")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(521589353, 1033908970)), content = "7.3664e-12")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1736441856, 1116990253)), content = "5475200000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1089502208)), content = "67520")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1089744384)), content = "82656")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(4055891968, 1123797837)), content = "488960000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1143791616, 1131582632)), content = "83680000000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1953895055, 1039166780)), content = "2.3904e-10")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3338665984, 1117111560)), content = "5984000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2840197023, 1018969887)), content = "3.92e-16")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(611603343, 1068564375)), content = "0.0664")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1409286144, 1117570850)), content = "7910400000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1946157056, 1116571102)), content = "4057600000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2463940608, 1131440605)), content = "73920000000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2945164049, 1005558305)), content = "5.3536e-20")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3346638517, 1075984937)), content = "9.1136")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3651423140, 1062229217)), content = "0.0009968")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2422773872, 1068541826)), content = "0.065056")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2620960843, 1060951545)), content = "0.00044")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1264438372, 1075120072)), content = "5.2576")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(793462165, 1001333053)), content = "3.296e-21")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1088821248)), content = "45248")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1295472994, 1046619222)), content = "3.3792e-8")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3992610196, 1013350245)), content = "9.7568e-18")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(536011919, 1075802066)), content = "7.8592")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2737176576, 1130530796)), content = "41728000000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1089491456)), content = "66848")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3305773363, 1040858830)), content = "7.6384e-10")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2296483966, 1060672544)), content = "0.00037504")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2370821947, 1067609751)), content = "0.036")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2717904769, 1033951397)), content = "7.6608e-12")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(805306368, 1116662655)), content = "4249600000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2743074816, 1117667743)), content = "8316800000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(0, 1089459200)), content = "65184")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(829291306, 1020284260)), content = "9.0496e-16")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2286131640, 1040068941)), content = "4.3936e-10")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(3844079616, 1124041024)), content = "554240000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(2273312768, 1120184809)), content = "45440000000000")
+  inspect(Double::to_string(Double::from_i64_bits_lohi(1889785610, 1072106045)), content = "0.72")
 }
 
-// #1207 Codex review (P2): the ascription-marker match above requires the
-// COMPLETE synthetic identity-lambda shape (no type params, no declared
-// return type, no effect row, body exactly `EIdent(<param's own name>,
-// _)`) -- not just a Double-typed param literally named `__asc`. A
-// hand-written IIFE that reuses that internal marker name but has a
-// DIFFERENT body (here: a non-identity String-returning body) must not be
-// misread as the ascription wrapper and misclassified as floatish.
-test "a non-identity __asc-named lambda is not treated as ascription" {
-  let result = ((__asc: Double) -> String {
-    "hello"
-  })(1.0)
-  assert(result == "hello")
+test "#2652 Double::parse is correctly rounded and reads every spelling to_string writes" {
+inspect(parse_desc("0"), content = "0:0")
+  inspect(parse_desc("1.5"), content = "1073217536:0")
+  inspect(parse_desc("-1.5"), content = "3220701184:0")
+  inspect(parse_desc("0.1"), content = "1069128089:2576980378")
+  inspect(parse_desc("3.141592653589793"), content = "1074340347:1413754136")
+  inspect(parse_desc("2.2250738585072014"), content = "1073859827:2246822048")
+  inspect(parse_desc("1e300"), content = "2117592124:2281731484")
+  inspect(parse_desc("-1e300"), content = "4265075772:2281731484")
+  inspect(parse_desc("1e-300"), content = "27618847:3271095129")
+  inspect(parse_desc("1e+21"), content = "1145772772:3605196624")
+  inspect(parse_desc("1e21"), content = "1145772772:3605196624")
+  inspect(parse_desc("100000000000000000000"), content = "1142271773:2025163840")
+  inspect(parse_desc("0.30000000000000004"), content = "1070805811:858993460")
+  inspect(parse_desc("5e-324"), content = "0:1")
+  inspect(parse_desc("4.9e-324"), content = "0:1")
+  inspect(parse_desc("2.4703282292062327e-324"), content = "0:0")
+  inspect(parse_desc("2.4703282292062328e-324"), content = "0:1")
+  inspect(parse_desc("1.7976931348623157e308"), content = "2146435071:4294967295")
+  inspect(parse_desc("1.7976931348623158e308"), content = "2146435071:4294967295")
+  inspect(parse_desc("1.7976931348623159e308"), content = "2146435072:0")
+  inspect(parse_desc("1e309"), content = "2146435072:0")
+  inspect(parse_desc("9007199254740993"), content = "1128267776:0")
+  inspect(parse_desc("9007199254740992.5"), content = "1128267776:0")
+  inspect(parse_desc("9007199254740993.000000000000001"), content = "1128267776:1")
+  inspect(parse_desc("0.1e-6"), content = "1048238066:2596056904")
+  inspect(parse_desc("123e-20"), content = "1010217090:3256126350")
+  inspect(parse_desc("+2"), content = "1073741824:0")
+  inspect(parse_desc("5."), content = "1075052544:0")
+  inspect(parse_desc(".5"), content = "1071644672:0")
+  inspect(parse_desc("-0"), content = "2147483648:0")
+  inspect(parse_desc("1e-400"), content = "0:0")
+  inspect(parse_desc("0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000024703282292062328"), content = "0:0")
+  inspect(parse_desc("1.00000000000000011102230246251565404236316680908203125"), content = "1072693248:0")
+  inspect(parse_desc("1.00000000000000011102230246251565404236316680908203124"), content = "1072693248:0")
+  inspect(parse_desc("1.00000000000000011102230246251565404236316680908203126"), content = "1072693248:1")
+  inspect(parse_desc("2.2250738585072011e-308"), content = "1048575:4294967295")
+  inspect(parse_desc("2.2250738585072012e-308"), content = "1048576:0")
+  inspect(parse_desc("2.2250738585072014e-308"), content = "1048576:0")
+  inspect(parse_desc("0.500000000000000166533453693773481063544750213623046875"), content = "1071644672:2")
+  inspect(parse_desc("0.500000000000000166533453693773481063544750213623046874"), content = "1071644672:1")
+  inspect(parse_desc("0.500000000000000166533453693773481063544750213623046876"), content = "1071644672:2")
+  inspect(parse_desc("6.9294956446009195e15"), content = "1127784022:3999169112")
+  inspect(parse_desc("3.5e-321"), content = "0:708")
+  inspect(parse_desc("10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001e-300"), content = "1107468383:536870912")
+  inspect(parse_desc("1e-10000"), content = "0:0")
+  inspect(parse_desc("Infinity"), content = "2146435072:0")
+  inspect(parse_desc("-Infinity"), content = "4293918720:0")
+  inspect(parse_desc("NaN"), content = "NaN")
+  inspect(parse_desc("abc"), content = "None")
+  inspect(parse_desc(""), content = "None")
+  inspect(parse_desc("1e"), content = "None")
+  inspect(parse_desc("1e+"), content = "None")
+  inspect(parse_desc("--1"), content = "None")
+  inspect(parse_desc("."), content = "None")
+  inspect(parse_desc("e5"), content = "None")
+  inspect(parse_desc("1.2.3"), content = "None")
+}
+
+test "#2652 the spellings the old parser accepted still parse" {
+  inspect(parse_desc("5."), content = "1075052544:0")
+  inspect(parse_desc(".5"), content = "1071644672:0")
+  inspect(parse_desc("+2"), content = "1073741824:0")
+  inspect(parse_desc("-0.5"), content = "3219128320:0")
+  inspect(parse_desc("abc"), content = "None")
+  inspect(parse_desc("1..2"), content = "None")
+  inspect(parse_desc("1e5x"), content = "None")
+  inspect(parse_desc(" 1"), content = "None")
+}
+
+test "#2652 parse(to_string(d)) returns the bits of d" {
+  let bits = [
+    (0, 0),
+    (0, 2147483648),
+    (0, 1073217536),
+    (0, 3220701184),
+    (2576980378, 1069128089),
+    (1413754136, 1074340347),
+    (2246822048, 1073859827),
+    (2281731484, 2117592124),
+    (2281731484, 4265075772),
+    (3271095129, 27618847),
+    (3605196624, 1145772772),
+    (2025163840, 1142271773),
+    (2114239706, 1142605114),
+    (858993460, 1070805811),
+    (1431655765, 1070945621),
+    (1, 0),
+    (4294967295, 2146435071),
+    (0, 1048576),
+    (2696277389, 1051772663),
+    (2596056904, 1048238066),
+    (3256126350, 1010217090),
+    (0, 1072693248),
+    (0, 1079574528),
+    (105764242, 1149300943),
+    (3353430774, 1152724226),
+    (0, 1128267776),
+    (1717986918, 1074882150),
+    (0, 1128267776),
+    (1, 1128267776),
+    (2296604913, 1055193269),
+    (2696277389, 1051772663),
+    (0, 1071644672),
+    (0, 1070596096),
+    (446676599, 1079958831),
+    (640942080, 1124887541),
+    (937459712, 1128383353),
+    (2245566464, 1131820119),
+    (3605196623, 1145772772),
+    (1, 1072693248),
+    (4294967295, 1072693247),
+    (1, 0),
+    (2, 0),
+    (1, 0),
+    (1, 0),
+    (3, 0),
+    (0, 1048576),
+    (0, 2097152),
+    (0, 2145386496),
+    (0, 2146435072),
+    (0, 4293918720),
+    (1018030080, 1752461816),
+    (694167616, 231376896),
+    (1370370816, 66284288),
+    (890177280, 2397297408),
+    (3525060608, 238320768),
+    (1487457024, 87345216),
+    (3105241856, 2686472960),
+    (3047893760, 3765715712),
+    (2173713536, 2040649600),
+    (2635930624, 3388054528),
+    (2216923904, 2968614400),
+    (1756627712, 2114484992),
+    (1390863360, 645598976),
+    (4035369216, 1186877696),
+    (3733235968, 2932171008),
+    (1440457984, 2448857568),
+    (3457075200, 2977499360),
+    (2132322048, 2786509312),
+    (1280112440, 1669443328),
+    (1989172992, 2765985536),
+    (625258304, 2210637568),
+    (1453773368, 2651087360),
+    (3426658816, 2133686784),
+    (3266365952, 4123204096),
+    (921785600, 700267072),
+    (1538639168, 2085223680),
+    (2398741376, 870676544),
+    (517152832, 4037607424),
+    (768785208, 3866481408),
+    (3910124288, 57916160),
+    (2649703424, 1087439872),
+    (478186496, 3246435552),
+    (976391168, 1718979584),
+    (955311616, 1308068864),
+    (4085912064, 1659455232),
+    (1473901056, 2250736128),
+    (2848369920, 2035147328),
+    (2977176832, 1627043072),
+    (874483008, 3386156288),
+    (105154784, 2978660352),
+    (832336832, 559106112),
+    (1256491776, 3503940352),
+    (4054519296, 1404670784),
+    (3419500800, 1101512256),
+    (1432191744, 1825329216),
+    (4110222336, 3698902016),
+    (926123008, 3493544960),
+    (2590508032, 883278848),
+    (2103332736, 2316893696),
+    (903450624, 3285643264),
+    (3915501568, 190001152),
+    (2860584960, 106524672),
+    (3888205824, 161722368),
+    (3149128448, 645263424),
+    (3835896320, 4153312256),
+    (3973159424, 623298368),
+    (2860562944, 297421312),
+    (4178926080, 607611392),
+    (342325760, 1648790016),
+    (1596055864, 2373202944),
+    (213752064, 4207382784),
+    (1755965760, 2089296128),
+    (3145331712, 111286464),
+    (3559158784, 3366073344),
+    (3247074816, 1901114368),
+    (1142237056, 2607135488),
+    (3415716352, 1365993728),
+    (872344832, 163390016),
+    (3805822080, 1522890048),
+    (760552448, 2932448256),
+    (146510592, 2846455296),
+    (1779459840, 2893052672),
+    (1757045312, 3141169664),
+    (1630465600, 4059872768),
+    (3971132416, 568818176),
+    (2750327808, 2802101248),
+    (1019915264, 1321249792),
+    (229026880, 2991369216),
+    (2791926272, 2343029760),
+    (3496919040, 1237627584),
+    (468287488, 2439241728),
+    (1206992896, 2782568448),
+    (1792732928, 3139303936),
+    (1162985280, 3948951296),
+    (3489265152, 780685888),
+    (3786349056, 3849183232),
+    (4027389952, 1070616320),
+    (1950659072, 3736156160),
+    (3180927232, 1724521336),
+    (1199401280, 1812701440),
+    (1477521920, 1721669632),
+    (942680384, 2895858688),
+    (3174216704, 307845312),
+    (1094957888, 2189979136),
+    (396420664, 1864136192),
+    (4033200384, 1019620928),
+    (355836992, 1397672256),
+    (2937007872, 705498936),
+    (574062400, 3995760384),
+    (2094025216, 3335379456),
+    (1019513728, 2216894208),
+    (3487858176, 3012830464),
+    (3846453248, 2454728192),
+    (2696299776, 3283254528),
+    (1351510272, 370633984),
+    (2228800512, 3974351872),
+    (2643879680, 212454464),
+    (2814260992, 2709581568),
+    (4058957568, 3535257344),
+    (2921371392, 3820949248),
+    (1810156288, 3815988992),
+    (789007936, 2924355072),
+    (591285632, 2221203712),
+    (2812763616, 1427430976),
+    (3682251264, 3503503360),
+    (1542711872, 1191999296),
+    (774393088, 1396073728),
+    (2931768576, 320443648),
+    (305791232, 2006811904),
+    (2855837184, 3872662528),
+    (1685061632, 1122909002),
+    (1713366595, 1046651873),
+    (2853696632, 1005517453),
+    (3221225472, 1103652594),
+    (1097322039, 1040982049),
+    (1587419913, 1074842409),
+    (0, 1096047544),
+    (0, 1101223724),
+    (3670070857, 1061337665),
+    (2627541012, 1036639306),
+    (2144047674, 1075167048),
+    (314310656, 1124078110),
+    (2718957568, 1124495938),
+    (0, 1089579520),
+    (2673187645, 1072213419),
+    (4218551238, 1067815909),
+    (2650800128, 1115951595),
+    (2670723072, 1123986188),
+    (3768089585, 1010836739),
+    (1135429840, 1047069582),
+    (3436518693, 1018759836),
+    (4066320487, 1040362353),
+    (521589353, 1033908970),
+    (1736441856, 1116990253),
+    (0, 1089502208),
+    (0, 1089744384),
+    (4055891968, 1123797837),
+    (1143791616, 1131582632),
+    (1953895055, 1039166780),
+    (3338665984, 1117111560),
+    (2840197023, 1018969887),
+    (611603343, 1068564375),
+    (1409286144, 1117570850),
+    (1946157056, 1116571102),
+    (2463940608, 1131440605),
+    (2945164049, 1005558305),
+    (3346638517, 1075984937),
+    (3651423140, 1062229217),
+    (2422773872, 1068541826),
+    (2620960843, 1060951545),
+    (1264438372, 1075120072),
+    (793462165, 1001333053),
+    (0, 1088821248),
+    (1295472994, 1046619222),
+    (3992610196, 1013350245),
+    (536011919, 1075802066),
+    (2737176576, 1130530796),
+    (0, 1089491456),
+    (3305773363, 1040858830),
+    (2296483966, 1060672544),
+    (2370821947, 1067609751),
+    (2717904769, 1033951397),
+    (805306368, 1116662655),
+    (2743074816, 1117667743),
+    (0, 1089459200),
+    (829291306, 1020284260),
+    (2286131640, 1040068941),
+    (3844079616, 1124041024),
+    (2273312768, 1120184809),
+    (1889785610, 1072106045)
+  ]
+  let mut i = 0
+  while i < Array::length(bits) {
+    let (lo, hi) = Array::get(bits, i)
+    let d = Double::from_i64_bits_lohi(lo, hi)
+    let printed = Double::to_string(d)
+    match Double::parse(printed) {
+      None => inspect(printed, content = "<parsed>"),
+      Some(back) => {
+        inspect(Double::to_i64_bits_hi(back) == hi, content = "true")
+        inspect(Double::to_i64_bits_lo(back) == lo, content = "true")
+      }
+    }
+    i = i + 1
+  }
+  inspect(i, content = "230")
 }

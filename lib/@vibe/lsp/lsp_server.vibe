@@ -718,6 +718,18 @@ fn lsp_handle_rename(source: String, uri: String, line0: Int, char0: Int, new_na
   }
 }
 
+/// `vibe symbols` KIND -> LSP SymbolKind. 27 (Test) and 28 (Bench) are the
+/// CLI's own kinds for block labels (#2632, legend v2); the protocol has no
+/// Test kind, so they cross this boundary as Function (12), which is what they
+/// were reported as before v2. Every other kind IS an LSP SymbolKind.
+fn lsp_symbol_kind(kind: Int) -> Int {
+  if kind == 27 || kind == 28 {
+    12
+  } else {
+    kind
+  }
+}
+
 fn lsp_handle_document_symbol(source: String) -> Json with Exception {
   let syms = symbol_spans(source)
   JArr(for entry in syms {
@@ -727,7 +739,7 @@ fn lsp_handle_document_symbol(source: String) -> Json with Exception {
     let r = jrange_pos(ps, pe)
     JObj(Map::from_pairs([
       ("name", JStr(name)),
-      ("kind", jnum_int(kind)),
+      ("kind", jnum_int(lsp_symbol_kind(kind))),
       ("range", r),
       ("selectionRange", r)
     ]))
@@ -881,9 +893,10 @@ export fn lsp_diagnostics_json_of_messages(source: String, msgs: Array[String]) 
 //# document (the docs store) rather than scanning the filesystem -- the
 //# server's entry row stays { Stdin, Stdout }, no Fs capability needed.
 
-/// SymbolKind (what symbol_spans emits) -> CompletionItemKind.
+/// SymbolKind (what symbol_spans emits) -> CompletionItemKind. A block label
+/// (27 / 28) completes like the Function it used to be reported as.
 fn lsp_completion_item_kind(sym_kind: Int) -> Int {
-  if sym_kind == 12 {
+  if sym_kind == 12 || sym_kind == 27 || sym_kind == 28 {
     3
   } else if sym_kind == 13 {
     6

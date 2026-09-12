@@ -2093,14 +2093,23 @@ fi
 # `main.vibe` was the program getting the wrong builtin (#2628 review).
 printf 'export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nexport fn unrelated_helper(n: Int) -> Int {\n  n + 1\n}\n' > "$bsdir/xdep.vibe"
 printf 'import ./xdep.vibe { unrelated_helper }\n\nexport fn run() -> Int {\n  unrelated_helper(1) + String::index_of("hello world", "world")\n}\n' > "$bsdir/xmain.vibe"
+# Since the importer-side rule landed, the cross-file case is a REFUSAL, not a
+# warning: the module that links the dependency is the one surprised, so it is
+# the one refused, and it must never come back `ok`. The definer's own file
+# (shadow_fn above) keeps the warning -- an entry's own shadow is explicit and
+# legal (fixtures/to_string_shadowed_builtin_test.vibe).
 bs_check "$bsdir/xmain.vibe" xmain
-if ! grep -qF 'rename `String::index_of`' "$bsdir/xmain.out" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: checking the ENTRY did not report a dependency's builtin override (#2378)" >&2
+if grep -qx 'ok' "$bsdir/xmain.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: checking the ENTRY accepted a dependency's builtin override (#2378)" >&2
   cat "$bsdir/xmain.out" "$bsdir/xmain.out.diag" >&2 2>/dev/null; exit 1
 fi
-if ! grep -qF 'xdep.vibe' "$bsdir/xmain.out" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the cross-file report does not name the file to edit (#2378)" >&2
-  cat "$bsdir/xmain.out" >&2; exit 1
+if ! grep -qF 'rename `String::index_of` in ' "$bsdir/xmain.out.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: checking the ENTRY did not refuse a dependency's builtin override with the edit first (#2378)" >&2
+  cat "$bsdir/xmain.out" "$bsdir/xmain.out.diag" >&2 2>/dev/null; exit 1
+fi
+if ! grep -qF 'xdep.vibe' "$bsdir/xmain.out.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the cross-file refusal does not name the file to edit (#2378)" >&2
+  cat "$bsdir/xmain.out.diag" >&2; exit 1
 fi
 echo "[compiler-gate] qualified fn reported (own file and through an import); value alias and bare name stay silent ok (#2378)"
 
@@ -2334,6 +2343,32 @@ run_test_block_fixtures "builtin value form (linear, bump)" fixtures/builtin_val
 run_test_block_fixtures_gc "builtin value form (gc)" fixtures/builtin_value_form_test.vibe
 run_test_block_fixtures_rc "builtin value form (linear, RC)" fixtures/builtin_value_form_test.vibe
 echo '[compiler-gate] builtin value form ok'
+
+# 15b-3c. #2630: the three length views of a byte string (`unicode_length` /
+#         `utf16_length` / `utf8_length`) are served by a callsite lowering on
+#         each lane -- a shared synthesis, but two `ce` dispatchers -- and were
+#         declared and published for a long time with no lowering at all. The
+#         fixture also pins that a view is an Int at every consumer (`==`,
+#         `+`, interpolation), which is a per-lane classifier question.
+echo '[compiler-gate] 15b-3c/15 string length views (#2630)'
+run_test_block_fixtures "string length views (linear, bump)" fixtures/string_length_intrinsics_test.vibe
+run_test_block_fixtures_gc "string length views (gc)" fixtures/string_length_intrinsics_test.vibe
+run_test_block_fixtures_rc "string length views (linear, RC)" fixtures/string_length_intrinsics_test.vibe
+echo '[compiler-gate] string length views ok'
+
+# 15b-3d. #2652: `Double::to_string` is shortest-round-trip and `Double::parse`
+#         is correctly rounded. Both are ONE runtime prelude in vibe source
+#         (codegen/common_base/double_runtime.vibe) appended to the program by
+#         each lane's own hook and compiled by each lane's own codegen without
+#         checker offsets, so three lanes are three separate compilations of
+#         the same contract. The fixture's 230 expected strings are
+#         JavaScript's, taken for exact bit patterns, and the parse table
+#         expects `Number(s)`'s bits.
+echo '[compiler-gate] 15b-3d/15 Double to_string / parse round trip (#2652)'
+run_test_block_fixtures "double to_string (linear, bump)" fixtures/double_to_string_test.vibe
+run_test_block_fixtures_gc "double to_string (gc)" fixtures/double_to_string_test.vibe
+run_test_block_fixtures_rc "double to_string (linear, RC)" fixtures/double_to_string_test.vibe
+echo '[compiler-gate] double to_string / parse ok'
 
 # 15b-4. A Double inside an aggregate reached through a NAME (#2431). Three
 #        lanes for the same reason as 15b-3, and here every lane was wrong in a

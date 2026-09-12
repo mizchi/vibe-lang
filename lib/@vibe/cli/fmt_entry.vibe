@@ -3,18 +3,26 @@
 //# argv[0] = input path, argv[1] = output path (both repo-root-relative, under
 //# the wasm preopen dir). Driven by scripts/vibe_fmt.sh.
 //#
-//# The formatter must never turn source that compiles into source that does
-//# not. It did, four times, each a different token in the slot before a brace
-//# (#945, #1429, #1505, #1821), and each fix taught the guard one more spelling
-//# it must not rewrite. `--check` then reported the wreckage as correctly
-//# formatted, so the CI fmt gate stayed green on files no parser accepts.
+//# The formatter is a CST-token formatter: it decides spacing from token
+//# kinds alone and has no grammar of its own. Two guards give it the
+//# compiler's grammar, both asked of the PARSER rather than of an enumeration:
 //#
-//# So the decision here is not made by enumerating anything. The output is
-//# PARSED: if the input was a program and the output is not, the rewrite is
-//# discarded and the run fails. That question has a bounded answer, and it
-//# holds for the next spelling nobody has thought of yet.
+//# 1. #2636: input the parser rejects is REFUSED -- left byte-identical, exit
+//#    1, the parse error on stderr. Before this, a C-style `cond ? a : b` was
+//#    reflowed to `a == 0?"z": "nz"` and then certified by `--check` as
+//#    correctly formatted: a spelling no one would type, minted for a construct
+//#    the language does not have, green in the CI fmt gate on a file that
+//#    cannot build. The formatter's grammar is the compiler's now, exactly.
+//#    (The earlier promise was "no worse" -- a file that never parsed was
+//#    still reflowed -- and that is what let the minted spelling through.)
 //#
-//# The check lives at the entry rather than inside the formatter because
+//# 2. #1821: a rewrite whose OUTPUT does not parse while the input did is
+//#    discarded and the run fails. The formatter did that four times, each a
+//#    different token in the slot before a brace (#945, #1429, #1505, #1821),
+//#    and each fix taught it one more spelling; parsing the output has a
+//#    bounded answer and holds for the next spelling nobody has thought of.
+//#
+//# The checks live at the entry rather than inside the formatter because
 //# lib/@vibe/compiler/fmt has no dependencies by design, and the parser is one.
 //#
 //# A leading `require @scope/name x.y.z = #pkg:sha1:...` head is a loader
@@ -22,12 +30,10 @@
 //# writer, #1435). The head split itself lives INSIDE format_source
 //# (format_vibe, #2253 round 6) so every formatter entry -- this one, the
 //# fmt.vibe batch, cli_adapter's `vibe fmt` -- preserves the head verbatim;
-//# this entry only re-derives the boundary (source_header_end) so the parse
-//# guard can ask its question of the BODY, which is the part that is vibe
+//# this entry only re-derives the boundary (source_header_end) so both parse
+//# guards can ask their question of the BODY, which is the part that is vibe
 //# syntax. A head the classifier refuses (-1) is left untouched by
-//# format_source, so the guard's body is the whole file there and the
-//# comparison stays "no worse".
-
+//# format_source, so the guards' body is the whole file there.
 import ../compiler/fmt {
   format_source, source_header_end
 }
@@ -40,11 +46,16 @@ import ../parser {
   lex, parse_program
 }
 
-fn program_parses(src: String) -> Bool {
+/// "" when `src` parses, else the parser's message.
+fn parse_error_of(src: String) -> String {
   handle {
     let _ = parse_program(lex(src))
-    true
-  } with { Exception::Throw(_) => false }
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn program_parses(src: String) -> Bool {
+  String::length(parse_error_of(src)) == 0
 }
 
 fn has_suffix(s: String, suffix: String) -> Bool {
@@ -91,15 +102,21 @@ export fn main() -> Int allows Fs + Env + Stderr {
   let body = String::substring(pre, head_end, String::length(pre))
   let formatted_body = String::substring(formatted, head_end, String::length(formatted))
   // A `.vpkg` header is not vibe syntax, so a whole-file parse never succeeds
-  // for one and the comparison below would say nothing. format_vpkg already
+  // for one and the questions below would say nothing. format_vpkg already
   // refuses to touch a header it cannot read, which is the same policy reached
   // by a different route (#1435).
-  //
-  // Only a rewrite that BREAKS something is rejected. A file that did not parse
-  // to begin with is still formatted: the promise is "no worse", not "only
-  // valid input". With a pin head split off, the parse question is asked of
-  // the BODY -- the head is not vibe syntax and is reattached verbatim.
-  if !has_suffix(input, ".vpkg") && program_parses(body) && !program_parses(formatted_body) {
+  let is_vpkg = has_suffix(input, ".vpkg")
+  let input_error = if is_vpkg {
+    ""
+  } else {
+    parse_error_of(body)
+  }
+  if String::length(input_error) > 0 {
+    // #2636: the input is not a program; do not mint a spelling for it.
+    Fs::write_file(output, src)
+    Stderr::write_stream("vibe fmt: refusing to format " + input + ": it does not parse\n" + "  " + input_error + "\n" + "  Fix the program first. The formatter only reflows source the compiler\n" + "  accepts; reflowing a construct the language does not have would mint a\n" + "  spelling for it and then certify that spelling as formatted (#2636).\n")
+    1
+  } else if !is_vpkg && !program_parses(formatted_body) {
     Fs::write_file(output, src)
     Stderr::write_stream("vibe fmt: refusing to rewrite " + input + "\n" + "  The formatted output does not parse, and the input did. This is a bug in\n" + "  the formatter, not a problem with the file. The file is unchanged; please\n" + "  report it with the source (see #1821).\n")
     1

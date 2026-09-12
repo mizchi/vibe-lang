@@ -8,6 +8,7 @@ deps = {
   @vibe/compiler/codegen/wasm_emit : 0.0.1
   @vibe/compiler/core : 0.0.1
   @vibe/compiler/normalize : 0.0.1
+  @vibe/compiler/syntax : 0.0.1
   @vibe/core : 0.2.0
 }
 
@@ -236,18 +237,57 @@ fn effect_op_declared_arity(keys: Array[String], arities: Array[Int], full: Stri
 fn effect_op_index(keys: Array[String], full: String) -> Int
 fn emit_heap_grow_after_heap_set(buf: Bytes, ctx: CompileCtx) -> Unit
 
-// --- double_to_string_expr.vibe (relocated here, see #897 header note above)
+// --- double_to_string_expr.vibe (relocated here, see #897 header note above;
+// #2652: one call into the Double runtime prelude, see double_runtime.vibe)
 fn double_to_string_expr(arg: Expr) -> Expr
 
 // --- int_parse_expr.vibe (relocated here, see #897 header note above)
 fn int_parse_expr(arg: Expr) -> Expr
 
-// --- double_parse_expr.vibe (#841 item E1)
+// --- double_parse_expr.vibe (#841 item E1; #2652: one call into the Double
+// runtime prelude, see double_runtime.vibe)
 fn double_parse_expr(arg: Expr) -> Expr
 
 // --- sized_bytes_new_expr.vibe (#2363): ONE synthesis for `Bytes::new(n)`,
 // called by both backends so the lanes cannot drift apart again.
 fn sized_bytes_new_expr(n_expr: Expr) -> Expr
+
+// --- string_length_exprs.vibe (#2630): the code-point and UTF-16 length views
+// of a byte string, ONE synthesis called by both backends.
+fn string_unicode_length_expr(arg: Expr) -> Expr
+fn string_utf16_length_expr(arg: Expr) -> Expr
+
+// --- string_views_runtime.vibe (PR #2708 review): the String length-view
+// runtime prelude -- the vibe source of `__vibe_string_unicode_length` /
+// `__vibe_string_utf16_length` (WHATWG replacement decoding of a byte string),
+// the hook each lane's convergence point calls to append it to a program that
+// calls a view, and the guard a callsite lowering runs before emitting a call
+// into it.
+fn string_views_runtime_source() -> String
+fn string_views_runtime_unicode_name() -> String
+fn string_views_runtime_utf16_name() -> String
+fn program_needs_string_views_runtime(stmts: Array[Stmt]) -> Bool
+fn program_has_string_views_runtime(stmts: Array[Stmt]) -> Bool
+fn append_string_views_runtime(stmts: Array[Stmt]) -> Unit with Exception
+fn string_views_runtime_require(ft: FuncTable, name: String) -> Unit with Exception
+
+// --- double_runtime.vibe (#2652): the Double runtime prelude -- the vibe source
+// of `__vibe_double_to_string` (shortest round-trip) and `__vibe_double_parse`
+// (correctly rounded), the hook each lane's convergence point calls to append
+// it to a program that can hold a Double, and the guard a callsite lowering
+// runs before emitting a call into it.
+fn double_runtime_source() -> String
+fn double_runtime_to_string_name() -> String
+fn double_runtime_parse_name() -> String
+fn program_mentions_double(stmts: Array[Stmt]) -> Bool
+fn program_has_render_site(stmts: Array[Stmt]) -> Bool
+fn program_needs_double_runtime(stmts: Array[Stmt]) -> Bool
+fn program_has_double_runtime(stmts: Array[Stmt]) -> Bool
+fn append_double_runtime(stmts: Array[Stmt]) -> Unit with Exception
+fn double_runtime_require(ft: FuncTable, name: String) -> Unit with Exception
+fn runtime_prelude_require(ft: FuncTable, name: String, what: String, hook: String) -> Unit with Exception
+fn program_calls_any(stmts: Array[Stmt], names: Array[String]) -> Bool
+fn program_defines_top_level(stmts: Array[Stmt], name: String) -> Bool
 
 // --- inline_wat.vibe (relocated here, see #897 header note above)
 fn compile_inline_wat(fn_name: String, wat: String, param_names: Array[String]) -> Bytes with Exception

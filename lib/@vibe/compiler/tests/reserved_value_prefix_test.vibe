@@ -1,0 +1,48 @@
+//# Imports
+
+// PR #2708 review (Codex P1): the `__vibe_` prefix is reserved for the
+// definitions the compiler generates and finds again by spelling -- the
+// Double runtime prelude's `__vibe_double_to_string`, the String length-view
+// prelude's `__vibe_string_unicode_length`. Measured before the guard: with
+// `fn __vibe_double_to_string(d: Double) -> String { "hijacked" }` in the
+// program, `Double::to_string(1.5)` answered `hijacked`. `vibe check` refuses
+// a top-level binder spelled that way, with the edit first; a local binder is
+// left alone because the compiler's own desugars introduce locals under the
+// prefix (`__vibe_inspect_actual`) before the check runs.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Functions
+
+fn diags_of(src: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(src)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+//# Tests
+
+test "#2708 review: a top-level fn at a prelude name is refused, edit first" {
+  let msg = diags_of("fn __vibe_double_to_string(d: Double) -> String {\n  \"hijacked\"\n}\n")
+  inspect(String::contains(msg, "rename `__vibe_double_to_string`: the `__vibe_` prefix is reserved"), content = "true")
+}
+
+test "#2708 review: every top-level binder shape under the prefix is refused" {
+  inspect(String::contains(diags_of("let __vibe_x = 1\n"), "rename `__vibe_x`"), content = "true")
+  inspect(String::contains(diags_of("let mut __vibe_m = 1\n"), "rename `__vibe_m`"), content = "true")
+  inspect(String::contains(diags_of("let (__vibe_a, b) = (1, 2)\n"), "rename `__vibe_a`"), content = "true")
+  inspect(String::contains(diags_of("export let __vibe_e = (x: Int) -> Int {\n  x\n}\n"), "rename `__vibe_e`"), content = "true")
+}
+
+test "#2708 review: a name that merely starts with __vibe, and a local under the prefix, stay legal" {
+  inspect(diags_of("let __vibex = 1\n"), content = "")
+  inspect(diags_of("let vibe_x = 1\n"), content = "")
+  inspect(diags_of("fn f() -> Int {\n  let __vibe_local = 1\n  __vibe_local\n}\n"), content = "")
+}

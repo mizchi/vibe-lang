@@ -3,13 +3,16 @@
 // no checker registration and no codegen -- calling it anywhere failed with
 // "unknown name: Double::parse". Fixed in checker/builtins_misc.vibe
 // (lookup_int_parse, now also handling "Double::parse") and
-// codegen/common_base/double_parse_expr.vibe. Scientific notation ("1e10")
-// is not supported (deliberately narrow first version, see that file). The
-// digit accumulator also guards against a magnitude that would trip a
-// pre-existing, unrelated compiler bug (mutable Double locals corrupt near
-// 2^62, #1050) -- inputs whose integer digits would exceed Int::max_value
-// are rejected with None rather than risk a silently wrong value (Codex
-// review finding on #1049).
+// codegen/common_base/double_parse_expr.vibe.
+//
+// #2652: the parser is the Double runtime prelude's `__vibe_double_parse`
+// now (codegen/common_base/double_runtime.vibe): correctly rounded, with
+// scientific notation, so the two magnitude guards the first version needed
+// are gone. They rejected inputs whose integer digits exceeded Int::max_value
+// with None, to stay clear of a mutable-Double corruption near 2^62 (#1050,
+// since fixed by #1068) -- a `None` for a value the type can hold was itself
+// a wrong answer, and the exact parser has no Int accumulator to protect.
+// fixtures/double_to_string_test.vibe carries the exhaustive tables.
 
 test "Double::parse valid decimal" {
   let Some(v) = Double::parse("3.14")
@@ -71,17 +74,28 @@ test "Double::parse two dots" {
   assert(result is None)
 }
 
-test "Double::parse at safe magnitude boundary" {
-  let result = Double::parse("2305843009213693951")
-  assert(result is Some(_))
+test "Double::parse at the old Int::max_value boundary" {
+  let Some(v) = Double::parse("2305843009213693951")
+  // The nearest double is 2305843009213693952; its shortest round-trip
+  // spelling is the one below (the same digits JavaScript prints).
+  inspect(Double::to_string(v), content = "2305843009213694000")
 }
 
-test "Double::parse rejects beyond safe magnitude boundary" {
-  let result = Double::parse("9999999999999999999")
-  assert(result is None)
+test "Double::parse beyond the old magnitude guard is the rounded value, not None (#2652)" {
+  let Some(v) = Double::parse("9999999999999999999")
+  inspect(Double::to_string(v), content = "10000000000000000000")
 }
 
-test "Double::parse rejects very long digit string" {
-  let result = Double::parse("99999999999999999999999999999999999999.5")
-  assert(result is None)
+test "Double::parse of a very long digit string is the rounded value, not None (#2652)" {
+  let Some(v) = Double::parse("99999999999999999999999999999999999999.5")
+  inspect(Double::to_string(v), content = "1e+38")
+}
+
+test "Double::parse reads scientific notation (#2652)" {
+  let Some(v) = Double::parse("1e10")
+  inspect(Double::to_string(v), content = "10000000000")
+  let Some(w) = Double::parse("-2.5E-3")
+  inspect(Double::to_string(w), content = "-0.0025")
+  assert(Double::parse("1e") is None)
+  assert(Double::parse("e5") is None)
 }

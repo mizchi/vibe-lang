@@ -38,6 +38,7 @@ import @vibe/compiler/checker {
   check_program_type_table,
   check_program_with_env_result,
   check_program_with_projected_import_env_typed_lowering_located_observation,
+  collect_builtin_shadowing_names,
   detect_redundant_namespace_imports,
   detect_unbound_nonunit_returns,
   detect_unused_imports,
@@ -1846,6 +1847,7 @@ fn bind_import_names_from_cache_collecting(acc: TypeEnv, resolved: String, raw_p
     None => EnvEmpty
   }
   let dep_bindings = env_flat_bindings(dep_env)
+  builtin_shadow_diagnostics_into(dep_bindings, resolved, unresolved)
   env_trait_def_names_into(dep_env, bi_trait_names)
   uppercase_binding_slots_into(dep_bindings, bi_upper_slots)
   let dep_selectable_type_defs = env_selectable_type_defs(dep_env)
@@ -1986,6 +1988,58 @@ export fn build_trait_aware_import_env(stmts: Array[Stmt], base_dir: String, cac
     env
   } else {
     throw(Array::get(unresolved, 0))
+  }
+}
+
+/// #2378: the marker a checked module's PUBLISHED environment carries for
+/// each `fn` (or bound lambda) it defines at a qualified name the builtin
+/// registry owns (`collect_builtin_shadowing_names`, checker_stmt.vibe). It
+/// rides the environment because that is the one channel every consumer of a
+/// checked module already reads -- the env cache, the persistent store, the
+/// worker transport -- so the fact survives exactly as long as the check does
+/// and needs no cache key of its own; and because the fact is a property of
+/// the MODULE, not of the role it was checked in: the same module checked as
+/// a root (`vibe check dep.vibe`, where its shadow is explicit and legal) and
+/// later linked as a dependency reuses the same cached environment, and a
+/// marker in it is what lets the importer be refused either way. Spelled like
+/// the loader's export markers (`__vibe_internal_export__:`): a name no
+/// import item can select, bound to `CtUnit`.
+fn builtin_shadow_marker_prefix() -> String {
+  "__vibe_internal_builtin_shadow__:"
+}
+
+fn bind_builtin_shadow_markers(env: TypeEnv, names: Array[String]) -> TypeEnv {
+  let mut acc = env
+  let mut i = 0
+  while i < Array::length(names) {
+    acc = env_bind(acc, String::concat(builtin_shadow_marker_prefix(), Array::get(names, i)), CtUnit)
+    i = i + 1
+  }
+  acc
+}
+
+/// The importer's side of #2378: a dependency whose environment carries a
+/// shadow marker is refused HERE, in the module that links it, because that
+/// module is the one surprised -- it never imported the name and would get
+/// the override anyway (measured on the seed: `String::index_of("hello
+/// world", "world")` answered -999 through an import of one unrelated name).
+/// The diagnostic leads with the edit and names the file that needs it.
+/// Collected into `unresolved` with the #1521 import diagnostics, so it is
+/// reported before the body is checked and carries the importer's path like
+/// they do.
+fn builtin_shadow_diagnostics_into(dep_bindings: Array[(String, Type)], resolved: String, unresolved: Array[String]) -> Unit {
+  let prefix = builtin_shadow_marker_prefix()
+  let plen = String::length(prefix)
+  let mut i = 0
+  while i < Array::length(dep_bindings) {
+    let (bname, _) = Array::get(dep_bindings, i)
+    if String::starts_with(bname, prefix) {
+      let name = String::substring(bname, plen, String::length(bname))
+      Array::push(unresolved, String::concat("rename `", String::concat(name, String::concat("` in ", String::concat(resolved, ": it is a builtin, and a `fn` defined at a builtin's qualified name replaces that builtin for EVERY program that links that file -- this one included, though it never imports the name (#2378). A bare or differently qualified name keeps the builtin, and a `let` alias of it (`let X::y = my_fn`) is fine")))))
+    } else {
+      ()
+    }
+    i = i + 1
   }
 }
 
@@ -3437,7 +3491,12 @@ export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt
   } else {
     published
   }
-  prepend_explicit_builtin_value_markers(value_surface, with_builtin_types)
+  // #2378: plus one marker per `fn` this module defines at a qualified
+  // builtin name, read by whichever module imports it -- see
+  // builtin_shadow_marker_prefix. Bound HERE, in the one publication every
+  // lane goes through (the FS wave loop, the #906 worker, and the in-memory
+  // walk in runtime.vibe), so no lane can publish an unmarked env.
+  bind_builtin_shadow_markers(prepend_explicit_builtin_value_markers(value_surface, with_builtin_types), collect_builtin_shadowing_names(stmts))
 }
 
 export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEnv) -> TypeEnv {

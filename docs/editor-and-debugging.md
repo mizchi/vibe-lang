@@ -28,7 +28,7 @@ the `vibe lsp` command. It provides:
 | --- | --- |
 | **Diagnostics** | Parser error-recovery surfaces *all* top-level syntax errors at once (not just the first), plus the located type error for a clean parse. |
 | **Hover** | Typed hover — shows the inferred type of the identifier under the cursor, including locals and parameters (per-node type table). |
-| **Document symbols** | AST-accurate outline (`vibe symbols`) — functions, values, structs, enums, traits, type aliases, effects, tests, benches, impls, and module-nested declarations, with correct `SymbolKind`s. Handles multi-line declarations; ignores names in strings/comments. Tests/benches are Function (12); `impl Trait for T` is one Method (6) named after `T`. |
+| **Document symbols** | AST-accurate outline (`vibe symbols`) — functions, values, structs, enums, traits, type aliases, effects, tests, benches, impls, and module-nested declarations, with correct `SymbolKind`s. Handles multi-line declarations; ignores names in strings/comments. Tests/benches are Test (27) / Bench (28) on the CLI surface and Function (12) over LSP (#2632); `impl Trait for T` is one Method (6) named after `T`. |
 | **Go to definition** | AST-accurate declaration span (`vibe symbols`), with a line-regex fallback for older compilers. |
 | **References / Rename** | AST-accurate via scope-aware binding occurrences (no string/comment false matches; distinguishes shadowed bindings). |
 | **Completion** | Identifier and member completion. |
@@ -53,7 +53,7 @@ vibe binding-at <file.vibe> <line> <col>  # source spans (START END byte offsets
 vibe symbols <file.vibe>                  # declaration outline (NAME KIND START END [DOC] per line)
 vibe symbols <dir> | vibe symbols a.vibe b.vibe   # BATCH: one sweep, PATH NAME KIND START END [DOC] per line
 vibe symbols --with-path <file.vibe>      # force the PATH field on for a single file
-vibe symbols --legend                     # KIND NAME table (LSP SymbolKind v1, 2026-08-17)
+vibe symbols --legend                     # KIND NAME table (LSP SymbolKind + 27 Test / 28 Bench, v2 2026-09-12)
 vibe check <file.vibe>                    # all diagnostics, one per line on stdout; empty output = clean, exit 1 if not
 vibe check --single-file <file.vibe>      # same, analysing the buffer ALONE (no FS import resolution)
 vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array of LSP Diagnostic objects (#820)
@@ -98,9 +98,15 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   still reads the fixed part; inside it a newline is the two characters `\n`
   and a backslash is doubled, so one declaration is always one line. The
   structured form (real newlines, for LSP detail) is `symbol_spans_with_docs`.
-- **SymbolKind legend v1 (2026-08-17).** `KIND` integers are LSP
+- **SymbolKind legend v2 (2026-09-12).** `KIND` integers are LSP
   [`SymbolKind`](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#symbolKind)
-  values. The machine-readable table is `vibe symbols --legend`: one
+  values, plus two of the command's own past that range: 27 Test and 28
+  Bench for a `test "X"` / `bench "X"` block, so a consumer can tell a
+  block label from a declaration of the same spelling (#2632; v1 reported
+  both as Function 12, and `lib/@vibe/lsp` still maps 27 / 28 to 12 at the
+  protocol boundary). A declaration's `START END` is the TOKEN that spells
+  its name -- never a copy of the name inside a comment or a string
+  literal. The machine-readable table is `vibe symbols --legend`: one
   `KIND NAME` line per kind this command actually emits, no decoration,
   never empty. `--help` / `-h` print usage and point at that table. A file
   outline is unchanged when `--legend` is absent. Bump the version when a
@@ -112,11 +118,13 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   | 6 | Method | `impl Trait for T` (named after `T`) |
   | 10 | Enum | `enum`, `suberror` |
   | 11 | Interface | `trait` |
-  | 12 | Function | `fn`, `test`, `bench`, let-bound functions |
+  | 12 | Function | `fn`, let-bound functions |
   | 13 | Variable | other `let` / `let mut` |
   | 23 | Struct | `struct` |
   | 24 | Event | `effect` |
   | 26 | TypeParameter | `type` alias |
+  | 27 | Test (not an LSP kind) | a `test "X"` block, span = the label inside the quotes |
+  | 28 | Bench (not an LSP kind) | a `bench "X"` block, span = the label inside the quotes |
 - **`--single-file` analyzes ONE file and does not follow its imports**, so on a
   file with imports it reports names it cannot see as undefined. A file that is
   perfectly valid under a plain `vibe check` can come back with

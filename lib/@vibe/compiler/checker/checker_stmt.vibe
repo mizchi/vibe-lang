@@ -33,6 +33,9 @@ import @vibe/compiler/core {
   TypeExpr,
   __to_string,
   apply_type_constructor,
+  canonical_builtin_name,
+  collect_declared_type_names,
+  collect_exported_type_names,
   collect_subst_bounds_pairs,
   compiler_owned_type_arity,
   env_bind,
@@ -52,11 +55,13 @@ import @vibe/compiler/core {
   find_typedef,
   generalize,
   is_singleton_resource_kind,
+  lookup_registry_builtin,
   overlapping_impl_target_for,
   predeclared_resources,
   reject_user_iterator_serialized_boundaries,
   resolve_builtin,
   rewrite_import_alias_stmt,
+  runtime_prelude_dispatched_builtin_name,
   sort_perm_by_names,
   subst_apply,
   subst_lookup,
@@ -4523,6 +4528,225 @@ fn tps_reserved_prefix_report(kind: String, name: String, errors: Array[String])
   }
 }
 
+/// #2378: the `fn`s (declarations and bound lambdas) this file defines at a
+/// QUALIFIED name the builtin registry owns -- `export fn String::index_of`.
+/// Such a definition replaces that builtin for EVERY program that links the
+/// file as a dependency -- not the defining file, not the importer's import
+/// list, `export`ed or not: bare names are namespaced per file by the export
+/// merge (`name_exp_<path>`), and so is a `Trait::operation` whose trait is
+/// declared in the same file, but every other `Type::method` stays global
+/// because that is what receiver dispatch across files needs, and a builtin
+/// such as `String::index_of` lives in that same global namespace. Measured
+/// on the seed with a dependency defining `String::index_of` as `-999` and a
+/// caller importing only an unrelated name: a private `fn`, an exported
+/// `fn`, a private lambda and an exported lambda all answered -999 (in the
+/// original instance 0.8us -> 174us on a sparse search, and
+/// `String::split(s, "")` changed its ANSWER), and nothing said so.
+///
+/// Which qualified definitions stay GLOBAL is the merge's decision, and this
+/// mirrors it exactly rather than approximating it (Codex review on #2708):
+/// an exported definition is renamed by the export plan only when its head is
+/// a trait this file declares (`append_export_def_name`, plus the
+/// `Array::flatmap` / `Iterator` specialization); a private one is renamed by
+/// private namespacing only when its head is a type this file declares and
+/// does NOT export (`collect_private_value_renames` /
+/// `qualified_method_of_exported_type` -- a private `struct Fs` with a private
+/// `fn Fs::exists` is renamed with its type and can replace nothing). Every
+/// other qualified definition keeps its spelling in the linked program.
+///
+/// Which names are BUILTINS: the registry's rows, under the canonical
+/// spelling (a source alias such as `String::byte_at` counts, since a call
+/// resolves by what the source wrote), plus the runtime-prelude names codegen
+/// dispatches by spelling with no registry row
+/// (`runtime_prelude_dispatched_builtin_name`): their arms honor any
+/// definition in the merged function table, so a dependency's
+/// `fn Double::to_string` would be an unrequested override too. A
+/// fallback-typed name the registry does not list and no arm dispatches this
+/// way (`Array::map`, which `lib/@vibe/builtin/array.vibe` defines as a
+/// first-class value) is not collected.
+///
+/// NOT collected either: a bare name, and a `let` VALUE ALIAS at a qualified
+/// builtin name (`export let Fs::exists = exists` in lib/@vibe/fs/fs.vibe),
+/// which takes no part in the name-to-fn-def resolution a real definition
+/// hijacks. The ENTRY file's own shadow is left alone on purpose: it is
+/// explicit in the program being compiled, and
+/// `fixtures/to_string_shadowed_builtin_test.vibe` relies on it.
+///
+/// This is the pure half. The refusal is the loader's (runtime/
+/// typecheck_fs.vibe): a checked module's published environment carries one
+/// marker per name collected here, and the module that IMPORTS it -- the
+/// caller that never asked for the override -- is the one diagnosed, with
+/// the edit first. Keeping the marker in the environment is what makes the
+/// answer independent of whether the file was checked as a root or as a
+/// dependency, so a cached check can never turn a leak into a clean result.
+/// `scripts/check_builtin_shadowing.sh` keeps watching the tree for the
+/// bare-name and alias shapes this leaves alone.
+export fn collect_builtin_shadowing_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  bfs_collect(stmts, out)
+  out
+}
+
+fn bfs_collect(stmts: Array[Stmt], out: Array[String]) -> Unit {
+  let trait_names = bfs_local_trait_names(stmts)
+  let declared_types = collect_declared_type_names(stmts)
+  let exported_types = collect_exported_type_names(stmts)
+  let export_items = bfs_export_items(stmts)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, _, name, _, body) => bfs_note(exported || string_array_contains_exact(export_items, name), name, body, trait_names, declared_types, exported_types, out),
+      SModule(_, _, body) => bfs_collect(body, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn bfs_local_trait_names(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, _, _) => Array::push(out, tname),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The names an `export { a, b }` list publishes: a private `let` named there
+/// travels with the export plan, like an `export let`.
+fn bfs_export_items(stmts: Array[Stmt]) -> Array[String] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          Array::push(out, Array::get(items, j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Does `name` (`head::member`) keep its spelling in the linked program?
+/// The merge's two rename passes, mirrored -- see the collector's doc.
+fn bfs_stays_global(exported: Bool, name: String, head: String, trait_names: Array[String], declared_types: Array[String], exported_types: Array[String]) -> Bool {
+  if exported {
+    !(string_array_contains_exact(trait_names, head) || (name == "Array::flatmap" && string_array_contains_exact(trait_names, "Iterator")))
+  } else {
+    string_array_contains_exact(exported_types, head) || !string_array_contains_exact(declared_types, head)
+  }
+}
+
+fn bfs_builtin_owned(name: String) -> Bool {
+  let canonical = canonical_builtin_name(name)
+  match lookup_registry_builtin(canonical) {
+    Some(_) => true,
+    None => runtime_prelude_dispatched_builtin_name(canonical)
+  }
+}
+
+fn bfs_note(exported: Bool, name: String, body: Expr, trait_names: Array[String], declared_types: Array[String], exported_types: Array[String], out: Array[String]) -> Unit {
+  let sep = String::index_of(name, "::")
+  if sep < 0 {
+    ()
+  } else {
+    match body {
+      EFn(_, _, _, _, _, _) => {
+        let head = String::substring(name, 0, sep)
+        if string_array_contains_exact(out, name) || !bfs_stays_global(exported, name, head, trait_names, declared_types, exported_types) {
+          ()
+        } else if bfs_builtin_owned(name) {
+          Array::push(out, name)
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+  }
+}
+
+/// PR #2708 review (Codex P1): the `__vibe_` prefix is the compiler's. Its
+/// generated definitions carry it -- the Double runtime prelude's
+/// `__vibe_double_to_string` / `__vibe_double_parse` and the String
+/// length-view prelude's `__vibe_string_unicode_length` /
+/// `__vibe_string_utf16_length` (codegen/common_base/*_runtime.vibe), which
+/// are appended to the program AFTER this check and found again by
+/// spelling -- so a program's own top-level definition spelled that way would
+/// be taken for the generated one. Measured: with `fn __vibe_double_to_string(
+/// d: Double) -> String { "hijacked" }` in the program, `Double::to_string(
+/// 1.5)` answered `hijacked`. Refusing the spelling here, with the edit
+/// first, is what makes a by-spelling presence test sound
+/// (`program_defines_top_level`).
+///
+/// Top-level binders only -- `let` / `fn`, `let mut`, a destructuring `let`,
+/// an extern, in a module body too: those are what a generated function's
+/// name is resolved against. A LOCAL binder is left alone because the
+/// compiler's own desugars introduce locals under this prefix before the
+/// check runs (`__vibe_inspect_actual`, desugar_trait_dict.vibe) and a
+/// re-check of desugared statements must stay clean.
+fn collect_reserved_value_prefix_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => rvp_report(name, errors),
+      SLetMut(name, _, _) => rvp_report(name, errors),
+      SExternLet(name, _) => rvp_report(name, errors),
+      SLetPat(pat, _) => rvp_report_pat(pat, errors),
+      SModule(_, _, body) => collect_reserved_value_prefix_errors(body, errors),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+fn rvp_report(name: String, errors: Array[String]) -> Unit {
+  if String::starts_with(name, "__vibe_") {
+    Array::push(errors, String::concat("rename `", String::concat(name, "`: the `__vibe_` prefix is reserved for definitions the compiler generates (the Double runtime prelude's `__vibe_double_to_string`, for one), and a program's own top-level definition spelled that way would silently take the generated one's place (#2652)")))
+  } else {
+    ()
+  }
+}
+
+fn rvp_report_pat(pat: Pat, errors: Array[String]) -> Unit {
+  match pat {
+    PBind(name) => rvp_report(name, errors),
+    PCtor(_, items) => rvp_report_pats(items, errors),
+    PTuple(items) => rvp_report_pats(items, errors),
+    POr(a, b) => {
+      rvp_report_pat(a, errors)
+      rvp_report_pat(b, errors)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, p) = Array::get(fields, i)
+        rvp_report_pat(p, errors)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+fn rvp_report_pats(items: Array[Pat], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    rvp_report_pat(Array::get(items, i), errors)
+    i = i + 1
+  }
+}
+
 fn collect_reserved_type_prefix_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -4795,6 +5019,7 @@ fn collect_decl_formal_application_errors(stmts: Array[Stmt], errors: Array[Stri
 
 fn collect_type_param_shadowing_errors(stmts: Array[Stmt], errors: Array[String]) -> Unit {
   collect_reserved_type_prefix_errors(stmts, errors)
+  collect_reserved_value_prefix_errors(stmts, errors)
   collect_decl_formal_application_errors(stmts, errors)
   let local_types = tps_local_type_names(stmts)
   if Array::length(local_types) == 0 {

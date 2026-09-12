@@ -1,0 +1,242 @@
+//# Imports
+
+// #2652: `Double::to_string` / `Double::parse` are ONE runtime prelude in
+// vibe source (codegen/common_base/double_runtime.vibe), appended to the
+// program by each lane's convergence hook and compiled WITHOUT checker
+// offsets -- the shape production takes, since the prelude is appended after
+// the checker ran. Every program here runs through the bump, RC, RC-shadow
+// and gc lanes of the checkout's codegen and must print the same answer on
+// all four (codegen_heap_e2e_test's convention). The answers are
+// JavaScript's `Number::toString` strings for the same bits, except `-0`,
+// which is deliberately spelled as the value held.
+
+import @vibe/compiler/codegen/common_base {
+  double_runtime_source, program_has_render_site, program_mentions_double, program_needs_double_runtime
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_gc, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+//# Functions
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_double_runtime_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  // Plain `wasmtime run` has no `vibe::stdout_write_stream` import, so a
+  // program here RETURNS its answer from `main` (the runner prints the Int)
+  // rather than printing it; the trailing `0` is the hidden env parameter
+  // (see codegen_heap_e2e_test.vibe).
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y,gc=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Stdout {
+  inspect(run_value(compile_wasi(src, "main"), String::concat(label, "_bump")), content = expected)
+  inspect(run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc")), content = expected)
+  inspect(run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow")), content = expected)
+  inspect(run_value(compile_wasi_gc(src, "main"), String::concat(label, "_gc")), content = expected)
+  0
+}
+
+/// A program that scores `checks` of `(printed, expected)` pairs: `main`
+/// returns a bitmask with bit i set when pair i matched, so a lane that
+/// formats one value wrong answers a different Int that names the case, and
+/// the fixture-style table stays readable here as source text.
+fn score_program(prelude: String, checks: Array[(String, String)]) -> String {
+  let mut body = ""
+  let mut i = 0
+  let mut bit = 1
+  while i < Array::length(checks) {
+    let (printed, expected) = Array::get(checks, i)
+    body = String::concat(body, String::concat("  if String::equals(", String::concat(printed, String::concat(", \"", String::concat(expected, String::concat("\") {\n    ok = ok + ", String::concat(Int::to_string(bit), "\n  } else {\n    ()\n  }\n")))))))
+    bit = bit * 2
+    i = i + 1
+  }
+  String::concat(prelude, String::concat("fn main() -> Int {\n  let mut ok = 0\n", String::concat(body, "  ok\n}\n")))
+}
+
+/// The mask `score_program` answers when every one of `n` checks matches.
+fn all_bits(n: Int) -> String {
+  let mut mask = 0
+  let mut bit = 1
+  let mut i = 0
+  while i < n {
+    mask = mask + bit
+    bit = bit * 2
+    i = i + 1
+  }
+  Int::to_string(mask)
+}
+
+//# Tests
+
+test "the prelude source parses on its own and names both entry points" {
+  let stmts = parse_program(lex(double_runtime_source()))
+  let mut has_to_string = false
+  let mut has_parse = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, name, _, _) => {
+        if name == "__vibe_double_to_string" {
+          has_to_string = true
+        } else if name == "__vibe_double_parse" {
+          has_parse = true
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  inspect(has_to_string, content = "true")
+  inspect(has_parse, content = "true")
+  // The prelude itself holds Doubles (it builds them), so a program that
+  // carries it always satisfies the scan that decides to append it.
+  inspect(program_mentions_double(stmts), content = "true")
+}
+
+test "the prelude is appended only to a program that can hold AND format or parse a Double" {
+  let no_double = "fn main() -> Unit { println(Int::to_string(1 + 2)) }"
+  inspect(program_mentions_double(parse_program(lex(no_double))), content = "false")
+  inspect(program_needs_double_runtime(parse_program(lex(no_double))), content = "false")
+  // Holds a Double, formats none: bench/binary_size/variant_float.vibe's
+  // shape. Appending here cost 124 B of pruning residue for nothing.
+  let holds_only = "fn main() -> Int { let x = 1.5 * Int::to_double(3)\n Double::to_int(x) }"
+  inspect(program_mentions_double(parse_program(lex(holds_only))), content = "true")
+  inspect(program_has_render_site(parse_program(lex(holds_only))), content = "false")
+  inspect(program_needs_double_runtime(parse_program(lex(holds_only))), content = "false")
+  // Each render / parse spelling codegen can turn into a prelude call.
+  let via_interp = "fn main() -> Unit { let x = 1.5\n println(\"\\{x}\") }"
+  inspect(program_needs_double_runtime(parse_program(lex(via_interp))), content = "true")
+  let via_to_string = "fn main() -> Unit { println(Double::to_string(1.5)) }"
+  inspect(program_needs_double_runtime(parse_program(lex(via_to_string))), content = "true")
+  let via_render = "fn main() -> Unit { println(__to_string(Int::to_double(3))) }"
+  inspect(program_needs_double_runtime(parse_program(lex(via_render))), content = "true")
+  let via_parse = "fn main() -> Unit { let x = Double::parse(\"1\")\n () }"
+  inspect(program_needs_double_runtime(parse_program(lex(via_parse))), content = "true")
+  let via_wrapper = "fn to_string(x: Double) -> String { __to_string(x) }\nfn main() -> Unit { println(to_string(2.5)) }"
+  inspect(program_needs_double_runtime(parse_program(lex(via_wrapper))), content = "true")
+  // A render site with no Double in reach never needs it either.
+  let render_int = "fn main() -> Unit { let n = 3\n println(\"\\{n}\") }"
+  inspect(program_has_render_site(parse_program(lex(render_int))), content = "true")
+  inspect(program_needs_double_runtime(parse_program(lex(render_int))), content = "false")
+}
+
+test "#2652 the values the issue measured print the same on every lane" {
+  let prelude = "fn pow10(n: Int) -> Double {\n  let mut r = 1.0\n  let mut i = 0\n  while i < n {\n    r = r * 10.0\n    i = i + 1\n  }\n  r\n}\n"
+  let checks = [
+    ("Double::to_string(2.2250738585072014)", "2.2250738585072014"),
+    ("Double::to_string(pow10(300))", "1.0000000000000002e+300"),
+    ("Double::to_string(0.0 - pow10(300))", "-1.0000000000000002e+300"),
+    ("Double::to_string(1.0 / pow10(300))", "9.999999999999999e-301"),
+    ("Double::to_string(Double::from_i64_bits_lohi(2281731484, 2117592124))", "1e+300"),
+    ("Double::to_string(0.1 + 0.2)", "0.30000000000000004"),
+    ("Double::to_string(1.5)", "1.5"),
+    ("Double::to_string(0.0)", "0"),
+    ("Double::to_string(0.0 * (0.0 - 1.0))", "-0"),
+    ("Double::to_string(pow10(21))", "1e+21"),
+    ("Double::to_string(pow10(20))", "100000000000000000000"),
+    ("Double::to_string(pow10(300) * pow10(300))", "Infinity"),
+    ("Double::to_string(0.0 / 0.0)", "NaN")
+  ]
+  assert_lanes_agree(score_program(prelude, checks), "issue_values", all_bits(13))
+}
+
+test "#2652 __to_string of a Double takes the prelude" {
+  let prelude = "fn half(x: Double) -> Double {\n  x / 2.0\n}\n"
+  let checks = [
+    ("__to_string(0.1)", "0.1"),
+    ("__to_string(half(5.0))", "2.5"),
+    ("__to_string(0.1 * 3.0)", "0.30000000000000004"),
+    ("__to_string(1.0 / 3.0)", "0.3333333333333333")
+  ]
+  assert_lanes_agree(score_program(prelude, checks), "to_string", all_bits(4))
+}
+
+test "#2652 Double::parse reads exponents, specials, and the old spellings" {
+  let prelude = "fn show(s: String) -> String {\n  match Double::parse(s) {\n    None => \"None\",\n    Some(d) => Double::to_string(d)\n  }\n}\n"
+  let checks = [
+    ("show(\"1e300\")", "1e+300"),
+    ("show(\"2.2250738585072014\")", "2.2250738585072014"),
+    ("show(\"1.7976931348623157e308\")", "1.7976931348623157e+308"),
+    ("show(\"5e-324\")", "5e-324"),
+    ("show(\"-0\")", "-0"),
+    ("show(\"Infinity\")", "Infinity"),
+    ("show(\"-Infinity\")", "-Infinity"),
+    ("show(\"NaN\")", "NaN"),
+    ("show(\"5.\")", "5"),
+    ("show(\".5\")", "0.5"),
+    ("show(\"+2\")", "2"),
+    ("show(\"abc\")", "None"),
+    ("show(\"1e\")", "None"),
+    ("show(\"\")", "None")
+  ]
+  assert_lanes_agree(score_program(prelude, checks), "parse", all_bits(14))
+}
+
+test "#2652 parse(to_string(d)) is exact at the edges of the format" {
+  // Bit patterns rather than literals: the smallest subnormal, the largest
+  // finite, the smallest normal, and three 17-digit values; each prints,
+  // reads back, and must land on the same bits.
+  let prelude = "fn rt(lo: Int, hi: Int) -> String {\n  let d = Double::from_i64_bits_lohi(lo, hi)\n  match Double::parse(Double::to_string(d)) {\n    None => \"None\",\n    Some(b) => if Double::to_i64_bits_hi(b) == hi && Double::to_i64_bits_lo(b) == lo {\n      String::concat(Double::to_string(d), \" ok\")\n    } else {\n      String::concat(Double::to_string(d), \" MISMATCH\")\n    }\n  }\n}\n"
+  let checks = [
+    ("rt(1, 0)", "5e-324 ok"),
+    ("rt(4294967295, 2146435071)", "1.7976931348623157e+308 ok"),
+    ("rt(0, 1048576)", "2.2250738585072014e-308 ok"),
+    ("rt(2246822048, 1073859827)", "2.2250738585072014 ok"),
+    ("rt(858993460, 1070805811)", "0.30000000000000004 ok"),
+    ("rt(2281731484, 2117592124)", "1e+300 ok")
+  ]
+  assert_lanes_agree(score_program(prelude, checks), "roundtrip", all_bits(6))
+}
+
+test "#2708 review: a Double that arrives through a type annotation is a Double source" {
+  // no float literal and no `Double::*` call anywhere -- the value comes from
+  // outside, and the interpolation is the render site
+  let shapes = [
+    "export fn render(x: Double) -> String {\n  \"\\{x}\"\n}\n",
+    "struct P {\n  x: Double\n}\n\nfn show(p: P) -> String {\n  \"\\{p.x}\"\n}\n",
+    "enum E {\n  V(Float)\n}\n\nfn show(e: E) -> String {\n  match e {\n    V(x) => \"\\{x}\"\n  }\n}\n",
+    "type Pair = (Double, Int)\n\nfn show(p: Pair) -> String {\n  \"\\{p.0}\"\n}\n",
+    "fn show(xs: Array[Double]) -> String {\n  \"\\{Array::get(xs, 0)}\"\n}\n",
+    "fn show(f: () -> Double) -> String {\n  \"\\{f()}\"\n}\n"
+  ]
+  let mut i = 0
+  while i < Array::length(shapes) {
+    let src = Array::get(shapes, i)
+    inspect(program_mentions_double(parse_program(lex(src))), content = "true")
+    inspect(program_needs_double_runtime(parse_program(lex(src))), content = "true")
+    i = i + 1
+  }
+  // and a program with no Double spelled anywhere stays without the prelude
+  let ints = parse_program(lex("fn show(x: Int) -> String {\n  \"\\{x}\"\n}\n"))
+  inspect(program_mentions_double(ints), content = "false")
+  inspect(program_needs_double_runtime(ints), content = "false")
+}
+
+test "#2708 review: a render of a Double parameter compiles and links the prelude on every lane" {
+  // Before the annotation scan this was the internal compiler error
+  // "`__vibe_double_to_string` ... is not linked into this program" on a
+  // valid program: `render` is exported, so it is compiled, and its hole
+  // lowers to the prelude.
+  let src = "export fn render(x: Double) -> String {\n  \"\\{x}\"\n}\n\nfn main() -> Int {\n  1\n}\n"
+  assert_lanes_agree(src, "typed_param", "1")
+}
+
+test "#2708 review: a program's own fn Double::to_string is that program's function on every lane" {
+  // the same guard the String length views got: the arm is off when the
+  // program defines the name, at the top level and inside a closure
+  let src = "fn Double::to_string(d: Double) -> String {\n  \"shadow\"\n}\n\nfn main() -> Int {\n  let inside = Array::map([1.5], (x) -> Double::to_string(x))\n  String::length(Double::to_string(2.5)) * 10 + String::length(Array::get(inside, 0))\n}\n"
+  assert_lanes_agree(src, "shadow", "66")
+}

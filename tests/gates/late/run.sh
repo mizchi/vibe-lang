@@ -968,6 +968,20 @@ send_check_reject "err_type_array_from_mutset.vibe" 'expected Array[String], got
 # caught by `head_differ` rather than falling through to
 # `nominal_head_conflict`. A shared kind would pass every other row here.
 send_check_reject "err_type_mutmap_from_mutset.vibe" 'expected MutMap[String, Int], got MutSet[String]' "cgenhead3"
+# #2378: a dependency's `fn` at a QUALIFIED builtin name replaces that builtin
+# for every program that links the file, with nothing said. It is refused at
+# the IMPORTER -- the module that never asked for the override and gets it
+# anyway -- naming the dependency and leading with the edit; the entry file's
+# own shadow stays legal (fixtures/to_string_shadowed_builtin_test.vibe). The
+# controls -- a bare name, a non-builtin qualified name, a trait-owned name and
+# the `let` alias shape -- are lib/@vibe/compiler/tests/builtin_fn_shadowing_test.vibe.
+send_check_reject "err_builtin_fn_shadowing.vibe" 'rename `String::index_of` in ' "bfs"
+send_check_reject "err_builtin_fn_shadowing.vibe" 'builtin_fn_shadowing_dep.vibe: it is a builtin, and a `fn` defined at a builtin' "bfs2"
+send_check_reject "err_builtin_fn_shadowing.vibe" 'replaces that builtin for EVERY program that links that file' "bfs3"
+# PR #2708 review: the `__vibe_` prefix is reserved for the definitions the
+# compiler generates and finds again by spelling; a program's own
+# `fn __vibe_double_to_string` used to pass for the Double runtime prelude.
+send_check_reject "err_reserved_vibe_prefix.vibe" 'rename `__vibe_double_to_string`: the `__vibe_` prefix is reserved' "rvp"
 # The control, and the reason the two rows above cannot pass by rejecting the
 # type outright: the same heads used correctly -- including a function
 # polymorphic over the element, which is what the `0` bucket exists for --

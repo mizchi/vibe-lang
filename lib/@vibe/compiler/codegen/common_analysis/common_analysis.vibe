@@ -21,6 +21,7 @@ import @vibe/compiler/core {
   is_borrow_ret_builtin,
   is_exception_throw_operation,
   resolve_type_expr_core_shadowed,
+  runtime_prelude_dispatched_builtin_name,
   sorted_names_of,
   type_to_string
 }
@@ -834,7 +835,24 @@ fn is_inlined_async_builtin(name: String) -> Bool {
 /// the two names here removes the second reading, which is what lets the arms
 /// switch to `!prefer_bound_call` and a local binding finally win.
 fn is_inlined_scalar_builtin(name: String) -> Bool {
-  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "Double::from_i64_bits" || name == "Map::__iter_get_unchecked" || name == "Array::iter_eager"
+  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "Double::from_i64_bits" || name == "Map::__iter_get_unchecked" || name == "Array::iter_eager" || is_runtime_prelude_dispatched_builtin(name)
+}
+
+/// PR #2708 review: the callsite-dispatched names that lower to ONE call into
+/// a runtime prelude (codegen/common_base/double_runtime.vibe,
+/// string_views_runtime.vibe) -- no func table entry under this spelling,
+/// and `canonical_builtin_resolves_globally` says no for them because their
+/// canonical spelling is their own. Their dispatch arms are guarded on
+/// `local_names` so a program's own `fn String::unicode_length` wins, which
+/// means a spurious capture of the builtin spelling into a closure now turns
+/// the arm OFF inside that closure and the call goes through an uninitialized
+/// closure slot (`wasm trap: uninitialized element`, measured on the bump
+/// and RC lanes with `Array::map(xs, (p) -> String::utf16_length(p))`).
+/// Listing them here is the linear lane's `gc_direct_abi_names`. The list
+/// itself is core's `runtime_prelude_dispatched_builtin_name`, shared with the
+/// #2378 collector.
+fn is_runtime_prelude_dispatched_builtin(name: String) -> Bool {
+  runtime_prelude_dispatched_builtin_name(name)
 }
 
 /// A namespaced source alias recognized by the builtin registry resolves
