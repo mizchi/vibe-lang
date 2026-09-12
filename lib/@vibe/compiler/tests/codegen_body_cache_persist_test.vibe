@@ -11,7 +11,10 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_filter_src_below,
   codegen_body_cache_find,
   codegen_body_cache_find_at,
+  codegen_body_cache_find_named,
+  codegen_body_cache_find_named_at,
   codegen_body_cache_from_bytes,
+  codegen_body_cache_name_index,
   codegen_body_cache_new,
   codegen_body_cache_slot_index,
   codegen_body_cache_to_bytes
@@ -79,12 +82,14 @@ fn remove_file_if_exists(path: String) -> Unit with Fs {
 fn sample_cache() -> CodegenBodyCache {
   let c = codegen_body_cache_new()
   Array::push(c.fn_indices, 0)
+  Array::push(c.fn_names, "alpha")
   Array::push(c.fn_src_stmts, 2)
   Array::push(c.fn_bodies, string_to_bytes("ab"))
   Array::push(c.fn_meta_i32, 1)
   Array::push(c.fn_meta_i64, 2)
   Array::push(c.fn_meta_v128, 0)
   Array::push(c.fn_indices, 3)
+  Array::push(c.fn_names, "beta")
   Array::push(c.fn_src_stmts, 7)
   Array::push(c.fn_bodies, string_to_bytes("cde"))
   Array::push(c.fn_meta_i32, 4)
@@ -138,6 +143,12 @@ test "codegen body cache codec round-trips every field group" {
       inspect(Array::length(d.fn_indices), content = "2")
       inspect(Array::get(d.fn_indices, 1), content = "3")
       inspect(Array::get(d.fn_src_stmts, 0), content = "2")
+      // #2669 step 2a. Asserted rather than merely carried: the previous
+      // column this struct gained (blind_body) round-tripped untested because
+      // the fixture enumerated rows by hand and did not grow with the struct,
+      // and the codec threw on it in production.
+      inspect(Array::get(d.fn_names, 0), content = "alpha")
+      inspect(Array::get(d.fn_names, 1), content = "beta")
       assert(bytes_eq(Array::get(d.fn_bodies, 1), string_to_bytes("cde")))
       inspect(Array::get(d.fn_meta_v128, 1), content = "1")
       inspect(Array::length(d.lam_owner), content = "1")
@@ -327,12 +338,14 @@ test "persisted body cache: verify survives an entry edit; on matches a fresh co
 // read. The scan is the ORACLE here, not a second implementation to eyeball:
 // the two must agree on every key, including the ones no entry holds.
 
-/// A cache carrying only `fn_indices` -- the lookup reads nothing else.
+/// A cache carrying only the lookup keys: `fn_indices`, and since #2669 step
+/// 2a the parallel `fn_names` the name lookup reads.
 fn cache_with_indices(indices: Array[Int]) -> CodegenBodyCache {
   let c = codegen_body_cache_new()
   let mut i = 0
   while i < Array::length(indices) {
     Array::push(c.fn_indices, Array::get(indices, i))
+    Array::push(c.fn_names, String::concat("f", __to_string(Array::get(indices, i))))
     i = i + 1
   }
   c
@@ -356,6 +369,29 @@ fn lookup_disagreements(c: CodegenBodyCache, key_count: Int) -> String {
     k = k + 1
   }
   String::join(out, ", ")
+}
+
+test "a duplicated function name is a miss on both name lookups" {
+  // Duplicate function names are REAL, not hypothetical: two `test "..."`
+  // blocks with the same title lower to the same `__test_` function, and
+  // `lib/@vibe/compiler/tests/builtins_extended_test.vibe` has such a pair.
+  // Both lookups must answer -2 so a consumer declines replay; resolving
+  // first-wins would hand one function another's body, which is the mistake
+  // #2705 found in the cross-build tool.
+  let c = codegen_body_cache_new()
+  Array::push(c.fn_indices, 0)
+  Array::push(c.fn_names, "solo")
+  Array::push(c.fn_indices, 1)
+  Array::push(c.fn_names, "twin")
+  Array::push(c.fn_indices, 2)
+  Array::push(c.fn_names, "twin")
+  let (sorted, positions) = codegen_body_cache_name_index(c)
+  inspect(codegen_body_cache_find_named(c, "solo"), content = "0")
+  inspect(codegen_body_cache_find_named_at(sorted, positions, "solo"), content = "0")
+  inspect(codegen_body_cache_find_named(c, "twin"), content = "-2")
+  inspect(codegen_body_cache_find_named_at(sorted, positions, "twin"), content = "-2")
+  inspect(codegen_body_cache_find_named(c, "absent"), content = "-1")
+  inspect(codegen_body_cache_find_named_at(sorted, positions, "absent"), content = "-1")
 }
 
 test "the indexed body-cache lookup answers exactly what the scan answers" {

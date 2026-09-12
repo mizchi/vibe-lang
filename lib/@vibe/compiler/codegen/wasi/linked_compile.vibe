@@ -212,7 +212,9 @@ import @vibe/compiler/codegen/common_base {
   bcc_int_lists_equal,
   bcc_string_lists_equal,
   codegen_body_cache_find_at,
+  codegen_body_cache_find_named_at,
   codegen_body_cache_merge,
+  codegen_body_cache_name_index,
   codegen_body_cache_new,
   codegen_body_cache_record,
   codegen_body_cache_replay,
@@ -10491,6 +10493,10 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // probe counted the bodies), paid on the lane that exists to make a warm
   // compile cheap.
   let body_cache_slot_index = codegen_body_cache_slot_index(body_cache_in, num_user_funcs)
+  // #2669 step 2a: the same table, keyed on the function's NAME. Built once
+  // beside the index one and checked against it per function below; nothing
+  // reads it as the answer yet.
+  let (body_cache_names_sorted, body_cache_names_pos) = codegen_body_cache_name_index(body_cache_in)
   let body_cache_in_ok = if Array::length(body_cache_in.fn_indices) == 0 {
     true
   } else if pin_region_capacity < 0 {
@@ -11226,6 +11232,40 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         codegen_body_cache_find_at(body_cache_slot_index, bi)
       } else {
         0 - 1
+      }
+      // #2669 step 2a: the name-keyed lookup must answer what the index-keyed
+      // one answers, HERE, before anything is allowed to depend on it.
+      //
+      // Under the prefix filter they cannot disagree: `decode_body_cache_payload_for`
+      // keeps only files that match in path, fingerprint and statement count,
+      // in order, so over that region index i and the function named at i are
+      // the same entry. That is what makes the index key sound and the name
+      // key a faithful replacement for it -- and a disagreement would mean the
+      // prefix invariant is not holding, which is worth stopping for rather
+      // than quietly preferring one answer.
+      //
+      // Step 2b drops the index lookup, at which point this check goes with
+      // it: there will be nothing left to agree with.
+      if body_cache_in_ok {
+        let __named_hit = codegen_body_cache_find_named_at(body_cache_names_sorted, body_cache_names_pos, Array::get(fn_names_list, bi))
+        // -2 is AMBIGUOUS, which the name lookup documents as a miss, so it is
+        // not a disagreement to report -- comparing a miss sentinel against a
+        // hit would abort every warm compile of a unit that happens to contain
+        // two functions of one name. Those exist: two `test "..."` blocks with
+        // the same title lower to the same `__test_` function, and
+        // `lib/@vibe/compiler/tests/builtins_extended_test.vibe` has a pair.
+        // Found by review on #2714, and the contract it violates is the one
+        // the previous commit wrote down.
+        //
+        // Step 2b turns this into declining replay for that function. A miss
+        // costs a recompile; resolving it first-wins would cost correctness.
+        if __named_hit != 0 - 2 && __named_hit != __cache_hit {
+          throw(String::concat("body cache: the name and index lookups disagree for function ", String::concat(__to_string(bi), String::concat(" (", String::concat(Array::get(fn_names_list, bi), String::concat("): by index ", String::concat(__to_string(__cache_hit), String::concat(", by name ", __to_string(__named_hit)))))))))
+        } else {
+          ()
+        }
+      } else {
+        ()
       }
       if __cache_hit >= 0 {
         let __r_slot_lo = Array::length(table_slots_used)
@@ -12167,7 +12207,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         } else {
           ()
         }
-        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners))
+        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners))
       }
     }
     bi = bi + 1

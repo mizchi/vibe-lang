@@ -208,6 +208,18 @@ export struct LambdaTable {
 /// the slots the whole-program assembly will install these lambdas at.
 export struct CodegenBodyCache {
   fn_indices: Array[Int];
+  /// #2669 step 2a: the function each entry was harvested from, by NAME.
+  ///
+  /// `fn_indices` keys the lookup today, and that is exactly why
+  /// `decode_body_cache_payload_for` can only keep the unchanged leading
+  /// PREFIX of files: over an identical prefix, cache index i and build index
+  /// i are the same function, and past the first change they are not. The
+  /// prefix rule is that precondition, not caution.
+  ///
+  /// A name does not move when something ahead of it is inserted, so keying
+  /// on it is what lets the filter keep every unchanged file instead. Recorded
+  /// now and checked against the index lookup; nothing depends on it yet.
+  fn_names: Array[String];
   fn_bodies: Array[Bytes];
   fn_meta_i32: Array[Int];
   fn_meta_i64: Array[Int];
@@ -303,6 +315,7 @@ export struct CodegenBodyCache {
 export fn codegen_body_cache_new() -> CodegenBodyCache {
   CodegenBodyCache::{
     fn_indices: array_empty(),
+    fn_names: array_empty(),
     fn_bodies: array_empty(),
     fn_meta_i32: array_empty(),
     fn_meta_i64: array_empty(),
@@ -380,6 +393,66 @@ export fn codegen_body_cache_find(cache: CodegenBodyCache, fn_index: Int) -> Int
 /// So the contract is exact and bounded: for every key in [0, key_count), this
 /// answers what `codegen_body_cache_find` answers, and
 /// `codegen_body_cache_find_at` answers -1 outside it.
+/// #2669 step 2a: the cache slot for the function NAMED `name`, or -1 when
+/// absent, or -2 when the name is carried by more than one entry.
+///
+/// Linear scan, and the REFERENCE for the sorted lookup below -- the same
+/// relationship `codegen_body_cache_find` has with `codegen_body_cache_find_at`.
+///
+/// Ambiguity is refused rather than resolved first-wins. Merged programs
+/// path-mangle private definitions (#716) so user function names should be
+/// unique, but "should be" is what #2705 discovered was false for generated
+/// names, and taking whichever came first there meant comparing a body
+/// against an unrelated one. A duplicated name is a miss, which costs a
+/// recompile; taking the first would cost correctness.
+export fn codegen_body_cache_find_named(cache: CodegenBodyCache, name: String) -> Int {
+  let n = Array::length(cache.fn_names)
+  let mut i = 0
+  let mut found = 0 - 1
+  let mut hits = 0
+  while i < n {
+    if Array::get(cache.fn_names, i) == name {
+      hits = hits + 1
+      if hits == 1 {
+        found = i
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if hits > 1 {
+    0 - 2
+  } else {
+    found
+  }
+}
+
+/// Sorted view of the cache's function names plus their original positions,
+/// built ONCE per compile. Without it the body loop would scan every entry
+/// for every function, which is quadratic -- the same reason
+/// `codegen_body_cache_slot_index` exists.
+export fn codegen_body_cache_name_index(cache: CodegenBodyCache) -> (Array[String], Array[Int]) {
+  ctor_sorted_index(cache.fn_names)
+}
+
+/// The cache slot for the function named `name`, via the sorted view. Same
+/// answer as `codegen_body_cache_find_named`, including the -2 for a
+/// duplicated name: `bsearch_leftmost` lands on the FIRST of a run of equal
+/// names, so a second one sitting next to it is what makes the name ambiguous.
+export fn codegen_body_cache_find_named_at(sorted: Array[String], positions: Array[Int], name: String) -> Int {
+  let s = bsearch_leftmost(sorted, name)
+  if s < 0 {
+    0 - 1
+  } else if s + 1 < Array::length(sorted) && Array::get(sorted, s + 1) == name {
+    0 - 2
+  } else {
+    Array::get(positions, s)
+  }
+}
+
 export fn codegen_body_cache_slot_index(cache: CodegenBodyCache, key_count: Int) -> Array[Int] {
   let out: Array[Int] = []
   let mut j = 0
@@ -417,12 +490,13 @@ export fn codegen_body_cache_find_at(slot_index: Array[Int], fn_index: Int) -> I
 /// Reads the LAST entry of `bodies` / `meta_i32` / `meta_i64` -- the loop has
 /// just pushed them -- and the lambda table slice `[lam_lo, lam_hi)`, which is
 /// exactly the range the plan assigned this function.
-export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, src_stmt: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int, blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], blind_lo: Int, blind_hi: Int) -> Unit {
+export fn codegen_body_cache_record(cache: CodegenBodyCache, fn_index: Int, fn_name: String, src_stmt: Int, bodies: Array[Bytes], meta_i32: Array[Int], meta_i64: Array[Int], meta_v128: Array[Int], lt: LambdaTable, lam_lo: Int, lam_hi: Int, slots: Array[Int], slot_lo: Int, slot_hi: Int, blind_bodies: Array[Int], blind_offsets: Array[Int], blind_kinds: Array[Int], blind_syms: Array[Int], blind_lo: Int, blind_hi: Int) -> Unit {
   let n = Array::length(bodies)
   if n == 0 {
     ()
   } else {
     Array::push(cache.fn_indices, fn_index)
+    Array::push(cache.fn_names, fn_name)
     Array::push(cache.fn_src_stmts, src_stmt)
     Array::push(cache.fn_bodies, Array::get(bodies, n - 1))
     Array::push(cache.fn_meta_i32, Array::get(meta_i32, Array::length(meta_i32) - 1))
@@ -483,6 +557,7 @@ export fn codegen_body_cache_merge(a: CodegenBodyCache, b: CodegenBodyCache) -> 
     let mut i = 0
     while i < fn_n {
       Array::push(out.fn_indices, Array::get(src.fn_indices, i))
+      Array::push(out.fn_names, Array::get(src.fn_names, i))
       Array::push(out.fn_src_stmts, Array::get(src.fn_src_stmts, i))
       Array::push(out.fn_bodies, Array::get(src.fn_bodies, i))
       Array::push(out.fn_meta_i32, Array::get(src.fn_meta_i32, i))
@@ -702,6 +777,7 @@ export fn codegen_body_cache_filter_src_below(cache: CodegenBodyCache, limit: In
       let fni = Array::get(cache.fn_indices, i)
       Array::push(keep_fn, fni)
       Array::push(out.fn_indices, fni)
+      Array::push(out.fn_names, Array::get(cache.fn_names, i))
       Array::push(out.fn_src_stmts, src_stmt)
       Array::push(out.fn_bodies, Array::get(cache.fn_bodies, i))
       Array::push(out.fn_meta_i32, Array::get(cache.fn_meta_i32, i))
@@ -879,12 +955,14 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   bytebuf_push(buf, 'V')
   bytebuf_push(buf, 'B')
   bytebuf_push(buf, 'C')
-  // #2669 slice 3 bumped this from '1': the stream gained the blind-reference
-  // arrays, so an artifact written by an older compiler must be REJECTED
-  // rather than read short. (The store is keyed on the codegen fingerprint
-  // too, so this is the second line of defence, not the first.)
-  bytebuf_push(buf, '2')
+  // Bumped on every stream change so an artifact written by an older compiler
+  // is REJECTED rather than read short: '1' -> '2' when #2669 slice 3 added
+  // the blind-reference arrays, '2' -> '3' when step 2a added fn_names. (The
+  // store is keyed on the codegen fingerprint too, so this is the second line
+  // of defence, not the first.)
+  bytebuf_push(buf, '3')
   bcc_push_int_array(buf, cache.fn_indices)
+  bcc_push_string_array(buf, cache.fn_names)
   bcc_push_int_array(buf, cache.fn_src_stmts)
   bcc_push_bytes_array(buf, cache.fn_bodies)
   bcc_push_int_array(buf, cache.fn_meta_i32)
@@ -1098,12 +1176,17 @@ fn bcc_read_string_arrays(b: Bytes, pos: Int, out: Array[Array[String]]) -> Int 
 }
 
 export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
-  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '2' {
+  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '3' {
     None
   } else {
     let out = codegen_body_cache_new()
     let mut p = 4
     p = bcc_read_int_array(b, p, out.fn_indices)
+    if p >= 0 {
+      p = bcc_read_string_array(b, p, out.fn_names)
+    } else {
+      ()
+    }
     if p >= 0 {
       p = bcc_read_int_array(b, p, out.fn_src_stmts)
     } else {
@@ -1255,7 +1338,7 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
       }
       fni = fni + 1
     }
-    if p < 0 || fn_index_negative || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || Array::length(out.blind_body) != Array::length(out.blind_fn) || Array::length(out.blind_offsets) != Array::length(out.blind_fn) || Array::length(out.blind_kinds) != Array::length(out.blind_fn) || Array::length(out.blind_syms) != Array::length(out.blind_fn) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) {
+    if p < 0 || fn_index_negative || Array::length(out.fn_names) != fn_n || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || Array::length(out.blind_body) != Array::length(out.blind_fn) || Array::length(out.blind_offsets) != Array::length(out.blind_fn) || Array::length(out.blind_kinds) != Array::length(out.blind_fn) || Array::length(out.blind_syms) != Array::length(out.blind_fn) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) {
       None
     } else {
       Some(out)
