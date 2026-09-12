@@ -20,6 +20,32 @@
 // actual bytes before answering, so a hash collision or a stale slot can only
 // cost an extra probe, never return the wrong string (the same fail-safe shape
 // as the perceus pctx_cache: verify content, never trust the index).
+//
+// What it MEASURES as, which is not what the paragraph above predicts. #2387
+// measured this at +3.5% cold wall on 2026-08-29 and concluded "identity
+// canonicalization alone does not pay"; the change was withdrawn on the issue
+// but had already merged (#2393), so it stayed. Re-measured 2026-09-12 on the
+// same corpus (`codegen_lexer_test.vibe`, full closure) under the
+// cache-isolated protocol -- `VIBE_BUILD_CACHE_DIR` fresh per run, cold-vs-cold,
+// ABBA-interleaved, N=10 per configuration, against a build with `intern_slice`
+// bypassed to a plain substring:
+//
+//   wall      median 5.59s (interned) vs 5.74s (not); mean 5.86 vs 5.79.
+//             The median and the mean DISAGREE IN SIGN, which is what a
+//             difference below the noise floor looks like -- no wall claim
+//             either way.
+//   heap_ptr  900 871 136 vs 900 867 928: the table costs 3 208 bytes,
+//             deterministic, 0.0004%.
+//   profile   intern_slice 4.5ms + intern_slice_matches 4.5ms +
+//             intern_grow_if_needed 1.1ms + intern_slots 1.1ms = 11.2ms of
+//             5 546ms sampled = 0.20% of compile CPU. `fnv_slice` does not
+//             appear (inlined).
+//
+// So the +3.5% liability is gone -- 280ms of an 8.0s compile then, 11ms of a
+// 5.6s compile now -- and reverting is not justified on that number. What was
+// NOT measured: whether the identity fast path pays for itself, i.e. how much
+// `__rt_str_eq` grows without interning. The A/B says the NET is below the
+// noise floor; the composition of that net is unmeasured.
 
 //# Table state
 
