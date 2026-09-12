@@ -87,17 +87,31 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   `START END` are byte offsets of the declaration name. Because it walks the
   parsed AST (not a line regex) it handles multi-line declarations and
   module-nested symbols and never reports a name that only appears in a string
-  or comment. Tests and benches are Function (12). An empty test/bench name
-  is outlined as the keyword `test`/`bench`. An `impl Trait for T` is one
-  Method (6) named after `T` — the impl statement does not carry method
-  children.
+  or comment. Tests and benches are Test (27) / Bench (28) — see the legend
+  below. An empty test/bench name is outlined as the keyword `test`/`bench`.
+  An `impl Trait for T` is one Method (6) named after `T` — the impl
+  statement does not carry method children.
 - **Doc comments (`DOC`).** A declaration's `///` doc comment is appended as a
   fifth field, present only when it has one — a declaration without a doc emits
   the same four fields it always did, with no trailing space. The doc is last
-  because it is the only field that can contain spaces, so `cut -d" " -f1-4`
+  because it was the only field that could contain spaces, so `cut -d" " -f1-4`
   still reads the fixed part; inside it a newline is the two characters `\n`
   and a backslash is doubled, so one declaration is always one line. The
   structured form (real newlines, for LSP detail) is `symbol_spans_with_docs`.
+- **A label is a string, so `NAME` is escaped too.** A declaration's name is an
+  identifier, but a `test` / `bench` label is a string literal: it can hold a
+  backslash, and a multi-line `#|` label holds a real newline. In `NAME` those
+  are written `\\`, `\n` and `\r`, so **one symbol is always one line** —
+  unescaped, a two-line label printed as two rows and a reader counted a symbol
+  that does not exist. `cut -d" " -f1-4` is still not enough for a label,
+  because `NAME` can contain a SPACE and nothing yet says where it ends
+  (#2723). The structured form has the real name.
+- **A multi-line `#|` label spans the literal, not its content.** `"…"`,
+  `r"…"` and a single-line `#|…` report the bytes inside the delimiters. A
+  `#|` block continued on the next line is the one spelling whose content is
+  not contiguous — the lexer joins the lines and drops the indentation and the
+  continuation `#|` — so `START END` covers the whole literal token instead of
+  a range that would present those delimiters as label text.
 - **SymbolKind legend v2 (2026-09-12).** `KIND` integers are LSP
   [`SymbolKind`](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#symbolKind)
   values, plus two of the command's own past that range: 27 Test and 28

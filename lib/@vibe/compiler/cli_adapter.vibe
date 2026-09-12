@@ -352,11 +352,47 @@ fn escape_doc_field(text: String) -> String {
   StringBuilder::freeze(acc)
 }
 
+/// Escape a NAME so it survives as ONE line. A declaration's name cannot
+/// contain either byte, but a `test` / `bench` label is a string literal and
+/// a multi-line `#|` one carries a real newline (Codex on #2718) -- emitted
+/// raw it splits one record across two lines, so a reader counting rows sees
+/// a symbol that does not exist. Same reversible scheme as the doc field
+/// (backslash first), with `\r` kept rather than dropped: a byte inside a
+/// name is not noise to discard.
+fn escape_name_field(text: String) -> String {
+  let n = String::length(text)
+  let acc = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = String::char_code_at(text, i)
+    if c == 92 {
+      StringBuilder::push(acc, "\\\\")
+    } else {
+      if c == 10 {
+        StringBuilder::push(acc, "\\n")
+      } else {
+        if c == 13 {
+          StringBuilder::push(acc, "\\r")
+        } else {
+          StringBuilder::push(acc, String::from_char_code(c))
+        }
+      }
+    }
+    i = i + 1
+  }
+  StringBuilder::freeze(acc)
+}
+
 /// One `NAME KIND START END` per declaration, with the `///` doc comment
 /// appended as a FIFTH field when the declaration has one. The doc goes last
-/// because it is the only field that can contain spaces, so `cut -f1-4` still
-/// reads the fixed part -- and a declaration with no doc emits exactly the
-/// four fields it always did, with no trailing space.
+/// because it WAS the only field that could contain spaces, so `cut -f1-4`
+/// still reads the fixed part -- and a declaration with no doc emits exactly
+/// the four fields it always did, with no trailing space. That reasoning
+/// stopped holding when a `test` / `bench` label became a symbol: its NAME is
+/// a string literal, usually a sentence. Which encoding those rows get is a
+/// contract decision, tracked in #2723. A newline in a NAME is escaped here
+/// regardless (`escape_name_field`) -- it breaks the RECORD boundary, not
+/// merely the field one, so a reader counts a symbol that does not exist.
 fn join_symbol_spans(syms: Array[(String, Int, Int, Int, String)]) -> String {
   let n = Array::length(syms)
   // O(N) join via StringBuilder; per-record String::concat was O(N²) (issue #366).
@@ -368,7 +404,7 @@ fn join_symbol_spans(syms: Array[(String, Int, Int, Int, String)]) -> String {
     if String::length(name) == 0 {
       ()
     } else {
-      let head = String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
+      let head = String::concat(escape_name_field(name), String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))
       let line = if String::length(doc) == 0 {
         head
       } else {
@@ -403,7 +439,7 @@ fn join_symbol_spans_with_path(rows: Array[(String, String, Int, Int, Int, Strin
     if String::length(name) == 0 {
       ()
     } else {
-      let head = String::concat(path, String::concat(" ", String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))))
+      let head = String::concat(path, String::concat(" ", String::concat(escape_name_field(name), String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e)))))))))
       let line = if String::length(doc) == 0 {
         head
       } else {
