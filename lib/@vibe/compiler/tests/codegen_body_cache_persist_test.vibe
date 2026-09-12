@@ -99,6 +99,22 @@ fn sample_cache() -> CodegenBodyCache {
   Array::push(c.lam_meta_i64, 0 - 1)
   Array::push(c.slot_owner, 0)
   Array::push(c.slot_values, 1029)
+  // #2669 slice 3: blind references, one owned by the FUNCTION and one owned
+  // by a LAMBDA. The lambda's owner is `blind_owner_of_lambda(5)` = -7, which
+  // is what makes this case load-bearing: the plain int codec encodes `v + 1`
+  // unsigned and throws below -1, so before the zigzag column this aborted
+  // the whole serialization. The sample had no blind rows at all, so the
+  // round-trip proved nothing about them.
+  Array::push(c.blind_fn, 0)
+  Array::push(c.blind_body, 0)
+  Array::push(c.blind_offsets, 17)
+  Array::push(c.blind_kinds, 101)
+  Array::push(c.blind_syms, 42)
+  Array::push(c.blind_fn, 0)
+  Array::push(c.blind_body, 0 - 7)
+  Array::push(c.blind_offsets, 3)
+  Array::push(c.blind_kinds, 102)
+  Array::push(c.blind_syms, 1030)
   Array::push(c.guard_meta, 1)
   Array::push(c.guard_meta, 1024)
   Array::push(c.guard_meta, 2048)
@@ -130,6 +146,16 @@ test "codegen body cache codec round-trips every field group" {
       inspect(Array::get(Array::get(d.lam_captures, 0), 1), content = "bb")
       inspect(Array::get(d.lam_meta_i64, 0), content = "-1")
       inspect(Array::get(d.slot_values, 0), content = "1029")
+      // #2669 slice 3. The second row is the one that matters: its body owner
+      // is a LAMBDA, so the value is negative and the plain column's encoder
+      // refuses it. Round-tripping it exactly is the whole point of giving
+      // this column a zigzag encoding.
+      inspect(Array::length(d.blind_fn), content = "2")
+      inspect(Array::get(d.blind_body, 0), content = "0")
+      inspect(Array::get(d.blind_body, 1), content = "-7")
+      inspect(Array::get(d.blind_offsets, 1), content = "3")
+      inspect(Array::get(d.blind_kinds, 1), content = "102")
+      inspect(Array::get(d.blind_syms, 1), content = "1030")
       inspect(Array::get(d.guard_meta, 2), content = "2048")
       inspect(Array::get(d.guard_meta, 4), content = "40")
       inspect(Array::get(d.guard_synth_names, 0), content = "Pt::equals")

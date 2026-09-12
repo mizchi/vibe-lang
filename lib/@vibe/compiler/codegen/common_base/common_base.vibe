@@ -798,6 +798,35 @@ fn bcc_push_int_array(buf: Bytes, xs: Array[Int]) -> Unit with Exception {
   }
 }
 
+/// #2669 slice 3: an Int array whose values may be BELOW -1.
+///
+/// The plain codec above encodes `v + 1` as an unsigned LEB and throws for
+/// anything under -1, which is right for every column it was written for --
+/// those are indices and counts. `blind_body` is not: a record made inside a
+/// lambda names it as `blind_owner_of_lambda`, i.e. `-2 - lambda_idx`, so
+/// writing it through `bcc_push_int_array` aborted the harvest of any program
+/// with a function value inside a lambda. Found by review on #2710; the
+/// in-process replay test never serializes, so nothing else saw it.
+///
+/// Zigzag, written arithmetically rather than with shifts so it does not
+/// depend on the tagged Int's width: non-negative `v` maps to `2v`, negative
+/// to `-2v - 1`, which is a bijection onto the non-negatives the plain
+/// encoder already accepts.
+fn bcc_push_zigzag_int_array(buf: Bytes, xs: Array[Int]) -> Unit with Exception {
+  bcc_push_int(buf, Array::length(xs))
+  let mut i = 0
+  while i < Array::length(xs) {
+    let v = Array::get(xs, i)
+    let z = if v >= 0 {
+      v * 2
+    } else {
+      0 - v * 2 - 1
+    }
+    bcc_push_int(buf, z)
+    i = i + 1
+  }
+}
+
 fn bcc_push_bytes(buf: Bytes, b: Bytes) -> Unit with Exception {
   bcc_push_int(buf, Bytes::length(b))
   bytebuf_push_buf(buf, b)
@@ -871,7 +900,7 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   bcc_push_int_array(buf, cache.slot_owner)
   bcc_push_int_array(buf, cache.slot_values)
   bcc_push_int_array(buf, cache.blind_fn)
-  bcc_push_int_array(buf, cache.blind_body)
+  bcc_push_zigzag_int_array(buf, cache.blind_body)
   bcc_push_int_array(buf, cache.blind_offsets)
   bcc_push_int_array(buf, cache.blind_kinds)
   bcc_push_int_array(buf, cache.blind_syms)
@@ -928,6 +957,33 @@ fn bcc_read_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
       if np < 0 {
         p = 0 - 1
       } else {
+        Array::push(out, v)
+        p = np
+      }
+      i = i + 1
+    }
+    p
+  }
+}
+
+/// The inverse of bcc_push_zigzag_int_array.
+fn bcc_read_zigzag_int_array(b: Bytes, pos: Int, out: Array[Int]) -> Int {
+  let (count, p0) = bcc_read_int(b, pos)
+  if p0 < 0 || count < 0 {
+    0 - 1
+  } else {
+    let mut p = p0
+    let mut i = 0
+    while p >= 0 && i < count {
+      let (z, np) = bcc_read_int(b, p)
+      if np < 0 || z < 0 {
+        p = 0 - 1
+      } else {
+        let v = if z % 2 == 0 {
+          z / 2
+        } else {
+          0 - ((z + 1) / 2)
+        }
         Array::push(out, v)
         p = np
       }
@@ -1124,7 +1180,7 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
       ()
     }
     if p >= 0 {
-      p = bcc_read_int_array(b, p, out.blind_body)
+      p = bcc_read_zigzag_int_array(b, p, out.blind_body)
     } else {
       ()
     }
