@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, expr_children
+  Expr, Pat, Stmt, TypeExpr, expr_child_at, expr_children_pop, expr_children_push, expr_children_top
 }
 
 import @vibe/compiler/syntax {
@@ -1039,6 +1039,13 @@ fn double_source_name(name: String) -> Bool {
 }
 
 /// `what` 0: a Double source; 1: a render / parse site.
+///
+/// The walk reads children off the shared scratch stack (`expr_children_push`
+/// / `expr_child_at` / `expr_children_pop`, #2386) rather than taking a fresh
+/// array per node: these scans run over the whole merged program at every
+/// lane's convergence point, and a per-node array on a compiler-sized AST is
+/// measurable heap (the self-compile's peak rose 2% on the perf report when a
+/// third such walk was added for the String length-view prelude).
 fn expr_has(e: Expr, what: Int) -> Bool {
   if what == 0 && expr_types_mention_double(e) {
     true
@@ -1052,13 +1059,15 @@ fn expr_has(e: Expr, what: Int) -> Bool {
         render_site_name(name)
       },
       _ => {
-        let kids = expr_children(e)
-        let mut i = 0
+        let mark = expr_children_push(e)
+        let top = expr_children_top()
+        let mut i = mark
         let mut found = false
-        while i < Array::length(kids) && !found {
-          found = expr_has(Array::get(kids, i), what)
+        while i < top && !found {
+          found = expr_has(expr_child_at(i), what)
           i = i + 1
         }
+        expr_children_pop(mark)
         found
       }
     }
@@ -1101,13 +1110,16 @@ fn expr_calls_any(e: Expr, names: Array[String]) -> Bool {
       found
     },
     _ => {
-      let kids = expr_children(e)
-      let mut i = 0
+      // the scratch stack, not a fresh array per node -- see expr_has
+      let mark = expr_children_push(e)
+      let top = expr_children_top()
+      let mut i = mark
       let mut found = false
-      while i < Array::length(kids) && !found {
-        found = expr_calls_any(Array::get(kids, i), names)
+      while i < top && !found {
+        found = expr_calls_any(expr_child_at(i), names)
         i = i + 1
       }
+      expr_children_pop(mark)
       found
     }
   }

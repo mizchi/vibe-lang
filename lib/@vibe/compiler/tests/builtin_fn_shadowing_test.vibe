@@ -98,6 +98,28 @@ test "#2378 what does not leak stays legal: alias, bare name, unowned qualified 
   inspect(diag_of(entry, []), content = "")
 }
 
+test "#2378 a dependency's fn at a prelude-dispatched name is refused like a registry name (Codex review on #2708)" {
+  // `Double::to_string` has no registry row -- codegen dispatches it by
+  // spelling into the Double runtime prelude, and its arm honors any
+  // definition in the merged function table -- so a dependency's definition
+  // would reach every importer exactly like `String::index_of` does.
+  let dep = String::concat("export fn Double::to_string(d: Double) -> String {\n  \"shadow\"\n}\n\n", helper())
+  let msg = diag_of(caller(), [("dep.vibe", dep)])
+  inspect(String::contains(msg, "rename `Double::to_string` in dep.vibe: it is a builtin"), content = "true")
+  let views = String::concat("fn String::unicode_length(s: String) -> Int {\n  42\n}\n\n", helper())
+  inspect(String::contains(diag_of(caller(), [("dep.vibe", views)]), "rename `String::unicode_length` in dep.vibe"), content = "true")
+}
+
+test "#2378 a method on a private local type is renamed with its type and is not a shadow (Codex review on #2708)" {
+  // private namespacing renames both `Fs` and `Fs::exists`, so nothing global
+  // is replaced; an EXPORTED `Fs`, or a private method of an exported trait,
+  // keeps the qualified spelling and IS a shadow.
+  let private_type = String::concat("struct Fs {\n  root: String\n}\n\nfn Fs::exists(f: Fs) -> Bool {\n  true\n}\n\n", helper())
+  inspect(diag_of(caller(), [("dep.vibe", private_type)]), content = "")
+  let exported_type = String::concat("export struct Fs {\n  root: String\n}\n\nfn Fs::exists(f: Fs) -> Bool {\n  true\n}\n\n", helper())
+  inspect(String::contains(diag_of(caller(), [("dep.vibe", exported_type)]), "rename `Fs::exists` in dep.vibe"), content = "true")
+}
+
 test "#2378 the names collector: registry-owned qualified fns and lambdas, nothing else" {
   inspect(names_of("export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n"), content = "String::index_of")
   inspect(names_of("let String::index_of = (s: String, sub: String) -> Int {\n  0 - 999\n}\n"), content = "String::index_of")
@@ -108,7 +130,17 @@ test "#2378 the names collector: registry-owned qualified fns and lambdas, nothi
   inspect(names_of("export fn Widget::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n"), content = "")
   // a fallback-typed name the registry does not own (lib/@vibe/builtin/array.vibe defines it)
   inspect(names_of("export let Array::map = [A, B](xs: Array[A], f: (x: A) -> B) -> Array[B] {\n  []\n}\n"), content = "")
+  // a prelude-dispatched name has no registry row but is a builtin all the same
+  inspect(names_of("fn Double::parse(s: String) -> Option[Double] {\n  None\n}\n"), content = "Double::parse")
   // a Trait::operation whose trait this file declares is namespaced per file
   inspect(names_of("trait Fs {\n}\n\nexport fn Fs::exists(p: String) -> Bool {\n  true\n}\n"), content = "")
   inspect(names_of("export fn Fs::exists(p: String) -> Bool {\n  true\n}\n"), content = "Fs::exists")
+  // the merge's two rename passes, mirrored: a private method of a private
+  // local type is renamed with the type; of an exported type, or of an
+  // exported trait, it keeps its spelling
+  inspect(names_of("struct Fs {\n  root: String\n}\n\nfn Fs::exists(f: Fs) -> Bool {\n  true\n}\n"), content = "")
+  inspect(names_of("export struct Fs {\n  root: String\n}\n\nfn Fs::exists(f: Fs) -> Bool {\n  true\n}\n"), content = "Fs::exists")
+  inspect(names_of("export trait Fs {\n}\n\nfn Fs::exists(p: String) -> Bool {\n  true\n}\n"), content = "Fs::exists")
+  // a private let published through `export { }` travels with the export plan
+  inspect(names_of("fn Fs::exists(p: String) -> Bool {\n  true\n}\n\nexport { Fs::exists }\n"), content = "Fs::exists")
 }

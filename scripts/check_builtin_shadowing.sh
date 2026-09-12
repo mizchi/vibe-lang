@@ -199,31 +199,14 @@ fi
 awk '$3 == 12 || $3 == 13 { print $2 }' "$SYMS" | sort -u > "$WORK/declared.txt"
 comm -12 "$WORK/registry.txt" "$WORK/declared.txt" > "$WORK/found.txt"
 
-# NOT filtered: a `test "X"` / `bench "X"` BLOCK label reads as kind 12 here.
-#
-# `vibe symbols` gives a block its quoted label under kind 12 on purpose --
-# `symbol_spans.vibe`'s header says "Tests/benches use Function (12) -- LSP has
-# no Test kind" -- so four block labels sit on the allowlist describing shadows
-# that do not exist (`Int::popcount` / `Int::ctz` / `Int::clz` / `not`).
-#
-# #2626 tried to filter them lexically: a block label's span starts INSIDE the
-# quotes, so the byte before START is `"`. That is UNSOUND, and the Codex review
-# on #2626 found the counterexample. Measured:
-#
-#   export fn // "String::length"
-#   String::length(s: String) -> Int { -1 }
-#
-# `sym_emit` reports the first whole-word occurrence of the name within the
-# statement span, which here is the one inside the COMMENT -- span 14..28, `"`
-# on both sides. A real, program-wide builtin override read as a block label and
-# vanished: the gate said "ok (0 new)" where it had correctly named
-# `String::length` before. A false negative in this gate is the exact defect it
-# exists to catch, and it is strictly worse than four documented false
-# positives.
-#
-# Before/after is not decidable from the byte either, since the counterexample
-# is quoted on both sides. The distinction is an AST one and the tool does not
-# expose it yet -- see #2632. Until it does, the four rows stay allowlisted.
+# A `test "X"` / `bench "X"` BLOCK label is kind 27 / 28 since #2632 (legend
+# v2), so the kind filter above leaves it out by construction. It used to read
+# as kind 12 -- `symbol_spans.vibe` had no Test kind -- and four labels sat on
+# the allowlist describing shadows that did not exist; #2626's lexical filter
+# for them (the byte before START is `"`) was unsound, because a declaration's
+# span could land on a copy of the name inside a comment, quoted on both
+# sides. Both halves are the tool's now: the kind names the block, and the
+# span is the token that spells the name.
 # Allowlist: `<name> <reason...>`. A row with no reason is rejected -- an
 # unexplained exemption is how a list like this goes stale unnoticed.
 : > "$WORK/allowed.txt"

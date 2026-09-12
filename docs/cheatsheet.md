@@ -1810,9 +1810,11 @@ count code points, UTF-16 code units and bytes of the same string (#2630). A
 byte that is not part of a well-formed UTF-8 sequence counts the way the WHATWG
 decoder counts it: each maximal invalid subpart is one U+FFFD (one code point,
 one UTF-16 unit), so `utf16_length` is `new TextDecoder().decode(bytes).length`
-for the same bytes — a stray continuation byte, an overlong `C0 80`, a
-surrogate `ED A0 80` and a truncated sequence each count as one. Other Unicode
-code-point and grapheme operations are not part of this API.
+for the same bytes — a stray continuation byte counts as one, an overlong
+`C0 80` as two and a surrogate `ED A0 80` as three (no byte of theirs starts a
+well-formed sequence, so each is its own subpart), and a truncated but
+otherwise well-formed prefix such as `E2 82` as one. Other Unicode code-point
+and grapheme operations are not part of this API.
 
 <!-- import-required-builtins: the authoritative list. scripts/check_cheatsheet_signatures.sh
      requires this paragraph to name EXACTLY the entries in the Signature reference
