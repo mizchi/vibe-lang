@@ -713,8 +713,63 @@ fn lc_concat_ints_into(dst: Array[Int], src: Array[Int]) -> Unit {
 /// program's own cross-module declarations carry these, so a builtin
 /// (`String::concat`, `Array::get`) cannot be mistaken for one and no builtin
 /// allow-list is needed to tell them apart.
+fn lc_int_array_has(xs: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn lc_name_is_module_mangled(n: String) -> Bool {
   String::index_of(n, "_exp_lib__") >= 0 || String::index_of(n, "_dep_lib__") >= 0
+}
+
+/// #2633: the MODULE TAG a mangled name carries -- `..._exp_lib__vibe_parser_polyfill_vibe`
+/// yields `lib__vibe_parser_polyfill_vibe`, and `_dep_` the same.
+///
+/// Read off the name itself rather than derived from the file path, so it
+/// cannot drift from whatever spelling the merge actually produced. "" when
+/// the name is not mangled.
+fn lc_mangle_tag_of(n: String) -> String {
+  let e = String::index_of(n, "_exp_lib__")
+  if e >= 0 {
+    String::substring(n, e + 5, String::length(n))
+  } else {
+    let d = String::index_of(n, "_dep_lib__")
+    if d >= 0 {
+      String::substring(n, d + 5, String::length(n))
+    } else {
+      ""
+    }
+  }
+}
+
+/// #2633: the tag this module's OWN declarations carry, or "" if it declares
+/// no mangled name. One tag per module by construction -- the merge stamps
+/// every declaration of a file with that file.
+fn lc_module_tag_of(part: Array[Stmt]) -> String {
+  let mut i = 0
+  while i < Array::length(part) {
+    let t = match Array::get(part, i) {
+      SLet(_, _, n, _, _) => lc_mangle_tag_of(n),
+      SFnDecl(_, n, _, _, _) => lc_mangle_tag_of(n),
+      _ => ""
+    }
+    if t != "" {
+      return t
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  ""
 }
 
 fn lc_decl_names_into(stmts: Array[Stmt], into: MutMap[String, Int]) -> Unit {
@@ -744,7 +799,7 @@ fn lc_decl_names_into(stmts: Array[Stmt], into: MutMap[String, Int]) -> Unit {
 ///
 /// Empty output is the claim that every cross-module name a module uses is one
 /// its context gave it.
-fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String]) -> Unit {
+fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String], visible: Array[Int], tag_owner: MutMap[String, Int], self_fi: Int, cls: Array[Int]) -> Unit {
   let have: MutMap[String, Int] = MutMap::new_string()
   lc_decl_names_into(part, have)
   lc_decl_names_into(ctx, have)
@@ -767,6 +822,28 @@ fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String
             let n = Array::get(fv, fj)
             if lc_name_is_module_mangled(n) && !MutMap::has(have, n) && !lc_str_array_has(out, n) {
               Array::push(out, n)
+              // #2633: and WHY it is missing. The name names its definer, so
+              // ask whether that module is in this one's import closure.
+              // `cls[0]` counts "the definer IS in the closure" -- the context
+              // rule had it and dropped it. `cls[1]` counts "it is not" -- the
+              // closure is short. `cls[2]` is a name whose definer this run
+              // could not identify at all, kept separate rather than folded
+              // into either answer.
+              if String::index_of(n, "_exp_lib__") >= 0 {
+                let owner = match MutMap::get(tag_owner, lc_mangle_tag_of(n)) {
+                  Some(oi) => oi,
+                  None => 0 - 1
+                }
+                if owner < 0 || owner == self_fi {
+                  Array::set(cls, 2, Array::get(cls, 2) + 1)
+                } else if lc_int_array_has(visible, owner) {
+                  Array::set(cls, 0, Array::get(cls, 0) + 1)
+                } else {
+                  Array::set(cls, 1, Array::get(cls, 1) + 1)
+                }
+              } else {
+                ()
+              }
             } else {
               ()
             }
@@ -5405,6 +5482,20 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     Array::push(ifaces, dst)
     pf = pf + 1
   }
+  // #2633: which module each mangle tag belongs to, so an unresolved name can
+  // be asked WHERE it was defined and whether that module is in the closure of
+  // the one that used it.
+  let tag_owner: MutMap[String, Int] = MutMap::new_string()
+  let mut tf = 0
+  while tf < file_count {
+    let t = lc_module_tag_of(Array::get(parts, tf))
+    if t != "" && !MutMap::has(tag_owner, t) {
+      MutMap::set(tag_owner, t, tf)
+    } else {
+      ()
+    }
+    tf = tf + 1
+  }
   // The trait-dict entry with that interface, then the rest of the prelude,
   // per module.
   // #2634: the union of the synthesis requests each module made.
@@ -5465,7 +5556,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     // #2633: what this module was GIVEN against what it USES, before anything
     // reads the context.
     Array::push(st.an_ctx_sizes, Array::length(ctx))
-    lc_ctx_unresolved_into(part, ctx, st.an_ctx_unresolved)
+    lc_ctx_unresolved_into(part, ctx, st.an_ctx_unresolved, visible, tag_owner, fi, st.an_ctx_cls)
     let synthesized = desugar_trait_dicts_module_with_facts(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys, env.trait_facts)
     lc_union_into(st.requests, eq_synthesis_requests_list())
     lc_union_into(st.refusals, eq_typed_refusals_list())
@@ -5794,6 +5885,9 @@ struct PreludeSplitStats {
   // module uses that its context did not give it.
   an_ctx_sizes: Array[Int];
   an_ctx_unresolved: Array[String];
+  // #2633: [definer in closure, definer outside closure, definer unknown] for
+  // the unresolved EXPORTED names.
+  an_ctx_cls: Array[Int];
   // #2638: the two fixpoints over `trial` -- concatenated, link-passes applied,
   // NOT folded. Isolates the fold from the link-only passes.
   an_bret_trial: Array[String];
@@ -5842,6 +5936,7 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     an_bret_seed: lc_fresh_int_array(),
     an_ctx_sizes: lc_fresh_int_array(),
     an_ctx_unresolved: lc_fresh_string_array(),
+    an_ctx_cls: [0, 0, 0],
     an_bret_trial: lc_fresh_string_array(),
     an_view_trial: lc_fresh_string_array(),
     an_mrv_names: lc_fresh_string_array(),
@@ -6177,6 +6272,12 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   ctx_line = String::concat(ctx_line, Int::to_string(ctx_unres_dep))
   ctx_line = String::concat(ctx_line, ":")
   ctx_line = String::concat(ctx_line, first_dep)
+  ctx_line = String::concat(ctx_line, " exp_in_closure=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 0)))
+  ctx_line = String::concat(ctx_line, " exp_outside=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 1)))
+  ctx_line = String::concat(ctx_line, " exp_unknown=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 2)))
   ctx_line = String::concat(ctx_line, "\n")
   let an_line = String::concat(String::concat(String::concat(an_head, an_cols), "\n"), ctx_line)
   let line = String::concat(String::concat(head, mid), tail)
