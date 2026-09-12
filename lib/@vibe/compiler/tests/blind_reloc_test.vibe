@@ -1,0 +1,85 @@
+//# #2669 slice 2: the compiler records where a body refers to a function by
+//# VALUE, and every record is checked against the byte it names.
+//#
+//# The assertion lives in the compiler, not here. `lc_verify_blind_relocs`
+//# runs on every compile: for each recorded reference, the opcode at the
+//# recorded offset must be the one its kind implies and the constant there
+//# must decode to exactly what the record says the reference is. A second
+//# check pairs the blind log against the funcref-slot log, which is appended
+//# at the same emission sites, so the two must grow by the same amount over a
+//# function's compile. Either one throws.
+//#
+//# So each case below is a whole-module assertion the same way
+//# codegen_body_cache_test's are: it passes only if every record the shape
+//# produces is true. What the cases are for is the OWNER numbering, which is
+//# the part with room to be wrong -- a lambda's index is not drawn from the
+//# plan until its body is finished, so its records are written under a pending
+//# owner and reassigned afterwards, and a nested lambda has to keep its own.
+//# A misassigned owner reads the offsets against another function's body,
+//# which is what the in-compiler check catches.
+//#
+//# Mutation-checked against a compiler with the recorded offset moved by one
+//# byte, with the two kinds swapped, and with the nested-lambda reassignment
+//# widened to claim the inner lambda's records. All three fail here.
+
+//# Imports
+
+import @vibe/compiler/codegen {
+  compile_wasi_module
+}
+
+import @vibe/compiler/syntax {
+  lex
+}
+
+import ../parser.vibe {
+  parse_program
+}
+
+//# Functions
+
+/// Compile, and assert the module is a real one. The interesting assertion
+/// already ran inside: a false record throws rather than returning bytes.
+fn assert_compiles(source: String) -> Unit with Exception {
+  let wasm = compile_wasi_module(parse_program(lex(source)), "main")
+  assert(Bytes::length(wasm) > 8)
+}
+
+test "blind reloc: a named function used as a value" {
+  // `inc` passed by name is compile_expr's `i64.const ((slot << 2) | 2)`.
+  assert_compiles("fn twice(f: (Int) -> Int, x: Int) -> Int {\n  f(f(x))\n}\n\nfn inc(n: Int) -> Int {\n  n + 1\n}\n\nfn main allows Stdout {\n  println(Int::to_string(twice(inc, 3)))\n}\n",)
+}
+
+test "blind reloc: a captureless lambda takes the same i64 form" {
+  assert_compiles("fn twice(f: (Int) -> Int, x: Int) -> Int {\n  f(f(x))\n}\n\nfn main allows Stdout {\n  println(Int::to_string(twice((v) -> {\n    v + 1\n  }, 3)))\n}\n",)
+}
+
+test "blind reloc: a capturing lambda stores its slot as an i32" {
+  // The capturing form puts the slot in the closure header instead of folding
+  // it into a function value, so this is the case that distinguishes the two
+  // kinds -- and the case where reading the constant with the wrong opcode
+  // expectation would be caught.
+  assert_compiles("fn twice(f: (Int) -> Int, x: Int) -> Int {\n  f(f(x))\n}\n\nfn bump(n: Int) -> Int {\n  twice((v) -> {\n    v + n\n  }, n)\n}\n\nfn main allows Stdout {\n  println(Int::to_string(bump(3)))\n}\n",)
+}
+
+test "blind reloc: nested lambdas keep their own owners" {
+  // The shape the pending-owner reassignment exists for. The inner lambda
+  // finishes first and claims its own records; the outer one must then claim
+  // only what is left. If it claimed the inner's too, those offsets would be
+  // read against the outer lambda's body and land on unrelated bytes.
+  assert_compiles("fn make_adder(n: Int) -> (Int) -> Int {\n  (x) -> {\n    let inner = (y) -> {\n      y + n\n    }\n    inner(x) + n\n  }\n}\n\nfn main allows Stdout {\n  let f = make_adder(2)\n  println(Int::to_string(f(10)))\n}\n",)
+}
+
+test "blind reloc: closures reaching call_indirect, several owners" {
+  // Lambdas in an array, so the module installs several table slots and the
+  // records span more than one owner -- the shape that first exposed the
+  // slot log's own gap in #1259.
+  assert_compiles("fn apply_all(fs: Array[(Int) -> Int], x: Int) -> Int {\n  let mut acc = x\n  let mut i = 0\n  while i < Array::length(fs) {\n    let f = Array::get(fs, i)\n    acc = f(acc)\n    i = i + 1\n  }\n  acc\n}\n\nfn main allows Stdout {\n  let fs = [\n    (v) -> {\n      v + 1\n    },\n    (v) -> {\n      v * 3\n    }\n  ]\n  println(Int::to_string(apply_all(fs, 5)))\n}\n",)
+}
+
+test "blind reloc: a program with no function values records nothing" {
+  // Nothing to record, and nothing spurious recorded: the paired-count check
+  // reads zero on both sides, which it would not if a record were produced
+  // without a slot.
+  assert_compiles("fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n\nfn main allows Stdout {\n  println(Int::to_string(add(2, 3)))\n}\n",)
+}

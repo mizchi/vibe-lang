@@ -833,6 +833,65 @@ monotonic. Red-tested by running the pre-fix version on that same pair under a
 second), and by confirming the added-function run reports byte-identical
 figures after the change.
 
+##### What a scan cannot find, recorded at emission (#2669, slice 2)
+
+The measurement above relocates a body using only what the instruction
+encoding exposes, and 98 of its mismatches are bodies where every such
+reference was remapped and the body still differs. What is left in those is a
+reference the encoding does not mark. Two shapes, both on the RC lane:
+
+| shape | what it is |
+|---|---|
+| `i64.const ((slot << 2) \| 2)` | a function used as a VALUE — passed by name, or a captureless lambda |
+| `i32.const slot` | the funcref-table slot a CAPTURING lambda stores into its closure header |
+
+Neither is distinguishable from an ordinary integer constant, so the emitter
+has to record them as it writes them. `CompileCtx` carries a blind-reference
+log (`blind_reloc_*`), shared by reference into per-lambda derived contexts the
+way `table_slots_used` already is, and `blind_reloc_record` appends one entry
+per emission. The offset it stores is where the constant's **opcode** goes, not
+where its immediate starts — so a consumer can check the byte it is about to
+rewrite instead of trusting the arithmetic that produced the offset.
+
+**Two checks, because a wrong record cannot be noticed later.** These are the
+references nothing in the bytes marks as references. A stale offset does not
+fail to resolve; it resolves, rewrites an unrelated operand, and the module
+still validates. There is no later stage that would catch it, so both checks
+run on every compile rather than in a test:
+
+- **Every record is checked against the byte it names** (`lc_verify_blind_relocs`).
+  The opcode must be the one the kind implies and the constant must decode —
+  signed, since both immediates are sLEB — to exactly what the record says the
+  reference is. A few thousand records on a compiler-sized program, two byte
+  reads and one LEB decode each.
+- **The record count must equal the funcref-slot count**, per compiled
+  function. This is what makes the recording COMPLETE rather than believed
+  complete: a function value is emitted at exactly the points that append to
+  `table_slots_used`, and each appends one slot and records one reference. A
+  new emission site that forgot to record shows up as a count that does not
+  match, on the next build, instead of as a cached body that relocates one
+  reference short.
+
+**Owners, and the part with room to be wrong.** A record belongs to the BODY it
+sits in, which is a user function or a lambda. A lambda's index is not drawn
+from the frozen plan until its body is finished, so records made while
+compiling one are written under a pending owner and reassigned afterwards —
+and a nested lambda, which finishes first, must keep its own. If the outer
+reassignment claimed the inner's records, their offsets would be read against
+the outer body and land on unrelated bytes; the check above is what turns that
+into a failed build. `lib/@vibe/compiler/tests/blind_reloc_test.vibe` compiles
+one program per shape, including the nested case.
+
+**What is NOT recorded yet, said plainly.** Data pointers — the other class the
+scan cannot see — have no kind number yet, because numbering one before
+anything emits it would be a promise and the numbers are append-only. And a
+REPLAYED function re-pushes its recorded funcref slots from
+`CodegenBodyCache` without re-running codegen, so it contributes slots and no
+blind references: a replaying build's log is incomplete by exactly that
+amount, which is why the paired count is checked only for functions that were
+compiled. Carrying these in the cache is what removes the asymmetry, and it
+belongs with the consumer that reads them back.
+
 #### And what it costs in ALLOCATION — the #2510 criterion-5 KPI (2026-09-11)
 
 The section above bounds the split's cost in wall time. The KPI #2510 actually
