@@ -1,0 +1,147 @@
+import ./grep.vibe {
+  grep_compile_pattern, grep_file_hits, grep_scan_source
+}
+
+fn ranges(source: String, pattern: String) -> String with Exception {
+  grep_scan_source("a.vibe", source, pattern, [], [], "", true)
+}
+
+fn slice_range(source: String, start: Int, end: Int) -> String {
+  if start < 0 || end < 0 {
+    "<synthetic>"
+  } else {
+    source[start: end]
+  }
+}
+
+fn slices(source: String, pattern: String) -> String with Exception {
+  let hits = grep_file_hits("a.vibe", source, grep_compile_pattern(pattern))
+  let mut out = ""
+  for hit in hits {
+    out = String::concat(out, String::concat(slice_range(source, hit.offset, hit.end_offset), "\n"))
+    let captures: Array[(String, String, Int, Bool, Int, Int)] = hit.captures
+    for capture in captures {
+      let (name, _, _, _, start, end) = capture
+      out = String::concat(out, String::concat(name, String::concat("=", String::concat(slice_range(source, start, end), "\n"))))
+    }
+  }
+  out
+}
+
+test "grep ranges include literal arguments and closing punctuation" {
+  let out = ranges("let x = add(1, 2)", "add($(a:exp), $(b:exp))")
+  inspect(out, "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":17,\"synthetic\":false,\"text\":\"add(1, 2)\",\"captures\":{\"a\":{\"text\":\"1\",\"start\":12,\"end\":13,\"synthetic\":false},\"b\":{\"text\":\"2\",\"start\":15,\"end\":16,\"synthetic\":false}}}\n]\n")
+}
+
+test "grep ranges distinguish equal literal occurrences" {
+  let out = ranges("let x = add(1, 1)", "add($(a:exp), $(b:exp))")
+  assert(String::contains(out, "\"a\":{\"text\":\"1\",\"start\":12,\"end\":13,\"synthetic\":false}"))
+  assert(String::contains(out, "\"b\":{\"text\":\"1\",\"start\":15,\"end\":16,\"synthetic\":false}"))
+}
+
+test "grep capture ranges slice original whitespace instead of printer text" {
+  let out = ranges("let x = f( a  +  b )", "f($(x:exp))")
+  assert(String::contains(out, "\"start\":8,\"end\":20,\"synthetic\":false"))
+  assert(String::contains(out, "\"x\":{\"text\":\"(a + b)\",\"start\":11,\"end\":18,\"synthetic\":false}"))
+}
+
+test "grep literal-only expressions have source ranges" {
+  let out = ranges("let x = 3 + 4", "$(a:exp) + $(b:exp)")
+  assert(String::contains(out, "\"start\":8,\"end\":13,\"synthetic\":false"))
+  assert(String::contains(out, "\"a\":{\"text\":\"3\",\"start\":8,\"end\":9,\"synthetic\":false}"))
+  assert(String::contains(out, "\"b\":{\"text\":\"4\",\"start\":12,\"end\":13,\"synthetic\":false}"))
+}
+
+test "grep nested calls retain different ends at the same start" {
+  inspect(slices("let x = f(1)(2)", "$(f:exp)($(x:exp))"), "f(1)(2)\nf=f(1)\nx=2\nf(1)\nf=f\nx=1\n")
+}
+
+test "grep source slices retain comments parentheses and unicode bytes" {
+  inspect(slices("let label = \"🎉\"\nlet x = f((1 // )\n + 2), \"é\")", "f($(a:exp), $(b:exp))"), "f((1 // )\n + 2), \"é\")\na=1 // )\n + 2\nb=\"é\"\n")
+}
+
+test "grep variadic captures include the complete source argument list" {
+  inspect(slices("let x = f(1, g(2), 3)", "f($(a:args))"), "f(1, g(2), 3)\na=1, g(2), 3\n")
+}
+
+test "grep match-pattern captures retain their source ranges" {
+  inspect(slices("let x = match v { Some(1) => 2, _ => 3 }", "match $(v:exp) { $(p:pat) => $(a:exp), _ => $(b:exp) }"), "match v { Some(1) => 2, _ => 3 }\nv=v\np=Some(1)\na=2\nb=3\n")
+}
+
+test "grep handler-arm captures retain the full arm list" {
+  inspect(slices("let x = handle { perform E::Get(1) } with { E::Get(x) => x }", "handle { $(b:exp) } with E { $(a:arms) }"), "handle { perform E::Get(1) } with { E::Get(x) => x }\nb=perform E::Get(1)\na=E::Get(x) => x\n")
+}
+
+test "grep type captures retain tuple and result extents" {
+  inspect(slices("let f = (x: (Int, String)) -> Array[Int] { [1] }", "(x: $(t:type)) -> $(r:type) { $(b:exp) }"), "(x: (Int, String)) -> Array[Int] { [1] }\nt=(Int, String)\nr=Array[Int]\nb=[1]\n")
+}
+
+test "grep field-name captures retain the field token range" {
+  inspect(slices("let x = value.field", "$(v:exp).$(f:id)"), "value.field\nf=field\nv=value\n")
+}
+
+test "grep record names and fields retain their own token ranges" {
+  inspect(slices("let x = Point::{ x: 1, y: 2 }", "$(n:id)::{ $(f:id): $(v:exp), y: 2 }"), "Point::{ x: 1, y: 2 }\nn=Point\nf=x\nv=1\n")
+}
+
+test "grep lambda parameter names are distinct from type and body names" {
+  inspect(slices("let f = (x: Int) -> Int { x }", "($(p:id): $(t:type)) -> $(r:type) { $(b:exp) }"), "(x: Int) -> Int { x }\np=x\nt=Int\nr=Int\nb=x\n")
+}
+
+test "grep argument labels retain their source name range" {
+  inspect(slices("let x = f(value=1)", "f($(label:id)=$(v:exp))"), "f(value=1)\nlabel=value\nv=1\n")
+}
+
+test "grep empty argument captures have a zero-width source range" {
+  inspect(slices("let x = (f( ))", "f($(a:args))"), "f( )\na=\n")
+}
+
+test "grep pipe operands retain their individual source occurrences" {
+  inspect(slices("let x = 1 |> f(2)", "f($(a:exp), $(b:exp))"), "1 |> f(2)\na=1\nb=2\n")
+}
+
+test "grep a lowered argument list has no contiguous source range" {
+  inspect(slices("let x = 1 |> f(2)", "f($(a:args))"), "1 |> f(2)\na=<synthetic>\n")
+}
+
+test "grep generated literals remain explicitly synthetic" {
+  inspect(ranges("let x = value is None", "true"), "[\n  {\"path\":\"a.vibe\",\"line\":null,\"col\":null,\"start\":null,\"end\":null,\"synthetic\":true,\"text\":\"true\",\"captures\":{}}\n]\n")
+}
+
+test "grep interpolation fragments use original byte offsets" {
+  inspect(slices("let x = \"é \\{1 + 2}\"", "$(a:exp) + $(b:exp)"), "1 + 2\na=1\nb=2\n")
+}
+
+test "grep shorthand field and binding captures retain source tokens" {
+  inspect(slices("let x = Point::{ value }", "Point::{ $(field:id): $(v:exp) }"), "Point::{ value }\nfield=value\nv=value\n")
+  inspect(slices("fn f() -> Unit { let mut n = 0; n += 2 }", "$(n:id) += $(v:exp)"), "n += 2\nn=n\nv=2\n")
+  inspect(slices("fn f() -> Unit { match x { _ => n += 2 } }", "$(n:id) += $(v:exp)"), "n += 2\nn=n\nv=2\n")
+}
+
+test "grep type head captures use name tokens" {
+  inspect(slices("let x = Box[Array[Int]]::{ value: [1] }", "Box[$(t:type)]::{ value: $(v:exp) }"), "Box[Array[Int]]::{ value: [1] }\nt=Array[Int]\nv=[1]\n")
+  inspect(slices("let f = (x: Array[Int]) -> { x }", "(x: $(name:id)[$(t:type)]) -> { $(b:exp) }"), "(x: Array[Int]) -> { x }\nname=Array\nt=Int\nb=x\n")
+}
+
+test "grep nested indexing retains each source extent" {
+  inspect(slices("let x = xs[1][2]", "$(x:exp)[$(i:exp)]"), "xs[1][2]\nx=xs[1]\ni=2\nxs[1]\nx=xs\ni=1\n")
+}
+
+test "grep a short lambda captures its source parameter" {
+  inspect(slices("let x = f(value -> value)", "f(($(p:id)) -> { $(b:exp) })"), "f(value -> value)\np=value\nb=value\n")
+}
+
+test "grep effect qualifier captures point to the effect token" {
+  let pattern = "handle { $(b:exp) } with $(e:id) { Get($(p:pat)) => $(v:exp) }"
+  inspect(slices("let x = handle { f() } with { Ask::Get(n) => n }", pattern), "handle { f() } with { Ask::Get(n) => n }\nb=f()\ne=Ask\np=n\nv=n\n")
+  inspect(slices("let x = handle { f() } with Ask { Get(n) => n }", pattern), "handle { f() } with Ask { Get(n) => n }\nb=f()\ne=Ask\np=n\nv=n\n")
+}
+
+test "grep optional types keep the written element and synthetic head separate" {
+  inspect(slices("let f = (x: Int?) -> { x }", "(x: $(name:id)[$(t:type)]) -> { $(b:exp) }"), "(x: Int?) -> { x }\nname=<synthetic>\nt=Int\nb=x\n")
+}
+
+test "grep a captured block includes its bindings and result" {
+  inspect(slices("let x = f({ let n = 1; n + 2 })", "f($(b:exp))"), "f({ let n = 1; n + 2 })\nb={ let n = 1; n + 2 }\n")
+  inspect(slices("let x = f({ let n = 1; n + 2 })", "{ let $(n:id) = $(v:exp); $(b:exp) }"), "{ let n = 1; n + 2 }\nn=n\nv=1\nb=n + 2\n")
+}

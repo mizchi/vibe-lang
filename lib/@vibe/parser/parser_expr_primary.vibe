@@ -1,5 +1,9 @@
 //# Imports
 
+import ./parser_source_span.vibe {
+  source_record_slot, source_rewrap_expr, source_wrap_expr
+}
+
 import @vibe/ast {
   Expr, Pat, Stmt, TypeExpr, trait_ref_key
 }
@@ -21,6 +25,7 @@ import ./parser_base.vibe {
   parse_param_list_with_binder_context,
   parse_type_impl,
   parse_type_param_kind,
+  parse_type_with_source_context,
   peek,
   tk_name,
   untyped_brace_lambda_param
@@ -65,6 +70,7 @@ fn map_located_off(off: Int, f: (Int) -> Int) -> Int {
 fn map_expr_offsets(expr: Expr, f: (Int) -> Int, context: Option[ParserBinderContext]) -> Expr {
   {
     match expr {
+      ECall(EIdent("$source_span", _), args, _) => source_rewrap_expr(expr, map_expr_offsets(Array::get(args, 0), f, context)),
       EInt(_) => expr,
       EFloat(_) => expr,
       EString(_) => expr,
@@ -962,13 +968,14 @@ fn parse_ctor_record_fields(tokens: Array[Token], starts: Array[Int], pos: Int, 
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
       let (val, next_pos) = match peek(tokens, pos + 1) {
-        TComma => (EIdent(fname, -1), pos + 1),
-        TRBrace => (EIdent(fname, -1), pos + 1),
+        TComma => (source_wrap_expr(EIdent(fname, -1), pos, pos + 1, context), pos + 1),
+        TRBrace => (source_wrap_expr(EIdent(fname, -1), pos, pos + 1, context), pos + 1),
         _ => {
           let colon_pos = expect_tk(tokens, pos + 1, ":")
           parse_recur(tokens, colon_pos, 0, context)
         }
       }
+      source_record_slot("field", fname, pos, pos + 1, context)
       ArrayBuilder::push(b, (fname, val))
       match peek(tokens, next_pos) {
         TComma => parse_ctor_record_fields(tokens, starts, next_pos + 1, b, parse_recur, context),
@@ -1062,7 +1069,7 @@ fn parse_generic_fn_primary(tokens: Array[Token], starts: Array[Int], pos: Int, 
   let (params, after_params) = parse_param_list_with_binder_context(tokens, params_pos, context)
   match peek(tokens, after_params) {
     TThinArrow => {
-      let (ret_ty, ret_pos) = parse_type_impl(tokens, after_params + 1, 0)
+      let (ret_ty, ret_pos) = parse_type_with_source_context(tokens, after_params + 1, 0, context)
       let effect_pair = match peek(tokens, ret_pos) {
         TWith => {
           let effect_name_pair = parse_effect_row(tokens, ret_pos + 1)
@@ -1150,7 +1157,7 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
       let after_arrow = after_params + 1
       match peek(tokens, after_arrow) {
         TIdent(_) => {
-          let (ty, ty_pos) = parse_type_impl(tokens, after_arrow, 0)
+          let (ty, ty_pos) = parse_type_with_source_context(tokens, after_arrow, 0, context)
           match peek(tokens, ty_pos) {
             TLBrace => {
               let (body, end) = parse_recur(tokens, ty_pos + 1, 20, context)
@@ -1180,7 +1187,7 @@ fn parse_paren_lambda_primary(tokens: Array[Token], starts: Array[Int], pos: Int
           // type parse SUCCEEDS but is not followed by `{`/`with` it is likewise
           // a body (the `_` arm) — e.g. a nested-lambda body `(x) -> f`. #788.
           let ty_opt = handle {
-            let (ty, ty_pos) = parse_type_impl(tokens, after_arrow, 0)
+            let (ty, ty_pos) = parse_type_with_source_context(tokens, after_arrow, 0, context)
             Some((ty, ty_pos))
           } with { Exception::Throw(_) => None }
           match ty_opt {
@@ -1241,13 +1248,14 @@ fn parse_record_literal_fields(tokens: Array[Token], starts: Array[Int], pos: In
     TRBrace => (ArrayBuilder::freeze(b), pos + 1),
     TIdent(fname) => {
       let (val, next_pos) = match peek(tokens, pos + 1) {
-        TComma => (EIdent(fname, -1), pos + 1),
-        TRBrace => (EIdent(fname, -1), pos + 1),
+        TComma => (source_wrap_expr(EIdent(fname, -1), pos, pos + 1, context), pos + 1),
+        TRBrace => (source_wrap_expr(EIdent(fname, -1), pos, pos + 1, context), pos + 1),
         _ => {
           let colon_pos = expect_tk(tokens, pos + 1, ":")
           parse_recur(tokens, colon_pos, 0, context)
         }
       }
+      source_record_slot("field", fname, pos, pos + 1, context)
       ArrayBuilder::push(b, (fname, val))
       match peek(tokens, next_pos) {
         TComma => parse_record_literal_fields(tokens, starts, next_pos + 1, b, parse_recur, context),
@@ -1310,15 +1318,15 @@ fn is_struct_targs_ctor_start(tokens: Array[Token], pos: Int) -> Bool {
 /// after the opening `[`. Returns the parsed arguments and the position just
 /// after the closing `]`. Full type grammar (nested generics, tuples, fn
 /// types) via `parse_type_impl`, same as annotation positions.
-fn parse_struct_ctor_targs(tokens: Array[Token], pos: Int, name: String) -> (Array[TypeExpr], Int) with Exception {
+fn parse_struct_ctor_targs(tokens: Array[Token], pos: Int, name: String, context: Option[ParserBinderContext]) -> (Array[TypeExpr], Int) with Exception {
   match peek(tokens, pos) {
     TRBracket => throw("expected at least one type argument in `\{name}[...]::{ ... }` at #\{pos}: write `\{name}::{ ... }` to infer the type arguments from the field values"),
     _ => {
-      let (first, after_first) = parse_type_impl(tokens, pos, 0)
+      let (first, after_first) = parse_type_with_source_context(tokens, pos, 0, context)
       let targs = [first]
       let mut p = after_first
       while tk_name(peek(tokens, p)) == "," {
-        let (next, after_next) = parse_type_impl(tokens, p + 1, 0)
+        let (next, after_next) = parse_type_with_source_context(tokens, p + 1, 0, context)
         Array::push(targs, next)
         p = after_next
       }
@@ -1389,7 +1397,7 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
       // against the struct's declared type params and pins the instantiation
       // (#829's inference otherwise derives the args from the field values).
       TLBracket => if is_struct_targs_ctor_start(tokens, pos + 1) {
-        let (targs, after_targs) = parse_struct_ctor_targs(tokens, pos + 2, name)
+        let (targs, after_targs) = parse_struct_ctor_targs(tokens, pos + 2, name, context)
         let dc_pos = expect_tk(tokens, after_targs, "::")
         let brace_pos = expect_tk(tokens, dc_pos, "{")
         let b = ArrayBuilder::new()
@@ -1404,7 +1412,7 @@ fn parse_ident_primary(tokens: Array[Token], starts: Array[Int], pos: Int, name:
 }
 
 export fn parse_primary_with_binder_context(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  match peek(tokens, pos) {
+  let (expr, next) = match peek(tokens, pos) {
     TInt(n) => (EInt(n), pos + 1),
     TFloat(n) => (EFloat(n), pos + 1),
     TString(s) => (EString(s), pos + 1),
@@ -1414,6 +1422,7 @@ export fn parse_primary_with_binder_context(tokens: Array[Token], starts: Array[
     TLBracket => parse_bracket_primary(tokens, starts, pos, parse_recur, context),
     _ => parse_control_primary(tokens, starts, pos, parse_recur, context)
   }
+  (source_wrap_expr(expr, pos, next, context), next)
 }
 
 export fn parse_primary(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {

@@ -18,9 +18,10 @@
 # check proves nothing.
 #
 # Environment:
-#   RANGE_STAGE2   compiler wasm (default: newest _build/selfhost generation,
-#                  else bootstrap/seed/compiler.wasm). A path that does not
-#                  exist is an ERROR, never a silent fallback.
+#   RANGE_STAGE2     gate-specific compiler wasm override.
+#   VIBE_STAGE2_WASM shared CI compiler override, used when RANGE_STAGE2 is unset.
+#   Otherwise use the newest _build/selfhost generation, then the committed seed.
+#   An override that does not exist is an ERROR, never a silent fallback.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -56,8 +57,13 @@ PY
 # three units -- a vacuous fixture is a defect in this check, and finding a
 # compiler first would report it as a compiler problem.
 STAGE2="${RANGE_STAGE2:-}"
+STAGE2_OVERRIDE=RANGE_STAGE2
+if [ -z "$STAGE2" ]; then
+  STAGE2="${VIBE_STAGE2_WASM:-}"
+  STAGE2_OVERRIDE=VIBE_STAGE2_WASM
+fi
 if [ -n "$STAGE2" ]; then
-  [ -s "$STAGE2" ] || { echo "source-range-contract: RANGE_STAGE2 does not exist: $STAGE2" >&2; exit 1; }
+  [ -s "$STAGE2" ] || { echo "source-range-contract: $STAGE2_OVERRIDE does not exist: $STAGE2" >&2; exit 1; }
 else
   for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
     [ -s "${gen}stage2.wasm" ] && { STAGE2="${gen}stage2.wasm"; break; }
@@ -196,29 +202,39 @@ fi
 
 # 11. An UNLOCATED result must not emit a number where an offset goes, and the
 #     two output modes must agree about which results those are.
-#
-#     `vibe grep`'s text lane has always rendered such a match as `<synthetic>`
-#     in place of `line:col`. Its JSON lane rendered `-1` in all four position
-#     fields (#1943) -- and `-1` is a NUMBER, so a consumer slicing `src[start:]`
-#     reads from the end of the file instead of failing. That is the same defect
-#     the capture-level `start` had, and the same class as a wrong unit: the
-#     answer is about a position nobody asked about, with no error.
-#
-#     A match comes out unlocated when its operands are literals, which carry no
-#     offset slot -- the gap this file's check 10 also exists for.
+#     Source literals and punctuation retain their full token ranges. Generated
+#     nodes have no source interval, and both output modes must say so.
 cat > "$WORK/synth.vibe" <<'SYNTH'
-fn add(a: Int, b: Int) -> Int { a + b }
-
 fn main() -> Unit {
-  let _ = 3 + 4
+  let _ = add(1, 2)
+  let _ = value is None
 }
 SYNTH
-gj="$(run "$WORK/synth.vibe" gj VIBE_GREP=1 VIBE_GREP_JSON=1 'VIBE_GREP_PATTERN=$(a:exp) + $(b:exp)')"
-gt="$(run "$WORK/synth.vibe" gt VIBE_GREP=1 'VIBE_GREP_PATTERN=$(a:exp) + $(b:exp)')"
+located="$(run "$WORK/synth.vibe" located VIBE_GREP=1 VIBE_GREP_JSON=1 'VIBE_GREP_PATTERN=add($(a:exp), $(b:exp))')"
+if python3 - "$WORK/synth.vibe" "$located" <<'PY_RANGE'
+import json, sys
+source = open(sys.argv[1], 'rb').read()
+rows = json.loads(sys.argv[2])
+assert len(rows) == 1, rows
+row = rows[0]
+assert row['synthetic'] is False, row
+assert source[row['start']:row['end']] == b'add(1, 2)', row
+for name, expected in [('a', b'1'), ('b', b'2')]:
+    capture = row['captures'][name]
+    assert capture['synthetic'] is False, capture
+    assert source[capture['start']:capture['end']] == expected, capture
+PY_RANGE
+then
+  note "grep match and literal captures slice the complete source occurrences"
+else
+  bad "grep match or capture source ranges are incomplete: [$located]"
+fi
+gj="$(run "$WORK/synth.vibe" gj VIBE_GREP=1 VIBE_GREP_JSON=1 'VIBE_GREP_PATTERN=true')"
+gt="$(run "$WORK/synth.vibe" gt VIBE_GREP=1 'VIBE_GREP_PATTERN=true')"
 if grep -q -- '-1' <<<"$gj"; then
   bad "vibe grep --json emits -1 in a position field; an unlocated result must be null: [$gj]"
-elif ! grep -q '"synthetic":true' <<<"$gj"; then
-  bad "vibe grep --json does not mark the unlocated match synthetic: [$gj]"
+elif ! grep -q '"line":null,"col":null,"start":null,"end":null,"synthetic":true' <<<"$gj"; then
+  bad "vibe grep --json does not mark the generated match synthetic: [$gj]"
 elif ! grep -q '<synthetic>' <<<"$gt"; then
   bad "vibe grep text lane no longer renders <synthetic>, so the two modes disagree: [$gt]"
 else

@@ -1,5 +1,9 @@
 //# Imports
 
+import ./parser_source_span.vibe {
+  source_expr, source_expr_context, source_record_slot, source_rewrap_expr, source_wrap_expr
+}
+
 import @vibe/ast {
   Expr, ImportItem, Pat, Stmt, TypeExpr, impl_method_binding_name
 }
@@ -69,7 +73,7 @@ import ./token.vibe {
 }
 
 import ./lexer.vibe {
-  last_unexpected_token_pos, offset_to_line_col, remember_parse_source
+  last_unexpected_token_pos, lex_with_offsets, offset_to_line_col, remember_parse_source
 }
 
 import ./parser_binder_context.vibe {
@@ -588,15 +592,16 @@ export fn parse_stmt_preserving_with_binder_context(tokens: Array[Token], starts
       _ => {
         let (e, next) = parse_impl_with_binder_context(tokens, starts, pos, 0, context)
         match peek(tokens, next) {
-          TEq => match e {
+          TEq => match source_expr(e) {
             EIdent(name, _) => {
               let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
-              (SExpr(EAssign(name, val, EUnit)), vn)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssign(name, val, EUnit), pos, vn, context)), vn)
             },
             ECall(idx_callee, idx_args, _) => {
               // `arr[i] = v` at statement level: `__index(arr, i)` receiver
               // desugars to Array::set (same as the block-expr TEq arm).
-              let is_index = match idx_callee {
+              let is_index = match source_expr(idx_callee) {
                 EIdent(icn, _) => icn == "__index",
                 _ => false
               }
@@ -613,31 +618,35 @@ export fn parse_stmt_preserving_with_binder_context(tokens: Array[Token], starts
             },
             _ => (SExpr(e), next)
           },
-          TPlusEq => match e {
+          TPlusEq => match source_expr(e) {
             EIdent(name, _) => {
               let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
-              (SExpr(EAssignOp(name, "+", val, EUnit)), vn)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssignOp(name, "+", val, EUnit), pos, vn, context)), vn)
             },
             _ => (SExpr(e), next)
           },
-          TMinusEq => match e {
+          TMinusEq => match source_expr(e) {
             EIdent(name, _) => {
               let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
-              (SExpr(EAssignOp(name, "-", val, EUnit)), vn)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssignOp(name, "-", val, EUnit), pos, vn, context)), vn)
             },
             _ => (SExpr(e), next)
           },
-          TStarEq => match e {
+          TStarEq => match source_expr(e) {
             EIdent(name, _) => {
               let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
-              (SExpr(EAssignOp(name, "*", val, EUnit)), vn)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssignOp(name, "*", val, EUnit), pos, vn, context)), vn)
             },
             _ => (SExpr(e), next)
           },
-          TSlashEq => match e {
+          TSlashEq => match source_expr(e) {
             EIdent(name, _) => {
               let (val, vn) = parse_impl_with_binder_context(tokens, starts, next + 1, 0, context)
-              (SExpr(EAssignOp(name, "/", val, EUnit)), vn)
+              source_record_slot("target", name, pos, pos + 1, context)
+              (SExpr(source_wrap_expr(EAssignOp(name, "/", val, EUnit), pos, vn, context)), vn)
             },
             _ => (SExpr(e), next)
           },
@@ -715,8 +724,8 @@ fn parse_impl_methods(tokens: Array[Token], pos: Int, simpl: Stmt, context: Opti
           TIdent(mname) => {
             let (efn, p2) = parse_impl_with_binder_context(tokens, [], p + 1, 0, context)
             let efn2 = if Array::length(impl_tparams) > 0 {
-              match efn {
-                EFn(mtp, mtb, mparams, mret, meff, mbody) => EFn(Array::concat(impl_tparams, mtp), Array::concat(impl_tbounds, mtb), mparams, mret, meff, mbody),
+              match source_expr(efn) {
+                EFn(mtp, mtb, mparams, mret, meff, mbody) => source_rewrap_expr(efn, EFn(Array::concat(impl_tparams, mtp), Array::concat(impl_tbounds, mtb), mparams, mret, meff, mbody)),
                 _ => efn
               }
             } else {
@@ -1524,4 +1533,12 @@ export {
   parse_stmt,
   parse_stmt_preserving,
   parse_type
+}
+
+/// Parse the source once, retaining exact token extents for editor queries.
+/// Annotations are never passed to the checker or code generator.
+export fn parse_source_with_ranges(source: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, ends) = lex_with_offsets(source)
+  let context = source_expr_context(starts, ends)
+  parse_program_located_with_context_impl(tokens, starts, source, Some(context)).0
 }

@@ -1,7 +1,11 @@
 //# Imports
 
+import ./parser_source_span.vibe {
+  source_expr, source_pat, source_rewrap_expr, source_type, source_wrap_expr
+}
+
 import @vibe/ast {
-  Expr, Pat, Stmt, TypeExpr, TypeExpr::is_array_of_int, trait_ref_key
+  Expr, Pat, Stmt, TypeExpr, trait_ref_key
 }
 
 import ./parser_base.vibe {
@@ -39,6 +43,7 @@ import ./parser_base.vibe {
   parse_type_alias_stmt,
   parse_type_impl,
   parse_type_param_kind,
+  parse_type_with_source_context,
   peek,
   peek_is_allows,
   skip_braced_body,
@@ -79,7 +84,26 @@ export fn parse_impl_with_binder_context(tokens: Array[Token], starts: Array[Int
     if rmode >= 0 && rmode <= 10 {
       parse_infix_with_binder_context(rtoks, starts, rpos, rmode, rpos, parse_recur, recur_context)
     } else {
-      parse_impl_dispatch_with_binder_context(rtoks, starts, rpos, rmode, parse_recur, recur_context)
+      let (expr, next) = parse_impl_dispatch_with_binder_context(rtoks, starts, rpos, rmode, parse_recur, recur_context)
+      let opens_block = rmode == 20 && rpos > 0 && match peek(rtoks, rpos - 1) {
+        TLBrace => true,
+        _ => false
+      }
+      let first = if rmode == 20 && !opens_block {
+        rpos
+      } else {
+        rpos - 1
+      }
+      let closes_outer_block = (rmode == 20 && !opens_block || rmode == 28) && next > 0 && match peek(rtoks, next - 1) {
+        TRBrace => true,
+        _ => false
+      }
+      let span_next = if closes_outer_block {
+        next - 1
+      } else {
+        next
+      }
+      (source_wrap_expr(expr, first, span_next, recur_context), next)
     }
   }
   parse_recur(tokens, pos, mode, context)
@@ -215,7 +239,7 @@ fn apply_fn_annotation_params(params: Array[(String, Option[TypeExpr])], param_t
 }
 
 fn apply_generic_fn_annotation(type_params: Array[String], type_bounds: Array[(String, Array[String])], ann: Option[TypeExpr], val: Expr, param_types: Array[TypeExpr], ret_ty: TypeExpr, effect_name: Option[String], annotation_mark: Int, retained_value_header_mark: Int, retained_value_header_count: Int, context: Option[ParserBinderContext]) -> (Option[TypeExpr], Expr) {
-  match val {
+  match source_expr(val) {
     EFn(existing_type_params, existing_type_bounds, params, ret_opt, effect_opt, body) => {
       let next_params = apply_fn_annotation_params(params, param_types, context)
       let next_ret = match ret_opt {
@@ -243,7 +267,7 @@ fn apply_generic_fn_annotation(type_params: Array[String], type_bounds: Array[(S
       } else {
         ()
       }
-      (next_ann, EFn(next_type_params, next_type_bounds, next_params, next_ret, next_effect, body))
+      (next_ann, source_rewrap_expr(val, EFn(next_type_params, next_type_bounds, next_params, next_ret, next_effect, body)))
     },
     _ => {
       binder_capture_discard_segment(context, annotation_mark, annotation_mark + Array::length(type_params))
@@ -273,9 +297,9 @@ fn apply_generic_let_annotation(type_params: Array[String], type_bounds: Array[(
 /// are tolerated) but broke once the module was re-exported and re-checked.
 fn apply_value_bracket_type_params(tps: Array[String], tbs: Array[(String, Array[String])], val: Expr, header_mark: Int, context: Option[ParserBinderContext]) -> (Expr, Int, Int) {
   let count = Array::length(tps)
-  match val {
+  match source_expr(val) {
     EFn(existing_tp, existing_tb, params, ret, eff, body) => if count > 0 && Array::length(existing_tp) == 0 {
-      (EFn(tps, tbs, params, ret, eff, body), header_mark, count)
+      (source_rewrap_expr(val, EFn(tps, tbs, params, ret, eff, body)), header_mark, count)
     } else {
       if count > 0 {
         // The outer syntactic header is erased. Delete it first; the retained
@@ -284,7 +308,7 @@ fn apply_value_bracket_type_params(tps: Array[String], tbs: Array[(String, Array
       } else {
         ()
       }
-      (EFn(existing_tp, existing_tb, params, ret, eff, body), header_mark, Array::length(existing_tp))
+      (source_rewrap_expr(val, EFn(existing_tp, existing_tb, params, ret, eff, body)), header_mark, Array::length(existing_tp))
     },
     _ => {
       binder_capture_discard_segment(context, header_mark, header_mark + count)
@@ -415,7 +439,7 @@ fn parse_value_bracket_header(tokens: Array[Token], pos: Int, context: Option[Pa
 /// allowed: bindings, `_`, tuples and struct/record patterns of those. Enum
 /// variants (`Some(x)`), literals and `|` alternatives are refutable.
 fn is_irrefutable_top_level_pat(p: Pat) -> Bool {
-  match p {
+  match source_pat(p) {
     PBind(_) => true,
     PWild => true,
     PTuple(elems) => {
@@ -473,7 +497,7 @@ fn reject_pattern_let_annotation(tokens: Array[Token], pos: Int) -> Int with Exc
 /// same convention the block-level `__rec_field` desugar uses — so the marker
 /// carries empty names and the expansion reads by index.
 fn remap_top_pattern_rows(pat: Pat, rows: Array[SourceBinder], at: Int, out: ArrayBuilder[SourceBinder], nested: Bool) -> Int {
-  match pat {
+  match source_pat(pat) {
     PBind(_) => {
       if at < Array::length(rows) {
         ArrayBuilder::push(out, Array::get(rows, at))
@@ -522,7 +546,7 @@ fn remapped_top_pattern_rows(pat: Pat, rows: Array[SourceBinder]) -> Array[Sourc
 }
 
 fn record_destr_marker(p: Pat, context: Option[ParserBinderContext]) -> Pat {
-  match p {
+  match source_pat(p) {
     PTuple(elems) => {
       let fields = ArrayBuilder::new()
       let mut i = 0
@@ -584,7 +608,7 @@ export fn expand_top_level_pattern_lets(stmts: Array[Stmt]) -> Array[Stmt] {
 
 /// Bind every name in `pat` from the already-bound `src` binding.
 fn emit_top_level_pat_bindings(out: ArrayBuilder[Stmt], pat: Pat, src: String, context: Option[ParserBinderContext]) -> Unit {
-  match pat {
+  match source_pat(pat) {
     PBind(name) => ArrayBuilder::push(out, SLet(false, false, name, None, EIdent(src, 0 - 1))),
     PWild => (),
     PTuple(elems) => {
@@ -615,7 +639,7 @@ fn emit_top_level_pat_bindings(out: ArrayBuilder[Stmt], pat: Pat, src: String, c
 /// a name, drop it when it is `_`, otherwise park it in a hidden binding and
 /// keep destructuring from there.
 fn emit_top_level_pat_projection(out: ArrayBuilder[Stmt], sub: Pat, read: Expr, src: String, index: Int, context: Option[ParserBinderContext]) -> Unit {
-  match sub {
+  match source_pat(sub) {
     PBind(name) => ArrayBuilder::push(out, SLet(false, false, name, None, read)),
     PWild => (),
     _ => {
@@ -806,7 +830,7 @@ fn parse_fn_signature_with_binder_context(tokens: Array[Token], pos: Int, contex
     pi = pi + 1
   }
   let arrow = expect_tk(tokens, after_params, "->")
-  let (ret_ty, ret_next) = parse_type_impl(tokens, arrow, 0)
+  let (ret_ty, ret_next) = parse_type_with_source_context(tokens, arrow, 0, context)
   // The row. `with` is a requirement and may follow any signature; `allows`
   // is a grant and may follow an ENTRY signature only (`fn main() -> Int
   // allows Console`, `fn _start() -> Int allows Fs`). On any other name the
@@ -999,8 +1023,14 @@ fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: Stri
     // lane-independent is the ELEMENT at `data_ptr + i*8`, tagged exactly
     // like a scalar Int param -- see docs/cheatsheet.md "Inline wasm".
     let ok = match pt {
-      Some(TyName(tn)) => tn == "Int" || tn == "Bytes",
-      Some(other) => TypeExpr::is_array_of_int(other),
+      Some(other) => match source_type(other) {
+        TyName(tn) => tn == "Int" || tn == "Bytes",
+        TyApp("Array", args) => Array::length(args) == 1 && match source_type(Array::get(args, 0)) {
+          TyName(n) => n == "Int",
+          _ => false
+        },
+        _ => false
+      },
       _ => false
     }
     if !ok {
@@ -1010,7 +1040,7 @@ fn parse_fn_wasm_body(tokens: Array[Token], pos: Int, exported: Bool, name: Stri
     }
     wi = wi + 1
   }
-  let ret_ok = match ret_ty {
+  let ret_ok = match source_type(ret_ty) {
     TyName(rn) => rn == "Int",
     _ => false
   }

@@ -1,0 +1,48 @@
+import ./parser.vibe {
+  parse_program_located, parse_source_with_ranges
+}
+import ./lexer.vibe {
+  lex_with_offsets
+}
+import ./printer.vibe {
+  print_program
+}
+
+fn assert_source_parse_parity(source: String) -> Unit with Exception + Stdout {
+  let (tokens, starts, _) = lex_with_offsets(source)
+  let expected = print_program(parse_program_located(tokens, starts, source))
+  let actual = print_program(parse_source_with_ranges(source))
+  assert_eq(actual, expected)
+}
+
+test "source annotations preserve parser lowering and printed syntax" {
+  for source in [
+    "let x = add(1, 2)",
+    "fn f() -> Int { let x = 1; x + 2 }",
+    "let f: (Int) -> Int = (x) -> { x + 1 }",
+    "let x = (1 + 2) * (3 - 4)",
+    "let x = f(a=1, b~=2)",
+    "let x = arr[1] + arr[2]",
+    "let x = arr[1:3]",
+    "let x = 1 |> f(2)",
+    "let x = f(_ + 2)",
+    "let x = Map::from_pairs([(\"a\", 1)])",
+    "fn f() -> Int { let mut x = 0; x += 1; x }",
+    "fn f() -> Int { if true { 1 } else { 2 } }",
+    "fn f() -> Int { match 1 { 1 => 2, _ => 3 } }",
+    "fn f() -> Int with Exception { throw(\"x\") }",
+    "fn f() -> Int with E { perform E::Get(1) }",
+    "fn f() -> Int { handle { perform E::Get(1) } with { E::Get(x) => x } }",
+    "fn f() -> Unit { while true { break } }",
+    "fn f() -> Int { let record { a, b } = record { a: 1, b: 2 }; a + b }",
+    "fn f() -> Int { let Point::{ x, y } = Point::{ x: 1, y: 2 }; x + y }",
+    "fn f() -> Int { guard v is Some(x) else { return 0 }; x }",
+    "fn f() -> Int { loop (i = 0) { if i > 3 { break i }; continue(i + 1) } }",
+    "fn f() -> Unit { match v { _ => n += 2 } }",
+    "fn add(a: Int, b: Int) -> Int = wasm \"local.get 0 local.get 1 i64.add\"",
+    "struct Box[T] { value: T }\ntrait Value[T] { value(Self) -> T }\nimpl[T] Value[T] for Box[T] { value (self: Box[T]) -> T { self.value } }",
+    "let x = \"a \\{1 + 2} b\""
+  ] {
+    assert_source_parse_parity(source)
+  }
+}

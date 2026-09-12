@@ -1,5 +1,17 @@
 //# Imports
 
+import ./parser_source_span.vibe {
+  source_expr,
+  source_pat,
+  source_record_slot,
+  source_rewrap_expr,
+  source_rewrap_pat,
+  source_set_pat_qualifier,
+  source_wrap_bind,
+  source_wrap_expr,
+  source_wrap_pat
+}
+
 import @vibe/ast {
   Expr, Pat, TypeExpr, trait_ref_key
 }
@@ -88,7 +100,7 @@ fn ascribe_wrap(val: Expr, ty: TypeExpr, capture_mark: Int, context: Option[Pars
 /// or the bare value (let rec, which previously discarded the annotation).
 fn distribute_local_fn_ann(ann_ty: TypeExpr, val: Expr, context: Option[ParserBinderContext]) -> Option[Expr] {
   match ann_ty {
-    TyFn(param_types, ret_ty, effect_name) => match val {
+    TyFn(param_types, ret_ty, effect_name) => match source_expr(val) {
       EFn(tp, tb, params, ret_opt, effect_opt, body) => {
         if Array::length(params) != Array::length(param_types) {
           None
@@ -112,7 +124,7 @@ fn distribute_local_fn_ann(ann_ty: TypeExpr, val: Expr, context: Option[ParserBi
             Some(_) => effect_opt,
             None => effect_name
           }
-          Some(EFn(tp, tb, ArrayBuilder::freeze(out), next_ret, next_eff, body))
+          Some(source_rewrap_expr(val, EFn(tp, tb, ArrayBuilder::freeze(out), next_ret, next_eff, body)))
         }
       },
       _ => None
@@ -224,12 +236,12 @@ fn parse_local_let_annotation_with_binder_context(tokens: Array[Token], pos: Int
 fn apply_local_let_tp(tps: Array[String], tbs: Array[(String, Array[String])], val: Expr, annotation_mark: Int, value_mark: Int, context: Option[ParserBinderContext]) -> Expr {
   let annotation_count = Array::length(tps)
   if annotation_count > 0 {
-    match val {
+    match source_expr(val) {
       EFn(existing_tps, _, params, ret, eff, body) => {
         // The annotation header supplies the final EFn header. A direct value
         // generic-lambda header is later in the row log, so remove it first.
         binder_capture_discard_segment(context, value_mark, value_mark + Array::length(existing_tps))
-        EFn(tps, tbs, params, ret, eff, body)
+        source_rewrap_expr(val, EFn(tps, tbs, params, ret, eff, body))
       },
       _ => {
         binder_capture_discard_segment(context, annotation_mark, annotation_mark + annotation_count)
@@ -253,6 +265,7 @@ fn blk_offset_at(starts: Array[Int], p: Int) -> Int {
 }
 
 enum BlockStep {
+  StepLocated(BlockStep, Int, Int);
   StepSeq(Expr);
   StepValue(Expr);
   StepLet(String, Expr, Int);
@@ -326,10 +339,11 @@ fn arm_assign_follows(tk: Token) -> Bool {
 /// #2197: `body op= <rhs>` as an arm body. Split out so each compound operator
 /// is named exactly once in the dispatch below, without an Option to carry it.
 fn parse_arm_compound_assign(tokens: Array[Token], body: Expr, at: Int, op: String, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
-  match body {
+  match source_expr(body) {
     EIdent(name, _) => {
       let (val, next) = parse_recur(tokens, at + 1, 0, context)
-      (EAssignOp(name, op, val, EUnit), next)
+      source_record_slot("target", name, at - 1, at, context)
+      (source_wrap_expr(EAssignOp(name, op, val, EUnit), at - 1, next, context), next)
     },
     _ => throw("invalid assignment target")
   }
@@ -359,10 +373,11 @@ fn parse_arm_assign_tail(tokens: Array[Token], body: Expr, at: Int, parse_recur:
     TStarEq => parse_arm_compound_assign(tokens, body, at, "*", parse_recur, context),
     TSlashEq => parse_arm_compound_assign(tokens, body, at, "/", parse_recur, context),
     TPercentEq => parse_arm_compound_assign(tokens, body, at, "%", parse_recur, context),
-    TEq => match body {
+    TEq => match source_expr(body) {
       EIdent(name, _) => {
         let (val, next) = parse_recur(tokens, at + 1, 0, context)
-        (EAssign(name, val, EUnit), next)
+        source_record_slot("target", name, at - 1, at, context)
+        (source_wrap_expr(EAssign(name, val, EUnit), at - 1, next, context), next)
       },
       EDot(obj, field, _, _) => {
         let (val, next) = parse_recur(tokens, at + 1, 0, context)
@@ -481,21 +496,24 @@ fn desugar_guarded_rows(arms: Array[(Pat, Expr, Expr)], rows: Array[(Array[Sourc
   }
 }
 
-fn qualify_handle_arm_pattern(effect_name: String, pat: Pat, context: Option[ParserBinderContext]) -> Pat {
-  match pat {
-    PCtor(name, args) => if String::contains(name, "::") {
-      PCtor(name, args)
-    } else {
-      PCtor(intern_qualified(effect_name, name), args)
+fn qualify_handle_arm_pattern(effect_name: String, pat: Pat, qualifier: (Int, Int), context: Option[ParserBinderContext]) -> Pat {
+  match source_pat(pat) {
+    PCtor(name, args) => {
+      let qualified = if String::contains(name, "::") {
+        name
+      } else {
+        intern_qualified(effect_name, name)
+      }
+      source_set_pat_qualifier(source_rewrap_pat(pat, PCtor(qualified, args)), qualifier.0, qualifier.1, context)
     },
-    POr(left, right) => POr(qualify_handle_arm_pattern(effect_name, left, context), qualify_handle_arm_pattern(effect_name, right, context)),
+    POr(left, right) => source_rewrap_pat(pat, POr(qualify_handle_arm_pattern(effect_name, left, qualifier, context), qualify_handle_arm_pattern(effect_name, right, qualifier, context))),
     _ => pat
   }
 }
 
-fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
+fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_name: String, qualifier: (Int, Int), parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, pos, context)
-  let qualified_pat = qualify_handle_arm_pattern(effect_name, pat, context)
+  let qualified_pat = qualify_handle_arm_pattern(effect_name, pat, qualifier, context)
   let arrow_pos = expect_tk(tokens, pat_next, "=>")
   // #2197: a handler body is an arm body too -- same bare-assignment tail,
   // same guard against paying for its result tuple on every arm.
@@ -507,7 +525,7 @@ fn parse_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, effect_n
     expr = assigned
     next = after_assign
   }
-  ((qualified_pat, expr), next)
+  ((source_wrap_pat(qualified_pat, pos, pat_next, context), expr), next)
 }
 
 fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int, parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> ((Pat, Expr), Int) with Exception {
@@ -533,7 +551,7 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
     _ => throw("handler-set arms must name a fully qualified operation such as `Exception::Throw(_)`")
   }
   let (pat, pat_next) = parse_pattern_with_binder_context(tokens, operation_pos, context)
-  let qualified_pat = match pat {
+  let qualified_pat = match source_pat(pat) {
     PCtor(name, args) => if name == operation_name {
       PCtor(intern_qualified(effect_label, operation_name), args)
     } else {
@@ -552,7 +570,7 @@ fn parse_qualified_handle_arm(tokens: Array[Token], starts: Array[Int], pos: Int
     expr = assigned
     next = after_assign
   }
-  ((qualified_pat, expr), next)
+  ((source_set_pat_qualifier(source_wrap_pat(source_rewrap_pat(pat, qualified_pat), pos, pat_next, context), pos, operation_pos - 1, context), expr), next)
 }
 
 fn parse_qualified_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: Expr, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
@@ -589,14 +607,14 @@ fn parse_suffix_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, 
   }
 }
 
-fn parse_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: Expr, effect_name: String, b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
+fn parse_handle_rest(tokens: Array[Token], starts: Array[Int], pos: Int, body: Expr, effect_name: String, qualifier: (Int, Int), b: ArrayBuilder[(Pat, Expr)], parse_recur: (Array[Token], Int, Int, Option[ParserBinderContext]) -> (Expr, Int) with Exception, context: Option[ParserBinderContext]) -> (Expr, Int) with Exception {
   match peek(tokens, pos) {
     TSemicolon => match peek(tokens, pos + 1) {
       TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 2),
       _ => {
-        let (arm, next) = parse_handle_arm(tokens, starts, pos + 1, effect_name, parse_recur, context)
+        let (arm, next) = parse_handle_arm(tokens, starts, pos + 1, effect_name, qualifier, parse_recur, context)
         ArrayBuilder::push(b, arm)
-        parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur, context)
+        parse_handle_rest(tokens, starts, next, body, effect_name, qualifier, b, parse_recur, context)
       }
     },
     TRBrace => (EHandle(body, ArrayBuilder::freeze(b)), pos + 1),
@@ -611,7 +629,7 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
       let (rest, end) = parse_recur(tokens, pos + 1, 20, context)
       (ESeq(e, rest), end)
     },
-    TEq => match e {
+    TEq => match source_expr(e) {
       EIdent(name, _) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
@@ -659,7 +677,7 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
       },
       _ => throw("invalid assignment target")
     },
-    TPlusEq => match e {
+    TPlusEq => match source_expr(e) {
       EIdent(name, _) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
@@ -670,7 +688,7 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
       },
       _ => throw("invalid assignment target")
     },
-    TMinusEq => match e {
+    TMinusEq => match source_expr(e) {
       EIdent(name, _) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
@@ -681,7 +699,7 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
       },
       _ => throw("invalid assignment target")
     },
-    TStarEq => match e {
+    TStarEq => match source_expr(e) {
       EIdent(name, _) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
@@ -692,7 +710,7 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
       },
       _ => throw("invalid assignment target")
     },
-    TSlashEq => match e {
+    TSlashEq => match source_expr(e) {
       EIdent(name, _) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
@@ -703,7 +721,7 @@ fn parse_block_after_expr(tokens: Array[Token], pos: Int, e: Expr, parse_recur: 
       },
       _ => throw("invalid assignment target")
     },
-    TPercentEq => match e {
+    TPercentEq => match source_expr(e) {
       EIdent(name, _) => {
         let val_pair = parse_recur(tokens, pos + 1, 0, context)
         let val = val_pair.0
@@ -742,9 +760,9 @@ fn parse_block_value_only(tokens: Array[Token], value_pos: Int, parse_recur: (Ar
 fn remap_struct_destr_rows(pat: Pat, rows: Array[SourceBinder], context: Option[ParserBinderContext]) -> Array[SourceBinder] {
   let out = ArrayBuilder::new()
   let mut at = 0
-  match pat {
+  match source_pat(pat) {
     PStruct(_, fields) => for field in fields {
-      match field.1 {
+      match source_pat(field.1) {
         PBind(_) => {
           if at < Array::length(rows) {
             ArrayBuilder::push(out, Array::get(rows, at))
@@ -770,7 +788,7 @@ fn remap_struct_destr_rows(pat: Pat, rows: Array[SourceBinder], context: Option[
 fn remap_record_destr_rows(pat: Pat, rows: Array[SourceBinder], context: Option[ParserBinderContext]) -> Array[SourceBinder] {
   let out = ArrayBuilder::new()
   let mut at = 0
-  match pat {
+  match source_pat(pat) {
     PTuple(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
@@ -787,7 +805,7 @@ fn remap_record_destr_rows(pat: Pat, rows: Array[SourceBinder], context: Option[
           PTuple(sub) => {
             ArrayBuilder::push(out, Synthetic(String::concat("__rec_sub_", __to_string(i)), ParserSynthetic))
             for item in sub {
-              match item {
+              match source_pat(item) {
                 PBind(_) => {
                   if at < Array::length(rows) {
                     ArrayBuilder::push(out, Array::get(rows, at))
@@ -819,12 +837,12 @@ fn remap_record_destr_rows(pat: Pat, rows: Array[SourceBinder], context: Option[
 fn apply_struct_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBinderContext]) -> Expr {
   let val_name = "__struct_destr"
   let mut desugar = rest
-  match pat {
+  match source_pat(pat) {
     PStruct(_, fields) => {
       let mut di = Array::length(fields) - 1
       while di >= 0 {
         let (fname, fpat) = Array::get(fields, di)
-        match fpat {
+        match source_pat(fpat) {
           PBind(bname) => {
             desugar = ELet(bname, EDot(EIdent(val_name, -1), fname, -1, -1), desugar, -1)
           },
@@ -841,12 +859,12 @@ fn apply_struct_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBin
 fn apply_record_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBinderContext]) -> Expr {
   let val_name = "__rec_destr"
   let mut desugar = rest
-  match pat {
+  match source_pat(pat) {
     PTuple(field_pats) => {
       let mut di = Array::length(field_pats) - 1
       while di >= 0 {
         let fp = Array::get(field_pats, di)
-        match fp {
+        match source_pat(fp) {
           PBind(bname) => {
             desugar = ELet(bname, ECall(EIdent("__rec_field", -1), [
               EIdent(val_name, -1),
@@ -857,7 +875,7 @@ fn apply_record_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBin
             let sub_name = String::concat("__rec_sub_", __to_string(di))
             let mut si = Array::length(sub_pats) - 1
             while si >= 0 {
-              match Array::get(sub_pats, si) {
+              match source_pat(Array::get(sub_pats, si)) {
                 PBind(sname) => {
                   desugar = ELet(sname, EDot(EIdent(sub_name, -1), __to_string(si), -1, -1), desugar, -1)
                 },
@@ -882,6 +900,7 @@ fn apply_record_destr(pat: Pat, val: Expr, rest: Expr, context: Option[ParserBin
 
 fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderContext]) -> Expr {
   match step {
+    StepLocated(inner, first, next) => source_wrap_expr(apply_block_step(inner, rest, context), first, next, context),
     StepSeq(expr) => ESeq(expr, rest),
     StepValue(expr) => expr,
     StepLet(name, val, soff) => ELet(name, val, rest, soff),
@@ -912,10 +931,10 @@ fn apply_block_step(step: BlockStep, rest: Expr, context: Option[ParserBinderCon
     // (`Result` or undeterminable) the original Result match
     //   `match val { Ok(x) => rest, Err(__bind_err) => Err(__bind_err) }`.
     // The continuation closure carries `x` + `rest` so `rest`'s scope is exact.
-    StepBind(name, val, off) => ECall(EIdent("__try_bind", off), [
+    StepBind(name, val, off) => source_wrap_bind(ECall(EIdent("__try_bind", off), [
       val,
       EFn(_no_tp(), _no_tb(), [(name, None)], None, None, rest)
-    ], off)
+    ], off), name, off, val, context)
   }
 }
 
@@ -946,7 +965,7 @@ fn fold_block_steps(steps: Array[BlockStep], context: Option[ParserBinderContext
 /// throw is likewise not direct — its EHandle wrapper can produce a value and
 /// continue. `break` and `continue` escape a loop rather than this function.
 fn expr_always_exits_guard(e: Expr) -> Bool {
-  match e {
+  match source_expr(e) {
     EReturn(_) => true,
     ECall(EIdent("perform", _), args, _) => if Array::length(args) == 1 {
       match Array::get(args, 0) {
@@ -1123,7 +1142,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   },
                   None => val
                 }
-                ArrayBuilder::push(steps, StepLetRec(name, val2))
+                ArrayBuilder::push(steps, locate_block_step(StepLetRec(name, val2), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               }
             },
@@ -1156,7 +1175,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                   },
                   None => val
                 }
-                ArrayBuilder::push(steps, StepLetMut(name, val2, blk_offset_at(starts, next - 1)))
+                ArrayBuilder::push(steps, locate_block_step(StepLetMut(name, val2, blk_offset_at(starts, next - 1)), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               }
             },
@@ -1281,7 +1300,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
                       },
                       None => val
                     }
-                    ArrayBuilder::push(steps, StepLet(name, val2, blk_offset_at(starts, next - 1)))
+                    ArrayBuilder::push(steps, locate_block_step(StepLet(name, val2, blk_offset_at(starts, next - 1)), p, block_source_end(tokens, next_pos), context))
                     p = next_pos
                   }
                 }
@@ -1332,10 +1351,11 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
               ArrayBuilder::push(steps, StepSeq(e))
               p = next + 1
             },
-            TEq => match e {
+            TEq => match source_expr(e) {
               EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
-                ArrayBuilder::push(steps, StepAssign(name, val))
+                source_record_slot("target", name, p, p + 1, context)
+                ArrayBuilder::push(steps, locate_block_step(StepAssign(name, val), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               EDot(obj, field, _, _) => {
@@ -1350,7 +1370,7 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
               ECall(sidx_callee, sidx_args, _) => {
                 // `arr[i] = v` in the step-block path (same desugar as the
                 // parse_block_after_expr TEq arm above).
-                let s_is_index = match sidx_callee {
+                let s_is_index = match source_expr(sidx_callee) {
                   EIdent(sicn, _) => sicn == "__index",
                   _ => false
                 }
@@ -1368,42 +1388,47 @@ fn parse_impl_block(tokens: Array[Token], starts: Array[Int], pos: Int, parse_re
               },
               _ => throw("invalid assignment target")
             },
-            TPlusEq => match e {
+            TPlusEq => match source_expr(e) {
               EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
-                ArrayBuilder::push(steps, StepAssignOp(name, "+", val))
+                source_record_slot("target", name, p, p + 1, context)
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "+", val), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
-            TMinusEq => match e {
+            TMinusEq => match source_expr(e) {
               EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
-                ArrayBuilder::push(steps, StepAssignOp(name, "-", val))
+                source_record_slot("target", name, p, p + 1, context)
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "-", val), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
-            TStarEq => match e {
+            TStarEq => match source_expr(e) {
               EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
-                ArrayBuilder::push(steps, StepAssignOp(name, "*", val))
+                source_record_slot("target", name, p, p + 1, context)
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "*", val), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
-            TSlashEq => match e {
+            TSlashEq => match source_expr(e) {
               EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
-                ArrayBuilder::push(steps, StepAssignOp(name, "/", val))
+                source_record_slot("target", name, p, p + 1, context)
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "/", val), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
             },
-            TPercentEq => match e {
+            TPercentEq => match source_expr(e) {
               EIdent(name, _) => {
                 let (val, next_pos) = parse_block_value_only(tokens, next + 1, parse_recur, context)
-                ArrayBuilder::push(steps, StepAssignOp(name, "%", val))
+                source_record_slot("target", name, p, p + 1, context)
+                ArrayBuilder::push(steps, locate_block_step(StepAssignOp(name, "%", val), p, block_source_end(tokens, next_pos), context))
                 p = next_pos
               },
               _ => throw("invalid assignment target")
@@ -1564,9 +1589,9 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
           TRBrace => throw(String::concat("handler for `", String::concat(effect_name, "` must contain at least one arm"))),
           _ => {
             let b = ArrayBuilder::new()
-            let (arm, next) = parse_handle_arm(tokens, starts, hb, effect_name, parse_recur, context)
+            let (arm, next) = parse_handle_arm(tokens, starts, hb, effect_name, (wp, effect_next), parse_recur, context)
             ArrayBuilder::push(b, arm)
-            parse_handle_rest(tokens, starts, next, body, effect_name, b, parse_recur, context)
+            parse_handle_rest(tokens, starts, next, body, effect_name, (wp, effect_next), b, parse_recur, context)
           }
         }
       },
@@ -1669,4 +1694,27 @@ export fn parse_impl_dispatch_with_binder_context(tokens: Array[Token], starts: 
 export fn parse_impl_dispatch(tokens: Array[Token], starts: Array[Int], pos: Int, mode: Int, parse_recur: (Array[Token], Int, Int) -> (Expr, Int) with Exception) -> (Expr, Int) with Exception {
   let adapted = (rtoks, rpos, rmode, _context) -> parse_recur(rtoks, rpos, rmode)
   parse_impl_dispatch_with_binder_context(tokens, starts, pos, mode, adapted, None)
+}
+
+fn block_source_end(tokens: Array[Token], next: Int) -> Int {
+  let mut end = next
+  let mut done = false
+  while end > 0 && !done {
+    match peek(tokens, end - 1) {
+      TSemicolon => end = end - 1,
+      _ => done = true
+    }
+  }
+  end
+}
+
+fn locate_block_step(step: BlockStep, first: Int, next: Int, context: Option[ParserBinderContext]) -> BlockStep {
+  match context {
+    Some(c) => if c.capture_source_spans {
+      StepLocated(step, first, next)
+    } else {
+      step
+    },
+    None => step
+  }
 }

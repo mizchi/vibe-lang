@@ -1,5 +1,9 @@
 //# Imports
 
+import ./parser_source_span.vibe {
+  source_expr, source_pat, source_type
+}
+
 import @vibe/ast {
   Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, trait_ref_from_key, type_param_arity, type_param_name
 }
@@ -262,7 +266,7 @@ fn escape_string(s: String) -> String {
 }
 
 export fn print_pat(p: Pat) -> String {
-  match p {
+  match source_pat(p) {
     PWild => "_",
     PBind(name) => print_name(name),
     PInt(n) => __to_string(n),
@@ -319,7 +323,7 @@ fn handle_effect_name_from_ctor(name: String) -> Option[String] {
 }
 
 fn infer_handle_effect_name_from_pat(pat: Pat) -> Option[String] {
-  match pat {
+  match source_pat(pat) {
     PCtor(name, _) => handle_effect_name_from_ctor(name),
     POr(left, right) => match infer_handle_effect_name_from_pat(left) {
       Some(name) => Some(name),
@@ -365,7 +369,7 @@ fn strip_handle_effect_ctor(effect_name: String, ctor_name: String) -> String {
 }
 
 fn print_handle_pat(effect_name: String, pat: Pat) -> String {
-  match pat {
+  match source_pat(pat) {
     PCtor(name, args) => {
       let short_name = strip_handle_effect_ctor(effect_name, name)
       if Array::length(args) == 0 {
@@ -389,7 +393,7 @@ fn map_to_strings(exprs: Array[Expr], f: (Expr) -> String) -> Array[String] {
 }
 
 export fn print_type_expr(ty: TypeExpr) -> String {
-  match ty {
+  match source_type(ty) {
     TyName(name) => name,
     TyUnit => "()",
     TyApp(name, args) => {
@@ -440,6 +444,7 @@ fn print_fn_type_params(type_params: Array[String], bounds: Array[(String, Array
 }
 
 fn peel_empty_handles(expr: Expr) -> Expr {
+  let expr = source_expr(expr)
   match expr {
     EHandle(body, arms) => if Array::length(arms) == 0 {
       peel_empty_handles(body)
@@ -451,7 +456,7 @@ fn peel_empty_handles(expr: Expr) -> Expr {
 }
 
 export fn print_expr(e: Expr) -> String {
-  match e {
+  match source_expr(e) {
     EInt(n) => __to_string(n),
     EFloat(n) => {
       // #726: a whole double printed as "2" re-parses as an INT literal —
@@ -492,7 +497,7 @@ export fn print_expr(e: Expr) -> String {
       } else String::concat(head, "::{ ")
       String::concat(prefix, String::concat(join(parts, ", "), " }"))
     },
-    EIf(cond, then_e, else_e) => match else_e {
+    EIf(cond, then_e, else_e) => match source_expr(else_e) {
       EUnit => String::concat("if ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(then_e), " }")))),
       _ => String::concat("if ", String::concat(print_expr(cond), String::concat(" { ", String::concat(print_expr(then_e), String::concat(" } else { ", String::concat(print_expr(else_e), " }"))))))
     },
@@ -555,8 +560,8 @@ export fn print_expr(e: Expr) -> String {
         // is_exception_throw_operation because @vibe/parser must not depend
         // on the compiler package (same reason parser_base.vibe spells out
         // is_core_ambient_effect_name).
-        let resugar = match Array::get(args, 0) {
-          ECall(op_callee, op_args, _) => match op_callee {
+        let resugar = match source_expr(Array::get(args, 0)) {
+          ECall(op_callee, op_args, _) => match source_expr(op_callee) {
             EIdent(op_name, _) => if (op_name == "Exception::Throw" || op_name == "Error::Throw") && Array::length(op_args) == 1 {
               Some(Array::get(op_args, 0))
             } else {
@@ -632,7 +637,7 @@ export fn print_expr(e: Expr) -> String {
 
 fn print_annotated_let_value(ty_opt: Option[TypeExpr], val: Expr) -> String {
   match ty_opt {
-    Some(TyFn(_, _, _)) => match val {
+    Some(TyFn(_, _, _)) => match source_expr(val) {
       EFn(type_params, bounds, params, _, _, body) => {
         // Type params live only on the EFn (the `: (T) -> T` annotation does
         // not carry `[T: Ord]`); emit them so a re-parse keeps the
@@ -684,7 +689,7 @@ export fn print_stmt(s: Stmt) -> String {
     // pipeline lowers SFnDecl to SLet before printing ever matters.
     SFnDecl(exported, name, fn_value, reqs, enss) => {
       let p = prefix(exported)
-      match fn_value {
+      match source_expr(fn_value) {
         EFn(type_params, bounds, params, ret_ty, effect, body) => {
           let tp_str = print_fn_type_params(type_params, bounds)
           let parts = for param in params {
@@ -728,8 +733,8 @@ export fn print_stmt(s: Stmt) -> String {
           // `%wasm("<WAT>")` marker call) round-trips as `= wasm "..."` —
           // printing the marker as a call would not re-parse (`%` is not an
           // ident start in expression position).
-          let wasm_text = match body {
-            ECall(wcal, wargs, _) => match wcal {
+          let wasm_text = match source_expr(body) {
+            ECall(wcal, wargs, _) => match source_expr(wcal) {
               EIdent(wname, _) => if wname == "%wasm" && Array::length(wargs) == 1 {
                 match Array::get(wargs, 0) {
                   EString(wt) => Some(wt),
