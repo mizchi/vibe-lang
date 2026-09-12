@@ -891,6 +891,31 @@ widened to drop its pending test: that version still passed. Both lambda bodies
 have to contain a function value of their own, which is what the committed case
 does. Three of four mutations failing is not a passing grade for the fourth.
 
+**What it costs, on the KPI this issue is about.** The recording is not free,
+and a memory regression on a memory issue should be stated rather than left in
+a report:
+
+| | selfcompile memory |
+|---|---:|
+| slice 1b alone (scripts and docs, no compiler change) | 852 MiB |
+| with slice 2's recording | 857 MiB (**+0.63%**) |
+
+Those two are the per-PR perf reports for `cb5bc9c` and `0ea74ec`, which share
+the same main baseline (`595fed3eb`) and differ by exactly the slice-2 commits
+— so the +5 MiB is attributable without building anything extra. Earlier
+reports on this branch used older baselines and are NOT comparable: main moved
+under them, which is most of what makes a "+x% vs main" row hard to read at
+all. Compiled code grew 0.21% (the verifier and the recorder are new code in
+the compiler's own wasm).
+
+Most of the 5 MiB is the log itself — four parallel arrays growing with every
+function-value reference in the program — which is the mechanism, not overhead
+around it. A smaller share is the fresh one-element owner cell allocated per
+function body; one module-level cell with save/restore in `compile_lambda`
+would remove it, and is worth doing only if this number ever matters. The
+trade is 0.63% now against what the warm build currently costs: 765 MB for a
+one-module edit, 93% of a cold build.
+
 **What is NOT recorded yet, said plainly.** Data pointers — the other class the
 scan cannot see — have no kind number yet, because numbering one before
 anything emits it would be a promise and the numbers are append-only. And a
