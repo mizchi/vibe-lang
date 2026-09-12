@@ -1,0 +1,1243 @@
+// Formatter token vocabulary and lexer. Token payloads follow the existing formatter representation.
+
+export let k_none: Int = -1
+
+export let k_eof: Int = 0
+
+let k_error = 1
+
+export let k_ws: Int = 2
+
+export let k_newline: Int = 3
+
+export let k_comment: Int = 4
+
+export let k_name: Int = 10
+
+export let k_int: Int = 11
+
+export let k_float: Int = 12
+
+export let k_string: Int = 13
+
+export let k_string_interp: Int = 14
+
+export let k_char: Int = 15
+
+export let k_bool: Int = 16
+
+let k_hash_ref = 17
+
+export let k_let: Int = 20
+
+export let k_import: Int = 21
+
+export let k_use: Int = 22
+
+export let k_declare: Int = 23
+
+export let k_test: Int = 24
+
+export let k_if: Int = 25
+
+export let k_else: Int = 26
+
+export let k_match: Int = 27
+
+export let k_record: Int = 28
+
+export let k_for: Int = 30
+
+export let k_in: Int = 31
+
+export let k_with: Int = 32
+
+export let k_is: Int = 33
+
+export let k_derive: Int = 34
+
+export let k_fn: Int = 35
+
+export let k_rec: Int = 36
+
+export let k_type: Int = 37
+
+export let k_enum: Int = 38
+
+export let k_while: Int = 39
+
+export let k_loop: Int = 40
+
+export let k_bench: Int = 41
+
+// #819: `example` is its own token kind, not an identifier. Without it the
+// keyword falls through to k_ident, is_keyword_kind is false, and needs_space
+// emits `example"name"` -- the same class of glue defect the k_handle/k_return
+// comment below records.
+export let k_example: Int = 103
+
+export let k_mut: Int = 42
+
+export let k_raise: Int = 43
+
+export let k_yield: Int = 44
+
+export let k_handle: Int = 45
+
+export let k_break: Int = 46
+
+export let k_continue: Int = 47
+
+export let k_return: Int = 48
+
+export let k_export: Int = 49
+
+export let k_from: Int = 50
+
+export let k_as: Int = 51
+
+export let k_struct: Int = 52
+
+export let k_trait: Int = 53
+
+export let k_impl: Int = 54
+
+export let k_flake: Int = 55
+
+export let k_alias: Int = 56
+
+export let k_arrow: Int = 60
+
+export let k_eqeq: Int = 61
+
+export let k_eq: Int = 62
+
+export let k_minus_eq: Int = 63
+
+export let k_thin_arrow: Int = 64
+
+export let k_minus: Int = 65
+
+export let k_semicolon: Int = 66
+
+export let k_lbrace: Int = 67
+
+export let k_rbrace: Int = 68
+
+export let k_lparen: Int = 69
+
+export let k_rparen: Int = 70
+
+export let k_lbracket: Int = 71
+
+export let k_rbracket: Int = 72
+
+export let k_comma: Int = 73
+
+export let k_double_colon: Int = 74
+
+export let k_colon: Int = 75
+
+export let k_slash_eq: Int = 76
+
+export let k_slash: Int = 77
+
+export let k_plus_eq: Int = 78
+
+export let k_plus: Int = 79
+
+export let k_star_eq: Int = 80
+
+export let k_star: Int = 81
+
+export let k_percent_eq: Int = 82
+
+export let k_percent: Int = 83
+
+export let k_neq: Int = 84
+
+export let k_bang: Int = 85
+
+let k_question = 86
+
+let k_lshift = 87
+
+export let k_lte: Int = 88
+
+export let k_lt: Int = 89
+
+let k_rshift = 90
+
+export let k_gte: Int = 91
+
+export let k_gt: Int = 92
+
+export let k_and_and: Int = 93
+
+let k_bit_and = 94
+
+export let k_or_or: Int = 95
+
+export let k_pipe_gt: Int = 96
+
+export let k_bit_or: Int = 97
+
+let k_bit_xor = 98
+
+export let k_dot: Int = 99
+
+let k_dotdotdot = 100
+
+export let k_dotdot: Int = 101
+
+export let k_pipe: Int = 102
+
+export struct LTok {
+  kind: Int;
+  text: String
+}
+
+struct LX {
+  input: String;
+  len: Int;
+  mut pos: Int
+}
+
+fn lx_peek(lx: LX) -> Int {
+  if lx.pos >= lx.len {
+    -1
+  } else {
+    String::char_code_at(lx.input, lx.pos)
+  }
+}
+
+fn lx_at(lx: LX, i: Int) -> Int {
+  if i < 0 || i >= lx.len {
+    -1
+  } else {
+    String::char_code_at(lx.input, i)
+  }
+}
+
+export fn is_alpha_c(c: Int) -> Bool {
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+fn is_digit_c(c: Int) -> Bool {
+  c >= '0' && c <= '9'
+}
+
+fn is_hex_c(c: Int) -> Bool {
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+fn is_alnum_c(c: Int) -> Bool {
+  is_alpha_c(c) || is_digit_c(c)
+}
+
+export fn is_ws_c(c: Int) -> Bool {
+  c == ' ' || c == '\t'
+}
+
+fn is_ident_delim_c(c: Int) -> Bool {
+  is_ws_c(c) || c == '\n' || c == '(' || c == ')' || c == '{' || c == '}' ||
+  c == '[' || c == ']' || c == ',' || c == ';' || c == '=' || c == ':' ||
+  c == '+' || c == '*' || c == '-' || c == '/' || c == '%' || c == '.' ||
+  c == '|' || c == '!' || c == '?' || c == '<' || c == '>' || c == '&' ||
+  c == '^' || c == '\''
+}
+
+/// Does the run of non-delimiter chars after pos contain `@` or `/` (a qualifier)?
+fn lx_should_continue_qualified(lx: LX) -> Bool {
+  let mut i = lx.pos + 1
+  let mut result = false
+  let mut going = true
+  while going && i < lx.len {
+    let ch = String::char_code_at(lx.input, i)
+    if is_ident_delim_c(ch) {
+      going = false
+    } else if ch == '@' || ch == '/' {
+      result = true
+      going = false
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+/// Lex an identifier run starting at lx.pos; returns the end position.
+fn lx_ident_end(lx: LX) -> Int {
+  let mut i = lx.pos
+  let mut allow_qual = false
+  let mut going = true
+  while going && i < lx.len {
+    let ch = String::char_code_at(lx.input, i)
+    if is_alnum_c(ch) || ch == '_' {
+      i = i + 1
+    } else if ch == '.' {
+      if allow_qual {
+        i = i + 1
+      } else {
+        going = false
+      }
+    } else if ch == '#' || ch == '?' || ch == '~' || ch == '@' {
+      if ch == '@' {
+        allow_qual = true
+      }
+      i = i + 1
+    } else if ch == '/' {
+      // peek qualified continuation from position i
+      let saved = lx.pos
+      lx.pos = i
+      let cont = allow_qual || lx_should_continue_qualified(lx)
+      lx.pos = saved
+      if cont {
+        allow_qual = true
+        i = i + 1
+      } else {
+        going = false
+      }
+    } else if ch == '-' {
+      if allow_qual {
+        i = i + 1
+      } else {
+        going = false
+      }
+    } else {
+      going = false
+    }
+  }
+  i
+}
+
+fn keyword_kind_for(text: String, lx: LX) -> Int {
+  if text == "let" {
+    k_let
+  }
+  else if text == "import" {
+    k_import
+  }
+  else if text == "use" {
+    k_use
+  }
+  else if text == "declare" {
+    k_declare
+  }
+  else if text == "test" {
+    k_test
+  }
+  else if text == "example" {
+    k_example
+  }
+  else if text == "if" {
+    k_if
+  }
+  else if text == "else" {
+    k_else
+  }
+  else if text == "match" {
+    k_match
+  }
+  else if text == "record" {
+    k_record
+  }
+  else if text == "for" {
+    k_for
+  }
+  else if text == "in" {
+    k_in
+  }
+  else if text == "with" { k_with }
+  else if text == "is" {
+    k_is
+  }
+  else if text == "derive" {
+    k_derive
+  }
+  else if text == "fn" {
+    k_fn
+  }
+  else if text == "rec" {
+    k_rec
+  }
+  else if text == "type" {
+    k_type
+  }
+  else if text == "enum" {
+    k_enum
+  }
+  else if text == "while" {
+    k_while
+  }
+  else if text == "loop" {
+    k_loop
+  }
+  else if text == "bench" {
+    k_bench
+  }
+  else if text == "mut" {
+    k_mut
+  }
+  else if text == "raise" {
+    k_raise
+  }
+  else if text == "yield" {
+    k_yield
+  }
+  else if text == "handle" {
+    k_handle
+  }
+  else if text == "break" {
+    k_break
+  }
+  else if text == "continue" {
+    k_continue
+  }
+  else if text == "return" {
+    k_return
+  }
+  else if text == "export" {
+    k_export
+  }
+  else if text == "from" {
+    k_from
+  }
+  else if text == "as" {
+    k_as
+  }
+  else if text == "struct" {
+    k_struct
+  }
+  else if text == "trait" {
+    k_trait
+  }
+  else if text == "impl" {
+    k_impl
+  }
+  else if text == "true" {
+    k_bool
+  }
+  else if text == "false" {
+    k_bool
+  }
+  else {
+    k_name
+  }
+}
+
+/// Is `text` a raw identifier r#foo? Returns the body or "" if not.
+fn raw_ident_body(text: String) -> String {
+  let n = String::length(text)
+  if n < 3 {
+    ""
+  } else if String::char_code_at(text, 0) != 'r' || String::char_code_at(text, 1) != '#' {
+    ""
+  } else {
+    let first = String::char_code_at(text, 2)
+    if !is_alpha_c(first) {
+      ""
+    } else {
+      let mut i = 3
+      let mut ok = true
+      while ok && i < n {
+        let c = String::char_code_at(text, i)
+        if !(is_alnum_c(c) || c == '_') {
+          ok = false
+        } else {
+          i = i + 1
+        }
+      }
+      if ok {
+        String::substring(text, 2, n)
+      } else {
+        ""
+      }
+    }
+  }
+}
+
+/// Lex a "..." string literal: returns (kind, decoded-or-raw text, end pos).
+fn lx_string(lx: LX) -> LTok {
+  let start = lx.pos
+  lx.pos = lx.pos + 1
+  // O(N) build via StringBuilder; the previous `buf/raw = String::concat(...)`
+  // per char was O(L²) over the literal length (issue #366). Both are written
+  // only in this loop and read once at the final LTok below.
+  let buf = StringBuilder::new()
+  let raw = StringBuilder::new()
+  let mut has_interp = false
+  let mut bad_escape = false
+  let mut going = true
+  while going {
+    let c = lx_peek(lx)
+    if c == '"' || c == -1 {
+      going = false
+    } else if c == '\\' {
+      lx.pos = lx.pos + 1
+      let n = lx_peek(lx)
+      if n == '{' || n == '(' {
+        has_interp = true
+        let open_char = n
+        let close_char = if open_char == '(' {
+          ')'
+        } else {
+          '}'
+        }
+        StringBuilder::push(raw, "\\")
+        StringBuilder::push(raw, String::from_char_code(open_char))
+        lx.pos = lx.pos + 1
+        let mut depth = 1
+        let mut inner = true
+        while inner {
+          let ic = lx_peek(lx)
+          if ic == -1 {
+            inner = false
+          } else if ic == open_char {
+            lx.pos = lx.pos + 1
+            depth = depth + 1
+            StringBuilder::push(raw, String::from_char_code(ic))
+          } else if ic == close_char {
+            lx.pos = lx.pos + 1
+            depth = depth - 1
+            StringBuilder::push(raw, String::from_char_code(ic))
+            if depth == 0 {
+              inner = false
+            }
+          } else {
+            lx.pos = lx.pos + 1
+            StringBuilder::push(raw, String::from_char_code(ic))
+          }
+        }
+      } else {
+        let e = lx_peek(lx)
+        if e == -1 {
+          going = false
+        } else {
+          lx.pos = lx.pos + 1
+          if e == '"' {
+            StringBuilder::push(buf, "\"")
+            StringBuilder::push(raw, "\\\"")
+          } else if e == '\\' {
+            StringBuilder::push(buf, "\\")
+            StringBuilder::push(raw, "\\\\")
+          } else if e == 'n' {
+            StringBuilder::push(buf, "\n")
+            StringBuilder::push(raw, "\\n")
+          } else if e == 't' {
+            StringBuilder::push(buf, "\t")
+            StringBuilder::push(raw, "\\t")
+          } else if e == 'r' {
+            StringBuilder::push(buf, "\r")
+            StringBuilder::push(raw, "\\r")
+          } else {
+            bad_escape = true
+            StringBuilder::push(buf, String::from_char_code(e))
+            StringBuilder::push(raw, String::concat("\\", String::from_char_code(e)))
+          }
+        }
+      }
+    } else {
+      lx.pos = lx.pos + 1
+      StringBuilder::push(buf, String::from_char_code(c))
+      StringBuilder::push(raw, String::from_char_code(c))
+    }
+  }
+  if lx_peek(lx) == '"' {
+    lx.pos = lx.pos + 1
+    if bad_escape {
+      LTok::{
+        kind: k_error,
+        text: StringBuilder::freeze(buf)
+      }
+    } else if has_interp {
+      LTok::{
+        kind: k_string_interp,
+        text: StringBuilder::freeze(raw)
+      }
+    } else {
+      LTok::{
+        kind: k_string,
+        text: StringBuilder::freeze(buf)
+      }
+    }
+  } else {
+    let _ = start
+    LTok::{
+      kind: k_error,
+      text: StringBuilder::freeze(buf)
+    }
+  }
+}
+
+/// Lex a raw string r"..." — no escape processing.
+fn lx_raw_string(lx: LX) -> LTok {
+  lx.pos = lx.pos + 1
+  lx.pos = lx.pos + 1
+  // O(N) build via StringBuilder; the previous `buf = String::concat(buf, c)`
+  // per char was O(N²) over the raw-string length (issue #366).
+  let buf = StringBuilder::new()
+  let mut going = true
+  while going {
+    let c = lx_peek(lx)
+    if c == '"' || c == -1 {
+      going = false
+    } else {
+      lx.pos = lx.pos + 1
+      StringBuilder::push(buf, String::from_char_code(c))
+    }
+  }
+  if lx_peek(lx) == '"' {
+    lx.pos = lx.pos + 1
+    LTok::{
+      kind: k_string,
+      text: StringBuilder::freeze(buf)
+    }
+  } else {
+    LTok::{
+      kind: k_error,
+      text: StringBuilder::freeze(buf)
+    }
+  }
+}
+
+/// Lex a 'c' char literal.
+fn lx_char(lx: LX) -> LTok {
+  lx.pos = lx.pos + 1
+  let c = lx_peek(lx)
+  if c == -1 || c == '\n' {
+    LTok::{
+      kind: k_error,
+      text: "'"
+    }
+  } else if c == '\\' {
+    lx.pos = lx.pos + 1
+    let e = lx_peek(lx)
+    if e == -1 {
+      LTok::{
+        kind: k_error,
+        text: "'"
+      }
+    } else {
+      let decoded = if e == 'n' {
+        10
+      }
+      else if e == 't' {
+        9
+      }
+      else if e == 'r' {
+        13
+      }
+      else if e == '\'' {
+        39
+      }
+      else if e == '\\' {
+        92
+      }
+      else {
+        -1
+      }
+      if decoded == -1 {
+        lx.pos = lx.pos + 1
+        let mut going = true
+        while going {
+          let p = lx_peek(lx)
+          if p == '\'' || p == -1 {
+            going = false
+          } else {
+            lx.pos = lx.pos + 1
+          }
+        }
+        if lx_peek(lx) == '\'' {
+          lx.pos = lx.pos + 1
+        }
+        LTok::{
+          kind: k_error,
+          text: "'"
+        }
+      } else {
+        lx.pos = lx.pos + 1
+        if lx_peek(lx) == '\'' {
+          lx.pos = lx.pos + 1
+          LTok::{
+            kind: k_char,
+            text: String::from_char_code(decoded)
+          }
+        } else {
+          LTok::{
+            kind: k_error,
+            text: "'"
+          }
+        }
+      }
+    }
+  } else {
+    lx.pos = lx.pos + 1
+    if lx_peek(lx) == '\'' {
+      lx.pos = lx.pos + 1
+      LTok::{
+        kind: k_char,
+        text: String::from_char_code(c)
+      }
+    } else {
+      LTok::{
+        kind: k_error,
+        text: "'"
+      }
+    }
+  }
+}
+
+/// Lex a #| multiline string starting at the already-detected '#'.
+fn lx_multiline_string(lx: LX) -> LTok {
+  // O(N) build via StringBuilder; the per-char `line` and per-line `buf` builds
+  // via String::concat were each O(N²) over their length (issue #366).
+  let buf = StringBuilder::new()
+  let mut first_line = true
+  let mut running = true
+  while running {
+    lx.pos = lx.pos + 1
+    let line = StringBuilder::new()
+    let mut inner = true
+    while inner {
+      let c = lx_peek(lx)
+      if c == '\n' || c == -1 {
+        inner = false
+      } else {
+        lx.pos = lx.pos + 1
+        StringBuilder::push(line, String::from_char_code(c))
+      }
+    }
+    if !first_line {
+      StringBuilder::push(buf, "\n")
+    }
+    first_line = false
+    StringBuilder::push(buf, StringBuilder::freeze(line))
+    if lx_peek(lx) == '\n' {
+      lx.pos = lx.pos + 1
+      let saved = lx.pos
+      let mut sk = true
+      while sk {
+        let c = lx_peek(lx)
+        if c == ' ' || c == '\t' {
+          lx.pos = lx.pos + 1
+        } else {
+          sk = false
+        }
+      }
+      if lx_peek(lx) == '#' {
+        lx.pos = lx.pos + 1
+        if lx_peek(lx) == '|' {
+          ()
+        } else {
+          lx.pos = saved
+          running = false
+        }
+      } else {
+        lx.pos = saved
+        running = false
+      }
+    } else {
+      running = false
+    }
+  }
+  LTok::{
+    kind: k_string,
+    text: StringBuilder::freeze(buf)
+  }
+}
+
+fn lx_next(lx: LX) -> LTok {
+  let c = lx_peek(lx)
+  if c == -1 {
+    LTok::{
+      kind: k_eof,
+      text: ""
+    }
+  } else if is_ws_c(c) {
+    let start = lx.pos
+    let mut going = true
+    while going {
+      let ch = lx_peek(lx)
+      if ch != -1 && is_ws_c(ch) {
+        lx.pos = lx.pos + 1
+      } else {
+        going = false
+      }
+    }
+    LTok::{
+      kind: k_ws,
+      text: String::substring(lx.input, start, lx.pos)
+    }
+  } else if c == '\n' {
+    lx.pos = lx.pos + 1
+    LTok::{
+      kind: k_newline,
+      text: "\n"
+    }
+  } else if c == '"' {
+    lx_string(lx)
+  } else if c == '\'' {
+    lx_char(lx)
+  } else if c == 'r' && lx.pos + 1 < lx.len && String::char_code_at(lx.input, lx.pos + 1) == '"' {
+    lx_raw_string(lx)
+  } else if is_alpha_c(c) {
+    let start = lx.pos
+    let end = lx_ident_end(lx)
+    lx.pos = end
+    let text = String::substring(lx.input, start, end)
+    let body = raw_ident_body(text)
+    if body != "" {
+      LTok::{
+        kind: k_name,
+        text: body
+      }
+    } else {
+      LTok::{
+        kind: keyword_kind_for(text, lx),
+        text: text
+      }
+    }
+  } else if is_digit_c(c) {
+    let start = lx.pos
+    let after_field_dot = start >= 1 && lx_at(lx, start - 1) == '.' &&
+    (start < 2 || lx_at(lx, start - 2) != '.')
+    if c == '0' && lx.pos + 1 < lx.len &&
+    (String::char_code_at(lx.input, lx.pos + 1) == 'x' || String::char_code_at(lx.input, lx.pos + 1) == 'X') {
+      lx.pos = lx.pos + 2
+      let mut going = true
+      while going {
+        let ch = lx_peek(lx)
+        if ch != -1 && is_hex_c(ch) {
+          lx.pos = lx.pos + 1
+        } else {
+          going = false
+        }
+      }
+      LTok::{
+        kind: k_int,
+        text: String::substring(lx.input, start, lx.pos)
+      }
+    } else {
+      let mut going = true
+      while going {
+        let ch = lx_peek(lx)
+        if ch != -1 && is_digit_c(ch) {
+          lx.pos = lx.pos + 1
+        } else {
+          going = false
+        }
+      }
+      let mut is_float = false
+      if !after_field_dot && lx_peek(lx) == '.' &&
+      !(lx.pos + 1 < lx.len && String::char_code_at(lx.input, lx.pos + 1) == '.') {
+        is_float = true
+        lx.pos = lx.pos + 1
+        let mut g2 = true
+        while g2 {
+          let ch = lx_peek(lx)
+          if ch != -1 && is_digit_c(ch) {
+            lx.pos = lx.pos + 1
+          } else {
+            g2 = false
+          }
+        }
+      }
+      let e = lx_peek(lx)
+      if e == 'e' || e == 'E' {
+        is_float = true
+        lx.pos = lx.pos + 1
+        let s = lx_peek(lx)
+        if s == '+' || s == '-' {
+          lx.pos = lx.pos + 1
+        }
+        let mut g3 = true
+        while g3 {
+          let ch = lx_peek(lx)
+          if ch != -1 && is_digit_c(ch) {
+            lx.pos = lx.pos + 1
+          } else {
+            g3 = false
+          }
+        }
+      }
+      let f = lx_peek(lx)
+      if f == 'f' || f == 'F' {
+        is_float = true
+        lx.pos = lx.pos + 1
+      }
+      let text = String::substring(lx.input, start, lx.pos)
+      if is_float {
+        LTok::{
+          kind: k_float,
+          text: text
+        }
+      } else {
+        LTok::{
+          kind: k_int,
+          text: text
+        }
+      }
+    }
+  } else {
+    lx.pos = lx.pos + 1
+    if c == '=' {
+      let n = lx_peek(lx)
+      if n == '>' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_arrow,
+          text: "=>"
+        }
+      }
+      else if n == '=' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_eqeq,
+          text: "=="
+        }
+      }
+      else {
+        LTok::{
+          kind: k_eq,
+          text: "="
+        }
+      }
+    } else if c == '-' {
+      let n = lx_peek(lx)
+      if n == '=' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_minus_eq,
+          text: "-="
+        }
+      }
+      else if n == '>' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_thin_arrow,
+          text: "->"
+        }
+      }
+      else {
+        LTok::{
+          kind: k_minus,
+          text: "-"
+        }
+      }
+    } else if c == ';' {
+      LTok::{
+        kind: k_semicolon,
+        text: ";"
+      }
+    }
+    else if c == '{' {
+      LTok::{
+        kind: k_lbrace,
+        text: "{"
+      }
+    }
+    else if c == '}' {
+      LTok::{
+        kind: k_rbrace,
+        text: "}"
+      }
+    }
+    else if c == '(' {
+      LTok::{
+        kind: k_lparen,
+        text: "("
+      }
+    }
+    else if c == ')' {
+      LTok::{
+        kind: k_rparen,
+        text: ")"
+      }
+    }
+    else if c == '[' {
+      LTok::{
+        kind: k_lbracket,
+        text: "["
+      }
+    }
+    else if c == ']' {
+      LTok::{
+        kind: k_rbracket,
+        text: "]"
+      }
+    }
+    else if c == ',' {
+      LTok::{
+        kind: k_comma,
+        text: ","
+      }
+    }
+    else if c == ':' {
+      if lx_peek(lx) == ':' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_double_colon,
+          text: "::"
+        }
+      }
+      else {
+        LTok::{
+          kind: k_colon,
+          text: ":"
+        }
+      }
+    } else if c == '/' {
+      let n = lx_peek(lx)
+      if n == '=' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_slash_eq,
+          text: "/="
+        }
+      }
+      else if n == '/' {
+        let start = lx.pos - 1
+        lx.pos = lx.pos + 1
+        let mut going = true
+        while going {
+          let ch = lx_peek(lx)
+          if ch == '\n' || ch == -1 {
+            going = false
+          } else {
+            lx.pos = lx.pos + 1
+          }
+        }
+        LTok::{
+          kind: k_comment,
+          text: String::substring(lx.input, start, lx.pos)
+        }
+      } else {
+        LTok::{
+          kind: k_slash,
+          text: "/"
+        }
+      }
+    } else if c == '+' {
+      if lx_peek(lx) == '=' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_plus_eq,
+          text: "+="
+        }
+      }
+      else {
+        LTok::{
+          kind: k_plus,
+          text: "+"
+        }
+      }
+    } else if c == '*' {
+      if lx_peek(lx) == '=' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_star_eq,
+          text: "*="
+        }
+      }
+      else {
+        LTok::{
+          kind: k_star,
+          text: "*"
+        }
+      }
+    } else if c == '%' {
+      if lx_peek(lx) == '=' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_percent_eq,
+          text: "%="
+        }
+      }
+      else {
+        LTok::{
+          kind: k_percent,
+          text: "%"
+        }
+      }
+    } else if c == '!' {
+      if lx_peek(lx) == '=' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_neq,
+          text: "!="
+        }
+      }
+      else {
+        LTok::{
+          kind: k_bang,
+          text: "!"
+        }
+      }
+    } else if c == '?' {
+      LTok::{
+        kind: k_question,
+        text: "?"
+      }
+    }
+    else if c == '<' {
+      let n = lx_peek(lx)
+      if n == '<' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_lshift,
+          text: "<<"
+        }
+      }
+      else if n == '=' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_lte,
+          text: "<="
+        }
+      }
+      else {
+        LTok::{
+          kind: k_lt,
+          text: "<"
+        }
+      }
+    } else if c == '>' {
+      let n = lx_peek(lx)
+      if n == '>' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_rshift,
+          text: ">>"
+        }
+      }
+      else if n == '=' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_gte,
+          text: ">="
+        }
+      }
+      else {
+        LTok::{
+          kind: k_gt,
+          text: ">"
+        }
+      }
+    } else if c == '&' {
+      if lx_peek(lx) == '&' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_and_and,
+          text: "&&"
+        }
+      }
+      else {
+        LTok::{
+          kind: k_bit_and,
+          text: "&"
+        }
+      }
+    } else if c == '|' {
+      let n = lx_peek(lx)
+      if n == '|' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_or_or,
+          text: "||"
+        }
+      }
+      else if n == '>' {
+        lx.pos = lx.pos + 1; LTok::{
+          kind: k_pipe_gt,
+          text: "|>"
+        }
+      }
+      else {
+        LTok::{
+          kind: k_bit_or,
+          text: "|"
+        }
+      }
+    } else if c == '^' {
+      LTok::{
+        kind: k_bit_xor,
+        text: "^"
+      }
+    }
+    else if c == '.' {
+      if lx.pos + 1 < lx.len && String::char_code_at(lx.input, lx.pos) == '.' &&
+      String::char_code_at(lx.input, lx.pos + 1) == '.' {
+        lx.pos = lx.pos + 2
+        LTok::{
+          kind: k_dotdotdot,
+          text: "..."
+        }
+      } else if lx.pos < lx.len && String::char_code_at(lx.input, lx.pos) == '.' {
+        lx.pos = lx.pos + 1
+        LTok::{
+          kind: k_dotdot,
+          text: ".."
+        }
+      } else {
+        LTok::{
+          kind: k_dot,
+          text: "."
+        }
+      }
+    } else if c == '#' {
+      if lx_peek(lx) == '|' {
+        lx.pos = lx.pos - 1
+        lx_multiline_string(lx)
+      } else {
+        let start = lx.pos - 1
+        let mut going = true
+        while going {
+          let ch = lx_peek(lx)
+          if ch != -1 && is_alnum_c(ch) {
+            lx.pos = lx.pos + 1
+          } else {
+            going = false
+          }
+        }
+        LTok::{
+          kind: k_hash_ref,
+          text: String::substring(lx.input, start, lx.pos)
+        }
+      }
+    } else if c == '@' {
+      if lx.pos < lx.len && is_alpha_c(String::char_code_at(lx.input, lx.pos)) {
+        let start = lx.pos - 1
+        let mut going = true
+        while going {
+          let ch = lx_peek(lx)
+          if ch != -1 && (is_alnum_c(ch) || ch == '_') {
+            lx.pos = lx.pos + 1
+          } else {
+            going = false
+          }
+        }
+        LTok::{
+          kind: k_name,
+          text: String::substring(lx.input, start, lx.pos)
+        }
+      } else {
+        LTok::{
+          kind: k_error,
+          text: String::from_char_code(c)
+        }
+      }
+    } else {
+      LTok::{
+        kind: k_error,
+        text: String::from_char_code(c)
+      }
+    }
+  }
+}
+
+export fn lex_lossless(src: String) -> Array[LTok] {
+  let lx = LX::{
+    input: src,
+    len: String::length(src),
+    pos: 0
+  }
+  let toks = []
+  let mut going = true
+  while going {
+    if lx.pos >= lx.len {
+      going = false
+    } else {
+      Array::push(toks, lx_next(lx))
+    }
+  }
+  Array::push(toks, LTok::{
+    kind: k_eof,
+    text: ""
+  })
+  toks
+}
