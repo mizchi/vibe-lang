@@ -733,6 +733,18 @@ fn lc_int_array_has(xs: Array[Int], v: Int) -> Bool {
   found
 }
 
+/// `s` up to the first `::`, or all of it. A qualified operation is spelled
+/// `ns ++ marker ++ tag ++ "::" ++ op`, so the stamp is always in the part
+/// before the `::` and a marker inside the operation name is not one.
+fn lc_cut_at_qualifier(s: String) -> String {
+  let cut = String::index_of(s, "::")
+  if cut < 0 {
+    s
+  } else {
+    String::substring(s, 0, cut)
+  }
+}
+
 /// #2701: the registered tag a name is stamped with and WHICH MARKER carries
 /// it -- `("", false)` when the name is not stamped.
 ///
@@ -770,7 +782,11 @@ fn lc_registered_tag_of(n: String, tag_owner: MutMap[String, Int]) -> (String, B
     let is_exp = marker == "_exp_"
     if is_exp || marker == "_dep_" {
       let tag = String::substring(ns, i + 5, String::length(ns))
-      if MutMap::has(tag_owner, tag) {
+      // The LONGEST registered tail, not the last. A tag that itself contains
+      // a marker (`fixtures_import_visibility_dep_a_vibe`) offers `a_vibe` as
+      // a shorter tail; taking the last match picked that one and reported an
+      // EXPORTED name as private.
+      if MutMap::has(tag_owner, tag) && String::length(tag) > String::length(best) {
         best = tag
         best_exp = is_exp
       } else {
@@ -784,35 +800,25 @@ fn lc_registered_tag_of(n: String, tag_owner: MutMap[String, Int]) -> (String, B
   (best, best_exp)
 }
 
-/// #2633: the MODULE TAG a mangled name carries -- `..._exp_lib__vibe_parser_polyfill_vibe`
-/// yields `lib__vibe_parser_polyfill_vibe`, and `_dep_` the same.
+/// #2701 (Codex round 5): every tail in `n`'s namespace portion that could be
+/// a module tag -- the text after each `_exp_` / `_dep_`, shape-filtered.
 ///
-/// Read off the name itself rather than derived from the file path, so it
-/// cannot drift from whatever spelling the merge actually produced. "" when
-/// the name is not mangled.
-fn lc_mangle_tag_of(n: String) -> String {
-  // The marker only -- `lib__` is the sanitized first path segment, not part
-  // of the spelling, and requiring it made every tag outside `lib/` read "".
-  // The `+ 5` skips `_exp_` / `_dep_`, so the tag is the sanitized path.
-  //
-  // Cut at `::` exactly as the predicate does. A qualified operation is spelled
-  // `ns ++ "_exp_" ++ path ++ "::" ++ op`, so without the cut the tag carries
-  // `::op`, misses `tag_owner`, and the name is counted `exp_unknown` instead
-  // of being placed -- and worse, `lc_module_tag_of` would register that
-  // spelling as the module's own tag if such a declaration came first.
-  // Scanned RIGHT TO LEFT, because a stamp is a SUFFIX. Taking the first
-  // `_exp_` reads a tag out of the SOURCE name when that name contains the
-  // marker itself: `render_exp_cache_vibe_exp__tmp_dep_vibe` is stamped with
-  // `_tmp_dep_vibe`, and first-occurrence parsing answered
-  // `cache_vibe_exp__tmp_dep_vibe` -- a tag no module carries, so every
-  // reference to it was dropped without trace (Codex round 3 on #2701).
-  let mut best = ""
+/// A LIST rather than an answer, because no scan direction is correct on its
+/// own. Round 3 needed the LAST marker (a source name containing `_exp_`
+/// stamped with a real tag); round 5 needs an EARLIER one (a sanitized PATH
+/// containing `_dep_` -- `fixtures/import_visibility_dep_a.vibe` is in this
+/// repo, and reading its last marker yields `a_vibe`). The two cases demand
+/// opposite rules, so one name in isolation cannot settle it; the caller
+/// decides by agreement across a module's declarations instead.
+fn lc_name_tag_candidates(n: String, out: Array[String]) -> Unit {
+  let ns = lc_cut_at_qualifier(n)
   let mut i = 0
-  while i < String::length(n) {
-    if (i + 5 <= String::length(n)) && (String::substring(n, i, i + 5) == "_exp_" || String::substring(n, i, i + 5) == "_dep_") {
-      let tag = lc_cut_at_qualifier(String::substring(n, i + 5, String::length(n)))
-      if String::length(tag) > 5 && String::ends_with(tag, "_vibe") {
-        best = tag
+  while i + 5 <= String::length(ns) {
+    let marker = String::substring(ns, i, i + 5)
+    if marker == "_exp_" || marker == "_dep_" {
+      let tag = String::substring(ns, i + 5, String::length(ns))
+      if String::length(tag) > 5 && String::ends_with(tag, "_vibe") && !lc_str_array_has(out, tag) {
+        Array::push(out, tag)
       } else {
         ()
       }
@@ -821,46 +827,85 @@ fn lc_mangle_tag_of(n: String) -> String {
     }
     i = i + 1
   }
-  best
 }
 
-/// `s` up to the first `::`, or all of it.
-fn lc_cut_at_qualifier(s: String) -> String {
-  let cut = String::index_of(s, "::")
-  if cut < 0 {
-    s
-  } else {
-    String::substring(s, 0, cut)
-  }
-}
-
-/// #2633: the tag this module's OWN declarations carry, or "" if it declares
-/// no mangled name. One tag per module by construction -- the merge stamps
-/// every declaration of a file with that file.
-fn lc_module_tag_of(part: Array[Stmt]) -> String {
+/// The entries of `a` that also appear in `b`.
+fn lc_str_intersect(a: Array[String], b: Array[String]) -> Array[String] {
+  let out: Array[String] = []
   let mut i = 0
-  while i < Array::length(part) {
-    // Every declaration form the merge stamps, not just the value ones: a
-    // module declaring only an enum would otherwise register no tag, and
-    // `tag_owner` is what decides whether a stamped name can be placed.
-    let t = match Array::get(part, i) {
-      SLet(_, _, n, _, _) => lc_mangle_tag_of(n),
-      SLetMut(n, _, _) => lc_mangle_tag_of(n),
-      SFnDecl(_, n, _, _, _) => lc_mangle_tag_of(n),
-      SStruct(_, n, _, _, _, _) => lc_mangle_tag_of(n),
-      STypeAlias(_, n, _, _) => lc_mangle_tag_of(n),
-      SEnum(_, n, _, _, _) => lc_mangle_tag_of(n),
-      SSuberror(_, n, _) => lc_mangle_tag_of(n),
-      _ => ""
-    }
-    if t != "" {
-      return t
+  while i < Array::length(a) {
+    if lc_str_array_has(b, Array::get(a, i)) {
+      Array::push(out, Array::get(a, i))
     } else {
       ()
     }
     i = i + 1
   }
-  ""
+  out
+}
+
+/// #2701: the tag a module's declarations AGREE on, or "" -- bumping
+/// `amb` when its own declarations cannot settle it.
+///
+/// Every stamped declaration of a module ends `<marker><tag>` for the SAME
+/// tag, so the real tag is a candidate of every one of them. The two kinds of
+/// spurious candidate are separated by that:
+///
+///   from a marker INSIDE the tag   a proper suffix, so SHORTER -- survives the
+///                                  intersection, loses on length
+///   from a marker inside the SOURCE name   LONGER than the tag, but carries
+///                                  that declaration's own text, so it does not
+///                                  survive the intersection
+///
+/// Hence: intersect, then take the longest. A module with exactly ONE stamped
+/// declaration has nothing to intersect against, so a second candidate there
+/// is genuinely undecidable from names -- it is counted and the module is left
+/// out of `tag_owner`, rather than guessed at. Silence about what cannot be
+/// determined is the failure mode this whole instrument exists to avoid.
+fn lc_module_tag_of_agreed(part: Array[Stmt], amb: Array[Int]) -> String {
+  let names: MutMap[String, Int] = MutMap::new_string()
+  lc_decl_names_into(part, names)
+  let decl_names = MutMap::keys(names)
+  let mut acc: Array[String] = []
+  let mut seen_any = false
+  let mut stamped_decls = 0
+  let mut i = 0
+  while i < Array::length(decl_names) {
+    let cand: Array[String] = []
+    lc_name_tag_candidates(Array::get(decl_names, i), cand)
+    if Array::length(cand) > 0 {
+      stamped_decls = stamped_decls + 1
+      if seen_any {
+        acc = lc_str_intersect(acc, cand)
+      } else {
+        acc = cand
+        seen_any = true
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if Array::length(acc) == 0 {
+    ""
+  } else if Array::length(acc) == 1 {
+    Array::get(acc, 0)
+  } else if stamped_decls < 2 {
+    Array::set(amb, 0, Array::get(amb, 0) + 1)
+    ""
+  } else {
+    let mut best = ""
+    let mut bi = 0
+    while bi < Array::length(acc) {
+      if String::length(Array::get(acc, bi)) > String::length(best) {
+        best = Array::get(acc, bi)
+      } else {
+        ()
+      }
+      bi = bi + 1
+    }
+    best
+  }
 }
 
 /// Every top-level name a statement list DECLARES -- values AND types AND
@@ -5708,6 +5753,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
   // the membership test below certify the very name it was added to reject
   // (Codex round 3 on #2701).
   let tag_owner: MutMap[String, Int] = MutMap::new_string()
+  let ctx_amb = st.an_ctx_amb
   let mut tf = 0
   while tf < file_count {
     // The ENTRY module is excluded, and that is the fix rather than a
@@ -5720,7 +5766,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     let t = if tf == entry_fid {
       ""
     } else {
-      lc_module_tag_of(Array::get(parts, tf))
+      lc_module_tag_of_agreed(Array::get(parts, tf), ctx_amb)
     }
     if t != "" && !MutMap::has(tag_owner, t) {
       MutMap::set(tag_owner, t, tf)
@@ -6148,6 +6194,7 @@ struct PreludeSplitStats {
   // unresolved EXPORTED names.
   an_ctx_cls: Array[Int];
   an_ctx_unresolved_exp: Array[Int];
+  an_ctx_amb: Array[Int];
   // #2638: the two fixpoints over `trial` -- concatenated, link-passes applied,
   // NOT folded. Isolates the fold from the link-only passes.
   an_bret_trial: Array[String];
@@ -6198,6 +6245,7 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     an_ctx_unresolved: lc_fresh_string_array(),
     an_ctx_cls: [0, 0, 0, 0, 0, 0],
     an_ctx_unresolved_exp: [],
+    an_ctx_amb: [0],
     an_bret_trial: lc_fresh_string_array(),
     an_view_trial: lc_fresh_string_array(),
     an_mrv_names: lc_fresh_string_array(),
@@ -6548,6 +6596,11 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // matched nothing and the zeros mean nothing.
   ctx_line = String::concat(ctx_line, " seen=")
   ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 5)))
+  // Modules whose own declarations cannot settle their tag. Reported rather
+  // than guessed: a wrong tag moves rows between `unresolved_exp` and
+  // `unresolved_dep`, which is the one distinction this line exists to make.
+  ctx_line = String::concat(ctx_line, " amb=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_amb, 0)))
   ctx_line = String::concat(ctx_line, "\n")
   let an_line = String::concat(String::concat(String::concat(an_head, an_cols), "\n"), ctx_line)
   let line = String::concat(String::concat(head, mid), tail)
