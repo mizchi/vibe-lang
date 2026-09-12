@@ -315,12 +315,6 @@ $ vibe grep --pattern 'f($(x:expr))' lib
 error: grep pattern: unknown metavariable kind `expr` — use one of exp, id, const, arg, args, pat, type
 ```
 
-`text` is the **printer's canonical rendering** of the matched node and is the
-exact, complete description of what matched. `end` is a *lower bound* on the
-source extent: only identifier-shaped tokens carry offsets in this AST, so
-trailing punctuation and literals are not counted. Use `text`, not `[start,
-end)`, when you need to know what the match was.
-
 A file that does not parse is skipped, not fatal: a repo sweep must not stop at
 the first work-in-progress file. The skip is reported on stderr
 (`warning: grep: skipped \`path\` because it could not be parsed`) so empty
