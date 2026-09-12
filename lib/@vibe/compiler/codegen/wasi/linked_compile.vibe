@@ -284,6 +284,7 @@ import @vibe/compiler/codegen/common_base {
   str_table_new,
   suspend_cps_pass,
   ty_head_names_formal,
+  unique_name_flags,
   wrap_entry_exception_boundary
 }
 
@@ -10497,6 +10498,16 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // beside the index one and checked against it per function below; nothing
   // reads it as the answer yet.
   let (body_cache_names_sorted, body_cache_names_pos) = codegen_body_cache_name_index(body_cache_in)
+  // #2669 step 2a: and which of THIS build's user function names identify one
+  // function. A name the current build duplicates cannot be used to find a
+  // body, whatever the cache happens to hold for it.
+  let lc_user_fn_names = lc_fresh_string_array()
+  let mut lc_ufn_i = 0
+  while lc_ufn_i < num_user_funcs {
+    Array::push(lc_user_fn_names, Array::get(fn_names_list, lc_ufn_i))
+    lc_ufn_i = lc_ufn_i + 1
+  }
+  let lc_name_unique = unique_name_flags(lc_user_fn_names)
   let body_cache_in_ok = if Array::length(body_cache_in.fn_indices) == 0 {
     true
   } else if pin_region_capacity < 0 {
@@ -11246,7 +11257,11 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       //
       // Step 2b drops the index lookup, at which point this check goes with
       // it: there will be nothing left to agree with.
-      if body_cache_in_ok {
+      // Only when the name identifies ONE function here. A build-side
+      // duplicate makes the name meaningless for this function even if the
+      // cache kept a single entry under it -- which the prefix filter can
+      // produce, by dropping one of the pair and keeping the other.
+      if body_cache_in_ok && Array::get(lc_name_unique, bi) == 1 {
         let __named_hit = codegen_body_cache_find_named_at(body_cache_names_sorted, body_cache_names_pos, Array::get(fn_names_list, bi))
         // -2 is AMBIGUOUS, which the name lookup documents as a miss, so it is
         // not a disagreement to report -- comparing a miss sentinel against a

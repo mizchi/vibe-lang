@@ -453,6 +453,41 @@ export fn codegen_body_cache_find_named_at(sorted: Array[String], positions: Arr
   }
 }
 
+/// #2669 step 2a: one flag per name -- 1 when that name occurs EXACTLY once
+/// in `names`, 0 when it is duplicated.
+///
+/// A name identifies a function only while it is unique, and uniqueness has to
+/// be asked of the CURRENT build, not only of the cache. The cache can hold
+/// one of a duplicated pair and no more -- the prefix filter drops entries
+/// past the first changed file, and the pair can straddle that boundary -- at
+/// which point the cached name looks unique while the build still has two
+/// functions answering to it. Found by review on #2714, one round after the
+/// cache-side ambiguity.
+///
+/// Sorted once and scanned in one pass rather than compared pairwise, so this
+/// is O(n log n) for the whole table instead of O(n) per lookup.
+export fn unique_name_flags(names: Array[String]) -> Array[Int] {
+  let n = Array::length(names)
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < n {
+    Array::push(out, 1)
+    i = i + 1
+  }
+  let (sorted, positions) = ctor_sorted_index(names)
+  let mut k = 0
+  while k + 1 < n {
+    if Array::get(sorted, k) == Array::get(sorted, k + 1) {
+      Array::set(out, Array::get(positions, k), 0)
+      Array::set(out, Array::get(positions, k + 1), 0)
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+  out
+}
+
 export fn codegen_body_cache_slot_index(cache: CodegenBodyCache, key_count: Int) -> Array[Int] {
   let out: Array[Int] = []
   let mut j = 0
