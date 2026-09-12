@@ -1156,12 +1156,27 @@ across two independent invocations:
 | **whole-compile total, one-leaf edit** | **848.7 MB** | **1,434.3 MB** |
 
 **Reuse on is 2.4x worse on the edit it was supposed to fix, and 6.1x worse
-cold.** The cold row is the one that says why: a cold compile has nothing to
-reuse, so every byte of that 1.38 GB is the machinery's WRITE side — building
-and publishing the per-module dependency-transport environments — paid in full
-for a read that cannot happen. The unchanged row is identical to the byte in
-both lanes, which says the reuse arm is not even reached there: the
-conservative fingerprint already short-circuits that case.
+cold.** The cold row is the one that bounds it: a cold compile can reuse
+nothing, so every byte of that 1.38 GB is the transport machinery running for
+a read that cannot succeed. The unchanged row is identical to the byte in both
+lanes, which says the reuse arm is not even reached there: the conservative
+fingerprint already short-circuits that case.
+
+**What the cold row does NOT say is that the cost is publication** (Codex P2 on
+the PR that recorded this, and correct). On a miss the enabled lane pays TWICE
+over, in two different places, and both are inside that number:
+
+- `finish_typecheck_fs_impl` builds `typing_dependency_transport_input_key`
+  from the module's verbatim source plus each dependency's exact env text, then
+  calls `load_typing_dependency_env_reuse_target` — which on a cold compile
+  misses for every module;
+- `commit_module_outcome` then builds *the same large key again* and publishes
+  the eligibility and the sidecar.
+
+So the cold figure is **miss-path lookup plus publication**, with the key
+construction paid twice per module, and nothing here separates them. Splitting
+those three terms is the next measurement, not a conclusion this table
+supports.
 
 **It is not wrong, just slower.** Compiling the same corpus with the flag on
 and off, body cache off so a replayed body cannot mask a difference, gives
@@ -1173,9 +1188,9 @@ What this rules out is the shortcut, not the goal. Criterion 5 still needs the
 check phase bounded by the edited module, but reusing the check lane's
 transport as-is makes a compile worse, because a compile consumes more of a
 module's check than the public env carries (the typed-lowering offsets the
-reuse arm republishes, #2391) and pays to publish the env regardless. The next
-measurement is where inside that 1.38 GB the write side actually goes — not
-another cache. The per-file AST cache was built before it was measured and
+reuse arm republishes, #2391) and pays the whole transport whether or not the
+read succeeds. The next measurement is the split named above — key
+construction, miss-path lookup, publication — not another cache. The per-file AST cache was built before it was measured and
 came back at exactly zero (#2668); this is the same mistake one step later,
 caught by measuring first. Filed as #2728.
 
