@@ -37,8 +37,11 @@ cd "$ROOT_DIR"
 . "$ROOT_DIR/scripts/resolve_stage2.sh"
 STAGE2="$(resolve_stage2 reloc-crossbuild "${RELOC_CROSSBUILD_STAGE2:-}")"
 
-if [ "$#" -eq 2 ]; then
-  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/vibe_run.sh scripts/reloc_crossbuild.vibex -- "$1" "$2"
+# An explicitly supplied pair. A third argument names comma-separated functions
+# whose SOURCE differs between the two modules, to be excluded from the
+# statistics (see the vibex); without one, nothing is excluded.
+if [ "$#" -ge 2 ]; then
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/vibe_run.sh scripts/reloc_crossbuild.vibex -- "$1" "$2" ${3:+"$3"}
   exit $?
 fi
 
@@ -85,7 +88,12 @@ build b
 cp "$work/leaf.orig" "$LEAF"
 
 echo "[reloc-crossbuild] the reordering edit touches ONE existing body:"
-echo "                   encode_url_safe (one added let). Mismatches naming it"
-echo "                   are a source change, not a relocation failure."
+echo "                   encode_url_safe (one added let). It is EXCLUDED from"
+echo "                   the statistics below -- its two versions are different"
+echo "                   source programs, so comparing them measures the edit."
+# The third argument names the function this wrapper EDITED. Its two versions
+# are different source programs, so comparing them would measure the edit and
+# not relocation; the vibex excludes it from the statistics and FAILS if the
+# name matches nothing, so a rename here cannot silently put it back.
 VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/vibe_run.sh scripts/reloc_crossbuild.vibex -- \
-  "$work/a.wasm" "$work/b.wasm"
+  "$work/a.wasm" "$work/b.wasm" encode_url_safe

@@ -50,10 +50,14 @@ fn read_uleb(b: Bytes, pos: Int) -> (Int, Int) {
   let mut done = false
   while !done {
     let byte = Bytes::get(b, p)
-    result = result | ((byte & 127) << shift)
+    result = result|((byte&127)<<shift)
     shift = shift + 7
     p = p + 1
-    if (byte & 128) == 0 { done = true } else { () }
+    if (byte&128) == 0 {
+      done = true
+    } else {
+      ()
+    }
   }
   (result, p)
 }
@@ -67,12 +71,20 @@ fn read_sleb(b: Bytes, pos: Int) -> (Int, Int) {
   while !done {
     let byte = Bytes::get(b, p)
     last = byte
-    result = result | ((byte & 127) << shift)
+    result = result|((byte&127)<<shift)
     shift = shift + 7
     p = p + 1
-    if (byte & 128) == 0 { done = true } else { () }
+    if (byte&128) == 0 {
+      done = true
+    } else {
+      ()
+    }
   }
-  if (last & 64) != 0 && shift < 63 { result = result - (1 << shift) } else { () }
+  if (last&64) != 0 && shift < 63 {
+    result = result - (1<<shift)
+  } else {
+    ()
+  }
   (result, p)
 }
 
@@ -139,11 +151,19 @@ fn load(path: String) -> Mod with Exception + Fs {
         } else if kind == 1 {
           let fl = Bytes::get(b, pk + 2)
           let (_, pn) = read_uleb(b, pk + 3)
-          if fl == 1 { let (_, pm) = read_uleb(b, pn); pi = pm } else { pi = pn }
+          if fl == 1 {
+            let (_, pm) = read_uleb(b, pn); pi = pm
+          } else {
+            pi = pn
+          }
         } else if kind == 2 {
           let fl = Bytes::get(b, pk + 1)
           let (_, pn) = read_uleb(b, pk + 2)
-          if fl == 1 { let (_, pm) = read_uleb(b, pn); pi = pm } else { pi = pn }
+          if fl == 1 {
+            let (_, pm) = read_uleb(b, pn); pi = pm
+          } else {
+            pi = pn
+          }
         } else {
           pi = pk + 3
         }
@@ -182,14 +202,27 @@ fn load(path: String) -> Mod with Exception + Fs {
               qc = qb + nlen
               k = k + 1
             }
-          } else { () }
+          } else {
+            ()
+          }
           q = sub_end
         }
-      } else { () }
-    } else { () }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
     p = section_end
   }
-  Mod::{ names: names, name_idxs: name_idxs, body_idxs: body_idxs, body_starts: body_starts, body_ends: body_ends, bytes: b }
+  Mod::{
+    names: names,
+    name_idxs: name_idxs,
+    body_idxs: body_idxs,
+    body_starts: body_starts,
+    body_ends: body_ends,
+    bytes: b
+  }
 }
 
 fn name_of(m: Mod, idx: Int) -> String {
@@ -197,7 +230,11 @@ fn name_of(m: Mod, idx: Int) -> String {
   let mut i = 0
   let mut found = ""
   while i < n {
-    if Array::get(m.name_idxs, i) == idx { found = Array::get(m.names, i); i = n } else { i = i + 1 }
+    if Array::get(m.name_idxs, i) == idx {
+      found = Array::get(m.names, i); i = n
+    } else {
+      i = i + 1
+    }
   }
   found
 }
@@ -221,11 +258,21 @@ fn index_of_name(m: Mod, name: String) -> Int {
   while i < n {
     if Array::get(m.names, i) == name {
       hits = hits + 1
-      if hits == 1 { found = Array::get(m.name_idxs, i) } else { () }
-    } else { () }
+      if hits == 1 {
+        found = Array::get(m.name_idxs, i)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
     i = i + 1
   }
-  if hits > 1 { -2 } else { found }
+  if hits > 1 {
+    -2
+  } else {
+    found
+  }
 }
 
 /// The index A's function `idx` maps to in B, or -1 when its name is absent
@@ -253,7 +300,11 @@ fn body_slot(m: Mod, idx: Int) -> Int {
   let mut i = 0
   let mut found = -1
   while i < n {
-    if Array::get(m.body_idxs, i) == idx { found = i; i = n } else { i = i + 1 }
+    if Array::get(m.body_idxs, i) == idx {
+      found = i; i = n
+    } else {
+      i = i + 1
+    }
   }
   found
 }
@@ -265,21 +316,94 @@ fn spans_equal(ab: Bytes, s: Int, e: Int, other: Bytes) -> Bool {
     let mut i = 0
     let mut same = true
     while i < e - s {
-      if Bytes::get(ab, s + i) != Bytes::get(other, i) { same = false } else { () }
+      if Bytes::get(ab, s + i) != Bytes::get(other, i) {
+        same = false
+      } else {
+        ()
+      }
       i = i + 1
     }
     same
   }
 }
 
+/// Is `name` one of the functions whose SOURCE the caller edited?
+///
+/// Forcing a module reorder requires editing at least one existing body --
+/// something has to call across the new import -- so that body's B version is
+/// a different program from its A version. Comparing them measures the edit,
+/// not relocation: it inflates the denominator and, when the edited body
+/// happens to carry no visible non-function reference, it lands in the
+/// "unambiguously encoding-blind" bucket and inflates the one number this
+/// whole exercise exists to size. Naming it in the output is not enough, so
+/// it is excluded from the statistics. Found by review on #2705.
+///
+/// Matching is on the UNMANGLED base, not a substring: #716 path-mangles a
+/// private definition to `<name>_exp_<path>` / `<name>_dep_<path>`, so an
+/// exact name or one of those two prefixes is the whole rule. A substring
+/// test would quietly take `encode` along with `encode_url_safe`.
+fn is_source_edited(name: String, edited: Array[String]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(edited) {
+    let e = Array::get(edited, i)
+    if name == e || String::starts_with(name, String::concat(e, "_exp_")) || String::starts_with(name, String::concat(e, "_dep_")) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn split_commas(s: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut cur = ""
+  let mut i = 0
+  while i < String::length(s) {
+    let c = String::substring(s, i, i + 1)
+    if c == "," {
+      if String::length(cur) > 0 {
+        Array::push(out, cur)
+      } else {
+        ()
+      }
+      cur = ""
+    } else {
+      cur = String::concat(cur, c)
+    }
+    i = i + 1
+  }
+  if String::length(cur) > 0 {
+    Array::push(out, cur)
+  } else {
+    ()
+  }
+  out
+}
+
 fn main() -> Unit allows Exception + Fs + Stdout + Env {
   if Env::args_len() < 2 {
     println("reloc-crossbuild: usage: vibe run scripts/reloc_crossbuild.vibex -- <a.wasm> <b.wasm>")
     throw("two modules required")
-  } else { () }
+  } else {
+    ()
+  }
   let a = load(Env::args_get(0))
   let b = load(Env::args_get(1))
-
+  // Optional third argument: comma-separated names of functions the caller
+  // EDITED between the two builds. See is_source_edited.
+  let edited = if Env::args_len() > 2 {
+    split_commas(Env::args_get(2))
+  } else {
+    []
+  }
+  let edited_hits: Array[Int] = []
+  let mut eh = 0
+  while eh < Array::length(edited) {
+    Array::push(edited_hits, 0); eh = eh + 1
+  }
   let mut compared = 0
   let mut matched = 0
   let mut mismatched = 0
@@ -293,22 +417,41 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   let mut unresolved_func = 0
   let mut had_nonfunc = 0
   let mut a_only_shape = 0
+  let mut source_edited_excluded = 0
   let examples: Array[String] = []
-
   let n = Array::length(a.body_idxs)
   let mut i = 0
   while i < n {
     let ai = Array::get(a.body_idxs, i)
     let nm = name_of(a, ai)
     let bi = map_index(a, b, ai)
-    let bs = if bi < 0 { -1 } else { body_slot(b, bi) }
+    let bs = if bi < 0 {
+      -1
+    } else {
+      body_slot(b, bi)
+    }
     if bi == -2 {
       ambiguous_name = ambiguous_name + 1
+    } else if bs >= 0 && is_source_edited(nm, edited) {
+      source_edited_excluded = source_edited_excluded + 1
+      let mut ei = 0
+      while ei < Array::length(edited) {
+        if is_source_edited(nm, [Array::get(edited, ei)]) {
+          Array::set(edited_hits, ei, Array::get(edited_hits, ei) + 1)
+        } else {
+          ()
+        }
+        ei = ei + 1
+      }
     } else if bs < 0 {
       a_only_shape = a_only_shape + 1
     } else {
       compared = compared + 1
-      if ai != bi { moved_index = moved_index + 1 } else { () }
+      if ai != bi {
+        moved_index = moved_index + 1
+      } else {
+        ()
+      }
       let a_start = Array::get(a.body_starts, i)
       let a_end = Array::get(a.body_ends, i)
       let r = scan_body_relocs(a.bytes, a_start, a_end)
@@ -338,7 +481,11 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
             Array::push(mapped, val)
           } else {
             Array::push(mapped, nv)
-            if nv != val { rewritten = rewritten + 1 } else { () }
+            if nv != val {
+              rewritten = rewritten + 1
+            } else {
+              ()
+            }
           }
         } else {
           nonfunc = nonfunc + 1
@@ -346,15 +493,35 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
         }
         k = k + 1
       }
-      if nonfunc > 0 { had_nonfunc = had_nonfunc + 1 } else { () }
-      if unresolved > 0 { unresolved_func = unresolved_func + 1 } else { () }
+      if nonfunc > 0 {
+        had_nonfunc = had_nonfunc + 1
+      } else {
+        ()
+      }
+      if unresolved > 0 {
+        unresolved_func = unresolved_func + 1
+      } else {
+        ()
+      }
       let rebuilt = rebuild_body_relocs(a.bytes, a_start, a_end, r, mapped)
-      if rewritten > 0 { rewritten_bodies = rewritten_bodies + 1 } else { () }
+      if rewritten > 0 {
+        rewritten_bodies = rewritten_bodies + 1
+      } else {
+        ()
+      }
       if spans_equal(b.bytes, Array::get(b.body_starts, bs), Array::get(b.body_ends, bs), rebuilt) {
         matched = matched + 1
-        if rewritten > 0 { rewritten_matched = rewritten_matched + 1 } else { () }
+        if rewritten > 0 {
+          rewritten_matched = rewritten_matched + 1
+        } else {
+          ()
+        }
       } else {
-        if rewritten > 0 { rewritten_mismatched = rewritten_mismatched + 1 } else { () }
+        if rewritten > 0 {
+          rewritten_mismatched = rewritten_mismatched + 1
+        } else {
+          ()
+        }
         mismatched = mismatched + 1
         // Attribute it. A body carrying a non-function reference was passed
         // through unchanged above, so a mismatch there may be this TOOL's
@@ -375,7 +542,11 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
         // confound belong in it.
         if nonfunc == 0 && unresolved == 0 {
           mismatch_encoding_blind = mismatch_encoding_blind + 1
-          if Array::length(examples) < 6 { Array::push(examples, nm) } else { () }
+          if Array::length(examples) < 6 {
+            Array::push(examples, nm)
+          } else {
+            ()
+          }
         } else {
           mismatch_ambiguous_cause = mismatch_ambiguous_cause + 1
         }
@@ -383,7 +554,6 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
     }
     i = i + 1
   }
-
   let out = StringBuilder::new()
   StringBuilder::push(out, "reloc-crossbuild compared=")
   StringBuilder::push(out, __to_string(compared))
@@ -405,6 +575,8 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   StringBuilder::push(out, __to_string(rewritten_matched))
   StringBuilder::push(out, " rewritten_mismatched=")
   StringBuilder::push(out, __to_string(rewritten_mismatched))
+  StringBuilder::push(out, " source_edited_excluded=")
+  StringBuilder::push(out, __to_string(source_edited_excluded))
   StringBuilder::push(out, " a_only=")
   StringBuilder::push(out, __to_string(a_only_shape))
   StringBuilder::push(out, " bodies_with_nonfunc_refs=")
@@ -422,10 +594,27 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
       e = e + 1
     }
     println(StringBuilder::freeze(ex))
-  } else { () }
+  } else {
+    ()
+  }
+  // A name the caller said it edited that matched NOTHING means the exclusion
+  // silently stopped working -- a rename in the wrapper, a change in the
+  // mangling -- and the confound would be back in the numbers with no sign of
+  // it. Same shape as the vacuity guards below.
+  let mut eg = 0
+  while eg < Array::length(edited) {
+    if Array::get(edited_hits, eg) == 0 {
+      throw(String::concat("reloc-crossbuild: no compared body matched the source-edited name '", String::concat(Array::get(edited, eg), "' -- the exclusion is not doing anything")))
+    } else {
+      ()
+    }
+    eg = eg + 1
+  }
   if compared == 0 {
     throw("reloc-crossbuild: nothing compared -- the two modules share no named function")
-  } else { () }
+  } else {
+    ()
+  }
   // NON-VACUITY, in two steps, because the first one is not enough.
   //
   // (1) If no shared function moved, the two builds have the same index
@@ -434,7 +623,9 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   // an order that already placed the imported module first, both land here.
   if moved_index == 0 {
     throw("reloc-crossbuild: no shared function changed index -- the two builds have the SAME assignment, so this run measured nothing")
-  } else { () }
+  } else {
+    ()
+  }
   // (2) A function's own index is NOT encoded in its body, so (1) says the
   // ASSIGNMENT moved, not that any REWRITE happened. Bodies referencing only
   // functions that held still are rebuilt by an identity operation, and would
@@ -445,5 +636,7 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   // #2705, one round after (1).)
   if rewritten_matched == 0 {
     throw("reloc-crossbuild: no body was both rewritten and byte-identical -- every rebuild was an identity operation, so this run says nothing about relocation")
-  } else { () }
+  } else {
+    ()
+  }
 }

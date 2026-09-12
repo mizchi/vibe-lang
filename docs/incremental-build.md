@@ -741,31 +741,32 @@ itself emitted for B**.
 
 | | count | share |
 |---|---:|---:|
-| bodies compared | 4351 | |
-| **REWRITTEN: at least one reference moved** | **3158** | |
+| bodies compared | 4350 | |
+| **REWRITTEN: at least one reference moved** | **3157** | |
 | **rewritten AND byte-identical to the compiler's own output** | **2814** | **89.1%** |
-| rewritten, mismatched | 344 | 10.9% |
+| rewritten, mismatched | 343 | 10.9% |
 | not rewritten — an identity rebuild, no evidence either way | 1193 | |
-| mismatch, cause not determinable (of all 383) | 284 | |
-| mismatch, unambiguously **encoding-blind** (of all 383) | 99 | |
+| mismatch, cause not determinable (of all 382) | 284 | |
+| mismatch, unambiguously **encoding-blind** (of all 382) | 98 | |
 | skipped: the name is ambiguous on one side or the other | 5 | |
-| shared functions whose index actually moved | 4266 | |
+| excluded: the body the wrapper EDITED, not a relocation case | 1 | |
+| shared functions whose index actually moved | 4265 | |
 
 **89.1% of the bodies this measurement can speak for survive a module reorder
 byte for byte**, using nothing but the references the instruction encoding
 exposes. That is the first direct evidence that index-independent bodies work
 rather than an argument that they should.
 
-**The load-bearing figure is 2814 / 3158, not 3968 / 4351.** A function's own
+**The load-bearing figure is 2814 / 3157, not 3968 / 4350.** A function's own
 index is not encoded in its body, so "the assignment moved" does not mean "this
-body was rewritten": 1193 of the 4351 reference only functions that held still,
+body was rewritten": 1193 of the 4350 reference only functions that held still,
 and are rebuilt by an identity operation. Their match says nothing about
 relocation, and counting them flattered the first published rate (91.2%) over
 the real one (89.1%). Measured the other way round, with the remap forced to
 the identity on the same pair, matched falls **3968 → 1154** — so the remap is
 worth 2814 bodies, and that is the claim.
 
-**99 is a LOWER BOUND on what the emitter must record, not the number.** Only
+**98 is a LOWER BOUND on what the emitter must record, not the number.** Only
 bodies with no confound are in it: a body can carry both a non-function
 reference (passed through here, because wasm gives those spaces no name
 section to map through) and an encoding-blind `i64.const`, and an unresolved
@@ -800,10 +801,14 @@ it got wrong first and reports now:
   zero of those FAILS too. Red-tested by forcing the remap to the identity on
   the real pair: `moved_index=4266 rewritten=0`, so the first guard passes and
   the second one fires.
-- **The one edited body is named.** Forcing a module reorder requires editing
-  something — a call has to cross the new import — so the wrapper keeps that to
-  one function and prints its name, rather than letting it inflate the figure
-  silently.
+- **The one edited body is EXCLUDED, not merely named.** Forcing a module
+  reorder requires editing something — a call has to cross the new import — so
+  that body's two versions are different source programs and comparing them
+  measures the edit. Naming it in the output left it in the denominator and,
+  measured, inside the encoding-blind bucket: excluding it moves the bound from
+  99 to **98** and the compared total from 4351 to 4350. The wrapper passes the
+  name and the tool FAILS if it matches nothing, so a rename cannot put the
+  confound back in silence.
 
 **What the scan cannot see, and why the link must record instead of derive.**
 A `call` immediate is self-describing — the opcode says the next uleb is a
