@@ -452,3 +452,41 @@ test "a persisted cache carrying a negative function index is refused" {
   }
   inspect(accepted, content = "accepted")
 }
+
+test "#2669: index-keyed replay reuses everything while the assignment agrees" {
+  // THE BASELINE step 2 has to improve, pinned before the work rather than
+  // claimed after it. `body_cache_out` records exactly the functions a build
+  // COMPILED -- `codegen_body_cache_record` runs only on the non-replay
+  // branch -- so its length is the recompile count directly, with no
+  // instrumentation and no proxy.
+  let src = "let alpha: () -> Int = () -> { 1 }\nlet beta: () -> Int = () -> { alpha() + 1 }\nlet run: () -> Int = () -> { beta() + alpha() }"
+  let out_a = codegen_body_cache_new()
+  let cold = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", codegen_body_cache_new(), out_a)
+  inspect(Array::length(out_a.fn_indices), content = "3")
+  // Handed that harvest, the same program recompiles NOTHING and answers the
+  // same bytes. Full reuse is available -- when the index assignment agrees.
+  let out_b = codegen_body_cache_new()
+  let warm = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", out_a, out_b)
+  inspect(Array::length(out_b.fn_indices), content = "0")
+  assert(bytes_eq(cold, warm))
+}
+
+//# `codegen_body_cache_find` keys on the FUNCTION INDEX, so an entry is only
+//# meaningful in a build that assigns that index to the same function. The FS
+//# layer supplies exactly that: `decode_body_cache_payload_for` keeps the
+//# unchanged PREFIX of files and `codegen_body_cache_filter_src_below` trims
+//# to it, and over an identical prefix index i names the same function in both
+//# builds. The prefix rule is not timidity -- it IS the precondition.
+//#
+//# Measured (#2669, not asserted here because it describes a misuse rather
+//# than a behaviour worth freezing): hand this entry point a harvest whose
+//# assignment does NOT agree -- insert a function ahead of the others -- and
+//# it replays 3 of 4 bodies into the wrong slots and answers a module that
+//# differs from a fresh compile. Production cannot reach that, because the
+//# prefix filter is upstream of it.
+//#
+//# That is what makes the prefix rule expensive: an edit early in merge order
+//# invalidates everything after it, whether or not those bodies changed. Step
+//# 2 removes the cost by removing the dependence -- key the lookup on function
+//# IDENTITY and relocate the references -- at which point the precondition is
+//# no longer needed and the filter can keep every unchanged file.
