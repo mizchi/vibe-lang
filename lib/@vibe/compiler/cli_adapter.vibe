@@ -990,10 +990,26 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // produced the table, not as a switch anyone should flip.
   //
   // The deletion condition is therefore BOTH halves, and the correctness half
-  // is not discharged: an oracle over edit shapes that actually change meaning
-  // (an interface change, a type change, a removed export), AND the transport
-  // ceasing to cost more than the read saves, which needs the four-term split
-  // above measured first. A compile consumes more of a module's check than the public env
+  // is not discharged. It needs an oracle that actually reaches a reuse HIT,
+  // which most edit shapes cannot: the input key is the module's VERBATIM
+  // source plus each dependency's exact env text
+  // (`typing_dependency_transport_input_key`), so editing the module under
+  // test changes its own key and editing a dependency's INTERFACE changes
+  // every consumer's key -- both MISS and are freshly checked, and an oracle
+  // built from them passes whether or not the reuse arm is correct.
+  //
+  // The shape that hits is a dependency-body edit that changes MEANING while
+  // leaving the dependency's public `TypeEnv` text identical: the consumer's
+  // key is then unchanged, the hit happens, and the question is whether the
+  // compile-only state it republishes (the typed-lowering offsets, #2391) is
+  // still right. The public env being equal is exactly what makes the hit
+  // happen and exactly why the public env cannot detect the problem.
+  //
+  // So: that edit shape, a check that the unchanged consumer really recorded
+  // a dependency-transport hit (or the oracle is vacuous again), and the wasm
+  // compared against reuse disabled. AND the transport ceasing to cost more
+  // than the read saves, which needs the four-term split above measured
+  // first. A compile consumes more of a module's check than the public env
   // carries (the typed-lowering offsets the reuse arm republishes, #2391),
   // and "the check lane proves it" was a claim about the check lane. #2728.
   //
