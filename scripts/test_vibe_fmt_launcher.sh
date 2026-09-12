@@ -86,6 +86,32 @@ for mode in "" "--check" "--stdout"; do
 done
 [ "$(cat "$SRC")" = "let   a=1" ] || fail "a refused format still rewrote the source file"
 
+# THE OTHER REFUSAL (#2636, Codex on #2708). The runner reports 2 -- the INPUT
+# does not parse -- writes the parse error to $out.diag and the input back to
+# $out. The arm must print that error and name the edit, NOT the "bug in the
+# formatter" text of verdict 1, and must leave the file alone in every mode.
+PARSE_REFUSE_RUNNER="$TMP_DIR/parse-refuse-runner"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'cat "$2" > "$3"' \
+  'printf "vibe fmt: refusing to format %s: it does not parse\n  unexpected token: ?" "$2" > "$3.diag"' \
+  'echo 2' > "$PARSE_REFUSE_RUNNER"
+chmod +x "$PARSE_REFUSE_RUNNER"
+printf 'let a=x?1:2\n' > "$SRC"
+for mode in "" "--check" "--stdout"; do
+  # shellcheck disable=SC2086
+  if VIBE_RUNNER="$PARSE_REFUSE_RUNNER" VIBE_CLI_WASM="$CLI" \
+    bash "$ROOT_DIR/runtime/vibe" fmt $mode "$SRC" > "$OUT" 2> "$ERR"; then
+    fail "an input that does not parse was formatted (exit 0) in mode '${mode:-write}'"
+  fi
+  grep -q "does not parse" "$ERR" || fail "an input that does not parse was not reported as such in mode '${mode:-write}'"
+  grep -q "unexpected token" "$ERR" || fail "the parse error did not reach the user in mode '${mode:-write}'"
+  if grep -q "bug in" "$ERR"; then
+    fail "an input that does not parse was reported as a formatter bug in mode '${mode:-write}'"
+  fi
+done
+[ "$(cat "$SRC")" = "let a=x?1:2" ] || fail "an input that does not parse was rewritten"
+
 # A runner that produces no output must not be reported as a clean format.
 EMPTY_RUNNER="$TMP_DIR/empty-runner"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 23' > "$EMPTY_RUNNER"

@@ -6178,6 +6178,36 @@ if ! cmp -s "$fmtdir/expected.vibe" "$fmtdir/out.vibe"; then
 fi
 rm -rf "$fmtdir"
 echo "[compiler-gate] vibe fmt ok (#2149)"
+#      ...and #2636 on that same INSTALLED route (Codex on #2708): the branch
+#      above is what runtime/vibe's `fmt` arm runs, and it formatted input that
+#      did not parse -- `a==0?"z":"nz"` came back reflowed as
+#      `a == 0?"z": "nz"` with verdict 0, which `--check` then certified.
+#      Verdict 2, the input written back byte-for-byte, and the parse error in
+#      the .diag sidecar; the messy file above already pins that a program
+#      which parses is still formatted with verdict 0.
+fmtdir="_build/_gate_vibe_fmt_parse"
+rm -rf "$fmtdir"; mkdir -p "$fmtdir"
+printf 'fn f(a: Int) -> String {\n  a==0?"z":"nz"\n}\n' > "$fmtdir/ternary.vibe"
+fmt_rc="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fmtdir/ternary.vibe" "$fmtdir/out.vibe" 2>"$fmtdir/run.err" | tail -1 || true)"
+if [ "$fmt_rc" != "2" ]; then
+  echo "[compiler-gate] FAIL: VIBE_FMT on a file that does not parse returned '$fmt_rc', not 2 -- the installed vibe fmt formats programs the compiler rejects (#2636)" >&2
+  cat "$fmtdir/run.err" >&2 || true
+  exit 1
+fi
+if ! cmp -s "$fmtdir/ternary.vibe" "$fmtdir/out.vibe"; then
+  echo "[compiler-gate] FAIL: VIBE_FMT rewrote a file that does not parse (#2636)" >&2
+  diff -u "$fmtdir/ternary.vibe" "$fmtdir/out.vibe" >&2 || true
+  exit 1
+fi
+if ! grep -qF 'does not parse' "$fmtdir/out.vibe.diag" 2>/dev/null || ! grep -qF 'unexpected token' "$fmtdir/out.vibe.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_FMT's refusal did not name the parse error in the .diag sidecar (#2636)" >&2
+  cat "$fmtdir/out.vibe.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+rm -rf "$fmtdir"
+echo "[compiler-gate] vibe fmt refuses a file that does not parse on the installed route ok (#2636)"
 
 # 108/108. The ADR-0068 concurrency surface is opt-in (#2248).
 #      docs/spec/stable-surface.md said the unstable surface "is reached only

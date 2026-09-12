@@ -123,8 +123,8 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   | 23 | Struct | `struct` |
   | 24 | Event | `effect` |
   | 26 | TypeParameter | `type` alias |
-  | 27 | Test (not an LSP kind) | a `test "X"` block, span = the label inside the quotes |
-  | 28 | Bench (not an LSP kind) | a `bench "X"` block, span = the label inside the quotes |
+  | 27 | Test (not an LSP kind) | a `test "X"` block, span = the label inside its delimiters (`"…"`, `r"…"`, `#\|…`) |
+  | 28 | Bench (not an LSP kind) | a `bench "X"` block, span = the label inside its delimiters |
 - **`--single-file` analyzes ONE file and does not follow its imports**, so on a
   file with imports it reports names it cannot see as undefined. A file that is
   perfectly valid under a plain `vibe check` can come back with

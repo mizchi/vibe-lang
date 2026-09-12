@@ -152,6 +152,17 @@ else
   bad "symbols should report [String::length 12 30 44]; got: $out_cm2"
 fi
 
+# 7c. Codex on #2708: a raw-string label `r"name"` starts its span at the name,
+#     not at the opening quote (the TString token starts at the `r`).
+rl="$WORK/raw_label.vibe"
+printf 'test r"adds" { let _ = 1 }\n' > "$rl"
+out_rl="$("$VIBE" symbols "$rl" 2>/dev/null || true)"
+if [ "$out_rl" = "adds 27 7 11" ]; then
+  ok "symbols starts a raw-string label at the name"
+else
+  bad "symbols should report [adds 27 7 11] for a raw-string label; got: $out_rl"
+fi
+
 # --- #2381: arguments are no longer accepted and ignored --------------------
 # Every case below used to print a.vibe's outline and exit 0, so a caller who
 # believed they had asked about two files -- or who typo'd a flag -- got a

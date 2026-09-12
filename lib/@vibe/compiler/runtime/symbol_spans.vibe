@@ -189,13 +189,57 @@ fn sym_string_is(t: Token, text: String) -> Bool {
   }
 }
 
-/// A `test "X"` / `bench "X"` block: its span is the label's text inside the
-/// quotes (the string literal token after the keyword), or the keyword itself
-/// when the label is empty (the parser rejects an unnamed block; `test ""` is
-/// the stand-in, and the keyword is the stable outline name for it, #1944).
-/// Kind 27 / 28, not Function: a block label is not a declaration of the
-/// spelling it carries (#2632).
-fn sym_emit_block(out: Array[(String, Int, Int, Int)], tokens: Array[Token], starts: Array[Int], ends: Array[Int], label: String, keyword: String, kind: Int, floor: Array[Int], hi: Int) -> Unit {
+/// The bytes of a string literal token's CONTENT, read from its delimiters
+/// in the source: a plain `"…"` is one byte in on each side, a raw `r"…"`
+/// two in and one back, and a `#|…` block starts two in and runs to the
+/// token's end (the lexer ends it at the line end, so nothing trails). An
+/// unrecognised spelling keeps the whole token rather than guessing. All
+/// three lex to one `TString`, so the token alone cannot say which (Codex on
+/// #2708: `test r"name"` reported the opening quote as the label's first
+/// byte).
+fn sym_string_content_span(source: String, s: Int, e: Int) -> (Int, Int) {
+  let n = String::length(source)
+  let c0 = if s < n {
+    String::char_code_at(source, s)
+  } else {
+    0
+  }
+  let c1 = if s + 1 < n {
+    String::char_code_at(source, s + 1)
+  } else {
+    0
+  }
+  if c0 == '"' {
+    (s + 1, if e - 1 > s + 1 {
+      e - 1
+    } else {
+      s + 1
+    })
+  } else if c0 == 'r' && c1 == '"' {
+    (s + 2, if e - 1 > s + 2 {
+      e - 1
+    } else {
+      s + 2
+    })
+  } else if c0 == '#' && c1 == '|' {
+    (s + 2, if e > s + 2 {
+      e
+    } else {
+      s + 2
+    })
+  } else {
+    (s, e)
+  }
+}
+
+/// A `test "X"` / `bench "X"` block: its span is the label's text inside its
+/// delimiters (the string literal token after the keyword --
+/// `sym_string_content_span`), or the keyword itself when the label is empty
+/// (the parser rejects an unnamed block; `test ""` is the stand-in, and the
+/// keyword is the stable outline name for it, #1944). Kind 27 / 28, not
+/// Function: a block label is not a declaration of the spelling it carries
+/// (#2632).
+fn sym_emit_block(out: Array[(String, Int, Int, Int)], source: String, tokens: Array[Token], starts: Array[Int], ends: Array[Int], label: String, keyword: String, kind: Int, floor: Array[Int], hi: Int) -> Unit {
   let ntok = Array::length(tokens)
   let mut k = sym_first_token_at(starts, Array::get(floor, 0))
   let mut found = false
@@ -208,7 +252,8 @@ fn sym_emit_block(out: Array[(String, Int, Int, Int)], tokens: Array[Token], sta
       } else if k + 1 < ntok && sym_string_is(Array::get(tokens, k + 1), label) {
         let s = Array::get(starts, k + 1)
         let e = Array::get(ends, k + 1)
-        Array::push(out, (label, kind, s + 1, e - 1))
+        let (cs, ce) = sym_string_content_span(source, s, e)
+        Array::push(out, (label, kind, cs, ce))
         Array::set(floor, 0, e)
         found = true
       } else {
@@ -254,7 +299,7 @@ fn sym_let_kind(body: Expr) -> Int {
 /// Tests/benches are 27 / 28 (see the header). An `impl Trait for T` is one
 /// Method (6) named after T, located after the `for` token: SImpl carries no
 /// method children (`parse_program_spans` skips the body).
-fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], tokens: Array[Token], starts: Array[Int], ends: Array[Int], stmt: Stmt, floor: Array[Int], hi: Int) -> Unit {
+fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], source: String, tokens: Array[Token], starts: Array[Int], ends: Array[Int], stmt: Stmt, floor: Array[Int], hi: Int) -> Unit {
   match stmt {
     SLet(_, _, name, _, body) => sym_emit(out, tokens, starts, ends, name, sym_let_kind(body), floor, hi),
     SFnDecl(_, name, _, _, _) => sym_emit(out, tokens, starts, ends, name, 12, floor, hi),
@@ -274,13 +319,13 @@ fn sym_walk_stmt(out: Array[(String, Int, Int, Int)], tokens: Array[Token], star
       sym_emit(out, tokens, starts, ends, type_name, 6, floor, hi)
     },
     SEffectDef(_, name, _, _) => sym_emit(out, tokens, starts, ends, name, 24, floor, hi),
-    STest(name, _) => sym_emit_block(out, tokens, starts, ends, name, "test", 27, floor, hi),
-    SBench(name, _) => sym_emit_block(out, tokens, starts, ends, name, "bench", 28, floor, hi),
+    STest(name, _) => sym_emit_block(out, source, tokens, starts, ends, name, "test", 27, floor, hi),
+    SBench(name, _) => sym_emit_block(out, source, tokens, starts, ends, name, "bench", 28, floor, hi),
     SModule(_, name, body) => {
       sym_emit(out, tokens, starts, ends, name, 2, floor, hi)
       let mut j = 0
       while j < Array::length(body) {
-        sym_walk_stmt(out, tokens, starts, ends, Array::get(body, j), floor, hi)
+        sym_walk_stmt(out, source, tokens, starts, ends, Array::get(body, j), floor, hi)
         j = j + 1
       }
     },
@@ -312,7 +357,7 @@ fn symbol_spans_impl(source: String) -> Array[(String, Int, Int, Int)] with Exce
         String::length(source)
       }
       let floor = sym_box_int(lo)
-      sym_walk_stmt(out, tokens, starts, ends, Array::get(span_stmts, i), floor, hi)
+      sym_walk_stmt(out, source, tokens, starts, ends, Array::get(span_stmts, i), floor, hi)
       i = i + 1
     }
     out

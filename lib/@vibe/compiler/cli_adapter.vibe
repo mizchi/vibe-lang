@@ -523,6 +523,16 @@ fn adapter_program_parses(src: String) -> Bool {
   } with { Exception::Throw(_) => false }
 }
 
+/// "" when `src` parses, else the parser's message -- the VIBE_FMT branch
+/// puts it in the `.diag` sidecar so the refusal names what is wrong with the
+/// file (lib/@vibe/cli/fmt_entry.vibe's `parse_error_of`, #2636).
+fn adapter_parse_error_of(src: String) -> String {
+  handle {
+    let _ = parse_program(lex(src))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
 fn adapter_string_to_bytes(s: String) -> Bytes {
   let out = Array::slice([0], 0, 0)
   let len = String::length(s)
@@ -1587,10 +1597,12 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // the path an installed user runs, where no CI fmt gate is watching.
   //
   // On refusal the INPUT is written back, so the caller always has a valid
-  // file at output_path; the non-zero return is what says "I refused". The
-  // runner exits 0 whatever this returns and prints the value as the last
-  // stdout line, so runtime/vibe's `fmt` arm reads that line -- discarding it
-  // is how a refusal once looked exactly like "nothing to change" (#1821).
+  // file at output_path; the non-zero return is what says "I refused": 2 when
+  // the input does not parse (the parse error is in the `.diag` sidecar), 1
+  // when the formatted output does not parse and the input did. The runner
+  // exits 0 whatever this returns and prints the value as the last stdout
+  // line, so runtime/vibe's `fmt` arm reads that line -- discarding it is how
+  // a refusal once looked exactly like "nothing to change" (#1821).
   if Env::get("VIBE_FMT") == "1" {
     let src = Fs::read_file(input_path)
     // #730 (D-3): pinned form is canonical, so fmt completes an unpinned
@@ -1604,17 +1616,24 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
     // require-head split (#1435, #2253 round 6).
     let formatted = format_source(input_path, fmt_pre)
     // A `.vpkg` header is not vibe syntax, so a whole-file parse never
-    // succeeds for one and the comparison would say nothing. format_vpkg
+    // succeeds for one and the questions below would say nothing. format_vpkg
     // already refuses to touch a header it cannot read -- the same policy
     // reached by a different route (#1435).
     //
-    // Only a rewrite that BREAKS something is rejected. A file that did not
-    // parse to begin with is still formatted: the promise is "no worse", not
-    // "only valid input". A require-pin head is not vibe syntax either and
-    // is reattached verbatim, so the parse question is asked of the BODY --
-    // both source and output start their body at the same boundary
-    // (source_header_end; -1 refused and 0 absent both mean "the body is
-    // the whole file").
+    // Two questions, both asked of the BODY (a require-pin head is not vibe
+    // syntax either and is reattached verbatim, so source and output start
+    // their body at the same boundary -- source_header_end; -1 refused and 0
+    // absent both mean "the body is the whole file"). First: does the INPUT
+    // parse? If not it is not a program, and no spelling is minted for it
+    // (#2636: `cond ? a : b` was reflowed into text that still did not parse,
+    // which `--check` then certified. lib/@vibe/cli/fmt_entry.vibe refused
+    // that first; this branch -- the route an installed user takes -- kept
+    // formatting under an older "no worse" promise until Codex found it on
+    // #2708). The parse error goes to the `.diag` sidecar and the verdict is
+    // 2, which runtime/vibe's `fmt` arm reports as "does not parse" with the
+    // edit named, not as a formatter bug. Second: does the OUTPUT parse? A
+    // rewrite that breaks a program that parsed is the formatter's own
+    // defect, verdict 1.
     let fmt_head_end = if adapter_path_has_suffix(input_path, ".vpkg") {
       0
     } else {
@@ -1627,7 +1646,18 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
     }
     let fmt_body = String::substring(fmt_pre, fmt_head_end, String::length(fmt_pre))
     let fmt_formatted_body = String::substring(formatted, fmt_head_end, String::length(formatted))
-    if !adapter_path_has_suffix(input_path, ".vpkg") && adapter_program_parses(fmt_body) && !adapter_program_parses(fmt_formatted_body) {
+    let fmt_is_vpkg = adapter_path_has_suffix(input_path, ".vpkg")
+    let fmt_input_error = if fmt_is_vpkg {
+      ""
+    } else {
+      adapter_parse_error_of(fmt_body)
+    }
+    if String::length(fmt_input_error) > 0 {
+      let _ = emit_compile_diag(output_path, String::concat("vibe fmt: refusing to format ", String::concat(input_path, String::concat(": it does not parse\n  ", fmt_input_error))))
+      Fs::write_bytes(output_path, adapter_string_to_bytes(src))
+      return 2
+    }
+    if !fmt_is_vpkg && !adapter_program_parses(fmt_formatted_body) {
       Fs::write_bytes(output_path, adapter_string_to_bytes(src))
       return 1
     }
