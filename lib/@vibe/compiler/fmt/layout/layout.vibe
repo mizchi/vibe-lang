@@ -1,0 +1,968 @@
+// Token layout, width decisions, spacing, escaping, and indentation.
+
+import @vibe/compiler/fmt/lexer {
+  LTok,
+  k_bang,
+  k_char,
+  k_colon,
+  k_comma,
+  k_comment,
+  k_dot,
+  k_dotdot,
+  k_double_colon,
+  k_else,
+  k_enum,
+  k_eof,
+  k_eq,
+  k_export,
+  k_from,
+  k_gt,
+  k_if,
+  k_impl,
+  k_import,
+  k_lbrace,
+  k_lbracket,
+  k_let,
+  k_lparen,
+  k_match,
+  k_minus,
+  k_name,
+  k_newline,
+  k_none,
+  k_pipe,
+  k_rbrace,
+  k_rbracket,
+  k_record,
+  k_rparen,
+  k_semicolon,
+  k_slash,
+  k_star,
+  k_string,
+  k_string_interp,
+  k_struct,
+  k_thin_arrow,
+  k_type,
+  k_ws
+}
+
+import @vibe/compiler/fmt/token_stream {
+  brace_starts_import_list,
+  find_matching_rbrace,
+  find_matching_rbracket,
+  is_generic_param_bracket,
+  is_index_receiver_kind,
+  is_keyword_kind,
+  is_literal_kind,
+  is_operator_kind,
+  is_statement_start,
+  is_type_context_end,
+  next_non_trivia_kind,
+  span_has_newline,
+  text_contains_newline
+}
+
+let c_brace_block = 0
+
+let c_brace_record = 1
+
+let c_brace_match = 3
+
+let c_brace_enum = 4
+
+let c_brace_effects = 5
+
+let c_bracket_array = 6
+
+let c_bracket_type_args = 7
+
+let c_bracket_index = 8
+
+/// import/export symbol list `{ ... }` whose single-line rendering would
+/// exceed max_import_list_width -- forces one item per line, like
+/// c_brace_record. A short import list still uses plain c_brace_block (one
+/// joined line), so this kind only exists to opt in to per-item newlines.
+let c_brace_import_wrap = 9
+
+/// Array literal that fits on the line it starts on (#2103): unlike
+/// c_bracket_array it neither indents nor forces one element per line, so
+/// `[1, 2, 3]` / `[]` stay written the way they read.
+let c_bracket_array_inline = 10
+
+/// `struct N { .. }` body / `N::{ .. }` literal that does NOT fit on one line
+/// (#2104): one field per line, like c_brace_record. Kept distinct from
+/// c_brace_record because a `:` inside a struct DECL body opens a type
+/// context (`x: Array[Int]`), which c_brace_record suppresses.
+let c_brace_struct = 11
+
+/// Same two containers when they DO fit: rendered entirely on one line.
+let c_brace_struct_inline = 12
+
+let max_import_list_width = 140
+
+/// Column budget for the one-line form of an array literal / struct body
+/// (#2103, #2104): a collection whose joined rendering would end past column
+/// 80 goes one item per line instead. Import lists keep their own, far wider
+/// budget (max_import_list_width) — an import list is a header, not an
+/// expression, and wrapping it early only pushes real code down the file.
+let max_collection_width = 80
+
+let decl_none = 0
+
+let decl_type_alias = 1
+
+let decl_enum = 2
+
+fn container_indents(c: Int) -> Bool {
+  c == c_brace_block || c == c_brace_record || c == c_brace_import_wrap ||
+  c == c_brace_match || c == c_brace_enum || c == c_bracket_array ||
+  c == c_brace_struct
+}
+
+fn container_forces_list_newlines(c: Int) -> Bool {
+  c == c_brace_record || c == c_brace_match || c == c_brace_import_wrap ||
+  c == c_brace_enum || c == c_bracket_array || c == c_brace_struct
+}
+
+/// Containers that render on the single line they start on. Nothing inside
+/// one may emit a newline — not the closer, not a separator, not a nested
+/// container — so every newline decision is suppressed while one is open
+/// (inline_depth in format_tokens).
+fn container_is_inline(c: Int) -> Bool {
+  c == c_bracket_array_inline || c == c_brace_struct_inline
+}
+
+/// Estimated single-line rendered width of the import-list interior
+/// (open_idx+1 .. close_idx), joined as `item1, item2, ...` starting at
+/// column base_col. Only needs to be a consistent (idempotent) function of
+/// the token stream, not pixel-perfect: it drives a wrap/no-wrap threshold
+/// decision, not the actual spacing (needs_space still renders the tokens).
+fn import_list_width(toks: Array[LTok], open_idx: Int, close_idx: Int, base_col: Int) -> Int {
+  let mut total = base_col
+  let mut i = open_idx + 1
+  let mut prev_kind = k_none
+  let mut first_in_item = true
+  while i < close_idx {
+    let k = Array::get(toks, i).kind
+    if k == k_ws || k == k_newline || k == k_comment {
+      i = i + 1
+    } else if k == k_comma {
+      total = total + 2
+      prev_kind = k_none
+      first_in_item = true
+      i = i + 1
+    } else {
+      let t = Array::get(toks, i).text
+      let need_sp = !first_in_item && prev_kind != k_double_colon && k != k_double_colon
+      total = total + (if need_sp {
+        1
+      } else {
+        0
+      }) + String::length(t)
+      prev_kind = k
+      first_in_item = false
+      i = i + 1
+    }
+  }
+  total
+}
+
+fn import_list_should_wrap(toks: Array[LTok], open_idx: Int, base_col: Int) -> Bool {
+  let close = find_matching_rbrace(toks, open_idx)
+  if close < 0 {
+    false
+  } else {
+    import_list_width(toks, open_idx, close, base_col) > max_import_list_width
+  }
+}
+
+/// Rendered width of one token, close enough to drive a threshold (the exact
+/// rendering is still token_text_for_output's job). Quoted kinds pay for their
+/// delimiters; escapes inside them are not counted.
+fn approx_token_width(tok: LTok) -> Int {
+  let k = tok.kind
+  if k == k_string || k == k_string_interp || k == k_char {
+    String::length(tok.text) + 2
+  } else {
+    String::length(trim_ascii_ws(tok.text))
+  }
+}
+
+/// Coarse version of needs_space for the width estimate above: it may be off
+/// by a column on exotic pairs, which only shifts a wrap threshold, never the
+/// emitted spacing.
+fn approx_needs_space(prev_kind: Int, curr_kind: Int) -> Bool {
+  if prev_kind == k_none {
+    false
+  } else if curr_kind == k_rparen || curr_kind == k_rbracket || curr_kind == k_comma ||
+  curr_kind == k_semicolon || curr_kind == k_colon || curr_kind == k_dot ||
+  curr_kind == k_double_colon || curr_kind == k_lparen || curr_kind == k_lbracket {
+    false
+  } else if prev_kind == k_lparen || prev_kind == k_lbracket || prev_kind == k_dot ||
+  prev_kind == k_double_colon {
+    false
+  } else {
+    true
+  }
+}
+
+/// #2103/#2104: may the container opened at `open_idx` (matching closer at
+/// `close_idx`) be rendered on the line it starts on, starting at column
+/// `base_col`? Three ways to say no:
+///
+///  * the joined rendering would end past max_collection_width,
+///  * the span holds a `//` comment (joining would comment out the rest of
+///    the line — real corruption, not a style regression),
+///  * an interpolated-string token carries a raw newline, which no amount of
+///    joining can pull back onto one line.
+///
+/// Trivia is otherwise skipped, so the answer is a function of the token
+/// sequence alone: re-formatting this formatter's own output re-derives the
+/// same decision, which is what keeps `fmt` a fixpoint.
+fn collection_fits_inline(toks: Array[LTok], open_idx: Int, close_idx: Int, base_col: Int) -> Bool {
+  if close_idx <= open_idx {
+    false
+  } else {
+    let mut col = base_col
+    let mut i = open_idx + 1
+    let mut prev_kind = k_none
+    let mut ok = true
+    while ok && i <= close_idx {
+      let tok = Array::get(toks, i)
+      let k = tok.kind
+      if k == k_comment {
+        ok = false
+      } else if k == k_ws || k == k_newline {
+        i = i + 1
+      } else if k == k_string_interp && text_contains_newline(tok.text) {
+        ok = false
+      } else {
+        col = col + (if approx_needs_space(prev_kind, k) {
+          1
+        } else {
+          0
+        }) + approx_token_width(tok)
+        if col > max_collection_width {
+          ok = false
+        } else {
+          prev_kind = k
+          i = i + 1
+        }
+      }
+    }
+    ok
+  }
+}
+
+fn trim_ascii_ws(text: String) -> String {
+  let len = String::length(text)
+  if len == 0 {
+    ""
+  } else {
+    let mut start = 0
+    let mut going = true
+    while going && start < len {
+      let c = String::char_code_at(text, start)
+      if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+        start = start + 1
+      } else {
+        going = false
+      }
+    }
+    let mut end = len
+    let mut g2 = true
+    while g2 && end > start {
+      let c = String::char_code_at(text, end - 1)
+      if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+        end = end - 1
+      } else {
+        g2 = false
+      }
+    }
+    String::substring(text, start, end)
+  }
+}
+
+fn write_escaped_char(c: Int, for_char: Bool) -> String {
+  if c == '\n' {
+    "\\n"
+  }
+  else if c == '\t' {
+    "\\t"
+  }
+  else if c == '\r' {
+    "\\r"
+  }
+  else if c == '\\' {
+    "\\\\"
+  }
+  else if c == '"' {
+    if for_char {
+      "\""
+    } else {
+      "\\\""
+    }
+  }
+  else if c == '\'' {
+    if for_char {
+      "\\'"
+    } else {
+      "'"
+    }
+  }
+  else {
+    String::from_char_code(c)
+  }
+}
+
+fn quote_string_literal(text: String) -> String {
+  // O(N) build via StringBuilder; per-char String::concat was O(L²) over the
+  // string-literal length, paid when re-emitting every literal (issue #366).
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "\"")
+  let n = String::length(text)
+  let mut i = 0
+  while i < n {
+    StringBuilder::push(out, write_escaped_char(String::char_code_at(text, i), false))
+    i = i + 1
+  }
+  StringBuilder::push(out, "\"")
+  StringBuilder::freeze(out)
+}
+
+fn quote_char_literal(text: String) -> String {
+  let mut out = "'"
+  if String::length(text) > 0 {
+    out = String::concat(out, write_escaped_char(String::char_code_at(text, 0), true))
+  }
+  String::concat(out, "'")
+}
+
+fn should_escape_identifier_text(text: String) -> Bool {
+  text == "let" || text == "import" || text == "use" || text == "declare" ||
+  text == "test" || text == "if" || text == "else" || text == "match" ||
+  text == "record" || text == "fn" || text == "rec" ||
+  text == "type" || text == "enum" || text == "while" || text == "loop" ||
+  text == "bench" || text == "example" || text == "mut" || text == "raise" || text == "yield" ||
+  text == "break" || text == "continue" || text == "export" || text == "from" ||
+  text == "as" || text == "struct" || text == "trait" || text == "impl" ||
+  text == "true" || text == "false"
+}
+
+fn token_text_for_output(tok: LTok, next_kind: Int) -> String {
+  let k = tok.kind
+  if k == k_string {
+    quote_string_literal(tok.text)
+  } else if k == k_string_interp {
+    String::concat("\"", String::concat(tok.text, "\""))
+  } else if k == k_char {
+    quote_char_literal(tok.text)
+  } else if k == k_name {
+    // #960 Stage 2: the `map { ... }` literal is retired, so `map` is an
+    // ordinary identifier — no k_map soft keyword, no `r#` re-escaping.
+    let trimmed = trim_ascii_ws(tok.text)
+    if should_escape_identifier_text(trimmed) {
+      String::concat("r#", trimmed)
+    } else {
+      trimmed
+    }
+  } else {
+    trim_ascii_ws(tok.text)
+  }
+}
+
+fn container_kind_for_brace(prev_kind: Int) -> Int {
+  if prev_kind == k_record {
+    c_brace_record
+  }
+  else {
+    c_brace_block
+  }
+}
+
+fn container_kind_for_bracket(prev_kind: Int, in_type_context: Bool, in_type_decl_header: Bool, generic_hint: Bool) -> Int {
+  if generic_hint {
+    c_bracket_type_args
+  } else if (prev_kind == k_name || prev_kind == k_rbracket) && (in_type_context || in_type_decl_header) {
+    c_bracket_type_args
+  } else if is_index_receiver_kind(prev_kind) {
+    c_bracket_index
+  } else {
+    c_bracket_array
+  }
+}
+
+fn should_force_newline_before(kind: Int, container_stack: Array[Int]) -> Bool {
+  if kind != k_rbrace && kind != k_rbracket {
+    false
+  } else if Array::length(container_stack) == 0 {
+    false
+  } else {
+    container_indents(Array::get(container_stack, Array::length(container_stack) - 1))
+  }
+}
+
+fn should_start_type_context_on_colon(container_stack: Array[Int]) -> Bool {
+  if Array::length(container_stack) == 0 {
+    true
+  } else {
+    let top = Array::get(container_stack, Array::length(container_stack) - 1)
+    !(top == c_brace_record)
+  }
+}
+
+fn is_prefix_op(kind: Int, prev_kind: Int) -> Bool {
+  if kind != k_minus && kind != k_bang {
+    false
+  } else if prev_kind == k_none {
+    true
+  } else {
+    is_operator_kind(prev_kind) || is_keyword_kind(prev_kind) ||
+    prev_kind == k_lparen || prev_kind == k_lbracket || prev_kind == k_lbrace ||
+    prev_kind == k_comma || prev_kind == k_colon || prev_kind == k_semicolon
+  }
+}
+
+/// #1505: the token that GOVERNS the qualified path ending just before `end`
+/// (the index of the `{` being considered), skipping trivia and the whole
+/// `Name (:: Name)*` run.
+///
+/// The struct-literal guards below key off the token before the name, but they
+/// read a fixed TWO-token lookback, which any qualifier defeats: in
+/// `match Color::Red {` the two-back token is `::`, not `match`, so every
+/// keyword guard missed and the scrutinee was rewritten to `match Color::Red::{`
+/// -- the same corruption family as the k_is / k_match cases, reachable
+/// whenever the subject is spelled with its enum.
+///
+/// Only a `::`-JOINED run is skipped, never two adjacent names. Several of the
+/// guards key off contextual keywords that lex as plain names (`effect`,
+/// `suberror`, `with`), so a walk that skipped any name would step straight
+/// over them: `export effect TcpSocket {` would report `export` as the
+/// governor and rewrite the declaration header to `effect TcpSocket::{`. That
+/// is the same corruption this function exists to prevent, and it showed up on
+/// 19 files the first time this was written the loose way.
+///
+/// This is a strict generalization: with an unqualified name exactly one token
+/// is skipped, so the result is the old two-token lookback.
+fn needs_space(prev_prev_kind: Int, prev_kind: Int, curr_kind: Int, prev_prefix: Bool, prev_pipe: Bool, path_active: Bool) -> Bool {
+  if prev_kind == k_none {
+    false
+  } else if prev_prefix {
+    false
+  } else if prev_pipe && curr_kind == k_gt {
+    false
+  } else if prev_kind == k_let && curr_kind == k_star {
+    false
+  } else if path_active && prev_kind != k_import && prev_kind != k_export && prev_kind != k_from &&
+  (prev_kind == k_slash || curr_kind == k_slash || prev_kind == k_dot || curr_kind == k_dot || prev_kind == k_dotdot || curr_kind == k_dotdot) {
+    // import/export path separators (`./a/b/index.vibe`, `.. / ..`) are a single
+    // path token, not division/projection — no surrounding spaces (#628). The
+    // space right after the `import`/`export`/`from` keyword is kept (excluded).
+    false
+  } else if curr_kind == k_rparen || curr_kind == k_rbracket || curr_kind == k_rbrace ||
+  curr_kind == k_comma || curr_kind == k_semicolon {
+    false
+  } else if curr_kind == k_colon {
+    false
+  } else if prev_kind == k_name && curr_kind == k_name {
+    true
+  } else if prev_kind == k_rbracket && curr_kind == k_name {
+    true
+  } else if (curr_kind == k_lparen || curr_kind == k_lbracket) &&
+  (prev_kind == k_name || is_literal_kind(prev_kind) || prev_kind == k_rparen || prev_kind == k_rbracket || prev_kind == k_rbrace) {
+    false
+  } else if curr_kind == k_lbrace &&
+  (prev_kind == k_lparen || prev_kind == k_lbracket || prev_kind == k_double_colon) {
+    false
+  } else if prev_kind == k_lparen || prev_kind == k_lbracket {
+    false
+  } else if (prev_kind == k_import || prev_kind == k_export) &&
+  (curr_kind == k_dot || curr_kind == k_slash) {
+    true
+  } else if prev_kind == k_slash && curr_kind == k_name &&
+  (prev_prev_kind == k_dot || prev_prev_kind == k_import || prev_prev_kind == k_export) {
+    false
+  } else if prev_kind == k_dot || curr_kind == k_dot {
+    false
+  } else if prev_kind == k_lbrace {
+    true
+  } else if prev_kind == k_comma || prev_kind == k_semicolon || prev_kind == k_colon {
+    true
+  } else if curr_kind == k_lbrace {
+    true
+  } else if is_keyword_kind(curr_kind) {
+    true
+  } else if is_operator_kind(prev_kind) || is_operator_kind(curr_kind) {
+    true
+  } else if is_keyword_kind(prev_kind) {
+    true
+  } else {
+    false
+  }
+}
+
+fn spaces(n: Int) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < n {
+    out = String::concat(out, " ")
+    i = i + 1
+  }
+  out
+}
+
+fn arr_pop_int(arr: Array[Int]) -> Int {
+  let n = Array::length(arr)
+  if n == 0 {
+    -1
+  } else {
+    let v = Array::get(arr, n - 1)
+    Array::truncate(arr, n - 1)
+    v
+  }
+}
+
+export fn format_tokens(toks: Array[LTok], indent_size: Int) -> String {
+  let out = []
+  let mut indent = 0
+  let mut pending_newlines = 0
+  let container_stack = []
+  let cpb_stack = []
+  let cpb_bracket_stack = []
+  let mut paren_depth = 0
+  let mut brace_depth = 0
+  let mut bracket_depth = 0
+  let pm_paren = []
+  let pm_brace = []
+  let pm_bracket = []
+  let tc_paren = []
+  let tc_brace = []
+  let tc_bracket = []
+  let mut type_decl_header = decl_none
+  let mut type_decl_rhs_active = false
+  let mut saw_newline = false
+  let mut line_has_content = false
+  // #2103/#2104: column reached on the line being built, so a collection's
+  // fits-on-one-line question is asked at its real starting column rather
+  // than at its indent (an array at the end of `let xs = foo(a, [..])` starts
+  // far right of `indent * indent_size`).
+  let mut cur_col = 0
+  // How many inline containers are currently open. > 0 suppresses every
+  // newline decision, including those of containers nested inside.
+  let mut inline_depth = 0
+  // True between the `struct` keyword and the `{` that opens its body, so
+  // that body can be told apart from an ordinary brace block.
+  let mut struct_header = false
+  let mut prev_prev_kind = k_none
+  let mut prev_prev_text = ""
+  let mut prev_kind = k_none
+  let mut prev_text = ""
+  let mut prev_prefix = false
+  let mut prev_pipe = false
+  let mut prev_line_comment = false
+  // #628: true while inside an import/export path region (keyword .. `{`), so
+  // `/` and `.` separators are emitted without surrounding spaces.
+  let mut path_active = false
+  let mut i = 0
+  let n = Array::length(toks)
+  while i < n {
+    let tok = Array::get(toks, i)
+    let kind = tok.kind
+    if kind == k_ws {
+      i = i + 1
+    } else if kind == k_comment {
+      let comment_text = trim_ascii_ws(tok.text)
+      if pending_newlines == 0 && line_has_content {
+        pending_newlines = 1
+      }
+      if pending_newlines > 0 {
+        let mut j = 0
+        while j < pending_newlines {
+          Array::push(out, "\n")
+          j = j + 1
+        }
+        pending_newlines = 0
+        let pad = if indent <= 0 || indent_size <= 0 {
+          0
+        } else {
+          indent * indent_size
+        }
+        Array::push(out, spaces(pad))
+        cur_col = pad
+        line_has_content = false
+      }
+      Array::push(out, comment_text)
+      cur_col = cur_col + String::length(comment_text)
+      line_has_content = true
+      prev_prev_kind = k_none
+      prev_prev_text = ""
+      prev_kind = k_none
+      prev_text = ""
+      prev_prefix = false
+      prev_pipe = false
+      path_active = false
+      prev_line_comment = String::length(comment_text) >= 2 &&
+      String::char_code_at(comment_text, 0) == '/' && String::char_code_at(comment_text, 1) == '/'
+      i = i + 1
+    } else if kind == k_newline {
+      saw_newline = true
+      if prev_line_comment {
+        let max_nl = if brace_depth == 0 {
+          2
+        } else {
+          1
+        }
+        if pending_newlines < max_nl {
+          pending_newlines = pending_newlines + 1
+        }
+        prev_line_comment = false
+        i = i + 1
+      } else {
+        let next_kind = next_non_trivia_kind(toks, i)
+        let collapse_generic_break =
+        (prev_kind == k_impl || prev_kind == k_eq) && next_kind == k_lbracket
+        let in_effects_brace = Array::length(container_stack) > 0 &&
+        Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_effects
+        // A newline directly inside a brace BLOCK (one statement per source
+        // line) is significant even when that block sits inside an enclosing
+        // call's parens (`run(() -> {`) or an array/bracket literal -- only a
+        // newline inside a paren/bracket construct opened AFTER the current
+        // innermost container (mid-expression line-wrapping, e.g. multi-line
+        // call args) should be swallowed. Comparing against the ABSOLUTE
+        // paren_depth/bracket_depth (as opposed to their value recorded when
+        // the innermost container was entered, via cpb_stack/cpb_bracket_stack)
+        // wrongly swallowed every statement-separating newline inside any
+        // brace block nested in an outer call's argument list, collapsing the
+        // whole block onto one line.
+        let base_paren = if Array::length(cpb_stack) > 0 {
+          Array::get(cpb_stack, Array::length(cpb_stack) - 1)
+        } else {
+          0
+        }
+        let base_bracket = if Array::length(cpb_bracket_stack) > 0 {
+          Array::get(cpb_bracket_stack, Array::length(cpb_bracket_stack) - 1)
+        } else {
+          0
+        }
+        if paren_depth > base_paren || bracket_depth > base_bracket || collapse_generic_break ||
+        in_effects_brace || inline_depth > 0 {
+          i = i + 1
+        } else {
+          let max_nl = if brace_depth == 0 {
+            2
+          } else {
+            1
+          }
+          if pending_newlines < max_nl {
+            pending_newlines = pending_newlines + 1
+          }
+          i = i + 1
+        }
+      }
+    } else if kind == k_eof {
+      i = i + 1
+    } else {
+      if kind == k_match {
+        Array::push(pm_paren, paren_depth)
+        Array::push(pm_brace, brace_depth)
+        Array::push(pm_bracket, bracket_depth)
+      }
+      if saw_newline && paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 &&
+      is_statement_start(kind) {
+        Array::truncate(tc_paren, 0)
+        Array::truncate(tc_brace, 0)
+        Array::truncate(tc_bracket, 0)
+        type_decl_rhs_active = false
+        type_decl_header = decl_none
+        struct_header = false
+      }
+      saw_newline = false
+      if pending_newlines == 0 && inline_depth == 0 &&
+      should_force_newline_before(kind, container_stack) {
+        pending_newlines = 1
+      }
+      let mut dedented_before = false
+      if pending_newlines > 0 {
+        if kind == k_rbrace || kind == k_rbracket {
+          if Array::length(container_stack) > 0 {
+            let container = Array::get(container_stack, Array::length(container_stack) - 1)
+            if container_indents(container) && indent > 0 {
+              indent = indent - 1
+              dedented_before = true
+            }
+          }
+        }
+        let mut j = 0
+        while j < pending_newlines {
+          Array::push(out, "\n")
+          j = j + 1
+        }
+        pending_newlines = 0
+        let pad = if indent <= 0 || indent_size <= 0 {
+          0
+        } else {
+          indent * indent_size
+        }
+        Array::push(out, spaces(pad))
+        cur_col = pad
+        prev_prev_kind = k_none
+        prev_prev_text = ""
+        prev_kind = k_none
+        prev_text = ""
+        prev_prefix = false
+        prev_pipe = false
+        path_active = false
+        line_has_content = false
+      }
+      let next_kind = next_non_trivia_kind(toks, i)
+      let curr_pipe = kind == k_pipe && next_kind == k_gt
+      let in_type_context = Array::length(tc_paren) > 0 ||
+      type_decl_header != decl_none || type_decl_rhs_active
+      let in_enum_container = Array::length(container_stack) > 0 &&
+      Array::get(container_stack, Array::length(container_stack) - 1) == c_brace_enum
+      let enum_top_level = in_enum_container && Array::length(cpb_stack) > 0 &&
+      paren_depth == Array::get(cpb_stack, Array::length(cpb_stack) - 1)
+      let rendered_text = if kind == k_comma && enum_top_level {
+        ";"
+      } else {
+        token_text_for_output(tok, next_kind)
+      }
+      if String::length(rendered_text) == 0 {
+        i = i + 1
+      } else {
+        let curr_prefix = is_prefix_op(kind, prev_kind)
+        let closing_container = if kind == k_rbrace && Array::length(container_stack) > 0 {
+          Array::get(container_stack, Array::length(container_stack) - 1)
+        } else {
+          -1
+        }
+        let effects_rbrace = closing_container == c_brace_effects
+        // `Point::{ x: 1 }` / `struct P { x: Int }` close with a space, the
+        // way `with { .. }` already does; needs_space alone would emit
+        // `x: 1}` (its rule for a `}` never keeps a preceding space). The test
+        // is "this closer is being written inside an inline region", not "this
+        // container is the inline one": a brace the author had broken can end
+        // up on one line anyway when an enclosing bracket literal joined
+        // (`[LTok::{\n  kind: k, text: t\n}]` -> `[LTok::{ kind: k, text: t }]`),
+        // and keying off the container alone lost the space there -- which
+        // also cost the fixpoint, since the next run reclassified the
+        // now-single-line brace as inline and put the space back.
+        let inline_rbrace = kind == k_rbrace && inline_depth > 0 && prev_kind != k_lbrace
+        if line_has_content &&
+        (effects_rbrace || inline_rbrace || needs_space(prev_prev_kind, prev_kind, kind, prev_prefix, prev_pipe, path_active)) {
+          Array::push(out, " ")
+          cur_col = cur_col + 1
+        }
+        Array::push(out, rendered_text)
+        cur_col = cur_col + String::length(rendered_text)
+        line_has_content = true
+        if kind == k_type {
+          type_decl_header = decl_type_alias
+        } else if kind == k_enum {
+          type_decl_header = decl_enum
+        } else if kind == k_struct {
+          struct_header = true
+        }
+        if kind == k_colon && should_start_type_context_on_colon(container_stack) {
+          Array::push(tc_paren, paren_depth)
+          Array::push(tc_brace, brace_depth)
+          Array::push(tc_bracket, bracket_depth)
+        } else if kind == k_thin_arrow {
+          Array::push(tc_paren, paren_depth)
+          Array::push(tc_brace, brace_depth)
+          Array::push(tc_bracket, bracket_depth)
+        }
+        if kind == k_lparen {
+          paren_depth = paren_depth + 1
+        } else if kind == k_rparen {
+          if paren_depth > 0 {
+            paren_depth = paren_depth - 1
+          }
+        }
+        if kind == k_lbrace || kind == k_lbracket {
+          if kind == k_lbrace {
+            let is_effects_brace = prev_text == "with"
+            // #2104: `struct N { .. }` and `N::{ .. }` are field lists, not
+            // statement blocks. Short ones stay on the line they start on;
+            // once broken, one field per line (c_brace_struct), instead of
+            // today's "break the braces, then pack the fields".
+            let struct_close = find_matching_rbrace(toks, i)
+            let struct_container = if !span_has_newline(toks, i, struct_close) &&
+            collection_fits_inline(toks, i, struct_close, cur_col + 1) {
+              c_brace_struct_inline
+            } else {
+              c_brace_struct
+            }
+            let container = if type_decl_header == decl_enum {
+              c_brace_enum
+            } else if is_effects_brace {
+              c_brace_effects
+            } else if struct_header {
+              struct_container
+            } else {
+              // is_match_brace
+              let pml = Array::length(pm_paren)
+              let is_mb = if pml == 0 {
+                false
+              } else if paren_depth != Array::get(pm_paren, pml - 1) ||
+              brace_depth != Array::get(pm_brace, pml - 1) ||
+              bracket_depth != Array::get(pm_bracket, pml - 1) {
+                false
+              } else {
+                prev_kind != k_match && prev_kind != k_record &&
+                prev_kind != k_if && prev_kind != k_else && prev_kind != k_none
+              }
+              if is_mb {
+                let _ = arr_pop_int(pm_paren)
+                let _ = arr_pop_int(pm_brace)
+                let _ = arr_pop_int(pm_bracket)
+                c_brace_match
+              } else if prev_kind == k_double_colon {
+                // `Name::{ .. }` — a struct literal, never a block.
+                struct_container
+              } else if brace_starts_import_list(toks, i) &&
+              import_list_should_wrap(toks, i, (indent + 1) * indent_size) {
+                c_brace_import_wrap
+              } else {
+                container_kind_for_brace(prev_kind)
+              }
+            }
+            brace_depth = brace_depth + 1
+            if type_decl_header == decl_enum {
+              type_decl_header = decl_none
+            }
+            struct_header = false
+            Array::push(container_stack, container)
+            Array::push(cpb_stack, paren_depth)
+            Array::push(cpb_bracket_stack, bracket_depth)
+            if container_is_inline(container) {
+              inline_depth = inline_depth + 1
+            }
+            if container_indents(container) {
+              indent = indent + 1
+              if pending_newlines == 0 && inline_depth == 0 {
+                pending_newlines = 1
+              }
+            }
+          } else {
+            let generic_hint = prev_kind == k_impl || is_generic_param_bracket(toks, i)
+            let raw_container = container_kind_for_bracket(prev_kind, Array::length(tc_paren) > 0 || type_decl_rhs_active, type_decl_header != decl_none, generic_hint)
+            // #2103: an array literal that fits on the line it starts on is
+            // written there — `[1, 2, 3]`, `[]` — instead of one element per
+            // line unconditionally.
+            let container = if raw_container == c_bracket_array &&
+            collection_fits_inline(toks, i, find_matching_rbracket(toks, i), cur_col) {
+              c_bracket_array_inline
+            } else {
+              raw_container
+            }
+            Array::push(container_stack, container)
+            Array::push(cpb_stack, paren_depth)
+            Array::push(cpb_bracket_stack, bracket_depth)
+            bracket_depth = bracket_depth + 1
+            if container_is_inline(container) {
+              inline_depth = inline_depth + 1
+            }
+            if container_indents(container) {
+              indent = indent + 1
+              if pending_newlines == 0 && inline_depth == 0 {
+                pending_newlines = 1
+              }
+            }
+          }
+        } else if kind == k_rbrace || kind == k_rbracket {
+          if kind == k_rbrace && brace_depth > 0 {
+            brace_depth = brace_depth - 1
+          }
+          if kind == k_rbracket && bracket_depth > 0 {
+            bracket_depth = bracket_depth - 1
+          }
+          if Array::length(container_stack) > 0 {
+            let container = Array::get(container_stack, Array::length(container_stack) - 1)
+            if container_indents(container) && !dedented_before && indent > 0 {
+              indent = indent - 1
+            }
+          }
+          if Array::length(container_stack) > 0 {
+            if Array::length(cpb_stack) > 0 {
+              let _ = arr_pop_int(cpb_stack)
+            }
+            if Array::length(cpb_bracket_stack) > 0 {
+              let _ = arr_pop_int(cpb_bracket_stack)
+            }
+            let popped = arr_pop_int(container_stack)
+            if container_is_inline(popped) && inline_depth > 0 {
+              inline_depth = inline_depth - 1
+            }
+          }
+        } else if kind == k_comma || kind == k_semicolon {
+          if inline_depth == 0 && Array::length(container_stack) > 0 && Array::length(cpb_stack) > 0 &&
+          container_forces_list_newlines(Array::get(container_stack, Array::length(container_stack) - 1)) &&
+          paren_depth == Array::get(cpb_stack, Array::length(cpb_stack) - 1) &&
+          pending_newlines == 0 {
+            pending_newlines = 1
+          }
+        }
+        if kind == k_eq && type_decl_header == decl_type_alias {
+          type_decl_header = decl_none
+          type_decl_rhs_active = true
+        } else if kind == k_semicolon {
+          type_decl_rhs_active = false
+          type_decl_header = decl_none
+        }
+        // maybe_end_type_context
+        if Array::length(tc_paren) > 0 && is_type_context_end(kind) {
+          let eff_brace = if kind == k_lbrace && brace_depth > 0 {
+            brace_depth - 1
+          } else {
+            brace_depth
+          }
+          let eff_bracket = if kind == k_lbracket && bracket_depth > 0 {
+            bracket_depth - 1
+          } else {
+            bracket_depth
+          }
+          let mut going = true
+          while going && Array::length(tc_paren) > 0 {
+            let li = Array::length(tc_paren) - 1
+            if Array::get(tc_paren, li) == paren_depth &&
+            Array::get(tc_brace, li) == eff_brace &&
+            Array::get(tc_bracket, li) == eff_bracket {
+              let _ = arr_pop_int(tc_paren)
+              let _ = arr_pop_int(tc_brace)
+              let _ = arr_pop_int(tc_bracket)
+            } else {
+              going = false
+            }
+          }
+        }
+        prev_prev_kind = prev_kind
+        prev_prev_text = prev_text
+        prev_kind = kind
+        prev_text = tok.text
+        prev_prefix = curr_prefix
+        prev_pipe = curr_pipe
+        prev_line_comment = false
+        // #628: enter path mode on import/export; leave it at the import
+        // list `{` (and any brace, harmless when already false). Deliberately
+        // NOT k_from -- see the comment on the matching check in
+        // brace_starts_import_list; `from` is a valid bare identifier in
+        // real vibe source (no import-statement grammar uses it), so it must
+        // not be treated as an import-context marker.
+        if kind == k_import || kind == k_export {
+          path_active = true
+        } else if kind == k_lbrace {
+          path_active = false
+        }
+        i = i + 1
+      }
+    }
+  }
+  if pending_newlines > 0 {
+    let mut j = 0
+    while j < pending_newlines {
+      Array::push(out, "\n")
+      j = j + 1
+    }
+  }
+  String::join(out, "")
+}

@@ -1,0 +1,30 @@
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/compiler/lowering/array_spread {
+  lower_array_spreads
+}
+import @vibe/parser {
+  print_expr
+}
+
+fn expression_text(stmt: Stmt) -> String {
+  match stmt {
+    SExpr(expr) => print_expr(expr),
+    _ => "unexpected statement"
+  }
+}
+
+test "array spread lowering touches only the supplied module prefix" {
+  let body = EArray([EInt(1), ESpread(EIdent("xs", 10)), EInt(2)])
+  let stmts = [SExpr(body), SExpr(body)]
+  lower_array_spreads(stmts, 1)
+  inspect(expression_text(Array::get(stmts, 0)), content = "Array::concat(Array::concat([1], xs), [2])")
+  inspect(expression_text(Array::get(stmts, 1)), content = "[1, ...xs, 2]")
+}
+
+test "an empty module prefix leaves dependency statements untouched" {
+  let stmts = [SExpr(EArray([ESpread(EIdent("xs", 10))]))]
+  lower_array_spreads(stmts, 0)
+  inspect(expression_text(Array::get(stmts, 0)), content = "[...xs]")
+}

@@ -1,0 +1,1419 @@
+import @vibe/compiler/core {
+  Expr, ImportItem, ImportKind, Stmt, TypeEnv, TypeExpr, __to_string, trait_definition
+}
+
+import @vibe/ast {
+  impl_method_owner, impl_target_key, trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_name
+}
+
+import @vibe/core {
+  array_empty
+}
+
+fn empty_str_array() -> Array[String] {
+  array_empty()
+}
+
+fn str_array_contains(arr: Array[String], val: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arr) {
+    if Array::get(arr, i) == val {
+      found = true
+      i = Array::length(arr)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn split_qualified(name: String) -> Option[(String, String)] {
+  let idx = String::index_of(name, "::")
+  if idx < 0 {
+    None
+  } else {
+    let head = String::substring(name, 0, idx)
+    let member = String::substring(name, idx + 2, String::length(name))
+    Some((head, member))
+  }
+}
+
+/// The hidden dict parameter name for `[T: Tr]`, e.g. `__dict_Measurable_T`.
+export fn dict_param_name(trait_name: String, tparam: String) -> String {
+  let applied = match trait_ref_from_key(trait_name) {
+    Some(reference) => match reference {
+      TyApp(_, _) => String::concat("_", impl_target_key(reference)),
+      _ => ""
+    },
+    None => ""
+  }
+  String::concat("__dict_", String::concat(trait_ref_name(trait_name), String::concat(applied, String::concat("_", tparam))))
+}
+
+/// Collect traits whose flattened signature contains at least one method.
+/// A marker-only trait stays inert, while `trait Child: Parent` is retained
+/// when `Parent` contributes a method to the child's witness dictionary.
+export fn collect_method_traits(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
+  let declared = collect_namespace_traits(stmts)
+  let flattened = flatten_traits(declared, collect_trait_supers(stmts))
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(declared) {
+    let (trait_name, declared_methods) = Array::get(declared, i)
+    match lookup_trait_sigs(flattened, trait_name) {
+      Some(methods) => if Array::length(methods) > 0 {
+        Array::push(out, (trait_name, declared_methods))
+      } else {
+        ()
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Collect every declared trait signature. Namespace derivation and dictionary
+/// eligibility both need this complete graph to see methods inherited through
+/// a subtrait that declares no methods of its own.
+fn collect_namespace_traits(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, trait_name, _, methods, _, _) => Array::push(out, (trait_name, methods)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Collect every trait's per-method generic binders (name -> [(method,
+/// type_params, bounds)]) from STrait's 5th field. Only traits that declare a
+/// non-empty binder on at least one method are kept, so this stays inert.
+fn collect_trait_method_gens(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, _, _, method_gens, _) => {
+        let mut any = false
+        let mut j = 0
+        while j < Array::length(method_gens) {
+          let (_, tps, _) = Array::get(method_gens, j)
+          if Array::length(tps) > 0 {
+            any = true
+          } else {
+            ()
+          }
+          j = j + 1
+        }
+        if any {
+          Array::push(out, (tname, method_gens))
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Look up a method's `(type_params, bounds)` in a trait's method-gen table.
+/// Returns None when the method has no binder (empty type_params).
+fn lookup_method_gen(table: Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], trait_name: String, method: String) -> Option[(Array[String], Array[(String, Array[String])])] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(table) {
+    let (tn, gens) = Array::get(table, i)
+    if tn == trait_ref_name(trait_name) {
+      let mut j = 0
+      while j < Array::length(gens) {
+        let (mname, tps, bounds) = Array::get(gens, j)
+        if mname == method && Array::length(tps) > 0 {
+          result = Some((tps, bounds))
+          j = Array::length(gens)
+        } else {
+          j = j + 1
+        }
+      }
+      i = Array::length(table)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+/// Map each impl method owner to the trait it implements. Concrete applied
+/// targets have a specialization-specific internal owner; generic and bare
+/// targets keep their constructor owner.
+fn collect_impl_trait_map(stmts: Array[Stmt]) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(tparams, _, trait_name, target) => Array::push(out, (impl_method_owner(tparams, trait_name, target), trait_name)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The declared parameter types of method `m` in trait `trait_name` (its 3-tuple
+/// signature). Used to annotate the impl method's unannotated params so the
+/// per-method type parameter `X` appears as `x: X`.
+fn lookup_trait_method_param_types(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, method: String) -> Option[Array[TypeExpr]] {
+  match lookup_trait_sigs(traits, trait_name) {
+    Some(sigs) => {
+      let mut j = 0
+      let mut result = None
+      while j < Array::length(sigs) {
+        let (mname, ptypes, _) = Array::get(sigs, j)
+        if mname == method {
+          result = Some(ptypes)
+          j = Array::length(sigs)
+        } else {
+          j = j + 1
+        }
+      }
+      result
+    },
+    None => None
+  }
+}
+
+/// Find the trait, among those `type_name` implements, that declares a
+/// method-level binder for `method`. Returns its (type_params, bounds, param
+/// types) so the impl method can be re-typed.
+fn find_method_generic_for_impl(impl_map: Array[(String, String)], gen_table: Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], type_name: String, method: String) -> Option[(Array[String], Array[(String, Array[String])], Array[TypeExpr])] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(impl_map) {
+    let (tn, trait_name) = Array::get(impl_map, i)
+    if tn == type_name {
+      match lookup_method_gen(gen_table, trait_name, method) {
+        Some(g) => {
+          let (tps, bounds) = g
+          match lookup_trait_method_param_types(traits, trait_name, method) {
+            Some(ptypes) => {
+              result = Some((tps, bounds, ptypes))
+              i = Array::length(impl_map)
+            },
+            None => {
+              i = i + 1
+            }
+          }
+        },
+        None => {
+          i = i + 1
+        }
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+/// Annotate each parameter whose annotation is None with the trait method's
+/// declared param type (when one exists at that index). Already-annotated params
+/// keep their annotation.
+fn annotate_params_from_sig(params: Array[(String, Option[TypeExpr])], ptypes: Array[TypeExpr]) -> Array[(String, Option[TypeExpr])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(params) {
+    let (pname, ann) = Array::get(params, i)
+    // `__rc_heap` is the planner's heap marker (see seed_var_types below):
+    // not an annotation the source wrote, so the trait's declared type
+    // still fills the slot -- an impl method's `x` classified heap before
+    // this pass ran kept the marker, the binder's `X` never reached it and
+    // `X::show(x)` lost its witness (fixtures/trait_method_generic_test.vibe
+    // trapped). The declared type carries the heap-ness anyway.
+    let unannotated = match ann {
+      Some(TyName(tn)) => tn == "__rc_heap",
+      Some(_) => false,
+      None => true
+    }
+    let new_ann = if !unannotated {
+      ann
+    } else if i < Array::length(ptypes) {
+      Some(Array::get(ptypes, i))
+    } else {
+      ann
+    }
+    Array::push(out, (pname, new_ann))
+    i = i + 1
+  }
+  out
+}
+
+/// In-place: for each impl method `C::m` whose trait declares a method-level
+/// `[X: Bound]` binder, re-attach the binder to the EFn and annotate its params
+/// with the trait method's declared types. Idempotent: an EFn that already
+/// carries type_params was injected on a prior run and is skipped.
+fn inject_method_generics_reporting_change(stmts: Array[Stmt], impl_map: Array[(String, String)], gen_table: Array[(String, Array[(String, Array[String], Array[(String, Array[String])])])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], own_end: Int) -> Bool {
+  let mut changed = false
+  let mut i = 0
+  while i < own_end {
+    match Array::get(stmts, i) {
+      SLet(exp, isrec, qname, ann, body) => match body {
+        EFn(tparams, bounds, params, ret, eff, fbody) => if Array::length(tparams) == 0 {
+          match split_qualified(qname) {
+            Some(parts) => {
+              let (cname, method) = parts
+              match find_method_generic_for_impl(impl_map, gen_table, traits, cname, method) {
+                Some(g) => {
+                  let (mtparams, mtbounds, ptypes) = g
+                  let new_params = annotate_params_from_sig(params, ptypes)
+                  let new_efn = EFn(mtparams, mtbounds, new_params, ret, eff, fbody)
+                  Array::set(stmts, i, SLet(exp, isrec, qname, ann, new_efn))
+                  changed = true
+                },
+                None => ()
+              }
+            },
+            None => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  changed
+}
+
+/// Re-attach trait-method `[X: Bound]` binders to impl free functions, given a
+/// (possibly flattened) method-trait table for param-type lookup. Inert and
+/// idempotent. Shared by `desugar_trait_dicts` (pre-codegen) and `check_program`
+/// (so the FS-compile path, which type-checks before the desugar runs, also sees
+/// the binder and can resolve `X::method`).
+export fn inject_trait_method_generics_with_reporting_change(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], own_end: Int) -> Bool {
+  assert(own_end >= 0 && own_end <= Array::length(stmts))
+  let method_gen_table = collect_trait_method_gens(stmts)
+  if Array::length(method_gen_table) > 0 {
+    let impl_map = collect_impl_trait_map(stmts)
+    inject_method_generics_reporting_change(stmts, impl_map, method_gen_table, traits, own_end)
+  } else {
+    false
+  }
+}
+
+/// Whether a value parameter can carry the witness for `name` through the
+/// dictionary lowerer's supported receiver shapes. Keep this aligned with
+/// find_recv_index / find_constructor_recv_index / find_array_elem_recv_index:
+/// a nested occurrence (for example `(Int) -> Self`) is not recoverable.
+fn trait_operation_type_is_carrier(ty: TypeExpr, name: String, stmts: Array[Stmt]) -> Bool {
+  let expanded = expand_constructor_alias(ty, stmts, Array::length(stmts) + 1)
+  match expanded {
+    TyName(current) => current == name,
+    TyApp(head, args) => if head == name {
+      true
+    } else if head == "Array" && Array::length(args) == 1 {
+      match Array::get(args, 0) {
+        TyName(current) => current == name,
+        _ => false
+      }
+    } else {
+      false
+    },
+    TyFn(_, _, _) => false,
+    TyTuple(_) => false,
+    TyUnit => false
+  }
+}
+
+fn trait_operation_params_have_carrier(params: Array[TypeExpr], name: String, stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) && !found {
+    found = trait_operation_type_is_carrier(Array::get(params, i), name, stmts); i = i + 1
+  }
+  found
+}
+
+fn trait_operation_type_mentions(ty: TypeExpr, name: String) -> Bool {
+  match ty {
+    TyName(current) => current == name,
+    TyApp(head, args) => {
+      let mut found = head == name
+      let mut i = 0
+      while i < Array::length(args) && !found {
+        found = trait_operation_type_mentions(Array::get(args, i), name)
+        i = i + 1
+      }
+      found
+    },
+    TyFn(params, ret, _) => {
+      let mut found = trait_operation_type_mentions(ret, name)
+      let mut i = 0
+      while i < Array::length(params) && !found {
+        found = trait_operation_type_mentions(Array::get(params, i), name)
+        i = i + 1
+      }
+      found
+    },
+    TyTuple(items) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(items) && !found {
+        found = trait_operation_type_mentions(Array::get(items, i), name)
+        i = i + 1
+      }
+      found
+    },
+    TyUnit => false
+  }
+}
+
+fn trait_operation_surface_mentions(params: Array[TypeExpr], ret: TypeExpr, name: String) -> Bool {
+  let mut found = trait_operation_type_mentions(ret, name)
+  let mut i = 0
+  while i < Array::length(params) && !found {
+    found = trait_operation_type_mentions(Array::get(params, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_method_shadows(method_params: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(method_params) && !found {
+    found = type_param_name(Array::get(method_params, i)) == name
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_fresh_self_param(base: String, header_params: Array[String], method_params: Array[String]) -> String {
+  let mut candidate = base
+  let mut suffix = 1
+  while trait_operation_method_shadows(header_params, candidate) || trait_operation_method_shadows(method_params, candidate) {
+    candidate = String::concat(base, String::concat("_", __to_string(suffix)))
+    suffix = suffix + 1
+  }
+  candidate
+}
+
+fn trait_operation_shadows_header(method_params: Array[String], header_params: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(header_params) && !found {
+    found = trait_operation_method_shadows(method_params, type_param_name(Array::get(header_params, i)))
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_substitute_self(ty: TypeExpr, replacement: String) -> TypeExpr {
+  match ty {
+    TyName(name) => if name == "Self" {
+      TyName(replacement)
+    } else {
+      ty
+    },
+    TyApp(head, args) => TyApp(if head == "Self" {
+      replacement
+    } else {
+      head
+    }, for arg in args {
+      trait_operation_substitute_self(arg, replacement)
+    }),
+    TyFn(params, ret, effect) => TyFn(for param in params {
+      trait_operation_substitute_self(param, replacement)
+    }, trait_operation_substitute_self(ret, replacement), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      trait_operation_substitute_self(item, replacement)
+    }),
+    TyUnit => TyUnit
+  }
+}
+
+fn trait_operation_binding_exists(stmts: Array[Stmt], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, current, _, _) => if current == name {
+        found = true
+      } else {
+        ()
+      },
+      SFnDecl(_, current, _, _, _) => if current == name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_forwarding_args(params: Array[(String, Option[TypeExpr])], args: Array[Expr]) -> Bool {
+  if Array::length(params) != Array::length(args) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(params) && same {
+      let (param_name, _) = Array::get(params, i)
+      match Array::get(args, i) {
+        EIdent(arg_name, _) => if arg_name != param_name {
+          same = false
+        } else {
+          ()
+        },
+        _ => {
+          same = false
+        }
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn trait_operation_desugared_forwarding_args(params: Array[(String, Option[TypeExpr])], args: Array[Expr]) -> Bool {
+  if Array::length(params) != Array::length(args) + 1 {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(args) && same {
+      let (param_name, _) = Array::get(params, i + 1)
+      match Array::get(args, i) {
+        EIdent(arg_name, _) => if arg_name != param_name {
+          same = false
+        } else {
+          ()
+        },
+        _ => {
+          same = false
+        }
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn trait_operation_forwarding_bound(bounds: Array[(String, Array[String])], callee: String, trait_name: String, method_name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bounds) && !found {
+    let (param, refs) = Array::get(bounds, i)
+    if callee == String::concat(type_param_name(param), String::concat("::", method_name)) {
+      let mut ri = 0
+      while ri < Array::length(refs) && !found {
+        found = trait_ref_name(Array::get(refs, ri)) == trait_name
+        ri = ri + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_desugared_forwarding_bound(bounds: Array[(String, Array[String])], dict_name: String, trait_name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bounds) && !found {
+    let (param, refs) = Array::get(bounds, i)
+    if dict_name == dict_param_name(trait_name, type_param_name(param)) {
+      let mut ri = 0
+      while ri < Array::length(refs) && !found {
+        found = trait_ref_name(Array::get(refs, ri)) == trait_name
+        ri = ri + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// The offset every node of a synthesized `Trait::op` wrapper carries.
+/// Negative, so every offset-keyed table filters it out like the parser's
+/// own synthesized nodes, and distinct from the parser's -1 (interpolation,
+/// indexing, `assert`, and a call in a `fn` declaration's body), so a
+/// binding read from source can never pass for a generated one (#2357's
+/// masquerade checks). Before #2388 slice 2b the wrapper's nodes carried
+/// `2000000000 - i * 1000 - mi * 10`, which made a module's wrapper depend
+/// on the trait's statement index.
+fn trait_operation_synthetic_off() -> Int {
+  0 - 2
+}
+
+/// Whether a `Trait::op` binding's call node was synthesized by
+/// `derive_trait_namespace_operations` (see trait_operation_synthetic_off).
+fn trait_operation_has_generated_offset(offset: Int) -> Bool {
+  offset == trait_operation_synthetic_off()
+}
+
+fn trait_operation_type_option_equal(left: Option[TypeExpr], right: Option[TypeExpr]) -> Bool {
+  match (left, right) {
+    (Some(a), Some(b)) => impl_target_key(a) == impl_target_key(b),
+    (None, None) => true,
+    _ => false
+  }
+}
+
+fn trait_operation_string_option_equal(left: Option[String], right: Option[String]) -> Bool {
+  match (left, right) {
+    (Some(a), Some(b)) => a == b,
+    (None, None) => true,
+    _ => false
+  }
+}
+
+fn trait_operation_bounds_equal(left: Array[(String, Array[String])], right: Array[(String, Array[String])]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) && same {
+      let (left_name, left_refs) = Array::get(left, i)
+      let (right_name, right_refs) = Array::get(right, i)
+      same = left_name == right_name && str_arrays_equal(left_refs, right_refs)
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn trait_operation_params_equal(left: Array[(String, Option[TypeExpr])], right: Array[(String, Option[TypeExpr])]) -> Bool {
+  if Array::length(left) != Array::length(right) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(left) && same {
+      let (left_name, left_type) = Array::get(left, i)
+      let (right_name, right_type) = Array::get(right, i)
+      same = left_name == right_name && trait_operation_type_option_equal(left_type, right_type)
+      i = i + 1
+    }
+    same
+  }
+}
+
+fn trait_operation_call_equal(left: Expr, right: Expr) -> Bool {
+  match (left, right) {
+    (ECall(EIdent(left_callee, _), left_args, _), ECall(EIdent(right_callee, _), right_args, _)) => left_callee == right_callee && {
+      if Array::length(left_args) != Array::length(right_args) {
+        false
+      } else {
+        let mut i = 0
+        let mut same = true
+        while i < Array::length(left_args) && same {
+          match (Array::get(left_args, i), Array::get(right_args, i)) {
+            (EIdent(left_name, _), EIdent(right_name, _)) => {
+              same = left_name == right_name
+            },
+            _ => {
+              same = false
+            }
+          }
+          i = i + 1
+        }
+        same
+      }
+    },
+    _ => false
+  }
+}
+
+fn trait_operation_matches_expected_binding(stmt: Stmt, expected: Option[Stmt]) -> Bool {
+  match expected {
+    Some(SLet(expected_exported, true, expected_name, None, EFn(expected_type_params, expected_bounds, expected_params, expected_ret, expected_effect, expected_body))) => match stmt {
+      SLet(exported, true, name, None, EFn(type_params, bounds, params, ret, effect, body)) => exported == expected_exported && name == expected_name && str_arrays_equal(type_params, expected_type_params) && trait_operation_bounds_equal(bounds, expected_bounds) && trait_operation_params_equal(params, expected_params) && trait_operation_type_option_equal(ret, expected_ret) && trait_operation_string_option_equal(effect, expected_effect) && trait_operation_call_equal(body, expected_body),
+      _ => false
+    },
+    _ => false
+  }
+}
+
+export fn trait_operation_is_derived_binding(stmt: Stmt, operation_name: String, trait_name: String, method_name: String) -> Bool {
+  match stmt {
+    SLet(_, true, name, None, EFn(_, bounds, params, _, _, ECall(EIdent(callee, _), args, call_off))) => name == operation_name && trait_operation_has_generated_offset(call_off) && trait_operation_forwarding_bound(bounds, callee, trait_name, method_name) && trait_operation_forwarding_args(params, args),
+    SLet(_, true, name, None, EFn(_, bounds, params, _, _, ECall(EDot(EIdent(dict_name, _), called_method, _, _), args, call_off))) => name == operation_name && trait_operation_has_generated_offset(call_off) && called_method == method_name && Array::length(params) > 0 && {
+      let (first_name, _) = Array::get(params, 0)
+      first_name == dict_name && trait_operation_desugared_forwarding_bound(bounds, dict_name, trait_name) && trait_operation_desugared_forwarding_args(params, args)
+    },
+    _ => false
+  }
+}
+
+fn expected_trait_operation_binding(definition_stmts: Array[Stmt], operation_name: String) -> Option[Stmt] {
+  let probe = array_empty()
+  let mut i = 0
+  while i < Array::length(definition_stmts) {
+    match Array::get(definition_stmts, i) {
+      SLet(_, _, name, _, _) => if name == operation_name {
+        ()
+      } else {
+        Array::push(probe, Array::get(definition_stmts, i))
+      },
+      SFnDecl(_, name, _, _, _) => if name == operation_name {
+        ()
+      } else {
+        Array::push(probe, Array::get(definition_stmts, i))
+      },
+      _ => Array::push(probe, Array::get(definition_stmts, i))
+    }
+    i = i + 1
+  }
+  let _added = derive_trait_namespace_operations(probe, Array::length(probe))
+  let mut found = None
+  let mut done = false
+  i = 0
+  while i < Array::length(probe) && !done {
+    match Array::get(probe, i) {
+      SLet(_, _, name, _, _) => if name == operation_name {
+        found = Some(Array::get(probe, i))
+        done = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_manual_binding_exists(stmts: Array[Stmt], operation_name: String, trait_name: String, method_name: String, expected: Option[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    let stmt = Array::get(stmts, i)
+    match stmt {
+      SLet(_, _, name, _, _) => if name == operation_name && !trait_operation_is_derived_binding(stmt, operation_name, trait_name, method_name) && !trait_operation_matches_expected_binding(stmt, expected) {
+        found = true
+      } else {
+        ()
+      },
+      SLetMut(name, _, _) => if name == operation_name {
+        found = true
+      } else {
+        ()
+      },
+      SExternLet(name, _) => if name == operation_name {
+        found = true
+      } else {
+        ()
+      },
+      SFnDecl(_, name, _, _, _) => if name == operation_name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn trait_namespace_conflict_note(trait_name: String, method_name: String, stmts: Array[Stmt], definition_stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let operation_name = String::concat(trait_name, String::concat("::", method_name))
+  let expected = expected_trait_operation_binding(definition_stmts, operation_name)
+  if trait_operation_manual_binding_exists(stmts, operation_name, trait_name, method_name, expected) {
+    let message = String::concat("remove declaration `", String::concat(operation_name, String::concat("`: trait operations are generated from `trait ", String::concat(trait_name, "`"))))
+    if !str_array_contains(errors, message) {
+      Array::push(errors, message)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
+fn append_imported_trait_probe(env: TypeEnv, lookup_name: String, local_name: String, seen: Array[String], probe: Array[Stmt]) -> Unit {
+  if str_array_contains(seen, local_name) {
+    ()
+  } else {
+    match trait_definition(env, lookup_name) {
+      Some((supers, methods, params, method_gens)) => {
+        Array::push(seen, local_name)
+        let mut si = 0
+        while si < Array::length(supers) {
+          let super_name = trait_ref_name(Array::get(supers, si))
+          append_imported_trait_probe(env, super_name, super_name, seen, probe)
+          si = si + 1
+        }
+        Array::push(probe, STrait(false, local_name, supers, methods, method_gens, params))
+      },
+      None => ()
+    }
+  }
+}
+
+fn imported_trait_probe(env: TypeEnv, local_name: String) -> Array[Stmt] {
+  let probe = array_empty()
+  append_imported_trait_probe(env, local_name, local_name, empty_str_array(), probe)
+  probe
+}
+
+fn import_item_is_explicit_trait(item: ImportItem) -> Bool {
+  match item.kind {
+    Some(ImportTrait) => true,
+    _ => false
+  }
+}
+
+fn imported_trait_namespace_conflict_notes(items: Array[ImportItem], env: TypeEnv, stmts: Array[Stmt], errors: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if import_item_is_explicit_trait(item) {
+      let local_name = match item.alias {
+        Some(alias) => alias,
+        None => item.name
+      }
+      let probe = imported_trait_probe(env, local_name)
+      let traits_raw = collect_namespace_traits(probe)
+      let traits = flatten_traits(traits_raw, collect_trait_supers(probe))
+      match lookup_trait_sigs(traits, local_name) {
+        Some(methods) => {
+          let mut mi = 0
+          while mi < Array::length(methods) {
+            let (method_name, _, _) = Array::get(methods, mi)
+            trait_namespace_conflict_note(local_name, method_name, stmts, probe, errors)
+            mi = mi + 1
+          }
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// Reject source declarations that would replace a generated
+/// `Trait::operation`. The generated wrapper is the trait declaration's public
+/// contract, so silently preferring a hand-written value would bypass witness
+/// selection and can return a different result from the selected impl (#2357).
+export fn collect_trait_namespace_conflict_errors(stmts: Array[Stmt], env: TypeEnv) -> Array[String] {
+  let errors = array_empty()
+  let traits_raw = collect_namespace_traits(stmts)
+  let supers_map = collect_trait_supers(stmts)
+  let traits = flatten_traits(traits_raw, supers_map)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, trait_name, _, declared_methods, _, _) => {
+        let methods = match lookup_trait_sigs(traits, trait_name) {
+          Some(flattened) => flattened,
+          None => declared_methods
+        }
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (method_name, _, _) = Array::get(methods, mi)
+          trait_namespace_conflict_note(trait_name, method_name, stmts, stmts, errors)
+          mi = mi + 1
+        }
+      },
+      SImport(_, items) => imported_trait_namespace_conflict_notes(items, env, stmts, errors),
+      SReExport(_, items) => imported_trait_namespace_conflict_notes(items, env, stmts, errors),
+      SModule(_, _, body) => {
+        let nested = collect_trait_namespace_conflict_errors(body, env)
+        let mut ni = 0
+        while ni < Array::length(nested) {
+          let message = Array::get(nested, ni)
+          if !str_array_contains(errors, message) {
+            Array::push(errors, message)
+          } else {
+            ()
+          }
+          ni = ni + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  errors
+}
+
+fn trait_operation_dict_already_materialized(stmts: Array[Stmt], trait_name: String) -> Bool {
+  let dict_name = String::concat(trait_name, "Dict")
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SStruct(_, name, _, _, _, _) => if name == dict_name {
+        found = true
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn trait_operation_method_generics(method_gens: Array[(String, Array[String], Array[(String, Array[String])])], method_index: Int, method_name: String) -> (Array[String], Array[(String, Array[String])]) {
+  if method_index < Array::length(method_gens) {
+    let (source_name, params, bounds) = Array::get(method_gens, method_index)
+    if source_name == method_name {
+      (params, bounds)
+    } else {
+      (array_empty(), array_empty())
+    }
+  } else {
+    (array_empty(), array_empty())
+  }
+}
+
+fn trait_operation_bound_key(trait_name: String, header_params: Array[String]) -> String {
+  if Array::length(header_params) == 0 {
+    trait_ref_key(TyName(trait_name))
+  } else {
+    trait_ref_key(TyApp(trait_name, for param in header_params {
+      TyName(type_param_name(param))
+    }))
+  }
+}
+
+fn trait_operation_param_name(ty: TypeExpr, index: Int, dispatch: String) -> String {
+  if index == 0 {
+    match ty {
+      TyName(name) => if name == dispatch {
+        "self"
+      } else {
+        "arg_0"
+      },
+      TyApp(head, _) => if head == dispatch {
+        "xs"
+      } else {
+        "arg_0"
+      },
+      _ => "arg_0"
+    }
+  } else match ty {
+    TyFn(_, _, _) => String::concat("f_", __to_string(index)),
+    _ => String::concat("arg_", __to_string(index))
+  }
+}
+
+/// Derive public `Trait::operation` wrappers without introducing bare names.
+export fn derive_trait_namespace_operations(stmts: Array[Stmt], own_end: Int) -> Int {
+  assert(own_end >= 0 && own_end <= Array::length(stmts))
+  let additions = array_empty()
+  // #2388: only the module's own traits get operations; the context (if any)
+  // sits after `original_len` and is carried through the reorder untouched.
+  let original_len = own_end
+  let total = Array::length(stmts)
+  let traits_raw = collect_namespace_traits(stmts)
+  let supers_map = collect_trait_supers(stmts)
+  let traits = flatten_traits(traits_raw, supers_map)
+  let method_gen_table = collect_trait_method_gens(stmts)
+  let mut i = 0
+  while i < original_len {
+    match Array::get(stmts, i) {
+      STrait(exported, trait_name, _, declared_methods, method_gens, header_params) => {
+        let methods = match lookup_trait_sigs(traits, trait_name) {
+          Some(flattened) => flattened,
+          None => declared_methods
+        }
+        let owners = flatten_trait_owners(trait_name, traits_raw, supers_map)
+        let mut mi = 0
+        while mi < Array::length(methods) {
+          let (method_name, raw_params, raw_ret) = Array::get(methods, mi)
+          let operation_name = String::concat(trait_name, String::concat("::", method_name))
+          if !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_dict_already_materialized(stmts, trait_name) {
+            let owner = lookup_str_pair(owners, method_name, trait_name)
+            let (method_params, method_bounds) = match lookup_method_gen(method_gen_table, owner, method_name) {
+              Some(generics) => generics,
+              None => trait_operation_method_generics(method_gens, mi, method_name)
+            }
+            let self_param = trait_operation_fresh_self_param(String::concat("__trait_operation_self_", String::concat(trait_name, String::concat("_", method_name))), header_params, method_params)
+            let shadows_header = trait_operation_shadows_header(method_params, header_params)
+            let uses_self = !shadows_header && trait_operation_params_have_carrier(raw_params, "Self", stmts)
+            let surface_mentions_self = trait_operation_surface_mentions(raw_params, raw_ret, "Self")
+            let mut dispatch = if uses_self {
+              self_param
+            } else {
+              ""
+            }
+            let mut dispatch_key = dispatch
+            let mut hi = 0
+            // A trait parameter can dispatch an operation whose entire surface
+            // is independent of the implementation target (`Mappable::map`).
+            // It must never stand in for `Self`: `impl Factory[Int] for Box`
+            // does not make `Int` the receiver of `Factory::build`.
+            while hi < Array::length(header_params) && dispatch == "" && !shadows_header && !surface_mentions_self {
+              let candidate_key = Array::get(header_params, hi)
+              let candidate = type_param_name(candidate_key)
+              if trait_operation_params_have_carrier(raw_params, candidate, stmts) {
+                dispatch = candidate; dispatch_key = candidate_key
+              } else {
+                ()
+              }
+              hi = hi + 1
+            }
+            if dispatch != "" {
+              // The wrapper's nodes are synthesized, not read from a source
+              // position: they carry trait_operation_synthetic_off, which
+              // every offset-keyed table filters out (negative). #2388: a
+              // value derived from the trait's statement index made a
+              // module's wrapper depend on its position in the program (and
+              // on the lane: the checker derives per module, codegen on the
+              // merged program), and the checker lane's Double call row at
+              // that offset could alias a different merged wrapper's call.
+              let synthetic_off = trait_operation_synthetic_off()
+              let extra_params = if uses_self {
+                [self_param]
+              } else {
+                array_empty()
+              }
+              let type_params = Array::concat(Array::concat(header_params, method_params), extra_params)
+              let bounds = Array::concat(method_bounds, [
+                (dispatch_key, [
+                  trait_operation_bound_key(trait_name, header_params)
+                ])
+              ])
+              let value_params = array_empty()
+              let call_args = array_empty()
+              let mut pi = 0
+              while pi < Array::length(raw_params) {
+                let param_ty = trait_operation_substitute_self(Array::get(raw_params, pi), dispatch)
+                let param_name = trait_operation_param_name(param_ty, pi, dispatch)
+                Array::push(value_params, (param_name, Some(param_ty)))
+                Array::push(call_args, EIdent(param_name, synthetic_off))
+                pi = pi + 1
+              }
+              let ret = trait_operation_substitute_self(raw_ret, dispatch)
+              let body = ECall(EIdent(String::concat(dispatch, String::concat("::", method_name)), synthetic_off), call_args, synthetic_off)
+              Array::push(additions, SLet(exported, true, operation_name, None, EFn(type_params, bounds, value_params, Some(ret), None, body)))
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          mi = mi + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  // Right after the last trait/impl, and NOT one statement further.
+  //
+  // #2570: this used to skip forward over the run of `SLet`/`SFnDecl` that
+  // follows, which put every wrapper BELOW the module's top-level functions.
+  // A `Trait::op(..)` inside a `fn` body was then a forward reference, and the
+  // checker's forward-reference hoist pre-binds a value whose EFn carries type
+  // parameters as `CtUnknown` -- every wrapper carries a `Self`-dispatch type
+  // parameter, so every wrapper hoisted as `CtUnknown`, which unifies with
+  // anything. Measured: result type, argument types and arity were all
+  // unchecked, `let z: String = Num::zero(p)` on a `-> Double` operation
+  // compiled and printed the Double's bits as a string, and the identical line
+  // inside a `test` body -- which sits below the old insertion point -- was
+  // correctly rejected. Inserting here makes the call an ordinary backward
+  // reference, so the wrapper's own statement has already bound its real type.
+  let mut insertion = 0
+  let mut si = 0
+  while si < original_len {
+    match Array::get(stmts, si) {
+      STrait(_, _, _, _, _, _) => {
+        insertion = si + 1
+      },
+      SImpl(_, _, _, _) => {
+        insertion = si + 1
+      },
+      _ => ()
+    }
+    si = si + 1
+  }
+  let ordered = array_empty()
+  si = 0
+  while si < original_len {
+    if si == insertion {
+      let mut ai = 0; while ai < Array::length(additions) {
+        Array::push(ordered, Array::get(additions, ai)); ai = ai + 1
+      }
+    } else {
+      ()
+    }
+    Array::push(ordered, Array::get(stmts, si))
+    si = si + 1
+  }
+  if insertion == original_len {
+    let mut ai = 0; while ai < Array::length(additions) {
+      Array::push(ordered, Array::get(additions, ai)); ai = ai + 1
+    }
+  } else {
+    ()
+  }
+  let mut ti = original_len
+  while ti < total {
+    Array::push(ordered, Array::get(stmts, ti))
+    ti = ti + 1
+  }
+  let mut oi = 0
+  while oi < Array::length(ordered) {
+    if oi < total {
+      Array::set(stmts, oi, Array::get(ordered, oi))
+    } else {
+      Array::push(stmts, Array::get(ordered, oi))
+    }; oi = oi + 1
+  }
+  Array::length(additions)
+}
+
+fn imported_trait_operation_additions(items: Array[ImportItem], env: TypeEnv, stmts: Array[Stmt], additions: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    if import_item_is_explicit_trait(item) {
+      let local_name = match item.alias {
+        Some(alias) => alias,
+        None => item.name
+      }
+      let probe = imported_trait_probe(env, local_name)
+      if Array::length(probe) > 0 {
+        let original_probe_len = Array::length(probe)
+        {
+          let _added = derive_trait_namespace_operations(probe, Array::length(probe))
+          let mut pi = original_probe_len
+          while pi < Array::length(probe) {
+            match Array::get(probe, pi) {
+              SLet(_, _, operation_name, _, _) => match split_qualified(operation_name) {
+                Some(parts) => {
+                  let (operation_trait, _) = parts
+                  if operation_trait == local_name && !trait_operation_binding_exists(stmts, operation_name) && !trait_operation_binding_exists(additions, operation_name) {
+                    Array::push(additions, Array::get(probe, pi))
+                  } else {
+                    ()
+                  }
+                },
+                None => ()
+              },
+              _ => ()
+            }
+            pi = pi + 1
+          }
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+/// Materialize non-exported `Trait::operation` wrappers from the trait
+/// declarations selected by this module's imports. The trait is the authority:
+/// callers import only `trait Trait`, while bare operation names stay absent.
+export fn derive_imported_trait_namespace_operations(stmts: Array[Stmt], env: TypeEnv) -> Unit {
+  let additions = array_empty()
+  let original_len = Array::length(stmts)
+  let mut i = 0
+  while i < original_len {
+    match Array::get(stmts, i) {
+      SImport(_, items) => imported_trait_operation_additions(items, env, stmts, additions),
+      SReExport(_, items) => imported_trait_operation_additions(items, env, stmts, additions),
+      SModule(_, _, body) => derive_imported_trait_namespace_operations(body, env),
+      _ => ()
+    }
+    i = i + 1
+  }
+  let ordered = array_empty()
+  let mut ai = 0
+  while ai < Array::length(additions) {
+    Array::push(ordered, Array::get(additions, ai))
+    ai = ai + 1
+  }
+  i = 0
+  while i < original_len {
+    Array::push(ordered, Array::get(stmts, i))
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(ordered) {
+    if i < original_len {
+      Array::set(stmts, i, Array::get(ordered, i))
+    } else {
+      Array::push(stmts, Array::get(ordered, i))
+    }
+    i = i + 1
+  }
+}
+
+/// Self-contained entry for callers that have not flattened the trait table
+/// (the checker). Builds its own (flattened) method-trait table from `stmts`.
+export fn inject_trait_method_generics_reporting_change(stmts: Array[Stmt], own_end: Int) -> Bool {
+  assert(own_end >= 0 && own_end <= Array::length(stmts))
+  let traits_raw = collect_method_traits(stmts)
+  let supers_map = collect_trait_supers(stmts)
+  let traits = flatten_traits(traits_raw, supers_map)
+  inject_trait_method_generics_with_reporting_change(stmts, traits, own_end)
+}
+
+/// Collect each trait's declared supertraits (`trait B: A + ...`), for all
+/// traits (method-bearing or not), so a method-bearing trait can inherit its
+/// supertraits' methods.
+export fn collect_trait_supers(stmts: Array[Stmt]) -> Array[(String, Array[String])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, tname, supers, _, _, _) => Array::push(out, (tname, supers)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn lookup_supers(supers_map: Array[(String, Array[String])], name: String) -> Array[String] {
+  let mut i = 0
+  let mut result = empty_str_array()
+  while i < Array::length(supers_map) {
+    let (tname, supers) = Array::get(supers_map, i)
+    if tname == trait_ref_name(name) {
+      result = supers
+      i = Array::length(supers_map)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+/// Flatten a trait's method signatures with those of its (transitive) method-
+/// bearing supertraits, deduplicating by method name, so `[T: B]` for
+/// `trait B: A` can dispatch both B's and A's methods through one flat witness
+/// dictionary. `acc_names` / `out` accumulate across the recursion.
+///
+/// Supertrait methods are emitted BEFORE the trait's own, so an inherited method
+/// keeps the same field index in every dict that contains it (e.g. `measure`
+/// is index 0 in both `MeasurableDict` and `SizedDict`). This matters because
+/// codegen resolves `dict.field` by a global first-match field-name search
+/// (compile_expr_tail4.vibe), not by the object's static type — so a shared
+/// field name must sit at a consistent index across structs. (Single supertrait
+/// chains only; multiple-supertrait ordering is a deferred slice.)
+/// `owners` records `(method name, the trait that DECLARES it)` in lockstep
+/// with `out`. A flattened list copies a supertrait's methods into the child,
+/// so the dict struct's owner is not the declaring trait of every field --
+/// see `synthesized_dict_field_trait` (#2286, Codex review on #2313).
+fn flatten_trait_sigs_into(tname: String, traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], supers_map: Array[(String, Array[String])], acc_names: Array[String], out: Array[(String, Array[TypeExpr], TypeExpr)], owners: Array[(String, String)], visiting: Array[String]) -> Unit {
+  if str_array_contains(visiting, tname) {
+    ()
+  } else {
+    let visiting_len = Array::length(visiting)
+    Array::push(visiting, tname)
+    let supers = lookup_supers(supers_map, tname)
+    let mut s = 0
+    while s < Array::length(supers) {
+      flatten_trait_sigs_into(Array::get(supers, s), traits_raw, supers_map, acc_names, out, owners, visiting)
+      s = s + 1
+    }
+    Array::truncate(visiting, visiting_len)
+    match lookup_trait_sigs(traits_raw, tname) {
+      Some(sigs) => {
+        let mut i = 0
+        while i < Array::length(sigs) {
+          let (mname, params, ret) = Array::get(sigs, i)
+          if str_array_contains(acc_names, mname) {
+            ()
+          } else {
+            Array::push(acc_names, mname)
+            Array::push(out, (mname, params, ret))
+            Array::push(owners, (mname, tname))
+          }
+          i = i + 1
+        }
+      },
+      None => ()
+    }
+  }
+}
+
+/// Produce a method-trait table whose signatures are flattened across
+/// supertraits, so all downstream code (dict struct, dispatch names, witness
+/// materialization) sees one flat method set per trait.
+export fn flatten_traits(traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], supers_map: Array[(String, Array[String])]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(traits_raw) {
+    let (tname, _) = Array::get(traits_raw, i)
+    let acc_names = empty_str_array()
+    let flat = array_empty()
+    flatten_trait_sigs_into(tname, traits_raw, supers_map, acc_names, flat, array_empty(), empty_str_array())
+    Array::push(out, (tname, flat))
+    i = i + 1
+  }
+  out
+}
+
+fn lookup_str_pair(pairs: Array[(String, String)], key: String, fallback: String) -> String {
+  let mut i = 0
+  let mut found = fallback
+  while i < Array::length(pairs) {
+    let (k, v) = Array::get(pairs, i)
+    if k == key {
+      found = v
+      i = Array::length(pairs)
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// Which trait DECLARES each method of `tname`'s flattened set.
+///
+/// Not a second implementation of the flattening rule: it runs
+/// `flatten_trait_sigs_into`, the same recursion `flatten_traits` runs, and
+/// reads the owner list it fills. A mirror of the rule would drift the first
+/// time an override or a diamond changed which declaration wins.
+export fn flatten_trait_owners(tname: String, traits_raw: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], supers_map: Array[(String, Array[String])]) -> Array[(String, String)] {
+  let owners = array_empty()
+  flatten_trait_sigs_into(tname, traits_raw, supers_map, empty_str_array(), array_empty(), owners, empty_str_array())
+  owners
+}
+
+export fn lookup_trait_sigs(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], name: String) -> Option[Array[(String, Array[TypeExpr], TypeExpr)]] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(traits) {
+    let (tname, sigs) = Array::get(traits, i)
+    if tname == trait_ref_name(name) {
+      result = Some(sigs)
+      i = Array::length(traits)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+fn constructor_alias_arg(params: Array[String], args: Array[TypeExpr], name: String) -> Option[TypeExpr] {
+  let mut i = 0
+  let mut result = None
+  while i < Array::length(params) && i < Array::length(args) {
+    if type_param_name(Array::get(params, i)) == name {
+      result = Some(Array::get(args, i))
+      i = Array::length(params)
+    } else {
+      i = i + 1
+    }
+  }
+  result
+}
+
+export fn substitute_constructor_alias_target(target: TypeExpr, params: Array[String], args: Array[TypeExpr]) -> TypeExpr {
+  match target {
+    TyName(name) => match constructor_alias_arg(params, args, name) {
+      Some(arg) => arg,
+      None => target
+    },
+    TyApp(head, items) => {
+      let substituted_items = for item in items {
+        substitute_constructor_alias_target(item, params, args)
+      }
+      match constructor_alias_arg(params, args, head) {
+        Some(TyName(actual_head)) => TyApp(actual_head, substituted_items),
+        _ => TyApp(head, substituted_items)
+      }
+    },
+    TyFn(fn_params, result, effect) => TyFn(for param in fn_params {
+      substitute_constructor_alias_target(param, params, args)
+    }, substitute_constructor_alias_target(result, params, args), effect),
+    TyTuple(items) => TyTuple(for item in items {
+      substitute_constructor_alias_target(item, params, args)
+    }),
+    TyUnit => target
+  }
+}
+
+/// Expand aliases until a constructor-bearing parameter or result exposes its
+/// outer constructor. The fuel bound makes cyclic aliases fail closed.
+export fn expand_constructor_alias(ret: TypeExpr, stmts: Array[Stmt], fuel: Int) -> TypeExpr {
+  if fuel <= 0 {
+    ret
+  } else match ret {
+    TyName(head) => {
+      let mut i = 0
+      let mut result = ret
+      let mut found = false
+      while i < Array::length(stmts) {
+        match Array::get(stmts, i) {
+          STypeAlias(_, name, params, target) => if !found && name == head && Array::length(params) == 0 {
+            result = expand_constructor_alias(target, stmts, fuel - 1)
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    TyApp(head, args) => {
+      let mut i = 0
+      let mut result = ret
+      let mut found = false
+      while i < Array::length(stmts) {
+        match Array::get(stmts, i) {
+          STypeAlias(_, name, params, target) => if !found && name == head && Array::length(params) == Array::length(args) {
+            let expanded = substitute_constructor_alias_target(target, params, args)
+            result = expand_constructor_alias(expanded, stmts, fuel - 1)
+            found = true
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      result
+    },
+    _ => ret
+  }
+}
+
+fn str_arrays_equal(a: Array[String], b: Array[String]) -> Bool {
+  if Array::length(a) != Array::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < Array::length(a) {
+      if Array::get(a, i) != Array::get(b, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}

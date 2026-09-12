@@ -1,0 +1,73 @@
+/// Encode a real AST char offset into a strippable diagnostic marker so the
+/// located-diagnostics layer (typecheck_fs.vibe::locate_type_error) can decode
+/// the exact line:col instead of falling back to a first-occurrence text scan.
+/// String::concat only (never `+` / interpolation — both mis-codegen to NUL
+/// here). off < 0 => no marker (heuristic fallback retained).
+export fn off_marker(off: Int) -> String {
+  if off >= 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), "]"))
+  } else {
+    ""
+  }
+}
+
+/// Like off_marker but also encodes the offending token's END offset as
+/// `[@off=N:M]` (M = off + len), so the located-diagnostics layer can emit an
+/// EXACT source range (line:colC-E) instead of the LSP guessing the token end
+/// with a word-scan — which mis-handles qualified names like `Mod.foo` (the scan
+/// stops at the dot). Falls back to the start-only marker when len <= 0. Use this
+/// where `off` is the START of a known-length named token (the symbol whose
+/// length matches the source span); keep plain off_marker where the offset is an
+/// anchor rather than the token start (e.g. a field error whose offset is the
+/// base expr). String::concat only (NUL-miscodegen hazard for `+`/interpolation).
+export fn off_marker_len(off: Int, len: Int) -> String {
+  if off >= 0 && len > 0 {
+    String::concat(" [@off=", String::concat(__to_string(off), String::concat(":", String::concat(__to_string(off + len), "]"))))
+  } else {
+    off_marker(off)
+  }
+}
+
+/// #1941: a return-type mismatch whose tail is a literal has no `[@off=]`
+/// (EInt/EString/EBool/EFloat carry no offset). Tag the enclosing binding
+/// name so `locate_type_error` can recover the `fn` / `let` name token
+/// instead of falling through to the synthetic `0:0` LSP range. Only
+/// rewrites errors that still have no side-channel marker. Exported for
+/// checker_stmt's top-level SLet path (the leftover `fn f() -> Int { "s" }`).
+export fn attach_unlocated_decl_name_marker(errors: Array[String], from: Int, name: String) -> Unit {
+  if String::length(name) == 0 {
+    ()
+  } else {
+    let n = Array::length(errors)
+    let mut i = from
+    while i < n {
+      let msg = Array::get(errors, i)
+      // #1941: `binding type mismatch` joins `return type mismatch` here. A
+      // top-level `let a: Int = "x"` anchors on the VALUE, and a literal value
+      // has no offset -- so that one diagnostic came out with no position at
+      // all, while the same code inside a function was located (the local lane
+      // goes through `ascribe_wrap`, which carries the binder offset).
+      // `find_fn_anchor_off` already prefers `fn name` then `let name`, so the
+      // binder is recoverable from the name alone.
+      let unlocated = String::index_of(msg, " [@") < 0
+      // #2125: `unknown type` is reported from a function literal's parameter
+      // and return annotations, which carry no offset of their own -- so it
+      // anchors on the declaration name exactly like the two above.
+      // #2198: `if branches have incompatible types` joins them for the
+      // all-literal case (`if c { "yes" } else { 0 }`) where the else
+      // branch, the then-tail and the condition are all offset-less.
+      // #2268 (Codex round 7 on #2267): `type parameter ...` joins -- the
+      // formal-application rejection reports from the same offset-less
+      // parameter/return/local-let annotations `unknown type` does, so it
+      // anchors on the declaration name the same way. The declaration-sweep
+      // sites (alias bodies, effect ops, trait methods, struct fields, enum
+      // payloads) stay unlocated exactly like their `unknown type` siblings
+      // -- locating those is the #1567 positions program, not this marker.
+      let anchorable = String::starts_with(msg, "return type mismatch") || String::starts_with(msg, "binding type mismatch for ") || String::starts_with(msg, "unknown type `") || String::starts_with(msg, "type parameter `") || String::starts_with(msg, "type constructor parameter `") || String::starts_with(msg, "if branches have incompatible types")
+      if anchorable && unlocated {
+        Array::set(errors, i, String::concat(msg, String::concat(" [@fn=", String::concat(name, "]"))))
+      }
+      i = i + 1
+    }
+  }
+}
