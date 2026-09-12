@@ -24,12 +24,12 @@ ok()   { echo "ok: $1"; pass=$((pass + 1)); }
 bad()  { echo "FAIL: $1" >&2; fail=$((fail + 1)); }
 
 # 0. #1944 leftover: `vibe symbols --legend` is launcher-only (no wasm).
-#    Pin the versioned KIND table (v1 / 2026-08-17) against the source
+#    Pin the versioned KIND table (v2 / 2026-09-12, #2632) against the source
 #    launcher so a missing/wrong table fails in <1s without install.sh.
 #    One `KIND NAME` per line, no decoration, never empty.
 LAUNCHER="$ROOT_DIR/runtime/vibe"
 legend="$(bash "$LAUNCHER" symbols --legend)"
-expected=$'2 Module\n6 Method\n10 Enum\n11 Interface\n12 Function\n13 Variable\n23 Struct\n24 Event\n26 TypeParameter'
+expected=$'2 Module\n6 Method\n10 Enum\n11 Interface\n12 Function\n13 Variable\n23 Struct\n24 Event\n26 TypeParameter\n27 Test\n28 Bench'
 if [ "$legend" = "$expected" ]; then
   ok "symbols --legend prints KIND NAME table"
 else
@@ -117,16 +117,50 @@ else
   bad "symbols should report 'main' as function(12); got: $out_ef"
 fi
 
-# 7. #1944: test / bench / impl are outlined (Function 12 / Function 12 /
-#    Method 6 named after the impl target).
+# 7. #1944: test / bench / impl are outlined (Test 27 / Bench 28 since #2632 --
+#    a block label is not a declaration -- / Method 6 named after the impl
+#    target).
 tb="$WORK/testbench.vibe"
 printf 'fn add(a: Int, b: Int) -> Int { a + b }\ntest "adds" { let _ = add(1, 2) }\nbench "once" { let _ = add(1, 1) }\ntrait Show { }\nstruct Point { x: Int }\nimpl Show for Point { }\n' > "$tb"
 out_tb="$("$VIBE" symbols "$tb" 2>/dev/null || true)"
-if has_sym "$out_tb" add 12 && has_sym "$out_tb" adds 12 && has_sym "$out_tb" once 12 \
+if has_sym "$out_tb" add 12 && has_sym "$out_tb" adds 27 && has_sym "$out_tb" once 28 \
    && has_sym "$out_tb" Show 11 && has_sym "$out_tb" Point 23 && has_sym "$out_tb" Point 6; then
   ok "symbols lists fn/test/bench/impl with correct kinds"
 else
   bad "symbols should find add/adds/once/Show/Point+impl; got: $out_tb"
+fi
+
+# 7b. #2632: a block label and a declaration of the same spelling are told
+#     apart by KIND, and a declaration's span is the token that spells it --
+#     never a copy of the name inside a comment (the #2626 counterexample:
+#     `String::length` is at byte 30, after the comment; the comment's copy at
+#     14..28 used to win).
+lb="$WORK/label_vs_decl.vibe"
+printf 'fn not() -> Bool { true }\ntest "not" { let _ = 1 }\n' > "$lb"
+out_lb="$("$VIBE" symbols "$lb" 2>/dev/null || true)"
+if has_sym "$out_lb" not 12 && has_sym "$out_lb" not 27; then
+  ok "symbols tells a test label from a declaration by kind"
+else
+  bad "symbols should report not 12 and not 27; got: $out_lb"
+fi
+cm2="$WORK/comment_copy.vibe"
+printf 'export fn // "String::length"\nString::length(s: String) -> Int {\n  0 - 1\n}\n' > "$cm2"
+out_cm2="$("$VIBE" symbols "$cm2" 2>/dev/null || true)"
+if [ "$out_cm2" = "String::length 12 30 44" ]; then
+  ok "symbols locates a name at its token, not at a copy inside a comment"
+else
+  bad "symbols should report [String::length 12 30 44]; got: $out_cm2"
+fi
+
+# 7c. Codex on #2708: a raw-string label `r"name"` starts its span at the name,
+#     not at the opening quote (the TString token starts at the `r`).
+rl="$WORK/raw_label.vibe"
+printf 'test r"adds" { let _ = 1 }\n' > "$rl"
+out_rl="$("$VIBE" symbols "$rl" 2>/dev/null || true)"
+if [ "$out_rl" = "adds 27 7 11" ]; then
+  ok "symbols starts a raw-string label at the name"
+else
+  bad "symbols should report [adds 27 7 11] for a raw-string label; got: $out_rl"
 fi
 
 # --- #2381: arguments are no longer accepted and ignored --------------------

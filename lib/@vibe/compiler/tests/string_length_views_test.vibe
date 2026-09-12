@@ -1,0 +1,73 @@
+//# Imports
+
+// #2630: `String::unicode_length` / `utf16_length` / `utf8_length` are served
+// by a callsite lowering on both backends (one synthesis in
+// codegen/common_base/string_length_exprs.vibe, two `ce` dispatchers). Every
+// program here runs through the bump, RC, RC-shadow and gc lanes of the
+// checkout's codegen with no checker offsets and must answer the same on all
+// four (codegen_heap_e2e_test's convention). The lambda case is the one the
+// review lint found: the gc lane's lambda-capture scan collected a dispatched
+// spelling that `gc_direct_abi_names` did not list as a free variable.
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_gc, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+//# Functions
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_string_length_views_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y,gc=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Stdout {
+  inspect(run_value(compile_wasi(src, "main"), String::concat(label, "_bump")), content = expected)
+  inspect(run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc")), content = expected)
+  inspect(run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow")), content = expected)
+  inspect(run_value(compile_wasi_gc(src, "main"), String::concat(label, "_gc")), content = expected)
+  0
+}
+
+/// "a" + U+00E9 (2 bytes) + U+65E5 (3 bytes) + U+1D11E (4 bytes) + "z", built
+/// from bytes so the program text stays ASCII: 5 code points, 6 UTF-16 units,
+/// 11 bytes.
+fn mixed_prelude() -> String {
+  "fn mixed() -> String {\n  String::concat(\"a\", String::concat(String::concat(String::from_char_code(195), String::from_char_code(169)), String::concat(String::concat(String::from_char_code(230), String::concat(String::from_char_code(151), String::from_char_code(165))), String::concat(String::concat(String::concat(String::from_char_code(240), String::from_char_code(157)), String::concat(String::from_char_code(132), String::from_char_code(158))), \"z\"))))\n}\n"
+}
+
+//# Tests
+
+test "#2630 the three views agree on every lane" {
+  let src = String::concat(mixed_prelude(), "fn main() -> Int {\n  let s = mixed()\n  String::unicode_length(s) * 10000 + String::utf16_length(s) * 100 + String::utf8_length(s)\n}\n")
+  assert_lanes_agree(src, "views", "50611")
+}
+
+test "#2630 a view called inside a lambda resolves globally on every lane" {
+  let src = String::concat(mixed_prelude(), "fn main() -> Int {\n  let by_code_points = (s: String) -> Int {\n    String::unicode_length(s)\n  }\n  let units = Array::map([\"ab\", mixed()], (p) -> String::utf16_length(p))\n  let bytes = Array::fold([\"ab\", mixed()], 0, (acc, p) -> acc + String::utf8_length(p))\n  by_code_points(mixed()) * 10000 + (Array::get(units, 0) + Array::get(units, 1)) * 100 + bytes\n}\n")
+  assert_lanes_agree(src, "lambda", "50813")
+}
+
+test "#2630 a view is an Int at every consumer" {
+  let src = String::concat(mixed_prelude(), "fn main() -> Int {\n  let s = mixed()\n  let n = String::unicode_length(s)\n  let mut ok = 0\n  if n == 5 {\n    ok = ok + 1\n  } else {\n    ()\n  }\n  if String::unicode_length(s) == String::utf16_length(s) {\n    ()\n  } else {\n    ok = ok + 2\n  }\n  if String::equals(__to_string(String::utf8_length(s)), \"11\") {\n    ok = ok + 4\n  } else {\n    ()\n  }\n  if String::utf8_length(s) - String::unicode_length(s) == 6 {\n    ok = ok + 8\n  } else {\n    ()\n  }\n  ok\n}\n")
+  assert_lanes_agree(src, "consumers", "15")
+}
+
+test "#2708 review: a program's own fn String::unicode_length is that program's function on every lane" {
+  // the shadow wins at the top level and inside a closure (the linear
+  // lane's capture scan must not capture the builtin spelling)
+  let src = "fn String::unicode_length(s: String) -> Int {\n  42\n}\n\nfn main() -> Int {\n  let inner = (s: String) -> Int {\n    String::unicode_length(s)\n  }\n  String::unicode_length(\"abc\") * 100 + inner(\"abc\") + String::utf16_length(\"abc\")\n}\n"
+  assert_lanes_agree(src, "shadow", "4245")
+}
+
+test "#2708 review: malformed bytes count as the WHATWG decoder counts them on every lane" {
+  // `a`, FF, U+00E9, U+1F600 (one code point, two units), a stray
+  // continuation byte, `z`: 6 code points, 7 UTF-16 units.
+  let src = "fn b(codes: Array[Int]) -> String {\n  let mut out = \"\"\n  let mut i = 0\n  while i < Array::length(codes) {\n    out = String::concat(out, String::from_byte(Array::get(codes, i)))\n    i = i + 1\n  }\n  out\n}\n\nfn main() -> Int {\n  let s = b([97, 255, 195, 169, 240, 159, 152, 128, 128, 122])\n  String::unicode_length(s) * 100 + String::utf16_length(s)\n}\n"
+  assert_lanes_agree(src, "malformed", "607")
+}

@@ -968,6 +968,20 @@ send_check_reject "err_type_array_from_mutset.vibe" 'expected Array[String], got
 # caught by `head_differ` rather than falling through to
 # `nominal_head_conflict`. A shared kind would pass every other row here.
 send_check_reject "err_type_mutmap_from_mutset.vibe" 'expected MutMap[String, Int], got MutSet[String]' "cgenhead3"
+# #2378: a dependency's `fn` at a QUALIFIED builtin name replaces that builtin
+# for every program that links the file, with nothing said. It is refused at
+# the IMPORTER -- the module that never asked for the override and gets it
+# anyway -- naming the dependency and leading with the edit; the entry file's
+# own shadow stays legal (fixtures/to_string_shadowed_builtin_test.vibe). The
+# controls -- a bare name, a non-builtin qualified name, a trait-owned name and
+# the `let` alias shape -- are lib/@vibe/compiler/tests/builtin_fn_shadowing_test.vibe.
+send_check_reject "err_builtin_fn_shadowing.vibe" 'rename `String::index_of` in ' "bfs"
+send_check_reject "err_builtin_fn_shadowing.vibe" 'builtin_fn_shadowing_dep.vibe: it is a builtin, and a `fn` defined at a builtin' "bfs2"
+send_check_reject "err_builtin_fn_shadowing.vibe" 'replaces that builtin for EVERY program that links that file' "bfs3"
+# PR #2708 review: the `__vibe_` prefix is reserved for the definitions the
+# compiler generates and finds again by spelling; a program's own
+# `fn __vibe_double_to_string` used to pass for the Double runtime prelude.
+send_check_reject "err_reserved_vibe_prefix.vibe" 'rename `__vibe_double_to_string`: the `__vibe_` prefix is reserved' "rvp"
 # The control, and the reason the two rows above cannot pass by rejecting the
 # type outright: the same heads used correctly -- including a function
 # polymorphic over the element, which is what the `0` bucket exists for --
@@ -6164,6 +6178,36 @@ if ! cmp -s "$fmtdir/expected.vibe" "$fmtdir/out.vibe"; then
 fi
 rm -rf "$fmtdir"
 echo "[compiler-gate] vibe fmt ok (#2149)"
+#      ...and #2636 on that same INSTALLED route (Codex on #2708): the branch
+#      above is what runtime/vibe's `fmt` arm runs, and it formatted input that
+#      did not parse -- `a==0?"z":"nz"` came back reflowed as
+#      `a == 0?"z": "nz"` with verdict 0, which `--check` then certified.
+#      Verdict 2, the input written back byte-for-byte, and the parse error in
+#      the .diag sidecar; the messy file above already pins that a program
+#      which parses is still formatted with verdict 0.
+fmtdir="_build/_gate_vibe_fmt_parse"
+rm -rf "$fmtdir"; mkdir -p "$fmtdir"
+printf 'fn f(a: Int) -> String {\n  a==0?"z":"nz"\n}\n' > "$fmtdir/ternary.vibe"
+fmt_rc="$(VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw VIBE_FMT=1 \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$fmtdir/ternary.vibe" "$fmtdir/out.vibe" 2>"$fmtdir/run.err" | tail -1 || true)"
+if [ "$fmt_rc" != "2" ]; then
+  echo "[compiler-gate] FAIL: VIBE_FMT on a file that does not parse returned '$fmt_rc', not 2 -- the installed vibe fmt formats programs the compiler rejects (#2636)" >&2
+  cat "$fmtdir/run.err" >&2 || true
+  exit 1
+fi
+if ! cmp -s "$fmtdir/ternary.vibe" "$fmtdir/out.vibe"; then
+  echo "[compiler-gate] FAIL: VIBE_FMT rewrote a file that does not parse (#2636)" >&2
+  diff -u "$fmtdir/ternary.vibe" "$fmtdir/out.vibe" >&2 || true
+  exit 1
+fi
+if ! grep -qF 'does not parse' "$fmtdir/out.vibe.diag" 2>/dev/null || ! grep -qF 'unexpected token' "$fmtdir/out.vibe.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_FMT's refusal did not name the parse error in the .diag sidecar (#2636)" >&2
+  cat "$fmtdir/out.vibe.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+rm -rf "$fmtdir"
+echo "[compiler-gate] vibe fmt refuses a file that does not parse on the installed route ok (#2636)"
 
 # 108/108. The ADR-0068 concurrency surface is opt-in (#2248).
 #      docs/spec/stable-surface.md said the unstable surface "is reached only

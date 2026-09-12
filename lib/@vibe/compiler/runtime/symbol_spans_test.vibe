@@ -115,13 +115,70 @@ test "symbol_spans: a clean file returns its declarations" {
   assert(sym_has(syms, "f", 12))
 }
 
-test "symbol_spans: fn, named test, and named bench are outlined (#1944)" {
+test "symbol_spans: fn, named test, and named bench are outlined (#1944, kinds 27/28 since #2632)" {
   let src = "fn add(a: Int, b: Int) -> Int { a + b }\ntest \"adds\" { let _ = add(1, 2) }\nbench \"once\" { let _ = add(1, 1) }\n"
   let syms = symbol_spans(src)
-  inspect(sym_fmt(syms), "add 12, adds 12, once 12")
+  inspect(sym_fmt(syms), "add 12, adds 27, once 28")
   assert(sym_has(syms, "add", 12))
-  assert(sym_has(syms, "adds", 12))
-  assert(sym_has(syms, "once", 12))
+  assert(sym_has(syms, "adds", 27))
+  assert(sym_has(syms, "once", 28))
+}
+
+test "symbol_spans: a block label and a declaration of the same spelling differ by kind (#2632)" {
+  let src = "fn not() -> Bool {\n  true\n}\n\ntest \"not\" {\n  let _ = 1\n}\n"
+  inspect(sym_fmt(symbol_spans(src)), "not 12, not 27")
+}
+
+test "symbol_spans: a label's span is the text inside the quotes" {
+  // `test "adds"` -- the label starts at byte 6, after `test "`.
+  let syms = symbol_spans("test \"adds\" {\n  let _ = 1\n}\n")
+  let (name, kind, s, e) = Array::get(syms, 0)
+  inspect(String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e))))))), "adds 27 6 10")
+}
+
+test "symbol_spans: a raw-string label starts after the r and the quote (Codex on #2708)" {
+  // `test r"adds"` -- the TString token starts at the `r` (byte 5), so the
+  // label's own bytes are 7..11, not 6..11.
+  let syms = symbol_spans("test r\"adds\" {\n  let _ = 1\n}\n")
+  let (name, kind, s, e) = Array::get(syms, 0)
+  inspect(String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e))))))), "adds 27 7 11")
+}
+
+test "symbol_spans: a #| block label starts after the delimiter (Codex on #2708)" {
+  // `test #|adds` with the block on the next line: the token starts at the
+  // `#` (byte 5) and ends at the line end (11); the label is 7..11.
+  let syms = symbol_spans("test #|adds\n{\n  let _ = 1\n}\n")
+  let (name, kind, s, e) = Array::get(syms, 0)
+  inspect(String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e))))))), "adds 27 7 11")
+}
+
+test "symbol_spans: a declaration is located at its token, never at a copy inside a comment (#2632)" {
+  // The #2626 counterexample: the comment carries the name first (bytes
+  // 14..28, quoted on both sides); the declaration's own token is at 30.
+  let src = "export fn // \"String::length\"\nString::length(s: String) -> Int {\n  0 - 1\n}\n"
+  let syms = symbol_spans(src)
+  let (name, kind, s, e) = Array::get(syms, 0)
+  inspect(String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e))))))), "String::length 12 30 44")
+}
+
+test "symbol_spans: a string literal holding the name is not the declaration either (#2632)" {
+  // The binder's own token is at byte 4; the literal after it spells the
+  // same name and is one TString token, which the scan never takes.
+  let src = "let greet = (\"greet\", 1)\nlet after = 2\n"
+  inspect(sym_fmt(symbol_spans(src)), "greet 13, after 13")
+  let (_, _, s, _) = Array::get(symbol_spans(src), 0)
+  inspect(__to_string(s), "4")
+}
+
+test "symbol_spans: an impl is located after `for`, so `impl T for T` names the target (#2632)" {
+  // Syntax only (parse_program_spans does not check), so a trait and a struct
+  // may share a spelling here: `impl Show for Show` -- the Method symbol is
+  // the target after `for` (byte 52), not the trait mention (byte 43) the
+  // first-occurrence scan used to take.
+  let src = "trait Show { }\nstruct Show { x: Int }\nimpl Show for Show { }\n"
+  let syms = symbol_spans(src)
+  let (name, kind, s, _) = Array::get(syms, 2)
+  inspect(String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", __to_string(s))))), "Show 6 52")
 }
 
 test "symbol_spans: empty test/bench names emit the keyword so outline is not empty (#1944)" {
@@ -129,7 +186,7 @@ test "symbol_spans: empty test/bench names emit the keyword so outline is not em
   // literal). An empty string is the stable stand-in for that missing name.
   let src = "test \"\" { let _ = 1 }\nbench \"\" { let _ = 1 }\n"
   let syms = symbol_spans(src)
-  inspect(sym_fmt(syms), "test 12, bench 12")
+  inspect(sym_fmt(syms), "test 27, bench 28")
 }
 
 test "symbol_spans: impl is one Method symbol named after the target type (#1944)" {

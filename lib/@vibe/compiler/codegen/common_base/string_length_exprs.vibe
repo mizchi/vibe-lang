@@ -1,0 +1,43 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import ./string_views_runtime.vibe {
+  string_views_runtime_unicode_name, string_views_runtime_utf16_name
+}
+
+//# Functions
+
+/// #2630: `String::unicode_length` / `String::utf16_length` -- the two length
+/// views of a byte string (ADR-0098) that are not the byte count -- lower to
+/// ONE call each into the String length-view runtime prelude
+/// (string_views_runtime.vibe): top-level functions every lane appends to a
+/// program that calls a view (`append_string_views_runtime`), the same shape
+/// as `double_to_string_expr` / `double_parse_expr` over the Double runtime
+/// prelude. Shared by the linear callsite handler (expr/compile_call.vibe) and
+/// the gc dispatch (gc/backend_call.vibe), which each run
+/// `string_views_runtime_require` first so a lane that never appended the
+/// prelude fails loudly at the lowering. (`String::utf8_length` is the byte
+/// count itself: each backend lowers it straight onto `String::length`.)
+///
+/// This used to synthesize a byte scan inline at every callsite that counted
+/// "bytes that are not `10xxxxxx`" -- which read `0xFF` as a code point and
+/// every lead byte >= 0xF0 as a surrogate pair whether or not a sequence
+/// followed (Codex review on #2708). The prelude decodes the bytes the way
+/// the WHATWG decoder does and counts what that decoding yields; see
+/// string_views_runtime.vibe for the rule and the counts it pins.
+///
+/// The three names were published from `@vibe/builtin` and declared in
+/// `builtins/declarations.vibe` for a long time with NO lowering anywhere: a
+/// direct call was `unknown name`, and an aliased import type-checked and then
+/// died in codegen with the "reached code generation unresolved" internal
+/// error (#2630).
+export fn string_unicode_length_expr(arg: Expr) -> Expr {
+  ECall(EIdent(string_views_runtime_unicode_name(), -1), [arg], -1)
+}
+
+export fn string_utf16_length_expr(arg: Expr) -> Expr {
+  ECall(EIdent(string_views_runtime_utf16_name(), -1), [arg], -1)
+}

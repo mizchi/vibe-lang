@@ -28,9 +28,11 @@
 //# argv[1] = manifest path: a file with one source path per line
 //# argv[2] = report path: written with one "STATUS\tpath" line per input
 //#           file (STATUS: OK = already a fixpoint / write no-op, DIFF =
-//#           check found drift / write rewrote it, ERROR = formatter or a
-//#           shard subprocess failed on this file -- message after a 2nd
-//#           tab). Order matches the manifest.
+//#           check found drift / write rewrote it, REFUSED = the file does
+//#           not parse, so it was neither checked nor rewritten (#2636; the
+//#           parse error after a 2nd tab), ERROR = formatter or a shard
+//#           subprocess failed on this file -- message after a 2nd tab).
+//#           Order matches the manifest.
 //# argv[3] = jobs (optional; string int, default "1" = minimum
 //#           parallelism -- the safety cap above may still force sharding)
 //#
@@ -39,11 +41,15 @@
 //# knows how to format a manifest and write a report.
 
 import ../compiler/fmt {
-  format_source
+  format_source, source_header_end
 }
 
 import ../compiler/loader {
   fill_require_pins_lenient
+}
+
+import ../parser {
+  lex, parse_program
 }
 
 import ../process {
@@ -108,6 +114,41 @@ fn read_manifest(path: String) -> Array[String] with Fs {
 //# Sequential formatting (always the actual work -- shards just call this
 //# recursively on a slice of the manifest).
 
+/// "" when `src` parses, else the parser's message.
+fn parse_error_of(src: String) -> String {
+  handle {
+    let _ = parse_program(lex(src))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn has_suffix(s: String, suffix: String) -> Bool {
+  let n = String::length(s)
+  let m = String::length(suffix)
+  if n < m {
+    false
+  } else {
+    String::substring(s, n - m, n) == suffix
+  }
+}
+
+/// #2636: the parse error of a plain vibe source's BODY (the part after a
+/// verbatim require-pin head, which is not vibe syntax), "" when it parses.
+/// A `.vpkg` contract is not a program and is never asked.
+fn input_parse_error(rel_path: String, pre: String) -> String {
+  if has_suffix(rel_path, ".vpkg") {
+    ""
+  } else {
+    let e = source_header_end(pre)
+    let head_end = if e > 0 {
+      e
+    } else {
+      0
+    }
+    parse_error_of(String::substring(pre, head_end, String::length(pre)))
+  }
+}
+
 fn format_one_line(mode: String, rel_path: String) -> String with Fs {
   let source = Fs::read_file(rel_path)
   // #730 (D-3): pinned form is canonical -- complete an unpinned `require`
@@ -116,6 +157,20 @@ fn format_one_line(mode: String, rel_path: String) -> String with Fs {
   // headers included (#2260 round 3). Check mode reports the fillable file
   // as DIFF via the comparison below, which is exactly "not canonical yet".
   let pre = fill_require_pins_lenient(source)
+  // #2636: the formatter's grammar is the compiler's. A file the parser
+  // rejects is REFUSED, never rewritten and never certified -- the same
+  // guard the single-file entry (fmt_entry.vibe) runs, so `pkf run fmt` and
+  // CI's vibe-fmt-check cannot mint a spelling for a construct the language
+  // does not have.
+  let input_error = input_parse_error(rel_path, pre)
+  if String::length(input_error) > 0 {
+    "REFUSED\t\{rel_path}\t\{input_error}"
+  } else {
+    format_one_line_parsed(mode, rel_path, source, pre)
+  }
+}
+
+fn format_one_line_parsed(mode: String, rel_path: String, source: String, pre: String) -> String with Fs {
   let formatted = format_source(rel_path, pre)
   let is_fixpoint = formatted == source
   if mode == "write" && !is_fixpoint {

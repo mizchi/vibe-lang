@@ -57,6 +57,7 @@ done
 formatted=0
 rewritten=0
 errors=()
+refused=()
 if [ "${#to_format[@]}" -gt 0 ]; then
   while IFS=$'\t' read -r status rel_path message; do
     [ -n "$status" ] || continue
@@ -64,6 +65,9 @@ if [ "${#to_format[@]}" -gt 0 ]; then
     case "$status" in
       DIFF) rewritten=$((rewritten + 1)) ;;
       ERROR) errors+=("$rel_path: $message") ;;
+      # #2636: a file the parser rejects is left untouched; say so, and fail,
+      # so a broken program is never mistaken for a formatted one.
+      REFUSED) refused+=("$rel_path: $message") ;;
     esac
   done < <(printf '%s\n' "${to_format[@]}" | bash scripts/run_vibe_fmt_batch.sh write "$JOBS")
   # A process substitution's exit status is not this script's, so a batch that
@@ -82,6 +86,11 @@ fi
 if [ "${#errors[@]}" -gt 0 ]; then
   echo "vibe-fmt apply: ${#errors[@]} file(s) errored:" >&2
   printf '  %s\n' "${errors[@]}" >&2
+  exit 1
+fi
+if [ "${#refused[@]}" -gt 0 ]; then
+  echo "vibe-fmt apply: ${#refused[@]} file(s) do not parse and were left untouched (fix the program first, #2636):" >&2
+  printf '  %s\n' "${refused[@]}" >&2
   exit 1
 fi
 

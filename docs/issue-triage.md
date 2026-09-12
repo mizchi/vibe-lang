@@ -1,10 +1,9 @@
 # Issue triage — deciding kind and priority mechanically
 
-Last updated: 2026-09-10 (applied state rewritten against the open set: **P0 is
-empty**. The 2026-09-08 edition listed four P0s and eight P1s; of those twelve
-rows, one moved to P1 on its own merits (#2378, once #2628 gave it an actionable
-diagnostic) and the rest are closed. A table naming closed issues is worse than
-no table -- it sends the next reader to work that is already done).
+Last updated: 2026-09-12 (applied state rewritten against the open set after
+#2708 merged: **P0 is empty**, five P1s of which two carry `blocker`, and the
+2026-09-10 edition's P1 row for #2378 is closed. A table naming closed issues is
+worse than no table -- it sends the next reader to work that is already done).
 
 So that "what do I do next" does not have to be re-derived every time, **each
 label means exactly one thing**. Every issue is labelled independently on three
@@ -56,7 +55,7 @@ the same shelf as a real bug.
 An `epic` is an index, so it is never itself the thing to work on (look at its
 sub-issues).
 
-## Applied state as of 2026-09-08
+## Applied state as of 2026-09-12
 
 **Rewrite this section; never append to it.** It is a snapshot of the open set,
 and a snapshot that has drifted is worse than none — the 2026-08-25 edition sat
@@ -72,56 +71,59 @@ first, then take the leftover.
 
 | occupied files | PR | what it is holding |
 |---|---|---|
-| `gen_eq_body` (codegen, RC lane) | [#2522](https://github.com/mizchi/vibe-lang/pull/2522) | #2474's runtime guard. **Decide before merging**: #2529 rejects that case at check time, so what is left for the guard is the flat single-source lane, at +312 B per emitted module |
+| none | [#2716](https://github.com/mizchi/vibe-lang/pull/2716) | records the re-measured #2387 interning cost (the +3.5% did not reproduce); comment-only, holds no source file |
 
 ### P0 — silently wrong (0)
 
-Empty. Each of the four that stood here is now either fixed or **reported**, and
-the distinction matters: three of them still describe a real defect, and what
-changed is that the compiler says so. By this document's own axis that is the
-P1 row ("you can notice, and you can work around it"), not the P0 one ("nobody
-can notice").
+Empty. The two former P0s that are still open are **reported**, not fixed, and
+the distinction is this document's own axis: P1 is "you can notice, and you can
+work around it", P0 is "nobody can notice".
 
-| former P0 | what closed the P0 property |
+| former P0 | what closed the P0 property, and what is left |
 |---|---|
-| #2523 | #2612 refuses the bound at a non-scalar instantiation instead of comparing by reference identity. The dispatch is still missing — now P1 |
-| #2475 | #2471 made the ambiguous rungs fail closed and #2475 moved the refusal to compile time with a message naming the edit. Both meanings still trap — now P1 |
-| #2378 | #2628 made `vibe check` report a qualified `fn` definition of a builtin name. The name is still replaced program-wide if you ignore the warning — now P1 |
-| #2381 | fixed: `vibe symbols` refuses an unrecognised argument and sweeps a directory in one process |
+| #2523 | #2612 refuses the bound at a non-scalar instantiation instead of comparing by reference identity. The dispatch is still missing |
+| #2475 | #2471 made the ambiguous rungs fail closed and #2616 moved the refusal to compile time with a message naming the edit. Both meanings still refuse |
 
-**Fail-closed is not the same as fixed**, and none of the three rows above should
-be read as done. But it is the difference between a language that lies and one
-that says it cannot answer, which is the difference this axis measures.
+The other two rows of the 2026-09-10 edition are closed: #2378 landed in #2708
+(the importer of a builtin-shadowing `fn` is refused, the definer warned) and
+#2381 was fixed.
 
-### P1 — crashes, or cannot be written (4)
+**Fail-closed is not the same as fixed**, and neither row above should be read
+as done. But it is the difference between a language that lies and one that
+says it cannot answer, which is the difference this axis measures.
+
+### P1 — crashes, or cannot be written (5)
+
+The order of work puts the two that carry `blocker` first.
 
 | # | what |
 |---|---|
-| #2523 | `Eq` is a marker trait, so `[T: Eq]` cannot compare a user aggregate. The bound is refused (#2612); giving `Eq` a real `equals` method is the fix, and it is an ADR-level change to a builtin trait. **Order matters**: the operator→witness lowering has to exist BEFORE the method, or the guard stands down while nothing dispatches |
-| #2475 | untyped-empty array pushes under a source-owned `struct Int` cannot tell a literal from the struct. Five attempts at the builtin-scalar marker failed five different ways; the consumers of a leaf spelling have to be enumerated first |
-| #2378 | a qualified `fn` definition of a builtin name replaces it program-wide. Reported since #2628; open for whether to escalate to a rejection, and for whether the caller (not the definer) should hear about it |
+| #2658 `blocker` | exact re-export-aware import closure — the last thing keeping the per-module prelude (#2510) off in production. The loader computes the re-export edge and discards it one line later (`collect_import_deps_from_stmts` in `loader/header_cache.vibe`); computing the closure in the split entry from the sources it already holds is the smaller first move, and the #2647 round-9 guard has to be replaced with it, not kept beside it |
+| #2651 `blocker` | `Double::from_i64_bits` takes the whole 64-bit pattern in one 63-bit `Int`, so every negative double cannot be read back exactly. Blocks the AST binary codec's `EFloat` / `PFloat` encoders (#2510's first bullet). The fix is the `_lohi` counterpart of the `to_i64_bits_lo` / `_hi` pair that already exists |
+| #2523 | `[T: Eq]` cannot compare a user aggregate: refused since #2612, the dispatch is missing. The mechanism map is in the 2026-09-12 comment, with two landmines the plan did not name — the impl method `String::equals` collides with the #2378 rule (the prelude would be refused for every program), and the prelude's `Option::equals[T: Eq]` has no witness carrier, so the guard going dead would revive the #2474 container symptom. The operator rung, the derive registration, the method under a non-colliding spelling and the container carrier land as one change |
+| #2475 | untyped-empty pushes under a source-owned `struct Int` cannot tell a literal from the struct. Every consumer of a leaf spelling in the channel is enumerated in the 2026-09-12 comment. The choice is an eq-channel-only marker (`__Vbi_Int`, about a dozen consumers to teach, never the renderer's producers) or refusing the declaration — which the tree half-does already: an annotation `Int` is always the builtin, so the struct can never be named |
 | #2199 | OOB aborts name operation / index / length but carry no source provenance (rides #1987) |
 
 ### P2 carrying `blocker` — the entrance to a subtree
 
 | # | subtree it opens |
 |---|---|
+| #2633 | #2575, the per-module run of `desugar_trait_dicts` (under #2510 / #2494): the evidence-dictionary pass is a whole-program decision, so a module cannot know it must take an `__EvDict` parameter. The decision has to be published as interface data |
 | #2509 | #2494 compiler memory. Every later change in that subtree needs this number to show it moved |
 | #2500 | #2493 binary size. One effect lowering, not five (ADR-0076) |
-| #2387 | #2386 design-level performance. Symbol interning |
+| #2387 | #2386 design-level performance. Symbol interning; #2716 records the re-measurement |
 | #1959 | the incremental planner; #1960 waits on it |
 
 ### epics — indexes, never the thing to work on
 
 | # | subtree |
 |---|---|
-| #2386 | design-level performance → #2387 (blocker), #2388, #2389, #2390, #2391, #2392 |
+| #2386 | design-level performance → #2387 (blocker), #2388 (→ #2575 → #2633), #2389, #2390, #2392 |
 | #2492 | build-time configuration, `VIBE_*` → `#cfg` → #2497, #2498, #2499 |
 | #2493 | a compile-only artifact at or under 1.0 MB → #2500 (blocker), #2501 – #2506 |
-| #2494 | compiler memory, 128 MB per unit of work → #2509 (blocker), #2507, #2508, #2510 |
-| #2340 | SIMD-first data structures → #2347. #2348's two inline-wasm halves landed in #2399 / #2420; the issue itself carried a "Closing" comment for two days without the state change, applied 2026-09-08 |
-| #2002 | documentation by audience → #2564, #2565, #2566, #2567. **The blocker is gone**: #2562's fail-closed classification gate landed in #2576, so the four moves are unblocked and can run in order (delete, then user, then internal/generated, then split the mixed ones) |
-| #2001 | retire the scripts layer |
+| #2494 | compiler memory, 128 MB per unit of work → #2509 (blocker), #2507, #2508, #2510 (→ #2658, the P1 blocker; #2651; #2669) |
+| #2002 | documentation by audience → #2565, #2566, #2567, in that order. #2564 (the delete) landed, so the user move is next |
+| #2001 | retire the scripts layer → #2592: wiring enforcement covers `check_*` / `lint_*` but not the 27 `*_gate.sh` scripts, and the first pass found a dark gate that was red |
 
 ### Everything else
 
@@ -129,21 +131,21 @@ The rest of the open set is P2 outside a subtree — `gh issue list --state open
 --label P2` is the list, and nothing in it blocks anything else. Small ones with
 a stated, bounded scope, if you want one to start on: **#2442** (bare-name
 builtin value forms, blocked only on teaching the lambda-site planner scope),
-**#2555** (delete the sidecar codec's
-hand-rolled renderer and unary counts — the bug they route around was a
-misdiagnosis and is closed), **#2219** (its "after the next bootstrap bump"
-precondition has fired — the committed seed emits the assert marker, so the
-legacy block recognizer can go).
+**#2219** (its "after the next bootstrap bump" precondition has fired — the
+committed seed emits the assert marker, so the legacy block recognizer can go),
+**#2670** (`vibe symbols lib` spends 84% of its time rescanning each file from
+offset 0 per declaration; one line-start table per file fixes it), **#2584**
+(adding a builtin means editing several hand-maintained classification lists —
+#2708 touched seven of them for three names, and nothing points at a missed
+one).
 
-**The gate-wiring pair, both from #2579 and both worth doing in order.** #2579
-wired all 19 previously-unreachable gate scripts into CI, so the count is zero
-today — by hand, and the hand audit got one of ten entries wrong. **#2580** is
-the mechanical replacement: a gate that fails when a `check_*` / `lint_*` script
-is reachable from no workflow, which is what keeps the count at zero.
-**#2581** is the other half of the same lesson: `check_portable_boundary.sh`
-answers a semantic question with a text scanner, and its review ran to 53
-findings — 52 fixed, one refused because measuring the emitted wasm showed the
-gate was right. Its three comments are the acceptance list for the AST version.
+**#2592 is the successor of the gate-wiring pair.** #2580 (the reachability
+gate) landed in #2591 and #2581 (the AST version of
+`check_portable_boundary.sh`) is closed; what the first pass deliberately left
+out is the 27 `*_gate.sh` scripts, and its own evidence —
+`check_book_console.sh` had run nowhere and was red — says the widened corpus
+will find more of the same. Widen, then wire or allowlist each dark gate with a
+reason; never allowlist the failures in bulk.
 
 **#1872 has no open parent.** Its parent #1770 closed, so the `effect Source`
 design is invisible from every open epic even though its remaining steps are
@@ -193,15 +195,15 @@ serially. Running across lanes is free.**
 
 | lane | file area | issues | notes |
 |---|---|---|---|
-| **A. eq dispatch** | `checker/checker_stmt.vibe`, `normalize/desugar_trait_dict.vibe` | #2523 (P1), then #2475 (P1), then #2501 | one lane, not two: the eq-row producer and its consumer are in these two files, and #2501 splits the second one, so it has to follow rather than run beside them |
+| **A. eq dispatch** | `checker/checker_stmt.vibe`, `normalize/desugar_trait_dict.vibe` | #2523 (P1), then #2475 (P1), then #2501 | one lane, not two: the eq-row producer and its consumer are in these two files, and #2501 splits the second one, so it has to follow rather than run beside them. Each of the two P1s carries its entry map in a 2026-09-12 comment |
 | **B. parser** | `lib/@vibe/parser/**` | — | #2535 and #2527 both closed |
-| **C. loader / module lane** | `runtime/runtime.vibe`, `runtime/typecheck_fs.vibe`, `entry/compiler/**` | #2521, #2555 | #2437 and #2449 both closed 2026-09-10; they ended at the same statement-merge shape, which is why they went together |
+| **C. loader / module lane** | `runtime/runtime.vibe`, `runtime/typecheck_fs.vibe`, `entry/compiler/**`, `loader/**` | #2658 (P1, blocker), #2521 | #2555 closed; #2437 and #2449 both closed 2026-09-10, ending at the same statement-merge shape |
 | **D. incremental / cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1959 → #1960, #2388, #2510 | **same files as lane C**, so C and D serialize with each other |
 | **E. codegen / RC** | `codegen/**` | #2389, #1980, #1934 | |
 | **F. runtime / host** | `runtime/viberun`, abort provenance | #2199 (rides #1987), #2397 | |
-| **G. CLI / editor queries** | `lib/@vibe/cli/**`, `entry/cli_cache` | #2378 (P1), #1943, #2499 | #2381 closed 2026-09-09 |
-| **H. scripts / gates** | `scripts/**`, `tests/gates/**` | #2580, #2581, #2001 | #2580 before #2581: the reachability gate is cheap and keeps the wiring #2579 did from rotting, while #2581 needs a compiler-bearing job |
-| **I. docs** | `docs/**`, `book/**` | #2002 → #2564, #2565, #2566, #2567 (in that order), #1346 | conflicts only on the cheatsheet. #2146 closed 2026-09-06 |
+| **G. CLI / editor queries** | `lib/@vibe/cli/**`, `entry/cli_cache`, `runtime/symbol_spans.vibe` | #2670, #1943, #2499 | #2378 closed 2026-09-12 (#2708); #2381 closed 2026-09-09 |
+| **H. scripts / gates** | `scripts/**`, `tests/gates/**` | #2592, #2001 | #2580 landed in #2591 and #2581 is closed; #2592 widens the wiring gate to the 27 `*_gate.sh` scripts, which is what keeps the count at zero |
+| **I. docs** | `docs/**`, `book/**` | #2002 → #2565, #2566, #2567 (in that order; #2564 landed), #1346 | conflicts only on the cheatsheet. #2146 closed 2026-09-06 |
 
 The #2386 perf subtree deliberately touches every lane — its slices land as many
 small independent PRs, which is why `git log` on a file is worth a look before
