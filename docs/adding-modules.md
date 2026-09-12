@@ -53,7 +53,7 @@ pin exists the hash is checked wherever the package was found. Under
    runs the battery over every `*_test.vibe` under `examples/`, `lib/` and
    `fixtures/` that `discover()` finds, unconditionally. There is no allowlist
    file (removed in #1231), so no registration step is needed. Only files the
-   generic harness cannot run — gate-only `__DATA__` fixtures, gc-only fixtures
+   generic harness cannot run — fixtures needing dedicated gate settings or a GC backend
    — go in `EXCLUDE_PATTERNS` in `scripts/unit_test_runner.sh`, with a reason.
    **A file with a `test` block placed under `fixtures/` must be named
    `*_test.vibe`** — that naming is the only condition for reaching

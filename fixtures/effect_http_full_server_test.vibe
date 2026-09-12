@@ -1,0 +1,49 @@
+// HTTP server: request + auth routing (simplified, no string concat)
+
+effect HttpReq {
+  Method -> String; Url -> String
+}
+
+effect Auth {
+  Verify(String) -> Bool
+}
+
+// Authenticated GET /api → 200
+
+// Unauthenticated GET /api → 401
+
+test "effect http full server" {
+  let test1 = handle {
+    handle {
+      let url = perform HttpReq::Url
+      if String::equals(url, "/api") {
+        let ok = perform Auth::Verify("token")
+        if ok {
+          200
+        } else {
+          401
+        }
+      } else if String::equals(url, "/") {
+        200
+      } else {
+        404
+      }
+    } with { Auth::Verify(_t) => resume(true) }
+  } with { HttpReq::Method => resume("GET"); HttpReq::Url => resume("/api") }
+  let test2 = handle {
+    handle {
+      let url = perform HttpReq::Url
+      if String::equals(url, "/api") {
+        let ok = perform Auth::Verify("token")
+        if ok {
+          200
+        } else {
+          401
+        }
+      } else {
+        404
+      }
+    } with { Auth::Verify(_t) => resume(false) }
+  } with { HttpReq::Method => resume("GET"); HttpReq::Url => resume("/api") }
+  inspect(test1 + test2, "601")
+}

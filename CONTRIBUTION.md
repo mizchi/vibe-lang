@@ -234,13 +234,16 @@ where new compiler work should land.
 
 ## Fixtures
 
-Fixtures live in `fixtures/*.vibe` and include a `__DATA__` JSON section; they are
-exercised through the selfhost gate (`pkf run full-gate`) and `pkf run
-test-fixtures`. Runtime-style fixtures (effect, HTTP, struct) live in
-`fixtures/runtime/`.
+Runtime fixtures are ordinary `*_test.vibe` files with `inspect` expectations.
+The unit runner discovers them directly under `fixtures/`, including
+`fixtures/runtime/`. Run one with `vibe test <file>` and update its snapshots
+with `vibe test --update <file>`. `pkf run full-gate` checks execution coverage
+and rejects legacy expectation tails and `.diag` expectation files.
 
-WASM fixtures live in `fixtures/wasm/*.vibe` and compare expected WAT.
-WASM GC fixtures live in `fixtures/wasm_gc/*.vibe` and check for `struct.new/get/set`.
+Compile-rejection fixtures use `fixtures/typecheck/expected.tsv`. Compiler
+warning snapshots live in `lib/@vibe/compiler/tests/warning_snapshots/`.
+`lib/@vibe/compiler/tests/gc_struct_opcode_snapshot_test.vibe` checks decoded
+`struct.new/get/set` instructions in the tested GC function's body.
 
 ## Bench
 

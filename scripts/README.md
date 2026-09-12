@@ -92,14 +92,15 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   was paid down in the 2026-07-28 bulk reformat). `vibe_fmt_apply.sh` (`pkf
   run fmt`) is the write-mode counterpart that applies the formatter across
   the tree; this script only lints.
-- `check_fixture_execution.sh` (+ `fixture_execution_exceptions.txt`,
-  `runtime_fixture_debt.tsv`) — every `fixtures/**/*.vibe` carrying `test`
-  blocks or a runtime `__DATA__.last` expectation must be run by some lane or
-  listed with a reason. `unit_test_runner.sh` regenerates the non-debt runtime
-  fixtures as ordinary `*_test.vibe` files on every inventory/run; new
-  expectations are active by default. Kills the state where a fixture looks
-  like coverage and is executed by nothing (#1587, #1855). Runs at the top of
-  `compiler_gate.sh` before the selfbuild.
+- `check_fixture_execution.sh` (+ `fixture_execution_exceptions.txt`) — every
+  `fixtures/**/*.vibe` carrying `test` blocks must run in a lane or be listed
+  with a reason. `unit_test_runner.sh` discovers committed `*_test.vibe`
+  files directly. Runs at the top of `compiler_gate.sh` before the selfbuild.
+- `check_fixture_snapshots.mjs` (+ `.test.mjs`) — rejects `__DATA__` tails and
+  `.diag` expectations under `fixtures/`. Runtime and warning expectations
+  live in executable `inspect` snapshots (#1571). Invoked by the fixture
+  execution check; its mutation tests run in bootstrap preflight and the
+  pre-commit self-test.
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
 - `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`
@@ -111,9 +112,6 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `build_release_assets.sh`, `build_wasi_http_p3_full_adapter.sh`, `precompile.sh`
 
 ## Generators / codegen data
-- `generate_runtime_fixture_tests.mjs` — turns live `__DATA__.last` fixtures
-  into generated unit tests; `VIBE_RUNTIME_FIXTURE_INCLUDE_DEBT=1` makes list
-  mode include the explicitly reasoned debt inventory for audits.
 - `emit_async_lift_fixture.sh`
 
 ## Misc infra
