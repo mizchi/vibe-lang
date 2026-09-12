@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The launcher's project-root and build-directory contract (#2675,
-# docs/toolchain-layout.md), measured on scratch projects:
+# docs/install.md "Project layout"), measured on scratch projects:
 #
 #   * `vibe new` writes main.vibex, a root index.vpkg and .gitignore, and the
 #     header it writes is the formatter's canonical shape;
@@ -160,6 +160,31 @@ got="$(cd "$app" && vibe clean)"
 [ "$got" = "nothing to clean under $app" ] || fail "vibe clean on a clean project: unexpected report: $got"
 ( cd "$app" && vibe clean --bogus >/dev/null 2>&1 ) && fail "vibe clean accepted an unknown flag"
 pass "vibe clean removes .vibe/build, --all the store too"
+
+# --- 5b. VIBE_BUILD_DIR carries the compiler cache with it ------------------
+# The compiler roots its cache at the literal `.vibe/build/cache/` under its
+# cwd (the root), so an overridden build directory has to take the cache
+# along, or `vibe clean` under the override removes the artifacts and leaves
+# the cache growing at the root. Measured before the fix: the artifact moved
+# and the cache did not.
+bd="$WORK/bd"
+got="$(cd "$app/sub" && VIBE_BUILD_DIR="$bd" vibe run deep.vibex 2>&1)" || fail "vibe run with VIBE_BUILD_DIR failed: $got"
+[ "$got" = "42 from-sub" ] || fail "vibe run with VIBE_BUILD_DIR: expected '42 from-sub', got '$got'"
+[ -s "$bd/run/deep.wasm" ] || fail "VIBE_BUILD_DIR: the artifact did not land at $bd/run/deep.wasm"
+[ -d "$bd/cache" ] || fail "VIBE_BUILD_DIR: the compiler cache did not follow the build directory to $bd/cache/"
+n_cache="$(find "$bd/cache" -maxdepth 1 -name 'vibe_*' | wc -l | tr -d ' ')"
+[ "$n_cache" -gt 0 ] || fail "VIBE_BUILD_DIR: $bd/cache/ exists but holds no compiler cache files"
+n_root="$( { find "$app/.vibe/build/cache" -maxdepth 1 -name 'vibe_*' 2>/dev/null || true; } | wc -l | tr -d ' ')"
+[ "$n_root" = "0" ] || fail "VIBE_BUILD_DIR: $n_root cache file(s) still landed under <root>/.vibe/build/cache/"
+iso="$WORK/iso"
+mkdir -p "$iso"
+( cd "$app/sub" && VIBE_BUILD_DIR="$bd" VIBE_BUILD_CACHE_DIR="$iso" vibe run deep.vibex >/dev/null 2>&1 ) || fail "vibe run with VIBE_BUILD_DIR and VIBE_BUILD_CACHE_DIR failed"
+n_iso="$(find "$iso" -maxdepth 1 -name 'vibe_*' | wc -l | tr -d ' ')"
+[ "$n_iso" -gt 0 ] || fail "an explicit VIBE_BUILD_CACHE_DIR must win over the derived one: nothing landed under $iso"
+got="$(cd "$app/sub" && VIBE_BUILD_DIR="$bd" vibe clean)"
+[ "$got" = "cleaned: $bd" ] || fail "vibe clean with VIBE_BUILD_DIR: unexpected report: $got"
+[ ! -e "$bd" ] || fail "vibe clean with VIBE_BUILD_DIR left $bd"
+pass "VIBE_BUILD_DIR moves the artifacts and the compiler cache; an explicit VIBE_BUILD_CACHE_DIR still wins; vibe clean removes the override"
 
 # --- 6. nothing left in the OS temp dir -------------------------------------
 leftover="$(find "$WORK/tmp" -mindepth 1 | wc -l | tr -d ' ')"

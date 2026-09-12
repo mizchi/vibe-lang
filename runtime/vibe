@@ -10,7 +10,7 @@
 #     update` can refresh the compiler wasm (+ .cwasm) without touching the
 #     runner.
 #
-# Project root and build directory (docs/toolchain-layout.md, #2675):
+# Project root and build directory (docs/install.md "Project layout", #2675):
 #   * the PROJECT ROOT is the outermost directory with an `index.vpkg` walking
 #     up from the invoking directory, not crossing a directory that contains
 #     `.git`; with no `index.vpkg` in sight it is the invoking directory.
@@ -24,7 +24,8 @@
 #   * everything the toolchain generates lands under `<root>/.vibe/build/`
 #     (`cache/` = the compiler's persistent cache, `run/`, `test/`, `bench/`,
 #     `out/`), never in a `_build/` and never next to a source file.
-#     VIBE_BUILD_DIR overrides the directory; `vibe clean` removes it.
+#     VIBE_BUILD_DIR overrides the directory, compiler cache included (an
+#     explicit VIBE_BUILD_CACHE_DIR still wins); `vibe clean` removes it.
 #
 # Subcommands:
 #   vibe run     <file.vibex> [-- args]   compile fixed `main`, then run
@@ -178,7 +179,7 @@ set -euo pipefail
 # release cannot ship carrying `-dev`. See docs/release-notes-0.1.0.md.
 VIBE_VERSION="0.1.0-dev"
 
-# Resolve install root (docs/toolchain-layout.md section 2, #2677). An
+# Resolve install root (docs/install.md "Install layout", #2677). An
 # installed launcher lives at $VIBE_HOME/toolchains/<name>/bin/vibe and
 # carries everything it needs inside that toolchain directory:
 #
@@ -304,7 +305,7 @@ valid_toolchain_name() {
   case "$1" in ""|.|..|*[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac
 }
 
-# --- release install (docs/toolchain-layout.md section 3, #2678) ------------
+# --- release install (docs/install.md "Updating", #2678) --------------------
 # `vibe self update <version>` fetches a release's assets from
 # $VIBE_RELEASE_URL (default: this repository's GitHub releases; tests point
 # it at a file:// directory), verifies every byte against
@@ -1123,7 +1124,7 @@ condense_test_trap() {
   fi
 }
 
-# --- Project root and build directory (docs/toolchain-layout.md, #2675) ------
+# --- Project root and build directory (docs/install.md "Project layout", #2675)
 #
 # The compiler resolves `.vibe/store/`, the workspace `lib/` and its own
 # persistent cache relative to ITS cwd, so the launcher makes that cwd the
@@ -1152,6 +1153,15 @@ project_root() {
 PROJECT_ROOT="$(project_root)"
 BUILD_DIR="${VIBE_BUILD_DIR:-$PROJECT_ROOT/.vibe/build}"
 case "$BUILD_DIR" in /*) ;; *) BUILD_DIR="$INVOKE_DIR/$BUILD_DIR" ;; esac
+# The compiler roots its persistent cache at the literal `.vibe/build/cache/`
+# under its cwd (the root), so an overridden build directory has to carry the
+# cache along explicitly. An explicit VIBE_BUILD_CACHE_DIR (the isolation knob
+# the unit-test runner and CI use) keeps precedence. Measured before this:
+# `VIBE_BUILD_DIR=x vibe run` moved the artifact and left the cache at the
+# root, where `vibe clean` under the same override never reached it.
+if [ -n "${VIBE_BUILD_DIR:-}" ] && [ -z "${VIBE_BUILD_CACHE_DIR:-}" ]; then
+  export VIBE_BUILD_CACHE_DIR="$BUILD_DIR/cache"
+fi
 # The invoking directory as seen from the root ("" at the root itself).
 INVOKE_REL="${INVOKE_DIR#"$PROJECT_ROOT"}"; INVOKE_REL="${INVOKE_REL#/}"
 # A path the user typed, as the compiler (cwd = root) must see it.
@@ -1292,7 +1302,8 @@ case "$cmd" in
     extra_args=("$@")
     [ -f "$src" ] || die "not found: $src"
     # The compiled program and its `.funcmap` sidecar live under the build
-    # directory and are overwritten on every run (docs/toolchain-layout.md).
+    # directory and are overwritten on every run (docs/install.md "Project
+    # layout").
     out="$BUILD_DIR/run/$(basename "${src%.vibex}").wasm"
     mkdir -p "$BUILD_DIR/run"
     # The runner executes from the invoking directory (see the root block
@@ -1434,7 +1445,7 @@ case "$cmd" in
     fi
     if [ -z "$out" ]; then
       # No `-o`: the artifact goes under the build directory, never next to
-      # the source (docs/toolchain-layout.md, #2675).
+      # the source (docs/install.md "Project layout", #2675).
       case "$src" in
         *.vibex) out="$BUILD_DIR/out/$(basename "${src%.vibex}").wasm" ;;
         *) out="$BUILD_DIR/out/$(basename "${src%.vibe}").wasm" ;;
@@ -2621,7 +2632,7 @@ case "$cmd" in
     set -- "${_test_files[@]}"
     # The pass cache is $VIBE_HOME/cache/test, keyed by the compiled wasm's
     # sha256 (which already folds in the compiler); no separate override
-    # (docs/toolchain-layout.md section 8, #2677) -- point VIBE_HOME at a
+    # (docs/install.md "Environment variables", #2677) -- point VIBE_HOME at a
     # scratch home to isolate a run.
     tcache="$VIBE_HOME/cache/test"
     # #2228: per-file result records for the [vibe-test] summary line. A
@@ -3297,8 +3308,8 @@ REPL_HELP
     # the program README.md and docs/install.md teach.
     printf 'fn main allows Console {\n  println("42")\n}\n' > "$ndir/main.vibex"
     # The root `index.vpkg` is the project marker (`vibe root` finds it) and
-    # the manifest its dependencies are pinned in (docs/toolchain-layout.md,
-    # #2675). Its header is written in the formatter's canonical shape so
+    # the manifest its dependencies are pinned in (docs/install.md "Project
+    # layout", #2675). Its header is written in the formatter's canonical shape so
     # `vibe fmt --check` on a fresh project is clean. The `@local` scope is
     # the one `vibe pkg publish` refuses: a scaffold is not a published name;
     # `--name @scope/name` names a project that will be.
@@ -3313,8 +3324,8 @@ REPL_HELP
   add)
     # vibe add <source-spec>
     # Fetch a package straight from git into the project's `.vibe/store/`
-    # and pin it in the root `index.vpkg` (docs/toolchain-layout.md section
-    # 7, #2676): the manifest gains a `deps` entry `<name> : <version>` and a
+    # and pin it in the root `index.vpkg` (docs/install.md "Dependencies",
+    # #2676): the manifest gains a `deps` entry `<name> : <version>` and a
     # `require <name> <version> = #pkg:sha1:<hex> from <pinned-spec>` line
     # whose spec names the resolved COMMIT, so `vibe fetch` on a fresh clone
     # restores the store from it without a registry. Name and version are
@@ -3329,7 +3340,7 @@ REPL_HELP
     [ "$#" -eq 1 ] || die "$add_usage"
     aspec="$1"
     case "$aspec" in -*) die "$add_usage" ;; esac
-    [ -f index.vpkg ] || die "vibe add: no index.vpkg at the project root ($PROJECT_ROOT); \`vibe new\` writes one (docs/toolchain-layout.md)"
+    [ -f index.vpkg ] || die "vibe add: no index.vpkg at the project root ($PROJECT_ROOT); \`vibe new\` writes one (docs/install.md, Project layout)"
     # Split the spec into remote + ref (+ subdir) so a constraint ref can be
     # resolved; the same split vibe_pkg.sh performs.
     aremote=""; aref=""; ahead=""; atail=""
@@ -3534,7 +3545,7 @@ EOF
     ;;
   toolchain)
     # vibe toolchain list | default <name> | remove <name>
-    # (docs/toolchain-layout.md section 3, #2677). Selection order is the
+    # (docs/install.md "Install layout", #2677). Selection order is the
     # dispatcher's: $VIBE_TOOLCHAIN, then $VIBE_HOME/toolchain, then the
     # single installed toolchain; `default` rewrites the file.
     tsub="${1:-list}"; shift || true
@@ -3599,7 +3610,7 @@ EOF
     case "$sub" in
       update)
         # vibe self update [<version>|latest] [--no-default] [--force]
-        #   install a release toolchain (docs/toolchain-layout.md section 3,
+        #   install a release toolchain (docs/install.md "Updating",
         #   #2678) and make it the default
         # vibe self update --cli-wasm <path>
         #   swap the compiler wasm of THIS toolchain and rebuild its .cwasm
@@ -3633,7 +3644,7 @@ EOF
         fi
         ;;
       uninstall)
-        # vibe self uninstall [--purge]  (docs/toolchain-layout.md section 3,
+        # vibe self uninstall [--purge]  (docs/install.md "Uninstalling",
         # #2677): removes what the installer put under $VIBE_HOME --
         # toolchains/, bin/ (the dispatcher), env, toolchain -- and the one rc
         # line a default-prefix install added. The shared, content-keyed state

@@ -112,7 +112,6 @@ the repo; not the user manual.
 | [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
 | [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
 | [simd-data-structures.md](simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |
-| [toolchain-layout.md](toolchain-layout.md) | `internal/design/` | ADR-0111, proposed. Global `$VIBE_HOME`, project-local `.vibe/`, per-verb outputs, one dependency lane, toolchain updates (#2674) |
 | [vibex-runtime-contract.md](vibex-runtime-contract.md) | `internal/design/` | ADR-0075, proposed |
 | [wasip3-effect-alignment.md](wasip3-effect-alignment.md) | `internal/design/` | ADR-0089, proposed |
 | [zero-alloc-check.md](zero-alloc-check.md) | `internal/design/` | ADR-0091, proposed |

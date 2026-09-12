@@ -2,7 +2,7 @@
 
 This note covers the **incremental build cache** the compiler writes
 under `.vibe/build/cache/vibe_*` at the project root
-([toolchain-layout.md](toolchain-layout.md), #2675), how its fingerprints relate to the ADR-0004
+([install.md](install.md#project-layout), #2675), how its fingerprints relate to the ADR-0004
 content-address *identity* layer, and how to reclaim disk. It is the resolution
 record for #631 (cache GC) and #633 (hash-layer clarification).
 
@@ -71,6 +71,15 @@ vpkg type stubs and everything else are untouched. A
 full rebuild simply repopulates the cache. Because the key already version-tags
 on every codegen change, a clean is never *required* for correctness — only to
 reclaim disk.
+
+For the compiler cache and the launcher's artifacts this repository is a
+project like any other: they live under `.vibe/build/` here too, so there is
+one rule, and the repository root has no `index.vpkg` (a root package would
+make every loose source its member under ADR-0070, and the gates already run
+from the root), so the current directory is the root. `_build/` stays for the
+repository's own tooling — selfhost generations, bench and coverage output,
+gate scratch, CI shard artifacts — which is repository infrastructure rather
+than product behavior (#2001).
 
 ## Experimental ingestion fingerprint stamp (#1379)
 

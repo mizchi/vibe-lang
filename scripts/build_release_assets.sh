@@ -69,7 +69,7 @@ sha256_file() {
   fi
 }
 
-# --- toolchain bundle (docs/toolchain-layout.md section 3, #2678) -----------
+# --- toolchain bundle (docs/install.md "Updating", #2678) --------------------
 # The platform-independent part of toolchains/<name>/: the launcher, the pkg
 # and warm-pool scripts, the LSP scripts, the context pack, and the stdlib
 # packages `install/install.sh` materializes in checkout mode, with their

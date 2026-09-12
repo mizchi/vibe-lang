@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 #
-# Two modes (docs/toolchain-layout.md section 9, #2678):
+# Two modes (docs/install.md "Installer options", #2678):
 #
 #   release   `--version X.Y.Z` (or `latest`, or VIBE_INSTALL_VERSION):
 #             download the release's assets, verify them against its
@@ -27,7 +27,7 @@
 #   $VIBE_HOME/lib/@scope/name                shared packages (`vibe pkg install`)
 #   $VIBE_HOME/cache/...
 #
-# Each toolchain carries its own stdlib (docs/toolchain-layout.md section 2,
+# Each toolchain carries its own stdlib (docs/install.md "Install layout",
 # #2677): installing a second one never touches the first.
 #
 # Usage:
@@ -91,7 +91,7 @@ die() { echo "[install] error: $*" >&2; exit 1; }
 # --- shared by both modes ----------------------------------------------------
 # A pre-#755 flat install (bin/viberun next to lib/vibe-cli.wasm) cannot host
 # toolchains: its launcher and stdlib would shadow theirs. Refuse rather than
-# mix the two layouts (docs/toolchain-layout.md section 2, #2677).
+# mix the two layouts (docs/install.md "Install layout", #2677).
 refuse_flat_home() {
   if [ -f "$VIBE_HOME/lib/vibe-cli.wasm" ] || [ -x "$VIBE_HOME/bin/viberun" ]; then
     die "$VIBE_HOME holds a flat pre-#755 install (lib/vibe-cli.wasm, bin/viberun), which is no longer supported; remove it, or choose another --prefix, and run install/install.sh again"
@@ -103,7 +103,7 @@ refuse_flat_home() {
 # Selection order: $VIBE_TOOLCHAIN env > $VIBE_HOME/toolchain file > the
 # single installed toolchain. `vibe toolchain default` rewrites the file. Its
 # whole contract is to keep executing any older toolchain's launcher with
-# VIBE_HOME exported (docs/toolchain-layout.md section 3).
+# VIBE_HOME exported (docs/install.md "Install layout").
 write_dispatcher() {
   mkdir -p "$VIBE_HOME/bin"
   cat > "$VIBE_HOME/bin/vibe" <<'DISPATCH'
@@ -558,7 +558,7 @@ elif [ -f "$ROOT_DIR/scripts/gen_context_pack.sh" ]; then
   fi
 fi
 
-# 4b. toolchain manifest (docs/toolchain-layout.md section 2, #2677) --------
+# 4b. toolchain manifest (docs/install.md "Install layout", #2677) ----------
 # What this toolchain is, for `vibe version` and `vibe toolchain list`: one
 # `"key": "value"` per line so the launcher reads it with sed. Every field
 # degrades to "" rather than failing the install: a --runner/--cli-wasm
@@ -604,7 +604,7 @@ write_default_toolchain "$TOOLCHAIN" "$SET_DEFAULT"
 
 # 6. stdlib packages (per toolchain, hash-verified) --------------------------
 # The runtime-relevant standard library is materialized into the toolchain's
-# own lib/ (docs/toolchain-layout.md section 2, #2677): the launcher puts
+# own lib/ (docs/install.md "Install layout", #2677): the launcher puts
 # $TC_DIR/lib first in VIBE_LIB, ahead of the shared $VIBE_HOME/lib (#751),
 # so two toolchains never clobber each other's stdlib. Verification: the hash
 # of the materialized copy must equal the hash of the source package,

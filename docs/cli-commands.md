@@ -40,7 +40,7 @@ vibe build -o output.wasm <file.vibe>     # explicit output path
 
 - **`--release`** (default): Full compilation with `-Oz` optimization. Falls back to unoptimized if the optimizer does not support generated opcodes.
 - **`--debug`**: Uses a linked debug fast path that caches library WASM modules and only recompiles user code when sources change. Significantly faster for iterative development.
-- Output defaults to `.vibe/build/out/<basename>.wasm` under the project root (#2675, [toolchain-layout.md](toolchain-layout.md)); `-o` chooses another path, relative to the directory you ran from.
+- Output defaults to `.vibe/build/out/<basename>.wasm` under the project root (#2675, [install.md](install.md#project-layout)); `-o` chooses another path, relative to the directory you ran from.
 
 ### compile
 
@@ -212,7 +212,7 @@ stdin line-oriented whenever stdin is not a tty.
 ### add / fetch
 
 A dependency is a package pinned in the root `index.vpkg` and installed under
-`.vibe/store/` (#2676, [toolchain-layout.md](toolchain-layout.md)). `vibe add`
+`.vibe/store/` (#2676, [install.md](install.md#dependencies)). `vibe add`
 fetches one from its git source, installs it, and writes the `deps` entry and
 the `require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>` pin;
 `vibe fetch` restores the store from those pins on a fresh clone, from the
@@ -360,4 +360,4 @@ removed in #594; both are covered by piping into `vibe shell`.)
 | Variable | Description |
 |----------|-------------|
 | `VIBE_TEST_JOBS` | Default parallelism for `test` (max 16) |
-| `VIBE_BUILD_DIR` | Overrides `<root>/.vibe/build`, where every artifact and the compiler cache land (#2675) |
+| `VIBE_BUILD_DIR` | Overrides `<root>/.vibe/build`, where every artifact lands; the launcher derives `VIBE_BUILD_CACHE_DIR=$VIBE_BUILD_DIR/cache` unless that is already set, so the compiler cache moves with it (#2675) |

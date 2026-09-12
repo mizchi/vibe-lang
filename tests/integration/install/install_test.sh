@@ -54,7 +54,7 @@ VIBE="$VIBE_BIN_DIR/vibe"
 [ -x "$VIBE" ] || { echo "FAIL: launcher not installed" >&2; exit 1; }
 # Toolchain layout (#755, #2677): the AOT artifact and the stdlib live under
 # toolchains/<name>/lib; the shared $VIBE_HOME/lib is for `vibe pkg install`
-# only (docs/toolchain-layout.md section 2).
+# only (docs/install.md "Install layout").
 tc_a="$VIBE_HOME/toolchains/main"
 [ -f "$tc_a/lib/vibe-cli.cwasm" ] || { echo "FAIL: .cwasm not generated" >&2; exit 1; }
 [ -f "$VIBE_HOME/toolchain" ] || { echo "FAIL: default toolchain file not written" >&2; exit 1; }
@@ -95,7 +95,7 @@ printf 'import @vibe/console {\n  println\n}\nfn main allows Console {\n  printl
   unset VIBE_LIB || true
   check "vibe run prelude import (no repo lib/)" "42" "$(run_number "$proj/prelude_hello.vibex")"
 )
-# #2675 (docs/toolchain-layout.md): everything the toolchain generates lands
+# #2675 (docs/install.md): everything the toolchain generates lands
 # under <root>/.vibe/build/. $proj has no index.vpkg, so the run above (cwd =
 # $proj) makes $proj its own root; the compiled program and the compiler's
 # cache must be there, and no `_build/` may appear anywhere in the project.
@@ -242,7 +242,7 @@ check "vibe shell declares + evaluates" "42" "$(printf '%s\n' "$shell_out" | sed
 check "vibe shell survives a bad line" "21" "$(printf '%s\n' "$shell_out" | sed -n 2p)"
 check "vibe shell reports the bad line" "yes" "$(grep -q 'error' "$shell_err" && echo yes || echo no)"
 
-# Dependencies (#2676, docs/toolchain-layout.md section 7): `vibe add
+# Dependencies (#2676, docs/install.md "Dependencies"): `vibe add
 # <source-spec>` fetches a package from a git source into the project's
 # `.vibe/store/` and pins it in the root index.vpkg (version, content hash,
 # commit-pinned source); `vibe fetch` restores the store from those pins on a
@@ -405,7 +405,7 @@ check "vibe new --name writes the given package name" "yes" "$(grep -qx 'name = 
 "$VIBE" new --name bogus "$WORK/scaffold_bad" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe new --name refuses a name that is not @scope/name" "yes" "$([ "$rc" != 0 ] && [ ! -e "$WORK/scaffold_bad" ] && echo yes || echo no)"
 
-# Two toolchains in one home (#2677, docs/toolchain-layout.md section 2): each
+# Two toolchains in one home (#2677, docs/install.md "Install layout"): each
 # carries its own stdlib and manifest, so installing a second one never
 # touches the first's. The second install root is a minimal copy of this
 # checkout whose @vibe/console gains one observable function; the runner and
