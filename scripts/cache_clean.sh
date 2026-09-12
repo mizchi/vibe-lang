@@ -4,7 +4,7 @@
 # The selfhost compiler writes every incremental-build cache entry (dep_list,
 # type_env, module_header, source_list, compiled artifact, ...) to
 # `.vibe/build/cache/vibe_<prefix>_<token><suffix>` under the project root
-# (docs/toolchain-layout.md, #2675), where <token> is a content+version
+# (docs/install.md "Project layout", #2675), where <token> is a content+version
 # fingerprint (compact_string_fingerprint, see persistent_cache.vibe). Entries
 # are written content-addressed and never deleted in place: a source or codegen
 # change yields a NEW token (the `cg-` segment, #630) and the old file is left

@@ -58,9 +58,8 @@ lib/VIBE_LIB steps are a dev-mode convenience; under `VIBE_REQUIRE_PINS=1` an
 unpinned resolution is an error. A store import is verified against the pins
 of the importer's owning `index.vpkg` (the nearest enclosing one, so the root
 manifest covers the whole project) as well as the importer's own head. This is
-the one dependency lane (#2676, [toolchain-layout.md](toolchain-layout.md)
-section 7); the earlier vendoring lane (`vibe.deps` / `vibe.lock` / `deps/`)
-is gone.
+the one dependency lane (#2676, [install.md](install.md#dependencies)); the
+earlier vendoring lane (`vibe.deps` / `vibe.lock` / `deps/`) is gone.
 
 **歴史的記述の扱い:** v1 仕様書 (`module-system.md`) は 2026-08 に削除した —
 `module {}` ブロック・`vibe.deps`/`vibe.lock` を唯一の依存モデルとする記述・

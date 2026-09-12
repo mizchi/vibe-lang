@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Network-free regression for the release install path (#2678,
-# docs/toolchain-layout.md section 3): a synthetic release directory served
+# docs/install.md "Updating"): a synthetic release directory served
 # over file:// stands in for GitHub releases, a fake `viberun` stands in for
 # the prebuilt runner (it only knows --precompile and --version), and the
 # toolchain bundle is built from this checkout's launcher. What is proven:

@@ -86,21 +86,34 @@ $VIBE_HOME/                           default ~/.vibe
   cache/pkg/sha1/<hex>/               content-addressed package store (CAS)
   cache/pkg/{versions,provenance}.tsv
   cache/test/<sha256>.pass            pure-test result cache
+  cache/downloads/<tag>/              release assets while `self update` runs
   log/                                transparency log (publisher state)
 ```
 
 A toolchain is one versioned unit: runner, compiler, launcher, editor
 scripts and the stdlib they were built with. Nothing under
 `toolchains/<name>/` is shared with another toolchain, so installing a
-second one (`--toolchain <name>`, or another `--ref`) never touches the
-first. The launcher resolves `@scope/name` through the active toolchain's
-`lib/` first, then the shared `$VIBE_HOME/lib`: it sets `VIBE_LIB` to that
-pair when you have not set it. The names `build` and `store` are reserved
-directly under `$VIBE_HOME`, because a project rooted at `$HOME` keeps its
-`.vibe/build/` and `.vibe/store/` there.
+second one (`vibe self update <version>`, `--toolchain <name>`, or another
+`--ref`) never touches the first, and a toolchain directory is never edited
+in place afterwards (the one exception is `vibe self update --cli-wasm`,
+under [Updating](#updating)). Its name is the release version (`0.2.0`) for
+a release install and the sanitized ref (`main`, `my-branch`) for a checkout
+install. What is shared is only what is keyed by content or independent of
+the compiler version: the package store `cache/pkg/`, the test result cache
+(its key is the sha256 of the compiled wasm, which already folds in the
+compiler), the `vibe pkg install` root `lib/`, and `log/`. The launcher
+resolves `@scope/name` through the active toolchain's `lib/` first, then the
+shared `$VIBE_HOME/lib`: it sets `VIBE_LIB` to that pair when you have not
+set it. The names `build` and `store` are reserved directly under
+`$VIBE_HOME`, because a project rooted at `$HOME` keeps its `.vibe/build/`
+and `.vibe/store/` there.
 
-The dispatcher picks the toolchain named by `$VIBE_TOOLCHAIN`, else by the
-`toolchain` file, else the only installed one:
+The dispatcher `$VIBE_HOME/bin/vibe` picks the toolchain named by
+`$VIBE_TOOLCHAIN`, else by the `toolchain` file, else the only installed
+one. It is a few lines of shell rewritten by whichever installer or updater
+ran last; its whole contract is to pick a toolchain that way, export
+`VIBE_HOME` and exec `toolchains/<name>/bin/vibe`, so it keeps working for
+any older toolchain's launcher:
 
 ```bash
 vibe toolchain list                 # installed toolchains, the default marked *
@@ -111,10 +124,7 @@ vibe version                        # reads the toolchain's manifest.json
 
 The pre-#755 flat layout (`$VIBE_HOME/bin/vibe` next to
 `$VIBE_HOME/lib/vibe-cli.wasm`) is not recognized: the launcher and the
-installer refuse it and ask for a reinstall. The release install and update
-path (`vibe self update <version>`, prebuilt runners) is the last phase of
-[toolchain-layout.md](toolchain-layout.md) (ADR-0111, #2674) and is not
-available yet.
+installer refuse it and ask for a reinstall.
 
 PATH policy: **`~/.vibe/bin` is the PATH entry** (the dispatcher lives
 there). The installer writes a sourceable `~/.vibe/env` (rustup's
@@ -144,6 +154,19 @@ To install a released compiler instead of the seed, pass the release artifact:
 bash install/install.sh --cli-wasm vibe-compiler-<tag>.wasm
 ```
 
+Two modes, one entry point:
+
+| mode | selector | needs | does |
+| --- | --- | --- | --- |
+| release | `--version X.Y.Z` or `--version latest` (or `VIBE_INSTALL_VERSION`) | bash, curl or wget, tar, sha256sum or shasum | fetch the release's manifest and toolchain bundle, verify the bundle, and hand over to that release's own `vibe self update` ([Updating](#updating)) |
+| checkout | `--ref <ref>` (or `VIBE_INSTALL_REF`), or running inside a checkout | git, cargo (unless `--runner`), Node.js (unless `--cli-wasm`) | build the runner and the compiler from the checkout |
+
+Both modes write the dispatcher, `env` and the default toolchain marker.
+`--runner`, `--cli-wasm`, `--toolchain` and `--no-stdlib` belong to the
+checkout mode (a release is named by its version and ships its runner,
+compiler and stdlib), so the release mode refuses them. The bare curl entry
+point stays in checkout mode until a release is published.
+
 ## Commands
 
 ```
@@ -156,6 +179,8 @@ vibe test    <file_test.vibe|dir>...  compile + run test {} blocks
 vibe add     <source-spec>            fetch a package into .vibe/store/ and pin it
                                       in the root index.vpkg
 vibe fetch                            restore .vibe/store/ from the pins
+vibe new     [--name @scope/name] <dir>
+                                      scaffold main.vibex, a root index.vpkg and .gitignore
 vibe root                             print the project root (outermost index.vpkg)
 vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too)
 vibe lsp                              start the stdio LSP server (diagnostics)
@@ -175,12 +200,96 @@ An executable root is a `.vibex` file with exactly one `fn main`; its
 user-visible entry cannot be overridden. Arbitrary entry names remain an
 internal compiler/test-harness ABI only.
 
+## Project layout
+
+`vibe new <dir>` scaffolds a project, and the root `index.vpkg` it writes is
+both the project marker and the manifest:
+
+```text
+<root>/
+  index.vpkg                          manifest: name, version, deps, require pins
+  main.vibex                          entry
+  .gitignore                          contains `.vibe/`
+  lib/@scope/name/                    workspace packages (optional)
+  .vibe/
+    store/@scope/name/                pinned dependencies, materialized from the pins
+    build/
+      cache/vibe_*                    the compiler's persistent cache
+      vpkg_types/                     vpkg type stubs
+      run/<stem>.wasm (+ .funcmap)    `vibe run`
+      test/<path>/<stem>.wasm (+ .testmeta)
+      bench/<stem>.wasm
+      out/<stem>.wasm                 `vibe build` without -o
+```
+
+**Project root.** Every verb applies one rule, and `vibe root` prints the
+answer: walk up from the current directory; the root is the **outermost**
+directory containing `index.vpkg`, without crossing a directory that
+contains `.git`; with no `index.vpkg` in sight, the root is the current
+directory. Outermost rather than nearest, because a workspace with
+`@scope/name` packages under `lib/`, each with its own `index.vpkg`, is one
+project with one build directory. Not across `.git`, because a package
+checked out inside another project is its own project. The fallback is what
+lets `vibe check` on a stray file and a single-file `.vibex` script work
+without a project: they get a `.vibe/build/` where they run, and such a
+`.vibex` may carry its own `require` pins in its header.
+
+The launcher changes to the root before invoking the compiler and rewrites
+relative path arguments (the root is always an ancestor, so the rewrite is a
+prefix); the compiled program itself still runs from the directory you stood
+in. The compiler's own contract is that its cwd is the project root, which is
+where the loader resolves `.vibe/store/` and the workspace `lib/`. `vibe lsp`
+computes the root from its cwd like every other verb, so start it at the
+workspace root.
+
+**`.vibe/` is the only directory the toolchain writes into a project.** It is
+reproducible from the sources and the pins, which is why `vibe new` puts the
+whole directory in `.gitignore`. `vibe clean` removes `.vibe/build/`; `vibe
+clean --all` also removes `.vibe/store/`. The cache is per project on
+purpose: `rm -rf .vibe` is the whole story of cleaning up, and one project
+cannot poison another. Sharing a build directory or a cache across worktrees
+or CI jobs is what `VIBE_BUILD_DIR` and `VIBE_BUILD_CACHE_DIR` are for
+(below).
+
+What each verb writes:
+
+| verb | writes |
+| --- | --- |
+| `vibe run x.vibex` | `.vibe/build/run/x.wasm` and its `.funcmap`, overwritten each run |
+| `vibe test a/b_test.vibe` | `.vibe/build/test/a/b_test.wasm` and its `.testmeta`; the PASS record goes to `$VIBE_HOME/cache/test/` |
+| `vibe bench x_bench.vibe` | `.vibe/build/bench/x_bench.wasm` |
+| `vibe build x.vibex`, `vibe compile x.vibe` without `-o` | `.vibe/build/out/x.wasm` (`--wit`: `.vibe/build/out/x.wit`); the path is printed |
+| `-o <path>` | as given, relative to the directory you ran from. A sidecar (`.funcmap`, `.diag`) lives next to the artifact it describes, never next to a source |
+| `vibe check`, `symbols`, `type-at`, `binding-at`, `deps`, `grep`, `escapes`, `rc-classify`, `rc-plan`, `allocs`, `doc-at`, `fmt`, `normalize`, `shell` | scratch under the OS temp dir, removed on exit. The compiler cache they warm goes to `.vibe/build/cache/` like any other verb |
+| `vibe add`, `vibe fetch` | `.vibe/store/`, the root `index.vpkg` |
+| `vibe pkg install` (without `--store`) | `$VIBE_HOME/lib/` |
+
+Nothing is written next to a source file, and nothing is left under the OS
+temp dir after a verb exits.
+
+## Environment variables
+
+| variable | read by | meaning |
+| --- | --- | --- |
+| `VIBE_HOME` | dispatcher, launcher, compiler | the global home, default `~/.vibe` |
+| `VIBE_TOOLCHAIN` | dispatcher | toolchain selection override |
+| `VIBE_LIB` | compiler | extra `@scope/name` roots, `:`-separated. An installed toolchain's launcher sets it (when unset) to `$TOOLCHAIN_DIR/lib:$VIBE_HOME/lib`, so the active toolchain's stdlib comes first; the compiler's own default with no environment is `$VIBE_HOME/lib` |
+| `VIBE_BUILD_DIR` | launcher | overrides `<root>/.vibe/build`; the launcher derives `VIBE_BUILD_CACHE_DIR=$VIBE_BUILD_DIR/cache` unless that is already set, so the compiler cache moves with it |
+| `VIBE_BUILD_CACHE_DIR` | compiler | the compiler cache root on its own: the isolation knob the unit-test runner and CI use |
+| `VIBE_RELEASE_URL` | launcher, installer | download base for release assets (default: this repository's GitHub releases; tests point it at a `file://` directory) |
+| `VIBE_INSTALL_VERSION`, `VIBE_INSTALL_REF`, `VIBE_INSTALL_REPO`, `VIBE_BIN_DIR` | installer | the `--version`, `--ref` and `--bin-dir` selectors, and the repository the checkout mode fetches from |
+
+`VIBE_CACHE` and `VIBE_TEST_CACHE` are not read: the vendoring lane whose
+fetch cache the first one named is gone, and the test result cache is always
+`$VIBE_HOME/cache/test/`. Compiler and test knobs (`VIBE_TEST_JOBS`, the
+`--unstable-*` flags) are in [cli-commands.md](cli-commands.md).
+
 ## Dependencies
 
 A dependency is a package: a directory with an `index.vpkg` (its contract and
 public API boundary, ADR-0070). The root `index.vpkg` of your project is the
 manifest, and pinned dependencies live in the project-local `.vibe/store/`
-([docs/toolchain-layout.md](toolchain-layout.md), #2676). The boundary,
+(#2676). The boundary,
 visibility and pinning rules live in one place:
 [docs/module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
 (#1269).
@@ -225,6 +334,11 @@ dependency's own dependencies arrive with it. Standard-library packages
 
 There is no lock file and no vendored `deps/` directory: the `require` line is
 the lock. Single-file URL dependencies are not supported.
+
+Resolution order (ADR-0065): `.vibe/store/` (pin verified), then the
+workspace `lib/`, then the `VIBE_LIB` roots with the active toolchain's
+stdlib first. `vibe new <dir>` names the project `@local/<dir>` unless
+`--name @scope/name` is given; `vibe pkg publish` refuses the `@local` scope.
 
 ## Editor support (LSP)
 
@@ -283,7 +397,22 @@ the newest release's), every asset is downloaded into
 toolchain is assembled and precompiled in a staging directory, and only then
 renamed into `toolchains/<version>/`. A mismatch stops before anything is
 moved. The previous toolchain stays installed: `vibe toolchain default
-<name>` switches back, `vibe toolchain remove <name>` deletes it.
+<name>` switches back, `vibe toolchain remove <name>` deletes it. An
+installed version is refused without `--force`.
+
+Per `vX.Y.Z` tag, `.github/workflows/release.yml` publishes:
+
+| asset | content |
+| --- | --- |
+| `viberun-<tag>-<target>.tar.gz` | one prebuilt runner per target: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin` (and `x86_64-apple-darwin` while a CI runner exists) |
+| `vibe-toolchain-<tag>.tar.gz` | the platform-independent part of `toolchains/<name>/`: launcher, `vibe_pkg.sh`, `parallel_warm_pool.sh`, the LSP scripts, `context-pack.md`, the stdlib packages with their hashes |
+| `vibe-compiler-<tag>.wasm`, `vibe-compiler-module-source-<tag>.vibe`, `vibe-compiler-seed-<tag>.json` | the compiler and its seed provenance |
+| `release-manifest.json` | every asset with its sha256, the runner per target, and the wasmtime version the runners embed |
+| `SHA256SUMS.txt` | checksums of all of the above |
+
+`vibe self update` needs the runner for this host, the toolchain bundle and
+the compiler wasm; a release with no runner for the host names the targets
+it ships.
 
 The runner and the compiler wasm also version independently. To move only the
 compiler of the current toolchain forward without a release:
