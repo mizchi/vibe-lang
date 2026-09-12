@@ -733,6 +733,18 @@ fn lc_int_array_has(xs: Array[Int], v: Int) -> Bool {
   found
 }
 
+/// #2704: the tag the merge stamps declarations of `path` with, computed by
+/// the merge's own mangler rather than recovered from a name.
+///
+/// `namespace_private_name(path, "")` is `"" ++ "_dep_" ++
+/// sanitize_namespace_path(path)`, so dropping the 5-character marker leaves
+/// exactly the sanitized path. Going through the shipped function means this
+/// cannot drift from the spelling the merge actually produces.
+fn lc_tag_of_path(path: String) -> String {
+  let stamped = namespace_private_name(path, "")
+  String::substring(stamped, 5, String::length(stamped))
+}
+
 /// `s` up to the first `::`, or all of it. A qualified operation is spelled
 /// `ns ++ marker ++ tag ++ "::" ++ op`, so the stamp is always in the part
 /// before the `::` and a marker inside the operation name is not one.
@@ -798,114 +810,6 @@ fn lc_registered_tag_of(n: String, tag_owner: MutMap[String, Int]) -> (String, B
     i = i + 1
   }
   (best, best_exp)
-}
-
-/// #2701 (Codex round 5): every tail in `n`'s namespace portion that could be
-/// a module tag -- the text after each `_exp_` / `_dep_`, shape-filtered.
-///
-/// A LIST rather than an answer, because no scan direction is correct on its
-/// own. Round 3 needed the LAST marker (a source name containing `_exp_`
-/// stamped with a real tag); round 5 needs an EARLIER one (a sanitized PATH
-/// containing `_dep_` -- `fixtures/import_visibility_dep_a.vibe` is in this
-/// repo, and reading its last marker yields `a_vibe`). The two cases demand
-/// opposite rules, so one name in isolation cannot settle it; the caller
-/// decides by agreement across a module's declarations instead.
-fn lc_name_tag_candidates(n: String, out: Array[String]) -> Unit {
-  let ns = lc_cut_at_qualifier(n)
-  let mut i = 0
-  while i + 5 <= String::length(ns) {
-    let marker = String::substring(ns, i, i + 5)
-    if marker == "_exp_" || marker == "_dep_" {
-      let tag = String::substring(ns, i + 5, String::length(ns))
-      if String::length(tag) > 5 && String::ends_with(tag, "_vibe") && !lc_str_array_has(out, tag) {
-        Array::push(out, tag)
-      } else {
-        ()
-      }
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-}
-
-/// The entries of `a` that also appear in `b`.
-fn lc_str_intersect(a: Array[String], b: Array[String]) -> Array[String] {
-  let out: Array[String] = []
-  let mut i = 0
-  while i < Array::length(a) {
-    if lc_str_array_has(b, Array::get(a, i)) {
-      Array::push(out, Array::get(a, i))
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  out
-}
-
-/// #2701: the tag a module's declarations AGREE on, or "" -- bumping
-/// `amb` when its own declarations cannot settle it.
-///
-/// Every stamped declaration of a module ends `<marker><tag>` for the SAME
-/// tag, so the real tag is a candidate of every one of them. The two kinds of
-/// spurious candidate are separated by that:
-///
-///   from a marker INSIDE the tag   a proper suffix, so SHORTER -- survives the
-///                                  intersection, loses on length
-///   from a marker inside the SOURCE name   LONGER than the tag, but carries
-///                                  that declaration's own text, so it does not
-///                                  survive the intersection
-///
-/// Hence: intersect, then take the longest. A module with exactly ONE stamped
-/// declaration has nothing to intersect against, so a second candidate there
-/// is genuinely undecidable from names -- it is counted and the module is left
-/// out of `tag_owner`, rather than guessed at. Silence about what cannot be
-/// determined is the failure mode this whole instrument exists to avoid.
-fn lc_module_tag_of_agreed(part: Array[Stmt], amb: Array[Int]) -> String {
-  let names: MutMap[String, Int] = MutMap::new_string()
-  lc_decl_names_into(part, names)
-  let decl_names = MutMap::keys(names)
-  let mut acc: Array[String] = []
-  let mut seen_any = false
-  let mut stamped_decls = 0
-  let mut i = 0
-  while i < Array::length(decl_names) {
-    let cand: Array[String] = []
-    lc_name_tag_candidates(Array::get(decl_names, i), cand)
-    if Array::length(cand) > 0 {
-      stamped_decls = stamped_decls + 1
-      if seen_any {
-        acc = lc_str_intersect(acc, cand)
-      } else {
-        acc = cand
-        seen_any = true
-      }
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  if Array::length(acc) == 0 {
-    ""
-  } else if Array::length(acc) == 1 {
-    Array::get(acc, 0)
-  } else if stamped_decls < 2 {
-    Array::set(amb, 0, Array::get(amb, 0) + 1)
-    ""
-  } else {
-    let mut best = ""
-    let mut bi = 0
-    while bi < Array::length(acc) {
-      if String::length(Array::get(acc, bi)) > String::length(best) {
-        best = Array::get(acc, bi)
-      } else {
-        ()
-      }
-      bi = bi + 1
-    }
-    best
-  }
 }
 
 /// Every top-level name a statement list DECLARES -- values AND types AND
@@ -4572,7 +4476,7 @@ fn effect_lowering_prelude_split_checked(stmts: Array[Stmt], entry_name: String,
         explicit_ops: collect_explicit_derived_op_names(stmts)
       }
     }
-    let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, st, env, 1)
+    let linked = prelude_run_per_module(stmts, split.stmt_file_id, split.file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, split.import_closure, render, st, env, 1, lc_fresh_string_array())
     // A COLLISION IS AN ERROR HERE (#2647 Codex P1). `prelude_run_per_module`
     // links with the REPORTING fold, which keeps the first definition and
     // records the conflict -- right for a measurement, which wants to know how
@@ -5654,7 +5558,7 @@ fn lc_entry_module_of(c: Array[Stmt], c_file_id: Array[Int], entry_name: String,
 /// partition cannot classify a heap value returned by an imported function and
 /// omits the annotation the merged run adds -- a different ownership
 /// classification reaching Perceus and codegen.
-fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats, env: PreludeEnv, first_pass: Int) -> Array[Stmt] with Exception {
+fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, st: PreludeSplitStats, env: PreludeEnv, first_pass: Int, module_paths: Array[String]) -> Array[Stmt] with Exception {
   // WHICH module owns the entry, derived rather than assumed (#2647 Codex
   // round 4). This was `file_count - 1`, which is true of the merge -- a root's
   // dependencies come first -- but nothing in `ModuleSplit` records it and
@@ -5763,10 +5667,25 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     // registered as a real tag and make the membership test certify the very
     // name it exists to reject. Skipping it needs no new information: the
     // entry module is already identified, as `entry_fid`.
+    // From the module's PATH through the merge's own mangler. Every attempt to
+    // recover a tag by PARSING a declaration name failed, in both directions
+    // and then in neither: the first marker is wrong when a source name
+    // contains one, the last is wrong when the PATH contains one, and
+    // agreement across declarations is wrong when two declarations SHARE a
+    // marker-bearing suffix -- a case that is genuinely indistinguishable from
+    // the legitimate one (Codex rounds 3, 5 and 6 on #2701/#2704). There is no
+    // parsing rule, so the tag comes from provenance instead.
     let t = if tf == entry_fid {
       ""
+    } else if tf >= Array::length(module_paths) {
+      // No provenance for this module, so it gets no tag and its stamped
+      // names are not judged. COUNTED rather than guessed: the alternative is
+      // parsing a name for its tag, which three review rounds established has
+      // no correct rule.
+      Array::set(ctx_amb, 0, Array::get(ctx_amb, 0) + 1)
+      ""
     } else {
-      lc_module_tag_of_agreed(Array::get(parts, tf), ctx_amb)
+      lc_tag_of_path(Array::get(module_paths, tf))
     }
     if t != "" && !MutMap::has(tag_owner, t) {
       MutMap::set(tag_owner, t, tf)
@@ -6258,7 +6177,7 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
   }
 }
 
-export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String) -> String with Exception {
+export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file_id: Array[Int], file_count: Int, entry_name: String, checker_eq_offsets: Array[Int], checker_eq_type_keys: Array[String], import_closure: Array[Array[Int]], render: (Stmt) -> String, module_paths: Array[String]) -> String with Exception {
   let entry_fid = file_count - 1
   // #2637 review (Codex P2): production runs `fold_const_bool_params` and
   // `dce_stmts` BETWEEN the prelude and the three analyses sampled below, and
@@ -6387,7 +6306,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let whole_invisible = eq_invisible_nominals_list()
   eq_invisible_nominals_reset()
   let st = prelude_split_stats_new()
-  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, st, prelude_env_none(), 0)
+  let linked = prelude_run_per_module(c, c_file_id, file_count, entry_name, checker_eq_offsets, checker_eq_type_keys, import_closure, render, st, prelude_env_none(), 0, module_paths)
   let split_invisible = eq_invisible_nominals_list()
   let ev_req_u = st.requests
   let ev_ref_u = st.refusals
@@ -6596,9 +6515,10 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   // matched nothing and the zeros mean nothing.
   ctx_line = String::concat(ctx_line, " seen=")
   ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_cls, 5)))
-  // Modules whose own declarations cannot settle their tag. Reported rather
-  // than guessed: a wrong tag moves rows between `unresolved_exp` and
-  // `unresolved_dep`, which is the one distinction this line exists to make.
+  // Modules with no path provenance, whose tag is therefore unknown and whose
+  // stamped names go unjudged. Reported rather than guessed: a wrong tag moves
+  // rows between `unresolved_exp` and `unresolved_dep`, the one distinction
+  // this line exists to make.
   ctx_line = String::concat(ctx_line, " amb=")
   ctx_line = String::concat(ctx_line, Int::to_string(Array::get(st.an_ctx_amb, 0)))
   ctx_line = String::concat(ctx_line, "\n")

@@ -540,11 +540,11 @@ fn build_grouped_merged_stmts_gc(source_groups: Array[(String, Array[(String, St
 export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String, pass_limit: Int) -> String with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
-  let (a, _, _, _) = prelude_oracle_merge(source_groups)
+  let (a, _, _, _) = prelude_oracle_merge(source_groups, lc_ignored_paths())
   let mut report = ""
   let mut k = 0
   while k <= pass_limit {
-    let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups)
+    let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups, lc_ignored_paths())
     let (eq_offs, eq_keys) = eq
     report = String::concat(report, prelude_pass_module_oracle_step(k, a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, print_stmt))
     k = k + 1
@@ -560,8 +560,9 @@ export fn prelude_module_oracle_report_fs(entry_path: String, entry_name: String
 export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: String) -> String with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let _ = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
-  let (a, _, _, _) = prelude_oracle_merge(source_groups)
-  let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups)
+  let (a, _, _, _) = prelude_oracle_merge(source_groups, lc_ignored_paths())
+  let module_paths: Array[String] = []
+  let (c, files, c_file_id, eq) = prelude_oracle_merge(source_groups, module_paths)
   let (eq_offs, eq_keys) = eq
   let (import_closure, unresolved_edges) = oracle_import_closure(source_groups)
   // The closure is indexed by FLAT SOURCE, the oracle by MERGED FILE ID. They
@@ -574,7 +575,7 @@ export fn prelude_module_full_oracle_report_fs(entry_path: String, entry_name: S
   } else {
     ()
   }
-  let line = prelude_module_full_oracle_line(a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, import_closure, print_stmt)
+  let line = prelude_module_full_oracle_line(a, c, c_file_id, Array::length(files), entry_name, eq_offs, eq_keys, import_closure, print_stmt, module_paths)
   String::concat(String::concat(line, "edges_unresolved="), String::concat(Int::to_string(unresolved_edges), "\n"))
 }
 
@@ -1027,7 +1028,12 @@ fn exact_import_closure(source_groups: Array[(String, Array[(String, String)])])
   }
 }
 
-fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {
+/// A throwaway sink for the path out-param, for callers that do not want it.
+fn lc_ignored_paths() -> Array[String] {
+  []
+}
+
+fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])], out_paths: Array[String]) -> (Array[Stmt], Array[String], Array[Int], (Array[Int], Array[String])) with Exception {
   let flat_paths: Array[String] = []
   let flat_bases: Array[Int] = []
   let clone_float_offsets: Array[Int] = []
@@ -1039,6 +1045,16 @@ fn prelude_oracle_merge(source_groups: Array[(String, Array[(String, String)])])
     throw("prelude oracle: the binop rewrite changed the statement count")
   } else {
     ()
+  }
+  // #2704: the SOURCE PATHS, in merged-file-id order. `flat_paths` is filled
+  // from the very `file_paths` array the merge mangles with
+  // (`build_grouped_merged_stmts_impl` pushes `file_paths[source_idx]`), so
+  // `sanitize_namespace_path` of one of these IS a module's stamp -- no
+  // parsing, no ambiguity. `files` is NOT this: it is `path_basename(...)`.
+  let mut fp = 0
+  while fp < Array::length(flat_paths) {
+    Array::push(out_paths, Array::get(flat_paths, fp))
+    fp = fp + 1
   }
   (stmts, files, stmt_file_id, (eq_offs, eq_keys))
 }
