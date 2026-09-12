@@ -708,29 +708,14 @@ fn lc_concat_ints_into(dst: Array[Int], src: Array[Int]) -> Unit {
   }
 }
 
-/// #2633: a name the MERGE mangled with its defining module -- `_exp_lib__`
-/// for an exported declaration, `_dep_lib__` for a private one. Exactly the
-/// program's own cross-module declarations carry these, so a builtin
-/// (`String::concat`, `Array::get`) cannot be mistaken for one and no builtin
-/// allow-list is needed to tell them apart.
 /// #2633: does this module's PUBLISHED interface declare `n`?
 fn lc_iface_declares(iface: Array[Stmt], n: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(iface) {
-    let nm = match Array::get(iface, i) {
-      SLet(_, _, d, _, _) => d,
-      SFnDecl(_, d, _, _, _) => d,
-      _ => ""
-    }
-    if nm == n {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
+  // Same collector as `lc_decl_names_into`, for the same reason: asking
+  // whether an interface publishes a name has to know that an enum publishes
+  // its constructors too.
+  let names: MutMap[String, Int] = MutMap::new_string()
+  lc_decl_names_into(iface, names)
+  MutMap::has(names, n)
 }
 
 fn lc_int_array_has(xs: Array[Int], v: Int) -> Bool {
@@ -747,8 +732,54 @@ fn lc_int_array_has(xs: Array[Int], v: Int) -> Bool {
   found
 }
 
+/// #2633: whether `n` is a name the MERGE stamped with its defining module.
+///
+/// The merge spells these `name ++ "_exp_" ++ sanitize_namespace_path(path)`
+/// (and `_dep_` for a private one), so the test is the marker plus a tag that
+/// looks like a sanitized path. `sanitize_namespace_path` maps every character
+/// outside `[A-Za-z0-9_]` to `_`, so a `.vibe` path always sanitizes to a tag
+/// ending `_vibe` -- which is what distinguishes a stamped name from a source
+/// identifier that merely contains `_dep_`. A qualified operation carries the
+/// tag before a `::`, so the tail is cut there first. Exactly the program's own
+/// cross-module declarations carry a stamp, so a builtin (`String::concat`,
+/// `Array::get`) cannot be mistaken for one and no builtin allow-list is
+/// needed to tell them apart.
+///
+/// This used to test for the literal `_exp_lib__` / `_dep_lib__`, which is the
+/// same predicate ONLY for files under `lib/`: the `lib__` is nothing but the
+/// sanitized first path segment. Every compiler-closure measurement was
+/// therefore right, and every FIXTURE reading was vacuously zero -- a two-file
+/// program written to `/tmp` gets the tag `_tmp_...`, matches nothing, and
+/// reports a clean context whatever the context actually holds. The all-zero
+/// two-module pin this instrument shipped with could not have failed.
 fn lc_name_is_module_mangled(n: String) -> Bool {
-  String::index_of(n, "_exp_lib__") >= 0 || String::index_of(n, "_dep_lib__") >= 0
+  lc_mangle_tail_is_path(n, "_exp_") || lc_mangle_tail_is_path(n, "_dep_")
+}
+
+/// The tag following `marker` in `n`, cut at a qualifying `::`, tested for the
+/// shape `sanitize_namespace_path` produces for a `.vibe` source path.
+fn lc_mangle_tail_is_path(n: String, marker: String) -> Bool {
+  let at = String::index_of(n, marker)
+  if at < 0 {
+    false
+  } else {
+    let rest = String::substring(n, at + String::length(marker), String::length(n))
+    let cut = String::index_of(rest, "::")
+    let tag = if cut < 0 {
+      rest
+    } else {
+      String::substring(rest, 0, cut)
+    }
+    String::length(tag) > 5 && String::ends_with(tag, "_vibe")
+  }
+}
+
+/// Of a name already known to be merge-stamped, whether the stamp is the
+/// EXPORTED one. Same `lib__`-independence as the predicate above: the split
+/// between "the contract publishes this" and "this is private to its module"
+/// must not depend on where the file happens to live.
+fn lc_name_is_exported_mangled(n: String) -> Bool {
+  lc_mangle_tail_is_path(n, "_exp_")
 }
 
 /// #2633: the MODULE TAG a mangled name carries -- `..._exp_lib__vibe_parser_polyfill_vibe`
@@ -758,11 +789,14 @@ fn lc_name_is_module_mangled(n: String) -> Bool {
 /// cannot drift from whatever spelling the merge actually produced. "" when
 /// the name is not mangled.
 fn lc_mangle_tag_of(n: String) -> String {
-  let e = String::index_of(n, "_exp_lib__")
+  // The marker only -- `lib__` is the sanitized first path segment, not part
+  // of the spelling, and requiring it made every tag outside `lib/` read "".
+  // The `+ 5` skips `_exp_` / `_dep_`, so the tag is the sanitized path.
+  let e = String::index_of(n, "_exp_")
   if e >= 0 {
     String::substring(n, e + 5, String::length(n))
   } else {
-    let d = String::index_of(n, "_dep_lib__")
+    let d = String::index_of(n, "_dep_")
     if d >= 0 {
       String::substring(n, d + 5, String::length(n))
     } else {
@@ -792,6 +826,17 @@ fn lc_module_tag_of(part: Array[Stmt]) -> String {
   ""
 }
 
+/// Every top-level name a statement list DECLARES -- values AND types AND
+/// their constructors.
+///
+/// The constructor arms are not decoration. `AvlNode` is a variant of the enum
+/// `AvlTree`, and the merge mangles variants like any other cross-module name;
+/// a collector that saw only `SLet` / `SFnDecl` reported every constructor
+/// reference as a name nobody declared -- including inside the very module
+/// that declares the enum. That is the same defect this instrument was built
+/// to find, one level up, and it was inflating the counts it reports until
+/// the `_dep_` head (`AvlNode_dep_lib__vibe_core_sortedmap_vibe`) gave it
+/// away.
 fn lc_decl_names_into(stmts: Array[Stmt], into: MutMap[String, Int]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -799,6 +844,26 @@ fn lc_decl_names_into(stmts: Array[Stmt], into: MutMap[String, Int]) -> Unit {
       SLet(_, _, n, _, _) => MutMap::set(into, n, 1),
       SLetMut(n, _, _) => MutMap::set(into, n, 1),
       SFnDecl(_, n, _, _, _) => MutMap::set(into, n, 1),
+      SStruct(_, n, _, _, _, _) => MutMap::set(into, n, 1),
+      STypeAlias(_, n, _, _) => MutMap::set(into, n, 1),
+      SEnum(_, n, _, variants, _) => {
+        MutMap::set(into, n, 1)
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vn, _) = Array::get(variants, vi)
+          MutMap::set(into, vn, 1)
+          vi = vi + 1
+        }
+      },
+      SSuberror(_, n, variants) => {
+        MutMap::set(into, n, 1)
+        let mut vi = 0
+        while vi < Array::length(variants) {
+          let (vn, _) = Array::get(variants, vi)
+          MutMap::set(into, vn, 1)
+          vi = vi + 1
+        }
+      },
       _ => ()
     }
     i = i + 1
@@ -849,7 +914,7 @@ fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String
               // closure is short. `cls[2]` is a name whose definer this run
               // could not identify at all, kept separate rather than folded
               // into either answer.
-              if String::index_of(n, "_exp_lib__") >= 0 {
+              if lc_name_is_exported_mangled(n) {
                 let owner = match MutMap::get(tag_owner, lc_mangle_tag_of(n)) {
                   Some(oi) => oi,
                   None => 0 - 1
@@ -6347,7 +6412,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let mut cui = 0
   while cui < Array::length(st.an_ctx_unresolved) {
     let n = Array::get(st.an_ctx_unresolved, cui)
-    if String::index_of(n, "_exp_lib__") >= 0 {
+    if lc_name_is_exported_mangled(n) {
       ctx_unres_exp = ctx_unres_exp + 1
       if first_exp == "" {
         first_exp = n

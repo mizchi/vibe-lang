@@ -808,3 +808,31 @@ test "a report's deferrals are its own, not the previous report's" {
   Fs::write_file(main2, "import ./vibe_defer_reset_dep2.vibe {\n  twice\n}\n\ntest \"t\" {\n  inspect(twice(2), content = \"4\")\n}\n")
   inspect(String::trim(synth_line_of(prelude_module_full_oracle_report_fs(main2, "__no_entry__"))), content = "SYNTH requests=0 typed_refused=0 deferred=0 minted=0 indirect=0")
 }
+
+test "a type declaration counts as declaring its own name, and an enum its constructors" {
+  let dep = "/tmp/vibe_ctx_typedecl_dep.vibe"
+  let main = "/tmp/vibe_ctx_typedecl_main.vibe"
+  // Every shape the collector has to know about, in one module: an exported
+  // enum whose constructors are used BOTH by its own module and across the
+  // boundary, a private enum used only at home, an exported struct, and a type
+  // alias naming the enum.
+  Fs::write_file(dep, "export enum Hue {\n  Crimson;\n  Azure\n}\n\nexport type Shade = Hue\n\nexport struct Paint {\n  hue: Hue\n}\n\nenum Secret {\n  Hidden(Int)\n}\n\nfn secret_of(n: Int) -> Int {\n  match Hidden(n) {\n    Hidden(v) => v\n  }\n}\n\nexport fn default_paint() -> Paint {\n  Paint::{ hue: Crimson }\n}\n\nexport fn home_use() -> Int {\n  let s: Shade = Azure\n  match s {\n    Crimson => secret_of(1)\n    Azure => secret_of(2)\n  }\n}\n")
+  Fs::write_file(main, "import ./vibe_ctx_typedecl_dep.vibe {\n  Hue, Paint, Crimson, Azure, default_paint, home_use\n}\n\nfn away_use() -> Int {\n  let p: Paint = default_paint()\n  match p.hue {\n    Crimson => 10\n    Azure => 20\n  }\n}\n\ntest \"t\" {\n  inspect(away_use() + home_use(), content = \"12\")\n}\n")
+  let report = prelude_module_full_oracle_report_fs(main, "__no_entry__")
+  // Zero on both halves, and this program is the reason the pin exists.
+  //
+  // `lc_decl_names_into` used to collect only `SLet` / `SLetMut` / `SFnDecl`,
+  // so a module that declares `enum Hue { Crimson; Azure }` and then WRITES
+  // `Crimson` was reported as using a name nobody declared -- in its own
+  // module. The all-zero two-module pin above could not see that: it declares
+  // no type at all, so the instrument's blind spot and a genuinely complete
+  // context read identically there.
+  //
+  // On the compiler's own closure the same defect was the WHOLE of the `_dep_`
+  // residue: 67 names, of which `AvlNode` (a constructor of `enum AvlTree` in
+  // `lib/@vibe/core/sortedmap.vibe`) was the head, and the corrected
+  // instrument reports 0. The `_exp_` count (83) did not move, because that
+  // half has a different cause -- all 83 are `exp_outside`, so the definer is
+  // not in the closure at all and no collector can reach them.
+  inspect(String::trim(ctx_line_of(report)), content = "CTX decls=5 modules=2 zero=1 unresolved_exp=0: unresolved_dep=0: exp_in_closure=0 exp_outside=0 exp_unknown=0 filt_not_published=0 filt_own_key_skip=0")
+}
