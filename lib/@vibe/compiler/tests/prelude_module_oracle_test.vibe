@@ -385,10 +385,19 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // was being detected. The remaining 83 are the other cause (the closure does
   // not reach the definer) and are untouched by this.
   //
-  // Zero here on a two-module program, which is the point of pinning it: those
-  // numbers could otherwise be the instrument miscounting rather than the
-  // context missing.
-  inspect(String::trim(ctx_line_of(report)), content = "CTX decls=1 modules=2 zero=1 unresolved_exp=0: unresolved_dep=0: exp_in_closure=0 exp_outside=0 exp_unknown=0 filt_not_published=0 filt_own_key_skip=0")
+  // `seen=0` is the honest reading of this pin, and it is pinned BECAUSE it is
+  // zero. `seen` counts the merge-stamped names the scan looked at, so this
+  // program gives it nothing to look at and its two `unresolved` zeros assert
+  // nothing whatever about the context rule.
+  //
+  // This pin was cited (in #2696) as the control backing the closure numbers --
+  // "without a program where the instrument reads zero, 118 and 67 could be the
+  // instrument miscounting rather than the context missing". It never was one:
+  // an all-zero assertion is worth nothing until the same assertion has been
+  // seen non-zero, and nothing here can move it. The test below is the control;
+  // this one is kept, with `seen` exposed, so the difference is visible rather
+  // than inferred.
+  inspect(String::trim(ctx_line_of(report)), content = "CTX decls=1 modules=2 zero=1 unresolved_exp=0: unresolved_dep=0: exp_in_closure=0 exp_outside=0 exp_unknown=0 filt_not_published=0 filt_own_key_skip=0 seen=0")
   // #2388: the VALIDATING passes, which produce diagnostics rather than
   // rewrites and are therefore invisible to a comparison keyed on
   // declarations. `0` here is both lanes silent on a clean program; the test
@@ -816,23 +825,36 @@ test "a type declaration counts as declaring its own name, and an enum its const
   // enum whose constructors are used BOTH by its own module and across the
   // boundary, a private enum used only at home, an exported struct, and a type
   // alias naming the enum.
-  Fs::write_file(dep, "export enum Hue {\n  Crimson;\n  Azure\n}\n\nexport type Shade = Hue\n\nexport struct Paint {\n  hue: Hue\n}\n\nenum Secret {\n  Hidden(Int)\n}\n\nfn secret_of(n: Int) -> Int {\n  match Hidden(n) {\n    Hidden(v) => v\n  }\n}\n\nexport fn default_paint() -> Paint {\n  Paint::{ hue: Crimson }\n}\n\nexport fn home_use() -> Int {\n  let s: Shade = Azure\n  match s {\n    Crimson => secret_of(1)\n    Azure => secret_of(2)\n  }\n}\n")
+  Fs::write_file(dep, "export enum Hue {\n  Crimson;\n  Azure\n}\n\nexport type Shade = Hue\n\nexport struct Paint {\n  hue: Hue\n}\n\nenum Secret {\n  Hidden(Int)\n}\n\nfn make_secret(n: Int) -> Secret {\n  Hidden(n)\n}\n\nfn secret_of(n: Int) -> Int {\n  let s = make_secret(n)\n  match s {\n    Hidden(v) => v\n  }\n}\n\nexport fn default_paint() -> Paint {\n  Paint::{ hue: Crimson }\n}\n\nexport fn home_use() -> Int {\n  let s: Shade = Azure\n  match s {\n    Crimson => secret_of(1)\n    Azure => secret_of(2)\n  }\n}\n")
   Fs::write_file(main, "import ./vibe_ctx_typedecl_dep.vibe {\n  Hue, Paint, Crimson, Azure, default_paint, home_use\n}\n\nfn away_use() -> Int {\n  let p: Paint = default_paint()\n  match p.hue {\n    Crimson => 10\n    Azure => 20\n  }\n}\n\ntest \"t\" {\n  inspect(away_use() + home_use(), content = \"12\")\n}\n")
   let report = prelude_module_full_oracle_report_fs(main, "__no_entry__")
-  // Zero on both halves, and this program is the reason the pin exists.
+  // The control for the CTX line: `seen=4` says the scan had four
+  // merge-stamped names to judge, and both `unresolved` counts are zero
+  // because the contexts really do supply them.
   //
-  // `lc_decl_names_into` used to collect only `SLet` / `SLetMut` / `SFnDecl`,
-  // so a module that declares `enum Hue { Crimson; Azure }` and then WRITES
-  // `Crimson` was reported as using a name nobody declared -- in its own
-  // module. The all-zero two-module pin above could not see that: it declares
-  // no type at all, so the instrument's blind spot and a genuinely complete
-  // context read identically there.
+  // Red-tested as a 2x2 over the two defects this fixture pins, measured by
+  // mutating the source and re-running (2026-09-12):
   //
-  // On the compiler's own closure the same defect was the WHOLE of the `_dep_`
-  // residue: 67 names, of which `AvlNode` (a constructor of `enum AvlTree` in
-  // `lib/@vibe/core/sortedmap.vibe`) was the head, and the corrected
-  // instrument reports 0. The `_exp_` count (83) did not move, because that
-  // half has a different cause -- all 83 are `exp_outside`, so the definer is
-  // not in the closure at all and no collector can reach them.
-  inspect(String::trim(ctx_line_of(report)), content = "CTX decls=5 modules=2 zero=1 unresolved_exp=0: unresolved_dep=0: exp_in_closure=0 exp_outside=0 exp_unknown=0 filt_not_published=0 filt_own_key_skip=0")
+  //   predicate  collector | result
+  //   old        old       | seen=0  unresolved_dep=0   the defect is INVISIBLE
+  //   new        old       | seen=4  unresolved_dep=1:Hidden_dep__tmp_..._vibe
+  //   new        new       | seen=4  unresolved_dep=0   (this pin)
+  //
+  // Both fixes are load-bearing, and the top row is why the pin above proves
+  // nothing. `lc_decl_names_into` used to collect only `SLet` / `SLetMut` /
+  // `SFnDecl`, so a module declaring `enum Secret { Hidden(Int) }` and then
+  // writing `Hidden` was reported as using a name nobody declared -- in its own
+  // module. `lc_name_is_module_mangled` used to require the literal
+  // `_dep_lib__`, so this program (written to `/tmp`, hence the tag
+  // `_tmp_..._vibe`) matched nothing and reported a clean context regardless.
+  //
+  // On the compiler's own closure the collector defect was the WHOLE of the
+  // `_dep_` residue: 67 names, headed by `AvlNode` (a constructor of
+  // `enum AvlTree` in `lib/@vibe/core/sortedmap.vibe`), corrected to 0. The
+  // `_exp_` count (83) did not move, because that half has a different cause --
+  // all 83 are `exp_outside`, so the definer is not in the closure at all and
+  // no collector can reach them. Relaxing the predicate left every closure
+  // column byte-identical, which is the check that it did not widen what
+  // counts as a stamped name on real code.
+  inspect(String::trim(ctx_line_of(report)), content = "CTX decls=5 modules=2 zero=1 unresolved_exp=0: unresolved_dep=0: exp_in_closure=0 exp_outside=0 exp_unknown=0 filt_not_published=0 filt_own_key_skip=0 seen=4")
 }
