@@ -46,7 +46,21 @@ export enum PerceusActionKind {
   // and stages the runtime rc==1 test; the bump and wasm-gc lanes ignore
   // both kinds entirely, so a pair degrades to today's drop + fresh alloc.
   PaReuseToken;
-  PaReuseAlloc
+  PaReuseAlloc;
+  // #2389 per-path release. A binding consumed on SOME branch of an `if` /
+  // `match` and not on the others keeps the merge's MINIMUM remaining count
+  // (#705, so the consuming path cannot double-free), which plans its
+  // scope-end drop away entirely -- and the paths that did not consume it
+  // then never release it. `PaPathDrop(name)` asks codegen for that drop
+  // back, guarded at run time by a per-binding flag local, and
+  // `PaConsumeMark(name)` -- one per occurrence that spends the binding's
+  // initial reference, keyed by the occurrence's source offset in
+  // `use_offset` -- is where codegen sets the flag. Flag set: the reference
+  // moved out on this path, skip the drop; flag clear: this path still holds
+  // it, drop it. The bump and wasm-gc lanes ignore both kinds, so the pair
+  // degrades to today's leak-direction behavior.
+  PaPathDrop;
+  PaConsumeMark
 }
 
 // PerceusAction is defined transparently in this package's contract
@@ -113,6 +127,14 @@ struct PCtx {
   // ..)` value MOVES (see the EAssign arm of pc_emit); -1 outside one.
   mut move_use_id: Int;
   mut move_hit: Bool;
+  // #2389 per-path release. Per binding id, the bits below (PF_*); and the
+  // occurrences that spend a binding's initial reference, as three aligned
+  // arrays (id, source offset, name) filtered into PaConsumeMark rows once
+  // the whole body is walked and the split set is known.
+  mut decl_flags: Array[Int];
+  mut mark_ids: Array[Int];
+  mut mark_offs: Array[Int];
+  mut mark_names: Array[String];
   mut actions: Array[PerceusAction]
 }
 
@@ -163,6 +185,35 @@ fn name_in(arr: Array[String], s: String) -> Bool {
   found
 }
 
+// #2389 per-path release, `PCtx.decl_flags` bits.
+//
+// PF_LET is set only for a plain immutable `let`: a `let mut` local is
+// reassigned, so the value its slot holds at scope end is not the one the
+// consume moved out, and a `let rec` binds a closure to itself.
+let pf_let = 1
+
+let pf_split = 2
+
+let pf_mark_bad = 4
+
+let pf_used_after = 8
+
+fn pe_flag_or(ctx: PCtx, id: Int, bit: Int) -> Unit {
+  if id >= 0 && id < Array::length(ctx.decl_flags) {
+    Array::set(ctx.decl_flags, id, Array::get(ctx.decl_flags, id)|bit)
+  } else {
+    ()
+  }
+}
+
+fn pe_flag_has(ctx: PCtx, id: Int, bit: Int) -> Bool {
+  if id >= 0 && id < Array::length(ctx.decl_flags) {
+    (Array::get(ctx.decl_flags, id)&bit) != 0
+  } else {
+    false
+  }
+}
+
 fn pe_push_for(ctx: PCtx, kind: PerceusActionKind, name: String, binding_id: Int, use_offset: Int) -> Int {
   Array::push(ctx.actions, PerceusAction::{
     kind: kind,
@@ -182,6 +233,50 @@ fn pr_push_reuse(actions: Array[PerceusAction], kind: PerceusActionKind, name: S
     use_offset: 0,
     extra: arity
   })
+}
+
+/// #2389 per-path release: record that this occurrence of `sid` spends the
+/// binding's INITIAL reference, so codegen can mark the path that took it. An
+/// occurrence with no source offset (a capture, the #1915 same-ident branch
+/// collapse) cannot be marked and disqualifies the binding rather than being
+/// ignored -- an unmarked consuming path would turn the leak this fixes into
+/// a release of a value already moved out.
+///
+/// Shared, because there are TWO places an occurrence can spend that
+/// reference and they are not one code path: `pe_use`, and the ELet alias arm
+/// (`let u = t`), which mirrors pe_use's dup condition and then decrements
+/// `remaining` directly. Recording it in pe_use alone left the alias transfer
+/// unmarked, so a split whose other arm was marked emitted the guarded drop
+/// and freed a value the alias had moved out -- measured as a silent wrong
+/// answer (36,000 became 26,000, no trap; `perceus_path_release_e2e_test`).
+fn pe_note_initial_ref_spent(ctx: PCtx, sid: Int, name: String, use_offset: Int, spends: Bool) -> Unit {
+  if pe_flag_has(ctx, sid, pf_let) {
+    if spends {
+      if use_offset < 0 {
+        pe_flag_or(ctx, sid, pf_mark_bad)
+      } else {
+        Array::push(ctx.mark_ids, sid)
+        Array::push(ctx.mark_offs, use_offset)
+        Array::push(ctx.mark_names, name)
+      }
+    } else {
+      ()
+    }
+    // A use sequenced AFTER the merge that zeroed the count is planned as
+    // nothing (remaining is already 0) while the codegen may still consume
+    // there. Guarding the scope end would then release a moved value, so
+    // decline the binding instead. Also a backstop: `uses` is the count over
+    // the whole body, so a merge can only reach zero when one branch spent
+    // every budgeted use and none is left to come -- no shape was found that
+    // reaches this, and it costs one flag test.
+    if pe_flag_has(ctx, sid, pf_split) {
+      pe_flag_or(ctx, sid, pf_used_after)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
 }
 
 fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String, use_offset: Int) -> Int {
@@ -206,6 +301,14 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String, use_offset: Int) -> 
     } else {
       ()
     }
+    // #2389: this occurrence spends the binding's INITIAL reference when it
+    // moves, or when it is the last owning use and takes the transfer.
+    let spends_initial = if move_here {
+      true
+    } else {
+      rem == 1 && !last_view_use && !Array::get(ctx.scalar, id)
+    }
+    pe_note_initial_ref_spent(ctx, id, name, use_offset, spends_initial)
     if rem > 0 {
       Array::set(ctx.remaining, id, rem - 1)
     }
@@ -238,6 +341,10 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
     view_src: [],
     move_use_id: 0 - 1,
     move_hit: false,
+    decl_flags: [],
+    mark_ids: [],
+    mark_offs: [],
+    mark_names: [],
     actions: [],
   }
 }
@@ -317,6 +424,14 @@ fn pctx_reset(ctx: PCtx) -> Int {
   ctx.view_src = vsrc0
   ctx.move_use_id = 0 - 1
   ctx.move_hit = false
+  let flags0: Array[Int] = []
+  ctx.decl_flags = flags0
+  let mids0: Array[Int] = []
+  ctx.mark_ids = mids0
+  let moffs0: Array[Int] = []
+  ctx.mark_offs = moffs0
+  let mnames0: Array[String] = []
+  ctx.mark_names = mnames0
   let actions0: Array[PerceusAction] = []
   ctx.actions = actions0
   0
@@ -385,6 +500,20 @@ fn pc_snap_restore(dst: Array[Int], at: Int, n: Int) -> Unit {
 export fn pa_is_dup(a: PerceusAction) -> Bool {
   match a.kind {
     PaDup => true,
+    _ => false
+  }
+}
+
+export fn pa_is_path_drop(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaPathDrop => true,
+    _ => false
+  }
+}
+
+export fn pa_is_consume_mark(a: PerceusAction) -> Bool {
+  match a.kind {
+    PaConsumeMark => true,
     _ => false
   }
 }
@@ -567,6 +696,7 @@ fn pe_declare(ctx: PCtx, _name: String) -> Int {
     owning
   }
   Array::push(ctx.remaining, init)
+  Array::push(ctx.decl_flags, 0)
   ctx.next_id = id + 1
   id
 }
@@ -2250,6 +2380,10 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
             } else {
               0
             }
+            // #2389: with no dup emitted above this occurrence TRANSFERS the
+            // source's initial reference, exactly as pe_use's last owning use
+            // does -- same condition, negated.
+            pe_note_initial_ref_spent(ctx, sid, src, src_off, rem == 1 && !src_last_view && !Array::get(ctx.scalar, sid))
             if rem > 0 {
               Array::set(ctx.remaining, sid, rem - 1)
             }
@@ -2261,6 +2395,13 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         _ => pc_emit(ctx, scope, value)
       }
       let id = pe_declare(ctx, name)
+      // #2389: a plain `let` is the one declaration form whose local still
+      // holds the same value at scope end that a consume moved out of.
+      if !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) {
+        pe_flag_or(ctx, id, pf_let)
+      } else {
+        ()
+      }
       if elide_dead_alias {
         Array::set(ctx.remaining, id, 0)
       }
@@ -2405,8 +2546,23 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         // (`snap` holds the THEN branch's values after the swap above.)
         let mut i = 0
         while i < n {
-          if Array::get(pc_scratch, snap + i) < Array::get(ctx.remaining, i) {
-            Array::set(ctx.remaining, i, Array::get(pc_scratch, snap + i))
+          let tv = Array::get(pc_scratch, snap + i)
+          let ev = Array::get(ctx.remaining, i)
+          // #2389: one branch spent the initial reference and the other did
+          // not, so the min below plans the scope-end drop away and the
+          // non-consuming path never releases it. Record the split; the
+          // guarded drop is emitted once the whole body is walked.
+          if pe_flag_has(ctx, i, pf_let) {
+            if (tv == 0 && ev > 0) || (ev == 0 && tv > 0) {
+              pe_flag_or(ctx, i, pf_split)
+            } else {
+              ()
+            }
+          } else {
+            ()
+          }
+          if tv < ev {
+            Array::set(ctx.remaining, i, tv)
           } else {
             ()
           }
@@ -2551,6 +2707,23 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
         // at a lower remaining; leaving the LAST arm's (higher) value made the
         // scope-end drop double-free that binding on the arm that consumed it.
         let minrem = pc_snap_slots(snap, n)
+        // #2389: the ids whose scope-end drop a min-merge could plan away --
+        // plain `let` bindings still holding their initial reference. Almost
+        // always none or a handful, so the per-arm bookkeeping below is over
+        // the candidates and not over every binding, and nothing at all is
+        // pushed when there are none.
+        let cmark = Array::length(pc_scratch)
+        let mut cs = 0
+        while cs < n {
+          if pe_flag_has(ctx, cs, pf_let) && Array::get(ctx.remaining, cs) > 0 {
+            Array::push(pc_scratch, cs)
+          } else {
+            ()
+          }
+          cs = cs + 1
+        }
+        let ccount = Array::length(pc_scratch) - cmark
+        let cmax = pc_snap_zeros(ccount)
         let mut a = 0
         while a < Array::length(arms) {
           let arm = Array::get(arms, a)
@@ -2582,7 +2755,27 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
             }
             mi = mi + 1
           }
+          let mut cj = 0
+          while cj < ccount {
+            let cid = Array::get(pc_scratch, cmark + cj)
+            if Array::get(ctx.remaining, cid) > Array::get(pc_scratch, cmax + cj) {
+              Array::set(pc_scratch, cmax + cj, Array::get(ctx.remaining, cid))
+            } else {
+              ()
+            }
+            cj = cj + 1
+          }
           a = a + 1
+        }
+        let mut ck = 0
+        while ck < ccount {
+          let cid = Array::get(pc_scratch, cmark + ck)
+          if Array::get(pc_scratch, minrem + cid) == 0 && Array::get(pc_scratch, cmax + ck) > 0 {
+            pe_flag_or(ctx, cid, pf_split)
+          } else {
+            ()
+          }
+          ck = ck + 1
         }
         pc_snap_restore(ctx.remaining, minrem, n)
         Array::truncate(pc_scratch, snap)
@@ -3706,6 +3899,64 @@ export fn build_perceus_plan_pinned(token: Int, params: Array[(String, Option[Ty
   build_perceus_plan_pinned_split(token, params, body, borrow_ret_names, borrow_param_fns, borrow_param_masks, view_ret_fns, ignored)
 }
 
+fn pe_int_array_has(xs: Array[Int], v: Int) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(xs) {
+    if Array::get(xs, i) == v {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2389 per-path release: turn the recorded initial-reference occurrences of
+/// every binding that a branch merge left split into `PaConsumeMark` rows plus
+/// one `PaPathDrop`. A binding qualifies only when it is a plain `let`, a
+/// merge actually zeroed its count against a sibling branch that kept it, no
+/// occurrence spending its initial reference lacked a source offset, and
+/// nothing used it after the split -- every one of those is a shape codegen
+/// could not mark, and an unmarked consuming path would turn today's leak
+/// into a release of a value already moved out.
+///
+/// The name a row carries is enough for codegen even though its bookkeeping is
+/// name-keyed: every body this plan is built for has been through
+/// `uniquify_shadowed_bindings_fresh` (linked_compile's planned-bodies loop,
+/// and `rc_plan_source`), so no two bindings of one function share a name --
+/// measured, two `let t`s in sibling branches come out as `t` and
+/// `__shadow_0_t`. `perceus_path_release_plan_test` pins that. A check here
+/// instead would need a name table per binding, which measured as a
+/// meaningful share of the planner's allocation on a full-closure compile.
+fn pe_emit_path_release(ctx: PCtx) -> Unit {
+  let done: Array[Int] = []
+  let done_names: Array[String] = []
+  let mut mi = 0
+  while mi < Array::length(ctx.mark_ids) {
+    let id = Array::get(ctx.mark_ids, mi)
+    if pe_flag_has(ctx, id, pf_split) && !pe_flag_has(ctx, id, pf_mark_bad) && !pe_flag_has(ctx, id, pf_used_after) {
+      let nm = Array::get(ctx.mark_names, mi)
+      let _ = pe_push_for(ctx, PaConsumeMark, nm, id, Array::get(ctx.mark_offs, mi))
+      if pe_int_array_has(done, id) {
+        ()
+      } else {
+        Array::push(done, id)
+        Array::push(done_names, nm)
+      }
+    } else {
+      ()
+    }
+    mi = mi + 1
+  }
+  let mut di = 0
+  while di < Array::length(done) {
+    let _ = pe_push_for(ctx, PaPathDrop, Array::get(done_names, di), Array::get(done, di), 0 - 1)
+    di = di + 1
+  }
+}
+
 fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])], body: Expr, out_param_drop_start: Array[Int]) -> Array[PerceusAction] {
   let mut scope: Map[String, Int] = Map::new()
   let mut pi = 0
@@ -3749,6 +4000,10 @@ fn build_perceus_plan_in_ctx(ctx: PCtx, params: Array[(String, Option[TypeExpr])
   // params' own" contract only speaks about drops, and reuse rows are
   // neither drops nor dups, so every existing consumer skips them.
   plan_reuse_pairs(body, ctx.actions)
+  // #2389: and the per-path release rows, after the same suffix and for the
+  // same reason -- they are neither drops nor dups, so every consumer that
+  // reads `out_param_drop_start` skips them.
+  pe_emit_path_release(ctx)
   // An owned copy, NOT ctx.actions itself: the cached PCtx keeps (and later
   // resets) its own actions array, while callers hold the returned plan
   // across subsequent plan builds.

@@ -117,6 +117,7 @@ import @vibe/compiler/codegen/common_extractors {
   get_eforin_iter,
   get_eforin_name,
   get_eident_name,
+  get_eident_off,
   get_eint_value,
   get_eletmut_body,
   get_eletmut_name,
@@ -977,6 +978,56 @@ fn compile_wrap_arith_loose(buf: Bytes, e: Expr, local_names: Array[String], nex
   }
 }
 
+/// #2389 per-path release: this occurrence of `name` is one the Perceus plan
+/// recorded as spending the binding's initial reference (PaConsumeMark, keyed
+/// by the occurrence's source offset), so the path that runs it has moved the
+/// value out -- set the binding's flag local, and the guarded scope-end drop
+/// in the `let` lowering stands down. A mark whose binding has no live flag
+/// local here (a lambda body compiled in its own CompileCtx) emits nothing:
+/// the drop then fires on a path that also consumed, which is the shape the
+/// planner declines by refusing any binding with an unmarkable occurrence.
+fn ce_mark_path_consume(buf: Bytes, expr: Expr, name: String, ctx: CompileCtx) -> Unit with Exception {
+  if ctx.enable_rc && Array::length(ctx.rc_path_flag_names) > 0 {
+    let off = get_eident_off(expr)
+    if off >= 0 {
+      let mut i = 0
+      let mut marked = false
+      while i < Array::length(ctx.rc_consume_mark_names) {
+        if Array::get(ctx.rc_consume_mark_offs, i) == off && Array::get(ctx.rc_consume_mark_names, i) == name {
+          marked = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      if marked {
+        let mut j = Array::length(ctx.rc_path_flag_names) - 1
+        let mut slot = 0 - 1
+        while j >= 0 {
+          if Array::get(ctx.rc_path_flag_names, j) == name {
+            slot = Array::get(ctx.rc_path_flag_locals, j)
+            j = 0 - 1
+          } else {
+            j = j - 1
+          }
+        }
+        if slot >= 0 {
+          emit_i64_const(buf, 1)
+          emit_local_set(buf, slot)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
 export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int) -> Int with Exception {
   let __tag = expr_tag(expr)
   if __tag == 0 {
@@ -1047,6 +1098,7 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       } else {
         emit_local_get(buf, local_idx)
       }
+      ce_mark_path_consume(buf, expr, name, ctx)
       next_local
     } else if builtin_value_form_arity(name) >= 0 && !user_fn_owns_name(ctx, name) {
       // #2442: a pure builtin in value position, eta-expanded.

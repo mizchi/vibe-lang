@@ -245,16 +245,12 @@ constructor at all (a scalar or call result, an identity arm, a rebuild at
 another size), 201 use nested sub-patterns, 181 mention the scrutinee
 again, 13 carry a control transfer.
 
-One inherited limit: a value consumed in ONE branch only is not released
-on the other path. Measured for a let-bound intermediate — the planner's
-branch merge keeps the minimum remaining count, so its scope-end drop is
-lost (two `Leaf` blocks, 48 B per iteration, when the leak guard was first
-written that way) — and true by construction for a pattern bind on both
-lanes: the consume count is the branch maximum, and the reference paid for
-the consume (the normal path's bind-time dup, the fusion's held reference)
-is never released on the branch that does not consume. The fusion matches
-the normal path on that shape rather than improving it; per-path release
-is a separate planner change.
+One limit this slice inherited is now partly lifted; see
+[Per-path release](#per-path-release-2389) below. A value consumed in ONE
+branch only keeps the branch merge's minimum remaining count, so its
+scope-end drop is planned away and the paths that do not consume it release
+nothing. The fusion matches the normal path on that shape rather than
+improving it.
 
 Self-compile KPI for this slice, measured 2026-09-11 with the
 `selfcompile_kpi_rc_lane.sh` discipline (five interleaved rounds in ABBA
@@ -279,6 +275,121 @@ allocator's bounded-walk and size-bin work, alloc/free churn is not what
 the RC lane's wall time is made of, and reuse buys allocation traffic, not
 wall. The lever for the ≤1.2× target is elsewhere (dup/drop traffic, the
 RC entry sequences), as the issue's last measurement already concluded.
+
+### Per-path release (#2389)
+
+A binding consumed on SOME branch of an `if` / `match` and not on the others
+keeps the merge's MINIMUM remaining count. That rule is #705's, and it is the
+one that keeps the consuming path from double-freeing; the cost it accepted is
+that the scope-end drop is planned away entirely, so the paths that did NOT
+consume release nothing. Reproduced on the normal lane, no reuse involved:
+
+```vibe
+let only_then = (c: Bool, i: Int) -> Tree {
+  let t = Node(Leaf(i), Leaf(i + 1))
+  if c { t } else { Leaf(0) }
+}
+```
+
+Called on the `else` path every iteration, that leaked 80 B per iteration (the
+`Node` and its two `Leaf` blocks) -- 1,600,024 B at N=20,000. It is now
+`only_then` in `fixtures/rc_reclaim_leak_test.vibe`, where the gate's 4,000 B
+bound is the Red test: compiled by a pre-change compiler the fixture measures
+1,603,488 B and fails; compiled by this one, 3,568 B, which is the steady state
+the fixture had before the shape was added.
+
+**How.** The planner records each occurrence that spends a binding's initial
+reference (`PaConsumeMark`, keyed by the occurrence's source offset -- what
+#2257 made plan actions carry) and, for a binding some merge left split, one
+`PaPathDrop`. The `let` lowering gives the drop back guarded by a flag local
+the marked occurrences set: flag set at the scope end means the reference moved
+out on this path, flag clear means this path still holds it. Same shape as the
+reuse fusion's `__reuse_flag`, one lowering over. `vibe rc-plan` prints both
+(`path_drop`, `consume_mark:<offset>`).
+
+That report had to be fixed first: it parsed with the offset-less
+`parse_program`, so every `EIdent` came out at -1 and it printed `dup` rows
+keyed by an offset the codegen could never have matched. It now parses the way
+the compile lane does.
+
+**What is admitted**, measured on the flat self-compile source (15,996 branch
+merges; 21,286 heap binding/merge pairs whose branches disagree; 10,861 of them
+merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
+4,150 pattern binds, 2,178 parameters, 15 for-in binds):
+
+- A plain `let` only. A `let mut` slot is reassignable, so the value it holds
+  at the scope end is not necessarily the one an occurrence moved out; a
+  pattern bind and a parameter have no `let` lowering to hang the flag on.
+  1,806 rows survive the planner's declines.
+- A value the SITE owns, as an ALLOW-LIST: a tuple, a record, an array
+  literal, a constructor call, and nothing else. 25 of the 1,806 rows in the
+  compiler's own sources, which bind mostly call results -- but it is the shape
+  this leak is written as in ordinary code (`let t = Ctor(..)`).
+
+  A call's result is the callee's contract instead, and the classifications
+  that describe it (borrow-returning, may-return-view) are the ones the planner
+  already uses to decide whether to plan a drop at all -- they do not answer
+  whether to give back one it eliminated. Measured: admitting call results
+  miscompiled the compiler itself. Five unit files answered wrongly with no
+  trap (`eq_unbounded_formal_test`, `parser_test`, and three #2357 trait-dict
+  files), and excluding exactly this class made all five green again. It is
+  1,193 of the 1,806.
+
+  This began as a DENYLIST (`expr_tag(value) != 8`) and review holed it twice:
+  a call wrapped in a block or an `ESeq` is not tag 8, and neither is an `if`
+  whose branches are calls, so `let t = { let _ = 0; Array::get(xs, 0) }` bound
+  an unowned view and the guarded drop would have released an element `xs`
+  still owns. A denylist over an open set of shapes cannot be finished. Reading
+  the initializer's result spine recursively -- through block bodies, `ESeq`
+  tails and conditional branches -- would admit those safely and is the obvious
+  next slice; until then they fail closed like everything nobody enumerated.
+- Every occurrence that spends the initial reference must have a source offset.
+  A lambda capture has none (the planner walks captures with -1), so codegen
+  would have no site to set the flag at; the binding keeps today's behavior
+  rather than getting a drop nothing suppresses.
+
+There are **two** places an occurrence can spend that reference, and they are
+not one code path: `pe_use`, and the `ELet` alias arm (`let u = t`), which
+mirrors pe_use's dup condition and then decrements `remaining` directly.
+Recording it in `pe_use` alone left the alias transfer unmarked, so a split
+whose other arm WAS marked emitted the guarded drop and freed a value the alias
+had moved out — a silent wrong answer with no trap (36,000 became 26,000 in the
+pinned case). Both sites now call one `pe_note_initial_ref_spent`, so they
+cannot drift.
+
+That bug also showed the e2e lane could not see the feature at all:
+`codegen_test_support`'s helpers parsed with the offset-less `parse_program`,
+so every `EIdent` came out at -1, every candidate was disqualified, and the
+case compiled **byte-identically** whether or not the planner recorded the
+alias. They now parse the way the compile lane does, which is what makes the
+case a real red test (it answers 1,045,100 instead of 3,545,100 when the
+recording is removed).
+- Not a borrow-bound binding (#708/#768): it holds a reference it never
+  acquired.
+- Not an Int-valued binding: it holds no reference at all, so a guarded drop
+  over it is pure instruction cost. The planner cannot see this -- its
+  `is_scalar_expr` knows only literals and borrow-returning calls -- but the
+  codegen's `expr_is_intish` can. Measured before the exclusion,
+  `bench/exec/sort_ints.vibe`'s `let mid = (lo + hi) / 2` took a flag local,
+  two flag stores and a guarded `rc_drop` for a heap figure that did not move
+  (32,828 B either way), and the PR's perf report flagged +2.84% fuel on that
+  bench; with it, the bench compiles byte-identically to a pre-change
+  compiler.
+
+The codegen's bookkeeping is name-keyed, which is safe here without a check
+because every planned body has been through `uniquify_shadowed_bindings_fresh`
+-- two `let t`s in sibling branches come out as `t` and `__shadow_0_t`.
+`lib/@vibe/compiler/tests/perceus_path_release_plan_test.vibe` pins that
+invariant, since the invariant is the thing that could regress.
+
+**Cost, measured** (`codegen_lexer_test` full-closure compile, isolated cache
+per run, three ABBA rounds): the compiler's own heap high-water goes
+918,895,200 B -> 922,810,000 B, +0.43%, identical on every run -- the planner's
+per-binding flag table, the mark arrays, and the flag locals and guarded drops
+in the emitted compiler. Wall is flat (median 5,532 ms -> 5,564 ms, ranges
+overlap). The leak this removes is per call of a split binding, so what it buys
+depends on the program rather than on this corpus; the self-compile does not
+show it, exactly as the reuse slices did not.
 
 ### Where reuse pays, and why the self-compile does not see it (2026-09-11)
 

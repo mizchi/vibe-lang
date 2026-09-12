@@ -125,11 +125,10 @@ let sumtri = (t: Tri) -> Int {
 // be released there (mr_emit_token_release) -- or one 32-byte N2 leaks per
 // iteration and heap_used scales with N. Both binds are consumed on both
 // paths (held: one reference per consume plus a base reference released at
-// arm end), so the payloads balance whichever branch runs. Deliberately NOT
-// a shape that consumes a let-bound value in one branch only: the planner's
-// branch merge keeps the minimum remaining count, and such a value leaks on
-// the non-consuming path on the normal lane too (measured: two Leaf blocks,
-// 48 B per iteration), which would swamp this guard.
+// arm end), so the payloads balance whichever branch runs. The let-bound
+// value consumed in one branch only -- which leaked on the normal lane too
+// and would have swamped this guard -- is `only_then` below, guarded on its
+// own since #2389's per-path release landed.
 let widen0 = (t: Tri, d: Int) -> Tri {
   match t {
     L(v) => L(v),
@@ -155,6 +154,24 @@ let hold = (t: Tree) -> Tree {
       let s = sumt(l)
       Node(l, Leaf(s + sumt(r)))
     }
+  }
+}
+
+// #2389 per-path release guard. `t` is consumed on the branch this call
+// never takes (`c` is false every iteration), so the planner's branch merge
+// keeps the MINIMUM remaining count (#705, which is what keeps the consuming
+// path from double-freeing) and plans `t`'s scope-end drop away entirely --
+// leaving the path that DOES run with nothing to release it. The codegen
+// gives that drop back, guarded by a flag local the consuming occurrence
+// sets. Measured before the fix through the same lane: 80 B per iteration
+// (a Node and two Leaf blocks), 1,600,024 B at N=20000. Adds 0 to `total`,
+// since the path that runs answers `Leaf(0)`.
+let only_then = (c: Bool, i: Int) -> Tree {
+  let t = Node(Leaf(i), Leaf(i + 1))
+  if c {
+    t
+  } else {
+    Leaf(0)
   }
 }
 
@@ -357,6 +374,9 @@ let main = () -> Int {
     ])
     let asum = Map::get(acc, "a") + Map::get(acc, "b") + Map::size(acc) + Array::length(xs_acc) + Array::get(xs_acc, 1)
     total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if) + sumtri(w) + sumt(h)
+    // #2389 (see only_then above): `i > 1000000` is false for every
+    // iteration, but not a constant the folder can see.
+    total = total + sumt(only_then(i > 1000000, i))
     total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum + asum
     i = i + 1
   }

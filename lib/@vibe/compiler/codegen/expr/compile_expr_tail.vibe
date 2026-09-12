@@ -1501,12 +1501,106 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       0 - 1
     }
-    let nl_body = if reuse_fusion {
+    let nl_after_reuse = if reuse_fusion {
       nl + 1
     } else {
       nl
     }
+    // #2389 per-path release: a branch merge planned this binding's scope-end
+    // drop away because SOME branch spends its initial reference, so the
+    // branches that do not spend it never release the value. Give the drop
+    // back, guarded by a flag local the plan's marked occurrences set (see
+    // compile_expr's EIdent case) -- 0 at the scope end means this path still
+    // holds the reference. Disjoint from the reuse fusion above by
+    // construction: a path-drop binding has no planned PaDrop, which that
+    // fusion requires.
+    //
+    // Two conditions beyond the plan's own, both about whether the INITIAL
+    // reference is one this binding really holds:
+    //
+    // - not a borrow-bound binding (#708/#768: a borrow-returning call, or an
+    //   if/match whose branch tail is borrowed). It holds a reference it never
+    //   acquired, exactly as the ordinary scope-end drop below leaves it to
+    //   loop_borrowed_names.
+    // - the value is an allocation made at the SITE. An ALLOW-LIST: a tuple, a
+    //   record, an array literal, a constructor call, and nothing else.
+    //
+    //   A call's result is the callee's contract instead, and the
+    //   classifications that describe it (borrow-returning, may-return-view)
+    //   are the ones the planner already uses to decide whether to plan a drop
+    //   at all -- they do not answer whether to give back one it eliminated.
+    //   Measured: admitting call results miscompiled the compiler itself, five
+    //   unit files answering wrongly with no trap (`eq_unbounded_formal_test`,
+    //   `parser_test`, and three #2357 trait-dict files), and excluding
+    //   exactly that class made all five green again. It is 1,193 of the 1,806
+    //   candidates in the compiler's own sources.
+    //
+    //   This began as a DENYLIST (`expr_tag(value) != 8`) and was holed twice
+    //   in review: a call wrapped in a block or an `ESeq` is not tag 8, and
+    //   neither is an `if` whose branches are calls, so `let t = { let _ = 0;
+    //   Array::get(xs, 0) }` bound an unowned view and the guarded drop would
+    //   release an element `xs` still owns. A denylist over an open set of
+    //   shapes cannot be finished. Reading the initializer's result spine
+    //   recursively -- through block bodies, `ESeq` tails and conditional
+    //   branches -- would admit those safely and is the obvious next slice;
+    //   until then they fail closed like everything nobody enumerated.
+    //
+    // - not an Int-valued binding: it holds no reference at all, so a guarded
+    //   drop over it is pure instruction cost. `bench/exec/sort_ints.vibe`'s
+    //   `let mid = (lo + hi) / 2` took a flag local, two flag stores and a
+    //   guarded `rc_drop` for a heap figure that did not move (32,828 B either
+    //   way) and +2.84% fuel. The planner cannot see it -- its
+    //   `is_scalar_expr` knows only literals and borrow-returning calls -- but
+    //   this classifier can. Redundant under the allow-list above for the
+    //   forms it admits, kept because it is the reason a value holding no
+    //   reference must never be guarded.
+    let path_value_ok = (is_etuple(value) || is_erecord(value) || expr_tag(value) == 17 || is_ctor_call(value, ctx.ctor_table)) && !expr_is_intish(value, local_names, ctx)
+    let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && path_value_ok && array_contains_str(ctx.rc_path_drop_names, name)
+    let path_flag_l = if path_drop {
+      // `local_names` is indexed BY wasm local index (compile_expr resolves an
+      // identifier to its slot by position), so a flag local may only be
+      // appended where the array already spans every local allocated so far.
+      // It does not always: a construct in `value` can take a scratch local
+      // without naming it (the `scope_tail_proj_root` arm below returns
+      // `nl2 + 1` after using `nl2`), which leaves `next_local` ahead of the
+      // array. Appending there would put every later binding's name one index
+      // short of its own local -- wrong reads, no trap. Pad with the
+      // no-name marker the value compile itself uses first.
+      while Array::length(local_names) < nl_after_reuse {
+        Array::push(local_names, "")
+      }
+      // The flag is addressed by its SLOT below and never looked up by name,
+      // so it takes the empty no-name marker rather than a spelling a user
+      // binding could also have: `local_names` is what compile_expr resolves
+      // identifiers through, last match wins, so a real name here would make
+      // a same-named outer binding read as this i64 flag (Codex on #2725).
+      Array::push(local_names, "")
+      emit_i64_const(buf, 0)
+      emit_local_set(buf, nl_after_reuse)
+      Array::push(ctx.rc_path_flag_names, name)
+      Array::push(ctx.rc_path_flag_locals, nl_after_reuse)
+      nl_after_reuse
+    } else {
+      0 - 1
+    }
+    let nl_body = if path_drop {
+      nl_after_reuse + 1
+    } else {
+      nl_after_reuse
+    }
     let nl2 = compile_expr(buf, body, local_names, nl_body, ctx, ld)
+    if path_drop {
+      Array::truncate(ctx.rc_path_flag_names, Array::length(ctx.rc_path_flag_names) - 1)
+      Array::truncate(ctx.rc_path_flag_locals, Array::length(ctx.rc_path_flag_locals) - 1)
+      emit_local_get(buf, path_flag_l)
+      emit_i64_eqz(buf)
+      emit_if_void(buf)
+      emit_local_get(buf, local_idx)
+      emit_call(buf, ctx.rc_drop_func_idx)
+      emit_end(buf)
+    } else {
+      ()
+    }
     if reuse_fusion {
       Array::truncate(ctx.reuse_scrutinee_names, Array::length(ctx.reuse_scrutinee_names) - 1)
       Array::truncate(ctx.reuse_flag_locals, Array::length(ctx.reuse_flag_locals) - 1)

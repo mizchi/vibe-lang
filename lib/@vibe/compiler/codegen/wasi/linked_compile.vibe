@@ -79,8 +79,10 @@ import @vibe/compiler/perceus {
   compute_scalar_returning_names,
   elaborate_heap_params,
   pa_is_alias_dup,
+  pa_is_consume_mark,
   pa_is_drop,
   pa_is_dup,
+  pa_is_path_drop,
   pa_is_reuse_token,
   param_is_heap_in_body,
   perceus_pin_tables
@@ -11744,6 +11746,9 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         let rc_dups = array_empty()
         let rc_reuse_names = lc_fresh_string_array()
         let rc_reuse_arities = lc_fresh_int_array()
+        let rc_path_drops = lc_fresh_string_array()
+        let rc_mark_names = lc_fresh_string_array()
+        let rc_mark_offs = lc_fresh_int_array()
         let lc_heap_params = lc_fresh_string_array()
         // #715: computed once, unconditionally (regardless of `enable_rc`), and
         // reused below both for the Perceus plan and for the actual codegen call
@@ -11843,6 +11848,13 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
               // (the consuming site is found while compiling the arm).
               Array::push(rc_reuse_names, pa.name)
               Array::push(rc_reuse_arities, pa.extra)
+            } else if pa_is_path_drop(pa) {
+              // #2389: these are `let` bindings only, so the borrowed-param
+              // drop filter above does not apply to them.
+              Array::push(rc_path_drops, pa.name)
+            } else if pa_is_consume_mark(pa) {
+              Array::push(rc_mark_names, pa.name)
+              Array::push(rc_mark_offs, pa.use_offset)
             } else {
               ()
             }
@@ -11968,6 +11980,11 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
           dbg_line_file_id: dbg_fid,
           loop_borrowed_names: lc_fresh_string_array(),
           loop_consumed_names: lc_fresh_string_array(),
+          rc_path_drop_names: rc_path_drops,
+          rc_consume_mark_names: rc_mark_names,
+          rc_consume_mark_offs: rc_mark_offs,
+          rc_path_flag_names: lc_fresh_string_array(),
+          rc_path_flag_locals: lc_fresh_int_array(),
           reuse_scrutinee_names: lc_fresh_string_array(),
           reuse_flag_locals: lc_fresh_int_array(),
           rc_reuse_token_names: rc_reuse_names,
