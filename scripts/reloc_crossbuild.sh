@@ -37,6 +37,20 @@ cd "$ROOT_DIR"
 . "$ROOT_DIR/scripts/resolve_stage2.sh"
 STAGE2="$(resolve_stage2 reloc-crossbuild "${RELOC_CROSSBUILD_STAGE2:-}")"
 
+# Exactly 0, 2 or 3 arguments. Anything else is a typo, and the two ways this
+# used to absorb one were both silent: ONE path fell through to the default
+# builds and reported a confident measurement of an entirely different pair,
+# and a FOURTH argument was accepted and dropped. A measurement tool that
+# answers a question nobody asked is worse than one that refuses.
+case "$#" in
+  0|2|3) ;;
+  *)
+    echo "reloc-crossbuild: usage: $0 [a.wasm b.wasm [edited,fn,names]]" >&2
+    echo "                  (no arguments builds the pair itself)" >&2
+    exit 2
+    ;;
+esac
+
 # An explicitly supplied pair. A third argument names comma-separated functions
 # whose SOURCE differs between the two modules, to be excluded from the
 # statistics (see the vibex); without one, nothing is excluded.
