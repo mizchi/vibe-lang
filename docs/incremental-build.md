@@ -677,21 +677,41 @@ assumed to be one byte wide. That is what made its coverage measurable rather
 than asserted. `scripts/reloc_roundtrip.sh` runs it over whole modules and
 requires an identity rebuild to be byte-identical:
 
-| module | bodies | sites | func | type | global | tag | blocktype | mismatches |
+| module | bodies | sites | func | type | global | table | tag | mismatches |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| the compiler's own stage2 | 6681 | 142,360 | 101,449 | 1315 | 38,616 | 980 | 0 | 0 |
-| a linear probe | 14 | 47 | 28 | 0 | 19 | 0 | 0 | 0 |
-| a gc-lane probe | 61 | 142 | 78 | 2 | 62 | 0 | 0 | 0 |
+| the compiler's own stage2 | 6681 | 143,675 | 101,449 | 1315 | 38,616 | 1315 | 980 | 0 |
+| a linear probe | 13 | 51 | 34 | 0 | 17 | 0 | 0 | 0 |
+| a gc-lane probe | 61 | 151 | 75 | 14 | 62 | 0 | 0 | 0 |
+
+Nine reference kinds are recorded: function, type, global, table, tag,
+blocktype, heap type, data segment and element segment. **Every immediate the
+decoder reads goes through either a recording helper or a NAMED skip
+helper** — `skip_local_index`, `skip_literal_uleb`, `skip_literal_sleb` — for
+a reason the review history makes concrete: four classes were found missing
+one at a time (tags, blocktypes, table indices, segment indices), and in every
+case the miss looked like `let (_, p) = read_uleb_at(...)`, which is
+indistinguishable from a reference someone forgot. With the immediates
+classified, `_` is not a shape the code offers.
 
 The per-kind breakdown is printed rather than just the total, because a kind
-that never appears is a code path no real input exercised — worth seeing
-rather than assuming. Two are in that position: **blocktype type indices and
-table indices appear in none of these modules**, so their only coverage is a
-synthetic test case, and the tests say so where they sit. A blocktype that is
-a type index is the s33 case `emit_if_type_index` emits for the gc backend's
-`gc_native_array_block_type_idx`; it rebuilds through a SIGNED writer, because
-type index 64 is `0x40` unsigned and a lone `0x40` sleb byte reads back as
-−64, an "empty" blocktype — a different instruction.
+that never appears is a code path no real input exercised. Four are in that
+position — blocktype, heap type, data and element segment indices read zero on
+every module here — so their only coverage is synthetic, and the tests say so
+where they sit.
+
+**The oracle can report success while scanning the wrong region**, which is
+the sharpest thing this exercise established and the reason "it round-trips"
+is not sufficient on its own. The locals header decides where the first
+instruction is, and a version of that walk which advanced a fixed byte per
+local group was wrong for the gc backend's typed reference locals
+(`0x63 <typeidx>`, `backend_body.vibe`). Measured on a probe that has three
+such local groups: the broken walk started one byte early, read the type index
+as an instruction, resynchronised, and produced a **different but
+self-consistent** classification — one type site reported as a blocktype
+site — with `identity_mismatch=0`. It passed. The probe in
+`scripts/reloc_roundtrip.sh` was then rewritten to contain such locals,
+because the previous one had none: a probe that cannot reach a construct is
+not coverage of it.
 
 The linear lanes passed on the first run; the first gc-lane module refused
 `0xfb` by name, which is how the wasm-gc opcode family got added rather than

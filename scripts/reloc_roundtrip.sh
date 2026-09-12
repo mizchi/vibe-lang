@@ -32,32 +32,31 @@ targets=("$@")
 if [ "${#targets[@]}" -eq 0 ]; then
   probe_dir="_build/_reloc_probe"
   mkdir -p "$probe_dir"
+  # The probe source is chosen so the gc lane emits TYPED REFERENCE LOCALS
+  # (`0x63 <typeidx>`), which the earlier one did not: measured, 3 such local
+  # groups here against 0 before. That matters because the locals header walk
+  # is what finds the first instruction, and a version of it that advanced a
+  # fixed byte per group reported SUCCESS on this module while scanning from
+  # one byte early -- classifying a type site as a blocktype site and still
+  # round-tripping. A probe that cannot reach a construct is not coverage of
+  # it.
   cat > "$probe_dir/gcprobe.vibe" <<'PROBE'
-struct P { x: Int; y: Int }
+struct Pt { x: Int; y: Int }
 
-fn mk(a: Int) -> P {
-  P::{ x: a, y: a + 1 }
+fn build() -> Array[Int] {
+  let xs = [1, 2, 3, 4]
+  xs
 }
 
-fn sum(ps: Array[P]) -> Int {
-  let mut t = 0
-  let mut i = 0
-  while i < Array::length(ps) {
-    let p = Array::get(ps, i)
-    t = t + p.x + p.y
-    i = i + 1
-  }
-  t
+fn mid(p: Pt) -> Int {
+  p.x + p.y
 }
 
 fn main() -> Int {
-  let ps = []
-  let mut i = 0
-  while i < 8 {
-    Array::push(ps, mk(i))
-    i = i + 1
-  }
-  sum(ps)
+  let xs = build()
+  let p = Pt::{ x: Array::get(xs, 0), y: Array::get(xs, 3) }
+  let ys = [mid(p), mid(p)]
+  Array::get(ys, 0) + Array::get(ys, 1) + Array::length(xs)
 }
 PROBE
   for backend in linear gc; do
