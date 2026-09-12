@@ -202,14 +202,30 @@ fn name_of(m: Mod, idx: Int) -> String {
   found
 }
 
+/// The index a NAME resolves to, or -1 when the name is absent, or -2 when it
+/// is AMBIGUOUS -- carried by more than one function.
+///
+/// Taking the first match would be silently wrong here, and the compiler
+/// really does produce duplicates: `linked_compile.vibe` labels every
+/// unassigned generated slot `__rt_gen` in a loop, so a module has many. With
+/// first-wins, every `__rt_gen` body in A is compared against the first one in
+/// B and every call targeting one is remapped to the first -- which
+/// manufactures mismatches AND can count a comparison against the WRONG body
+/// as a match. Found by review on #2705, after the first measurement had
+/// already been published with those rows in it.
 fn index_of_name(m: Mod, name: String) -> Int {
   let n = Array::length(m.names)
   let mut i = 0
   let mut found = -1
+  let mut hits = 0
   while i < n {
-    if Array::get(m.names, i) == name { found = Array::get(m.name_idxs, i); i = n } else { i = i + 1 }
+    if Array::get(m.names, i) == name {
+      hits = hits + 1
+      if hits == 1 { found = Array::get(m.name_idxs, i) } else { () }
+    } else { () }
+    i = i + 1
   }
-  found
+  if hits > 1 { -2 } else { found }
 }
 
 fn body_slot(m: Mod, idx: Int) -> Int {
@@ -247,7 +263,9 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   let mut compared = 0
   let mut matched = 0
   let mut mismatched = 0
-  let mut mismatch_with_nonfunc = 0
+  let mut mismatch_ambiguous_cause = 0
+  let mut ambiguous_name = 0
+  let mut moved_index = 0
   let mut mismatch_encoding_blind = 0
   let mut unresolved_func = 0
   let mut had_nonfunc = 0
@@ -261,10 +279,13 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
     let nm = name_of(a, ai)
     let bi = if nm == "" { -1 } else { index_of_name(b, nm) }
     let bs = if bi < 0 { -1 } else { body_slot(b, bi) }
-    if bs < 0 {
+    if bi == -2 {
+      ambiguous_name = ambiguous_name + 1
+    } else if bs < 0 {
       a_only_shape = a_only_shape + 1
     } else {
       compared = compared + 1
+      if ai != bi { moved_index = moved_index + 1 } else { () }
       let a_start = Array::get(a.body_starts, i)
       let a_end = Array::get(a.body_ends, i)
       let r = scan_body_relocs(a.bytes, a_start, a_end)
@@ -282,6 +303,8 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
         if kind == reloc_kind_func {
           let target = name_of(a, val)
           let nv = if target == "" { -1 } else { index_of_name(b, target) }
+          // -1 absent, -2 ambiguous: neither can be remapped, and passing the
+          // old value through is a KNOWN-WRONG relocation, not a neutral one.
           if nv < 0 { unresolved = unresolved + 1; Array::push(mapped, val) } else { Array::push(mapped, nv) }
         } else {
           nonfunc = nonfunc + 1
@@ -304,11 +327,20 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
         // reference the encoding does NOT expose -- the i64.const function
         // values and data pointers. That is the number the emitter has to
         // close, and it is measured here rather than estimated.
-        if nonfunc > 0 {
-          mismatch_with_nonfunc = mismatch_with_nonfunc + 1
-        } else {
+        // Attribute it, and ONLY when the attribution is unambiguous.
+        //
+        // A body can carry a non-function reference AND an encoding-blind
+        // i64.const at once, and an unresolved function target is passed
+        // through unchanged. Either makes the cause undeterminable from here.
+        // The first version of this put every `nonfunc == 0` mismatch in the
+        // blind bucket and called the total "the number the emitter has to
+        // close"; it is a LOWER BOUND, and only the bodies with neither
+        // confound belong in it.
+        if nonfunc == 0 && unresolved == 0 {
           mismatch_encoding_blind = mismatch_encoding_blind + 1
           if Array::length(examples) < 6 { Array::push(examples, nm) } else { () }
+        } else {
+          mismatch_ambiguous_cause = mismatch_ambiguous_cause + 1
         }
       }
     }
@@ -324,8 +356,12 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   StringBuilder::push(out, __to_string(mismatched))
   StringBuilder::push(out, " mismatch_encoding_blind=")
   StringBuilder::push(out, __to_string(mismatch_encoding_blind))
-  StringBuilder::push(out, " mismatch_with_nonfunc_refs=")
-  StringBuilder::push(out, __to_string(mismatch_with_nonfunc))
+  StringBuilder::push(out, " mismatch_ambiguous_cause=")
+  StringBuilder::push(out, __to_string(mismatch_ambiguous_cause))
+  StringBuilder::push(out, " ambiguous_name_skipped=")
+  StringBuilder::push(out, __to_string(ambiguous_name))
+  StringBuilder::push(out, " moved_index=")
+  StringBuilder::push(out, __to_string(moved_index))
   StringBuilder::push(out, " a_only=")
   StringBuilder::push(out, __to_string(a_only_shape))
   StringBuilder::push(out, " bodies_with_nonfunc_refs=")
@@ -346,5 +382,14 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   } else { () }
   if compared == 0 {
     throw("reloc-crossbuild: nothing compared -- the two modules share no named function")
+  } else { () }
+  // NON-VACUITY. If no shared function moved, the two builds have the same
+  // index assignment and every body "relocates" by doing nothing -- a perfect
+  // score that measures nothing. The whole point is a MOVED assignment, so a
+  // run where none moved is a failed run, not a clean one. (Review on #2705:
+  // a corpus that does not reach the edited file, or an order that already
+  // placed the imported module first, would both land here.)
+  if moved_index == 0 {
+    throw("reloc-crossbuild: no shared function changed index -- the two builds have the SAME assignment, so this run measured nothing")
   } else { () }
 }

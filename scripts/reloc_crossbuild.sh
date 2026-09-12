@@ -16,6 +16,11 @@
 # function and named in the output below, so the figure can be read with that
 # in mind rather than silently inflated.
 #
+# The vibex REFUSES a run where no shared function changed index: two builds
+# with the same assignment relocate perfectly by doing nothing, and that
+# perfect score measures nothing. Handing it one module twice reports
+# `matched=4351 mismatched=0 moved_index=0` and then fails.
+#
 # Not a `check_*` gate, same as scripts/reloc_roundtrip.sh: it builds the
 # compiler's whole closure twice, which is minutes, for a measurement rather
 # than a pass/fail property. It still FAILS rather than reporting a clean run

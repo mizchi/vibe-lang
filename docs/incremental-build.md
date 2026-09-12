@@ -741,34 +741,47 @@ itself emitted for B**.
 
 | | count | share |
 |---|---:|---:|
-| bodies compared (present in both by name) | 4356 | |
-| **relocated byte-identically to the compiler's own output** | **3943** | **90.5%** |
-| mismatch, body carries a non-function reference (this tool's limit) | 299 | 6.9% |
-| mismatch, **encoding-blind** | 114 | 2.6% |
+| bodies compared | 4351 | |
+| **relocated byte-identically to the compiler's own output** | **3968** | **91.2%** |
+| mismatch, cause not determinable | 284 | 6.5% |
+| mismatch, unambiguously **encoding-blind** | 99 | 2.3% |
+| skipped: the name is carried by more than one function | 5 | |
+| shared functions whose index actually moved | 4266 | |
 
-**90.5% of bodies survive a module reorder byte for byte**, using nothing but
+**91.2% of bodies survive a module reorder byte for byte**, using nothing but
 the references the instruction encoding exposes. That is the first direct
 evidence that index-independent bodies work rather than an argument that they
 should.
 
-The two mismatch classes are different in kind, which is why they are counted
-apart:
+**99 is a LOWER BOUND on what the emitter must record, not the number.** Only
+bodies with no confound are in it: a body can carry both a non-function
+reference (passed through here, because wasm gives those spaces no name
+section to map through) and an encoding-blind `i64.const`, and an unresolved
+function target is also passed through. Either makes the cause undeterminable
+from the binary, so those 284 are counted apart rather than attributed. A real
+link has the symbol tables this tool lacks and would resolve most of them; how
+many of the 284 are ALSO encoding-blind is not knowable here.
 
-- The **299** carry a reference in a space wasm gives no name section for
-  (type, table, tag, global, data, elem), so this tool passes the value
-  through unchanged and cannot do better from the binary alone. A real link
-  has those symbol tables and would remap them; this is the measurement's
-  limit, not the approach's.
-- The **114** carry no such reference. Every reference the encoding exposes
-  was remapped, so what remains is a reference it does NOT expose — the
-  `i64.const` function values and data pointers. **That is the number the
-  emitter has to close**, measured rather than estimated, and it is 2.6%.
+Three things this measurement needs in order to mean anything, each of which
+it got wrong first and reports now:
 
-Forcing a module reorder requires editing at least one existing body —
-something has to call across the new import — so a couple of the 114 are
-genuine source changes rather than relocation failures. The wrapper keeps that
-edit to one function and names it in its own output (`encode_url_safe`), so
-the figure can be read with that in mind instead of quietly inflated.
+- **Duplicate names are refused, not resolved first-wins.** The compiler emits
+  many functions called `__rt_gen` — `linked_compile.vibe` labels every
+  unassigned generated slot that way in a loop. Taking the first match compared
+  each of them against the wrong body and remapped every call to one into the
+  wrong target, which both manufactures mismatches and can count a comparison
+  against the WRONG body as a match. The first published figure (4356 / 3943 /
+  90.5%) had those rows in it.
+- **The reorder is asserted, not assumed.** `moved_index` counts shared
+  functions whose index actually differs, and a run where it is zero FAILS.
+  Without that, a corpus that never reaches the edited file would report every
+  body as relocated — a perfect score measuring nothing. Handing the tool the
+  same module twice produces exactly that: `matched=4351 mismatched=0`, and
+  the guard rejects it.
+- **The one edited body is named.** Forcing a module reorder requires editing
+  something — a call has to cross the new import — so the wrapper keeps that to
+  one function and prints its name, rather than letting it inflate the figure
+  silently.
 
 **What the scan cannot see, and why the link must record instead of derive.**
 A `call` immediate is self-describing — the opcode says the next uleb is a
