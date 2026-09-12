@@ -517,9 +517,10 @@ function typeAt(uri, position) {
   const tmp = path.join(dir, `.vibe-lsp-ty-${process.pid}-${Math.abs(hash(uri))}.vibe`);
   try {
     fs.writeFileSync(tmp, doc.text, "utf8");
-    // LSP positions are 0-based; `vibe type-at` expects 1-based line/col.
+    // LSP positions are 0-based UTF-16; `vibe type-at` expects a 1-based line
+    // and a 1-based BYTE column.
     const line = String(position.line + 1);
-    const col = String(position.character + 1);
+    const col = String(positionToByteCol(doc.text, position));
     const res = spawnSync(VIBE_BIN, ["type-at", tmp, line, col], { encoding: "utf8" });
     return (res.stdout || "").trim();
   } catch {
@@ -530,7 +531,50 @@ function typeAt(uri, position) {
   }
 }
 
-// Convert a 0-based char offset into an LSP {line, character} position.
+// The compiler answers in BYTE offsets and takes BYTE columns (ADR-0108,
+// docs/source-range-contract.md); LSP positions are 0-based lines and UTF-16
+// code units. The two agree only while a line is ascii, so this boundary
+// converts in BOTH directions, as lib/@vibe/lsp does at its own. Without it one
+// multibyte character earlier in the file shifts every range after it, and a
+// hover on a line containing one asks the compiler about the wrong column.
+// `offsetToPosition` below is NOT this: it takes an offset already measured in
+// UTF-16 units, which is what the JS-side workspace index produces.
+function utf8Len(cp) {
+  return cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+}
+
+// A compiler BYTE offset -> an LSP position.
+function byteOffsetToPosition(text, byteOff) {
+  let line = 0, lineStartUnit = 0, bytes = 0, unit = 0;
+  while (unit < text.length && bytes < byteOff) {
+    const cp = text.codePointAt(unit);
+    bytes += utf8Len(cp);
+    unit += cp > 0xffff ? 2 : 1;
+    if (cp === 10) { line++; lineStartUnit = unit; }
+  }
+  return { line, character: unit - lineStartUnit };
+}
+
+// An LSP position -> the compiler's 1-based BYTE column. `\r` is line content,
+// so a CRLF file does not shift a column.
+function positionToByteCol(text, position) {
+  let lineStart = 0;
+  for (let l = 0; l < position.line; l++) {
+    const nl = text.indexOf("\n", lineStart);
+    if (nl < 0) { lineStart = text.length; break; }
+    lineStart = nl + 1;
+  }
+  let bytes = 0, unit = 0;
+  while (unit < position.character && lineStart + unit < text.length) {
+    const cp = text.codePointAt(lineStart + unit);
+    if (cp === 10) break;
+    bytes += utf8Len(cp);
+    unit += cp > 0xffff ? 2 : 1;
+  }
+  return bytes + 1;
+}
+
+// Convert a 0-based UTF-16 offset into an LSP {line, character} position.
 function offsetToPosition(text, off) {
   let line = 0, lineStart = 0;
   const n = Math.min(off, text.length);
@@ -551,11 +595,11 @@ function bindingOccurrences(uri, position) {
   const tmp = path.join(dir, `.vibe-lsp-ba-${process.pid}-${Math.abs(hash(uri))}.vibe`);
   try {
     fs.writeFileSync(tmp, doc.text, "utf8");
-    const res = spawnSync(VIBE_BIN, ["binding-at", tmp, String(position.line + 1), String(position.character + 1)], { encoding: "utf8" });
+    const res = spawnSync(VIBE_BIN, ["binding-at", tmp, String(position.line + 1), String(positionToByteCol(doc.text, position))], { encoding: "utf8" });
     const ranges = [];
     for (const l of (res.stdout || "").split(/\r?\n/)) {
       const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(l);
-      if (m) ranges.push({ start: offsetToPosition(doc.text, +m[1]), end: offsetToPosition(doc.text, +m[2]) });
+      if (m) ranges.push({ start: byteOffsetToPosition(doc.text, +m[1]), end: byteOffsetToPosition(doc.text, +m[2]) });
     }
     return ranges.length ? ranges : null;
   } catch {
@@ -566,8 +610,49 @@ function bindingOccurrences(uri, position) {
   }
 }
 
-// AST-accurate declaration outline via `vibe symbols` (one "NAME KIND START END"
-// per line; KIND = LSP SymbolKind, START/END = char offsets of the name).
+// One `vibe symbols` row: `NAME KIND START END [DOC]`. DOC is last precisely
+// because it can contain anything, so it is matched and ignored rather than
+// left to end the row: requiring the line to STOP after END silently dropped
+// every declaration that carries a `///` doc comment.
+//
+// The classes are spelled out in ASCII because the producer's contract is
+// ASCII: NAME escapes ascii whitespace (#2723) and nothing else, so a label
+// written with a NBSP or an ideographic space carries that byte raw. JS's
+// \s / \S are Unicode-aware, so `\S+` stopped at the NBSP and the row matched
+// nothing -- and silently, since compilerSymbols returns the rows it did parse
+// rather than falling back. Separators are a single ascii space.
+const SYMBOL_ROW_RE = /^([^ \t]+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(.*))?$/;
+
+// Reverse the NAME escaping, or the editor shows `adds\stwo` where the source
+// says `adds two`. Backslash is doubled on the way out, so consuming exactly
+// one byte after each backslash, left to right, is exact.
+function decodeSymbolName(text) {
+  if (text.indexOf("\\") < 0) return text;
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "\\" || i + 1 >= text.length) { out += text[i]; continue; }
+    const c = text[++i];
+    if (c === "s") out += " ";
+    else if (c === "t") out += "\t";
+    else if (c === "n") out += "\n";
+    else if (c === "v") out += "\v";
+    else if (c === "f") out += "\f";
+    else if (c === "r") out += "\r";
+    else if (c === "\\") out += "\\";
+    else out += "\\" + c;
+  }
+  return out;
+}
+
+// `vibe symbols` legend v2 added two kinds past the LSP range: 27 Test and 28
+// Bench, so a consumer can tell a block label from a declaration of the same
+// spelling (#2632). The protocol has no such values, so they become Function
+// (12) at this boundary -- the same mapping lib/@vibe/lsp applies.
+function lspSymbolKind(kind) {
+  return kind === 27 || kind === 28 ? 12 : kind;
+}
+
+// AST-accurate declaration outline via `vibe symbols`.
 // Returns an array of { name, kind, selectionRange } (selectionRange spans the
 // name), or null when unavailable (older compiler / no symbols) so callers can
 // fall back to the line-regex scan. Unlike the regex, this handles multi-line
@@ -584,14 +669,14 @@ function compilerSymbols(uri) {
     const res = spawnSync(VIBE_BIN, ["symbols", tmp], { encoding: "utf8" });
     const out = [];
     for (const l of (res.stdout || "").split(/\r?\n/)) {
-      const m = /^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(l);
+      const m = SYMBOL_ROW_RE.exec(l);
       if (m) {
         out.push({
-          name: m[1],
-          kind: +m[2],
+          name: decodeSymbolName(m[1]),
+          kind: lspSymbolKind(+m[2]),
           selectionRange: {
-            start: offsetToPosition(doc.text, +m[3]),
-            end: offsetToPosition(doc.text, +m[4]),
+            start: byteOffsetToPosition(doc.text, +m[3]),
+            end: byteOffsetToPosition(doc.text, +m[4]),
           },
         });
       }

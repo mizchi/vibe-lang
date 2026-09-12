@@ -150,6 +150,76 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   checkAst("outline finds a struct symbol", astNames.includes("Vec"));
   checkAst("outline excludes a name that only appears in a comment", !astNames.includes("ghost"));
 
+  // A `test` label and a documented declaration, both of which the row parser
+  // used to mishandle: NAME escapes its whitespace so the row stays field-split
+  // (#2723) and must be DECODED here, a row carrying a DOC field must still be
+  // read (requiring the line to stop after END dropped every declaration with a
+  // `///` comment), and kind 27 Test is outside the protocol's SymbolKind range
+  // so it maps to Function (12), as lib/@vibe/lsp does.
+  const labUri = "file:///tmp/vibe-lsp-test-label.vibe";
+  const labText =
+    "/// Doc on a declaration.\nexport let documented = (x: Int) -> Int { x }\n" +
+    "\ntest \"adds two numbers\" {\n  let _ = 1\n}\n" +
+    "\ntest \"counts\u00a0items\" {\n  let _ = 2\n}\n";
+  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: labUri, languageId: "vibe", version: 1, text: labText } } });
+  await waitFor(isDiag(labUri));
+  send({ jsonrpc: "2.0", id: 32, method: "textDocument/documentSymbol", params: { textDocument: { uri: labUri } } });
+  const labSyms = (await waitFor((m) => m.id === 32)).result || [];
+  const labNames = labSyms.map((s) => s.name);
+  // Capability probe: only a compiler that reports block labels can satisfy
+  // these. An older one answers without the label, and the row parser is never
+  // handed one to decode.
+  const labelName = labNames.find((n) => n.indexOf("adds") === 0);
+  if (!labelName) {
+    console.log("skip: label outline (this compiler does not report block labels)");
+  } else {
+    check("a label's name is decoded, not the escaped spelling", labelName === "adds two numbers");
+    check("a label's kind is inside the protocol's SymbolKind range",
+      labSyms.filter((s) => s.name === labelName).every((s) => s.kind >= 1 && s.kind <= 26));
+    check("a declaration carrying a doc comment is still in the outline", labNames.includes("documented"));
+    // NON-ascii whitespace inside a label reaches the row raw -- the producer
+    // escapes ascii whitespace and nothing else -- so the row parser must split
+    // on ascii, not on JS's Unicode-aware \s.
+    check("a label containing a NBSP survives the row parser", labNames.includes("counts\u00a0items"));
+  }
+
+  // The compiler answers in BYTE offsets and takes BYTE columns; LSP positions
+  // are UTF-16 code units. This file puts two 4-byte emoji in the middle of it,
+  // so after them every byte offset runs 4 ahead of the UTF-16 offset the
+  // editor uses, and the column of anything later on that LINE runs 4 ahead
+  // too. Both directions are asserted: an outline range must still land on the
+  // name, and a hover must still reach the right identifier.
+  const mbUri = "file:///tmp/vibe-lsp-test-bytes.vibe";
+  const mbText =
+    "export let f = (n: Int) -> Int {\n" +
+    "  let doubled = n * 2\n" +
+    "  String::length(\"\u{1F38C}\u{1F38C}\") + doubled\n" +
+    "}\n" +
+    "export let after = (x: Int) -> Int { x }\n";
+  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: mbUri, languageId: "vibe", version: 1, text: mbText } } });
+  await waitFor(isDiag(mbUri));
+  send({ jsonrpc: "2.0", id: 33, method: "textDocument/documentSymbol", params: { textDocument: { uri: mbUri } } });
+  const mbSyms = (await waitFor((m) => m.id === 33)).result || [];
+  const afterSym = mbSyms.find((s) => s.name === "after");
+  if (!afterSym) {
+    console.log("skip: byte-offset ranges (compiler outline unavailable)");
+  } else {
+    const r = afterSym.selectionRange || afterSym.range;
+    const rLine = mbText.split(/\n/)[r.start.line] || "";
+    check("an outline range lands on the name after multibyte text",
+      rLine.slice(r.start.character, r.end.character) === "after");
+  }
+
+  // Hover on `doubled`, which sits AFTER the two emoji on its own line. With
+  // the UTF-16 column sent as a byte column the cursor lands inside the string
+  // literal instead, and the inferred type is not the binding's.
+  const mbCol = (mbText.split(/\n/)[2] || "").indexOf("doubled");
+  send({ jsonrpc: "2.0", id: 34, method: "textDocument/hover", params: { textDocument: { uri: mbUri }, position: { line: 2, character: mbCol + 1 } } });
+  const mbHov = await waitFor((m) => m.id === 34);
+  const mbHovVal = mbHov.result ? JSON.stringify(mbHov.result.contents) : "";
+  check("a hover after multibyte text on the same line reaches the identifier",
+    /doubled/.test(mbHovVal) && /Int/.test(mbHovVal));
+
   // definition: cursor on `helper` in main's body -> jumps to helper's decl (line 1)
   const callLine = goodText.split(/\r?\n/)[2]; // "export let main = () -> Int { helper(21) }"
   const helperCol = callLine.indexOf("helper");

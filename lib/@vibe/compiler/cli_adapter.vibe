@@ -352,47 +352,88 @@ fn escape_doc_field(text: String) -> String {
   StringBuilder::freeze(acc)
 }
 
-/// Escape a NAME so it survives as ONE line. A declaration's name cannot
-/// contain either byte, but a `test` / `bench` label is a string literal and
-/// a multi-line `#|` one carries a real newline (Codex on #2718) -- emitted
-/// raw it splits one record across two lines, so a reader counting rows sees
-/// a symbol that does not exist. Same reversible scheme as the doc field
-/// (backslash first), with `\r` kept rather than dropped: a byte inside a
-/// name is not noise to discard.
-fn escape_name_field(text: String) -> String {
+/// Does this NAME contain a byte that would break the row? Backslash (which
+/// makes the escaping reversible) and every ASCII whitespace byte: tab, LF,
+/// VT, FF, CR (9..13) and space. A declaration's name contains none of them,
+/// so this answers false for nearly every row and `escape_name_field` hands
+/// the string straight back.
+fn name_field_needs_escape(text: String) -> Bool {
   let n = String::length(text)
-  let acc = StringBuilder::new()
   let mut i = 0
-  while i < n {
+  let mut found = false
+  while i < n && !found {
     let c = String::char_code_at(text, i)
-    if c == 92 {
-      StringBuilder::push(acc, "\\\\")
+    if c == 92 || c == 32 || (c >= 9 && c <= 13) {
+      found = true
     } else {
-      if c == 10 {
-        StringBuilder::push(acc, "\\n")
-      } else {
-        if c == 13 {
-          StringBuilder::push(acc, "\\r")
-        } else {
-          StringBuilder::push(acc, String::from_char_code(c))
-        }
-      }
+      ()
     }
     i = i + 1
   }
-  StringBuilder::freeze(acc)
+  found
+}
+
+/// The escaped spelling of one NAME byte.
+fn name_field_escape_of(c: Int) -> String {
+  if c == 92 {
+    "\\\\"
+  } else if c == 32 {
+    "\\s"
+  } else if c == 9 {
+    "\\t"
+  } else if c == 10 {
+    "\\n"
+  } else if c == 11 {
+    "\\v"
+  } else if c == 12 {
+    "\\f"
+  } else if c == 13 {
+    "\\r"
+  } else {
+    String::from_char_code(c)
+  }
+}
+
+/// Escape a NAME so the row stays ONE line of FIXED fields. A declaration's
+/// name is an identifier and contains none of these bytes, but a `test` /
+/// `bench` label is a string literal: a multi-line `#|` one carries a real
+/// newline (Codex on #2718), and almost every label carries spaces (#2723).
+/// Unescaped, the first split one record across two lines -- a reader counting
+/// rows saw a symbol that does not exist -- and the second made `NAME KIND
+/// START END` unsplittable, so `adds two numbers 27 6 22` read KIND=`two`
+/// with nothing to signal it.
+///
+/// So NAME carries no ASCII whitespace at all: backslash first (which is what
+/// makes it reversible), then space `\s`, tab `\t`, LF `\n`, VT `\v`, FF `\f`
+/// and CR `\r`. DOC needs none of this because it is LAST and nothing is
+/// parsed after it; NAME is positional, so the property it needs is stronger.
+/// `\r` is escaped rather than dropped as DOC drops it: a byte inside a name
+/// is not noise to discard. The structured form
+/// (`symbol_spans` / `symbol_spans_with_docs`) has the real name.
+fn escape_name_field(text: String) -> String {
+  if !name_field_needs_escape(text) {
+    text
+  } else {
+    let n = String::length(text)
+    let acc = StringBuilder::new()
+    let mut i = 0
+    while i < n {
+      StringBuilder::push(acc, name_field_escape_of(String::char_code_at(text, i)))
+      i = i + 1
+    }
+    StringBuilder::freeze(acc)
+  }
 }
 
 /// One `NAME KIND START END` per declaration, with the `///` doc comment
 /// appended as a FIFTH field when the declaration has one. The doc goes last
 /// because it WAS the only field that could contain spaces, so `cut -f1-4`
 /// still reads the fixed part -- and a declaration with no doc emits exactly
-/// the four fields it always did, with no trailing space. That reasoning
-/// stopped holding when a `test` / `bench` label became a symbol: its NAME is
-/// a string literal, usually a sentence. Which encoding those rows get is a
-/// contract decision, tracked in #2723. A newline in a NAME is escaped here
-/// regardless (`escape_name_field`) -- it breaks the RECORD boundary, not
-/// merely the field one, so a reader counts a symbol that does not exist.
+/// the four fields it always did, with no trailing space. DOC stayed the only
+/// field allowed to hold a space when a `test` / `bench` label became a
+/// symbol, whose NAME is a string literal and usually a sentence: NAME is
+/// escaped to carry no ASCII whitespace at all (`escape_name_field`, #2723),
+/// so every row splits on whitespace into the same five fields.
 fn join_symbol_spans(syms: Array[(String, Int, Int, Int, String)]) -> String {
   let n = Array::length(syms)
   // O(N) join via StringBuilder; per-record String::concat was O(N²) (issue #366).
