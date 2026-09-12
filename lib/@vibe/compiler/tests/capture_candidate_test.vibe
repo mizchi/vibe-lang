@@ -1,0 +1,113 @@
+import @vibe/compiler/core {
+  Expr, Pat, Stmt
+}
+import @vibe/compiler/codegen/common_analysis {
+  compute_borrow_param_user_fns, is_mut_captured_in
+}
+
+fn closure(body: Expr) -> Expr {
+  EFn([], [], [], None, None, body)
+}
+
+test "a closure without the queried name needs no free-variable allocation" {
+  let body = closure(ELet("local", EInt(1), EIdent("local", -1), -1))
+  let before = Profiler::heap_bytes()
+  let captured = is_mut_captured_in(body, "absent")
+  let allocated = Profiler::heap_bytes() - before
+  inspect(captured, content = "false")
+  inspect(allocated, content = "0")
+}
+
+test "reads and write-only captures remain candidates" {
+  inspect(is_mut_captured_in(closure(EIdent("x", -1)), "x"), content = "true")
+  inspect(is_mut_captured_in(closure(EAssign("x", EInt(2), EUnit)), "x"), content = "true")
+  inspect(is_mut_captured_in(closure(EAssignOp("x", "+", EInt(2), EUnit)), "x"), content = "true")
+}
+
+test "nested closure candidates survive control-flow payloads" {
+  let capture = closure(EIdent("x", -1))
+  inspect(is_mut_captured_in(EBreak(Some(capture)), "x"), content = "true")
+  inspect(is_mut_captured_in(EContinue([capture]), "x"), content = "true")
+  inspect(is_mut_captured_in(closure(closure(EIdent("x", -1))), "x"), content = "true")
+}
+
+test "a capture under every expression child remains visible" {
+  let c = closure(EIdent("x", -1))
+  let z = EInt(0)
+  let arms: Array[(Pat, Expr)] = [(PWild, c)]
+  let parents: Array[Expr] = [
+    ELet("other", c, z, -1),
+    ELet("other", z, c, -1),
+    ELetMut("other", c, z, -1),
+    ELetMut("other", z, c, -1),
+    ELetRec("other", c, z),
+    ELetRec("other", z, c),
+    EAssign("other", c, z),
+    EAssign("other", z, c),
+    EAssignOp("other", "+", c, z),
+    EAssignOp("other", "+", z, c),
+    ESeq(c, z),
+    ESeq(z, c),
+    EBinOp("+", c, z, -1),
+    EBinOp("+", z, c, -1),
+    EIf(c, z, z),
+    EIf(z, c, z),
+    EIf(z, z, c),
+    EWhile(c, z),
+    EWhile(z, c),
+    EForIn("other", None, c, z),
+    EForIn("other", None, z, c),
+    ECall(c, [], -1),
+    ECall(z, [c], -1),
+    ETuple([c]),
+    EArray([c]),
+    EContinue([c]),
+    ERecord("Box", [("field", c)], []),
+    EMap([("key", c)]),
+    ELoop([("other", c)], z),
+    ELoop([], c),
+    EMatch(c, []),
+    EMatch(z, arms),
+    EHandle(c, []),
+    EHandle(z, arms),
+    closure(c),
+    EUnaryOp("-", c),
+    EDot(c, "field", -1, -1),
+    ELabeledArg("arg", "~", c),
+    EReturn(c),
+    ESpread(c),
+    EBreak(Some(c))
+  ]
+  let mut i = 0
+  let mut all_captured = true
+  while i < Array::length(parents) {
+    if !is_mut_captured_in(closure(Array::get(parents, i)), "x") {
+      all_captured = false
+    }
+    i = i + 1
+  }
+  inspect(all_captured, content = "true")
+}
+
+test "the pre-scan leaves shadowing to the existing capture judgment" {
+  let shadowed = EFn([], [], [("x", None)], None, None, EIdent("x", -1))
+  inspect(is_mut_captured_in(shadowed, "x"), content = "false")
+  let local = closure(ELet("x", EInt(1), EIdent("x", -1), -1))
+  inspect(is_mut_captured_in(local, "x"), content = "false")
+  let init_capture = ELet("x", closure(EIdent("x", -1)), EUnit, -1)
+  inspect(is_mut_captured_in(init_capture, "x"), content = "true")
+}
+
+test "borrow inference distinguishes unrelated closures from write-only captures" {
+  let read = ECall(EIdent("Array::length", -1), [EIdent("xs", -1)], -1)
+  let unrelated = ESeq(closure(EIdent("other", -1)), read)
+  let write_only = ESeq(closure(EAssign("xs", EArray([]), EUnit)), read)
+  let decls: Array[Stmt] = [
+    SLet(false, false, "reader", None, EFn([], [], [("xs", None)], None, None, unrelated)),
+    SLet(false, false, "writer", None, EFn([], [], [("xs", None)], None, None, write_only))
+  ]
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns(decls, [], masks)
+  inspect(names, content = "[reader]")
+  inspect(masks, content = "[1]")
+}

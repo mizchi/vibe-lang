@@ -1042,15 +1042,26 @@ fn unbox_tuple_loop_params_drive(stmts: Array[Stmt]) -> Unit {
   while i < Array::length(stmts) {
     let st = Array::get(stmts, i)
     match st {
-      SLet(a, b, name, ty, body) => Array::set(stmts, i, SLet(a, b, name, ty, utl_drive(body))),
-      SLetMut(name, ty, body) => Array::set(stmts, i, SLetMut(name, ty, utl_drive(body))),
-      SExpr(e) => Array::set(stmts, i, SExpr(utl_drive(e))),
-      STest(name, body) => Array::set(stmts, i, STest(name, utl_drive(body))),
-      SBench(name, body) => Array::set(stmts, i, SBench(name, utl_drive(body))),
-      SLetPat(p, body) => Array::set(stmts, i, SLetPat(p, utl_drive(body))),
-      SModule(exp, name, inner) => {
+      SLet(a, b, name, ty, body) => if has_unbox_tuple_candidate_expr(body) {
+        Array::set(stmts, i, SLet(a, b, name, ty, utl_drive(body)))
+      },
+      SLetMut(name, ty, body) => if has_unbox_tuple_candidate_expr(body) {
+        Array::set(stmts, i, SLetMut(name, ty, utl_drive(body)))
+      },
+      SExpr(e) => if has_unbox_tuple_candidate_expr(e) {
+        Array::set(stmts, i, SExpr(utl_drive(e)))
+      },
+      STest(name, body) => if has_unbox_tuple_candidate_expr(body) {
+        Array::set(stmts, i, STest(name, utl_drive(body)))
+      },
+      SBench(name, body) => if has_unbox_tuple_candidate_expr(body) {
+        Array::set(stmts, i, SBench(name, utl_drive(body)))
+      },
+      SLetPat(p, body) => if has_unbox_tuple_candidate_expr(body) {
+        Array::set(stmts, i, SLetPat(p, utl_drive(body)))
+      },
+      SModule(_, _, inner) => {
         unbox_tuple_loop_params_drive(inner)
-        Array::set(stmts, i, SModule(exp, name, inner))
       },
       _ => ()
     }
@@ -1060,11 +1071,8 @@ fn unbox_tuple_loop_params_drive(stmts: Array[Stmt]) -> Unit {
 
 /// Split every eligible tuple `let mut` in `stmts` into scalar `let mut`s,
 /// IN PLACE. Run at both linear codegen entries, after the checker.
-/// #1935: skip the walk when no 2..8-ary tuple `let mut` exists.
+/// #1935: select each statement body independently. One candidate elsewhere
+/// in the program must not make us rebuild every unrelated function/module.
 export fn unbox_tuple_loop_params(stmts: Array[Stmt]) -> Unit {
-  if !has_unbox_tuple_candidate(stmts) {
-    ()
-  } else {
-    unbox_tuple_loop_params_drive(stmts)
-  }
+  unbox_tuple_loop_params_drive(stmts)
 }

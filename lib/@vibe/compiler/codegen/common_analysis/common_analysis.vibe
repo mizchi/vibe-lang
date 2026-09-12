@@ -1407,6 +1407,82 @@ export fn scope_tail_proj_root(e: Expr) -> String {
   }
 }
 
+// #1935: allocation-free negative filter before collecting a closure's free
+// variables. This asks only whether the spelling occurs, including write-only
+// assignment targets. It deliberately ignores binders: shadowing belongs to
+// the existing capture judgment, and a false positive only costs that walk.
+// Interpolation is opaque at this AST layer, so it cannot certify absence.
+fn capture_body_mentions_name(e: Expr, name: String) -> Bool {
+  match e {
+    EIdent(n, _) => n == name,
+    EAssign(n, v, b) => n == name || capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    EAssignOp(n, _, v, b) => n == name || capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    EInt(_) => false,
+    EFloat(_) => false,
+    EString(_) => false,
+    EBool(_) => false,
+    EUnit => false,
+    EStringInterp(_) => true,
+    ELet(_, v, b, _) => capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    ELetMut(_, v, b, _) => capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    ELetRec(_, v, b) => capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
+    ESeq(a, b) => capture_body_mentions_name(a, name) || capture_body_mentions_name(b, name),
+    EBinOp(_, a, b, _) => capture_body_mentions_name(a, name) || capture_body_mentions_name(b, name),
+    EIf(c, t, f) => capture_body_mentions_name(c, name) || capture_body_mentions_name(t, name) || capture_body_mentions_name(f, name),
+    EWhile(c, b) => capture_body_mentions_name(c, name) || capture_body_mentions_name(b, name),
+    EForIn(_, _, iter, b) => capture_body_mentions_name(iter, name) || capture_body_mentions_name(b, name),
+    ECall(callee, args, _) => capture_body_mentions_name(callee, name) || capture_list_mentions_name(args, name),
+    ETuple(items) => capture_list_mentions_name(items, name),
+    EArray(items) => capture_list_mentions_name(items, name),
+    EContinue(items) => capture_list_mentions_name(items, name),
+    ERecord(_, fields, _) => capture_fields_mention_name(fields, name),
+    EMap(fields) => capture_fields_mention_name(fields, name),
+    ELoop(inits, body) => capture_fields_mention_name(inits, name) || capture_body_mentions_name(body, name),
+    EMatch(scrutinee, arms) => capture_body_mentions_name(scrutinee, name) || capture_arms_mention_name(arms, name),
+    EHandle(body, arms) => capture_body_mentions_name(body, name) || capture_arms_mention_name(arms, name),
+    EFn(_, _, _, _, _, body) => capture_body_mentions_name(body, name),
+    EUnaryOp(_, body) => capture_body_mentions_name(body, name),
+    EDot(body, _, _, _) => capture_body_mentions_name(body, name),
+    ELabeledArg(_, _, body) => capture_body_mentions_name(body, name),
+    EReturn(body) => capture_body_mentions_name(body, name),
+    ESpread(body) => capture_body_mentions_name(body, name),
+    EBreak(Some(body)) => capture_body_mentions_name(body, name),
+    EBreak(None) => false
+  }
+}
+
+fn capture_list_mentions_name(items: Array[Expr], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(items) {
+    found = capture_body_mentions_name(Array::get(items, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn capture_fields_mention_name(fields: Array[(String, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(fields) {
+    let (_, value) = Array::get(fields, i)
+    found = capture_body_mentions_name(value, name)
+    i = i + 1
+  }
+  found
+}
+
+fn capture_arms_mention_name(arms: Array[(Pat, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    found = capture_body_mentions_name(body, name)
+    i = i + 1
+  }
+  found
+}
+
 /// Check if a mutable variable is captured by any nested EFn in the given expression
 export fn is_mut_captured_in(expr: Expr, name: String) -> Bool {
   match expr {
@@ -1504,7 +1580,7 @@ export fn is_mut_captured_in(expr: Expr, name: String) -> Bool {
         }
         pi = pi + 1
       }
-      if shadowed {
+      if shadowed || !capture_body_mentions_name(fn_body, name) {
         false
       }
       else {
