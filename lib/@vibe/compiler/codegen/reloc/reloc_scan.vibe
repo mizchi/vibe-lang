@@ -46,6 +46,19 @@ export let reloc_kind_table: Int = 4
 /// IDENTITY check, and an unrecorded reference round-trips perfectly.
 export let reloc_kind_tag: Int = 5
 
+/// A blocktype that is a TYPE INDEX rather than a value type. `block`, `loop`
+/// and `if` take an s33: negative values are value types (-64 is "empty"),
+/// and a NON-NEGATIVE one is an index into the type section.
+/// `emit_if_type_index` emits exactly that, and the gc backend uses it for
+/// `ctx.gc_native_array_block_type_idx`, so the index moves with the type
+/// assignment like any other.
+///
+/// It is a separate kind from `reloc_kind_type` because of the ENCODING, not
+/// the meaning: an s33 must be rebuilt with a signed writer. The two differ
+/// for exactly the values this matters at -- 64 is `0x40` unsigned and
+/// `0xC0 0x00` signed, because a lone `0x40` sleb byte reads as -64.
+export let reloc_kind_blocktype: Int = 6
+
 /// Every reference one body makes, as parallel arrays -- the shape
 /// `CodegenBodyCache` already uses for everything it carries.
 ///
@@ -160,6 +173,23 @@ fn write_uleb(out: Bytes, value: Int) -> Unit with Exception {
   }
 }
 
+/// Minimal-width sleb128, for the one kind whose immediate is signed.
+fn write_sleb(out: Bytes, value: Int) -> Unit {
+  let mut v = value
+  let mut more = true
+  while more {
+    let byte = v&127
+    v = v>>7
+    let sign_set = (byte&64) != 0
+    if (v == 0 && !sign_set) || (v == -1 && sign_set) {
+      Bytes::push(out, byte)
+      more = false
+    } else {
+      Bytes::push(out, byte|128)
+    }
+  }
+}
+
 export fn reloc_uleb_width(value: Int) -> Int with Exception {
   let probe = Bytes::new()
   write_uleb(probe, value)
@@ -210,8 +240,17 @@ fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
   if op_has_no_immediate(op) {
     pos + 1
   } else if op == 0x02 || op == 0x03 || op == 0x04 {
-    // block / loop / if <blocktype>
-    let (_, p) = read_sleb_at(body, pos + 1)
+    // block / loop / if <blocktype>: a value type when negative, a TYPE INDEX
+    // when not -- and then it relocates.
+    let (v, p) = read_sleb_at(body, pos + 1)
+    if v >= 0 {
+      Array::push(out.offsets, pos + 1)
+      Array::push(out.kinds, reloc_kind_blocktype)
+      Array::push(out.values, v)
+      Array::push(out.widths, p - pos - 1)
+    } else {
+      ()
+    }
     p
   } else if op == 0x0C || op == 0x0D {
     // br / br_if <labelidx>  -- a LOCAL index, never relocated
@@ -538,7 +577,11 @@ export fn rebuild_body_relocs(body: Bytes, start: Int, end_pos: Int, r: BodyRelo
       Bytes::push(out, Bytes::get(body, c))
       c = c + 1
     }
-    write_uleb(out, Array::get(new_values, i))
+    if Array::get(r.kinds, i) == reloc_kind_blocktype {
+      write_sleb(out, Array::get(new_values, i))
+    } else {
+      write_uleb(out, Array::get(new_values, i))
+    }
     cursor = site + Array::get(r.widths, i)
     i = i + 1
   }

@@ -10,7 +10,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/reloc {
-  rebuild_body_relocs, reloc_kind_func, reloc_kind_global, reloc_kind_tag, reloc_kind_type, scan_body_relocs
+  rebuild_body_relocs, reloc_kind_blocktype, reloc_kind_func, reloc_kind_global, reloc_kind_tag, reloc_kind_type, scan_body_relocs
 }
 
 //# Functions
@@ -197,4 +197,36 @@ test "exception tags are relocations, in both throw and try_table" {
   // and the tag really is rewritable
   let moved = rebuild_body_relocs(b, 0, Bytes::length(b), r, [7, 9])
   assert_eq(Array::get(bytes_to_ints(moved), 4), 7)
+}
+
+test "a blocktype that is a TYPE INDEX relocates, and rebuilds SIGNED" {
+  // `block`/`loop`/`if` take an s33: negative is a value type, non-negative is
+  // an index into the type section. `emit_if_type_index` emits the latter and
+  // the gc backend uses it for `gc_native_array_block_type_idx`.
+  //
+  // No module in scripts/reloc_roundtrip.sh's probe set contains one
+  // (`blocktype=0` on all three), so this case is the ONLY coverage the kind
+  // has. Same for reloc_kind_table. Said out loud because "it round-trips on
+  // real modules" does not cover a construct those modules do not contain.
+  // if (type 3) ; end ; end   -- a one-byte non-negative blocktype
+  let codes = [0x04, 0x03, 0x0B, 0x0B]
+  let (offsets, kinds, values, widths) = scan_all(codes)
+  assert_eq(Array::length(offsets), 1)
+  assert_eq(Array::get(kinds, 0), reloc_kind_blocktype)
+  assert_eq(Array::get(values, 0), 3)
+  assert_eq(Array::get(widths, 0), 1)
+  // an EMPTY blocktype (-64, encoded 0x40) is a value type, not a relocation
+  let (o2, _k2, _v2, _w2) = scan_all([0x02, 0x40, 0x0B, 0x0B])
+  assert_eq(Array::length(o2), 0)
+  let b = body_of(codes)
+  let r = scan_body_relocs(b, 0, Bytes::length(b))
+  assert_eq(bytes_to_ints(rebuild_body_relocs(b, 0, Bytes::length(b), r, r.values)), codes)
+  // THE SIGNED ENCODING IS THE POINT. Type index 64 is `0x40` as a uleb, but a
+  // lone `0x40` sleb byte reads back as -64 -- an "empty" blocktype, i.e. a
+  // different instruction. It has to grow to `0xC0 0x00`.
+  let moved = rebuild_body_relocs(b, 0, Bytes::length(b), r, [64])
+  assert_eq(bytes_to_ints(moved), [0x04, 0xC0, 0x00, 0x0B, 0x0B])
+  let r2 = scan_body_relocs(moved, 0, Bytes::length(moved))
+  assert_eq(Array::get(r2.values, 0), 64)
+  assert_eq(Array::get(r2.kinds, 0), reloc_kind_blocktype)
 }

@@ -62,7 +62,6 @@ fn main() -> Int {
 PROBE
   for backend in linear gc; do
     out="$probe_dir/probe_$backend.wasm"
-    if [ "$backend" = gc ]; then be=gc; else be=""; fi
     # Delete first, and treat the compiler's exit status as the answer. With
     # neither, a rerun whose compile FAILS leaves the previous run's good wasm
     # in place, `-s` passes, and the oracle scans stale bytes and reports
@@ -70,16 +69,37 @@ PROBE
     # run never produced. (Codex review on #2702.)
     rm -f "$out"
     build_rc=0
-    env -u VIBE_RC ${be:+VIBE_BACKEND=$be} VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
-      VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
-      "$probe_dir/gcprobe.vibe" "$out" main >/dev/null 2>&1 || build_rc=$?
+    # VIBE_BACKEND is set EXPLICITLY in both directions, never left to
+    # whatever the caller exported. With `${be:+...}` the linear iteration
+    # passed nothing, so a caller who already had VIBE_BACKEND=gc got TWO gc
+    # probes and an oracle reporting success without ever scanning the linear
+    # lane it promised (#2252: a gate must not assume its environment).
+    if [ "$backend" = gc ]; then
+      env -u VIBE_RC VIBE_BACKEND=gc VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+        VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
+        "$probe_dir/gcprobe.vibe" "$out" main >/dev/null 2>&1 || build_rc=$?
+    else
+      env -u VIBE_RC -u VIBE_BACKEND VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+        VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+        bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
+        "$probe_dir/gcprobe.vibe" "$out" main >/dev/null 2>&1 || build_rc=$?
+    fi
     if [ "$build_rc" -ne 0 ] || [ ! -s "$out" ]; then
       echo "reloc-roundtrip: FAIL: could not build the $backend probe module (exit $build_rc)" >&2
       exit 1
     fi
     targets+=("$out")
   done
+  # And CHECK the property rather than trusting the env that was meant to
+  # produce it: same source, same compiler, so if the two lanes really ran
+  # the outputs cannot be identical. This catches a backend leak however it
+  # happened, which setting the variable correctly does not.
+  if cmp -s "$probe_dir/probe_linear.wasm" "$probe_dir/probe_gc.wasm"; then
+    echo "reloc-roundtrip: FAIL: the two probes are byte-identical, so both were built" >&2
+    echo "  through the SAME backend -- this run scanned one lane twice, not two lanes." >&2
+    exit 1
+  fi
   targets+=("$STAGE2")
 fi
 

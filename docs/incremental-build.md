@@ -677,11 +677,21 @@ assumed to be one byte wide. That is what made its coverage measurable rather
 than asserted. `scripts/reloc_roundtrip.sh` runs it over whole modules and
 requires an identity rebuild to be byte-identical:
 
-| module | bodies | relocation sites | identity mismatches |
-|---|---:|---:|---:|
-| the compiler's own stage2 | 6681 | 142,360 | 0 |
-| a 4743-function linear corpus | 4743 | 144,253 | 0 |
-| a gc-lane probe | 61 | 142 | 0 |
+| module | bodies | sites | func | type | global | tag | blocktype | mismatches |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| the compiler's own stage2 | 6681 | 142,360 | 101,449 | 1315 | 38,616 | 980 | 0 | 0 |
+| a linear probe | 14 | 47 | 28 | 0 | 19 | 0 | 0 | 0 |
+| a gc-lane probe | 61 | 142 | 78 | 2 | 62 | 0 | 0 | 0 |
+
+The per-kind breakdown is printed rather than just the total, because a kind
+that never appears is a code path no real input exercised — worth seeing
+rather than assuming. Two are in that position: **blocktype type indices and
+table indices appear in none of these modules**, so their only coverage is a
+synthetic test case, and the tests say so where they sit. A blocktype that is
+a type index is the s33 case `emit_if_type_index` emits for the gc backend's
+`gc_native_array_block_type_idx`; it rebuilds through a SIGNED writer, because
+type index 64 is `0x40` unsigned and a lone `0x40` sleb byte reads back as
+−64, an "empty" blocktype — a different instruction.
 
 The linear lanes passed on the first run; the first gc-lane module refused
 `0xfb` by name, which is how the wasm-gc opcode family got added rather than
