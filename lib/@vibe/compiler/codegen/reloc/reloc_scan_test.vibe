@@ -1,0 +1,232 @@
+//# Unit tests for the relocation scanner.
+//#
+//# These are SYNTHETIC bodies, on purpose: they pin one immediate shape each,
+//# so an edit that breaks one shape names it. The complementary test is
+//# `scripts/reloc_roundtrip.sh`, which runs the same scanner over whole real
+//# modules and can therefore catch a shape nobody thought to write down here
+//# -- that is how the 0xFB gc opcodes were found. Neither replaces the other:
+//# synthetic cases localise a break, real modules find an omission.
+
+//# Imports
+
+import @vibe/compiler/codegen/reloc {
+  rebuild_body_relocs, reloc_kind_blocktype, reloc_kind_func, reloc_kind_global, reloc_kind_tag, reloc_kind_type, scan_body_relocs
+}
+
+//# Functions
+
+fn body_of(codes: Array[Int]) -> Bytes {
+  let b = Bytes::new()
+  let mut i = 0
+  while i < Array::length(codes) {
+    Bytes::push(b, Array::get(codes, i))
+    i = i + 1
+  }
+  b
+}
+
+fn bytes_to_ints(b: Bytes) -> Array[Int] {
+  let out = []
+  let mut i = 0
+  while i < Bytes::length(b) {
+    Array::push(out, Bytes::get(b, i))
+    i = i + 1
+  }
+  out
+}
+
+fn scan_all(codes: Array[Int]) -> (Array[Int], Array[Int], Array[Int], Array[Int]) with Exception {
+  let b = body_of(codes)
+  let r = scan_body_relocs(b, 0, Bytes::length(b))
+  (r.offsets, r.kinds, r.values, r.widths)
+}
+
+test "call is a func relocation, and identity rebuild is byte-exact" {
+  // local.get 0 ; call 5 ; end
+  let codes = [0x20, 0x00, 0x10, 0x05, 0x0B]
+  let (offsets, kinds, values, widths) = scan_all(codes)
+  assert_eq(Array::length(offsets), 1)
+  assert_eq(Array::get(offsets, 0), 3)
+  assert_eq(Array::get(kinds, 0), reloc_kind_func)
+  assert_eq(Array::get(values, 0), 5)
+  assert_eq(Array::get(widths, 0), 1)
+  let b = body_of(codes)
+  let r = scan_body_relocs(b, 0, Bytes::length(b))
+  let same = rebuild_body_relocs(b, 0, Bytes::length(b), r, r.values)
+  assert_eq(bytes_to_ints(same), codes)
+}
+
+test "a relocation that crosses the LEB width band changes the body LENGTH" {
+  // This is the property #2669 turns on. A callee moving from index 127 to
+  // 128 grows its call immediate from one byte to two, so every calling body
+  // gets LONGER -- measured on the real compiler as Rational::abs 135 -> 136
+  // and make_rational 534 -> 536. A relocator that patched immediates in
+  // place could not represent this; rebuilding spans does it for free.
+  let codes = [0x10, 0x7F, 0x0B]
+  let b = body_of(codes)
+  let r = scan_body_relocs(b, 0, Bytes::length(b))
+  assert_eq(Array::get(r.values, 0), 127)
+  assert_eq(Array::get(r.widths, 0), 1)
+  let grown = rebuild_body_relocs(b, 0, Bytes::length(b), r, [128])
+  assert_eq(Bytes::length(grown), 4)
+  assert_eq(bytes_to_ints(grown), [0x10, 0x80, 0x01, 0x0B])
+  // and back down again, so the shrink direction is pinned too
+  let r2 = scan_body_relocs(grown, 0, Bytes::length(grown))
+  assert_eq(Array::get(r2.widths, 0), 2)
+  let shrunk = rebuild_body_relocs(grown, 0, Bytes::length(grown), r2, [127])
+  assert_eq(bytes_to_ints(shrunk), codes)
+}
+
+test "global.get and call_indirect report their own kinds" {
+  // global.get 1 ; call_indirect type=2 table=0 ; end
+  let codes = [0x23, 0x01, 0x11, 0x02, 0x00, 0x0B]
+  let (offsets, kinds, values, _widths) = scan_all(codes)
+  assert_eq(Array::length(offsets), 2)
+  assert_eq(Array::get(kinds, 0), reloc_kind_global)
+  assert_eq(Array::get(values, 0), 1)
+  assert_eq(Array::get(kinds, 1), reloc_kind_type)
+  assert_eq(Array::get(values, 1), 2)
+}
+
+test "an i64.const is walked but never reported" {
+  // The documented blind spot: a function VALUE and a data pointer both ride
+  // an i64.const, and nothing in the encoding separates either from an
+  // ordinary constant. The scanner must still SKIP it correctly -- a wrong
+  // width here would desynchronise everything after it -- so the call that
+  // follows has to be found at the right offset.
+  //
+  // i64.const 16254 (3 sleb bytes: fe fe 00) ; call 7 ; end
+  let codes = [0x42, 0xFE, 0xFE, 0x00, 0x10, 0x07, 0x0B]
+  let (offsets, kinds, values, _w) = scan_all(codes)
+  assert_eq(Array::length(offsets), 1)
+  assert_eq(Array::get(kinds, 0), reloc_kind_func)
+  assert_eq(Array::get(values, 0), 7)
+  assert_eq(Array::get(offsets, 0), 5)
+}
+
+test "memarg, br_table and block types are skipped at the right width" {
+  // block (empty) ; br_table 2 [0,1] 0 ; i32.load align=2 off=8 ; drop ;
+  // call 3 ; end ; end
+  let codes = [
+    0x02,
+    0x40,
+    0x0E,
+    0x02,
+    0x00,
+    0x01,
+    0x00,
+    0x28,
+    0x02,
+    0x08,
+    0x1A,
+    0x10,
+    0x03,
+    0x0B,
+    0x0B
+  ]
+  let (offsets, _k, values, _w) = scan_all(codes)
+  assert_eq(Array::length(offsets), 1)
+  assert_eq(Array::get(values, 0), 3)
+  let b = body_of(codes)
+  let r = scan_body_relocs(b, 0, Bytes::length(b))
+  assert_eq(bytes_to_ints(rebuild_body_relocs(b, 0, Bytes::length(b), r, r.values)), codes)
+}
+
+test "an unknown opcode is REFUSED, not guessed" {
+  // 0x06 is not an instruction this decoder knows. Assuming a width for it
+  // would desynchronise the walk and every later offset would be garbage that
+  // still looked like a successful scan, which is why the contract is to
+  // refuse. (@vibe/optimizer's decoder treats an unknown opcode as one byte;
+  // that is right for an optimiser free to decline, wrong for an oracle.)
+  let refused = handle {
+    let _ = scan_all([0x06, 0x0B])
+    false
+  } with { Exception::Throw(_) => true }
+  assert_true(refused)
+}
+
+test "a walk that would run past the end is REFUSED" {
+  // `call` with a truncated immediate: the uleb runs into the end of the
+  // body. Reporting a site here would invent a value.
+  let refused = handle {
+    let _ = scan_all([0x10, 0x80])
+    false
+  } with { Exception::Throw(_) => true }
+  assert_true(refused)
+}
+
+test "exception tags are relocations, in both throw and try_table" {
+  // Review found this, the oracle could not: an identity round-trip is
+  // exactly what an UNRECORDED reference passes. Tag indices are sized by the
+  // declared effects (`len(effect_names) + 4`), so adding an effect moves
+  // them, and a rebuilt body holding a stale tag routes a perform to the
+  // wrong handler with nothing failing at build time.
+  //
+  // throw 2 ; end
+  let (o1, k1, v1, _w1) = scan_all([0x08, 0x02, 0x0B])
+  assert_eq(Array::length(o1), 1)
+  assert_eq(Array::get(k1, 0), reloc_kind_tag)
+  assert_eq(Array::get(v1, 0), 2)
+  // try_table (empty blocktype) [catch tag=3 label=0, catch_all label=1]
+  //   call 9
+  // end ; end
+  let codes = [
+    0x1F,
+    0x40,
+    0x02,
+    0x00,
+    0x03,
+    0x00,
+    0x02,
+    0x01,
+    0x10,
+    0x09,
+    0x0B,
+    0x0B
+  ]
+  let (o2, k2, v2, _w2) = scan_all(codes)
+  assert_eq(Array::length(o2), 2)
+  // the catch clause's tag, then the call -- catch_all carries no tag
+  assert_eq(Array::get(k2, 0), reloc_kind_tag)
+  assert_eq(Array::get(v2, 0), 3)
+  assert_eq(Array::get(k2, 1), reloc_kind_func)
+  assert_eq(Array::get(v2, 1), 9)
+  let b = body_of(codes)
+  let r = scan_body_relocs(b, 0, Bytes::length(b))
+  assert_eq(bytes_to_ints(rebuild_body_relocs(b, 0, Bytes::length(b), r, r.values)), codes)
+  // and the tag really is rewritable
+  let moved = rebuild_body_relocs(b, 0, Bytes::length(b), r, [7, 9])
+  assert_eq(Array::get(bytes_to_ints(moved), 4), 7)
+}
+
+test "a blocktype that is a TYPE INDEX relocates, and rebuilds SIGNED" {
+  // `block`/`loop`/`if` take an s33: negative is a value type, non-negative is
+  // an index into the type section. `emit_if_type_index` emits the latter and
+  // the gc backend uses it for `gc_native_array_block_type_idx`.
+  //
+  // No module in scripts/reloc_roundtrip.sh's probe set contains one
+  // (`blocktype=0` on all three), so this case is the ONLY coverage the kind
+  // has. Same for reloc_kind_table. Said out loud because "it round-trips on
+  // real modules" does not cover a construct those modules do not contain.
+  // if (type 3) ; end ; end   -- a one-byte non-negative blocktype
+  let codes = [0x04, 0x03, 0x0B, 0x0B]
+  let (offsets, kinds, values, widths) = scan_all(codes)
+  assert_eq(Array::length(offsets), 1)
+  assert_eq(Array::get(kinds, 0), reloc_kind_blocktype)
+  assert_eq(Array::get(values, 0), 3)
+  assert_eq(Array::get(widths, 0), 1)
+  // an EMPTY blocktype (-64, encoded 0x40) is a value type, not a relocation
+  let (o2, _k2, _v2, _w2) = scan_all([0x02, 0x40, 0x0B, 0x0B])
+  assert_eq(Array::length(o2), 0)
+  let b = body_of(codes)
+  let r = scan_body_relocs(b, 0, Bytes::length(b))
+  assert_eq(bytes_to_ints(rebuild_body_relocs(b, 0, Bytes::length(b), r, r.values)), codes)
+  // THE SIGNED ENCODING IS THE POINT. Type index 64 is `0x40` as a uleb, but a
+  // lone `0x40` sleb byte reads back as -64 -- an "empty" blocktype, i.e. a
+  // different instruction. It has to grow to `0xC0 0x00`.
+  let moved = rebuild_body_relocs(b, 0, Bytes::length(b), r, [64])
+  assert_eq(bytes_to_ints(moved), [0x04, 0xC0, 0x00, 0x0B, 0x0B])
+  let r2 = scan_body_relocs(moved, 0, Bytes::length(moved))
+  assert_eq(Array::get(r2.values, 0), 64)
+  assert_eq(Array::get(r2.kinds, 0), reloc_kind_blocktype)
+}

@@ -1,0 +1,594 @@
+//# @vibe/compiler/codegen/reloc — where a function body refers to the global
+//# index spaces, and how to rewrite those references when the spaces move.
+//#
+//# #2669 chose index-independent bodies: a cached body should carry SYMBOLIC
+//# references that the link resolves, instead of the baked-in indices that
+//# make `CodegenBodyCache` replayable only while a long conjunction of
+//# whole-program layout facts still holds (see its `guard_*` fields).
+//#
+//# This module is the first half of that: given a finished body, find every
+//# reference and rewrite it. It deliberately does NOT change how bodies are
+//# emitted, so it can be checked against real output before anything depends
+//# on it.
+//#
+//# WHAT IT CANNOT SEE, and why that is the whole argument for recording at
+//# emission time rather than deriving afterwards. A `call` immediate is
+//# self-describing: the opcode says the next uleb is a funcidx. A function
+//# used as a VALUE is not. On the RC lane it is emitted as
+//# `i64.const ((idx << 1 | 1) << 1)`, i.e. `idx * 4 + 2`, and a data pointer
+//# rides an `i64.const` the same way -- both are indistinguishable from an
+//# ordinary integer constant by any amount of decoding. #2669 measured 25 of
+//# one class and 850 of the other on a single module reorder. A scanner that
+//# guessed at them would be wrong sometimes, which is worse than not
+//# answering; so this scanner reports only what the INSTRUCTION ENCODING
+//# makes certain, and `reloc_scan_unseen_kinds` names the rest.
+
+//# Imports
+
+//# Functions
+
+/// Relocation kinds. The number is stored in cached artifacts, so these are
+/// append-only: never renumber one.
+export let reloc_kind_func: Int = 1
+
+export let reloc_kind_type: Int = 2
+
+export let reloc_kind_global: Int = 3
+
+export let reloc_kind_table: Int = 4
+
+/// Exception tags. Their index space is sized by the DECLARED EFFECTS --
+/// `linked_compile.vibe` builds the tag section as `len(effect_names) + 4` --
+/// so adding, removing or reordering an effect moves every tag after it.
+/// A rebuilt body that kept a stale tag would route a `perform` to the wrong
+/// handler or leave it uncaught: wrong at run time, with nothing failing at
+/// build time. Found by review, not by the oracle: the round-trip is an
+/// IDENTITY check, and an unrecorded reference round-trips perfectly.
+export let reloc_kind_tag: Int = 5
+
+/// A blocktype that is a TYPE INDEX rather than a value type. `block`, `loop`
+/// and `if` take an s33: negative values are value types (-64 is "empty"),
+/// and a NON-NEGATIVE one is an index into the type section.
+/// `emit_if_type_index` emits exactly that, and the gc backend uses it for
+/// `ctx.gc_native_array_block_type_idx`, so the index moves with the type
+/// assignment like any other.
+///
+/// It is a separate kind from `reloc_kind_type` because of the ENCODING, not
+/// the meaning: an s33 must be rebuilt with a signed writer. The two differ
+/// for exactly the values this matters at -- 64 is `0x40` unsigned and
+/// `0xC0 0x00` signed, because a lone `0x40` sleb byte reads as -64.
+export let reloc_kind_blocktype: Int = 6
+
+/// Every reference one body makes, as parallel arrays -- the shape
+/// `CodegenBodyCache` already uses for everything it carries.
+///
+/// `offsets[i]` is where the immediate's FIRST byte sits, relative to the
+/// start of the body slice handed in. `widths[i]` is how many bytes it
+/// occupies there, which is NOT implied by `values[i]`: the emitter writes
+/// minimal LEB128, but a rewritten body may need more or fewer, and the
+/// rebuild handles that by copying spans rather than patching in place.
+export fn body_relocs_new() -> BodyRelocs {
+  BodyRelocs::{ offsets: [], kinds: [], values: [], widths: [] }
+}
+
+export fn body_relocs_count(r: BodyRelocs) -> Int {
+  Array::length(r.offsets)
+}
+
+/// The reference classes this module CANNOT report, named so a caller can
+/// state its own coverage honestly rather than implying completeness.
+export fn reloc_scan_unseen_kinds() -> Array[String] {
+  [
+    "i64.const function value (idx * 4 + 2)",
+    "i64.const data pointer ((ptr << 32) | len)"
+  ]
+}
+
+fn read_uleb_at(body: Bytes, pos: Int) -> (Int, Int) with Exception {
+  let len = Bytes::length(body)
+  let mut result = 0
+  let mut shift = 0
+  let mut p = pos
+  let mut done = false
+  while !done {
+    if p >= len {
+      throw("reloc_scan: uleb128 runs past the end of the body")
+    } else {
+      ()
+    }
+    let b = Bytes::get(body, p)
+    result = result|((b&127)<<shift)
+    shift = shift + 7
+    p = p + 1
+    if (b&128) == 0 {
+      done = true
+    } else {
+      if shift > 56 {
+        throw("reloc_scan: uleb128 wider than a 63-bit Int")
+      } else {
+        ()
+      }
+    }
+  }
+  (result, p)
+}
+
+fn read_sleb_at(body: Bytes, pos: Int) -> (Int, Int) with Exception {
+  let len = Bytes::length(body)
+  let mut result = 0
+  let mut shift = 0
+  let mut p = pos
+  let mut done = false
+  let mut last = 0
+  while !done {
+    if p >= len {
+      throw("reloc_scan: sleb128 runs past the end of the body")
+    } else {
+      ()
+    }
+    let b = Bytes::get(body, p)
+    last = b
+    result = result|((b&127)<<shift)
+    shift = shift + 7
+    p = p + 1
+    if (b&128) == 0 {
+      done = true
+    } else {
+      if shift > 56 {
+        throw("reloc_scan: sleb128 wider than a 63-bit Int")
+      } else {
+        ()
+      }
+    }
+  }
+  if (last&64) != 0 && shift < 63 {
+    result = result - (1<<shift)
+  } else {
+    ()
+  }
+  (result, p)
+}
+
+/// Minimal-width uleb128, matching `leb128_encode_u32` in
+/// `@vibe/compiler/core`'s bytebuf -- the rebuild must produce what the
+/// emitter would have produced, or an identity rebuild would not be
+/// byte-identical and the oracle below would be meaningless.
+fn write_uleb(out: Bytes, value: Int) -> Unit with Exception {
+  if value < 0 {
+    throw("reloc_scan: refusing to encode a negative index")
+  } else {
+    ()
+  }
+  let mut v = value
+  let mut more = true
+  while more {
+    let byte = v&127
+    v = v>>7
+    if v == 0 {
+      Bytes::push(out, byte)
+      more = false
+    } else {
+      Bytes::push(out, byte|128)
+    }
+  }
+}
+
+/// Minimal-width sleb128, for the one kind whose immediate is signed.
+fn write_sleb(out: Bytes, value: Int) -> Unit {
+  let mut v = value
+  let mut more = true
+  while more {
+    let byte = v&127
+    v = v>>7
+    let sign_set = (byte&64) != 0
+    if (v == 0 && !sign_set) || (v == -1 && sign_set) {
+      Bytes::push(out, byte)
+      more = false
+    } else {
+      Bytes::push(out, byte|128)
+    }
+  }
+}
+
+export fn reloc_uleb_width(value: Int) -> Int with Exception {
+  let probe = Bytes::new()
+  write_uleb(probe, value)
+  Bytes::length(probe)
+}
+
+/// Opcodes that take no immediate at all. Written as RANGES of the encoding
+/// rather than a list of names, because that is what makes the coverage
+/// argument checkable: the numeric operators occupy one contiguous block, and
+/// a decoder organised by immediate SHAPE cannot forget a member of a block
+/// the way a decoder organised by name can forget an operator.
+fn op_has_no_immediate(op: Int) -> Bool {
+  if op == 0x00 || op == 0x01 || op == 0x05 || op == 0x0B || op == 0x0F {
+    // unreachable, nop, else, end, return
+    true
+  } else if op == 0x0A || op == 0x1A || op == 0x1B {
+    // throw_ref, drop, select
+    true
+  } else if op == 0xD1 {
+    // ref.is_null
+    true
+  } else if op >= 0x45 && op <= 0xC4 {
+    // every comparison, arithmetic, conversion and sign-extension operator
+    true
+  } else {
+    false
+  }
+}
+
+/// Skip a `memarg`: alignment then offset, both uleb128.
+fn skip_memarg(body: Bytes, pos: Int) -> Int with Exception {
+  let (_, p1) = read_uleb_at(body, pos)
+  let (_, p2) = read_uleb_at(body, p1)
+  p2
+}
+
+/// Walk ONE instruction. Returns the position just past it, appending any
+/// relocation site it carries.
+///
+/// REFUSES an opcode it does not know, rather than assuming a width. The
+/// decoder in `@vibe/optimizer`'s wasm_opt.vibe treats an unrecognised
+/// opcode as a one-byte instruction; that is right for an optimiser that may
+/// decline to transform, and wrong here, because a mis-skipped immediate
+/// silently desynchronises the walk and every later offset is then garbage
+/// that still looks like a successful scan.
+fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
+  let op = Bytes::get(body, pos)
+  if op_has_no_immediate(op) {
+    pos + 1
+  } else if op == 0x02 || op == 0x03 || op == 0x04 {
+    // block / loop / if <blocktype>: a value type when negative, a TYPE INDEX
+    // when not -- and then it relocates.
+    let (v, p) = read_sleb_at(body, pos + 1)
+    if v >= 0 {
+      Array::push(out.offsets, pos + 1)
+      Array::push(out.kinds, reloc_kind_blocktype)
+      Array::push(out.values, v)
+      Array::push(out.widths, p - pos - 1)
+    } else {
+      ()
+    }
+    p
+  } else if op == 0x0C || op == 0x0D {
+    // br / br_if <labelidx>  -- a LOCAL index, never relocated
+    let (_, p) = read_uleb_at(body, pos + 1)
+    p
+  } else if op == 0x0E {
+    // br_table vec(labelidx) labelidx
+    let (count, p0) = read_uleb_at(body, pos + 1)
+    let mut p = p0
+    let mut i = 0
+    while i < count {
+      let (_, np) = read_uleb_at(body, p)
+      p = np
+      i = i + 1
+    }
+    let (_, pe) = read_uleb_at(body, p)
+    pe
+  } else if op == 0x10 {
+    // call <funcidx>  -- RELOCATION
+    let (v, p) = read_uleb_at(body, pos + 1)
+    Array::push(out.offsets, pos + 1)
+    Array::push(out.kinds, reloc_kind_func)
+    Array::push(out.values, v)
+    Array::push(out.widths, p - pos - 1)
+    p
+  } else if op == 0xD2 {
+    // ref.func <funcidx>  -- RELOCATION
+    let (v, p) = read_uleb_at(body, pos + 1)
+    Array::push(out.offsets, pos + 1)
+    Array::push(out.kinds, reloc_kind_func)
+    Array::push(out.values, v)
+    Array::push(out.widths, p - pos - 1)
+    p
+  } else if op == 0x11 {
+    // call_indirect <typeidx> <tableidx>  -- the TYPE index relocates
+    let (v, p1) = read_uleb_at(body, pos + 1)
+    Array::push(out.offsets, pos + 1)
+    Array::push(out.kinds, reloc_kind_type)
+    Array::push(out.values, v)
+    Array::push(out.widths, p1 - pos - 1)
+    let (_, p2) = read_uleb_at(body, p1)
+    p2
+  } else if op == 0x23 || op == 0x24 {
+    // global.get / global.set <globalidx>  -- RELOCATION
+    let (v, p) = read_uleb_at(body, pos + 1)
+    Array::push(out.offsets, pos + 1)
+    Array::push(out.kinds, reloc_kind_global)
+    Array::push(out.values, v)
+    Array::push(out.widths, p - pos - 1)
+    p
+  } else if op == 0x25 || op == 0x26 {
+    // table.get / table.set <tableidx>  -- RELOCATION
+    let (v, p) = read_uleb_at(body, pos + 1)
+    Array::push(out.offsets, pos + 1)
+    Array::push(out.kinds, reloc_kind_table)
+    Array::push(out.values, v)
+    Array::push(out.widths, p - pos - 1)
+    p
+  } else if op >= 0x20 && op <= 0x22 {
+    // local.get / local.set / local.tee <localidx>  -- LOCAL, never relocated
+    let (_, p) = read_uleb_at(body, pos + 1)
+    p
+  } else if op >= 0x28 && op <= 0x3E {
+    // every load and store: <memarg>
+    skip_memarg(body, pos + 1)
+  } else if op == 0x3F || op == 0x40 {
+    // memory.size / memory.grow <memidx>
+    let (_, p) = read_uleb_at(body, pos + 1)
+    p
+  } else if op == 0x41 || op == 0x42 {
+    // i32.const / i64.const <sleb>
+    //
+    // A function VALUE and a data pointer both ride here (see the header).
+    // Not reported: nothing in the encoding separates them from an ordinary
+    // constant, and a guess would be wrong some of the time.
+    let (_, p) = read_sleb_at(body, pos + 1)
+    p
+  } else if op == 0x43 {
+    pos + 5
+  } else if op == 0x44 {
+    pos + 9
+  } else if op == 0x1C {
+    // select t*: vec(valtype)
+    let (count, p0) = read_uleb_at(body, pos + 1)
+    p0 + count
+  } else if op == 0xD0 {
+    // ref.null <heaptype>
+    let (_, p) = read_sleb_at(body, pos + 1)
+    p
+  } else if op == 0x08 {
+    // throw <tagidx>  -- RELOCATION
+    push_reloc(body, pos + 1, reloc_kind_tag, out)
+  } else if op == 0x1F {
+    // try_table <blocktype> vec(catch)
+    let (_, p1) = read_sleb_at(body, pos + 1)
+    let (count, p2) = read_uleb_at(body, p1)
+    let mut p = p2
+    let mut i = 0
+    while i < count {
+      let kind = Bytes::get(body, p)
+      p = p + 1
+      if kind == 0 || kind == 1 {
+        // catch / catch_ref: <tagidx> <labelidx>. The tag RELOCATES; the
+        // label is local to the enclosing block and never does.
+        let pa = push_reloc(body, p, reloc_kind_tag, out)
+        let (_, pb) = read_uleb_at(body, pa)
+        p = pb
+      } else {
+        let (_, pa) = read_uleb_at(body, p)
+        p = pa
+      }
+      i = i + 1
+    }
+    p
+  } else if op == 0xFC {
+    step_misc(body, pos, out)
+  } else if op == 0xFD {
+    step_simd(body, pos)
+  } else if op == 0xFB {
+    step_gc(body, pos, out)
+  } else {
+    throw(String::concat("reloc_scan: unknown opcode 0x", int_to_hex2(op)))
+  }
+}
+
+fn int_to_hex2(v: Int) -> String {
+  let digits = "0123456789abcdef"
+  let hi = (v>>4)&15
+  let lo = v&15
+  String::concat(String::substring(digits, hi, hi + 1), String::substring(digits, lo, lo + 1))
+}
+
+/// The 0xFB prefix: wasm-gc. The gc backend (ADR-0095) emits these, and the
+/// first run of `scripts/reloc_roundtrip.vibex` against a gc-lane module is
+/// what said so -- the scanner refused `0xfb` by name instead of guessing a
+/// width and desynchronising, which is the whole point of the fail-closed
+/// contract.
+///
+/// Nearly every one of these carries a TYPE index, so the gc lane has
+/// proportionally far more relocation sites than the linear lane: a struct
+/// field access names its type where a linear-lane load names only an offset.
+fn step_gc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
+  let (sub, p0) = read_uleb_at(body, pos + 1)
+  if sub <= 1 || (sub >= 6 && sub <= 7) || (sub >= 11 && sub <= 14) || sub == 16 {
+    // struct.new / struct.new_default / array.new / array.new_default /
+    // array.get{,_s,_u} / array.set / array.fill: <typeidx>
+    push_type_reloc(body, p0, out)
+  } else if sub >= 2 && sub <= 5 {
+    // struct.get{,_s,_u} / struct.set: <typeidx> <fieldidx>
+    let p1 = push_type_reloc(body, p0, out)
+    let (_, p2) = read_uleb_at(body, p1)
+    p2
+  } else if sub == 8 || (sub >= 9 && sub <= 10) || (sub >= 18 && sub <= 19) {
+    // array.new_fixed <typeidx> <n>; array.new_data/elem <typeidx> <idx>;
+    // array.init_data/elem <typeidx> <idx>
+    let p1 = push_type_reloc(body, p0, out)
+    let (_, p2) = read_uleb_at(body, p1)
+    p2
+  } else if sub == 17 {
+    // array.copy <typeidx> <typeidx>
+    let p1 = push_type_reloc(body, p0, out)
+    push_type_reloc(body, p1, out)
+  } else if sub == 15 || (sub >= 26 && sub <= 30) {
+    // array.len; any.convert_extern; extern.convert_any; ref.i31;
+    // i31.get_s; i31.get_u -- no immediate
+    p0
+  } else if sub >= 20 && sub <= 23 {
+    // ref.test / ref.cast, null and non-null: <heaptype>
+    let (_, p1) = read_sleb_at(body, p0)
+    p1
+  } else if sub == 24 || sub == 25 {
+    // br_on_cast / br_on_cast_fail: <castflags> <labelidx> <heaptype> <heaptype>
+    let p1 = p0 + 1
+    let (_, p2) = read_uleb_at(body, p1)
+    let (_, p3) = read_sleb_at(body, p2)
+    let (_, p4) = read_sleb_at(body, p3)
+    p4
+  } else {
+    throw(String::concat("reloc_scan: unknown 0xFB sub-opcode ", __to_string(sub)))
+  }
+}
+
+/// Read an index at `pos`, record it as a relocation site of `kind`, and
+/// return the position just past it.
+fn push_reloc(body: Bytes, pos: Int, kind: Int, out: BodyRelocs) -> Int with Exception {
+  let (v, p) = read_uleb_at(body, pos)
+  Array::push(out.offsets, pos)
+  Array::push(out.kinds, kind)
+  Array::push(out.values, v)
+  Array::push(out.widths, p - pos)
+  p
+}
+
+fn push_type_reloc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
+  push_reloc(body, pos, reloc_kind_type, out)
+}
+
+/// The 0xFC prefix: saturating truncation, and the bulk memory / table ops.
+fn step_misc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
+  let (sub, p0) = read_uleb_at(body, pos + 1)
+  if sub <= 7 {
+    // i32/i64.trunc_sat_f32/f64_s/u -- no immediate
+    p0
+  } else if sub == 8 {
+    // memory.init <dataidx> <memidx>
+    let (_, p1) = read_uleb_at(body, p0)
+    p1 + 1
+  } else if sub == 9 {
+    // data.drop <dataidx>
+    let (_, p1) = read_uleb_at(body, p0)
+    p1
+  } else if sub == 10 {
+    // memory.copy <memidx> <memidx>
+    p0 + 2
+  } else if sub == 11 {
+    // memory.fill <memidx>
+    p0 + 1
+  } else if sub == 12 || sub == 14 {
+    // table.init <elemidx> <tableidx> / table.copy <tableidx> <tableidx>
+    let (_, p1) = read_uleb_at(body, p0)
+    let (_, p2) = read_uleb_at(body, p1)
+    p2
+  } else if sub == 13 || sub == 15 || sub == 16 || sub == 17 {
+    // elem.drop <elemidx>; table.grow/size/fill <tableidx>
+    let (_, p1) = read_uleb_at(body, p0)
+    p1
+  } else {
+    throw(String::concat("reloc_scan: unknown 0xFC sub-opcode ", __to_string(sub)))
+  }
+}
+
+/// The 0xFD prefix: SIMD. Only the shapes this codegen emits are decoded; an
+/// unknown one is refused rather than guessed, same as the main table.
+fn step_simd(body: Bytes, pos: Int) -> Int with Exception {
+  let (sub, p0) = read_uleb_at(body, pos + 1)
+  if sub == 0 || (sub >= 1 && sub <= 11) {
+    // v128.load* / v128.store*: <memarg>
+    skip_memarg(body, p0)
+  } else if sub == 12 {
+    // v128.const: 16 immediate bytes
+    p0 + 16
+  } else if sub == 13 {
+    // i8x16.shuffle: 16 lane bytes
+    p0 + 16
+  } else if sub >= 21 && sub <= 34 {
+    // extract_lane / replace_lane: one lane byte
+    p0 + 1
+  } else if sub >= 84 && sub <= 91 {
+    // v128.load*_lane / store*_lane: <memarg> + one lane byte
+    let pm = skip_memarg(body, p0)
+    pm + 1
+  } else if sub >= 92 && sub <= 93 {
+    // v128.load32_zero / load64_zero: <memarg>
+    skip_memarg(body, p0)
+  } else if sub >= 14 && sub <= 20 {
+    p0
+  } else if sub >= 35 && sub <= 83 {
+    p0
+  } else if sub >= 94 {
+    p0
+  } else {
+    throw(String::concat("reloc_scan: unknown 0xFD sub-opcode ", __to_string(sub)))
+  }
+}
+
+/// Every relocation site in `body[start .. end)`, which must be the
+/// INSTRUCTION region -- the caller strips the code entry's locals header.
+///
+/// Offsets are relative to `start`, so a caller that stores the instruction
+/// region on its own does not have to re-base them.
+export fn scan_body_relocs(body: Bytes, start: Int, end_pos: Int) -> BodyRelocs with Exception {
+  let out = body_relocs_new()
+  let mut p = start
+  while p < end_pos {
+    let before = p
+    p = step_instr(body, p, out)
+    if p <= before {
+      throw("reloc_scan: instruction walk did not advance")
+    } else {
+      ()
+    }
+    if p > end_pos {
+      throw("reloc_scan: instruction walk ran past the end of the body")
+    } else {
+      ()
+    }
+  }
+  // Offsets were collected against `body`; re-base them onto `start`.
+  let n = Array::length(out.offsets)
+  let mut i = 0
+  while i < n {
+    Array::set(out.offsets, i, Array::get(out.offsets, i) - start)
+    i = i + 1
+  }
+  out
+}
+
+/// Rebuild the instruction region with a NEW value at each relocation site.
+///
+/// Spans are copied and immediates re-encoded, rather than patched in place,
+/// because minimal LEB128 means a new value can need a different number of
+/// bytes -- #2669 measured a one-line edit that moved a callee from index 127
+/// to 128 and grew two unrelated bodies by a byte each. A patcher would have
+/// had to refuse those; a rebuilder does not notice them.
+export fn rebuild_body_relocs(body: Bytes, start: Int, end_pos: Int, r: BodyRelocs, new_values: Array[Int]) -> Bytes with Exception {
+  let n = Array::length(r.offsets)
+  if Array::length(new_values) != n {
+    throw("reloc_scan: rebuild needs exactly one new value per relocation site")
+  } else {
+    ()
+  }
+  let out = Bytes::new()
+  let mut cursor = start
+  let mut i = 0
+  while i < n {
+    let site = start + Array::get(r.offsets, i)
+    if site < cursor {
+      throw("reloc_scan: relocation sites are not in ascending order")
+    } else {
+      ()
+    }
+    let mut c = cursor
+    while c < site {
+      Bytes::push(out, Bytes::get(body, c))
+      c = c + 1
+    }
+    if Array::get(r.kinds, i) == reloc_kind_blocktype {
+      write_sleb(out, Array::get(new_values, i))
+    } else {
+      write_uleb(out, Array::get(new_values, i))
+    }
+    cursor = site + Array::get(r.widths, i)
+    i = i + 1
+  }
+  let mut c2 = cursor
+  while c2 < end_pos {
+    Bytes::push(out, Bytes::get(body, c2))
+    c2 = c2 + 1
+  }
+  out
+}
