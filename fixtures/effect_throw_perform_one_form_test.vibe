@@ -1,0 +1,36 @@
+// #640 Stage 2: `throw(x)` desugars at PARSE time to the same AST as
+
+// `perform Error::Throw(x)` (ECall(EIdent("perform"), [ECall(
+
+// EIdent("Error::Throw"), [x])])) — one internal form through the checker,
+
+// normalize, and both codegen backends; the printer re-sugars that form back
+
+// to `throw(x)`. This pins that the desugar does NOT tighten effect rows:
+
+// `helper` declares NO `with Exception` row (throw's Error row is pervasive
+
+// and exempt from the #626 perform discipline, exactly as before Stage 2),
+
+// and both spellings are caught by the same `with Exception` handler with the
+
+// payload preserved.
+
+// "negative" → 8 for both spellings → 8 * 10 + 8 = 88
+
+test "effect throw perform one form" {
+  let helper = (n: Int) -> Int {
+    if n < 0 {
+      throw("negative")
+    }
+    n * 2
+  }
+  let via_throw = handle {
+    helper(-1)
+  } with { Exception::Throw(msg) => String::length(msg) }
+  let via_perform = handle {
+    perform Error::Throw("negative")
+    0
+  } with { Exception::Throw(msg) => String::length(msg) }
+  inspect(via_throw * 10 + via_perform, "88")
+}

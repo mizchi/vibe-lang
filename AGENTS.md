@@ -357,26 +357,30 @@ CI shard では:
 - `scripts/pkfire/gates_shard.sh bootstrap|cli|check|coverage` がゲートを走らせる
 - `pkf run full-gate` を継続運用判断の主 gate とする
 
-### 方針: 期待値は snapshot に寄せる — `__DATA__` と `.diag` は畳む (#1571)
+### Executable fixture snapshots (#1571)
 
-期待値を持つ仕組みが3つある。**`inspect(value, content)` + `vibe test --update`
-に一本化していく**方針で、新しいテストはこれで書く。
+Runtime expectations live in `test` blocks as **`inspect(value, content)`**.
+Run a fixture directly with `vibe test`, and update its expected value with
+`vibe test --update`. No import is needed: `desugar_inspect_calls` expands
+`inspect` before checking, including on the single-file compiler lane.
 
-- **`inspect(...)`** — 本命。期待値がソースの中にあり、`vibe test --update`
-  で更新できる (`lib/@vibe/compiler/inspect_update.vibe`)。**import 不要**
-  (#1571): `desugar_inspect_calls` が checker の前に `__to_string` /
-  `println` / `assert_true` へ展開するので、import 解決の無い単一ファイル
-  レーンで compile される fixture からも呼べる
-- **`__DATA__`** — fixture 末尾の `{"last": "..."}`。723 fixture 中 544 が使用。
-  vibe の構文ではないので、fixture を単体で `vibe test` に食わせられず、
-  `compiler_gate.sh` は**81 箇所で `sed '/^__DATA__$/,$d'` して剥がしている**
-- **`.diag`** — `emit_compile_diag` が `<output_path>.diag` に書く sidecar。
-  診断が stdout に出ないので、中断した実行が残骸を落とす (`a.wasm.diag` /
-  `b.wasm.diag` がリポジトリ root に tracked で残っていた)。stdout へ移す話は
-  #1567 と同じ問題
+- Name new runtime fixtures `*_test.vibe` so the unit runner discovers them.
+  Preserve any dedicated backend or compiler settings when migrating a gate.
+- Keep each independently updated diagnostic snapshot in its own file when
+  expectations can be identical. The updater matches the expected literal;
+  repeated empty literals in one file cannot identify the failing call.
+- Compiler warning snapshots live in
+  `lib/@vibe/compiler/tests/warning_snapshots/`. GC opcode snapshots decode
+  the tested function's instructions in
+  `lib/@vibe/compiler/tests/gc_struct_opcode_snapshot_test.vibe`.
+- Compile-rejection fixtures remain classified by verdict and message in
+  `fixtures/typecheck/expected.tsv`.
 
-`fixtures/warnings/*.diag` は逆に**意図的にコミットされた期待出力**なので、
-これも snapshot 側へ寄せる対象。移行は一括ではなく、触った fixture から。
+`scripts/check_fixture_snapshots.mjs` rejects `__DATA__` tails and `.diag`
+expectation files under `fixtures/`; `scripts/check_fixture_execution.sh`
+checks that test fixtures have an execution lane. Compiler-produced
+`<output>.diag` files are still an internal diagnostic transport, not stored
+test expectations, and remain gitignored.
 
 ## Coding Convention
 

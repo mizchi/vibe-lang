@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 OUT="$ROOT/_build/coverage/singular-pipeline-attestation"
 rm -rf "$OUT"
-VIBE_COV_DIR="$OUT" VIBE_COV_MAX=1 bash scripts/coverage_corpus.sh fixtures/hello.vibe
+VIBE_COV_DIR="$OUT" VIBE_COV_MAX=1 bash scripts/coverage_corpus.sh fixtures/hello_test.vibe
 before="$(VIBE_COVERAGE_DRIVERS_LIB_ONLY=1 source scripts/coverage_drivers.sh; COMPILER_COV="$OUT/compiler_cov.wasm"; coverage_driver_stat "$OUT/acc.json")"
 VIBE_COV_DIR="$OUT" bash scripts/coverage_driver.sh
 after="$(VIBE_COVERAGE_DRIVERS_LIB_ONLY=1 source scripts/coverage_drivers.sh; COMPILER_COV="$OUT/compiler_cov.wasm"; coverage_driver_stat "$OUT/acc.json")"
