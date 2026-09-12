@@ -1140,9 +1140,10 @@ and this row is the number it has to move.
 
 ##### The obvious candidate is measured, and it is a REGRESSION (2026-09-12)
 
-The check lane has had typing-dependency env reuse (TDRE8) as its production
-default for a while, and on that lane a one-leaf edit re-checks exactly **1 of
-197** planned modules. The obvious move was to give a COMPILE the same reuse,
+The check lane has had typing-dependency env reuse as its production default
+for a while — **TDRE9** at this commit; `TDRE8` was the retired protocol v23
+replaced, and the section below already says so — and on that lane a one-leaf
+edit re-checks exactly **1 of 197** planned modules. The obvious move was to give a COMPILE the same reuse,
 so `VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE=1` exists. Measured on the same
 corpus, same instrument, same three temperatures, reproduced byte-for-byte
 across two independent invocations:
@@ -1166,31 +1167,46 @@ fingerprint already short-circuits that case.
 the PR that recorded this, and correct). On a miss the enabled lane pays TWICE
 over, in two different places, and both are inside that number:
 
-- `finish_typecheck_fs_impl` builds `typing_dependency_transport_input_key`
-  from the module's verbatim source plus each dependency's exact env text, then
-  calls `load_typing_dependency_env_reuse_target` — which on a cold compile
-  misses for every module;
-- `commit_module_outcome` then builds *the same large key again* and publishes
-  the eligibility and the sidecar.
+- `finish_typecheck_fs_impl` calls `typing_dependency_env_reuse_is_eligible`,
+  then builds `typing_dependency_transport_input_key` from the module's
+  verbatim source plus each dependency's exact env text, then calls
+  `load_typing_dependency_env_reuse_target` — which on a cold compile misses
+  for every module;
+- `commit_module_outcome` then runs the eligibility walk again, builds *the
+  same large key again*, and publishes the eligibility and the sidecar.
 
-So the cold figure is **miss-path lookup plus publication**, with the key
-construction paid twice per module, and nothing here separates them. Splitting
-those three terms is the next measurement, not a conclusion this table
-supports.
+**The eligibility walk is not a cheap predicate.** For each dependency it does
+`Fs::exists`, `Fs::read_file`, a binding parse, and
+`load_canonical_typing_dependency_env_reuse_target` — reading and parsing that
+dependency's canonical target env text. On a non-leaf module with many
+dependencies it is a plausible dominant term on its own, and like the key it
+is paid twice.
 
-**It is not wrong, just slower.** Compiling the same corpus with the flag on
-and off, body cache off so a replayed body cannot mask a difference, gives
-byte-identical output at both temperatures (cold and leaf-edited,
-`sha256` equal). So the flag stays as the instrument that produced this table,
-and stays OFF.
+So the cold figure is **eligibility validation plus miss-path lookup plus
+publication**, with both the eligibility walk and the key construction paid
+twice per module, and nothing here separates them. Splitting those four terms
+is the next measurement, not a conclusion this table supports.
+
+**Nothing here shows it is WRONG either — and nothing here shows it is
+right.** Compiling the same corpus with the flag on and off, body cache off so
+a replayed body cannot mask a difference, gives byte-identical output at both
+temperatures (`sha256` equal). Read what those two comparisons can actually
+see: the cold one has no reuse hit to get wrong, and the edited one appends a
+COMMENT, so the program is semantically unchanged and a stale reused env would
+produce the same answer as a fresh one. **Neither exercises a reuse hit on a
+program whose meaning changed**, which is the case that could be silently
+wrong. So the flag stays as the instrument that produced this table, and stays
+OFF, on correctness grounds as much as cost.
 
 What this rules out is the shortcut, not the goal. Criterion 5 still needs the
 check phase bounded by the edited module, but reusing the check lane's
 transport as-is makes a compile worse, because a compile consumes more of a
 module's check than the public env carries (the typed-lowering offsets the
 reuse arm republishes, #2391) and pays the whole transport whether or not the
-read succeeds. The next measurement is the split named above — key
-construction, miss-path lookup, publication — not another cache. The per-file AST cache was built before it was measured and
+read succeeds. The next measurement is the split named above — eligibility
+validation, key construction, miss-path lookup, publication — not another
+cache. Enabling it needs an ORACLE too, over edit shapes that actually change
+meaning; the comparisons above do not stand in for one. The per-file AST cache was built before it was measured and
 came back at exactly zero (#2668); this is the same mistake one step later,
 caught by measuring first. Filed as #2728.
 

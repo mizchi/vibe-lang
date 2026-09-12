@@ -936,8 +936,9 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   //
   // #2510 criterion 5, OPT-IN and off by default:
   // `VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE=1` lets a COMPILE take the
-  // same reuse the check lane has had as production default since TDRE8, so
-  // the reset below reads the opt-in rather than a bare `false`.
+  // same reuse the check lane has as production default (TDRE9; TDRE8 is the
+  // retired protocol v23 replaced), so the reset below reads the opt-in rather
+  // than a bare `false`.
   //
   // The measurement that asks for it: with reuse on, a one-leaf edit to the
   // compiler's own closure re-checks exactly ONE of 197 planned modules
@@ -965,23 +966,34 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // there; the conservative fingerprint short-circuits it.
   //
   // It does NOT say the cost is publication. On a miss the enabled lane pays
-  // in two places: `finish_typecheck_fs_impl` builds
+  // in two places: `finish_typecheck_fs_impl` runs
+  // `typing_dependency_env_reuse_is_eligible`, builds
   // `typing_dependency_transport_input_key` (verbatim source plus each
   // dependency's exact env text) and calls
   // `load_typing_dependency_env_reuse_target`, which misses for every module
-  // on a cold compile; then `commit_module_outcome` builds the same large key
-  // AGAIN and publishes the eligibility and sidecar. Lookup, publication, and
-  // a key constructed twice per module are all inside that one number, and
-  // nothing measured here separates them.
+  // on a cold compile; then `commit_module_outcome` runs the eligibility walk
+  // again, builds the same large key AGAIN, and publishes the eligibility and
+  // sidecar. The eligibility walk is not a cheap predicate: per dependency it
+  // is `Fs::exists` + `Fs::read_file` + a binding parse +
+  // `load_canonical_typing_dependency_env_reuse_target`. Four terms, two of
+  // them paid twice per module, all inside that one number, and nothing
+  // measured here separates them.
   //
-  // It is not WRONG: with the body cache off so a replayed body cannot mask a
+  // Nothing measured here shows it is WRONG, and nothing shows it is RIGHT
+  // either. With the body cache off so a replayed body cannot mask a
   // difference, a compile's output is byte-identical with the flag on and off
-  // at both temperatures. So this is kept as the instrument that produced
-  // that table, not as a switch anyone should flip.
+  // at both temperatures -- but the cold comparison has no reuse hit to get
+  // wrong, and the edited one appends a COMMENT, so the program's meaning is
+  // unchanged and a stale reused env answers the same as a fresh one. Neither
+  // exercises a reuse hit on a program whose meaning changed, which is the
+  // case that could be silently wrong. So this is kept as the instrument that
+  // produced the table, not as a switch anyone should flip.
   //
-  // The deletion condition is therefore NOT "the output matches" -- that is
-  // already true. It is that the transport stops costing more than the read
-  // saves, which needs the split above measured first. A compile consumes more of a module's check than the public env
+  // The deletion condition is therefore BOTH halves, and the correctness half
+  // is not discharged: an oracle over edit shapes that actually change meaning
+  // (an interface change, a type change, a removed export), AND the transport
+  // ceasing to cost more than the read saves, which needs the four-term split
+  // above measured first. A compile consumes more of a module's check than the public env
   // carries (the typed-lowering offsets the reuse arm republishes, #2391),
   // and "the check lane proves it" was a claim about the check lane. #2728.
   //
