@@ -7,8 +7,12 @@
 import @vibe/compiler/codegen/common_base {
   CodegenBodyCache,
   bcc_int_lists_equal,
+  bcc_layout_fp_ints,
+  bcc_layout_fp_strings,
+  bcc_layout_fp_strings_upto,
   bcc_string_lists_equal,
   codegen_body_cache_filter_src_below,
+  codegen_body_cache_filter_src_keep,
   codegen_body_cache_find,
   codegen_body_cache_find_at,
   codegen_body_cache_find_named,
@@ -22,7 +26,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached, compile_file_fs_mode_rc_body_cached_counted
 }
 
 import @vibe/compiler/cache {
@@ -84,6 +88,7 @@ fn sample_cache() -> CodegenBodyCache {
   let c = codegen_body_cache_new()
   Array::push(c.fn_indices, 0)
   Array::push(c.fn_names, "alpha")
+  Array::push(c.fn_files, 0)
   Array::push(c.fn_src_stmts, 2)
   Array::push(c.fn_bodies, string_to_bytes("ab"))
   Array::push(c.fn_meta_i32, 1)
@@ -91,6 +96,7 @@ fn sample_cache() -> CodegenBodyCache {
   Array::push(c.fn_meta_v128, 0)
   Array::push(c.fn_indices, 3)
   Array::push(c.fn_names, "beta")
+  Array::push(c.fn_files, 1)
   Array::push(c.fn_src_stmts, 7)
   Array::push(c.fn_bodies, string_to_bytes("cde"))
   Array::push(c.fn_meta_i32, 4)
@@ -133,6 +139,47 @@ fn sample_cache() -> CodegenBodyCache {
   Array::push(c.guard_borrow_names, "peek")
   Array::push(c.guard_borrow_masks, 5)
   Array::push(c.guard_unmangled_names, "run")
+  // #2669 step 2b: two layout slots.
+  Array::push(c.guard_layout, 3)
+  Array::push(c.guard_layout, 12)
+  Array::push(c.guard_layout, 99)
+  Array::push(c.guard_layout, 77)
+  c
+}
+
+/// #2669 step 2b: two source-region entries, at merged statements 1 and 9.
+///
+/// The gap is the point. A PREFIX limit cannot keep the entry at 9 without
+/// also keeping the one at 1, so a filter that can is doing something the old
+/// one could not express -- which is the whole of this step at the decode
+/// layer.
+fn cache_two_files() -> CodegenBodyCache {
+  let c = codegen_body_cache_new()
+  Array::push(c.fn_indices, 0)
+  Array::push(c.fn_names, "early")
+  Array::push(c.fn_files, 0)
+  Array::push(c.fn_src_stmts, 1)
+  Array::push(c.fn_bodies, string_to_bytes("e"))
+  Array::push(c.fn_meta_i32, 0)
+  Array::push(c.fn_meta_i64, 0)
+  Array::push(c.fn_meta_v128, 0)
+  Array::push(c.fn_indices, 1)
+  Array::push(c.fn_names, "late")
+  Array::push(c.fn_files, 2)
+  Array::push(c.fn_src_stmts, 9)
+  Array::push(c.fn_bodies, string_to_bytes("l"))
+  Array::push(c.fn_meta_i32, 0)
+  Array::push(c.fn_meta_i64, 0)
+  Array::push(c.fn_meta_v128, 0)
+  Array::push(c.slot_owner, 1)
+  Array::push(c.slot_values, 2048)
+  // pin_src_n = 2, so BOTH entries are in the source region and the region
+  // test cannot be what decides either case below.
+  Array::push(c.guard_meta, 2)
+  Array::push(c.guard_meta, 1024)
+  Array::push(c.guard_meta, 2048)
+  Array::push(c.guard_meta, 7)
+  Array::push(c.guard_meta, 40)
   c
 }
 
@@ -150,6 +197,7 @@ test "codegen body cache codec round-trips every field group" {
       // and the codec threw on it in production.
       inspect(Array::get(d.fn_names, 0), content = "alpha")
       inspect(Array::get(d.fn_names, 1), content = "beta")
+      inspect(Array::get(d.fn_files, 1), content = "1")
       assert(bytes_eq(Array::get(d.fn_bodies, 1), string_to_bytes("cde")))
       inspect(Array::get(d.fn_meta_v128, 1), content = "1")
       inspect(Array::length(d.lam_owner), content = "1")
@@ -176,6 +224,11 @@ test "codegen body cache codec round-trips every field group" {
       inspect(Array::get(d.guard_borrow_names, 0), content = "peek")
       inspect(Array::get(d.guard_borrow_masks, 0), content = "5")
       inspect(Array::get(d.guard_unmangled_names, 0), content = "run")
+      inspect(Array::length(d.guard_layout), content = "4")
+      inspect(Array::get(d.guard_layout, 3), content = "77")
+      // The decode-time annotation is NOT in the stream: it describes the
+      // build that read the artifact, not the harvest that wrote it.
+      inspect(Array::length(d.consumer_src_limit), content = "0")
     },
     None => assert(false)
   }
@@ -220,6 +273,102 @@ test "filter_src_below keeps only guarded source-region entries below the limit"
   Array::truncate(unguarded.guard_meta, 0)
   let g = codegen_body_cache_filter_src_below(unguarded, 100)
   inspect(Array::length(g.fn_indices), content = "0")
+}
+
+test "#2669: filter_src_keep keeps a LATE unchanged file the prefix rule cannot reach" {
+  let c = cache_two_files()
+  // The case that does not exist under a prefix limit: file 2 is unchanged,
+  // file 0 is not.
+  let late_only = codegen_body_cache_filter_src_keep(c, [0, 0, 1])
+  inspect(Array::length(late_only.fn_indices), content = "1")
+  inspect(Array::get(late_only.fn_names, 0), content = "late")
+  // Its funcref slot rides along, exactly as the prefix filter carries one.
+  inspect(Array::length(late_only.slot_owner), content = "1")
+  // Control: the same filter asked the other way answers the other entry, so
+  // the result above is the keep-map talking and not a constant.
+  let early_only = codegen_body_cache_filter_src_keep(c, [1, 0, 0])
+  inspect(Array::length(early_only.fn_indices), content = "1")
+  inspect(Array::get(early_only.fn_names, 0), content = "early")
+  // And the prefix filter genuinely cannot express the first answer: any limit
+  // that reaches the late entry's statement also takes the early one.
+  inspect(Array::length(codegen_body_cache_filter_src_below(c, 10).fn_indices), content = "2")
+  inspect(Array::length(codegen_body_cache_filter_src_below(c, 2).fn_indices), content = "1")
+  // A file index outside the map is not kept -- a torn or short map costs a
+  // recompile, never a body attributed to a file nobody described.
+  inspect(Array::length(codegen_body_cache_filter_src_keep(c, [1]).fn_indices), content = "1")
+  // An entry whose file could not be determined (-1: a name two files declare,
+  // or a lane with no provenance) is never kept, whatever the map says.
+  let unattributed = cache_two_files()
+  Array::set(unattributed.fn_files, 1, 0 - 1)
+  inspect(Array::length(codegen_body_cache_filter_src_keep(unattributed, [
+    1,
+    1,
+    1
+  ]).fn_indices), content = "1")
+  // Guard-less caches never cross compiles, here as in the prefix filter.
+  let unguarded = cache_two_files()
+  Array::truncate(unguarded.guard_meta, 0)
+  inspect(Array::length(codegen_body_cache_filter_src_keep(unguarded, [1, 1, 1]).fn_indices), content = "0")
+}
+
+test "#2669: the layout fingerprint separates the values that move a body's bytes" {
+  // A body embeds `(offset << 32) | length`, so two string pools are
+  // interchangeable for replay exactly when every string sits at the same
+  // offset with the same bytes. These are the three ways that fails, and they
+  // are why every element gets a separator byte.
+  //
+  // Same bytes, different split: "c" is at offset 2 in the first and at 1 in
+  // the second.
+  let ab_c: Array[Int] = []
+  bcc_layout_fp_strings(ab_c, ["ab", "c"])
+  let a_bc: Array[Int] = []
+  bcc_layout_fp_strings(a_bc, ["a", "bc"])
+  assert(!bcc_int_lists_equal(ab_c, a_bc))
+  // Same strings, different order: "b" moves.
+  let a_b: Array[Int] = []
+  bcc_layout_fp_strings(a_b, ["a", "b"])
+  let b_a: Array[Int] = []
+  bcc_layout_fp_strings(b_a, ["b", "a"])
+  assert(!bcc_int_lists_equal(a_b, b_a))
+  // Same lengths, different content: every offset agrees and no body may
+  // replay anyway, because the string AT each offset changed.
+  let ab: Array[Int] = []
+  bcc_layout_fp_strings(ab, ["ab"])
+  let cd: Array[Int] = []
+  bcc_layout_fp_strings(cd, ["cd"])
+  assert(!bcc_int_lists_equal(ab, cd))
+  // `upto` is respected: what lies past it is the source path/content region,
+  // which no user body can reference.
+  let past_long: Array[Int] = []
+  bcc_layout_fp_strings_upto(past_long, ["a", "b", "zzz"], 2)
+  let past_short: Array[Int] = []
+  bcc_layout_fp_strings_upto(past_short, ["a", "b", "q"], 2)
+  assert(bcc_int_lists_equal(past_long, past_short))
+  // One call is one SLOT, so the order is positional and a caller cannot
+  // append half of one.
+  inspect(Array::length(ab_c), content = "2")
+  // Int vectors separate the same three ways, which matters because the
+  // constructor tags and the lambda plan are pinned as Int vectors.
+  let ints_a: Array[Int] = []
+  bcc_layout_fp_ints(ints_a, [1, 2])
+  let ints_b: Array[Int] = []
+  bcc_layout_fp_ints(ints_b, [2, 1])
+  assert(!bcc_int_lists_equal(ints_a, ints_b))
+  let ints_c: Array[Int] = []
+  bcc_layout_fp_ints(ints_c, [1, 2, 0])
+  assert(!bcc_int_lists_equal(ints_a, ints_c))
+  // A negative value (a -1 "absent" index) folds rather than trapping, and
+  // does not collide with its magnitude.
+  let neg: Array[Int] = []
+  bcc_layout_fp_ints(neg, [0 - 1])
+  let pos: Array[Int] = []
+  bcc_layout_fp_ints(pos, [1])
+  assert(!bcc_int_lists_equal(neg, pos))
+  // Accumulation appends: two slots are four ints.
+  let two: Array[Int] = []
+  bcc_layout_fp_strings(two, ["a"])
+  bcc_layout_fp_ints(two, [1])
+  inspect(Array::length(two), content = "4")
 }
 
 test "guard validation can fail: a poisoned body replays, a poisoned guard drops the cache" {
@@ -347,6 +496,7 @@ fn cache_with_indices(indices: Array[Int]) -> CodegenBodyCache {
   while i < Array::length(indices) {
     Array::push(c.fn_indices, Array::get(indices, i))
     Array::push(c.fn_names, String::concat("f", __to_string(Array::get(indices, i))))
+    Array::push(c.fn_files, 0)
     i = i + 1
   }
   c
@@ -535,6 +685,146 @@ test "#2669: index-keyed replay reuses everything while the assignment agrees" {
   let warm = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", out_a, out_b)
   inspect(Array::length(out_b.fn_indices), content = "0")
   assert(bytes_eq(cold, warm))
+}
+
+test "#2669: a failed layout guard narrows to the prefix instead of dropping the cache" {
+  // The half of step 2b that lives in the body loop. Widening WHICH entries
+  // survive the file table is only safe while the index spaces a body refers
+  // to are unchanged; when they are not, the lane must fall back to what the
+  // prefix rule would have replayed -- not to nothing. Without this, every
+  // edit the new guards reject (a new closure, a new literal, a renamed
+  // function) would lose the prefix it replays today: a REGRESSION dressed as
+  // an improvement.
+  //
+  // The array comparison forces a derived comparator, which is what makes the
+  // compile run the #2388 pin reorder and record guards at all.
+  let src = "let seed_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nlet alpha: () -> Int = () -> { 1 }\nlet beta: () -> Int = () -> { alpha() + 1 }\nlet run: () -> Int = () -> { if seed_eq() { beta() + alpha() } else { 0 } }"
+  let cold_out = codegen_body_cache_new()
+  let cold = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", codegen_body_cache_new(), cold_out)
+  let cold_n = Array::length(cold_out.fn_indices)
+  assert(cold_n > 1)
+  // Non-vacuity: the harvest must actually carry the guard this test poisons.
+  assert(Array::length(cold_out.guard_layout) > 0)
+  // GREEN: guards intact, no narrowing annotation -- full reuse, as before.
+  let warm_out = codegen_body_cache_new()
+  let warm = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", cold_out, warm_out)
+  inspect(Array::length(warm_out.fn_indices), content = "0")
+  assert(bytes_eq(cold, warm))
+  // RED: poison the layout guard and annotate a prefix limit of 2 merged
+  // statements. The wide lane must decline and the prefix must survive.
+  //
+  // ONE poison is enough because the comparison is over the whole vector at
+  // once -- a per-slot poison would only re-prove `bcc_int_lists_equal`. What
+  // needs covering is that each pinned value REACHES the vector, and that is
+  // an edit-shape question rather than a poison one:
+  // `body_cache_edit_classes_test.vibe` moves each of them for real and
+  // requires the compile to stay byte-exact.
+  match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(cold_out)) {
+    Some(narrowed_in) => {
+      Array::set(narrowed_in.guard_layout, 1, Array::get(narrowed_in.guard_layout, 1) + 1)
+      Array::push(narrowed_in.consumer_src_limit, 2)
+      let narrowed_out = codegen_body_cache_new()
+      let narrowed = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", narrowed_in, narrowed_out)
+      let narrowed_n = Array::length(narrowed_out.fn_indices)
+      // Neither zero (the guard would not be doing anything) nor everything
+      // (the prefix would have been thrown away with it).
+      assert(narrowed_n > 0)
+      assert(narrowed_n < cold_n)
+      assert(bytes_eq(cold, narrowed))
+    },
+    None => assert(false)
+  }
+  // Control: the same poisoned guard with NO annotation cannot narrow, which
+  // is the in-process lane's shape -- it replays everything, exactly as the
+  // green case does. This is what says the previous block was the annotation
+  // talking and not the poison alone.
+  match codegen_body_cache_from_bytes(codegen_body_cache_to_bytes(cold_out)) {
+    Some(unannotated) => {
+      Array::set(unannotated.guard_layout, 1, Array::get(unannotated.guard_layout, 1) + 1)
+      let unannotated_out = codegen_body_cache_new()
+      let bytes = compile_wasi_module_rc_body_cached(parse_program(lex(src)), "run", unannotated, unannotated_out)
+      inspect(Array::length(unannotated_out.fn_indices), content = "0")
+      assert(bytes_eq(cold, bytes))
+    },
+    None => assert(false)
+  }
+}
+
+test "#2669: an edit to the FIRST file replays the files after it" {
+  // The KPI claim, end to end on the FS lane and stated in the only terms it
+  // is visible in: how many bodies the compile rebuilt.
+  //
+  // Three files in a chain, so merge order is a -> b -> main and an edit to
+  // `a` is upstream of everything. Under the prefix rule that leaves NOTHING
+  // replayable: the first file mismatched, so the unchanged leading run is
+  // empty and the compile is a cold one.
+  let a_path = "/tmp/vibe_body_cache_wide_a.vibe"
+  let b_path = "/tmp/vibe_body_cache_wide_b.vibe"
+  let main_path = "/tmp/vibe_body_cache_wide_main.vibe"
+  // The array comparison in `a` forces a derived comparator, so the compile
+  // runs the pin reorder and records the guards this lane needs.
+  // Every file carries a string literal, so the pooled offsets a later body
+  // embeds are real and the last block below has something to move.
+  let a_source = "export let a_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport let a_one: () -> String = () -> { \"alpha one\" }\nexport let a_two: () -> String = () -> { \"alpha two\" }"
+  let b_source = "import ./vibe_body_cache_wide_a.vibe { a_one, a_two }\nexport let b_one: () -> String = () -> { String::concat(a_one(), a_two()) }\nexport let b_two: () -> String = () -> { String::concat(b_one(), \"beta\") }"
+  let main_source = "import ./vibe_body_cache_wide_b.vibe { b_one, b_two }\nlet run: () -> Int = () -> { String::length(String::concat(b_one(), b_two())) }"
+  Fs::write_bytes(a_path, string_to_bytes(a_source))
+  Fs::write_bytes(b_path, string_to_bytes(b_source))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(main_path)))
+  remove_file_if_exists(artifact_path)
+  let cold_counts: Array[Int] = []
+  let cold = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", cold_counts)
+  // Nothing offered on a cold run; everything rebuilt.
+  inspect(Array::get(cold_counts, 0), content = "0")
+  let cold_n = Array::get(cold_counts, 1)
+  assert(cold_n > 3)
+  // A comment-only edit to the FIRST file. Its fingerprint changes; its
+  // statements, functions, closures and literals do not, so every layout
+  // guard still holds for the files after it.
+  Fs::write_bytes(a_path, string_to_bytes(String::concat(a_source, "\n// touched")))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", warm_counts)
+  // Sharper than "fewer": everything the file table offered was REPLAYED, so
+  // the compile rebuilt exactly the rest. Under the prefix rule the offer
+  // itself is zero -- the first file mismatched -- which is what the mutation
+  // test for this behaviour turns off.
+  assert(Array::get(warm_counts, 0) > 0)
+  inspect(Array::get(warm_counts, 1) + Array::get(warm_counts, 0) == cold_n, content = "true")
+  // Reuse is not an excuse to answer differently.
+  assert(bytes_eq(warm, compile_file_fs_mode_rc(main_path, "run")))
+  // And the same edit under verify, which compiles twice and throws on the
+  // first differing byte -- the replayed bodies are what the compiler itself
+  // emits for this build, not merely bytes that link.
+  Fs::write_bytes(a_path, string_to_bytes(String::concat(a_source, "\n// touched twice")))
+  let verify_counts: Array[Int] = []
+  let verified = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "verify", verify_counts)
+  assert(Array::get(verify_counts, 0) > 0)
+  assert(Bytes::length(verified) > 0)
+  // The conservative half, stated rather than left implied. LENGTHENING an
+  // existing literal in `a` keeps the statement count, the function vector and
+  // the lambda plan identical -- so the file table still offers the later
+  // files -- while every pooled offset after it moves. The layout guard's
+  // string-pool slot is what turns that into a narrow to the prefix, which for
+  // a first-file edit is empty: the build is cold again.
+  //
+  // The byte comparison is the load-bearing one. Measured with that slot
+  // dropped: `offered=3 recompiled=1022` and the module is NOT what a fresh
+  // compile emits -- `b_two`'s cached body still points at where "beta" used
+  // to sit. A count is a cost; this is correctness.
+  //
+  // Adding a DECLARATION instead would prove nothing about the pool: the file's
+  // statement count changes and the table refuses the layout before any guard
+  // is consulted. Measured, that variant reports `offered=0` either way.
+  let a_moved = "export let a_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport let a_one: () -> String = () -> { \"alpha one is now a good deal longer\" }\nexport let a_two: () -> String = () -> { \"alpha two\" }"
+  Fs::write_bytes(a_path, string_to_bytes(a_moved))
+  let moved_counts: Array[Int] = []
+  let moved = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", moved_counts)
+  // Still offered by the file table -- the layout is intact -- and still not
+  // replayed, because the guard says the offsets moved.
+  assert(Array::get(moved_counts, 0) > 0)
+  inspect(Array::get(moved_counts, 1) == cold_n, content = "true")
+  assert(bytes_eq(moved, compile_file_fs_mode_rc(main_path, "run")))
 }
 
 //# `codegen_body_cache_find` keys on the FUNCTION INDEX, so an entry is only
