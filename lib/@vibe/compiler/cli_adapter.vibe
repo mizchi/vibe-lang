@@ -948,11 +948,33 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // build spends 11.3 MB there (`scripts/compile_phase_memory.sh`). That one
   // phase is the whole gap between a warm build and a cold one.
   //
-  // It stays opt-in until a compile's output is shown byte-identical with it
-  // on and off across the edit shapes -- a compile consumes more of a module's
-  // check than the public env (the typed-lowering offsets the reuse arm
-  // republishes, #2391), and "the check lane proves it" is a claim about the
-  // check lane.
+  // MEASURED 2026-09-12, and it is a REGRESSION -- this stays off, and the
+  // reason is no longer "unproven". Same corpus, same heap-mark instrument,
+  // reproduced to the byte across two invocations
+  // (`scripts/compile_phase_memory.sh`), check phase:
+  //
+  //              off (default)      on
+  //   cold           270.9 MB   1647.1 MB
+  //   unchanged       11.4 MB     11.4 MB
+  //   leaf-edited    344.9 MB    812.7 MB
+  //
+  // 2.4x worse on the very edit it was meant to fix, 6.1x cold. The COLD row
+  // is the diagnosis: a cold compile has nothing to reuse, so all of that
+  // 1.38 GB is the WRITE side -- building and publishing the per-module
+  // dependency-transport envs -- paid for a read that cannot happen. The
+  // unchanged row is identical in both lanes, so the reuse arm is not even
+  // reached there; the conservative fingerprint short-circuits it.
+  //
+  // It is not WRONG: with the body cache off so a replayed body cannot mask a
+  // difference, a compile's output is byte-identical with the flag on and off
+  // at both temperatures. So this is kept as the instrument that produced
+  // that table, not as a switch anyone should flip.
+  //
+  // The deletion condition is therefore NOT "the output matches" -- that is
+  // already true. It is that the write side stops costing more than the read
+  // saves. A compile consumes more of a module's check than the public env
+  // carries (the typed-lowering offsets the reuse arm republishes, #2391),
+  // and "the check lane proves it" was a claim about the check lane. #2728.
   //
   // It is read in EXPRESSION position and named in `OBSERVATION_ONLY`
   // (`scripts/check_selector_precedence.sh`) for the same reason

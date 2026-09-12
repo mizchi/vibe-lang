@@ -1138,6 +1138,47 @@ to one leaf must re-check that leaf and the modules whose interfaces it
 changes, not the whole closure. That is #1379's semantic-module granularity,
 and this row is the number it has to move.
 
+##### The obvious candidate is measured, and it is a REGRESSION (2026-09-12)
+
+The check lane has had typing-dependency env reuse (TDRE8) as its production
+default for a while, and on that lane a one-leaf edit re-checks exactly **1 of
+197** planned modules. The obvious move was to give a COMPILE the same reuse,
+so `VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE=1` exists. Measured on the same
+corpus, same instrument, same three temperatures, reproduced byte-for-byte
+across two independent invocations:
+
+| check phase (`source_groups -> prepared_db`) | reuse off (today's default) | reuse on |
+|---|---:|---:|
+| cold | 270.9 MB | **1,647.1 MB** |
+| unchanged (warm) | 11.4 MB | 11.4 MB |
+| one-leaf edit | 344.9 MB | **812.7 MB** |
+| **whole-compile total, cold** | **946.2 MB** | **2,322.4 MB** |
+| **whole-compile total, one-leaf edit** | **848.7 MB** | **1,434.3 MB** |
+
+**Reuse on is 2.4x worse on the edit it was supposed to fix, and 6.1x worse
+cold.** The cold row is the one that says why: a cold compile has nothing to
+reuse, so every byte of that 1.38 GB is the machinery's WRITE side — building
+and publishing the per-module dependency-transport environments — paid in full
+for a read that cannot happen. The unchanged row is identical to the byte in
+both lanes, which says the reuse arm is not even reached there: the
+conservative fingerprint already short-circuits that case.
+
+**It is not wrong, just slower.** Compiling the same corpus with the flag on
+and off, body cache off so a replayed body cannot mask a difference, gives
+byte-identical output at both temperatures (cold and leaf-edited,
+`sha256` equal). So the flag stays as the instrument that produced this table,
+and stays OFF.
+
+What this rules out is the shortcut, not the goal. Criterion 5 still needs the
+check phase bounded by the edited module, but reusing the check lane's
+transport as-is makes a compile worse, because a compile consumes more of a
+module's check than the public env carries (the typed-lowering offsets the
+reuse arm republishes, #2391) and pays to publish the env regardless. The next
+measurement is where inside that 1.38 GB the write side actually goes — not
+another cache. The per-file AST cache was built before it was measured and
+came back at exactly zero (#2668); this is the same mistake one step later,
+caught by measuring first. Filed as #2728.
+
 #### And what it costs in ALLOCATION — the #2510 criterion-5 KPI (2026-09-11)
 
 The section above bounds the split's cost in wall time. The KPI #2510 actually
