@@ -59,6 +59,21 @@ export let reloc_kind_tag: Int = 5
 /// `0xC0 0x00` signed, because a lone `0x40` sleb byte reads as -64.
 export let reloc_kind_blocktype: Int = 6
 
+/// A heap type that is a TYPE INDEX: the `ref.test` / `ref.cast` /
+/// `br_on_cast` / `ref.null` operand. Same s33 encoding as a blocktype, and
+/// the same rule -- negative is an abstract heap type, non-negative is an
+/// index. Separate kind because a consumer resolving these is answering a
+/// different question from "what block type does this region have".
+export let reloc_kind_heaptype: Int = 7
+
+/// Data and element SEGMENT indices (`memory.init`, `data.drop`,
+/// `array.new_data`, `array.init_data`; `table.init`, `elem.drop`,
+/// `array.new_elem`, `array.init_elem`). Reordering segments leaves a cached
+/// body initialising an array from unrelated contents.
+export let reloc_kind_data: Int = 8
+
+export let reloc_kind_elem: Int = 9
+
 /// Every reference one body makes, as parallel arrays -- the shape
 /// `CodegenBodyCache` already uses for everything it carries.
 ///
@@ -242,32 +257,20 @@ fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
   } else if op == 0x02 || op == 0x03 || op == 0x04 {
     // block / loop / if <blocktype>: a value type when negative, a TYPE INDEX
     // when not -- and then it relocates.
-    let (v, p) = read_sleb_at(body, pos + 1)
-    if v >= 0 {
-      Array::push(out.offsets, pos + 1)
-      Array::push(out.kinds, reloc_kind_blocktype)
-      Array::push(out.values, v)
-      Array::push(out.widths, p - pos - 1)
-    } else {
-      ()
-    }
-    p
+    push_signed_reloc(body, pos + 1, reloc_kind_blocktype, out)
   } else if op == 0x0C || op == 0x0D {
-    // br / br_if <labelidx>  -- a LOCAL index, never relocated
-    let (_, p) = read_uleb_at(body, pos + 1)
-    p
+    // br / br_if <labelidx> -- local to the enclosing blocks
+    skip_local_index(body, pos + 1)
   } else if op == 0x0E {
     // br_table vec(labelidx) labelidx
     let (count, p0) = read_uleb_at(body, pos + 1)
     let mut p = p0
     let mut i = 0
     while i < count {
-      let (_, np) = read_uleb_at(body, p)
-      p = np
+      p = skip_local_index(body, p)
       i = i + 1
     }
-    let (_, pe) = read_uleb_at(body, p)
-    pe
+    skip_local_index(body, p)
   } else if op == 0x10 {
     // call <funcidx>  -- RELOCATION
     let (v, p) = read_uleb_at(body, pos + 1)
@@ -285,14 +288,11 @@ fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
     Array::push(out.widths, p - pos - 1)
     p
   } else if op == 0x11 {
-    // call_indirect <typeidx> <tableidx>  -- the TYPE index relocates
-    let (v, p1) = read_uleb_at(body, pos + 1)
-    Array::push(out.offsets, pos + 1)
-    Array::push(out.kinds, reloc_kind_type)
-    Array::push(out.values, v)
-    Array::push(out.widths, p1 - pos - 1)
-    let (_, p2) = read_uleb_at(body, p1)
-    p2
+    // call_indirect <typeidx> <tableidx> -- BOTH relocate. The table index
+    // was skipped until review pointed out that a module with more than one
+    // table dispatches through the wrong one after a reassignment.
+    let p1 = push_reloc(body, pos + 1, reloc_kind_type, out)
+    push_reloc(body, p1, reloc_kind_table, out)
   } else if op == 0x23 || op == 0x24 {
     // global.get / global.set <globalidx>  -- RELOCATION
     let (v, p) = read_uleb_at(body, pos + 1)
@@ -310,24 +310,21 @@ fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
     Array::push(out.widths, p - pos - 1)
     p
   } else if op >= 0x20 && op <= 0x22 {
-    // local.get / local.set / local.tee <localidx>  -- LOCAL, never relocated
-    let (_, p) = read_uleb_at(body, pos + 1)
-    p
+    // local.get / local.set / local.tee <localidx> -- frame-local
+    skip_local_index(body, pos + 1)
   } else if op >= 0x28 && op <= 0x3E {
     // every load and store: <memarg>
     skip_memarg(body, pos + 1)
   } else if op == 0x3F || op == 0x40 {
-    // memory.size / memory.grow <memidx>
-    let (_, p) = read_uleb_at(body, pos + 1)
-    p
+    // memory.size / memory.grow <memidx> -- one memory only in this target
+    skip_literal_uleb(body, pos + 1)
   } else if op == 0x41 || op == 0x42 {
     // i32.const / i64.const <sleb>
     //
     // A function VALUE and a data pointer both ride here (see the header).
     // Not reported: nothing in the encoding separates them from an ordinary
     // constant, and a guess would be wrong some of the time.
-    let (_, p) = read_sleb_at(body, pos + 1)
-    p
+    skip_literal_sleb(body, pos + 1)
   } else if op == 0x43 {
     pos + 5
   } else if op == 0x44 {
@@ -337,15 +334,16 @@ fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
     let (count, p0) = read_uleb_at(body, pos + 1)
     p0 + count
   } else if op == 0xD0 {
-    // ref.null <heaptype>
-    let (_, p) = read_sleb_at(body, pos + 1)
-    p
+    // ref.null <heaptype> -- an index when non-negative
+    push_signed_reloc(body, pos + 1, reloc_kind_heaptype, out)
   } else if op == 0x08 {
     // throw <tagidx>  -- RELOCATION
     push_reloc(body, pos + 1, reloc_kind_tag, out)
   } else if op == 0x1F {
-    // try_table <blocktype> vec(catch)
-    let (_, p1) = read_sleb_at(body, pos + 1)
+    // try_table <blocktype> vec(catch) -- the blocktype is a type index when
+    // non-negative, exactly as in block/loop/if. Fixing those and not this one
+    // is what "one class at a time" looks like from the outside.
+    let p1 = push_signed_reloc(body, pos + 1, reloc_kind_blocktype, out)
     let (count, p2) = read_uleb_at(body, p1)
     let mut p = p2
     let mut i = 0
@@ -356,11 +354,10 @@ fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
         // catch / catch_ref: <tagidx> <labelidx>. The tag RELOCATES; the
         // label is local to the enclosing block and never does.
         let pa = push_reloc(body, p, reloc_kind_tag, out)
-        let (_, pb) = read_uleb_at(body, pa)
-        p = pb
+        p = skip_local_index(body, pa)
       } else {
-        let (_, pa) = read_uleb_at(body, p)
-        p = pa
+        // catch_all / catch_all_ref: <labelidx> only
+        p = skip_local_index(body, p)
       }
       i = i + 1
     }
@@ -399,16 +396,23 @@ fn step_gc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
     // array.get{,_s,_u} / array.set / array.fill: <typeidx>
     push_type_reloc(body, p0, out)
   } else if sub >= 2 && sub <= 5 {
-    // struct.get{,_s,_u} / struct.set: <typeidx> <fieldidx>
+    // struct.get{,_s,_u} / struct.set: <typeidx> <fieldidx>. The field index
+    // is positional WITHIN the struct type, so it moves only if the type
+    // does -- and then the type index above carries the whole thing.
     let p1 = push_type_reloc(body, p0, out)
-    let (_, p2) = read_uleb_at(body, p1)
-    p2
-  } else if sub == 8 || (sub >= 9 && sub <= 10) || (sub >= 18 && sub <= 19) {
-    // array.new_fixed <typeidx> <n>; array.new_data/elem <typeidx> <idx>;
-    // array.init_data/elem <typeidx> <idx>
+    skip_local_index(body, p1)
+  } else if sub == 8 {
+    // array.new_fixed <typeidx> <n> -- n is a LENGTH, not an index
     let p1 = push_type_reloc(body, p0, out)
-    let (_, p2) = read_uleb_at(body, p1)
-    p2
+    skip_literal_uleb(body, p1)
+  } else if sub == 9 || sub == 18 {
+    // array.new_data / array.init_data <typeidx> <dataidx>
+    let p1 = push_type_reloc(body, p0, out)
+    push_reloc(body, p1, reloc_kind_data, out)
+  } else if sub == 10 || sub == 19 {
+    // array.new_elem / array.init_elem <typeidx> <elemidx>
+    let p1 = push_type_reloc(body, p0, out)
+    push_reloc(body, p1, reloc_kind_elem, out)
   } else if sub == 17 {
     // array.copy <typeidx> <typeidx>
     let p1 = push_type_reloc(body, p0, out)
@@ -418,19 +422,44 @@ fn step_gc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
     // i31.get_s; i31.get_u -- no immediate
     p0
   } else if sub >= 20 && sub <= 23 {
-    // ref.test / ref.cast, null and non-null: <heaptype>
-    let (_, p1) = read_sleb_at(body, p0)
-    p1
+    // ref.test / ref.cast, null and non-null: <heaptype> -- a TYPE INDEX when
+    // non-negative, so a reassignment makes the rebuilt body test or cast
+    // against the wrong nominal type WHILE STILL VALIDATING.
+    push_signed_reloc(body, p0, reloc_kind_heaptype, out)
   } else if sub == 24 || sub == 25 {
     // br_on_cast / br_on_cast_fail: <castflags> <labelidx> <heaptype> <heaptype>
     let p1 = p0 + 1
-    let (_, p2) = read_uleb_at(body, p1)
-    let (_, p3) = read_sleb_at(body, p2)
-    let (_, p4) = read_sleb_at(body, p3)
-    p4
+    let p2 = skip_local_index(body, p1)
+    let p3 = push_signed_reloc(body, p2, reloc_kind_heaptype, out)
+    push_signed_reloc(body, p3, reloc_kind_heaptype, out)
   } else {
     throw(String::concat("reloc_scan: unknown 0xFB sub-opcode ", __to_string(sub)))
   }
+}
+
+/// EVERY immediate this decoder reads goes through exactly one of the
+/// following: `push_reloc` / `push_signed_reloc` when it names a global index
+/// space, or one of the `skip_*` helpers when it does not. That is the point
+/// of them -- a bare `let (_, p) = read_uleb_at(...)` is indistinguishable
+/// from a reference someone forgot to record, and review found four such
+/// omissions here one at a time (tags, blocktypes, table indices, segment
+/// indices) before the immediates were classified this way instead.
+///
+/// So: if you add an instruction, every immediate in it must be spelled with
+/// one of these. `_` is not an option the shape of this code offers.
+fn skip_local_index(body: Bytes, pos: Int) -> Int with Exception {
+  let (_, p) = read_uleb_at(body, pos)
+  p
+}
+
+fn skip_literal_uleb(body: Bytes, pos: Int) -> Int with Exception {
+  let (_, p) = read_uleb_at(body, pos)
+  p
+}
+
+fn skip_literal_sleb(body: Bytes, pos: Int) -> Int with Exception {
+  let (_, p) = read_sleb_at(body, pos)
+  p
 }
 
 /// Read an index at `pos`, record it as a relocation site of `kind`, and
@@ -448,6 +477,21 @@ fn push_type_reloc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception
   push_reloc(body, pos, reloc_kind_type, out)
 }
 
+/// An s33 that is a type index when non-negative and an abstract type when
+/// not. Records only in the first case; the position advances either way.
+fn push_signed_reloc(body: Bytes, pos: Int, kind: Int, out: BodyRelocs) -> Int with Exception {
+  let (v, p) = read_sleb_at(body, pos)
+  if v >= 0 {
+    Array::push(out.offsets, pos)
+    Array::push(out.kinds, kind)
+    Array::push(out.values, v)
+    Array::push(out.widths, p - pos)
+  } else {
+    ()
+  }
+  p
+}
+
 /// The 0xFC prefix: saturating truncation, and the bulk memory / table ops.
 fn step_misc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
   let (sub, p0) = read_uleb_at(body, pos + 1)
@@ -456,27 +500,31 @@ fn step_misc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
     p0
   } else if sub == 8 {
     // memory.init <dataidx> <memidx>
-    let (_, p1) = read_uleb_at(body, p0)
+    let p1 = push_reloc(body, p0, reloc_kind_data, out)
     p1 + 1
   } else if sub == 9 {
     // data.drop <dataidx>
-    let (_, p1) = read_uleb_at(body, p0)
-    p1
+    push_reloc(body, p0, reloc_kind_data, out)
   } else if sub == 10 {
     // memory.copy <memidx> <memidx>
     p0 + 2
   } else if sub == 11 {
     // memory.fill <memidx>
     p0 + 1
-  } else if sub == 12 || sub == 14 {
-    // table.init <elemidx> <tableidx> / table.copy <tableidx> <tableidx>
-    let (_, p1) = read_uleb_at(body, p0)
-    let (_, p2) = read_uleb_at(body, p1)
-    p2
-  } else if sub == 13 || sub == 15 || sub == 16 || sub == 17 {
-    // elem.drop <elemidx>; table.grow/size/fill <tableidx>
-    let (_, p1) = read_uleb_at(body, p0)
-    p1
+  } else if sub == 12 {
+    // table.init <elemidx> <tableidx>
+    let p1 = push_reloc(body, p0, reloc_kind_elem, out)
+    push_reloc(body, p1, reloc_kind_table, out)
+  } else if sub == 14 {
+    // table.copy <tableidx> <tableidx>
+    let p1 = push_reloc(body, p0, reloc_kind_table, out)
+    push_reloc(body, p1, reloc_kind_table, out)
+  } else if sub == 13 {
+    // elem.drop <elemidx>
+    push_reloc(body, p0, reloc_kind_elem, out)
+  } else if sub == 15 || sub == 16 || sub == 17 {
+    // table.grow / table.size / table.fill <tableidx>
+    push_reloc(body, p0, reloc_kind_table, out)
   } else {
     throw(String::concat("reloc_scan: unknown 0xFC sub-opcode ", __to_string(sub)))
   }
@@ -577,7 +625,8 @@ export fn rebuild_body_relocs(body: Bytes, start: Int, end_pos: Int, r: BodyRelo
       Bytes::push(out, Bytes::get(body, c))
       c = c + 1
     }
-    if Array::get(r.kinds, i) == reloc_kind_blocktype {
+    let kind_i = Array::get(r.kinds, i)
+    if kind_i == reloc_kind_blocktype || kind_i == reloc_kind_heaptype {
       write_sleb(out, Array::get(new_values, i))
     } else {
       write_uleb(out, Array::get(new_values, i))

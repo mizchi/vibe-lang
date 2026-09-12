@@ -10,7 +10,17 @@
 //# Imports
 
 import @vibe/compiler/codegen/reloc {
-  rebuild_body_relocs, reloc_kind_blocktype, reloc_kind_func, reloc_kind_global, reloc_kind_tag, reloc_kind_type, scan_body_relocs
+  rebuild_body_relocs,
+  reloc_kind_blocktype,
+  reloc_kind_data,
+  reloc_kind_elem,
+  reloc_kind_func,
+  reloc_kind_global,
+  reloc_kind_heaptype,
+  reloc_kind_table,
+  reloc_kind_tag,
+  reloc_kind_type,
+  scan_body_relocs
 }
 
 //# Functions
@@ -79,13 +89,20 @@ test "a relocation that crosses the LEB width band changes the body LENGTH" {
 
 test "global.get and call_indirect report their own kinds" {
   // global.get 1 ; call_indirect type=2 table=0 ; end
+  //
+  // THREE sites, not two: call_indirect's second immediate is a table index
+  // and relocates as well. This case asserted two until that was recorded,
+  // and failing was the right behaviour -- an expectation written against a
+  // scanner that missed a reference class encodes the miss.
   let codes = [0x23, 0x01, 0x11, 0x02, 0x00, 0x0B]
   let (offsets, kinds, values, _widths) = scan_all(codes)
-  assert_eq(Array::length(offsets), 2)
+  assert_eq(Array::length(offsets), 3)
   assert_eq(Array::get(kinds, 0), reloc_kind_global)
   assert_eq(Array::get(values, 0), 1)
   assert_eq(Array::get(kinds, 1), reloc_kind_type)
   assert_eq(Array::get(values, 1), 2)
+  assert_eq(Array::get(kinds, 2), reloc_kind_table)
+  assert_eq(Array::get(values, 2), 0)
 }
 
 test "an i64.const is walked but never reported" {
@@ -229,4 +246,49 @@ test "a blocktype that is a TYPE INDEX relocates, and rebuilds SIGNED" {
   let r2 = scan_body_relocs(moved, 0, Bytes::length(moved))
   assert_eq(Array::get(r2.values, 0), 64)
   assert_eq(Array::get(r2.kinds, 0), reloc_kind_blocktype)
+}
+
+test "call_indirect relocates BOTH immediates, and try_table's blocktype too" {
+  // call_indirect type=2 table=1 ; end
+  let (_o, k, v, _w) = scan_all([0x11, 0x02, 0x01, 0x0B])
+  assert_eq(Array::length(k), 2)
+  assert_eq(Array::get(k, 0), reloc_kind_type)
+  assert_eq(Array::get(v, 0), 2)
+  assert_eq(Array::get(k, 1), reloc_kind_table)
+  assert_eq(Array::get(v, 1), 1)
+  // try_table (type 5) [catch_all label=0] ; end ; end
+  let (_o2, k2, v2, _w2) = scan_all([0x1F, 0x05, 0x01, 0x02, 0x00, 0x0B, 0x0B])
+  assert_eq(Array::length(k2), 1)
+  assert_eq(Array::get(k2, 0), reloc_kind_blocktype)
+  assert_eq(Array::get(v2, 0), 5)
+}
+
+test "segment and heap-type indices relocate" {
+  // 0xFC 8 = memory.init <dataidx> <memidx> ; 0xFC 13 = elem.drop <elemidx>
+  let (_o, k, v, _w) = scan_all([0xFC, 0x08, 0x04, 0x00, 0xFC, 0x0D, 0x06, 0x0B])
+  assert_eq(Array::length(k), 2)
+  assert_eq(Array::get(k, 0), reloc_kind_data)
+  assert_eq(Array::get(v, 0), 4)
+  assert_eq(Array::get(k, 1), reloc_kind_elem)
+  assert_eq(Array::get(v, 1), 6)
+  // 0xFB 20 = ref.test <heaptype>. Non-negative is a TYPE INDEX; an abstract
+  // heap type is negative and must NOT be reported.
+  let (_o2, k2, v2, _w2) = scan_all([0xFB, 0x14, 0x09, 0x0B])
+  assert_eq(Array::length(k2), 1)
+  assert_eq(Array::get(k2, 0), reloc_kind_heaptype)
+  assert_eq(Array::get(v2, 0), 9)
+  // ref.null with the abstract `func` heap type (-16, sleb 0x70)
+  let (o3, _k3, _v3, _w3) = scan_all([0xD0, 0x70, 0x0B])
+  assert_eq(Array::length(o3), 0)
+  // and a heap type rebuilds SIGNED, like a blocktype
+  let codes = [0xFB, 0x14, 0x09, 0x0B]
+  let b = body_of(codes)
+  let r = scan_body_relocs(b, 0, Bytes::length(b))
+  assert_eq(bytes_to_ints(rebuild_body_relocs(b, 0, Bytes::length(b), r, [64])), [
+    0xFB,
+    0x14,
+    0xC0,
+    0x00,
+    0x0B
+  ])
 }
