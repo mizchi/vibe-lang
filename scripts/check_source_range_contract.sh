@@ -18,9 +18,10 @@
 # check proves nothing.
 #
 # Environment:
-#   RANGE_STAGE2   compiler wasm (default: newest _build/selfhost generation,
-#                  else bootstrap/seed/compiler.wasm). A path that does not
-#                  exist is an ERROR, never a silent fallback.
+#   RANGE_STAGE2     gate-specific compiler wasm override.
+#   VIBE_STAGE2_WASM shared CI compiler override, used when RANGE_STAGE2 is unset.
+#   Otherwise use the newest _build/selfhost generation, then the committed seed.
+#   An override that does not exist is an ERROR, never a silent fallback.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -56,8 +57,13 @@ PY
 # three units -- a vacuous fixture is a defect in this check, and finding a
 # compiler first would report it as a compiler problem.
 STAGE2="${RANGE_STAGE2:-}"
+STAGE2_OVERRIDE=RANGE_STAGE2
+if [ -z "$STAGE2" ]; then
+  STAGE2="${VIBE_STAGE2_WASM:-}"
+  STAGE2_OVERRIDE=VIBE_STAGE2_WASM
+fi
 if [ -n "$STAGE2" ]; then
-  [ -s "$STAGE2" ] || { echo "source-range-contract: RANGE_STAGE2 does not exist: $STAGE2" >&2; exit 1; }
+  [ -s "$STAGE2" ] || { echo "source-range-contract: $STAGE2_OVERRIDE does not exist: $STAGE2" >&2; exit 1; }
 else
   for gen in $(ls -td _build/selfhost/generations/*/ 2>/dev/null); do
     [ -s "${gen}stage2.wasm" ] && { STAGE2="${gen}stage2.wasm"; break; }

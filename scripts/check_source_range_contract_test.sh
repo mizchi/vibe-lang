@@ -24,6 +24,13 @@ set +e; out="$(RANGE_STAGE2="$TMP/nope.wasm" bash "$CHECK" 2>&1)"; rc=$?; set -e
 grep -qF "RANGE_STAGE2 does not exist" <<<"$out" || fail "a missing explicit compiler did not say so"
 echo "source-range self-test: ok: a missing explicit compiler is an error"
 
+# The shared CI override is just as authoritative as the gate-specific one.
+# A missing shared compiler must not fall back to a local generation or seed.
+set +e; out="$(RANGE_STAGE2= VIBE_STAGE2_WASM="$TMP/nope.wasm" bash "$CHECK" 2>&1)"; rc=$?; set -e
+[ "$rc" != "0" ] || fail "a missing shared compiler passed"
+grep -qF "VIBE_STAGE2_WASM does not exist" <<<"$out" || fail "a missing shared compiler did not say so: $out"
+echo "source-range self-test: ok: the shared CI compiler override is enforced"
+
 # 2. A compiler that cannot run must fail, not report ok. Every surface answers
 #    empty, and empty is the CLI's spelling of "clean" -- exactly the shape
 #    this whole gate exists to keep from passing.
