@@ -1534,7 +1534,13 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     //   It is 1,193 of the 1,806 candidates in the compiler's own sources, so
     //   it is most of the population and the obvious next slice -- with the
     //   callee-contract question answered, not guessed.
-    let path_value_ok = expr_tag(value) != 8 || is_ctor_call(value, ctx.ctor_table)
+    // An Int-valued binding holds no reference at all, so a guarded drop over
+    // it is pure instruction cost: `bench/exec/sort_ints.vibe`'s `let mid =
+    // (lo + hi) / 2` took a flag local, two flag stores and a guarded
+    // `rc_drop` for a heap figure that did not move (32,828 B either way) and
+    // +2.84% fuel. The planner cannot see it -- its `is_scalar_expr` only
+    // knows literals and borrow-returning calls -- but this classifier can.
+    let path_value_ok = (expr_tag(value) != 8 || is_ctor_call(value, ctx.ctor_table)) && !expr_is_intish(value, local_names, ctx)
     let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && path_value_ok && array_contains_str(ctx.rc_path_drop_names, name)
     let path_flag_l = if path_drop {
       // `local_names` is indexed BY wasm local index (compile_expr resolves an
