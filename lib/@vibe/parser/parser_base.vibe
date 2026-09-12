@@ -1,5 +1,9 @@
 //# Imports
 
+import ./parser_source_span.vibe {
+  source_clear_type_head, source_record_slot, source_wrap_pat, source_wrap_type
+}
+
 import @vibe/ast {
   Expr, ImportItem, ImportKind, Pat, Stmt, TypeExpr, trait_ref_key, type_param_key
 }
@@ -468,15 +472,15 @@ export fn parse_pattern_with_binder_context(tokens: Array[Token], pos: Int, cont
                 },
                 TComma => {
                   binder_capture_source(context, fname, rp, rp)
-                  ArrayBuilder::push(field_pats_b, PBind(fname)); rp = rp + 1
+                  ArrayBuilder::push(field_pats_b, source_wrap_pat(PBind(fname), rp, rp + 1, context)); rp = rp + 1
                 },
                 TRBrace => {
                   binder_capture_source(context, fname, rp, rp)
-                  ArrayBuilder::push(field_pats_b, PBind(fname)); rp = rp + 1
+                  ArrayBuilder::push(field_pats_b, source_wrap_pat(PBind(fname), rp, rp + 1, context)); rp = rp + 1
                 },
                 _ => {
                   binder_capture_source(context, fname, rp, rp)
-                  ArrayBuilder::push(field_pats_b, PBind(fname)); rp = rp + 1
+                  ArrayBuilder::push(field_pats_b, source_wrap_pat(PBind(fname), rp, rp + 1, context)); rp = rp + 1
                 }
               }
               match peek(tokens, rp) {
@@ -514,7 +518,7 @@ export fn parse_pattern_with_binder_context(tokens: Array[Token], pos: Int, cont
                     },
                     TIdent(fname) => {
                       binder_capture_source(context, fname, sp, sp)
-                      ArrayBuilder::push(field_pats, (fname, PBind(fname)))
+                      ArrayBuilder::push(field_pats, (fname, source_wrap_pat(PBind(fname), sp, sp + 1, context)))
                       sp = sp + 1
                       match peek(tokens, sp) {
                         TComma => {
@@ -589,7 +593,19 @@ export fn parse_pattern_with_binder_context(tokens: Array[Token], pos: Int, cont
       throw("unexpected in pattern: \{actual}")
     }
   }
-  match peek(tokens, next) {
+  match pat {
+    PCtor(name, _) => {
+      let head = match peek(tokens, pos + 1) {
+        TDoubleColon => pos + 2,
+        _ => pos
+      }
+      source_record_slot("pat_head", name, head, head + 1, context)
+    },
+    PStruct(name, _) => source_record_slot("pat_head", name, pos, pos + 1, context),
+    _ => ()
+  }
+  let pat = source_wrap_pat(pat, pos, next, context)
+  let (result, end) = match peek(tokens, next) {
     TBitOr => {
       binder_capture_mark_ineligible(context)
       let (right, end) = parse_pattern_with_binder_context(tokens, next + 1, context);
@@ -597,6 +613,7 @@ export fn parse_pattern_with_binder_context(tokens: Array[Token], pos: Int, cont
     },
     _ => (pat, next)
   }
+  (source_wrap_pat(result, pos, end, context), end)
 }
 
 fn parse_pattern(tokens: Array[Token], pos: Int) -> (Pat, Int) with Exception {
@@ -1370,14 +1387,18 @@ export fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with
   }
 }
 
-fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int) with Exception {
+export fn parse_type_with_source_context(tokens: Array[Token], pos: Int, mode: Int, context: Option[ParserBinderContext]) -> (TypeExpr, Int) with Exception {
+  match peek(tokens, pos) {
+    TIdent(name) => source_record_slot("type_head", name, pos, pos + 1, context),
+    _ => ()
+  }
   let rec type_list_rest: (Array[Token], Int, ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int) with Exception = (tokens, pos, b) -> {
     match peek(tokens, pos) {
       TComma => match peek(tokens, pos + 1) {
         TRParen|TRBracket => (ArrayBuilder::freeze(b), pos + 1),
         _ => {
           let (ts, ts_opt) = labeled_type_start(tokens, pos + 1)
-          let (ty, next) = parse_type_impl(tokens, ts, 0)
+          let (ty, next) = parse_type_with_source_context(tokens, ts, 0, context)
           ArrayBuilder::push(b, optional_param_type(ty, ts_opt))
           type_list_rest(tokens, next, b)
         }
@@ -1402,7 +1423,7 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
       _ => (None, rn)
     }
   }
-  if mode == 0 {
+  let (ty, next) = if mode == 0 {
     // Leading-paren handling parses the group's TOP-LEVEL elements with arity
     // preserved, so a function parameter list is read by element count rather
     // than by reinterpreting a (already-unwrapped) tuple atom. This keeps
@@ -1416,7 +1437,7 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
           let after = pos + 2
           match peek(tokens, after) {
             TThinArrow => {
-              let (ret, rn) = parse_type_impl(tokens, after + 1, 0)
+              let (ret, rn) = parse_type_with_source_context(tokens, after + 1, 0, context)
               let eff = parse_effect_suffix(tokens, rn)
               (TyFn(empty_type_exprs(), ret, eff.0), eff.1)
             },
@@ -1428,7 +1449,7 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
           // skip the label so the element's TYPE is what gets recorded. `?`
           // additionally wraps it in `Option` (#1500).
           let (ty_start, ty_opt) = labeled_type_start(tokens, pos + 1)
-          let (first_raw, n1) = parse_type_impl(tokens, ty_start, 0)
+          let (first_raw, n1) = parse_type_with_source_context(tokens, ty_start, 0, context)
           let first = optional_param_type(first_raw, ty_opt)
           let (elems, after) = match peek(tokens, n1) {
             TRParen => ([first], n1 + 1),
@@ -1443,7 +1464,7 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
           }
           match peek(tokens, after) {
             TThinArrow => {
-              let (ret, rn) = parse_type_impl(tokens, after + 1, 0)
+              let (ret, rn) = parse_type_with_source_context(tokens, after + 1, 0, context)
               let eff = parse_effect_suffix(tokens, rn)
               (TyFn(elems, ret, eff.0), eff.1)
             },
@@ -1456,7 +1477,9 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
                 TyTuple(elems)
               }
               match peek(tokens, after) {
-                TQuestion => (TyApp("Option", [atom]), after + 1),
+                TQuestion => (TyApp("Option", [
+                  source_wrap_type(atom, pos, after, context)
+                ]), after + 1),
                 _ => (atom, after)
               }
             }
@@ -1464,10 +1487,10 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
         }
       },
       _ => {
-        let (atom_ty, atom_next) = parse_type_impl(tokens, pos, 1)
+        let (atom_ty, atom_next) = parse_type_with_source_context(tokens, pos, 1, context)
         match peek(tokens, atom_next) {
           TThinArrow => {
-            let (ret, rn) = parse_type_impl(tokens, atom_next + 1, 0)
+            let (ret, rn) = parse_type_with_source_context(tokens, atom_next + 1, 0, context)
             let eff = parse_effect_suffix(tokens, rn)
             (TyFn([atom_ty], ret, eff.0), eff.1)
           },
@@ -1481,7 +1504,7 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
         TRParen => (TyUnit, pos + 2),
         _ => {
           let (ty_start, ty_opt) = labeled_type_start(tokens, pos + 1)
-          let (first_raw, n1) = parse_type_impl(tokens, ty_start, 0)
+          let (first_raw, n1) = parse_type_with_source_context(tokens, ty_start, 0, context)
           let first = optional_param_type(first_raw, ty_opt)
           match peek(tokens, n1) {
             TRParen => (first, n1 + 1),
@@ -1498,7 +1521,7 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
       },
       TIdent(name) => match peek(tokens, pos + 1) {
         TLBracket => {
-          let (first, n1) = parse_type_impl(tokens, pos + 2, 0)
+          let (first, n1) = parse_type_with_source_context(tokens, pos + 2, 0, context)
           match peek(tokens, n1) {
             TRBracket => (TyApp(name, [first]), n1 + 1),
             TComma => {
@@ -1519,10 +1542,22 @@ fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int)
       }
     }
     match peek(tokens, base_next) {
-      TQuestion => (TyApp("Option", [base_ty]), base_next + 1),
+      TQuestion => (TyApp("Option", [
+        source_wrap_type(base_ty, pos, base_next, context)
+      ]), base_next + 1),
       _ => (base_ty, base_next)
     }
   }
+  let located = source_wrap_type(ty, pos, next, context)
+  let result = match peek(tokens, next - 1) {
+    TQuestion => source_clear_type_head(located),
+    _ => located
+  }
+  (result, next)
+}
+
+fn parse_type_impl(tokens: Array[Token], pos: Int, mode: Int) -> (TypeExpr, Int) with Exception {
+  parse_type_with_source_context(tokens, pos, mode, None)
 }
 
 export fn parse_type(tokens: Array[Token], pos: Int) -> (TypeExpr, Int) with Exception {
@@ -1570,7 +1605,7 @@ fn optional_param_type(ty: TypeExpr, is_optional: Bool) -> TypeExpr {
 }
 
 fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: Option[ParserBinderContext]) -> ((String, Option[TypeExpr]), Int) with Exception {
-  match peek(tokens, pos) {
+  let ((name, ty), next) = match peek(tokens, pos) {
     TIdent(name) => {
       match peek(tokens, pos + 1) {
         TTilde => {
@@ -1578,7 +1613,7 @@ fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: 
           binder_capture_source(context, labeled_name, pos, pos + 1)
           match peek(tokens, pos + 2) {
             TColon => {
-              let (ty, tp) = parse_type_impl(tokens, pos + 3, 0);
+              let (ty, tp) = parse_type_with_source_context(tokens, pos + 3, 0, context);
               ((labeled_name, Some(ty)), tp)
             },
             _ => ((labeled_name, None), pos + 2)
@@ -1589,7 +1624,7 @@ fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: 
           binder_capture_source(context, opt_name, pos, pos + 1)
           match peek(tokens, pos + 2) {
             TColon => {
-              let (ty, tp) = parse_type_impl(tokens, pos + 3, 0);
+              let (ty, tp) = parse_type_with_source_context(tokens, pos + 3, 0, context);
               // #1500: an optional parameter is declared `Option[T]`. The body
               // sees an `Option` (that is what the omitted case has to produce),
               // and `desugar_optional_args` makes the call site agree -- omitted
@@ -1603,7 +1638,7 @@ fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: 
         },
         TColon => {
           binder_capture_source(context, name, pos, pos)
-          let (ty, tp) = parse_type_impl(tokens, pos + 2, 0);
+          let (ty, tp) = parse_type_with_source_context(tokens, pos + 2, 0, context);
           let tp2 = match peek(tokens, tp) {
             TColon => {
               let mut bp = tp + 1
@@ -1639,6 +1674,12 @@ fn parse_one_param_with_binder_context(tokens: Array[Token], pos: Int, context: 
     },
     token => throw(binder_name_error(tk_name(token), "parameter", pos))
   }
+  let name_end = match peek(tokens, pos + 1) {
+    TTilde|TQuestion => pos + 2,
+    _ => pos + 1
+  }
+  source_record_slot("param", name, pos, name_end, context)
+  ((name, ty), next)
 }
 
 fn parse_param_cont_with_binder_context(tokens: Array[Token], pos: Int, b: ArrayBuilder[(String, Option[TypeExpr])], context: Option[ParserBinderContext]) -> (Array[(String, Option[TypeExpr])], Int) with Exception {

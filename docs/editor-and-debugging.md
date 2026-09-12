@@ -297,16 +297,16 @@ text>` then tab-separated `$var=<capture>`:
 lib/@vibe/x/y.vibe:41:11: readit(q)	$f=readit	$x=q
 ```
 
-`--json` emits the same matches as a JSON array; each match carries `start` /
-`end` byte offsets and per-capture `{text, start}`, plus `type` when the typed
-tier ran. **The range is a lower bound, not an extent** (#1941): only
-identifier-shaped AST nodes carry an offset, so the span misses trailing
-punctuation and cannot see a literal at all -- `add(one, two)` reports an `end`
-one byte short of the `)`, and `add(1, 2)` collapses to `add`. `start` is exact,
-`end` is a floor, and `text` is the printer's rendering rather than a slice. A
-capture carries `start` with no `end` (`-1` when the node has no offset), so it
-cannot be sliced at all (#1943). See
-[source-range-contract.md](source-range-contract.md). Empty output (`[]` in JSON) means no match, and `vibe grep` exits 0 —
+`--json` emits the same matches as a JSON array. Each match and capture carries
+`start` / `end` as half-open byte offsets and a `synthetic` flag; a capture also
+carries `text`, plus `type` when the typed tier ran. Ranges include literals and
+closing punctuation: `add(1, 2)` slices to the whole call. `text` is the
+printer's normalized rendering, so recover original whitespace from the source
+interval rather than its text length. Generated nodes without a source
+occurrence use `null` for both bounds and `synthetic: true`; the text lane
+reports such matches at `<synthetic>`. See
+[source-range-contract.md](source-range-contract.md) for grouping and variadic
+captures. Empty output (`[]` in JSON) means no match, and `vibe grep` exits 0 —
 it is a *report*. Only a bad pattern or a bad filter is an error, and those say
 what to write instead:
 

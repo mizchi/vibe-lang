@@ -1,0 +1,542 @@
+import @vibe/ast {
+  Expr, Pat, TypeExpr
+}
+import ./parser_binder_context.vibe {
+  ParserBinderContext, SourceBinder, binder_capture_context
+}
+
+// Source annotations exist only in the opt-in tooling parse. The sentinel is
+// not a source identifier. Ordinary parsing and compilation never emit it.
+//
+// Metadata layouts (all intervals are half-open byte offsets):
+// - Expr: ECall(EIdent(marker, start), [node, end, name_slots,
+//   syntax_start, syntax_end], start). Each name slot is a (start, end) tuple.
+// - Pat: PCtor(marker, [node, start, end, head_start, head_end,
+//   qualifier_start, qualifier_end]). Bounds use PInt.
+// - Type: TyApp(marker, [node, start, end, head_start, head_end]). Bounds use
+//   decimal TyName strings; TyUnit denotes a missing head token.
+//
+// Accessors keep these details out of consumers. A replacement that preserves
+// an occurrence must retain its wrapper; generated children remain unwrapped.
+export fn source_expr(expr: Expr) -> Expr {
+  match expr {
+    ECall(EIdent("$source_span", _), args, _) => Array::get(args, 0),
+    _ => expr
+  }
+}
+
+export fn source_expr_range(expr: Expr) -> (Int, Int) {
+  match expr {
+    ECall(EIdent("$source_span", start), args, _) => match Array::get(args, 1) {
+      EInt(end) => if start >= 0 && end >= start {
+        (start, end)
+      } else {
+        (-1, -1)
+      },
+      _ => (-1, -1)
+    },
+    _ => (-1, -1)
+  }
+}
+
+fn source_annotate(expr: Expr, start: Int, end: Int, c: ParserBinderContext) -> Expr {
+  match expr {
+    // Grouping changes the syntactic extent used by a surrounding operator,
+    // not the occurrence of the already parsed child expression.
+    ECall(EIdent("$source_span", core_start), args, _) => ECall(EIdent("$source_span", core_start), [
+      Array::get(args, 0),
+      Array::get(args, 1),
+      Array::get(args, 2),
+      EInt(start),
+      EInt(end)
+    ], core_start),
+    _ => ECall(EIdent("$source_span", start), [
+      expr,
+      EInt(end),
+      EArray(source_direct_slots(expr, start, end, c)),
+      EInt(start),
+      EInt(end)
+    ], start)
+  }
+}
+
+export fn source_expr_syntax_range(expr: Expr) -> (Int, Int) {
+  match expr {
+    ECall(EIdent("$source_span", _), args, _) => match (Array::get(args, 3), Array::get(args, 4)) {
+      (EInt(start), EInt(end)) => (start, end),
+      _ => (-1, -1)
+    },
+    _ => (-1, -1)
+  }
+}
+
+export fn source_expr_context(starts: Array[Int], ends: Array[Int]) -> ParserBinderContext {
+  let c = binder_capture_context(starts, ends)
+  ParserBinderContext::{
+    rows: c.rows,
+    starts_stack: c.starts_stack,
+    ends_stack: c.ends_stack,
+    bases: c.bases,
+    eligible: c.eligible,
+    capture_source_spans: true,
+    source_slots: c.source_slots
+  }
+}
+
+export fn source_wrap_expr(expr: Expr, first: Int, next: Int, context: Option[ParserBinderContext]) -> Expr {
+  match context {
+    Some(c) => if c.capture_source_spans && first >= 0 && next > first {
+      let depth = Array::length(c.starts_stack) - 1
+      let starts = Array::get(c.starts_stack, depth)
+      let ends = Array::get(c.ends_stack, depth)
+      if next <= Array::length(ends) {
+        let base = Array::get(c.bases, depth)
+        source_annotate(expr, base + Array::get(starts, first), base + Array::get(ends, next - 1), c)
+      } else {
+        expr
+      }
+    } else {
+      expr
+    },
+    None => expr
+  }
+}
+
+export fn source_pat(pat: Pat) -> Pat {
+  match pat {
+    PCtor("$source_span", args) => Array::get(args, 0),
+    _ => pat
+  }
+}
+
+export fn source_pat_range(pat: Pat) -> (Int, Int) {
+  match pat {
+    PCtor("$source_span", args) => match (Array::get(args, 1), Array::get(args, 2)) {
+      (PInt(start), PInt(end)) => (start, end),
+      _ => (-1, -1)
+    },
+    _ => (-1, -1)
+  }
+}
+
+export fn source_wrap_pat(pat: Pat, first: Int, next: Int, context: Option[ParserBinderContext]) -> Pat {
+  let (start, end) = source_expr_range(source_wrap_expr(EUnit, first, next, context))
+  if start < 0 {
+    pat
+  } else {
+    match pat {
+      PCtor("$source_span", args) => PCtor("$source_span", [
+        Array::get(args, 0),
+        PInt(start),
+        PInt(end),
+        Array::get(args, 3),
+        Array::get(args, 4),
+        Array::get(args, 5),
+        Array::get(args, 6)
+      ]),
+      _ => {
+        let name = match pat {
+          PCtor(n, _) => n,
+          PStruct(n, _) => n,
+          _ => ""
+        }
+        let slot = match context {
+          Some(c) => source_named_slot("pat_head", name, start, end, c),
+          None => source_slot_node(-1, -1)
+        }
+        let (head_start, head_end) = source_slot_range(slot)
+        PCtor("$source_span", [
+          pat,
+          PInt(start),
+          PInt(end),
+          PInt(head_start),
+          PInt(head_end),
+          PInt(-1),
+          PInt(-1)
+        ])
+      }
+    }
+  }
+}
+
+export fn source_type(ty: TypeExpr) -> TypeExpr {
+  match ty {
+    TyApp("$source_span", args) => Array::get(args, 0),
+    _ => ty
+  }
+}
+
+fn source_span_number(ty: TypeExpr) -> Int {
+  match ty {
+    TyName(digits) => {
+      let mut value = 0
+      let mut i = 0
+      while i < String::length(digits) {
+        value = value * 10 + String::char_code_at(digits, i) - '0'
+        i = i + 1
+      }
+      value
+    },
+    _ => -1
+  }
+}
+
+export fn source_type_range(ty: TypeExpr) -> (Int, Int) {
+  match ty {
+    TyApp("$source_span", args) => (source_span_number(Array::get(args, 1)), source_span_number(Array::get(args, 2))),
+    _ => (-1, -1)
+  }
+}
+
+export fn source_wrap_type(ty: TypeExpr, first: Int, next: Int, context: Option[ParserBinderContext]) -> TypeExpr {
+  let (start, end) = source_expr_range(source_wrap_expr(EUnit, first, next, context))
+  if start < 0 {
+    ty
+  } else {
+    match ty {
+      TyApp("$source_span", _) => ty,
+      _ => {
+        let name = match ty {
+          TyApp(n, _) => n,
+          TyName(n) => n,
+          _ => ""
+        }
+        let slot = match context {
+          Some(c) => source_named_slot("type_head", name, start, end, c),
+          None => source_slot_node(-1, -1)
+        }
+        let (head_start, head_end) = source_slot_range(slot)
+        TyApp("$source_span", [
+          ty,
+          TyName(__to_string(start)),
+          TyName(__to_string(end)),
+          source_span_type_number(head_start),
+          source_span_type_number(head_end)
+        ])
+      }
+    }
+  }
+}
+
+// A direct name slot is recorded at its grammar production, independently of
+// the binder-authority rows. Later transformations cannot turn a same-spelled
+// name elsewhere into this occurrence's source range.
+export fn source_record_slot(kind: String, name: String, first: Int, next: Int, context: Option[ParserBinderContext]) -> Unit {
+  match context {
+    Some(c) => if c.capture_source_spans {
+      let depth = Array::length(c.starts_stack) - 1
+      let starts = Array::get(c.starts_stack, depth)
+      let ends = Array::get(c.ends_stack, depth)
+      if first >= 0 && next > first && next <= Array::length(ends) {
+        let base = Array::get(c.bases, depth)
+        Array::push(c.source_slots, (kind, name, base + Array::get(starts, first), base + Array::get(ends, next - 1)))
+      }
+    },
+    None => ()
+  }
+}
+
+fn source_slot_node(start: Int, end: Int) -> Expr {
+  ETuple([EInt(start), EInt(end)])
+}
+
+fn source_named_slot(kind: String, name: String, lo: Int, hi: Int, c: ParserBinderContext) -> Expr {
+  let mut start = -1
+  let mut end = -1
+  for row in c.source_slots {
+    let (role, spelling, first, next) = row
+    if lo >= 0 && role == kind && spelling == name && first >= lo && next <= hi && (start < 0 || first < start) {
+      start = first
+      end = next
+    }
+  }
+  source_slot_node(start, end)
+}
+
+fn source_binding_slot(name: String, lo: Int, hi: Int, c: ParserBinderContext) -> Expr {
+  let mut start = -1
+  let mut end = -1
+  for row in c.rows {
+    match row {
+      SourceToken(spelling, first, next) => if lo >= 0 && spelling == name && first >= lo && next <= hi && (start < 0 || first < start) {
+        start = first
+        end = next
+      },
+      _ => ()
+    }
+  }
+  source_slot_node(start, end)
+}
+
+fn source_token_slot(offset: Int, c: ParserBinderContext) -> Expr {
+  let depth = Array::length(c.starts_stack) - 1
+  let starts = Array::get(c.starts_stack, 0)
+  let active_starts = Array::get(c.starts_stack, depth)
+  let ends = Array::get(c.ends_stack, depth)
+  let base = Array::get(c.bases, depth)
+  let mut lo = 0
+  let mut hi = Array::length(starts)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if Array::get(starts, mid) < offset {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  if lo < Array::length(starts) && lo < Array::length(ends) && Array::get(starts, lo) == offset {
+    source_slot_node(base + Array::get(active_starts, lo), base + Array::get(ends, lo))
+  } else {
+    source_slot_node(-1, -1)
+  }
+}
+
+fn source_direct_slots(expr: Expr, start: Int, end: Int, c: ParserBinderContext) -> Array[Expr] {
+  match expr {
+    EDot(receiver, field, _, _) => [
+      source_named_slot("dot_field", field, source_expr_syntax_range(receiver).1, end, c)
+    ],
+    ELet(name, _, _, off) => [
+      if off < 0 {
+        source_slot_node(-1, -1)
+      } else {
+        source_binding_slot(name, start, end, c)
+      }
+    ],
+    ELetMut(name, _, _, off) => [
+      if off < 0 {
+        source_slot_node(-1, -1)
+      } else {
+        source_binding_slot(name, start, end, c)
+      }
+    ],
+    ELetRec(name, _, _) => [source_binding_slot(name, start, end, c)],
+    EFn(_, _, params, _, _, body) => {
+      let body_start = source_expr_range(body).0
+      for param in params {
+        source_named_slot("param", param.0, start, body_start, c)
+      }
+    },
+    EAssign(name, value, _) => [
+      source_named_slot("target", name, start, source_expr_range(value).0, c)
+    ],
+    EAssignOp(name, _, value, _) => [
+      source_named_slot("target", name, start, source_expr_range(value).0, c)
+    ],
+    ELabeledArg(name, _, value) => [
+      source_named_slot("label", name, start, source_expr_range(value).0, c)
+    ],
+    ERecord(name, fields, _) => {
+      let slots = [
+        if name == "" {
+          source_slot_node(-1, -1)
+        } else {
+          source_token_at_start(start, c)
+        }
+      ]
+      let mut cursor = start
+      for field in fields {
+        let value_range = source_expr_range(field.1)
+        Array::push(slots, source_named_slot("field", field.0, cursor, value_range.1, c))
+        cursor = value_range.1
+      }
+      slots
+    },
+    EForIn(name, index, value, _) => {
+      let hi = source_expr_range(value).0
+      let primary = source_binding_slot(name, start, hi, c)
+      let secondary = match index {
+        Some(n) => source_binding_slot(n, start, hi, c),
+        None => source_slot_node(-1, -1)
+      }
+      [primary, secondary]
+    },
+    _ => []
+  }
+}
+
+export fn source_expr_slot(expr: Expr, index: Int) -> (Int, Int) {
+  match expr {
+    ECall(EIdent("$source_span", _), args, _) => match Array::get(args, 2) {
+      EArray(slots) => if index >= 0 && index < Array::length(slots) {
+        match Array::get(slots, index) {
+          ETuple(bounds) => match (Array::get(bounds, 0), Array::get(bounds, 1)) {
+            (EInt(start), EInt(end)) => (start, end),
+            _ => (-1, -1)
+          },
+          _ => (-1, -1)
+        }
+      } else {
+        (-1, -1)
+      },
+      _ => (-1, -1)
+    },
+    _ => (-1, -1)
+  }
+}
+
+/// Preserve the source occurrence when parser normalization replaces a node
+/// without introducing new syntax (for example distributing a lambda type).
+export fn source_rewrap_expr(original: Expr, replacement: Expr) -> Expr {
+  match original {
+    ECall(EIdent("$source_span", start), args, _) => ECall(EIdent("$source_span", start), [
+      replacement,
+      Array::get(args, 1),
+      Array::get(args, 2),
+      Array::get(args, 3),
+      Array::get(args, 4)
+    ], start),
+    _ => replacement
+  }
+}
+
+/// A railway binder is source syntax; its continuation lambda is generated.
+/// Keep the real binder token on that lambda's parameter slot without giving
+/// the generated lambda itself a fabricated expression range.
+export fn source_wrap_bind(expr: Expr, name: String, off: Int, value: Expr, context: Option[ParserBinderContext]) -> Expr {
+  match context {
+    Some(c) => if c.capture_source_spans {
+      let start = match source_token_slot(off, c) {
+        ETuple(bounds) => match Array::get(bounds, 0) {
+          EInt(n) => n,
+          _ => -1
+        },
+        _ => -1
+      }
+      let value_span = source_expr_syntax_range(value)
+      match expr {
+        ECall(callee, args, call_off) => {
+          let continuation = Array::get(args, 1)
+          let slot = source_binding_slot(name, start, value_span.0, c)
+          let located_continuation = ECall(EIdent("$source_span", -1), [
+            continuation,
+            EInt(-1),
+            EArray([slot]),
+            EInt(-1),
+            EInt(-1)
+          ], -1)
+          source_annotate(ECall(callee, [value, located_continuation], call_off), start, value_span.1, c)
+        },
+        _ => expr
+      }
+    } else {
+      expr
+    },
+    None => expr
+  }
+}
+
+fn source_span_type_number(n: Int) -> TypeExpr {
+  if n < 0 {
+    TyUnit
+  } else {
+    TyName(__to_string(n))
+  }
+}
+
+fn source_slot_range(slot: Expr) -> (Int, Int) {
+  match slot {
+    ETuple(bounds) => match (Array::get(bounds, 0), Array::get(bounds, 1)) {
+      (EInt(start), EInt(end)) => (start, end),
+      _ => (-1, -1)
+    },
+    _ => (-1, -1)
+  }
+}
+
+export fn source_pat_head(pat: Pat) -> (Int, Int) {
+  match pat {
+    PCtor("$source_span", args) => match (Array::get(args, 3), Array::get(args, 4)) {
+      (PInt(start), PInt(end)) => (start, end),
+      _ => (-1, -1)
+    },
+    _ => (-1, -1)
+  }
+}
+
+export fn source_type_head(ty: TypeExpr) -> (Int, Int) {
+  match ty {
+    TyApp("$source_span", args) => (source_span_number(Array::get(args, 3)), source_span_number(Array::get(args, 4))),
+    _ => (-1, -1)
+  }
+}
+
+export fn source_rewrap_pat(original: Pat, replacement: Pat) -> Pat {
+  match original {
+    PCtor("$source_span", args) => PCtor("$source_span", [
+      replacement,
+      Array::get(args, 1),
+      Array::get(args, 2),
+      Array::get(args, 3),
+      Array::get(args, 4),
+      Array::get(args, 5),
+      Array::get(args, 6)
+    ]),
+    _ => replacement
+  }
+}
+
+// Unlike raw checker offsets (which interpolation remaps later), this start
+// already belongs to the current source frame.
+fn source_token_at_start(start: Int, c: ParserBinderContext) -> Expr {
+  let depth = Array::length(c.starts_stack) - 1
+  let starts = Array::get(c.starts_stack, depth)
+  let ends = Array::get(c.ends_stack, depth)
+  let base = Array::get(c.bases, depth)
+  let mut lo = 0
+  let mut hi = Array::length(starts)
+  while lo < hi {
+    let mid = (lo + hi) / 2
+    if base + Array::get(starts, mid) < start {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+  if lo < Array::length(ends) && base + Array::get(starts, lo) == start {
+    source_slot_node(start, base + Array::get(ends, lo))
+  } else {
+    source_slot_node(-1, -1)
+  }
+}
+
+export fn source_clear_type_head(ty: TypeExpr) -> TypeExpr {
+  match ty {
+    TyApp("$source_span", args) => TyApp("$source_span", [
+      Array::get(args, 0),
+      Array::get(args, 1),
+      Array::get(args, 2),
+      TyUnit,
+      TyUnit
+    ]),
+    _ => ty
+  }
+}
+
+/// Preserve the independently spelled effect qualifier when handler parsing
+/// prefixes an operation name. Its interval may live in the `with E` header.
+export fn source_set_pat_qualifier(pat: Pat, first: Int, next: Int, context: Option[ParserBinderContext]) -> Pat {
+  let (start, end) = source_expr_range(source_wrap_expr(EUnit, first, next, context))
+  match pat {
+    PCtor("$source_span", args) => PCtor("$source_span", [
+      Array::get(args, 0),
+      Array::get(args, 1),
+      Array::get(args, 2),
+      Array::get(args, 3),
+      Array::get(args, 4),
+      PInt(start),
+      PInt(end)
+    ]),
+    _ => pat
+  }
+}
+
+export fn source_pat_qualifier(pat: Pat) -> (Int, Int) {
+  match pat {
+    PCtor("$source_span", args) => match (Array::get(args, 5), Array::get(args, 6)) {
+      (PInt(start), PInt(end)) => (start, end),
+      _ => (-1, -1)
+    },
+    _ => (-1, -1)
+  }
+}

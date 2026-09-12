@@ -124,7 +124,7 @@ test "grep: `id` only takes identifiers, `const` only literals" {
 
 test "grep: `id` captures a compound-assignment target, not its operator" {
   let src = "let mut counter = 0\ncounter += 2\n"
-  inspect(scan(src, "$(target:id) += 2"), "a.vibe:<synthetic>: { counter += 2; () }\t$target=counter\n")
+  inspect(scan(src, "$(target:id) += 2"), "a.vibe:2:1: { counter += 2; () }\t$target=counter\n")
 }
 
 test "grep: a repeated metavariable must agree, `_` never has to" {
@@ -140,12 +140,12 @@ test "grep: matching is formatting-insensitive (AST, not text)" {
 
 test "grep: match arms with a `pat` metavariable" {
   let src = "let a = match v { Some(k) => k, None => 0 }\n"
-  inspect(scan(src, "match $(s:exp) { Some($(p:pat)) => $(b:exp), None => 0 }"), "a.vibe:1:15: match v { Some(k) => k, None => 0 }\t$s=v\t$p=k\t$b=k\n")
+  inspect(scan(src, "match $(s:exp) { Some($(p:pat)) => $(b:exp), None => 0 }"), "a.vibe:1:9: match v { Some(k) => k, None => 0 }\t$s=v\t$p=k\t$b=k\n")
 }
 
 test "grep: a `type` metavariable matches a lambda's annotation" {
   let src = "let a = (x: Int) -> Int { x }\n"
-  inspect(scan(src, "(x: $(t:type)) -> Int { x }"), "a.vibe:1:27: (x: Int) -> Int { x }\t$t=Int\n")
+  inspect(scan(src, "(x: $(t:type)) -> Int { x }"), "a.vibe:1:9: (x: Int) -> Int { x }\t$t=Int\n")
 }
 
 test "grep: a method call keeps its shape; the pipe form parses to a plain call" {
@@ -161,21 +161,16 @@ test "grep: nested matches are reported as the separate sites they are" {
 
 test "grep: JSON output carries offsets and per-capture spans" {
   let src = "let a = f(1)\n"
-  inspect(grep_scan_source("a.vibe", src, "f($(x:const))", no_strings(), no_strings(), "", true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":9,\"synthetic\":false,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":null}}}\n]\n")
+  inspect(grep_scan_source("a.vibe", src, "f($(x:const))", no_strings(), no_strings(), "", true), "[\n  {\"path\":\"a.vibe\",\"line\":1,\"col\":9,\"start\":8,\"end\":12,\"synthetic\":false,\"text\":\"f(1)\",\"captures\":{\"x\":{\"text\":\"1\",\"start\":10,\"end\":11,\"synthetic\":false}}}\n]\n")
 }
 
 test "grep: an unlocated match is null + synthetic, and the two modes agree" {
-  // #1943: the text lane has always rendered such a match as `<synthetic>`;
-  // JSON rendered `-1` in all four position fields. `-1` is a NUMBER, so a
-  // consumer slicing `src[start:end]` reads from the end of the file instead
-  // of failing. A match is unlocated when its operands are literals, which
-  // carry no offset slot.
-  let src = "let a = 3 + 4\n"
-  let out = grep_scan_source("a.vibe", src, "$(x:exp) + $(y:exp)", no_strings(), no_strings(), "", true)
+  // The Bool arm introduced by `is` has no source occurrence of `true`.
+  let src = "let a = value is None\n"
+  let out = grep_scan_source("a.vibe", src, "true", no_strings(), no_strings(), "", true)
   assert(String::contains(out, "\"line\":null,\"col\":null,\"start\":null,\"end\":null,\"synthetic\":true"))
   assert(!String::contains(out, "-1"))
-  // The text lane's spelling of the same fact.
-  assert(String::contains(scan(src, "$(x:exp) + $(y:exp)"), "<synthetic>"))
+  assert(String::contains(scan(src, "true"), "<synthetic>"))
 }
 
 test "grep: no match is empty output, in both text and JSON form" {
@@ -233,7 +228,7 @@ test "grep: a file whose typing failed outright is never reported well-typed" {
   inspect(grep_error_scan(src, "f($(x:exp))", "well"), "")
   inspect(grep_error_scan(src, "f($(x:exp))", "ill"), "a.vibe:2:9: f(1)\t$x=1\n")
   // A capture with no identifier-shaped token (a bare literal) carries no
-  // source offset, so there is nothing to look the type up BY -- the filter
+  // checker anchor, so there is nothing to look the type up BY -- the filter
   // drops it instead of guessing. Same boundary the docs state.
   inspect(scan_where(src, "f($(x:const))", "$x : Int"), "")
 }
@@ -449,9 +444,7 @@ test "grep: `let*` matches each written binder in a nested railway" {
 
 //# Range honesty (#1941 / #1943)
 
-/// Two calls to the same function: one with identifier operands, one with
-/// literal operands. The pair is what separates "the span is short" from "the
-/// span is the head", and both are the SAME reporting rule.
+/// Identifier and literal arguments both retain the complete call range.
 fn span_src() -> String {
   "fn add(a: Int, b: Int) -> Int {\n  a + b\n}\n\nfn f() -> Int {\n  let one = 1\n  let two = 2\n  add(one, two) + add(1, 2)\n}\n"
 }
@@ -460,55 +453,30 @@ fn scan_json(source: String, pattern: String) -> String with Exception {
   grep_scan_source("a.vibe", source, pattern, no_strings(), no_strings(), "", true)
 }
 
-test "grep: a reported range is a LOWER BOUND, not the match's extent" {
-  // `grep_expr_span` takes the min/max over the offsets it can find in the
-  // matched subtree, and only identifier-shaped AST nodes carry one -- `EInt`,
-  // `EString`, `EBool`, `EUnit` and friends carry none. So the span stops at
-  // the last identifier and never reaches the closing `)`.
-  //
-  // Slicing by it truncates, which is why docs/source-range-contract.md tells
-  // a reader to trust `start`, treat `end` as a floor, and read `text` for the
-  // description. The exact numbers are pinned so the claim in that document
-  // cannot quietly stop being true.
+test "grep: a call range includes its closing delimiter" {
   let src = span_src()
   let out = scan_json(src, "add($(a:args))")
-  // `add(one, two)` starts at 89; `two` ends at 101; the `)` is at 101.
-  assert(String::contains(out, "\"start\":89,\"end\":101,\"synthetic\":false,\"text\":\"add(one, two)\""))
-  assert_eq(String::substring(src, 89, 101), "add(one, two")
-  assert_eq(String::substring(src, 89, 102), "add(one, two)")
+  assert(String::contains(out, "\"start\":89,\"end\":102,\"synthetic\":false,\"text\":\"add(one, two)\""))
+  inspect(src[89: 102], "add(one, two)")
 }
 
-test "grep: a match whose operands are all literals collapses to the head" {
-  // The same rule at its most visible: neither `1` nor `2` is in the AST with
-  // an offset, so the span has nothing to widen past `add`.
+test "grep: literal operands retain the complete call range" {
   let src = span_src()
   let out = scan_json(src, "add($(a:args))")
-  assert(String::contains(out, "\"start\":105,\"end\":108,\"synthetic\":false,\"text\":\"add(1, 2)\""))
-  assert_eq(String::substring(src, 105, 108), "add")
+  assert(String::contains(out, "\"start\":105,\"end\":114,\"synthetic\":false,\"text\":\"add(1, 2)\""))
+  inspect(src[105: 114], "add(1, 2)")
 }
 
-test "grep: a capture carries a start and no end, and null when it has neither" {
-  // #1943's "captures also lack complete source ranges". `one, two` reports
-  // where it begins and nothing about where it stops; `1, 2` cannot even
-  // report that.
-  //
-  // The unlocated case used to render `-1`, chosen over `0` so the output did
-  // not invent a plausible offset. Right intent, wrong type: `-1` is still a
-  // NUMBER, and a consumer that slices `src[start:]` on it reads from the end
-  // of the file instead of failing. `null` carries the same "no offset" and
-  // breaks arithmetic loudly.
+test "grep: argument captures carry complete source ranges" {
   let out = scan_json(span_src(), "add($(a:args))")
-  assert(String::contains(out, "\"a\":{\"text\":\"one, two\",\"start\":93}"))
-  assert(String::contains(out, "\"a\":{\"text\":\"1, 2\",\"start\":null}"))
+  assert(String::contains(out, "\"a\":{\"text\":\"one, two\",\"start\":93,\"end\":101,\"synthetic\":false}"))
+  assert(String::contains(out, "\"a\":{\"text\":\"1, 2\",\"start\":109,\"end\":113,\"synthetic\":false}"))
   assert(!String::contains(out, "\"start\":-1"))
 }
 
 test "grep: a capture's text is a PRINTED form, not a source slice" {
-  // Measured 2026-08-19 and previously undocumented. `f( a  +  b )` captures
-  // as `(a + b)`: parens added, runs of whitespace collapsed. So
-  // `src[start : start + length(text)]` is NOT the captured source, and an
-  // `end` cannot be derived from the text either -- which is why this reports
-  // no end rather than a computed one.
+  // The printer adds parentheses and normalizes whitespace. Only the
+  // parser's token range, never text length, defines the source slice.
   let src = "fn f(x: Int) -> Int { x }\nfn g(a: Int, b: Int) -> Int { f( a  +  b ) }\n"
   let out = scan_json(src, "f($(x:exp))")
   assert(String::contains(out, "\"text\":\"(a + b)\""))

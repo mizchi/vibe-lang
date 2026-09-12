@@ -499,7 +499,18 @@ test("atomic binder authority is source-owned, validated, fail-closed, and bundl
   assert.match(parserContract, /opaque type LocatedProgramBinderAuthority/);
   assert.match(parserContract, /fn parse_source_located_with_binder_authority\(source: String\)/);
   assert.match(compilerManifest, /parser_binder_authority\.vibe/);
-  assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 0, "ordinary parser module must not own exact-source authority lexing");
+  // The opt-in grep parse owns token extents but returns only syntax. It must
+  // not publish binder authority, and no ordinary parse entry may acquire this
+  // lexing path. The ordinary None wrappers are pinned separately above.
+  const toolingBody = functionBody(parserSource, "parse_source_with_ranges");
+  assert.match(parserSource, /export fn parse_source_with_ranges\(source: String\) -> Array\[Stmt\] with Exception/);
+  assertBody(parserSource, "parse_source_with_ranges", [
+    "lex_with_offsets(source)",
+    "source_expr_context(starts, ends)",
+    "parse_program_located_with_context_impl(tokens, starts, source, Some(context)).0",
+  ], ["LocatedProgramBinderAuthority", "build_program_binder_authority", "binder_capture_is_eligible"]);
+  assert.equal((toolingBody.match(/lex_with_offsets\(source\)/g) ?? []).length, 1);
+  assert.equal((parserSource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only the syntax-only tooling entry may lex source in the ordinary parser module");
   assert.equal((binderAuthoritySource.match(/lex_with_offsets\(source\)/g) ?? []).length, 1, "only source-owning authority entry lexes source with exact offsets");
   const storedBlock = binderAuthoritySource.slice(
     binderAuthoritySource.indexOf("enum StoredBinderAuthority"),
@@ -769,7 +780,7 @@ test("parser binder context crosses every immediate binder-bearing lowering and 
   ]) {
     assertContextual(dispatchSource, helper, []);
   }
-  assertContextual(dispatchSource, "parse_handle_arm", ["qualify_handle_arm_pattern(effect_name, pat, context)"], ["qualify_handle_arm_pattern(effect_name, pat)"]);
+  assertContextual(dispatchSource, "parse_handle_arm", ["qualify_handle_arm_pattern(effect_name, pat, qualifier, context)"], ["qualify_handle_arm_pattern(effect_name, pat)"]);
   assertContextual(dispatchSource, "parse_impl_block", [
     "fold_block_steps(ArrayBuilder::freeze(steps), context)",
     // The offset argument is required, not incidental: ascribe_wrap's synthetic
