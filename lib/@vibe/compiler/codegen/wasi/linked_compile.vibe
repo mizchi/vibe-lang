@@ -733,76 +733,46 @@ fn lc_int_array_has(xs: Array[Int], v: Int) -> Bool {
   found
 }
 
-/// #2633: whether `n` is a name the MERGE stamped with its defining module.
+/// #2701: the registered tag a name is stamped with and WHICH MARKER carries
+/// it -- `("", false)` when the name is not stamped.
 ///
-/// The merge spells these `name ++ "_exp_" ++ sanitize_namespace_path(path)`
-/// (and `_dep_` for a private one), so the test is the marker plus a tag that
-/// looks like a sanitized path. `sanitize_namespace_path` maps every character
-/// outside `[A-Za-z0-9_]` to `_`, so a `.vibe` path always sanitizes to a tag
-/// ending `_vibe` -- which is what distinguishes a stamped name from a source
-/// identifier that merely contains `_dep_`. A qualified operation carries the
-/// tag before a `::`, so the tail is cut there first. Exactly the program's own
-/// cross-module declarations carry a stamp, so a builtin (`String::concat`,
-/// `Array::get`) cannot be mistaken for one and no builtin allow-list is
-/// needed to tell them apart.
+/// Three properties, each of which was a defect before it was one (Codex
+/// rounds 3 and 4):
 ///
-/// This used to test for the literal `_exp_lib__` / `_dep_lib__`, which is the
-/// same predicate ONLY for files under `lib/`: the `lib__` is nothing but the
-/// sanitized first path segment. Every compiler-closure measurement was
-/// therefore right, and every FIXTURE reading was vacuously zero -- a two-file
-/// program written to `/tmp` gets the tag `_tmp_...`, matches nothing, and
-/// reports a clean context whatever the context actually holds. The all-zero
-/// two-module pin this instrument shipped with could not have failed.
-fn lc_name_is_module_mangled(n: String) -> Bool {
-  lc_mangle_tail_is_path(n, "_exp_") || lc_mangle_tail_is_path(n, "_dep_")
-}
-
-/// The tag following `marker` in `n`, cut at a qualifying `::`, tested for the
-/// shape `sanitize_namespace_path` produces for a `.vibe` source path.
-fn lc_mangle_tail_is_path(n: String, marker: String) -> Bool {
-  let at = String::index_of(n, marker)
-  if at < 0 {
-    false
-  } else {
-    let tag = lc_cut_at_qualifier(String::substring(n, at + String::length(marker), String::length(n)))
-    String::length(tag) > 5 && String::ends_with(tag, "_vibe")
-  }
-}
-
-/// Of a name already known to be merge-stamped, whether the stamp is the
-/// EXPORTED one. Same `lib__`-independence as the predicate above: the split
-/// between "the contract publishes this" and "this is private to its module"
-/// must not depend on where the file happens to live.
-fn lc_name_is_exported_mangled(n: String) -> Bool {
-  lc_mangle_tail_is_path(n, "_exp_")
-}
-
-/// #2701 (Codex round 3): the registered tag a name is stamped with, or "".
+/// 1. Only the NAMESPACE PORTION is scanned. A qualified operation is spelled
+///    `ns ++ marker ++ tag ++ "::" ++ op`, so the stamp is always before the
+///    `::` and a marker inside the OPERATION name is not one. Scanning the
+///    whole string let `Trait_exp_<B>::render_dep_cache_vibe` replace B's real
+///    tag with `cache_vibe` whenever some module carried that tag.
 ///
-/// A stamp is a SUFFIX, so the marker that introduces it is the LAST one whose
-/// tail is a tag some module actually carries -- not the first `_exp_` in the
-/// string. Both failure modes of first-occurrence parsing are closed here:
+/// 2. Markers are read RIGHT TO LEFT, because the stamp is a SUFFIX. Taking
+///    the first one reads a tag out of the SOURCE name when that name contains
+///    a marker itself: `render_exp_cache_vibe_exp__tmp_dep_vibe` is stamped
+///    `_tmp_dep_vibe`, and first-occurrence parsing answered a tag no module
+///    carries, so the reference was dropped with no trace.
 ///
-///   render_exp_cache_vibe                    no tail is a registered tag -> ""
-///   render_exp_cache_vibe_exp__tmp_dep_vibe  the LAST marker gives the real tag
+/// 3. The `_exp_` / `_dep_` answer is the marker attached to THE REGISTERED
+///    TAG, not the first marker-shaped substring. A private
+///    `render_exp_cache_vibe_dep_<owner>` resolves its tag correctly and was
+///    still reported EXPORTED, because an earlier `_exp_` had a tail that
+///    also ended `_vibe` -- putting a private name into the `exp_*`
+///    classifiers, which exist to separate exactly these two things.
 ///
-/// The first is a legal source identifier in an entry module, which is never
-/// stamped at all; the second is a genuinely stamped name whose SOURCE name
-/// happens to contain the marker, which first-occurrence parsing resolved to a
-/// tag nobody carries and therefore dropped silently.
-///
-/// Matching against registered tags rather than a shape is what makes this
-/// exact: `tag_owner` is built from module PATHS through the merge's own
-/// mangler, so a tail either is a module's tag or it is not.
-fn lc_registered_tag_of(n: String, tag_owner: MutMap[String, Int]) -> String {
+/// Matching against registered tags rather than a name shape is what makes it
+/// exact: a tail either is some module's tag or it is not.
+fn lc_registered_tag_of(n: String, tag_owner: MutMap[String, Int]) -> (String, Bool) {
+  let ns = lc_cut_at_qualifier(n)
   let mut best = ""
+  let mut best_exp = false
   let mut i = 0
-  while i < String::length(n) {
-    let is_marker = (String::char_code_at(n, i) == '_') && (i + 5 <= String::length(n)) && (String::substring(n, i, i + 5) == "_exp_" || String::substring(n, i, i + 5) == "_dep_")
-    if is_marker {
-      let tag = lc_cut_at_qualifier(String::substring(n, i + 5, String::length(n)))
+  while i + 5 <= String::length(ns) {
+    let marker = String::substring(ns, i, i + 5)
+    let is_exp = marker == "_exp_"
+    if is_exp || marker == "_dep_" {
+      let tag = String::substring(ns, i + 5, String::length(ns))
       if MutMap::has(tag_owner, tag) {
         best = tag
+        best_exp = is_exp
       } else {
         ()
       }
@@ -811,7 +781,7 @@ fn lc_registered_tag_of(n: String, tag_owner: MutMap[String, Int]) -> String {
     }
     i = i + 1
   }
-  best
+  (best, best_exp)
 }
 
 /// #2633: the MODULE TAG a mangled name carries -- `..._exp_lib__vibe_parser_polyfill_vibe`
@@ -951,7 +921,7 @@ fn lc_decl_names_into(stmts: Array[Stmt], into: MutMap[String, Int]) -> Unit {
 ///
 /// Empty output is the claim that every cross-module name a module uses is one
 /// its context gave it.
-fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String], visible: Array[Int], tag_owner: MutMap[String, Int], self_fi: Int, cls: Array[Int], ifaces: Array[Array[Stmt]]) -> Unit {
+fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String], out_exp: Array[Int], visible: Array[Int], tag_owner: MutMap[String, Int], self_fi: Int, cls: Array[Int], ifaces: Array[Array[Stmt]]) -> Unit {
   let have: MutMap[String, Int] = MutMap::new_string()
   lc_decl_names_into(part, have)
   lc_decl_names_into(ctx, have)
@@ -987,7 +957,7 @@ fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String
             // report the scan exercising cross-module names it never saw. A
             // denominator that can be inflated by a plausible function name is
             // worth no more than the zero it was added to qualify.
-            let n_tag = lc_registered_tag_of(n, tag_owner)
+            let (n_tag, n_exp) = lc_registered_tag_of(n, tag_owner)
             let stamped = n_tag != ""
             if stamped {
               Array::set(cls, 5, Array::get(cls, 5) + 1)
@@ -996,6 +966,16 @@ fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String
             }
             if stamped && !MutMap::has(have, n) && !lc_str_array_has(out, n) {
               Array::push(out, n)
+              // #2701 (Codex round 4): the `_exp_` / `_dep_` answer is recorded
+              // HERE, where `tag_owner` says which marker carries the tag.
+              // Re-deriving it from the name later cannot be done correctly --
+              // the report has no `tag_owner` -- and doing it by shape put
+              // private names into the exported classifiers.
+              Array::push(out_exp, if n_exp {
+                1
+              } else {
+                0
+              })
               // #2633: and WHY it is missing. The name names its definer, so
               // ask whether that module is in this one's import closure.
               // `cls[0]` counts "the definer IS in the closure" -- the context
@@ -1003,7 +983,7 @@ fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String
               // closure is short. `cls[2]` is a name whose definer this run
               // could not identify at all, kept separate rather than folded
               // into either answer.
-              if lc_name_is_exported_mangled(n) {
+              if n_exp {
                 let owner = match MutMap::get(tag_owner, n_tag) {
                   Some(oi) => oi,
                   None => 0 - 1
@@ -5834,7 +5814,7 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     // #2633: what this module was GIVEN against what it USES, before anything
     // reads the context.
     Array::push(st.an_ctx_sizes, Array::length(ctx))
-    lc_ctx_unresolved_into(part, ctx, st.an_ctx_unresolved, visible, tag_owner, fi, st.an_ctx_cls, ifaces)
+    lc_ctx_unresolved_into(part, ctx, st.an_ctx_unresolved, st.an_ctx_unresolved_exp, visible, tag_owner, fi, st.an_ctx_cls, ifaces)
     let synthesized = desugar_trait_dicts_module_with_facts(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys, env.trait_facts)
     lc_union_into(st.requests, eq_synthesis_requests_list())
     lc_union_into(st.refusals, eq_typed_refusals_list())
@@ -6167,6 +6147,7 @@ struct PreludeSplitStats {
   // owner's interface, present in it but skipped by the context loop] for the
   // unresolved EXPORTED names.
   an_ctx_cls: Array[Int];
+  an_ctx_unresolved_exp: Array[Int];
   // #2638: the two fixpoints over `trial` -- concatenated, link-passes applied,
   // NOT folded. Isolates the fold from the link-only passes.
   an_bret_trial: Array[String];
@@ -6216,6 +6197,7 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     an_ctx_sizes: lc_fresh_int_array(),
     an_ctx_unresolved: lc_fresh_string_array(),
     an_ctx_cls: [0, 0, 0, 0, 0, 0],
+    an_ctx_unresolved_exp: [],
     an_bret_trial: lc_fresh_string_array(),
     an_view_trial: lc_fresh_string_array(),
     an_mrv_names: lc_fresh_string_array(),
@@ -6520,7 +6502,7 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
   let mut cui = 0
   while cui < Array::length(st.an_ctx_unresolved) {
     let n = Array::get(st.an_ctx_unresolved, cui)
-    if lc_name_is_exported_mangled(n) {
+    if cui < Array::length(st.an_ctx_unresolved_exp) && Array::get(st.an_ctx_unresolved_exp, cui) == 1 {
       ctx_unres_exp = ctx_unres_exp + 1
       if first_exp == "" {
         first_exp = n
