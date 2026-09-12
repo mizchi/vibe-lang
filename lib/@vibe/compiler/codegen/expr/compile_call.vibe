@@ -49,6 +49,9 @@ import @vibe/compiler/codegen/common_base {
   agg_slot_lookup,
   ctor_table_index_of,
   double_parse_expr,
+  double_runtime_parse_name,
+  double_runtime_require,
+  double_runtime_to_string_name,
   double_to_string_expr,
   effect_name_to_tag,
   effect_op_index,
@@ -110,6 +113,8 @@ import @vibe/compiler/codegen/common_base {
   resolve_local,
   sized_bytes_new_expr,
   str_table_index_of,
+  string_unicode_length_expr,
+  string_utf16_length_expr,
   struct_field_candidates,
   struct_field_dispatch_cases
 }
@@ -529,6 +534,9 @@ fn cc_ladder_names() -> Array[String] {
       "String::ends_with",
       "String::last_index_of",
       "String::to_bytes",
+      "String::unicode_length",
+      "String::utf16_length",
+      "String::utf8_length",
       "StringBuilder::freeze",
       "StringBuilder::new",
       "StringBuilder::push",
@@ -2240,7 +2248,7 @@ fn ts_known_int(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool wi
 /// arm so the shadow guard beside it reads as one condition rather than a
 /// chain with a trailing `&&`.
 fn ts_int_returning_builtin_name(bn: String) -> Bool {
-  bn == "Fs::stat_token" || bn == "vibe_fs_stat_token_raw" || bn == "Profiler::now_us" || bn == "Profiler::heap_bytes" || bn == "Env::args_len" || bn == "String::length" || bn == "Array::length" || bn == "Bytes::length" || bn == "String::char_code_at" || bn == "String::index_of" || bn == "String::last_index_of" || bn == "Stdin::read_char"
+  bn == "Fs::stat_token" || bn == "vibe_fs_stat_token_raw" || bn == "Profiler::now_us" || bn == "Profiler::heap_bytes" || bn == "Env::args_len" || bn == "String::length" || bn == "String::unicode_length" || bn == "String::utf16_length" || bn == "String::utf8_length" || bn == "Array::length" || bn == "Bytes::length" || bn == "String::char_code_at" || bn == "String::index_of" || bn == "String::last_index_of" || bn == "Stdin::read_char"
 }
 
 /// #2585 review (Codex P1): does the source shadow this builtin name?
@@ -3865,9 +3873,11 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       ], -1)), -1), local_names, next_local, ctx, ld)
     }
     else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_floatish(Array::get(args, 0), local_names, ctx) {
-      // #744: a statically-floatish argument takes the synthesized Double
-      // formatter — the generic handler below would stringify the raw f64
-      // bits (or the box pointer under RC) as an integer.
+      // #744: a statically-floatish argument takes the Double formatter of
+      // the runtime prelude (#2652) — the generic handler below would
+      // stringify the raw f64 bits (or the box pointer under RC) as an
+      // integer.
+      double_runtime_require(ctx.func_table, double_runtime_to_string_name())
       ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_boolish(Array::get(args, 0), local_names, ctx) {
@@ -4184,15 +4194,31 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
     }
     else if fname == "Double::to_string" || fname == "Float::to_string" {
-      // #767: same synthesized-AST technique `__to_string` already uses for a
-      // statically-floatish argument (see the __to_string branch above) —
-      // just exposed under its documented qualified name too.
+      // #767: the same lowering `__to_string` takes for a statically-floatish
+      // argument (see the __to_string branch above) — one call into the
+      // runtime prelude (#2652) — just exposed under its documented qualified
+      // name too.
+      double_runtime_require(ctx.func_table, double_runtime_to_string_name())
       ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    }
+    else if fname == "String::unicode_length" && Array::length(args) == 1 {
+      // #2630: the code-point view of a byte string, synthesized once for
+      // both lanes (see string_length_exprs.vibe).
+      ce(buf, string_unicode_length_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    }
+    else if fname == "String::utf16_length" && Array::length(args) == 1 {
+      ce(buf, string_utf16_length_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
+    }
+    else if fname == "String::utf8_length" && Array::length(args) == 1 {
+      // #2630: a String IS its UTF-8 bytes (ADR-0098), so the UTF-8 length is
+      // the byte length.
+      ce(buf, ECall(EIdent("String::length", -1), [Array::get(args, 0)], -1), local_names, next_local, ctx, ld)
     }
     else if fname == "Int::parse" {
       ce(buf, int_parse_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else if fname == "Double::parse" {
+      double_runtime_require(ctx.func_table, double_runtime_parse_name())
       ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ctx, ld)
     }
     else if fname == "Double::abs" || fname == "Double::floor" || fname == "Double::ceil" {

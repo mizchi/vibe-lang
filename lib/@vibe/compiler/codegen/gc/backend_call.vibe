@@ -45,6 +45,9 @@ import @vibe/compiler/codegen/common_base {
   agg_log_reset_above,
   ctor_table_index_of,
   double_parse_expr,
+  double_runtime_parse_name,
+  double_runtime_require,
+  double_runtime_to_string_name,
   double_to_string_expr,
   emit_binop_op,
   emit_i32_eq,
@@ -78,6 +81,8 @@ import @vibe/compiler/codegen/common_base {
   resolve_local,
   sized_bytes_new_expr,
   str_table_index_of,
+  string_unicode_length_expr,
+  string_utf16_length_expr,
   struct_field_candidates,
   struct_field_dispatch_cases
 }
@@ -1645,10 +1650,25 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // already imported here for `__to_string`; only the documented qualified
       // spellings were missing.
       else if fname == "Double::parse" {
+        double_runtime_require(ctx.func_table, double_runtime_parse_name())
         ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
       }
       else if fname == "Double::to_string" || fname == "Float::to_string" {
+        double_runtime_require(ctx.func_table, double_runtime_to_string_name())
         ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
+      }
+      else if fname == "String::unicode_length" && Array::length(args) == 1 {
+        // #2630 (gc mirror of the linear arm): the code-point view of a byte
+        // string, synthesized once for both lanes (string_length_exprs.vibe).
+        ce(buf, string_unicode_length_expr(Array::get(args, 0)), local_names, next_local, ld)
+      }
+      else if fname == "String::utf16_length" && Array::length(args) == 1 {
+        ce(buf, string_utf16_length_expr(Array::get(args, 0)), local_names, next_local, ld)
+      }
+      else if fname == "String::utf8_length" && Array::length(args) == 1 {
+        // #2630: a String IS its UTF-8 bytes (ADR-0098), so the UTF-8 length
+        // is the byte length.
+        ce(buf, ECall(EIdent("String::length", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)
       }
       else if fname == "Int::parse" {
         ce(buf, int_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
@@ -2528,6 +2548,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // #744 (gc mirror of the linear fix): a statically-floatish argument
         // takes the synthesized Double formatter — the runtime-dispatch
         // builtin below reads the raw f64 bits as an integer.
+        double_runtime_require(ctx.func_table, double_runtime_to_string_name())
         ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
       }
       else if fname == "__to_string" && Array::length(args) == 1 && bc_expr_is_boolish(Array::get(args, 0), local_names, ctx) {

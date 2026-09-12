@@ -1,0 +1,992 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr, expr_children
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import ./common_base.vibe {
+  FuncTable, func_table_index_of
+}
+
+//# Functions
+
+/// #2652: the Double runtime prelude -- `Double::to_string` (shortest
+/// round-trip) and `Double::parse` (correctly rounded), written as ordinary
+/// vibe source and compiled INTO the program that uses them.
+///
+/// Why source text and not a synthesized expression. `double_to_string_expr`
+/// used to build the formatter as hand-written AST inlined at every callsite:
+/// a fixed 15-digit fraction with the integer part through `Double::to_int`,
+/// which printed `2.2250738585072014` as `2.225073858507201` and `1e300` as
+/// `0` -- silently, on a value the bits held perfectly (#2652, P0). A correct
+/// formatter is a few hundred lines of integer arithmetic; as AST constructors
+/// that is unreadable, and inlined per callsite it is also large. As source it
+/// reads like the library function it is, and it is emitted ONCE per program
+/// as a set of top-level functions, on every lane, by `append_double_runtime`
+/// below. The callsite lowerings (`double_to_string_expr` /
+/// `double_parse_expr`) are now one `ECall` each.
+///
+/// The algorithm. A finite double is `f * 2^e` with integers f < 2^53 and e in
+/// [-1074, 971], read off the bits (`Double::to_i64_bits_hi` / `_lo`). Its
+/// rounding interval is `(f*4 - 2) * 2^(e-2)` .. `(f*4 + 2) * 2^(e-2)` (the low
+/// side is `f*4 - 1` when f is 2^52 in a binade above the lowest, where the
+/// neighbour below is half as far), inclusive when f is even (round-half-even
+/// on the reading side). Every one of those is an integer times `10^-p`, with
+/// `p = max(0, 2 - e)`: multiply by `2^(e-2)` or by `5^(2-e)`, exactly, in
+/// base-10^9 limbs (`Int64Array`), then read the decimal digits off. The
+/// shortest digit string inside the interval is found by Steele & White's
+/// free-format search over those exact digits (`__vibe_dbl_shortest`): for k =
+/// 1, 2, .. take the value's first k digits (T) and T plus one unit in the last
+/// place; emit the first that lands inside the interval, the closer one when
+/// both do, the even one on a tie. That is the same answer JavaScript's
+/// `Number::toString` and Ryu give, measured on 230 doubles (`fixtures/
+/// double_to_string_test.vibe` carries the table), and it is exact by
+/// construction rather than by a table.
+///
+/// The spelling is JavaScript's: plain digits for 1e-7 < |x| < 1e21 (`100`,
+/// `1.5`, `0.000001`), otherwise one digit, an optional fraction and a signed
+/// exponent (`1e+21`, `1e-7`, `1.7976931348623157e+308`); `NaN`, `Infinity`,
+/// `-Infinity`; and `-0` for negative zero -- the honest spelling of the value
+/// held (JavaScript prints `0`), and the one that reads back as -0.0.
+///
+/// `Double::parse` reads what `to_string` writes and everything the old
+/// parser did: an optional sign, digits, an optional fraction, and now an
+/// optional `e`/`E` exponent, plus the three special spellings. It is
+/// correctly rounded: the digits are read exactly, a first approximation is
+/// taken in double arithmetic (at most ~16 roundings, so within a few ulps),
+/// and then refined against the candidate's exact rounding interval with the
+/// same digit machinery until the input lies inside it -- ties go to the even
+/// significand. `Double::parse(Double::to_string(d))` therefore returns the
+/// bits of `d` for every finite `d`, which is #2652's round-trip requirement.
+///
+/// Cost. Every array is sized from the exponent (`__vibe_dbl_limb_capacity`),
+/// so an everyday value works in a few hundred bytes; the extremes
+/// (subnormals, 1e-300) need ~90 limbs and a ~800-digit expansion, still a
+/// few thousand integer operations. The bump lane never frees, so the sizing
+/// is what keeps a formatting loop's high-water mark sane there.
+///
+/// The prelude is NOT type-checked: it is appended after the checker ran (or
+/// in lanes that never run it) and is compiled by the syntactic classifiers
+/// alone. It is therefore written in the subset those classifiers answer
+/// exactly -- every parameter annotated, Doubles flowing only through
+/// literals, `Int::to_double`, `-> Double` functions and arithmetic on those,
+/// every `==` on a small Int or a Bool, and no `__to_string` of a Double
+/// (which would call itself). `lib/@vibe/compiler/tests/
+/// double_runtime_test.vibe` compiles it through the bump, RC, RC-shadow and
+/// gc lanes WITHOUT checker offsets, which is exactly the production shape.
+export fn double_runtime_source() -> String {
+  let lines = [
+    "fn __vibe_dbl_limbs_from_int(a: Array[Int], v: Int) -> Int {",
+    "  let mut x = v",
+    "  let mut n = 0",
+    "  while x > 0 {",
+    "    Int64Array::set(a, n, x % 1000000000)",
+    "    x = x / 1000000000",
+    "    n = n + 1",
+    "  }",
+    "  n",
+    "}",
+    "",
+    "fn __vibe_dbl_limbs_mul_small(a: Array[Int], len: Int, m: Int) -> Int {",
+    "  let mut carry = 0",
+    "  let mut i = 0",
+    "  while i < len {",
+    "    let v = Int64Array::get(a, i) * m + carry",
+    "    Int64Array::set(a, i, v % 1000000000)",
+    "    carry = v / 1000000000",
+    "    i = i + 1",
+    "  }",
+    "  let mut n = len",
+    "  while carry > 0 {",
+    "    Int64Array::set(a, n, carry % 1000000000)",
+    "    carry = carry / 1000000000",
+    "    n = n + 1",
+    "  }",
+    "  n",
+    "}",
+    "",
+    "fn __vibe_dbl_limbs_mul_pow5(a: Array[Int], len: Int, k: Int) -> Int {",
+    "  let mut n = len",
+    "  let mut r = k",
+    "  while r >= 13 {",
+    "    n = __vibe_dbl_limbs_mul_small(a, n, 1220703125)",
+    "    r = r - 13",
+    "  }",
+    "  let mut p = 1",
+    "  while r > 0 {",
+    "    p = p * 5",
+    "    r = r - 1",
+    "  }",
+    "  if p > 1 {",
+    "    n = __vibe_dbl_limbs_mul_small(a, n, p)",
+    "  } else {",
+    "    ()",
+    "  }",
+    "  n",
+    "}",
+    "",
+    "fn __vibe_dbl_limbs_mul_pow2(a: Array[Int], len: Int, k: Int) -> Int {",
+    "  let mut n = len",
+    "  let mut r = k",
+    "  while r >= 30 {",
+    "    n = __vibe_dbl_limbs_mul_small(a, n, 1073741824)",
+    "    r = r - 30",
+    "  }",
+    "  let mut p = 1",
+    "  while r > 0 {",
+    "    p = p * 2",
+    "    r = r - 1",
+    "  }",
+    "  if p > 1 {",
+    "    n = __vibe_dbl_limbs_mul_small(a, n, p)",
+    "  } else {",
+    "    ()",
+    "  }",
+    "  n",
+    "}",
+    "",
+    "fn __vibe_dbl_limbs_to_digits(a: Array[Int], len: Int, out: Array[Int]) -> Int {",
+    "  let mut pos = 0",
+    "  let mut li = len - 1",
+    "  while li >= 0 {",
+    "    let mut v = Int64Array::get(a, li)",
+    "    let mut d = 8",
+    "    while d >= 0 {",
+    "      Int64Array::set(out, pos + d, v % 10)",
+    "      v = v / 10",
+    "      d = d - 1",
+    "    }",
+    "    pos = pos + 9",
+    "    li = li - 1",
+    "  }",
+    "  let mut lz = 0",
+    "  let mut scanning = true",
+    "  while scanning {",
+    "    if lz < pos {",
+    "      let dz = Int64Array::get(out, lz)",
+    "      if dz == 0 {",
+    "        lz = lz + 1",
+    "      } else {",
+    "        scanning = false",
+    "      }",
+    "    } else {",
+    "      scanning = false",
+    "    }",
+    "  }",
+    "  let mut i = 0",
+    "  while i + lz < pos {",
+    "    Int64Array::set(out, i, Int64Array::get(out, i + lz))",
+    "    i = i + 1",
+    "  }",
+    "  pos - lz",
+    "}",
+    "",
+    "fn __vibe_dbl_limb_capacity(e2: Int) -> Int {",
+    "  if e2 >= 0 {",
+    "    3 + (17 + e2 * 31 / 100) / 9",
+    "  } else {",
+    "    3 + (17 + (0 - e2) * 7 / 10) / 9",
+    "  }",
+    "}",
+    "",
+    "fn __vibe_dbl_digit_capacity(e2: Int) -> Int {",
+    "  9 * __vibe_dbl_limb_capacity(e2) + 9",
+    "}",
+    "",
+    "fn __vibe_dbl_scaled_digits(x: Int, e2: Int, out: Array[Int]) -> Int {",
+    "  let limbs = Int64Array::make(__vibe_dbl_limb_capacity(e2), 0)",
+    "  let mut n = __vibe_dbl_limbs_from_int(limbs, x)",
+    "  if e2 >= 0 {",
+    "    n = __vibe_dbl_limbs_mul_pow2(limbs, n, e2)",
+    "  } else {",
+    "    n = __vibe_dbl_limbs_mul_pow5(limbs, n, 0 - e2)",
+    "  }",
+    "  __vibe_dbl_limbs_to_digits(limbs, n, out)",
+    "}",
+    "",
+    "fn __vibe_dbl_pad_get(d: Array[Int], nd: Int, width: Int, i: Int) -> Int {",
+    "  let off = width - nd",
+    "  if i < off {",
+    "    0",
+    "  } else {",
+    "    Int64Array::get(d, i - off)",
+    "  }",
+    "}",
+    "",
+    "fn __vibe_dbl_shortest(dv: Array[Int], nv: Int, dl: Array[Int], nl: Int, dh: Array[Int], nh: Int, inclusive: Bool, res: Array[Int]) -> Int {",
+    "  let width = nh",
+    "  let mut k = 1",
+    "  let mut found = 0",
+    "  while found == 0 {",
+    "    let mut cl = 0",
+    "    let mut i = 0",
+    "    while i < width && cl == 0 {",
+    "      let tv = if i < k {",
+    "        __vibe_dbl_pad_get(dv, nv, width, i)",
+    "      } else {",
+    "        0",
+    "      }",
+    "      let lv = __vibe_dbl_pad_get(dl, nl, width, i)",
+    "      if tv > lv {",
+    "        cl = 1",
+    "      } else if tv < lv {",
+    "        cl = 0 - 1",
+    "      } else {",
+    "        ()",
+    "      }",
+    "      i = i + 1",
+    "    }",
+    "    let within_low = cl > 0 || (cl == 0 && inclusive)",
+    "    let mut j = 0",
+    "    while j < k {",
+    "      Int64Array::set(res, j, __vibe_dbl_pad_get(dv, nv, width, j))",
+    "      j = j + 1",
+    "    }",
+    "    let mut carry = 1",
+    "    let mut c = k - 1",
+    "    while c >= 0 && carry > 0 {",
+    "      let nvv = Int64Array::get(res, c) + 1",
+    "      if nvv >= 10 {",
+    "        Int64Array::set(res, c, 0)",
+    "        carry = 1",
+    "      } else {",
+    "        Int64Array::set(res, c, nvv)",
+    "        carry = 0",
+    "      }",
+    "      c = c - 1",
+    "    }",
+    "    let mut within_high = false",
+    "    if carry == 0 {",
+    "      let mut ch = 0",
+    "      let mut i2 = 0",
+    "      while i2 < width && ch == 0 {",
+    "        let tv = if i2 < k {",
+    "          Int64Array::get(res, i2)",
+    "        } else {",
+    "          0",
+    "        }",
+    "        let hv = __vibe_dbl_pad_get(dh, nh, width, i2)",
+    "        if tv > hv {",
+    "          ch = 1",
+    "        } else if tv < hv {",
+    "          ch = 0 - 1",
+    "        } else {",
+    "          ()",
+    "        }",
+    "        i2 = i2 + 1",
+    "      }",
+    "      within_high = ch < 0 || (ch == 0 && inclusive)",
+    "    } else {",
+    "      ()",
+    "    }",
+    "    if within_low && within_high {",
+    "      let dk = __vibe_dbl_pad_get(dv, nv, width, k)",
+    "      let mut round_up = false",
+    "      if dk > 5 {",
+    "        round_up = true",
+    "      } else if dk == 5 {",
+    "        let mut nonzero = false",
+    "        let mut t = k + 1",
+    "        while t < width && !nonzero {",
+    "          if __vibe_dbl_pad_get(dv, nv, width, t) != 0 {",
+    "            nonzero = true",
+    "          } else {",
+    "            ()",
+    "          }",
+    "          t = t + 1",
+    "        }",
+    "        if nonzero {",
+    "          round_up = true",
+    "        } else {",
+    "          let last = __vibe_dbl_pad_get(dv, nv, width, k - 1)",
+    "          round_up = last % 2 == 1",
+    "        }",
+    "      } else {",
+    "        ()",
+    "      }",
+    "      if round_up {",
+    "        found = 2",
+    "      } else {",
+    "        found = 1",
+    "      }",
+    "    } else if within_low {",
+    "      found = 1",
+    "    } else if within_high {",
+    "      found = 2",
+    "    } else {",
+    "      k = k + 1",
+    "    }",
+    "  }",
+    "  if found == 1 {",
+    "    let mut j2 = 0",
+    "    while j2 < k {",
+    "      Int64Array::set(res, j2, __vibe_dbl_pad_get(dv, nv, width, j2))",
+    "      j2 = j2 + 1",
+    "    }",
+    "  } else {",
+    "    ()",
+    "  }",
+    "  k",
+    "}",
+    "",
+    "fn __vibe_dbl_digit_str(res: Array[Int], start: Int, count: Int) -> String {",
+    "  let mut out = \"\"",
+    "  let mut i = 0",
+    "  while i < count {",
+    "    out = String::concat(out, String::from_char_code(48 + Int64Array::get(res, start + i)))",
+    "    i = i + 1",
+    "  }",
+    "  out",
+    "}",
+    "",
+    "fn __vibe_dbl_zeros(count: Int) -> String {",
+    "  let mut out = \"\"",
+    "  let mut i = 0",
+    "  while i < count {",
+    "    out = String::concat(out, String::from_char_code(48))",
+    "    i = i + 1",
+    "  }",
+    "  out",
+    "}",
+    "",
+    "fn __vibe_dbl_format(res: Array[Int], start: Int, m: Int, n: Int, neg: Bool) -> String {",
+    "  let body = if m <= n && n <= 21 {",
+    "    String::concat(__vibe_dbl_digit_str(res, start, m), __vibe_dbl_zeros(n - m))",
+    "  } else if 0 < n && n <= 21 {",
+    "    String::concat(__vibe_dbl_digit_str(res, start, n), String::concat(String::from_char_code(46), __vibe_dbl_digit_str(res, start + n, m - n)))",
+    "  } else if 0 - 6 < n && n <= 0 {",
+    "    String::concat(String::concat(String::from_char_code(48), String::from_char_code(46)), String::concat(__vibe_dbl_zeros(0 - n), __vibe_dbl_digit_str(res, start, m)))",
+    "  } else {",
+    "    let ex = n - 1",
+    "    let mant = if m > 1 {",
+    "      String::concat(__vibe_dbl_digit_str(res, start, 1), String::concat(String::from_char_code(46), __vibe_dbl_digit_str(res, start + 1, m - 1)))",
+    "    } else {",
+    "      __vibe_dbl_digit_str(res, start, 1)",
+    "    }",
+    "    let sign = if ex >= 0 {",
+    "      String::from_char_code(43)",
+    "    } else {",
+    "      String::from_char_code(45)",
+    "    }",
+    "    let mag = if ex >= 0 {",
+    "      ex",
+    "    } else {",
+    "      0 - ex",
+    "    }",
+    "    String::concat(mant, String::concat(String::from_char_code(101), String::concat(sign, Int::to_string(mag))))",
+    "  }",
+    "  if neg {",
+    "    String::concat(String::from_char_code(45), body)",
+    "  } else {",
+    "    body",
+    "  }",
+    "}",
+    "",
+    "fn __vibe_double_to_string(d: Double) -> String {",
+    "  let hi = Double::to_i64_bits_hi(d)",
+    "  let lo = Double::to_i64_bits_lo(d)",
+    "  let neg = hi >= 2147483648",
+    "  let biased = (hi / 1048576) % 2048",
+    "  let mant = (hi % 1048576) * 4294967296 + lo",
+    "  if biased == 2047 {",
+    "    if mant != 0 {",
+    "      \"NaN\"",
+    "    } else if neg {",
+    "      \"-Infinity\"",
+    "    } else {",
+    "      \"Infinity\"",
+    "    }",
+    "  } else if biased == 0 && mant == 0 {",
+    "    if neg {",
+    "      \"-0\"",
+    "    } else {",
+    "      \"0\"",
+    "    }",
+    "  } else {",
+    "    let f = if biased == 0 {",
+    "      mant",
+    "    } else {",
+    "      mant + 4503599627370496",
+    "    }",
+    "    let e = if biased == 0 {",
+    "      0 - 1074",
+    "    } else {",
+    "      biased - 1075",
+    "    }",
+    "    let asym = biased > 1 && mant == 0",
+    "    let e2 = e - 2",
+    "    let p = if e2 < 0 {",
+    "      0 - e2",
+    "    } else {",
+    "      0",
+    "    }",
+    "    let cap = __vibe_dbl_digit_capacity(e2)",
+    "    let dv = Int64Array::make(cap, 0)",
+    "    let dl = Int64Array::make(cap, 0)",
+    "    let dh = Int64Array::make(cap, 0)",
+    "    let nv = __vibe_dbl_scaled_digits(f * 4, e2, dv)",
+    "    let lowx = if asym {",
+    "      f * 4 - 1",
+    "    } else {",
+    "      f * 4 - 2",
+    "    }",
+    "    let nl = __vibe_dbl_scaled_digits(lowx, e2, dl)",
+    "    let nh = __vibe_dbl_scaled_digits(f * 4 + 2, e2, dh)",
+    "    let inclusive = f % 2 == 0",
+    "    let res = Int64Array::make(nh + 2, 0)",
+    "    let k = __vibe_dbl_shortest(dv, nv, dl, nl, dh, nh, inclusive, res)",
+    "    let mut lz = 0",
+    "    let mut scanning = true",
+    "    while scanning {",
+    "      if lz < k {",
+    "        if Int64Array::get(res, lz) == 0 {",
+    "          lz = lz + 1",
+    "        } else {",
+    "          scanning = false",
+    "        }",
+    "      } else {",
+    "        scanning = false",
+    "      }",
+    "    }",
+    "    let mut last = k",
+    "    let mut scanning2 = true",
+    "    while scanning2 {",
+    "      if last > lz {",
+    "        if Int64Array::get(res, last - 1) == 0 {",
+    "          last = last - 1",
+    "        } else {",
+    "          scanning2 = false",
+    "        }",
+    "      } else {",
+    "        scanning2 = false",
+    "      }",
+    "    }",
+    "    let m = last - lz",
+    "    let n = nh - p - lz",
+    "    __vibe_dbl_format(res, lz, m, n, neg)",
+    "  }",
+    "}",
+    "",
+    "fn __vibe_dbl_pow2(k: Int) -> Double {",
+    "  let mut r = 1.0",
+    "  let mut i = 0",
+    "  while i < k {",
+    "    r = r * 2.0",
+    "    i = i + 1",
+    "  }",
+    "  r",
+    "}",
+    "",
+    "fn __vibe_dbl_pow10(k: Int) -> Double {",
+    "  let mut r = 1.0",
+    "  let mut i = 0",
+    "  while i < k {",
+    "    r = r * 10.0",
+    "    i = i + 1",
+    "  }",
+    "  r",
+    "}",
+    "",
+    "fn __vibe_dbl_build(f: Int, biased: Int) -> Double {",
+    "  if biased >= 2047 {",
+    "    1.0 / 0.0",
+    "  } else {",
+    "    let e = if biased == 0 {",
+    "      0 - 1074",
+    "    } else {",
+    "      biased - 1075",
+    "    }",
+    "    let mut x = Int::to_double(f)",
+    "    let mut k = e",
+    "    while k > 0 {",
+    "      let step = if k > 60 {",
+    "        60",
+    "      } else {",
+    "        k",
+    "      }",
+    "      x = x * __vibe_dbl_pow2(step)",
+    "      k = k - step",
+    "    }",
+    "    while k < 0 {",
+    "      let step = if k < 0 - 60 {",
+    "        60",
+    "      } else {",
+    "        0 - k",
+    "      }",
+    "      x = x / __vibe_dbl_pow2(step)",
+    "      k = k + step",
+    "    }",
+    "    x",
+    "  }",
+    "}",
+    "",
+    "fn __vibe_dbl_cmp_scaled(a: Array[Int], na: Int, sa: Int, b: Array[Int], nb: Int, sticky: Bool) -> Int {",
+    "  let wa = if sa >= 0 {",
+    "    na + sa",
+    "  } else {",
+    "    na",
+    "  }",
+    "  let wb = if sa >= 0 {",
+    "    nb",
+    "  } else {",
+    "    nb - sa",
+    "  }",
+    "  if wa > wb {",
+    "    1",
+    "  } else if wa < wb {",
+    "    0 - 1",
+    "  } else {",
+    "    let mut i = 0",
+    "    let mut r = 0",
+    "    while i < wa && r == 0 {",
+    "      let da = if i < na {",
+    "        Int64Array::get(a, i)",
+    "      } else {",
+    "        0",
+    "      }",
+    "      let db = if i < nb {",
+    "        Int64Array::get(b, i)",
+    "      } else {",
+    "        0",
+    "      }",
+    "      if da > db {",
+    "        r = 1",
+    "      } else if da < db {",
+    "        r = 0 - 1",
+    "      } else {",
+    "        ()",
+    "      }",
+    "      i = i + 1",
+    "    }",
+    "    if r == 0 && sticky {",
+    "      1",
+    "    } else {",
+    "      r",
+    "    }",
+    "  }",
+    "}",
+    "",
+    "fn __vibe_dbl_match_at(s: String, i: Int, lit: String) -> Bool {",
+    "  let n = String::length(lit)",
+    "  if i + n != String::length(s) {",
+    "    false",
+    "  } else {",
+    "    let mut ok = true",
+    "    let mut j = 0",
+    "    while j < n && ok {",
+    "      if String::char_code_at(s, i + j) != String::char_code_at(lit, j) {",
+    "        ok = false",
+    "      } else {",
+    "        ()",
+    "      }",
+    "      j = j + 1",
+    "    }",
+    "    ok",
+    "  }",
+    "}",
+    "",
+    "fn __vibe_dbl_signed(x: Double, neg: Bool) -> Double {",
+    "  if neg {",
+    "    x * (0.0 - 1.0)",
+    "  } else {",
+    "    x",
+    "  }",
+    "}",
+    "",
+    "fn __vibe_double_parse(s: String) -> Option[Double] {",
+    "  let len = String::length(s)",
+    "  if len == 0 {",
+    "    None",
+    "  } else {",
+    "    let c0 = String::char_code_at(s, 0)",
+    "    let neg = c0 == 45",
+    "    let start = if c0 == 45 || c0 == 43 {",
+    "      1",
+    "    } else {",
+    "      0",
+    "    }",
+    "    if __vibe_dbl_match_at(s, start, \"NaN\") {",
+    "      Some(0.0 / 0.0)",
+    "    } else if __vibe_dbl_match_at(s, start, \"Infinity\") {",
+    "      Some(__vibe_dbl_signed(1.0 / 0.0, neg))",
+    "    } else {",
+    "      let dig = Int64Array::make(if len < 800 {",
+    "        len + 1",
+    "      } else {",
+    "        801",
+    "      }, 0)",
+    "      let mut nd = 0",
+    "      let mut total_sig = 0",
+    "      let mut frac_digits = 0",
+    "      let mut seen_dot = false",
+    "      let mut seen_digit = false",
+    "      let mut sticky = false",
+    "      let mut ok = true",
+    "      let mut i = start",
+    "      let mut in_mantissa = true",
+    "      while i < len && ok && in_mantissa {",
+    "        let ch = String::char_code_at(s, i)",
+    "        if ch >= 48 && ch <= 57 {",
+    "          seen_digit = true",
+    "          if seen_dot {",
+    "            frac_digits = frac_digits + 1",
+    "          } else {",
+    "            ()",
+    "          }",
+    "          if total_sig == 0 && ch == 48 {",
+    "            ()",
+    "          } else {",
+    "            total_sig = total_sig + 1",
+    "            if nd < 800 {",
+    "              Int64Array::set(dig, nd, ch - 48)",
+    "              nd = nd + 1",
+    "            } else if ch != 48 {",
+    "              sticky = true",
+    "            } else {",
+    "              ()",
+    "            }",
+    "          }",
+    "          i = i + 1",
+    "        } else if ch == 46 && !seen_dot {",
+    "          seen_dot = true",
+    "          i = i + 1",
+    "        } else if ch == 101 || ch == 69 {",
+    "          in_mantissa = false",
+    "        } else {",
+    "          ok = false",
+    "        }",
+    "      }",
+    "      let mut exp_val = 0",
+    "      if ok && i < len {",
+    "        i = i + 1",
+    "        let mut exp_neg = false",
+    "        if i < len {",
+    "          let ec = String::char_code_at(s, i)",
+    "          if ec == 45 {",
+    "            exp_neg = true",
+    "            i = i + 1",
+    "          } else if ec == 43 {",
+    "            i = i + 1",
+    "          } else {",
+    "            ()",
+    "          }",
+    "        } else {",
+    "          ()",
+    "        }",
+    "        let mut exp_digits = 0",
+    "        while i < len && ok {",
+    "          let ch = String::char_code_at(s, i)",
+    "          if ch >= 48 && ch <= 57 {",
+    "            if exp_val < 100000 {",
+    "              exp_val = exp_val * 10 + (ch - 48)",
+    "            } else {",
+    "              ()",
+    "            }",
+    "            exp_digits = exp_digits + 1",
+    "            i = i + 1",
+    "          } else {",
+    "            ok = false",
+    "          }",
+    "        }",
+    "        if exp_digits == 0 {",
+    "          ok = false",
+    "        } else {",
+    "          ()",
+    "        }",
+    "        if exp_neg {",
+    "          exp_val = 0 - exp_val",
+    "        } else {",
+    "          ()",
+    "        }",
+    "      } else {",
+    "        ()",
+    "      }",
+    "      if !ok || !seen_digit {",
+    "        None",
+    "      } else if nd == 0 {",
+    "        Some(__vibe_dbl_signed(0.0, neg))",
+    "      } else {",
+    "        let exp10 = exp_val - frac_digits + (total_sig - nd)",
+    "        let mag = nd + exp10",
+    "        if mag > 310 {",
+    "          Some(__vibe_dbl_signed(1.0 / 0.0, neg))",
+    "        } else if mag < 0 - 324 {",
+    "          Some(__vibe_dbl_signed(0.0, neg))",
+    "        } else {",
+    "          let nlead = if nd < 17 {",
+    "            nd",
+    "          } else {",
+    "            17",
+    "          }",
+    "          let mut lead = 0",
+    "          let mut j = 0",
+    "          while j < nlead {",
+    "            lead = lead * 10 + Int64Array::get(dig, j)",
+    "            j = j + 1",
+    "          }",
+    "          let mut approx = Int::to_double(lead)",
+    "          let mut ae = exp10 + (nd - nlead)",
+    "          while ae > 0 {",
+    "            let step = if ae > 22 {",
+    "              22",
+    "            } else {",
+    "              ae",
+    "            }",
+    "            approx = approx * __vibe_dbl_pow10(step)",
+    "            ae = ae - step",
+    "          }",
+    "          while ae < 0 {",
+    "            let step = if ae < 0 - 22 {",
+    "              22",
+    "            } else {",
+    "              0 - ae",
+    "            }",
+    "            approx = approx / __vibe_dbl_pow10(step)",
+    "            ae = ae + step",
+    "          }",
+    "          let ahi = Double::to_i64_bits_hi(approx)",
+    "          let alo = Double::to_i64_bits_lo(approx)",
+    "          let mut biased = (ahi / 1048576) % 2048",
+    "          let amant = (ahi % 1048576) * 4294967296 + alo",
+    "          let mut f = if biased == 0 {",
+    "            amant",
+    "          } else {",
+    "            amant + 4503599627370496",
+    "          }",
+    "          if biased >= 2047 {",
+    "            biased = 2046",
+    "            f = 9007199254740991",
+    "          } else {",
+    "            ()",
+    "          }",
+    "          let mut done = false",
+    "          let mut iter = 0",
+    "          while !done && iter < 2000 {",
+    "            let e = if biased == 0 {",
+    "              0 - 1074",
+    "            } else {",
+    "              biased - 1075",
+    "            }",
+    "            let e2 = e - 2",
+    "            let p = if e2 < 0 {",
+    "              0 - e2",
+    "            } else {",
+    "              0",
+    "            }",
+    "            let asym = biased > 1 && f == 4503599627370496",
+    "            let inclusive = f % 2 == 0",
+    "            let cap = __vibe_dbl_digit_capacity(e2)",
+    "            let dh = Int64Array::make(cap, 0)",
+    "            let nh = __vibe_dbl_scaled_digits(f * 4 + 2, e2, dh)",
+    "            let ch = __vibe_dbl_cmp_scaled(dig, nd, exp10 + p, dh, nh, sticky)",
+    "            if ch > 0 || (ch == 0 && !inclusive) {",
+    "              if biased == 0 {",
+    "                f = f + 1",
+    "                if f == 4503599627370496 {",
+    "                  biased = 1",
+    "                } else {",
+    "                  ()",
+    "                }",
+    "              } else if f == 9007199254740991 {",
+    "                biased = biased + 1",
+    "                f = 4503599627370496",
+    "                if biased >= 2047 {",
+    "                  done = true",
+    "                } else {",
+    "                  ()",
+    "                }",
+    "              } else {",
+    "                f = f + 1",
+    "              }",
+    "            } else if f == 0 {",
+    "              done = true",
+    "            } else {",
+    "              let lowx = if asym {",
+    "                f * 4 - 1",
+    "              } else {",
+    "                f * 4 - 2",
+    "              }",
+    "              let dl = Int64Array::make(cap, 0)",
+    "              let nl = __vibe_dbl_scaled_digits(lowx, e2, dl)",
+    "              let cl = __vibe_dbl_cmp_scaled(dig, nd, exp10 + p, dl, nl, sticky)",
+    "              if cl < 0 || (cl == 0 && !inclusive) {",
+    "                if biased == 0 {",
+    "                  f = f - 1",
+    "                } else if f == 4503599627370496 {",
+    "                  if biased == 1 {",
+    "                    biased = 0",
+    "                    f = 4503599627370495",
+    "                  } else {",
+    "                    biased = biased - 1",
+    "                    f = 9007199254740991",
+    "                  }",
+    "                } else {",
+    "                  f = f - 1",
+    "                }",
+    "              } else {",
+    "                done = true",
+    "              }",
+    "            }",
+    "            iter = iter + 1",
+    "          }",
+    "          Some(__vibe_dbl_signed(__vibe_dbl_build(f, biased), neg))",
+    "        }",
+    "      }",
+    "    }",
+    "  }",
+    "}"
+  ]
+  String::join(lines, "\n")
+}
+
+export fn double_runtime_to_string_name() -> String {
+  "__vibe_double_to_string"
+}
+
+export fn double_runtime_parse_name() -> String {
+  "__vibe_double_parse"
+}
+
+/// Can this program hold a `Double` at all? A Double is born from a float
+/// literal, from `Int::to_double` / `Int::to_float`, or from a `Double::*` /
+/// `Float::*` builtin (`Double::parse`, `Double::from_i64_bits*`, ...); with
+/// none of those in the program no expression is ever classified floatish,
+/// so no callsite asks for the prelude.
+export fn program_mentions_double(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = stmt_body_has(Array::get(stmts, i), 0)
+    i = i + 1
+  }
+  found
+}
+
+/// Can this program FORMAT or PARSE a Double? The prelude is called from
+/// exactly these lowerings: `Double::to_string` / `Float::to_string`,
+/// `Double::parse`, and `__to_string` on a floatish argument -- which codegen
+/// also synthesizes for an interpolation hole (`EStringInterp`, linear lane),
+/// for the trivial `to_string` Show wrapper (both lanes), and which the
+/// normalize passes already wrote into the AST for `inspect`, `assert_eq`,
+/// derived `Show` and the Show witness wrappers before the hook runs. A
+/// program with none of those spellings never reaches a prelude call.
+export fn program_has_render_site(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = stmt_body_has(Array::get(stmts, i), 1)
+    i = i + 1
+  }
+  found
+}
+
+/// The append condition: both a Double source and a render / parse site.
+/// Measured on `bench/binary_size/variant_float.vibe` (holds Doubles, formats
+/// none): appending on the Double source alone cost 124 B after the
+/// module-level late DCE had dropped every prelude function -- the type
+/// entries of their signatures (+70) and their string literals (+53), which
+/// that pass does not prune. Requiring a render site too keeps that program
+/// byte-identical to the one main produces. Still an over-approximation on
+/// purpose: a program that renders only Ints and holds a Double elsewhere
+/// carries an unused prelude, which costs size, never an answer.
+export fn program_needs_double_runtime(stmts: Array[Stmt]) -> Bool {
+  program_mentions_double(stmts) && program_has_render_site(stmts)
+}
+
+fn stmt_body_has(stmt: Stmt, what: Int) -> Bool {
+  match stmt {
+    SLet(_, _, _, _, body) => expr_has(body, what),
+    SLetMut(_, _, body) => expr_has(body, what),
+    SLetPat(_, body) => expr_has(body, what),
+    STest(_, body) => expr_has(body, what),
+    SBench(_, body) => expr_has(body, what),
+    SExample(_, body) => expr_has(body, what),
+    SExpr(body) => expr_has(body, what),
+    _ => false
+  }
+}
+
+fn render_site_name(name: String) -> Bool {
+  name == "__to_string" || name == "to_string" || name == "inspect" || name == "assert_eq" || name == "Double::to_string" || name == "Float::to_string" || name == "Double::parse"
+}
+
+fn double_source_name(name: String) -> Bool {
+  String::starts_with(name, "Double::") || String::starts_with(name, "Float::") || name == "Int::to_double" || name == "Int::to_float"
+}
+
+/// `what` 0: a Double source; 1: a render / parse site.
+fn expr_has(e: Expr, what: Int) -> Bool {
+  match e {
+    EFloat(_) => what == 0,
+    EStringInterp(_) => what == 1,
+    EIdent(name, _) => if what == 0 {
+      double_source_name(name)
+    } else {
+      render_site_name(name)
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(kids) && !found {
+        found = expr_has(Array::get(kids, i), what)
+        i = i + 1
+      }
+      found
+    }
+  }
+}
+
+/// Is the prelude already in `stmts`? Its entry function is a top-level
+/// `let`, so a program that carries it (a second lane compiling the same
+/// statement array) is not handed a duplicate.
+export fn program_has_double_runtime(stmts: Array[Stmt]) -> Bool {
+  let name = double_runtime_to_string_name()
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => n == name,
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Append the prelude's functions to `stmts` when the program can format or
+/// parse a Double (`program_needs_double_runtime`) and does not carry them
+/// yet. Called at each lane's convergence
+/// point AFTER every AST-mutating pass, so the functions are compiled as the
+/// source wrote them, and BEFORE the analyses that codegen reads (borrow
+/// masks, float-returning names, heap-returning names), so they see the
+/// prelude like any other function.
+export fn append_double_runtime(stmts: Array[Stmt]) -> Unit with Exception {
+  if program_needs_double_runtime(stmts) && !program_has_double_runtime(stmts) {
+    let prelude = parse_program(lex(double_runtime_source()))
+    let mut i = 0
+    while i < Array::length(prelude) {
+      Array::push(stmts, Array::get(prelude, i))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// The callsite lowering's guard: a program whose lane never appended the
+/// prelude must fail loudly at the lowering, naming the missing hook, rather
+/// than reach `resolve_local`'s generic "reached code generation unresolved"
+/// (which blames a checker that was never at fault) -- or, worse, fall back
+/// to a formatter that answers wrong.
+export fn double_runtime_require(ft: FuncTable, name: String) -> Unit with Exception {
+  if func_table_index_of(ft, name) < 0 {
+    throw(String::concat("internal compiler error: `", String::concat(name, "` (the Double runtime prelude, codegen/common_base/double_runtime.vibe) is not linked into this program: the lane compiling it never called append_double_runtime, so this is a bug in the compiler and not in your program -- please report the source that triggers it")))
+  } else {
+    ()
+  }
+}

@@ -2335,6 +2335,32 @@ run_test_block_fixtures_gc "builtin value form (gc)" fixtures/builtin_value_form
 run_test_block_fixtures_rc "builtin value form (linear, RC)" fixtures/builtin_value_form_test.vibe
 echo '[compiler-gate] builtin value form ok'
 
+# 15b-3c. #2630: the three length views of a byte string (`unicode_length` /
+#         `utf16_length` / `utf8_length`) are served by a callsite lowering on
+#         each lane -- a shared synthesis, but two `ce` dispatchers -- and were
+#         declared and published for a long time with no lowering at all. The
+#         fixture also pins that a view is an Int at every consumer (`==`,
+#         `+`, interpolation), which is a per-lane classifier question.
+echo '[compiler-gate] 15b-3c/15 string length views (#2630)'
+run_test_block_fixtures "string length views (linear, bump)" fixtures/string_length_intrinsics_test.vibe
+run_test_block_fixtures_gc "string length views (gc)" fixtures/string_length_intrinsics_test.vibe
+run_test_block_fixtures_rc "string length views (linear, RC)" fixtures/string_length_intrinsics_test.vibe
+echo '[compiler-gate] string length views ok'
+
+# 15b-3d. #2652: `Double::to_string` is shortest-round-trip and `Double::parse`
+#         is correctly rounded. Both are ONE runtime prelude in vibe source
+#         (codegen/common_base/double_runtime.vibe) appended to the program by
+#         each lane's own hook and compiled by each lane's own codegen without
+#         checker offsets, so three lanes are three separate compilations of
+#         the same contract. The fixture's 230 expected strings are
+#         JavaScript's, taken for exact bit patterns, and the parse table
+#         expects `Number(s)`'s bits.
+echo '[compiler-gate] 15b-3d/15 Double to_string / parse round trip (#2652)'
+run_test_block_fixtures "double to_string (linear, bump)" fixtures/double_to_string_test.vibe
+run_test_block_fixtures_gc "double to_string (gc)" fixtures/double_to_string_test.vibe
+run_test_block_fixtures_rc "double to_string (linear, RC)" fixtures/double_to_string_test.vibe
+echo '[compiler-gate] double to_string / parse ok'
+
 # 15b-4. A Double inside an aggregate reached through a NAME (#2431). Three
 #        lanes for the same reason as 15b-3, and here every lane was wrong in a
 #        DIFFERENT place: `let x = (0.0, 1); let y = (-0.0, 1); x == y` was

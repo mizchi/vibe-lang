@@ -1,0 +1,112 @@
+// #2630: the three length VIEWS of a byte string are real builtins on every
+// lane. They had been declared (builtins/declarations.vibe) and published
+// (lib/@vibe/builtin/string.vibe) for a long time with no lowering anywhere:
+// a direct call was `unknown name`, and an aliased import type-checked and
+// then died in codegen with the "reached code generation unresolved"
+// internal error. The gate runs this file on the bump, RC and gc lanes.
+//
+// A `String` is its UTF-8 bytes (ADR-0098): `utf8_length` is the byte
+// count, `unicode_length` counts code points (bytes that are not
+// `10xxxxxx` continuation bytes), `utf16_length` counts UTF-16 code units
+// (one more per 4-byte lead, since a supplementary code point is a
+// surrogate pair). Every literal below mixes widths on purpose: an ASCII-only
+// test passes against a lowering that answers the byte count for all three.
+
+fn e_acute() -> String {
+  // U+00E9, two bytes: 0xC3 0xA9.
+  String::concat(String::from_byte(195), String::from_byte(169))
+}
+
+fn cjk_ni() -> String {
+  // U+65E5, three bytes: 0xE6 0x97 0xA5.
+  String::concat(String::from_byte(230), String::concat(String::from_byte(151), String::from_byte(165)))
+}
+
+fn g_clef() -> String {
+  // U+1D11E, four bytes: 0xF0 0x9D 0x84 0x9E -- a surrogate pair in UTF-16.
+  String::concat(String::concat(String::from_byte(240), String::from_byte(157)), String::concat(String::from_byte(132), String::from_byte(158)))
+}
+
+fn mixed() -> String {
+  // "a" + é + 日 + 𝄞 + "z": 5 code points, 6 UTF-16 units, 11 bytes.
+  String::concat("a", String::concat(e_acute(), String::concat(cjk_ni(), String::concat(g_clef(), "z"))))
+}
+
+test "#2630 unicode_length counts code points" {
+  inspect(String::unicode_length(""), content = "0")
+  inspect(String::unicode_length("abc"), content = "3")
+  inspect(String::unicode_length(e_acute()), content = "1")
+  inspect(String::unicode_length(cjk_ni()), content = "1")
+  inspect(String::unicode_length(g_clef()), content = "1")
+  inspect(String::unicode_length(mixed()), content = "5")
+}
+
+test "#2630 utf16_length counts UTF-16 code units" {
+  inspect(String::utf16_length(""), content = "0")
+  inspect(String::utf16_length("abc"), content = "3")
+  inspect(String::utf16_length(e_acute()), content = "1")
+  inspect(String::utf16_length(cjk_ni()), content = "1")
+  inspect(String::utf16_length(g_clef()), content = "2")
+  inspect(String::utf16_length(mixed()), content = "6")
+}
+
+test "#2630 utf8_length is the byte length" {
+  inspect(String::utf8_length(""), content = "0")
+  inspect(String::utf8_length("abc"), content = "3")
+  inspect(String::utf8_length(e_acute()), content = "2")
+  inspect(String::utf8_length(cjk_ni()), content = "3")
+  inspect(String::utf8_length(g_clef()), content = "4")
+  inspect(String::utf8_length(mixed()), content = "11")
+  inspect(String::utf8_length(mixed()) == String::length(mixed()), content = "true")
+}
+
+test "#2630 a stray continuation byte starts no code point" {
+  let stray = String::from_byte(128)
+  inspect(String::utf8_length(stray), content = "1")
+  inspect(String::unicode_length(stray), content = "0")
+  inspect(String::utf16_length(stray), content = "0")
+}
+
+test "#2630 a length view is an Int at every consumer" {
+  let s = mixed()
+  let n = String::unicode_length(s)
+  inspect("\{n}", content = "5")
+  inspect(n == 5, content = "true")
+  inspect(n + String::utf16_length(s), content = "11")
+  inspect(String::unicode_length(s) == String::utf16_length(s), content = "false")
+  inspect(String::unicode_length("abc") == String::utf16_length("abc"), content = "true")
+  inspect(String::utf8_length(s) - String::unicode_length(s), content = "6")
+  inspect("\{String::utf16_length(s)}/\{String::utf8_length(s)}", content = "6/11")
+}
+
+test "#2630 a view called inside a lambda resolves globally on every lane" {
+  // The gc lane's lambda-capture scan must not collect the builtin name as a
+  // free variable (gc_direct_abi_names); the linear lanes must not resolve it
+  // as a local either.
+  let by_code_points = (s: String) -> Int {
+    String::unicode_length(s)
+  }
+  let lens = Array::map(["a", e_acute(), g_clef(), mixed()], (p) -> String::utf16_length(p))
+  inspect(by_code_points(mixed()), content = "5")
+  inspect(Array::get(lens, 0), content = "1")
+  inspect(Array::get(lens, 1), content = "1")
+  inspect(Array::get(lens, 2), content = "2")
+  inspect(Array::get(lens, 3), content = "6")
+  let total = Array::fold(["ab", mixed()], 0, (acc, p) -> acc + String::utf8_length(p))
+  inspect(total, content = "13")
+}
+
+test "#2630 the views compose with the other string builtins" {
+  let s = mixed()
+  inspect(String::unicode_length(String::concat(s, s)), content = "10")
+  inspect(String::unicode_length(String::substring(s, 0, 3)), content = "2")
+  inspect(String::utf16_length(String::substring(s, 6, 11)), content = "3")
+  let mut total = 0
+  let parts = String::split(String::concat(s, String::concat(",", s)), ",")
+  let mut i = 0
+  while i < Array::length(parts) {
+    total = total + String::unicode_length(Array::get(parts, i))
+    i = i + 1
+  }
+  inspect(total, content = "10")
+}

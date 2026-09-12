@@ -1804,8 +1804,10 @@ compatibility surface. They live in the Signature reference; they are not
 indexed here because the freeze probe is a bare reference.
 
 `String` is a byte string: `length`, indexes and slices use byte counts and
-offsets, and iteration yields byte-valued `Int`. Unicode code-point and
-grapheme operations are not part of this API.
+offsets, and iteration yields byte-valued `Int`. The three length views
+`String::unicode_length` / `String::utf16_length` / `String::utf8_length`
+count code points, UTF-16 code units and bytes of the same string (#2630);
+other Unicode code-point and grapheme operations are not part of this API.
 
 <!-- import-required-builtins: the authoritative list. scripts/check_cheatsheet_signatures.sh
      requires this paragraph to name EXACTLY the entries in the Signature reference
@@ -1949,7 +1951,7 @@ Profiler::heap_bytes()  // with Profiler - current bump-heap pointer
                         // way now_us deltas attribute time (heap never shrinks)
 ```
 
-**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_byte`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`), `Double::parse(s) -> Option[Double]` (符号・整数部・小数点付き小数部; 指数表記 `1e10` は非対応。linear backend のみ、gc backend は未対応)
+**Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_byte`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`), `Double::parse(s) -> Option[Double]` (an optional sign, digits, an optional fraction, an optional `e`/`E` exponent, and `NaN` / `Infinity` / `-Infinity`; correctly rounded, so it reads back every spelling `Double::to_string` writes; both backends, #2652), `Double::to_string(d) -> String` (the shortest digits that read back to the same double, in JavaScript's spelling: `1.5`, `100`, `0.000001`, `1e-7`, `1e+21`, `1.7976931348623157e+308`; `NaN`, `Infinity`, `-Infinity`, and `-0` for negative zero; `"\{d}"` and `__to_string(d)` print the same, #2652)
 
 ### Signature reference
 
@@ -1977,7 +1979,8 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 
 | function | signature |
 |---|---|
-| `String::length` | `(String) -> Int` |
+| `String::length` | `(String) -> Int` (bytes) |
+| `String::unicode_length` / `String::utf16_length` / `String::utf8_length` | `(String) -> Int` (code points / UTF-16 code units / bytes -- `utf8_length` is `length`, #2630) |
 | `String::concat` | `(String, String) -> String` |
 | `String::substring` | `(String, Int, Int) -> String` (start, end) |
 | `String::byte_at` | `(String, Int) -> Int` (deprecated alias `String::char_code_at` — `vibe check` warns per use) |
