@@ -5601,10 +5601,35 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
     // edges it is the claim that matters: no module needed anything IT
     // IMPORTS did not have.
     //
-    // Transitive, because a module sees what its dependencies re-export, and
-    // what this feeds is declaration surface rather than a name-resolution
-    // decision. An index out of range is a caller that built the closure over
-    // a different file space, which would silently hand a module some other
+    // The closure is the CALLER'S, and the two callers pass different ones.
+    // This comment previously asserted one rule for both and was wrong about
+    // each: it said "transitive, because a module sees what its dependencies
+    // re-export" (the justification `oracle_import_closure` now calls wrong as
+    // implemented -- a transitive closure hands A the declarations of a module
+    // B imports PRIVATELY), and the correction then over-swung to "direct-only,
+    // and the loader cannot express re-export" (Codex on #2700), which
+    // misdescribes production and denies machinery that already exists.
+    //
+    //   production  `exact_import_closure` (#2658) -- direct imports PLUS
+    //               everything reachable across RE-EXPORT edges only, with the
+    //               re-export subset taken from the LOADER
+    //               (`module_reexport_deps_fs`). Exact, and necessary: a module
+    //               that cannot see what its dependency re-exports lowers a
+    //               call to a bounded generic without the witness argument.
+    //   oracle      `oracle_import_closure` -- DIRECT edges only. An
+    //               under-approximation on purpose: for a MEASUREMENT, being
+    //               given context a module does not have is the one failure
+    //               mode that makes a green meaningless.
+    //
+    // So the `CTX exp_outside` count (83 on the compiler's closure) is the
+    // ORACLE lane's, not production's, and it is the price of that deliberate
+    // conservatism -- not a missing capability. Whether the oracle should adopt
+    // the exact closure is a live question, since measuring with LESS context
+    // than production has makes the oracle solve a harder problem than the
+    // thing it models; `ModuleSplit.closure_exact` already records which it got.
+    //
+    // An index out of range is a caller that built the closure over a
+    // different file space, which would silently hand a module some other
     // module's context, so it is refused rather than defaulted.
     if Array::length(import_closure) != file_count {
       throw(String::concat("prelude oracle: the import closure has ", String::concat(Int::to_string(Array::length(import_closure)), String::concat(" rows for ", String::concat(Int::to_string(file_count), " modules")))))
