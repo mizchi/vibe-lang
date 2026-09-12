@@ -354,6 +354,15 @@ case a real red test (it answers 1,045,100 instead of 3,545,100 when the
 recording is removed).
 - Not a borrow-bound binding (#708/#768): it holds a reference it never
   acquired.
+- Not an Int-valued binding: it holds no reference at all, so a guarded drop
+  over it is pure instruction cost. The planner cannot see this -- its
+  `is_scalar_expr` knows only literals and borrow-returning calls -- but the
+  codegen's `expr_is_intish` can. Measured before the exclusion,
+  `bench/exec/sort_ints.vibe`'s `let mid = (lo + hi) / 2` took a flag local,
+  two flag stores and a guarded `rc_drop` for a heap figure that did not move
+  (32,828 B either way), and the PR's perf report flagged +2.84% fuel on that
+  bench; with it, the bench compiles byte-identically to a pre-change
+  compiler.
 
 The codegen's bookkeeping is name-keyed, which is safe here without a check
 because every planned body has been through `uniquify_shadowed_bindings_fresh`
