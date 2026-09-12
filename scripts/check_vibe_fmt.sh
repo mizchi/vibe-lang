@@ -94,6 +94,7 @@ files=("${checked_files[@]}")
 new_violations=()
 stale_allowlist=()
 errors=()
+refused=()
 checked=0
 
 while IFS=$'\t' read -r status rel_path message; do
@@ -107,6 +108,9 @@ while IFS=$'\t' read -r status rel_path message; do
   fi
   if [ "$status" = "ERROR" ]; then
     errors+=("$rel_path: $message")
+  fi
+  if [ "$status" = "REFUSED" ]; then
+    refused+=("$rel_path: $message")
   fi
   if is_allowed "$rel_path"; then
     known_debt=$((known_debt + 1))
@@ -129,6 +133,13 @@ fi
 if [ "${#errors[@]}" -gt 0 ]; then
   echo "vibe-fmt lint: ${#errors[@]} file(s) errored while checking (not merely unformatted):" >&2
   printf '  %s\n' "${errors[@]}" >&2
+fi
+# #2636: a file the parser rejects is not formatted and not certified. It is
+# a violation like any other unless the allowlist explains it (the one file
+# under lib/ that is not vibe syntax by design is listed there).
+if [ "${#refused[@]}" -gt 0 ]; then
+  echo "vibe-fmt lint: ${#refused[@]} file(s) do not parse; the formatter refused to touch them (fix the program, not the formatting):" >&2
+  printf '  %s\n' "${refused[@]}" >&2
 fi
 
 status=0

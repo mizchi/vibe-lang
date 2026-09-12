@@ -52,16 +52,65 @@ if ! cmp -s "$pass_input" "$work/pass.original"; then
   exit 1
 fi
 
-# The guard's other half, which IS still reachable: it must not over-refuse.
-# It rejects a rewrite that BREAKS a file, not any file that happens not to
-# parse -- the promise is "no worse", not "only valid input". Getting this
-# backwards would make the formatter useless on exactly the broken files a
-# person most wants to run it on.
+# #2636: the formatter's grammar is the compiler's. Input the parser rejects
+# is REFUSED -- left byte-identical, exit 1, the parse error on stderr --
+# rather than reflowed. This used to be the opposite ("no worse": a file
+# that never parsed was still reflowed), and that is what let a C-style
+# `cond ? a : b` be minted as `a == 0?"z": "nz"` and then certified by
+# `--check` as correctly formatted, green in CI on a file that cannot build.
 broken="$work/broken.vibe"
 printf 'fn f( {\n  1\n' >"$broken"
-if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$broken" >/dev/null 2>&1; then
-  echo "vibe_fmt_parse_guard_test: formatter refused a file that never parsed;" >&2
-  echo "  the guard rejects rewrites that BREAK a file, not files already broken" >&2
+cp "$broken" "$work/broken.original"
+if bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$broken" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: formatter reflowed a file that does not parse (#2636)" >&2
+  exit 1
+fi
+if ! cmp -s "$broken" "$work/broken.original"; then
+  echo "vibe_fmt_parse_guard_test: formatter changed a file it refused" >&2
+  diff "$work/broken.original" "$broken" >&2 || true
+  exit 1
+fi
+# The construct the issue measured: the compiler has no ternary. Every mode
+# refuses it, the file is untouched, and the reason names the parse error.
+tern="$work/tern.vibe"
+printf 'fn f(a: Int) -> String {\n  a == 0 ? "z" : "nz"\n}\n' >"$tern"
+cp "$tern" "$work/tern.original"
+tern_err="$(bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$tern" 2>&1 >/dev/null || true)"
+if ! cmp -s "$tern" "$work/tern.original"; then
+  echo "vibe_fmt_parse_guard_test: formatter rewrote a C-style ternary the compiler rejects (#2636)" >&2
+  diff "$work/tern.original" "$tern" >&2 || true
+  exit 1
+fi
+if ! printf '%s\n' "$tern_err" | grep -q 'does not parse'; then
+  echo "vibe_fmt_parse_guard_test: the refusal did not say the file does not parse:" >&2
+  printf '%s\n' "$tern_err" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$tern_err" | grep -q 'unexpected token'; then
+  echo "vibe_fmt_parse_guard_test: the refusal did not carry the parser's message:" >&2
+  printf '%s\n' "$tern_err" >&2
+  exit 1
+fi
+if bash "$ROOT_DIR/scripts/vibe_fmt.sh" --check "$tern" >/dev/null 2>&1; then
+  echo "vibe_fmt_parse_guard_test: --check certified a file that does not parse (#2636)" >&2
+  exit 1
+fi
+# The batch lane (what CI's vibe-fmt-check and \`pkf run fmt\` run) must refuse
+# the same way, and say so in its report: REFUSED, never OK, never a rewrite.
+batch_tern_rel="_build/vibe_fmt_parse_guard_batch_tern.$$.vibe"
+batch_tern="$ROOT_DIR/$batch_tern_rel"
+trap 'rm -rf "$work" "$batch_tern"' EXIT
+cp "$tern" "$batch_tern"
+batch_tern_report="$(printf '%s\n' "$batch_tern_rel" | bash "$ROOT_DIR/scripts/run_vibe_fmt_batch.sh" write 1)"
+case "$batch_tern_report" in
+  REFUSED*) : ;;
+  *)
+    echo "vibe_fmt_parse_guard_test: batch lane did not refuse a file that does not parse (report: $batch_tern_report)" >&2
+    exit 1
+    ;;
+esac
+if ! cmp -s "$batch_tern" "$work/tern.original"; then
+  echo "vibe_fmt_parse_guard_test: BATCH lane rewrote a file it should have refused" >&2
   exit 1
 fi
 
@@ -102,7 +151,7 @@ fi
 # the fixture lives under _build.)
 batch_pin_rel="_build/vibe_fmt_parse_guard_batch_pin.$$.vibe"
 batch_pin="$ROOT_DIR/$batch_pin_rel"
-trap 'rm -rf "$work" "$batch_pin"' EXIT
+trap 'rm -rf "$work" "$batch_tern" "$batch_pin"' EXIT
 printf 'require @vibe/core 0.2.0 = #pkg:sha1:0000000000000000000000000000000000000000\n\nfn double(n:Int)->Int {\n  n*2\n}\n' >"$batch_pin"
 batch_report="$(printf '%s\n' "$batch_pin_rel" | bash "$ROOT_DIR/scripts/run_vibe_fmt_batch.sh" write 1)"
 case "$batch_report" in
@@ -135,7 +184,7 @@ store_pkg="@fmtpin/p$$"
 store_dir="$ROOT_DIR/.vibe/store/$store_pkg"
 fill_in="_build/vibe_fmt_pin_fill.$$.vibe"
 fill_abs="$ROOT_DIR/$fill_in"
-trap 'rm -rf "$work" "$batch_pin" "$store_dir" "$fill_abs"' EXIT
+trap 'rm -rf "$work" "$batch_tern" "$batch_pin" "$store_dir" "$fill_abs"' EXIT
 mkdir -p "$store_dir"
 printf 'version 0.1.0\nimport ./impl.vibe {}\nfn quadruple(x: Int) -> Int\n' >"$store_dir/index.vibei"
 printf 'export fn quadruple(x: Int) -> Int { x * 4 }\n' >"$store_dir/impl.vibe"
@@ -166,7 +215,7 @@ fi
 # loader's own header scanner (the blanked output of extract_require_pins).
 vpkg_fill="_build/vibe_fmt_pin_fill.$$.vpkg"
 vpkg_fill_abs="$ROOT_DIR/$vpkg_fill"
-trap 'rm -rf "$work" "$batch_pin" "$store_dir" "$fill_abs" "$vpkg_fill_abs"' EXIT
+trap 'rm -rf "$work" "$batch_tern" "$batch_pin" "$store_dir" "$fill_abs" "$vpkg_fill_abs"' EXIT
 printf 'name = @fmtpin/consumer\nversion = 0.1.0\nrequire %s ^0.1.0\n\nfn double(n: Int) -> Int\n' "$store_pkg" >"$vpkg_fill_abs"
 if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$vpkg_fill_abs" >/dev/null 2>&1; then
   echo "vibe_fmt_parse_guard_test: formatter declined a .vpkg with an unpinned require" >&2
