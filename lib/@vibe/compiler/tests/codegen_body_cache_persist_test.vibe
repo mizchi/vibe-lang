@@ -11,7 +11,10 @@ import @vibe/compiler/codegen/common_base {
   codegen_body_cache_filter_src_below,
   codegen_body_cache_find,
   codegen_body_cache_find_at,
+  codegen_body_cache_find_named,
+  codegen_body_cache_find_named_at,
   codegen_body_cache_from_bytes,
+  codegen_body_cache_name_index,
   codegen_body_cache_new,
   codegen_body_cache_slot_index,
   codegen_body_cache_to_bytes
@@ -366,6 +369,29 @@ fn lookup_disagreements(c: CodegenBodyCache, key_count: Int) -> String {
     k = k + 1
   }
   String::join(out, ", ")
+}
+
+test "a duplicated function name is a miss on both name lookups" {
+  // Duplicate function names are REAL, not hypothetical: two `test "..."`
+  // blocks with the same title lower to the same `__test_` function, and
+  // `lib/@vibe/compiler/tests/builtins_extended_test.vibe` has such a pair.
+  // Both lookups must answer -2 so a consumer declines replay; resolving
+  // first-wins would hand one function another's body, which is the mistake
+  // #2705 found in the cross-build tool.
+  let c = codegen_body_cache_new()
+  Array::push(c.fn_indices, 0)
+  Array::push(c.fn_names, "solo")
+  Array::push(c.fn_indices, 1)
+  Array::push(c.fn_names, "twin")
+  Array::push(c.fn_indices, 2)
+  Array::push(c.fn_names, "twin")
+  let (sorted, positions) = codegen_body_cache_name_index(c)
+  inspect(codegen_body_cache_find_named(c, "solo"), content = "0")
+  inspect(codegen_body_cache_find_named_at(sorted, positions, "solo"), content = "0")
+  inspect(codegen_body_cache_find_named(c, "twin"), content = "-2")
+  inspect(codegen_body_cache_find_named_at(sorted, positions, "twin"), content = "-2")
+  inspect(codegen_body_cache_find_named(c, "absent"), content = "-1")
+  inspect(codegen_body_cache_find_named_at(sorted, positions, "absent"), content = "-1")
 }
 
 test "the indexed body-cache lookup answers exactly what the scan answers" {

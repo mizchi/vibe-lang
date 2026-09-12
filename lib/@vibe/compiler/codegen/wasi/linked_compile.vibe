@@ -11243,7 +11243,18 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       // it: there will be nothing left to agree with.
       if body_cache_in_ok {
         let __named_hit = codegen_body_cache_find_named_at(body_cache_names_sorted, body_cache_names_pos, Array::get(fn_names_list, bi))
-        if __named_hit != __cache_hit {
+        // -2 is AMBIGUOUS, which the name lookup documents as a miss, so it is
+        // not a disagreement to report -- comparing a miss sentinel against a
+        // hit would abort every warm compile of a unit that happens to contain
+        // two functions of one name. Those exist: two `test "..."` blocks with
+        // the same title lower to the same `__test_` function, and
+        // `lib/@vibe/compiler/tests/builtins_extended_test.vibe` has a pair.
+        // Found by review on #2714, and the contract it violates is the one
+        // the previous commit wrote down.
+        //
+        // Step 2b turns this into declining replay for that function. A miss
+        // costs a recompile; resolving it first-wins would cost correctness.
+        if __named_hit != 0 - 2 && __named_hit != __cache_hit {
           throw(String::concat("body cache: the name and index lookups disagree for function ", String::concat(__to_string(bi), String::concat(" (", String::concat(Array::get(fn_names_list, bi), String::concat("): by index ", String::concat(__to_string(__cache_hit), String::concat(", by name ", __to_string(__named_hit)))))))))
         } else {
           ()
