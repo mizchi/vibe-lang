@@ -922,6 +922,91 @@ export fn gen_rc_drop_body(self_idx: Int, rc_shadow: Bool, bins_base: Int, uaf_a
   emit_br(b, 0)
   emit_end(b)
   emit_end(b)
+  // #2683: the side index (i32 at vptr+4, built by __rt_map_build_index
+  // once a map holds 8 entries or more; zero otherwise) is an RC leaf block
+  // on this lane -- push it onto its size bin, with the same shadow-lane
+  // double-free guard the grown array buffer gets above. (ptr = local 5.)
+  emit_local_get(b, 1)
+  emit_i32_load(b, 2, 4)
+  emit_local_set(b, 5)
+  emit_local_get(b, 5)
+  emit_if_void(b)
+  if rc_shadow {
+    emit_local_get(b, 5)
+    emit_shadow_slot_from_vptr(b)
+    emit_i32_load(b, 2, 0)
+    emit_if_void(b)
+    emit_shadow_uaf_trap(b, () -> {
+      emit_local_get(b, 5)
+    }, uaf_abort_idx, prefix_fat)
+    emit_end(b)
+  } else {
+    ()
+  }
+  if rc_shadow {
+    emit_shadow_mark_freed(b, () -> {
+      emit_local_get(b, 5)
+    })
+  } else {
+    ()
+  }
+  emit_rc_free_push(b, 5, bins_base)
+  emit_end(b)
+  emit_end(b)
+  // #2683 MapBuilder handle (class 9): [count@vptr+0 (i32)][cap@+4 (i32)]
+  // [storage value pointer@+8 (i64)], the storage a class-0 leaf block of
+  // 16-byte (key, value) slots. Drop each stored key and value, release
+  // the storage through the recursive call (rc 1 -> 0, no walk arm, common
+  // free), then fall through to the common free of the handle.
+  emit_local_get(b, 2)
+  emit_i32_const(b, 9)
+  emit_i32_eq(b)
+  emit_if_void(b)
+  emit_local_get(b, 1)
+  emit_i32_load(b, 2, 0)
+  emit_local_set(b, 3)
+  emit_local_get(b, 1)
+  emit_i64_load(b, 3, 8)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 5)
+  emit_i32_const(b, 0)
+  emit_local_set(b, 4)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 4)
+  emit_local_get(b, 3)
+  emit_i32_ge_u(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 5)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 16)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_i64_load(b, 3, 0)
+  emit_local_set(b, 6)
+  emit_local_get(b, 6)
+  emit_call(b, self_idx)
+  emit_local_get(b, 5)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 16)
+  emit_i32_mul(b)
+  emit_i32_add(b)
+  emit_i64_load(b, 3, 8)
+  emit_local_set(b, 6)
+  emit_local_get(b, 6)
+  emit_call(b, self_idx)
+  emit_local_get(b, 4)
+  emit_i32_const(b, 1)
+  emit_i32_add(b)
+  emit_local_set(b, 4)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  emit_local_get(b, 5)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 1)
+  emit_i64_or(b)
+  emit_call(b, self_idx)
   emit_end(b)
   // #699 ref cell (class 8): a heap-boxed `let mut` holds a single value at
   // vptr+0. Drop it recursively (scalar payloads are a no-op via the odd-check),

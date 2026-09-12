@@ -1640,8 +1640,13 @@ export fn mut_needs_ref_cell(body: Expr, name: String) -> Bool {
 /// module-level `MutSet` lookup hashes the whole callee name per call site,
 /// while `__rt_str_eq` length-gates almost every mismatch, and the set form
 /// measured SLOWER (0.09 s -> 0.14 s warm inclusive).
+/// `Map::set` and `Map::delete` are NOT in this list (ADR-0092 for maps,
+/// #2683 follow-up): they CONSUME their map. A uniquely referenced source
+/// is updated in place and becomes the result; a shared one is copied and
+/// released. Listing them here would pass the caller's reference through
+/// unspent and pin every map to the copy path.
 export fn md_is_borrow_arg0_call(f: String) -> Bool {
-  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::iter_get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::has_key" || f == "Map::set" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
+  f == "__index" || f == "Array::get" || f == "Array::length" || f == "Array::set" || f == "Array::push" || f == "Array::push_all" || f == "ArrayBuilder::push" || f == "MutList::push" || f == "MutList::get" || f == "MutList::length" || f == "MutList::truncate" || f == "MutBytes::push" || f == "MutBytes::length" || f == "StringBuilder::push" || f == "MapBuilder::set" || f == "MapBuilder::has_key" || f == "MapBuilder::get" || f == "Map::get" || f == "Map::iter_get" || f == "Map::__iter_get_unchecked" || f == "Map::keys" || f == "Map::values" || f == "Map::size" || f == "Map::has_key" || f == "Map::has" || f == "Bytes::push" || f == "Bytes::set" || f == "Bytes::get" || f == "Bytes::length" || f == "Bytes::index_of" || f == "Bytes::count" || f == "Bytes::last_index_of" || f == "Bytes::index_of_bytes" || f == "Bytes::compare" || f == "FrozenArray::get" || f == "FrozenArray::length" || f == "FixedArray::get" || f == "FixedArray::set" || f == "FixedArray::length" || f == "String::join" || f == "eq" || f == "__rec_field"
 }
 fn md_max(a: Int, b: Int) -> Int {
   if a > b {
@@ -1672,6 +1677,62 @@ export fn md_consume_count(e: Expr, name: String) -> Int {
   let md_no_user_fns: Array[String] = []
   let md_no_user_masks: Array[Int] = []
   md_cc_go(e, name, md_no_user_fns, md_no_user_masks)
+}
+
+/// Occurrences of the identifier `name` anywhere in `e`.
+export fn md_ident_occurrences(e: Expr, name: String) -> Int {
+  match e {
+    EIdent(n, _) => if n == name {
+      1
+    } else {
+      0
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut acc = 0
+      let mut i = 0
+      while i < Array::length(kids) {
+        acc = acc + md_ident_occurrences(Array::get(kids, i), name)
+        i = i + 1
+      }
+      acc
+    }
+  }
+}
+
+/// ADR-0092 for maps (#2683 follow-up): is `value`, the right-hand side of
+/// `name = value`, a call that takes `name` exactly once, as a direct
+/// argument at an owning position, and nowhere else? The planner moves that
+/// occurrence (perceus.vibe pe_self_reassign_moves is this predicate with
+/// lexical shadowing of the callee honoured); the assignment lowering keeps
+/// its loop-carried dup off the same occurrence, so a unique map reaches
+/// Map::set's in-place path from a loop accumulator too.
+export fn md_self_reassign_move_arg(value: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> Bool {
+  match value {
+    ECall(callee, args, _) => match callee {
+      EIdent(f, _) => if f == name {
+        false
+      } else {
+        let bmask = md_borrow_mask_of(f, bfns, bmasks)
+        let mut direct = 0
+        let mut i = 0
+        while i < Array::length(args) {
+          match Array::get(args, i) {
+            EIdent(x, _) => if x == name && ((bmask>>i)&1) == 0 {
+              direct = direct + 1
+            } else {
+              ()
+            },
+            _ => ()
+          }
+          i = i + 1
+        }
+        direct == 1 && md_ident_occurrences(value, name) == 1
+      },
+      _ => false
+    },
+    _ => false
+  }
 }
 
 /// #2345: and which take a borrowed SECOND operand. `Bytes::index_of_bytes`

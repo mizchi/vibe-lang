@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/common_analysis {
-  collect_free_vars, md_borrow_mask_of, md_consume_count_pre
+  collect_free_vars, md_borrow_mask_of, md_consume_count, md_consume_count_pre
 }
 
 import @vibe/core {
@@ -104,12 +104,29 @@ struct PCtx {
   // interior view. With the borrow set empty this is never set, so the fix
   // is inert while lc_borrow_arg0_enabled is off.
   mut view_call_let: Array[Bool];
+  // ADR-0092 for maps (#2683 follow-up): the binding a view-call let VIEWS
+  // (`let v = Map::get(m, k)` records m's id under v's; -1 otherwise), so a
+  // self-reassignment of m can tell whether a live view still reads the
+  // value it is about to move.
+  mut view_src: Array[Int];
+  // The binding whose single owning occurrence in the current `x = f(.., x,
+  // ..)` value MOVES (see the EAssign arm of pc_emit); -1 outside one.
+  mut move_use_id: Int;
+  mut move_hit: Bool;
   mut actions: Array[PerceusAction]
 }
 
 struct HeapInferCtx {
   ctors: Array[String];
-  heap_fns: Array[String]
+  heap_fns: Array[String];
+  // #2681: the top-level `let` bindings' heap-ness, read by arg_class when
+  // the local environment has no entry for a name (a local binding wins).
+  // Kept OUT of the threaded environment on purpose: `Map::set` copies its
+  // map, so seeding every top-level binding into the environment made each
+  // `let` and each lambda parameter the call analysis walked copy the whole
+  // module's bindings -- the bump-built compiler ran out of memory compiling
+  // the split CLI (compiler gate 3cli/3) before this was a separate lookup.
+  top_env: Map[String, Bool]
 }
 
 //# Functions
@@ -176,10 +193,18 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String, use_offset: Int) -> 
     // owned use must also dup -- the standard rem == 1 "spend the initial
     // ref" transfer would consume a reference the binding never acquired.
     let last_view_use = rem == 1 && Array::get(ctx.view_call_let, id)
-    if (rem > 1 || last_view_use) && !Array::get(ctx.scalar, id) {
-      pe_push_for(ctx, PaDup, name, id, use_offset)
+    // ADR-0092 for maps: the single owning occurrence of `x` in `x = f(..,
+    // x, ..)` moves (see pe_self_reassign_moves) unless the binding is a
+    // scalar, itself a view, or a view of it is still live.
+    let move_here = ctx.move_use_id == id && !Array::get(ctx.scalar, id) && !Array::get(ctx.view_call_let, id) && !pe_has_live_view_of(ctx, id)
+    if move_here {
+      ctx.move_hit = true
+      ctx.move_use_id = 0 - 1
+    } else if (rem > 1 || last_view_use) && !Array::get(ctx.scalar, id) {
+      let _ = pe_push_for(ctx, PaDup, name, id, use_offset)
+      ()
     } else {
-      0
+      ()
     }
     if rem > 0 {
       Array::set(ctx.remaining, id, rem - 1)
@@ -210,6 +235,9 @@ fn pctx_new(borrow_ret_names: Array[String], borrow_param_fns: Array[String], bo
     scalar: [],
     remaining: [],
     view_call_let: [],
+    view_src: [],
+    move_use_id: 0 - 1,
+    move_hit: false,
     actions: [],
   }
 }
@@ -285,6 +313,10 @@ fn pctx_reset(ctx: PCtx) -> Int {
   ctx.remaining = remaining0
   let view0: Array[Bool] = []
   ctx.view_call_let = view0
+  let vsrc0: Array[Int] = []
+  ctx.view_src = vsrc0
+  ctx.move_use_id = 0 - 1
+  ctx.move_hit = false
   let actions0: Array[PerceusAction] = []
   ctx.actions = actions0
   0
@@ -419,6 +451,7 @@ fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
   Array::push(ctx.borrows, 0)
   Array::push(ctx.scalar, scalar)
   Array::push(ctx.view_call_let, false)
+  Array::push(ctx.view_src, 0 - 1)
   ctx.next_id = id + 1
   id
 }
@@ -430,9 +463,36 @@ fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
 /// shadows a view-ret name is an ordinary owned closure call (#875).
 fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr) -> Int {
   match value {
-    ECall(vc, _, _) => match vc {
-      EIdent(vf, _) => if !Map::has_key(scope, vf) && bsearch_leftmost(ctx.view_ret_user, vf) >= 0 {
-        Array::set(ctx.view_call_let, id, true)
+    ECall(vc, args, _) => match vc {
+      EIdent(vf, _) => {
+        if !Map::has_key(scope, vf) && bsearch_leftmost(ctx.view_ret_user, vf) >= 0 {
+          Array::set(ctx.view_call_let, id, true)
+        } else {
+          ()
+        }
+        // ADR-0092 for maps: a value read out of a container by a
+        // borrow-returning callee (Map::get, Array::get, a user fn in either
+        // view set) views its first argument -- remember which binding, so
+        // a self-reassignment of that binding does not move a value this
+        // one still reads (pe_has_live_view_of).
+        if !Map::has_key(scope, vf) && Array::length(args) > 0 && (is_borrow_ret_fname(ctx, vf) || bsearch_leftmost(ctx.view_ret_user, vf) >= 0) {
+          match Array::get(args, 0) {
+            EIdent(src, _) => if Map::has_key(scope, src) {
+              Array::set(ctx.view_src, id, Map::get(scope, src))
+            } else {
+              ()
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        }
+      },
+      _ => ()
+    },
+    EDot(obj, _, _, _) => match obj {
+      EIdent(src, _) => if Map::has_key(scope, src) {
+        Array::set(ctx.view_src, id, Map::get(scope, src))
       } else {
         ()
       },
@@ -441,6 +501,61 @@ fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr)
     _ => ()
   }
   0
+}
+
+/// Does a binding that views `id` (see pctx_mark_view_call) still have
+/// uses ahead of the current emission point? A view used only at borrowed
+/// positions keeps its initial count until its scope ends, so it blocks a
+/// move for its whole scope -- the safe side.
+fn pe_has_live_view_of(ctx: PCtx, id: Int) -> Bool {
+  let n = Array::length(ctx.remaining)
+  let mut j = 0
+  let mut live = false
+  while j < n && !live {
+    if Array::get(ctx.view_src, j) == id && Array::get(ctx.remaining, j) > 0 {
+      live = true
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  live
+}
+
+/// ADR-0092 for maps: is `value`, the right-hand side of `name = value`, a
+/// call that takes `name` exactly once, as a direct argument at an owning
+/// position, and nowhere else? Then that occurrence moves the binding's
+/// current value into the call (pe_use): the old value is consumed and the
+/// binding takes the result, so nothing is left for anyone to release --
+/// the assignment lowering already drops nothing for a self-referential
+/// right-hand side -- and a unique map reaches Map::set's in-place path.
+/// Mirrored by md_self_reassign_move_arg (codegen/common_analysis), which
+/// keeps the codegen's loop-carried dup off the same occurrence.
+fn pe_self_reassign_moves(ctx: PCtx, scope: Map[String, Int], name: String, value: Expr) -> Bool {
+  match value {
+    ECall(callee, args, _) => {
+      let callee_is_name = match callee {
+        EIdent(c, _) => c == name,
+        _ => false
+      }
+      let bmask = pe_borrow_mask(ctx, scope, callee)
+      let mut direct = 0
+      let mut i = 0
+      while i < Array::length(args) {
+        match Array::get(args, i) {
+          EIdent(x, _) => if x == name && !pe_bmask_has(bmask, i) {
+            direct = direct + 1
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      !callee_is_name && direct == 1 && reuse_ident_occurrences(value, name) == 1
+    },
+    _ => false
+  }
 }
 
 fn pe_declare(ctx: PCtx, _name: String) -> Int {
@@ -1301,6 +1416,8 @@ fn arg_class(arg: Expr, env: Map[String, Bool], hctx: HeapInferCtx) -> Bool {
     match arg {
       EIdent(n, _) => if Map::has_key(env, n) {
         Map::get(env, n)
+      } else if Map::has_key(hctx.top_env, n) {
+        Map::get(hctx.top_env, n)
       } else {
         false
       },
@@ -1620,7 +1737,7 @@ export fn type_expr_is_heap(ot: Option[TypeExpr]) -> Bool {
         match t {
           TyTuple(_) => true,
           TyApp(_, _) => true,
-          TyName(n) => type_name_is_heap(n),
+          TyName(n) => n == inferred_heap_marker_name() || type_name_is_heap(n),
           TyFn(_, _, _) => false,
           TyUnit => false
         }
@@ -1698,41 +1815,206 @@ fn collect_ctor_names(stmts: Array[Stmt]) -> Array[String] {
   out
 }
 
+/// The annotation a parameter gets when the planner CLASSIFIES it heap
+/// (fill_params_from_calls). It says "an rc block", not a type, and every
+/// reader but type_expr_is_heap must treat it as no annotation at all. It
+/// used to be the empty tuple `TyTuple([])` -- a shape no source spells
+/// (`()` parses to TyUnit), which made it look private, but desugar_trait_dicts
+/// runs AFTER elaborate_heap_params and seed_var_types recorded it as a
+/// composite eq shape: `Array::get(names, i) == name` on a heap-classified
+/// string parameter became eq_for_typed(TyTuple([])), trivially true, and
+/// `lookup` in fixtures/rc_shadow_regression_test.vibe answered Some for a
+/// name it did not hold (#2681 follow-up; the RC lane only). linked_compile's
+/// agg_info_of_type_expr read the same annotation as a tuple of arity 0 and
+/// registered the parameter as an aggregate local. A nominal no type table
+/// knows is what an unannotated parameter already is to those readers:
+/// agg_info_of_type_name answers 0 for it, and seed_var_types skips it by
+/// name (desugar_trait_dict.vibe) so no witness or comparator is ever
+/// looked up under it.
 fn inferred_heap_type() -> TypeExpr {
-  TyTuple(array_empty())
+  TyName(inferred_heap_marker_name())
+}
+
+/// The marker's spelling, shared by name with desugar_trait_dict.vibe's
+/// seed_var_types (which cannot import this module).
+fn inferred_heap_marker_name() -> String {
+  "__rc_heap"
 }
 
 fn fill_lambda_params(name: String, efn: Expr, body: Expr, hctx: HeapInferCtx) -> Expr {
   match efn {
-    EFn(tps, bounds, params, ret, eff, fnbody) => {
+    EFn(_, _, _, _, _, _) => {
       let calls: Array[Array[Bool]] = []
       let esc = [false]
       let env0: Map[String, Bool] = Map::new()
       analyze_calls(name, body, env0, calls, esc, hctx)
-      if Array::get(esc, 0) || Array::length(calls) == 0 {
-        efn
-      } else {
-        let new_params = Array::slice(params, 0, 0)
-        let mut pi = 0
-        while pi < Array::length(params) {
-          let (pname, pty) = Array::get(params, pi)
-          let filled = match pty {
-            Some(_) => (pname, pty),
-            None =>
-            if all_calls_heap_at(pi, calls) {
-              (pname, Some(inferred_heap_type()))
-            } else {
-              (pname, pty)
-            }
+      fill_params_from_calls(efn, calls, esc)
+    },
+    _ => efn
+  }
+}
+
+/// Give every unannotated parameter of `efn` the inferred heap type when
+/// EVERY collected call passes a heap value at that position and the lambda
+/// never escapes as a value, OR (#2681) when the body itself CONSUMES the
+/// parameter at an owning position. The second test is what the scalar
+/// classification cannot afford to miss: a value the body hands to an
+/// owning position is released there whatever it is, so a heap argument
+/// needs the dups and the exit accounting a heap parameter gets, while a
+/// scalar handed the same treatment costs only guarded no-ops (rc_dup and
+/// rc_drop ignore even values and fat pointers). The consume count is the
+/// builtin-only view (`md_consume_count`: a user callee counts as owning),
+/// which over-approximates in the harmless direction -- the plan built
+/// later decides the actual dups and drops from the real borrow masks.
+fn fill_params_from_calls(efn: Expr, calls: Array[Array[Bool]], esc: Array[Bool]) -> Expr {
+  match efn {
+    EFn(tps, bounds, params, ret, eff, fnbody) => {
+      let calls_decide = !Array::get(esc, 0) && Array::length(calls) > 0
+      let new_params = Array::slice(params, 0, 0)
+      let mut changed = false
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pname, pty) = Array::get(params, pi)
+        let filled = match pty {
+          Some(_) => (pname, pty),
+          None =>
+          if (calls_decide && all_calls_heap_at(pi, calls)) || md_consume_count(fnbody, pname) > 0 {
+            changed = true
+            (pname, Some(inferred_heap_type()))
+          } else {
+            (pname, pty)
           }
-          Array::push(new_params, filled)
-          pi = pi + 1
         }
+        Array::push(new_params, filled)
+        pi = pi + 1
+      }
+      if changed {
         EFn(tps, bounds, new_params, ret, eff, fnbody)
+      } else {
+        efn
       }
     },
     _ => efn
   }
+}
+
+/// #2681: the same inference for a TOP-LEVEL `let f = (p) -> ..`. Only the
+/// ELet / ELetRec locals went through fill_lambda_params, so an unannotated
+/// parameter of a top-level lambda kept no type, the planner read it as a
+/// scalar and planned neither dups nor drops for it, and a heap argument
+/// consumed twice or more in the body (`(tys) -> consume(tys) + consume(tys)`)
+/// was released once more than it was retained -- the shadow lane's "drop of
+/// freed value". The calls are collected from every top-level statement's
+/// expressions (`top_level_call_scope`), with the top-level `let` bindings
+/// seeded into the environment so a heap constant passed by name counts as
+/// heap. A lambda used as a value anywhere escapes and is left alone, as
+/// before.
+fn fill_top_lambda_params(name: String, efn: Expr, scope: Array[Expr], scope_refs: Array[Array[String]], hctx: HeapInferCtx) -> Expr {
+  match efn {
+    EFn(_, _, params, _, _, _) =>
+    if !params_have_unannotated(params) {
+      efn
+    } else {
+      let calls: Array[Array[Bool]] = []
+      let esc = [false]
+      let env0: Map[String, Bool] = Map::new()
+      let mut si = 0
+      while si < Array::length(scope) {
+        // Only the statements that mention the lambda can hold a call to it
+        // or let it escape; the others are skipped without a walk. The
+        // top-level bindings' heap-ness reaches arg_class through
+        // hctx.top_env, so the threaded environment starts empty.
+        if bsearch_leftmost(Array::get(scope_refs, si), name) >= 0 {
+          analyze_calls(name, Array::get(scope, si), env0, calls, esc, hctx)
+        } else {
+          ()
+        }
+        si = si + 1
+      }
+      fill_params_from_calls(efn, calls, esc)
+    },
+    _ => efn
+  }
+}
+
+fn params_have_unannotated(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut pi = 0
+  let mut found = false
+  while pi < Array::length(params) && !found {
+    let (_, pty) = Array::get(params, pi)
+    match pty {
+      None => {
+        found = true
+      },
+      Some(_) => ()
+    }
+    pi = pi + 1
+  }
+  found
+}
+
+/// Every expression a top-level statement carries: the scope a top-level
+/// lambda's calls are collected from (#2681). Impl methods are top-level
+/// lets by the time the planner runs.
+fn top_level_call_scope(stmts: Array[Stmt], out: Array[Expr]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, e) => Array::push(out, e),
+      SLetMut(_, _, e) => Array::push(out, e),
+      SExpr(e) => Array::push(out, e),
+      STest(_, e) => Array::push(out, e),
+      SBench(_, e) => Array::push(out, e),
+      SExample(_, e) => Array::push(out, e),
+      SLetPat(_, e) => Array::push(out, e),
+      SFnDecl(_, _, fv, _, _) => Array::push(out, fv),
+      SModule(_, _, inner) => top_level_call_scope(inner, out),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The top-level `let` bindings' heap-ness, the environment the top-level
+/// call analysis starts from (#2681): an annotated binding by its type, an
+/// unannotated one by its value.
+fn top_level_heap_env(stmts: Array[Stmt], hctx: HeapInferCtx) -> Map[String, Bool] {
+  // Built through a MapBuilder: a `Map::set` chain copies the map at every
+  // step, which is quadratic in the module's binding count. The value
+  // classification sees an empty local environment, so a top-level function
+  // is judged by hctx.ctors / hctx.heap_fns rather than shadowed by its own
+  // binding.
+  let builder = MapBuilder::new()
+  let empty_env: Map[String, Bool] = Map::new()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, ty, e) => {
+        let heap = match ty {
+          Some(_) => type_expr_is_heap(ty),
+          None => is_heap_value(e, empty_env, hctx)
+        }
+        MapBuilder::set(builder, n, heap)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  MapBuilder::freeze(builder)
+}
+
+/// The identifiers each top-level expression mentions, sorted, one list per
+/// entry of `top_level_call_scope`'s output (#2681): the filter that keeps a
+/// lambda's call analysis to the statements that can reference it.
+fn top_level_scope_refs(scope: Array[Expr]) -> Array[Array[String]] {
+  let out: Array[Array[String]] = []
+  let no_names: Array[String] = []
+  let mut i = 0
+  while i < Array::length(scope) {
+    Array::push(out, sorted_names_of(collect_free_vars(Array::get(scope, i), no_names, no_names)))
+    i = i + 1
+  }
+  out
 }
 
 fn elaborate_rw(e: Expr, hctx: HeapInferCtx) -> Expr {
@@ -1998,8 +2280,30 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       pc_emit(ctx, s2, body)
       pe_scope_end(ctx, id, name)
     },
-    EAssign(_name, value, body) => {
+    EAssign(name, value, body) => {
+      // ADR-0092 for maps: `x = f(.., x, ..)` moves x's current value into
+      // the call (pe_self_reassign_moves / pe_use). The binding then holds
+      // the call's result with its own initial reference, so its remaining
+      // count is topped back up by the one the move spent: the scope end
+      // still releases whatever it holds last. A self-reassignment whose
+      // occurrence dupped instead (a live view) leaks the old value, as it
+      // did before -- the lowering drops nothing for a self-referential
+      // right-hand side.
+      let mid = if Map::has_key(scope, name) && pe_self_reassign_moves(ctx, scope, name, value) {
+        Map::get(scope, name)
+      } else {
+        0 - 1
+      }
+      ctx.move_use_id = mid
+      ctx.move_hit = false
       pc_emit(ctx, scope, value)
+      ctx.move_use_id = 0 - 1
+      if ctx.move_hit {
+        Array::set(ctx.remaining, mid, Array::get(ctx.remaining, mid) + 1)
+      } else {
+        ()
+      }
+      ctx.move_hit = false
       pc_emit(ctx, scope, body)
     },
     EAssignOp(_name, _op, value, body) => {
@@ -2741,16 +3045,30 @@ fn collect_heap_ret_fns(stmts: Array[Stmt]) -> Array[String] {
 }
 
 export fn elaborate_heap_params(stmts: Array[Stmt]) -> Array[Stmt] {
+  let ctors = collect_ctor_names(stmts)
+  let heap_fns = collect_heap_ret_fns(stmts)
+  let no_env: Map[String, Bool] = Map::new()
+  let hctx0 = HeapInferCtx::{
+    ctors: ctors,
+    heap_fns: heap_fns,
+    top_env: no_env
+  }
+  // #2681: the scope the top-level lambdas' calls are collected from and the
+  // top-level bindings' heap-ness, built once for the whole program.
+  let scope: Array[Expr] = []
+  top_level_call_scope(stmts, scope)
+  let scope_refs = top_level_scope_refs(scope)
   let hctx = HeapInferCtx::{
-    ctors: collect_ctor_names(stmts),
-    heap_fns: collect_heap_ret_fns(stmts),
+    ctors: ctors,
+    heap_fns: heap_fns,
+    top_env: top_level_heap_env(stmts, hctx0)
   }
   let out = Array::slice(stmts, 0, 0)
   let mut i = 0
   while i < Array::length(stmts) {
     let s = Array::get(stmts, i)
     let s2 = match s {
-      SLet(a, b, n, t, e) => SLet(a, b, n, t, elaborate_rw(e, hctx)),
+      SLet(a, b, n, t, e) => SLet(a, b, n, t, elaborate_rw(fill_top_lambda_params(n, e, scope, scope_refs, hctx), hctx)),
       SExpr(e) => SExpr(elaborate_rw(e, hctx)),
       _ => s
     }

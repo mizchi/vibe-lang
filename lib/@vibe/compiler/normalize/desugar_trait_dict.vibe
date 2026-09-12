@@ -717,13 +717,23 @@ fn annotate_params_from_sig(params: Array[(String, Option[TypeExpr])], ptypes: A
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ann) = Array::get(params, i)
-    let new_ann = match ann {
-      Some(_) => ann,
-      None => if i < Array::length(ptypes) {
-        Some(Array::get(ptypes, i))
-      } else {
-        None
-      }
+    // `__rc_heap` is the planner's heap marker (see seed_var_types below):
+    // not an annotation the source wrote, so the trait's declared type
+    // still fills the slot -- an impl method's `x` classified heap before
+    // this pass ran kept the marker, the binder's `X` never reached it and
+    // `X::show(x)` lost its witness (fixtures/trait_method_generic_test.vibe
+    // trapped). The declared type carries the heap-ness anyway.
+    let unannotated = match ann {
+      Some(TyName(tn)) => tn == "__rc_heap",
+      Some(_) => false,
+      None => true
+    }
+    let new_ann = if !unannotated {
+      ann
+    } else if i < Array::length(ptypes) {
+      Some(Array::get(ptypes, i))
+    } else {
+      ann
     }
     Array::push(out, (pname, new_ann))
     i = i + 1
@@ -7198,7 +7208,17 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
   while i < Array::length(params) {
     let (pname, ann) = Array::get(params, i)
     match ann {
-      Some(TyName(tn)) => {
+      // `__rc_heap` is the planner's heap marker (perceus.vibe
+      // inferred_heap_type), put on a parameter elaborate_heap_params
+      // classified heap; this pass runs after that elaboration on the RC
+      // lane. It is not a type: seeded, its previous spelling (the empty
+      // tuple) made `x == y` on such a parameter a trivially true tuple
+      // comparison (#2681 follow-up), and a nominal seeded by name would
+      // have witnesses and comparators looked up under it. Unannotated is
+      // what the parameter is to this pass.
+      Some(TyName(tn)) => if tn == "__rc_heap" {
+        ()
+      } else {
         Array::push(out, (pname, tn))
         // A nullary alias can hide a structural parameter type just as a
         // TyApp annotation can. Preserve a same-spelled in-scope formal before

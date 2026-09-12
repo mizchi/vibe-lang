@@ -393,13 +393,242 @@ used by three maps, a source-level `Array::map` shadowing the intrinsic),
 the HOF shapes of `fixtures/rc_reclaim_leak_test.vibe`
 (the shell release, under the 2,000-byte bound) and shape 10 of
 `fixtures/rc_shadow_regression_test.vibe`. Three neighbours found on the
-way are filed, not fixed here: an unannotated lambda parameter consumed
-three times is released early (#2681, P0), an owned call result passed
-straight into a borrowed argument position is never released (#2682), and
-a `MapBuilder` is never reclaimed (#2683). A fourth, in the compiler rather
-than the lane, is fixed on the same branch: a bound `+` chain of 24
-operands ran the compiler out of memory because the trait-dict operand
-inference walked each operand twice per node (#2680).
+way were filed from that PR and are fixed in the next section: an
+unannotated lambda parameter consumed three times is released early
+(#2681, P0), an owned call result passed straight into a borrowed argument
+position is never released (#2682), and a `MapBuilder` is never reclaimed
+(#2683). A fourth, in the compiler rather than the lane, was fixed on the
+same branch: a bound `+` chain of 24 operands ran the compiler out of
+memory because the trait-dict operand inference walked each operand twice
+per node (#2680).
+
+### The three neighbours, fixed (#2681, #2682, #2683)
+
+**#2681 -- a top-level lambda's unannotated parameter.** Only the local
+`let f = (p) -> ..` lambdas went through the call-site inference
+(`fill_lambda_params`), so a top-level one kept no parameter type, the
+planner read the parameter as a scalar and planned neither dups nor drops
+for it, while every consuming call in the body released it. Two changes in
+`perceus.vibe`: the inference runs for top-level lambdas too
+(`fill_top_lambda_params`), and a parameter the body CONSUMES at an owning
+position is marked heap whatever the calls pass (`md_consume_count`, the
+builtin-only view -- the case the scalar classification cannot afford to
+miss; a scalar handed the heap treatment costs guarded no-ops).
+
+The first cut of the top-level inference was a lesson in its own right. It
+seeded every top-level binding into the environment the call analysis
+threads, and that environment is an immutable `Map`: `Map::set` copies its
+map, and `analyze_calls` sets it at every `let` and every lambda parameter
+it walks, so each walk copied the module's bindings again and again. The
+compiler gate's split-CLI step went red with `memory access out of bounds`
+inside `__rt_map_build_index`, called from `analyze_calls` -- the
+bump-built compiler had run out of memory. The fix keeps the top-level
+bindings OUT of the threaded environment: they are a side lookup
+(`HeapInferCtx.top_env`, built once through a `MapBuilder`) that
+`arg_class` consults when the local environment has no entry, and a
+lambda's calls are collected only from the top-level statements whose
+free-variable list mentions it. Measured on the split CLI (RC output
+lane): the 045db6c compiler 21.6 s, the first cut a trap after 27 s, the
+fix 17.6 s.
+
+The second lesson came from the gate's shadow fixture, which answered
+5,025,372,489 instead of 25,377,489 on the RC lane once top-level lambdas
+were classified: its `lookup(names, effs, name)` returned `Some` for a
+name it did not hold. The planner spelled a heap-classified parameter's
+annotation as the EMPTY TUPLE (`TyTuple([])`, a shape no source produces
+-- `()` parses to `TyUnit`), and `desugar_trait_dicts`, which runs AFTER
+`elaborate_heap_params`, seeded that as a composite eq shape for the
+parameter: `Array::get(names, i) == name` became
+`eq_for_typed(TyTuple([]))`, a trivially true tuple comparison. Annotate
+the parameters and the answer is right; local lambdas never reached
+`seed_var_types`, which is why the same marker had been harmless there.
+`linked_compile` read it too, as a tuple of arity 0 registered in
+`agg_local_slots`. The marker is a nominal now (`__rc_heap`): a name no
+type table knows is exactly what an unannotated parameter already is to
+those readers (`agg_info_of_type_name` answers 0), `type_expr_is_heap`
+recognises it, `seed_var_types` skips it by name so no witness or
+comparator is ever looked up under it, and `annotate_params_from_sig`
+lets the trait's declared type overwrite it -- an impl method's parameter
+classified heap before that pass kept the marker, the method-level
+binder's `X` never reached it and `X::show(x)` lost its witness
+(`fixtures/trait_method_generic_test.vibe` trapped in the unit battery).
+Pinned by
+`tests/lambda_param_consume_rc_test.vibe` (seven shapes through bump / RC /
+RC-shadow, the `lookup` shape among them) and by the shadow fixture.
+
+**#2682 -- an owned temporary in a borrowed position.**
+`Array::length(build_arr(3))` handed a fresh array to a position that
+takes no ownership, and no binding held it, so nobody dropped it: 84 B per
+call for the three-element array, and the map result and its elements in
+the `Array::length(Array::map(ta, f))` shape. `cc_compile_resolved_call`
+now parks such a temporary (`cc_is_owned_temp`: a call to a callee that
+returns no view, or an array / tuple / record literal) in a local and
+releases it after the call -- unless the callee may return a view of its
+argument (`is_borrow_ret_builtin`, the `borrow_ret_names` and
+`borrow_view_ret` sets), where the leak stays the safe side. Pinned by
+`tests/borrowed_temp_release_rc_test.vibe` and the `tlen` shape of
+`fixtures/rc_reclaim_leak_test.vibe`.
+
+**#2683 -- `Map` and `MapBuilder` are RC blocks.** Both were raw bump
+allocations in both lanes -- even values, invisible to the RC machinery
+-- so a builder leaked 144 B per `new`, every value stored in it with it,
+and the frozen `Map` on top; every `Map::set` / `Map::delete` / literal
+result was the same. On the RC lane they are rc blocks now:
+
+- a `Map` is class 6 (`[count][index][entries]`, the layout rc_drop's
+  arm already walked); `Map::set`, `Map::delete`, `MapBuilder::freeze`
+  and the `EMap` literal (`Map::new()` and `Map::from_pairs` parse to it)
+  allocate through `cc_map_alloc_rc` and hand the value out TAGGED. Every
+  reader already untagged with `& -2`. The side index that
+  `__rt_map_build_index` builds once a map holds 8 entries is a class-0
+  leaf allocated through rc_alloc, freed by the class-6 arm;
+- a `MapBuilder` is a class-9 handle over a class-0 storage leaf, and
+  `rc_drop` gained the arm: drop the stored keys and values, release the
+  storage, free the handle. `MapBuilder::set` releases the storage it
+  grows out of and the value it replaces, and `freeze` decides by the
+  handle's rc word: uniquely held, the entries MOVE (count zeroed, handle
+  and storage freed); shared, every copied key and value is retained;
+- a key or value copied from one map into another is retained in both
+  (`Map::set`, `Map::delete`, `Map::keys`, `Map::values`), a replaced key
+  the caller retained for storage is released, a literal's value that
+  is a borrowed view (a projection, a borrow-returning call, a
+  loop-borrowed name) is retained as the array / tuple / record literals
+  do, and a lowering that borrows its map releases an OWNED temporary
+  handed there (`Map::set(Map::new(), k, v)`, a nested `Map::set`, a
+  frozen builder) after its last read -- the #2682 rule, which the
+  resolved-call path applies to runtime-function builtins and these
+  inline arms apply themselves; `Map::get` / `MapBuilder::get` return a
+  view and keep the leak on the safe side.
+
+Two rules only the measurement showed. A `Map`'s index slot (vptr+4) must
+be zeroed at allocation, because rc_alloc hands back memory that still
+holds whatever the previous block wrote there. And every Map builtin that
+reads or copies its map without releasing it has to be in
+`md_is_borrow_arg0_call`: `Map::delete`, `Map::values`, `Map::size` and the
+`Map::has` alias were not, so the planner handed them an OWNED reference
+that no lowering dropped -- invisible while maps were bump blocks, 48 B per
+iteration once they were rc blocks (`Map::keys` / `Map::get` / `Map::set`
+already were; `MapBuilder::freeze` stays an owning position, its lowering
+releases what it is handed). The same measurement found the map literal
+missing from `cc_is_owned_temp`: `Map::set(Map::new(), k, v)` hands a
+16-byte block to a borrowed position that nobody released (#2682's rule,
+now covering `EMap`). Pinned by
+`tests/map_builder_rc_test.vibe` (eight shapes -- a replaced value, a
+builder frozen twice, a builder grown past 8 entries with the frozen map
+indexed, a map in a struct captured by a closure, literals over views, a
+builder held by an array and read through `MapBuilder::get`, a freeze
+through a projection -- bump / RC / RC-shadow agreement) and the
+`MapBuilder` / `Map` shape of `fixtures/rc_reclaim_leak_test.vibe`
+(`5i + 21` per iteration; the expected total moved to 7,401,070,000, and
+to 7,801,510,000 with the accumulator shapes below). The
+fixture's heap bound moves from 2,000 to 4,000 B: its steady state is a
+constant, one parked block per size bin at loop exit, measured 3,204 B
+with the indexed maps and the grown builder storage, while any leak
+scales with N (16 B per iteration is 320,000 B at N = 20000).
+
+**What the compiler's own RC-lane self-compile pays for the three fixes**
+(the `selfcompile_kpi` protocol: the seed entry compiled by an RC-built
+stage2 of the PR base bca14ae and of the final tree, viberun fuel and
+allocation, three runs each, identical to the digit):
+
+| | base (bca14ae) | this branch | delta |
+|---|---:|---:|---:|
+| fuel | 1,177,029,188,611 | 1,194,445,790,779 | +1.48% |
+| bytes allocated | 1,835,120,428 | 1,839,410,132 | +0.23% |
+| heap peak | 1,835,229,036 | 1,839,518,828 | +0.23% |
+| RC stage2 size | 4,889,148 | 4,895,557 | +0.13% |
+
+The fuel is the price of maps that are accounted at all: `Map::set`
+retains every entry it copies out of a source it borrows (a plain copy
+before), rc_drop walks a map's entries when it dies, and the index goes
+through rc_alloc. The peak does not fall because the compiler's own maps
+(type environments) live to the end of the compile, so reclaiming them
+buys nothing there and their headers cost 0.23%. The map counterpart of
+ADR-0092 reuse is the next section.
+
+### Map reuse: a uniquely held Map updates in place (ADR-0092 for maps)
+
+`Map::set` and `Map::delete` CONSUME their map now (they left
+`md_is_borrow_arg0_call`). On the RC lane the lowering reads the source's
+rc word: exactly one reference (`1 | 6 << 24` -- a saturated, immortal
+block fails the test) and the entry is replaced, appended or removed in
+place and the same block is the result; anything else takes the copy
+path, after which the consumed reference is released. In place, the
+capacity comes off the block's size word (rc_alloc hands back exactly the
+size asked for), a full block moves its entries into one of twice the
+capacity (no retains -- the old block's count is zeroed and it is released
+with its index), the side index is inserted into (`__rt_map_index_insert`,
+now on `CompileCtx`) while it stays at or under the half load
+`__rt_map_cap_for` sizes for and released and rebuilt otherwise, and a
+delete shifts the tail down and rebuilds the index or drops it under 8
+entries. The bump lane keeps the copy.
+
+Two things had to be true of the planner for that path to be reached. A
+container read after (or through a view around) a consuming use is
+already kept alive: `pctx_apply_borrow_retention` adds one owning use to
+any binding with a borrow occurrence, so the consuming use dups instead of
+moving and the scope end releases the initial reference (measured before
+the change: `let v = Array::get(xs, 1)` then `Array::concat(xs, ..)`,
+`Array::filter(xs, ..)` rejecting the viewed element, a user fn consuming
+`xs`, and `Array::length(xs)` after the consume all agree across bump /
+RC / shadow). So `let v = Map::get(m, k); let m2 = Map::set(m, k, x)`
+copies and `v` survives, while a source with no later reads moves.
+
+The accumulator did not reach it, and it leaked. `m = Map::set(m, k, v)`
+counts as an owning use of `m`, the planner retained it whenever `m` had
+any other use, the callee copied, and the assignment lowering -- which
+drops nothing for a self-referential right-hand side, on the assumption
+that the call consumed the old value -- left the old map with the
+reference the retain had kept: 864 B per iteration for nine sets on a
+map, 420 B for four `Array::concat` on an array, on the compiler before
+this change (the `let mut` accumulator pattern, any heap type, since
+#699). `x = f(.., x, ..)` with `x` at exactly one owning position and
+nowhere else in the right-hand side now MOVES that occurrence
+(`pe_self_reassign_moves` / `pe_use`): the old value is consumed and the
+binding takes the result, the binding's remaining count is topped back up
+by the one the move spent so its scope end still releases what it holds
+last, and the assignment lowering keeps its loop-carried dup off the same
+occurrence (`md_self_reassign_move_arg`). The move is withheld when the
+binding is a scalar, is itself a view, or when another binding still
+views it (`view_src`, recorded for borrow-returning calls and projections
+at their `let`; a view used only at borrowed positions keeps its initial
+count until its scope ends, which blocks the move for that whole scope --
+the safe side).
+
+Measured with viberun (RC lane, 20,000 iterations), before -> after:
+
+| shape | fuel | heap peak |
+|---|---:|---:|
+| a 21-step unique chain of `Map::set` through a consuming helper | 2,022,100,188 -> 499,280,141 (-75%) | 9,504 -> 2,480 B |
+| nine `m = Map::set(m, ..)` on a `let mut` inside the loop | 234,520,377 -> 149,420,287 (-36%) | 17,280,760 -> 840 B |
+| two `m = Map::set(m, ..)` on a `let mut` inside the loop | 19,420,266 -> 20,980,273 (+8%) | 960,496 -> 544 B |
+| four `xs = Array::concat(xs, [..])` on a `let mut` | 68,880,301 -> 62,480,229 (-9%) | 8,400,532 -> 700 B |
+
+The heap columns are the leak: every intermediate value, gone. The +8% on
+the two-set map is the unique test plus the in-place search on a map too
+small to have anything to save. Pinned by `tests/map_reuse_rc_test.vibe`
+(thirteen shapes through bump / RC / RC-shadow: unique and shared sources,
+growth past the index threshold, a replace through the index, deletes back
+under it, a view read before and one held across a consuming set, a source
+consumed twice, accumulators inside and outside loops, reads between
+reassignments, the array accumulator) and by the accumulator shapes of
+`fixtures/rc_reclaim_leak_test.vibe` (`2i + 23` per iteration; the
+expected total moves to 7,801,510,000), on which the compiler before the
+move keeps 28,723,336 B against the 4,000-byte bound.
+
+What the compiler's own self-compile gets out of it: nothing measurable.
+The `selfcompile_kpi` protocol (RC-built stage2 of the tree before the
+reuse, 3c7ba5b, against the reuse) moves fuel 1,194,445,790,779 ->
+1,194,859,964,204 (+0.03%), bytes allocated 1,839,410,132 ->
+1,841,373,196 (+0.11%) and the RC stage2 grows 4,895,557 -> 4,906,173 B
+(+0.22%, the in-place arms). The compiler's map traffic is not the shape
+the reuse serves: of its 117 `Map::set` sites, 17 are self-reassignments
+(the planner's `env = Map::set(env, n, ..)` threading, and the one that
+also reads `env` in the value argument is not a single occurrence), 7 are
+`let`-bound, and the rest pass `Map::set(scope, name, id)` straight into
+a recursive call while the caller keeps `scope` -- shared by
+construction, so they copy, and would need a persistent structure rather
+than an in-place update to get cheaper.
 
 ### An FBIP-shaped rewrite of one pass, measured (2026-09-11)
 

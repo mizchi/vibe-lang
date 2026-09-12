@@ -1,0 +1,88 @@
+//# Imports
+
+// #2683: a MapBuilder, its storage, the Map it freezes and every map a
+// Map::set / Map::delete / literal produces were raw bump allocations on
+// the RC lane -- even, invisible to the RC machinery, never reclaimed, and
+// every value stored in them leaked with them. They are RC blocks now (a
+// class-9 handle over a class-0 storage leaf; class-6 maps whose side index
+// is a class-0 leaf), so the planner's dups and drops reach them: rc_drop
+// walks the entries, and MapBuilder::freeze moves the entries out of a
+// uniquely held builder or retains them out of a shared one. These programs
+// pin that nothing is released while still in use: bump, RC and RC-shadow
+// must agree. The heap side is pinned by fixtures/rc_reclaim_leak_test.vibe.
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+//# Functions
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_map_builder_rc_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Stdout {
+  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
+  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  let shadow = run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow"))
+  inspect(bump, content = expected)
+  inspect(rc, content = expected)
+  inspect(shadow, content = expected)
+  0
+}
+
+fn prelude() -> String {
+  "enum Tree {\n  Leaf(Int);\n  Node(Tree, Tree)\n}\nfn sumt(t: Tree) -> Int {\n  match t {\n    Leaf(v) => v,\n    Node(l, r) => sumt(l) + sumt(r)\n  }\n}\nstruct Holder {\n  m: Map[String, Tree];\n  n: Int\n}\nstruct HB {\n  b: MapBuilder[String, Tree]\n}\n"
+}
+
+test "a builder frozen once, a value replaced before the freeze (#2683)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let b = MapBuilder::new()\n    MapBuilder::set(b, \"a\", i)\n    MapBuilder::set(b, \"b\", i + 1)\n    MapBuilder::set(b, \"a\", i + 2)\n    let m = MapBuilder::freeze(b)\n    total = total + Map::get(m, \"a\") + Map::get(m, \"b\") + Map::size(m)\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "builder_basic", "4008000")
+}
+
+test "heap values through Map::set / Map::delete / Map::values (#2683)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let m1 = Map::set(Map::new(), \"x\", Node(Leaf(i), Leaf(i + 1)))\n    let m2 = Map::set(m1, \"y\", Leaf(i))\n    let m3 = Map::delete(m2, \"x\")\n    let vs = Map::values(m2)\n    total = total + sumt(Map::get(m1, \"x\")) + sumt(Map::get(m2, \"x\")) + sumt(Map::get(m3, \"y\")) + Array::length(vs) + sumt(Array::get(vs, 0))\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "map_chain_values", "14003000")
+}
+
+test "a shared builder frozen twice: the shared path retains, the unique path moves (#2683)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let b = MapBuilder::new()\n    MapBuilder::set(b, \"a\", Leaf(i))\n    let m1 = MapBuilder::freeze(b)\n    MapBuilder::set(b, \"b\", Leaf(i + 1))\n    let m2 = MapBuilder::freeze(b)\n    total = total + sumt(Map::get(m1, \"a\")) + Map::size(m1) + sumt(Map::get(m2, \"b\")) + Map::size(m2)\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "builder_frozen_twice", "4006000")
+}
+
+test "a builder grown past 8 entries, the frozen map indexed, Map::set and Map::delete on it (#2683)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let b = MapBuilder::new()\n    MapBuilder::set(b, \"k0\", i)\n    MapBuilder::set(b, \"k1\", i + 1)\n    MapBuilder::set(b, \"k2\", i + 2)\n    MapBuilder::set(b, \"k3\", i + 3)\n    MapBuilder::set(b, \"k4\", i + 4)\n    MapBuilder::set(b, \"k5\", i + 5)\n    MapBuilder::set(b, \"k6\", i + 6)\n    MapBuilder::set(b, \"k7\", i + 7)\n    MapBuilder::set(b, \"k8\", i + 8)\n    MapBuilder::set(b, \"k9\", i + 9)\n    MapBuilder::set(b, \"k10\", i + 10)\n    MapBuilder::set(b, \"k11\", i + 11)\n    let m = MapBuilder::freeze(b)\n    let m2 = Map::set(m, \"k12\", i)\n    let m3 = Map::delete(m2, \"k0\")\n    let missing = if Map::has_key(m3, \"k0\") {\n      100\n    } else {\n      0\n    }\n    total = total + Map::get(m, \"k5\") + Map::get(m2, \"k12\") + Map::get(m3, \"k11\") + Map::size(m3) + missing\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "indexed_map", "6053000")
+}
+
+test "a map inside a struct captured by a closure (#2683)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let h = Holder::{ m: Map::set(Map::new(), \"t\", Leaf(i)), n: i }\n    let f = () -> Int {\n      sumt(Map::get(h.m, \"t\")) + h.n\n    }\n    total = total + f()\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "map_in_struct_closure", "3998000")
+}
+
+test "literal maps whose values are borrowed views (#2683)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let ta: Array[Tree] = [Leaf(i), Node(Leaf(i), Leaf(i + 1))]\n    let m = Map::from_pairs([(\"a\", Array::get(ta, 1)), (\"b\", Leaf(i))])\n    let hd = Holder::{ m: m, n: 1 }\n    let m2 = Map::from_pairs([(\"c\", hd.m)])\n    let inner = Map::get(m2, \"c\")\n    total = total + sumt(Map::get(m, \"a\")) + sumt(Map::get(inner, \"b\")) + sumt(Array::get(ta, 1))\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "literal_views", "9999000")
+}
+
+test "a builder held by an array and read through MapBuilder::get, never frozen (#2683)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let b = MapBuilder::new()\n    MapBuilder::set(b, \"a\", Leaf(i))\n    let arr = [b]\n    let hit = if MapBuilder::has_key(Array::get(arr, 0), \"a\") {\n      1\n    } else {\n      0\n    }\n    let g = match MapBuilder::get(b, \"a\") {\n      Some(t) => sumt(t),\n      None => 0\n    }\n    total = total + Array::length(arr) + hit + g\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "builder_in_array", "2003000")
+}
+
+test "a builder frozen through a struct projection (#2683)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let hb = HB::{ b: MapBuilder::new() }\n    MapBuilder::set(hb.b, \"a\", Leaf(i))\n    let m = MapBuilder::freeze(hb.b)\n    total = total + sumt(Map::get(m, \"a\")) + Map::size(m)\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "builder_projection_freeze", "2001000")
+}
+
+test "owned temporaries handed to the borrowing map lowerings (#2683)" {
+  let src = String::concat(prelude(), "let main = () -> Int {\n  let mut total = 0\n  let mut i = 0\n  while i < 2000 {\n    let s = Map::size(Map::set(Map::new(), \"a\", Leaf(i)))\n    let h = if Map::has_key(Map::from_pairs([(\"a\", Leaf(i))]), \"a\") {\n      1\n    } else {\n      0\n    }\n    let ks = Map::keys(Map::delete(Map::set(Map::from_pairs([(\"z\", Leaf(i))]), \"a\", Leaf(i + 1)), \"z\"))\n    let vs = Map::values(Map::set(Map::new(), \"v\", Node(Leaf(i), Leaf(i + 1))))\n    total = total + s + h + Array::length(ks) + sumt(Array::get(vs, 0))\n    i = i + 1\n  }\n  total\n}\n")
+  assert_lanes_agree(src, "temp_maps_in_borrowed_positions", "4006000")
+}

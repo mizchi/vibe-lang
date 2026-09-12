@@ -1,0 +1,87 @@
+//# Imports
+
+// #2681: an unannotated parameter of a TOP-LEVEL `let f = (p) -> ..`
+// lambda kept no type: only the local (ELet / ELetRec) lambdas went through
+// the planner's parameter heap inference, so the parameter was planned as
+// a scalar -- no dup, no drop -- while every consuming call in the body
+// released it. Two consumes of a heap argument freed it once too often
+// (the shadow lane's "drop of freed value"; the RC lane answered from the
+// freed block or trapped). The inference now runs for top-level lambdas
+// too, with every top-level statement's expressions as the scope the
+// calls are collected from. Each program runs through the bump, RC and
+// RC-shadow lanes of the checkout's codegen and must print the bump value
+// on all three (hof_rc_ownership_test's convention).
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+//# Functions
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_lambda_param_rc_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Stdout {
+  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
+  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  let shadow = run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow"))
+  inspect(bump, content = expected)
+  inspect(rc, content = expected)
+  inspect(shadow, content = expected)
+  0
+}
+
+fn prelude() -> String {
+  "enum Ty {\n  TInt;\n  TFn(Array[Ty], Ty)\n}\nlet consume_arr = (xs) -> {\n  let holder = [xs]\n  Array::length(holder)\n}\n"
+}
+
+test "three consumes of one heap argument in a single expression (#2681)" {
+  let src = String::concat(prelude(), "let three = (tys) -> consume_arr(tys) + consume_arr(tys) + consume_arr(tys)\nlet main = () -> Int {\n  let tys = [TInt, TFn([TInt], TInt), TInt]\n  three(tys)\n}\n")
+  assert_lanes_agree(src, "three_in_one_expr", "3")
+}
+
+test "two consumes while the caller still reads the argument (#2681)" {
+  let src = String::concat(prelude(), "let two = (tys) -> consume_arr(tys) + consume_arr(tys)\nlet main = () -> Int {\n  let tys = [TInt, TFn([TInt], TInt), TInt]\n  two(tys) + Array::length(tys)\n}\n")
+  assert_lanes_agree(src, "two_then_used_after", "5")
+}
+
+test "three let-bound consumes, called from a loop (#2681)" {
+  let src = String::concat(prelude(), "let three = (tys) -> {\n  let a = consume_arr(tys)\n  let b = consume_arr(tys)\n  let c = consume_arr(tys)\n  a + b + c\n}\nlet main = () -> Int {\n  let mut acc = 0\n  let mut k = 0\n  while k < 100 {\n    let tys = [TInt, TFn([TInt], TInt), TInt]\n    acc = acc + three(tys) + Array::length(tys)\n    k = k + 1\n  }\n  acc\n}\n")
+  assert_lanes_agree(src, "three_lets_in_loop", "600")
+}
+
+test "a heap parameter next to a scalar one (#2681)" {
+  let src = String::concat(prelude(), "let pick = (tys, i) -> consume_arr(tys) + i\nlet main = () -> Int {\n  let tys = [TInt, TFn([TInt], TInt), TInt]\n  pick(tys, 1) + pick(tys, 2) + Array::length(tys)\n}\n")
+  assert_lanes_agree(src, "mixed_scalar_and_heap", "8")
+}
+
+test "a borrowed view (Array::get) handed to the lambda through an annotated wrapper (#2681)" {
+  let src = String::concat(prelude(), "let consume_ty = (t) -> {\n  let holder = [t]\n  Array::length(holder)\n}\nlet thrice = (t) -> consume_ty(t) + consume_ty(t) + consume_ty(t)\nlet shape = (tys: Array[Ty]) -> Int {\n  thrice(Array::get(tys, 1))\n}\nlet main = () -> Int {\n  let tys = [TInt, TFn([TInt], TInt), TInt]\n  shape(tys) + 1\n}\n")
+  assert_lanes_agree(src, "borrowed_view_argument", "4")
+}
+
+test "a parameter every call passes a scalar to stays a scalar (#2681)" {
+  let src = String::concat(prelude(), "let sc = (n) -> n + n + n\nlet main = () -> Int {\n  sc(4)\n}\n")
+  assert_lanes_agree(src, "scalar_only_calls", "12")
+}
+
+// #2681 follow-up: the heap classification of `names` / `effs` / `name`
+// (every call passes an array or a string literal) used to be spelled as an
+// EMPTY TUPLE annotation, and desugar_trait_dicts -- which runs after the
+// elaboration -- seeded it as a composite eq shape: `Array::get(names, i)
+// == name` became a trivially true tuple comparison and the not-found
+// lookup answered Some on the RC lane (bump was right, the fixture's
+// 25377489 became 5025372489). The marker is a nominal now that the
+// desugar skips by name.
+test "an inferred heap parameter compared with == keeps string equality (#2681 follow-up)" {
+  let src = String::concat(prelude(), "let lookup = (names, effs, name) -> {\n  let mut i = 0\n  let mut found = None\n  while i < Array::length(names) {\n    match found {\n      None => if Array::get(names, i) == name {\n        found = Some(Array::get(effs, i))\n      } else { () },\n      Some(_) => ()\n    }\n    i = i + 1\n  }\n  found\n}\nlet main = () -> Int {\n  let names = [\"a\", \"b\", \"c\"]\n  let effs = [[1], [2, 3], [4]]\n  let mut acc = 0\n  let mut k = 0\n  while k < 2000 {\n    match lookup(names, effs, \"b\") {\n      Some(arr) => { acc = acc + Array::length(arr) },\n      None => ()\n    }\n    match lookup(names, effs, \"zzz\") {\n      Some(_) => { acc = acc + 1000000 },\n      None => { acc = acc + 1 }\n    }\n    k = k + 1\n  }\n  acc\n}\n")
+  assert_lanes_agree(src, "inferred_param_string_eq", "6000")
+}
