@@ -29,13 +29,15 @@
 //# that exercises them. What the whole table DOES establish is sufficiency:
 //# every class answers what a fresh compile answers.
 //#
-//# What is NOT here, and why: an interface change that moves a whole-program
-//# CLASSIFICATION (a callee that stops returning Double, a const that stops
-//# being an Int) also changes the source of everyone who uses it, so there is
-//# no unchanged file left to replay. Those slots are pinned anyway -- a type
-//# alias or a generic instantiation can move a classification without touching
-//# the consumer's text -- but this file cannot reach them, and saying so is
-//# better than a case that passes by editing nothing.
+//# One interface change that moves a whole-program CLASSIFICATION is here --
+//# `render-type`, a callee going from `Int` to `Bool` while the consuming file
+//# is untouched -- and it is the row that says a classification can move
+//# without any name-keyed guard seeing it. The rest of that family cannot be
+//# reached from this fixture: a callee that stops returning `Double`, or a
+//# const that stops being an `Int`, changes the consumer's own text too, so no
+//# unchanged file is left to replay. Those slots are pinned on the
+//# `CompileCtx` enumeration, not on a case here, and saying so is better than
+//# a case that passes by editing nothing.
 
 import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
@@ -92,8 +94,8 @@ let ec_main_path: String = "/tmp/vibe_body_cache_ec_main.vibe"
 /// this file: adding an uncompared struct OR an uncompared enum to a fixture
 /// that otherwise reuses takes its recorded guards from 5 to 0 and its reuse
 /// to nothing. So a fixture with a dead declaration measures the DCE guard,
-/// not the layout guard, and every row below would read `reuse=none` for a
-/// reason that has nothing to do with what it claims to test.
+/// not the layout guard, and every row below would read `reuse=unoffered` for
+/// a reason that has nothing to do with what it claims to test.
 ///
 /// Every later file reaches into it, so each edit is upstream of bodies the
 /// widened lane wants to replay. It carries one of everything the fingerprint
@@ -117,6 +119,7 @@ fn ec_base_a_lines() -> Array[String] {
     "export let ec_k: Int = 7",
     "export let ec_eq: () -> Bool = () -> { [1, 2] == [1, 2] }",
     "export let ec_scale: () -> Double = () -> { 1.5 }",
+    "export let ec_flag: () -> Int = () -> { 1 }",
     "export let ec_name: () -> String = () -> { \"alpha\" }",
     "export let ec_twice: ((Int) -> Int, Int) -> Int = (f, n) -> { f(f(n)) }",
     "export let ec_bump: (Int) -> Int = (n) -> { n + ec_k }",
@@ -138,7 +141,7 @@ fn ec_base_a() -> String {
 /// bytes rather than as nothing at all.
 fn ec_base_b() -> String {
   let parts: Array[String] = [
-    "import ./vibe_body_cache_ec_a.vibe { EcBright, EcDim, EcPoint, EcShade, ec_bump, ec_eq, ec_k, ec_name, ec_noted, ec_point, ec_same, ec_scale, ec_shade, ec_twice }",
+    "import ./vibe_body_cache_ec_a.vibe { EcBright, EcDim, EcPoint, EcShade, ec_bump, ec_eq, ec_flag, ec_k, ec_name, ec_noted, ec_point, ec_same, ec_scale, ec_shade, ec_twice }",
     "export let ec_b_tag: () -> Int = () -> { let mine: EcShade = EcBright(5)\n  match mine { EcDim => 0, EcBright(n) => n } + match ec_shade() { EcDim => 1, EcBright(n) => n } }",
     "export let ec_b_field: () -> Int = () -> { let p: EcPoint = EcPoint::{ x: 9, y: 8 }\n  p.x + p.y * 10 + ec_point().x + ec_point().y * 100 }",
     "export let ec_b_text: () -> String = () -> { String::concat(ec_name(), \"beta\") }",
@@ -146,17 +149,19 @@ fn ec_base_b() -> String {
     "export let ec_b_closure: () -> Int = () -> { let step = (n) -> { n + ec_k }\n  ec_twice(step, 2) }",
     "export let ec_b_double: () -> Double = () -> { ec_scale() * 2.0 }",
     "export let ec_b_effect: () -> Int = () -> { ec_noted() }",
-    "export let ec_b_eq: () -> Int = () -> { (if ec_eq() { 1 } else { 0 }) + ec_same() }"
+    "export let ec_b_eq: () -> Int = () -> { (if ec_eq() { 1 } else { 0 }) + ec_same() }",
+    "export let ec_b_render: () -> String = () -> { \"f=\\{ec_flag()}\" }",
+    "export let ec_b_cmp: () -> Int = () -> { if ec_flag() == ec_flag() { 1 } else { 0 } }"
   ]
   String::join(parts, "\n")
 }
 
 fn ec_base_main() -> String {
   let parts: Array[String] = [
-    "import ./vibe_body_cache_ec_b.vibe { ec_b_closure, ec_b_double, ec_b_effect, ec_b_eq, ec_b_field, ec_b_slot, ec_b_tag, ec_b_text }",
+    "import ./vibe_body_cache_ec_b.vibe { ec_b_closure, ec_b_cmp, ec_b_double, ec_b_effect, ec_b_eq, ec_b_field, ec_b_render, ec_b_slot, ec_b_tag, ec_b_text }",
     "let run: () -> Int = () -> {",
     "  let s = ec_b_tag() + ec_b_field() + ec_b_slot() + ec_b_closure() + ec_b_effect() + ec_b_eq()",
-    "  s + String::length(ec_b_text()) + Double::to_int(ec_b_double())",
+    "  s + String::length(ec_b_text()) + String::length(ec_b_render()) + ec_b_cmp() + Double::to_int(ec_b_double())",
     "}"
   ]
   String::join(parts, "\n")
@@ -227,10 +232,18 @@ fn ec_subs(olds: Array[String], news: Array[String]) -> String with Exception {
 /// the first file, and report what the warm compile reused and whether it
 /// answered what a fresh compile does.
 ///
-/// One line, fixed field order: `<label> reuse=<full|partial|none> equal=<bool>`.
+/// One line, fixed field order:
+/// `<label> reuse=<unoffered|partial|none> equal=<bool>`.
 /// The reuse column is CLASSIFIED rather than counted because the raw count is
 /// dominated by the pin region's 1024 pads, which say nothing about this.
-/// `full` means the widened lane declined and everything recompiled.
+///
+/// The field says REUSE, so the values describe reuse and not the rebuild:
+/// `unoffered` is the file table refusing before any guard is consulted (the
+/// edit moved a statement count, so the stored indices are not this build's),
+/// `none` is the lane being offered entries and replaying nothing of them.
+/// The third case was spelled `full` first, which read as its own opposite --
+/// `reuse=full` on a build that reused nothing -- and the surrounding prose
+/// had to translate it every time.
 fn ec_probe(label: String, edited: String) -> String with Exception + Fs {
   let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(ec_main_path)))
   if Fs::exists(artifact_path) {
@@ -257,11 +270,11 @@ fn ec_probe(label: String, edited: String) -> String with Exception + Fs {
   let warm = compile_file_fs_mode_rc_body_cached_counted(ec_main_path, "run", "on", warm_counts)
   let fresh = compile_file_fs_mode_rc(ec_main_path, "run")
   let reuse = if Array::get(warm_counts, 0) == 0 {
-    "none"
+    "unoffered"
   } else if Array::get(warm_counts, 1) < cold_n {
     "partial"
   } else {
-    "full"
+    "none"
   }
   "\{label} reuse=\{reuse} equal=\{bytes_eq(warm, fresh)}"
 }
@@ -305,6 +318,38 @@ test "#2669: every edit class stays byte-exact under the widened body cache" {
   // Exception tags: effect `effect_names[i]` routes through tag `3 + i`, so an
   // effect declared ahead moves the tag `ec_b_effect` unwinds through.
   Array::push(report, ec_probe("add-effect-ahead", ec_sub("effect EcLog {", "effect EcAhead {\n  Ping(Int) -> Int\n}\neffect EcLog {")))
+  // A typed RENDER/eq classification: `ec_flag` goes from Int to Bool while
+  // keeping its name, its arity, its statement count and its scalar-return
+  // classification, and two functions in the UNCHANGED file `b` consume it --
+  // one interpolating it, one comparing it. No name-keyed table separates Int
+  // from Bool, so nothing in `guard_layout` sees this edit.
+  //
+  // Raised as a P0 by review. Two separate things came back measured, and
+  // they point opposite ways.
+  //
+  // The CHANNEL is real. Reading `b`'s own typed-lowering rows across this
+  // edit, on a two-file version of this chain: a comment, a same-length body
+  // edit and a body edit that lengthens `a` all leave them at `[715]`, and the
+  // `Int` to `Bool` change moves them to `[717]`. So an untouched consumer's
+  // classification does move on an upstream interface change, and no
+  // name-keyed guard is looking at it. `guard_typed_lowering` -- the per-file
+  // fingerprint of the checker's own tables -- is that look.
+  //
+  // The ROW does not prove it necessary. Rebuilt with the stamp neutered, so
+  // the guard is never consulted, this row still reports `partial` and
+  // `equal=true`: `ec_flag`'s return classification is program-wide, so a
+  // `guard_layout` slot moves and the lane declines before the typed-lowering
+  // guard could matter. The guard is carried on the same footing as the ten
+  // `guard_layout` slots the header lists as unproven -- the shape that would
+  // separate them (a classification that moves through a type alias or a
+  // generic instantiation, leaving every layout slot still) is the one this
+  // fixture cannot build.
+  //
+  // What the row DOES establish is that the guard does not over-decline. An
+  // earlier version compared the classification whole-program instead of per
+  // file, and every row here that reuses went to reusing nothing -- the edited
+  // file moves its own slot on every edit.
+  Array::push(report, ec_probe("render-type", ec_sub("export let ec_flag: () -> Int = () -> { 1 }", "export let ec_flag: () -> Bool = () -> { true }")))
   // A const's VALUE. Measured `reuse=partial`, which is itself the finding:
   // `ec_k` is not const-folded into `ec_b_closure` here -- it lowers to a
   // thunk call -- so only its own file's bodies change and the rest replay
@@ -315,5 +360,5 @@ test "#2669: every edit class stays byte-exact under the widened body cache" {
   Array::push(report, ec_probe("const-value", ec_sub("export let ec_k: Int = 7", "export let ec_k: Int = 11")))
   // One line, fixed field order -- the CLI contract, and it keeps the whole
   // table visible in a failure rather than only its first row.
-  inspect(String::join(report, " | "), content = "comment reuse=partial equal=true | int-literal reuse=partial equal=true | string-literal reuse=full equal=true | add-function reuse=none equal=true | swap-order reuse=full equal=true | add-closure reuse=full equal=true | add-type-ahead reuse=none equal=true | swap-struct-fields reuse=full equal=true | add-effect-ahead reuse=none equal=true | const-value reuse=partial equal=true")
+  inspect(String::join(report, " | "), content = "comment reuse=partial equal=true | int-literal reuse=partial equal=true | string-literal reuse=none equal=true | add-function reuse=unoffered equal=true | swap-order reuse=none equal=true | add-closure reuse=none equal=true | add-type-ahead reuse=unoffered equal=true | swap-struct-fields reuse=none equal=true | add-effect-ahead reuse=unoffered equal=true | render-type reuse=partial equal=true | const-value reuse=partial equal=true")
 }

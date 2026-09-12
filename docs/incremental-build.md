@@ -989,26 +989,37 @@ by reading:
   guards reject — a new closure, a new literal, a reordered declaration — would
   lose the prefix it replays today: a regression dressed as an improvement.
 
-Measured on the compiler's own closure (`codegen_lexer_test.vibe`, 193 files,
-5242 functions), `scripts/body_cache_reuse.sh`, one temperature per process
+Measured on the compiler's own closure (`codegen_lexer_test.vibe`, 196 files,
+5263 functions), `scripts/body_cache_reuse.sh`, one temperature per process
 sharing one `VIBE_BUILD_CACHE_DIR`:
 
 | temperature | offered | recompiled | heap_delta |
 |---|---:|---:|---:|
-| cold | 0 | 5242 | 1,074,931,408 |
-| unchanged (warm) | 4394 | 848 | 653,882,856 |
-| comment-edited | 4394 | **848** | 922,784,296 |
+| cold | 0 | 5263 | 1,081,422,048 |
+| unchanged (warm) | 4431 | 832 | 659,839,296 |
+| comment-edited | 4431 | **832** | 930,477,800 |
+| reverted (a second one-file edit) | 4431 | 832 | 665,264,816 |
 
-`offered + recompiled == 5242` exactly: everything the file table offered was
+`offered + recompiled == 5263` exactly: everything the file table offered was
 replayed. Under the prefix rule the same edit offers **0** — `defaults.vibe` is
 early in merge order, so the unchanged leading run ends before almost
-everything. The ~848 that always recompile are the pin region's pads and the
+everything. The ~832 that always recompile are the pin region's pads and the
 prelude-synthesized region, which the filter excludes by construction.
 
 The allocation figure is the KPI, and it moved by less than the reuse did:
-1.075 GB cold against 0.923 GB after the edit. Codegen is 28.7% of a warm
+1.081 GB cold against 0.930 GB after the edit. Codegen is 28.7% of a warm
 compile (measured above), so replaying 84% of the bodies cannot move more than
 that share, and the front end still runs whole-program.
+
+`VIBE_BODY_CACHE_REUSE_MODE=verify` reports the SAME counts on every warm row
+(`offered=4431 recompiled=832`) and `recompiled=-1` on the cold one, which is
+that lane saying no replay compile ran at all: nothing was offered, so there
+was nothing to replay. The number is the REPLAY compile's harvest. It used to
+be the FRESH compile's, which by construction holds every function, so every
+verify row read as a full rebuild whatever it actually reused (Codex P2 on the
+PR); the agreement with `on` above is what says the count now means something.
+Each warm verify row allocates ~0.432 GB more than its `on` counterpart, which
+is the second compile it performs to have something to compare against.
 
 ##### What the edit classes actually do (#2669, step 2b)
 
@@ -1021,18 +1032,53 @@ to equal a fresh compile every time:
 | a comment | partial | yes |
 | an Int literal inside a body | partial | yes |
 | lengthening a string literal | none | yes |
-| adding a function | none (layout) | yes |
+| adding a function | unoffered | yes |
 | exchanging two declarations | none | yes |
 | adding a closure | none | yes |
-| adding a type declaration ahead | none (layout) | yes |
+| adding a type declaration ahead | unoffered | yes |
 | exchanging two struct fields | none | yes |
-| adding an effect declaration ahead | none (layout) | yes |
+| adding an effect declaration ahead | unoffered | yes |
+| a callee's return type, Int to Bool | partial | yes |
 | changing a const's value | partial | yes |
 
-"none (layout)" is the file table refusing before any guard is consulted: those
-edits change the file's statement count, so the file indices are not this
-build's. The two `partial` rows are what the step buys; the rest are the
-conservative fallback, and each is a case relocation would later convert.
+`unoffered` is the file table refusing before any guard is consulted: those
+edits change the file's statement count, so the stored indices are not this
+build's. `none` is the lane being offered entries and replaying nothing of
+them — a guard declined, and the prefix it narrowed to is empty because the
+edit is in the first file. The `partial` rows are what the step buys; the rest
+are the conservative fallback, and each is a case relocation would later
+convert.
+
+The Int-to-Bool row is there because review raised it as a P0: a callee that
+changes between two scalar return types keeps its name, arity and
+scalar-return classification, so no name-keyed table separates the two, while
+the checker's per-call-site render and `eq` tables do. Two measurements came
+back, pointing opposite ways, and both belong here.
+
+**The channel is real.** Reading the untouched consumer's own typed-lowering
+rows while editing the callee's file: a comment, a same-length body edit and a
+body edit that lengthens the callee's file all leave them at `[715]`; the
+`Int`-to-`Bool` change moves them to `[717]`. So those rows track the
+interfaces a module reads rather than the bytes anyone else adds — an
+untouched consumer's classification really does move on an upstream interface
+change, and nothing name-keyed is watching it. `guard_typed_lowering`, a
+per-FILE fingerprint of `module_typed_lowering_offsets_for_path` and
+`module_typed_eq_rows_for_path`, is that watch.
+
+**The row does not prove the guard necessary.** Rebuilt with the stamp
+neutered, so the guard is never consulted, the row still reports `partial` and
+`equal=true`: the callee's return classification is program-wide, a
+`guard_layout` slot moves, and the lane declines before the typed-lowering
+guard could matter. It is carried on the same footing as the ten `guard_layout`
+slots below that this corpus leaves unproven. The shape that would separate
+them — a classification moving through a type alias or a generic
+instantiation, with every layout slot still — is the one the fixture cannot
+build.
+
+It is per file and not whole-program for a third measured reason: a
+whole-program comparison declines on every edit there is, since the edited file
+moves its own slot. Measured with the comparison whole-program, every row in
+the table above that reuses went to reusing nothing.
 
 **The guard set is sufficient — every row is byte-exact — and the test proves
 some of it necessary rather than all of it.** Dropping a slot and re-running:

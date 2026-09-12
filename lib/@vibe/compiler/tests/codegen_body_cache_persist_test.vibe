@@ -139,11 +139,13 @@ fn sample_cache() -> CodegenBodyCache {
   Array::push(c.guard_borrow_names, "peek")
   Array::push(c.guard_borrow_masks, 5)
   Array::push(c.guard_unmangled_names, "run")
-  // #2669 step 2b: two layout slots.
+  // #2669 step 2b: two layout slots, and one typed-lowering slot.
   Array::push(c.guard_layout, 3)
   Array::push(c.guard_layout, 12)
   Array::push(c.guard_layout, 99)
   Array::push(c.guard_layout, 77)
+  Array::push(c.guard_typed_lowering, 5)
+  Array::push(c.guard_typed_lowering, 8)
   c
 }
 
@@ -226,6 +228,8 @@ test "codegen body cache codec round-trips every field group" {
       inspect(Array::get(d.guard_unmangled_names, 0), content = "run")
       inspect(Array::length(d.guard_layout), content = "4")
       inspect(Array::get(d.guard_layout, 3), content = "77")
+      inspect(Array::length(d.guard_typed_lowering), content = "2")
+      inspect(Array::get(d.guard_typed_lowering, 1), content = "8")
       // The decode-time annotation is NOT in the stream: it describes the
       // build that read the artifact, not the harvest that wrote it.
       inspect(Array::length(d.consumer_src_limit), content = "0")
@@ -364,6 +368,34 @@ test "#2669: the layout fingerprint separates the values that move a body's byte
   let pos: Array[Int] = []
   bcc_layout_fp_ints(pos, [1])
   assert(!bcc_int_lists_equal(neg, pos))
+  // The WHOLE 63-bit width, not the low 56. `1 << 56` against `0` is the pair
+  // the first version collided (Codex P1): harmless for an index, not harmless
+  // for `const_int_values`, where the pinned thing is a literal a body embeds.
+  //
+  // Red side measured, not assumed: reimplementing the seven-byte encoding
+  // against the same accumulator collides on all THREE of the pairs below
+  // (`0`/`1<<56`, `0`/`1<<61`, `1<<56`/`1<<61`) and the nine-byte one collides
+  // on none. The extremes pair after them is NOT red -- seven bytes already
+  // separated it -- and is here for a different property, that the sign split
+  // handles the ends of the range without trapping on the way in.
+  let zero: Array[Int] = []
+  bcc_layout_fp_ints(zero, [0])
+  let high: Array[Int] = []
+  bcc_layout_fp_ints(high, [1<<56])
+  assert(!bcc_int_lists_equal(zero, high))
+  let higher: Array[Int] = []
+  bcc_layout_fp_ints(higher, [1<<61])
+  assert(!bcc_int_lists_equal(zero, higher))
+  assert(!bcc_int_lists_equal(high, higher))
+  // The extremes round-trip through the sign split rather than trapping. The
+  // most negative Int is not spellable as a literal (the bound is symmetric
+  // about the positive side), so it is built by negating the largest one and
+  // subtracting.
+  let most_negative: Array[Int] = []
+  bcc_layout_fp_ints(most_negative, [0 - 4611686018427387903 - 1])
+  let most_positive: Array[Int] = []
+  bcc_layout_fp_ints(most_positive, [4611686018427387903])
+  assert(!bcc_int_lists_equal(most_negative, most_positive))
   // Accumulation appends: two slots are four ints.
   let two: Array[Int] = []
   bcc_layout_fp_strings(two, ["a"])
@@ -825,6 +857,58 @@ test "#2669: an edit to the FIRST file replays the files after it" {
   assert(Array::get(moved_counts, 0) > 0)
   inspect(Array::get(moved_counts, 1) == cold_n, content = "true")
   assert(bytes_eq(moved, compile_file_fs_mode_rc(main_path, "run")))
+}
+
+test "#2669: a narrowed build keeps its replayed prefix in the artifact" {
+  // Codex P2 on this PR. When a layout guard drifts but the unchanged leading
+  // PREFIX is non-empty, the body loop replays that prefix -- and a replayed
+  // function is not re-recorded, so the fresh harvest has a hole exactly
+  // there. Persisting only the harvest silently drops those entries, and the
+  // next completely unchanged build recompiles them for nothing.
+  //
+  // Three files, and the edit lands on the MIDDLE one so the prefix is real:
+  // `p_a` stays put, `p_b` lengthens a string literal, `p_main` is downstream.
+  // A literal is the edit to pick: it moves the pooled offsets, which live
+  // ONLY in `guard_layout`, so the pre-2b guards still match and the narrowed
+  // merge is the branch under test. An edit that also moves `guard_meta` (a
+  // new closure, say) refuses the merge for the older reason and measures
+  // nothing about this one -- measured, that version of this test passed
+  // whether or not the fix was there.
+  let a_path = "/tmp/vibe_body_cache_pfx_a.vibe"
+  let b_path = "/tmp/vibe_body_cache_pfx_b.vibe"
+  let main_path = "/tmp/vibe_body_cache_pfx_main.vibe"
+  let a_source = "export let p_eq: () -> Bool = () -> { [1, 2] == [1, 2] }\nexport let p_one: () -> String = () -> { \"one\" }\nexport let p_two: () -> Int = () -> { 22 }"
+  let b_base = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() }"
+  let b_closure = "import ./vibe_body_cache_pfx_a.vibe { p_one, p_two }\nexport let p_b_one: () -> String = () -> { String::concat(p_one(), \"b is a good deal longer now\") }\nexport let p_b_two: () -> Int = () -> { String::length(p_b_one()) + p_two() }"
+  let main_source = "import ./vibe_body_cache_pfx_b.vibe { p_b_one, p_b_two }\nlet run: () -> Int = () -> { String::length(p_b_one()) + p_b_two() }"
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(main_path)))
+  remove_file_if_exists(artifact_path)
+  Fs::write_bytes(a_path, string_to_bytes(a_source))
+  Fs::write_bytes(b_path, string_to_bytes(b_base))
+  Fs::write_bytes(main_path, string_to_bytes(main_source))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", cold_counts)
+  let cold_n = Array::get(cold_counts, 1)
+  // The narrowing build: `b` gains a closure, so a layout slot moves and the
+  // widened lane declines; `a` is the unchanged prefix and replays.
+  Fs::write_bytes(b_path, string_to_bytes(b_closure))
+  let narrowed_counts: Array[Int] = []
+  let narrowed = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", narrowed_counts)
+  assert(bytes_eq(narrowed, compile_file_fs_mode_rc(main_path, "run")))
+  // Non-vacuity: something must actually have been replayed here, or the
+  // third compile below measures nothing.
+  assert(Array::get(narrowed_counts, 1) < cold_n)
+  // Nothing changed since: every entry the artifact holds is offered, and the
+  // compile rebuilds only what no entry covers. Without the prefix carried
+  // back into the artifact this recompiles the prefix again.
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(main_path, "run", "on", warm_counts)
+  assert(bytes_eq(warm, compile_file_fs_mode_rc(main_path, "run")))
+  // The artifact GREW by the prefix the narrowed build replayed: the third
+  // compile is offered more than the second was. Without the carry-back it is
+  // offered the narrowed build's harvest alone, which is missing exactly those
+  // entries.
+  inspect(Array::get(warm_counts, 0) > Array::get(narrowed_counts, 0), content = "true")
 }
 
 //# `codegen_body_cache_find` keys on the FUNCTION INDEX, so an entry is only

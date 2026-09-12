@@ -56,7 +56,12 @@ adapter, launcher, mode, enforced = sys.argv[1], sys.argv[2], sys.argv[3], sys.a
 # VIBE_UNSTABLE is the ADR-0068 opt-in, read inside already-selected branches
 # (`vibe check` / `vibe build` / `vibe serve`); it must not enter
 # VIBE_SELECTOR_ORDER or selector_clears_before would strip it.
-OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS", "VIBE_UNSTABLE"}
+# VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE (#2510 criterion 5) is the same
+# shape: it turns typing-dependency env reuse on for whichever COMPILE lane was
+# already selected, and every compile lane is later in the order, so ordering it
+# would have selector_clears_before unset it on exactly the lanes it exists for.
+OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS", "VIBE_UNSTABLE",
+                    "VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE"}
 
 # The order is SOURCE ORDER, and a selector counts wherever it is tested --
 # `let bytes = if Env::get("VIBE_COVERAGE") == "1" { .. } else if

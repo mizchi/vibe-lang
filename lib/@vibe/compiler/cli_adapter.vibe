@@ -933,7 +933,34 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // check-only branch may enable it after strict policy validation below;
   // build/codegen lanes stay conservative, and a prior check in a long-lived
   // instance cannot leak its policy into a later invocation.
-  set_experimental_typing_dependency_env_reuse_enabled(false)
+  //
+  // #2510 criterion 5, OPT-IN and off by default:
+  // `VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE=1` lets a COMPILE take the
+  // same reuse the check lane has had as production default since TDRE8, so
+  // the reset below reads the opt-in rather than a bare `false`.
+  //
+  // The measurement that asks for it: with reuse on, a one-leaf edit to the
+  // compiler's own closure re-checks exactly ONE of 197 planned modules
+  // (`modules_rechecked: 1`, 130 reused through the dependency-transport env
+  // and 66 through the conservative fingerprint). With it off -- which is what
+  // every build does today -- the same edit costs the compile 331.4 MB in its
+  // check phase, MORE than a cold check's 269.2 MB, while an unchanged warm
+  // build spends 11.3 MB there (`scripts/compile_phase_memory.sh`). That one
+  // phase is the whole gap between a warm build and a cold one.
+  //
+  // It stays opt-in until a compile's output is shown byte-identical with it
+  // on and off across the edit shapes -- a compile consumes more of a module's
+  // check than the public env (the typed-lowering offsets the reuse arm
+  // republishes, #2391), and "the check lane proves it" is a claim about the
+  // check lane.
+  //
+  // It is read in EXPRESSION position and named in `OBSERVATION_ONLY`
+  // (`scripts/check_selector_precedence.sh`) for the same reason
+  // `VIBE_UNSTABLE` is: it picks no verb, it modifies whichever lane was
+  // already selected, and a caller sets it deliberately -- entering
+  // `VIBE_SELECTOR_ORDER` would make `selector_clears_before` strip it on the
+  // compile lanes it exists for.
+  set_experimental_typing_dependency_env_reuse_enabled(Env::get("VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE") == "1")
   // #2513: the `#cfg` flag set, for every module this invocation parses and
   // for every cache key it touches. Set before ANY lane runs, like the
   // switches below.
