@@ -65,6 +65,7 @@ import @vibe/compiler/codegen/common_base {
   bcc_int_lists_equal,
   bcc_string_lists_equal,
   codegen_body_cache_filter_src_below,
+  codegen_body_cache_filter_src_keep,
   codegen_body_cache_from_bytes,
   codegen_body_cache_merge,
   codegen_body_cache_new,
@@ -1664,6 +1665,15 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
     let mut limit = 0
     let mut still_matching = true
     let mut malformed = false
+    // #2669 step 2b. `layout_same` is the condition under which the stored
+    // statement positions ARE this build's: every file present, in order,
+    // contributing the same number of merged statements. Only the file
+    // CONTENTS may differ. It is what lets an entry from a file after the
+    // edit be addressed at all -- when a count changes, every later
+    // statement index shifts and a cached entry's recorded position means
+    // nothing here.
+    let mut layout_same = file_n == Array::length(paths)
+    let keep_by_stmt = array_empty()
     while !malformed && i < file_n {
       let (spath, p1) = bcw_read_string(b, p)
       let (sfp, p2) = if p1 < 0 {
@@ -1680,7 +1690,23 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
         malformed = true
       } else {
         p = p3
-        if still_matching && i < Array::length(paths) && spath == Array::get(paths, i) && sfp == Array::get(fps, i) && scount == Array::get(counts, i) {
+        let positioned = i < Array::length(paths) && spath == Array::get(paths, i) && scount == Array::get(counts, i)
+        let unchanged = positioned && sfp == Array::get(fps, i)
+        if !positioned {
+          layout_same = false
+        } else {
+          ()
+        }
+        let mut k = 0
+        while k < scount {
+          Array::push(keep_by_stmt, if unchanged {
+            1
+          } else {
+            0
+          })
+          k = k + 1
+        }
+        if still_matching && unchanged {
           limit = limit + scount
         } else {
           still_matching = false
@@ -1688,11 +1714,23 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
       }
       i = i + 1
     }
-    if malformed || limit == 0 {
+    if malformed || (!layout_same && limit == 0) {
       codegen_body_cache_new()
     } else {
       match codegen_body_cache_from_bytes(Bytes::slice(b, p, Bytes::length(b))) {
-        Some(cache) => codegen_body_cache_filter_src_below(cache, limit),
+        Some(cache) => {
+          let kept = if layout_same {
+            codegen_body_cache_filter_src_keep(cache, keep_by_stmt)
+          } else {
+            codegen_body_cache_filter_src_below(cache, limit)
+          }
+          // What the leading unchanged run was, for the body loop to narrow
+          // back to if the layout guards it checks do not hold. Set on both
+          // branches: the wide set is a superset of the prefix, so the
+          // fallback is meaningful either way.
+          Array::push(kept.consumer_src_limit, limit)
+          kept
+        },
         None => codegen_body_cache_new()
       }
     }
@@ -1728,7 +1766,7 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
 /// verify mismatch. Also decides whether a consumed cache may be merged
 /// back into the refreshed artifact.
 fn body_cache_guards_equal(a: CodegenBodyCache, b: CodegenBodyCache) -> Bool {
-  Array::length(a.guard_meta) == 5 && bcc_int_lists_equal(a.guard_meta, b.guard_meta) && bcc_string_lists_equal(a.guard_synth_names, b.guard_synth_names) && bcc_int_lists_equal(a.guard_synth_stmts, b.guard_synth_stmts) && bcc_string_lists_equal(a.guard_import_names, b.guard_import_names) && bcc_string_lists_equal(a.guard_borrow_names, b.guard_borrow_names) && bcc_int_lists_equal(a.guard_borrow_masks, b.guard_borrow_masks) && bcc_string_lists_equal(a.guard_unmangled_names, b.guard_unmangled_names)
+  Array::length(a.guard_meta) == 5 && bcc_int_lists_equal(a.guard_meta, b.guard_meta) && bcc_string_lists_equal(a.guard_synth_names, b.guard_synth_names) && bcc_int_lists_equal(a.guard_synth_stmts, b.guard_synth_stmts) && bcc_string_lists_equal(a.guard_import_names, b.guard_import_names) && bcc_string_lists_equal(a.guard_borrow_names, b.guard_borrow_names) && bcc_int_lists_equal(a.guard_borrow_masks, b.guard_borrow_masks) && bcc_string_lists_equal(a.guard_unmangled_names, b.guard_unmangled_names) && bcc_string_lists_equal(a.guard_user_names, b.guard_user_names) && bcc_int_lists_equal(a.guard_lambda_counts, b.guard_lambda_counts) && bcc_int_lists_equal(a.guard_strpool, b.guard_strpool)
 }
 
 /// #2575 item 2: the ordinary lane's statement-to-module map, as a `DbgProv`.
@@ -1859,14 +1897,29 @@ export fn ordinary_lane_split_shape(entry_path: String) -> (Int, Int) with Excep
 /// The ordinary RC lane with the per-module prelude selectable (#2575 item 2
 /// step 3b). `use_split` false is byte-for-byte the lane below it.
 export fn compile_file_fs_mode_rc_body_cached_split(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool) -> Bytes with Exception + Fs {
-  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, use_split)
+  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, use_split, array_empty())
 }
 
 export fn compile_file_fs_mode_rc_body_cached(entry_path: String, entry_name: String, cache_mode: String) -> Bytes with Exception + Fs {
-  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false)
+  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false, array_empty())
 }
 
-fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool) -> Bytes with Exception + Fs {
+/// #2669 step 2b: the same lane, plus the two numbers that say what it reused
+/// -- `[offered, recompiled]`, appended to `counts_out`.
+///
+/// `offered` is how many cached bodies the file table let through; `recompiled`
+/// is `body_cache_out`'s length, which IS the compiled set because
+/// `codegen_body_cache_record` runs only on the non-replay branch. The claim
+/// this step makes -- an edit recompiles its own file, not everything after it
+/// -- is a statement about those numbers and is not observable from the
+/// returned bytes, which are identical either way. That is what this entry
+/// point exists for; `ordinary_lane_split_shape` above is the same kind of
+/// observation seam for the same reason.
+export fn compile_file_fs_mode_rc_body_cached_counted(entry_path: String, entry_name: String, cache_mode: String, counts_out: Array[Int]) -> Bytes with Exception + Fs {
+  compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false, counts_out)
+}
+
+fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool, counts_out: Array[Int]) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
   let _ = next_db
@@ -1904,8 +1957,11 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
   } else {
     codegen_body_cache_new()
   }
+  Array::push(counts_out, Array::length(cache_in.fn_indices))
   if !caching {
-    compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_new(), lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
+    let uncached = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, codegen_body_cache_new(), codegen_body_cache_new(), lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
+    Array::push(counts_out, 0)
+    uncached
   } else if cache_mode == "verify" {
     let fresh_out = codegen_body_cache_new()
     let fresh = compile_wasi_module_rc_cached_impl_with_split(merged_stmts, entry_name, codegen_body_cache_new(), fresh_out, lane_prov, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys, lane_split, print_stmt)
@@ -1946,6 +2002,10 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
       ()
     }
     store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, fresh_out))
+    // Verify compiles everything fresh by construction, so its recompile
+    // count says nothing about reuse; report the REPLAY compile's instead,
+    // which is the lane "on" takes.
+    Array::push(counts_out, Array::length(fresh_out.fn_indices))
     fresh
   } else {
     let cache_out = codegen_body_cache_new()
@@ -1962,6 +2022,7 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
       cache_out
     }
     store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, refreshed))
+    Array::push(counts_out, Array::length(cache_out.fn_indices))
     bytes
   }
 }

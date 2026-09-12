@@ -209,8 +209,11 @@ import @vibe/compiler/codegen/common_base {
   append_hidden_attempt_constructors,
   await_poll_pass,
   bcc_guard_synth_matches,
+  bcc_guard_user_name,
   bcc_int_lists_equal,
   bcc_string_lists_equal,
+  bcc_strpool_guard,
+  codegen_body_cache_filter_src_below,
   codegen_body_cache_find_at,
   codegen_body_cache_find_named_at,
   codegen_body_cache_merge,
@@ -9037,6 +9040,13 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     Array::push(str_strs, __src_content)
     __src_i = __src_i + 1
   }
+  // #2669 step 2b: the pooled strings a user body can reference, fingerprinted
+  // for the cross-compile body cache. Taken here rather than after the source
+  // pairs because those are appended PAST `src_str_base` and read only by
+  // `gen_sources_proper_body`, a generated builtin every compile rebuilds --
+  // including them would make any source edit anywhere invalidate every
+  // cached body, which is the cost this step exists to remove.
+  let guard_strpool_now = bcc_strpool_guard(str_strs, src_str_base)
   let num_strings = Array::length(str_strs)
   let data_base = 64
   let str_offsets = lc_fresh_int_array()
@@ -10454,6 +10464,24 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   } else {
     lc_fresh_string_array()
   }
+  // #2669 step 2b: the same region as a VECTOR, in index order. What the
+  // guard above pins is name MEMBERSHIP; what a cached body needs pinned is
+  // the index each name was assigned, and a sorted set cannot tell a swap
+  // from no change at all. The prefix rule used to make that unnecessary --
+  // merge order is topological, so a body in the unchanged prefix can only
+  // call things in the unchanged prefix -- and replaying past the prefix is
+  // exactly what gives that up.
+  let guard_user_names_now = if pin_region_capacity >= 0 {
+    let vec = lc_fresh_string_array()
+    let mut __guv = 0
+    while __guv < pin_region_src_n {
+      Array::push(vec, bcc_guard_user_name(Array::get(fn_names_list, __guv)))
+      __guv = __guv + 1
+    }
+    vec
+  } else {
+    lc_fresh_string_array()
+  }
   if pin_region_capacity >= 0 && !late_dce_pruned {
     Array::push(body_cache_out.guard_meta, pin_region_src_n)
     Array::push(body_cache_out.guard_meta, pin_region_capacity)
@@ -10486,19 +10514,21 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       Array::push(body_cache_out.guard_unmangled_names, Array::get(guard_unmangled_now, __gum))
       __gum = __gum + 1
     }
+    // #2669 step 2b. `guard_lambda_counts` is filled in further down, once
+    // the lambda plan exists -- it is the one of the three that is not known
+    // yet here.
+    let mut __guv2 = 0
+    while __guv2 < Array::length(guard_user_names_now) {
+      Array::push(body_cache_out.guard_user_names, Array::get(guard_user_names_now, __guv2))
+      __guv2 = __guv2 + 1
+    }
+    let mut __gsp = 0
+    while __gsp < Array::length(guard_strpool_now) {
+      Array::push(body_cache_out.guard_strpool, Array::get(guard_strpool_now, __gsp))
+      __gsp = __gsp + 1
+    }
   }
-  // #2388 step 3 follow-up: function index -> cache slot, built once. The
-  // lookup below runs per function, and scanning the whole cache each time is
-  // quadratic in the function count -- ~8.9 million comparisons to answer the
-  // 4,214 questions the compiler's own closure asks (#2388's prefix-stability
-  // probe counted the bodies), paid on the lane that exists to make a warm
-  // compile cheap.
-  let body_cache_slot_index = codegen_body_cache_slot_index(body_cache_in, num_user_funcs)
-  // #2669 step 2a: the same table, keyed on the function's NAME. Built once
-  // beside the index one and checked against it per function below; nothing
-  // reads it as the answer yet.
-  let (body_cache_names_sorted, body_cache_names_pos) = codegen_body_cache_name_index(body_cache_in)
-  // #2669 step 2a: and which of THIS build's user function names identify one
+  // #2669 step 2a: which of THIS build's user function names identify one
   // function. A name the current build duplicates cannot be used to find a
   // body, whatever the cache happens to hold for it.
   let lc_user_fn_names = lc_fresh_string_array()
@@ -11185,6 +11215,82 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     })
     pbi = pbi + 1
   }
+  // #2669 step 2b: each source-region function's planned lambda count, the
+  // third layout guard. A lambda's funcref slot is `lambda_slot_base +
+  // lambda_idx` and the indices are handed out by walking this plan in
+  // function order, so a function that gains or loses a closure moves every
+  // later lambda's slot -- inside bodies whose own source did not change.
+  let guard_lambda_counts_now = if pin_region_capacity >= 0 {
+    let counts = lc_fresh_int_array()
+    let mut __glc = 0
+    while __glc < pin_region_src_n {
+      let __glc_hi = if __glc + 1 < num_user_funcs {
+        Array::get(lambda_bases, __glc + 1)
+      } else {
+        lambda_base_acc
+      }
+      Array::push(counts, __glc_hi - Array::get(lambda_bases, __glc))
+      __glc = __glc + 1
+    }
+    counts
+  } else {
+    lc_fresh_int_array()
+  }
+  if pin_region_capacity >= 0 && !late_dce_pruned {
+    let mut __glc2 = 0
+    while __glc2 < Array::length(guard_lambda_counts_now) {
+      Array::push(body_cache_out.guard_lambda_counts, Array::get(guard_lambda_counts_now, __glc2))
+      __glc2 = __glc2 + 1
+    }
+  } else {
+    ()
+  }
+  // #2669 step 2b: may this compile replay bodies from unchanged files that
+  // sit AFTER the edit, or only from the unchanged leading prefix?
+  //
+  // `decode_body_cache_payload_for` has already kept the wider set; this is
+  // the other half of the contract. The prefix rule supplied three things for
+  // free that a body from a later file does not get: the function index
+  // assignment it calls into, the lambda slots it embeds, and the string
+  // offsets it points at. Each is pinned above, and they are checked here as
+  // one decision because a body can depend on all three.
+  //
+  // A cache with no recorded layout guards is one this compiler wrote before
+  // the guards existed, or a hand-built one -- neither may take the wide lane.
+  //
+  // `pin_region_capacity < 0` stands down for the same reason `body_cache_in_ok`
+  // does: this compile did not reorder, so it is re-feeding an array some
+  // earlier compile in this process already lowered, and its layout IS the
+  // harvest's. That is the case the verify lane's second compile takes -- if
+  // this narrowed there, `VIBE_CODEGEN_BODY_CACHE=verify` would byte-compare
+  // the prefix lane and never see the wide one. Cross-compile drift is caught
+  // before that point, by `body_cache_guards_equal` against the fresh harvest.
+  let lc_wide_ok = if pin_region_capacity < 0 {
+    true
+  } else {
+    Array::length(body_cache_in.guard_user_names) > 0 && bcc_string_lists_equal(body_cache_in.guard_user_names, guard_user_names_now) && bcc_int_lists_equal(body_cache_in.guard_lambda_counts, guard_lambda_counts_now) && bcc_int_lists_equal(body_cache_in.guard_strpool, guard_strpool_now)
+  }
+  // Narrowing, not dropping. Without this, widening would be a REGRESSION on
+  // exactly the edits the guards reject (a new closure, a new literal, a
+  // renamed function): the prefix those builds replay today would be lost as
+  // well. `consumer_src_limit` is what the decoder measured the unchanged
+  // leading run to be; an in-process cache carries none and keeps everything.
+  let body_cache_use = if !lc_wide_ok && Array::length(body_cache_in.consumer_src_limit) == 1 {
+    codegen_body_cache_filter_src_below(body_cache_in, Array::get(body_cache_in.consumer_src_limit, 0))
+  } else {
+    body_cache_in
+  }
+  // #2388 step 3 follow-up: function index -> cache slot, built once. The
+  // lookup below runs per function, and scanning the whole cache each time is
+  // quadratic in the function count -- ~8.9 million comparisons to answer the
+  // 4,214 questions the compiler's own closure asks (#2388's prefix-stability
+  // probe counted the bodies), paid on the lane that exists to make a warm
+  // compile cheap.
+  let body_cache_slot_index = codegen_body_cache_slot_index(body_cache_use, num_user_funcs)
+  // #2669 step 2a: the same table, keyed on the function's NAME. Built once
+  // beside the index one and checked against it per function below; nothing
+  // reads it as the answer yet.
+  let (body_cache_names_sorted, body_cache_names_pos) = codegen_body_cache_name_index(body_cache_use)
   let mut bi = 0
   while bi < num_user_funcs {
     // #1259 step 8: outside this worker's slice, produce nothing but keep every
@@ -11285,7 +11391,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       if __cache_hit >= 0 {
         let __r_slot_lo = Array::length(table_slots_used)
         let __r_blind_lo = Array::length(blind_owners)
-        codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms)
+        codegen_body_cache_replay(body_cache_use, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms)
         // #2669 slice 3: the SAME pairing the compiled path asserts below.
         // A replayed function re-pushes both logs from the cache instead of
         // running the emission, so this says the cache carried a complete
