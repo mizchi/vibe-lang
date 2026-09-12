@@ -1,0 +1,30 @@
+import @vibe/compiler/core {
+  Stmt
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+import @vibe/compiler/lowering/trait_namespaces {
+  derive_trait_namespace_operations, inject_trait_method_generics_reporting_change
+}
+
+test "namespace wrappers belong only to the supplied module prefix"allows Exception {
+  let stmts = parse_program(lex("trait Own { get(Self) -> Int }\ntrait Dep { read(Self) -> Int }"))
+  inspect(derive_trait_namespace_operations(stmts, 1), content = "1")
+  let names: Array[String] = []
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, name, _, _) => Array::push(names, name),
+      _ => ()
+    }
+  }
+  inspect(names, content = "[Own::get]")
+  inspect(derive_trait_namespace_operations(stmts, 2), content = "0")
+}
+
+test "method binders respect an empty prefix and injection is idempotent"allows Exception {
+  let stmts = parse_program(lex("trait Show { show(Self) -> String }\ntrait Logger { write_object: [X: Show](Self, X) -> String }\nstruct Box { value: Int }\nimpl Logger for Box { write_object(self, x) -> String { X::show(x) } }"))
+  inspect(inject_trait_method_generics_reporting_change(stmts, 0), content = "false")
+  inspect(inject_trait_method_generics_reporting_change(stmts, Array::length(stmts)), content = "true")
+  inspect(inject_trait_method_generics_reporting_change(stmts, Array::length(stmts)), content = "false")
+}

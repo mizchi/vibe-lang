@@ -1,0 +1,1043 @@
+import @vibe/compiler/core {
+  Subst,
+  Type,
+  exception_effect_kind,
+  exception_effect_labels_equal,
+  instantiate,
+  is_exception_effect_name,
+  is_exception_label,
+  is_hkt_app,
+  subst_apply,
+  type_to_string,
+  unify
+}
+
+import @vibe/core {
+  array_empty, struct MutMap
+}
+
+import @vibe/compiler/checker/diagnostics {
+  off_marker
+}
+
+/// Erase every effect annotation in a type (recursively), so an argument can be
+/// checked for STRUCTURAL compatibility independent of effects. Effects on
+/// function VALUES are inferred imprecisely (a `with Exception` callback often
+/// arrives typed with no effect), so an effect-only difference must not be
+/// reported as a type error — only the structural shape is enforced here.
+fn strip_effects(ty: Type) -> Type {
+  match ty {
+    CtFn(params, ret, _) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(params) {
+        Array::push(out, strip_effects(Array::get(params, i)))
+        i = i + 1
+      }
+      CtFn(out, strip_effects(ret), None)
+    },
+    CtArray(elem) => CtArray(strip_effects(elem)),
+    CtOption(elem) => CtOption(strip_effects(elem)),
+    CtTuple(elems) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(elems) {
+        Array::push(out, strip_effects(Array::get(elems, i)))
+        i = i + 1
+      }
+      CtTuple(out)
+    },
+    CtNamed(name, args) => {
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(args) {
+        Array::push(out, strip_effects(Array::get(args, i)))
+        i = i + 1
+      }
+      CtNamed(name, out)
+    },
+    _ => ty
+  }
+}
+
+export fn type_is_ground(t: Type) -> Bool {
+  match t {
+    CtNamed(_, _) => false,
+    CtVar(_) => false,
+    CtForAll(_, _, _) => false,
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        if !type_is_ground(Array::get(items, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => type_is_ground(e),
+    CtOption(e) => type_is_ground(e),
+    CtFn(ps, r, _) => {
+      let mut ok = type_is_ground(r)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if !type_is_ground(Array::get(ps, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => true
+  }
+}
+
+/// True when a type mentions no RIGID type parameter (`CtNamed` / `CtForAll`) but
+/// MAY contain inference variables (`CtVar`). Used to recognise an `actual` type
+/// whose only flexibility is unification variables: if such a type fails to unify
+/// against a fully GROUND expected type, no instantiation of its variables can
+/// make it match, so the mismatch is real (unlike an un-instantiated generic
+/// param `CtNamed(T)`, which the checker simply has not substituted yet).
+fn type_no_named(t: Type) -> Bool {
+  match t {
+    CtNamed(_, _) => false,
+    CtForAll(_, _, _) => false,
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        if !type_no_named(Array::get(items, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => type_no_named(e),
+    CtOption(e) => type_no_named(e),
+    CtFn(ps, r, _) => {
+      let mut ok = type_no_named(r)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if !type_no_named(Array::get(ps, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => true
+  }
+}
+
+/// A small tag for a type's TOP-LEVEL constructor, or 0 for a type whose head is
+/// not concrete (a type variable / unresolved named param / unknown / forall).
+/// Two types with DIFFERENT non-zero heads can never be made equal by any
+/// instantiation of their inner type parameters (an `Int` is never an `Array[T]`
+/// for any `T`), so such a unify failure is a real mismatch even when the inner
+/// parts are generic — which the whole-type groundness gate misses.
+export fn head_kind(t: Type) -> Int {
+  match t {
+    CtInt => 1,
+    CtDouble => 2,
+    CtBool => 3,
+    CtString => 4,
+    CtChar => 5,
+    CtUnit => 6,
+    CtBytes => 7,
+    CtTuple(_) => 8,
+    CtArray(_) => 9,
+    CtOption(_) => 10,
+    CtStruct(_) => 11,
+    CtEnum(_) => 12,
+    CtFn(_, _, _) => 13,
+    // #1839 (Codex review on #1867): a concrete head, NOT the `_ => 0`
+    // "unresolved; tolerate" bucket — otherwise representation-specific
+    // builtin receiver checks (`Array::get(record { a: 1 }, 0)` etc.) pass
+    // and codegen reads the record layout as the wrong representation.
+    CtRecord(_) => 14,
+    CtNamed(name, nargs) => if name == "MutList" {
+      15
+    } else if name == "Attempt" {
+      // #1961 / ADR-0088: `perform?` yields `Attempt[T, E]`, a compiler-owned
+      // named type. Kind 0 would let `fn main() -> String { perform? ... }`
+      // unify-fail and then be swallowed — `type_no_named` is false and
+      // `nominal_name_of` treats a still-open `T` as non-concrete.
+      16
+    } else if name == "Map" {
+      // Map's runtime representation is compiler-owned just like MutList's.
+      // Keeping it in the unresolved CtNamed bucket lets direct builtins such
+      // as `Map::iter_get(1, 0)` reinterpret an arbitrary scalar as a map.
+      17
+    } else if name == "FrozenArray" {
+      // #2454: `FrozenArray[T]` is a checker-only phantom over `Array[T]`'s
+      // runtime layout (#906), and while it sat in the tolerated `0` bucket the
+      // distinction it exists for was not held apart AT ALL. All three of these
+      // checked clean:
+      //
+      //   fn f(x: Array[Int]) -> Int { FrozenArray::length(x) }
+      //   fn g(x: Array[Int]) -> Int { FrozenArray::get(x, 0) }
+      //   fn h(x: FrozenArray[Int]) -> Int { Array::get(x, 0) }
+      //
+      // A certain head is all three need. The `FrozenArray::*` rows carry real
+      // parameter types since #2451, so `builtin_param_head` reads
+      // `FrozenArray[T]` for their receiver and the existing head check rejects
+      // an `Array` there; the `Array::*` rows expect head 9, which now rejects a
+      // `FrozenArray`. Nothing goes wrong at RUN time either way -- the copy
+      // contract is codegen's (fixtures/frozen_array_copies_test.vibe) -- so
+      // this is a missing diagnostic being added, not a wrong answer being
+      // fixed.
+      //
+      // This is the MutList / Attempt / Map treatment, not ByteStream's: that
+      // one stayed out of head_kind and got its own predicate because only the
+      // Array sites needed it. Here both directions need a head, so the head is
+      // where it belongs.
+      18
+    } else if name == "MutMap" && Array::length(nargs) > 0 {
+      // #2640: `@vibe/core`'s collections are declared BODYLESS in its
+      // contract (`type MutMap[K, V]`, `type MutSet[T]`), so a consumer sees
+      // them as `CtNamed` and they landed in the tolerated `0` bucket --
+      // indistinguishable from a rigid type parameter. Measured, that let
+      // `vibe check` accept an `Array[String]` passed where a `MutSet[String]`
+      // is declared, in BOTH directions, with no diagnostic; the program then
+      // read an array's header as a hash table and trapped in `find_index`.
+      // `Int` in the same position was rejected (it is a builtin scalar, so
+      // `named_vs_scalar` fires), and so were `StringSet`, an imported
+      // concrete struct and an array element mismatch -- the hole was exactly
+      // a PARAMETERIZED bodyless contract head.
+      //
+      // Same treatment as MutList / Attempt / Map / FrozenArray above, for the
+      // same reason: their runtime representation is compiler-owned, so a
+      // certain head is what the check needs.
+      //
+      // APPLIED ONLY, and that is the load-bearing half (Codex review on
+      // #2644's successor). A type formal may be NAMED `MutSet`: shadowing is
+      // legal, these names are not reserved, and
+      // `resolve_type_expr_core_shadowed` gives a bare shadowed formal
+      // `CtNamed(name, [])` -- the same representation. Classifying by the
+      // string alone would make `struct Cell[MutSet] { value: MutSet }`
+      // behave differently from the identical declaration spelled `T`, whose
+      // tolerance is what the `0` bucket exists for. An APPLIED occurrence is
+      // not that case: the contract declares both heads WITH parameters
+      // (`type MutMap[K, V]`, `type MutSet[T]`), and a shadowed formal with
+      // arity resolves to `CtApplied`, not here. So the arity is the property
+      // and the name is not asked to carry it alone.
+      //
+      // The four entries above are unguarded and carry the same latent
+      // exposure; narrowing them is a separate change with its own
+      // measurement, not a drive-by.
+      19
+    } else if name == "MutSet" && Array::length(nargs) > 0 {
+      // Its own kind, not MutMap's: sharing one would make `MutMap[K, V]` and
+      // `MutSet[T]` equal to `head_differ`, and then only `nominal_head_conflict`
+      // stands between them. Two heads, two kinds.
+      20
+    } else {
+      0
+    },
+    _ => 0
+  }
+}
+
+fn is_stdin_stream_internal(t: Type) -> Bool {
+  match t {
+    CtStruct(n) => n == "#vibe_stdin_stream",
+    _ => false
+  }
+}
+
+/// #1539: the opaque stdin provider token is compiler-owned. Unlike ordinary
+/// nullary CtNamed values, no unresolved/generic tolerance may let a different
+/// concrete representation cross this boundary. Recurse through matching
+/// containers/function signatures so aliases cannot launder the token either.
+fn stdin_stream_nominal_conflict(expected: Type, actual: Type) -> Bool {
+  let e_token = is_stdin_stream_internal(expected)
+  let a_token = is_stdin_stream_internal(actual)
+  if e_token || a_token {
+    e_token != a_token
+  } else {
+    match expected {
+      CtArray(e) => match actual {
+        CtArray(a) => stdin_stream_nominal_conflict(e, a),
+        _ => false
+      },
+      CtOption(e) => match actual {
+        CtOption(a) => stdin_stream_nominal_conflict(e, a),
+        _ => false
+      },
+      CtNamed(_, es) => match actual {
+        CtNamed(_, actuals) => if Array::length(es) == Array::length(actuals) {
+          let mut i = 0
+          let mut conflict = false
+          while i < Array::length(es) && !conflict {
+            conflict = stdin_stream_nominal_conflict(Array::get(es, i), Array::get(actuals, i))
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      CtTuple(es) => match actual {
+        CtTuple(actuals) => if Array::length(es) == Array::length(actuals) {
+          let mut i = 0
+          let mut conflict = false
+          while i < Array::length(es) && !conflict {
+            conflict = stdin_stream_nominal_conflict(Array::get(es, i), Array::get(actuals, i))
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      CtFn(eps, er, _) => match actual {
+        CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
+          let mut i = 0
+          let mut conflict = stdin_stream_nominal_conflict(er, ar)
+          while i < Array::length(eps) && !conflict {
+            conflict = stdin_stream_nominal_conflict(Array::get(eps, i), Array::get(aps, i))
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      _ => false
+    }
+  }
+}
+
+/// #939 helpers: detect a function VALUE laundering a concrete effect row away
+/// through a pure-typed slot (HOF argument, let/struct-field/array annotation).
+/// The strip_effects fallback below deliberately tolerates effect-only
+/// differences — but for CONCRETE, non-exempt labels flowing in a COVARIANT
+/// position that tolerance is the #939 soundness hole: the value's perform
+/// executes with no handler and the program dies with an unhandled wasm
+/// exception at runtime. Exemptions mirror checker_effects' transitive pass:
+/// `Error` (pervasive un-annotated throw sites, #640), `Async`
+/// (composition-allowed), and effect VARIABLES (single lowercase letter /
+/// `$N` fresh vars — not decidable without call-site row unification, #885).
+fn effect_label_is_exempt(lbl: String) -> Bool {
+  let len = String::length(lbl)
+  // ADR-0085 (#1344): only the ERASED exception spellings keep the #640
+  // exemption. It exists because `Error` is pervasive and un-annotated, so
+  // laundering it away is not evidence of a bug; a KINDED `Exception[E]` is
+  // opt-in and carries real information, so dropping it through a pure-typed
+  // slot is exactly the #939 hole this check exists to catch. Nothing in the
+  // codebase writes a kinded label, so no existing program changes verdict.
+  if String::starts_with(lbl, "#region_") || String::starts_with(lbl, "#capture[") || String::starts_with(lbl, "#param[") || String::starts_with(lbl, "#aliasparam[") || String::starts_with(lbl, "#fieldparam[") {
+    true
+  } else if (is_exception_effect_name(lbl) && String::length(exception_effect_kind(lbl)) == 0) || lbl == "Async" {
+    true
+  } else if len == 1 {
+    String::char_code_at(lbl, 0) >= 97 && String::char_code_at(lbl, 0) <= 122
+  } else if len >= 2 {
+    String::char_code_at(lbl, 0) == 36
+  } else {
+    true
+  }
+}
+
+export fn row_labels(row: Option[String]) -> Array[String] {
+  match row {
+    Some(r) => {
+      let parts = String::split(r, ",")
+      let out = array_empty()
+      let mut i = 0
+      while i < Array::length(parts) {
+        let t = String::trim(Array::get(parts, i))
+        if String::length(t) > 0 {
+          Array::push(out, t)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      out
+    },
+    None => array_empty()
+  }
+}
+
+/// #1340 (ADR-0071): base effect name of a row label — `State[Int]` strips
+/// to `State`, a bracketless label is its own base. (Local copy: the
+/// same-named helpers in checker_effects.vibe / core stay file-private.)
+fn ck_row_label_base(label: String) -> String {
+  let bi = String::index_of(label, "[")
+  if bi > 0 {
+    label[0: bi]
+  } else {
+    label
+  }
+}
+
+fn row_contains_label(row: Option[String], lbl: String) -> Bool {
+  let labels = row_labels(row)
+  let mut i = 0
+  let mut found = false
+  // #1340 (ADR-0071): compare by base name so a generic instantiation label
+  // (`State[Int]`) and the bare effect (`State`) count as the same label in
+  // the dropped-row walk — bracketless labels degenerate to exact equality.
+  // ADR-0085 (#1344): the exception effect opts out of that base-name
+  // equivalence and compares by KIND instead, so assigning a
+  // `with Exception[IoError]` value into a `with Exception[ParseError]`
+  // slot is a dropped row, not a match. Erased labels (`Error`, `Exception`)
+  // stay compatible with every kind in both directions, which is what keeps
+  // every pre-#1344 row behaving exactly as before.
+  let wanted = ck_row_label_base(lbl)
+  let exc_wanted = is_exception_label(lbl)
+  while i < Array::length(labels) && !found {
+    let have = Array::get(labels, i)
+    let hit = if exc_wanted || is_exception_label(have) {
+      exception_effect_labels_equal(have, lbl)
+    } else {
+      ck_row_label_base(have) == wanted
+    }
+    if hit {
+      found = true
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// First concrete, non-exempt effect label whose drop would let a perform run
+/// with no handler. At each CtFn the ACTUAL side's own row must not carry a
+/// label the EXPECTED side's row lacks; the return type recurses covariantly;
+/// PARAMETER positions recurse with expected/actual SWAPPED (contravariance —
+/// Codex P1 on #978: an `((Int) -> Int with Logger, Int) -> Int` slot
+/// holding a pure-callback fn lets `h(eff, 1)` type-check while the callee
+/// invokes the effectful callback with no handler, so at parameter positions
+/// it is the EXPECTED param's concrete labels that must be tolerated by the
+/// ACTUAL param). pure→effectful still passes in both directions by
+/// construction, and an effectful parameter slot accepting a pure function
+/// stays legal (the swap makes that the label-free side).
+fn effect_row_dropped(expected: Type, actual: Type) -> Option[String] {
+  match expected {
+    CtFn(eparams, eret, eeff) => match actual {
+      CtFn(aparams, aret, aeff) => {
+        let alabels = row_labels(aeff)
+        let mut i = 0
+        let mut dropped = None
+        let mut done = false
+        while i < Array::length(alabels) && !done {
+          let lbl = Array::get(alabels, i)
+          if !effect_label_is_exempt(lbl) && !row_contains_label(eeff, lbl) {
+            dropped = Some(lbl)
+            done = true
+          } else {
+            ()
+          }
+          i = i + 1
+        }
+        if !done && Array::length(eparams) == Array::length(aparams) {
+          let mut pi = 0
+          while pi < Array::length(eparams) && !done {
+            match effect_row_dropped(Array::get(aparams, pi), Array::get(eparams, pi)) {
+              Some(pl) => {
+                dropped = Some(pl)
+                done = true
+              },
+              None => ()
+            }
+            pi = pi + 1
+          }
+        } else {
+          ()
+        }
+        match dropped {
+          Some(l) => Some(l),
+          None => effect_row_dropped(eret, aret)
+        }
+      },
+      _ => None
+    },
+    CtArray(ee) => match actual {
+      CtArray(ae) => effect_row_dropped(ee, ae),
+      _ => None
+    },
+    CtOption(ee) => match actual {
+      CtOption(ae) => effect_row_dropped(ee, ae),
+      _ => None
+    },
+    CtTuple(ees) => match actual {
+      CtTuple(aes) => if Array::length(ees) == Array::length(aes) {
+        let mut i = 0
+        let mut dropped = None
+        let mut done = false
+        while i < Array::length(ees) && !done {
+          match effect_row_dropped(Array::get(ees, i), Array::get(aes, i)) {
+            Some(d) => {
+              dropped = Some(d)
+              done = true
+            },
+            None => ()
+          }
+          i = i + 1
+        }
+        dropped
+      } else {
+        None
+      },
+      _ => None
+    },
+    CtNamed(en, eargs) => match actual {
+      CtNamed(an, aargs) => if en == an && Array::length(eargs) == Array::length(aargs) {
+        let mut i = 0
+        let mut dropped = None
+        let mut done = false
+        while i < Array::length(eargs) && !done {
+          match effect_row_dropped(Array::get(eargs, i), Array::get(aargs, i)) {
+            Some(d) => {
+              dropped = Some(d)
+              done = true
+            },
+            None => ()
+          }
+          i = i + 1
+        }
+        dropped
+      } else {
+        None
+      },
+      _ => None
+    },
+    _ => None
+  }
+}
+
+/// Unify `expected` with `actual`, REPORTING only a genuine STRUCTURAL mismatch
+/// (the checker historically swallowed these, accepting ill-typed programs).
+/// `unify` already accepts `CtUnknown`/`CtVar` freely; on failure we retry with
+/// effects erased, and tolerate the difference if the structure matches — effect
+/// inference on function values is imprecise, so effect-only differences must not
+/// be reported here (EXCEPT a concrete covariant row drop — see
+/// `effect_row_dropped` above, #939). Returns the (possibly extended)
+/// substitution.
+fn is_hkt_skolem(ty: Type) -> Bool {
+  match ty {
+    CtNamed(n, args) => String::starts_with(n, "#hktformal.") && Array::length(args) == 0,
+    _ => false
+  }
+}
+
+fn hkt_skolem_differ(a: Type, b: Type) -> Bool {
+  if is_hkt_skolem(a) && is_hkt_skolem(b) {
+    match a {
+      CtNamed(an, _) => match b {
+        CtNamed(bn, _) => an != bn,
+        _ => false
+      },
+      _ => false
+    }
+  } else {
+    false
+  }
+}
+
+fn is_unresolved_head(ty: Type) -> Bool {
+  match ty {
+    CtVar(_) => true,
+    CtUnknown => true,
+    _ => false
+  }
+}
+
+fn skolem_vs_concrete(a: Type, b: Type) -> Bool {
+  // Only `#hktformal.*` is a rigid constructor/index. A nullary `CtNamed`
+  // is also an unresolved alias (`MyAlias`) and a region token (`r`);
+  // treating those as skolems rejects `fn a() -> Int { rows }` when
+  // `rows: MyAlias` is declared later.
+  if is_hkt_skolem(a) && !is_hkt_skolem(b) && !is_unresolved_head(b) {
+    true
+  } else if is_hkt_skolem(b) && !is_hkt_skolem(a) && !is_unresolved_head(a) {
+    true
+  } else {
+    hkt_skolem_differ(a, b)
+  }
+}
+
+fn named_args_skolem_differ(ea: Array[Type], aa: Array[Type]) -> Bool {
+  if Array::length(ea) != Array::length(aa) {
+    true
+  } else {
+    let mut i = 0
+    let mut differ = false
+    while i < Array::length(ea) {
+      let e = Array::get(ea, i)
+      let a = Array::get(aa, i)
+      if rigid_applied_mismatch(e, a) {
+        differ = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    differ
+  }
+}
+
+/// Report `#hkt` vs `#hkt` with rigid args, and `#hkt` vs a resolved
+/// constructor. Recurses into tuple / fn / Array / Option / same-name
+/// `CtNamed` `#hkt` args so nested identity-as-map is not tolerated.
+/// Call-site `F` is a unification var so this does not run there.
+fn rigid_applied_mismatch(expected: Type, actual: Type) -> Bool {
+  if skolem_vs_concrete(expected, actual) {
+    true
+  } else if is_hkt_app(expected) && is_hkt_app(actual) {
+    match expected {
+      CtNamed(en, ea) => match actual {
+        CtNamed(an, aa) => en == an && named_args_skolem_differ(ea, aa),
+        _ => false
+      },
+      _ => false
+    }
+  } else if is_hkt_app(expected) && !is_unresolved_head(actual) {
+    true
+  } else if is_hkt_app(actual) && !is_unresolved_head(expected) {
+    true
+  } else {
+    match expected {
+      CtArray(e) => match actual {
+        CtArray(a) => rigid_applied_mismatch(e, a),
+        _ => false
+      },
+      CtOption(e) => match actual {
+        CtOption(a) => rigid_applied_mismatch(e, a),
+        _ => false
+      },
+      CtTuple(ees) => match actual {
+        CtTuple(aes) => if Array::length(ees) != Array::length(aes) {
+          false
+        } else {
+          let mut i = 0
+          let mut differ = false
+          while i < Array::length(ees) {
+            if rigid_applied_mismatch(Array::get(ees, i), Array::get(aes, i)) {
+              differ = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          differ
+        },
+        _ => false
+      },
+      CtFn(eps, eret, _) => match actual {
+        CtFn(aps, aret, _) => if Array::length(eps) != Array::length(aps) {
+          false
+        } else {
+          let mut i = 0
+          let mut differ = rigid_applied_mismatch(eret, aret)
+          while i < Array::length(eps) {
+            if rigid_applied_mismatch(Array::get(eps, i), Array::get(aps, i)) {
+              differ = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          differ
+        },
+        _ => false
+      },
+      CtNamed(en, ea) => match actual {
+        CtNamed(an, aa) => if en != an {
+          false
+        } else if Array::length(ea) != Array::length(aa) {
+          false
+        } else {
+          // Only walk `#hkt` arguments. Walking every arg would compare
+          // region tokens (`r` vs `#region_1`) inside MutList.
+          let mut i = 0
+          let mut differ = false
+          while i < Array::length(ea) {
+            let e = Array::get(ea, i)
+            let a = Array::get(aa, i)
+            if (is_hkt_app(e) || is_hkt_app(a)) && rigid_applied_mismatch(e, a) {
+              differ = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          differ
+        },
+        _ => false
+      },
+      _ => false
+    }
+  }
+}
+
+export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array[String], what: String, off: Int) -> Subst {
+  check_assignable_for(expected, actual, s, errors, what, "", off)
+}
+
+/// #2386: `check_assignable` with the report's subject split in two so the
+/// message is built only when a mismatch is reported. Every call site with a
+/// per-call subject (`"argument type mismatch for " ++ label`) used to build
+/// the string first: ~25 ms of `__rt_str_concat` under `unify_call_args` in a
+/// cold self-compile, for calls that almost always agree.
+export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
+  match unify(expected, actual, s) {
+    Some(su) => su,
+    None => {
+      let structural = match unify(strip_effects(expected), strip_effects(actual), s) {
+        Some(_) => true,
+        None => false
+      }
+      // Only report when BOTH sides are fully ground (mention no type parameter
+      // / type variable). The checker does not instantiate a generic
+      // struct field's or function parameter's type params — they surface as
+      // rigid `CtNamed(T, _)` — so a unify failure against a concrete
+      // instantiation there is NOT a real mismatch (e.g. a `pull: (Int) ->
+      // Option[(T, Int)]` field vs a concrete closure). Reporting only on
+      // ground/ground keeps the genuine concrete-type mismatches (Int vs
+      // String, struct field of the wrong concrete type) while not
+      // over-rejecting polymorphic code.
+      // Report when the EXPECTED type is fully ground and the ACTUAL type
+      // mentions no rigid type parameter (inference variables are fine). A
+      // unify failure under those conditions is genuine: no instantiation of
+      // the actual's variables can satisfy the concrete expected type (this is
+      // what catches `let g: (Int) -> String = (n) -> { n }`). A non-ground
+      // expected, or an actual carrying an un-instantiated generic `CtNamed`,
+      // is still tolerated to avoid over-rejecting polymorphic code.
+      let reportable = type_is_ground(subst_apply(s, expected)) && type_no_named(subst_apply(s, actual))
+      // Also report when the two types have DIFFERENT concrete top-level
+      // constructors (e.g. `Array[T]` vs `Int` from `Array::length(5)`): no
+      // instantiation of inner type parameters can reconcile them, so it is a
+      // real mismatch even though the expected type is non-ground. A
+      // var/named/unknown head (kind 0) on either side stays tolerated.
+      let eh = head_kind(subst_apply(s, expected))
+      let ah = head_kind(subst_apply(s, actual))
+      let head_differ = eh != 0 && ah != 0 && eh != ah
+      // #1001: a `CtNamed` head is kind 0 in `head_kind` (may be a rigid type
+      // parameter), so `Result[Int,String]` vs `Option[Int]` — or the same
+      // pair nested inside `Array[_]`/`Option[_]`/a tuple/a fn signature —
+      // sails past `head_differ` untouched, and `detect_narrowed_generic_mismatch`
+      // below only fires on a SAME-name pair, so a genuinely DIFFERENT nominal
+      // head was never reported at all. Check that ahead of the existing
+      // gates; internally gated on `type_fully_concrete` so a still-rigid
+      // type parameter never triggers it.
+      let expected_zonked = subst_apply(s, expected)
+      let actual_zonked = subst_apply(s, actual)
+      let stdin_stream_conflict = stdin_stream_nominal_conflict(expected_zonked, actual_zonked)
+      let nominal_conflict = nominal_head_conflict(expected_zonked, actual_zonked)
+      let rigid_applied_conflict = rigid_applied_mismatch(expected_zonked, actual_zonked)
+      // A body that instantiated `T := Box[Int]` publishes that named type,
+      // and `f(1)` is then Box vs Int. `type_is_ground` is false for every
+      // `CtNamed` and `head_kind` of a named type is 0, so the existing
+      // gates tolerate it. Restrict to fully-concrete named vs a builtin
+      // scalar: Array vs FixedArray (zlib Huffman) is a different pair and
+      // stays on the historical tolerate path.
+      let named_vs_scalar = (type_fully_concrete(expected) && is_fully_concrete_named(expected_zonked) && is_builtin_scalar(actual_zonked)) || (is_builtin_scalar(expected_zonked) && is_fully_concrete_named(actual_zonked))
+      if stdin_stream_conflict || nominal_conflict || rigid_applied_conflict || (named_vs_scalar && !structural) {
+        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(expected_zonked), String::concat(", got ", String::concat(type_to_string(actual_zonked), off_marker(off)))))))
+        s
+      } else if structural {
+        // #939: the structural retry tolerated EVERY effect-only difference,
+        // including a function value whose CONCRETE row silently vanishes
+        // into a pure-typed slot (HOF argument, let / struct field / array
+        // annotation) — the perform then runs with no handler and dies as an
+        // unhandled wasm exception at runtime. Report exactly that shape;
+        // pure→effectful subsumption and Error/Async/effect-var differences
+        // stay tolerated (see effect_row_dropped).
+        match effect_row_dropped(subst_apply(s, expected), subst_apply(s, actual)) {
+          Some(lbl) => {
+            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": effect row mismatch: a value of type ", String::concat(type_to_string(subst_apply(s, actual)), String::concat(" cannot be used where ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(" is expected (the { ", String::concat(lbl, String::concat(" } effect would be dropped — no handler could ever run)", off_marker(off))))))))))
+            s
+          },
+          None => s
+        }
+      } else if !(reportable || head_differ) {
+        // #981: a user generic type's ARGUMENTS were never compared here — a
+        // `CtNamed` head is kind 0 (tolerated by `head_differ`) and makes
+        // `type_no_named(actual)` false, so `get_int(b)` with
+        // `b: Box[String]` against `Box[Int]` sailed through this branch
+        // silently (compile clean, heap-pointer garbage at runtime), while
+        // the symmetric builtin (`Array[String]` vs `Array[Int]`) and the
+        // RETURN position were both rejected. Close exactly that hole with
+        // the proven #844 predicate (`detect_narrowed_generic_mismatch`):
+        // report ONLY a same-name, same-arity (> 0), fully-concrete `CtNamed`
+        // pair whose arguments fail to unify — a rigid/uninstantiated type
+        // parameter surfaces as `CtNamed(T, [])` / the `[CtUnknown]` sentinel
+        // and stays tolerated, so polymorphic code is not over-rejected.
+        // Additionally gate on the RAW expected type (BEFORE subst) being
+        // fully concrete: an expected that only became concrete through this
+        // call's own unification is not trustworthy — an IMPORTED generic
+        // fn's signature can cross-talk its type params through the flat
+        // import env (measured: `list_zip[A, B]` imported from
+        // lib/@vibe/core/list.vibe reported `expected List[String], got
+        // List[Int]` on its second argument — A's binding leaked into B's
+        // slot), and reporting that shape would reject valid polymorphic
+        // calls. A monomorphic signature (the #981 hole) is concrete without
+        // any substitution, so the genuine cases all keep reporting.
+        if type_fully_concrete(expected) {
+          detect_narrowed_generic_mismatch_for(expected, actual, s, errors, what_head, what_tail, off)
+        } else {
+          s
+        }
+      } else {
+        Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(subst_apply(s, expected)), String::concat(", got ", String::concat(type_to_string(subst_apply(s, actual)), off_marker(off)))))))
+        s
+      }
+    }
+  }
+}
+
+/// #1001: the type's outer constructor's nominal name, when it is one that can
+/// NEVER be a placeholder for a still-unresolved rigid type parameter --
+/// `CtOption` (the builtin `Option[T]`; `Option` written as an annotation
+/// resolves to this, not `CtNamed("Option", _)`)
+/// and `CtEnum`/`CtStruct` (a RESOLVED reference to a declared enum/struct,
+/// always concrete) are unconditionally trustworthy. A bare `CtNamed(n, _)`
+/// is ambiguous -- it is ALSO how an uninstantiated generic type parameter
+/// surfaces (`CtNamed("T", [])`) -- so it only counts when
+/// `type_fully_concrete` confirms this occurrence is not that sentinel shape.
+/// `None` means "nothing nominal to compare" (a type variable, a builtin
+/// scalar, a container whose own head isn't itself nominal, etc).
+fn nominal_name_of(t: Type) -> Option[String] {
+  match t {
+    CtOption(_) => Some("Option"),
+    CtEnum(n) => Some(n),
+    CtStruct(n) => Some(n),
+    CtNamed(n, _) => if n == "HostStream" || n == "Attempt" {
+      // Compiler-owned and always concrete despite an open type argument
+      // (`HostStream` is nullary; `Attempt[T, E]` may still hold a fresh
+      // var for T when the inner capability has no declared signature).
+      Some(n)
+    } else if type_fully_concrete(t) {
+      Some(n)
+    } else {
+      None
+    },
+    _ => None
+  }
+}
+
+/// #1001: true when `expected` and `actual` carry a corresponding pair of
+/// nominal names that DIFFER, anywhere in their structure -- e.g.
+/// `Result[Int,String]` (`CtNamed`) vs `Option[Int]` (the builtin `CtOption`),
+/// or the same pair nested inside `Array[_]`/`Option[_]`/a tuple/a fn
+/// signature/a same-named `CtNamed`'s own type arguments (mirroring
+/// `effect_row_dropped`'s traversal above). No instantiation of type
+/// PARAMETERS can ever reconcile two DIFFERENT nominal names, so this is a
+/// genuine mismatch regardless of arity or which concrete `Type` shape either
+/// side happens to be represented as -- unlike `detect_narrowed_generic_mismatch`
+/// below, which only catches a SAME-name `CtNamed`/`CtNamed` mismatch (e.g.
+/// `Box[Int]` vs `Box[String]`, #981) and never even inspects a
+/// `CtArray[Option[Int]]` vs `CtArray[Result[Int,String]]` pair's nested heads,
+/// nor a builtin `CtOption` against a `CtNamed`/`CtEnum` nominal type, at all.
+fn nominal_head_conflict(expected: Type, actual: Type) -> Bool {
+  let direct_conflict = match nominal_name_of(expected) {
+    Some(en) => match nominal_name_of(actual) {
+      Some(an) => en != an,
+      None => false
+    },
+    None => false
+  }
+  if direct_conflict {
+    true
+  } else {
+    match expected {
+      CtNamed(_, eargs) => match actual {
+        CtNamed(_, aargs) => if Array::length(eargs) == Array::length(aargs) {
+          let mut i = 0
+          let mut conflict = false
+          while i < Array::length(eargs) && !conflict {
+            if nominal_head_conflict(Array::get(eargs, i), Array::get(aargs, i)) {
+              conflict = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      CtArray(ee) => match actual {
+        CtArray(ae) => nominal_head_conflict(ee, ae),
+        _ => false
+      },
+      CtOption(ee) => match actual {
+        CtOption(ae) => nominal_head_conflict(ee, ae),
+        _ => false
+      },
+      CtTuple(ees) => match actual {
+        CtTuple(aes) => if Array::length(ees) == Array::length(aes) {
+          let mut i = 0
+          let mut conflict = false
+          while i < Array::length(ees) && !conflict {
+            if nominal_head_conflict(Array::get(ees, i), Array::get(aes, i)) {
+              conflict = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      CtFn(eps, er, _) => match actual {
+        CtFn(aps, ar, _) => if Array::length(eps) == Array::length(aps) {
+          let mut i = 0
+          let mut conflict = nominal_head_conflict(er, ar)
+          while i < Array::length(eps) && !conflict {
+            if nominal_head_conflict(Array::get(eps, i), Array::get(aps, i)) {
+              conflict = true
+            } else {
+              ()
+            }
+            i = i + 1
+          }
+          conflict
+        } else {
+          false
+        },
+        _ => false
+      },
+      _ => false
+    }
+  }
+}
+
+/// #844: true when `t` mentions no unresolved/rigid type-parameter placeholder
+/// and no unbound unification variable ANYWHERE in its structure -- i.e. it is
+/// a genuinely CONCRETE type. Unlike the more conservative shared
+/// `type_is_ground` (which treats EVERY `CtNamed` as non-ground, to stay safe
+/// for the many call sites that must still tolerate a rigid/uninstantiated
+/// type parameter such as a trait method's `CtNamed("T", _)` field type), this
+/// recurses into `CtNamed`'s own type arguments. Used ONLY by
+/// `detect_narrowed_generic_mismatch` below (a narrowly-scoped, additive check
+/// for the `let`-annotation erasure hole -- see #844) so this refinement's
+/// blast radius stays contained to that one new check instead of the many
+/// existing `type_is_ground` call sites.
+///
+/// The sentinel shape `CtNamed(name, [CtUnknown])` is what `resolve_type_expr`
+/// (checker_resolve.vibe) emits for an unresolved rigid single-name type
+/// parameter reference AND for an unresolved/unknown type name alike -- treat
+/// that shape as non-concrete. A REAL instantiated generic type (e.g. #829's
+/// `Box::{v:1}` -> `CtNamed("Box", [CtInt])`) never carries the bare
+/// `CtUnknown` sentinel as its own argument.
+export fn type_fully_concrete(t: Type) -> Bool {
+  match t {
+    CtVar(_) => false,
+    CtForAll(_, _, _) => false,
+    CtUnknown => false,
+    // A `CtNamed` with an EMPTY argument list is ALSO treated as non-concrete
+    // (not just the `[CtUnknown]` singlet sentinel above): a rigid/uninstantiated
+    // generic function's own type parameter can leak through, unsubstituted,
+    // as a bare `CtNamed(pname, [])` when it only appears NESTED inside another
+    // type's argument list (e.g. `MutMap::new_int[V]() -> MutMap[Int, V]`
+    // called as `MutMap::new_int()` -- `instantiate` does not always rewrite
+    // an occurrence of `V` buried inside a struct's own field/return-type
+    // representation to a fresh `CtVar`, so it can surface literally as
+    // `CtNamed("V", [])` instead -- lib/@vibe/core/hashmap_test.vibe
+    // hit exactly this via `let m: MutMap[Int, String] = MutMap::new_int()`
+    // during development of this check). Both shapes are the SAME underlying
+    // ambiguity (a name with no way to tell "resolved zero-arg nominal type"
+    // from "unresolved rigid reference" apart) that the shared `type_is_ground`
+    // sidesteps by always tolerating `CtNamed`; treat both as non-concrete here
+    // too so this narrowly-scoped check only ever fires when it is SURE both
+    // sides are fully resolved.
+    CtNamed(_, args) => {
+      let is_sentinel = Array::length(args) == 0 || (Array::length(args) == 1 && match Array::get(args, 0) {
+        CtUnknown => true,
+        _ => false
+      })
+      if is_sentinel {
+        false
+      } else {
+        let mut ok = true
+        let mut i = 0
+        while i < Array::length(args) {
+          if !type_fully_concrete(Array::get(args, i)) {
+            ok = false
+          }
+          i = i + 1
+        }
+        ok
+      }
+    },
+    CtTuple(items) => {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(items) {
+        if !type_fully_concrete(Array::get(items, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    CtArray(e) => type_fully_concrete(e),
+    CtOption(e) => type_fully_concrete(e),
+    CtFn(ps, r, _) => {
+      let mut ok = type_fully_concrete(r)
+      let mut i = 0
+      while i < Array::length(ps) {
+        if !type_fully_concrete(Array::get(ps, i)) {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    _ => true
+  }
+}
+
+fn is_builtin_scalar(t: Type) -> Bool {
+  match t {
+    CtInt => true,
+    CtDouble => true,
+    CtBool => true,
+    CtString => true,
+    CtChar => true,
+    CtUnit => true,
+    CtBytes => true,
+    _ => false
+  }
+}
+
+fn is_fully_concrete_named(t: Type) -> Bool {
+  match t {
+    CtNamed(_, _) => type_fully_concrete(t),
+    _ => false
+  }
+}
+
+export fn detect_narrowed_generic_mismatch_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
+  let e2 = subst_apply(s, expected)
+  let a2 = subst_apply(s, actual)
+  match e2 {
+    CtNamed(ename, eargs) => match a2 {
+      CtNamed(aname, aargs) => if ename == aname && Array::length(eargs) == Array::length(aargs) && Array::length(eargs) > 0 && type_fully_concrete(e2) && type_fully_concrete(a2) {
+        match unify(e2, a2, s) {
+          Some(_) => s,
+          None => {
+            Array::push(errors, String::concat(String::concat(what_head, what_tail), String::concat(": expected ", String::concat(type_to_string(e2), String::concat(", got ", String::concat(type_to_string(a2), off_marker(off)))))))
+            s
+          }
+        }
+      } else s,
+      _ => s
+    },
+    _ => s
+  }
+}

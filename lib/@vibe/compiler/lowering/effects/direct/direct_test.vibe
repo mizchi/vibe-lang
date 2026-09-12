@@ -1,0 +1,24 @@
+import @vibe/compiler/core {
+  Expr, Pat, Stmt
+}
+import @vibe/compiler/lowering/effects/direct {
+  idp_is_pure_builtin_call, idp_pure_builtin_names, inline_direct_performs
+}
+
+test "a direct handled perform becomes its resumed value" {
+  let call = ECall(EIdent("perform", 2), [ECall(EIdent("Ask::Get", 3), [], 4)], 5)
+  let arm = (PCtor("Ask::Get", []), ECall(EIdent("resume", 6), [EInt(42)], 7))
+  let stmts = [SLet(false, false, "value", None, EHandle(call, [arm]))]
+  inline_direct_performs(stmts)
+  inspect(match Array::get(stmts, 0) {
+    SLet(_, _, _, _, EInt(v)) => v,
+    _ => -1
+  }, content = "42")
+}
+
+test "a caller cannot mutate the builtin classification memo" {
+  let names = idp_pure_builtin_names()
+  Array::set(names, 0, "user_function")
+  inspect(idp_is_pure_builtin_call("user_function"), content = "false")
+  inspect(idp_is_pure_builtin_call("String::equals"), content = "true")
+}

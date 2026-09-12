@@ -1,0 +1,768 @@
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, is_exception_throw_handler_name
+}
+
+/// ADR-0076 Phase 2 (evidence-passing effect handlers, #817), first slice.
+///
+/// `handle { BODY } with Effect { Op(args) => arm_body, ... }` is compiled
+/// today via a replay loop (compile_expr_tail6.vibe) that re-executes BODY
+/// from the top on every resume -- the mechanism behind the M2 correctness
+/// bug (fixtures/effect_handle_replay_corruption.vibe) and the ~16K perform
+/// bound. #942 already guarantees, as a hard compile error otherwise, that
+/// every `resume(e)` in a handler arm is in TAIL position with nothing after
+/// it (single-shot, no post-processing) -- i.e. every arm body already has
+/// exactly the shape ADR-0076 calls "tail-resumptive". This pass exploits
+/// that: for a `perform Effect::Op(args)` that occurs DIRECTLY inside a
+/// handle's own BODY (not behind an intervening function call, and not
+/// inside a nested closure or a nested `handle`), the handler is known at
+/// the exact point of the perform -- no runtime dispatch, no evidence dict,
+/// no unwind is needed at all. The perform is replaced in place by the
+/// matching arm's body (with each pattern-bound parameter let-bound to the
+/// actual argument expression, and the arm's own tail `resume(e)` rewritten
+/// to plain `e`), and if EVERY perform for this handle's operations turns
+/// out to be reachable this way, the `EHandle` wrapper itself is dropped
+/// entirely -- the compiled program has no handler machinery left for that
+/// `handle` at all.
+///
+/// This does NOT attempt the general case (evidence dicts threaded through
+/// intervening function calls, ADR-0076's primary mechanism) -- that is a
+/// separate, larger slice. Conservative bail-out: if a handle's BODY
+/// contains any `EFn` (nested closure -- a perform inside it might run much
+/// later, dynamically, possibly after this handle has already returned) or
+/// any nested `EHandle` (handler-shadowing semantics this pass does not
+/// attempt to reason about), inlining is skipped entirely for that handle
+/// and it is left for the existing replay codegen, matching today's
+/// behavior exactly. A handle with some performs reachable and some hidden
+/// behind such a boundary is a documented future improvement -- today it is
+/// all-or-nothing.
+///
+/// Phase 2b (this revision): a call is also no longer an automatic bail-out
+/// when its callee is one of a small, hand-audited set of builtin static
+/// functions (idp_pure_builtin_names) that the checker's own builtin type
+/// table (checker/builtins_string1.vibe, builtins_string2.vibe,
+/// builtins_misc.vibe) records with effect `None` and with no function-typed
+/// parameter -- i.e. calls that provably cannot themselves perform, and
+/// cannot invoke any user-supplied closure that might. `String::equals` in a
+/// handle body (fixtures/effect_handle_two_layer_test.vibe's cache-hit check) no
+/// longer forces a bail-out just because it is a call. Calls to ordinary
+/// user-defined functions (whose declared effect row this pass does not
+/// consult) are still unconditionally unsafe.
+///
+/// Runs once over the whole merged program, called from both codegen
+/// backends' convergence points, mirroring rewrite_self_tail_calls
+/// (self_tail_call.vibe) and desugar_trait_dicts.
+export fn inline_direct_performs(stmts: Array[Stmt]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(exported, is_rec, name, ty, expr) => {
+        let new_expr = idp_rewrite(expr, idp_empty_table())
+        Array::set(stmts, i, SLet(exported, is_rec, name, ty, new_expr))
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// Arm lookup table: parallel arrays (op qualified name, param bind names,
+/// prepared body with tail resume(e) already rewritten to e). Empty arrays
+/// mean "no handle scope currently active" -- performs never match.
+fn idp_empty_table() -> (Array[String], Array[Array[String]], Array[Expr]) {
+  (array_empty_str(), array_empty_arr_str(), array_empty_expr())
+}
+
+fn array_empty_str() -> Array[String] {
+  Array::slice([""], 0, 0)
+}
+
+fn array_empty_arr_str() -> Array[Array[String]] {
+  Array::slice([array_empty_str()], 0, 0)
+}
+
+fn array_empty_expr() -> Array[Expr] {
+  Array::slice([EUnit], 0, 0)
+}
+
+fn idp_table_is_empty(table: (Array[String], Array[Array[String]], Array[Expr])) -> Bool {
+  let (names, _, _) = table
+  Array::length(names) == 0
+}
+
+fn idp_table_lookup(table: (Array[String], Array[Array[String]], Array[Expr]), qname: String) -> Int {
+  let (names, _, _) = table
+  let mut i = 0
+  let mut found = -1
+  while i < Array::length(names) {
+    if Array::get(names, i) == qname {
+      found = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// --- conservative bail-out guard.
+///
+/// Inlining is only sound when EVERY perform matching this handle's
+/// operations is actually reachable by this pass's own traversal. Two
+/// things can hide one: (a) an `EFn`/nested `EHandle` (a perform inside
+/// either might run later, dynamically, or is intercepted by a nearer
+/// handler -- see the module doc comment), and (b) a call to anything
+/// other than `perform` itself. (b) matters even with no lambda in sight:
+/// `handle { f() } with Http { Fetch(_) => resume(...) } }` (exactly the
+/// shape of every fixtures/effect_higher_order_*.vibe fixture) calls a
+/// NAMED function `f` whose OWN body may perform Http::Fetch -- that
+/// perform is not in `body`'s AST at all (it lives in f's separate
+/// top-level definition), so this pass cannot see, let alone inline, it.
+/// Treating "no EFn/EHandle" as sufficient to drop the wrapper would have
+/// deleted the handler for that unseen perform entirely -- an unhandled
+/// perform at runtime. Conservatively flagging every non-`perform` call as
+/// unsafe avoids this, EXCEPT for the fixed pure-builtin allowlist below
+/// (idp_is_pure_builtin_call) -- those are checker-verified effect-free and
+/// take no closure argument, so they cannot hide a perform. Recognizing
+/// calls to user functions whose declared row excludes this effect is a
+/// larger follow-up (needs the row/signature info this untyped AST pass
+/// does not have), not attempted here.
+fn idp_has_unsafe_construct(expr: Expr) -> Bool {
+  match expr {
+    EFn(_, _, _, _, _, _) => true,
+    EHandle(_, _) => true,
+    ELet(_, v, b, _) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(b),
+    ELetMut(_, v, b, _) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(b),
+    ELetRec(_, v, b) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(b),
+    ESeq(a, b) => idp_has_unsafe_construct(a) || idp_has_unsafe_construct(b),
+    EIf(c, t, e) => idp_has_unsafe_construct(c) || idp_has_unsafe_construct(t) || idp_has_unsafe_construct(e),
+    EMatch(s, arms) => idp_has_unsafe_construct(s) || idp_arms_have_unsafe_construct(arms),
+    EWhile(c, b) => idp_has_unsafe_construct(c) || idp_has_unsafe_construct(b),
+    EForIn(_, _, it, b) => idp_has_unsafe_construct(it) || idp_has_unsafe_construct(b),
+    ECall(callee, args, _) => match callee {
+      // `perform Effect::Op(args)` parses to `ECall(EIdent("perform"),
+      // [ECall(EIdent("Effect::Op"), args)])` (or `[EIdent("Effect::Op")]`
+      // for a zero-arg op) -- the operation's own qualified name is NOT a
+      // "call to something else" in the unsafe sense, it is the operation
+      // being performed; only ITS OWN arguments need checking.
+      EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 {
+        idp_perform_operand_has_unsafe_construct(Array::get(args, 0))
+      } else if idp_is_pure_builtin_call(nm) {
+        idp_exprs_have_unsafe_construct(args)
+      } else {
+        idp_call_is_unsafe(callee) || idp_exprs_have_unsafe_construct(args)
+      },
+      _ => idp_call_is_unsafe(callee) || idp_exprs_have_unsafe_construct(args)
+    },
+    EBinOp(_, l, r, _) => idp_has_unsafe_construct(l) || idp_has_unsafe_construct(r),
+    EUnaryOp(_, e2) => idp_has_unsafe_construct(e2),
+    EAssign(_, v, c) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(c),
+    EAssignOp(_, _, v, c) => idp_has_unsafe_construct(v) || idp_has_unsafe_construct(c),
+    // Any `.field`/method-style access is conservatively unsafe too (could
+    // be a method dispatch with hidden effects by the time this runs).
+    EDot(_, _, _, _) => true,
+    ELabeledArg(_, _, v) => idp_has_unsafe_construct(v),
+    EReturn(e2) => idp_has_unsafe_construct(e2),
+    EBreak(opt) => match opt {
+      Some(e2) => idp_has_unsafe_construct(e2),
+      None => false
+    },
+    EContinue(args) => idp_exprs_have_unsafe_construct(args),
+    ETuple(elems) => idp_exprs_have_unsafe_construct(elems),
+    EArray(elems) => idp_exprs_have_unsafe_construct(elems),
+    ERecord(_, fields, _) => idp_fields_have_unsafe_construct(fields),
+    EMap(fields) => idp_fields_have_unsafe_construct(fields),
+    ESpread(e2) => idp_has_unsafe_construct(e2),
+    ELoop(pairs, b) => idp_pairs_have_unsafe_construct(pairs) || idp_has_unsafe_construct(b),
+    _ => false
+  }
+}
+
+/// Only a direct call to the `perform` builtin is safe; a call to anything
+/// else (a named top-level function, a parameter-bound closure, a computed
+/// callee expression) may reach a perform this pass cannot see. (The
+/// pure-builtin allowlist is checked separately, before this function is
+/// ever reached -- see idp_is_pure_builtin_call's call site.)
+fn idp_call_is_unsafe(callee: Expr) -> Bool {
+  match callee {
+    EIdent(nm, _) => nm != "perform",
+    _ => true
+  }
+}
+
+/// Phase 2b: a fixed, hand-audited set of builtin static-call names, each
+/// individually checked (as of this change) against the checker's builtin
+/// type table to have effect `None` (pure -- see checker/builtins_string1.
+/// vibe, builtins_string2.vibe, builtins_misc.vibe) AND no function-typed
+/// parameter (so it cannot invoke a user-supplied closure that might
+/// perform). Deliberately NOT a prefix/namespace match: builtins_misc.vibe
+/// mixes pure entries (Int::to_string, Char::to_int, ...) with impure ones
+/// in the SAME file (`print`, `println`, `throw` -- `throw` in particular
+/// is documented there as going through the Error effect, i.e. it IS a
+/// perform in disguise), so only exact, individually-verified names belong
+/// here. Extending this list requires re-checking the new name's entry in
+/// those files, not just adding a plausible-looking string.
+///
+/// #2373: this is THE list -- both consumers read it. `idp_is_pure_builtin_
+/// call` (this pass, and `scps_named_call_ok`'s suspend-class lowering
+/// through it) and `edp_is_pure_builtin_call` (the evidence pass's safety
+/// scans) share one table; the evidence pass used to keep a second copy whose
+/// doc comment claimed to mirror this one and did not. The audit criterion is
+/// the same for both, so a name belongs to both or to neither.
+export fn idp_pure_builtin_names() -> Array[String] {
+  [
+    "String::concat",
+    "String::equals",
+    "String::length",
+    // #2630: the three length views, registry rows with effect `None` and no
+    // function-typed parameter, served by a callsite lowering on both lanes.
+    "String::unicode_length",
+    "String::utf16_length",
+    "String::utf8_length",
+    "String::substring",
+    "string_char_at",
+    "String::trim",
+    "String::split",
+    "String::contains",
+    "String::index_of",
+    // #2345: the Bytes-prologue half of the SAME windowed substring search
+    // `String::index_of` above reaches through a String prologue. Registry row
+    // `(Bytes, Bytes) -> Int`, effect None, no function-typed parameter -- the
+    // audit this list's doc comment demands. The consumer that needs it is
+    // scps_named_call_ok (suspend-class lowering), which has no registry
+    // fallback: without this entry a handle body calling it is refused naming
+    // the call, exactly as `Array::concat` was before #1536.
+    "Bytes::index_of_bytes",
+    // #2345: the single-byte family, on the same audit as the substring
+    // entry above -- registry rows `(Bytes, Int) -> Int`, effect None, no
+    // function-typed parameter. All three were added to the registry in this
+    // PR and to this list only after review caught it, which is the fourth
+    // time one hand-maintained declaration was missed while another was
+    // updated (see #2373).
+    "Bytes::index_of",
+    "Bytes::count",
+    "Bytes::last_index_of",
+    "Bytes::compare",
+    "String::to_lower",
+    "String::to_upper",
+    "String::ends_with",
+    "String::starts_with",
+    "String::char_code_at",
+    "String::last_index_of",
+    "String::from_char_code",
+    "String::join",
+    "Char::to_int",
+    "Char::from_int",
+    "Int::to_double",
+    "Int::to_float",
+    "Int::to_string",
+    "Double::to_int",
+    "Float::to_int",
+    "Double::to_string",
+    "Float::to_string",
+    "Double::abs",
+    "Double::floor",
+    "Double::ceil",
+    "Double::max",
+    "Double::min",
+    "Int::parse",
+    "Double::parse",
+    // #817 gc-backend follow-up (2026-07-23): `obj[i]` desugars to
+    // `__index(obj, i)` (desugar_trait_dict.vibe); `Array::get`/`Map::get`/
+    // `Bytes::get` are the same read operation spelled explicitly, and
+    // `Array::length`/`Map::size`/`Bytes::length` are the same class of
+    // pure, no-function-param builtin query. All seven are individually
+    // checker-verified pure (effect `None`, no function-typed parameter --
+    // checker/builtins_misc.vibe's lookup_index,
+    // builtins_array.vibe/builtins_map.vibe/builtins_bytes.vibe's own
+    // `*::get`/`*::length`/`Map::size` entries) and the `__index`/`*::get`
+    // subset is already treated as the same borrow-only-read equivalence
+    // class elsewhere in the compiler (perceus.vibe, common_analysis.vibe).
+    // Found missing via gc-backend coverage testing:
+    // `perform Logger::Log(items[i])` inside a `while i < Array::length
+    // (items) { ... }`-bodied needing function was sunk to ineligible
+    // purely because `items[i]`'s desugared `__index` call (and
+    // `Array::length`'s own call in the loop condition) weren't on this
+    // list, not because of anything about the perform itself.
+    "__index",
+    "Array::get",
+    "Map::get",
+    "Bytes::get",
+    "Array::length",
+    "Map::size",
+    "Bytes::length",
+    // #1536: the same audit criterion, found the same way. `Array::concat`
+    // allocates a fresh array from two existing ones -- it can neither perform
+    // a user effect nor invoke a function-typed argument (registry row
+    // `(Array[_], Array[_]) -> Array[_]`, effect None). Its sibling
+    // `Array::slice` was already admitted via scps_is_safe_mut_builtin and
+    // `String::concat` via this list, so the gap was this one name: a
+    // `for x in Array::concat(a, b)` in a suspend-class handle body was refused
+    // naming the concat, not the loop.
+    "Array::concat",
+    // ADR-0076 追記34 V2: string interpolation desugars every `\{...}`
+    // segment to a `__to_string(...)` call (preprocess_interp_string_
+    // collect.vibe) BEFORE the checker runs, so any needing function
+    // formatting with interp was sunk to ineligible purely by that
+    // synthesized call name -- surfaced by gate 4b the moment the replay
+    // fallback stopped absorbing it. Checker-verified pure: effect None
+    // (checker/builtins_misc.vibe lookup_to_string) and it never INVOKES
+    // its argument (stringification only), so the function-typed-param
+    // exclusion does not apply. `not` (Bool -> Bool, effect None --
+    // checker/builtins_misc.vibe lookup_not) was surfaced the same way by
+    // quickcheck_effect's `if not(prop()) {..}` needing body.
+    "__to_string",
+    "not",
+    // #1324: the operator helpers desugar_trait_dict emits when an operand's
+    // type is not syntactically determinable. `a + b` becomes
+    // `__generic_add(a, b)` and `a < b` becomes `__generic_rel_diff(a, b) < 0`
+    // whenever `infer_arg_type_name` reports a non-concrete name (#973), and
+    // `str_lex_diff` is the String arm of the same relational rewrite. That
+    // fires for any value bound from a GENERIC callee's result -- e.g.
+    // `let v = TaskHandle::result_wait(h)` (returns `T`) followed by `v + 1`
+    // inside a `spawn_suspend` closure literal -- so an ordinary arithmetic
+    // tail sank the whole closure to ineligible on the synthesized callee
+    // name alone, exactly like `__to_string` above. All three are registered
+    // builtins with hand-written wasm bodies and a `None` effect
+    // (builtin_registry.vibe: `(Int, Int) -> Int` / `(String, String) -> Int`),
+    // so they can neither perform a user effect nor invoke a function-typed
+    // argument.
+    "__generic_add",
+    "__generic_rel_diff",
+    "str_lex_diff",
+    // #1374: the exception-kind side channel's write. Every `throw(v)` in a
+    // suspend-class closure literal now carries a preceding `Array::set
+    // (__exn_kind_cell, 0, "<Kind>")` (desugar_trait_dict.vibe), so without
+    // this entry the very throws this list already admits as performs would
+    // sink their own closure to ineligible on the synthesized WRITE alone --
+    // the same failure mode `__generic_add` above hit. What this list gates is
+    // "can neither perform a user effect nor invoke a function-typed
+    // argument", and a 3-arg store into an `Array[String]` does neither.
+    // `Array::get` (the READ, used by handler arms) is already listed above.
+    "Array::set",
+    // ADR-0089 D1 (#1218/#1312): the HOST sleeps. Not effect-free -- `sleep`
+    // carries the nominal Async row -- but what this list actually gates is
+    // "an opaque callee that cannot PERFORM a user effect and never invokes
+    // a function-typed argument", and both qualify (Int -> Unit host
+    // calls). Needed because the scoped sleep retarget deliberately leaves
+    // the raw builtin in top-level fn bodies when no entry boundary exists
+    // (Codex P1 on #1312): an Async-row fn like `fn delay() with Async
+    // { sleep(1) }` must classify as PERFORM-FREE (the stat_token
+    // precedent, edp_append_perform_free_row_fns) rather than sinking the
+    // whole effect's migration to ineligible on an unknown callee -- and
+    // the same call must pass scps_calls_ok when such a fn is driven from
+    // a suspend-class handle.
+    "sleep",
+    "sleep_blocking",
+    // ADR-0089 D2 (#1218): the Future cell primitives, same audit criterion
+    // as `sleep` above -- none can perform a user effect or invoke a
+    // function-typed argument. `Future::pending`/`Future::ready` allocate
+    // the two-slot [state, payload] cell and `Future::resolve` is two
+    // Array::set stores (compile_call.vibe's inline lowerings). Without
+    // these, any handle body (or Async-row entry under the injected
+    // boundary) that touches a PENDING future sinks to ineligible on the
+    // opaque callee name alone (measured: `sleep(1); let f =
+    // Future::pending(); Future::resolve(f, 42); await(f)` under an
+    // Async-row entry was rejected with the ADR-0076 ineligibility
+    // diagnostic before these entries existed). `await` itself needs no
+    // entry: await_poll_pass rewrites every await call into `__aw_poll`
+    // (a needing fn) before any effect pass runs.
+    "Future::pending",
+    "Future::ready",
+    "Future::resolve",
+    // ADR-0089 step 4 (#1218): the host-future surface + its raw halves,
+    // same audit criterion -- opaque host calls (`vibe.host_future_get` /
+    // `vibe.host_future_wait` component-adapter imports) that cannot
+    // perform a user effect and take/return only Ints. `host_future_get`
+    // appears in user code (a boundary-wrapped entry body touching it must
+    // stay eligible, the Future::pending precedent above);
+    // `vibe_hf_wait_raw` appears in the injected `__entry_settle`;
+    // `vibe_hf_get_raw` only after compile_call's lowering (listed for
+    // symmetry/safety).
+    "host_future_get",
+    "vibe_hf_get_raw",
+    "vibe_hf_wait_raw",
+    // ADR-0089 (c) (#1218): the NAMED sibling of host_future_get. Its raw
+    // half is per-name (`vibe_hf_get_raw$<name>`), matched by prefix in
+    // idp_is_pure_builtin_call below -- same audit, same shapes (a
+    // `() -> Int` opaque host call).
+    "host_future_named",
+    // ADR-0089 Decision 3 (#1218): the host-stream surface + its shared raw
+    // read half, same audit criterion -- opaque component-adapter imports
+    // (`vibe.host_stream_get$<name>` / `vibe.host_stream_read`) that cannot
+    // perform a user effect and take/return only Ints. `host_stream_named`
+    // appears in user code (a boundary-wrapped entry body creating the
+    // stream cell must stay eligible, the host_future_named precedent);
+    // `vibe_hs_read_raw` appears in the injected `__entry_settle` stream
+    // arm. `host_stream_next` needs no entry here: the boundary machinery
+    // retargets every call to the injected `__hs_next` (a needing fn)
+    // before any effect pass runs, exactly like await -> `__aw_poll`.
+    // `vibe_hs_close_raw` (the drop half, injected `__hs_close`) is inert on
+    // the same grounds -- dropping a readable end takes an Int and performs
+    // nothing.
+    "host_stream_named",
+    // #1955: rewritten to the injected direct-perform `__hs_next_option`
+    // before lowering, just as the raw scalar spelling becomes `__hs_next`.
+    "HostStream::next",
+    "HostStream::close",
+    "vibe_hs_close_raw",
+    "vibe_hs_read_raw",
+    // #1539: opaque stdin provider calls are inert host boundaries. Authority
+    // is carried by the checker rows; none can perform a user effect.
+    "Stdin::read_via_stream",
+    "StdinStream::next",
+    "StdinStream::close",
+    "vibe_stdin_provider_acquire_raw",
+    "vibe_stdin_provider_read_raw",
+    "vibe_stdin_provider_close_raw"
+  ]
+}
+
+/// ADR-0089 (c) (#1218): the per-name raw halves of `host_future_named`.
+/// compile_call mints one callee name per import name, so the exact-match
+/// list above cannot enumerate them; the prefix is the whole criterion (the
+/// suffix is a validated component label, and every such callee is the same
+/// `() -> Int` adapter import).
+export fn idp_is_host_future_named_raw(nm: String) -> Bool {
+  String::starts_with(nm, "vibe_hf_get_raw$")
+}
+
+/// ADR-0089 Decision 3 (#1218): the per-name raw halves of
+/// `host_stream_named` (`vibe_hs_get_raw$<name>`), same prefix criterion --
+/// every such callee is the same `() -> Int` adapter import.
+export fn idp_is_host_stream_named_raw(nm: String) -> Bool {
+  String::starts_with(nm, "vibe_hs_get_raw$")
+}
+
+// #1875 R3: module-level memo -- this predicate runs per CALL NODE of the
+// whole merged program during the direct-perform inlining walk, and used to
+// rebuild the table (and scan it without early exit) on every probe.
+let idp_pure_builtin_names_table: Array[String] = idp_pure_builtin_names()
+
+export fn idp_is_pure_builtin_call(nm: String) -> Bool {
+  if idp_is_host_future_named_raw(nm) || idp_is_host_stream_named_raw(nm) {
+    true
+  } else {
+    let names = idp_pure_builtin_names_table
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(names) && !found {
+      if Array::get(names, i) == nm {
+        found = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// `operand` is `perform`'s single argument -- the operation application
+/// itself (`EIdent(qname)` for zero args, `ECall(EIdent(qname), op_args)`
+/// otherwise). The qualified operation name is never itself an unsafe call
+/// target; only the actual argument expressions need checking.
+fn idp_perform_operand_has_unsafe_construct(operand: Expr) -> Bool {
+  match operand {
+    EIdent(_, _) => false,
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(_, _) => idp_exprs_have_unsafe_construct(op_args),
+      _ => true
+    },
+    _ => true
+  }
+}
+
+fn idp_exprs_have_unsafe_construct(exprs: Array[Expr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(exprs) {
+    if idp_has_unsafe_construct(Array::get(exprs, i)) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_fields_have_unsafe_construct(fields: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    if idp_has_unsafe_construct(v) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_pairs_have_unsafe_construct(pairs: Array[(String, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(pairs) {
+    let (_, v) = Array::get(pairs, i)
+    if idp_has_unsafe_construct(v) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_arms_have_unsafe_construct(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (_, ex) = Array::get(arms, i)
+    if idp_has_unsafe_construct(ex) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// --- per-arm preparation: bind names + tail resume(e) -> e.
+
+fn idp_pat_bind_names(pat: Pat) -> Array[String] {
+  match pat {
+    PCtor(_, subpats) => for p in subpats {
+      match p {
+        PBind(n) => n,
+        _ => "_"
+      }
+    },
+    _ => array_empty_str()
+  }
+}
+
+fn idp_pat_qname(pat: Pat) -> String {
+  match pat {
+    PCtor(name, _) => name,
+    _ => ""
+  }
+}
+
+/// Replace every tail-position `resume(e)` with `e`. Mirrors #942's own
+/// tail-position traversal (check_arm_resume_tail in checker.vibe) so the
+/// two stay in lockstep: #942 already guarantees resume only ever appears
+/// at exactly these tail slots, with nothing after it.
+fn idp_strip_tail_resume(expr: Expr) -> Expr {
+  match expr {
+    EIf(c, t, e) => EIf(c, idp_strip_tail_resume(t), idp_strip_tail_resume(e)),
+    EMatch(s, arms) => EMatch(s, idp_strip_tail_resume_arms(arms)),
+    ELet(n, v, b, off) => ELet(n, v, idp_strip_tail_resume(b), off),
+    ELetMut(n, v, b, off) => ELetMut(n, v, idp_strip_tail_resume(b), off),
+    ELetRec(n, v, b) => ELetRec(n, v, idp_strip_tail_resume(b)),
+    ESeq(a, b) => ESeq(a, idp_strip_tail_resume(b)),
+    EAssign(n, v, c) => EAssign(n, v, idp_strip_tail_resume(c)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, v, idp_strip_tail_resume(c)),
+    EReturn(e2) => EReturn(idp_strip_tail_resume(e2)),
+    ECall(callee, args, _) => match callee {
+      EIdent(nm, _) => if nm == "resume" && Array::length(args) == 1 {
+        Array::get(args, 0)
+      } else {
+        expr
+      },
+      _ => expr
+    },
+    _ => expr
+  }
+}
+
+fn idp_strip_tail_resume_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, idp_strip_tail_resume(ex))
+  }
+}
+
+// --- the main rewrite.
+
+fn idp_rewrite(expr: Expr, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  match expr {
+    EHandle(body, arms) => idp_rewrite_handle(body, arms, table),
+    EFn(tps, tbs, params, ret, eff, b) => EFn(tps, tbs, params, ret, eff, idp_rewrite(b, idp_empty_table())),
+    ELet(n, v, b, off) => ELet(n, idp_rewrite(v, table), idp_rewrite(b, table), off),
+    ELetMut(n, v, b, off) => ELetMut(n, idp_rewrite(v, table), idp_rewrite(b, table), off),
+    ELetRec(n, v, b) => ELetRec(n, idp_rewrite(v, table), idp_rewrite(b, table)),
+    ESeq(a, b) => ESeq(idp_rewrite(a, table), idp_rewrite(b, table)),
+    EIf(c, t, e) => EIf(idp_rewrite(c, table), idp_rewrite(t, table), idp_rewrite(e, table)),
+    EMatch(s, arms) => EMatch(idp_rewrite(s, table), idp_rewrite_arms(arms, table)),
+    EWhile(c, b) => EWhile(idp_rewrite(c, table), idp_rewrite(b, table)),
+    EForIn(n, idx, it, b) => EForIn(n, idx, idp_rewrite(it, table), idp_rewrite(b, table)),
+    ECall(callee, args, off) => idp_rewrite_call(callee, args, off, table),
+    EBinOp(op, l, r, boff) => EBinOp(op, idp_rewrite(l, table), idp_rewrite(r, table), boff),
+    EUnaryOp(op, e2) => EUnaryOp(op, idp_rewrite(e2, table)),
+    EAssign(n, v, c) => EAssign(n, idp_rewrite(v, table), idp_rewrite(c, table)),
+    EAssignOp(n, op, v, c) => EAssignOp(n, op, idp_rewrite(v, table), idp_rewrite(c, table)),
+    EDot(o, f, off1, off2) => EDot(idp_rewrite(o, table), f, off1, off2),
+    ELabeledArg(l, n, v) => ELabeledArg(l, n, idp_rewrite(v, table)),
+    EReturn(e2) => EReturn(idp_rewrite(e2, table)),
+    EBreak(opt) => EBreak(match opt {
+      Some(e2) => Some(idp_rewrite(e2, table)),
+      None => None
+    }),
+    EContinue(args) => EContinue(idp_rewrite_exprs(args, table)),
+    ETuple(elems) => ETuple(idp_rewrite_exprs(elems, table)),
+    EArray(elems) => EArray(idp_rewrite_exprs(elems, table)),
+    ERecord(n, fields, tas) => ERecord(n, idp_rewrite_fields(fields, table), tas),
+    EMap(fields) => EMap(idp_rewrite_fields(fields, table)),
+    ESpread(e2) => ESpread(idp_rewrite(e2, table)),
+    ELoop(pairs, b) => ELoop(idp_rewrite_pairs(pairs, table), idp_rewrite(b, table)),
+    _ => expr
+  }
+}
+
+fn idp_rewrite_exprs(exprs: Array[Expr], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[Expr] {
+  for e in exprs {
+    idp_rewrite(e, table)
+  }
+}
+
+fn idp_rewrite_fields(fields: Array[(String, Expr)], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[(String, Expr)] {
+  for f in fields {
+    let (n, v) = f
+    (n, idp_rewrite(v, table))
+  }
+}
+
+fn idp_rewrite_pairs(pairs: Array[(String, Expr)], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[(String, Expr)] {
+  for p in pairs {
+    let (n, v) = p
+    (n, idp_rewrite(v, table))
+  }
+}
+
+fn idp_rewrite_arms(arms: Array[(Pat, Expr)], table: (Array[String], Array[Array[String]], Array[Expr])) -> Array[(Pat, Expr)] {
+  for a in arms {
+    let (p, ex) = a
+    (p, idp_rewrite(ex, table))
+  }
+}
+
+/// #1087: `Error` is NON-resumable (#640) -- a `handle .. with Exception` arm
+/// never calls resume; its value must become the whole handle's result and
+/// the rest of the body must NOT run. The splice below implements exactly
+/// the opposite (resumptive) semantics: the arm body replaces the perform
+/// in place, so its value becomes the PERFORM's result and the body's
+/// continuation keeps running. In tail position the two coincide (which is
+/// why the bug stayed hidden); for a non-tail `throw` the arm's value is
+/// discarded and the body continues -- a silent wrong-value miscompile.
+/// Any handle whose arms discharge an Error operation is therefore never
+/// eligible for this pass and stays on the try_table lowering
+/// (compile_expr_tail6.vibe), whose catch-and-branch shape aborts the body
+/// correctly in every position.
+export fn idp_arms_discharge_error(arms: Array[(Pat, Expr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    let q = idp_pat_qname(p)
+    if is_exception_throw_handler_name(q) {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn idp_rewrite_handle(body: Expr, arms: Array[(Pat, Expr)], outer_table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  if idp_has_unsafe_construct(body) || idp_arms_discharge_error(arms) {
+    // Conservative bail-out: leave this handle's own performs to the
+    // existing replay codegen. Still recurse into body/arms with a FRESH
+    // (empty) context -- any OTHER handle nested inside (which triggered
+    // this bail-out) gets its own independent chance to inline, and any
+    // stray perform for the now-inactive outer effect is simply left alone
+    // (matches ordinary lexical scoping: this pass never invents a target
+    // that codegen wouldn't otherwise resolve).
+    EHandle(idp_rewrite(body, idp_empty_table()), idp_rewrite_arms(arms, idp_empty_table()))
+  } else {
+    let op_names = for a in arms {
+      let (p, _) = a
+      idp_pat_qname(p)
+    }
+    let bind_names = for a in arms {
+      let (p, _) = a
+      idp_pat_bind_names(p)
+    }
+    let prepared_bodies = for a in arms {
+      let (_, ex) = a
+      idp_strip_tail_resume(idp_rewrite(ex, idp_empty_table()))
+    }
+    let table = (op_names, bind_names, prepared_bodies)
+    // No EFn/nested-handle boundary exists anywhere in `body`, so this
+    // rewrite is guaranteed to reach and inline every perform matching
+    // one of `arms` -- the result has none left, and the EHandle wrapper
+    // (and everything it would have compiled to: replay loop, per-effect
+    // reserved region, perform counter) can be dropped entirely.
+    idp_rewrite(body, table)
+  }
+}
+
+fn idp_rewrite_call(callee: Expr, args: Array[Expr], off: Int, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  match callee {
+    EIdent(nm, _) => if nm == "perform" && Array::length(args) == 1 && !idp_table_is_empty(table) {
+      idp_rewrite_perform(Array::get(args, 0), table)
+    } else {
+      ECall(idp_rewrite(callee, table), idp_rewrite_exprs(args, table), off)
+    },
+    _ => ECall(idp_rewrite(callee, table), idp_rewrite_exprs(args, table), off)
+  }
+}
+
+/// `operand` is the perform's single argument: either `EIdent(qname)` for a
+/// zero-arg operation, or `ECall(EIdent(qname), op_args)` for one with
+/// arguments (see parser_expr_primary.vibe's parse_perform_primary).
+fn idp_rewrite_perform(operand: Expr, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  match operand {
+    EIdent(qname, _) => idp_splice_or_leave(qname, array_empty_expr(), operand, table),
+    ECall(op_callee, op_args, _) => match op_callee {
+      EIdent(qname, _) => idp_splice_or_leave(qname, idp_rewrite_exprs(op_args, table), operand, table),
+      _ => ECall(EIdent("perform", -1), [idp_rewrite(operand, table)], -1)
+    },
+    _ => ECall(EIdent("perform", -1), [idp_rewrite(operand, table)], -1)
+  }
+}
+
+fn idp_splice_or_leave(qname: String, actual_args: Array[Expr], original_operand: Expr, table: (Array[String], Array[Array[String]], Array[Expr])) -> Expr {
+  let idx = idp_table_lookup(table, qname)
+  if idx < 0 {
+    ECall(EIdent("perform", -1), [original_operand], -1)
+  } else {
+    let (_, bind_names_list, prepared_bodies) = table
+    let bind_names = Array::get(bind_names_list, idx)
+    let prepared_body = Array::get(prepared_bodies, idx)
+    idp_bind_args(bind_names, actual_args, prepared_body)
+  }
+}
+
+/// `let bind_0 = actual_0; let bind_1 = actual_1; ...; prepared_body` --
+/// evaluates every argument exactly once, in left-to-right order, before the
+/// (already tail-resume-stripped) arm body runs, matching ordinary function
+/// call-argument semantics.
+fn idp_bind_args(bind_names: Array[String], actual_args: Array[Expr], prepared_body: Expr) -> Expr {
+  let n = Array::length(bind_names)
+  let mut result = prepared_body
+  let mut i = n - 1
+  while i >= 0 {
+    if i < Array::length(actual_args) {
+      result = ELet(Array::get(bind_names, i), Array::get(actual_args, i), result, -1)
+    } else {
+      ()
+    }
+    i = i - 1
+  }
+  result
+}
