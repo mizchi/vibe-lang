@@ -616,6 +616,20 @@ reassignments, the array accumulator) and by the accumulator shapes of
 expected total moves to 7,801,510,000), on which the compiler before the
 move keeps 28,723,336 B against the 4,000-byte bound.
 
+What the compiler's own self-compile gets out of it: nothing measurable.
+The `selfcompile_kpi` protocol (RC-built stage2 of the tree before the
+reuse, 3c7ba5b, against the reuse) moves fuel 1,194,445,790,779 ->
+1,194,859,964,204 (+0.03%), bytes allocated 1,839,410,132 ->
+1,841,373,196 (+0.11%) and the RC stage2 grows 4,895,557 -> 4,906,173 B
+(+0.22%, the in-place arms). The compiler's map traffic is not the shape
+the reuse serves: of its 117 `Map::set` sites, 17 are self-reassignments
+(the planner's `env = Map::set(env, n, ..)` threading, and the one that
+also reads `env` in the value argument is not a single occurrence), 7 are
+`let`-bound, and the rest pass `Map::set(scope, name, id)` straight into
+a recursive call while the caller keeps `scope` -- shared by
+construction, so they copy, and would need a persistent structure rather
+than an in-place update to get cheaper.
+
 ### An FBIP-shaped rewrite of one pass, measured (2026-09-11)
 
 The question behind #2389 was whether the compiler's own code could be
