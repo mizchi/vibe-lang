@@ -727,6 +727,49 @@ holding a stale tag routes a `perform` to the wrong handler with nothing
 failing at build time. Recording them raised stage2's site count from 141,380
 to 142,360 — 980 references that were silently going to be left behind.
 
+##### Does a body actually relocate? (#2669, slice 1b)
+
+The round-trip above proves the walk does not desynchronise. It does not prove
+the central claim, which is that a body compiled against ONE index assignment
+can be moved onto ANOTHER. `scripts/reloc_crossbuild.sh` tests that directly:
+it builds the compiler's own closure twice — the second with one import added
+to `lib/@vibe/core/base64.vibe`, which pulls `hex.vibe` earlier in the module
+order and moves most of the function index space — then takes each of A's
+bodies, rewrites every function reference from A's index space into B's by
+resolving through the name section, and compares against **what the compiler
+itself emitted for B**.
+
+| | count | share |
+|---|---:|---:|
+| bodies compared (present in both by name) | 4356 | |
+| **relocated byte-identically to the compiler's own output** | **3943** | **90.5%** |
+| mismatch, body carries a non-function reference (this tool's limit) | 299 | 6.9% |
+| mismatch, **encoding-blind** | 114 | 2.6% |
+
+**90.5% of bodies survive a module reorder byte for byte**, using nothing but
+the references the instruction encoding exposes. That is the first direct
+evidence that index-independent bodies work rather than an argument that they
+should.
+
+The two mismatch classes are different in kind, which is why they are counted
+apart:
+
+- The **299** carry a reference in a space wasm gives no name section for
+  (type, table, tag, global, data, elem), so this tool passes the value
+  through unchanged and cannot do better from the binary alone. A real link
+  has those symbol tables and would remap them; this is the measurement's
+  limit, not the approach's.
+- The **114** carry no such reference. Every reference the encoding exposes
+  was remapped, so what remains is a reference it does NOT expose — the
+  `i64.const` function values and data pointers. **That is the number the
+  emitter has to close**, measured rather than estimated, and it is 2.6%.
+
+Forcing a module reorder requires editing at least one existing body —
+something has to call across the new import — so a couple of the 114 are
+genuine source changes rather than relocation failures. The wrapper keeps that
+edit to one function and names it in its own output (`encode_url_safe`), so
+the figure can be read with that in mind instead of quietly inflated.
+
 **What the scan cannot see, and why the link must record instead of derive.**
 A `call` immediate is self-describing — the opcode says the next uleb is a
 funcidx. A function used as a VALUE is not: it is an `i64.const (idx*4+2)`,
