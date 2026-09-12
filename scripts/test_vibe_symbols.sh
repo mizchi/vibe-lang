@@ -178,6 +178,46 @@ else
   bad "symbols should report [one\\ntwo 27 5 21] for a multi-line label; got: $out_ml"
 fi
 
+# 7e. #2723: a label is a string literal, so almost every one carries spaces.
+#     Emitted raw, `adds two numbers 27 6 22` read KIND=`two` to anything that
+#     splits on whitespace -- right values, an encoding that does not say where
+#     a field ends. NAME now carries no ASCII whitespace at all.
+sl="$WORK/spaced_label.vibe"
+printf 'test "adds two numbers" { let _ = 1 }\n' > "$sl"
+out_sl="$("$VIBE" symbols "$sl" 2>/dev/null || true)"
+if [ "$out_sl" = 'adds\stwo\snumbers 27 6 22' ]; then
+  ok "symbols escapes the spaces in a label"
+else
+  bad "symbols should report [adds\\stwo\\snumbers 27 6 22]; got: $out_sl"
+fi
+kind_sl="$(printf '%s\n' "$out_sl" | awk '{print $2}')"
+if [ "$kind_sl" = "27" ]; then
+  ok "a label row's KIND is readable by splitting on whitespace"
+else
+  bad "field 2 of [$out_sl] should be 27; got: $kind_sl"
+fi
+
+tl="$WORK/tab_label.vibe"
+printf 'test "adds\\ttwo" { let _ = 1 }\n' > "$tl"
+out_tl="$("$VIBE" symbols "$tl" 2>/dev/null || true)"
+if [ "$out_tl" = 'adds\ttwo 27 6 15' ]; then
+  ok "symbols escapes a tab inside a label"
+else
+  bad "symbols should report [adds\\ttwo 27 6 15]; got: $out_tl"
+fi
+
+# The same property over a REAL corpus rather than a crafted file: every label
+# in these *_test.vibe files is a sentence. In the batch form KIND is the third
+# field, and it is an integer on every row or the format is not splittable.
+sweep_out="$("$VIBE" symbols "$ROOT_DIR/lib/@vibe/compiler/runtime" 2>/dev/null || true)"
+sweep_rows="$(printf '%s\n' "$sweep_out" | awk 'NF > 0' | wc -l | tr -d ' ')"
+sweep_bad="$(printf '%s\n' "$sweep_out" | awk 'NF > 0 && $3 !~ /^[0-9]+$/' | head -3)"
+if [ "$sweep_rows" -gt 100 ] && [ -z "$sweep_bad" ]; then
+  ok "every row of a directory sweep ($sweep_rows rows) has an integer KIND"
+else
+  bad "sweep rows=$sweep_rows, rows with a non-integer KIND: $sweep_bad"
+fi
+
 # --- #2381: arguments are no longer accepted and ignored --------------------
 # Every case below used to print a.vibe's outline and exit 0, so a caller who
 # believed they had asked about two files -- or who typo'd a flag -- got a

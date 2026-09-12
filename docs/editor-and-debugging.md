@@ -99,13 +99,17 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
   and a backslash is doubled, so one declaration is always one line. The
   structured form (real newlines, for LSP detail) is `symbol_spans_with_docs`.
 - **A label is a string, so `NAME` is escaped too.** A declaration's name is an
-  identifier, but a `test` / `bench` label is a string literal: it can hold a
-  backslash, and a multi-line `#|` label holds a real newline. In `NAME` those
-  are written `\\`, `\n` and `\r`, so **one symbol is always one line** —
-  unescaped, a two-line label printed as two rows and a reader counted a symbol
-  that does not exist. `cut -d" " -f1-4` is still not enough for a label,
-  because `NAME` can contain a SPACE and nothing yet says where it ends
-  (#2723). The structured form has the real name.
+  identifier, but a `test` / `bench` label is a string literal: almost every one
+  holds spaces, a multi-line `#|` label holds a real newline, and any of them
+  can hold a backslash. **`NAME` therefore carries no ASCII whitespace at
+  all** — backslash first (that is what makes it reversible), then space
+  `\s`, tab `\t`, LF `\n`, VT `\v`, FF `\f`, CR `\r` — so every row is one
+  line of five whitespace-separated fields and `cut -d" " -f1-4` reads the
+  fixed part of a label row as well as a declaration's. Unescaped, a two-line
+  label printed as two rows (a reader counted a symbol that did not exist) and
+  `adds two numbers 27 6 22` read `KIND=two` (#2718, #2723). `DOC` needs none
+  of this because it is last and nothing is parsed after it. The structured
+  form (`symbol_spans_with_docs`) has the real name.
 - **A multi-line `#|` label spans the literal, not its content.** `"…"`,
   `r"…"` and a single-line `#|…` report the bytes inside the delimiters. A
   `#|` block continued on the next line is the one spelling whose content is
