@@ -708,6 +708,79 @@ fn lc_concat_ints_into(dst: Array[Int], src: Array[Int]) -> Unit {
   }
 }
 
+/// #2633: a name the MERGE mangled with its defining module -- `_exp_lib__`
+/// for an exported declaration, `_dep_lib__` for a private one. Exactly the
+/// program's own cross-module declarations carry these, so a builtin
+/// (`String::concat`, `Array::get`) cannot be mistaken for one and no builtin
+/// allow-list is needed to tell them apart.
+fn lc_name_is_module_mangled(n: String) -> Bool {
+  String::index_of(n, "_exp_lib__") >= 0 || String::index_of(n, "_dep_lib__") >= 0
+}
+
+fn lc_decl_names_into(stmts: Array[Stmt], into: MutMap[String, Int]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, _) => MutMap::set(into, n, 1),
+      SLetMut(n, _, _) => MutMap::set(into, n, 1),
+      SFnDecl(_, n, _, _, _) => MutMap::set(into, n, 1),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// #2633: the mangled names a module REFERS TO that are neither declared in
+/// its own statements nor present in the context it was handed.
+///
+/// This is the instrument the issue's last open question needs. The final
+/// `content` row turns on whether the owning module's `fn_returns` carries an
+/// imported function's return type, and `fn_returns` is built from `ctx ++
+/// own`. Reading the code could not settle whether the declaration reaches
+/// `ctx`: every step downstream of that checked out, and one attribution
+/// (`SFnDecl` missing from `oracle_is_interface_stmt`) turned out to be dead
+/// code, because the parser lowers `SFnDecl` to `SLet` before the prelude ever
+/// runs. So it is measured instead of argued.
+///
+/// Empty output is the claim that every cross-module name a module uses is one
+/// its context gave it.
+fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String]) -> Unit {
+  let have: MutMap[String, Int] = MutMap::new_string()
+  lc_decl_names_into(part, have)
+  lc_decl_names_into(ctx, have)
+  let no_fn_names: Array[String] = []
+  let mut i = 0
+  while i < Array::length(part) {
+    match Array::get(part, i) {
+      SLet(_, _, _, _, v) => match v {
+        EFn(_, _, params, _, _, body) => {
+          let pnames: Array[String] = []
+          let mut pi = 0
+          while pi < Array::length(params) {
+            let (pn, _) = Array::get(params, pi)
+            Array::push(pnames, pn)
+            pi = pi + 1
+          }
+          let fv = collect_free_vars(body, pnames, no_fn_names)
+          let mut fj = 0
+          while fj < Array::length(fv) {
+            let n = Array::get(fv, fj)
+            if lc_name_is_module_mangled(n) && !MutMap::has(have, n) && !lc_str_array_has(out, n) {
+              Array::push(out, n)
+            } else {
+              ()
+            }
+            fj = fj + 1
+          }
+        },
+        _ => ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
 fn lc_str_array_has(xs: Array[String], n: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -5389,6 +5462,10 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int
       }
       vj = vj + 1
     }
+    // #2633: what this module was GIVEN against what it USES, before anything
+    // reads the context.
+    Array::push(st.an_ctx_sizes, Array::length(ctx))
+    lc_ctx_unresolved_into(part, ctx, st.an_ctx_unresolved)
     let synthesized = desugar_trait_dicts_module_with_facts(part, ctx, "f\{fi}", checker_eq_offsets, checker_eq_type_keys, env.trait_facts)
     lc_union_into(st.requests, eq_synthesis_requests_list())
     lc_union_into(st.refusals, eq_typed_refusals_list())
@@ -5713,6 +5790,10 @@ struct PreludeSplitStats {
   // The OR the split lane actually seeded with, so the caller can compare it
   // against the whole program's instead of assuming they agree.
   an_bret_seed: Array[Int];
+  // #2633: per-module context sizes, and the mangled cross-module names a
+  // module uses that its context did not give it.
+  an_ctx_sizes: Array[Int];
+  an_ctx_unresolved: Array[String];
   // #2638: the two fixpoints over `trial` -- concatenated, link-passes applied,
   // NOT folded. Isolates the fold from the link-only passes.
   an_bret_trial: Array[String];
@@ -5759,6 +5840,8 @@ fn prelude_split_stats_new() -> PreludeSplitStats {
     an_shadow: lc_fresh_int_array(),
     an_bret_shadow: lc_fresh_int_array(),
     an_bret_seed: lc_fresh_int_array(),
+    an_ctx_sizes: lc_fresh_int_array(),
+    an_ctx_unresolved: lc_fresh_string_array(),
     an_bret_trial: lc_fresh_string_array(),
     an_view_trial: lc_fresh_string_array(),
     an_mrv_names: lc_fresh_string_array(),
@@ -6033,7 +6116,69 @@ export fn prelude_module_full_oracle_line(a: Array[Stmt], c: Array[Stmt], c_file
       _ => Array::get(st.an_bret_seed, 0)
     }), String::concat("/", Int::to_string(borrow_ret_shadow_mask(a))))), String::concat(String::concat(" link_bret_cat=", lc_set_cmp_counted(an_bret_w, an_bret_catr)), String::concat(String::concat(" link_view=", lc_set_cmp_counted(an_view_w, st.an_view_link)), String::concat(String::concat(" link_view_self=", lc_set_cmp_counted(an_view_w, an_view_self)), String::concat(String::concat(" link_view_asm=", lc_set_cmp_counted(an_view_w, an_view_asm)), String::concat(String::concat(" link_bret_trial=", lc_set_cmp_counted(an_bret_w, st.an_bret_trial)), String::concat(" link_view_trial=", lc_set_cmp_counted(an_view_w, st.an_view_trial)))))))))))))))))))))
   }
-  let an_line = String::concat(String::concat(an_head, an_cols), "\n")
+  // #2633: the context instrument. `decls` is the total number of declarations
+  // handed to modules, `zero` how many modules got none, and `unresolved` the
+  // mangled cross-module names a module uses that its context did not supply --
+  // empty meaning every one was given.
+  let mut ctx_decls = 0
+  let mut ctx_zero = 0
+  let mut cxi = 0
+  while cxi < Array::length(st.an_ctx_sizes) {
+    let n = Array::get(st.an_ctx_sizes, cxi)
+    ctx_decls = ctx_decls + n
+    if n == 0 {
+      ctx_zero = ctx_zero + 1
+    } else {
+      ()
+    }
+    cxi = cxi + 1
+  }
+  // Split by SPELLING, which is the whole point: `_exp_` is an EXPORTED
+  // declaration, so a module that uses one and was not given it is a context
+  // gap. `_dep_` is private to its defining module, which
+  // `oracle_is_interface_stmt` excludes on purpose -- a module referring to one
+  // is a different finding (a private name reaching across a module boundary),
+  // not a gap in what the contract publishes.
+  let mut ctx_unres_exp = 0
+  let mut ctx_unres_dep = 0
+  let mut first_exp = ""
+  let mut first_dep = ""
+  let mut cui = 0
+  while cui < Array::length(st.an_ctx_unresolved) {
+    let n = Array::get(st.an_ctx_unresolved, cui)
+    if String::index_of(n, "_exp_lib__") >= 0 {
+      ctx_unres_exp = ctx_unres_exp + 1
+      if first_exp == "" {
+        first_exp = n
+      } else {
+        ()
+      }
+    } else {
+      ctx_unres_dep = ctx_unres_dep + 1
+      if first_dep == "" {
+        first_dep = n
+      } else {
+        ()
+      }
+    }
+    cui = cui + 1
+  }
+  let mut ctx_line = "CTX decls="
+  ctx_line = String::concat(ctx_line, Int::to_string(ctx_decls))
+  ctx_line = String::concat(ctx_line, " modules=")
+  ctx_line = String::concat(ctx_line, Int::to_string(Array::length(st.an_ctx_sizes)))
+  ctx_line = String::concat(ctx_line, " zero=")
+  ctx_line = String::concat(ctx_line, Int::to_string(ctx_zero))
+  ctx_line = String::concat(ctx_line, " unresolved_exp=")
+  ctx_line = String::concat(ctx_line, Int::to_string(ctx_unres_exp))
+  ctx_line = String::concat(ctx_line, ":")
+  ctx_line = String::concat(ctx_line, first_exp)
+  ctx_line = String::concat(ctx_line, " unresolved_dep=")
+  ctx_line = String::concat(ctx_line, Int::to_string(ctx_unres_dep))
+  ctx_line = String::concat(ctx_line, ":")
+  ctx_line = String::concat(ctx_line, first_dep)
+  ctx_line = String::concat(ctx_line, "\n")
+  let an_line = String::concat(String::concat(String::concat(an_head, an_cols), "\n"), ctx_line)
   let line = String::concat(String::concat(head, mid), tail)
   let mut collision_lines = ""
   let mut ldi = 0

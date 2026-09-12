@@ -61,6 +61,11 @@ fn synth_line_of(report: String) -> String {
   report_line_of(report, "SYNTH ")
 }
 
+/// The report's `CTX ...` line, or "" (#2633).
+fn ctx_line_of(report: String) -> String {
+  report_line_of(report, "CTX ")
+}
+
 /// The report's `DIAGS ...` line, or "" .
 fn diag_line_of(report: String) -> String {
   report_line_of(report, "DIAGS ")
@@ -336,6 +341,21 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // DIRECTLY, which is weaker and more useful: a need that reaches the link
   // only through another need.
   inspect(String::trim(synth_line_of(report)), content = "SYNTH requests=0 typed_refused=0 deferred=0 minted=0 indirect=0")
+  // #2633: what each module was GIVEN against what it USES. `decls` is the
+  // total handed out, `zero` the modules given none, and the two `unresolved`
+  // counts the MANGLED cross-module names a module refers to that its context
+  // did not supply -- split by spelling, because the two mean different
+  // things. `_exp_` is an exported declaration, which a `.vpkg` publishes, so
+  // a module using one it was not given is a gap in the context rule. `_dep_`
+  // is private to its defining module and `oracle_is_interface_stmt` excludes
+  // it deliberately, so a reference to one is a private name crossing a module
+  // boundary -- a different finding, not a gap.
+  //
+  // Zero here on a two-module program, which is the point of pinning it: the
+  // closure measurement reads `unresolved_exp=118 unresolved_dep=67 zero=37`,
+  // and without a program where the instrument reads zero those numbers could
+  // be the instrument miscounting rather than the context missing.
+  inspect(String::trim(ctx_line_of(report)), content = "CTX decls=1 modules=2 zero=1 unresolved_exp=0: unresolved_dep=0:")
   // #2388: the VALIDATING passes, which produce diagnostics rather than
   // rewrites and are therefore invisible to a comparison keyed on
   // declarations. `0` here is both lanes silent on a clean program; the test
