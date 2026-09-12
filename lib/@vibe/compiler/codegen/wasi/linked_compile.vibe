@@ -763,13 +763,7 @@ fn lc_mangle_tail_is_path(n: String, marker: String) -> Bool {
   if at < 0 {
     false
   } else {
-    let rest = String::substring(n, at + String::length(marker), String::length(n))
-    let cut = String::index_of(rest, "::")
-    let tag = if cut < 0 {
-      rest
-    } else {
-      String::substring(rest, 0, cut)
-    }
+    let tag = lc_cut_at_qualifier(String::substring(n, at + String::length(marker), String::length(n)))
     String::length(tag) > 5 && String::ends_with(tag, "_vibe")
   }
 }
@@ -792,16 +786,32 @@ fn lc_mangle_tag_of(n: String) -> String {
   // The marker only -- `lib__` is the sanitized first path segment, not part
   // of the spelling, and requiring it made every tag outside `lib/` read "".
   // The `+ 5` skips `_exp_` / `_dep_`, so the tag is the sanitized path.
+  //
+  // Cut at `::` exactly as the predicate does. A qualified operation is spelled
+  // `ns ++ "_exp_" ++ path ++ "::" ++ op`, so without the cut the tag carries
+  // `::op`, misses `tag_owner`, and the name is counted `exp_unknown` instead
+  // of being placed -- and worse, `lc_module_tag_of` would register that
+  // spelling as the module's own tag if such a declaration came first.
   let e = String::index_of(n, "_exp_")
   if e >= 0 {
-    String::substring(n, e + 5, String::length(n))
+    lc_cut_at_qualifier(String::substring(n, e + 5, String::length(n)))
   } else {
     let d = String::index_of(n, "_dep_")
     if d >= 0 {
-      String::substring(n, d + 5, String::length(n))
+      lc_cut_at_qualifier(String::substring(n, d + 5, String::length(n)))
     } else {
       ""
     }
+  }
+}
+
+/// `s` up to the first `::`, or all of it.
+fn lc_cut_at_qualifier(s: String) -> String {
+  let cut = String::index_of(s, "::")
+  if cut < 0 {
+    s
+  } else {
+    String::substring(s, 0, cut)
   }
 }
 
@@ -811,9 +821,17 @@ fn lc_mangle_tag_of(n: String) -> String {
 fn lc_module_tag_of(part: Array[Stmt]) -> String {
   let mut i = 0
   while i < Array::length(part) {
+    // Every declaration form the merge stamps, not just the value ones: a
+    // module declaring only an enum would otherwise register no tag, and
+    // `tag_owner` is what decides whether a stamped name can be placed.
     let t = match Array::get(part, i) {
       SLet(_, _, n, _, _) => lc_mangle_tag_of(n),
+      SLetMut(n, _, _) => lc_mangle_tag_of(n),
       SFnDecl(_, n, _, _, _) => lc_mangle_tag_of(n),
+      SStruct(_, n, _, _, _, _) => lc_mangle_tag_of(n),
+      STypeAlias(_, n, _, _) => lc_mangle_tag_of(n),
+      SEnum(_, n, _, _, _) => lc_mangle_tag_of(n),
+      SSuberror(_, n, _) => lc_mangle_tag_of(n),
       _ => ""
     }
     if t != "" {
@@ -911,12 +929,22 @@ fn lc_ctx_unresolved_into(part: Array[Stmt], ctx: Array[Stmt], out: Array[String
             // nothing at all -- which is exactly how the original two-module
             // pin passed while being incapable of failing, and how it stayed
             // that way through two attempts to red-test it.
-            if lc_name_is_module_mangled(n) {
+            //
+            // The tag is checked against the tags modules ACTUALLY carry, not
+            // against a name shape (Codex on #2701). `_exp_` / `_dep_` plus a
+            // `_vibe` tail is a legal source identifier -- an entry-module
+            // `render_exp_cache_vibe` has it and is never renamed, entry
+            // declarations not being stamped at all -- so a shape test would
+            // report the scan exercising cross-module names it never saw. A
+            // denominator that can be inflated by a plausible function name is
+            // worth no more than the zero it was added to qualify.
+            let stamped = lc_name_is_module_mangled(n) && MutMap::has(tag_owner, lc_mangle_tag_of(n))
+            if stamped {
               Array::set(cls, 5, Array::get(cls, 5) + 1)
             } else {
               ()
             }
-            if lc_name_is_module_mangled(n) && !MutMap::has(have, n) && !lc_str_array_has(out, n) {
+            if stamped && !MutMap::has(have, n) && !lc_str_array_has(out, n) {
               Array::push(out, n)
               // #2633: and WHY it is missing. The name names its definer, so
               // ask whether that module is in this one's import closure.
