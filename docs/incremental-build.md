@@ -181,11 +181,6 @@ CLI closure (369 modules) took `keyed content` 1 → 0 and `CTX unresolved_exp`
 denominator unchanged at 25 556 — the per-module lane reproducing the
 whole-program prelude exactly.
 
-(An earlier revision of this section said the header scan "does not distinguish"
-re-export edges, "so this takes the narrower side". That was wrong:
-`module_reexport_deps_fs` has returned exactly that subset since #2658, and
-production has used it all along.)
-
 `edges_unresolved` is reported for its own reason: a dropped edge narrows a
 module's context further, and a closure built from every edge and one built from
 half of them otherwise look identical.
@@ -258,7 +253,7 @@ for name and body for body.
 counts the merge-stamped names the context scan judged, so a zero here is an
 answer rather than a scan that matched nothing (#2633).
 
-`copies=444` is what remains after the link and is not a difference: each is a
+`copies=448` is what remains after the link and is not a difference: each is a
 module's own `reexport_boundary` marker, one per module, which no link should
 merge. `dup_defs=5` equals `linked_dups=5`, so the link removed none of the
 definitions the program legitimately carries twice and left nothing unfolded.
@@ -1285,8 +1280,9 @@ declared and performed in `core/module_graph_path.vibe`, and handled in
 decision as interface data on *dependencies* cannot work — a dependency's
 contract cannot hold a decision that depends on its dependents. What decomposes
 is the *inputs*: measured, the union of the per-module (declared, handled,
-performed) facts equals the whole-program facts (`EVIDENCE declared=6 handled=4
-performed=3`), sampled immediately before the pass runs. So the module collects,
+performed) facts equals the whole-program facts (`EVIDENCE declared=6 handled=5
+performed=4` on the closure measured above), sampled immediately before the pass
+runs. So the module collects,
 the link unions and decides, and the link rewrites — with the rewrite then
 cacheable per function keyed on (body fingerprint, migration set). #2633.
 
