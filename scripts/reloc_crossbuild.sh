@@ -2,7 +2,7 @@
 # #2669: relocate one build's bodies onto ANOTHER build's index assignment,
 # and compare against what the compiler emitted for that assignment.
 #
-#   bash scripts/reloc_crossbuild.sh [a.wasm b.wasm]
+#   bash scripts/reloc_crossbuild.sh [a.wasm b.wasm [source-edited-names]]
 #
 # With no arguments it builds the pair itself: the compiler's own closure, and
 # the same closure with one import added to `lib/@vibe/core/base64.vibe` --
@@ -10,11 +10,9 @@
 # function index space. That is the edit class #2669 measured as the hardest:
 # two distinct index deltas, one large and negative.
 #
-# Forcing a reorder REQUIRES editing at least one existing body (something has
-# to call across the new import), so a small number of mismatches are genuine
-# source changes rather than relocation failures. The edit is kept to one
-# function and named in the output below, so the figure can be read with that
-# in mind rather than silently inflated.
+# This perturbation changes one existing body to call across the new import.
+# That body is excluded from all relocation statistics and non-vacuity guards.
+# For explicitly supplied modules, the caller must identify their source edits.
 #
 # The vibex REFUSES a vacuous run, in two steps. It fails when no shared
 # function changed index -- two builds with the same assignment relocate
@@ -55,7 +53,7 @@ esac
 # whose SOURCE differs between the two modules, to be excluded from the
 # statistics (see the vibex); without one, nothing is excluded.
 if [ "$#" -ge 2 ]; then
-  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/vibe_run.sh scripts/reloc_crossbuild.vibex -- "$1" "$2" ${3:+"$3"}
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/vibe_run.sh scripts/reloc_crossbuild.vibex -- "$@"
   exit $?
 fi
 

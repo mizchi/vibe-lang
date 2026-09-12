@@ -44,4 +44,7 @@ bash "$ROOT_DIR/scripts/check_gate_self_tests_test.sh"
 # and `gate_split_cli_cache_is_current` decides WHICH compiler the #2305 lane
 # questions, which is exactly the kind of answer that must not go unchecked.
 bash "$ROOT_DIR/tests/gates/lib_test.sh"
+# The relocation measurement is not a check_* gate, so its synthetic-module
+# regression is explicit here. gate_resolve_stage2 supplies this lane's compiler.
+bash "$ROOT_DIR/scripts/reloc_crossbuild_test.sh"
 echo "[compiler-gate] gate self-tests ok (#2248)"
