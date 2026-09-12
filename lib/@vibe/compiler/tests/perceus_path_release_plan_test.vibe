@@ -1,0 +1,89 @@
+//# Imports
+
+// #2389 per-path release: a binding consumed on one branch and not on the
+// others keeps the merge's MINIMUM remaining count (#705), which plans its
+// scope-end drop away -- and then nothing releases it on the paths that did
+// not consume it. The planner emits `path_drop` plus one `consume_mark` per
+// occurrence that spends the binding's initial reference; shapes codegen
+// could not mark stay silent.
+
+import @vibe/compiler/runtime {
+  rc_plan_source
+}
+
+//# Functions
+
+fn plan_of(source: String) -> String with Exception {
+  rc_plan_source(source, "")
+}
+
+let prelude = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet own: (Node) -> Node = (m) -> Pair(m, Leaf(0))\n"
+
+let epilogue = "\nlet main: () -> Int = () -> {\n  match run(true) {\n    _ => 0\n  }\n}"
+
+test "a let consumed in one if-branch only gets a guarded drop and a mark" {
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  if c {\n    t\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run t path_drop 1"))
+  assert(String::contains(plan, "run t consume_mark:"))
+}
+
+test "a let consumed in one match arm only gets the same pair" {
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  match c {\n    true => t,\n    false => Leaf(0)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run t path_drop 1"))
+  assert(String::contains(plan, "run t consume_mark:"))
+}
+
+test "every branch consuming it is not a split" {
+  // Both paths spend the initial reference, so the merge takes the same
+  // count from either side and there is nothing to give back.
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  if c {\n    t\n  } else {\n    own(t)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(!String::contains(plan, "run t path_drop"))
+  assert(!String::contains(plan, "run t consume_mark:"))
+}
+
+test "no branch consuming it is not a split either" {
+  // `t` keeps its initial reference on every path, so its ordinary
+  // scope-end drop is planned and fires -- the pre-existing behavior.
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  if c {\n    Leaf(1)\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run t drop 1"))
+  assert(!String::contains(plan, "run t path_drop"))
+}
+
+test "a let mut is declined" {
+  // The slot is reassignable, so the value it holds at scope end is not
+  // necessarily the one an occurrence moved out.
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let mut t = Pair(Leaf(1), Leaf(2))\n  if c {\n    t\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(!String::contains(plan, "run t path_drop"))
+  assert(!String::contains(plan, "run t consume_mark:"))
+}
+
+test "the codegen's name-keying is safe because normalization uniquifies" {
+  // The guarded drop and its flag local are keyed by NAME, so a name two
+  // bindings of one function share would hand one binding's release to the
+  // other -- and the second `t` here has its own ordinary scope-end drop, so
+  // it would get two. That cannot arise on the compile lane:
+  // `uniquify_shadowed_bindings_fresh` (linked_compile's planned-bodies loop,
+  // and this report) renames the second one first. This pins that invariant;
+  // the planner also declines a shared name outright, as a backstop.
+  let src = String::concat(prelude, String::concat("let run: (Bool, Bool) -> Node = (c, d) -> {\n  if c {\n    let t = Pair(Leaf(1), Leaf(2))\n    if d {\n      t\n    } else {\n      Leaf(0)\n    }\n  } else {\n    let t = Pair(Leaf(3), Leaf(4))\n    Leaf(7)\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(true, true) {\n    _ => 0\n  }\n}"))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run __shadow_0_t drop 1"))
+  assert(String::contains(plan, "run t path_drop 1"))
+  assert(!String::contains(plan, "run t drop 1"))
+}
+
+test "an occurrence with no source offset declines the whole binding" {
+  // The consuming occurrence is a lambda CAPTURE, which the planner walks
+  // with offset -1 -- codegen has no site to set the flag at, so the
+  // binding keeps today's behavior instead of getting a drop nothing
+  // would suppress.
+  let src = String::concat(prelude, String::concat("let run: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  if c {\n    let f: () -> Node = () -> t\n    f()\n  } else {\n    Leaf(0)\n  }\n}", epilogue))
+  let plan = plan_of(src)
+  assert(!String::contains(plan, "run t path_drop"))
+  assert(!String::contains(plan, "run t consume_mark:"))
+}

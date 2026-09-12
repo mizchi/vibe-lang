@@ -1,0 +1,93 @@
+//# Imports
+
+// #2389 per-path release, end to end. Each program compiles through BOTH the
+// bump lane and the RC lane of THIS checkout's codegen and runs under
+// wasmtime; the entry's return value is the oracle (codegen_heap_e2e_test's
+// convention). The shapes are the ones the planner admits (a `let` consumed
+// on some branch and not on others) and the neighbouring ones it declines,
+// so an over-release would show up as a wrong answer or a trap on the
+// consuming path, and the leak direction is pinned separately by
+// fixtures/rc_reclaim_leak_test.vibe's heap bound.
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc
+}
+
+//# Functions
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_path_release_e2e_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_bump_rc_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Stdout {
+  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
+  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  inspect(bump, content = expected)
+  inspect(rc, content = expected)
+  0
+}
+
+let prelude = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n"
+
+//# Tests
+
+test "the non-consuming path answers the same as before" {
+  // `t` is consumed by the `then` branch only. Both branches are exercised,
+  // so a release the consuming path should not have made would free a value
+  // still in use, and one the other path should have made would leak.
+  let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
+  let _ = assert_bump_rc_agree(src, "if_branch", "709")
+  ()
+}
+
+test "the same split through a match arm" {
+  let src = String::concat(prelude, "let pick: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  match k {\n    0 => t,\n    _ => Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(0)) * 100 + total(pick(1))\n}")
+  let _ = assert_bump_rc_agree(src, "match_arm", "709")
+  ()
+}
+
+test "three arms, one of them consuming" {
+  let src = String::concat(prelude, "let pick: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  match k {\n    0 => Leaf(1),\n    1 => t,\n    _ => Leaf(2)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(0)) * 10000 + total(pick(1)) * 100 + total(pick(2))\n}")
+  let _ = assert_bump_rc_agree(src, "three_arms", "10702")
+  ()
+}
+
+test "a nested split inside the consuming branch" {
+  // The inner `if` splits `t` again; the flag is per binding, so whichever
+  // path reaches an occurrence that spends the initial reference stands the
+  // scope-end drop down and no other path does.
+  let src = String::concat(prelude, "let pick: (Bool, Bool) -> Node = (c, d) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  if c {\n    if d {\n      t\n    } else {\n      Leaf(5)\n    }\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true, true)) * 10000 + total(pick(true, false)) * 100 + total(pick(false, false))\n}")
+  let _ = assert_bump_rc_agree(src, "nested", "70509")
+  ()
+}
+
+test "a shared source stays intact on the path that keeps it" {
+  // `t` is read after the branch on both paths, so no merge zeroes its
+  // count and the binding keeps its ordinary scope-end drop -- the value
+  // read afterwards must still be the one built.
+  let src = String::concat(prelude, "let keep: (Bool) -> Int = (c) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  let k = if c {\n    total(t)\n  } else {\n    0\n  }\n  k * 100 + total(t)\n}\nlet main: () -> Int = () -> {\n  keep(true) * 10000 + keep(false)\n}")
+  let _ = assert_bump_rc_agree(src, "shared", "7070007")
+  ()
+}
+
+test "a let mut split is declined and still answers" {
+  let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let mut t = Pair(Leaf(3), Leaf(4))\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
+  let _ = assert_bump_rc_agree(src, "let_mut", "709")
+  ()
+}
+
+test "a consuming occurrence inside a lambda is declined and still answers" {
+  // The occurrence is a capture, which the planner walks with no source
+  // offset -- codegen would have no site to set the flag at, so the binding
+  // keeps today's behavior rather than getting a drop nothing suppresses.
+  let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  if c {\n    let f: () -> Node = () -> t\n    f()\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
+  let _ = assert_bump_rc_agree(src, "capture", "709")
+  ()
+}

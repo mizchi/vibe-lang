@@ -16,7 +16,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/syntax {
-  lex, parse_program
+  lex_with_offsets, parse_program_located
 }
 
 import @vibe/compiler/normalize {
@@ -37,8 +37,10 @@ import @vibe/compiler/perceus {
   compute_borrow_returning_names,
   compute_scalar_returning_names,
   pa_is_alias_dup,
+  pa_is_consume_mark,
   pa_is_drop,
   pa_is_dup,
+  pa_is_path_drop,
   pa_is_reuse_alloc,
   pa_is_reuse_token
 }
@@ -131,6 +133,14 @@ fn rcq_action_name(a: PerceusAction) -> String {
     String::concat("reuse_token:", __to_string(a.extra))
   } else if pa_is_reuse_alloc(a) {
     String::concat("reuse_alloc:", __to_string(a.extra))
+  } else if pa_is_path_drop(a) {
+    // #2389 per-path release: the scope-end drop a branch merge planned
+    // away, given back guarded by a runtime flag, plus the occurrences that
+    // set that flag. The mark's source offset rides the action name, since
+    // it is what tells two occurrences of one binding apart.
+    "path_drop"
+  } else if pa_is_consume_mark(a) {
+    String::concat("consume_mark:", __to_string(a.use_offset))
   } else {
     "other"
   }
@@ -164,12 +174,22 @@ fn rcq_view_ret(stmts: Array[Stmt]) -> Array[String] {
   sorted_names_of(compute_may_return_view_fns(stmts))
 }
 
+/// Parse the way the compile lane does -- WITH source offsets. The
+/// offset-less `parse_program` leaves every `EIdent` at -1, which is what a
+/// per-use plan action is keyed by (#2257), so these reports used to print
+/// `dup` rows the codegen could not have matched and could not show a
+/// per-path release pair at all (#2389).
+fn rcq_parse(source: String) -> Array[Stmt] with Exception {
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  parse_program_located(tokens, starts, source)
+}
+
 fn rcq_scalar_ret(stmts: Array[Stmt]) -> Array[String] {
   sorted_names_of(compute_scalar_returning_names(stmts))
 }
 
 export fn rc_classify_source(source: String) -> String with Exception {
-  let stmts = parse_program(lex(source))
+  let stmts = rcq_parse(source)
   rcq_run_prelude(stmts)
   let borrow_ret = rcq_borrow_ret(stmts)
   let masks: Array[Int] = []
@@ -241,7 +261,7 @@ fn rcq_emit_fn_plan(acc: StringBuilder, first: Array[Bool], fname: String, param
 /// means every user function; a non-empty filter that names no function
 /// throws so "the query broke" stays distinguishable from an empty plan.
 export fn rc_plan_source(source: String, fn_filter: String) -> String with Exception {
-  let stmts = parse_program(lex(source))
+  let stmts = rcq_parse(source)
   rcq_run_prelude(stmts)
   let borrow_ret = rcq_borrow_ret(stmts)
   let masks: Array[Int] = []
