@@ -16,10 +16,15 @@
 # function and named in the output below, so the figure can be read with that
 # in mind rather than silently inflated.
 #
-# The vibex REFUSES a run where no shared function changed index: two builds
-# with the same assignment relocate perfectly by doing nothing, and that
-# perfect score measures nothing. Handing it one module twice reports
-# `matched=4351 mismatched=0 moved_index=0` and then fails.
+# The vibex REFUSES a vacuous run, in two steps. It fails when no shared
+# function changed index -- two builds with the same assignment relocate
+# perfectly by doing nothing, and handing it one module twice reports
+# `matched=4351 mismatched=0 moved_index=0` and then fails. It ALSO fails when
+# no body was both rewritten and byte-identical: a function's own index is not
+# encoded in its body, so a moved assignment does not mean any body was
+# rewritten, and bodies referencing only functions that held still are rebuilt
+# by an identity operation. `rewritten_matched` is the figure the result rests
+# on; `matched` includes those identity rebuilds and reads higher.
 #
 # Not a `check_*` gate, same as scripts/reloc_roundtrip.sh: it builds the
 # compiler's whole closure twice, which is minutes, for a measurement rather

@@ -742,16 +742,28 @@ itself emitted for B**.
 | | count | share |
 |---|---:|---:|
 | bodies compared | 4351 | |
-| **relocated byte-identically to the compiler's own output** | **3968** | **91.2%** |
-| mismatch, cause not determinable | 284 | 6.5% |
-| mismatch, unambiguously **encoding-blind** | 99 | 2.3% |
-| skipped: the name is carried by more than one function | 5 | |
+| **REWRITTEN: at least one reference moved** | **3158** | |
+| **rewritten AND byte-identical to the compiler's own output** | **2814** | **89.1%** |
+| rewritten, mismatched | 344 | 10.9% |
+| not rewritten — an identity rebuild, no evidence either way | 1193 | |
+| mismatch, cause not determinable (of all 383) | 284 | |
+| mismatch, unambiguously **encoding-blind** (of all 383) | 99 | |
+| skipped: the name is ambiguous on one side or the other | 5 | |
 | shared functions whose index actually moved | 4266 | |
 
-**91.2% of bodies survive a module reorder byte for byte**, using nothing but
-the references the instruction encoding exposes. That is the first direct
-evidence that index-independent bodies work rather than an argument that they
-should.
+**89.1% of the bodies this measurement can speak for survive a module reorder
+byte for byte**, using nothing but the references the instruction encoding
+exposes. That is the first direct evidence that index-independent bodies work
+rather than an argument that they should.
+
+**The load-bearing figure is 2814 / 3158, not 3968 / 4351.** A function's own
+index is not encoded in its body, so "the assignment moved" does not mean "this
+body was rewritten": 1193 of the 4351 reference only functions that held still,
+and are rebuilt by an identity operation. Their match says nothing about
+relocation, and counting them flattered the first published rate (91.2%) over
+the real one (89.1%). Measured the other way round, with the remap forced to
+the identity on the same pair, matched falls **3968 → 1154** — so the remap is
+worth 2814 bodies, and that is the claim.
 
 **99 is a LOWER BOUND on what the emitter must record, not the number.** Only
 bodies with no confound are in it: a body can carry both a non-function
@@ -772,12 +784,22 @@ it got wrong first and reports now:
   wrong target, which both manufactures mismatches and can count a comparison
   against the WRONG body as a match. The first published figure (4356 / 3943 /
   90.5%) had those rows in it.
-- **The reorder is asserted, not assumed.** `moved_index` counts shared
-  functions whose index actually differs, and a run where it is zero FAILS.
-  Without that, a corpus that never reaches the edited file would report every
-  body as relocated — a perfect score measuring nothing. Handing the tool the
-  same module twice produces exactly that: `matched=4351 mismatched=0`, and
-  the guard rejects it.
+- **Duplicate names are refused on BOTH sides.** Checking only the target
+  module was the first version of that fix and it is not enough: if A carries
+  two `__rt_gen` and B carries one, both A bodies are compared against that
+  single B body and every A-side reference to either collapses onto it. On this
+  particular pair the two-sided check changes no number — the duplicates exist
+  on both sides — but an explicitly supplied pair can exhibit it.
+- **The reorder is asserted, not assumed, and then so is the REWRITE.** Two
+  guards, because the first alone can pass vacuously. `moved_index` counts
+  shared functions whose index differs, and zero FAILS — handing the tool the
+  same module twice gives `matched=4351 mismatched=0 moved_index=0`, a perfect
+  score, rejected. But a function's own index is not in its body, so that only
+  establishes the assignment moved. `rewritten_matched` counts bodies where a
+  reference was rewritten to a different index AND the result is byte-identical;
+  zero of those FAILS too. Red-tested by forcing the remap to the identity on
+  the real pair: `moved_index=4266 rewritten=0`, so the first guard passes and
+  the second one fires.
 - **The one edited body is named.** Forcing a module reorder requires editing
   something — a call has to cross the new import — so the wrapper keeps that to
   one function and prints its name, rather than letting it inflate the figure

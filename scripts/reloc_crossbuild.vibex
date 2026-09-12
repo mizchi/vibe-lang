@@ -228,6 +228,26 @@ fn index_of_name(m: Mod, name: String) -> Int {
   if hits > 1 { -2 } else { found }
 }
 
+/// The index A's function `idx` maps to in B, or -1 when its name is absent
+/// there, or -2 when the name is AMBIGUOUS on EITHER side.
+///
+/// Checking only B was the first fix and it is not enough. If A carries two
+/// functions called `__rt_gen` and B carries one -- a generated helper
+/// removed, say -- both A bodies are compared against that single B body, and
+/// every A-side reference to either collapses onto it. The name has to
+/// identify ONE function on each side before it can carry a mapping. Found by
+/// review on #2705, one round after the B-side-only version.
+fn map_index(a: Mod, b: Mod, idx: Int) -> Int {
+  let nm = name_of(a, idx)
+  if nm == "" {
+    -1
+  } else if index_of_name(a, nm) == -2 {
+    -2
+  } else {
+    index_of_name(b, nm)
+  }
+}
+
 fn body_slot(m: Mod, idx: Int) -> Int {
   let n = Array::length(m.body_idxs)
   let mut i = 0
@@ -266,6 +286,9 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   let mut mismatch_ambiguous_cause = 0
   let mut ambiguous_name = 0
   let mut moved_index = 0
+  let mut rewritten_bodies = 0
+  let mut rewritten_matched = 0
+  let mut rewritten_mismatched = 0
   let mut mismatch_encoding_blind = 0
   let mut unresolved_func = 0
   let mut had_nonfunc = 0
@@ -277,7 +300,7 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   while i < n {
     let ai = Array::get(a.body_idxs, i)
     let nm = name_of(a, ai)
-    let bi = if nm == "" { -1 } else { index_of_name(b, nm) }
+    let bi = map_index(a, b, ai)
     let bs = if bi < 0 { -1 } else { body_slot(b, bi) }
     if bi == -2 {
       ambiguous_name = ambiguous_name + 1
@@ -296,16 +319,27 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
       let mapped: Array[Int] = []
       let mut nonfunc = 0
       let mut unresolved = 0
+      // #2705 review: how many of this body's references the remap actually
+      // CHANGED. A body that referenced only functions whose index held still
+      // is rebuilt by an identity operation, and its match is not evidence
+      // that rewriting works.
+      let mut rewritten = 0
       let mut k = 0
       while k < cnt {
         let kind = Array::get(r.kinds, k)
         let val = Array::get(r.values, k)
         if kind == reloc_kind_func {
-          let target = name_of(a, val)
-          let nv = if target == "" { -1 } else { index_of_name(b, target) }
-          // -1 absent, -2 ambiguous: neither can be remapped, and passing the
-          // old value through is a KNOWN-WRONG relocation, not a neutral one.
-          if nv < 0 { unresolved = unresolved + 1; Array::push(mapped, val) } else { Array::push(mapped, nv) }
+          let nv = map_index(a, b, val)
+          // -1 absent, -2 ambiguous on either side: neither can be remapped,
+          // and passing the old value through is a KNOWN-WRONG relocation,
+          // not a neutral one.
+          if nv < 0 {
+            unresolved = unresolved + 1
+            Array::push(mapped, val)
+          } else {
+            Array::push(mapped, nv)
+            if nv != val { rewritten = rewritten + 1 } else { () }
+          }
         } else {
           nonfunc = nonfunc + 1
           Array::push(mapped, val)
@@ -315,9 +349,12 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
       if nonfunc > 0 { had_nonfunc = had_nonfunc + 1 } else { () }
       if unresolved > 0 { unresolved_func = unresolved_func + 1 } else { () }
       let rebuilt = rebuild_body_relocs(a.bytes, a_start, a_end, r, mapped)
+      if rewritten > 0 { rewritten_bodies = rewritten_bodies + 1 } else { () }
       if spans_equal(b.bytes, Array::get(b.body_starts, bs), Array::get(b.body_ends, bs), rebuilt) {
         matched = matched + 1
+        if rewritten > 0 { rewritten_matched = rewritten_matched + 1 } else { () }
       } else {
+        if rewritten > 0 { rewritten_mismatched = rewritten_mismatched + 1 } else { () }
         mismatched = mismatched + 1
         // Attribute it. A body carrying a non-function reference was passed
         // through unchanged above, so a mismatch there may be this TOOL's
@@ -362,6 +399,12 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   StringBuilder::push(out, __to_string(ambiguous_name))
   StringBuilder::push(out, " moved_index=")
   StringBuilder::push(out, __to_string(moved_index))
+  StringBuilder::push(out, " rewritten=")
+  StringBuilder::push(out, __to_string(rewritten_bodies))
+  StringBuilder::push(out, " rewritten_matched=")
+  StringBuilder::push(out, __to_string(rewritten_matched))
+  StringBuilder::push(out, " rewritten_mismatched=")
+  StringBuilder::push(out, __to_string(rewritten_mismatched))
   StringBuilder::push(out, " a_only=")
   StringBuilder::push(out, __to_string(a_only_shape))
   StringBuilder::push(out, " bodies_with_nonfunc_refs=")
@@ -383,13 +426,24 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   if compared == 0 {
     throw("reloc-crossbuild: nothing compared -- the two modules share no named function")
   } else { () }
-  // NON-VACUITY. If no shared function moved, the two builds have the same
-  // index assignment and every body "relocates" by doing nothing -- a perfect
-  // score that measures nothing. The whole point is a MOVED assignment, so a
-  // run where none moved is a failed run, not a clean one. (Review on #2705:
-  // a corpus that does not reach the edited file, or an order that already
-  // placed the imported module first, would both land here.)
+  // NON-VACUITY, in two steps, because the first one is not enough.
+  //
+  // (1) If no shared function moved, the two builds have the same index
+  // assignment and every body "relocates" by doing nothing -- a perfect score
+  // that measures nothing. A corpus that does not reach the edited file, or
+  // an order that already placed the imported module first, both land here.
   if moved_index == 0 {
     throw("reloc-crossbuild: no shared function changed index -- the two builds have the SAME assignment, so this run measured nothing")
+  } else { () }
+  // (2) A function's own index is NOT encoded in its body, so (1) says the
+  // ASSIGNMENT moved, not that any REWRITE happened. Bodies referencing only
+  // functions that held still are rebuilt by an identity operation, and would
+  // report a perfect rate while proving nothing. `rewritten_matched` is the
+  // claim this tool actually makes: bodies where at least one reference was
+  // rewritten to a different index AND the result is byte-identical to what
+  // the compiler emitted for B. Zero of those is a failed run. (Review on
+  // #2705, one round after (1).)
+  if rewritten_matched == 0 {
+    throw("reloc-crossbuild: no body was both rewritten and byte-identical -- every rebuild was an identity operation, so this run says nothing about relocation")
   } else { () }
 }
