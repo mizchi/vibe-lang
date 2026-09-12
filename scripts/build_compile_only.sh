@@ -114,11 +114,11 @@ if ! (
       "$COMPILER" "$MODULE_SOURCE" "$OUT" cli_main_compile_only >"$STEM.compile.log" 2>&1
 ); then
   echo "build_compile_only: compile failed:" >&2
-  cat "$OUT.diag" 2>/dev/null >&2 || true
+  cat "$OUT.diag" >&2 2>/dev/null || true
   tail -40 "$STEM.compile.log" >&2
   exit 1
 fi
-[ -s "$OUT" ] || { echo "build_compile_only: no output: $OUT" >&2; cat "$OUT.diag" 2>/dev/null >&2 || true; exit 1; }
+[ -s "$OUT" ] || { echo "build_compile_only: no output: $OUT" >&2; cat "$OUT.diag" >&2 2>/dev/null || true; exit 1; }
 # A non-empty file is not a compiler: a hijacked verb writes text there. The
 # output must start with the wasm magic.
 if [ "$(head -c 4 "$OUT" | od -An -tx1 | tr -d ' \n')" != "0061736d" ]; then

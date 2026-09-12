@@ -89,7 +89,7 @@ for spec in "${inputs[@]}"; do
     # than a skip: an input that compares nothing must not look like
     # agreement. (This is how bench/binary_size got its `=main` entries.)
     echo "[differential] FAIL: $input compiled by NEITHER build (wrong entry '$entry'?)" >&2
-    cat "$new_out.diag" 2>/dev/null >&2 || true
+    cat "$new_out.diag" >&2 2>/dev/null || true
     status=1
     continue
   fi

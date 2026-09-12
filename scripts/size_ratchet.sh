@@ -42,7 +42,7 @@ for src in bench/binary_size/*.vibe; do
     "$src" "$out" main >/dev/null 2>&1 || true
   if [ ! -s "$out" ]; then
     echo "[size-ratchet] FAIL: binary_size sample did not compile: $src" >&2
-    cat "$out.diag" 2>/dev/null >&2 || true
+    cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
   printf '%s %s\n' "$name" "$(wc -c < "$out")" >> "$measured"

@@ -88,7 +88,7 @@ for seed in $SEEDS; do
     "$STAGE2" "$INPUT" "$out" "$ENTRY" >/dev/null 2>&1 || true
   if [ ! -s "$out" ]; then
     echo "[dep-order-oracle] FAIL: seed=$seed did not compile $INPUT" >&2
-    cat "$out.diag" 2>/dev/null >&2 || true
+    cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
   size="$(wc -c < "$out")"

@@ -111,7 +111,7 @@ env VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   "$PROBE" "$WORK/probe.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$WORK/probe.wasm" ]; then
   echo "cheatsheet-signatures: FAIL: the probe did not compile" >&2
-  head -3 "$WORK/probe.wasm.diag" 2>/dev/null >&2 || true
+  head -3 "$WORK/probe.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
 # The probe's exit status is load-bearing, so it is NOT discarded. If it emits
@@ -125,7 +125,7 @@ env VIBE_PREOPEN_DIR="$ROOT_DIR" CHEATSHEET_SIG_INPUT="_build/_cheatsheet_sig/pa
   > "$WORK/actual.tsv" 2>"$WORK/probe.err" || probe_rc=$?
 if [ "$probe_rc" -ne 0 ]; then
   echo "cheatsheet-signatures: FAIL: the probe exited $probe_rc after emitting $(grep -c '' "$WORK/actual.tsv" 2>/dev/null || echo 0) of $pair_count rows" >&2
-  head -3 "$WORK/probe.err" 2>/dev/null >&2 || true
+  head -3 "$WORK/probe.err" >&2 2>/dev/null || true
   exit 1
 fi
 if [ ! -s "$WORK/actual.tsv" ]; then

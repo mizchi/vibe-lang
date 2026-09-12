@@ -183,4 +183,31 @@ if VIBE_GATE_PORTABILITY_ROOT="$TMP_ROOT/nowhere" bash "$CHECK" >"$TMP_ROOT/out"
 fi
 ok "a missing scan directory fails rather than passing vacuously"
 
+# --- red 7: the diag-swallowing redirection `2>/dev/null >&2` (#2688). The
+# redirections apply left to right, so `2>/dev/null` points stderr at
+# /dev/null and `>&2` then dups stdout onto that -- the sidecar goes to
+# /dev/null and only the caller's generic line shows.
+reset_tree
+printf '%s\n' 'cat "$out.diag" 2>/dev/null >&2 || true' >> "$TMP_ROOT/scripts/clean.sh"
+grep -qF 'cat "$out.diag" 2>/dev/null >&2' "$TMP_ROOT/scripts/clean.sh" || fail "fixture 7 did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "the 2>/dev/null >&2 diag-swallow was accepted"; }
+grep -qF 'sends the message to /dev/null' "$TMP_ROOT/out" || { cat "$TMP_ROOT/out" >&2; fail "diag-swallow finding did not name the reason"; }
+ok "the 2>/dev/null >&2 diag-swallowing redirection is rejected"
+
+# --- green guard for 7: the corrected order must pass, or the rule could be
+# satisfied by rejecting every redirection to stderr.
+reset_tree
+printf '%s\n' 'cat "$out.diag" >&2 2>/dev/null || true' >> "$TMP_ROOT/scripts/clean.sh"
+printf '%s\n' 'foo >/dev/null 2>&1 || true' >> "$TMP_ROOT/scripts/clean.sh"
+run || { cat "$TMP_ROOT/out" >&2; fail "the corrected >&2 2>/dev/null form (or >/dev/null 2>&1) was rejected"; }
+ok "the corrected >&2 2>/dev/null form and the discard-both >/dev/null 2>&1 both pass"
+
+# --- red 7b: the checker must not flag the idiom in a whole-line comment. One
+# such comment documents the historical bug in install_test.sh, and rewriting
+# it to the correct order would make the sentence false.
+reset_tree
+printf '%s\n' '# cat "$x.diag" 2>/dev/null >&2 sent the message to /dev/null (historical, #2688)' >> "$TMP_ROOT/scripts/clean.sh"
+run || { cat "$TMP_ROOT/out" >&2; fail "a comment documenting the 2>/dev/null >&2 bug was rejected"; }
+ok "the 2>/dev/null >&2 idiom in a whole-line comment is not a finding"
+
 echo "[gate-portability-test] ok"

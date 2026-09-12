@@ -23,6 +23,17 @@
 #      formatter entry points, so `pkf run fmt` and `bash scripts/
 #      check_vibe_fmt.sh` did not run on a supported contributor platform.
 #
+#   4. `cmd 2>/dev/null >&2` sends the message to /dev/null, not to stderr
+#      (#2688). Redirections apply left to right: `2>/dev/null` points stderr
+#      at /dev/null, then `>&2` dups stdout onto THAT -- so a sidecar the
+#      caller meant to surface (`cat "$out.diag" 2>/dev/null >&2`) is
+#      discarded and only the generic failure line ("... did not compile")
+#      shows. The fix is the reverse order, `>&2 2>/dev/null`. This is a
+#      correctness defect rather than a portability one, but it is lexical and
+#      shares the machinery, and it had reached 419 sites across runtime,
+#      scripts, tests and install, so it is scanned across every directory the
+#      idiom reached, not just scripts/.
+#
 # All are lexical, so all are decidable from the text.
 set -euo pipefail
 
@@ -147,10 +158,55 @@ findings="$(
   ' "${scan_files[@]}"
 )"
 
+# 4. The diag-swallowing redirection `2>/dev/null >&2` (#2688), scanned across
+#    every directory the idiom reached -- not just scripts/, because the
+#    launcher (runtime/), the gate runners (tests/gates/) and the installer
+#    (install/) all cat a `.diag` sidecar on a failure path. `*.mjs` too: the
+#    same order is just as broken inside a shell string handed to a node child
+#    process. Same self-exclusion and whole-line-comment skip as above, so the
+#    one comment that documents the historical bug (install_test.sh) is not a
+#    finding.
+diag_scan_files=()
+for d in runtime scripts tests install .github .claude; do
+  [ -d "$ROOT/$d" ] || continue
+  while IFS= read -r f; do
+    case "$(basename "$f")" in "$SELF" | "$SELF_TEST") continue ;; esac
+    diag_scan_files+=("$f")
+  done < <(find "$ROOT/$d" -type f \( -name '*.sh' -o -name '*.mjs' \))
+done
+
+if [ "${#diag_scan_files[@]}" -gt 0 ]; then
+  diag_findings="$(
+    awk -v root="$ROOT/" '
+      FNR == 1 { rel = FILENAME; sub("^" root, "", rel) }
+
+      # Whole-line comments (sh # or mjs //) carry no behaviour, and one of
+      # them deliberately shows the broken form to document the bug.
+      /^[[:space:]]*(#|\/\/)/ { next }
+
+      # `2>/dev/null` then `>&2` (or the `1>&2` synonym), any run of blanks
+      # between. The reverse order `>&2 2>/dev/null` and the correct
+      # discard-both `>/dev/null 2>&1` both have a different token order and do
+      # not match.
+      /2>[[:space:]]*\/dev\/null[[:space:]]+1?>&2/ {
+        printf "  %s:%d: `2>/dev/null >&2` sends the message to /dev/null (redirections apply left to right) -- write `>&2 2>/dev/null` so the content reaches stderr and only the missing-file error is dropped (#2688)\n", rel, FNR
+      }
+    ' "${diag_scan_files[@]}"
+  )"
+  if [ -n "$diag_findings" ]; then
+    if [ -n "$findings" ]; then
+      findings="$findings
+$diag_findings"
+    else
+      findings="$diag_findings"
+    fi
+  fi
+fi
+
 if [ -n "$findings" ]; then
   echo "[gate-portability] FAIL: gates that cannot run, or patterns that do not mean what they say:" >&2
   printf '%s\n' "$findings" >&2
   exit 1
 fi
 
-echo "[gate-portability] ok (no ripgrep dependency; no bash 4 mapfile; no bare sed -i; no uninterpreted \\t in grep patterns)"
+echo "[gate-portability] ok (no ripgrep dependency; no bash 4 mapfile; no bare sed -i; no uninterpreted \\t in grep patterns; no 2>/dev/null >&2 diag-swallow)"
