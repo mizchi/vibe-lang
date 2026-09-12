@@ -20,7 +20,8 @@ Phases, in dependency order:
    stdlib, toolchain manifest, `vibe toolchain`, environment variables —
    **implemented**
 4. [#2678](https://github.com/mizchi/vibe-lang/issues/2678) — prebuilt runner
-   release assets, `vibe self update <version>`, release install path
+   release assets, `vibe self update <version>`, release install path —
+   **implemented**
 
 ## 1. What this replaces (measured 2026-09-11)
 
@@ -328,7 +329,7 @@ Two modes, one entry point:
 
 | mode | selector | requirements | what it does |
 | --- | --- | --- | --- |
-| release | `--version X.Y.Z` (or `VIBE_INSTALL_VERSION`); the default of the curl entry point once #2678 lands | bash, curl or wget, tar | download the assets of section 3, verify against the manifest, unpack into `toolchains/<version>/`, precompile, write `manifest.json` |
+| release | `--version X.Y.Z` or `--version latest` (or `VIBE_INSTALL_VERSION`); the bare curl entry point stays in checkout mode until a release is published | bash, curl or wget, tar, sha256sum or shasum | download the assets of section 3, verify against the manifest, unpack into `toolchains/<version>/`, precompile, write `manifest.json` |
 | checkout | `--ref <ref>` (or `VIBE_INSTALL_REF`), or running inside a checkout | git, cargo, Node.js (Node.js not needed with `--cli-wasm`) | build the runner and the compiler from the checkout, as today |
 
 Both modes: install into a staging directory and rename, so a failed install

@@ -13,7 +13,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # One prebuilt `viberun` per target, built natively (docs/toolchain-layout.md
+  # section 3, #2678). x86_64 macOS rides along while GitHub still hosts an
+  # Intel runner; its job may fail without failing the release.
+  runners:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.target == 'x86_64-apple-darwin' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build runner
+        run: |
+          set -euo pipefail
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          [ "$host" = "${{ matrix.target }}" ] || { echo "runner host $host is not ${{ matrix.target }}" >&2; exit 1; }
+          cargo build --release --manifest-path runtime/viberun/Cargo.toml
+
+      - name: Package runner
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release/runners
+          tar -czf "dist/release/runners/viberun-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" \
+            -C runtime/viberun/target/release viberun
+
+      - name: Upload runner
+        uses: actions/upload-artifact@v6
+        with:
+          name: viberun-${{ matrix.target }}
+          path: dist/release/runners/viberun-*.tar.gz
+          if-no-files-found: error
+
   github-release:
+    needs: runners
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -25,6 +69,13 @@ jobs:
       # needed, just the node wasm runner.
       - name: Ensure seed artifact
         run: bash scripts/ensure_seed.sh
+
+      - name: Download runner tarballs
+        uses: actions/download-artifact@v6
+        with:
+          pattern: viberun-*
+          path: dist/release/runners
+          merge-multiple: true
 
       - name: Build release assets
         run: bash scripts/build_release_assets.sh "${GITHUB_REF_NAME}"
@@ -43,3 +94,28 @@ jobs:
             dist/release/${{ github.ref_name }}/*
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+  # The published release installs the way a user installs it
+  # (docs/toolchain-layout.md section 9, #2678): the curl entry point in
+  # release mode, on a fresh machine, with nothing but bash, curl and tar --
+  # then the installed toolchain compiles and runs a program.
+  release-install:
+    needs: github-release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install the published release
+        run: |
+          set -euo pipefail
+          export VIBE_HOME="$RUNNER_TEMP/vibe-home"
+          cat install/install.sh | bash -s -- --version "${GITHUB_REF_NAME#v}" --no-modify-path
+          "$VIBE_HOME/bin/vibe" version
+          printf 'fn main allows Console {\n  println("42")\n}\n' > "$RUNNER_TEMP/hello.vibex"
+          out="$(cd "$RUNNER_TEMP" && "$VIBE_HOME/bin/vibe" run hello.vibex)"
+          [ "$out" = "42" ] || { echo "installed release printed '$out'" >&2; exit 1; }

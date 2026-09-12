@@ -164,7 +164,10 @@
 #   vibe toolchain list                   installed toolchains, the default marked
 #   vibe toolchain default <name>         select the default toolchain
 #   vibe toolchain remove <name>          delete a toolchain (never the default)
-#   vibe self update [--cli-wasm <path>]  refresh compiler wasm + rebuild .cwasm
+#   vibe self update [<version>|latest] [--no-default] [--force]
+#                                         install a release toolchain (download,
+#                                         verify, precompile) and make it default
+#   vibe self update --cli-wasm <path>    refresh compiler wasm + rebuild .cwasm
 #   vibe self uninstall [--purge]         remove toolchains/, bin/, env, toolchain
 #                                         (--purge: cache/, lib/ and log/ too)
 #   vibe help                             this message
@@ -299,6 +302,140 @@ default_toolchain_name() {
 }
 valid_toolchain_name() {
   case "$1" in ""|.|..|*[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac
+}
+
+# --- release install (docs/toolchain-layout.md section 3, #2678) ------------
+# `vibe self update <version>` fetches a release's assets from
+# $VIBE_RELEASE_URL (default: this repository's GitHub releases; tests point
+# it at a file:// directory), verifies every byte against
+# release-manifest.json BEFORE anything is moved, unpacks into a staging
+# directory under toolchains/, precompiles, writes manifest.json and renames
+# into toolchains/<version>/. Needs curl or wget, tar, and sha256sum or
+# shasum -- no git, cargo or Node.js.
+VIBE_RELEASE_URL_DEFAULT="https://github.com/mizchi/vibe-lang/releases/download"
+release_fetch() { # release_fetch <url> <out>
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$2" "$1"
+  else
+    die "vibe self update: curl or wget is required to download $1"
+  fi
+}
+release_target() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  case "$arch" in arm64|aarch64) arch="aarch64" ;; x86_64|amd64) arch="x86_64" ;; esac
+  case "$os" in
+    Linux) printf '%s-unknown-linux-gnu' "$arch" ;;
+    Darwin) printf '%s-apple-darwin' "$arch" ;;
+    *) die "vibe self update: no prebuilt runner for $os/$arch; install from a checkout instead (install/install.sh --ref <ref>)" ;;
+  esac
+}
+# The release manifest is read with sed: top-level `"key": "value"` lines sit
+# at two spaces, the `assets` (name -> sha256) and `runners` (target -> asset)
+# entries at four, the shape scripts/build_release_assets.sh writes.
+release_manifest_field() { sed -n "s/^  \"$2\": \"\([^\"]*\)\",\{0,1\}\$/\1/p" "$1" | sed -n '1p'; }
+release_manifest_asset() { sed -n "s/^    \"$2\": \"\([0-9a-f]*\)\",\{0,1\}\$/\1/p" "$1" | sed -n '1p'; }
+release_manifest_runner() { sed -n "s/^    \"$2\": \"\([^\"]*\)\",\{0,1\}\$/\1/p" "$1" | sed -n '1p'; }
+release_manifest_targets() { sed -n '/^  "runners": {/,/^  }/p' "$1" | sed -n 's/^    "\([^"]*\)".*/\1/p' | tr '\n' ' '; }
+json_safe() { printf '%s' "$1" | tr -d '"\\\n'; }
+# write_toolchain_manifest <dir> <version> <toolchain> <source> <ref> <commit> <wasmtime>
+# The same one-`"key": "value"`-per-line shape install/install.sh writes for a
+# checkout install, so `vibe version` and `vibe toolchain list` read both.
+write_toolchain_manifest() {
+  local dir="$1" version="$2" name="$3" source="$4" ref="$5" commit="$6" wasmtime="$7"
+  {
+    printf '{\n'
+    printf '  "version": "%s",\n' "$(json_safe "$version")"
+    printf '  "toolchain": "%s",\n' "$(json_safe "$name")"
+    printf '  "source": "%s",\n' "$(json_safe "$source")"
+    printf '  "ref": "%s",\n' "$(json_safe "$ref")"
+    printf '  "commit": "%s",\n' "$(json_safe "$commit")"
+    printf '  "installed_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+    printf '  "runner_sha256": "%s",\n' "$(_sha256_file "$dir/bin/viberun" 2>/dev/null || true)"
+    printf '  "compiler_sha256": "%s",\n' "$(_sha256_file "$dir/lib/vibe-cli.wasm" 2>/dev/null || true)"
+    printf '  "wasmtime": "%s"\n' "$(json_safe "$wasmtime")"
+    printf '}\n'
+  } > "$dir/manifest.json"
+}
+# install_release_toolchain <version|latest> <set-default 0|1> <force 0|1>
+install_release_toolchain() {
+  local want="$1" set_default="$2" force="$3"
+  local base="${VIBE_RELEASE_URL:-$VIBE_RELEASE_URL_DEFAULT}"
+  local dl tag version manifest target runner_name tc_name wasm_name asset sha want_sha staging
+  command -v tar >/dev/null 2>&1 || die "vibe self update: tar is required"
+  command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 \
+    || die "vibe self update: sha256sum or shasum is required to verify the release assets"
+  if [ "$want" = "latest" ]; then
+    dl="$VIBE_HOME/cache/downloads/latest"
+    mkdir -p "$dl"
+    release_fetch "${base%/download}/latest/download/release-manifest.json" "$dl/release-manifest.json" \
+      || die "vibe self update: cannot fetch the latest release manifest from ${base%/download}/latest/download/"
+    version="$(release_manifest_field "$dl/release-manifest.json" version)"
+    [ -n "$version" ] || die "vibe self update: the latest release manifest names no version"
+    echo "vibe: latest release is $version"
+  else
+    version="${want#v}"
+  fi
+  valid_toolchain_name "$version" || die "vibe self update: invalid version '$version'"
+  tag="v$version"
+  if [ -e "$VIBE_HOME/toolchains/$version" ] && [ "$force" != 1 ]; then
+    die "toolchain '$version' is already installed at $VIBE_HOME/toolchains/$version (\`vibe self update $version --force\` reinstalls it, \`vibe toolchain default $version\` selects it)"
+  fi
+  dl="$VIBE_HOME/cache/downloads/$tag"
+  mkdir -p "$dl"
+  manifest="$dl/release-manifest.json"
+  release_fetch "$base/$tag/release-manifest.json" "$manifest" \
+    || die "vibe self update: cannot fetch $base/$tag/release-manifest.json (is $version a published release?)"
+  [ "$(release_manifest_field "$manifest" version)" = "$version" ] \
+    || die "vibe self update: the manifest at $base/$tag names version '$(release_manifest_field "$manifest" version)', not $version"
+  target="$(release_target)"
+  runner_name="$(release_manifest_runner "$manifest" "$target")"
+  [ -n "$runner_name" ] || die "vibe self update: release $tag ships no runner for $target (it ships: $(release_manifest_targets "$manifest")); install from a checkout instead (install/install.sh --ref $tag)"
+  tc_name="$(release_manifest_field "$manifest" toolchain)"
+  wasm_name="$(release_manifest_field "$manifest" compiler_wasm)"
+  [ -n "$tc_name" ] && [ -n "$wasm_name" ] || die "vibe self update: the release manifest lists no toolchain bundle or compiler wasm"
+  # Every asset is downloaded and verified before toolchains/ is touched; a
+  # cached copy that still matches the manifest is reused.
+  for asset in "$runner_name" "$tc_name" "$wasm_name"; do
+    want_sha="$(release_manifest_asset "$manifest" "$asset")"
+    [ -n "$want_sha" ] || die "vibe self update: the release manifest has no sha256 for $asset"
+    if [ -f "$dl/$asset" ] && [ "$(_sha256_file "$dl/$asset")" = "$want_sha" ]; then
+      echo "vibe: $asset (cached)"
+    else
+      echo "vibe: downloading $asset"
+      release_fetch "$base/$tag/$asset" "$dl/$asset.part" || { rm -f "$dl/$asset.part"; die "vibe self update: download failed: $base/$tag/$asset"; }
+      mv "$dl/$asset.part" "$dl/$asset"
+    fi
+    sha="$(_sha256_file "$dl/$asset")"
+    if [ "$sha" != "$want_sha" ]; then
+      rm -f "$dl/$asset"
+      die "vibe self update: $asset does not match the release manifest (sha256 $sha, manifest $want_sha); nothing was installed"
+    fi
+  done
+  staging="$VIBE_HOME/toolchains/.staging-$version-$$"
+  rm -rf "$staging"
+  mkdir -p "$staging/bin" "$staging/lib"
+  tar -xzf "$dl/$tc_name" -C "$staging" || { rm -rf "$staging"; die "vibe self update: cannot unpack $tc_name"; }
+  tar -xzf "$dl/$runner_name" -C "$staging/bin" || { rm -rf "$staging"; die "vibe self update: cannot unpack $runner_name"; }
+  [ -f "$staging/bin/viberun" ] && [ -f "$staging/bin/vibe" ] \
+    || { rm -rf "$staging"; die "vibe self update: the release assets did not contain bin/viberun and bin/vibe"; }
+  chmod 0755 "$staging/bin/viberun" "$staging/bin/vibe"
+  cp "$dl/$wasm_name" "$staging/lib/vibe-cli.wasm"
+  echo "vibe: AOT-compiling the host-specific .cwasm"
+  "$staging/bin/viberun" --precompile "$staging/lib/vibe-cli.wasm" -o "$staging/lib/vibe-cli.cwasm" \
+    || { rm -rf "$staging"; die "vibe self update: viberun --precompile failed"; }
+  write_toolchain_manifest "$staging" "$version" "$version" "release" "$tag" \
+    "$(release_manifest_field "$manifest" commit)" "$(release_manifest_field "$manifest" wasmtime)"
+  rm -rf "$VIBE_HOME/toolchains/$version"
+  mv "$staging" "$VIBE_HOME/toolchains/$version"
+  echo "vibe: installed toolchain $version -> $VIBE_HOME/toolchains/$version"
+  if [ "$set_default" = 1 ]; then
+    printf '%s\n' "$version" > "$VIBE_HOME/toolchain"
+    echo "vibe: default toolchain -> $version"
+  fi
 }
 
 # --- semver constraint resolution for `vibe add` -----------------------------
@@ -471,9 +608,14 @@ manifest_add_pin() {
 # missing/unbuilt runner. `vibe symbols --legend|--help|-h` is the same:
 # a static KIND table / usage, no wasm (#1944). Every other subcommand
 # still requires the runner.
+# `self update <version>` (#2678) runs the runner it DOWNLOADS, never this
+# toolchain's; `self uninstall`, `toolchain`, `root`, `clean` and `new` touch
+# no wasm either -- so a launcher extracted from a release bundle into a
+# directory that holds no runner yet (install/install.sh --version) can drive
+# the release install.
 need_runner=1
 case "${1:-help}" in
-  context-pack) need_runner=0 ;;
+  context-pack|self|toolchain|root|clean|new|help|--help|-h|version|--version|-V) need_runner=0 ;;
   symbols)
     case "${2:-}" in
       --legend|--help|-h) need_runner=0 ;;
@@ -3456,21 +3598,39 @@ EOF
     sub="${1:-}"; shift || true
     case "$sub" in
       update)
+        # vibe self update [<version>|latest] [--no-default] [--force]
+        #   install a release toolchain (docs/toolchain-layout.md section 3,
+        #   #2678) and make it the default
+        # vibe self update --cli-wasm <path>
+        #   swap the compiler wasm of THIS toolchain and rebuild its .cwasm
+        #   (offline; the one in-place edit of a toolchain directory)
         new_wasm=""
+        want=""
+        set_default=1
+        force=0
         while [ "$#" -gt 0 ]; do
           case "$1" in
-            --cli-wasm) new_wasm="$2"; shift 2 ;;
-            *) die "unknown self update flag: $1" ;;
+            --cli-wasm) new_wasm="${2:-}"; shift 2 ;;
+            --no-default) set_default=0; shift ;;
+            --force) force=1; shift ;;
+            -*) die "unknown self update flag: $1" ;;
+            *)
+              [ -z "$want" ] || die "usage: vibe self update [<version>|latest] [--no-default] [--force]"
+              want="$1"; shift ;;
           esac
         done
-        [ -n "$new_wasm" ] || die "usage: vibe self update --cli-wasm <path-to-vibe-cli.wasm>"
-        [ -f "$new_wasm" ] || die "not found: $new_wasm"
-        mkdir -p "$(dirname "$CLI_WASM")"
-        cp -f "$new_wasm" "$CLI_WASM"
-        echo "vibe: updated compiler wasm -> $CLI_WASM"
-        # Rebuild the host-specific AOT artifact against this runner.
-        "$RUNNER" --precompile "$CLI_WASM" -o "$CLI_CWASM"
-        echo "vibe: rebuilt AOT compiler -> $CLI_CWASM"
+        if [ -n "$new_wasm" ]; then
+          [ -z "$want" ] || die "vibe self update: --cli-wasm swaps the compiler of the current toolchain and takes no version"
+          [ -f "$new_wasm" ] || die "not found: $new_wasm"
+          mkdir -p "$(dirname "$CLI_WASM")"
+          cp -f "$new_wasm" "$CLI_WASM"
+          echo "vibe: updated compiler wasm -> $CLI_WASM"
+          # Rebuild the host-specific AOT artifact against this runner.
+          "$RUNNER" --precompile "$CLI_WASM" -o "$CLI_CWASM"
+          echo "vibe: rebuilt AOT compiler -> $CLI_CWASM"
+        else
+          install_release_toolchain "${want:-latest}" "$set_default" "$force"
+        fi
         ;;
       uninstall)
         # vibe self uninstall [--purge]  (docs/toolchain-layout.md section 3,
@@ -3506,7 +3666,7 @@ EOF
           echo "vibe: kept $VIBE_HOME/{cache,lib,log} (vibe self uninstall --purge removes them too)"
         fi
         ;;
-      *) die "usage: vibe self update --cli-wasm <path> | vibe self uninstall [--purge]" ;;
+      *) die "usage: vibe self update [<version>|latest] [--no-default] [--force] | vibe self update --cli-wasm <path> | vibe self uninstall [--purge]" ;;
     esac
     ;;
   root)

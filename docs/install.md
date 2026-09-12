@@ -6,19 +6,34 @@ is AOT-compiled to a host-specific `vibe-cli.cwasm` so the compiler is not
 re-JITed on every command. See `docs/release-roadmap.md` (テーマ1) for the
 rationale behind this split.
 
-## Quick install (curl)
+## Quick install (release)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash -s -- --version X.Y.Z
+```
+
+Installs the published release `vX.Y.Z` (or `latest`) into
+`$VIBE_HOME/toolchains/X.Y.Z/` with nothing but bash, curl (or wget), tar and
+sha256sum (or shasum): the release's runner for this machine, its compiler
+wasm and its toolchain bundle are downloaded into
+`$VIBE_HOME/cache/downloads/vX.Y.Z/`, verified against the release's
+`release-manifest.json`, unpacked into a staging directory and precompiled,
+and only then renamed into place (#2678). `VIBE_INSTALL_VERSION` selects the
+version from the environment; `VIBE_RELEASE_URL` overrides the download base.
+
+## Quick install (from source)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 ```
 
-Outside a checkout, the installer initializes a temporary repository and
+Without `--version`, the installer initializes a temporary repository and
 shallow-fetches the exact branch, tag, or reachable commit selected by
-`VIBE_INSTALL_REF` from `VIBE_INSTALL_REPO`, then safely reinvokes the matching
-`install/install.sh` from the detached checkout. Requirements: `git`, `bash`,
-`cargo` (unless `--runner` supplies a prebuilt runner), and Node.js for the
-default compiler seed acquisition/build path. Node.js is optional only when
-`--cli-wasm PATH` supplies an existing compiler wasm.
+`--ref` / `VIBE_INSTALL_REF` from `VIBE_INSTALL_REPO`, then safely reinvokes
+the matching `install/install.sh` from the detached checkout. Requirements:
+`git`, `bash`, `cargo` (unless `--runner` supplies a prebuilt runner), and
+Node.js for the default compiler seed acquisition/build path. Node.js is
+optional only when `--cli-wasm PATH` supplies an existing compiler wasm.
 
 ## Quick install (from a checkout)
 
@@ -149,6 +164,8 @@ vibe context-pack [--out FILE]        emit cheatsheet + verified golden examples
 vibe version                          print toolchain versions (from manifest.json)
 vibe toolchain list|default <name>|remove <name>
                                       installed toolchains / pick the default / delete one
+vibe self update [<version>|latest] [--no-default] [--force]
+                                      install a release toolchain and make it the default
 vibe self update --cli-wasm <path>    refresh compiler wasm + rebuild .cwasm
 vibe self uninstall [--purge]         remove the install (--purge: caches, shared packages, log too)
 vibe help                             usage
@@ -251,17 +268,33 @@ references are AST-accurate (scope-aware binding occurrences). Remaining
 precision work (call-site / expression-node spans) is tracked as span-arc in
 [docs/release-roadmap.md](release-roadmap.md) テーマ4.
 
-## Updating the compiler independently of the runner
+## Updating
 
-The runner and the compiler wasm version independently. To move the compiler
-forward (e.g. to a newer compiler build) without rebuilding the runner:
+```bash
+vibe self update latest            # install the newest release and make it the default
+vibe self update 0.2.0             # a specific release
+vibe self update 0.2.0 --no-default
+vibe self update 0.2.0 --force     # reinstall over an existing toolchains/0.2.0/
+```
+
+A release is resolved through its `release-manifest.json` (`latest` through
+the newest release's), every asset is downloaded into
+`$VIBE_HOME/cache/downloads/<tag>/` and verified against that manifest, the
+toolchain is assembled and precompiled in a staging directory, and only then
+renamed into `toolchains/<version>/`. A mismatch stops before anything is
+moved. The previous toolchain stays installed: `vibe toolchain default
+<name>` switches back, `vibe toolchain remove <name>` deletes it.
+
+The runner and the compiler wasm also version independently. To move only the
+compiler of the current toolchain forward without a release:
 
 ```bash
 vibe self update --cli-wasm path/to/new/vibe-cli.wasm
 ```
 
 This copies the new compiler wasm into place and rebuilds the host-specific
-`vibe-cli.cwasm` against the installed runner.
+`vibe-cli.cwasm` against the installed runner; it is the one edit ever made
+inside an installed toolchain directory.
 
 ## Uninstalling
 

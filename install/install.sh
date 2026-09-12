@@ -3,9 +3,18 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
 #
-# With no checkout, this script fetches VIBE_INSTALL_REPO at VIBE_INSTALL_REF
-# into a temporary directory and safely reinvokes the matching installer from
-# that checkout. When run from a checkout, it installs that checkout directly.
+# Two modes (docs/toolchain-layout.md section 9, #2678):
+#
+#   release   `--version X.Y.Z` (or `latest`, or VIBE_INSTALL_VERSION):
+#             download the release's assets, verify them against its
+#             release-manifest.json, unpack into toolchains/<version>/ and
+#             precompile. Needs bash, curl or wget, tar, and sha256sum or
+#             shasum -- no git, cargo or Node.js.
+#   checkout  `--ref REF` (or VIBE_INSTALL_REF), or running inside a
+#             checkout: with no checkout, fetch VIBE_INSTALL_REPO at the ref
+#             into a temporary directory and safely reinvoke the matching
+#             installer from it; from a checkout, install that checkout
+#             directly. Builds the runner and the compiler.
 #
 # The installed rustup-style layout under VIBE_HOME (default ~/.vibe) is:
 #
@@ -22,16 +31,20 @@
 # #2677): installing a second one never touches the first.
 #
 # Usage:
+#   bash install/install.sh --version X.Y.Z [--prefix DIR] [--bin-dir DIR]
+#       [--no-link] [--no-modify-path] [--set-default]
 #   bash install/install.sh [--repo URL] [--ref REF] [--prefix DIR]
 #       [--runner PATH] [--cli-wasm PATH] [--bin-dir DIR] [--no-link]
 #       [--no-modify-path] [--toolchain NAME] [--set-default] [--no-stdlib]
 #
 # Curl arguments follow `bash -s --`, for example:
-#   curl -fsSL URL | bash -s -- --ref v0.1.0 --no-modify-path
+#   curl -fsSL URL | bash -s -- --version 0.1.0 --no-modify-path
 #
-# Env overrides: VIBE_INSTALL_REPO, VIBE_INSTALL_REF, VIBE_HOME, VIBE_BIN_DIR.
-# Requirements: git and bash; Node.js unless --cli-wasm supplies the compiler;
-# cargo unless --runner points to a prebuilt runner.
+# Env overrides: VIBE_INSTALL_VERSION, VIBE_INSTALL_REPO, VIBE_INSTALL_REF,
+# VIBE_RELEASE_URL, VIBE_HOME, VIBE_BIN_DIR.
+# Requirements (release mode): bash, curl or wget, tar, sha256sum or shasum.
+# Requirements (checkout mode): git and bash; Node.js unless --cli-wasm
+# supplies the compiler; cargo unless --runner points to a prebuilt runner.
 set -euo pipefail
 
 usage() {
@@ -39,10 +52,16 @@ usage() {
 vibe installer
 
 Usage:
+  bash install/install.sh --version X.Y.Z [install options]
   bash install/install.sh [--repo URL] [--ref REF] [install options]
+  curl -fsSL URL | bash -s -- --version X.Y.Z [install options]
   curl -fsSL URL | bash -s -- [--repo URL] [--ref REF] [install options]
 
-Bootstrap options:
+Release mode (bash, curl or wget, tar, sha256sum or shasum):
+  --version X.Y.Z|latest install a published release (or VIBE_INSTALL_VERSION);
+                         VIBE_RELEASE_URL overrides the download base
+
+Bootstrap options (checkout mode: git, cargo, Node.js):
   --repo URL             source repository (or VIBE_INSTALL_REPO)
   --ref REF              source ref and default toolchain name (or VIBE_INSTALL_REF)
 
@@ -58,13 +77,254 @@ Install options:
   --no-stdlib            do not install standard library packages
 
 Requirements:
-  Git and Bash; Node.js unless --cli-wasm supplies the compiler; Cargo unless
-  --runner supplies a prebuilt viberun executable.
+  Release mode: Bash, curl or wget, tar, sha256sum or shasum.
+  Checkout mode: Git and Bash; Node.js unless --cli-wasm supplies the
+  compiler; Cargo unless --runner supplies a prebuilt viberun executable.
 USAGE
 }
 
 bootstrap_die() { echo "[vibe-installer] error: $*" >&2; exit 1; }
 bootstrap_say() { echo "[vibe-installer] $*"; }
+say() { echo "[install] $*"; }
+die() { echo "[install] error: $*" >&2; exit 1; }
+
+# --- shared by both modes ----------------------------------------------------
+# A pre-#755 flat install (bin/viberun next to lib/vibe-cli.wasm) cannot host
+# toolchains: its launcher and stdlib would shadow theirs. Refuse rather than
+# mix the two layouts (docs/toolchain-layout.md section 2, #2677).
+refuse_flat_home() {
+  if [ -f "$VIBE_HOME/lib/vibe-cli.wasm" ] || [ -x "$VIBE_HOME/bin/viberun" ]; then
+    die "$VIBE_HOME holds a flat pre-#755 install (lib/vibe-cli.wasm, bin/viberun), which is no longer supported; remove it, or choose another --prefix, and run install/install.sh again"
+  fi
+}
+
+# The dispatcher: a few lines of shell rewritten by the newest installer
+# (rustup-style, #755) that select a toolchain and exec its launcher.
+# Selection order: $VIBE_TOOLCHAIN env > $VIBE_HOME/toolchain file > the
+# single installed toolchain. `vibe toolchain default` rewrites the file. Its
+# whole contract is to keep executing any older toolchain's launcher with
+# VIBE_HOME exported (docs/toolchain-layout.md section 3).
+write_dispatcher() {
+  mkdir -p "$VIBE_HOME/bin"
+  cat > "$VIBE_HOME/bin/vibe" <<'DISPATCH'
+#!/usr/bin/env bash
+# vibe dispatcher (rustup-style, #755): selects a toolchain and execs its
+# launcher. Selection order: $VIBE_TOOLCHAIN env > $VIBE_HOME/toolchain file
+# > the single installed toolchain. Managed by the installer;
+# `vibe toolchain default` rewrites the default file.
+set -euo pipefail
+_src="${BASH_SOURCE[0]}"
+while [ -L "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+_self_dir="$(cd -P "$(dirname "$_src")" && pwd)"
+VIBE_HOME="${VIBE_HOME:-$(dirname "$_self_dir")}"
+tc="${VIBE_TOOLCHAIN:-}"
+if [ -z "$tc" ] && [ -f "$VIBE_HOME/toolchain" ]; then
+  tc="$(head -n 1 "$VIBE_HOME/toolchain" | tr -d '[:space:]')"
+fi
+if [ -z "$tc" ]; then
+  count=0
+  only=""
+  for d in "$VIBE_HOME/toolchains"/*/; do
+    [ -d "$d" ] || continue
+    count=$((count + 1))
+    only="$(basename "$d")"
+  done
+  if [ "$count" = "1" ]; then
+    tc="$only"
+  else
+    echo "vibe: no default toolchain (set \$VIBE_TOOLCHAIN or write $VIBE_HOME/toolchain)" >&2
+    exit 1
+  fi
+fi
+case "$tc" in
+  ""|.|..|*[!A-Za-z0-9._-]*)
+    echo "vibe: invalid toolchain name '$tc'" >&2
+    exit 1
+    ;;
+esac
+launcher="$VIBE_HOME/toolchains/$tc/bin/vibe"
+[ -x "$launcher" ] || { echo "vibe: toolchain '$tc' is not installed ($launcher)" >&2; exit 1; }
+export VIBE_HOME
+exec "$launcher" "$@"
+DISPATCH
+  chmod 0755 "$VIBE_HOME/bin/vibe"
+  say "dispatcher -> $VIBE_HOME/bin/vibe"
+}
+
+# write_default_toolchain <name> <set-default 0|1>: the default file, written
+# when asked for or when there is none yet.
+write_default_toolchain() {
+  if [ "$2" = "1" ] || [ ! -f "$VIBE_HOME/toolchain" ]; then
+    printf '%s\n' "$1" > "$VIBE_HOME/toolchain"
+    say "default toolchain -> $1"
+  fi
+}
+
+# PATH setup: $VIBE_HOME/bin (the dispatcher) is THE PATH entry. Write the
+# sourceable env file (rustup's ~/.cargo/env pattern) and -- for a
+# default-prefix install only -- wire it into the shell rc files. A custom
+# --prefix (tests, throwaway installs) never touches the user's rc files.
+# Emit one POSIX-shell single-quoted word. Prefixes may contain whitespace,
+# quotes, command substitutions, or newlines; sourcing the generated file must
+# always treat those bytes as path data rather than shell syntax.
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+# write_env_and_path <modify-path 0|1> <link 0|1> <bin-dir>
+write_env_and_path() {
+  local do_modify_path="$1" do_link="$2" bin_dir="$3" env_line modified rc
+  {
+    cat <<'ENV_HEAD'
+#!/bin/sh
+# vibe shell setup: prepends the vibe dispatcher dir to PATH.
+# Wired into your shell rc by the installer.
+_vibe_bin=
+ENV_HEAD
+    printf '_vibe_bin='
+    shell_quote "$VIBE_HOME/bin"
+    printf '\n'
+    cat <<'ENV_TAIL'
+case ":${PATH}:" in
+  *:"${_vibe_bin}":*) ;;
+  *) PATH="${_vibe_bin}:${PATH}"; export PATH ;;
+esac
+unset _vibe_bin
+ENV_TAIL
+  } > "$VIBE_HOME/env"
+  chmod 0644 "$VIBE_HOME/env"
+  say "env file -> $VIBE_HOME/env"
+
+  if [ "$do_modify_path" = "1" ] && [ "$VIBE_HOME" = "$HOME/.vibe" ]; then
+    env_line=". \"\$HOME/.vibe/env\""
+    modified=""
+    for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
+      [ -f "$rc" ] || continue
+      if ! grep -qsF '.vibe/env' "$rc"; then
+        printf '\n%s\n' "$env_line" >> "$rc"
+        modified="$modified $(basename "$rc")"
+      fi
+    done
+    if [ -n "$modified" ]; then
+      say "PATH: added '. \$HOME/.vibe/env' to:$modified"
+      say "restart your shell or run: . \"\$HOME/.vibe/env\""
+    else
+      say "PATH: shell rc files already source ~/.vibe/env (or none found)"
+    fi
+  else
+    case ":$PATH:" in
+      *":$VIBE_HOME/bin:"*) ;;
+      *) say "PATH: add $VIBE_HOME/bin to PATH (e.g. . \"$VIBE_HOME/env\")" ;;
+    esac
+  fi
+
+  # Optional extra symlink dir (test harness / packaging), opt-in only.
+  if [ "$do_link" = "1" ] && [ -n "$bin_dir" ]; then
+    mkdir -p "$bin_dir"
+    ln -sf "$VIBE_HOME/bin/vibe" "$bin_dir/vibe"
+    say "linked $bin_dir/vibe -> $VIBE_HOME/bin/vibe"
+  fi
+}
+
+# --- release mode --------------------------------------------------------------
+# The launcher owns the download/verify/stage/precompile logic
+# (`vibe self update`, runtime/vibe). Release mode fetches the release's
+# manifest and toolchain bundle into the download cache, verifies the bundle,
+# extracts the launcher from it and hands over; then writes the dispatcher,
+# the default marker and the env file exactly as a checkout install does.
+release_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | sed 's/ .*//'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | sed 's/ .*//'
+  else
+    bootstrap_die "sha256sum or shasum is required to verify the release assets"
+  fi
+}
+release_fetch() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$2" "$1"
+  else
+    bootstrap_die "curl or wget is required to download $1"
+  fi
+}
+release_field() { sed -n "s/^  \"$2\": \"\([^\"]*\)\",\{0,1\}\$/\1/p" "$1" | sed -n '1p'; }
+release_asset_sha() { sed -n "s/^    \"$2\": \"\([0-9a-f]*\)\",\{0,1\}\$/\1/p" "$1" | sed -n '1p'; }
+release_work=""
+release_install() {
+  local want="$1"; shift
+  local bin_dir="${VIBE_BIN_DIR:-}" do_link=1 do_modify_path=1 set_default=0
+  local base="${VIBE_RELEASE_URL:-https://github.com/mizchi/vibe-lang/releases/download}"
+  local version tag dl manifest tc_name want_sha
+  VIBE_HOME="${VIBE_HOME:-$HOME/.vibe}"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --prefix) VIBE_HOME="$2"; shift 2 ;;
+      --bin-dir) bin_dir="$2"; shift 2 ;;
+      --no-link) do_link=0; shift ;;
+      --no-modify-path) do_modify_path=0; shift ;;
+      --set-default) set_default=1; shift ;;
+      --toolchain|--runner|--cli-wasm|--no-stdlib)
+        bootstrap_die "$1 applies to a checkout install; a release install is named by its version and ships its runner, compiler and stdlib" ;;
+      -h|--help) usage; exit 0 ;;
+      *) bootstrap_die "unknown argument: $1" ;;
+    esac
+  done
+  command -v tar >/dev/null 2>&1 || bootstrap_die "tar is required"
+  refuse_flat_home
+  if [ "$want" = "latest" ]; then
+    dl="$VIBE_HOME/cache/downloads/latest"
+    mkdir -p "$dl"
+    release_fetch "${base%/download}/latest/download/release-manifest.json" "$dl/release-manifest.json" \
+      || bootstrap_die "cannot fetch the latest release manifest from ${base%/download}/latest/download/"
+    version="$(release_field "$dl/release-manifest.json" version)"
+    [ -n "$version" ] || bootstrap_die "the latest release manifest names no version"
+    bootstrap_say "latest release is $version"
+  else
+    version="${want#v}"
+  fi
+  case "$version" in
+    ""|.|..|*[!A-Za-z0-9._-]*) bootstrap_die "invalid version '$version'" ;;
+  esac
+  tag="v$version"
+  dl="$VIBE_HOME/cache/downloads/$tag"
+  mkdir -p "$dl"
+  manifest="$dl/release-manifest.json"
+  release_fetch "$base/$tag/release-manifest.json" "$manifest" \
+    || bootstrap_die "cannot fetch $base/$tag/release-manifest.json (is $version a published release?)"
+  tc_name="$(release_field "$manifest" toolchain)"
+  [ -n "$tc_name" ] || bootstrap_die "the release manifest lists no toolchain bundle"
+  want_sha="$(release_asset_sha "$manifest" "$tc_name")"
+  [ -n "$want_sha" ] || bootstrap_die "the release manifest has no sha256 for $tc_name"
+  if ! { [ -f "$dl/$tc_name" ] && [ "$(release_sha256 "$dl/$tc_name")" = "$want_sha" ]; }; then
+    bootstrap_say "downloading $tc_name"
+    release_fetch "$base/$tag/$tc_name" "$dl/$tc_name.part" || { rm -f "$dl/$tc_name.part"; bootstrap_die "download failed: $base/$tag/$tc_name"; }
+    mv "$dl/$tc_name.part" "$dl/$tc_name"
+  fi
+  if [ "$(release_sha256 "$dl/$tc_name")" != "$want_sha" ]; then
+    rm -f "$dl/$tc_name"
+    bootstrap_die "$tc_name does not match the release manifest; nothing was installed"
+  fi
+  # A global, not a local: the EXIT trap runs after this function returned.
+  release_work="$(mktemp -d "${TMPDIR:-/tmp}/vibe-install-XXXXXX")"
+  trap 'rm -rf -- "${release_work:-}"' EXIT
+  tar -xzf "$dl/$tc_name" -C "$release_work" bin/vibe || bootstrap_die "the toolchain bundle has no bin/vibe"
+  bootstrap_say "installing toolchain '$version' with the release's launcher..."
+  VIBE_HOME="$VIBE_HOME" VIBE_RELEASE_URL="$base" bash "$release_work/bin/vibe" self update "$version" --no-default \
+    || bootstrap_die "release install failed"
+  export VIBE_HOME
+  write_dispatcher
+  write_default_toolchain "$version" "$set_default"
+  write_env_and_path "$do_modify_path" "$do_link" "$bin_dir"
+  say "done. try: vibe version"
+}
 
 # The private root argument is emitted only by the bootstrap half below. It
 # makes reinvocation explicit and avoids trusting BASH_SOURCE after curl|bash.
@@ -78,6 +338,7 @@ if [ "${1:-}" = "--__vibe-install-root" ]; then
 else
   REPO="${VIBE_INSTALL_REPO:-https://github.com/mizchi/vibe-lang}"
   REF="${VIBE_INSTALL_REF:-main}"
+  WANT_VERSION="${VIBE_INSTALL_VERSION:-}"
   passthrough=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -87,11 +348,19 @@ else
       --ref)
         [ "$#" -ge 2 ] || bootstrap_die "--ref requires a value"
         REF="$2"; shift 2 ;;
+      --version)
+        [ "$#" -ge 2 ] || bootstrap_die "--version requires a value"
+        WANT_VERSION="$2"; shift 2 ;;
       --) shift; passthrough+=("$@"); break ;;
       -h|--help) usage; exit 0 ;;
       *) passthrough+=("$1"); shift ;;
     esac
   done
+
+  if [ -n "$WANT_VERSION" ]; then
+    release_install "$WANT_VERSION" ${passthrough[@]+"${passthrough[@]}"}
+    exit $?
+  fi
 
   SRC_DIR=""
   script_source="${BASH_SOURCE[0]:-}"
@@ -177,9 +446,6 @@ done
 CLI_WASM_EXPLICIT=0
 [ -n "$CLI_WASM_SRC" ] && CLI_WASM_EXPLICIT=1
 
-say() { echo "[install] $*"; }
-die() { echo "[install] error: $*" >&2; exit 1; }
-
 # The seed wasm is a fetched/build cache rather than a tracked checkout file.
 # Both fresh compilation and seed acquisition use the Node bootstrap runner, so
 # do not pretend a default install can continue without Node. An explicitly
@@ -197,12 +463,7 @@ validate_toolchain_name() {
 }
 
 validate_toolchain_name "$TOOLCHAIN"
-# A pre-#755 flat install (bin/viberun next to lib/vibe-cli.wasm) cannot host
-# toolchains: its launcher and stdlib would shadow theirs. Refuse rather than
-# mix the two layouts (docs/toolchain-layout.md section 2, #2677).
-if [ -f "$VIBE_HOME/lib/vibe-cli.wasm" ] || [ -x "$VIBE_HOME/bin/viberun" ]; then
-  die "$VIBE_HOME holds a flat pre-#755 install (lib/vibe-cli.wasm, bin/viberun), which is no longer supported; remove it, or choose another --prefix, and run install/install.sh again"
-fi
+refuse_flat_home
 TC_DIR="$VIBE_HOME/toolchains/$TOOLCHAIN"
 mkdir -p "$TC_DIR/bin" "$TC_DIR/lib" "$VIBE_HOME/bin" "$VIBE_HOME/lib"
 
@@ -338,57 +599,8 @@ wasmtime_ver="$("$TC_DIR/bin/viberun" --version 2>/dev/null | sed -n '1p' || tru
 say "manifest -> $TC_DIR/manifest.json"
 
 # 5. dispatcher + default toolchain ----------------------------------------
-cat > "$VIBE_HOME/bin/vibe" <<'DISPATCH'
-#!/usr/bin/env bash
-# vibe dispatcher (rustup-style, #755): selects a toolchain and execs its
-# launcher. Selection order: $VIBE_TOOLCHAIN env > $VIBE_HOME/toolchain file
-# > the single installed toolchain. Managed by the installer; a future
-# `vibe toolchain` selector rewrites the default file.
-set -euo pipefail
-_src="${BASH_SOURCE[0]}"
-while [ -L "$_src" ]; do
-  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
-  _src="$(readlink "$_src")"
-  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
-done
-_self_dir="$(cd -P "$(dirname "$_src")" && pwd)"
-VIBE_HOME="${VIBE_HOME:-$(dirname "$_self_dir")}"
-tc="${VIBE_TOOLCHAIN:-}"
-if [ -z "$tc" ] && [ -f "$VIBE_HOME/toolchain" ]; then
-  tc="$(head -n 1 "$VIBE_HOME/toolchain" | tr -d '[:space:]')"
-fi
-if [ -z "$tc" ]; then
-  count=0
-  only=""
-  for d in "$VIBE_HOME/toolchains"/*/; do
-    [ -d "$d" ] || continue
-    count=$((count + 1))
-    only="$(basename "$d")"
-  done
-  if [ "$count" = "1" ]; then
-    tc="$only"
-  else
-    echo "vibe: no default toolchain (set \$VIBE_TOOLCHAIN or write $VIBE_HOME/toolchain)" >&2
-    exit 1
-  fi
-fi
-case "$tc" in
-  ""|.|..|*[!A-Za-z0-9._-]*)
-    echo "vibe: invalid toolchain name '$tc'" >&2
-    exit 1
-    ;;
-esac
-launcher="$VIBE_HOME/toolchains/$tc/bin/vibe"
-[ -x "$launcher" ] || { echo "vibe: toolchain '$tc' is not installed ($launcher)" >&2; exit 1; }
-export VIBE_HOME
-exec "$launcher" "$@"
-DISPATCH
-chmod 0755 "$VIBE_HOME/bin/vibe"
-say "dispatcher -> $VIBE_HOME/bin/vibe"
-if [ "$SET_DEFAULT" = "1" ] || [ ! -f "$VIBE_HOME/toolchain" ]; then
-  printf '%s\n' "$TOOLCHAIN" > "$VIBE_HOME/toolchain"
-  say "default toolchain -> $TOOLCHAIN"
-fi
+write_dispatcher
+write_default_toolchain "$TOOLCHAIN" "$SET_DEFAULT"
 
 # 6. stdlib packages (per toolchain, hash-verified) --------------------------
 # The runtime-relevant standard library is materialized into the toolchain's
@@ -433,67 +645,6 @@ if [ "$DO_STDLIB" = "1" ]; then
 fi
 
 # 7. PATH setup --------------------------------------------------------------
-# $VIBE_HOME/bin (the dispatcher) is THE PATH entry. Write the sourceable env
-# file (rustup's ~/.cargo/env pattern) and -- for a default-prefix install
-# only -- wire it into the shell rc files. A custom --prefix (tests, throwaway
-# installs) never touches the user's rc files.
-# Emit one POSIX-shell single-quoted word. Prefixes may contain whitespace,
-# quotes, command substitutions, or newlines; sourcing the generated file must
-# always treat those bytes as path data rather than shell syntax.
-shell_quote() {
-  printf "'"
-  printf '%s' "$1" | sed "s/'/'\\\\''/g"
-  printf "'"
-}
-{
-  cat <<'ENV_HEAD'
-#!/bin/sh
-# vibe shell setup: prepends the vibe dispatcher dir to PATH.
-# Wired into your shell rc by the installer.
-_vibe_bin=
-ENV_HEAD
-  printf '_vibe_bin='
-  shell_quote "$VIBE_HOME/bin"
-  printf '\n'
-  cat <<'ENV_TAIL'
-case ":${PATH}:" in
-  *:"${_vibe_bin}":*) ;;
-  *) PATH="${_vibe_bin}:${PATH}"; export PATH ;;
-esac
-unset _vibe_bin
-ENV_TAIL
-} > "$VIBE_HOME/env"
-chmod 0644 "$VIBE_HOME/env"
-say "env file -> $VIBE_HOME/env"
-
-if [ "$DO_MODIFY_PATH" = "1" ] && [ "$VIBE_HOME" = "$HOME/.vibe" ]; then
-  env_line=". \"\$HOME/.vibe/env\""
-  modified=""
-  for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
-    [ -f "$rc" ] || continue
-    if ! grep -qsF '.vibe/env' "$rc"; then
-      printf '\n%s\n' "$env_line" >> "$rc"
-      modified="$modified $(basename "$rc")"
-    fi
-  done
-  if [ -n "$modified" ]; then
-    say "PATH: added '. \$HOME/.vibe/env' to:$modified"
-    say "restart your shell or run: . \"\$HOME/.vibe/env\""
-  else
-    say "PATH: shell rc files already source ~/.vibe/env (or none found)"
-  fi
-else
-  case ":$PATH:" in
-    *":$VIBE_HOME/bin:"*) ;;
-    *) say "PATH: add $VIBE_HOME/bin to PATH (e.g. . \"$VIBE_HOME/env\")" ;;
-  esac
-fi
-
-# Optional extra symlink dir (test harness / packaging), opt-in only.
-if [ "$DO_LINK" = "1" ] && [ -n "$BIN_DIR" ]; then
-  mkdir -p "$BIN_DIR"
-  ln -sf "$VIBE_HOME/bin/vibe" "$BIN_DIR/vibe"
-  say "linked $BIN_DIR/vibe -> $VIBE_HOME/bin/vibe"
-fi
+write_env_and_path "$DO_MODIFY_PATH" "$DO_LINK" "$BIN_DIR"
 
 say "done. try: vibe version"

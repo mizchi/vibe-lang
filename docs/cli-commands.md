@@ -314,7 +314,8 @@ There is no `vibe init`; scaffolding is `vibe new`.
 | `context-pack [--out FILE]` | Cheatsheet + verified golden examples as one file (#820) |
 | `lsp` | Start the stdio LSP server |
 | `toolchain list\|default <name>\|remove <name>` | Installed toolchains with the default marked; select the default; delete one, never the default (#2677) |
-| `self update [--cli-wasm <path>]` | Refresh the compiler wasm and rebuild the `.cwasm` |
+| `self update [<version>\|latest] [--no-default] [--force]` | Install a release toolchain: download into `$VIBE_HOME/cache/downloads/<tag>/`, verify every asset against `release-manifest.json`, precompile, rename into `toolchains/<version>/` and make it the default (#2678) |
+| `self update --cli-wasm <path>` | Refresh the current toolchain's compiler wasm and rebuild its `.cwasm` |
 | `self uninstall [--purge]` | Remove `toolchains/`, `bin/`, `env` and `toolchain` under `$VIBE_HOME` (and the installer's rc line); `--purge` also `cache/`, `lib/`, `log/` |
 | `version` | Print the toolchain's version from its `manifest.json`, then the runner and compiler paths |
 
