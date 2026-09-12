@@ -361,14 +361,34 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   //   exp_unknown     the definer could not be identified at all, kept apart
   //                   rather than folded into either answer
   //
-  // On the compiler's closure that reads `unresolved_exp=118 exp_in_closure=35
-  // exp_outside=83 exp_unknown=0`, so both causes are real and `unknown=0`
-  // says neither count is polluted by a name this could not place.
+  // `filt_not_published` / `filt_own_key_skip` split the in-closure half one
+  // level further: the owner's published interface never carried the
+  // declaration, or it did and the context loop skipped it because this module
+  // declares the same key.
+  //
+  // That split is what found the BARE EXPORT BLOCK. All 35 in-closure misses
+  // were `filt_not_published`, none were the key skip, and the filter reads
+  // only the per-declaration `export` flag -- so a name exported by
+  // `export { f }` at the foot of a file was modelled as published by nothing.
+  // `lib/@vibe/parser/polyfill.vibe` does exactly that, deliberately, and
+  // `parser_expr.vibe` REFUSES `export let <pattern> = ..` and tells the
+  // author to use a block, so it is the required spelling in cases the flag
+  // cannot express.
+  //
+  // Honouring it took the closure from
+  //
+  //   unresolved_exp=118 exp_in_closure=35 filt_not_published=35  decls=120878
+  //   unresolved_exp=83  exp_in_closure=0  filt_not_published=0   decls=121778
+  //
+  // -- 900 more declarations reaching contexts, and `missing=0 extra=0
+  // content=1` unchanged across it, so the wider context masked nothing that
+  // was being detected. The remaining 83 are the other cause (the closure does
+  // not reach the definer) and are untouched by this.
   //
   // Zero here on a two-module program, which is the point of pinning it: those
   // numbers could otherwise be the instrument miscounting rather than the
   // context missing.
-  inspect(String::trim(ctx_line_of(report)), content = "CTX decls=1 modules=2 zero=1 unresolved_exp=0: unresolved_dep=0: exp_in_closure=0 exp_outside=0 exp_unknown=0")
+  inspect(String::trim(ctx_line_of(report)), content = "CTX decls=1 modules=2 zero=1 unresolved_exp=0: unresolved_dep=0: exp_in_closure=0 exp_outside=0 exp_unknown=0 filt_not_published=0 filt_own_key_skip=0")
   // #2388: the VALIDATING passes, which produce diagnostics rather than
   // rewrites and are therefore invisible to a comparison keyed on
   // declarations. `0` here is both lanes silent on a clean program; the test
