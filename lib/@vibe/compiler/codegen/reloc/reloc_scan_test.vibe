@@ -10,7 +10,7 @@
 //# Imports
 
 import @vibe/compiler/codegen/reloc {
-  rebuild_body_relocs, reloc_kind_func, reloc_kind_global, reloc_kind_type, scan_body_relocs
+  rebuild_body_relocs, reloc_kind_func, reloc_kind_global, reloc_kind_tag, reloc_kind_type, scan_body_relocs
 }
 
 //# Functions
@@ -153,4 +153,48 @@ test "a walk that would run past the end is REFUSED" {
     false
   } with { Exception::Throw(_) => true }
   assert_true(refused)
+}
+
+test "exception tags are relocations, in both throw and try_table" {
+  // Review found this, the oracle could not: an identity round-trip is
+  // exactly what an UNRECORDED reference passes. Tag indices are sized by the
+  // declared effects (`len(effect_names) + 4`), so adding an effect moves
+  // them, and a rebuilt body holding a stale tag routes a perform to the
+  // wrong handler with nothing failing at build time.
+  //
+  // throw 2 ; end
+  let (o1, k1, v1, _w1) = scan_all([0x08, 0x02, 0x0B])
+  assert_eq(Array::length(o1), 1)
+  assert_eq(Array::get(k1, 0), reloc_kind_tag)
+  assert_eq(Array::get(v1, 0), 2)
+  // try_table (empty blocktype) [catch tag=3 label=0, catch_all label=1]
+  //   call 9
+  // end ; end
+  let codes = [
+    0x1F,
+    0x40,
+    0x02,
+    0x00,
+    0x03,
+    0x00,
+    0x02,
+    0x01,
+    0x10,
+    0x09,
+    0x0B,
+    0x0B
+  ]
+  let (o2, k2, v2, _w2) = scan_all(codes)
+  assert_eq(Array::length(o2), 2)
+  // the catch clause's tag, then the call -- catch_all carries no tag
+  assert_eq(Array::get(k2, 0), reloc_kind_tag)
+  assert_eq(Array::get(v2, 0), 3)
+  assert_eq(Array::get(k2, 1), reloc_kind_func)
+  assert_eq(Array::get(v2, 1), 9)
+  let b = body_of(codes)
+  let r = scan_body_relocs(b, 0, Bytes::length(b))
+  assert_eq(bytes_to_ints(rebuild_body_relocs(b, 0, Bytes::length(b), r, r.values)), codes)
+  // and the tag really is rewritable
+  let moved = rebuild_body_relocs(b, 0, Bytes::length(b), r, [7, 9])
+  assert_eq(Array::get(bytes_to_ints(moved), 4), 7)
 }

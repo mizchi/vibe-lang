@@ -63,12 +63,19 @@ PROBE
   for backend in linear gc; do
     out="$probe_dir/probe_$backend.wasm"
     if [ "$backend" = gc ]; then be=gc; else be=""; fi
+    # Delete first, and treat the compiler's exit status as the answer. With
+    # neither, a rerun whose compile FAILS leaves the previous run's good wasm
+    # in place, `-s` passes, and the oracle scans stale bytes and reports
+    # success -- a decoder-coverage check that is green about a module this
+    # run never produced. (Codex review on #2702.)
+    rm -f "$out"
+    build_rc=0
     env -u VIBE_RC ${be:+VIBE_BACKEND=$be} VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
       VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
       bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
-      "$probe_dir/gcprobe.vibe" "$out" main >/dev/null 2>&1 || true
-    if [ ! -s "$out" ]; then
-      echo "reloc-roundtrip: FAIL: could not build the $backend probe module" >&2
+      "$probe_dir/gcprobe.vibe" "$out" main >/dev/null 2>&1 || build_rc=$?
+    if [ "$build_rc" -ne 0 ] || [ ! -s "$out" ]; then
+      echo "reloc-roundtrip: FAIL: could not build the $backend probe module (exit $build_rc)" >&2
       exit 1
     fi
     targets+=("$out")

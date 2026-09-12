@@ -37,6 +37,15 @@ export let reloc_kind_global: Int = 3
 
 export let reloc_kind_table: Int = 4
 
+/// Exception tags. Their index space is sized by the DECLARED EFFECTS --
+/// `linked_compile.vibe` builds the tag section as `len(effect_names) + 4` --
+/// so adding, removing or reordering an effect moves every tag after it.
+/// A rebuilt body that kept a stale tag would route a `perform` to the wrong
+/// handler or leave it uncaught: wrong at run time, with nothing failing at
+/// build time. Found by review, not by the oracle: the round-trip is an
+/// IDENTITY check, and an unrecorded reference round-trips perfectly.
+export let reloc_kind_tag: Int = 5
+
 /// Every reference one body makes, as parallel arrays -- the shape
 /// `CodegenBodyCache` already uses for everything it carries.
 ///
@@ -293,9 +302,8 @@ fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
     let (_, p) = read_sleb_at(body, pos + 1)
     p
   } else if op == 0x08 {
-    // throw <tagidx>
-    let (_, p) = read_uleb_at(body, pos + 1)
-    p
+    // throw <tagidx>  -- RELOCATION
+    push_reloc(body, pos + 1, reloc_kind_tag, out)
   } else if op == 0x1F {
     // try_table <blocktype> vec(catch)
     let (_, p1) = read_sleb_at(body, pos + 1)
@@ -306,7 +314,9 @@ fn step_instr(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
       let kind = Bytes::get(body, p)
       p = p + 1
       if kind == 0 || kind == 1 {
-        let (_, pa) = read_uleb_at(body, p)
+        // catch / catch_ref: <tagidx> <labelidx>. The tag RELOCATES; the
+        // label is local to the enclosing block and never does.
+        let pa = push_reloc(body, p, reloc_kind_tag, out)
         let (_, pb) = read_uleb_at(body, pa)
         p = pb
       } else {
@@ -384,15 +394,19 @@ fn step_gc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
   }
 }
 
-/// Read a typeidx at `pos`, record it as a relocation site, and return the
-/// position just past it.
-fn push_type_reloc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
+/// Read an index at `pos`, record it as a relocation site of `kind`, and
+/// return the position just past it.
+fn push_reloc(body: Bytes, pos: Int, kind: Int, out: BodyRelocs) -> Int with Exception {
   let (v, p) = read_uleb_at(body, pos)
   Array::push(out.offsets, pos)
-  Array::push(out.kinds, reloc_kind_type)
+  Array::push(out.kinds, kind)
   Array::push(out.values, v)
   Array::push(out.widths, p - pos)
   p
+}
+
+fn push_type_reloc(body: Bytes, pos: Int, out: BodyRelocs) -> Int with Exception {
+  push_reloc(body, pos, reloc_kind_type, out)
 }
 
 /// The 0xFC prefix: saturating truncation, and the bulk memory / table ops.

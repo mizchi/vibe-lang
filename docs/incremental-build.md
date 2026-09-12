@@ -679,7 +679,7 @@ requires an identity rebuild to be byte-identical:
 
 | module | bodies | relocation sites | identity mismatches |
 |---|---:|---:|---:|
-| the compiler's own stage2 | 6681 | 141,380 | 0 |
+| the compiler's own stage2 | 6681 | 142,360 | 0 |
 | a 4743-function linear corpus | 4743 | 144,253 | 0 |
 | a gc-lane probe | 61 | 142 | 0 |
 
@@ -688,6 +688,14 @@ The linear lanes passed on the first run; the first gc-lane module refused
 silently mis-walked. Identity alone would pass vacuously on a scanner that
 found nothing, so the site count is reported beside it and a second pass
 perturbs one value per body and requires the bytes to change.
+
+Exception TAGS are in that table's count because review put them there, not
+the oracle: an identity round-trip is precisely what an unrecorded reference
+passes. Tag indices are sized by the declared effects (`len(effect_names) + 4`
+in `linked_compile.vibe`), so adding an effect moves them, and a rebuilt body
+holding a stale tag routes a `perform` to the wrong handler with nothing
+failing at build time. Recording them raised stage2's site count from 141,380
+to 142,360 — 980 references that were silently going to be left behind.
 
 **What the scan cannot see, and why the link must record instead of derive.**
 A `call` immediate is self-describing — the opcode says the next uleb is a
