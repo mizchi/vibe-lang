@@ -11223,7 +11223,22 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         0 - 1
       }
       if __cache_hit >= 0 {
-        codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used)
+        let __r_slot_lo = Array::length(table_slots_used)
+        let __r_blind_lo = Array::length(blind_owners)
+        codegen_body_cache_replay(body_cache_in, __cache_hit, bodies, meta_i32, meta_i64, meta_v128, lt_w, table_slots_used, blind_owners, blind_offsets, blind_kinds, blind_syms)
+        // #2669 slice 3: the SAME pairing the compiled path asserts below.
+        // A replayed function re-pushes both logs from the cache instead of
+        // running the emission, so this says the cache carried a complete
+        // pair -- which is the whole claim of carrying them at all. Before
+        // the cache held these, a replayed function contributed slots and no
+        // references and this check could not exist.
+        let __r_blind_grew = Array::length(blind_owners) - __r_blind_lo
+        let __r_slots_grew = Array::length(table_slots_used) - __r_slot_lo
+        if __r_blind_grew != __r_slots_grew {
+          throw(String::concat("blind reloc: replayed function ", String::concat(__to_string(bi), String::concat(" restored ", String::concat(__to_string(__r_slots_grew), String::concat(" funcref slots but ", String::concat(__to_string(__r_blind_grew), " blind references -- the cache entry is not a complete pair")))))))
+        } else {
+          ()
+        }
       } else {
         // #1259 step 7: where this function's table_slots_used entries start.
         // The log is module-level and append-only, so the function's own
@@ -12136,11 +12151,10 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         // here as a count that does not match, on every compile, instead of as
         // a cached body that relocates one reference short.
         //
-        // Compiled functions only: a REPLAYED function re-pushes its recorded
-        // slots from the cache without re-running codegen, so it contributes
-        // slots and no blind references. That asymmetry is the reason a
-        // replaying build's blind log is incomplete, and carrying these in
-        // `CodegenBodyCache` is what removes it.
+        // #2669 slice 3: the replay path above now asserts the same pairing,
+        // because the cache carries the references alongside the slots. The
+        // two checks together say the log is complete however the body got
+        // here.
         let __blind_grew = Array::length(blind_owners) - __blind_lo
         let __slots_grew = Array::length(table_slots_used) - __slot_lo
         if __blind_grew != __slots_grew {
@@ -12148,7 +12162,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         } else {
           ()
         }
-        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used))
+        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners))
       }
     }
     bi = bi + 1
