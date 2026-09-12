@@ -152,22 +152,40 @@ links the per-module results and compares by declaration key
 (`prelude_module_full_oracle_report_fs`). What each file is given as *context*
 decides what its green means.
 
-That context is each module's **own direct imports**, taken from the loader's
+That context is each module's own direct imports **plus everything reachable
+across re-export edges** (`exact_import_closure`, #2658) — the same closure
+production's `ordinary_lane_module_split` builds. Both come from the loader's
 header scan (`load_or_parse_module_header_fs` — the same scan the FS typecheck
 lane plans module order with), with a dependency that names a `.vpkg` contract
-expanded to that package's sibling implementations. It has to come from the
-loader because the merge drops `SImport` / `SReExport` as already resolved, so
-the edges cannot be read back off the merged program. The counters only mean
-what they say under a rule that matches a real compile; what that takes is
+expanded to that package's sibling implementations, and the re-export subset
+from `module_reexport_deps_fs`. It has to come from the loader because the merge
+drops `SImport` / `SReExport` as already resolved, so the edges cannot be read
+back off the merged program. The counters only mean what they say under a rule
+that matches a real compile; what that takes is
 [The context rule](#the-context-rule) below.
 
-**One hop, not transitive.** Closing transitively hands A the declarations of a
-module C that A's dependency B imports *privately* — context no real compile of
-A exposes. Closing only across re-export edges would be the exact rule, and the
-header scan does not distinguish them (it returns a module's deps and its export
-*names*, with no record of which deps a dep re-exports), so this takes the
-narrower side. That narrowing is not free of consequences in either direction —
-[The context rule](#the-context-rule) below says what it can and cannot hide.
+**Re-export edges, not transitive.** Closing transitively hands A the
+declarations of a module C that A's dependency B imports *privately* — context
+no real compile of A exposes. Closing across **re-export** edges is a different
+thing: what B re-exports is precisely what a real compile of A does see, so
+including it is not a widening at all.
+
+The oracle measured on direct edges only until #2633, on the reasoning that for
+a measurement, being handed context a module lacks is the one failure mode that
+makes a green meaningless. That reasoning is sound and does not apply here: it
+was written against the transitive rule. Measuring *without* the re-export edges
+made the oracle solve a harder problem than the thing it models, and part of its
+residue was an artifact of that. Adopting the exact closure on the compiler's own
+CLI closure (369 modules) took `keyed content` 1 → 0 and `CTX unresolved_exp`
+83 → 0, with `missing` / `extra` / `collisions` already 0 and the `seen`
+denominator unchanged at 25 556 — the per-module lane reproducing the
+whole-program prelude exactly.
+
+(An earlier revision of this section said the header scan "does not distinguish"
+re-export edges, "so this takes the narrower side". That was wrong:
+`module_reexport_deps_fs` has returned exactly that subset since #2658, and
+production has used it all along.)
+
 `edges_unresolved` is reported for its own reason: a dropped edge narrows a
 module's context further, and a closure built from every edge and one built from
 half of them otherwise look identical.
@@ -209,7 +227,10 @@ unreachable on the whole-program lane the rule is unconditional rather than
 lane-dependent. `invisible_split` is unaffected by the fix and should be: those
 nominals are still invisible to the modules comparing them — what changed is
 that their invisibility no longer reaches the body. That is why `collisions=0`
-survived the narrowing that took `invisible_split` from 2 to 15.
+survived the narrowing that took `invisible_split` from 2 to 15. Widening back
+to the exact closure moves it the other way — 2 on the compiler's closure today
+— for the same reason and with `collisions=0` again unaffected: the count tracks
+what a module can see, and the fix is what keeps that from reaching the body.
 
 The link still folds only by a key a module reported as **synthesized**, and
 still content-checks the bodies under it. That is not redundant with the above:
@@ -219,17 +240,23 @@ kept body.
 ### The per-module prelude reproduces the whole-program prelude exactly
 
 ```
-CLOSURE files=365 edges=11342 unresolved=0
-FULL stmts=9876 split=10033 linked=9876 folded=157 modules=365 collisions=0
-     invisible_whole=0 invisible_split=8 linked_dups=5
-keyed missing=0 extra=0 copies=444 content=0 renames=0 dup_keys=451 dup_defs=5
-EVIDENCE declared=6 handled=4 performed=3
+CLOSURE files=369 edges=15874 unresolved=0
+FULL stmts=10242 split=10413 linked=10242 folded=171 modules=369 collisions=0
+     invisible_whole=0 invisible_split=2 linked_dups=5
+keyed missing=0 extra=0 copies=448 content=0 renames=0 dup_keys=455 dup_defs=5
+EVIDENCE declared=6 handled=5 performed=4
+CTX  unresolved_exp=0 unresolved_dep=0 exp_unknown=0 seen=25556 amb=0
 ```
 
-`lib/@vibe/cli/entry.vibe`, 365 modules. **`linked` equals `stmts`, and
-`missing`, `extra`, `content` and `renames` are all zero.** Compiling the
-compiler's own CLI closure per module and linking produces every declaration the
-whole-program prelude produces, name for name and body for body.
+`lib/@vibe/cli/entry.vibe`, 369 modules, measured 2026-09-12 on the exact
+closure. **`linked` equals `stmts`, and `missing`, `extra`, `content` and
+`renames` are all zero.** Compiling the compiler's own CLI closure per module
+and linking produces every declaration the whole-program prelude produces, name
+for name and body for body.
+
+`seen=25556` is the denominator the two `unresolved` zeros are read against: it
+counts the merge-stamped names the context scan judged, so a zero here is an
+answer rather than a scan that matched nothing (#2633).
 
 `copies=444` is what remains after the link and is not a difference: each is a
 module's own `reexport_boundary` marker, one per module, which no link should
