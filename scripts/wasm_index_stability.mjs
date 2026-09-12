@@ -175,8 +175,18 @@ for (const n of common) {
 // ones an in-place patch could serve, so what is IN them decides whether such
 // a patch can be written.
 const OPCODE = { 0x42: "i64.const", 0x41: "i32.const", 0x10: "call", 0x11: "call_indirect", 0x23: "global.get", 0xd2: "ref.func" };
-let explained = 0, unexplained = 0, viaCall = 0, viaFnValue = 0, carries = 0;
+let explained = 0, unexplained = 0, viaCall = 0, viaFnValue = 0, carries = 0, noOpcode = 0;
 const deltas = new Map();
+// Deltas of the sites that could NOT be attributed. Reported, never named:
+// a bare `i64.const 288 -> 348` has no cross-check that says what it is, and
+// this tool's rule is that an absent classification is fine while a wrong one
+// is not (the fn-value arm only claims a site when the decoded index carries
+// the same NAME on both sides). The histogram is interpretation-free and is
+// what makes the class legible anyway -- on a module reorder it came back
+// -101:578 +60:268 plus one +257698037760, and that last one is (60 << 32),
+// i.e. a `(ptr<<32)|len` String whose DATA pointer moved 60 bytes with its
+// length unchanged. Structure like that says "one moved segment", not noise.
+const unexplainedDeltas = new Map();
 const unexplainedSamples = [];
 for (const n of common) {
   const a = A.bodies.get(indexA.get(n)), b = B.bodies.get(indexB.get(n));
@@ -185,10 +195,20 @@ for (const n of common) {
   while (i < a.length) {
     if (a[i] === b[i]) { i++; continue; }
     // Walk back to the nearest opcode whose immediate could cover this byte.
+    // `at` therefore lands BEHIND `i`, which is why every advance below goes
+    // through `advance` rather than jumping to the end of the immediate
+    // directly: an immediate that ends at or before `i` would otherwise move
+    // `i` backwards and the same difference would be re-found forever. That
+    // is not hypothetical -- it hung for 15+ minutes on the first module pair
+    // whose indices moved by more than one, because there a differing byte can
+    // sit several bytes into an immediate whose opcode is further back still.
+    // Deltas of +1 never reached it: there the differing byte is the first
+    // byte after the opcode, so at = i - 1 and the jump always went forward.
     let op = null, at = -1;
     for (let k = 1; k <= 6 && i - k >= 0; k++) {
       if (OPCODE[a[i - k]] !== undefined) { op = OPCODE[a[i - k]]; at = i - k; break; }
     }
+    const advance = (end) => { i = Math.max(i + 1, end); };
     const signed = op === "i64.const" || op === "i32.const";
     const va = op ? (signed ? sleb(a, at + 1)[0] : uleb(a, at + 1)[0]) : null;
     const vb = op ? (signed ? sleb(b, at + 1)[0] : uleb(b, at + 1)[0]) : null;
@@ -199,7 +219,7 @@ for (const n of common) {
       deltas.set(vb - va, (deltas.get(vb - va) || 0) + 1);
       if (widthA !== widthB) movedWidth++;
       if (widthA > 1) carries += widthA - 1;
-      i = at + 1 + widthA;
+      advance(at + 1 + widthA);
       continue;
     }
     const fa = op === "i64.const" ? fnValueIndex(va) : null;
@@ -211,14 +231,19 @@ for (const n of common) {
     if (fa !== null && fb !== null && A.names.get(fa) !== undefined && A.names.get(fa) === B.names.get(fb)) {
       explained++; viaFnValue++;
       deltas.set(fb - fa, (deltas.get(fb - fa) || 0) + 1);
-      i = at + 1 + widthA;
+      advance(at + 1 + widthA);
       continue;
     }
     unexplained++;
+    if (op !== null) unexplainedDeltas.set(vb - va, (unexplainedDeltas.get(vb - va) || 0) + 1);
+    else noOpcode++;
     if (unexplainedSamples.length < 6) {
       unexplainedSamples.push(`${n}@${i} ${op ?? "?"} ${va} -> ${vb}`);
     }
-    i++;
+    // Advance past the immediate, like the explained arms: counting each BYTE
+    // of one multi-byte immediate as its own site inflated the figure (1696
+    // bytes for 850 sites on the reorder pair below).
+    advance(op !== null ? at + 1 + widthA : i + 1);
   }
 }
 
@@ -235,6 +260,7 @@ console.log(`index shift-deltas ${moved === 0 ? "(none)" : histo(shifts).slice(0
 console.log(`index width-band-crossings ${movedWidth}`);
 console.log(`body identical=${identical} (${pct(identical, common.length)}) same-length-differ=${sameLen} (${pct(sameLen, common.length)}) length-changed=${diffLen} (${pct(diffLen, common.length)})`);
 if (lenChanges.length) console.log(`body length-changed-examples ${lenChanges.join(" | ")}`);
-console.log(`sites explained=${explained} unexplained=${unexplained} (call-immediate=${viaCall} fn-value-i64const=${viaFnValue})`);
+console.log(`sites explained=${explained} unexplained=${unexplained} (call-immediate=${viaCall} fn-value-i64const=${viaFnValue} no-opcode-within-6-bytes=${noOpcode})`);
 console.log(`sites value-deltas ${explained === 0 ? "(none)" : histo(deltas).slice(0, 8).join(" ") + ` (${deltas.size} distinct)`}`);
+console.log(`sites unexplained-deltas ${unexplained === 0 ? "(none)" : histo(unexplainedDeltas).slice(0, 8).join(" ") + ` (${unexplainedDeltas.size} distinct)`}`);
 if (unexplainedSamples.length) console.log(`sites unexplained-samples ${unexplainedSamples.join(" | ")}`);

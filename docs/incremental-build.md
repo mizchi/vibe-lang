@@ -539,79 +539,130 @@ into a build where indices moved — the stored form or the cache key has to
 account for index assignment. That constraint came out of this measurement; no
 amount of comparing declarations would have produced it.
 
-##### How far they actually move (#2669, 2026-09-11)
+##### How far they actually move (#2669)
 
 The paragraph above says a body cannot be replayed "into a build where indices
-moved". How far they move was never measured, and measuring it splits the
-problem into two cases that behave nothing alike.
+moved". How far they move was never measured. Measured, it splits into edit
+classes that behave nothing alike, and it turns up two relocation classes
+beyond the call immediates that sentence names.
 
 `scripts/wasm_index_stability.mjs` compares two builds made with
 `VIBE_WASM_NAMES=1`, matching functions **by name** — matching them by index
 would assume the stability being measured. Corpus: the compiler's own closure
-(`codegen_lexer_test.vibe`, 190 resolved files, 4652 defined functions, 4286
-matched by name), compiled by the generation stage2 of `bef330a`. Leaf:
-`lib/@vibe/core/hex.vibe`, checked to be IN that closure — the first run of the
-neighbouring memory measurement edited a file that was not, and every row came
-back identical, a vacuous experiment that looked like a result. N=1 per cell,
-which is exact here rather than approximate: these are byte comparisons of a
-deterministic compile, not timings.
+(`codegen_lexer_test.vibe`, 190 resolved files, 4743 defined functions, 4341
+matched by name), compiled by the generation stage2 of `bef330a`, baseline
+built on `6c53578`. Every leaf edited is checked to be IN that closure — the
+first run of the neighbouring memory measurement edited a file that was not,
+and every row came back identical, a vacuous experiment that looked like a
+result. N=1 per cell, which is exact rather than approximate here: these are
+byte comparisons of a deterministic compile, not timings.
 
-| | body-only edit | one added function |
-|---|---:|---:|
-| index kept | 4286 (100%) | 216 (5.04%) |
-| index moved | 0 | 4070 (94.96%) |
-| distinct shift deltas | — | **1** (`+1`) |
-| LEB128 width-band crossings | 0 | 0 |
-| body byte-identical | 4285 (99.98%) | 1297 (30.26%) |
-| body differs, SAME length | 0 | 2988 (69.72%) |
-| body length changed | 1 (the edited fn) | 1 (the edited fn) |
-| relocation sites explained | — | 31256, **all `+1`** |
-| relocation sites unexplained | — | 0 |
+Four edit classes, one baseline:
+
+| | body only | +1 fn ABOVE the band | +1 fn BELOW the band | module reorder |
+|---|---:|---:|---:|---:|
+| index kept | 4341 (100%) | 216 (4.98%) | 87 (2.00%) | 4208 (96.94%) |
+| index moved | 0 | 4125 (95.02%) | 4254 (98.00%) | 133 (3.06%) |
+| distinct index deltas | — | 1 (`+1`) | 1 (`+1`) | **2** (`+4`, `−129`) |
+| LEB width-band crossings | 0 | 0 | **1** | **8** |
+| bodies byte-identical | 4340 (99.98%) | 1303 (30.02%) | 1192 (27.46%) | 3800 (87.54%) |
+| bodies differing, same length | 0 | 3037 | 3146 | 527 |
+| bodies whose LENGTH changed | 1 (edited) | 1 (edited) | **3** | **14** |
+| sites explained | — | 31778 | 32218 | 433 |
+| sites unexplained | — | 0 | 0 | **850** |
+
+The edits: a `StringBuilder::push(sb, "")` added inside `hex_encode`; a private
+function added to `hex.vibe` (indices 225–228, above the 127/128 boundary); the
+same to `base64.vibe` (96–101, below it); and `import ./hex.vibe` added to
+`base64.vibe`, which forces `hex.vibe` earlier in the order.
 
 **A body-only edit moves nothing.** Adding a statement to a function changes
-that function's body and no other byte of the module: 4285 of 4286 bodies come
+that function's body and no other byte of the module: 4340 of 4341 bodies come
 back byte-identical and every index is unchanged. For this edit class the
-constraint does not apply at all — a body cache needs no relocation, no
-index-independent form and no stable assignment. That is the common edit.
+constraint does not apply at all — no relocation, no index-independent form and
+no stable assignment. That is the common edit, and a cache that served only it
+would already serve most of what a developer does.
 
 **Adding a function shifts every later index by exactly one.** Not a scatter:
-ONE distinct delta across 4070 moved functions, because the assignment is
-positional and a module's functions are contiguous. 30% of bodies are still
-byte-identical (they call nothing that moved); the rest differ at IDENTICAL
-length, so an in-place patch is arithmetically possible.
+ONE distinct delta, because the assignment is positional and a module's
+functions are contiguous. The 216 (or 87) that keep their index are the ones
+before the insertion point; the byte-identical bodies are those that call
+nothing that moved. The rest differ at IDENTICAL length, so an in-place patch
+is arithmetically possible — *for this class*.
 
-**But not every relocation site is a `call` immediate.** Of the 31256 sites,
-31231 are call immediates and **25 are `i64.const`**: a first-class function
-value is emitted as `i64.const (idx*4+2)` (the index tagged once as a function
-reference, once as an `Int`). Both decode to a function index that moved `+1`,
-and both carry the same name on each side — but only the first announces itself
-by opcode. A relocation pass keyed on `call` would leave those 25 wrong, and
-wrong silently, which is the worst way for this to break. Verified rather than
-inferred: the tool decodes the constant back to an index and requires the NAME
-at that index to match on both sides before claiming it, so an ordinary integer
-that happens to be 2 mod 4 is not counted as a relocation site.
+**Where in the index space the insertion lands decides whether that holds.**
+`leb128_encode_u32` (`lib/@vibe/compiler/core/bytebuf.vibe`) is minimal-width,
+so an immediate's byte count tracks the index magnitude: one byte below 128,
+two below 16384. Inserting into `hex.vibe` at 225 crosses no band, and exactly
+one body (the edited one) changes length. Inserting into `base64.vibe` at 96
+pushes `BigInt::abs` from 127 to 128, and its call immediate grows from one
+byte to two: `Rational::abs` calls it once and grew 135 → 136, `make_rational`
+calls it twice (`rational.vibe:72,73`) and grew 534 → 536. One byte per call
+site, exactly. **Two bodies in a module the edit never touched changed
+LENGTH** — so an in-place patch is not merely incomplete for this case, it
+cannot represent it, and the case is reachable by a one-line edit.
 
-Two limits on the above, both real:
+**A module reorder is a different animal again.** Adding one import moved
+`hex.vibe`'s four functions from 225–228 to just before 96, and the 129
+functions between the two positions up by four: **two** distinct deltas, one
+large and negative, where every other class produced exactly one. Eight
+functions crossed a width band, fourteen bodies changed length. The function
+SET is unchanged here (`only-in-a 0`, `only-in-b 0`) — this is purely a
+reorder, the cleanest possible form of the case.
 
-- **The width bands are luck at this size, not a property.**
-  `leb128_encode_u32` (`lib/@vibe/compiler/core/bytebuf.vibe`) is
-  minimal-width, so an immediate's byte count tracks the index magnitude: 1
-  byte below 128, 2 below 16384. Zero of the 4070 movers crossed a band here
-  only because the insertion landed above index 128 and the program never
-  reaches 16384. An edit inside a module whose functions sit below 128 moves a
-  callee across that edge, and every body calling it changes LENGTH — which is
-  the case an in-place patch cannot serve.
-- **An edit that reorders modules is not measured.** Adding one function to one
-  module keeps the module order, so the shift is uniform. Whether adding an
-  *import* (which can move a whole module in the order) keeps that property is
-  an open question, and the tool answers it for any two builds.
+**Three relocation classes, and only one announces itself.** Of the 31778
+sites on the added-function run, 31753 are `call` immediates and **25 are
+`i64.const`**: a first-class function value is emitted as `i64.const
+(idx*4+2)` — the index tagged once as a function reference and once as an
+`Int`. Both decode to a function index that moved `+1`, and both carry the
+same name on each side; only the first is recognisable from its opcode. The
+reorder adds the third: 850 sites could not be attributed to any function
+index, and their delta histogram is `-101:578  +60:268  +0:2
++257698037760:1` — structured, not noise. That last one decodes:
+257698037760 is `60 << 32`, and the site goes `(367 << 32) | 1` →
+`(427 << 32) | 1`, i.e. a `(ptr<<32)|len` **String constant whose DATA pointer
+moved 60 bytes** with its length unchanged. Reordering the modules reordered
+the data segment under them, and a String literal's pointer rides an
+`i64.const` exactly as invisibly as a function value does.
 
-`unexplained` is reported next to `explained` for a reason: "0 unexplained"
-means nothing on its own, and did not hold on the first run — the `i64.const`
-function values came back as 7 unexplained bodies until the decoder above was
-added. Red-tested by flipping one body byte the classifier cannot attribute (a
-local-declaration count, which has no preceding opcode), with the mutation
-confirmed to have landed first: `unexplained=1`, naming the function and offset.
+The tool reports those deltas but deliberately does **not** name the class. A
+bare `i64.const 288 -> 348` carries no cross-check that says what it is — the
+fn-value arm can only claim a site because the decoded index carries the same
+NAME on both sides. An absent classification is fine here; a wrong one is not.
+`unexplained` prints next to `explained` for the same reason: "0 unexplained"
+means nothing on its own, and it did not hold on the first run — the
+`i64.const` function values came back as 7 unexplained bodies until the decoder
+above was added.
+
+**What this costs each option for closing the criterion.** Three relocation
+classes are measured — `call` immediates, function values in `i64.const`, and
+data pointers in `i64.const` — and only the first is recognisable by opcode:
+
+- **patching immediates in place** covers the first class, silently misses the
+  other two, and cannot represent a body whose LENGTH changes at all — which a
+  single added function below index 128 already causes;
+- **a stable, identity-derived function index assignment** removes the first
+  two classes and leaves data pointers moving;
+- **emitting against a per-module symbol table and resolving at the link** is
+  the only shape where no class can be forgotten, because a symbolic reference
+  is explicit by construction rather than recognised by a scanner.
+
+A fourth reading, cheaper than all three: **gate the cache on the edit class.**
+A body cache that serves body-only edits and declines the moment the function
+set or the module order changes needs none of the above, and the first column
+says what it would be worth.
+
+The tool's own failure mode is worth recording, because it is the shape this
+repository keeps finding. Its site scan walks BACK up to six bytes to find the
+opcode owning a differing byte, then advanced to the end of that immediate —
+which can be at or before where it started. On every edit whose deltas were
+`+1` the differing byte sits right after the opcode, so the jump always went
+forward and the bug was invisible; the first module pair whose indices moved by
+more than one spun for 15 minutes at 100% CPU. Fixed by making the advance
+monotonic. Red-tested by running the pre-fix version on that same pair under a
+90s budget (exit 124, did not terminate) against the fixed one (exit 0, under a
+second), and by confirming the added-function run reports byte-identical
+figures after the change.
 
 #### And what it costs in ALLOCATION — the #2510 criterion-5 KPI (2026-09-11)
 
