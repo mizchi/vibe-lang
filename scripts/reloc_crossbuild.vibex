@@ -1,0 +1,646 @@
+// #2669: can a body compiled against ONE index assignment be relocated onto
+// ANOTHER? That is the whole claim of index-independent bodies, and this
+// answers it end to end against two real builds.
+//
+//   vibe run scripts/reloc_crossbuild.vibex -- <a.wasm> <b.wasm>
+//
+// Both built with VIBE_WASM_NAMES=1. For every function present in both by
+// NAME: take A's body, rewrite each function reference from A's index space
+// into B's (by resolving A's index to a name and that name to B's index),
+// and compare the result against B's ACTUAL body.
+//
+// A match means the relocation reproduced, byte for byte, what the compiler
+// itself emitted for the moved assignment. That is a much stronger statement
+// than the identity round-trip in reloc_roundtrip.vibex, which only proves
+// the walk does not desynchronise.
+//
+// THE MISMATCHES ARE THE POINT. `@vibe/compiler/codegen/reloc` can only see
+// references the instruction encoding makes certain. A function used as a
+// VALUE is `i64.const ((slot << 2) | 2)` (compile_expr.vibe) and a string
+// constant's data pointer rides an `i64.const` too (emit_str_ref,
+// bodies_core_b's folded `(off << 32) | len`) -- neither is distinguishable
+// from an ordinary constant. So the count of bodies that do NOT match is a
+// direct measurement of what the emitter would have to record, rather than
+// an estimate. Non-function index spaces (type, table, tag, global, data,
+// elem) are passed through UNCHANGED here and reported separately, because
+// wasm carries no name section for them: a body that moved one of those
+// cannot be remapped from the binary alone either.
+import @vibe/compiler/codegen/reloc {
+  BodyRelocs, rebuild_body_relocs, reloc_kind_func, scan_body_relocs
+}
+
+/// A String is a BYTE string (ADR-0098), so a name is rebuilt one byte at a
+/// time -- `String::from_char_code` takes a byte, and concatenating them
+/// reproduces the section's bytes exactly. No decoding is wanted here: these
+/// are matched against each other, never interpreted.
+fn bytes_range_to_string(b: Bytes, start: Int, end_pos: Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = start
+  while i < end_pos {
+    StringBuilder::push(sb, String::from_byte(Bytes::get(b, i)))
+    i = i + 1
+  }
+  StringBuilder::freeze(sb)
+}
+
+fn read_uleb(b: Bytes, pos: Int) -> (Int, Int) {
+  let mut result = 0
+  let mut shift = 0
+  let mut p = pos
+  let mut done = false
+  while !done {
+    let byte = Bytes::get(b, p)
+    result = result|((byte&127)<<shift)
+    shift = shift + 7
+    p = p + 1
+    if (byte&128) == 0 {
+      done = true
+    } else {
+      ()
+    }
+  }
+  (result, p)
+}
+
+fn read_sleb(b: Bytes, pos: Int) -> (Int, Int) {
+  let mut result = 0
+  let mut shift = 0
+  let mut p = pos
+  let mut done = false
+  let mut last = 0
+  while !done {
+    let byte = Bytes::get(b, p)
+    last = byte
+    result = result|((byte&127)<<shift)
+    shift = shift + 7
+    p = p + 1
+    if (byte&128) == 0 {
+      done = true
+    } else {
+      ()
+    }
+  }
+  if (last&64) != 0 && shift < 63 {
+    result = result - (1<<shift)
+  } else {
+    ()
+  }
+  (result, p)
+}
+
+fn skip_valtype(b: Bytes, pos: Int) -> Int {
+  let t = Bytes::get(b, pos)
+  if t == 0x63 || t == 0x64 {
+    let (_, p) = read_sleb(b, pos + 1)
+    p
+  } else {
+    pos + 1
+  }
+}
+
+fn skip_locals(b: Bytes, pos: Int) -> Int {
+  let (groups, p0) = read_uleb(b, pos)
+  let mut p = p0
+  let mut i = 0
+  while i < groups {
+    let (_, pn) = read_uleb(b, p)
+    p = skip_valtype(b, pn)
+    i = i + 1
+  }
+  p
+}
+
+/// A module reduced to what this comparison needs: every defined function's
+/// instruction region, and the index <-> name mapping from the name section.
+struct Mod {
+  names: Array[String];
+  name_idxs: Array[Int];
+  body_idxs: Array[Int];
+  body_starts: Array[Int];
+  body_ends: Array[Int];
+  bytes: Bytes
+}
+
+fn load(path: String) -> Mod with Exception + Fs {
+  let b = Fs::read_bytes(path)
+  let len = Bytes::length(b)
+  let names: Array[String] = []
+  let name_idxs: Array[Int] = []
+  let body_idxs: Array[Int] = []
+  let body_starts: Array[Int] = []
+  let body_ends: Array[Int] = []
+  let mut imported = 0
+  let mut p = 8
+  while p < len {
+    let sid = Bytes::get(b, p)
+    let (size, p1) = read_uleb(b, p + 1)
+    let section_end = p1 + size
+    if sid == 2 {
+      let (n, pi0) = read_uleb(b, p1)
+      let mut pi = pi0
+      let mut i = 0
+      while i < n {
+        let (l1, pa) = read_uleb(b, pi)
+        let (l2, pb) = read_uleb(b, pa + l1)
+        let pk = pb + l2
+        let kind = Bytes::get(b, pk)
+        if kind == 0 {
+          let (_, pn) = read_uleb(b, pk + 1)
+          imported = imported + 1
+          pi = pn
+        } else if kind == 1 {
+          let fl = Bytes::get(b, pk + 2)
+          let (_, pn) = read_uleb(b, pk + 3)
+          if fl == 1 {
+            let (_, pm) = read_uleb(b, pn); pi = pm
+          } else {
+            pi = pn
+          }
+        } else if kind == 2 {
+          let fl = Bytes::get(b, pk + 1)
+          let (_, pn) = read_uleb(b, pk + 2)
+          if fl == 1 {
+            let (_, pm) = read_uleb(b, pn); pi = pm
+          } else {
+            pi = pn
+          }
+        } else {
+          pi = pk + 3
+        }
+        i = i + 1
+      }
+    } else if sid == 10 {
+      let (n, pc0) = read_uleb(b, p1)
+      let mut pc = pc0
+      let mut i = 0
+      while i < n {
+        let (bsize, bstart) = read_uleb(b, pc)
+        Array::push(body_idxs, imported + i)
+        Array::push(body_starts, skip_locals(b, bstart))
+        Array::push(body_ends, bstart + bsize)
+        pc = bstart + bsize
+        i = i + 1
+      }
+    } else if sid == 0 {
+      let (nl, pn0) = read_uleb(b, p1)
+      let sec_name = bytes_range_to_string(b, pn0, pn0 + nl)
+      if sec_name == "name" {
+        let mut q = pn0 + nl
+        while q < section_end {
+          let sub = Bytes::get(b, q)
+          let (ssz, qs) = read_uleb(b, q + 1)
+          let sub_end = qs + ssz
+          if sub == 1 {
+            let (cnt, qc0) = read_uleb(b, qs)
+            let mut qc = qc0
+            let mut k = 0
+            while k < cnt {
+              let (idx, qa) = read_uleb(b, qc)
+              let (nlen, qb) = read_uleb(b, qa)
+              Array::push(name_idxs, idx)
+              Array::push(names, bytes_range_to_string(b, qb, qb + nlen))
+              qc = qb + nlen
+              k = k + 1
+            }
+          } else {
+            ()
+          }
+          q = sub_end
+        }
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    p = section_end
+  }
+  Mod::{
+    names: names,
+    name_idxs: name_idxs,
+    body_idxs: body_idxs,
+    body_starts: body_starts,
+    body_ends: body_ends,
+    bytes: b
+  }
+}
+
+fn name_of(m: Mod, idx: Int) -> String {
+  let n = Array::length(m.name_idxs)
+  let mut i = 0
+  let mut found = ""
+  while i < n {
+    if Array::get(m.name_idxs, i) == idx {
+      found = Array::get(m.names, i); i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+/// The index a NAME resolves to, or -1 when the name is absent, or -2 when it
+/// is AMBIGUOUS -- carried by more than one function.
+///
+/// Taking the first match would be silently wrong here, and the compiler
+/// really does produce duplicates: `linked_compile.vibe` labels every
+/// unassigned generated slot `__rt_gen` in a loop, so a module has many. With
+/// first-wins, every `__rt_gen` body in A is compared against the first one in
+/// B and every call targeting one is remapped to the first -- which
+/// manufactures mismatches AND can count a comparison against the WRONG body
+/// as a match. Found by review on #2705, after the first measurement had
+/// already been published with those rows in it.
+fn index_of_name(m: Mod, name: String) -> Int {
+  let n = Array::length(m.names)
+  let mut i = 0
+  let mut found = -1
+  let mut hits = 0
+  while i < n {
+    if Array::get(m.names, i) == name {
+      hits = hits + 1
+      if hits == 1 {
+        found = Array::get(m.name_idxs, i)
+      } else {
+        ()
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if hits > 1 {
+    -2
+  } else {
+    found
+  }
+}
+
+/// The index A's function `idx` maps to in B, or -1 when its name is absent
+/// there, or -2 when the name is AMBIGUOUS on EITHER side.
+///
+/// Checking only B was the first fix and it is not enough. If A carries two
+/// functions called `__rt_gen` and B carries one -- a generated helper
+/// removed, say -- both A bodies are compared against that single B body, and
+/// every A-side reference to either collapses onto it. The name has to
+/// identify ONE function on each side before it can carry a mapping. Found by
+/// review on #2705, one round after the B-side-only version.
+fn map_index(a: Mod, b: Mod, idx: Int) -> Int {
+  let nm = name_of(a, idx)
+  if nm == "" {
+    -1
+  } else if index_of_name(a, nm) == -2 {
+    -2
+  } else {
+    index_of_name(b, nm)
+  }
+}
+
+fn body_slot(m: Mod, idx: Int) -> Int {
+  let n = Array::length(m.body_idxs)
+  let mut i = 0
+  let mut found = -1
+  while i < n {
+    if Array::get(m.body_idxs, i) == idx {
+      found = i; i = n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+fn spans_equal(ab: Bytes, s: Int, e: Int, other: Bytes) -> Bool {
+  if e - s != Bytes::length(other) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while i < e - s {
+      if Bytes::get(ab, s + i) != Bytes::get(other, i) {
+        same = false
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    same
+  }
+}
+
+/// Is `name` one of the functions whose SOURCE the caller edited?
+///
+/// Forcing a module reorder requires editing at least one existing body --
+/// something has to call across the new import -- so that body's B version is
+/// a different program from its A version. Comparing them measures the edit,
+/// not relocation: it inflates the denominator and, when the edited body
+/// happens to carry no visible non-function reference, it lands in the
+/// "unambiguously encoding-blind" bucket and inflates the one number this
+/// whole exercise exists to size. Naming it in the output is not enough, so
+/// it is excluded from the statistics. Found by review on #2705.
+///
+/// Matching is on the UNMANGLED base, not a substring: #716 path-mangles a
+/// private definition to `<name>_exp_<path>` / `<name>_dep_<path>`, so an
+/// exact name or one of those two prefixes is the whole rule. A substring
+/// test would quietly take `encode` along with `encode_url_safe`.
+fn is_source_edited(name: String, edited: Array[String]) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(edited) {
+    let e = Array::get(edited, i)
+    if name == e || String::starts_with(name, String::concat(e, "_exp_")) || String::starts_with(name, String::concat(e, "_dep_")) {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn split_commas(s: String) -> Array[String] {
+  let out: Array[String] = []
+  let mut cur = ""
+  let mut i = 0
+  while i < String::length(s) {
+    let c = String::substring(s, i, i + 1)
+    if c == "," {
+      if String::length(cur) > 0 {
+        Array::push(out, cur)
+      } else {
+        ()
+      }
+      cur = ""
+    } else {
+      cur = String::concat(cur, c)
+    }
+    i = i + 1
+  }
+  if String::length(cur) > 0 {
+    Array::push(out, cur)
+  } else {
+    ()
+  }
+  out
+}
+
+fn main() -> Unit allows Exception + Fs + Stdout + Env {
+  // Exactly two or three. The shell wrapper validates its own arity, but this
+  // is a documented entry point of its own -- so a mistyped direct run used to
+  // consume the first three arguments, drop the rest, and report statistics
+  // for inputs nobody asked about. Fixing the wrapper alone left that open.
+  if Env::args_len() < 2 || Env::args_len() > 3 {
+    println("reloc-crossbuild: usage: vibe run scripts/reloc_crossbuild.vibex -- <a.wasm> <b.wasm> [edited,fn,names]")
+    throw(String::concat("expected 2 or 3 arguments, got ", __to_string(Env::args_len())))
+  } else {
+    ()
+  }
+  let a = load(Env::args_get(0))
+  let b = load(Env::args_get(1))
+  // Optional third argument: comma-separated names of functions the caller
+  // EDITED between the two builds. See is_source_edited.
+  let edited = if Env::args_len() > 2 {
+    split_commas(Env::args_get(2))
+  } else {
+    []
+  }
+  let edited_hits: Array[Int] = []
+  let mut eh = 0
+  while eh < Array::length(edited) {
+    Array::push(edited_hits, 0); eh = eh + 1
+  }
+  let mut compared = 0
+  let mut matched = 0
+  let mut mismatched = 0
+  let mut mismatch_ambiguous_cause = 0
+  let mut ambiguous_name = 0
+  let mut moved_index = 0
+  let mut rewritten_bodies = 0
+  let mut rewritten_matched = 0
+  let mut rewritten_mismatched = 0
+  let mut mismatch_encoding_blind = 0
+  let mut unresolved_func = 0
+  let mut had_nonfunc = 0
+  let mut a_only_shape = 0
+  let mut source_edited_excluded = 0
+  let examples: Array[String] = []
+  let n = Array::length(a.body_idxs)
+  let mut i = 0
+  while i < n {
+    let ai = Array::get(a.body_idxs, i)
+    let nm = name_of(a, ai)
+    let bi = map_index(a, b, ai)
+    let bs = if bi < 0 {
+      -1
+    } else {
+      body_slot(b, bi)
+    }
+    if bi == -2 {
+      ambiguous_name = ambiguous_name + 1
+    } else if bs >= 0 && is_source_edited(nm, edited) {
+      source_edited_excluded = source_edited_excluded + 1
+      let mut ei = 0
+      while ei < Array::length(edited) {
+        if is_source_edited(nm, [Array::get(edited, ei)]) {
+          Array::set(edited_hits, ei, Array::get(edited_hits, ei) + 1)
+        } else {
+          ()
+        }
+        ei = ei + 1
+      }
+    } else if bs < 0 {
+      a_only_shape = a_only_shape + 1
+    } else {
+      compared = compared + 1
+      if ai != bi {
+        moved_index = moved_index + 1
+      } else {
+        ()
+      }
+      let a_start = Array::get(a.body_starts, i)
+      let a_end = Array::get(a.body_ends, i)
+      let r = scan_body_relocs(a.bytes, a_start, a_end)
+      let cnt = Array::length(r.offsets)
+      // Remap: a FUNCTION index goes through the name; everything else is
+      // passed through, and counted, because the binary carries no name for
+      // those spaces to map through.
+      let mapped: Array[Int] = []
+      let mut nonfunc = 0
+      let mut unresolved = 0
+      // #2705 review: how many of this body's references the remap actually
+      // CHANGED. A body that referenced only functions whose index held still
+      // is rebuilt by an identity operation, and its match is not evidence
+      // that rewriting works.
+      let mut rewritten = 0
+      let mut k = 0
+      while k < cnt {
+        let kind = Array::get(r.kinds, k)
+        let val = Array::get(r.values, k)
+        if kind == reloc_kind_func {
+          let nv = map_index(a, b, val)
+          // -1 absent, -2 ambiguous on either side: neither can be remapped,
+          // and passing the old value through is a KNOWN-WRONG relocation,
+          // not a neutral one.
+          if nv < 0 {
+            unresolved = unresolved + 1
+            Array::push(mapped, val)
+          } else {
+            Array::push(mapped, nv)
+            if nv != val {
+              rewritten = rewritten + 1
+            } else {
+              ()
+            }
+          }
+        } else {
+          nonfunc = nonfunc + 1
+          Array::push(mapped, val)
+        }
+        k = k + 1
+      }
+      if nonfunc > 0 {
+        had_nonfunc = had_nonfunc + 1
+      } else {
+        ()
+      }
+      if unresolved > 0 {
+        unresolved_func = unresolved_func + 1
+      } else {
+        ()
+      }
+      let rebuilt = rebuild_body_relocs(a.bytes, a_start, a_end, r, mapped)
+      if rewritten > 0 {
+        rewritten_bodies = rewritten_bodies + 1
+      } else {
+        ()
+      }
+      if spans_equal(b.bytes, Array::get(b.body_starts, bs), Array::get(b.body_ends, bs), rebuilt) {
+        matched = matched + 1
+        if rewritten > 0 {
+          rewritten_matched = rewritten_matched + 1
+        } else {
+          ()
+        }
+      } else {
+        if rewritten > 0 {
+          rewritten_mismatched = rewritten_mismatched + 1
+        } else {
+          ()
+        }
+        mismatched = mismatched + 1
+        // Attribute it. A body carrying a non-function reference was passed
+        // through unchanged above, so a mismatch there may be this TOOL's
+        // limit (wasm has no name section for those spaces) rather than the
+        // approach's. A mismatch with NO such reference cannot be that: every
+        // reference the encoding exposes was remapped, so what is left is a
+        // reference the encoding does NOT expose -- the i64.const function
+        // values and data pointers. That is the number the emitter has to
+        // close, and it is measured here rather than estimated.
+        // Attribute it, and ONLY when the attribution is unambiguous.
+        //
+        // A body can carry a non-function reference AND an encoding-blind
+        // i64.const at once, and an unresolved function target is passed
+        // through unchanged. Either makes the cause undeterminable from here.
+        // The first version of this put every `nonfunc == 0` mismatch in the
+        // blind bucket and called the total "the number the emitter has to
+        // close"; it is a LOWER BOUND, and only the bodies with neither
+        // confound belong in it.
+        if nonfunc == 0 && unresolved == 0 {
+          mismatch_encoding_blind = mismatch_encoding_blind + 1
+          if Array::length(examples) < 6 {
+            Array::push(examples, nm)
+          } else {
+            ()
+          }
+        } else {
+          mismatch_ambiguous_cause = mismatch_ambiguous_cause + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "reloc-crossbuild compared=")
+  StringBuilder::push(out, __to_string(compared))
+  StringBuilder::push(out, " matched=")
+  StringBuilder::push(out, __to_string(matched))
+  StringBuilder::push(out, " mismatched=")
+  StringBuilder::push(out, __to_string(mismatched))
+  StringBuilder::push(out, " mismatch_encoding_blind=")
+  StringBuilder::push(out, __to_string(mismatch_encoding_blind))
+  StringBuilder::push(out, " mismatch_ambiguous_cause=")
+  StringBuilder::push(out, __to_string(mismatch_ambiguous_cause))
+  StringBuilder::push(out, " ambiguous_name_skipped=")
+  StringBuilder::push(out, __to_string(ambiguous_name))
+  StringBuilder::push(out, " moved_index=")
+  StringBuilder::push(out, __to_string(moved_index))
+  StringBuilder::push(out, " rewritten=")
+  StringBuilder::push(out, __to_string(rewritten_bodies))
+  StringBuilder::push(out, " rewritten_matched=")
+  StringBuilder::push(out, __to_string(rewritten_matched))
+  StringBuilder::push(out, " rewritten_mismatched=")
+  StringBuilder::push(out, __to_string(rewritten_mismatched))
+  StringBuilder::push(out, " source_edited_excluded=")
+  StringBuilder::push(out, __to_string(source_edited_excluded))
+  StringBuilder::push(out, " a_only=")
+  StringBuilder::push(out, __to_string(a_only_shape))
+  StringBuilder::push(out, " bodies_with_nonfunc_refs=")
+  StringBuilder::push(out, __to_string(had_nonfunc))
+  StringBuilder::push(out, " bodies_with_unresolved_func=")
+  StringBuilder::push(out, __to_string(unresolved_func))
+  println(StringBuilder::freeze(out))
+  if Array::length(examples) > 0 {
+    let ex = StringBuilder::new()
+    StringBuilder::push(ex, "reloc-crossbuild encoding-blind-examples")
+    let mut e = 0
+    while e < Array::length(examples) {
+      StringBuilder::push(ex, " ")
+      StringBuilder::push(ex, Array::get(examples, e))
+      e = e + 1
+    }
+    println(StringBuilder::freeze(ex))
+  } else {
+    ()
+  }
+  // A name the caller said it edited that matched NOTHING means the exclusion
+  // silently stopped working -- a rename in the wrapper, a change in the
+  // mangling -- and the confound would be back in the numbers with no sign of
+  // it. Same shape as the vacuity guards below.
+  let mut eg = 0
+  while eg < Array::length(edited) {
+    if Array::get(edited_hits, eg) == 0 {
+      throw(String::concat("reloc-crossbuild: no compared body matched the source-edited name '", String::concat(Array::get(edited, eg), "' -- the exclusion is not doing anything")))
+    } else {
+      ()
+    }
+    eg = eg + 1
+  }
+  if compared == 0 {
+    throw("reloc-crossbuild: nothing compared -- the two modules share no named function")
+  } else {
+    ()
+  }
+  // NON-VACUITY, in two steps, because the first one is not enough.
+  //
+  // (1) If no shared function moved, the two builds have the same index
+  // assignment and every body "relocates" by doing nothing -- a perfect score
+  // that measures nothing. A corpus that does not reach the edited file, or
+  // an order that already placed the imported module first, both land here.
+  if moved_index == 0 {
+    throw("reloc-crossbuild: no shared function changed index -- the two builds have the SAME assignment, so this run measured nothing")
+  } else {
+    ()
+  }
+  // (2) A function's own index is NOT encoded in its body, so (1) says the
+  // ASSIGNMENT moved, not that any REWRITE happened. Bodies referencing only
+  // functions that held still are rebuilt by an identity operation, and would
+  // report a perfect rate while proving nothing. `rewritten_matched` is the
+  // claim this tool actually makes: bodies where at least one reference was
+  // rewritten to a different index AND the result is byte-identical to what
+  // the compiler emitted for B. Zero of those is a failed run. (Review on
+  // #2705, one round after (1).)
+  if rewritten_matched == 0 {
+    throw("reloc-crossbuild: no body was both rewritten and byte-identical -- every rebuild was an identity operation, so this run says nothing about relocation")
+  } else {
+    ()
+  }
+}

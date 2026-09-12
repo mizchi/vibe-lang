@@ -24,6 +24,10 @@ import @vibe/core {
   MutMap, array_empty
 }
 
+import @vibe/compiler/codegen/reloc {
+  blind_owner_pending
+}
+
 import @vibe/compiler/codegen/wasm_emit {
   emit_block_i64,
   emit_br,
@@ -1610,7 +1614,27 @@ export struct CompileCtx {
   // enclosing top-level index would point at the wrong function entirely.
   // That is a known, documented gap (like the funcmap's entry-file-only
   // scope): lambda-body statements are simply absent from the linemap.
-  linemap: LineMapState
+  linemap: LineMapState;
+  // #2669 slice 2: where THIS body puts a reference the instruction encoding
+  // cannot expose. A `call` immediate says what it is -- the opcode declares
+  // the next uleb a funcidx -- but a function used as a VALUE is an
+  // `i64.const ((slot << 2) | 2)` and a data pointer rides an `i64.const` the
+  // same way, indistinguishable from an ordinary constant by any amount of
+  // decoding. A cached body cannot be moved onto another index assignment
+  // without them, and they cannot be recovered afterwards, so they are
+  // recorded here as they are written (blind_reloc_record).
+  //
+  // `blind_reloc_owner_cell` is a one-element cell naming the body being
+  // filled, and an EMPTY one disables recording entirely -- the same
+  // convention `lambda_plan_next` uses for "this ctx was built outside the
+  // planned body loop". The three payload arrays are shared BY REFERENCE into
+  // per-lambda derived ctxs, like table_slots_used, so a nested lambda's
+  // records land in the module-level arrays; only the cell is per-body.
+  blind_reloc_owner_cell: Array[Int];
+  blind_reloc_owners: Array[Int];
+  blind_reloc_offsets: Array[Int];
+  blind_reloc_kinds: Array[Int];
+  blind_reloc_syms: Array[Int]
 }
 
 /// Interior-line breakpoints (span-arc step5, multi-file): per-file provenance the
@@ -1706,6 +1730,48 @@ export fn linemap_disabled() -> LineMapState {
     offsets: array_empty(),
     file_ids: array_empty(),
     lines: array_empty()
+  }
+}
+
+/// #2669 slice 2: record one reference the instruction encoding does not
+/// expose, at the byte `buf` is about to receive.
+///
+/// The offset is where the CONSTANT'S OPCODE goes, not where its immediate
+/// starts. That is deliberate: a consumer can assert the byte it finds there
+/// is the opcode it expects (`0x42` for i64.const, `0x41` for i32.const)
+/// before rewriting, so an off-by-one is caught rather than silently
+/// patching an operand of the previous instruction.
+///
+/// A no-op when the owner cell is empty -- every ctx built outside a body
+/// loop that harvests these, including the whole gc lane.
+export fn blind_reloc_record(ctx: CompileCtx, buf: Bytes, kind: Int, sym: Int) -> Unit {
+  if Array::length(ctx.blind_reloc_owner_cell) > 0 {
+    Array::push(ctx.blind_reloc_owners, Array::get(ctx.blind_reloc_owner_cell, 0))
+    Array::push(ctx.blind_reloc_offsets, Bytes::length(buf))
+    Array::push(ctx.blind_reloc_kinds, kind)
+    Array::push(ctx.blind_reloc_syms, sym)
+  } else {
+    ()
+  }
+}
+
+/// Give every still-`pending` record appended since `lo` the owner `owner`.
+///
+/// A lambda's index comes from the frozen plan AFTER its body is compiled, so
+/// the records that body made cannot know their owner when they are written.
+/// Records from a NESTED lambda in the same range were already reassigned by
+/// that lambda's own call, which is why the pending test -- not the range
+/// alone -- decides.
+export fn blind_reloc_assign_pending(ctx: CompileCtx, lo: Int, owner: Int) -> Unit {
+  let n = Array::length(ctx.blind_reloc_owners)
+  let mut i = lo
+  while i < n {
+    if Array::get(ctx.blind_reloc_owners, i) == blind_owner_pending {
+      Array::set(ctx.blind_reloc_owners, i, owner)
+    } else {
+      ()
+    }
+    i = i + 1
   }
 }
 

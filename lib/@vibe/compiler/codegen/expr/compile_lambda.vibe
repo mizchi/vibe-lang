@@ -23,6 +23,10 @@ import @vibe/compiler/perceus {
   build_perceus_plan_pinned, pa_is_alias_dup, pa_is_drop, pa_is_dup, pa_is_reuse_token, param_is_heap_in_body
 }
 
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value, blind_kind_table_slot_i32, blind_owner_of_lambda, blind_owner_pending
+}
+
 import @vibe/compiler/codegen/common_analysis {
   collect_free_vars,
   collect_free_vars_indexed,
@@ -43,6 +47,8 @@ import @vibe/compiler/codegen/common_base {
   FuncTable,
   LambdaTable,
   StrTable,
+  blind_reloc_assign_pending,
+  blind_reloc_record,
   emit_binop_op,
   emit_heap_grow_after_heap_set,
   emit_i32_eq,
@@ -450,6 +456,10 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     }
     lfs_i = lfs_i + 1
   }
+  // #2669 slice 2: everything recorded from here on belongs to THIS lambda's
+  // body (or to one nested inside it, which reassigns its own) until the
+  // plan hands over an index below.
+  let blind_lo = Array::length(ctx.blind_reloc_owners)
   let lam_ctx = CompileCtx::{
     func_table: ctx.func_table,
     str_table: ctx.str_table,
@@ -535,7 +545,17 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     // the wrong buffer. Force disabled rather than propagating ctx.linemap
     // (documented gap: lambda-body statements are absent from the static
     // linemap; their live `--break`/dbg_line hooks are unaffected).
-    linemap: linemap_disabled()
+    linemap: linemap_disabled(),
+    // #2669 slice 2: the payload arrays are SHARED, like table_slots_used --
+    // a lambda body's references belong in the module-level log. Only the
+    // owner cell is this body's own, and it holds `pending` because the
+    // lambda's index is not drawn from the plan until the body is finished
+    // (see blind_reloc_assign_pending below).
+    blind_reloc_owner_cell: [blind_owner_pending],
+    blind_reloc_owners: ctx.blind_reloc_owners,
+    blind_reloc_offsets: ctx.blind_reloc_offsets,
+    blind_reloc_kinds: ctx.blind_reloc_kinds,
+    blind_reloc_syms: ctx.blind_reloc_syms
   }
   if ctx.enable_rc {
     let mut dpi = 0
@@ -653,9 +673,11 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   }
   Array::push(ctx.lambda_table.meta_i32, 0)
   Array::push(ctx.lambda_table.meta_i64, extra_lam)
+  blind_reloc_assign_pending(ctx, blind_lo, blind_owner_of_lambda(lambda_idx))
   let table_slot = ctx.lambda_slot_base + lambda_idx
   Array::push(ctx.table_slots_used, table_slot)
   if num_captures == 0 {
+    blind_reloc_record(ctx, buf, blind_kind_fn_value, table_slot)
     emit_i64_const(buf, (table_slot<<2)|2)
     next_local
   } else {
@@ -686,6 +708,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       emit_i32_store8(buf, 0, 7)
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
+      blind_reloc_record(ctx, buf, blind_kind_table_slot_i32, table_slot)
       emit_i32_const(buf, table_slot)
       emit_i32_store(buf, 2, 8)
       emit_local_get(buf, ptr_local)
@@ -703,6 +726,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       emit_heap_grow_after_heap_set(buf, ctx)
       emit_local_get(buf, ptr_local)
       emit_i32_wrap_i64(buf)
+      blind_reloc_record(ctx, buf, blind_kind_table_slot_i32, table_slot)
       emit_i32_const(buf, table_slot)
       emit_i32_store(buf, 2, 0)
       emit_local_get(buf, ptr_local)

@@ -74,6 +74,50 @@ export let reloc_kind_data: Int = 8
 
 export let reloc_kind_elem: Int = 9
 
+//# The classes the instruction encoding does NOT expose (#2669 slice 2).
+//#
+//# These are not found by scanning: they ride an `i64.const` / `i32.const`
+//# that is byte-for-byte an ordinary constant. The EMITTER records them, at
+//# the sites that already exist for another reason -- `CompileCtx`'s
+//# `table_slots_used` log is appended at exactly the points a function value
+//# is emitted, so the set is closed and stays closed: a new function-value
+//# site that forgot to record would also break the element section.
+//#
+//# Numbered from 101 so a consumer can hold scanned and recorded references
+//# in ONE table with no extra tag. Stored in artifacts, so append-only.
+
+/// `i64.const ((slot << 2) | 2)` -- a function used as a VALUE. `sym` is the
+/// funcref-table slot, `aux` unused.
+export let blind_kind_fn_value: Int = 101
+
+/// `i32.const slot` -- the funcref-table slot stored into a closure header by
+/// the capturing lambda form. Same symbol, different encoding and width.
+///
+/// The other class named above -- a DATA POINTER, which rides an `i64.const`
+/// the same way -- has no kind here yet. Numbering it before anything emits
+/// it would be a promise, and the numbers are append-only, so it gets one
+/// when the emitter records it.
+export let blind_kind_table_slot_i32: Int = 102
+
+/// The owner of a recorded reference is the body it sits in: a user function
+/// by index, or a lambda. A lambda's index is not known until AFTER its body
+/// has been compiled (`compile_lambda` takes it from the frozen plan at the
+/// end), so records made while compiling one are owned by `pending` and
+/// reassigned when the index arrives.
+export let blind_owner_pending: Int = -1
+
+export fn blind_owner_of_lambda(lambda_idx: Int) -> Int {
+  0 - 2 - lambda_idx
+}
+
+export fn blind_owner_lambda_index(owner: Int) -> Int {
+  0 - 2 - owner
+}
+
+export fn blind_owner_is_lambda(owner: Int) -> Bool {
+  owner <= 0 - 2
+}
+
 /// Every reference one body makes, as parallel arrays -- the shape
 /// `CodegenBodyCache` already uses for everything it carries.
 ///

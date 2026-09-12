@@ -727,6 +727,89 @@ holding a stale tag routes a `perform` to the wrong handler with nothing
 failing at build time. Recording them raised stage2's site count from 141,380
 to 142,360 — 980 references that were silently going to be left behind.
 
+##### Does a body actually relocate? (#2669, slice 1b)
+
+The round-trip above proves the walk does not desynchronise. It does not prove
+the central claim, which is that a body compiled against ONE index assignment
+can be moved onto ANOTHER. `scripts/reloc_crossbuild.sh` tests that directly:
+it builds the compiler's own closure twice — the second with one import added
+to `lib/@vibe/core/base64.vibe`, which pulls `hex.vibe` earlier in the module
+order and moves most of the function index space — then takes each of A's
+bodies, rewrites every function reference from A's index space into B's by
+resolving through the name section, and compares against **what the compiler
+itself emitted for B**.
+
+| | count | share |
+|---|---:|---:|
+| bodies compared | 4350 | |
+| **REWRITTEN: at least one reference moved** | **3157** | |
+| **rewritten AND byte-identical to the compiler's own output** | **2814** | **89.1%** |
+| rewritten, mismatched | 343 | 10.9% |
+| not rewritten — an identity rebuild, no evidence either way | 1193 | |
+| mismatch, cause not determinable (of all 382) | 284 | |
+| mismatch, unambiguously **encoding-blind** (of all 382) | 98 | |
+| skipped: the name is ambiguous on one side or the other | 5 | |
+| excluded: the body the wrapper EDITED, not a relocation case | 1 | |
+| shared functions whose index actually moved | 4265 | |
+
+**89.1% of the bodies this measurement can speak for survive a module reorder
+byte for byte**, using nothing but the references the instruction encoding
+exposes. That is the first direct evidence that index-independent bodies work
+rather than an argument that they should.
+
+**The load-bearing figure is 2814 / 3157, not 3968 / 4350.** A function's own
+index is not encoded in its body, so "the assignment moved" does not mean "this
+body was rewritten": 1193 of the 4350 reference only functions that held still,
+and are rebuilt by an identity operation. Their match says nothing about
+relocation, and counting them flattered the first published rate (91.2%) over
+the real one (89.1%). Measured the other way round, with the remap forced to
+the identity on the same pair, matched falls **3968 → 1154** — so the remap is
+worth 2814 bodies, and that is the claim.
+
+**98 is a LOWER BOUND on what the emitter must record, not the number.** Only
+bodies with no confound are in it: a body can carry both a non-function
+reference (passed through here, because wasm gives those spaces no name
+section to map through) and an encoding-blind `i64.const`, and an unresolved
+function target is also passed through. Either makes the cause undeterminable
+from the binary, so those 284 are counted apart rather than attributed. A real
+link has the symbol tables this tool lacks and would resolve most of them; how
+many of the 284 are ALSO encoding-blind is not knowable here.
+
+Three things this measurement needs in order to mean anything, each of which
+it got wrong first and reports now:
+
+- **Duplicate names are refused, not resolved first-wins.** The compiler emits
+  many functions called `__rt_gen` — `linked_compile.vibe` labels every
+  unassigned generated slot that way in a loop. Taking the first match compared
+  each of them against the wrong body and remapped every call to one into the
+  wrong target, which both manufactures mismatches and can count a comparison
+  against the WRONG body as a match. The first published figure (4356 / 3943 /
+  90.5%) had those rows in it.
+- **Duplicate names are refused on BOTH sides.** Checking only the target
+  module was the first version of that fix and it is not enough: if A carries
+  two `__rt_gen` and B carries one, both A bodies are compared against that
+  single B body and every A-side reference to either collapses onto it. On this
+  particular pair the two-sided check changes no number — the duplicates exist
+  on both sides — but an explicitly supplied pair can exhibit it.
+- **The reorder is asserted, not assumed, and then so is the REWRITE.** Two
+  guards, because the first alone can pass vacuously. `moved_index` counts
+  shared functions whose index differs, and zero FAILS — handing the tool the
+  same module twice gives `matched=4351 mismatched=0 moved_index=0`, a perfect
+  score, rejected. But a function's own index is not in its body, so that only
+  establishes the assignment moved. `rewritten_matched` counts bodies where a
+  reference was rewritten to a different index AND the result is byte-identical;
+  zero of those FAILS too. Red-tested by forcing the remap to the identity on
+  the real pair: `moved_index=4266 rewritten=0`, so the first guard passes and
+  the second one fires.
+- **The one edited body is EXCLUDED, not merely named.** Forcing a module
+  reorder requires editing something — a call has to cross the new import — so
+  that body's two versions are different source programs and comparing them
+  measures the edit. Naming it in the output left it in the denominator and,
+  measured, inside the encoding-blind bucket: excluding it moves the bound from
+  99 to **98** and the compared total from 4351 to 4350. The wrapper passes the
+  name and the tool FAILS if it matches nothing, so a rename cannot put the
+  confound back in silence.
+
 **What the scan cannot see, and why the link must record instead of derive.**
 A `call` immediate is self-describing — the opcode says the next uleb is a
 funcidx. A function used as a VALUE is not: it is an `i64.const (idx*4+2)`,
@@ -749,6 +832,99 @@ monotonic. Red-tested by running the pre-fix version on that same pair under a
 90s budget (exit 124, did not terminate) against the fixed one (exit 0, under a
 second), and by confirming the added-function run reports byte-identical
 figures after the change.
+
+##### What a scan cannot find, recorded at emission (#2669, slice 2)
+
+The measurement above relocates a body using only what the instruction
+encoding exposes, and 98 of its mismatches are bodies where every such
+reference was remapped and the body still differs. What is left in those is a
+reference the encoding does not mark. Two shapes, both on the RC lane:
+
+| shape | what it is |
+|---|---|
+| `i64.const ((slot << 2) \| 2)` | a function used as a VALUE — passed by name, or a captureless lambda |
+| `i32.const slot` | the funcref-table slot a CAPTURING lambda stores into its closure header |
+
+Neither is distinguishable from an ordinary integer constant, so the emitter
+has to record them as it writes them. `CompileCtx` carries a blind-reference
+log (`blind_reloc_*`), shared by reference into per-lambda derived contexts the
+way `table_slots_used` already is, and `blind_reloc_record` appends one entry
+per emission. The offset it stores is where the constant's **opcode** goes, not
+where its immediate starts — so a consumer can check the byte it is about to
+rewrite instead of trusting the arithmetic that produced the offset.
+
+**Two checks, because a wrong record cannot be noticed later.** These are the
+references nothing in the bytes marks as references. A stale offset does not
+fail to resolve; it resolves, rewrites an unrelated operand, and the module
+still validates. There is no later stage that would catch it, so both checks
+run on every compile rather than in a test:
+
+- **Every record is checked against the byte it names** (`lc_verify_blind_relocs`).
+  The opcode must be the one the kind implies and the constant must decode —
+  signed, since both immediates are sLEB — to exactly what the record says the
+  reference is. A few thousand records on a compiler-sized program, two byte
+  reads and one LEB decode each.
+- **The record count must equal the funcref-slot count**, per compiled
+  function. This is what makes the recording COMPLETE rather than believed
+  complete: a function value is emitted at exactly the points that append to
+  `table_slots_used`, and each appends one slot and records one reference. A
+  new emission site that forgot to record shows up as a count that does not
+  match, on the next build, instead of as a cached body that relocates one
+  reference short.
+
+**Owners, and the part with room to be wrong.** A record belongs to the BODY it
+sits in, which is a user function or a lambda. A lambda's index is not drawn
+from the frozen plan until its body is finished, so records made while
+compiling one are written under a pending owner and reassigned afterwards —
+and a nested lambda, which finishes first, must keep its own. If the outer
+reassignment claimed the inner's records, their offsets would be read against
+the outer body and land on unrelated bytes; the check above is what turns that
+into a failed build. `lib/@vibe/compiler/tests/blind_reloc_test.vibe` compiles
+one program per shape, including the nested case.
+
+That nested case had to be BUILT rather than picked, and the first version of
+it proved nothing. The obvious spelling of nested lambdas — a closure over an
+enclosing binding — does not reach the hazard at all: a capturing lambda's slot
+is emitted into the ENCLOSING buffer, so the inner body records nothing and an
+outer reassignment has nothing to steal. Measured, with the reassignment
+widened to drop its pending test: that version still passed. Both lambda bodies
+have to contain a function value of their own, which is what the committed case
+does. Three of four mutations failing is not a passing grade for the fourth.
+
+**What it costs, on the KPI this issue is about.** The recording is not free,
+and a memory regression on a memory issue should be stated rather than left in
+a report:
+
+| | selfcompile memory |
+|---|---:|
+| slice 1b alone (scripts and docs, no compiler change) | 852 MiB |
+| with slice 2's recording | 857 MiB (**+0.63%**) |
+
+Those two are the per-PR perf reports for `cb5bc9c` and `0ea74ec`, which share
+the same main baseline (`595fed3eb`) and differ by exactly the slice-2 commits
+— so the +5 MiB is attributable without building anything extra. Earlier
+reports on this branch used older baselines and are NOT comparable: main moved
+under them, which is most of what makes a "+x% vs main" row hard to read at
+all. Compiled code grew 0.21% (the verifier and the recorder are new code in
+the compiler's own wasm).
+
+Most of the 5 MiB is the log itself — four parallel arrays growing with every
+function-value reference in the program — which is the mechanism, not overhead
+around it. A smaller share is the fresh one-element owner cell allocated per
+function body; one module-level cell with save/restore in `compile_lambda`
+would remove it, and is worth doing only if this number ever matters. The
+trade is 0.63% now against what the warm build currently costs: 765 MB for a
+one-module edit, 93% of a cold build.
+
+**What is NOT recorded yet, said plainly.** Data pointers — the other class the
+scan cannot see — have no kind number yet, because numbering one before
+anything emits it would be a promise and the numbers are append-only. And a
+REPLAYED function re-pushes its recorded funcref slots from
+`CodegenBodyCache` without re-running codegen, so it contributes slots and no
+blind references: a replaying build's log is incomplete by exactly that
+amount, which is why the paired count is checked only for functions that were
+compiled. Carrying these in the cache is what removes the asymmetry, and it
+belongs with the consumer that reads them back.
 
 #### And what it costs in ALLOCATION — the #2510 criterion-5 KPI (2026-09-11)
 

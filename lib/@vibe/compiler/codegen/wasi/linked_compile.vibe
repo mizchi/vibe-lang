@@ -165,6 +165,10 @@ import @vibe/compiler/codegen/builtin_bodies {
   static_str_len_body
 }
 
+import @vibe/compiler/codegen/reloc {
+  blind_kind_fn_value, blind_kind_table_slot_i32, blind_owner_lambda_index, blind_owner_pending
+}
+
 import @vibe/compiler/codegen/common_analysis {
   bmask_has,
   borrow_round0_link,
@@ -1199,6 +1203,113 @@ fn lc_fresh_type_expr_array() -> Array[TypeExpr] {
 /// each index is known (linemap_hdrlen_by_bi below: one entry per user
 /// function, filled in `ci` order as each function's locals header is
 /// assembled).
+/// #2669 slice 2: LEB128, signed, at `p` in `body`. `i64.const` and
+/// `i32.const` immediates are both signed; reading one unsigned would agree
+/// exactly where small slot numbers live and disagree everywhere a check
+/// would matter, so the decode has to sign-extend.
+fn lc_read_sleb(body: Bytes, p: Int) -> Int with Exception {
+  let n = Bytes::length(body)
+  let mut acc = 0
+  let mut shift = 0
+  let mut i = p
+  let mut last = 0
+  let mut done = false
+  while !done {
+    if i >= n {
+      throw("blind reloc: constant runs past the end of the body")
+    } else {
+      ()
+    }
+    let byte = Bytes::get(body, i)
+    last = byte
+    acc = acc|((byte&127)<<shift)
+    shift = shift + 7
+    i = i + 1
+    if (byte&128) == 0 {
+      done = true
+    } else {
+      ()
+    }
+  }
+  if shift < 64 && (last&64) != 0 {
+    acc|(0 - (1<<shift))
+  } else {
+    acc
+  }
+}
+
+/// #2669 slice 2: every recorded reference must name the constant it claims.
+///
+/// See the call site for why this is not optional. `owners` are body ids -- a
+/// user function by index, a lambda as `blind_owner_of_lambda` -- and the
+/// offsets are relative to that body's instruction stream, which is what
+/// `bodies` holds (the locals header is prepended later, at code-section
+/// assembly).
+fn lc_verify_blind_relocs(bodies: Array[Bytes], num_generated: Int, lambda_ci_base: Int, owners: Array[Int], offsets: Array[Int], kinds: Array[Int], syms: Array[Int]) -> Unit with Exception {
+  let n = Array::length(owners)
+  let mut k = 0
+  while k < n {
+    let owner = Array::get(owners, k)
+    // A record still owned by `pending` means a lambda body was compiled and
+    // its planned index never arrived, so the reference belongs to no body at
+    // all. Louder than leaving it to be misattributed.
+    if owner == blind_owner_pending {
+      throw("blind reloc: a recorded reference was never assigned an owner (a lambda body compiled without taking its planned index)")
+    } else {
+      ()
+    }
+    let ci = if owner >= 0 {
+      num_generated + owner
+    } else {
+      lambda_ci_base + blind_owner_lambda_index(owner)
+    }
+    // Late DCE replaces an unused GENERATED helper's body with a one-byte
+    // stub, which would leave a record naming it pointing into a body that no
+    // longer exists. None can: an owner is a user function or a lambda, and
+    // both map above num_generated. Checked, not assumed -- the two sites are
+    // far apart and only one of them would have to move.
+    if ci < num_generated || ci >= Array::length(bodies) {
+      throw(String::concat("blind reloc: owner maps outside the user code range: owner ", String::concat(__to_string(owner), String::concat(" -> code index ", __to_string(ci)))))
+    } else {
+      ()
+    }
+    let body = Array::get(bodies, ci)
+    let off = Array::get(offsets, k)
+    if off < 0 || off >= Bytes::length(body) {
+      throw(String::concat("blind reloc: offset outside the body: code index ", String::concat(__to_string(ci), String::concat(" offset ", __to_string(off)))))
+    } else {
+      ()
+    }
+    let kind = Array::get(kinds, k)
+    let sym = Array::get(syms, k)
+    let opcode = Bytes::get(body, off)
+    let want_op = if kind == blind_kind_fn_value {
+      66
+    } else if kind == blind_kind_table_slot_i32 {
+      65
+    } else {
+      throw(String::concat("blind reloc: unknown kind ", __to_string(kind)))
+    }
+    let want_val = if kind == blind_kind_fn_value {
+      (sym<<2)|2
+    } else {
+      sym
+    }
+    if opcode != want_op {
+      throw(String::concat("blind reloc: expected opcode ", String::concat(__to_string(want_op), String::concat(" at code index ", String::concat(__to_string(ci), String::concat(" offset ", String::concat(__to_string(off), String::concat(", found ", __to_string(opcode)))))))))
+    } else {
+      ()
+    }
+    let got = lc_read_sleb(body, off + 1)
+    if got != want_val {
+      throw(String::concat("blind reloc: constant at code index ", String::concat(__to_string(ci), String::concat(" offset ", String::concat(__to_string(off), String::concat(" decodes to ", String::concat(__to_string(got), String::concat(", recorded ", __to_string(want_val)))))))))
+    } else {
+      ()
+    }
+    k = k + 1
+  }
+}
+
 fn lc_fresh_int_array_of_len(n: Int, fill: Int) -> Array[Int] {
   let arr = lc_fresh_int_array()
   let mut i = 0
@@ -10700,6 +10811,16 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // array by reference — and consumed by the element-section emission, which
   // registers only the recorded slots.
   let table_slots_used = lc_fresh_int_array()
+  // #2669 slice 2: module-wide log of the references the instruction encoding
+  // does not expose -- function values and data pointers, which ride an
+  // ordinary-looking constant (see CompileCtx.blind_reloc_*). Created once and
+  // shared by reference into every per-body CompileCtx below, exactly like
+  // table_slots_used, and checked against the emitted bodies below
+  // (lc_verify_blind_relocs) before anything is allowed to depend on them.
+  let blind_owners = lc_fresh_int_array()
+  let blind_offsets = lc_fresh_int_array()
+  let blind_kinds = lc_fresh_int_array()
+  let blind_syms = lc_fresh_int_array()
   let bodies = lc_fresh_bytes_array()
   let meta_i32 = lc_fresh_int_array()
   let meta_i64 = lc_fresh_int_array()
@@ -11108,6 +11229,8 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         // The log is module-level and append-only, so the function's own
         // contribution is exactly the suffix it grows below.
         let __slot_lo = Array::length(table_slots_used)
+        // #2669 slice 2: the same suffix, for the blind-reference log.
+        let __blind_lo = Array::length(blind_owners)
         let __bi_stmt = Array::get(stmts, Array::get(fn_stmt_indices, bi))
         // #703 follow-up: under RC, lift temporary match scrutinees into lets so the
         // Perceus pass (which drops named bindings) reclaims them. Applied here, the
@@ -11535,7 +11658,15 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
           pending_letrec_self_name: lc_fresh_string_array(),
           table_slots_used: table_slots_used,
           lambda_plan_next: lambda_plan_cell,
-          linemap: linemap_state
+          linemap: linemap_state,
+          // #2669 slice 2: this body is user function `bi`. The cell is fresh
+          // per body (it names the owner); the payload arrays are the
+          // module-wide ones.
+          blind_reloc_owner_cell: [bi],
+          blind_reloc_owners: blind_owners,
+          blind_reloc_offsets: blind_offsets,
+          blind_reloc_kinds: blind_kinds,
+          blind_reloc_syms: blind_syms
         }
         if is_efn(__bi_expr) {
           // #715: `lc_norm_params` (built above from `get_efn_params(__bi_expr)`)
@@ -11991,6 +12122,32 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         // Harvest is unconditional and cheap (it copies references into parallel
         // arrays, it does not re-encode). The cache is only READ when a caller
         // supplies one.
+        // #2669 slice 2: the blind-reference log and the funcref-slot log must
+        // grow BY THE SAME AMOUNT over this function's compile.
+        //
+        // This is what keeps the recording COMPLETE rather than merely
+        // believed complete. A function value is emitted at exactly the points
+        // that append to `table_slots_used` -- compile_expr's
+        // named-function-as-value branch and compile_lambda's single
+        // `table_slot` computation, which feeds both the captureless
+        // `i64.const` and the capturing closure header's `i32.const`. Each
+        // appends one slot and records one reference. So a new emission site
+        // that forgot to record, or a record without an emission, shows up
+        // here as a count that does not match, on every compile, instead of as
+        // a cached body that relocates one reference short.
+        //
+        // Compiled functions only: a REPLAYED function re-pushes its recorded
+        // slots from the cache without re-running codegen, so it contributes
+        // slots and no blind references. That asymmetry is the reason a
+        // replaying build's blind log is incomplete, and carrying these in
+        // `CodegenBodyCache` is what removes it.
+        let __blind_grew = Array::length(blind_owners) - __blind_lo
+        let __slots_grew = Array::length(table_slots_used) - __slot_lo
+        if __blind_grew != __slots_grew {
+          throw(String::concat("blind reloc: function ", String::concat(__to_string(bi), String::concat(" appended ", String::concat(__to_string(__slots_grew), String::concat(" funcref slots but ", String::concat(__to_string(__blind_grew), " blind references -- a function-value emission site records one or the other, never just one")))))))
+        } else {
+          ()
+        }
         codegen_body_cache_record(body_cache_out, bi, Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used))
       }
     }
@@ -12109,6 +12266,27 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     Array::push(meta_v128, 0)
     li = li + 1
   }
+  // #2669 slice 2: where lambda bodies begin in `bodies`. DERIVED from the
+  // array that was just filled rather than spelled as
+  // `num_generated + num_user_funcs + 2` -- the `+ 2` would be a silent
+  // assumption about `_start` and `run`, and a third synthesized body would
+  // misattribute every recorded lambda reference. Nothing appends to `bodies`
+  // after this point.
+  let lambda_ci_base = Array::length(bodies) - num_lambdas
+  // #2669 slice 2: CHECK every recorded reference against the byte it names.
+  //
+  // A wrong record is the worst thing this mechanism can produce and the
+  // hardest to notice. The references it holds are the ones nothing in the
+  // bytes marks as references, so a stale offset does not fail to resolve --
+  // it resolves, rewrites an unrelated operand, and the module still
+  // validates. There is no later stage that could catch it.
+  //
+  // So it is checked here, on every compile, against the bodies as emitted:
+  // the opcode at the offset must be the one the kind implies, and the
+  // constant there must decode to exactly what the record says the reference
+  // is. Thousands of records on a compiler-sized program, a couple of byte
+  // reads and one LEB decode each.
+  lc_verify_blind_relocs(bodies, num_generated, lambda_ci_base, blind_owners, blind_offsets, blind_kinds, blind_syms)
   let mut max_closure_arity = -1
   let mut lai = 0
   while lai < num_lambdas {
