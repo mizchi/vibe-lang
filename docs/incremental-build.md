@@ -1049,6 +1049,49 @@ the guards are not recorded at all. Measured: adding one uncompared struct OR
 one uncompared enum to a fixture that otherwise reuses takes its recorded
 guards from 5 to 0 and its reuse to nothing.
 
+#### Where a compile's allocation actually goes, by PHASE (2026-09-12)
+
+The rows below are the same instrument as the section that follows, cut by
+phase instead of by lane: `scripts/compile_phase_memory.sh` drives the #1553
+heap-mark lane (`compile_file_fs_mode_rc_heap_marked`, selected by
+`VIBE_PROFILE_MEMORY_MARKS=1`) at three temperatures sharing one
+`VIBE_BUILD_CACHE_DIR`. A delta between two marks is bytes ALLOCATED in that
+phase. Corpus: the compiler's own closure, leaf `lib/@vibe/core/defaults.vibe`,
+checked to be in it. Reproduced to the byte across runs.
+
+| phase | cold | unchanged (warm) | one-leaf edit |
+|---|---:|---:|---:|
+| collect sources | 200.2 MB | 19.9 MB | 33.6 MB |
+| **type check** | 269.2 MB | **11.3 MB** | **331.4 MB** |
+| merge | 63.4 MB | 187.5 MB | 78.7 MB |
+| codegen | 359.6 MB | 359.7 MB | 359.6 MB |
+| write output | 25.2 MB | 25.2 MB | 25.2 MB |
+| **total** | **917.6 MB** | **603.6 MB** | **828.5 MB** |
+
+**The type check is what a one-file edit costs.** It is 11.3 MB when nothing
+changed and **331.4 MB** when one leaf did — *more than a cold check's 269.2
+MB*. That single row is #2510's fifth criterion failing: the live set is not
+bounded by the edited module because the TYPE CHECK is not. Everything else in
+the edited column is within a few tens of MB of its unchanged value.
+
+Two readings that are easy to get wrong, so they are stated here:
+
+- **The phases do not partition the work cleanly.** The parse happens inside
+  whichever phase first needs a statement list. Cold, `collect sources` pays it
+  (200.2 MB) and the merge is cheap; warm-unchanged, the typing cache hits so
+  nothing has parsed yet and the merge pays it (187.5 MB). That row moving is
+  not extra work appearing. Compare TOTALS; read a phase as "where this
+  temperature paid".
+- **This lane has no body cache.** `compile_file_fs_mode_rc_heap_marked` calls
+  the plain RC compile, so codegen is a flat 359.6 MB in every column. The
+  body cache (#2669 step 2b) is what moves that one, and on the lane that has
+  it a one-leaf edit measures 0.923 GB against a cold 1.075 GB.
+
+So the remaining work for criterion 5 is the check, not the back end: an edit
+to one leaf must re-check that leaf and the modules whose interfaces it
+changes, not the whole closure. That is #1379's semantic-module granularity,
+and this row is the number it has to move.
+
 #### And what it costs in ALLOCATION — the #2510 criterion-5 KPI (2026-09-11)
 
 The section above bounds the split's cost in wall time. The KPI #2510 actually
