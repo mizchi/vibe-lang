@@ -652,6 +652,54 @@ A body cache that serves body-only edits and declines the moment the function
 set or the module order changes needs none of the above, and the first column
 says what it would be worth.
 
+##### The decision, and what has landed of it
+
+**Index-independent bodies were chosen** (the third option above). The reason
+is the P0 ordering rather than cost: the other two fail by *answering wrongly*
+— a relocator keyed on the `call` opcode leaves the `i64.const` classes
+untouched and produces a body that looks fine and calls the wrong function —
+while a symbolic body's failure mode is a reference that will not resolve,
+which is a build error. A fourth reading, gating the cache on the edit class,
+remains available as a cheaper slice and is not excluded by this.
+
+Landed so far — `@vibe/compiler/codegen/reloc`, the half that a cached body
+needs before the link can exist: given a finished body, find every reference
+and rewrite it against a new assignment. It changes no emission, so it can be
+held against real output before anything depends on it.
+
+The rebuild copies spans and re-encodes rather than patching in place, which
+is what lets it serve the width-band case above: `call 127` → `call 128` grows
+the body by a byte and the rebuild does not notice, where a patcher would have
+had to refuse. `reloc_scan_test.vibe` pins that in both directions.
+
+The scan is **fail-closed**: an opcode it does not know is refused by name, not
+assumed to be one byte wide. That is what made its coverage measurable rather
+than asserted. `scripts/reloc_roundtrip.sh` runs it over whole modules and
+requires an identity rebuild to be byte-identical:
+
+| module | bodies | relocation sites | identity mismatches |
+|---|---:|---:|---:|
+| the compiler's own stage2 | 6681 | 141,380 | 0 |
+| a 4743-function linear corpus | 4743 | 144,253 | 0 |
+| a gc-lane probe | 61 | 142 | 0 |
+
+The linear lanes passed on the first run; the first gc-lane module refused
+`0xfb` by name, which is how the wasm-gc opcode family got added rather than
+silently mis-walked. Identity alone would pass vacuously on a scanner that
+found nothing, so the site count is reported beside it and a second pass
+perturbs one value per body and requires the bytes to change.
+
+**What the scan cannot see, and why the link must record instead of derive.**
+A `call` immediate is self-describing — the opcode says the next uleb is a
+funcidx. A function used as a VALUE is not: it is an `i64.const (idx*4+2)`,
+and a data pointer rides an `i64.const` the same way. Nothing in the encoding
+separates either from an ordinary constant, so no amount of decoding can
+recover them and a guess would be wrong some of the time. `#2669` measured 25
+of the first class and 850 of the second on one module reorder. This is the
+concrete argument that the emitter must RECORD those references as it writes
+them; it is the next slice, and `reloc_scan_unseen_kinds` names the gap in the
+code so the boundary is not something a reader has to infer.
+
 The tool's own failure mode is worth recording, because it is the shape this
 repository keeps finding. Its site scan walks BACK up to six bytes to find the
 opcode owning a differing byte, then advanced to the end of that immediate —
