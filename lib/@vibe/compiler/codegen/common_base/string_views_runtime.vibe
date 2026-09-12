@@ -1,0 +1,201 @@
+//# Imports
+
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import ./common_base.vibe {
+  FuncTable
+}
+
+import ./double_runtime.vibe {
+  program_calls_any, program_defines_top_level, runtime_prelude_require
+}
+
+//# Functions
+
+/// #2630 / PR #2708 review: the String length-view runtime prelude --
+/// `String::unicode_length` (code points) and `String::utf16_length` (UTF-16
+/// code units) of a byte string (ADR-0098), written as ordinary vibe source
+/// and compiled INTO the program that calls them, the way the Double runtime
+/// prelude is (double_runtime.vibe, #2652). Each lane's convergence point
+/// appends it (`append_string_views_runtime`), the callsite lowerings
+/// (string_length_exprs.vibe) are one `ECall` each, and a lowering runs
+/// `string_views_runtime_require` first so a lane that never appended the
+/// prelude fails loudly at the lowering.
+///
+/// What a malformed byte counts as. A `String` is its bytes and may hold any
+/// of them, so the views must say what a byte that is not part of a
+/// well-formed UTF-8 sequence counts as. They used to count "bytes that are
+/// not `10xxxxxx`", which read `0xFF` as a code point and every lead byte
+/// >= 0xF0 as a surrogate pair whether or not a 4-byte sequence followed
+/// (Codex review on #2708). The answer now is the WHATWG decoder's: the bytes
+/// are decoded with the replacement character, each maximal invalid subpart
+/// becomes ONE U+FFFD, and a view is that decoded text's length -- one code
+/// point and one UTF-16 unit per U+FFFD. So `String::utf16_length(s)` is
+/// `new TextDecoder().decode(bytes).length` and `String::unicode_length(s)`
+/// is `[...decoded].length`, the two answers a JavaScript host gives for the
+/// same bytes (`fixtures/string_length_intrinsics_test.vibe` pins sixteen
+/// malformed shapes against them). A stray continuation byte, an overlong
+/// form (`C0 80`), a surrogate (`ED A0 80`), a value past U+10FFFF (`F4 90 80
+/// 80`) and a truncated sequence all count that way; a well-formed sequence
+/// counts as before, one code point, and two UTF-16 units when it is four
+/// bytes long.
+///
+/// The walk (`__vibe_str_view_length`): at each position read the lead byte.
+/// ASCII, and a byte that cannot start a sequence (`80..C1`, `F5..FF`),
+/// consume one byte. A 2-, 3- or 4-byte lead consumes its whole sequence when
+/// every continuation byte is in range -- the second byte's range depends on
+/// the lead (`E0`: A0..BF, `ED`: 80..9F, `F0`: 90..BF, `F4`: 80..8F, otherwise
+/// 80..BF), which is what excludes overlongs, surrogates and values past
+/// U+10FFFF -- and otherwise consumes the longest well-formed prefix as one
+/// U+FFFD, exactly the "maximal subpart" the WHATWG decoder replaces.
+export fn string_views_runtime_source() -> String {
+  let lines = [
+    "fn __vibe_str_cont(s: String, i: Int, n: Int) -> Bool {",
+    "  i < n && (String::char_code_at(s, i) & 192) == 128",
+    "}",
+    "",
+    "fn __vibe_str_in(s: String, i: Int, n: Int, lo: Int, hi: Int) -> Bool {",
+    "  if i < n {",
+    "    let b = String::char_code_at(s, i)",
+    "    b >= lo && b <= hi",
+    "  } else {",
+    "    false",
+    "  }",
+    "}",
+    "",
+    "fn __vibe_str_view_length(s: String, utf16: Bool) -> Int {",
+    "  let n = String::length(s)",
+    "  let mut i = 0",
+    "  let mut count = 0",
+    "  while i < n {",
+    "    let b = String::char_code_at(s, i)",
+    "    if b < 194 {",
+    "      count = count + 1",
+    "      i = i + 1",
+    "    } else if b < 224 {",
+    "      count = count + 1",
+    "      i = if __vibe_str_cont(s, i + 1, n) {",
+    "        i + 2",
+    "      } else {",
+    "        i + 1",
+    "      }",
+    "    } else if b < 240 {",
+    "      let lo = if b == 224 {",
+    "        160",
+    "      } else {",
+    "        128",
+    "      }",
+    "      let hi = if b == 237 {",
+    "        159",
+    "      } else {",
+    "        191",
+    "      }",
+    "      count = count + 1",
+    "      i = if __vibe_str_in(s, i + 1, n, lo, hi) {",
+    "        if __vibe_str_cont(s, i + 2, n) {",
+    "          i + 3",
+    "        } else {",
+    "          i + 2",
+    "        }",
+    "      } else {",
+    "        i + 1",
+    "      }",
+    "    } else if b < 245 {",
+    "      let lo = if b == 240 {",
+    "        144",
+    "      } else {",
+    "        128",
+    "      }",
+    "      let hi = if b == 244 {",
+    "        143",
+    "      } else {",
+    "        191",
+    "      }",
+    "      if __vibe_str_in(s, i + 1, n, lo, hi) && __vibe_str_cont(s, i + 2, n) && __vibe_str_cont(s, i + 3, n) {",
+    "        if utf16 {",
+    "          count = count + 2",
+    "        } else {",
+    "          count = count + 1",
+    "        }",
+    "        i = i + 4",
+    "      } else {",
+    "        count = count + 1",
+    "        i = if __vibe_str_in(s, i + 1, n, lo, hi) {",
+    "          if __vibe_str_cont(s, i + 2, n) {",
+    "            i + 3",
+    "          } else {",
+    "            i + 2",
+    "          }",
+    "        } else {",
+    "          i + 1",
+    "        }",
+    "      }",
+    "    } else {",
+    "      count = count + 1",
+    "      i = i + 1",
+    "    }",
+    "  }",
+    "  count",
+    "}",
+    "",
+    "fn __vibe_string_unicode_length(s: String) -> Int {",
+    "  __vibe_str_view_length(s, false)",
+    "}",
+    "",
+    "fn __vibe_string_utf16_length(s: String) -> Int {",
+    "  __vibe_str_view_length(s, true)",
+    "}"
+  ]
+  String::join(lines, "\n")
+}
+
+export fn string_views_runtime_unicode_name() -> String {
+  "__vibe_string_unicode_length"
+}
+
+export fn string_views_runtime_utf16_name() -> String {
+  "__vibe_string_utf16_length"
+}
+
+/// Does this program call either view? The prelude is called from exactly
+/// two lowerings, `String::unicode_length` and `String::utf16_length`
+/// (`String::utf8_length` is `String::length` and needs none), so a program
+/// that spells neither never reaches it.
+export fn program_needs_string_views_runtime(stmts: Array[Stmt]) -> Bool {
+  program_calls_any(stmts, ["String::unicode_length", "String::utf16_length"])
+}
+
+/// Is the prelude already in `stmts`? See `program_defines_top_level` for why
+/// the spelling can be trusted.
+export fn program_has_string_views_runtime(stmts: Array[Stmt]) -> Bool {
+  program_defines_top_level(stmts, string_views_runtime_unicode_name())
+}
+
+/// Append the prelude's functions to `stmts` when the program calls a view
+/// and does not carry them yet -- at each lane's convergence point, next to
+/// `append_double_runtime` and under the same rules (after every AST-mutating
+/// pass, before the analyses codegen reads).
+export fn append_string_views_runtime(stmts: Array[Stmt]) -> Unit with Exception {
+  if program_needs_string_views_runtime(stmts) && !program_has_string_views_runtime(stmts) {
+    let prelude = parse_program(lex(string_views_runtime_source()))
+    let mut i = 0
+    while i < Array::length(prelude) {
+      Array::push(stmts, Array::get(prelude, i))
+      i = i + 1
+    }
+  } else {
+    ()
+  }
+}
+
+/// The callsite lowering's guard: a lane that never appended the prelude
+/// fails loudly at the lowering, naming the missing hook.
+export fn string_views_runtime_require(ft: FuncTable, name: String) -> Unit with Exception {
+  runtime_prelude_require(ft, name, "the String length-view runtime prelude, codegen/common_base/string_views_runtime.vibe", "append_string_views_runtime")
+}

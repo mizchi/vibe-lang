@@ -1806,8 +1806,13 @@ indexed here because the freeze probe is a bare reference.
 `String` is a byte string: `length`, indexes and slices use byte counts and
 offsets, and iteration yields byte-valued `Int`. The three length views
 `String::unicode_length` / `String::utf16_length` / `String::utf8_length`
-count code points, UTF-16 code units and bytes of the same string (#2630);
-other Unicode code-point and grapheme operations are not part of this API.
+count code points, UTF-16 code units and bytes of the same string (#2630). A
+byte that is not part of a well-formed UTF-8 sequence counts the way the WHATWG
+decoder counts it: each maximal invalid subpart is one U+FFFD (one code point,
+one UTF-16 unit), so `utf16_length` is `new TextDecoder().decode(bytes).length`
+for the same bytes — a stray continuation byte, an overlong `C0 80`, a
+surrogate `ED A0 80` and a truncated sequence each count as one. Other Unicode
+code-point and grapheme operations are not part of this API.
 
 <!-- import-required-builtins: the authoritative list. scripts/check_cheatsheet_signatures.sh
      requires this paragraph to name EXACTLY the entries in the Signature reference
@@ -1953,6 +1958,12 @@ Profiler::heap_bytes()  // with Profiler - current bump-heap pointer
 
 **Conversion**: `Int::to_string`, `Int::to_double`, `Double::to_int`, `String::from_byte`, `Int::parse(s) -> Option[Int]` (10 進、先頭 `-` 可; 空文字列・非数字・`Int::max_value` 超えは `None`), `Double::parse(s) -> Option[Double]` (an optional sign, digits, an optional fraction, an optional `e`/`E` exponent, and `NaN` / `Infinity` / `-Infinity`; correctly rounded, so it reads back every spelling `Double::to_string` writes; both backends, #2652), `Double::to_string(d) -> String` (the shortest digits that read back to the same double, in JavaScript's spelling: `1.5`, `100`, `0.000001`, `1e-7`, `1e+21`, `1.7976931348623157e+308`; `NaN`, `Infinity`, `-Infinity`, and `-0` for negative zero; `"\{d}"` and `__to_string(d)` print the same, #2652)
 
+**Reserved prefix**: `__vibe_` is the compiler's. Its generated definitions
+carry it (the Double runtime prelude's `__vibe_double_to_string`, the String
+length-view prelude's `__vibe_string_unicode_length`) and are found again by
+spelling, so `vibe check` refuses a program's own top-level definition spelled
+that way, with the edit first (a local binder is fine).
+
 ### Signature reference
 
 The section above says what exists; this one says how to call it. The
@@ -1980,7 +1991,7 @@ prelude wrappers: `add`, `sub`, `mul`, `div`, `eq`, `lt`, `not`, `and`, `or`.
 | function | signature |
 |---|---|
 | `String::length` | `(String) -> Int` (bytes) |
-| `String::unicode_length` / `String::utf16_length` / `String::utf8_length` | `(String) -> Int` (code points / UTF-16 code units / bytes -- `utf8_length` is `length`, #2630) |
+| `String::unicode_length` / `String::utf16_length` / `String::utf8_length` | `(String) -> Int` (code points / UTF-16 code units / bytes -- `utf8_length` is `length`, #2630; a malformed byte sequence counts as one U+FFFD per maximal subpart, as the WHATWG decoder counts it) |
 | `String::concat` | `(String, String) -> String` |
 | `String::substring` | `(String, Int, Int) -> String` (start, end) |
 | `String::byte_at` | `(String, Int) -> Int` (deprecated alias `String::char_code_at` — `vibe check` warns per use) |
@@ -2474,12 +2485,28 @@ against a library `fn` of the same name that some other file in the program
 happened to define. The answers can differ too, not just the speed:
 `String::split(s, "")` trapped on one and returned `[s]` on the other.
 
-Nothing enforces this yet, which is what #2378 is for. A lexical scan cannot:
-`fn r#String::index_of` defines `String::index_of` and reads as `r`,
-`#deprecated fn X::y` puts the declaration off column zero, and `fn` and its
-name may sit on separate lines — each of those was a silent miss in a scanner
-built for exactly this rule. Deciding what a declaration binds is the
-compiler's job.
+`vibe check` reports it twice (#2378): the DEFINING file gets a warning at
+the definition (#2628), and the leak itself is refused where it happens, at
+the IMPORTER. A `fn` (or a bound lambda) defined at a QUALIFIED name the
+builtin registry owns — `export fn String::index_of(..)`, `export`ed or not —
+marks the module's published environment, and every module that imports that
+file, even for one unrelated name, is rejected with the edit first: rename it
+in the dependency; a bare or differently qualified name keeps the builtin. The
+entry file's own shadow stays legal (a warning, never an error) — it is
+explicit in the program being compiled, and
+`fixtures/to_string_shadowed_builtin_test.vibe` relies on it — and so does
+what does not leak: a bare name (namespaced per file), a `Trait::operation`
+whose trait the same file declares (namespaced the same way), a qualified name
+the registry does not own (`Array::map`, which `@vibe/builtin` itself
+defines), and a `let` value alias at the qualified name (`export let
+Fs::exists = exists` in `lib/@vibe/fs/fs.vibe`), which takes no part in the
+name-to-fn-def resolution a real definition hijacks. The rule is the
+compiler's, not a lexical scan's — `fn r#String::index_of` reads as `r` to a
+scanner, `#deprecated fn X::y` sits off column zero, and `fn` and its name may
+sit on separate lines; each of those was a silent miss in a scanner built for
+exactly this rule. Deciding what a declaration binds is the compiler's job,
+and `scripts/check_builtin_shadowing.sh` keeps asking it about the tree for
+the bare-name and alias shapes the rule leaves alone.
 
 A compiler-provided name can still be published from a package without
 defining it — a bodyless declaration on the export surface, the shape

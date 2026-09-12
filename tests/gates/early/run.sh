@@ -2093,14 +2093,23 @@ fi
 # `main.vibe` was the program getting the wrong builtin (#2628 review).
 printf 'export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nexport fn unrelated_helper(n: Int) -> Int {\n  n + 1\n}\n' > "$bsdir/xdep.vibe"
 printf 'import ./xdep.vibe { unrelated_helper }\n\nexport fn run() -> Int {\n  unrelated_helper(1) + String::index_of("hello world", "world")\n}\n' > "$bsdir/xmain.vibe"
+# Since the importer-side rule landed, the cross-file case is a REFUSAL, not a
+# warning: the module that links the dependency is the one surprised, so it is
+# the one refused, and it must never come back `ok`. The definer's own file
+# (shadow_fn above) keeps the warning -- an entry's own shadow is explicit and
+# legal (fixtures/to_string_shadowed_builtin_test.vibe).
 bs_check "$bsdir/xmain.vibe" xmain
-if ! grep -qF 'rename `String::index_of`' "$bsdir/xmain.out" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: checking the ENTRY did not report a dependency's builtin override (#2378)" >&2
+if grep -qx 'ok' "$bsdir/xmain.out" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: checking the ENTRY accepted a dependency's builtin override (#2378)" >&2
   cat "$bsdir/xmain.out" "$bsdir/xmain.out.diag" >&2 2>/dev/null; exit 1
 fi
-if ! grep -qF 'xdep.vibe' "$bsdir/xmain.out" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: the cross-file report does not name the file to edit (#2378)" >&2
-  cat "$bsdir/xmain.out" >&2; exit 1
+if ! grep -qF 'rename `String::index_of` in ' "$bsdir/xmain.out.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: checking the ENTRY did not refuse a dependency's builtin override with the edit first (#2378)" >&2
+  cat "$bsdir/xmain.out" "$bsdir/xmain.out.diag" >&2 2>/dev/null; exit 1
+fi
+if ! grep -qF 'xdep.vibe' "$bsdir/xmain.out.diag" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: the cross-file refusal does not name the file to edit (#2378)" >&2
+  cat "$bsdir/xmain.out.diag" >&2; exit 1
 fi
 echo "[compiler-gate] qualified fn reported (own file and through an import); value alias and bare name stay silent ok (#2378)"
 

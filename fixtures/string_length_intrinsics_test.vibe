@@ -6,11 +6,14 @@
 // internal error. The gate runs this file on the bump, RC and gc lanes.
 //
 // A `String` is its UTF-8 bytes (ADR-0098): `utf8_length` is the byte
-// count, `unicode_length` counts code points (bytes that are not
-// `10xxxxxx` continuation bytes), `utf16_length` counts UTF-16 code units
-// (one more per 4-byte lead, since a supplementary code point is a
-// surrogate pair). Every literal below mixes widths on purpose: an ASCII-only
-// test passes against a lowering that answers the byte count for all three.
+// count, `unicode_length` counts code points, `utf16_length` counts UTF-16
+// code units (two for a supplementary code point, a surrogate pair). A byte
+// that is not part of a well-formed sequence counts the way the WHATWG
+// decoder counts it -- each maximal invalid subpart is one U+FFFD, one code
+// point and one unit -- so the views agree with `new TextDecoder().decode(
+// bytes)` on a JavaScript host (the malformed table below was measured with
+// node). Every literal below mixes widths on purpose: an ASCII-only test
+// passes against a lowering that answers the byte count for all three.
 
 fn e_acute() -> String {
   // U+00E9, two bytes: 0xC3 0xA9.
@@ -60,11 +63,54 @@ test "#2630 utf8_length is the byte length" {
   inspect(String::utf8_length(mixed()) == String::length(mixed()), content = "true")
 }
 
-test "#2630 a stray continuation byte starts no code point" {
+test "#2630 a stray continuation byte is one U+FFFD" {
+  // It used to count as nothing; the WHATWG decoder replaces it, and the
+  // views count what the decoder yields (Codex review on #2708).
   let stray = String::from_byte(128)
   inspect(String::utf8_length(stray), content = "1")
-  inspect(String::unicode_length(stray), content = "0")
-  inspect(String::utf16_length(stray), content = "0")
+  inspect(String::unicode_length(stray), content = "1")
+  inspect(String::utf16_length(stray), content = "1")
+}
+
+fn bytes_of(codes: Array[Int]) -> String {
+  let mut out = ""
+  let mut i = 0
+  while i < Array::length(codes) {
+    out = String::concat(out, String::from_byte(Array::get(codes, i)))
+    i = i + 1
+  }
+  out
+}
+
+fn views_of(codes: Array[Int]) -> String {
+  let s = bytes_of(codes)
+  "\{String::unicode_length(s)}/\{String::utf16_length(s)}/\{String::utf8_length(s)}"
+}
+
+test "#2708 review: a malformed sequence counts as one U+FFFD per maximal subpart, as the WHATWG decoder counts it" {
+  // code points / UTF-16 units / bytes -- the first two are `[...s].length`
+  // and `s.length` of `new TextDecoder().decode(bytes)`, measured with node.
+  inspect(views_of([255]), content = "1/1/1")
+  inspect(views_of([245]), content = "1/1/1")
+  inspect(views_of([128, 128]), content = "2/2/2")
+  inspect(views_of([169, 98]), content = "2/2/2")
+  // a 4-byte lead followed by ASCII: U+FFFD, then `a`
+  inspect(views_of([240, 97]), content = "2/2/2")
+  // truncated 2-, 3- and 4-byte sequences: one U+FFFD for the well-formed prefix
+  inspect(views_of([225, 128]), content = "1/1/2")
+  inspect(views_of([224, 160]), content = "1/1/2")
+  inspect(views_of([240, 144, 128]), content = "1/1/3")
+  // overlong forms: every byte is its own U+FFFD
+  inspect(views_of([192, 128]), content = "2/2/2")
+  inspect(views_of([193, 191]), content = "2/2/2")
+  inspect(views_of([224, 128, 128]), content = "3/3/3")
+  // a surrogate and a value past U+10FFFF are not scalar values
+  inspect(views_of([237, 160, 128]), content = "3/3/3")
+  inspect(views_of([244, 144, 128, 128]), content = "4/4/4")
+  // and a well-formed supplementary code point is still one code point, two units
+  inspect(views_of([240, 159, 152, 128]), content = "1/2/4")
+  // mixed: `a`, FF, U+00E9, U+1F600, a stray continuation byte, `z`
+  inspect(views_of([97, 255, 195, 169, 240, 159, 152, 128, 128, 122]), content = "6/7/10")
 }
 
 test "#2630 a length view is an Int at every consumer" {

@@ -28,8 +28,14 @@
 # cannot see, and whose absence is what #2380 paid for.
 #
 # This is containment for THIS repository only. The language-level half of
-# #2378 -- whether `vibe check` should reject or warn, and whether
-# program-wide resolution is itself the bug -- is untouched.
+# #2378 is in the compiler: a `fn` defined at a QUALIFIED builtin name is a
+# warning at the defining file (#2628, cli_support.vibe), marks the module's
+# published environment (checker_stmt.vibe, collect_builtin_shadowing_names),
+# and every module that imports that file is refused by `vibe check` with the
+# edit (runtime/typecheck_fs.vibe), because that is the one shape that leaks
+# program-wide and the importer is the one surprised. This gate keeps watching
+# the tree for what that rule deliberately leaves alone -- bare names and value
+# aliases -- which do not leak but are worth an explained row.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"

@@ -13,7 +13,7 @@ import @vibe/compiler/codegen/common_base {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, builtin_registry, dir_of_path, executable_export_kept_bytes, is_contract_ext, unstable_package_note
+  Expr, Stmt, dir_of_path, executable_export_kept_bytes, is_contract_ext, unstable_package_note
 }
 
 import @vibe/compiler/cache {
@@ -25,7 +25,7 @@ import @vibe/parser {
 }
 
 import @vibe/compiler/checker {
-  detect_redundant_namespace_imports
+  collect_builtin_shadowing_names, detect_redundant_namespace_imports
 }
 
 import @vibe/compiler/contract {
@@ -824,26 +824,6 @@ export fn check_redundant_import_warnings_from_source_groups(input_path: String,
   }
 }
 
-/// Does the builtin registry own `name`? Unfiltered on `checker_visible`, the
-/// same way `scripts/check_builtin_shadowing.sh` reads the registry: a
-/// definition colliding with a codegen-internal name is still a collision, and
-/// fail-closed is the direction this question wants.
-fn registry_owns_name(name: String) -> Bool {
-  let rows = builtin_registry()
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(rows) {
-    let (row_name, _, _, _, _) = Array::get(rows, i)
-    if row_name == name {
-      found = true
-      i = Array::length(rows)
-    } else {
-      i = i + 1
-    }
-  }
-  found
-}
-
 /// #2378: a qualified definition (`Type::method`) of a name the builtin
 /// registry owns replaces that builtin for the WHOLE linked program, including
 /// files that never import it -- and nothing said so.
@@ -864,8 +844,12 @@ fn registry_owns_name(name: String) -> Bool {
 /// exists` is a re-export of the builtin, while `export fn Fs::exists(..)` is a
 /// replacement of it. Only the second is reported.
 ///
-/// Reported at the DEFINING file, which is where the edit goes. Measured
-/// against `lib/**`: zero rows today.
+/// Reported at the DEFINING file as a WARNING, which is where the edit goes
+/// and where a shadow can be deliberate (an entry's own shadow is explicit and
+/// legal). The module that IMPORTS such a file -- the one that never asked for
+/// the override and gets it anyway -- is REFUSED by the loader
+/// (runtime/typecheck_fs.vibe, builtin_shadow_diagnostics_into), on every
+/// lane. Measured against `lib/**`: zero rows today.
 /// One file's offending definitions, appended to `out`.
 ///
 /// `label` is empty for the entry (its own warnings need no path prefix, like
@@ -876,29 +860,23 @@ fn append_builtin_shadowing_warnings(out: Array[String], path: String, source: S
     Some(parsed) => parsed,
     None => return ()
   }
+  // ONE predicate for the whole rule: the checker's collector is also what the
+  // loader marks a published environment with and refuses the importer for
+  // (runtime/typecheck_fs.vibe), so the warning here and the refusal there
+  // cannot disagree about what a definition binds -- a source-spelled alias
+  // (`String::byte_at`) counts, a `Trait::operation` of a trait declared in
+  // the same file does not.
+  let names = collect_builtin_shadowing_names(stmts)
   let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, name, _, value) => {
-        let qualified = String::index_of(name, "::") > 0
-        let is_fn_def = match value {
-          EFn(_, _, _, _, _, _) => true,
-          _ => false
-        }
-        if qualified && is_fn_def && registry_owns_name(name) {
-          let tail = String::concat("` -- a qualified definition of a builtin name replaces that builtin for the whole linked program, including files that never import it. Use a different name, or `let ", String::concat(name, " = <builtin>` if you mean to re-export it."))
-          let located = locate_type_error(source, String::concat("warning: rename `", String::concat(name, tail)))
-          Array::push(out, if String::length(label) == 0 {
-            located
-          } else {
-            String::concat(label, String::concat(": ", located))
-          })
-        } else {
-          ()
-        }
-      },
-      _ => ()
-    }
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    let tail = String::concat("` -- a qualified definition of a builtin name replaces that builtin for the whole linked program, including files that never import it. Use a different name, or `let ", String::concat(name, " = <builtin>` if you mean to re-export it."))
+    let located = locate_type_error(source, String::concat("warning: rename `", String::concat(name, tail)))
+    Array::push(out, if String::length(label) == 0 {
+      located
+    } else {
+      String::concat(label, String::concat(": ", located))
+    })
     i = i + 1
   }
 }

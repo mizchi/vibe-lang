@@ -83,6 +83,9 @@ import @vibe/compiler/codegen/common_base {
   str_table_index_of,
   string_unicode_length_expr,
   string_utf16_length_expr,
+  string_views_runtime_require,
+  string_views_runtime_unicode_name,
+  string_views_runtime_utf16_name,
   struct_field_candidates,
   struct_field_dispatch_cases
 }
@@ -1649,23 +1652,29 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
       // cannot drift apart on what these mean. double_to_string_expr was
       // already imported here for `__to_string`; only the documented qualified
       // spellings were missing.
-      else if fname == "Double::parse" {
+      else if fname == "Double::parse" && !gc_name_is_user_defined(ctx, local_names, fname) {
         double_runtime_require(ctx.func_table, double_runtime_parse_name())
         ce(buf, double_parse_expr(Array::get(args, 0)), local_names, next_local, ld)
       }
-      else if fname == "Double::to_string" || fname == "Float::to_string" {
+      else if (fname == "Double::to_string" || fname == "Float::to_string") && !gc_name_is_user_defined(ctx, local_names, fname) {
         double_runtime_require(ctx.func_table, double_runtime_to_string_name())
         ce(buf, double_to_string_expr(Array::get(args, 0)), local_names, next_local, ld)
       }
-      else if fname == "String::unicode_length" && Array::length(args) == 1 {
+      else if fname == "String::unicode_length" && Array::length(args) == 1 && !gc_name_is_user_defined(ctx, local_names, fname) {
         // #2630 (gc mirror of the linear arm): the code-point view of a byte
-        // string, synthesized once for both lanes (string_length_exprs.vibe).
+        // string -- one call into the String length-view runtime prelude
+        // (string_views_runtime.vibe), the lowering both lanes share
+        // (string_length_exprs.vibe). Guarded like the other builtin arms: a
+        // program's own `fn String::unicode_length` is that program's
+        // function, not this one (Codex review on #2708).
+        string_views_runtime_require(ctx.func_table, string_views_runtime_unicode_name())
         ce(buf, string_unicode_length_expr(Array::get(args, 0)), local_names, next_local, ld)
       }
-      else if fname == "String::utf16_length" && Array::length(args) == 1 {
+      else if fname == "String::utf16_length" && Array::length(args) == 1 && !gc_name_is_user_defined(ctx, local_names, fname) {
+        string_views_runtime_require(ctx.func_table, string_views_runtime_utf16_name())
         ce(buf, string_utf16_length_expr(Array::get(args, 0)), local_names, next_local, ld)
       }
-      else if fname == "String::utf8_length" && Array::length(args) == 1 {
+      else if fname == "String::utf8_length" && Array::length(args) == 1 && !gc_name_is_user_defined(ctx, local_names, fname) {
         // #2630: a String IS its UTF-8 bytes (ADR-0098), so the UTF-8 length
         // is the byte length.
         ce(buf, ECall(EIdent("String::length", -1), [Array::get(args, 0)], -1), local_names, next_local, ld)

@@ -200,3 +200,43 @@ test "#2652 parse(to_string(d)) is exact at the edges of the format" {
   ]
   assert_lanes_agree(score_program(prelude, checks), "roundtrip", all_bits(6))
 }
+
+test "#2708 review: a Double that arrives through a type annotation is a Double source" {
+  // no float literal and no `Double::*` call anywhere -- the value comes from
+  // outside, and the interpolation is the render site
+  let shapes = [
+    "export fn render(x: Double) -> String {\n  \"\\{x}\"\n}\n",
+    "struct P {\n  x: Double\n}\n\nfn show(p: P) -> String {\n  \"\\{p.x}\"\n}\n",
+    "enum E {\n  V(Float)\n}\n\nfn show(e: E) -> String {\n  match e {\n    V(x) => \"\\{x}\"\n  }\n}\n",
+    "type Pair = (Double, Int)\n\nfn show(p: Pair) -> String {\n  \"\\{p.0}\"\n}\n",
+    "fn show(xs: Array[Double]) -> String {\n  \"\\{Array::get(xs, 0)}\"\n}\n",
+    "fn show(f: () -> Double) -> String {\n  \"\\{f()}\"\n}\n"
+  ]
+  let mut i = 0
+  while i < Array::length(shapes) {
+    let src = Array::get(shapes, i)
+    inspect(program_mentions_double(parse_program(lex(src))), content = "true")
+    inspect(program_needs_double_runtime(parse_program(lex(src))), content = "true")
+    i = i + 1
+  }
+  // and a program with no Double spelled anywhere stays without the prelude
+  let ints = parse_program(lex("fn show(x: Int) -> String {\n  \"\\{x}\"\n}\n"))
+  inspect(program_mentions_double(ints), content = "false")
+  inspect(program_needs_double_runtime(ints), content = "false")
+}
+
+test "#2708 review: a render of a Double parameter compiles and links the prelude on every lane" {
+  // Before the annotation scan this was the internal compiler error
+  // "`__vibe_double_to_string` ... is not linked into this program" on a
+  // valid program: `render` is exported, so it is compiled, and its hole
+  // lowers to the prelude.
+  let src = "export fn render(x: Double) -> String {\n  \"\\{x}\"\n}\n\nfn main() -> Int {\n  1\n}\n"
+  assert_lanes_agree(src, "typed_param", "1")
+}
+
+test "#2708 review: a program's own fn Double::to_string is that program's function on every lane" {
+  // the same guard the String length views got: the arm is off when the
+  // program defines the name, at the top level and inside a closure
+  let src = "fn Double::to_string(d: Double) -> String {\n  \"shadow\"\n}\n\nfn main() -> Int {\n  let inside = Array::map([1.5], (x) -> Double::to_string(x))\n  String::length(Double::to_string(2.5)) * 10 + String::length(Array::get(inside, 0))\n}\n"
+  assert_lanes_agree(src, "shadow", "66")
+}

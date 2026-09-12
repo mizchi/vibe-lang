@@ -1,0 +1,114 @@
+//# Imports
+
+// #2378: a `fn` (or bound lambda) defined at a QUALIFIED builtin name replaces
+// that builtin for every program that links the file as a dependency -- bare
+// names are namespaced per file by the export merge, `Type::method` names are
+// global by design (receiver dispatch across files), and a builtin such as
+// `String::index_of` shares that global namespace. Measured on the seed with
+// the dependency below and a caller importing only `unrelated_helper`:
+// `String::index_of("hello world", "world")` answered -999, `export`ed or
+// not, `fn` or lambda. The loader refuses the IMPORTER now (the module that
+// never asked for the override), naming the dependency and the edit; the
+// shapes that do not leak stay legal: a bare name, a qualified name the
+// registry does not own, a `Trait::operation` whose trait the same file
+// declares, the `let` VALUE ALIAS lib/@vibe/fs/fs.vibe relies on, and the
+// entry file's own shadow, which is explicit in the program being compiled.
+
+import @vibe/compiler/checker {
+  collect_builtin_shadowing_names
+}
+
+import @vibe/compiler/entry/compiler/fs_compile {
+  prepare_modules_cached
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+import ../type_db.vibe {
+  db_new
+}
+
+//# Functions
+
+/// The diagnostic `vibe check` gives `main.vibe` over `sources`, or "" when
+/// the program checks clean -- the same per-module lane the FS compile and
+/// `vibe check` run, over in-memory sources.
+fn diag_of(main_src: String, sources: Array[(String, String)]) -> String {
+  handle {
+    let _ = prepare_modules_cached(db_new(), "main.vibe", main_src, sources)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn caller() -> String {
+  "import ./dep.vibe { unrelated_helper }\n\nfn main() -> Int {\n  unrelated_helper() + String::index_of(\"hello world\", \"world\")\n}\n"
+}
+
+fn helper() -> String {
+  "export fn unrelated_helper() -> Int {\n  1\n}\n"
+}
+
+fn names_of(src: String) -> String with Exception {
+  String::join(collect_builtin_shadowing_names(parse_program(lex(src))), ",")
+}
+
+//# Tests
+
+test "#2378 a dependency's exported fn at a registry builtin's qualified name refuses the importer, edit first" {
+  let dep = String::concat("export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
+  let msg = diag_of(caller(), [("dep.vibe", dep)])
+  inspect(String::contains(msg, "rename `String::index_of` in dep.vibe: it is a builtin"), content = "true")
+  inspect(String::contains(msg, "replaces that builtin for EVERY program that links that file"), content = "true")
+  // (the FS lane prefixes the importer's path -- `fixtures/err_builtin_fn_shadowing.vibe: rename ...`,
+  // pinned by tests/gates/late/run.sh; this in-memory lane throws the line bare)
+}
+
+test "#2378 a private fn and a bound lambda leak the same way and are refused the same way" {
+  let private_fn = String::concat("fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
+  inspect(String::contains(diag_of(caller(), [("dep.vibe", private_fn)]), "rename `String::index_of` in dep.vibe"), content = "true")
+  let lambda = String::concat("export let String::index_of = (s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
+  inspect(String::contains(diag_of(caller(), [("dep.vibe", lambda)]), "rename `String::index_of` in dep.vibe"), content = "true")
+}
+
+test "#2378 the importer is refused through a facade that re-exports the dependency" {
+  let dep = String::concat("export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
+  let facade = "import ./dep.vibe { unrelated_helper }\nexport { unrelated_helper }\n"
+  let main = "import ./facade.vibe { unrelated_helper }\n\nfn main() -> Int {\n  unrelated_helper()\n}\n"
+  let msg = diag_of(main, [("dep.vibe", dep), ("facade.vibe", facade)])
+  // main never imports dep.vibe itself; the facade's own check consumes
+  // dep's environment and is the one refused
+  inspect(String::contains(msg, "rename `String::index_of` in dep.vibe"), content = "true")
+}
+
+test "#2378 what does not leak stays legal: alias, bare name, unowned qualified name, entry-file shadow" {
+  // a `let` VALUE ALIAS at the qualified name (the lib/@vibe/fs/fs.vibe shape)
+  let alias = String::concat("fn my_index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nexport let String::index_of = my_index_of\n\n", helper())
+  inspect(diag_of(caller(), [("dep.vibe", alias)]), content = "")
+  // a bare name is namespaced per file by the export merge
+  let bare = String::concat("export fn index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
+  inspect(diag_of(caller(), [("dep.vibe", bare)]), content = "")
+  // a qualified name the registry does not own
+  let unowned = String::concat("export fn Widget::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\n", helper())
+  inspect(diag_of(caller(), [("dep.vibe", unowned)]), content = "")
+  // the entry file's own shadow is explicit, and pinned by
+  // fixtures/to_string_shadowed_builtin_test.vibe
+  let entry = "fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nfn main() -> Int {\n  String::index_of(\"hello world\", \"world\")\n}\n"
+  inspect(diag_of(entry, []), content = "")
+}
+
+test "#2378 the names collector: registry-owned qualified fns and lambdas, nothing else" {
+  inspect(names_of("export fn String::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n"), content = "String::index_of")
+  inspect(names_of("let String::index_of = (s: String, sub: String) -> Int {\n  0 - 999\n}\n"), content = "String::index_of")
+  // the source-spelled alias of a registry name is looked up under its registry name
+  inspect(names_of("fn String::byte_at(s: String, i: Int) -> Int {\n  700 + i\n}\n"), content = "String::byte_at")
+  inspect(names_of("fn my_index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n\nexport let String::index_of = my_index_of\n"), content = "")
+  inspect(names_of("export fn index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n"), content = "")
+  inspect(names_of("export fn Widget::index_of(s: String, sub: String) -> Int {\n  0 - 999\n}\n"), content = "")
+  // a fallback-typed name the registry does not own (lib/@vibe/builtin/array.vibe defines it)
+  inspect(names_of("export let Array::map = [A, B](xs: Array[A], f: (x: A) -> B) -> Array[B] {\n  []\n}\n"), content = "")
+  // a Trait::operation whose trait this file declares is namespaced per file
+  inspect(names_of("trait Fs {\n}\n\nexport fn Fs::exists(p: String) -> Bool {\n  true\n}\n"), content = "")
+  inspect(names_of("export fn Fs::exists(p: String) -> Bool {\n  true\n}\n"), content = "Fs::exists")
+}

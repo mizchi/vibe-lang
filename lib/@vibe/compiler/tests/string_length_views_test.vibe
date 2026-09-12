@@ -57,3 +57,17 @@ test "#2630 a view is an Int at every consumer" {
   let src = String::concat(mixed_prelude(), "fn main() -> Int {\n  let s = mixed()\n  let n = String::unicode_length(s)\n  let mut ok = 0\n  if n == 5 {\n    ok = ok + 1\n  } else {\n    ()\n  }\n  if String::unicode_length(s) == String::utf16_length(s) {\n    ()\n  } else {\n    ok = ok + 2\n  }\n  if String::equals(__to_string(String::utf8_length(s)), \"11\") {\n    ok = ok + 4\n  } else {\n    ()\n  }\n  if String::utf8_length(s) - String::unicode_length(s) == 6 {\n    ok = ok + 8\n  } else {\n    ()\n  }\n  ok\n}\n")
   assert_lanes_agree(src, "consumers", "15")
 }
+
+test "#2708 review: a program's own fn String::unicode_length is that program's function on every lane" {
+  // the shadow wins at the top level and inside a closure (the linear
+  // lane's capture scan must not capture the builtin spelling)
+  let src = "fn String::unicode_length(s: String) -> Int {\n  42\n}\n\nfn main() -> Int {\n  let inner = (s: String) -> Int {\n    String::unicode_length(s)\n  }\n  String::unicode_length(\"abc\") * 100 + inner(\"abc\") + String::utf16_length(\"abc\")\n}\n"
+  assert_lanes_agree(src, "shadow", "4245")
+}
+
+test "#2708 review: malformed bytes count as the WHATWG decoder counts them on every lane" {
+  // `a`, FF, U+00E9, U+1F600 (one code point, two units), a stray
+  // continuation byte, `z`: 6 code points, 7 UTF-16 units.
+  let src = "fn b(codes: Array[Int]) -> String {\n  let mut out = \"\"\n  let mut i = 0\n  while i < Array::length(codes) {\n    out = String::concat(out, String::from_byte(Array::get(codes, i)))\n    i = i + 1\n  }\n  out\n}\n\nfn main() -> Int {\n  let s = b([97, 255, 195, 169, 240, 159, 152, 128, 128, 122])\n  String::unicode_length(s) * 100 + String::utf16_length(s)\n}\n"
+  assert_lanes_agree(src, "malformed", "607")
+}

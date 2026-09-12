@@ -853,17 +853,137 @@ export fn double_runtime_parse_name() -> String {
 
 /// Can this program hold a `Double` at all? A Double is born from a float
 /// literal, from `Int::to_double` / `Int::to_float`, or from a `Double::*` /
-/// `Float::*` builtin (`Double::parse`, `Double::from_i64_bits*`, ...); with
-/// none of those in the program no expression is ever classified floatish,
-/// so no callsite asks for the prelude.
+/// `Float::*` builtin (`Double::parse`, `Double::from_i64_bits*`, ...) -- or
+/// it ARRIVES through a type: a parameter, a field, an extern or trait
+/// signature, an effect operation spelled `Double` / `Float`. Codex review on
+/// #2708: `export fn render(x: Double) -> String { "\{x}" }` holds a Double
+/// the host hands in, codegen classifies `x` floatish from the annotation and
+/// lowers the hole to the prelude, and a scan of literals and call names alone
+/// had left the prelude out -- an internal compiler error on a valid program.
+/// So every type annotation in the program is read too
+/// (`stmt_types_mention_double`): with no literal, no source call and no
+/// `Double` spelled anywhere, no expression is ever classified floatish, so no
+/// callsite asks for the prelude.
 export fn program_mentions_double(stmts: Array[Stmt]) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
-    found = stmt_body_has(Array::get(stmts, i), 0)
+    let stmt = Array::get(stmts, i)
+    found = stmt_body_has(stmt, 0) || stmt_types_mention_double(stmt)
     i = i + 1
   }
   found
+}
+
+/// `Double` / `Float` spelled in a type annotation `stmt` carries itself: a
+/// `let` annotation, a struct's fields, an enum's or suberror's payloads, an
+/// alias, a trait's or effect's operation signatures, an impl target, an
+/// extern. The annotations INSIDE a body -- every `fn` parameter and return
+/// type, every explicit struct-literal type argument -- are read by
+/// `stmt_body_has`'s walk (`expr_types_mention_double`).
+fn stmt_types_mention_double(stmt: Stmt) -> Bool {
+  match stmt {
+    SLet(_, _, _, ty, _) => opt_ty_mentions_double(ty),
+    SLetMut(_, ty, _) => opt_ty_mentions_double(ty),
+    SEnum(_, _, _, variants, _) => variant_payloads_mention_double(variants),
+    SSuberror(_, _, variants) => variant_payloads_mention_double(variants),
+    SStruct(_, _, fields, _, _, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, fty) = Array::get(fields, i)
+        found = ty_mentions_double(fty)
+        i = i + 1
+      }
+      found
+    },
+    STypeAlias(_, _, _, ty) => ty_mentions_double(ty),
+    STrait(_, _, _, methods, _, _) => op_sigs_mention_double(methods),
+    SEffectDef(_, _, _, ops) => op_sigs_mention_double(ops),
+    SImpl(_, _, _, target) => ty_mentions_double(target),
+    SExternLet(_, ty) => ty_mentions_double(ty),
+    SModule(_, _, body) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(body) && !found {
+        let inner = Array::get(body, i)
+        found = stmt_body_has(inner, 0) || stmt_types_mention_double(inner)
+        i = i + 1
+      }
+      found
+    },
+    _ => false
+  }
+}
+
+fn opt_ty_mentions_double(ty: Option[TypeExpr]) -> Bool {
+  match ty {
+    Some(t) => ty_mentions_double(t),
+    None => false
+  }
+}
+
+fn variant_payloads_mention_double(variants: Array[(String, Array[TypeExpr])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(variants) && !found {
+    let (_, payload) = Array::get(variants, i)
+    found = tys_mention_double(payload)
+    i = i + 1
+  }
+  found
+}
+
+fn op_sigs_mention_double(ops: Array[(String, Array[TypeExpr], TypeExpr)]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(ops) && !found {
+    let (_, params, ret) = Array::get(ops, i)
+    found = tys_mention_double(params) || ty_mentions_double(ret)
+    i = i + 1
+  }
+  found
+}
+
+fn tys_mention_double(tys: Array[TypeExpr]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(tys) && !found {
+    found = ty_mentions_double(Array::get(tys, i))
+    i = i + 1
+  }
+  found
+}
+
+/// `Double` or `Float` anywhere in a type expression.
+fn ty_mentions_double(t: TypeExpr) -> Bool {
+  match t {
+    TyName(name) => name == "Double" || name == "Float",
+    TyApp(name, args) => name == "Double" || name == "Float" || tys_mention_double(args),
+    TyFn(params, ret, _) => tys_mention_double(params) || ty_mentions_double(ret),
+    TyTuple(items) => tys_mention_double(items),
+    TyUnit => false
+  }
+}
+
+/// The annotations an expression carries itself: a `fn`'s parameter and
+/// return types, a struct literal's explicit type arguments. Its children are
+/// walked by `expr_has`.
+fn expr_types_mention_double(e: Expr) -> Bool {
+  match e {
+    EFn(_, _, params, ret, _, _) => {
+      let mut i = 0
+      let mut found = opt_ty_mentions_double(ret)
+      while i < Array::length(params) && !found {
+        let (_, pty) = Array::get(params, i)
+        found = opt_ty_mentions_double(pty)
+        i = i + 1
+      }
+      found
+    },
+    ERecord(_, _, targs) => tys_mention_double(targs),
+    _ => false
+  }
 }
 
 /// Can this program FORMAT or PARSE a Double? The prelude is called from
@@ -920,20 +1040,72 @@ fn double_source_name(name: String) -> Bool {
 
 /// `what` 0: a Double source; 1: a render / parse site.
 fn expr_has(e: Expr, what: Int) -> Bool {
+  if what == 0 && expr_types_mention_double(e) {
+    true
+  } else {
+    match e {
+      EFloat(_) => what == 0,
+      EStringInterp(_) => what == 1,
+      EIdent(name, _) => if what == 0 {
+        double_source_name(name)
+      } else {
+        render_site_name(name)
+      },
+      _ => {
+        let kids = expr_children(e)
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(kids) && !found {
+          found = expr_has(Array::get(kids, i), what)
+          i = i + 1
+        }
+        found
+      }
+    }
+  }
+}
+
+/// Does any statement body mention one of `names` as an identifier -- call
+/// or reference? The scan the runtime preludes share to decide whether a
+/// program can reach them: string_views_runtime.vibe asks it about the two
+/// length views.
+export fn program_calls_any(stmts: Array[Stmt], names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    found = match Array::get(stmts, i) {
+      SLet(_, _, _, _, body) => expr_calls_any(body, names),
+      SLetMut(_, _, body) => expr_calls_any(body, names),
+      SLetPat(_, body) => expr_calls_any(body, names),
+      STest(_, body) => expr_calls_any(body, names),
+      SBench(_, body) => expr_calls_any(body, names),
+      SExample(_, body) => expr_calls_any(body, names),
+      SExpr(body) => expr_calls_any(body, names),
+      SModule(_, _, body) => program_calls_any(body, names),
+      _ => false
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn expr_calls_any(e: Expr, names: Array[String]) -> Bool {
   match e {
-    EFloat(_) => what == 0,
-    EStringInterp(_) => what == 1,
-    EIdent(name, _) => if what == 0 {
-      double_source_name(name)
-    } else {
-      render_site_name(name)
+    EIdent(name, _) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(names) && !found {
+        found = Array::get(names, i) == name
+        i = i + 1
+      }
+      found
     },
     _ => {
       let kids = expr_children(e)
       let mut i = 0
       let mut found = false
       while i < Array::length(kids) && !found {
-        found = expr_has(Array::get(kids, i), what)
+        found = expr_calls_any(Array::get(kids, i), names)
         i = i + 1
       }
       found
@@ -941,11 +1113,17 @@ fn expr_has(e: Expr, what: Int) -> Bool {
   }
 }
 
-/// Is the prelude already in `stmts`? Its entry function is a top-level
-/// `let`, so a program that carries it (a second lane compiling the same
-/// statement array) is not handed a duplicate.
-export fn program_has_double_runtime(stmts: Array[Stmt]) -> Bool {
-  let name = double_runtime_to_string_name()
+/// Is `name` defined as a top-level `let` / `fn` of `stmts`? The runtime
+/// preludes ask this about their entry function before appending, so a lane
+/// handed a statement array that already carries a prelude (a second lane
+/// compiling the same array) is not handed a duplicate. Trusting the SPELLING
+/// is sound only because the `__vibe_` prefix is reserved: `vibe check`
+/// refuses a program's own top-level definition spelled that way
+/// (checker_stmt.vibe, collect_reserved_value_prefix_errors -- Codex review
+/// on #2708, where a user `fn __vibe_double_to_string` passed for the prelude
+/// and `Double::to_string(1.5)` answered whatever it returned), so a top-level
+/// definition at a prelude name can only be the prelude.
+export fn program_defines_top_level(stmts: Array[Stmt], name: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < Array::length(stmts) && !found {
@@ -956,6 +1134,12 @@ export fn program_has_double_runtime(stmts: Array[Stmt]) -> Bool {
     i = i + 1
   }
   found
+}
+
+/// Is the prelude already in `stmts`? See `program_defines_top_level` for
+/// why its entry function's spelling can be trusted.
+export fn program_has_double_runtime(stmts: Array[Stmt]) -> Bool {
+  program_defines_top_level(stmts, double_runtime_to_string_name())
 }
 
 /// Append the prelude's functions to `stmts` when the program can format or
@@ -984,8 +1168,15 @@ export fn append_double_runtime(stmts: Array[Stmt]) -> Unit with Exception {
 /// (which blames a checker that was never at fault) -- or, worse, fall back
 /// to a formatter that answers wrong.
 export fn double_runtime_require(ft: FuncTable, name: String) -> Unit with Exception {
+  runtime_prelude_require(ft, name, "the Double runtime prelude, codegen/common_base/double_runtime.vibe", "append_double_runtime")
+}
+
+/// The guard every runtime prelude's callsite lowering runs: `name` must be
+/// in the function table, else the lane compiling this program never called
+/// `hook` -- a compiler bug, reported as one.
+export fn runtime_prelude_require(ft: FuncTable, name: String, what: String, hook: String) -> Unit with Exception {
   if func_table_index_of(ft, name) < 0 {
-    throw(String::concat("internal compiler error: `", String::concat(name, "` (the Double runtime prelude, codegen/common_base/double_runtime.vibe) is not linked into this program: the lane compiling it never called append_double_runtime, so this is a bug in the compiler and not in your program -- please report the source that triggers it")))
+    throw(String::concat("internal compiler error: `", String::concat(name, String::concat("` (", String::concat(what, String::concat(") is not linked into this program: the lane compiling it never called ", String::concat(hook, ", so this is a bug in the compiler and not in your program -- please report the source that triggers it")))))))
   } else {
     ()
   }

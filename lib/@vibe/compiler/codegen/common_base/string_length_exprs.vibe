@@ -4,62 +4,40 @@ import @vibe/compiler/core {
   Expr, Pat, Stmt, TypeExpr
 }
 
+import ./string_views_runtime.vibe {
+  string_views_runtime_unicode_name, string_views_runtime_utf16_name
+}
+
 //# Functions
 
-/// #2630: `String::unicode_length` / `String::utf16_length` -- the two
-/// length views of a byte string (ADR-0098) that are not the byte count --
-/// synthesized as ordinary AST and lowered via each backend's `ce`, the same
-/// technique as `double_to_string_expr` / `int_parse_expr`. One synthesis for
-/// both lanes so they cannot drift apart. (`String::utf8_length` is the byte
+/// #2630: `String::unicode_length` / `String::utf16_length` -- the two length
+/// views of a byte string (ADR-0098) that are not the byte count -- lower to
+/// ONE call each into the String length-view runtime prelude
+/// (string_views_runtime.vibe): top-level functions every lane appends to a
+/// program that calls a view (`append_string_views_runtime`), the same shape
+/// as `double_to_string_expr` / `double_parse_expr` over the Double runtime
+/// prelude. Shared by the linear callsite handler (expr/compile_call.vibe) and
+/// the gc dispatch (gc/backend_call.vibe), which each run
+/// `string_views_runtime_require` first so a lane that never appended the
+/// prelude fails loudly at the lowering. (`String::utf8_length` is the byte
 /// count itself: each backend lowers it straight onto `String::length`.)
 ///
-/// The scan reads one byte at a time with `String::char_code_at` (the
-/// registry-canonical spelling of `String::byte_at`, which every lane serves)
-/// and counts the bytes that are not UTF-8 continuation bytes (`10xxxxxx`):
-/// on well-formed UTF-8 that is exactly the number of code points. The
-/// UTF-16 view adds one more unit for each 4-byte lead (`11110xxx`), since a
-/// supplementary code point encodes as a surrogate pair. Stray bytes -- a
-/// lone continuation byte from `String::from_byte(128)` -- count as no code
-/// point, which is the honest answer for a byte that starts none.
+/// This used to synthesize a byte scan inline at every callsite that counted
+/// "bytes that are not `10xxxxxx`" -- which read `0xFF` as a code point and
+/// every lead byte >= 0xF0 as a surrogate pair whether or not a sequence
+/// followed (Codex review on #2708). The prelude decodes the bytes the way
+/// the WHATWG decoder does and counts what that decoding yields; see
+/// string_views_runtime.vibe for the rule and the counts it pins.
 ///
 /// The three names were published from `@vibe/builtin` and declared in
 /// `builtins/declarations.vibe` for a long time with NO lowering anywhere: a
 /// direct call was `unknown name`, and an aliased import type-checked and then
 /// died in codegen with the "reached code generation unresolved" internal
-/// error (#2630). They are checker-visible registry rows now, served by these
-/// callsite lowerings on both lanes.
+/// error (#2630).
 export fn string_unicode_length_expr(arg: Expr) -> Expr {
-  string_length_view_expr(arg, false)
+  ECall(EIdent(string_views_runtime_unicode_name(), -1), [arg], -1)
 }
 
 export fn string_utf16_length_expr(arg: Expr) -> Expr {
-  string_length_view_expr(arg, true)
-}
-
-fn string_length_view_expr(arg: Expr, utf16: Bool) -> Expr {
-  let s = EIdent("__slv_s", -1)
-  let n = EIdent("__slv_n", -1)
-  let i = EIdent("__slv_i", -1)
-  let c = EIdent("__slv_c", -1)
-  let b = EIdent("__slv_b", -1)
-  let byte_at = ECall(EIdent("String::char_code_at", -1), [s, i], -1)
-  // A continuation byte is 10xxxxxx: (b & 0xC0) == 0x80.
-  let is_continuation = EBinOp("==", EBinOp("&", b, EInt(192), -1), EInt(128), -1)
-  let count_one = EAssign("__slv_c", EBinOp("+", c, EInt(1), -1), EUnit)
-  let count_lead = if utf16 {
-    // A 4-byte lead (11110xxx, b >= 0xF0) starts a supplementary code point:
-    // two UTF-16 code units.
-    EIf(EBinOp(">=", b, EInt(240), -1), EAssign("__slv_c", EBinOp("+", c, EInt(2), -1), EUnit), count_one)
-  } else {
-    count_one
-  }
-  let step = EIf(is_continuation, EUnit, count_lead)
-  let advance = EAssign("__slv_i", EBinOp("+", i, EInt(1), -1), EUnit)
-  let body = ELet("__slv_b", byte_at, ESeq(step, advance), -1)
-  // review-lint: allow-fixed-synthetic-name
-  let scan = EWhile(EBinOp("<", i, n, -1), body)
-  let counted = ELetMut("__slv_i", EInt(0), ELetMut("__slv_c", EInt(0), ESeq(scan, c), -1), -1)
-  // review-lint: allow-fixed-synthetic-name
-  ELet("__slv_s", arg, ELet("__slv_n", ECall(EIdent("String::length", -1), [s], -1), counted, -1), -1)
-  // review-lint: allow-fixed-synthetic-name
+  ECall(EIdent(string_views_runtime_utf16_name(), -1), [arg], -1)
 }
