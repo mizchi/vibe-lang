@@ -566,13 +566,18 @@ function bindingOccurrences(uri, position) {
   }
 }
 
-// One `vibe symbols` row: `NAME KIND START END [DOC]`. NAME never contains
-// ascii whitespace -- a `test` / `bench` label is a string literal, so its
-// spaces, tabs and newlines are escaped (#2723) -- and DOC is last precisely
+// One `vibe symbols` row: `NAME KIND START END [DOC]`. DOC is last precisely
 // because it can contain anything, so it is matched and ignored rather than
 // left to end the row: requiring the line to STOP after END silently dropped
 // every declaration that carries a `///` doc comment.
-const SYMBOL_ROW_RE = /^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(.*))?$/;
+//
+// The classes are spelled out in ASCII because the producer's contract is
+// ASCII: NAME escapes ascii whitespace (#2723) and nothing else, so a label
+// written with a NBSP or an ideographic space carries that byte raw. JS's
+// \s / \S are Unicode-aware, so `\S+` stopped at the NBSP and the row matched
+// nothing -- and silently, since compilerSymbols returns the rows it did parse
+// rather than falling back. Separators are a single ascii space.
+const SYMBOL_ROW_RE = /^([^ \t]+)[ \t]+(\d+)[ \t]+(\d+)[ \t]+(\d+)(?:[ \t]+(.*))?$/;
 
 // Reverse the NAME escaping, or the editor shows `adds\stwo` where the source
 // says `adds two`. Backslash is doubled on the way out, so consuming exactly

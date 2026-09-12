@@ -485,6 +485,8 @@ vibe symbols file.vibe
 # literal, so its spaces, tabs and newlines are escaped (`\s` `\t` `\n`
 # `\v` `\f` `\r`, backslash doubled) and every row splits into the same
 # fields (#2723). DOC is exempt -- it is last, and nothing is parsed after it.
+# Split on ASCII: a NBSP inside a label is NOT escaped (the separators are
+# ascii spaces), so a Unicode-aware class drops the row instead of reading it.
 vibe symbols lib
 vibe symbols --with-path file.vibe
 

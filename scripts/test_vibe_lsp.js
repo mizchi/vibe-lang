@@ -159,7 +159,8 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   const labUri = "file:///tmp/vibe-lsp-test-label.vibe";
   const labText =
     "/// Doc on a declaration.\nexport let documented = (x: Int) -> Int { x }\n" +
-    "\ntest \"adds two numbers\" {\n  let _ = 1\n}\n";
+    "\ntest \"adds two numbers\" {\n  let _ = 1\n}\n" +
+    "\ntest \"counts\u00a0items\" {\n  let _ = 2\n}\n";
   send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: labUri, languageId: "vibe", version: 1, text: labText } } });
   await waitFor(isDiag(labUri));
   send({ jsonrpc: "2.0", id: 32, method: "textDocument/documentSymbol", params: { textDocument: { uri: labUri } } });
@@ -176,6 +177,10 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
     check("a label's kind is inside the protocol's SymbolKind range",
       labSyms.filter((s) => s.name === labelName).every((s) => s.kind >= 1 && s.kind <= 26));
     check("a declaration carrying a doc comment is still in the outline", labNames.includes("documented"));
+    // NON-ascii whitespace inside a label reaches the row raw -- the producer
+    // escapes ascii whitespace and nothing else -- so the row parser must split
+    // on ascii, not on JS's Unicode-aware \s.
+    check("a label containing a NBSP survives the row parser", labNames.includes("counts\u00a0items"));
   }
 
   // definition: cursor on `helper` in main's body -> jumps to helper's decl (line 1)

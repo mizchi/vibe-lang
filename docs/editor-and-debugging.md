@@ -101,15 +101,21 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
 - **A label is a string, so `NAME` is escaped too.** A declaration's name is an
   identifier, but a `test` / `bench` label is a string literal: almost every one
   holds spaces, a multi-line `#|` label holds a real newline, and any of them
-  can hold a backslash. **`NAME` therefore carries no ASCII whitespace at
-  all** — backslash first (that is what makes it reversible), then space
-  `\s`, tab `\t`, LF `\n`, VT `\v`, FF `\f`, CR `\r` — so every row is one
-  line of five whitespace-separated fields and `cut -d" " -f1-4` reads the
-  fixed part of a label row as well as a declaration's. Unescaped, a two-line
-  label printed as two rows (a reader counted a symbol that did not exist) and
-  `adds two numbers 27 6 22` read `KIND=two` (#2718, #2723). `DOC` needs none
-  of this because it is last and nothing is parsed after it. The structured
-  form (`symbol_spans_with_docs`) has the real name.
+  can hold a backslash. Unescaped, a two-line label printed as two rows — a
+  reader counted a symbol that did not exist — and `adds two numbers 27 6 22`
+  read `KIND=two` (#2718, #2723). **`NAME` therefore carries no ASCII
+  whitespace at all**: backslash first (that is what makes it reversible),
+  then space `\s`, tab `\t`, LF `\n`, VT `\v`, FF `\f`, CR `\r`. Every row is
+  one line of the same four fixed fields, plus `DOC` when the declaration has
+  one, so `cut -d" " -f1-4` reads the fixed part of a label row as well as a
+  declaration's. `DOC` needs none of this because it is last and nothing is
+  parsed after it, and the structured form (`symbol_spans_with_docs`) has the
+  real name.
+  **ASCII is all that is escaped**, deliberately: a label written with a NBSP
+  or an ideographic space carries that byte raw, because escaping it would
+  change a name for no gain — the separators are ASCII spaces. A consumer must
+  therefore split on ASCII; a Unicode-aware class (JavaScript's `\s`, Python's
+  `str.split()`) treats the NBSP as a separator and drops the row.
 - **A multi-line `#|` label spans the literal, not its content.** `"…"`,
   `r"…"` and a single-line `#|…` report the bytes inside the delimiters. A
   `#|` block continued on the next line is the one spelling whose content is
