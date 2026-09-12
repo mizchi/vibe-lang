@@ -1,0 +1,69 @@
+// #2669 step 2b: how much of a warm build the codegen body cache actually
+// reuses, on a real closure.
+//
+//   vibe run scripts/body_cache_reuse.vibex -- <root.vibe> <entry> on|verify|off
+//
+// `offered` is how many cached bodies the artifact's file table let through;
+// `recompiled` is how many the compile rebuilt. The reuse claim of this step
+// -- an edit recompiles its own file, not everything after it in merge order
+// -- is a statement about those two numbers and about nothing in the returned
+// bytes, which are identical whether a body was replayed or rebuilt.
+//
+// One temperature per process, deliberately, and the caller supplies the
+// VIBE_BUILD_CACHE_DIR. Running two temperatures in one process would let the
+// first warm every persistent cache the second reads; the perf skill measures
+// that asymmetry at ~8.0s/1.46GB cold vs ~4.7s/727MB warm, larger than
+// anything this is trying to see (#2393).
+//
+// `Profiler::heap_bytes` is a BUMP pointer, so the delta is bytes ALLOCATED
+// across the compile, not bytes live at its end. Report it as allocation
+// volume and nothing else.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc_body_cached_counted
+}
+
+fn arg_at(i: Int, fallback: String) -> String with Env {
+  if i < Env::args_len() {
+    Env::args_get(i)
+  } else {
+    fallback
+  }
+}
+
+fn field(out: StringBuilder, name: String, value: String) -> Unit {
+  StringBuilder::push(out, name)
+  StringBuilder::push(out, value)
+}
+
+fn measure(root: String, entry: String, mode: String) -> Unit with Exception + Fs + Profiler::heap_bytes + Stdout {
+  let counts: Array[Int] = []
+  let before = Profiler::heap_bytes()
+  let bytes = compile_file_fs_mode_rc_body_cached_counted(root, entry, mode, counts)
+  let after = Profiler::heap_bytes()
+  // The seam appends `offered` before the compile and `recompiled` after, so
+  // a run that produced neither is a run that did not take this lane at all.
+  if Array::length(counts) != 2 {
+    throw("body-cache-reuse: the counted lane reported \{Array::length(counts)} numbers, not 2")
+  } else {
+    ()
+  }
+  let out = StringBuilder::new()
+  field(out, "body-cache-reuse mode=", mode)
+  field(out, " offered=", __to_string(Array::get(counts, 0)))
+  field(out, " recompiled=", __to_string(Array::get(counts, 1)))
+  field(out, " heap_delta=", __to_string(after - before))
+  field(out, " wasm_bytes=", __to_string(Bytes::length(bytes)))
+  println(StringBuilder::freeze(out))
+}
+
+fn main() -> Unit with Env + Exception + Fs + Profiler::heap_bytes + Stdout {
+  let root = arg_at(0, "")
+  let entry = arg_at(1, "__no_entry__")
+  let mode = arg_at(2, "on")
+  if String::length(root) == 0 {
+    println("usage: body_cache_reuse.vibex <root.vibe> <entry> on|verify|off")
+  } else {
+    measure(root, entry, mode)
+  }
+}

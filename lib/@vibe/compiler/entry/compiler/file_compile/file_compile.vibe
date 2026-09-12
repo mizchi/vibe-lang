@@ -1665,15 +1665,16 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
     let mut limit = 0
     let mut still_matching = true
     let mut malformed = false
-    // #2669 step 2b. `layout_same` is the condition under which the stored
-    // statement positions ARE this build's: every file present, in order,
+    // #2669 step 2b. `layout_same` is the condition under which this build's
+    // FILE INDICES are the harvest's: every file present, in order,
     // contributing the same number of merged statements. Only the file
-    // CONTENTS may differ. It is what lets an entry from a file after the
-    // edit be addressed at all -- when a count changes, every later
-    // statement index shifts and a cached entry's recorded position means
-    // nothing here.
+    // CONTENTS may differ. A cached entry names its file by index
+    // (`fn_files`), so without this the map below would be read against a
+    // different file list -- and the statement counts are in it because a
+    // changed count moves the pin region and the synthesized statements with
+    // it, which the codegen guards would reject anyway.
     let mut layout_same = file_n == Array::length(paths)
-    let keep_by_stmt = array_empty()
+    let keep_file = array_empty()
     while !malformed && i < file_n {
       let (spath, p1) = bcw_read_string(b, p)
       let (sfp, p2) = if p1 < 0 {
@@ -1697,15 +1698,11 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
         } else {
           ()
         }
-        let mut k = 0
-        while k < scount {
-          Array::push(keep_by_stmt, if unchanged {
-            1
-          } else {
-            0
-          })
-          k = k + 1
-        }
+        Array::push(keep_file, if unchanged {
+          1
+        } else {
+          0
+        })
         if still_matching && unchanged {
           limit = limit + scount
         } else {
@@ -1720,7 +1717,7 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
       match codegen_body_cache_from_bytes(Bytes::slice(b, p, Bytes::length(b))) {
         Some(cache) => {
           let kept = if layout_same {
-            codegen_body_cache_filter_src_keep(cache, keep_by_stmt)
+            codegen_body_cache_filter_src_keep(cache, keep_file)
           } else {
             codegen_body_cache_filter_src_below(cache, limit)
           }
@@ -1766,7 +1763,7 @@ fn decode_body_cache_payload_for(b: Bytes, payload_start: Int, paths: Array[Stri
 /// verify mismatch. Also decides whether a consumed cache may be merged
 /// back into the refreshed artifact.
 fn body_cache_guards_equal(a: CodegenBodyCache, b: CodegenBodyCache) -> Bool {
-  Array::length(a.guard_meta) == 5 && bcc_int_lists_equal(a.guard_meta, b.guard_meta) && bcc_string_lists_equal(a.guard_synth_names, b.guard_synth_names) && bcc_int_lists_equal(a.guard_synth_stmts, b.guard_synth_stmts) && bcc_string_lists_equal(a.guard_import_names, b.guard_import_names) && bcc_string_lists_equal(a.guard_borrow_names, b.guard_borrow_names) && bcc_int_lists_equal(a.guard_borrow_masks, b.guard_borrow_masks) && bcc_string_lists_equal(a.guard_unmangled_names, b.guard_unmangled_names) && bcc_string_lists_equal(a.guard_user_names, b.guard_user_names) && bcc_int_lists_equal(a.guard_lambda_counts, b.guard_lambda_counts) && bcc_int_lists_equal(a.guard_strpool, b.guard_strpool)
+  Array::length(a.guard_meta) == 5 && bcc_int_lists_equal(a.guard_meta, b.guard_meta) && bcc_string_lists_equal(a.guard_synth_names, b.guard_synth_names) && bcc_int_lists_equal(a.guard_synth_stmts, b.guard_synth_stmts) && bcc_string_lists_equal(a.guard_import_names, b.guard_import_names) && bcc_string_lists_equal(a.guard_borrow_names, b.guard_borrow_names) && bcc_int_lists_equal(a.guard_borrow_masks, b.guard_borrow_masks) && bcc_string_lists_equal(a.guard_unmangled_names, b.guard_unmangled_names) && bcc_int_lists_equal(a.guard_layout, b.guard_layout)
 }
 
 /// #2575 item 2: the ordinary lane's statement-to-module map, as a `DbgProv`.

@@ -1,0 +1,311 @@
+//# #2669 step 2b: does replaying past the unchanged PREFIX stay byte-exact
+//# across the edit shapes that move each program-wide index space?
+//#
+//# The widened body cache replays a body from any file whose bytes did not
+//# change, wherever it sits in merge order. That is sound only while the
+//# program-wide inputs it was compiled against -- the function vector, the
+//# lambda plan, the string pool, the constructor tags, the struct layouts, the
+//# exception tags, the folded constants, the return classifications -- are
+//# unchanged, and `guard_layout` is the check that says so.
+//#
+//# `guard_layout` is an ENUMERATION, read off the per-function `CompileCtx`
+//# construction. The reloc scan lost four reference classes one at a time to
+//# exactly that kind of list, so it does not get to be argued: each edit below
+//# MOVES one of those spaces for real, in the FIRST file of a three-file
+//# chain, and the compile has to answer what a fresh compile answers. A space
+//# left out of the fingerprint shows up here as `equal=false`.
+//#
+//# MEASURED COVERAGE, so the file does not read as stronger than it is. Drop
+//# one slot from `guard_layout` and re-run: three of the thirteen flip a row
+//# to `equal=false`, which is this corpus proving them NECESSARY --
+//#
+//#   all_fn_names_list       -> swap-order         equal=false
+//#   str_strs (string pool)  -> string-literal     equal=false
+//#   struct_field_names      -> swap-struct-fields equal=false
+//#
+//# -- and the other ten stay green, because another slot declines first or
+//# because the file table refuses the layout before any guard is consulted.
+//# They are carried on the `CompileCtx` enumeration argument, not on a case
+//# that exercises them. What the whole table DOES establish is sufficiency:
+//# every class answers what a fresh compile answers.
+//#
+//# What is NOT here, and why: an interface change that moves a whole-program
+//# CLASSIFICATION (a callee that stops returning Double, a const that stops
+//# being an Int) also changes the source of everyone who uses it, so there is
+//# no unchanged file left to replay. Those slots are pinned anyway -- a type
+//# alias or a generic instantiation can move a classification without touching
+//# the consumer's text -- but this file cannot reach them, and saying so is
+//# better than a case that passes by editing nothing.
+
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+}
+
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+
+//# Helpers
+
+fn string_to_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let len = String::length(s)
+  let mut i = 0
+  while i < len {
+    Bytes::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn bytes_eq(a: Bytes, b: Bytes) -> Bool {
+  let n = Bytes::length(a)
+  if n != Bytes::length(b) {
+    false
+  } else {
+    let mut i = 0
+    let mut same = true
+    while same && i < n {
+      if Bytes::get(a, i) != Bytes::get(b, i) {
+        same = false
+      } else {
+        i = i + 1
+      }
+    }
+    same
+  }
+}
+
+let ec_a_path: String = "/tmp/vibe_body_cache_ec_a.vibe"
+
+let ec_b_path: String = "/tmp/vibe_body_cache_ec_b.vibe"
+
+let ec_main_path: String = "/tmp/vibe_body_cache_ec_main.vibe"
+
+/// The base first file, one declaration per line so an edit can be expressed
+/// as a whole-line substitution.
+///
+/// NOTHING here is dead, and `ec_same` exists to keep it that way: a declared
+/// struct or enum gets a synthesized comparator, and if nothing compares that
+/// type, late DCE prunes it -- which sets `late_dce_pruned` and stands the
+/// body cache down wholesale, for the whole program. Measured while building
+/// this file: adding an uncompared struct OR an uncompared enum to a fixture
+/// that otherwise reuses takes its recorded guards from 5 to 0 and its reuse
+/// to nothing. So a fixture with a dead declaration measures the DCE guard,
+/// not the layout guard, and every row below would read `reuse=none` for a
+/// reason that has nothing to do with what it claims to test.
+///
+/// Every later file reaches into it, so each edit is upstream of bodies the
+/// widened lane wants to replay. It carries one of everything the fingerprint
+/// pins: a struct, an enum, an effect, a folded Int const, a Double-returning
+/// function, string literals, a closure, and an array comparison -- the last
+/// forces a derived comparator, which is what makes the compile run the #2388
+/// pin reorder and record guards at all.
+fn ec_base_a_lines() -> Array[String] {
+  [
+    "effect EcLog {",
+    "  Note(String) -> Int",
+    "}",
+    "export struct EcPoint {",
+    "  x: Int;",
+    "  y: Int",
+    "}",
+    "export enum EcShade {",
+    "  EcDim;",
+    "  EcBright(Int)",
+    "}",
+    "export let ec_k: Int = 7",
+    "export let ec_eq: () -> Bool = () -> { [1, 2] == [1, 2] }",
+    "export let ec_scale: () -> Double = () -> { 1.5 }",
+    "export let ec_name: () -> String = () -> { \"alpha\" }",
+    "export let ec_twice: ((Int) -> Int, Int) -> Int = (f, n) -> { f(f(n)) }",
+    "export let ec_bump: (Int) -> Int = (n) -> { n + ec_k }",
+    "export let ec_point: () -> EcPoint = () -> { EcPoint::{ x: 1, y: 2 } }",
+    "export let ec_shade: () -> EcShade = () -> { EcBright(3) }",
+    "export let ec_same: () -> Int = () -> { (if ec_point() == EcPoint::{ x: 1, y: 2 } { 1 } else { 0 }) + (if ec_shade() == EcBright(3) { 2 } else { 0 }) }",
+    "export let ec_note_all: () -> Int with EcLog = () -> { perform EcLog::Note(\"hi\") }",
+    "export let ec_noted: () -> Int = () -> { handle { ec_note_all() } with { EcLog::Note(m) => { resume(String::length(m)) } } }"
+  ]
+}
+
+fn ec_base_a() -> String {
+  String::join(ec_base_a_lines(), "\n")
+}
+
+/// The second file. Its bodies embed a constructor tag, a struct field offset,
+/// a folded const, a pooled string, a funcref slot, a closure's slot and an
+/// exception tag -- one per pinned space, so a stale pin surfaces as wrong
+/// bytes rather than as nothing at all.
+fn ec_base_b() -> String {
+  let parts: Array[String] = [
+    "import ./vibe_body_cache_ec_a.vibe { EcBright, EcDim, EcPoint, EcShade, ec_bump, ec_eq, ec_k, ec_name, ec_noted, ec_point, ec_same, ec_scale, ec_shade, ec_twice }",
+    "export let ec_b_tag: () -> Int = () -> { let mine: EcShade = EcBright(5)\n  match mine { EcDim => 0, EcBright(n) => n } + match ec_shade() { EcDim => 1, EcBright(n) => n } }",
+    "export let ec_b_field: () -> Int = () -> { let p: EcPoint = EcPoint::{ x: 9, y: 8 }\n  p.x + p.y * 10 + ec_point().x + ec_point().y * 100 }",
+    "export let ec_b_text: () -> String = () -> { String::concat(ec_name(), \"beta\") }",
+    "export let ec_b_slot: () -> Int = () -> { ec_twice(ec_bump, 1) }",
+    "export let ec_b_closure: () -> Int = () -> { let step = (n) -> { n + ec_k }\n  ec_twice(step, 2) }",
+    "export let ec_b_double: () -> Double = () -> { ec_scale() * 2.0 }",
+    "export let ec_b_effect: () -> Int = () -> { ec_noted() }",
+    "export let ec_b_eq: () -> Int = () -> { (if ec_eq() { 1 } else { 0 }) + ec_same() }"
+  ]
+  String::join(parts, "\n")
+}
+
+fn ec_base_main() -> String {
+  let parts: Array[String] = [
+    "import ./vibe_body_cache_ec_b.vibe { ec_b_closure, ec_b_double, ec_b_effect, ec_b_eq, ec_b_field, ec_b_slot, ec_b_tag, ec_b_text }",
+    "let run: () -> Int = () -> {",
+    "  let s = ec_b_tag() + ec_b_field() + ec_b_slot() + ec_b_closure() + ec_b_effect() + ec_b_eq()",
+    "  s + String::length(ec_b_text()) + Double::to_int(ec_b_double())",
+    "}"
+  ]
+  String::join(parts, "\n")
+}
+
+/// `ec_base_a()` with the LINE equal to `old` replaced by `new` (which may
+/// itself contain newlines).
+///
+/// Whole-line, and the match is REQUIRED. An edit that silently changes
+/// nothing is the failure mode this whole file guards against: the case would
+/// report `equal=true` while editing nothing, which is how #2248's five green
+/// runs happened.
+fn ec_sub(old: String, new: String) -> String with Exception {
+  ec_subs([old], [new])
+}
+
+/// `ec_base_a()` with several whole-line substitutions applied at once, each
+/// required to match exactly one line.
+///
+/// A pairwise SWAP goes through here rather than through a line exchange,
+/// because two lines can differ in more than their content -- `  x: Int;` and
+/// `  y: Int` carry the struct's separator, and exchanging them whole produces
+/// a file that does not parse. Naming both sides makes the edit say what it
+/// means.
+fn ec_subs(olds: Array[String], news: Array[String]) -> String with Exception {
+  let lines = ec_base_a_lines()
+  let out: Array[String] = []
+  let hits: Array[Int] = []
+  let mut h = 0
+  while h < Array::length(olds) {
+    Array::push(hits, 0)
+    h = h + 1
+  }
+  let mut i = 0
+  while i < Array::length(lines) {
+    let line = Array::get(lines, i)
+    let mut matched = 0 - 1
+    let mut k = 0
+    while k < Array::length(olds) {
+      if Array::get(olds, k) == line {
+        matched = k
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    if matched >= 0 {
+      Array::set(hits, matched, Array::get(hits, matched) + 1)
+      Array::push(out, Array::get(news, matched))
+    } else {
+      Array::push(out, line)
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < Array::length(hits) {
+    if Array::get(hits, j) != 1 {
+      throw("edit-class fixture: \{Array::get(hits, j)} lines match, expected exactly 1: \{Array::get(olds, j)}")
+    } else {
+      ()
+    }
+    j = j + 1
+  }
+  String::join(out, "\n")
+}
+
+/// Compile the chain cold on the base, then again with `edited` in place of
+/// the first file, and report what the warm compile reused and whether it
+/// answered what a fresh compile does.
+///
+/// One line, fixed field order: `<label> reuse=<full|partial|none> equal=<bool>`.
+/// The reuse column is CLASSIFIED rather than counted because the raw count is
+/// dominated by the pin region's 1024 pads, which say nothing about this.
+/// `full` means the widened lane declined and everything recompiled.
+fn ec_probe(label: String, edited: String) -> String with Exception + Fs {
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(ec_main_path)))
+  if Fs::exists(artifact_path) {
+    Fs::remove(artifact_path)
+  } else {
+    ()
+  }
+  Fs::write_bytes(ec_a_path, string_to_bytes(ec_base_a()))
+  Fs::write_bytes(ec_b_path, string_to_bytes(ec_base_b()))
+  Fs::write_bytes(ec_main_path, string_to_bytes(ec_base_main()))
+  let cold_counts: Array[Int] = []
+  let _cold = compile_file_fs_mode_rc_body_cached_counted(ec_main_path, "run", "on", cold_counts)
+  let cold_n = Array::get(cold_counts, 1)
+  Fs::write_bytes(ec_a_path, string_to_bytes(edited))
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(ec_main_path, "run", "on", warm_counts)
+  let fresh = compile_file_fs_mode_rc(ec_main_path, "run")
+  let reuse = if Array::get(warm_counts, 0) == 0 {
+    "none"
+  } else if Array::get(warm_counts, 1) < cold_n {
+    "partial"
+  } else {
+    "full"
+  }
+  "\{label} reuse=\{reuse} equal=\{bytes_eq(warm, fresh)}"
+}
+
+//# Tests
+
+test "#2669: every edit class stays byte-exact under the widened body cache" {
+  let report: Array[String] = []
+  // CONTROL. A comment moves nothing, so the widened lane must reuse. Without
+  // at least one `partial` row this whole file would be vacuous: every other
+  // case could pass by declining.
+  Array::push(report, ec_probe("comment", String::concat(ec_base_a(), "\n// touched")))
+  // A body-interior edit that changes no declaration and no literal pool.
+  Array::push(report, ec_probe("int-literal", ec_sub("export let ec_bump: (Int) -> Int = (n) -> { n + ec_k }", "export let ec_bump: (Int) -> Int = (n) -> { n + ec_k + 0 }")))
+  // The string pool: every pooled offset after "alpha" moves, including the
+  // one `ec_b_text` embeds for "beta".
+  Array::push(report, ec_probe("string-literal", ec_sub("export let ec_name: () -> String = () -> { \"alpha\" }", "export let ec_name: () -> String = () -> { \"alpha is a good deal longer now\" }")))
+  // The function vector, by membership: an added declaration shifts every
+  // later index.
+  Array::push(report, ec_probe("add-function", String::concat(ec_base_a(), "\nexport let ec_extra: () -> Int = () -> { 5 }")))
+  // The function vector, by ORDER. Membership is untouched, so the sorted
+  // name set `guard_unmangled_names` sees nothing; two indices exchange.
+  let ec_scale_line = "export let ec_scale: () -> Double = () -> { 1.5 }"
+  let ec_name_line = "export let ec_name: () -> String = () -> { \"alpha\" }"
+  Array::push(report, ec_probe("swap-order", ec_subs([
+    ec_scale_line,
+    ec_name_line
+  ], [ec_name_line, ec_scale_line])))
+  // The lambda plan: a closure added ahead shifts every later funcref slot,
+  // including the one `ec_b_closure` stores in its closure header.
+  Array::push(report, ec_probe("add-closure", ec_sub(ec_scale_line, "export let ec_scale: () -> Double = () -> { let g = (d) -> { d }\n  g(1.5) }")))
+  // Constructor tags: `(type_index << 16) | variant`, and `type_index` counts
+  // type declarations in merge order, so a type added ahead moves EcShade's.
+  Array::push(report, ec_probe("add-type-ahead", ec_sub("export enum EcShade {", "export enum EcAhead {\n  EcFirst\n}\nexport enum EcShade {")))
+  // Struct layout: exchanging two fields swaps their offsets without changing
+  // any construction site, so `ec_b_field`'s `.x` and `.y` move under it.
+  Array::push(report, ec_probe("swap-struct-fields", ec_subs([
+    "  x: Int;",
+    "  y: Int"
+  ], ["  y: Int;", "  x: Int"])))
+  // Exception tags: effect `effect_names[i]` routes through tag `3 + i`, so an
+  // effect declared ahead moves the tag `ec_b_effect` unwinds through.
+  Array::push(report, ec_probe("add-effect-ahead", ec_sub("effect EcLog {", "effect EcAhead {\n  Ping(Int) -> Int\n}\neffect EcLog {")))
+  // A const's VALUE. Measured `reuse=partial`, which is itself the finding:
+  // `ec_k` is not const-folded into `ec_b_closure` here -- it lowers to a
+  // thunk call -- so only its own file's bodies change and the rest replay
+  // correctly. The `const_int_values` slot of the fingerprint is therefore
+  // NOT exercised by this row; it is covered by inspection of the ctx
+  // construction and by nothing else, and this comment is the record of that
+  // rather than a claim the row proves it.
+  Array::push(report, ec_probe("const-value", ec_sub("export let ec_k: Int = 7", "export let ec_k: Int = 11")))
+  // One line, fixed field order -- the CLI contract, and it keeps the whole
+  // table visible in a failure rather than only its first row.
+  inspect(String::join(report, " | "), content = "comment reuse=partial equal=true | int-literal reuse=partial equal=true | string-literal reuse=full equal=true | add-function reuse=none equal=true | swap-order reuse=full equal=true | add-closure reuse=full equal=true | add-type-ahead reuse=none equal=true | swap-struct-fields reuse=full equal=true | add-effect-ahead reuse=none equal=true | const-value reuse=partial equal=true")
+}

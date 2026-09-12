@@ -928,6 +928,127 @@ amount, which is why the paired count is checked only for functions that were
 compiled. Carrying these in the cache is what removes the asymmetry, and it
 belongs with the consumer that reads them back.
 
+##### Replaying past the unchanged prefix (#2669, step 2b)
+
+The cross-compile body cache could only replay the unchanged **leading prefix**
+of files: `decode_body_cache_payload_for` walked the stored file table, stopped
+at the first file whose fingerprint differed, and dropped everything after it.
+An edit to an early module therefore recompiled nearly the whole program
+whether or not anything those bodies referred to had moved — which is most of
+why a one-module edit measured at 93% of a cold build.
+
+The prefix rule was not timidity. Merge order is topological, so a body in the
+unchanged prefix can only reference things declared in the unchanged prefix:
+its call immediates, funcref slots, string offsets, constructor tags and
+exception tags could not have moved. **A body from a file after the edit has
+none of that protection**, and widening the filter is exactly the act of giving
+it up. So the filter now keeps every unchanged file, and what the prefix
+supplied for free is recorded and checked instead.
+
+**What has to be pinned is a closed set, and `CompileCtx` is what closes it.**
+A function's bytes are a function of its own AST and the context it compiles
+in; every PER-function value in that context is in turn a function of its own
+AST and the program-wide part (the Perceus plan, the widest of them, takes only
+the body plus the borrow tables). So `guard_layout` is one `[h1, h2]`
+fingerprint per program-wide field of the per-function `CompileCtx`,
+enumerated at the site that builds it: the function vector with its param
+counts and return kinds, the string pool below `src_str_base`, the lambda plan,
+the constructor table with struct field names and float-field map, the folded
+constants, the thunk names, the effect names and operation arities, the
+generated-builtin index assignment, the whole-program return classifications,
+and the compile modes. Enumerating index spaces by inspection is how the reloc
+scan lost four reference classes one at a time; enumerating one struct's fields
+at the site that builds it is a different kind of list — closed, next to what it
+describes, and probed by a test that moves each of them for real.
+
+Three things had to be got right, and each was found by measurement rather than
+by reading:
+
+- **A statement POSITION cannot say which file an entry came from.**
+  `fn_src_stmts` indexes the merged array AFTER the prelude, which inserts (a
+  trait dispatcher lands after the last impl; effect lowering adds statements
+  mid-program), so a source function's recorded position is its pre-prelude one
+  plus however many statements were inserted ahead of it. Against a file table
+  built before the prelude that shift can carry an entry out of its own file's
+  range and into the next one's — and if the next file is the unchanged one, a
+  body from the EDITED file gets replayed. Measured: a three-file fixture with
+  one `effect` declaration offered **zero** entries, because every index had
+  moved. Entries now record a FILE (`fn_files`), taken from the pre-prelude
+  name → file snapshot that interior-line breakpoints already resolve through.
+- **The typed-lowering OFFSET arrays must not be pinned.** They are source
+  positions in the merged text, so appending a comment to any file shifts every
+  offset after it. Measured on the compiler's own closure, comment-edited: with
+  them folded in, `offered=4394 recompiled=5155` — the wide lane declined and
+  the build was a cold one in all but name; without them, `recompiled=848`.
+  They also do not need pinning: a replayed body never consults them, and a
+  recompiled one consults them against its own current offsets, which shift
+  with the same text. What could change an unchanged file's lowering is a
+  cross-file CLASSIFICATION change, and those are name-keyed and pinned.
+- **Widening must NARROW, not drop.** When a guard does not hold the body loop
+  falls back to the prefix the decoder measured. Without that, every edit the
+  guards reject — a new closure, a new literal, a reordered declaration — would
+  lose the prefix it replays today: a regression dressed as an improvement.
+
+Measured on the compiler's own closure (`codegen_lexer_test.vibe`, 193 files,
+5242 functions), `scripts/body_cache_reuse.sh`, one temperature per process
+sharing one `VIBE_BUILD_CACHE_DIR`:
+
+| temperature | offered | recompiled | heap_delta |
+|---|---:|---:|---:|
+| cold | 0 | 5242 | 1,074,931,408 |
+| unchanged (warm) | 4394 | 848 | 653,882,856 |
+| comment-edited | 4394 | **848** | 922,784,296 |
+
+`offered + recompiled == 5242` exactly: everything the file table offered was
+replayed. Under the prefix rule the same edit offers **0** — `defaults.vibe` is
+early in merge order, so the unchanged leading run ends before almost
+everything. The ~848 that always recompile are the pin region's pads and the
+prelude-synthesized region, which the filter excludes by construction.
+
+The allocation figure is the KPI, and it moved by less than the reuse did:
+1.075 GB cold against 0.923 GB after the edit. Codegen is 28.7% of a warm
+compile (measured above), so replaying 84% of the bodies cannot move more than
+that share, and the front end still runs whole-program.
+
+##### What the edit classes actually do (#2669, step 2b)
+
+`lib/@vibe/compiler/tests/body_cache_edit_classes_test.vibe` compiles a
+three-file chain and edits the FIRST file once per class, requiring the answer
+to equal a fresh compile every time:
+
+| edit to the first file | reuse | equals a fresh compile |
+|---|---|---|
+| a comment | partial | yes |
+| an Int literal inside a body | partial | yes |
+| lengthening a string literal | none | yes |
+| adding a function | none (layout) | yes |
+| exchanging two declarations | none | yes |
+| adding a closure | none | yes |
+| adding a type declaration ahead | none (layout) | yes |
+| exchanging two struct fields | none | yes |
+| adding an effect declaration ahead | none (layout) | yes |
+| changing a const's value | partial | yes |
+
+"none (layout)" is the file table refusing before any guard is consulted: those
+edits change the file's statement count, so the file indices are not this
+build's. The two `partial` rows are what the step buys; the rest are the
+conservative fallback, and each is a case relocation would later convert.
+
+**The guard set is sufficient — every row is byte-exact — and the test proves
+some of it necessary rather than all of it.** Dropping a slot and re-running:
+the string-pool slot flips `string-literal` to a wrong module, the struct
+field-name slot flips `swap-struct-fields`, and the function-vector slot flips
+`swap-order`. The other slots stay green under this corpus: they are carried on
+the `CompileCtx` enumeration argument, not on a case that exercises them.
+
+One finding worth recording on its own, because it bounds the cache far more
+than anything in this step: **a declared struct or enum that nothing compares
+disables the body cache for the whole program.** Its synthesized comparator is
+unreachable, late DCE prunes it, `stmts` shrinks, `late_dce_pruned` is set, and
+the guards are not recorded at all. Measured: adding one uncompared struct OR
+one uncompared enum to a fixture that otherwise reuses takes its recorded
+guards from 5 to 0 and its reuse to nothing.
+
 #### And what it costs in ALLOCATION — the #2510 criterion-5 KPI (2026-09-11)
 
 The section above bounds the split's cost in wall time. The KPI #2510 actually

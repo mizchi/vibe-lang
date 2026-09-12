@@ -209,10 +209,13 @@ import @vibe/compiler/codegen/common_base {
   append_hidden_attempt_constructors,
   await_poll_pass,
   bcc_guard_synth_matches,
-  bcc_guard_user_name,
   bcc_int_lists_equal,
+  bcc_layout_fp_bools,
+  bcc_layout_fp_ints,
+  bcc_layout_fp_string_matrix,
+  bcc_layout_fp_strings,
+  bcc_layout_fp_strings_upto,
   bcc_string_lists_equal,
-  bcc_strpool_guard,
   codegen_body_cache_filter_src_below,
   codegen_body_cache_find_at,
   codegen_body_cache_find_named_at,
@@ -6909,6 +6912,46 @@ fn lc_dbg_build_file_index(keys: Array[String], files: Array[Int]) -> MutMap[Str
 /// for tests. It runs the real builder and the real lookup rather than a
 /// restatement of either, so a test written against it cannot pass under a
 /// policy the compiler does not have.
+/// #2669 step 2b: name -> source file over the pre-prelude snapshot, with an
+/// AMBIGUOUS name mapped to -1.
+///
+/// Ambiguity is real rather than hypothetical: two `test "..."` blocks with the
+/// same title lower to one `__test_` name, and two files can hold that pair.
+/// First-wins would attribute one file's function to another, which under the
+/// widened body cache is exactly the mistake that replays an edited file's
+/// stale body.
+fn lc_build_name_file_index(names: Array[String], files: Array[Int]) -> MutMap[String, Int] {
+  let out: MutMap[String, Int] = MutMap::new_string()
+  let n = if Array::length(names) < Array::length(files) {
+    Array::length(names)
+  } else {
+    Array::length(files)
+  }
+  let mut i = 0
+  while i < n {
+    let nm = Array::get(names, i)
+    let f = Array::get(files, i)
+    match MutMap::get(out, nm) {
+      Some(prev) => if prev != f {
+        MutMap::set(out, nm, 0 - 1)
+      } else {
+        ()
+      },
+      None => MutMap::set(out, nm, f)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The file `name` was declared in, or -1 when the index cannot say.
+fn lc_fn_file_lookup(index: MutMap[String, Int], name: String) -> Int {
+  match MutMap::get(index, name) {
+    Some(f) => f,
+    None => 0 - 1
+  }
+}
+
 export fn lc_dbg_file_of_fn_for(names: Array[String], name_files: Array[Int], owner_keys: Array[String], owner_files: Array[Int], name: String) -> Int {
   lc_dbg_file_of_fn(lc_dbg_build_file_index(names, name_files), lc_dbg_build_file_index(owner_keys, owner_files), name)
 }
@@ -8257,6 +8300,25 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     }
     __sbn_i = __sbn_i + 1
   }
+  // #2669 step 2b: name -> source file, for the cross-compile body cache.
+  //
+  // Taken from the same pre-prelude snapshot the break lane resolves a
+  // function's file through, and for the same reason: after the prelude a
+  // statement's POSITION is no longer the program's, so a cached entry cannot
+  // be attributed to a file by where it sits. A name the snapshot does not
+  // cover (a synthesized definition, a pad) answers -1, and so does a name two
+  // files both declare -- an ambiguous owner is not an owner.
+  //
+  // `prov` has to cover the whole pre-prelude region for the ids to mean
+  // anything: `__sbn_file` above records 0 for a position the provenance does
+  // not reach, which would attribute every function to file 0. The FS lane
+  // always fills it; the in-process lanes do not, and there the map is empty
+  // and the widened filter keeps nothing.
+  let lc_fn_file_of = if dbg_prov_len >= synth_boundary_stmt {
+    lc_build_name_file_index(pre_prelude_let_names, pre_prelude_let_files)
+  } else {
+    MutMap::new_string()
+  }
   let prelude_errs = effect_lowering_prelude_split(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render)
   if Array::length(prelude_errs) > 0 {
     throw(Array::get(prelude_errs, 0))
@@ -9040,13 +9102,6 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     Array::push(str_strs, __src_content)
     __src_i = __src_i + 1
   }
-  // #2669 step 2b: the pooled strings a user body can reference, fingerprinted
-  // for the cross-compile body cache. Taken here rather than after the source
-  // pairs because those are appended PAST `src_str_base` and read only by
-  // `gen_sources_proper_body`, a generated builtin every compile rebuilds --
-  // including them would make any source edit anywhere invalidate every
-  // cached body, which is the cost this step exists to remove.
-  let guard_strpool_now = bcc_strpool_guard(str_strs, src_str_base)
   let num_strings = Array::length(str_strs)
   let data_base = 64
   let str_offsets = lc_fresh_int_array()
@@ -10464,24 +10519,6 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   } else {
     lc_fresh_string_array()
   }
-  // #2669 step 2b: the same region as a VECTOR, in index order. What the
-  // guard above pins is name MEMBERSHIP; what a cached body needs pinned is
-  // the index each name was assigned, and a sorted set cannot tell a swap
-  // from no change at all. The prefix rule used to make that unnecessary --
-  // merge order is topological, so a body in the unchanged prefix can only
-  // call things in the unchanged prefix -- and replaying past the prefix is
-  // exactly what gives that up.
-  let guard_user_names_now = if pin_region_capacity >= 0 {
-    let vec = lc_fresh_string_array()
-    let mut __guv = 0
-    while __guv < pin_region_src_n {
-      Array::push(vec, bcc_guard_user_name(Array::get(fn_names_list, __guv)))
-      __guv = __guv + 1
-    }
-    vec
-  } else {
-    lc_fresh_string_array()
-  }
   if pin_region_capacity >= 0 && !late_dce_pruned {
     Array::push(body_cache_out.guard_meta, pin_region_src_n)
     Array::push(body_cache_out.guard_meta, pin_region_capacity)
@@ -10514,19 +10551,9 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       Array::push(body_cache_out.guard_unmangled_names, Array::get(guard_unmangled_now, __gum))
       __gum = __gum + 1
     }
-    // #2669 step 2b. `guard_lambda_counts` is filled in further down, once
-    // the lambda plan exists -- it is the one of the three that is not known
-    // yet here.
-    let mut __guv2 = 0
-    while __guv2 < Array::length(guard_user_names_now) {
-      Array::push(body_cache_out.guard_user_names, Array::get(guard_user_names_now, __guv2))
-      __guv2 = __guv2 + 1
-    }
-    let mut __gsp = 0
-    while __gsp < Array::length(guard_strpool_now) {
-      Array::push(body_cache_out.guard_strpool, Array::get(guard_strpool_now, __gsp))
-      __gsp = __gsp + 1
-    }
+    // #2669 step 2b's `guard_layout` is recorded further down, once the
+    // lambda plan exists -- it is the last of the program-wide inputs to be
+    // computed.
   }
   // #2669 step 2a: which of THIS build's user function names identify one
   // function. A name the current build duplicates cannot be used to find a
@@ -11215,31 +11242,136 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     })
     pbi = pbi + 1
   }
-  // #2669 step 2b: each source-region function's planned lambda count, the
-  // third layout guard. A lambda's funcref slot is `lambda_slot_base +
-  // lambda_idx` and the indices are handed out by walking this plan in
-  // function order, so a function that gains or loses a closure moves every
-  // later lambda's slot -- inside bodies whose own source did not change.
-  let guard_lambda_counts_now = if pin_region_capacity >= 0 {
-    let counts = lc_fresh_int_array()
-    let mut __glc = 0
-    while __glc < pin_region_src_n {
-      let __glc_hi = if __glc + 1 < num_user_funcs {
-        Array::get(lambda_bases, __glc + 1)
-      } else {
-        lambda_base_acc
-      }
-      Array::push(counts, __glc_hi - Array::get(lambda_bases, __glc))
-      __glc = __glc + 1
-    }
-    counts
+  // #2669 step 2b: the program-wide inputs a cached body's bytes depend on.
+  //
+  // Read off the per-function `CompileCtx` construction below, which is the
+  // whole interface between the program-wide prologue and a body's codegen: a
+  // function's bytes are a function of its own AST and this context, and every
+  // PER-function field of that context is in turn a function of its own AST
+  // and the program-wide values folded here (the Perceus plan, the widest of
+  // them, takes only the body plus `lc_perceus_pin` and the borrow tables).
+  // So an unchanged file's body compiles to the same bytes exactly while these
+  // agree -- which is what the prefix rule used to supply for free, merge
+  // order being topological.
+  //
+  // Enumerating index spaces by inspection is how the reloc scan lost four
+  // reference classes one at a time. Enumerating ONE struct's program-wide
+  // fields at the site that builds it is a different kind of list: it is
+  // closed, it sits next to what it describes, and
+  // `scripts/check_body_cache_edit_classes.sh` compiles a program under
+  // `VIBE_CODEGEN_BODY_CACHE=verify` across the edit shapes that move each of
+  // them, so a slot left out fails as a byte mismatch rather than as a wrong
+  // module in someone's build.
+  let guard_layout_now = lc_fresh_int_array()
+  if pin_region_capacity >= 0 {
+    // func_table -- every `call` immediate.
+    bcc_layout_fp_strings(guard_layout_now, all_fn_names_list)
+    bcc_layout_fp_ints(guard_layout_now, all_fn_indices_list)
+    bcc_layout_fp_ints(guard_layout_now, all_fn_param_counts)
+    bcc_layout_fp_ints(guard_layout_now, all_fn_returns_list)
+    bcc_layout_fp_bools(guard_layout_now, all_fn_needs_env_list)
+    // `all_fn_names_list` is the whole vector, so it pins ORDER as well as
+    // membership -- the case `guard_unmangled_names` (a sorted set) cannot
+    // see. A `__test_` name riding along in it is not over-strict in the way
+    // it looks: a renamed test is an edit to the ENTRY file, which is last in
+    // merge order, so the prefix the lane narrows to is everything before it
+    // -- exactly what it would have replayed anyway.
+    // str_table -- every `(offset << 32) | length`.
+    bcc_layout_fp_strings_upto(guard_layout_now, str_strs, src_str_base)
+    // The scalars the table indices are built on. `lc_perceus_pin` is NOT one
+    // of them: it is a process-local monotonic token (`pctx_pin_counter`)
+    // memoizing the borrow tables, so it differs between two compiles of the
+    // SAME program in one process -- measured, it was the only slot that moved
+    // under a leading comment. The tables it stands for are folded below.
+    bcc_layout_fp_ints(guard_layout_now, [
+      num_user_funcs,
+      lambda_slot_base,
+      func_offset
+    ])
+    // The lambda plan -- every `lambda_slot_base + lambda_idx`.
+    bcc_layout_fp_ints(guard_layout_now, lambda_bases)
+    // ctor_table -- every constructor tag is `(type_index << 16) | variant`,
+    // and `type_index` counts type declarations in merge order.
+    bcc_layout_fp_strings(guard_layout_now, ctor_names_list)
+    bcc_layout_fp_ints(guard_layout_now, ctor_tags_list)
+    bcc_layout_fp_ints(guard_layout_now, ctor_field_counts_list)
+    bcc_layout_fp_strings(guard_layout_now, ctor_type_names_list)
+    bcc_layout_fp_strings(guard_layout_now, struct_names)
+    bcc_layout_fp_string_matrix(guard_layout_now, struct_field_names)
+    bcc_layout_fp_ints(guard_layout_now, ctor_float_fields_list)
+    // Which functions return a Double. The three typed-lowering OFFSET arrays
+    // beside it are deliberately NOT folded in: they are source positions in
+    // the MERGED text, so appending a comment to any file shifts every offset
+    // after it, and the guard would decline on an edit that moves no body's
+    // bytes at all. Measured on the compiler's own closure (5242 functions),
+    // comment-edited: with them folded in, `offered=4394 recompiled=5155` --
+    // the wide lane declined and the build was a cold one in all but name;
+    // without them, `recompiled=848`. Same tree, same leaf, one difference.
+    // They also do not need to be folded: a replayed body never consults them,
+    // and a recompiled one consults them against ITS OWN current offsets,
+    // which shift with the same text.
+    // What could change an unchanged file's lowering is a cross-file
+    // classification change, and those are name-keyed and pinned -- a callee
+    // that starts returning Double enters `float_ret_fn_names`, a const that
+    // stops being an Int leaves `const_int_names`, a struct field that becomes
+    // Double enters `ctor_float_fields`. `check_body_cache_edit_classes.sh`
+    // probes that residue directly rather than leaving it argued.
+    bcc_layout_fp_strings(guard_layout_now, float_ret_fn_names)
+    // Thunks decide call-vs-value at a reference; a folded const decides the
+    // literal a body embeds.
+    bcc_layout_fp_strings(guard_layout_now, thunk_names_sorted_shared)
+    bcc_layout_fp_strings(guard_layout_now, const_int_names_list)
+    bcc_layout_fp_ints(guard_layout_now, const_int_values_list)
+    // Generated-builtin indices and the region arena's address. `num_generated`
+    // pins their COUNT; these are the assignment.
+    bcc_layout_fp_ints(guard_layout_now, [
+      rc_drop_idx,
+      rc_dup_idx,
+      rc_alloc_idx,
+      region_ptr_addr,
+      region_arr_new_idx,
+      region_bytes_new_idx,
+      heap_grow_check_idx,
+      map_hash_idx,
+      map_cap_idx,
+      map_build_index_idx,
+      map_probe_index_idx,
+      map_index_insert_idx
+    ])
+    // Exception tags: effect `effect_names[i]` routes through tag `3 + i`, so
+    // a declared effect added anywhere moves every later `perform`'s tag.
+    bcc_layout_fp_strings(guard_layout_now, effect_names_list)
+    bcc_layout_fp_strings(guard_layout_now, effect_op_keys_list)
+    bcc_layout_fp_ints(guard_layout_now, effect_op_arities_list)
+    bcc_layout_fp_bools(guard_layout_now, [stmts_contain_exceptions(stmts)])
+    // Whole-program return classifications: they decide a call site's shape.
+    bcc_layout_fp_strings(guard_layout_now, lc_agg_ret_names)
+    bcc_layout_fp_ints(guard_layout_now, lc_agg_ret_infos)
+    bcc_layout_fp_strings(guard_layout_now, lc_heap_ret_names)
+    bcc_layout_fp_strings(guard_layout_now, lc_scalar_ret_names)
+    bcc_layout_fp_strings(guard_layout_now, lc_borrow_ret_names)
+    bcc_layout_fp_strings(guard_layout_now, lc_borrow_view_ret)
+    bcc_layout_fp_strings(guard_layout_now, lc_borrow_param_user_srt)
+    bcc_layout_fp_ints(guard_layout_now, lc_borrow_param_mask)
+    // The shared capture-name index a lambda resolves a capture through.
+    bcc_layout_fp_strings(guard_layout_now, capture_name_index_shared)
+    // Compile modes that change emitted code, and the entry name, which
+    // `rc_entry_untag_return` compares each function's own name against.
+    bcc_layout_fp_bools(guard_layout_now, [
+      enable_rc,
+      rc_shadow,
+      dbg_line_on,
+      coverage,
+      library_mode
+    ])
+    bcc_layout_fp_strings(guard_layout_now, [entry_name])
   } else {
-    lc_fresh_int_array()
+    ()
   }
   if pin_region_capacity >= 0 && !late_dce_pruned {
     let mut __glc2 = 0
-    while __glc2 < Array::length(guard_lambda_counts_now) {
-      Array::push(body_cache_out.guard_lambda_counts, Array::get(guard_lambda_counts_now, __glc2))
+    while __glc2 < Array::length(guard_layout_now) {
+      Array::push(body_cache_out.guard_layout, Array::get(guard_layout_now, __glc2))
       __glc2 = __glc2 + 1
     }
   } else {
@@ -11249,14 +11381,12 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // sit AFTER the edit, or only from the unchanged leading prefix?
   //
   // `decode_body_cache_payload_for` has already kept the wider set; this is
-  // the other half of the contract. The prefix rule supplied three things for
-  // free that a body from a later file does not get: the function index
-  // assignment it calls into, the lambda slots it embeds, and the string
-  // offsets it points at. Each is pinned above, and they are checked here as
-  // one decision because a body can depend on all three.
+  // the other half of the contract, and the two are deliberately separate
+  // questions: the decoder can see which FILES are unchanged and nothing
+  // about what their bodies refer to.
   //
-  // A cache with no recorded layout guards is one this compiler wrote before
-  // the guards existed, or a hand-built one -- neither may take the wide lane.
+  // A cache with no recorded layout guard is one this compiler wrote before
+  // the guard existed, or a hand-built one -- neither may take the wide lane.
   //
   // `pin_region_capacity < 0` stands down for the same reason `body_cache_in_ok`
   // does: this compile did not reorder, so it is re-feeding an array some
@@ -11268,7 +11398,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   let lc_wide_ok = if pin_region_capacity < 0 {
     true
   } else {
-    Array::length(body_cache_in.guard_user_names) > 0 && bcc_string_lists_equal(body_cache_in.guard_user_names, guard_user_names_now) && bcc_int_lists_equal(body_cache_in.guard_lambda_counts, guard_lambda_counts_now) && bcc_int_lists_equal(body_cache_in.guard_strpool, guard_strpool_now)
+    Array::length(body_cache_in.guard_layout) > 0 && bcc_int_lists_equal(body_cache_in.guard_layout, guard_layout_now)
   }
   // Narrowing, not dropping. Without this, widening would be a REGRESSION on
   // exactly the edits the guards reject (a new closure, a new literal, a
@@ -12328,7 +12458,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         } else {
           ()
         }
-        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners))
+        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_file_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners))
       }
     }
     bi = bi + 1
