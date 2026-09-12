@@ -150,6 +150,34 @@ const isDiag = (uri) => (m) => m.method === "textDocument/publishDiagnostics" &&
   checkAst("outline finds a struct symbol", astNames.includes("Vec"));
   checkAst("outline excludes a name that only appears in a comment", !astNames.includes("ghost"));
 
+  // A `test` label and a documented declaration, both of which the row parser
+  // used to mishandle: NAME escapes its whitespace so the row stays field-split
+  // (#2723) and must be DECODED here, a row carrying a DOC field must still be
+  // read (requiring the line to stop after END dropped every declaration with a
+  // `///` comment), and kind 27 Test is outside the protocol's SymbolKind range
+  // so it maps to Function (12), as lib/@vibe/lsp does.
+  const labUri = "file:///tmp/vibe-lsp-test-label.vibe";
+  const labText =
+    "/// Doc on a declaration.\nexport let documented = (x: Int) -> Int { x }\n" +
+    "\ntest \"adds two numbers\" {\n  let _ = 1\n}\n";
+  send({ jsonrpc: "2.0", method: "textDocument/didOpen", params: { textDocument: { uri: labUri, languageId: "vibe", version: 1, text: labText } } });
+  await waitFor(isDiag(labUri));
+  send({ jsonrpc: "2.0", id: 32, method: "textDocument/documentSymbol", params: { textDocument: { uri: labUri } } });
+  const labSyms = (await waitFor((m) => m.id === 32)).result || [];
+  const labNames = labSyms.map((s) => s.name);
+  // Capability probe: only a compiler that reports block labels can satisfy
+  // these. An older one answers without the label, and the row parser is never
+  // handed one to decode.
+  const labelName = labNames.find((n) => n.indexOf("adds") === 0);
+  if (!labelName) {
+    console.log("skip: label outline (this compiler does not report block labels)");
+  } else {
+    check("a label's name is decoded, not the escaped spelling", labelName === "adds two numbers");
+    check("a label's kind is inside the protocol's SymbolKind range",
+      labSyms.filter((s) => s.name === labelName).every((s) => s.kind >= 1 && s.kind <= 26));
+    check("a declaration carrying a doc comment is still in the outline", labNames.includes("documented"));
+  }
+
   // definition: cursor on `helper` in main's body -> jumps to helper's decl (line 1)
   const callLine = goodText.split(/\r?\n/)[2]; // "export let main = () -> Int { helper(21) }"
   const helperCol = callLine.indexOf("helper");

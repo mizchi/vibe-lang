@@ -566,8 +566,44 @@ function bindingOccurrences(uri, position) {
   }
 }
 
-// AST-accurate declaration outline via `vibe symbols` (one "NAME KIND START END"
-// per line; KIND = LSP SymbolKind, START/END = char offsets of the name).
+// One `vibe symbols` row: `NAME KIND START END [DOC]`. NAME never contains
+// ascii whitespace -- a `test` / `bench` label is a string literal, so its
+// spaces, tabs and newlines are escaped (#2723) -- and DOC is last precisely
+// because it can contain anything, so it is matched and ignored rather than
+// left to end the row: requiring the line to STOP after END silently dropped
+// every declaration that carries a `///` doc comment.
+const SYMBOL_ROW_RE = /^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)(?:\s+(.*))?$/;
+
+// Reverse the NAME escaping, or the editor shows `adds\stwo` where the source
+// says `adds two`. Backslash is doubled on the way out, so consuming exactly
+// one byte after each backslash, left to right, is exact.
+function decodeSymbolName(text) {
+  if (text.indexOf("\\") < 0) return text;
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "\\" || i + 1 >= text.length) { out += text[i]; continue; }
+    const c = text[++i];
+    if (c === "s") out += " ";
+    else if (c === "t") out += "\t";
+    else if (c === "n") out += "\n";
+    else if (c === "v") out += "\v";
+    else if (c === "f") out += "\f";
+    else if (c === "r") out += "\r";
+    else if (c === "\\") out += "\\";
+    else out += "\\" + c;
+  }
+  return out;
+}
+
+// `vibe symbols` legend v2 added two kinds past the LSP range: 27 Test and 28
+// Bench, so a consumer can tell a block label from a declaration of the same
+// spelling (#2632). The protocol has no such values, so they become Function
+// (12) at this boundary -- the same mapping lib/@vibe/lsp applies.
+function lspSymbolKind(kind) {
+  return kind === 27 || kind === 28 ? 12 : kind;
+}
+
+// AST-accurate declaration outline via `vibe symbols`.
 // Returns an array of { name, kind, selectionRange } (selectionRange spans the
 // name), or null when unavailable (older compiler / no symbols) so callers can
 // fall back to the line-regex scan. Unlike the regex, this handles multi-line
@@ -584,11 +620,11 @@ function compilerSymbols(uri) {
     const res = spawnSync(VIBE_BIN, ["symbols", tmp], { encoding: "utf8" });
     const out = [];
     for (const l of (res.stdout || "").split(/\r?\n/)) {
-      const m = /^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(l);
+      const m = SYMBOL_ROW_RE.exec(l);
       if (m) {
         out.push({
-          name: m[1],
-          kind: +m[2],
+          name: decodeSymbolName(m[1]),
+          kind: lspSymbolKind(+m[2]),
           selectionRange: {
             start: offsetToPosition(doc.text, +m[3]),
             end: offsetToPosition(doc.text, +m[4]),
