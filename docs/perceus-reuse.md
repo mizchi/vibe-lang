@@ -321,7 +321,11 @@ merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
   at the scope end is not necessarily the one an occurrence moved out; a
   pattern bind and a parameter have no `let` lowering to hang the flag on.
   1,806 rows survive the planner's declines.
-- A value the SITE owns: a literal, a tuple, a record, a constructor call.
+- A value the SITE owns, as an ALLOW-LIST: a tuple, a record, an array
+  literal, a constructor call, and nothing else. 25 of the 1,806 rows in the
+  compiler's own sources, which bind mostly call results -- but it is the shape
+  this leak is written as in ordinary code (`let t = Ctor(..)`).
+
   A call's result is the callee's contract instead, and the classifications
   that describe it (borrow-returning, may-return-view) are the ones the planner
   already uses to decide whether to plan a drop at all -- they do not answer
@@ -329,8 +333,16 @@ merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
   miscompiled the compiler itself. Five unit files answered wrongly with no
   trap (`eq_unbounded_formal_test`, `parser_test`, and three #2357 trait-dict
   files), and excluding exactly this class made all five green again. It is
-  1,193 of the 1,806, so it is most of the population and the obvious next
-  slice -- with the callee-contract question answered, not guessed.
+  1,193 of the 1,806.
+
+  This began as a DENYLIST (`expr_tag(value) != 8`) and review holed it twice:
+  a call wrapped in a block or an `ESeq` is not tag 8, and neither is an `if`
+  whose branches are calls, so `let t = { let _ = 0; Array::get(xs, 0) }` bound
+  an unowned view and the guarded drop would have released an element `xs`
+  still owns. A denylist over an open set of shapes cannot be finished. Reading
+  the initializer's result spine recursively -- through block bodies, `ESeq`
+  tails and conditional branches -- would admit those safely and is the obvious
+  next slice; until then they fail closed like everything nobody enumerated.
 - Every occurrence that spends the initial reference must have a source offset.
   A lambda capture has none (the planner walks captures with -1), so codegen
   would have no site to set the flag at; the binding keeps today's behavior

@@ -1522,25 +1522,39 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     //   if/match whose branch tail is borrowed). It holds a reference it never
     //   acquired, exactly as the ordinary scope-end drop below leaves it to
     //   loop_borrowed_names.
-    // - the value is an allocation made at the SITE: a literal, a tuple, a
-    //   record, a constructor call. A call's result is the callee's contract
-    //   instead, and the classifications that describe it (borrow-returning,
-    //   may-return-view) are the ones the planner already uses to decide
-    //   whether to plan a drop at all -- they do not answer whether to give
-    //   back one it eliminated. Measured: admitting call results miscompiled
-    //   the compiler itself, five unit files answering wrongly with no trap
-    //   (`eq_unbounded_formal_test`, `parser_test`, and three #2357 trait-dict
-    //   files), and excluding exactly this class made all five green again.
-    //   It is 1,193 of the 1,806 candidates in the compiler's own sources, so
-    //   it is most of the population and the obvious next slice -- with the
-    //   callee-contract question answered, not guessed.
-    // An Int-valued binding holds no reference at all, so a guarded drop over
-    // it is pure instruction cost: `bench/exec/sort_ints.vibe`'s `let mid =
-    // (lo + hi) / 2` took a flag local, two flag stores and a guarded
-    // `rc_drop` for a heap figure that did not move (32,828 B either way) and
-    // +2.84% fuel. The planner cannot see it -- its `is_scalar_expr` only
-    // knows literals and borrow-returning calls -- but this classifier can.
-    let path_value_ok = (expr_tag(value) != 8 || is_ctor_call(value, ctx.ctor_table)) && !expr_is_intish(value, local_names, ctx)
+    // - the value is an allocation made at the SITE. An ALLOW-LIST: a tuple, a
+    //   record, an array literal, a constructor call, and nothing else.
+    //
+    //   A call's result is the callee's contract instead, and the
+    //   classifications that describe it (borrow-returning, may-return-view)
+    //   are the ones the planner already uses to decide whether to plan a drop
+    //   at all -- they do not answer whether to give back one it eliminated.
+    //   Measured: admitting call results miscompiled the compiler itself, five
+    //   unit files answering wrongly with no trap (`eq_unbounded_formal_test`,
+    //   `parser_test`, and three #2357 trait-dict files), and excluding
+    //   exactly that class made all five green again. It is 1,193 of the 1,806
+    //   candidates in the compiler's own sources.
+    //
+    //   This began as a DENYLIST (`expr_tag(value) != 8`) and was holed twice
+    //   in review: a call wrapped in a block or an `ESeq` is not tag 8, and
+    //   neither is an `if` whose branches are calls, so `let t = { let _ = 0;
+    //   Array::get(xs, 0) }` bound an unowned view and the guarded drop would
+    //   release an element `xs` still owns. A denylist over an open set of
+    //   shapes cannot be finished. Reading the initializer's result spine
+    //   recursively -- through block bodies, `ESeq` tails and conditional
+    //   branches -- would admit those safely and is the obvious next slice;
+    //   until then they fail closed like everything nobody enumerated.
+    //
+    // - not an Int-valued binding: it holds no reference at all, so a guarded
+    //   drop over it is pure instruction cost. `bench/exec/sort_ints.vibe`'s
+    //   `let mid = (lo + hi) / 2` took a flag local, two flag stores and a
+    //   guarded `rc_drop` for a heap figure that did not move (32,828 B either
+    //   way) and +2.84% fuel. The planner cannot see it -- its
+    //   `is_scalar_expr` knows only literals and borrow-returning calls -- but
+    //   this classifier can. Redundant under the allow-list above for the
+    //   forms it admits, kept because it is the reason a value holding no
+    //   reference must never be guarded.
+    let path_value_ok = (is_etuple(value) || is_erecord(value) || expr_tag(value) == 17 || is_ctor_call(value, ctx.ctor_table)) && !expr_is_intish(value, local_names, ctx)
     let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && path_value_ok && array_contains_str(ctx.rc_path_drop_names, name)
     let path_flag_l = if path_drop {
       // `local_names` is indexed BY wasm local index (compile_expr resolves an
@@ -1555,7 +1569,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       while Array::length(local_names) < nl_after_reuse {
         Array::push(local_names, "")
       }
-      Array::push(local_names, "__path_flag")
+      // The flag is addressed by its SLOT below and never looked up by name,
+      // so it takes the empty no-name marker rather than a spelling a user
+      // binding could also have: `local_names` is what compile_expr resolves
+      // identifiers through, last match wins, so a real name here would make
+      // a same-named outer binding read as this i64 flag (Codex on #2725).
+      Array::push(local_names, "")
       emit_i64_const(buf, 0)
       emit_local_set(buf, nl_after_reuse)
       Array::push(ctx.rc_path_flag_names, name)
