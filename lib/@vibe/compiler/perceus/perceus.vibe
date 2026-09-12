@@ -235,6 +235,50 @@ fn pr_push_reuse(actions: Array[PerceusAction], kind: PerceusActionKind, name: S
   })
 }
 
+/// #2389 per-path release: record that this occurrence of `sid` spends the
+/// binding's INITIAL reference, so codegen can mark the path that took it. An
+/// occurrence with no source offset (a capture, the #1915 same-ident branch
+/// collapse) cannot be marked and disqualifies the binding rather than being
+/// ignored -- an unmarked consuming path would turn the leak this fixes into
+/// a release of a value already moved out.
+///
+/// Shared, because there are TWO places an occurrence can spend that
+/// reference and they are not one code path: `pe_use`, and the ELet alias arm
+/// (`let u = t`), which mirrors pe_use's dup condition and then decrements
+/// `remaining` directly. Recording it in pe_use alone left the alias transfer
+/// unmarked, so a split whose other arm was marked emitted the guarded drop
+/// and freed a value the alias had moved out -- measured as a silent wrong
+/// answer (36,000 became 26,000, no trap; `perceus_path_release_e2e_test`).
+fn pe_note_initial_ref_spent(ctx: PCtx, sid: Int, name: String, use_offset: Int, spends: Bool) -> Unit {
+  if pe_flag_has(ctx, sid, pf_let) {
+    if spends {
+      if use_offset < 0 {
+        pe_flag_or(ctx, sid, pf_mark_bad)
+      } else {
+        Array::push(ctx.mark_ids, sid)
+        Array::push(ctx.mark_offs, use_offset)
+        Array::push(ctx.mark_names, name)
+      }
+    } else {
+      ()
+    }
+    // A use sequenced AFTER the merge that zeroed the count is planned as
+    // nothing (remaining is already 0) while the codegen may still consume
+    // there. Guarding the scope end would then release a moved value, so
+    // decline the binding instead. Also a backstop: `uses` is the count over
+    // the whole body, so a merge can only reach zero when one branch spent
+    // every budgeted use and none is left to come -- no shape was found that
+    // reaches this, and it costs one flag test.
+    if pe_flag_has(ctx, sid, pf_split) {
+      pe_flag_or(ctx, sid, pf_used_after)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
 fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String, use_offset: Int) -> Int {
   if Map::has_key(scope, name) {
     let id = Map::get(scope, name)
@@ -257,43 +301,14 @@ fn pe_use(ctx: PCtx, scope: Map[String, Int], name: String, use_offset: Int) -> 
     } else {
       ()
     }
-    // #2389: this occurrence spends the binding's INITIAL reference (it moves,
-    // or it is the last owning use and takes the transfer). Record where, so
-    // codegen can mark the path that took it; an occurrence with no source
-    // offset (a capture, the #1915 same-ident branch collapse) cannot be
-    // marked, and disqualifies the binding rather than being ignored.
-    if pe_flag_has(ctx, id, pf_let) {
-      let spends_initial = if move_here {
-        true
-      } else {
-        rem == 1 && !last_view_use && !Array::get(ctx.scalar, id)
-      }
-      if spends_initial {
-        if use_offset < 0 {
-          pe_flag_or(ctx, id, pf_mark_bad)
-        } else {
-          Array::push(ctx.mark_ids, id)
-          Array::push(ctx.mark_offs, use_offset)
-          Array::push(ctx.mark_names, name)
-        }
-      } else {
-        ()
-      }
-      // A use sequenced AFTER the merge that zeroed the count is planned as
-      // nothing (remaining is already 0) while the codegen may still consume
-      // there. Guarding the scope end would then release a moved value, so
-      // decline the binding instead. Also a backstop: `uses` is the count over
-      // the whole body, so a merge can only reach zero when one branch spent
-      // every budgeted use and none is left to come -- no shape was found that
-      // reaches this, and it costs one flag test.
-      if pe_flag_has(ctx, id, pf_split) {
-        pe_flag_or(ctx, id, pf_used_after)
-      } else {
-        ()
-      }
+    // #2389: this occurrence spends the binding's INITIAL reference when it
+    // moves, or when it is the last owning use and takes the transfer.
+    let spends_initial = if move_here {
+      true
     } else {
-      ()
+      rem == 1 && !last_view_use && !Array::get(ctx.scalar, id)
     }
+    pe_note_initial_ref_spent(ctx, id, name, use_offset, spends_initial)
     if rem > 0 {
       Array::set(ctx.remaining, id, rem - 1)
     }
@@ -2365,6 +2380,10 @@ export fn pc_emit(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
             } else {
               0
             }
+            // #2389: with no dup emitted above this occurrence TRANSFERS the
+            // source's initial reference, exactly as pe_use's last owning use
+            // does -- same condition, negated.
+            pe_note_initial_ref_spent(ctx, sid, src, src_off, rem == 1 && !src_last_view && !Array::get(ctx.scalar, sid))
             if rem > 0 {
               Array::set(ctx.remaining, sid, rem - 1)
             }

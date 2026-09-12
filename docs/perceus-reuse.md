@@ -335,6 +335,23 @@ merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
   A lambda capture has none (the planner walks captures with -1), so codegen
   would have no site to set the flag at; the binding keeps today's behavior
   rather than getting a drop nothing suppresses.
+
+There are **two** places an occurrence can spend that reference, and they are
+not one code path: `pe_use`, and the `ELet` alias arm (`let u = t`), which
+mirrors pe_use's dup condition and then decrements `remaining` directly.
+Recording it in `pe_use` alone left the alias transfer unmarked, so a split
+whose other arm WAS marked emitted the guarded drop and freed a value the alias
+had moved out — a silent wrong answer with no trap (36,000 became 26,000 in the
+pinned case). Both sites now call one `pe_note_initial_ref_spent`, so they
+cannot drift.
+
+That bug also showed the e2e lane could not see the feature at all:
+`codegen_test_support`'s helpers parsed with the offset-less `parse_program`,
+so every `EIdent` came out at -1, every candidate was disqualified, and the
+case compiled **byte-identically** whether or not the planner recorded the
+alias. They now parse the way the compile lane does, which is what makes the
+case a real red test (it answers 1,045,100 instead of 3,545,100 when the
+recording is removed).
 - Not a borrow-bound binding (#708/#768): it holds a reference it never
   acquired.
 

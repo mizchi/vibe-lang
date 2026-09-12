@@ -62,6 +62,18 @@ test "a let mut is declined" {
   assert(!String::contains(plan, "run t consume_mark:"))
 }
 
+test "an alias transfer is recorded too" {
+  // `let u = t` at the source's last owning use transfers its initial
+  // reference without going through `pe_use` -- it mirrors pe_use's dup
+  // condition and then decrements `remaining` directly. Here that alias is
+  // the ONLY occurrence spending it, so a row appears at all only if the
+  // alias arm was recorded.
+  let src = String::concat(prelude, String::concat("let run: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(1), Leaf(2))\n  match k {\n    0 => {\n      let u = t\n      u\n    },\n    _ => Leaf(9)\n  }\n}", "\nlet main: () -> Int = () -> {\n  match run(0) {\n    _ => 0\n  }\n}"))
+  let plan = plan_of(src)
+  assert(String::contains(plan, "run t path_drop 1"))
+  assert(String::contains(plan, "run t consume_mark:"))
+}
+
 test "the codegen's name-keying is safe because normalization uniquifies" {
   // The guarded drop and its flag local are keyed by NAME, so a name two
   // bindings of one function share would hand one binding's release to the

@@ -16,15 +16,18 @@ import @vibe/compiler/codegen/gc {
 }
 
 import @vibe/compiler/syntax {
-  lex
-}
-
-import ../parser.vibe {
-  parse_program
+  lex_with_offsets, parse_program_located
 }
 
 //# Functions
 
+/// #2389: every helper below parses with `lex_with_offsets` +
+/// `parse_program_located`, the way the compile lane does. The offset-less
+/// `parse_program` leaves every `EIdent` at -1, and a plan action keyed by a
+/// use offset (#2257) is then unmatchable -- measured, the per-path release
+/// fails closed on such a lane, so an e2e case written against it compiled
+/// byte-identically whether or not the feature was there, and asserted
+/// nothing about it.
 export fn assert_wasm(bytes: Bytes) -> Int {
   assert(Bytes::length(bytes) > 8)
   assert(Bytes::get(bytes, 0) == 0)
@@ -35,8 +38,8 @@ export fn assert_wasm(bytes: Bytes) -> Int {
 }
 
 export fn compile_wasi(source: String, entry: String) -> Bytes with Exception {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
   compile_wasi_module(stmts, entry)
 }
 
@@ -44,8 +47,8 @@ export fn compile_wasi(source: String, entry: String) -> Bytes with Exception {
 /// Perceus RC path; used by the heap e2e / leak tests to exercise the headered
 /// layout (docs/spec/selfhost-rc-port.md).
 export fn compile_wasi_rc(source: String, entry: String) -> Bytes with Exception {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
   compile_wasi_module_rc(stmts, entry)
 }
 
@@ -55,20 +58,20 @@ export fn compile_wasi_rc(source: String, entry: String) -> Bytes with Exception
 /// source through this lane and asserts the normal lane's value comes out,
 /// so an RC accounting regression fails at the faulting operation.
 export fn compile_wasi_rc_shadow(source: String, entry: String) -> Bytes with Exception {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
   compile_wasi_module_rc_shadow(stmts, entry)
 }
 
 export fn compile_source(source: String) -> Bytes with Exception {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
   compile_module(stmts)
 }
 
 export fn compile_wasi_gc(source: String, entry: String) -> Bytes with Exception {
-  let tokens = lex(source)
-  let stmts = parse_program(tokens)
+  let (tokens, starts, _ends) = lex_with_offsets(source)
+  let stmts = parse_program_located(tokens, starts, source)
   // #1015: no strip pass runs in this test-support helper, so `stmts` here
   // is already the pre-strip shape gc_to_string_resolves_to_show_wrapper
   // needs.
@@ -82,8 +85,9 @@ export fn compile_wasi_with_imports(import_sources: Array[String], source: Strin
   let all_stmts = ArrayBuilder::new()
   let mut ii = 0
   while ii < Array::length(import_sources) {
-    let itokens = lex(Array::get(import_sources, ii))
-    let istmts = parse_program(itokens)
+    let isrc = Array::get(import_sources, ii)
+    let (itokens, istarts, _iends) = lex_with_offsets(isrc)
+    let istmts = parse_program_located(itokens, istarts, isrc)
     let mut si = 0
     while si < Array::length(istmts) {
       let s = Array::get(istmts, si)
@@ -98,8 +102,8 @@ export fn compile_wasi_with_imports(import_sources: Array[String], source: Strin
     }
     ii = ii + 1
   }
-  let main_tokens = lex(source)
-  let main_stmts = parse_program(main_tokens)
+  let (main_tokens, main_starts, _main_ends) = lex_with_offsets(source)
+  let main_stmts = parse_program_located(main_tokens, main_starts, source)
   let mut mi = 0
   while mi < Array::length(main_stmts) {
     ArrayBuilder::push(all_stmts, Array::get(main_stmts, mi))

@@ -77,6 +77,18 @@ test "a shared source stays intact on the path that keeps it" {
   ()
 }
 
+test "an arm that transfers through an alias keeps its value" {
+  // One arm returns `t` directly (an occurrence `pe_use` records); the other
+  // transfers it through `let u = t`, which the planner decrements outside
+  // `pe_use`. With that transfer unrecorded the guarded drop fired on the
+  // alias path and freed the block `u` had just moved out -- measured as a
+  // silent wrong answer, no trap. `filler` and `g` allocate after the value
+  // is held, so a released block is reused under it.
+  let src = String::concat(prelude, "let run: (Int) -> Node = (k) -> {\n  let t = Pair(Leaf(3), Leaf(4))\n  match k {\n    0 => t,\n    1 => {\n      let u = t\n      u\n    },\n    _ => Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  let mut i = 0\n  let mut acc = 0\n  while i < 50 {\n    let a = run(1)\n    let filler = run(2)\n    let g = Pair(Leaf(1), Leaf(1))\n    acc = acc + total(a) * 10000 + total(filler) * 100 + total(g)\n    i = i + 1\n  }\n  acc\n}")
+  let _ = assert_bump_rc_agree(src, "alias_transfer", "3545100")
+  ()
+}
+
 test "a let mut split is declined and still answers" {
   let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let mut t = Pair(Leaf(3), Leaf(4))\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
   let _ = assert_bump_rc_agree(src, "let_mut", "709")
