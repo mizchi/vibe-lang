@@ -729,15 +729,24 @@ to 142,360 — 980 references that were silently going to be left behind.
 
 ##### Does a body actually relocate? (#2669, slice 1b)
 
-The round-trip above proves the walk does not desynchronise. It does not prove
-the central claim, which is that a body compiled against ONE index assignment
-can be moved onto ANOTHER. `scripts/reloc_crossbuild.sh` tests that directly:
-it builds the compiler's own closure twice — the second with one import added
-to `lib/@vibe/core/base64.vibe`, which pulls `hex.vibe` earlier in the module
-order and moves most of the function index space — then takes each of A's
-bodies, rewrites every function reference from A's index space into B's by
-resolving through the name section, and compares against **what the compiler
-itself emitted for B**.
+The round-trip above proves the walk does not desynchronise. The cross-build
+comparison in `scripts/reloc_crossbuild.sh` tests whether a body compiled
+against one index assignment can be moved onto another: it builds the
+compiler's own closure twice, pulls `hex.vibe` earlier through a new import in
+`lib/@vibe/core/base64.vibe`, remaps function references by their unique names,
+and compares the rebuilt bodies against what the compiler emitted for B.
+
+The perturbation also adds a call to `encode_url_safe`. That function has
+different source in A and B, so the wrapper passes its name in the optional
+third, comma-separated argument. The comparator resolves each name to one
+shared defined function and removes it before **all** counts and non-vacuity
+guards. It reports `source_edited_excluded` separately. Calls
+*to* an excluded function still relocate normally; only its own body is outside
+the sample. Explicitly supplied module pairs must identify their source edits
+the same way: the binary alone cannot establish source equality.
+
+Measured on the compiler closure (`codegen_lexer_test.vibe`), excluding the one
+known source-edited body (compiler sources at `2e9da1132`):
 
 | | count | share |
 |---|---:|---:|
@@ -745,70 +754,41 @@ itself emitted for B**.
 | **REWRITTEN: at least one reference moved** | **3157** | |
 | **rewritten AND byte-identical to the compiler's own output** | **2814** | **89.1%** |
 | rewritten, mismatched | 343 | 10.9% |
-| not rewritten — an identity rebuild, no evidence either way | 1193 | |
+| not rewritten — an identity rebuild, no relocation evidence | 1193 | |
 | mismatch, cause not determinable (of all 382) | 284 | |
-| mismatch, unambiguously **encoding-blind** (of all 382) | 98 | |
-| skipped: the name is ambiguous on one side or the other | 5 | |
-| excluded: the body the wrapper EDITED, not a relocation case | 1 | |
+| mismatch, **encoding-blind** under the unchanged-source condition (of all 382) | 98 | |
+| skipped: known source change | 1 | |
+| skipped: the name is ambiguous on either side | 5 | |
 | shared functions whose index actually moved | 4265 | |
 
-**89.1% of the bodies this measurement can speak for survive a module reorder
-byte for byte**, using nothing but the references the instruction encoding
-exposes. That is the first direct evidence that index-independent bodies work
-rather than an argument that they should.
+The relocation success rate is **2814 / 3157**, restricted to bodies whose
+references were actually rewritten. A containing function's own index does
+not appear in its body, so a moved assignment alone is insufficient evidence.
+The 1193 identity rebuilds do not enter that rate.
 
-**The load-bearing figure is 2814 / 3157, not 3968 / 4350.** A function's own
-index is not encoded in its body, so "the assignment moved" does not mean "this
-body was rewritten": 1193 of the 4350 reference only functions that held still,
-and are rebuilt by an identity operation. Their match says nothing about
-relocation, and counting them flattered the first published rate (91.2%) over
-the real one (89.1%). Measured the other way round, with the remap forced to
-the identity on the same pair, matched falls **3968 → 1154** — so the remap is
-worth 2814 bodies, and that is the claim.
+**98 is a lower bound under the unchanged-source condition.** These mismatches
+carry neither a non-function reference (which this tool passes through) nor an
+unresolved function target. The remaining differences require information the
+instruction encoding does not expose, including function-value and data-pointer
+constants. The 284 other mismatches may carry those constants too, but their
+visible unresolved references prevent a causal attribution. A real link has
+symbol tables for the non-function spaces that this binary comparison lacks.
 
-**98 is a LOWER BOUND on what the emitter must record, not the number.** Only
-bodies with no confound are in it: a body can carry both a non-function
-reference (passed through here, because wasm gives those spaces no name
-section to map through) and an encoding-blind `i64.const`, and an unresolved
-function target is also passed through. Either makes the cause undeterminable
-from the binary, so those 284 are counted apart rather than attributed. A real
-link has the symbol tables this tool lacks and would resolve most of them; how
-many of the 284 are ALSO encoding-blind is not knowable here.
+The comparison refuses an empty sample, a sample with no moved assignment, or
+one with no rewritten byte-identical body. Excluded functions cannot satisfy
+any of these guards. Exact wasm names take precedence; a short name is accepted
+only when it resolves uniquely on both sides. A missing, ambiguous, one-sided,
+empty or duplicate exclusion is an error; it cannot silently leave a known
+edit in the sample. Ambiguous names are also refused for relocation mappings on
+both sides, including references targeting the compiler's repeated `__rt_gen`
+names.
 
-Three things this measurement needs in order to mean anything, each of which
-it got wrong first and reports now:
-
-- **Duplicate names are refused, not resolved first-wins.** The compiler emits
-  many functions called `__rt_gen` — `linked_compile.vibe` labels every
-  unassigned generated slot that way in a loop. Taking the first match compared
-  each of them against the wrong body and remapped every call to one into the
-  wrong target, which both manufactures mismatches and can count a comparison
-  against the WRONG body as a match. The first published figure (4356 / 3943 /
-  90.5%) had those rows in it.
-- **Duplicate names are refused on BOTH sides.** Checking only the target
-  module was the first version of that fix and it is not enough: if A carries
-  two `__rt_gen` and B carries one, both A bodies are compared against that
-  single B body and every A-side reference to either collapses onto it. On this
-  particular pair the two-sided check changes no number — the duplicates exist
-  on both sides — but an explicitly supplied pair can exhibit it.
-- **The reorder is asserted, not assumed, and then so is the REWRITE.** Two
-  guards, because the first alone can pass vacuously. `moved_index` counts
-  shared functions whose index differs, and zero FAILS — handing the tool the
-  same module twice gives `matched=4351 mismatched=0 moved_index=0`, a perfect
-  score, rejected. But a function's own index is not in its body, so that only
-  establishes the assignment moved. `rewritten_matched` counts bodies where a
-  reference was rewritten to a different index AND the result is byte-identical;
-  zero of those FAILS too. Red-tested by forcing the remap to the identity on
-  the real pair: `moved_index=4266 rewritten=0`, so the first guard passes and
-  the second one fires.
-- **The one edited body is EXCLUDED, not merely named.** Forcing a module
-  reorder requires editing something — a call has to cross the new import — so
-  that body's two versions are different source programs and comparing them
-  measures the edit. Naming it in the output left it in the denominator and,
-  measured, inside the encoding-blind bucket: excluding it moves the bound from
-  99 to **98** and the compared total from 4351 to 4350. The wrapper passes the
-  name and the tool FAILS if it matches nothing, so a rename cannot put the
-  confound back in silence.
+`pkf run test-reloc-crossbuild` exercises the production comparator on valid
+small wasm modules. It proves that a source edit enters the old mismatch
+bucket without an exclusion, that excluding it removes it from every relevant
+count while retaining other mismatches and calls to it, and that exclusions
+cannot satisfy the non-vacuity guards. It is included in `release-check` and
+the CI selftests lane.
 
 **What the scan cannot see, and why the link must record instead of derive.**
 A `call` immediate is self-describing — the opcode says the next uleb is a

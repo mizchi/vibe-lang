@@ -2,12 +2,15 @@
 // ANOTHER? That is the whole claim of index-independent bodies, and this
 // answers it end to end against two real builds.
 //
-//   vibe run scripts/reloc_crossbuild.vibex -- <a.wasm> <b.wasm>
+//   vibe run scripts/reloc_crossbuild.vibex -- <a.wasm> <b.wasm> [source-edited-names]
 //
 // Both built with VIBE_WASM_NAMES=1. For every function present in both by
 // NAME: take A's body, rewrite each function reference from A's index space
 // into B's (by resolving A's index to a name and that name to B's index),
 // and compare the result against B's ACTUAL body.
+// The optional third argument is a comma-separated list of source-edited
+// functions. They are excluded from every count and evidence guard; callers
+// must identify all source edits because wasm cannot establish source equality.
 //
 // A match means the relocation reproduced, byte for byte, what the compiler
 // itself emitted for the moved assignment. That is a much stronger statement
@@ -327,60 +330,100 @@ fn spans_equal(ab: Bytes, s: Int, e: Int, other: Bytes) -> Bool {
   }
 }
 
-/// Is `name` one of the functions whose SOURCE the caller edited?
-///
-/// Forcing a module reorder requires editing at least one existing body --
-/// something has to call across the new import -- so that body's B version is
-/// a different program from its A version. Comparing them measures the edit,
-/// not relocation: it inflates the denominator and, when the edited body
-/// happens to carry no visible non-function reference, it lands in the
-/// "unambiguously encoding-blind" bucket and inflates the one number this
-/// whole exercise exists to size. Naming it in the output is not enough, so
-/// it is excluded from the statistics. Found by review on #2705.
-///
-/// Matching is on the UNMANGLED base, not a substring: #716 path-mangles a
-/// private definition to `<name>_exp_<path>` / `<name>_dep_<path>`, so an
-/// exact name or one of those two prefixes is the whole rule. A substring
-/// test would quietly take `encode` along with `encode_url_safe`.
+// Validated exclusions contain exact wasm names. A short name may be accepted
+// at the CLI boundary only when it resolves to one body on each side.
 fn is_source_edited(name: String, edited: Array[String]) -> Bool {
   let mut i = 0
   let mut hit = false
-  while i < Array::length(edited) {
-    let e = Array::get(edited, i)
-    if name == e || String::starts_with(name, String::concat(e, "_exp_")) || String::starts_with(name, String::concat(e, "_dep_")) {
-      hit = true
-    } else {
-      ()
-    }
+  while !hit && i < Array::length(edited) {
+    hit = name == Array::get(edited, i)
     i = i + 1
   }
   hit
 }
 
-fn split_commas(s: String) -> Array[String] {
+fn source_edited_index(m: Mod, name: String) -> Int with Exception {
+  let exact = index_of_name(m, name)
+  if exact == -2 {
+    throw("reloc-crossbuild: source-edited name is ambiguous: " + name)
+  } else {
+    ()
+  }
+  if exact >= 0 {
+    exact
+  } else {
+    let mut found = -1
+    let mut hits = 0
+    let mut i = 0
+    while i < Array::length(m.names) {
+      let candidate = Array::get(m.names, i)
+      if String::starts_with(candidate, name + "_exp_") || String::starts_with(candidate, name + "_dep_") {
+        found = Array::get(m.name_idxs, i)
+        hits = hits + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    if hits > 1 {
+      throw("reloc-crossbuild: source-edited name is ambiguous: " + name)
+    } else {
+      ()
+    }
+    found
+  }
+}
+
+fn split_commas(s: String) -> Array[String] with Exception {
   let out: Array[String] = []
   let mut cur = ""
   let mut i = 0
   while i < String::length(s) {
     let c = String::substring(s, i, i + 1)
     if c == "," {
-      if String::length(cur) > 0 {
-        Array::push(out, cur)
+      if cur == "" {
+        throw("reloc-crossbuild: source-edited list requires a function name at every position")
       } else {
         ()
       }
+      Array::push(out, cur)
       cur = ""
     } else {
-      cur = String::concat(cur, c)
+      cur = cur + c
     }
     i = i + 1
   }
-  if String::length(cur) > 0 {
-    Array::push(out, cur)
+  if cur == "" {
+    throw("reloc-crossbuild: source-edited list requires a function name at every position")
   } else {
     ()
   }
+  Array::push(out, cur)
   out
+}
+
+fn source_edited_names(a: Mod, b: Mod, requested: Array[String]) -> Array[String] with Exception {
+  let names: Array[String] = []
+  let mut i = 0
+  while i < Array::length(requested) {
+    let name = Array::get(requested, i)
+    let ai = source_edited_index(a, name)
+    let bi = source_edited_index(b, name)
+    if ai < 0 || bi < 0 || body_slot(a, ai) < 0 || body_slot(b, bi) < 0 || map_index(a, b, ai) != bi {
+      throw("reloc-crossbuild: exclusion must name a shared defined function: " + name)
+    } else {
+      ()
+    }
+    let exact = name_of(a, ai)
+    if is_source_edited(exact, names) {
+      throw("reloc-crossbuild: duplicate exclusion: " + name)
+    } else {
+      ()
+    }
+    Array::push(names, exact)
+    i = i + 1
+  }
+  names
 }
 
 fn main() -> Unit allows Exception + Fs + Stdout + Env {
@@ -396,17 +439,12 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
   }
   let a = load(Env::args_get(0))
   let b = load(Env::args_get(1))
-  // Optional third argument: comma-separated names of functions the caller
-  // EDITED between the two builds. See is_source_edited.
-  let edited = if Env::args_len() > 2 {
-    split_commas(Env::args_get(2))
+  // Validate every request before reporting any measurement. The binary
+  // cannot establish source equality; callers must identify their edits.
+  let edited = if Env::args_len() == 3 {
+    source_edited_names(a, b, split_commas(Env::args_get(2)))
   } else {
     []
-  }
-  let edited_hits: Array[Int] = []
-  let mut eh = 0
-  while eh < Array::length(edited) {
-    Array::push(edited_hits, 0); eh = eh + 1
   }
   let mut compared = 0
   let mut matched = 0
@@ -434,19 +472,10 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
     } else {
       body_slot(b, bi)
     }
-    if bi == -2 {
-      ambiguous_name = ambiguous_name + 1
-    } else if bs >= 0 && is_source_edited(nm, edited) {
+    if is_source_edited(nm, edited) {
       source_edited_excluded = source_edited_excluded + 1
-      let mut ei = 0
-      while ei < Array::length(edited) {
-        if is_source_edited(nm, [Array::get(edited, ei)]) {
-          Array::set(edited_hits, ei, Array::get(edited_hits, ei) + 1)
-        } else {
-          ()
-        }
-        ei = ei + 1
-      }
+    } else if bi == -2 {
+      ambiguous_name = ambiguous_name + 1
     } else if bs < 0 {
       a_only_shape = a_only_shape + 1
     } else {
@@ -600,19 +629,6 @@ fn main() -> Unit allows Exception + Fs + Stdout + Env {
     println(StringBuilder::freeze(ex))
   } else {
     ()
-  }
-  // A name the caller said it edited that matched NOTHING means the exclusion
-  // silently stopped working -- a rename in the wrapper, a change in the
-  // mangling -- and the confound would be back in the numbers with no sign of
-  // it. Same shape as the vacuity guards below.
-  let mut eg = 0
-  while eg < Array::length(edited) {
-    if Array::get(edited_hits, eg) == 0 {
-      throw(String::concat("reloc-crossbuild: no compared body matched the source-edited name '", String::concat(Array::get(edited, eg), "' -- the exclusion is not doing anything")))
-    } else {
-      ()
-    }
-    eg = eg + 1
   }
   if compared == 0 {
     throw("reloc-crossbuild: nothing compared -- the two modules share no named function")
