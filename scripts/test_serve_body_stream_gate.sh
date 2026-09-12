@@ -142,7 +142,7 @@ env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw 
   "${UNUSED_BODY_SRC#"$PROJECT_ROOT"/}" "${UNUSED_BODY_COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
 if [ ! -s "$UNUSED_BODY_COMPONENT" ]; then
   echo "[serve-body] FAILED: a signature-selected stream handler with an unused body did not componentize" >&2
-  cat "$UNUSED_BODY_COMPONENT.diag" 2>/dev/null >&2 || true
+  cat "$UNUSED_BODY_COMPONENT.diag" >&2 2>/dev/null || true
   exit 1
 fi
 wasm-tools validate --features all "$UNUSED_BODY_COMPONENT" >/dev/null
@@ -172,7 +172,7 @@ env VIBE_RC=0 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw \
   "${ORDINARY_STREAM_SRC#"$PROJECT_ROOT"/}" "${ORDINARY_STREAM_CORE#"$PROJECT_ROOT"/}" __no_entry__ >/dev/null 2>&1 || true
 if [ ! -s "$ORDINARY_STREAM_CORE" ]; then
   echo "[serve-body] FAILED: the ordinary HostStream export did not compile" >&2
-  cat "$ORDINARY_STREAM_CORE.diag" 2>/dev/null >&2 || true
+  cat "$ORDINARY_STREAM_CORE.diag" >&2 2>/dev/null || true
   exit 1
 fi
 if LC_ALL=C grep -a -q 'vibe.tagmode' "$ORDINARY_STREAM_CORE"; then
@@ -194,7 +194,7 @@ serve_handler() {
     "${src#"$PROJECT_ROOT"/}" "${component#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
   if [ ! -s "$component" ]; then
     echo "[serve-body] FAILED: the serve path produced no component for $tag" >&2
-    cat "$component.diag" 2>/dev/null >&2 || true
+    cat "$component.diag" >&2 2>/dev/null || true
     exit 1
   fi
   wasm-tools validate --features all "$component" >/dev/null
@@ -418,7 +418,7 @@ env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw 
   "${CLOSE_SRC#"$PROJECT_ROOT"/}" "${CLOSE_COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
 if [ ! -s "$CLOSE_COMPONENT" ]; then
   echo "[serve-body] FAILED: an early-closing handler did not componentize" >&2
-  cat "$CLOSE_COMPONENT.diag" 2>/dev/null >&2 || true
+  cat "$CLOSE_COMPONENT.diag" >&2 2>/dev/null || true
   exit 1
 fi
 CLOSE_CORE_WIT="$(wasm-tools print "$CLOSE_COMPONENT")"

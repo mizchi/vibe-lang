@@ -109,7 +109,7 @@ LEAK="$TMP/leak.wasm"
 env $(sed -n '/^VIBE_SELECTOR_ORDER="/,/"$/p' "$ROOT_DIR/runtime/vibe" | tr -d '"' | sed 's/^VIBE_SELECTOR_ORDER=//' | sed 's/\(VIBE_[A-Z_]*\)/-u \1/g') \
   -u VIBE_RC VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$LEAK_SRC" "$LEAK" main >"$TMP/leak.build.log" 2>&1 || true
-[ -s "$LEAK" ] || { echo "check_compile_only_lanes_test: FAIL (leak): probe did not compile" >&2; cat "$LEAK.diag" 2>/dev/null >&2; exit 1; }
+[ -s "$LEAK" ] || { echo "check_compile_only_lanes_test: FAIL (leak): probe did not compile" >&2; cat "$LEAK.diag" >&2 2>/dev/null; exit 1; }
 node scripts/wasm_func_sizes.mjs "$LEAK" --top 1000000 | grep -q 'compile_file_fs_mode_gc' \
   || { echo "check_compile_only_lanes_test: FAIL (leak): the probe's name section lacks compile_file_fs_mode_gc, so the mutation did not hit" >&2; exit 1; }
 expect_fail leak "still defines functions of a dropped lane" --scan-only "$LEAK"

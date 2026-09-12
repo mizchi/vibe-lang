@@ -59,10 +59,10 @@ for f in lib/@vibe/compiler/*_test.vibe; do
     VIBE_PREOPEN_DIR="$ROOT" VIBE_IMPORT_ABI=raw \
     bash "$RUNNER" --invoke cli_main "$COMPILER_COV" \
     "$COMPILER_ENTRY" "$d/src.vibe" cov_driver_main >"$d/expose.log" 2>&1 || true
-  [ -s "$d/src.vibe" ] || { echo "[ut:$base] exact-path exposure failed" >&2; cat "$d/src.vibe.diag" 2>/dev/null >&2 || tail -3 "$d/expose.log" >&2; exit 1; }
+  [ -s "$d/src.vibe" ] || { echo "[ut:$base] exact-path exposure failed" >&2; cat "$d/src.vibe.diag" >&2 2>/dev/null || tail -3 "$d/expose.log" >&2; exit 1; }
   compile_status=0
   coverage_driver_compile_with_retries "$d" cov_driver_main || compile_status=$?
-  [ "$compile_status" = 0 ] || { echo "[ut:$base] compile failed (status $compile_status)" >&2; cat "$d/m.wasm.diag" 2>/dev/null >&2 || tail -3 "$d/compile.log" >&2; exit 1; }
+  [ "$compile_status" = 0 ] || { echo "[ut:$base] compile failed (status $compile_status)" >&2; cat "$d/m.wasm.diag" >&2 2>/dev/null || tail -3 "$d/compile.log" >&2; exit 1; }
   cov="$d/cov.json"
   VIBE_COV_OUT="$cov" VIBE_COV_RAW=1 VIBE_PREOPEN_DIR="$ROOT" bash "$RUNNER" --invoke _start "$d/m.wasm" >"$d/run.log" 2>&1 || {
     echo "[ut:$base] execution failed" >&2; tail -5 "$d/run.log" >&2; exit 1

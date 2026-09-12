@@ -351,7 +351,7 @@ VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   "$EMITTER_COMPILER" "$OUT_DIR/emit.vibe" "$OUT_DIR/emit.wasm" main >/dev/null 2>&1 || true
 if [ ! -s "$OUT_DIR/emit.wasm" ]; then
   echo "[body-read-probe] FAILED: the emitter program did not compile" >&2
-  cat "$OUT_DIR/emit.wasm.diag" 2>/dev/null >&2 || true
+  cat "$OUT_DIR/emit.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
 VIBE_PREOPEN_DIR="$PROJECT_ROOT" bash "$PROJECT_ROOT/scripts/run_wasm_vibe_host_runner.sh" \

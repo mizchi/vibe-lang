@@ -141,7 +141,7 @@ expect_rejected() { # label driver source diagnostic-fragment
   fi
   if [ ! -s "$output.diag" ] || ! grep -Fq "$expected" "$output.diag"; then
     echo "coverage-driver-exposure: $label missing diagnostic '$expected'" >&2
-    cat "$output.diag" 2>/dev/null >&2 || true
+    cat "$output.diag" >&2 2>/dev/null || true
     exit 1
   fi
 }

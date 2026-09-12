@@ -81,7 +81,7 @@ env VIBE_SERVE_COMPONENT=1 VIBE_PREOPEN_DIR="$PROJECT_ROOT" VIBE_IMPORT_ABI=raw 
   "${HANDLER_SRC#"$PROJECT_ROOT"/}" "${COMPONENT#"$PROJECT_ROOT"/}" main >/dev/null 2>&1 || true
 if [ ! -s "$COMPONENT" ]; then
   echo "[http-full-gate] FAIL: handler componentization produced nothing" >&2
-  cat "$COMPONENT.diag" 2>/dev/null >&2 || true
+  cat "$COMPONENT.diag" >&2 2>/dev/null || true
   exit 1
 fi
 wasm-tools validate --features all "$COMPONENT" >/dev/null
