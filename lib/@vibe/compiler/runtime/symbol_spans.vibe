@@ -189,14 +189,44 @@ fn sym_string_is(t: Token, text: String) -> Bool {
   }
 }
 
+/// Does the source slice `[s, e)` cross a line boundary? Only a `#|` block
+/// can, and only by continuing on the next physical line.
+fn sym_span_has_newline(source: String, s: Int, e: Int) -> Bool {
+  let n = String::length(source)
+  let hi = if e < n {
+    e
+  } else {
+    n
+  }
+  let mut i = s
+  let mut found = false
+  while i < hi && !found {
+    if String::char_code_at(source, i) == '\n' {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// The bytes of a string literal token's CONTENT, read from its delimiters
 /// in the source: a plain `"…"` is one byte in on each side, a raw `r"…"`
-/// two in and one back, and a `#|…` block starts two in and runs to the
-/// token's end (the lexer ends it at the line end, so nothing trails). An
-/// unrecognised spelling keeps the whole token rather than guessing. All
-/// three lex to one `TString`, so the token alone cannot say which (Codex on
-/// #2708: `test r"name"` reported the opening quote as the label's first
-/// byte).
+/// two in and one back, and a single-line `#|…` block starts two in and runs
+/// to the token's end. An unrecognised spelling keeps the whole token rather
+/// than guessing. All three lex to one `TString`, so the token alone cannot
+/// say which (Codex on #2708: `test r"name"` reported the opening quote as
+/// the label's first byte).
+///
+/// A `#|` block that CONTINUES over several physical lines is the one
+/// spelling whose content is not contiguous in the source: the lexer joins
+/// each line's text with "\n" and drops the indentation and the continuation
+/// `#|`, so no single interval holds the content and nothing else. There the
+/// whole literal token is returned instead of a range that would present
+/// those delimiters as label text (Codex on #2718). A trailing `\r` is not
+/// content either way: the lexer strips it per line but ends the token at
+/// the `\n`, so a CRLF source would otherwise carry it inside the span.
 fn sym_string_content_span(source: String, s: Int, e: Int) -> (Int, Int) {
   let n = String::length(source)
   let c0 = if s < n {
@@ -222,11 +252,20 @@ fn sym_string_content_span(source: String, s: Int, e: Int) -> (Int, Int) {
       s + 2
     })
   } else if c0 == '#' && c1 == '|' {
-    (s + 2, if e > s + 2 {
-      e
+    let stop = if e > s && e <= n && String::char_code_at(source, e - 1) == '\r' {
+      e - 1
     } else {
-      s + 2
-    })
+      e
+    }
+    if sym_span_has_newline(source, s, stop) {
+      (s, stop)
+    } else {
+      (s + 2, if stop > s + 2 {
+        stop
+      } else {
+        s + 2
+      })
+    }
   } else {
     (s, e)
   }

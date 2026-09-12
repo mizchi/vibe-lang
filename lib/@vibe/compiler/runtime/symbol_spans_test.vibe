@@ -152,6 +152,27 @@ test "symbol_spans: a #| block label starts after the delimiter (Codex on #2708)
   inspect(String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e))))))), "adds 27 7 11")
 }
 
+test "symbol_spans: a multi-line #| label reports the whole literal token (Codex on #2718)" {
+  // `test #|one` continued by `     #|two` at the same column. The lexer
+  // joins the two lines as "one\ntwo" and drops the indentation and the
+  // second `#|`, so NO interval holds the content and nothing else: bytes
+  // 7..21 would read `one\n     #|two`, presenting the delimiters as label
+  // text. The literal token (5..21) is reported instead.
+  let src = "test #|one\n     #|two\n{\n  let _ = 1\n}\n"
+  let syms = symbol_spans(src)
+  let (_, kind, s, e) = Array::get(syms, 0)
+  assert(sym_has(syms, "one\ntwo", 27))
+  inspect(String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e))))), "27 5 21")
+}
+
+test "symbol_spans: a #| label's span stops before a CRLF's carriage return (Codex on #2718)" {
+  // The lexer strips the `\r` from each line's content but ends the token at
+  // the `\n`, so the byte before the token's end is not label text.
+  let syms = symbol_spans("test #|adds\r\n{\n  let _ = 1\n}\n")
+  let (name, kind, s, e) = Array::get(syms, 0)
+  inspect(String::concat(name, String::concat(" ", String::concat(__to_string(kind), String::concat(" ", String::concat(__to_string(s), String::concat(" ", __to_string(e))))))), "adds 27 7 11")
+}
+
 test "symbol_spans: a declaration is located at its token, never at a copy inside a comment (#2632)" {
   // The #2626 counterexample: the comment carries the name first (bytes
   // 14..28, quoted on both sides); the declaration's own token is at 30.

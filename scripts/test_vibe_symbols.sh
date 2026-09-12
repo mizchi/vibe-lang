@@ -163,6 +163,21 @@ else
   bad "symbols should report [adds 27 7 11] for a raw-string label; got: $out_rl"
 fi
 
+# 7d. Codex on #2718: a `#|` label continued on a second physical line. The
+#     lexer joins the lines as "one\ntwo" and drops the indentation and the
+#     continuation `#|`, so no interval holds the content and nothing else --
+#     7..21 would read `one\n     #|two`. The literal token (5..21) is
+#     reported instead, and the newline in the NAME is escaped so the record
+#     stays on ONE line (it used to print as two).
+ml="$WORK/multiline_label.vibe"
+printf 'test #|one\n     #|two\n{ let _ = 1 }\n' > "$ml"
+out_ml="$("$VIBE" symbols "$ml" 2>/dev/null || true)"
+if [ "$out_ml" = 'one\ntwo 27 5 21' ]; then
+  ok "symbols keeps a multi-line #| label on one row, spanning the literal"
+else
+  bad "symbols should report [one\\ntwo 27 5 21] for a multi-line label; got: $out_ml"
+fi
+
 # --- #2381: arguments are no longer accepted and ignored --------------------
 # Every case below used to print a.vibe's outline and exit 0, so a caller who
 # believed they had asked about two files -- or who typo'd a flag -- got a
