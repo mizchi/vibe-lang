@@ -81,3 +81,23 @@ test "unbox still rewrites an eligible tuple let mut after the pre-scan" {
     _ => assert(false)
   }
 }
+
+test "one candidate does not rebuild unrelated function bodies" {
+  let mut body = EInt(0)
+  let mut i = 0
+  while i < 512 {
+    body = ESeq(EInt(i), body)
+    i = i + 1
+  }
+  let stmts: Array[Stmt] = [
+    SExpr(EFn([], [], [], None, None, body)),
+    SModule(false, "M", [SExpr(tuple_let_mut("s", destr_body()))])
+  ]
+  // Warm the reusable child stack before measuring the rewrite itself.
+  inspect(has_unbox_tuple_candidate(stmts), content = "true")
+  let before = Profiler::heap_bytes()
+  unbox_tuple_loop_params(stmts)
+  let allocated = Profiler::heap_bytes() - before
+  // Rewriting the tiny candidate fits here; copying 512 unrelated nodes does not.
+  inspect(allocated < 4096, content = "true")
+}
