@@ -18,9 +18,17 @@
 //# A misassigned owner reads the offsets against another function's body,
 //# which is what the in-compiler check catches.
 //#
-//# Mutation-checked against a compiler with the recorded offset moved by one
-//# byte, with the two kinds swapped, and with the nested-lambda reassignment
-//# widened to claim the inner lambda's records. All three fail here.
+//# Mutation-checked, four ways, each against a compiler built with that one
+//# change and this file run unmodified. All four FAIL here; unmutated passes.
+//#
+//#   recorded offset + 1                 the byte named is not the opcode
+//#   kind changed at compile_expr        i64.const read as an i32.const
+//#   one record push deleted             the paired counts diverge
+//#   reassignment drops its pending test the outer lambda claims the inner's
+//#
+//# The fourth is the reason the nested case below is shaped the way it is:
+//# the first version of it PASSED under that mutation, which made three out of
+//# four look like a complete result.
 
 //# Imports
 
@@ -63,11 +71,21 @@ test "blind reloc: a capturing lambda stores its slot as an i32" {
 }
 
 test "blind reloc: nested lambdas keep their own owners" {
-  // The shape the pending-owner reassignment exists for. The inner lambda
-  // finishes first and claims its own records; the outer one must then claim
-  // only what is left. If it claimed the inner's too, those offsets would be
-  // read against the outer lambda's body and land on unrelated bytes.
-  assert_compiles("fn make_adder(n: Int) -> (Int) -> Int {\n  (x) -> {\n    let inner = (y) -> {\n      y + n\n    }\n    inner(x) + n\n  }\n}\n\nfn main allows Stdout {\n  let f = make_adder(2)\n  println(Int::to_string(f(10)))\n}\n",)
+  // The shape the pending-owner reassignment exists for, and the one case
+  // here that had to be built rather than picked: a lambda's records are
+  // written under a pending owner and reassigned once the plan hands over its
+  // index, so a nested lambda -- which finishes FIRST -- must already own its
+  // own. An outer reassignment that claimed them would read their offsets
+  // against the outer body.
+  //
+  // Both lambda BODIES have to contain a function value for that to be
+  // reachable, which is why each passes a named function to `twice` rather
+  // than doing arithmetic. The obvious spelling -- a nested closure over `n`
+  // -- does NOT exercise it: a capturing lambda's slot is emitted into the
+  // ENCLOSING buffer, so the inner body records nothing and there is nothing
+  // to steal. Measured: with the reassignment widened to drop its pending
+  // test, that version still passed.
+  assert_compiles("fn twice(f: (Int) -> Int, x: Int) -> Int {\n  f(f(x))\n}\n\nfn inc(n: Int) -> Int {\n  n + 1\n}\n\nfn dbl(n: Int) -> Int {\n  n * 2\n}\n\nfn outer() -> (Int) -> Int {\n  (x) -> {\n    let inner = (y) -> {\n      twice(dbl, y)\n    }\n    inner(twice(inc, x))\n  }\n}\n\nfn main allows Stdout {\n  let f = outer()\n  println(Int::to_string(f(3)))\n}\n",)
 }
 
 test "blind reloc: closures reaching call_indirect, several owners" {

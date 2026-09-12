@@ -882,6 +882,15 @@ the outer body and land on unrelated bytes; the check above is what turns that
 into a failed build. `lib/@vibe/compiler/tests/blind_reloc_test.vibe` compiles
 one program per shape, including the nested case.
 
+That nested case had to be BUILT rather than picked, and the first version of
+it proved nothing. The obvious spelling of nested lambdas — a closure over an
+enclosing binding — does not reach the hazard at all: a capturing lambda's slot
+is emitted into the ENCLOSING buffer, so the inner body records nothing and an
+outer reassignment has nothing to steal. Measured, with the reassignment
+widened to drop its pending test: that version still passed. Both lambda bodies
+have to contain a function value of their own, which is what the committed case
+does. Three of four mutations failing is not a passing grade for the fourth.
+
 **What is NOT recorded yet, said plainly.** Data pointers — the other class the
 scan cannot see — have no kind number yet, because numbering one before
 anything emits it would be a promise and the numbers are append-only. And a
