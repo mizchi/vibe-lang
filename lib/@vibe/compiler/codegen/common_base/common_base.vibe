@@ -357,6 +357,33 @@ export struct CodegenBodyCache {
   /// The LENGTH is a schema check: a compile whose slot count differs from the
   /// harvest's is one whose enumeration changed, and it declines.
   guard_layout: Array[Int];
+  /// #2669 step 2b (Codex P0): the checker's PER-MODULE typed-lowering
+  /// classification, fingerprinted in each module's OWN coordinates.
+  ///
+  /// `guard_layout` folds `float_ret_fn_names` but deliberately not the three
+  /// typed-lowering OFFSET arrays, because those are positions in the merged
+  /// text -- a comment anywhere shifts every offset after it, and folding them
+  /// made a comment-only edit decline the whole widened lane (measured:
+  /// `offered=4394 recompiled=5155`, a cold build in all but name).
+  ///
+  /// What that leaves unpinned is the CLASSIFICATION those offsets carry, and
+  /// one class of it is name-keyed nowhere: a callee that changes from `Int` to
+  /// `Bool` keeps its name, its arity and its scalar-return classification,
+  /// while every render and `eq` argument fed by it changes tag. So this
+  /// fingerprints each module's own table -- `module_typed_lowering_offsets_for_path`
+  /// and `module_typed_eq_rows_for_path`, before the merge rebases them.
+  ///
+  /// Those rows follow the INTERFACES a module reads, not the text anyone else
+  /// moves. Measured on a two-file chain, editing the callee's file and reading
+  /// the untouched CONSUMER's rows: a comment, a same-length body edit, and a
+  /// body edit that LENGTHENS the callee's file all leave them at `[715]`;
+  /// changing the callee's return type from `Int` to `Bool` moves them to
+  /// `[717]`. That is the dependence this guard exists to see, and the reason
+  /// the merged arrays cannot stand in for it.
+  ///
+  /// Filled in by the FS lane, which is the layer that knows the file list;
+  /// empty on every in-process lane, where it pins nothing and nothing reads it.
+  guard_typed_lowering: Array[Int];
   /// #2669 step 2b, and NOT part of the artifact: what the CONSUMING build's
   /// file table said, filled in by `decode_body_cache_payload_for` and read by
   /// the body loop. One element, the merged-statement limit of the unchanged
@@ -401,6 +428,7 @@ export fn codegen_body_cache_new() -> CodegenBodyCache {
     guard_borrow_masks: array_empty(),
     guard_unmangled_names: array_empty(),
     guard_layout: array_empty(),
+    guard_typed_lowering: array_empty(),
     consumer_src_limit: array_empty()
   }
 }
@@ -768,6 +796,11 @@ fn bcc_copy_guards(src: CodegenBodyCache, out: CodegenBodyCache) -> Unit {
     Array::push(out.guard_layout, Array::get(src.guard_layout, gw))
     gw = gw + 1
   }
+  let mut gt = 0
+  while gt < Array::length(src.guard_typed_lowering) {
+    Array::push(out.guard_typed_lowering, Array::get(src.guard_typed_lowering, gt))
+    gt = gt + 1
+  }
 }
 
 /// #2388 step 3: exact int-list equality, the mask half of the borrow guard.
@@ -817,11 +850,32 @@ fn bcc_fp_byte(fp: Array[Int], byte: Int) -> Unit {
 }
 
 fn bcc_fp_int(fp: Array[Int], v: Int) -> Unit {
-  // Seven bytes of the value, low first. Wider than any index space this
-  // pins, and it does not depend on the tagged Int's width.
+  // The WHOLE value: a sign byte and nine magnitude bytes, low first.
+  //
+  // Seven bytes was the first version and it was wrong -- 56 bits, against a
+  // 63-bit Int, so `0` and `1 << 56` fingerprinted alike. That is harmless for
+  // an index or a count and not harmless for `const_int_values`, where the
+  // pinned thing is a literal the program embeds: a folded constant edited
+  // between two such values would leave `guard_layout` equal and replay a body
+  // carrying the old number (Codex P1 on this PR).
+  //
+  // Nine bytes is 72 bits, which covers the 62-bit magnitude with room; the
+  // sign rides separately so `acc / 256` never has to mean anything for a
+  // negative, and the magnitude of the most negative Int is taken as
+  // `-(v + 1)` so it cannot overflow on the way in.
+  let neg = v < 0
+  let mut acc = if neg {
+    0 - (v + 1)
+  } else {
+    v
+  }
+  bcc_fp_byte(fp, if neg {
+    1
+  } else {
+    0
+  })
   let mut k = 0
-  let mut acc = v
-  while k < 7 {
+  while k < 9 {
     bcc_fp_byte(fp, acc&255)
     acc = acc / 256
     k = k + 1
@@ -1252,8 +1306,8 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   // the blind-reference arrays, '2' -> '3' when step 2a added fn_names. (The
   // store is keyed on the codegen fingerprint too, so this is the second line
   // of defence, not the first.) '3' -> '4' when step 2b added the layout
-  // guard and the per-entry source file that let replay reach past the
-  // leading prefix.
+  // guard, the typed-lowering guard and the per-entry source file that let
+  // replay reach past the leading prefix.
   bytebuf_push(buf, '4')
   bcc_push_int_array(buf, cache.fn_indices)
   bcc_push_string_array(buf, cache.fn_names)
@@ -1285,6 +1339,7 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   bcc_push_int_array(buf, cache.guard_borrow_masks)
   bcc_push_string_array(buf, cache.guard_unmangled_names)
   bcc_push_int_array(buf, cache.guard_layout)
+  bcc_push_int_array(buf, cache.guard_typed_lowering)
   bytebuf_to_bytes(buf)
 }
 
@@ -1623,6 +1678,11 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
     } else {
       ()
     }
+    if p >= 0 {
+      p = bcc_read_int_array(b, p, out.guard_typed_lowering)
+    } else {
+      ()
+    }
     let fn_n = Array::length(out.fn_indices)
     let lam_n = Array::length(out.lam_owner)
     let guard_n = Array::length(out.guard_meta)
@@ -1644,7 +1704,7 @@ export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
       }
       fni = fni + 1
     }
-    if p < 0 || fn_index_negative || Array::length(out.fn_names) != fn_n || Array::length(out.fn_files) != fn_n || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || Array::length(out.blind_body) != Array::length(out.blind_fn) || Array::length(out.blind_offsets) != Array::length(out.blind_fn) || Array::length(out.blind_kinds) != Array::length(out.blind_fn) || Array::length(out.blind_syms) != Array::length(out.blind_fn) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) || Array::length(out.guard_layout) % 2 != 0 {
+    if p < 0 || fn_index_negative || Array::length(out.fn_names) != fn_n || Array::length(out.fn_files) != fn_n || Array::length(out.fn_src_stmts) != fn_n || Array::length(out.fn_bodies) != fn_n || Array::length(out.fn_meta_i32) != fn_n || Array::length(out.fn_meta_i64) != fn_n || Array::length(out.fn_meta_v128) != fn_n || Array::length(out.lam_indices) != lam_n || Array::length(out.lam_bodies) != lam_n || Array::length(out.lam_param_counts) != lam_n || Array::length(out.lam_captures) != lam_n || Array::length(out.lam_meta_i32) != lam_n || Array::length(out.lam_meta_i64) != lam_n || Array::length(out.slot_owner) != Array::length(out.slot_values) || Array::length(out.blind_body) != Array::length(out.blind_fn) || Array::length(out.blind_offsets) != Array::length(out.blind_fn) || Array::length(out.blind_kinds) != Array::length(out.blind_fn) || Array::length(out.blind_syms) != Array::length(out.blind_fn) || (guard_n != 0 && guard_n != 5) || Array::length(out.guard_synth_names) != Array::length(out.guard_synth_stmts) || Array::length(out.guard_borrow_names) != Array::length(out.guard_borrow_masks) || Array::length(out.guard_layout) % 2 != 0 || Array::length(out.guard_typed_lowering) % 2 != 0 {
       None
     } else {
       Some(out)
