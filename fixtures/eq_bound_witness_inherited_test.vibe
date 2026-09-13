@@ -1,0 +1,75 @@
+//# A bound that INHERITS the witness trait dispatches through it (#2523).
+//
+// Codex on #2739, and the other side of the rule in
+// eq_bound_witness_trait_test.vibe. Keying the `==` rung on the method alone let
+// an unrelated trait hijack scalar equality; keying it on the immediate trait
+// NAME then rejected a witness the program was promised.
+//
+// `trait Key: Eq` is a real witness carrier: `flatten_traits` copies the
+// inherited `equals` into `KeyDict`, so the dictionary threaded for `[T: Key]`
+// already has it -- nothing extra needs threading. And the checker admits
+// `x == y` here precisely because `bound_entails_eq` (`checker.vibe`) walks the
+// super graph rather than comparing one name, so a narrower rule in the desugar
+// rejects what the checker licensed.
+//
+// Measured on the same program, three ways:
+//
+//   method-only scan          true    (right answer, wrong reason)
+//   immediate name must be Eq FALSE   <- reference identity, the regression
+//   entailment                true
+//
+// This file declares its own method-bearing `Eq`; the prelude's is still a
+// marker, which is why the sibling fixture can use that one to test the
+// hijack it enables.
+
+trait Eq {
+  equals(Self, Self) -> Bool
+}
+
+trait Key: Eq {
+  key_of(Self) -> Int
+}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {
+  equals(a: Pt, b: Pt) -> Bool {
+    a.v == b.v
+  }
+}
+
+impl Key for Pt {
+  key_of(a: Pt) -> Int {
+    a.v
+  }
+}
+
+fn via_key[T: Key](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn via_key_ne[T: Key](x: T, y: T) -> Bool {
+  x != y
+}
+
+fn equality_snapshot(value: Bool) -> String {
+  if value {
+    "true"
+  } else {
+    "false"
+  }
+}
+
+test "a bound inheriting the witness trait compares by content" {
+  inspect(equality_snapshot(via_key(Pt::{ v: 1 }, Pt::{ v: 1 })), content = "true")
+}
+
+test "an inherited witness still separates different values" {
+  inspect(equality_snapshot(via_key(Pt::{ v: 1 }, Pt::{ v: 2 })), content = "false")
+}
+
+test "an inherited witness negates correctly" {
+  inspect(equality_snapshot(via_key_ne(Pt::{ v: 1 }, Pt::{ v: 1 })), content = "false")
+}
