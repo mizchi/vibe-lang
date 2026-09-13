@@ -74,6 +74,15 @@ test_wasi_cli_stdin_provider_guest_component_gate.sh
 test_wasi_cli_stdin_provider_source_component_gate.sh
 test_wasi_http_p3_full_gate.sh test_wasi_p3_guarantee_gate.sh
 test_wit_async_import_component_gate.sh"
+
+# SECOND CORPUS WIDENING (#2771). Discovery covered `.sh` only, so the
+# `*_oracle.mjs` release gates -- run from tests/gates/bootstrap/run.sh exactly
+# like the shell ones -- were never asked for a companion. Two of the five had
+# written one anyway; these two had not, and they are pinned exactly as they
+# stood the day the scope widened. The list still only SHRINKS, and a NEW
+# `*_oracle.mjs` is rejected like any other gate arriving without one.
+baseline_no_test="$baseline_no_test
+experimental_typing_env_reuse_oracle.mjs ingestion_stamp_oracle.mjs"
 # Pinned EMPTY (#2252): all five original entries were repaired, so any name
 # appearing in the failing list from here on is rejected outright. There is no
 # longer a supported way to exempt a failing self-test.
@@ -107,13 +116,18 @@ missing=""
 # (#2248 review). The existing `*_gate.sh` scripts enter the allowlist as a
 # CORPUS WIDENING, not as exemptions anyone granted; see the second baseline
 # block below.
-for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh; do
+for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh scripts/*_oracle.mjs; do
   # An unmatched glob arrives as its own literal text; skip it rather than
   # reporting `scripts/lint_*.sh` as a gate with no self-test.
   [ -e "$f" ] || continue
   case "$f" in *_test.sh) continue ;; esac
   base="${f%.sh}"
+  case "$f" in *.mjs) base="${f%.mjs}" ;; esac
   [ -f "${base}_test.sh" ] && continue
+  # `.test.mjs` is the other companion spelling already in this tree
+  # (incremental_invalidation_oracle, artifact_input_trace_oracle), so it
+  # counts. What does NOT count is having neither.
+  [ -f "${base}.test.mjs" ] && continue
   name="${f#scripts/}"
   if ! printf '%s\n' "$allowed" | grep -qxF "$name"; then
     missing="$missing $name"
@@ -125,9 +139,11 @@ done
 stale=""
 while IFS= read -r name; do
   [ -n "$name" ] || continue
+  base="${name%.sh}"
+  case "$name" in *.mjs) base="${name%.mjs}" ;; esac
   if [ ! -f "scripts/$name" ]; then
     stale="$stale $name(script-gone)"
-  elif [ -f "scripts/${name%.sh}_test.sh" ]; then
+  elif [ -f "scripts/${base}_test.sh" ] || [ -f "scripts/${base}.test.mjs" ]; then
     stale="$stale $name(test-exists)"
   fi
 done <<EOF
@@ -159,10 +175,13 @@ EOF
 failed_tests=""
 repaired=""
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
-  for t in scripts/check_*_test.sh scripts/lint_*_test.sh scripts/*_gate_test.sh; do
+  for t in scripts/check_*_test.sh scripts/lint_*_test.sh scripts/*_gate_test.sh scripts/*_oracle_test.sh; do
     [ -e "$t" ] || continue
     # Only companions OF a gate in this tree; an orphan is reported below.
-    [ -f "${t%_test.sh}.sh" ] || continue
+    # A `.mjs` gate counts -- discovery above asks those for a companion, so
+    # refusing to RUN theirs would credit the file for existing, which is the
+    # one thing this loop's comment says it will not do.
+    [ -f "${t%_test.sh}.sh" ] || [ -f "${t%_test.sh}.mjs" ] || continue
     base="${t#scripts/}"
     if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then
       # A known-failing exemption is still RUN, because the interesting case is

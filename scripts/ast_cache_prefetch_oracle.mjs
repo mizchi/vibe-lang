@@ -34,6 +34,26 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fail = (message) => { throw new Error(`ast-cache-prefetch-oracle: ${message}`); };
 
+// Every VIBE_* variable is DROPPED, not inherited (#2252: a gate must not
+// assume its environment). `cli_adapter.vibe` diverts off the FS-compile lane
+// on any of eighteen selectors -- VIBE_CHECK_ONLY, VIBE_LSP, VIBE_COVERAGE,
+// VIBE_HASH, VIBE_LIST_DEPS, VIBE_MODULE_PLAN, the VIBE_EMIT_* family, and so
+// on -- and on this oracle the symptom is the CONTROL going quiet: a
+// check-only run never reaches the merge lane, so it reports zero non-walk
+// parses and the comparison fails for a reason that has nothing to do with
+// AST prefetching. Clearing the list one name at a time would need updating
+// whenever that list grows; dropping the prefix cannot go stale.
+// `tests/gates/bootstrap/run.sh` invokes this with VIBE_RC=0, which is why
+// that one is set back explicitly below.
+const cleanEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith("VIBE_")),
+);
+
+// The runner, overridable ONLY so this oracle's own self-test can drive it
+// with scripted telemetry; unset on every real invocation.
+const runnerScript = process.env.VIBE_AST_CACHE_ORACLE_RUNNER
+  || join(root, "scripts/run_wasm_vibe_host_runner.sh");
+
 function makeProject(project) {
   mkdirSync(project, { recursive: true });
   writeFileSync(join(project, "leaf.vibe"), "export fn leaf() -> Int { 1 }\n");
@@ -73,24 +93,22 @@ function telemetry(path) {
 function build(stage2, project, cache, astCache, name, checkedModuleCache = "off") {
   const out = `${name}.wasm`;
   const telemetryOut = `${name}.telemetry.json`;
-  const result = spawnSync("bash", [join(root, "scripts/run_wasm_vibe_host_runner.sh"), "--invoke", "cli_main", stage2, "app.vibe", out, "main"], {
+  const result = spawnSync("bash", [runnerScript, "--invoke", "cli_main", stage2, "app.vibe", out, "main"], {
     cwd: project,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...cleanEnv,
+      VIBE_RC: "0",
       VIBE_BUILD_CACHE_DIR: cache,
       VIBE_FS_COMPILE: "1",
       VIBE_IMPORT_ABI: "raw",
       VIBE_HOME: join(project, ".home"),
       VIBE_PREOPEN_DIR: project,
       VIBE_EXPERIMENTAL_AST_CACHE: astCache ? "1" : "",
-      // PINNED, never inherited (#2252: a gate must not assume its
-      // environment). `on` and `verify` populate
-      // `checked_module_artifact_stmts`, which serves the merge before the
-      // shared parse memo is consulted -- so an ambient setting would make
-      // even the cache-OFF control parse nothing, and the control below
-      // would fail for a reason that has nothing to do with the AST cache.
-      // `tests/gates/bootstrap/run.sh` invokes this with only VIBE_RC=0.
+      // `on` and `verify` populate `checked_module_artifact_stmts`, which
+      // serves the merge before the shared parse memo is consulted -- so an
+      // inherited setting would make even the cache-OFF control parse
+      // nothing. Set per build because one scenario deliberately wants it on.
       VIBE_CHECKED_MODULE_CACHE: checkedModuleCache,
       VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryOut,
     },

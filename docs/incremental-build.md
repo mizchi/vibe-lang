@@ -2585,10 +2585,13 @@ without changing the lane you were measuring.
 VIBE_INCREMENTAL_TELEMETRY_OUT=<sidecar.json>
 ```
 
-On the FS compile lane this publishes the same `schema: 2` counter document the
-check lane publishes. The counters are CAPTURED at the typing walk's boundary
-and PUBLISHED at the compile's, so they describe the walk and nothing after it,
-and a sidecar exists only for a compile that finished: a throw anywhere above
+On the FS compile lane this publishes the same counter document the check lane
+publishes — `schema: 4`, or `schema: 5` with the checked-module cache on. Most
+of those counters are CAPTURED at the typing walk's boundary and PUBLISHED at
+the compile's, so they describe the walk and nothing after it; the two added by
+#2766, `non_walk_parse_operations` and `ast_cache_prefetches`, are the
+exception and exist precisely because a build does parser work the walk never
+sees. A sidecar exists only for a compile that finished: a throw anywhere above
 removes it. Measured on the compiler's own closure, a cold build reports
 `modules_planned: 219`, which is `vibe deps` (218) plus the entry.
 
