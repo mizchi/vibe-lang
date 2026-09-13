@@ -284,6 +284,42 @@ let via_local_shadow = (i: Int) -> Tree {
   Leaf(sumt(x) * 0)
 }
 
+// The destination binder is not in scope in either initializer. Dropping
+// these unused slots must release their retains without freeing xs[0].
+let via_pending_global = (i: Int) -> Tree {
+  let xs = [mk_pair(i)]
+  let direct = {
+    let mut shadowed_first = shadowed_first(xs)
+    Leaf(0)
+  }
+  let filler = mk_pair(i + 10)
+  Leaf(sumt(Array::get(xs, 0)) - (i * 2 + 1) + sumt(filler) - (i * 2 + 21) + sumt(direct))
+}
+
+let via_pending_wrapped_global = (i: Int) -> Tree {
+  let xs = [mk_pair(i)]
+  let wrapped = {
+    let mut shadowed_first = { let k = 0; shadowed_first(xs) }
+    Leaf(0)
+  }
+  let filler = mk_pair(i + 10)
+  Leaf(sumt(Array::get(xs, 0)) - (i * 2 + 1) + sumt(filler) - (i * 2 + 21) + sumt(wrapped))
+}
+
+// Hiding the pending slot must preserve the existing local callee. Its fresh
+// results need no initialization retain; an extra retain leaks every call.
+let via_pending_local = (i: Int) -> Tree {
+  let shadowed_first = (n: Int) -> Tree { mk_pair(n) }
+  let mut shadowed_first = shadowed_first(i)
+  Leaf(0)
+}
+
+let via_pending_wrapped_local = (i: Int) -> Tree {
+  let shadowed_first = (n: Int) -> Tree { mk_pair(n) }
+  let mut shadowed_first = { let k = i; shadowed_first(k) }
+  Leaf(0)
+}
+
 let via_call = (c: Bool, i: Int) -> Tree {
   let t = mk_pair(i)
   if c {
@@ -578,6 +614,8 @@ let main = () -> Int {
     total = total + consume_callback_pair(allocate_wrapper_pair, i)
     total = total + move_projection_through_wrapper(i) + move_pattern_through_wrapper(i)
     total = total + borrow_inside_wrapper(i) + sumt(via_outer_mut(i)) + sumt(via_local_shadow(i)) + sumt(via_outer_mut_unassigned(i)) + sumt(via_outer_mut_reborrow(i))
+    total = total + sumt(via_pending_global(i)) + sumt(via_pending_local(i))
+    total = total + sumt(via_pending_wrapped_global(i)) + sumt(via_pending_wrapped_local(i))
     total = total + sumt(via_call(i > 1000000, i)) + sumt(via_spine(i > 1000000, i)) + sumt(via_move(i)) + sumt(via_mut(i))
     total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum + asum
     i = i + 1
