@@ -3531,7 +3531,7 @@ fn interface_bracketed(items: Array[String], separator: String) -> String {
 /// The 7 statement kinds below ARE the type-level namespace of a module: the
 /// declarations that introduce a name a type expression can resolve to. The
 /// interface identity wants only the exported ones; the witness set
-/// (`trait_witness_set_lines`) wants them all, because a PRIVATE declaration
+/// (`trait_witness_module_row`) wants them all, because a PRIVATE declaration
 /// can shadow an imported name and re-resolve an impl target without appearing
 /// in any interface (Codex on #2742, P1). One serializer, two callers, so the
 /// two cannot drift apart.
@@ -3830,7 +3830,7 @@ fn trait_impl_identity_line(tparams: Array[String], tbounds: Array[(String, Arra
 /// The item KIND is recorded only as present/absent. Distinguishing the
 /// variants would mean enumerating them here and re-enumerating whenever one
 /// is added; the name-to-source association is what decides resolution.
-fn trait_witness_binding_line(path: String, tag: String, raw_path: String, items: Array[ImportItem],) -> String {
+fn trait_witness_binding_line(tag: String, raw_path: String, items: Array[ImportItem]) -> String {
   let rows = array_empty()
   let mut i = 0
   while i < Array::length(items) {
@@ -3846,7 +3846,7 @@ fn trait_witness_binding_line(path: String, tag: String, raw_path: String, items
     Array::push(rows, String::concat(interface_segment(item.name), String::concat(interface_segment(alias), kind)),)
     i = i + 1
   }
-  String::concat(interface_segment(path), String::concat(tag, String::concat(interface_segment(raw_path), interface_bracketed(rows, ";")),),)
+  String::concat(tag, String::concat(interface_segment(raw_path), interface_bracketed(rows, ";")))
 }
 
 /// Everything in ONE module that decides which witnesses exist, as canonical
@@ -3875,46 +3875,65 @@ fn trait_witness_binding_line(path: String, tag: String, raw_path: String, items
 ///
 /// The caller must feed EVERY module of the closure -- the same requirement
 /// the impl rows already impose.
-export fn trait_witness_set_lines(path: String, stmts: Array[Stmt]) -> Array[String] {
+/// One canonical row for ONE module, in SOURCE ORDER.
+///
+/// Order is semantic here and must not be sorted away: resolution stops at the
+/// first matching `EnvTypeDefs` node (core/types.vibe), and
+/// `build_import_envs_collecting` prepends each projection in source order, so
+/// two imports binding the same local name resolve by precedence. Swapping
+/// them retargets an impl while the rows are identical AS A SET (Codex on
+/// #2742, P1).
+///
+/// The set-ness the earlier rounds needed lives one level up instead:
+/// `trait_witness_set_fingerprint` sorts and deduplicates MODULE ROWS, so the
+/// order modules are walked in, and reaching one module twice, still do not
+/// matter. The path is stamped once here rather than on every line.
+export fn trait_witness_module_row(path: String, stmts: Array[Stmt]) -> String {
   let lines = array_empty()
-  trait_witness_collect_into(path, stmts, lines)
-  lines
+  trait_witness_collect_into(stmts, lines)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, interface_segment(path))
+  let mut i = 0
+  while i < Array::length(lines) {
+    StringBuilder::push(out, interface_segment(Array::get(lines, i)))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
 }
 
-/// Recursive because the checker's own visibility collector is. A nested
-/// `module M { struct Target }` is a VISIBLE type declaration:
+/// Recursive because the checker's own visibility collector is: a nested
+/// `module M { struct Target }` is a VISIBLE type declaration, since
 /// `collect_visible_type_stmts` (checker_stmt.vibe) recurses into `SModule`
-/// bodies and flattens them into one list, so a nested struct can shadow an
-/// imported `type Target = Int` and re-resolve `impl Marker for Target` with
-/// nothing at the top level changing (Codex on #2742, P1). The impl, import
-/// and re-export arms recurse for the same reason -- an `impl` inside a module
-/// body is still an impl.
+/// bodies and flattens them into one list. An impl, import or re-export inside
+/// a module body is still one, for the same reason.
 ///
-/// Flattened rather than qualified by the module name, which is what
-/// `collect_visible_type_stmts` does: it pushes nested declarations into the
-/// same `out` as the top-level ones.
-fn trait_witness_collect_into(path: String, stmts: Array[Stmt], lines: Array[String]) -> Unit {
-  // Every TYPE-LEVEL DECLARATION at this level, private ones included.
-  // `interface_decl_lines` enumerates exactly the statement kinds that
-  // introduce a name a type expression can resolve to, and each line already
-  // carries that declaration's derives, so a `derive` change moves the set
-  // through the same row.
-  let decls = interface_decl_lines(stmts, true)
-  let mut d = 0
-  while d < Array::length(decls) {
-    Array::push(lines, String::concat(interface_segment(path), Array::get(decls, d)))
-    d = d + 1
-  }
+/// ONE PASS over the statements, so a declaration and a binding keep their
+/// relative position. Collecting the declarations first and the bindings after
+/// would order every declaration ahead of every import, which is exactly the
+/// precedence the first-match rule reads.
+///
+/// `interface_decl_lines` is called on a one-statement slice to keep it the
+/// single authority on which declarations are type-level -- the interface
+/// identity calls the same function with `false` -- without losing position.
+fn trait_witness_collect_into(stmts: Array[Stmt], lines: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
+    let stmt = Array::get(stmts, i)
+    let one = array_empty()
+    Array::push(one, stmt)
+    let decl = interface_decl_lines(one, true)
+    let mut d = 0
+    while d < Array::length(decl) {
+      Array::push(lines, Array::get(decl, d))
+      d = d + 1
+    }
+    match stmt {
       SImpl(tparams, tbounds, trait_name, target) =>
-      Array::push(lines, String::concat(interface_segment(path), trait_impl_identity_line(tparams, tbounds, trait_name, target),),),
-      SImport(raw_path, items) =>
-      Array::push(lines, trait_witness_binding_line(path, "import:", raw_path, items)),
+      Array::push(lines, trait_impl_identity_line(tparams, tbounds, trait_name, target)),
+      SImport(raw_path, items) => Array::push(lines, trait_witness_binding_line("import:", raw_path, items)),
       SReExport(raw_path, items) =>
-      Array::push(lines, trait_witness_binding_line(path, "reexport:", raw_path, items)),
-      SModule(_, _, body) => trait_witness_collect_into(path, body, lines),
+      Array::push(lines, trait_witness_binding_line("reexport:", raw_path, items)),
+      SModule(_, _, body) => trait_witness_collect_into(body, lines),
       _ => ()
     }
     i = i + 1
@@ -3927,12 +3946,14 @@ fn trait_witness_collect_into(path: String, stmts: Array[Stmt], lines: Array[Str
 /// different order, or one module reached twice along two import paths, give
 /// one fingerprint. That is what lets this be folded into every module's
 /// typing key without making the key depend on the order modules happened to
-/// be walked in. Deduplication is only safe because each line carries its
-/// owning module -- see `trait_witness_set_lines`.
-export fn trait_witness_set_fingerprint(lines: Array[String]) -> String {
-  let sorted = interface_sorted_unique(lines)
+/// be walked in. Deduplication is only safe because each ROW carries its
+/// owning module, and safe to SORT only because the order that IS semantic --
+/// precedence between bindings inside one module -- is held inside the row
+/// rather than between rows (see `trait_witness_module_row`).
+export fn trait_witness_set_fingerprint(module_rows: Array[String]) -> String {
+  let sorted = interface_sorted_unique(module_rows)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-trait-witness-set:v2\n")
+  StringBuilder::push(out, "vibe-trait-witness-set:v3\n")
   let mut i = 0
   while i < Array::length(sorted) {
     StringBuilder::push(out, Array::get(sorted, i))

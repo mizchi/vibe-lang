@@ -12,7 +12,7 @@
 //# and assert insensitivity only where two spellings are the same impl.
 
 import @vibe/compiler/runtime {
-  trait_witness_set_fingerprint, trait_witness_set_lines
+  trait_witness_module_row, trait_witness_set_fingerprint
 }
 
 import @vibe/ast {
@@ -26,18 +26,13 @@ import @vibe/ast {
 //# which is what "one module reached twice along two import paths" means.
 
 fn fp_paths(paths: Array[String], stmt_groups: Array[Array[Stmt]]) -> String {
-  let lines: Array[String] = []
+  let rows: Array[String] = []
   let mut g = 0
   while g < Array::length(stmt_groups) {
-    let group = trait_witness_set_lines(Array::get(paths, g), Array::get(stmt_groups, g))
-    let mut i = 0
-    while i < Array::length(group) {
-      Array::push(lines, Array::get(group, i))
-      i = i + 1
-    }
+    Array::push(rows, trait_witness_module_row(Array::get(paths, g), Array::get(stmt_groups, g)))
     g = g + 1
   }
-  trait_witness_set_fingerprint(lines)
+  trait_witness_set_fingerprint(rows)
 }
 
 fn fp(stmt_groups: Array[Array[Stmt]]) -> String {
@@ -262,6 +257,43 @@ test "a declaration NESTED in a module is visible, so it is in the set" {
         fp_paths(["a.vibe", "c.vibe"], [dep, no_impl]),
         fp_paths(["a.vibe", "c.vibe"], [dep, nested_impl]),
       )}", "nested-decl=moved nested-impl=moved",)
+}
+
+test "binding PRECEDENCE inside a module is semantic and is kept" {
+  // Codex on #2742 (P1, round 6). Resolution stops at the first matching
+  // EnvTypeDefs node and build_import_envs_collecting prepends projections in
+  // source order, so two imports binding the same local name resolve by
+  // precedence. Swapping them retargets the impl while the rows are identical
+  // AS A SET -- which is exactly what a sort over all lines would erase.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep_a: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let dep_b: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("String"))]
+  let a_first: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImport("b.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  let b_first: Array[Stmt] = [
+    SImport("b.vibe", [item]),
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  // A declaration and an import also keep their relative position: collecting
+  // declarations first would order every declaration ahead of every import.
+  let decl_first: Array[Stmt] = [
+    STypeAlias(false, "Target", [], TyName("Bool")),
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  let import_first: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    STypeAlias(false, "Target", [], TyName("Bool")),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  inspect("swapped-imports=\{show_eq(
+      fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, a_first]),
+      fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, b_first]),
+    )}" + " decl-vs-import=\{show_eq(fp([decl_first]), fp([import_first]))}", "swapped-imports=moved decl-vs-import=moved",)
 }
 
 test "bound ORDER is not part of what an impl means" {
