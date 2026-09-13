@@ -3395,6 +3395,45 @@ fn dtd_interp_absorb_assigns(var_types: Array[(String, String)], e: Expr, struct
   out
 }
 
+/// Walk a binder's BODY, then drop whatever that body recorded for the names the
+/// binder introduced.
+///
+/// #2745 (Codex, P1 round 6 on #2761): the absorb walk had no scope at all, so an
+/// inner `{ let mut x = a; x = a; .. }` pushed `x -> T` into the shared
+/// environment and the CONCRETE outer `x` the sequence tail reads was then
+/// classified erased -- a correct program REFUSED. That is the opposite failure
+/// from the rest of this round, and the one the refusal fixtures cannot see.
+///
+/// An inner binding is out of scope once its block ends, and `lookup_var_type`
+/// takes the LAST match, so unshadowing means removing the appended entries
+/// rather than pushing anything. Only the region this body appended is compacted,
+/// so a recording the body made for an OUTER name it merely assigned survives --
+/// that one really did happen.
+fn dtd_interp_absorb_scoped(out: Array[(String, String)], names: Array[String], body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  let mark = Array::length(out)
+  dtd_interp_absorb_into(out, body, struct_sets, fn_returns)
+  let mut r = mark
+  let mut w = mark
+  while r < Array::length(out) {
+    let e = Array::get(out, r)
+    if str_array_contains(names, e.0) {
+      ()
+    } else {
+      Array::set(out, w, e)
+      w = w + 1
+    }
+    r = r + 1
+  }
+  Array::truncate(out, w)
+}
+
+/// `dtd_interp_absorb_scoped` for a single binder.
+fn dtd_interp_absorb_scoped1(out: Array[(String, String)], name: String, body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  let names = empty_str_array()
+  Array::push(names, name)
+  dtd_interp_absorb_scoped(out, names, body, struct_sets, fn_returns)
+}
+
 fn dtd_interp_absorb_exprs(out: Array[(String, String)], es: Array[Expr], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   let mut i = 0
   while i < Array::length(es) {
@@ -3415,8 +3454,11 @@ fn dtd_interp_absorb_named(out: Array[(String, String)], fields: Array[(String, 
 fn dtd_interp_absorb_arms(out: Array[(String, String)], arms: Array[(Pat, Expr)], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   let mut i = 0
   while i < Array::length(arms) {
-    let (_, ab) = Array::get(arms, i)
-    dtd_interp_absorb_into(out, ab, struct_sets, fn_returns)
+    let (ap, ab) = Array::get(arms, i)
+    // An arm's pattern binders are scoped to that arm, exactly like a let's.
+    let names = empty_str_array()
+    collect_pat_binders(ap, names)
+    dtd_interp_absorb_scoped(out, names, ab, struct_sets, fn_returns)
     i = i + 1
   }
 }
@@ -3451,17 +3493,21 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
       dtd_interp_absorb_into(out, t, struct_sets, fn_returns)
       dtd_interp_absorb_into(out, el, struct_sets, fn_returns)
     },
-    ELet(_, v, b, _) => {
+    // The VALUE is evaluated in the enclosing scope, so it absorbs unscoped; the
+    // BODY sees the new binding, so whatever it records for that name dies with
+    // the block. See dtd_interp_absorb_scoped.
+    ELet(n, v, b, _) => {
       dtd_interp_absorb_into(out, v, struct_sets, fn_returns)
-      dtd_interp_absorb_into(out, b, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, b, struct_sets, fn_returns)
     },
-    ELetMut(_, v, b, _) => {
+    ELetMut(n, v, b, _) => {
       dtd_interp_absorb_into(out, v, struct_sets, fn_returns)
-      dtd_interp_absorb_into(out, b, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, b, struct_sets, fn_returns)
     },
-    ELetRec(_, v, b) => {
-      dtd_interp_absorb_into(out, v, struct_sets, fn_returns)
-      dtd_interp_absorb_into(out, b, struct_sets, fn_returns)
+    // A `let rec` binder is in scope for its own value as well as its body.
+    ELetRec(n, v, b) => {
+      dtd_interp_absorb_scoped1(out, n, v, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, b, struct_sets, fn_returns)
     },
     ESeq(a, b) => {
       dtd_interp_absorb_into(out, a, struct_sets, fn_returns)
@@ -3481,11 +3527,24 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
     },
     ELoop(params, b) => {
       dtd_interp_absorb_named(out, params, struct_sets, fn_returns)
-      dtd_interp_absorb_into(out, b, struct_sets, fn_returns)
+      let names = empty_str_array()
+      let mut pi = 0
+      while pi < Array::length(params) {
+        let (pn, _) = Array::get(params, pi)
+        Array::push(names, pn)
+        pi = pi + 1
+      }
+      dtd_interp_absorb_scoped(out, names, b, struct_sets, fn_returns)
     },
-    EForIn(_, _, it, b) => {
+    EForIn(vn, idx, it, b) => {
       dtd_interp_absorb_into(out, it, struct_sets, fn_returns)
-      dtd_interp_absorb_into(out, b, struct_sets, fn_returns)
+      let names = empty_str_array()
+      Array::push(names, vn)
+      match idx {
+        Some(ix) => Array::push(names, ix),
+        None => ()
+      }
+      dtd_interp_absorb_scoped(out, names, b, struct_sets, fn_returns)
     },
     ECall(callee, args, _) => {
       dtd_interp_absorb_into(out, callee, struct_sets, fn_returns)
@@ -3551,6 +3610,7 @@ fn dtd_interp_bind_local(var_types: Array[(String, String)], name: String, val: 
       None => ""
     }
   }
+  dtd_interp_record_tuple_elems(out, name, val, struct_sets, var_types, fn_returns)
   Array::push(out, (name, bound))
   out
 }
@@ -3606,6 +3666,45 @@ fn dtd_interp_bind_pattern(var_types: Array[(String, String)], pat: Pat, scrutin
   out
 }
 
+/// A synthetic KEY for the i-th element of a TUPLE literal bound to `name`.
+/// `$` is not a valid identifier character, so this cannot collide with a real
+/// binding -- the same device `array_elem_key` uses.
+fn dtd_interp_tuple_elem_key(name: String, i: Int) -> String {
+  let base = String::concat("__Vtupelem$", name)
+  String::concat(base, String::concat("$", digit_str(i)))
+}
+
+/// #2745 (Codex, P1 round 6 on #2761): a tuple literal bound to a NAME is still
+/// the shape a later `match` takes apart, but the scrutinee then arrives as an
+/// `EIdent` and the pairing blanked every payload -- measured, `{ let pair =
+/// (a, 1); match pair { (b, _) => b } }` printed `252`.
+///
+/// Each element's classification is recorded under a reserved key, so the
+/// pairing can answer for `pair` without this pass growing a second environment.
+/// TUPLES only: a `PTuple` pattern can only match a tuple, so the shape is
+/// certain. A constructor or record bound to a name keeps today's blank answer,
+/// because the pattern's own constructor would have to be checked against the
+/// value's and only the tuple case needs no such check.
+///
+/// Elements are classified in the OUTER environment, which is where a tuple
+/// literal's elements are evaluated.
+fn dtd_interp_record_tuple_elems(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
+  match val {
+    ETuple(es) => {
+      let mut i = 0
+      // `digit_str` saturates at 9, so index 9 and above would share a key.
+      // Stopping at 8 keeps every key distinct; a wider tuple simply records
+      // nothing and the pairing blanks, which is this walk's fail-open answer.
+      while i < Array::length(es) && i < 9 {
+        let el = Array::get(es, i)
+        Array::push(out, (dtd_interp_tuple_elem_key(name, i), dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
 /// Every binder in `pat`, bound to "" -- the answer for a pattern whose payloads
 /// this pass cannot place. Shadowing, not inheriting, is the point: an outer
 /// binding of the same spelling must not be read for a name the arm rebinds.
@@ -3631,6 +3730,26 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
         while i < Array::length(ps) {
           let el = Array::get(es, i)
           dtd_interp_bind_pat_into(out, Array::get(ps, i), el, dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns), struct_sets, var_types, fn_returns)
+          i = i + 1
+        }
+      } else {
+        dtd_interp_blank_binders(out, pat)
+      },
+      // The tuple was bound to a NAME first. Its elements were recorded under
+      // reserved keys at that binding (dtd_interp_record_tuple_elems); a missing
+      // key means the name does not hold a tuple literal this walk saw, so the
+      // whole pattern blanks rather than pairing against half an answer.
+      // `EUnit` as each element's scrutinee is deliberate: only a `PBind`
+      // sub-pattern can take the recorded formal, and anything nested blanks --
+      // this route carries a classification, not an expression to descend into.
+      EIdent(sname, _) => if dtd_interp_tuple_elems_known(var_types, sname, Array::length(ps)) {
+        let mut i = 0
+        while i < Array::length(ps) {
+          let ef = match lookup_var_type(var_types, dtd_interp_tuple_elem_key(sname, i)) {
+            Some(t) => t,
+            None => ""
+          }
+          dtd_interp_bind_pat_into(out, Array::get(ps, i), EUnit, ef, struct_sets, var_types, fn_returns)
           i = i + 1
         }
       } else {
@@ -3676,6 +3795,29 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
     // through `(b, _) | (_, b)` keeps today's fail-open answer.
     POr(_, _) => dtd_interp_blank_binders(out, pat),
     _ => dtd_interp_blank_binders(out, pat)
+  }
+}
+
+/// Were all `n` tuple elements recorded for `name`? A partial answer must not be
+/// paired against: the recorded arity has to match the pattern's, or the name
+/// does not hold the tuple this pattern takes apart.
+fn dtd_interp_tuple_elems_known(var_types: Array[(String, String)], name: String, n: Int) -> Bool {
+  if n <= 0 || n > 9 {
+    false
+  } else {
+    let mut i = 0
+    let mut ok = true
+    while i < n {
+      match lookup_var_type(var_types, dtd_interp_tuple_elem_key(name, i)) {
+        Some(_) => (),
+        None => ok = false
+      }
+      i = i + 1
+    }
+    ok && (match lookup_var_type(var_types, dtd_interp_tuple_elem_key(name, n)) {
+      Some(_) => false,
+      None => true
+    })
   }
 }
 

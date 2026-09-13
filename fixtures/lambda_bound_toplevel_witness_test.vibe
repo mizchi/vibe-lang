@@ -242,3 +242,46 @@ test "#2745: a generic call with a concrete argument still renders" {
 test "#2745: and with a String argument" {
   inspect(generic_call_string(7), content = "s")
 }
+
+// #2745 (Codex, P1 round 6 on #2761): the absorb walk had NO SCOPE, so an inner
+// `{ let mut x = a; x = a; .. }` pushed `x -> T` into the shared environment and
+// the CONCRETE outer `x` the tail reads was classified erased -- a correct
+// program REFUSED. This row is that program; the refusal fixtures cannot see it,
+// because they would keep refusing either way.
+fn shadowed_assign_scope[T](a: T) -> String {
+  let x = 7
+  "\{ { { let mut x = a
+    x = a
+    0 }
+    x } }"
+}
+
+// The other half of the round-6 pairing rule. A tuple bound to a NAME pairs by
+// its recorded elements, so the slot that is NOT the formal must still render,
+// and a pattern that rebinds the formal's spelling at a concrete element must
+// render the element.
+fn tuple_alias_other_slot[T](a: T) -> String {
+  "\{ { let pair = (a, 9)
+  match pair {
+    (_, c) => c
+  } } }"
+}
+
+fn tuple_alias_concrete[T](a: T) -> String {
+  "\{ { let pair = (3, 4)
+  match pair {
+    (b, _) => b
+  } } }"
+}
+
+test "#2745: an inner shadowed assignment does not escape its scope" {
+  inspect(shadowed_assign_scope(7), content = "7")
+}
+
+test "#2745: a named tuple's non-formal slot still renders" {
+  inspect(tuple_alias_other_slot(7), content = "9")
+}
+
+test "#2745: a named tuple of concrete elements still renders" {
+  inspect(tuple_alias_concrete(7), content = "3")
+}
