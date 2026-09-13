@@ -1463,29 +1463,6 @@ fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[String], c
   }
 }
 
-/// Does this assignment store a reference the binding will OWN? Used to keep
-/// `heap_binding_names` honest across an assignment (see the `EAssign` arm).
-///
-/// Deliberately narrow: an allocation made at the site, or a call whose
-/// DECLARED return type says heap and which neither borrow set claims and
-/// whose name is not bound locally -- the same contract `path_value_owned`
-/// reads for a call leaf. Anything else answers no and leaves the record as
-/// it was, because registering a binding that turns out to hold a borrow
-/// would make a later assignment drop what its container still owns.
-fn assign_stores_owned_heap(v: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
-  if is_etuple(v) || is_earray(v) || is_erecord(v) || is_ctor_call(v, ctx.ctor_table) {
-    true
-  } else {
-    match v {
-      ECall(callee, _, _) => match callee {
-        EIdent(cn, _) => find_local_slot(local_names, cn) < 0 && bsearch_leftmost(ctx.heap_ret_names, cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(ctx.borrow_ret_names, cn) < 0 && bsearch_leftmost(ctx.borrow_view_ret, cn) < 0,
-        _ => false
-      },
-      _ => false
-    }
-  }
-}
-
 /// #2733: does this value's RESULT SPINE hand the binding back a reference
 /// the scope does not own?
 ///
@@ -2285,30 +2262,6 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       let is_heap_mut = ctx.enable_rc && ctx.rc_drop_func_idx >= 0 && array_contains_str(ctx.heap_binding_names, name)
       let is_self = assign_value_mentions(value, name)
-      // #2750 review: `heap_binding_names` records what a binding held when
-      // it was BOUND. A `let mut` whose initializer was borrowed is absent
-      // from it, and storing an allocation into that binding left it absent
-      // -- so a later reader saw "not a heap binding", concluded "borrowed",
-      // and suppressed a drop the allocation needed. Measured at 80 B per
-      // iteration for `let mut t = Array::get(xs, 0); t = Pair(..)` read back
-      // through a wrapper.
-      //
-      // Register it here rather than teaching the reader, because absence is
-      // ALSO how a genuine borrow is recognised -- an alias of a borrowed
-      // value is absent for the honest reason, and reading absence as
-      // ownership frees what the container still owns. Only a literal
-      // allocation, or a call whose contract says it returns one, counts --
-      // the shapes that cannot be anything but owned. A conditional
-      // assignment is no more decidable here than it was before.
-      //
-      // It also makes a SUBSEQUENT assignment to the same binding drop the
-      // value this one stored, which was previously skipped for the same
-      // missing record.
-      if ctx.enable_rc && !is_heap_mut && assign_stores_owned_heap(value, local_names, ctx) {
-        Array::push(ctx.heap_binding_names, name)
-      } else {
-        ()
-      }
       if is_heap_mut && is_self && reassign_self_reusable(value, name) {
         let old_temp = next_local
         let scratch = next_local + 1
