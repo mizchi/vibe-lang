@@ -453,7 +453,10 @@ identical; each figure reproduced on two runs with a fresh cache):
 
 The one exec program that changed is `expr_eval`, +18 B of code with identical
 allocation (1,766,816 B either way) and the same stdout as its golden: one
-admitted site whose leak that program never takes.
+admitted site whose leak that program never takes. The PR perf report's
+deterministic lane puts the instruction cost of that site at +0.50% fuel on
+that scenario, below the ±2% drift threshold, and reports no drift in any of
+the 77 other tracked series.
 
 The upper bound is worth recording next to it. A compiler built with the value
 test removed entirely -- every call admitted, contract unread -- moves the same
