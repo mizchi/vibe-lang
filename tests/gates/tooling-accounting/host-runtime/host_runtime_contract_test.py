@@ -93,16 +93,17 @@ class GcHostListTest(unittest.TestCase):
         self.names = set()
         for band in ("portableCore", "nodeCoreOnly", "viberunDebugOnly", "componentAdapterOnly"):
             self.names |= set(manifest[band])
+        self.import_types = manifest.get("importTypes", {})
 
     def assert_mutation_fails(self, mutated):
         # A mutation that did not apply would make the case pass while proving
         # nothing -- the trap #2248 calls out by name.
         self.assertNotEqual(mutated, self.text, "mutation did not apply")
         with self.assertRaises(SystemExit):
-            module.validate_gc_lists(self.names, mutated)
+            module.validate_gc_lists(self.names, mutated, self.import_types)
 
     def test_real_backend_satisfies_every_invariant(self):
-        self.assertEqual(module.validate_gc_lists(self.names, self.text), 22)
+        self.assertEqual(module.validate_gc_lists(self.names, self.text, self.import_types), 22)
 
     def test_use_host_losing_a_builtin_fails(self):
         self.assert_mutation_fails(
@@ -139,6 +140,66 @@ class GcHostListTest(unittest.TestCase):
 
     def test_host_import_name_absent_from_the_contract_fails(self):
         self.assert_mutation_fails(self.text.replace('("fs_exists", 3)', '("fs_exists_typo", 3)', 1))
+
+    def test_same_abi_type_import_reorder_fails(self):
+        # Codex on #2765 (P2). Import ORDER fixes the wasm function indices that
+        # host_defs's absolute call indices address, so swapping two entries of
+        # the same ABI type yields a module that validates and calls the wrong
+        # host function -- `Fs::is_dir` running `is_file`. Length and name
+        # membership both survive that swap, which is why it needs its own case.
+        self.assert_mutation_fails(
+            self.text.replace(
+                '      ("fs_is_dir", 3),\n      ("fs_is_file", 3),',
+                '      ("fs_is_file", 3),\n      ("fs_is_dir", 3),',
+                1,
+            )
+        )
+
+    def test_import_abi_type_change_fails(self):
+        # Codex on #2765 (P2). The extractor dropped the type id, so a
+        # name-preserving type edit was invisible: type 5 is ()->i64 while
+        # fs_exists takes one argument. Checked against the manifest's own
+        # importTypes -- all 22 already agree, so this adds no list to maintain.
+        self.assert_mutation_fails(self.text.replace('("fs_exists", 3)', '("fs_exists", 5)', 1))
+
+    def test_host_imports_gaining_an_entry_fails(self):
+        # The DROP case above is now caught by the positional name check, which
+        # made the count assertion pass for the wrong reason -- found by
+        # disabling each assertion in turn and seeing which test noticed. An
+        # APPEND is the mutation only the count can catch: `zip` truncates, so
+        # all 22 pairs still line up. The appended name must be one the manifest
+        # ALREADY knows -- an invented name is caught by the membership check
+        # instead, which is how the first attempt at this test passed while
+        # proving nothing about the count.
+        self.assert_mutation_fails(
+            self.text.replace(
+                '      ("fs_remove_file", 1)\n    ]',
+                '      ("fs_remove_file", 1),\n      ("fs_exists", 3)\n    ]',
+                1,
+            )
+        )
+
+    def test_import_absent_from_the_manifest_fails_even_when_self_consistent(self):
+        # Same discovery: renaming ONE side trips the positional check, so it
+        # never exercised manifest membership. Rename all three gc lists
+        # consistently and the backend is internally coherent -- which is
+        # exactly "added a builtin everywhere in the gc backend and forgot the
+        # contract". Only the manifest check sees it.
+        mutated = self.text.replace('stmts_use_builtin(stmts, fn_names_list, "Fs::exists")',
+                                    'stmts_use_builtin(stmts, fn_names_list, "Fs::invented")', 1)
+        mutated = mutated.replace('("Fs::exists", 1, 5, 1)', '("Fs::invented", 1, 5, 1)', 1)
+        mutated = mutated.replace('("fs_exists", 3)', '("fs_invented", 3)', 1)
+        self.assert_mutation_fails(mutated)
+
+    def test_every_gc_import_name_is_derivable_or_declared(self):
+        # The exception table is a seventh hand-maintained list, which is what
+        # #2759 is about; it earns its place by being checked from both sides.
+        self.assertEqual(module.gc_import_name_for("Fs::read_file"), "fs_read_file")
+        self.assertEqual(module.gc_import_name_for("Env::get"), "env-get")
+        self.assertEqual(set(module.GC_IMPORT_NAME_EXCEPTIONS), {
+            "Env::get", "Env::args_len", "Env::args_get",
+            "Profiler::now_us", "vibe_fs_read_dir_raw", "vibe_process_exit_raw",
+        })
 
     def test_lowered_alias_is_not_a_drift(self):
         # `use_host` lists what a USER can write; `host_defs` registers what it
