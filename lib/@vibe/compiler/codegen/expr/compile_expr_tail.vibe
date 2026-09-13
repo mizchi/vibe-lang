@@ -2125,8 +2125,8 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     Array::push(local_names, name)
     // #1120 Codex review (P1): same non-recursive-binder masking as ELet
     // above -- `let mut add = (x, y) -> Int { add(x, y) }` means the BUILTIN
-    // add. Restored right after each branch compiles the value, before the
-    // body (where the binder IS in scope).
+    // add. Keep it masked through initializer ownership classification too;
+    // restore it before compiling the body, where the binder IS in scope.
     Array::set(local_names, local_idx, "")
     if expr_is_floatish(value, local_names, ctx) {
       Array::push(ctx.float_local_slots, local_idx * 2 + 1)
@@ -2225,7 +2225,6 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     } else {
       // #768: same branch-tail retain rewrite as ELet (see retain_wrap_let_value).
       let nl = compile_expr(buf, retain_wrap_let_value(value, name, ctx), local_names, next_local + 1, ctx, ld)
-      Array::set(local_names, local_idx, name)
       emit_local_set(buf, local_idx)
       // #791: classify AFTER the value is compiled + stored (local_idx now
       // holds it), matching ELet's ordering -- classify_let_value_heap's
@@ -2248,24 +2247,16 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // straight-line spine leaf rather than `_mut_is_borrow_ret_ext`, whose
       // wrapper answer is broader (branches, projections, aliases) than the
       // plan's.
-      // The binder's own slot is already restored in `local_names` by the
-      // time this runs, but it is NOT in scope in its own initializer -- a
-      // non-recursive `let mut peek = peek(xs, 0)` calls the GLOBAL. Leaving
-      // it visible makes the local test reject the global contract here while
-      // `pc_count`, which reads the initializer before declaring the binder,
-      // still selects the owning plan: the twins would disagree on exactly
-      // the shape they exist to agree on. Mask it, as the wrapper-spine read
-      // does for the same reason.
-      let mib_self = Array::get(local_names, local_idx)
-      Array::set(local_names, local_idx, "")
-      let mib_borrowed = mut_init_borrowed_call(value, local_names, ctx)
-      Array::set(local_names, local_idx, mib_self)
-      if ctx.enable_rc && mib_borrowed {
+      if ctx.enable_rc && mut_init_borrowed_call(value, local_names, ctx) {
         emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         Array::push(ctx.heap_binding_names, name)
       } else {
         ()
       }
+      // `let mut peek = peek(xs, 0)` calls the outer `peek`. Both ownership
+      // classifiers above must see that same scope, even though the value
+      // has already been stored so their retains can target local_idx.
+      Array::set(local_names, local_idx, name)
       // #715: the ELet path (tag 9) emits every dup the Perceus plan budgeted
       // for a binding (ctx.rc_dup_names) at its declaration site -- this
       // ELetMut path never did, while the matching scope-end drop below DID

@@ -135,3 +135,29 @@ test "a mutable slot retains a borrowed replacement" {
   let _ = assert_bump_rc_agree(src, "outer_mut_reborrow", "70715")
   ()
 }
+
+test "a mutable initializer resolves a global before its own binder" {
+  // Leave the slot unused so its scope-end drop runs before filler reuses
+  // freed storage. The pending binder must not hide the borrow contract.
+  let src = String::concat(prelude, "let peek = (xs: Array[Node], k: Int) -> Node { Array::get(xs, k) }\nlet pick = () -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let mut peek = peek(xs, 0)\n    Leaf(9)\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main = () -> Int { pick() }")
+  let _ = assert_bump_rc_agree(src, "mut_pending_global", "90715")
+  ()
+}
+
+test "a wrapped mutable initializer resolves a global before its own binder" {
+  let src = String::concat(prelude, "let peek = (xs: Array[Node], k: Int) -> Node { Array::get(xs, k) }\nlet pick = () -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let mut peek = { let k = 0; peek(xs, k) }\n    Leaf(9)\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main = () -> Int { pick() }")
+  let _ = assert_bump_rc_agree(src, "mut_pending_wrapped_global", "90715")
+  ()
+}
+
+test "an immutable initializer resolves a global before its own binder" {
+  let src = String::concat(prelude, "let peek = (xs: Array[Node], k: Int) -> Node { Array::get(xs, k) }\nlet pick = () -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let peek = peek(xs, 0)\n    Leaf(9)\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main = () -> Int { pick() }")
+  let _ = assert_bump_rc_agree(src, "let_pending_global", "90715")
+  ()
+}
+
+test "a mutable initializer still resolves an existing local callee" {
+  let src = String::concat(prelude, "let peek = (xs: Array[Node], k: Int) -> Node { Array::get(xs, k) }\nlet pick = () -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let peek = (k: Int) -> Node { Pair(Leaf(k), Leaf(k + 1)) }\n  let r = {\n    let mut peek = peek(5)\n    Leaf(9)\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main = () -> Int { pick() }")
+  let _ = assert_bump_rc_agree(src, "mut_pending_local", "90715")
+  ()
+}
