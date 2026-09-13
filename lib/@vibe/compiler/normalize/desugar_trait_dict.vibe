@@ -3730,6 +3730,14 @@ fn dtd_interp_tuple_shape() -> String {
   "#tuple"
 }
 
+/// A synthetic KEY for `field` of a RECORD bound to `name`. Fields are named,
+/// not positional, so they cannot use the index keys; the `$` separator keeps
+/// `__Vfield$r$v` from being a prefix of `__Vfield$r2$v`.
+fn dtd_interp_field_key(name: String, field: String) -> String {
+  let base = String::concat("__Vfield$", name)
+  String::concat(base, String::concat("$", field))
+}
+
 /// #2745 (Codex, P1 round 6 on #2761): a tuple literal bound to a NAME is still
 /// the shape a later `match` takes apart, but the scrutinee then arrives as an
 /// `EIdent` and the pairing blanked every payload -- measured, `{ let pair =
@@ -3773,6 +3781,25 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
     // `Array::get` arm already reads `array_elem_key`, so recording into that
     // same key is what makes the two agree. Writing a third table beside it is
     // the mistake the projection bug in the previous commit was made of.
+    // #2745 (Codex, P1 round 9 on #2761): a RECORD bound to a name, then
+    // destructured -- `{ let r = Box1::{ value: a }; match r { Box1::{ value }
+    // => value } }` printed `252`.
+    //
+    // This is the THIRD aggregate kind, and it should have landed with the
+    // other two. The patterns that take an aggregate apart are exactly `PTuple`
+    // / `PCtor` / `PStruct` -- the `Pat` enum says so -- and I closed the first
+    // two while the `PStruct` arm sat in the same function. Recording all three
+    // closes the set against the enum rather than one kind per review round,
+    // which is the discipline the rest of this walk already follows.
+    ERecord(rname, fields, _) => {
+      Array::push(out, (dtd_interp_shape_key(name), rname))
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (fname, fe) = Array::get(fields, i)
+        Array::push(out, (dtd_interp_field_key(name, fname), dtd_erased_interp_formal(fe, struct_sets, var_types, fn_returns)))
+        i = i + 1
+      }
+    },
     EArray(es) => {
       let mut i = 0
       let mut found = ""
@@ -3810,6 +3837,19 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
       match lookup_var_type(var_types, array_elem_key(src)) {
         Some(t) => Array::push(out, (array_elem_key(name), t)),
         None => ()
+      }
+      // A record's fields are NAMED, so there is no index range to probe --
+      // the source's keys are found by their prefix instead.
+      let fpre = dtd_interp_field_key(src, "")
+      let mut vi = 0
+      while vi < Array::length(var_types) {
+        let (k, v) = Array::get(var_types, vi)
+        if String::starts_with(k, fpre) {
+          Array::push(out, (dtd_interp_field_key(name, String::substring(k, String::length(fpre), String::length(k))), v))
+        } else {
+          ()
+        }
+        vi = vi + 1
       }
       let mut i = 0
       let mut more = true
@@ -3927,6 +3967,23 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
           let (fname, fpat) = Array::get(fps, i)
           match dtd_interp_record_field(fes, fname) {
             Some(fe) => dtd_interp_bind_pat_into(out, fpat, fe, dtd_erased_interp_formal(fe, struct_sets, var_types, fn_returns), struct_sets, var_types, fn_returns),
+            None => dtd_interp_blank_binders(out, fpat)
+          }
+          i = i + 1
+        }
+      } else {
+        dtd_interp_blank_binders(out, pat)
+      },
+      // #2745 round 9: the record was bound to a NAME first. Its fields were
+      // recorded at that binding, and the recorded struct must equal this
+      // pattern's -- the same check the constructor route makes, for the same
+      // reason.
+      EIdent(vname, _) => if dtd_interp_shape_is(var_types, vname, sname) {
+        let mut i = 0
+        while i < Array::length(fps) {
+          let (fname, fpat) = Array::get(fps, i)
+          match lookup_var_type(var_types, dtd_interp_field_key(vname, fname)) {
+            Some(ft) => dtd_interp_bind_pat_into(out, fpat, EUnit, ft, struct_sets, var_types, fn_returns),
             None => dtd_interp_blank_binders(out, fpat)
           }
           i = i + 1
