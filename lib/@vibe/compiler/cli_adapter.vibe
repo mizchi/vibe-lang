@@ -1142,6 +1142,27 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   } else {
     set_scheduler_trace_path(scheduler_trace)
   }
+  // #2510: the incremental typecheck telemetry request joins the shared
+  // clear-then-validate discipline rather than re-deriving it in a branch.
+  // Cleared HERE, before any validation below can throw and before every
+  // one-shot early return, for the reason the ingestion pair states two blocks
+  // down: a malformed sibling request must not leave this one's stale sidecar
+  // looking like the failed invocation's result.
+  //
+  // Four review rounds were spent moving a per-branch copy of this around, and
+  // each round found a failure point earlier or later than the last. The
+  // mechanism already existed; the fix was to use it.
+  let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+  if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
+    Fs::remove(fs_telemetry_out)
+  } else {
+    ()
+  }
+  // Set from the env on every invocation, not merely enabled: a long-lived
+  // instance that served a telemetry request must not leave counting on for
+  // the next caller. The check-only branch may enable it again for its own
+  // invalidation-trace reason, and runs later, so it still wins there.
+  set_incremental_typecheck_telemetry_enabled(fs_telemetry_out != "")
   // Validate an artifact-input trace request before ANY CLI-mode return. This
   // must precede LSP and every one-shot special/check path so none can leave a
   // stale sidecar or silently ignore a request intended for the one exact
@@ -1215,6 +1236,17 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   }
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
+  // #2510: an observation must never be able to destroy what it observes. If
+  // the telemetry destination aliases the primary output, the compile writes
+  // the artifact and the sidecar publication then overwrites it with JSON,
+  // while the invocation still reports success -- a silently corrupt build
+  // produced by asking for a measurement. Checked for EVERY lane, because the
+  // check-only branch publishes to the same variable.
+  if fs_telemetry_out != "" && fs_telemetry_out == output_path {
+    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name the compile output path")
+  } else {
+    ()
+  }
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
   // #730 (D-2): `vibe hash` — print a contract package's content-addressing
@@ -1594,31 +1626,10 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
     // #cov: `vibe test/run --coverage` sets VIBE_COVERAGE=1 so the user file (and
     // its imports) is compiled with function/branch hit instrumentation; running
     // the produced wasm fills the bitmap that the runner reads via VIBE_COV_OUT.
-    // #2510: the incremental typecheck telemetry request. Three placements,
-    // and each one is load-bearing for the same property -- a sidecar exists
-    // only for an invocation that produced a compile:
-    //
-    //   READ AND CLEARED HERE, outside and before the `handle`, so it covers
-    //   the early `return emit_compile_diag(...)` paths (the ADR-0068 entry
-    //   precheck and the closure gate) which are returns, not throws, and so
-    //   the exception arm below can see the binding at all.
-    //   PUBLISHED LAST inside the block, past every sidecar.
-    //   REMOVED AGAIN in the exception arm.
-    //
-    // The first two rounds of review moved this write later twice, and both
-    // times a later failure point turned up. Ordering alone cannot settle it:
-    // any sidecar added after the write reopens the hole. The exception arm is
-    // what makes the property hold by construction instead.
-    let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
-    if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
-      Fs::remove(fs_telemetry_out)
-    } else {
-      ()
-    }
-    // Set from the env on every invocation, not merely enabled: a long-lived
-    // instance that served a telemetry request must not leave counting on for
-    // the next caller.
-    set_incremental_typecheck_telemetry_enabled(fs_telemetry_out != "")
+    // #2510: the sidecar was already cleared, validated and the counters armed
+    // in the shared request block above. What is left here is the pair that
+    // cannot live there: publish LAST on the success path, and remove again on
+    // any throw.
     return handle {
       // Request validation and stale-sidecar deletion happened before every
       // CLI early return above. This branch now only consumes the validated
