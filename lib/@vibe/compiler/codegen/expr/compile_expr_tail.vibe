@@ -1124,25 +1124,7 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
       } else {
         false
       }
-      // #2733 (second instance): a callee bound LOCALLY -- a parameter, or a
-      // local closure -- has no contract. Every table consulted above is
-      // keyed by GLOBAL name, so reading one for a local spelling answers
-      // about a different function, and the heap default below then plans a
-      // drop for a reference the closure only borrowed. No contract is the
-      // fail-closed case: decline, and mark the binding borrow-bound so a
-      // consuming use dups it, exactly as `is_borrow_ret` does.
-      let is_local_callee = if is_eident(callee) {
-        let lc_self = Array::get(local_names, local_idx)
-        Array::set(local_names, local_idx, "")
-        let r = find_local_slot(local_names, get_eident_name(callee)) >= 0
-        Array::set(local_names, local_idx, lc_self)
-        r
-      } else {
-        false
-      }
       if is_borrow_ret || is_scalar_ret {
-        ()
-      } else if is_local_callee {
         ()
       } else if is_declared_heap_ret {
         rc_kind = 2
@@ -1155,7 +1137,7 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
       }
-      is_borrow_ret_ext = is_borrow_ret || is_local_callee
+      is_borrow_ret_ext = is_borrow_ret
     } else if is_edot(value) {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
@@ -1523,11 +1505,15 @@ fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[String], c
 ///   the wrapped form more aggressive than the bare call and leaked: measured
 ///   at +5,952 and +7,104 bytes/op on the two parser benches the
 ///   `bench-regression` gate tracks.
-/// - a call through a name bound LOCALLY -- a parameter, or a local closure.
-///   The contract tables are keyed by GLOBAL name, so reading one for a local
-///   spelling answers about a different function; no contract at all is the
-///   fail-closed case. This is the second instance recorded on the issue,
-///   which needs no block to reach the same hole.
+/// A call through a name bound LOCALLY -- a parameter, or a local closure --
+/// is NOT one of them, and is the reason the test above answers `false` for
+/// one rather than falling through to the tables. Those are keyed by GLOBAL
+/// name, so reading one for a local spelling answers about a different
+/// function; but declining on that ground costs +8.6% to +24% of the
+/// allocation in the parser and checker benches (the whole of this rule's
+/// measured cost -- with it out, they are byte-identical to main), against a
+/// silent-wrong that needs the closure to return a borrow. That trade is
+/// #2754, with the per-series numbers, and is deliberately not made here.
 /// - a match arm whose pattern `pvo_pat_binds` cannot enumerate: an unseen
 ///   binder is exactly the shadow this scope check exists to catch.
 ///
@@ -1550,7 +1536,7 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
       EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
         false
       } else if find_local_slot(bound, cn) >= 0 || find_local_slot(local_names, cn) >= 0 {
-        true
+        false
       } else {
         is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0
       },
