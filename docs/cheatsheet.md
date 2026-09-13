@@ -2593,8 +2593,8 @@ fn lifted_by_interp[T: Show](a: T) -> String {
 }
 ```
 
-Lifting the lambda to a top-level declaration is the edit the message names, and
-it is the whole fix. Note that the binder's spelling is irrelevant — `[U: Eq]`
+Lifting the lambda to a top-level declaration is the edit the message leads with,
+and it is the whole fix. Note that the binder's spelling is irrelevant — `[U: Eq]`
 is refused exactly like the `[T: Eq]` that shadows the outer one, because the
 condition is which binder declared the bound, not whether a spelling repeats. A
 **kinded** binder is the same: `[F[_]: Mappable[F]]` on a lambda is refused, while
