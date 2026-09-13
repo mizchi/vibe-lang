@@ -447,8 +447,8 @@ identical; each figure reproduced on two runs with a fresh cache):
 
 | | before | after |
 |---|---:|---:|
-| compiler heap high-water, `codegen_lexer_test` | 956,186,160 B | 956,187,136 B (+0.0001%) |
-| RC-built stage2 size | 3,072,573 B | 3,073,215 B (+0.02%) |
+| compiler heap high-water, `codegen_lexer_test` | 956,207,312 B | 956,208,816 B (+0.00016%) |
+| RC-built stage2 size | 3,072,573 B | 3,073,251 B (+0.02%) |
 | `bench/exec` corpus | — | 9 of 10 byte-identical |
 
 The one exec program that changed is `expr_eval`, +18 B of code with identical
