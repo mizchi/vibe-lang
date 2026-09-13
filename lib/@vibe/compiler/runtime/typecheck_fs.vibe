@@ -3877,13 +3877,28 @@ fn trait_witness_binding_line(path: String, tag: String, raw_path: String, items
 /// the impl rows already impose.
 export fn trait_witness_set_lines(path: String, stmts: Array[Stmt]) -> Array[String] {
   let lines = array_empty()
-  // Every TYPE-LEVEL DECLARATION, private ones included. `interface_decl_lines`
-  // enumerates exactly the 7 statement kinds that introduce a name a type
-  // expression can resolve to, and each line already carries that
-  // declaration's derives, so a `derive` change moves the set through the same
-  // row (Codex on #2742, P1 twice: once for derives, then again for a private
-  // `struct Target` shadowing an imported `type Target = Int`, which
-  // re-resolves the impl target with nothing else on the module changing).
+  trait_witness_collect_into(path, stmts, lines)
+  lines
+}
+
+/// Recursive because the checker's own visibility collector is. A nested
+/// `module M { struct Target }` is a VISIBLE type declaration:
+/// `collect_visible_type_stmts` (checker_stmt.vibe) recurses into `SModule`
+/// bodies and flattens them into one list, so a nested struct can shadow an
+/// imported `type Target = Int` and re-resolve `impl Marker for Target` with
+/// nothing at the top level changing (Codex on #2742, P1). The impl, import
+/// and re-export arms recurse for the same reason -- an `impl` inside a module
+/// body is still an impl.
+///
+/// Flattened rather than qualified by the module name, which is what
+/// `collect_visible_type_stmts` does: it pushes nested declarations into the
+/// same `out` as the top-level ones.
+fn trait_witness_collect_into(path: String, stmts: Array[Stmt], lines: Array[String]) -> Unit {
+  // Every TYPE-LEVEL DECLARATION at this level, private ones included.
+  // `interface_decl_lines` enumerates exactly the statement kinds that
+  // introduce a name a type expression can resolve to, and each line already
+  // carries that declaration's derives, so a `derive` change moves the set
+  // through the same row.
   let decls = interface_decl_lines(stmts, true)
   let mut d = 0
   while d < Array::length(decls) {
@@ -3899,11 +3914,11 @@ export fn trait_witness_set_lines(path: String, stmts: Array[Stmt]) -> Array[Str
       Array::push(lines, trait_witness_binding_line(path, "import:", raw_path, items)),
       SReExport(raw_path, items) =>
       Array::push(lines, trait_witness_binding_line(path, "reexport:", raw_path, items)),
+      SModule(_, _, body) => trait_witness_collect_into(path, body, lines),
       _ => ()
     }
     i = i + 1
   }
-  lines
 }
 
 /// The fingerprint of a reachable witness SET.

@@ -231,6 +231,39 @@ test "a RE-EXPORT binds a target name too, not just an import" {
     )}" + " import-vs-reexport=\{show_eq(fp([via_a]), fp([imported]))}", "switched-source=moved import-vs-reexport=moved",)
 }
 
+test "a declaration NESTED in a module is visible, so it is in the set" {
+  // Codex on #2742 (P1, round 5). `collect_visible_type_stmts` recurses into
+  // `SModule` bodies and flattens them, so a nested `struct Target` shadows an
+  // imported `type Target = Int` and re-resolves `impl Marker for Target`
+  // with nothing at the top level changing.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let plain: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  let nested_decl: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SModule(false, "M", [
+      SStruct(false, "Target", [("x", TyName("Int"))], [], [], [])
+    ]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  // An impl nested in a module body is still an impl.
+  let nested_impl: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SModule(false, "M", [SImpl([], [], "Marker", TyName("Target"))]),
+  ]
+  let no_impl: Array[Stmt] = [SImport("a.vibe", [item])]
+  inspect("nested-decl=\{show_eq(
+      fp_paths(["a.vibe", "c.vibe"], [dep, plain]),
+      fp_paths(["a.vibe", "c.vibe"], [dep, nested_decl]),
+    )}" + " nested-impl=\{show_eq(
+        fp_paths(["a.vibe", "c.vibe"], [dep, no_impl]),
+        fp_paths(["a.vibe", "c.vibe"], [dep, nested_impl]),
+      )}", "nested-decl=moved nested-impl=moved",)
+}
+
 test "bound ORDER is not part of what an impl means" {
   let one: Array[Stmt] = [
     SImpl(["A", "B"], [("A", ["Show"]), ("B", ["Eq"])], "Pair", TyApp("P", [
