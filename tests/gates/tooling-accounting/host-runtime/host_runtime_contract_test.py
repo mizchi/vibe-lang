@@ -238,10 +238,37 @@ class GcHostListTest(unittest.TestCase):
         self.assert_mutation_fails(self.text.replace('("Fs::exists", 1, 5, 1)', '("Fs::exists", 1, 5, 0)', 1))
 
     def test_core_signature_shape_parses_the_manifest_forms(self):
-        self.assertEqual(module.core_signature_shape("(i64) -> i64"), (1, 1))
-        self.assertEqual(module.core_signature_shape("() -> ()"), (0, 0))
-        self.assertEqual(module.core_signature_shape("(i64, i64) -> ()"), (2, 0))
-        self.assertEqual(module.core_signature_shape("() -> i64"), (0, 1))
+        for signature, shape in (
+            ("(i64) -> i64", (1, 1)),
+            ("() -> ()", (0, 0)),
+            ("(i64, i64) -> ()", (2, 0)),
+            ("() -> i64", (0, 1)),
+            ("(i32, i32) -> ()", (2, 0)),                    # dbg_line_type_idx
+            ("(i64, i64, i64, i64) -> i64", (4, 1)),         # http_request_type_idx
+        ):
+            with self.subTest(signature=signature):
+                self.assertEqual(module.core_signature_shape(signature), shape)
+
+    def test_core_signature_shape_rejects_anything_that_is_not_a_signature(self):
+        # Codex on #2768 (P2). The first parser split on `->` and inferred the
+        # rest, so EVERY malformed form still produced a shape rather than an
+        # error -- it named `()` becoming (0, 1); measured, all of these did the
+        # same, including a missing paren and a wrong arrow. A contract entry
+        # that no longer describes an ABI signature would then silently agree
+        # with whatever host_defs claimed.
+        for signature in ("()", "(i64)", "i64 -> i64", "", "(i64) => i64", "(i64) -> ", "(,) -> i64", "(i64 i64) -> i64"):
+            with self.subTest(signature=signature):
+                with self.assertRaises(SystemExit):
+                    module.core_signature_shape(signature)
+
+    def test_every_manifest_signature_parses(self):
+        # The strict parser must accept the contract as it actually stands --
+        # a rejection battery that also rejected the real entries would fail
+        # closed on everything and prove nothing.
+        manifest = json.loads((ROOT / "docs/wasm/host-runtime-contract.json").read_text())
+        for type_id, signature in manifest["coreTypeSignatures"].items():
+            with self.subTest(type_id=type_id):
+                module.core_signature_shape(signature)
 
     def test_every_gc_import_name_is_derivable_or_declared(self):
         # The exception table is a seventh hand-maintained list, which is what

@@ -169,14 +169,31 @@ def gc_lists(text: str) -> tuple[list[str], list[tuple[str, int]], list[str], in
     return use_host, host_defs, host_imports, hbo, int(header.group(1))
 
 
+# `(i64, i64) -> ()` and `() -> i64`, and nothing else. Anchored on both ends so
+# a partial match cannot pass.
+_CORE_SIGNATURE = re.compile(
+    r"^\(\s*(?:[a-z][a-z0-9]*(?:\s*,\s*[a-z][a-z0-9]*)*\s*)?\)\s*->\s*(?:\(\s*\)|[a-z][a-z0-9]*)$"
+)
+
+
 def core_signature_shape(signature: str) -> tuple[int, int]:
     """`(i64, i64) -> ()` becomes (2, 0): parameter count and whether it returns.
 
     Parsed from the manifest's own `coreTypeSignatures` rather than transcribed,
-    so the arity check below introduces no table of its own.
+    so the arity check introduces no table of its own -- but parsed STRICTLY.
+
+    The first version split on `->` with `partition` and inferred the rest, so
+    every malformed form still produced a shape instead of an error: `()` and
+    `""` both became (0, 1), `(i64)` became (1, 1), and neither a missing paren
+    (`i64 -> i64`) nor a wrong arrow (`(i64) => i64`) was noticed. A contract
+    entry that no longer describes an ABI signature would then silently agree
+    with whatever host_defs claimed (Codex on #2768, P2 -- it named the `()`
+    case; measured, all five behave the same way).
     """
+    if not _CORE_SIGNATURE.match(signature.strip()):
+        die(f"host-runtime contract coreTypeSignatures entry is not an ABI signature: {signature!r}")
     lhs, _, rhs = signature.partition("->")
-    inner = lhs.strip().strip("()").strip()
+    inner = lhs.strip()[1:-1].strip()
     params = len([part for part in inner.split(",") if part.strip()]) if inner else 0
     return params, 0 if rhs.strip() == "()" else 1
 
