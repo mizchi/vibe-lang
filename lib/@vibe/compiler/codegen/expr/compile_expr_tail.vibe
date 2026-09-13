@@ -1093,12 +1093,7 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
       }
     } else if expr_tag(value) == 8 {
       let callee = get_ecall_callee(value)
-      let is_borrow_ret = if is_eident(callee) {
-        let cn = get_eident_name(callee)
-        is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0
-      } else {
-        false
-      }
+      let is_borrow_ret = call_returns_borrow(value, local_names, ctx)
       // #791: consult the DECLARED return-type table (compute_heap_returning,
       // built once from a syntactic scan of top-level signatures -- see its
       // doc comment) before falling back to the blanket "any ECall is heap"
@@ -1155,9 +1150,30 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
     } else if expr_tag(value) == 16 {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
-    } else if expr_tag(value) == 9 || expr_tag(value) == 14 {
-      rc_kind = 2
-      Array::push(ctx.heap_binding_names, name)
+    } else if expr_tag(value) == 9 || expr_tag(value) == 14 || expr_tag(value) == 10 || expr_tag(value) == 11 || expr_tag(value) == 12 || expr_tag(value) == 13 {
+      // #2733: a WRAPPER value -- a block, or a binder/assignment chain --
+      // produces whatever its RESULT SPINE ends in, which is what has to be
+      // classified. Reading the top node instead made every one of these
+      // owning, so a block around a borrow-returning call got a scope-end
+      // drop that freed an element its container still owned. Tags 10..13
+      // reached the same default through the catch-all below; they are
+      // pulled in here so one rule covers the whole wrapper class.
+      //
+      // Only the borrowed direction changes: a spine this cannot place still
+      // falls through to heap exactly as before.
+      let spine_self = Array::get(local_names, local_idx)
+      Array::set(local_names, local_idx, "")
+      let spine_borrowed = value_spine_borrowed(value, local_names, array_empty(), array_empty(), ctx)
+      Array::set(local_names, local_idx, spine_self)
+      if spine_borrowed {
+        // Decline the drop, and mark the binding borrow-bound for its body
+        // scope so a consuming use dups it -- the same shape the
+        // `is_borrow_ret` arm above takes for a call value node.
+        is_borrow_ret_ext = true
+      } else {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      }
     } else {
       let __sf_tag = expr_tag(value)
       if is_eident(value) || __sf_tag == 0 || __sf_tag == 1 || __sf_tag == 2 || __sf_tag == 3 || __sf_tag == 22 {
@@ -1171,6 +1187,60 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
     ()
   }
   (rc_kind, is_borrow_ret_ext)
+}
+
+/// Does a `let mut` initializer hand the slot a borrowed call result, reached
+/// through a straight-line wrapper if there is one? The twin of `pc_count`'s
+/// ELetMut `borrowed_call`: the retain this gates and the owning plan that
+/// arm records must cover the same values, or codegen and the planner
+/// disagree about what the slot holds.
+fn mut_init_borrowed_call(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let binders = array_empty()
+  let leaf = mib_spine_leaf(value, binders)
+  match leaf {
+    ECall(EIdent(cn, _), _, _) => !array_contains_str(binders, cn) && call_returns_borrow(leaf, local_names, ctx),
+    _ => false
+  }
+}
+
+/// The leaf of a STRAIGHT-LINE spine, collecting the names it binds. Mirrors
+/// `pmvc_spine_leaf` in perceus.vibe; branching stops the walk because the
+/// plan it pairs with records one answer per binding.
+fn mib_spine_leaf(e: Expr, binders: Array[String]) -> Expr {
+  match e {
+    ELet(n, _, b, _) => {
+      Array::push(binders, n)
+      mib_spine_leaf(b, binders)
+    },
+    ELetMut(n, _, b, _) => {
+      Array::push(binders, n)
+      mib_spine_leaf(b, binders)
+    },
+    ELetRec(n, _, b) => {
+      Array::push(binders, n)
+      mib_spine_leaf(b, binders)
+    },
+    ESeq(_, b) => mib_spine_leaf(b, binders),
+    EAssign(_, _, b) => mib_spine_leaf(b, binders),
+    EAssignOp(_, _, _, b) => mib_spine_leaf(b, binders),
+    _ => e
+  }
+}
+
+/// The direct-call borrow contract, shared by initialization and assignment.
+///
+/// The tables are keyed by GLOBAL name, so a callee whose spelling resolves
+/// to a LOCAL -- a parameter or a local closure shadowing a borrow-returning
+/// top-level function -- is not described by them. Reading one anyway calls a
+/// fresh owned result borrowed; on the assignment path that adds a retain
+/// nothing spends, measured at 80 B per iteration (244 B on main against
+/// 1,600,164 B at N=20000). A local resolves to no contract, which is not the
+/// same as a borrow contract.
+fn call_returns_borrow(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  match value {
+    ECall(EIdent(cn, _), _, _) => find_local_slot(local_names, cn) < 0 && (is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0),
+    _ => false
+  }
 }
 
 /// #768 (heap-corruption root cause): a `let` whose value is an if/match and
@@ -1437,6 +1507,150 @@ fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[String], c
     EAssignOp(_, _, _, b) => path_value_owned(b, local_names, bound, ctx),
     _ => false
   }
+}
+
+/// #2733: does this value's RESULT SPINE hand the binding back a reference
+/// the scope does not own?
+///
+/// Every borrow test in this file reads the value's TOP node, so a WRAPPER --
+/// a block, i.e. an `ELet` / `ESeq` chain -- hides what the value actually
+/// produces. `classify_let_value_heap` consults a callee only at
+/// `expr_tag(value) == 8`, `value_has_borrowed_branch_tail` is consulted only
+/// for an if/match value node, and `pctx_mark_view_call` matches an `ECall`
+/// value only. The binding is then classified as owning a reference it never
+/// acquired, and its scope-end drop frees an element the container still
+/// owns -- silently, since `__rt_rc_drop` hands the block straight back to the
+/// free list for the next allocation to reuse.
+///
+/// ANY leaf answering yes is enough. One drop is emitted for the binding, so
+/// a single path that hands back a borrow makes that drop a premature free.
+/// Unowned leaves:
+///
+/// - an identifier without an owned reference. For an enclosing binding, use
+///   the heap ownership record used by the direct alias arm, excluding the
+///   borrowed bindings handled by `value_has_borrowed_branch_tail`. Perceus
+///   moves an owner's last reference into this result (or retains a non-last
+///   use); an alias of a borrowed value has no such reference. For an inner
+///   binder, `bound` / `bound_owned` carry the initializer's classification,
+///   keeping a chain (`let t = <borrow>` then a branch returning `t`) borrowed.
+/// - a projection (`EDot`): a field read is a view into its parent.
+/// - a call to a borrow-returning builtin or to `borrow_ret_names`, matching
+///   the direct-call arm of `classify_let_value_heap`. The planner separately
+///   handles `borrow_view_ret` on straight-line spines; that conservative
+///   may-view set is not a result-ownership contract for branch leaves.
+/// - a match arm whose pattern `pvo_pat_binds` cannot enumerate: an unseen
+///   binder is exactly the shadow this scope check exists to catch.
+///
+/// A leaf this cannot place keeps today's answer rather than flipping to
+/// borrowed. `classify_let_value_heap` already defaults an unresolved call to
+/// heap, and a drop on the scalar or string most of them return is a no-op;
+/// widening that default is a separate change with its own measurement.
+fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String], bound_owned: Array[Int], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    EIdent(x, _) => {
+      let bi = find_local_slot(bound, x)
+      if bi < 0 {
+        !array_contains_str(ctx.heap_binding_names, x) || (array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x))
+      } else {
+        Array::get(bound_owned, bi) == 0
+      }
+    },
+    EDot(_, _, _, _) => true,
+    ECall(callee, _, _) => match callee {
+      EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
+        false
+      } else if find_local_slot(bound, cn) >= 0 || find_local_slot(local_names, cn) >= 0 {
+        // Keep the existing owning-call ABI for callbacks. A local spelling
+        // cannot resolve through the global borrow-return tables.
+        false
+      } else {
+        is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0
+      },
+      _ => false
+    },
+    EIf(_, t, el) => value_spine_borrowed(t, local_names, bound, bound_owned, ctx) || value_spine_borrowed(el, local_names, bound, bound_owned, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        if pvo_pat_binds(ap, bound) {
+          // bind_match_pat retains a payload when the arm consumes it. A
+          // payload returned through this spine transfers that reference.
+          vsb_pad_owned(bound, bound_owned, 1)
+          if value_spine_borrowed(ab, local_names, bound, bound_owned, ctx) {
+            found = true
+          } else {
+            ()
+          }
+        } else {
+          found = true
+        }
+        Array::truncate(bound, mark)
+        Array::truncate(bound_owned, mark)
+        i = i + 1
+      }
+      found
+    },
+    ELet(n, v, b, _) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
+    // A MUTABLE binder carries no borrow-ness. Its value can be replaced
+    // after this walk records it -- `let mut t = <borrow>; t = <alloc>; t`
+    // hands back the allocation, and an `EAssign` walks its continuation, not
+    // its target -- so a flag taken from the initial value is a statement
+    // about a value the binding may no longer hold. Recording it as owned is
+    // today's answer and keeps the assignment from being able to invalidate
+    // anything: only an `ELetMut` binder is assignable, so no flag this walk
+    // does record can go stale. Measured at 80 B per iteration when it did;
+    // the shape is `via_mut` in fixtures/rc_reclaim_leak_test.vibe.
+    //
+    // It is still PUSHED, so that a leaf spelling it reads this binder and
+    // not an outer one this wrapper marked borrowed.
+    ELetMut(n, _, b, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, n)
+      Array::push(bound_owned, 1)
+      let r = value_spine_borrowed(b, local_names, bound, bound_owned, ctx)
+      Array::truncate(bound, mark)
+      Array::truncate(bound_owned, mark)
+      r
+    },
+    ELetRec(n, v, b) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
+    ESeq(_, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    EAssign(_, _, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    EAssignOp(_, _, _, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    _ => false
+  }
+}
+
+/// Extend `bound_owned` to `bound`'s length with `flag`, so the two stay
+/// index-aligned after `pvo_pat_binds` has pushed an arm's binders.
+fn vsb_pad_owned(bound: Array[String], bound_owned: Array[Int], flag: Int) -> Int {
+  while Array::length(bound_owned) < Array::length(bound) {
+    Array::push(bound_owned, flag)
+  }
+  0
+}
+
+/// Walk a binder's body with `n` recorded as owned or borrowed according to
+/// its own value's spine. Pushed and truncated in lockstep with
+/// `bound_owned`, so a name that shadows an outer binder of the other kind
+/// answers for the inner one (`find_local_slot` takes the LAST match).
+fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bound: Array[String], bound_owned: Array[Int], ctx: CompileCtx) -> Bool with Exception {
+  // A bare projection is borrowed, but binding it emits an immediate retain
+  // in classify_let_value_heap. The new name therefore owns its reference.
+  let v_borrowed = !is_edot(v) && value_spine_borrowed(v, local_names, bound, bound_owned, ctx)
+  let mark = Array::length(bound)
+  Array::push(bound, n)
+  if v_borrowed {
+    Array::push(bound_owned, 0)
+  } else {
+    Array::push(bound_owned, 1)
+  }
+  let r = value_spine_borrowed(b, local_names, bound, bound_owned, ctx)
+  Array::truncate(bound, mark)
+  Array::truncate(bound_owned, mark)
+  r
 }
 
 /// #768: apply the branch-tail retain rewrite (see retain_wrap_branch_tails)
@@ -2023,6 +2237,35 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // that repeatedly drifted out of sync with ELet's (the #715/#791 bug
       // family); sharing one function makes that drift impossible.
       let (_mut_rc_kind, _mut_is_borrow_ret_ext) = classify_let_value_heap(buf, value, name, local_idx, local_names, ctx)
+      // A borrowed call initializes an owning mutable slot. Its later value
+      // may be a fresh allocation, so keeping the initializer's borrow flag
+      // would suppress both the slot's drop and a wrapper result's drop.
+      // Retain now: even an unassigned slot may be returned through a wrapper
+      // without taking a reference away from the original container.
+      // pc_count's ELetMut arm supplies the matching ordinary owning plan.
+      // The initializer may WRAP the call. This must fire on exactly the
+      // values `pc_count`'s ELetMut arm plans as owning, so it reads the same
+      // straight-line spine leaf rather than `_mut_is_borrow_ret_ext`, whose
+      // wrapper answer is broader (branches, projections, aliases) than the
+      // plan's.
+      // The binder's own slot is already restored in `local_names` by the
+      // time this runs, but it is NOT in scope in its own initializer -- a
+      // non-recursive `let mut peek = peek(xs, 0)` calls the GLOBAL. Leaving
+      // it visible makes the local test reject the global contract here while
+      // `pc_count`, which reads the initializer before declaring the binder,
+      // still selects the owning plan: the twins would disagree on exactly
+      // the shape they exist to agree on. Mask it, as the wrapper-spine read
+      // does for the same reason.
+      let mib_self = Array::get(local_names, local_idx)
+      Array::set(local_names, local_idx, "")
+      let mib_borrowed = mut_init_borrowed_call(value, local_names, ctx)
+      Array::set(local_names, local_idx, mib_self)
+      if ctx.enable_rc && mib_borrowed {
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        ()
+      }
       // #715: the ELet path (tag 9) emits every dup the Perceus plan budgeted
       // for a binding (ctx.rc_dup_names) at its declaration site -- this
       // ELetMut path never did, while the matching scope-end drop below DID
@@ -2147,7 +2390,10 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           sm_removed = sm_removed - 1
         }
         emit_local_set(buf, idx)
-        if is_heap_mut && !is_self && is_edot(value) {
+        // An owning mutable slot must acquire a borrowed replacement just
+        // as it acquires a borrowed initializer. Otherwise its next drop
+        // would release the container's reference instead of its own.
+        if is_heap_mut && ((!is_self && is_edot(value)) || call_returns_borrow(value, local_names, ctx)) {
           emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
           ()

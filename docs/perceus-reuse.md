@@ -363,9 +363,46 @@ merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
   They stay so the predicate answers on its own rather than inheriting a
   decision another pass made for another reason.
 
-  A value whose borrow-ness none of these tables can see is a live defect in
-  the ORDINARY scope-end drop rather than this one, tracked as #2733: do not
-  widen the classifications above without reading it.
+  Borrow-ness is read from the value's RESULT SPINE rather than its top node,
+  both here and in the ordinary scope-end drop (#2733), so a block or a binder
+  chain wrapped around a borrow-returning call is declined the same way the
+  bare call is. Calls through parameters or local closures keep their existing
+  owning-call ABI; treating every callback result as borrowed would leak the
+  fresh tuples returned by recursive parser callbacks. A call with no resolved
+  signature remains over-approximated: it defaults to heap, and a drop on the
+  scalar or string most of those return is
+  a no-op. Widening that default is its own change with its own measurement.
+
+  An outer identifier is borrowed only when its binding is borrowed. An
+  owning identifier returned through a block transfers its last reference,
+  or a retained reference if the source is used again. Its destination must
+  keep the ordinary drop. Treating every outer identifier as borrowed leaks
+  the transferred reference; `move_through_wrapper` in
+  `fixtures/rc_reclaim_leak_test.vibe` checks reclamation over 20,000 calls,
+  while the wrapper e2e tests check that borrowed results remain valid.
+  A raw field read borrows, but a field binding retains its value; a consumed
+  match payload also acquires a reference. Returning either binding through
+  a block transfers that reference and must keep the destination's drop.
+
+  An unboxed mutable binding initialized by a borrow-returning call retains its own
+  reference. Its planner entry is owning, so assignment and scope exit use
+  the same accounting as a mutable binding initialized by an allocation.
+  Assigning another borrow-returning call also retains the replacement.
+  The initial call's borrowed classification cannot survive assignment: a
+  later wrapper may transfer an allocation stored into that slot. Tests
+  cover both assigned and unassigned bindings, later reads, and replacement
+  with another borrowed value.
+
+  An immutable inner alias of a direct borrow-returning call remains borrowed:
+  the planner's scalar exemption prevents a last-view-use retain in that
+  case. The reclamation guard checks both read and ignored wrapper results;
+  treating every inner alias as owned would prematurely free its container's
+  element.
+
+  The ordinary wrapper classifier uses the same borrow-returning call set as
+  the direct-call classifier. The broader may-return-view analysis remains
+  in the planner's straight-line rule. Applying that conservative set to all
+  branch leaves also declined fresh parser results and leaked their tuples.
 
 - Every occurrence that spends the initial reference must have a source offset.
   A lambda capture has none (the planner walks captures with -1), so codegen

@@ -193,6 +193,97 @@ let mk_pair = (i: Int) -> Tree {
   Node(Leaf(i), Leaf(i + 1))
 }
 
+// #2733 review (Codex P1): the wrapper's result spine ends in an OUTER
+// identifier whose LAST owning use this is, so the planner MOVES `x`'s
+// reference into `y` and `x` gets no scope-end drop. `y`'s drop is then the
+// only one that balances the allocation. Classifying the spine leaf as
+// borrowed because the name comes from an enclosing scope suppresses that
+// drop too and leaks the node -- 80 B per iteration, the same rate as
+// `only_then` and `via_call`. Adds 0 to `total`.
+let via_move = (i: Int) -> Tree {
+  let x = mk_pair(i)
+  let y = {
+    let k = i
+    x
+  }
+  Leaf(sumt(y) * 0)
+}
+
+// #2733 review round 2 (Codex P1): the wrapper's binder starts BORROWED and
+// is then ASSIGNED a fresh allocation. A spine walk that records the binder's
+// flag from its initial value, and walks an assignment's continuation only,
+// still calls the binding borrowed -- so nothing drops the `Node` that was
+// assigned into it. 80 B per iteration, the same rate as the shapes above.
+// Adds 0 to `total`.
+let via_mut = (i: Int) -> Tree {
+  let xs = [
+    mk_pair(i)
+  ]
+  let y = {
+    let mut t = Array::get(xs, 0)
+    t = mk_pair(i + 1)
+    t
+  }
+  Leaf(sumt(y) * 0)
+}
+
+// #2750 review round 4 (Codex P1): the wrapper returns a MUTABLE binding
+// declared OUTSIDE it, whose initializer was borrowed and which was then
+// assigned an allocation. `heap_binding_names` recorded the initializer, the
+// assignment did not update it, and absence was read as "borrowed" -- so the
+// wrapper's drop was suppressed while the assigned allocation had no other
+// owner. 80 B per iteration. Adds 0 to `total`.
+let via_outer_mut = (i: Int) -> Tree {
+  let xs = [
+    mk_pair(i)
+  ]
+  let mut t = Array::get(xs, 0)
+  t = mk_pair(i + 1)
+  let y = {
+    let k = 0
+    t
+  }
+  Leaf(sumt(y) * 0)
+}
+
+let via_outer_mut_unassigned = (i: Int) -> Tree {
+  let xs = [mk_pair(i)]
+  let mut t = Array::get(xs, 0)
+  let y = {
+    let k = 0; t
+  }
+  Leaf(sumt(y) * 0)
+}
+
+let via_outer_mut_reborrow = (i: Int) -> Tree {
+  let xs = [mk_pair(i)]
+  let mut t = Array::get(xs, 0)
+  t = Array::get(xs, 0)
+  let y = { let k = 0; t }
+  Leaf(sumt(y) * 0)
+}
+
+// #2750 review: a local closure whose spelling shadows a top-level
+// BORROW-RETURNING function. The contract tables are keyed by global name, so
+// reading one for the local spelling calls a fresh owned result borrowed --
+// and on the assignment path that adds a retain nothing spends. 80 B per
+// iteration. Adds 0 to `total`.
+let shadowed_first = (xs: Array[Tree]) -> Tree {
+  Array::get(xs, 0)
+}
+
+let via_local_shadow = (i: Int) -> Tree {
+  let xs = [
+    mk_pair(i)
+  ]
+  let shadowed_first = (n: Int) -> Tree {
+    mk_pair(n)
+  }
+  let mut x = Array::get(xs, 0)
+  x = shadowed_first(i)
+  Leaf(sumt(x) * 0)
+}
+
 let via_call = (c: Bool, i: Int) -> Tree {
   let t = mk_pair(i)
   if c {
@@ -249,6 +340,70 @@ let is_node = (t: Tree) -> Bool {
     Leaf(_) => false,
     Node(_, _) => true
   }
+}
+
+// #2750: returning an outer owner from a block moves its initial reference
+// into the destination. Neither binding may abandon that reference: treating
+// the block result as borrowed leaked 32 B per call despite correct values.
+struct WrapperPair {
+  a: Int;
+  b: Int
+}
+
+fn move_through_wrapper(i: Int) -> Int {
+  let x = WrapperPair::{ a: i, b: i + 1 }
+  let y = {
+    let k = 0
+    x
+  }
+  y.a + y.b
+}
+
+fn allocate_wrapper_pair(i: Int) -> WrapperPair {
+  WrapperPair::{ a: i, b: i + 1 }
+}
+
+// A field binding acquires a retained reference before the wrapper returns it.
+fn move_projection_through_wrapper(i: Int) -> Int {
+  let x = (allocate_wrapper_pair(i), 0)
+  let y = {
+    let field = x.0
+    field
+  }
+  y.a + y.b
+}
+
+// A direct borrow-returning initializer is scalar-exempt in the planner:
+// returning its inner alias does not acquire a last-view-use retain. Pin
+// both read and ignored results so changing that contract cannot leak.
+fn borrow_inside_wrapper(i: Int) -> Int {
+  let xs = [allocate_wrapper_pair(i)]
+  let y = {
+    let t = Array::get(xs, 0); t
+  }
+  let ignored = {
+    let t = Array::get(xs, 0); t
+  }
+  y.a + y.b
+}
+
+// A consumed pattern payload also acquires a reference from its scrutinee.
+fn move_pattern_through_wrapper(i: Int) -> Int {
+  let x = (allocate_wrapper_pair(i), 0)
+  let y = {
+    let k = 0
+    match x {
+      (field, _) => field
+    }
+  }
+  y.a + y.b
+}
+
+// Recursive parser callbacks return fresh tuples. A callback's result must
+// not lose its ownership merely because the callee is held in a parameter.
+fn consume_callback_pair(make: (Int) -> WrapperPair, i: Int) -> Int {
+  let pair = make(i)
+  pair.a + pair.b
 }
 
 let main = () -> Int {
@@ -419,8 +574,11 @@ let main = () -> Int {
     total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if) + sumtri(w) + sumt(h)
     // #2389 (see only_then above): `i > 1000000` is false for every
     // iteration, but not a constant the folder can see.
-    total = total + sumt(only_then(i > 1000000, i))
-    total = total + sumt(via_call(i > 1000000, i)) + sumt(via_spine(i > 1000000, i))
+    total = total + sumt(only_then(i > 1000000, i)) + move_through_wrapper(i)
+    total = total + consume_callback_pair(allocate_wrapper_pair, i)
+    total = total + move_projection_through_wrapper(i) + move_pattern_through_wrapper(i)
+    total = total + borrow_inside_wrapper(i) + sumt(via_outer_mut(i)) + sumt(via_local_shadow(i)) + sumt(via_outer_mut_unassigned(i)) + sumt(via_outer_mut_reborrow(i))
+    total = total + sumt(via_call(i > 1000000, i)) + sumt(via_spine(i > 1000000, i)) + sumt(via_move(i)) + sumt(via_mut(i))
     total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum + asum
     i = i + 1
   }

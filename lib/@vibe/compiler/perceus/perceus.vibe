@@ -585,16 +585,53 @@ fn pc_declare(ctx: PCtx, _name: String, scalar: Bool) -> Int {
   id
 }
 
+/// The leaf of a STRAIGHT-LINE spine, collecting the names it binds on the
+/// way. Branching stops the walk: `view_src` below records ONE source
+/// binding, so an if/match spine has no single answer to record.
+fn pmvc_spine_leaf(e: Expr, binders: Array[String]) -> Expr {
+  match e {
+    ELet(n, _, b, _) => {
+      Array::push(binders, n)
+      pmvc_spine_leaf(b, binders)
+    },
+    ELetMut(n, _, b, _) => {
+      Array::push(binders, n)
+      pmvc_spine_leaf(b, binders)
+    },
+    ELetRec(n, _, b) => {
+      Array::push(binders, n)
+      pmvc_spine_leaf(b, binders)
+    },
+    ESeq(_, b) => pmvc_spine_leaf(b, binders),
+    EAssign(_, _, b) => pmvc_spine_leaf(b, binders),
+    EAssignOp(_, _, _, b) => pmvc_spine_leaf(b, binders),
+    _ => e
+  }
+}
+
 /// ADR-0092 per-use pairing: mark `id` as a view-call let-binding when its
 /// value is a call to a borrow-arg0 fn that may RETURN an unowned view
 /// (see PCtx.view_ret_user -- fresh-returning borrow-arg0 callees must
 /// keep their binding's scope-end drop or the result leaks). A local that
 /// shadows a view-ret name is an ordinary owned closure call (#875).
 fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr) -> Int {
-  match value {
+  // #2733: a straight-line WRAPPER -- a block, i.e. an `ELet` / `ESeq` chain
+  // -- hands back whatever its spine ends in, but this matched the value's
+  // TOP node only. A view call behind a block therefore set neither
+  // `view_call_let` nor `view_src`, and the planner emitted an ordinary
+  // scope-end drop for a binding that holds a view.
+  //
+  // Only a STRAIGHT-LINE spine is unwrapped: `view_src` records ONE source
+  // binding, so a branching spine has no single answer and keeps today's.
+  // Names bound along the way are collected -- a leaf mentioning one of them
+  // reads that local, not the outer binding of the same spelling, so it must
+  // not be resolved through `scope`.
+  let binders = array_empty()
+  let leaf = pmvc_spine_leaf(value, binders)
+  match leaf {
     ECall(vc, args, _) => match vc {
       EIdent(vf, _) => {
-        if !Map::has_key(scope, vf) && bsearch_leftmost(ctx.view_ret_user, vf) >= 0 {
+        if !array_contains_str_pctx(binders, vf) && !Map::has_key(scope, vf) && bsearch_leftmost(ctx.view_ret_user, vf) >= 0 {
           Array::set(ctx.view_call_let, id, true)
         } else {
           ()
@@ -604,9 +641,9 @@ fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr)
         // view set) views its first argument -- remember which binding, so
         // a self-reassignment of that binding does not move a value this
         // one still reads (pe_has_live_view_of).
-        if !Map::has_key(scope, vf) && Array::length(args) > 0 && (is_borrow_ret_fname(ctx, vf) || bsearch_leftmost(ctx.view_ret_user, vf) >= 0) {
+        if !array_contains_str_pctx(binders, vf) && !Map::has_key(scope, vf) && Array::length(args) > 0 && (is_borrow_ret_fname(ctx, vf) || bsearch_leftmost(ctx.view_ret_user, vf) >= 0) {
           match Array::get(args, 0) {
-            EIdent(src, _) => if Map::has_key(scope, src) {
+            EIdent(src, _) => if !array_contains_str_pctx(binders, src) && Map::has_key(scope, src) {
               Array::set(ctx.view_src, id, Map::get(scope, src))
             } else {
               ()
@@ -620,7 +657,7 @@ fn pctx_mark_view_call(ctx: PCtx, scope: Map[String, Int], id: Int, value: Expr)
       _ => ()
     },
     EDot(obj, _, _, _) => match obj {
-      EIdent(src, _) => if Map::has_key(scope, src) {
+      EIdent(src, _) => if !array_contains_str_pctx(binders, src) && Map::has_key(scope, src) {
         Array::set(ctx.view_src, id, Map::get(scope, src))
       } else {
         ()
@@ -2876,8 +2913,32 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     },
     ELetMut(name, value, body, _) => {
       pc_count(ctx, scope, value)
-      let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
-      let _ = pctx_mark_view_call(ctx, scope, id, value)
+      // A mutable call binding acquires its own reference even when the
+      // initializer borrows. Assignments replace that value, so neither the
+      // scalar exemption nor the view-only lifetime can describe the slot.
+      // compile_expr_tail retains the borrowed initializer to match this
+      // ordinary owning plan, including its assignment dup/drop budget.
+      // #2750 review: the initializer may WRAP the call -- `let mut x = { let
+      // k = 0; Array::get(xs, k) }` produces the same borrowed value through
+      // a block. Reading the top node only left the slot view-classified and
+      // out of `heap_binding_names`, so a later assignment of a fresh
+      // allocation saw `is_heap_mut == false` and nothing dropped it (80 B
+      // per iteration, measured). Straight-line only, and a callee the spine
+      // itself bound is a local with no contract -- both matching the retain
+      // in compile_expr_tail's ELetMut arm, which must fire on exactly the
+      // same values as this plan or the two sides desync.
+      let bc_binders = array_empty()
+      let borrowed_call = match pmvc_spine_leaf(value, bc_binders) {
+        ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(bc_binders, fname) && is_borrow_ret_fname(ctx, fname),
+        _ => false
+      }
+      let id = pc_declare(ctx, name, !borrowed_call && is_scalar_expr(ctx, value))
+      if !borrowed_call {
+        let _ = pctx_mark_view_call(ctx, scope, id, value)
+        ()
+      } else {
+        ()
+      }
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetRec(name, value, body) => {
