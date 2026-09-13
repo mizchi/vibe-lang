@@ -3351,6 +3351,25 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
           None => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
         }
       },
+      // #2745 (Codex, P1 round 14 on #2761): the receiver need not be a NAME.
+      // `"\{(a, 1).0}"` projects straight out of a literal, which reached the
+      // leaf and printed a 3-digit pointer decimal. A receiver written at the
+      // site needs no recorded shape at all -- the projected element IS a
+      // sub-expression of it, and this walk classifies sub-expressions. The
+      // named route exists only because a name's elements were written
+      // somewhere else.
+      ETuple(es) => {
+        let idx = dtd_interp_index_of_field(field)
+        if idx >= 0 && idx < Array::length(es) {
+          dtd_erased_interp_formal(Array::get(es, idx), struct_sets, var_types, fn_returns)
+        } else {
+          dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+        }
+      },
+      ERecord(_, fields, _) => match dtd_interp_record_field(fields, field) {
+        Some(fe) => dtd_erased_interp_formal(fe, struct_sets, var_types, fn_returns),
+        None => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+      },
       _ => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
     },
     _ => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
@@ -3541,6 +3560,45 @@ fn dtd_interp_absorb_scoped1(out: Array[(String, String)], name: String, bound: 
   dtd_interp_absorb_scoped_bound(out, names, bound, val, body, struct_sets, fn_returns)
 }
 
+/// A `for` loop, for the absorb walk. The VALUE binder holds the iterable's
+/// ELEMENT; the index binder is an `Int`, so "" is its whole answer.
+///
+/// #2745 (Codex, P1 round 14 on #2761): every loop binder was masked with "",
+/// so `{ let mut y = idf(a); for b in [a] { y = b }; y }` lost the only
+/// evidence `y` is erased and printed a 3-digit pointer decimal. The same
+/// mistake round 12 fixed for a match arm -- a binder that CAN be typed from
+/// what it is bound to must be, and masking is only the fallback for one that
+/// cannot.
+///
+/// The iterable is recorded under a synthetic name first, so both spellings of
+/// it -- a literal and a name bound to one earlier -- go through the ONE
+/// recorder and answer alike, rather than this arm growing a scan of its own.
+/// `$#iter` cannot collide with a field of `vn`: `#` is not an identifier
+/// character, and everything under `vn$` is dropped with `vn` at scope exit.
+fn dtd_interp_absorb_forin(out: Array[(String, String)], vn: String, idx: Option[String], it: Expr, body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  let names = empty_str_array()
+  Array::push(names, vn)
+  match idx {
+    Some(ix) => Array::push(names, ix),
+    None => ()
+  }
+  let mark = Array::length(out)
+  match idx {
+    Some(ix) => Array::push(out, (ix, "")),
+    None => ()
+  }
+  let itname = String::concat(vn, "$#iter")
+  dtd_interp_record_shape(out, itname, it, struct_sets, out, fn_returns)
+  let elem = match lookup_var_type(out, array_elem_key(itname)) {
+    Some(t) => t,
+    None => ""
+  }
+  Array::push(out, (vn, elem))
+  dtd_interp_record_shape(out, vn, EIdent(dtd_interp_array_slot_name(itname), -1), struct_sets, out, fn_returns)
+  dtd_interp_absorb_into(out, body, struct_sets, fn_returns)
+  dtd_interp_unscope(out, mark, names)
+}
+
 fn dtd_interp_absorb_exprs(out: Array[(String, String)], es: Array[Expr], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   let mut i = 0
   while i < Array::length(es) {
@@ -3662,13 +3720,7 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
     },
     EForIn(vn, idx, it, b) => {
       dtd_interp_absorb_into(out, it, struct_sets, fn_returns)
-      let names = empty_str_array()
-      Array::push(names, vn)
-      match idx {
-        Some(ix) => Array::push(names, ix),
-        None => ()
-      }
-      dtd_interp_absorb_scoped(out, names, b, struct_sets, fn_returns)
+      dtd_interp_absorb_forin(out, vn, idx, it, b, struct_sets, fn_returns)
     },
     ECall(callee, args, _) => {
       dtd_interp_absorb_into(out, callee, struct_sets, fn_returns)
