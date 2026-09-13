@@ -1712,7 +1712,27 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // the program and every one on the bump lane, never pays for
     // `path_value_owned`. Every operand is pure, so the order is a cost
     // choice only.
-    let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(ctx.rc_path_drop_names, name) && path_value_owned(value, local_names, array_empty(), ctx) && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
+    //
+    // The binding's OWN slot is masked for the scope read, exactly as it is
+    // masked while the value compiles above (#1120): a non-recursive `let`
+    // binder is not in scope inside its own initializer, so `let mk = mk(i)`
+    // calls the GLOBAL `mk`. `local_names[local_idx]` has been restored by
+    // now, so without the mask `find_local_slot` finds this binding itself and
+    // declines a result the callee's contract says is owned -- the safe
+    // direction, but it keeps the leak this pass exists to remove. Measured:
+    // with the mask removed, `let mk = mk(3)` under a heap-returning global
+    // `mk` compiles 18 B smaller, which is the guarded drop not being emitted.
+    let pd_candidate = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(ctx.rc_path_drop_names, name)
+    let path_value_ok = if pd_candidate {
+      let pd_self = Array::get(local_names, local_idx)
+      Array::set(local_names, local_idx, "")
+      let r = path_value_owned(value, local_names, array_empty(), ctx)
+      Array::set(local_names, local_idx, pd_self)
+      r
+    } else {
+      false
+    }
+    let path_drop = pd_candidate && path_value_ok && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
     let path_flag_l = if path_drop {
       // `local_names` is indexed BY wasm local index (compile_expr resolves an
       // identifier to its slot by position), so a flag local may only be
