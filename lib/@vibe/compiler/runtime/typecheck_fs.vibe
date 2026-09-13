@@ -3797,15 +3797,41 @@ fn trait_impl_identity_line(tparams: Array[String], tbounds: Array[(String, Arra
   StringBuilder::freeze(out)
 }
 
-/// Every `impl` in one module's statements, as canonical lines. Exported so a
-/// caller can collect per module and combine once over the closure.
-export fn trait_impl_identity_lines(stmts: Array[Stmt]) -> Array[String] {
+/// Everything in ONE module that decides which witnesses exist, as canonical
+/// lines, each carrying the module it came from.
+///
+/// Two rows, and both are needed (Codex on #2742, both P1):
+///
+///   - `impl:` for each `SImpl`, prefixed by the OWNING MODULE. Two
+///     dependencies can each declare `export trait Marker; impl Marker for
+///     Int` -- nominally two different traits, which a consumer imports under
+///     distinct aliases -- and those two impls have identical text.
+///     Deduplicating the text collapses them, so deleting one module's impl
+///     leaves the other's line and the fingerprint does not move, while one
+///     imported trait has lost its witness. With the module in the row,
+///     repeated REACH of one module still collapses and two modules never do.
+///
+///   - `alias:` for each `STypeAlias`, EXPORTED OR NOT. An alias is
+///     transparent, so `type Hidden = Int; impl Marker for Hidden` is an impl
+///     for `Int`, and editing the alias to `= String` re-targets the impl
+///     while the `impl` row's own text does not change. A private alias is in
+///     no module's interface identity either, so nothing else would catch it.
+///     Every alias in the closure is emitted rather than only the ones a local
+///     impl mentions, because an impl target can be an alias IMPORTED from
+///     another module. That costs a full invalidation on any alias edit, which
+///     is cheap at the measured 40 aliases across `lib/`.
+///
+/// The caller must feed EVERY module of the closure -- the same requirement
+/// the impl rows already impose.
+export fn trait_witness_set_lines(path: String, stmts: Array[Stmt]) -> Array[String] {
   let lines = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SImpl(tparams, tbounds, trait_name, target) =>
-      Array::push(lines, trait_impl_identity_line(tparams, tbounds, trait_name, target)),
+      Array::push(lines, String::concat(interface_segment(path), trait_impl_identity_line(tparams, tbounds, trait_name, target),),),
+      STypeAlias(_, name, params, body) =>
+      Array::push(lines, String::concat(interface_segment(path), String::concat("alias:", String::concat(interface_segment(name), interface_segment(interface_canonical_type_expr(body, params)),),),),),
       _ => ()
     }
     i = i + 1
@@ -3813,17 +3839,18 @@ export fn trait_impl_identity_lines(stmts: Array[Stmt]) -> Array[String] {
   lines
 }
 
-/// The fingerprint of a reachable impl SET.
+/// The fingerprint of a reachable witness SET.
 ///
-/// A set, so the lines are sorted and deduplicated: the same impls reached
-/// through a different module order, or one impl reached twice along two
-/// import paths, give one fingerprint. That is the property that lets this be
-/// folded into every module's typing key without making the key depend on the
-/// order modules happened to be walked in.
-export fn trait_impl_set_fingerprint(lines: Array[String]) -> String {
+/// A set, so the lines are sorted and deduplicated: modules reached in a
+/// different order, or one module reached twice along two import paths, give
+/// one fingerprint. That is what lets this be folded into every module's
+/// typing key without making the key depend on the order modules happened to
+/// be walked in. Deduplication is only safe because each line carries its
+/// owning module -- see `trait_witness_set_lines`.
+export fn trait_witness_set_fingerprint(lines: Array[String]) -> String {
   let sorted = interface_sorted_unique(lines)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-trait-impl-set:v1\n")
+  StringBuilder::push(out, "vibe-trait-witness-set:v2\n")
   let mut i = 0
   while i < Array::length(sorted) {
     StringBuilder::push(out, Array::get(sorted, i))

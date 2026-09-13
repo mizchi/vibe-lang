@@ -12,7 +12,7 @@
 //# and assert insensitivity only where two spellings are the same impl.
 
 import @vibe/compiler/runtime {
-  trait_impl_identity_lines, trait_impl_set_fingerprint
+  trait_witness_set_fingerprint, trait_witness_set_lines
 }
 
 import @vibe/ast {
@@ -21,11 +21,15 @@ import @vibe/ast {
 
 //# Helpers
 
-fn fp(stmt_groups: Array[Array[Stmt]]) -> String {
+//# `fp` gives every group a DISTINCT module path, so the rows below describe
+//# separate dependencies. `fp_same_module` gives two groups the SAME path,
+//# which is what "one module reached twice along two import paths" means.
+
+fn fp_paths(paths: Array[String], stmt_groups: Array[Array[Stmt]]) -> String {
   let lines: Array[String] = []
   let mut g = 0
   while g < Array::length(stmt_groups) {
-    let group = trait_impl_identity_lines(Array::get(stmt_groups, g))
+    let group = trait_witness_set_lines(Array::get(paths, g), Array::get(stmt_groups, g))
     let mut i = 0
     while i < Array::length(group) {
       Array::push(lines, Array::get(group, i))
@@ -33,7 +37,17 @@ fn fp(stmt_groups: Array[Array[Stmt]]) -> String {
     }
     g = g + 1
   }
-  trait_impl_set_fingerprint(lines)
+  trait_witness_set_fingerprint(lines)
+}
+
+fn fp(stmt_groups: Array[Array[Stmt]]) -> String {
+  let paths: Array[String] = []
+  let mut g = 0
+  while g < Array::length(stmt_groups) {
+    Array::push(paths, "m\{g}.vibe")
+    g = g + 1
+  }
+  fp_paths(paths, stmt_groups)
 }
 
 fn show_eq(left: String, right: String) -> String {
@@ -44,14 +58,63 @@ fn show_eq(left: String, right: String) -> String {
   }
 }
 
-test "an impl set is a SET: module order and duplicate reach do not move it" {
+test "a witness set is a SET: module order and repeated reach do not move it" {
   let a: Array[Stmt] = [SImpl([], [], "Show", TyName("Pt"))]
   let b: Array[Stmt] = [SImpl([], [], "Eq", TyName("Pt"))]
-  // Same two impls, opposite module order.
-  let order = show_eq(fp([a, b]), fp([b, a]))
-  // The same impl reached twice along two import paths.
-  let dup = show_eq(fp([a, b]), fp([a, b, a]))
-  inspect("order=\{order} duplicate-reach=\{dup}", "order=same duplicate-reach=same")
+  // The same two modules, walked in the opposite order.
+  let order = show_eq(fp_paths(["a.vibe", "b.vibe"], [a, b]), fp_paths([
+    "b.vibe",
+    "a.vibe"
+  ], [b, a]))
+  // ONE module reached twice along two import paths -- same path, so its rows
+  // are identical text and collapse.
+  let dup = show_eq(fp_paths(["a.vibe", "b.vibe"], [a, b]), fp_paths([
+    "a.vibe",
+    "b.vibe",
+    "a.vibe"
+  ], [a, b, a]),)
+  inspect("order=\{order} repeated-reach=\{dup}", "order=same repeated-reach=same")
+}
+
+test "two modules declaring the same-spelled impl are TWO impls" {
+  // Codex on #2742 (P1). `export trait Marker; impl Marker for Int` in two
+  // dependencies is two nominally distinct traits that a consumer imports
+  // under distinct aliases, and the two impl lines are identical text.
+  // Deduplicating that text would collapse them, so deleting one module's
+  // impl would leave the other's line and the fingerprint would not move --
+  // while one imported trait has lost its witness.
+  let impl_row: Array[Stmt] = [SImpl([], [], "Marker", TyName("Int"))]
+  let none: Array[Stmt] = []
+  let both = fp_paths(["a.vibe", "b.vibe"], [impl_row, impl_row])
+  let one_deleted = fp_paths(["a.vibe", "b.vibe"], [impl_row, none])
+  let single = fp_paths(["a.vibe"], [impl_row])
+  inspect("delete-one=\{show_eq(both, one_deleted)} two-vs-one=\{show_eq(both, single)}", "delete-one=moved two-vs-one=moved",)
+}
+
+test "a PRIVATE alias an impl targets is part of the set" {
+  // Codex on #2742 (P1). An alias is transparent, so `type Hidden = Int;
+  // impl Marker for Hidden` is an impl for `Int`. Retargeting the alias
+  // changes the published witness while the impl row's own text does not
+  // move, and a private alias is in no module's interface identity either --
+  // so nothing else would catch it.
+  let as_int: Array[Stmt] = [
+    STypeAlias(false, "Hidden", [], TyName("Int")),
+    SImpl([], [], "Marker", TyName("Hidden")),
+  ]
+  let as_string: Array[Stmt] = [
+    STypeAlias(false, "Hidden", [], TyName("String")),
+    SImpl([], [], "Marker", TyName("Hidden")),
+  ]
+  // An alias in ANOTHER module counts too: an impl target can name an
+  // imported alias, so every alias in the closure is emitted.
+  let elsewhere_int: Array[Stmt] = [
+    STypeAlias(false, "Hidden", [], TyName("Int"))
+  ]
+  let elsewhere_string: Array[Stmt] = [
+    STypeAlias(false, "Hidden", [], TyName("String"))
+  ]
+  let impl_only: Array[Stmt] = [SImpl([], [], "Marker", TyName("Hidden"))]
+  inspect("same-module=\{show_eq(fp([as_int]), fp([as_string]))}" + " imported=\{show_eq(fp([elsewhere_int, impl_only]), fp([elsewhere_string, impl_only]))}", "same-module=moved imported=moved",)
 }
 
 test "adding, removing or retargeting an impl moves the fingerprint" {
