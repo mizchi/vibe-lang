@@ -1,0 +1,36 @@
+//# #2745: a match ARM's binder assigned into a slot read later.
+//
+// Codex, P1 round 12 on #2761. Measured on `7101f3e`: `{ let mut y = idf(a);
+// match a { b => { y = b; 0 } }; y }` printed a 3-digit pointer decimal.
+//
+// The absorb walk -- the half that records what an assignment left in a name --
+// masked every arm binder with "" while `dtd_erased_interp_arms`, the value
+// walk's twin, PAIRED it against the scrutinee. So `b` was blank, `y = b`
+// carried no evidence, and the only thing that could say `y` is erased said
+// nothing. One question, two walks, and the pairing now lives in exactly one
+// place (`dtd_interp_bind_pat_into`) that both read.
+//
+// `idf` is a nested lambda, so `let mut y = idf(a)` is the initializer this
+// walk declines -- which is what leaves the ASSIGNMENT as the only evidence and
+// so isolates this from the initializer routes that already answer.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) -> U { u }
+    "\{ { let mut y = idf(a)
+    match a {
+      b => { y = b
+        0 }
+    }
+    y } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

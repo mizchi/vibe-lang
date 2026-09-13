@@ -200,6 +200,50 @@ fn nested_all_concrete(q: Qt) -> String {
   inner(q)
 }
 
+// #2745 (Codex, P2 round 12 on #2761): a REBINDING masks every record the
+// outer binding owned, not only its shape. The element keys have readers that
+// never consult the shape -- `Array::get` reads `array_elem_key`, a projection
+// reads the index keys -- so blanking the shape alone left those live and
+// refused these two, both of which render.
+fn rebind_array_elem(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let ints = [U](u: U) -> Array[Int] {
+      [7]
+    }
+    "\{ { let xs = [a]
+    { let xs = ints(0)
+      Array::get(xs, 0) } } }"
+  }
+  inner(q)
+}
+
+fn rebind_tuple_proj(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let pr = [U](u: U) -> (Int, Int) {
+      (4, 5)
+    }
+    "\{ { let p = (a, 1)
+    { let p = pr(0)
+      p.0 } } }"
+  }
+  inner(q)
+}
+
+// #2745 round 12, the green side of the arm pairing: an arm binder that is NOT
+// the formal, assigned into a slot and read later, must still render. Over-
+// recording here would refuse a program that prints `1`.
+fn arm_absorb_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut y = 0
+    match (a, 1) {
+      (_, c) => { y = c
+        0 }
+    }
+    y } }"
+  }
+  inner(q)
+}
+
 test "#2745: a nested binder's masked inner let renders the concrete value" {
   inspect(absorb_scope_mask(Qt::{ w: 5 }), content = "1")
 }
@@ -254,4 +298,16 @@ test "#2745: an absorbed assignment reads the INNER shadowing aggregate" {
 
 test "#2745: an absorbed assignment's non-formal slot still renders" {
   inspect(absorb_other_slot(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: a rebound array name does not inherit the outer element type" {
+  inspect(rebind_array_elem(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a rebound tuple name does not inherit the outer element types" {
+  inspect(rebind_tuple_proj(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: an absorbed arm binder that is not the formal still renders" {
+  inspect(arm_absorb_other_slot(Qt::{ w: 5 }), content = "1")
 }

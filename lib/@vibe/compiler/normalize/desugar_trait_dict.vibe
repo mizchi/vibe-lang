@@ -3481,6 +3481,16 @@ fn dtd_interp_absorb_scoped_bound(out: Array[(String, String)], names: Array[Str
     bi = bi + 1
   }
   dtd_interp_absorb_into(out, body, struct_sets, fn_returns)
+  dtd_interp_unscope(out, mark, names)
+}
+
+/// Drop everything `out[mark..]` holds for `names` -- their bindings and the
+/// synthetic records they own. An inner binding is out of scope once its block
+/// ends, and `lookup_var_type` takes the LAST match, so unshadowing means
+/// REMOVING the appended entries rather than pushing anything. Only the region
+/// the body appended is compacted, so a recording the body made for an OUTER
+/// name it merely assigned survives -- that one really did happen.
+fn dtd_interp_unscope(out: Array[(String, String)], mark: Int, names: Array[String]) -> Unit {
   let mut r = mark
   let mut w = mark
   while r < Array::length(out) {
@@ -3494,6 +3504,26 @@ fn dtd_interp_absorb_scoped_bound(out: Array[(String, String)], names: Array[Str
     r = r + 1
   }
   Array::truncate(out, w)
+}
+
+/// A match arm, for the absorb walk: the pattern is PAIRED against the
+/// scrutinee, the body is walked, and the arm's binders go out of scope again.
+///
+/// #2745 (Codex, P1 round 12 on #2761): this walk masked every arm binder with
+/// "" while `dtd_erased_interp_arms` -- the value walk's twin -- paired it. So
+/// an assignment that is the ONLY evidence a slot is erased was missed:
+/// `{ let mut y = idf(a); match a { b => { y = b; 0 } }; y }` printed a 3-digit
+/// pointer decimal, because `idf` is a nested lambda whose result this pass
+/// cannot classify and `b` was blanked. One question, two walks, and they have
+/// to answer it the same way; the pairing lives in `dtd_interp_bind_pat_into`
+/// so both now read it from there.
+fn dtd_interp_absorb_scoped_pat(out: Array[(String, String)], pat: Pat, scrut: Expr, scrut_formal: String, body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  let names = empty_str_array()
+  collect_pat_binders(pat, names)
+  let mark = Array::length(out)
+  dtd_interp_bind_pat_into(out, pat, scrut, scrut_formal, struct_sets, out, fn_returns)
+  dtd_interp_absorb_into(out, body, struct_sets, fn_returns)
+  dtd_interp_unscope(out, mark, names)
 }
 
 /// `dtd_interp_absorb_scoped_bound` for a single binder.
@@ -3520,14 +3550,14 @@ fn dtd_interp_absorb_named(out: Array[(String, String)], fields: Array[(String, 
   }
 }
 
-fn dtd_interp_absorb_arms(out: Array[(String, String)], arms: Array[(Pat, Expr)], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+fn dtd_interp_absorb_arms(out: Array[(String, String)], arms: Array[(Pat, Expr)], scrut: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  // Classified ONCE, in the environment the scrutinee is evaluated in -- which
+  // is this one, before any arm binds anything.
+  let scrut_formal = dtd_erased_interp_formal(scrut, struct_sets, out, fn_returns)
   let mut i = 0
   while i < Array::length(arms) {
     let (ap, ab) = Array::get(arms, i)
-    // An arm's pattern binders are scoped to that arm, exactly like a let's.
-    let names = empty_str_array()
-    collect_pat_binders(ap, names)
-    dtd_interp_absorb_scoped(out, names, ab, struct_sets, fn_returns)
+    dtd_interp_absorb_scoped_pat(out, ap, scrut, scrut_formal, ab, struct_sets, fn_returns)
     i = i + 1
   }
 }
@@ -3584,11 +3614,15 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
     },
     EMatch(sc, arms) => {
       dtd_interp_absorb_into(out, sc, struct_sets, fn_returns)
-      dtd_interp_absorb_arms(out, arms, struct_sets, fn_returns)
+      dtd_interp_absorb_arms(out, arms, sc, struct_sets, fn_returns)
     },
+    // A handler arm's binders are the OPERATION's payload, not the handled
+    // body's value, so there is no scrutinee to pair against -- `EUnit` makes
+    // every binder blank, which is the same answer the value walk's `EHandle`
+    // arm gives.
     EHandle(body, arms) => {
       dtd_interp_absorb_into(out, body, struct_sets, fn_returns)
-      dtd_interp_absorb_arms(out, arms, struct_sets, fn_returns)
+      dtd_interp_absorb_arms(out, arms, EUnit, struct_sets, fn_returns)
     },
     EWhile(c, b) => {
       dtd_interp_absorb_into(out, c, struct_sets, fn_returns)
@@ -3791,23 +3825,76 @@ fn dtd_interp_field_name(name: String, field: String) -> String {
   String::concat(name, String::concat("$", field))
 }
 
-/// The key families a binding owns. Read by `dtd_interp_copy_records`, which is
-/// the one place that has to know the whole set -- everywhere else names a
-/// family through its own key builder.
-fn dtd_interp_key_families() -> Array[String] {
+/// Families whose key is `<family>$<owner>`: what follows the family IS the
+/// owner, so a key may be matched against an owner exactly or by prefix.
+fn dtd_interp_name_key_families() -> Array[String] {
   let out = empty_str_array()
   Array::push(out, "__Vshape$")
-  Array::push(out, "__Vtupelem$")
-  Array::push(out, "__Vfield$")
   Array::push(out, "__arrelem$")
   out
+}
+
+/// Families whose key is `<family>$<owner>$<slot>`: what follows the family is
+/// an owner FOLLOWED BY a slot, so it is never the owner itself.
+///
+/// The two lists are separate because the exact test is WRONG here, and reading
+/// one list uniformly was a real bug: `__Vtupelem$p$0` is "element 0 of `p`",
+/// and an exact test also reads it as "the `__Vtupelem` record of `p$0`". The
+/// slot recorder writes `__Vtupelem$p$0` and then masks the records of `p$0`,
+/// so the uniform test blanked the element it had just recorded -- measured,
+/// `lambda_bound_erased_interp_absorb_shape_refused.vibe` started compiling
+/// again, which is how the refusal gate caught it. The same collision made the
+/// alias copy hand a slot-named source its OWNER's element.
+fn dtd_interp_slot_key_families() -> Array[String] {
+  let out = empty_str_array()
+  Array::push(out, "__Vtupelem$")
+  Array::push(out, "__Vfield$")
+  out
+}
+
+/// Blank every synthetic record `name` currently owns, so a REBINDING shadows
+/// the lot.
+///
+/// #2745 (Codex, P2 round 12 on #2761): blanking only `__Vshape$<name>` was
+/// chosen by asking which readers use the SHAPE key, and the element keys have
+/// readers of their own that never consult it -- `infer_arg_type_name`'s
+/// `Array::get` arm reads `array_elem_key` directly, and the `EDot` projection
+/// arm reads the index keys. So after an outer `let xs = [a]`, an inner
+/// `let xs = ints()` left `__arrelem$xs -> T` live and a concrete
+/// `Array::get(xs, 0)` was REFUSED although it renders `7`.
+///
+/// The shape key is blanked unconditionally (there may be no key to find, and
+/// `dtd_interp_shape_is` must still answer false); everything else is blanked
+/// where it exists. "" is this walk's spelling for "no answer" everywhere else,
+/// and it is not a formal, so every reader fails open on it.
+fn dtd_interp_mask_records(out: Array[(String, String)], var_types: Array[(String, String)], name: String) -> Unit {
+  Array::push(out, (dtd_interp_shape_key(name), ""))
+  let one = empty_str_array()
+  Array::push(one, name)
+  // Snapshot: `out` and `var_types` are the same array in the absorb walk.
+  let n = Array::length(var_types)
+  let mut vi = 0
+  while vi < n {
+    let (k, _) = Array::get(var_types, vi)
+    if dtd_interp_key_owned_by(one, k) {
+      Array::push(out, (k, ""))
+    } else {
+      ()
+    }
+    vi = vi + 1
+  }
 }
 
 /// Is `key` a synthetic record owned by one of `names`, or by one of their
 /// nested slots? A binder's shape must not outlive the binder's scope any more
 /// than its classification does, so the absorb walk's compaction drops both.
 fn dtd_interp_key_owned_by(names: Array[String], key: String) -> Bool {
-  let fams = dtd_interp_key_families()
+  dtd_interp_key_owned_in(dtd_interp_name_key_families(), true, names, key) || dtd_interp_key_owned_in(dtd_interp_slot_key_families(), false, names, key)
+}
+
+/// `dtd_interp_key_owned_by` over one family list. `exact` says whether what
+/// follows the family may BE an owner, or must be an owner plus a slot.
+fn dtd_interp_key_owned_in(fams: Array[String], exact: Bool, names: Array[String], key: String) -> Bool {
   let mut fi = 0
   let mut hit = false
   while fi < Array::length(fams) {
@@ -3817,7 +3904,7 @@ fn dtd_interp_key_owned_by(names: Array[String], key: String) -> Bool {
       let mut ni = 0
       while ni < Array::length(names) {
         let nm = Array::get(names, ni)
-        if rest == nm || String::starts_with(rest, String::concat(nm, "$")) {
+        if (exact && rest == nm) || String::starts_with(rest, String::concat(nm, "$")) {
           hit = true
         } else {
           ()
@@ -3844,13 +3931,21 @@ fn dtd_interp_key_owned_by(names: Array[String], key: String) -> Bool {
 /// Entries are pushed in `var_types` order, so a slot rebound later in the
 /// environment is pushed later and still wins the backward scan.
 fn dtd_interp_copy_records(out: Array[(String, String)], var_types: Array[(String, String)], name: String, src: String) -> Unit {
-  let fams = dtd_interp_key_families()
-  let srcdollar = String::concat(src, "$")
   // The length is SNAPSHOT, because `out` and `var_types` may be the same
   // array: the absorb walk records a binder's shape into the environment it is
   // reading. Re-reading the length there would append to the array being
   // scanned and never terminate.
   let n = Array::length(var_types)
+  dtd_interp_copy_in(out, var_types, n, dtd_interp_name_key_families(), true, name, src)
+  dtd_interp_copy_in(out, var_types, n, dtd_interp_slot_key_families(), false, name, src)
+}
+
+/// `dtd_interp_copy_records` over one family list. `exact` carries the same
+/// distinction `dtd_interp_key_owned_in` does, and for the same reason: reading
+/// `__Vtupelem$p$0` as a record OF `p$0` would re-key an element of `p` onto
+/// the copy's own name.
+fn dtd_interp_copy_in(out: Array[(String, String)], var_types: Array[(String, String)], n: Int, fams: Array[String], exact: Bool, name: String, src: String) -> Unit {
+  let srcdollar = String::concat(src, "$")
   let mut vi = 0
   while vi < n {
     let (k, v) = Array::get(var_types, vi)
@@ -3859,7 +3954,7 @@ fn dtd_interp_copy_records(out: Array[(String, String)], var_types: Array[(Strin
       let f = Array::get(fams, fi)
       if String::starts_with(k, f) {
         let rest = String::substring(k, String::length(f), String::length(k))
-        if rest == src {
+        if exact && rest == src {
           Array::push(out, (String::concat(f, name), v))
         } else if String::starts_with(rest, srcdollar) {
           let tail = String::substring(rest, String::length(src), String::length(rest))
@@ -3898,7 +3993,7 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
   // in its third place. Blanking first and letting each arm push the real shape
   // afterwards keeps one statement of the rule: `lookup_var_type` scans
   // backward, so the later push wins.
-  Array::push(out, (dtd_interp_shape_key(name), ""))
+  dtd_interp_mask_records(out, var_types, name)
   match val {
     ETuple(es) => {
       Array::push(out, (dtd_interp_shape_key(name), dtd_interp_tuple_shape()))
