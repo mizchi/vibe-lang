@@ -3528,6 +3528,34 @@ fn interface_bracketed(items: Array[String], separator: String) -> String {
   StringBuilder::freeze(out)
 }
 
+/// The export FLAG belongs on the line exactly when `include_private` is on.
+///
+/// With it off every emitted line is exported by construction, so the flag is
+/// constant and recording it would only churn the interface identity's
+/// preimage. With it on BOTH kinds are in the list, and the flag is then the
+/// only thing telling them apart -- which matters because it is not
+/// decoration: `interface_public_trait_names` puts a trait in the export
+/// surface only when its declaration is exported (or an `SExport` names it),
+/// and `restrict_env_to_export_surface` keeps an `EnvTraitImpl` only when its
+/// trait is in that surface. Flipping `export trait Marker` to `trait Marker`
+/// therefore withdraws every `Marker` impl from the published environment with
+/// the trait's own text unchanged (Codex on #2742, P1: the same mechanism it
+/// found for `SExport`).
+///
+/// Every arm goes through this one door so a new one cannot quietly emit an
+/// unstamped line.
+fn interface_push_decl_line(lines: Array[String], exported: Bool, include_private: Bool, line: String) -> Unit {
+  if include_private {
+    Array::push(lines, String::concat(if exported {
+      "pub:"
+    } else {
+      "prv:"
+    }, line))
+  } else {
+    Array::push(lines, line)
+  }
+}
+
 /// The 7 statement kinds below ARE the type-level namespace of a module: the
 /// declarations that introduce a name a type expression can resolve to. The
 /// interface identity wants only the exported ones; the witness set
@@ -3558,7 +3586,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
         StringBuilder::push(enum_body, interface_bracketed(vs, ";"))
         StringBuilder::push(enum_body, "derive")
         StringBuilder::push(enum_body, interface_bracketed(interface_sorted_unique(derives), ","))
-        Array::push(lines, interface_decl_line("enum:", name, StringBuilder::freeze(enum_body)))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("enum:", name, StringBuilder::freeze(enum_body)))
       } else {
         ()
       },
@@ -3576,7 +3604,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
           Array::push(vs, String::concat(interface_segment(vname), String::concat("[", String::concat(String::join(fs, ";"), "]"))))
           j = j + 1
         }
-        Array::push(lines, interface_decl_line("suberror:", name, interface_bracketed(vs, ";")))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("suberror:", name, interface_bracketed(vs, ";")))
       } else {
         ()
       },
@@ -3597,12 +3625,12 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
         StringBuilder::push(struct_body, interface_bracketed(fs, ";"))
         StringBuilder::push(struct_body, "derive")
         StringBuilder::push(struct_body, interface_bracketed(interface_sorted_unique(derives), ","))
-        Array::push(lines, interface_decl_line("struct:", name, StringBuilder::freeze(struct_body)))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("struct:", name, StringBuilder::freeze(struct_body)))
       } else {
         ()
       },
       STypeAlias(exported, name, params, body) => if exported || include_private {
-        Array::push(lines, String::concat("alias:", String::concat(interface_segment(name), interface_canonical_type_expr(body, params))))
+        interface_push_decl_line(lines, exported, include_private, String::concat("alias:", String::concat(interface_segment(name), interface_canonical_type_expr(body, params))))
       } else {
         ()
       },
@@ -3684,7 +3712,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
         StringBuilder::push(trait_body, interface_bracketed(ms, ";"))
         StringBuilder::push(trait_body, "surplus-method-generics")
         StringBuilder::push(trait_body, interface_bracketed(surplus_method_rows, ";"))
-        Array::push(lines, interface_decl_line("trait:", name, StringBuilder::freeze(trait_body)))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("trait:", name, StringBuilder::freeze(trait_body)))
       } else {
         ()
       },
@@ -3702,12 +3730,12 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
           Array::push(os, String::concat(interface_segment(opname), String::concat("[", String::concat(String::join(arg_lines, ";"), String::concat("]", interface_canonical_type_expr(ret, params))))))
           j = j + 1
         }
-        Array::push(lines, interface_decl_line("effect:", name, interface_bracketed(os, ";")))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("effect:", name, interface_bracketed(os, ";")))
       } else {
         ()
       },
       SEffectSet(exported, name, members) => if exported || include_private {
-        Array::push(lines, interface_decl_line("effectset:", name, interface_bracketed(interface_sorted_unique(members), ",")))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("effectset:", name, interface_bracketed(interface_sorted_unique(members), ",")))
       } else {
         ()
       },
@@ -3849,6 +3877,32 @@ fn trait_witness_binding_line(tag: String, raw_path: String, items: Array[Import
   String::concat(tag, String::concat(interface_segment(raw_path), interface_bracketed(rows, ";")))
 }
 
+/// An aggregate `export { .. }` is the OTHER half of what a module publishes.
+///
+/// `interface_public_trait_names` adds every name listed here that names a
+/// trait, so `trait Marker; impl Marker for Int; export { Marker }` publishes
+/// the impl while a module without the last line does not -- with the trait
+/// row and the impl row byte-for-byte identical in both (Codex on #2742, P1).
+/// The same list also feeds `interface_public_value_names` and
+/// `interface_public_type_names`, which is why the whole list is emitted
+/// rather than the subset that happens to name a trait: deciding that subset
+/// needs the checked environment, and the names are cheap.
+///
+/// Source order is kept, like every other line in a row: the surfaces
+/// canonicalize the list themselves, so a reordering cannot change what is
+/// published -- which makes keeping it the over-sensitive and therefore safe
+/// direction.
+fn trait_witness_export_line(items: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "export:")
+  let mut i = 0
+  while i < Array::length(items) {
+    StringBuilder::push(out, interface_segment(Array::get(items, i)))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
 /// Everything in ONE module that decides which witnesses exist, as canonical
 /// lines, each carrying the module it came from.
 ///
@@ -3942,6 +3996,31 @@ fn trait_witness_push_module(name: String, body: Array[Stmt], lines: Array[Strin
 /// `interface_decl_lines` is called on a one-statement slice to keep it the
 /// single authority on which declarations are type-level -- the interface
 /// identity calls the same function with `false` -- without losing position.
+///
+/// THREE things move the set, and the third is the one round 8 added:
+///
+///   1. what PRODUCES a witness -- `SImpl`, and the derives that ride inside a
+///      declaration's own line;
+///   2. what decides how the names in it RESOLVE -- every type-level
+///      declaration, and the statements that bind a name from elsewhere;
+///   3. what decides whether the module PUBLISHES it -- a witness that does
+///      not cross the boundary is not in any consumer's set.
+///
+/// The authority for (3) is `interface_public_trait_names` together with
+/// `restrict_env_to_export_surface`: the export flag on a declaration (stamped
+/// by `interface_push_decl_line`), an aggregate `export { .. }`, and a
+/// re-export, which already had a row for reason (2).
+///
+/// One input to (3) is deliberately NOT read here: `interface_public_trait_names`
+/// also collects the trait bounds of every EXPORTED VALUE, so
+/// `trait Marker; impl Marker for Int; export fn f[T: Marker](x: T)` publishes
+/// the impl and deleting `f` withdraws it. Those bounds live inside the
+/// value's `Expr` and reading them means a new hand-written walk -- the exact
+/// move rounds 3 to 6 each had to undo. It is also the one input that is
+/// attributable to a single module's own interface identity in every case: the
+/// value is exported, so it is in that identity by construction, and
+/// `interface_canonical_type` carries its bounds. Part 1 covers it at that
+/// edge. Written down here so it is a stated boundary rather than a gap.
 fn trait_witness_collect_into(stmts: Array[Stmt], lines: Array[String]) -> Unit {
   let mut i = 0
   while i < Array::length(stmts) {
@@ -3957,6 +4036,7 @@ fn trait_witness_collect_into(stmts: Array[Stmt], lines: Array[String]) -> Unit 
     match stmt {
       SImpl(tparams, tbounds, trait_name, target) =>
       Array::push(lines, trait_impl_identity_line(tparams, tbounds, trait_name, target)),
+      SExport(items) => Array::push(lines, trait_witness_export_line(items)),
       SImport(raw_path, items) => Array::push(lines, trait_witness_binding_line("import:", raw_path, items)),
       SReExport(raw_path, items) =>
       Array::push(lines, trait_witness_binding_line("reexport:", raw_path, items)),
@@ -3980,7 +4060,7 @@ fn trait_witness_collect_into(stmts: Array[Stmt], lines: Array[String]) -> Unit 
 export fn trait_witness_set_fingerprint(module_rows: Array[String]) -> String {
   let sorted = interface_sorted_unique(module_rows)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-trait-witness-set:v3\n")
+  StringBuilder::push(out, "vibe-trait-witness-set:v4\n")
   let mut i = 0
   while i < Array::length(sorted) {
     StringBuilder::push(out, Array::get(sorted, i))

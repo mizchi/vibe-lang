@@ -379,3 +379,37 @@ test "a PRIVATE nominal declaration is part of the set; a value one is not" {
         fp_paths(["a.vibe", "c.vibe"], [dep, with_value]),
       )}", "private-shadow=moved value-decl=same",)
 }
+
+test "what a module PUBLISHES decides which witnesses cross" {
+  // Codex on #2742 (P1, round 8). A witness only reaches a consumer if the
+  // module publishes it: `interface_public_trait_names` builds the trait
+  // surface and `restrict_env_to_export_surface` keeps an `EnvTraitImpl` only
+  // when its trait is in that surface. So the two statements that decide the
+  // surface move the set even though neither the trait's own text nor the
+  // impl's own text changes.
+  let impl_int: Stmt = SImpl([], [], "Marker", TyName("Int"))
+  // An aggregate `export { Marker }` naming a PRIVATE trait publishes every
+  // impl of it. This was Codex's case.
+  let hidden: Array[Stmt] = [STrait(false, "Marker", [], [], [], []), impl_int]
+  let named: Array[Stmt] = [
+    STrait(false, "Marker", [], [], [], []),
+    impl_int,
+    SExport(["Marker"])
+  ]
+  // ... and naming something else does not.
+  let named_other: Array[Stmt] = [
+    STrait(false, "Marker", [], [], [], []),
+    impl_int,
+    SExport(["Other"])
+  ]
+  // The export FLAG on the declaration itself does the same thing directly,
+  // and `include_private` is exactly what made it invisible: with private
+  // declarations in the list, the flag is the only thing telling the two
+  // apart, so dropping it makes `export trait Marker` and `trait Marker` one
+  // line.
+  let flagged: Array[Stmt] = [STrait(true, "Marker", [], [], [], []), impl_int]
+  inspect("aggregate-export=\{show_eq(fp([hidden]), fp([named]))}" + " which-name=\{show_eq(
+        fp([named]),
+        fp([named_other]),
+      )}" + " export-flag=\{show_eq(fp([hidden]), fp([flagged]))}", "aggregate-export=moved which-name=moved export-flag=moved",)
+}
