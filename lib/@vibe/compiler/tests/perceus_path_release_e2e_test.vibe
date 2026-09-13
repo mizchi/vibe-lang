@@ -103,3 +103,62 @@ test "a consuming occurrence inside a lambda is declined and still answers" {
   let _ = assert_bump_rc_agree(src, "capture", "709")
   ()
 }
+
+test "a call result whose callee declares a heap return is admitted" {
+  // `mk` is a named function whose DECLARED return type is heap and which
+  // neither borrow set claims, so its result is a reference the binding owns
+  // and the guarded drop is correct. The leak it removes is pinned by
+  // `via_call` in `fixtures/rc_reclaim_leak_test.vibe` (80 B per iteration,
+  // 1,600,024 B at N=20000 before the rule read that contract); this case is
+  // the answer oracle for the same shape.
+  let src = String::concat(prelude, "let mk: (Int) -> Node = (i) -> Pair(Leaf(i), Leaf(i + 1))\nlet pick: (Bool) -> Node = (c) -> {\n  let t = mk(3)\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
+  let _ = assert_bump_rc_agree(src, "call_heap_ret", "709")
+  ()
+}
+
+test "a call that may return a view is declined and still answers" {
+  // `maybe` is not provably borrow-returning (#707's fixpoint rejects it --
+  // one arm hands back a fresh allocation) but may return an interior view,
+  // and it reaches the binding through an `if` VALUE position, which
+  // `linked_compile.vibe` records as a gap in the planner's own `view_call_let`
+  // marking. The leaf reads `borrow_view_ret` so the predicate answers on its
+  // own rather than relying on a guard computed elsewhere for another reason.
+  // A regression guard, not a red test: with the check removed this shape
+  // still answers, so what it buys is that the rule does not depend on that.
+  let src = String::concat(prelude, "let maybe: (Array[Node], Bool) -> Node = (xs, b) -> {\n  if b {\n    Array::get(xs, 0)\n  } else {\n    Pair(Leaf(1), Leaf(1))\n  }\n}\nlet pick: (Bool, Bool) -> Int = (c, d) -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let t = if d {\n      maybe(xs, true)\n    } else {\n      Pair(Leaf(0), Leaf(0))\n    }\n    if c {\n      t\n    } else {\n      Leaf(9)\n    }\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick(false, true)\n}")
+  let _ = assert_bump_rc_agree(src, "view_ret_leaf", "90715")
+  ()
+}
+
+test "a block whose tail allocates is admitted through the result spine" {
+  // The value node is an `ELet`, not an allocation, so only reading the
+  // result spine reaches it.
+  let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let t = {\n    let k = 4\n    Pair(Leaf(3), Leaf(k))\n  }\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
+  let _ = assert_bump_rc_agree(src, "spine_block", "709")
+  ()
+}
+
+test "a conditional value is admitted when every branch allocates" {
+  let src = String::concat(prelude, "let pick: (Bool, Bool) -> Node = (c, d) -> {\n  let t = if d {\n    Pair(Leaf(3), Leaf(4))\n  } else {\n    Pair(Leaf(1), Leaf(1))\n  }\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true, true)) * 10000 + total(pick(true, false)) * 100 + total(pick(false, true))\n}")
+  let _ = assert_bump_rc_agree(src, "spine_if", "70209")
+  ()
+}
+
+test "one branch of a conditional value declining declines the binding" {
+  // Every leaf has to answer yes. The `else` leaf calls a local closure, whose
+  // name is not a top-level signature the heap-return scan can read, so the
+  // binding fails closed even though the `then` leaf allocates at the site.
+  let src = String::concat(prelude, "let pick: (Bool, Bool) -> Node = (c, d) -> {\n  let f: (Int) -> Node = (i) -> Pair(Leaf(i), Leaf(i))\n  let t = if d {\n    Pair(Leaf(1), Leaf(1))\n  } else {\n    f(2)\n  }\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true, true)) * 10000 + total(pick(true, false)) * 100 + total(pick(false, false))\n}")
+  let _ = assert_bump_rc_agree(src, "spine_mixed", "20409")
+  ()
+}
+
+test "a callee with no top-level signature is declined and still answers" {
+  // `f` is a local binding, not a top-level function, so #791's declared
+  // return-type scan has nothing to say about it and the contract cannot be
+  // read. The binding fails closed rather than being admitted on the "any
+  // call is heap" default.
+  let src = String::concat(prelude, "let pick: (Bool) -> Node = (c) -> {\n  let f: (Int) -> Node = (i) -> Pair(Leaf(i), Leaf(i + 1))\n  let t = f(3)\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
+  let _ = assert_bump_rc_agree(src, "indirect", "709")
+  ()
+}

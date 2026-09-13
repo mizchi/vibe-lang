@@ -320,29 +320,74 @@ merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
 - A plain `let` only. A `let mut` slot is reassignable, so the value it holds
   at the scope end is not necessarily the one an occurrence moved out; a
   pattern bind and a parameter have no `let` lowering to hang the flag on.
-  1,806 rows survive the planner's declines.
-- A value the SITE owns, as an ALLOW-LIST: a tuple, a record, an array
-  literal, a constructor call, and nothing else. 25 of the 1,806 rows in the
-  compiler's own sources, which bind mostly call results -- but it is the shape
-  this leak is written as in ordinary code (`let t = Ctor(..)`).
+  1,833 rows survive the planner's declines (1,806 when the merge census above
+  was taken; `main` has moved since).
+- Every leaf of the value's RESULT SPINE is a reference the scope owns
+  (`path_value_owned`, `compile_expr_tail.vibe`). The read follows block bodies
+  (`let` / `;` chains) and conditional branches, and each leaf answers on its
+  own; one leaf that declines declines the binding. An ALLOW-LIST at the leaf:
+  what nobody enumerated fails closed, because a denylist over an open set of
+  shapes cannot be finished -- this test began as `expr_tag(value) != 8` and
+  review holed it twice, since a call wrapped in a block or an `ESeq` is not
+  tag 8 and neither is an `if` whose branches are calls.
 
-  A call's result is the callee's contract instead, and the classifications
-  that describe it (borrow-returning, may-return-view) are the ones the planner
-  already uses to decide whether to plan a drop at all -- they do not answer
-  whether to give back one it eliminated. Measured: admitting call results
-  miscompiled the compiler itself. Five unit files answered wrongly with no
-  trap (`eq_unbounded_formal_test`, `parser_test`, and three #2357 trait-dict
-  files), and excluding exactly this class made all five green again. It is
-  1,193 of the 1,806.
+  An OWNED leaf is an allocation made at the SITE -- a tuple, a record, an
+  array literal, a constructor call, owned by construction -- or a call to a
+  NAMED function whose DECLARED return type is heap (#791's signature scan)
+  and which neither returns a borrow (#707) nor may return an interior view
+  (#768). That is the callee's own contract, read off its signature. It is
+  NOT the "any `ECall` is heap" default `classify_let_value_heap` falls back
+  to, which is an over-approximation chosen because a dup or a drop no-ops on
+  what it gets wrong -- an even-tagged scalar, or a string/bytes fat pointer
+  that `__rt_rc_drop` returns early on. The drop this pass gives back is no
+  such no-op, so it reads a contract or declines.
 
-  This began as a DENYLIST (`expr_tag(value) != 8`) and review holed it twice:
-  a call wrapped in a block or an `ESeq` is not tag 8, and neither is an `if`
-  whose branches are calls, so `let t = { let _ = 0; Array::get(xs, 0) }` bound
-  an unowned view and the guarded drop would have released an element `xs`
-  still owns. A denylist over an open set of shapes cannot be finished. Reading
-  the initializer's result spine recursively -- through block bodies, `ESeq`
-  tails and conditional branches -- would admit those safely and is the obvious
-  next slice; until then they fail closed like everything nobody enumerated.
+  Declined, each for its own reason: an INDIRECT call (no signature to read);
+  an alias or a projection (their reference is acquired by the alias-dup /
+  projection-dup machinery, whose own bookkeeping owns that question); a
+  literal or an arithmetic value (it holds no reference at all); a lambda; a
+  loop; a `handle`.
+
+  The heap-return requirement is the load-bearing half, and the borrow and
+  view tests beside it are belt-and-braces: a function can be declared
+  heap-returning AND borrow-returning, so the contract has to read all three,
+  but every shape tried where only those two decide is already declined by a
+  guard computed elsewhere (`is_borrow_ret_ext` for a direct call,
+  `value_borrow_like` for an if/match value). Removing them from the leaf did
+  not change an answer in any case built for it. They stay because the
+  predicate should answer on its own rather than inherit a decision another
+  pass made for another reason, and they are pinned as regression guards in
+  `perceus_path_release_e2e_test.vibe` -- honestly labelled there as guards,
+  not as red tests.
+
+  Looking for a red test for them turned up a REAL defect, in the ordinary
+  drop rather than this one: `let t = { let k = 0; Array::get(xs, k) }` binds
+  an unowned view that nothing classifies as one, because
+  `classify_let_value_heap` reads a callee only when the value node IS the
+  call, `value_has_borrowed_branch_tail` runs only for an if/match value node,
+  and `pctx_mark_view_call` matches only an `ECall` value. The scope-end drop
+  then frees an element the array still owns -- measured on `79c8688`, a
+  20-line program answers 91515 under `VIBE_RC=1` against 90715 on bump, with
+  no trap. That is **#2733**, filed rather than fixed here: it reproduces with
+  no branch at all, so it is not this feature's, and the fix changes how every
+  block-valued `let` in the compiler is classified.
+
+  **The call class was excluded for a reason that did not survive
+  re-measurement, and that is worth recording.** The first version of this
+  section said admitting call results "miscompiled the compiler itself" --
+  five unit files answering wrongly with no trap (`eq_unbounded_formal_test`,
+  `parser_test`, and three #2357 trait-dict files) -- because excluding
+  exactly that class made all five green again. Re-measured on this tree with
+  the whole class admitted, all five PASS. The bisection that produced the
+  exclusion ran BEFORE the alias-transfer bug below was found, and that bug
+  (an occurrence spending the initial reference outside `pe_use`, so the
+  guarded drop freed a moved value) is what the five files were failing on.
+  Narrowing the value shape removed enough guarded drops to hide it. So
+  "call-valued" was a PROXY for the real defect, not a cause -- the failure
+  mode `CLAUDE.md` warns about when it says a check means nothing until it is
+  shown able to fail, here in the choice of a rule rather than in a gate. What
+  the rule tests now is the property itself: does the binding hold a reference
+  this scope owns?
 - Every occurrence that spends the initial reference must have a source offset.
   A lambda capture has none (the planner walks captures with -1), so codegen
   would have no site to set the flag at; the binding keeps today's behavior
@@ -375,6 +420,26 @@ recording is removed).
   (32,828 B either way), and the PR's perf report flagged +2.84% fuel on that
   bench; with it, the bench compiles byte-identically to a pre-change
   compiler.
+- `local_names` must still span every local allocated so far. It is indexed BY
+  wasm local index, and the value's own compile can take a scratch local
+  without naming it, so the flag allocation pads up to the flag's index first.
+  Padding cannot fix the other direction: an array already LONGER than that
+  index would record the flag's name at one position and address its slot at
+  another, and every later binding would then read a slot that is not its own
+  -- wrong values, no trap. No shape was found that reaches it; the check
+  costs one comparison and turns a silent aliasing bug into a declined
+  binding.
+
+`scripts/path_release_census.sh` is the measurement tool the numbers above
+come from: it runs the planner over a flat source, finds each `PaPathDrop`
+row's `let`, and classifies it by the codegen's own rule -- admitted, admitted
+only through the recursive spine read, or the leaf kind that disqualified it.
+On the compiler's own sources, of 1,833 rows: 129 admitted (125 at the value
+node, 4 only through the spine read), and of the rest the largest groups are
+1,126 calls whose callee declares no heap return (the great majority builtins
+returning an `Int` or a `String` -- `Array::length`, `String::index_of`,
+`String::concat` -- for which a drop would be a no-op anyway), 245 arithmetic
+values, 181 aliases, 72 literals, 42 projections and 30 indirect calls.
 
 The codegen's bookkeeping is name-keyed, which is safe here without a check
 because every planned body has been through `uniquify_shadowed_bindings_fresh`
@@ -390,6 +455,28 @@ in the emitted compiler. Wall is flat (median 5,532 ms -> 5,564 ms, ranges
 overlap). The leak this removes is per call of a split binding, so what it buys
 depends on the program rather than on this corpus; the self-compile does not
 show it, exactly as the reuse slices did not.
+
+**Cost of widening the rule to the call contract and the spine read**, measured
+the same way (both compilers built from the same tree, so the corpus is
+identical; each figure reproduced on two runs with a fresh cache):
+
+| | before | after |
+|---|---:|---:|
+| compiler heap high-water, `codegen_lexer_test` | 956,186,160 B | 956,187,136 B (+0.0001%) |
+| RC-built stage2 size | 3,072,573 B | 3,073,215 B (+0.02%) |
+| `bench/exec` corpus | — | 9 of 10 byte-identical |
+
+The one exec program that changed is `expr_eval`, +18 B of code with identical
+allocation (1,766,816 B either way) and the same stdout as its golden: one
+admitted site whose leak that program never takes.
+
+The upper bound is worth recording next to it. A compiler built with the value
+test removed entirely -- every call admitted, contract unread -- moves the same
+high-water by +0.008% and removes nothing measurable, because what the compiler
+leaks here is not what its peak is made of. Meanwhile one 20,000-iteration loop
+over a split binding leaks 1,600,024 B and this makes it a constant. That is the
+shape of the whole feature: it is a correctness fix whose benefit is a property
+of the program, and the self-compile is the wrong instrument for it.
 
 ### Where reuse pays, and why the self-compile does not see it (2026-09-11)
 
