@@ -37,6 +37,12 @@
 # still answering `true` for `equals(7, 8)`. The corpus is a GLOB for that reason
 # -- a route found later joins by adding a file, not by editing this script.
 #
+# #2745 joined as a second FAMILY: interpolating a value whose type a nested
+# binder bound printed the tagged pointer (`272`) rather than the value. It shares
+# the edit clause -- lift the lambda -- and differs in the reason, so the reason is
+# selected from the fixture name and an unclassified fixture FAILS rather than
+# being waved through.
+#
 # Round 2 added the KINDED case the same way. A formal declared `F[_]` is stored as
 # `type_param_key(name, arity)` while every lookup passes a bare head, so the whole
 # condition was blind to it and its nested dispatch died on a bare
@@ -56,11 +62,19 @@ STAGE2="$(resolve_stage2 lambda-bound-refusal "${LAMBDA_BOUND_REFUSAL_STAGE2:-}"
 
 # Overridable so the self-test can point the gate at a mutated copy of the
 # corpus instead of editing the tree's own fixtures.
-FIXTURE_GLOB="${LAMBDA_BOUND_REFUSAL_FIXTURES:-fixtures/lambda_bound_dispatch_*_refused.vibe}"
+FIXTURE_GLOB="${LAMBDA_BOUND_REFUSAL_FIXTURES:-fixtures/lambda_bound_*_refused.vibe}"
 
-# The clause the diagnostic must BEGIN with, named once so the self-test's
-# mutation is a single edit.
+# The clause EVERY one of these diagnostics must BEGIN with, named once so the
+# self-test's mutation is a single edit. Both families share it: the edit is the
+# same one (lift the lambda), only the reason differs.
 EDIT_NEEDLE="move the lambda that binds"
+
+# The reason clause, chosen PER FAMILY from the fixture's name rather than by
+# accepting either. Accepting either would pass a fixture refused by the wrong
+# rule -- an erased-interp fixture that tripped the dispatch refusal, say -- which
+# is the same proxy-instead-of-property mistake this gate has already made once.
+dispatch_reason="only a top-level binder threads a bound's dictionary"
+erased_reason="is erased here"
 
 WORK="$ROOT_DIR/_build/_lambda_bound_refusal"
 rm -rf "$WORK"; mkdir -p "$WORK"
@@ -78,8 +92,17 @@ for src in $FIXTURE_GLOB; do
     echo "[lambda-bound-refusal] FAIL: $src compiled; expected a compile-time refusal (#2737)" >&2
     exit 1
   fi
-  if ! grep -qF "only a top-level binder threads a bound's dictionary" "$out.diag" 2>/dev/null; then
-    echo "[lambda-bound-refusal] FAIL: $src was refused without the #2737 message" >&2
+  case "$name" in
+    lambda_bound_erased_interp_*) reason="$erased_reason"; issue="#2745" ;;
+    lambda_bound_dispatch_*) reason="$dispatch_reason"; issue="#2737" ;;
+    *)
+      echo "[lambda-bound-refusal] FAIL: $src matches the glob but no family" >&2
+      echo "  add its reason clause here; an unclassified fixture is unchecked, not clean" >&2
+      exit 1
+      ;;
+  esac
+  if ! grep -qF "$reason" "$out.diag" 2>/dev/null; then
+    echo "[lambda-bound-refusal] FAIL: $src was refused without the $issue message" >&2
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi

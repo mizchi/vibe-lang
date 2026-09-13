@@ -174,6 +174,29 @@ invisible to `formal_in_scope`, `dtd_formal_is_shadowed` and
 top-level binder, which is what would catch a refusal that grew too wide).
 Threading a lambda binder's own bound is the remaining half of #2737.
 
+**Interpolating a nested binder's formal is refused too** (#2745), and for a
+different reason than the four dispatch rungs: a dispatch asks for a witness, so
+it is refused only when the binder's bound promised one, whereas every type is
+renderable in principle and what fails is that this pass does not know WHICH type
+it has. A formal a nested binder bound is erased, so `"\{a}"` printed the
+representation — measured `272`, the tagged pointer, for a struct. That is the
+pointer decimal the #1445 refusal exists to prevent; its guard requires a
+DECLARED struct and deliberately excludes a formal (#2141, so an erased formal
+does not produce a false "missing Show"), and the two guards' gap is where this
+sat. A TOP-LEVEL generic never reaches it: specialization gives the interpolation
+a concrete type, so `fn show_any[T](a: T) { "\{a}" }` prints `7` at `Int` and is
+refused by name at a renderless struct, both unchanged. **The cost, accepted: a
+nested binder applied only at a scalar rendered correctly and is now refused**
+— it was right by accident of the instantiation, since one lowering serves
+`inner(42)` and `inner(Qt::{ .. })`, and telling them apart needs the lambda
+specialized (the same work #2737 left open). Pinned by
+`fixtures/lambda_bound_erased_interp_*_refused.vibe`, the scalar cost among them.
+Landing it also fixed the marker it reads: `rewrite_stmt` now pushes a top-level
+declaration's binder frame itself instead of letting `rewrite_expr`'s EFn arm do
+it, because that arm cannot tell a declaration from a lambda — measured, an
+unbounded top-level generic was marked nested, and the refusal rejected the
+compiler's own sources.
+
 **The bound itself is required** (#2474): `==` / `!=`
 on an operand whose type mentions a formal with no `Eq` bound (bare `T`,
 `Option[T]`, `(T, Int)`, `Array[T]`) is rejected by the checker, because the

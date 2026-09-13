@@ -3178,6 +3178,57 @@ fn dtd_unthreaded_interp_msg(tp: String) -> String {
   }
 }
 
+/// #2745: the interpolated value's type is a formal bound by a NESTED binder, so
+/// its values are erased and nothing here can render them.
+///
+/// A TOP-LEVEL generic does not reach this: it is specialized per instantiation
+/// before this pass, so `infer_arg_type_name` answers with the concrete type and
+/// either a renderer is found or #1445 refuses by name. Measured on main at
+/// b4ccb37, `fn show_any[T](a: T) -> String { "\{a}" }` applied to a `Qt` is
+/// refused with "cannot interpolate a value of type `Qt`", and applied to `7`
+/// prints `7`.
+///
+/// A nested lambda is not specialized, so the same interpolation prints the
+/// representation: `272`, the tagged pointer, for a struct. That is the pointer
+/// decimal the #1445 site's own comment says it exists to prevent -- the guard
+/// just could not see this shape, because `interp_missing_show_type` requires a
+/// declared struct and deliberately excludes a formal (#2141, so an erased
+/// formal does not produce a FALSE "missing Show").
+///
+/// The cost, accepted: a nested binder applied only at a SCALAR renders
+/// correctly today (`inner(42)` prints `42`) and is refused too. It renders
+/// correctly by accident of the instantiation -- the same lambda applied to a
+/// struct prints a pointer, from one lowering -- and this pass cannot tell the
+/// two apart without specializing the lambda, which is the same work #2737 left
+/// open. Refusing both is the fail-closed reading of "never be silently wrong";
+/// the edit is the same one #2737 names, and at a top-level binder the scalar
+/// case keeps working.
+fn dtd_erased_interp_msg(tp: String) -> String {
+  let mut base = String::concat("move the lambda that binds `", tp)
+  base = String::concat(base, "` to a top-level `fn` / `let` declaration, or interpolate at a concrete type: a value of type parameter `")
+  base = String::concat(base, tp)
+  base = String::concat(base, "` is erased here, so `\\{}` would print its representation rather than the value (#2745)")
+  let self_fn = Array::get(dtd_show_self_fn, 0)
+  if String::length(self_fn) > 0 {
+    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  } else {
+    base
+  }
+}
+
+/// The formal this interpolation would render, when it is one a nested binder
+/// bound; "" otherwise (a concrete type, a top-level formal, or no answer).
+fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(tn) => if formal_in_scope(tn) && dtd_formal_innermost_is_nested(tn) {
+      tn
+    } else {
+      ""
+    },
+    None => ""
+  }
+}
+
 fn dtd_check_unthreaded_interp(resolved: Option[String], head: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_returns: Array[(String, String)]) -> Unit with Exception {
   match resolved {
     Some(_) => (),
@@ -9310,8 +9361,15 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             expanded
           } else {
             let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
+            let erased = dtd_erased_interp_formal(Array::get(args, 0), struct_sets, var_types, fn_returns)
             if missing != "" {
               throw(interp_missing_show_msg(missing))
+            } else if erased != "" {
+              // #2745: same shape as the #1445 arm above, for the type this pass
+              // cannot name -- a formal a nested binder bound, whose values are
+              // erased. Placed AFTER it so a concrete type keeps the message that
+              // names it.
+              throw(dtd_erased_interp_msg(erased))
             } else if is_show_shim_call(callee, args) {
               // #2468: nothing HERE resolved it, and for a shim call leaving
               // the call standing is not the same as leaving a `__to_string`
@@ -10275,7 +10333,28 @@ fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, Array[(
         },
         _ => stmt
       },
-      None => SLet(exp, isrec, fname, ann, rewrite_expr(body, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns))
+      // #2745: a TOP-LEVEL generic that `build_gens` did not thread -- an
+      // unbounded one, `fn show_any[T](a: T)` -- reached here and let
+      // `rewrite_expr`'s EFn arm push its binder frame, which marks the frame as
+      // a LAMBDA's. That made `dtd_formal_innermost_is_nested` answer "nested"
+      // for a top-level declaration. #2737's uses never saw it (they also require
+      // the binder's bound to promise the method, and an unbounded binder
+      // promises nothing), but it is wrong on its own terms, and #2745's refusal
+      // reads that marker alone -- measured: the whole compiler was rejected,
+      // because its own top-level unbounded generics interpolate their formals.
+      //
+      // Unwrapping the EFn here is what the threaded path above already does, for
+      // the same reason: the frame belongs to the DECLARATION, so this arm must
+      // push it rather than leave it to the arm that cannot tell the two apart.
+      None => match body {
+        EFn(tparams, bounds, params, ret, eff, fbody) => {
+          scope_formals_push(tparams, bounds, false)
+          let new_body = rewrite_expr(fbody, gens, traits, struct_sets, no_binds, seed_var_types(params, tparams, toplevel_vars), fn_returns)
+          scope_formals_pop()
+          SLet(exp, isrec, fname, ann, EFn(tparams, bounds, params, ret, eff, new_body))
+        },
+        _ => SLet(exp, isrec, fname, ann, rewrite_expr(body, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns))
+      }
     },
     SLetMut(name, ty, e) => SLetMut(name, ty, rewrite_expr(e, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),
     SLetPat(pat, e) => SLetPat(pat, rewrite_expr(e, gens, traits, struct_sets, no_binds, toplevel_vars, fn_returns)),

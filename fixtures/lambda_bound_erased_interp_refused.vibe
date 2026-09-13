@@ -1,0 +1,49 @@
+//# #2745: interpolating a value whose type a NESTED binder bound is refused.
+//
+// `"\{a}"` where `a: T` renders the value's REPRESENTATION when `T` is erased.
+// Measured on main at b4ccb37, this program printed `272` -- the tagged pointer.
+// That is the pointer decimal the #1445 refusal site's own comment says it exists
+// to prevent; its guard could not see this shape, because
+// `interp_missing_show_type` requires a DECLARED struct and deliberately excludes
+// a formal (#2141, so an erased formal does not produce a false "missing Show").
+//
+// A TOP-LEVEL generic never reaches here: it is specialized per instantiation
+// before this pass, so the concrete type is what gets asked about. Measured, both
+// halves, unchanged by this fix:
+//
+//   fn show_any[T](a: T) -> String { "\{a}" }  applied to a `Qt`   refused (#1445)
+//   the same applied to `7`                                        prints `7`
+//
+// So the fix is exactly the shape the existing machinery could not name, and the
+// green side is pinned in `fixtures/lambda_bound_toplevel_witness_test.vibe`.
+
+trait Eq {
+  equals(Self, Self) -> Bool
+}
+
+struct Qt {
+  w: Int
+}
+
+impl Eq for Qt {
+  equals(a: Qt, b: Qt) -> Bool {
+    a.w == b.w
+  }
+}
+
+impl Eq for Int {
+  equals(a: Int, b: Int) -> Bool {
+    a == b
+  }
+}
+
+fn outer[T: Eq](x: T) -> String {
+  let inner = [T: Eq](a: T) -> String {
+    "\{a}"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}
