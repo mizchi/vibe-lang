@@ -3604,12 +3604,72 @@ fn interface_push_decl_line(lines: Array[String], exported: Bool, include_privat
 /// can shadow an imported name and re-resolve an impl target without appearing
 /// in any interface (Codex on #2742, P1). One serializer, two callers, so the
 /// two cannot drift apart.
-fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[String] {
+/// The names an aggregate `export { .. }` lists, in source order.
+///
+/// Unlike `interface_public_value_names` this is the RAW `SExport` list and
+/// nothing else -- no re-exports, no declaration-exported names, no sort. It
+/// answers one question: which declarations does this module publish WITHOUT
+/// carrying `export` on the declaration itself.
+fn interface_aggregate_export_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          Array::push(names, Array::get(items, j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+/// Whether one declaration belongs in the serialized list.
+///
+/// An aggregate `export { Name }` publishes a declaration that does not carry
+/// `export` itself -- `interface_public_trait_names` and
+/// `interface_public_type_names` both already put such a name in the export
+/// surface, and `restrict_env_to_export_surface` publishes accordingly. The
+/// serializer did not agree: it read the declaration's OWN flag, so an
+/// aggregate-exported declaration's contents were omitted from the interface
+/// identity while its contents were published (Codex on #2756, P2).
+///
+/// Measured on the head before the fix, one probe module per kind, comparing
+/// the module's `interface_fingerprint` across a body edit:
+///
+/// | aggregate-exported private declaration | edit | fingerprint |
+/// |---|---|---|
+/// | `trait Marker` | method renamed, method added | UNCHANGED |
+/// | `effect Log` | operation renamed | UNCHANGED |
+/// | `struct Point` | `derive(Eq)` -> `derive(Eq, Show)` | UNCHANGED |
+/// | `enum Hue` | a whole variant added | UNCHANGED |
+///
+/// so it was not confined to the kinds with no value binding. A struct's and
+/// an alias's TYPE still moved the identity through the `value:` row its
+/// constructor produces, which is why the hole is easy to miss: the parts that
+/// row cannot carry -- derives, enum variants, trait methods, effect
+/// operations, effectset members -- were the ones that went unrecorded.
+///
+/// Taking the set as a PARAMETER rather than computing it inside is what keeps
+/// the two callers honest about their own policy: the identity passes the real
+/// set, and `trait_witness_module_row` passes an empty one because it already
+/// emits every declaration under `include_private` and records the aggregate
+/// export as its own `export:` row -- so its preimage is unchanged by this.
+fn interface_decl_selected(exported: Bool, name: String, aggregate: Array[String], include_private: Bool) -> Bool {
+  exported || include_private || contains_str(aggregate, name)
+}
+
+fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool, aggregate: Array[String]) -> Array[String] {
   let lines = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SEnum(exported, name, params, variants, derives) => if exported || include_private {
+      SEnum(exported, name, params, variants, derives) => if interface_decl_selected(exported, name, aggregate, include_private) {
         let vs = array_empty()
         let mut j = 0
         while j < Array::length(variants) {
@@ -3631,7 +3691,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
       } else {
         ()
       },
-      SSuberror(exported, name, variants) => if exported || include_private {
+      SSuberror(exported, name, variants) => if interface_decl_selected(exported, name, aggregate, include_private) {
         let vs = array_empty()
         let mut j = 0
         while j < Array::length(variants) {
@@ -3649,7 +3709,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
       } else {
         ()
       },
-      SStruct(exported, name, fields, derives, mut_fields, params) => if exported || include_private {
+      SStruct(exported, name, fields, derives, mut_fields, params) => if interface_decl_selected(exported, name, aggregate, include_private) {
         let fs = array_empty()
         let mut j = 0
         while j < Array::length(fields) {
@@ -3670,12 +3730,12 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
       } else {
         ()
       },
-      STypeAlias(exported, name, params, body) => if exported || include_private {
+      STypeAlias(exported, name, params, body) => if interface_decl_selected(exported, name, aggregate, include_private) {
         interface_push_decl_line(lines, exported, include_private, interface_decl_line("alias:", name, params, interface_canonical_type_expr(body, params)))
       } else {
         ()
       },
-      STrait(exported, name, supers, methods, method_gens, header_params) => if exported || include_private {
+      STrait(exported, name, supers, methods, method_gens, header_params) => if interface_decl_selected(exported, name, aggregate, include_private) {
         let ms = array_empty()
         let mut j = 0
         while j < Array::length(methods) {
@@ -3757,7 +3817,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
       } else {
         ()
       },
-      SEffectDef(exported, name, params, ops) => if exported || include_private {
+      SEffectDef(exported, name, params, ops) => if interface_decl_selected(exported, name, aggregate, include_private) {
         let os = array_empty()
         let mut j = 0
         while j < Array::length(ops) {
@@ -3775,7 +3835,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
       } else {
         ()
       },
-      SEffectSet(exported, name, members) => if exported || include_private {
+      SEffectSet(exported, name, members) => if interface_decl_selected(exported, name, aggregate, include_private) {
         interface_push_decl_line(lines, exported, include_private, interface_decl_line("effectset:", name, array_empty(), interface_bracketed(interface_sorted_unique(members), ",")))
       } else {
         ()
@@ -3788,7 +3848,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
 }
 
 fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
-  interface_decl_lines(stmts, false)
+  interface_decl_lines(stmts, false, interface_aggregate_export_names(stmts))
 }
 
 /// A trace-only canonical token-stream identity. It length-delimits each token's
@@ -3831,7 +3891,7 @@ export fn incremental_trait_generic_provenance_markers_for_test(header_params: A
 /// A version that can be bumped in one place and not the other is not a
 /// version. Both sites read this.
 fn interface_identity_version() -> String {
-  "vibe-module-interface:v6"
+  "vibe-module-interface:v7"
 }
 
 /// What an aggregate `export { .. }` names when it does NOT name a value.
@@ -4145,7 +4205,7 @@ fn trait_witness_collect_into(stmts: Array[Stmt], lines: Array[String]) -> Unit 
     let stmt = Array::get(stmts, i)
     let one = array_empty()
     Array::push(one, stmt)
-    let decl = interface_decl_lines(one, true)
+    let decl = interface_decl_lines(one, true, array_empty())
     let mut d = 0
     while d < Array::length(decl) {
       Array::push(lines, Array::get(decl, d))
