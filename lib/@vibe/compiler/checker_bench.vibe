@@ -1,5 +1,17 @@
 //# Imports
 
+import @vibe/compiler/core {
+  Expr, Subst, Type, TypeEnv, env_bind, env_cache, types_equal
+}
+
+import @vibe/compiler/checker {
+  check_expr
+}
+
+import @vibe/core {
+  array_empty
+}
+
 import ./checker_hotspot_probe.vibe {
   probe_check_chained_lets,
   probe_check_deep_binop,
@@ -43,4 +55,28 @@ bench "check_deep_region_closure_128" {
   let _ = handle {
     probe_check_deep_region_closure()
   } with { Exception::Throw(_) => 0 }
+}
+
+fn builtin_probe_env() -> TypeEnv {
+  let mut env = EnvEmpty
+  let mut i = 0
+  while i < 512 {
+    env = env_bind(env, String::concat("x_", __to_string(i)), CtInt)
+    i = i + 1
+  }
+  env_cache(env)
+}
+
+let builtin_large_env = builtin_probe_env()
+let builtin_probe_call = ECall(EIdent("String::length", 0), [EString("abc")], 20)
+
+bench "check_builtin_large_env_512" {
+  let mut i = 0
+  while i < 64 {
+    let errors = array_empty()
+    let (ty, _, _) = check_expr(builtin_probe_call, builtin_large_env, array_empty(), SubstEmpty, 0, errors, array_empty())
+    assert(Array::length(errors) == 0)
+    assert(types_equal(ty, CtInt))
+    i = i + 1
+  }
 }

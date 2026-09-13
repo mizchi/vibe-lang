@@ -38,6 +38,7 @@ import @vibe/compiler/checker/diagnostics {
 }
 
 import @vibe/compiler/core {
+  BindingOrigin,
   Expr,
   Pat,
   Subst,
@@ -55,6 +56,7 @@ import @vibe/compiler/core {
   env_cache_binding,
   env_has_reexport_surface_binding,
   env_lookup,
+  env_lookup_binding_including_surface,
   env_type_defs,
   exception_effect_kind,
   exception_effect_labels_equal,
@@ -4749,19 +4751,24 @@ fn direct_builtin_return(name: String) -> Option[Type] {
 }
 
 fn direct_call_return(env: TypeEnv, name: String) -> Option[Type] {
-  // #2386: the builtin table answers first. A callee it does not know
-  // returns None whatever the environment says, so the two chain walks
-  // (the lookup, and on a miss the surface-binding probe, which reads the
-  // whole chain) run only for the names that can be shadowed builtins.
-  // Every user-defined callee used to pay both per call site.
+  // Ask the builtin table first so user-defined callees pay no environment
+  // scan. A lookup that includes surface bindings proves both kinds absent
+  // in one walk; ordinary value lookup hides surfaces and needs a second.
   match direct_builtin_return(canonical_builtin_name(name)) {
     None => None,
-    Some(ret) => match env_lookup(env, name) {
-      Some(_) => None,
-      None => if env_has_reexport_surface_binding(env, name) {
-        None
-      } else {
-        Some(ret)
+    Some(ret) => match env_lookup_binding_including_surface(env, name) {
+      None => Some(ret),
+      Some(binding) => match binding.origin {
+        BindingOriginReExportSurface(_, _) => {
+          // An accelerator-only surface is not an authoritative source
+          // spelling. Keep the chain probe for this uncommon positive case.
+          if env_has_reexport_surface_binding(env, name) {
+            None
+          } else {
+            Some(ret)
+          }
+        },
+        _ => None
       }
     }
   }

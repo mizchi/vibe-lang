@@ -1,7 +1,23 @@
 //# Imports
 
 import @vibe/compiler/core {
-  Expr, Stmt, Subst, Type, TypeDef, TypeEnv, TypeExpr, env_bind, env_lookup, subst_add_bound, subst_apply, types_equal
+  BindingOrigin,
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_bind,
+  env_bind_with_origin,
+  env_cache,
+  env_lookup,
+  env_value_binding,
+  subst_add_bound,
+  subst_apply,
+  type_to_string,
+  types_equal
 }
 
 import @vibe/compiler/checker {
@@ -293,4 +309,58 @@ test "typed occurrences preserve synthetic negative-offset omission" {
   let defs = [TDStruct("Box", [("value", CtInt)], array_empty(), array_empty())]
   let box_env = env_bind(EnvEmpty, "box", CtStruct("Box"))
   assert_typed_occurrences(check_expr_occurrences(EDot(EIdent("box", -4), "value", -5, -6), box_env, defs), array_empty())
+}
+
+fn builtin_call_observation(env: TypeEnv) -> String {
+  let errors = array_empty()
+  let (ty, subst, _) = check_expr(ECall(EIdent("String::length", 10), [
+    EString("abc")
+  ], 30), env, array_empty(), SubstEmpty, 0, errors, array_empty())
+  if Array::length(errors) > 0 {
+    assert(String::contains(Array::get(errors, 0), "unknown name: String::length"))
+    "blocked"
+  } else {
+    type_to_string(subst_apply(subst, ty))
+  }
+}
+
+test "direct builtins preserve local and re-export shadowing across environment layouts" {
+  let name = "String::length"
+  let local = env_bind(EnvEmpty, name, CtFn([CtString], CtBool, None))
+  let surface = env_bind_with_origin(EnvEmpty, name, CtUnknown, BindingOriginReExportSurface("dep", "length"))
+  inspect(builtin_call_observation(EnvEmpty), "Int")
+  inspect(builtin_call_observation(local), "Bool")
+  inspect(builtin_call_observation(env_cache(local)), "Bool")
+  inspect(builtin_call_observation(surface), "blocked")
+  inspect(builtin_call_observation(env_cache(surface)), "blocked")
+  inspect(builtin_call_observation(env_bind_with_origin(local, name, CtUnknown, BindingOriginReExportSurface("dep", "length"))), "blocked")
+  inspect(builtin_call_observation(env_cache(env_bind(surface, name, CtFn([
+    CtString
+  ], CtBool, None)))), "Bool")
+  let flat = EnvFlat([
+    (name, EnvValueBinding::{
+      ty: CtUnknown,
+      origin: BindingOriginReExportSurface("dep", "length")
+    })
+  ])
+  inspect(builtin_call_observation(flat), "blocked")
+  inspect(builtin_call_observation(env_cache(flat)), "blocked")
+  // Cache misses still search bindings introduced after indexing.
+  inspect(builtin_call_observation(env_bind(env_cache(EnvEmpty), name, CtFn([
+    CtString
+  ], CtBool, None))), "Bool")
+  inspect(builtin_call_observation(env_bind_with_origin(env_cache(EnvEmpty), name, CtUnknown, BindingOriginReExportSurface("dep", "length"))), "blocked")
+  // A cache-only surface is hidden by value lookup, but does not claim a
+  // source spelling in the authoritative chain. Preserve that distinction.
+  let cache_only = EnvCached([name], [
+    EnvValueBinding::{
+      ty: CtUnknown,
+      origin: BindingOriginReExportSurface("dep", "length")
+    }
+  ], EnvEmpty)
+  inspect(builtin_call_observation(cache_only), "Int")
+  let cached_local = EnvCached([name], [
+    env_value_binding(CtFn([CtString], CtBool, None))
+  ], surface)
+  inspect(builtin_call_observation(cached_local), "Bool")
 }
