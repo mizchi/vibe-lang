@@ -1124,7 +1124,25 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
       } else {
         false
       }
+      // #2733 (second instance): a callee bound LOCALLY -- a parameter, or a
+      // local closure -- has no contract. Every table consulted above is
+      // keyed by GLOBAL name, so reading one for a local spelling answers
+      // about a different function, and the heap default below then plans a
+      // drop for a reference the closure only borrowed. No contract is the
+      // fail-closed case: decline, and mark the binding borrow-bound so a
+      // consuming use dups it, exactly as `is_borrow_ret` does.
+      let is_local_callee = if is_eident(callee) {
+        let lc_self = Array::get(local_names, local_idx)
+        Array::set(local_names, local_idx, "")
+        let r = find_local_slot(local_names, get_eident_name(callee)) >= 0
+        Array::set(local_names, local_idx, lc_self)
+        r
+      } else {
+        false
+      }
       if is_borrow_ret || is_scalar_ret {
+        ()
+      } else if is_local_callee {
         ()
       } else if is_declared_heap_ret {
         rc_kind = 2
@@ -1137,7 +1155,7 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
         rc_kind = 2
         Array::push(ctx.heap_binding_names, name)
       }
-      is_borrow_ret_ext = is_borrow_ret
+      is_borrow_ret_ext = is_borrow_ret || is_local_callee
     } else if is_edot(value) {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
@@ -1155,9 +1173,30 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
     } else if expr_tag(value) == 16 {
       rc_kind = 2
       Array::push(ctx.heap_binding_names, name)
-    } else if expr_tag(value) == 9 || expr_tag(value) == 14 {
-      rc_kind = 2
-      Array::push(ctx.heap_binding_names, name)
+    } else if expr_tag(value) == 9 || expr_tag(value) == 14 || expr_tag(value) == 10 || expr_tag(value) == 11 || expr_tag(value) == 12 || expr_tag(value) == 13 {
+      // #2733: a WRAPPER value -- a block, or a binder/assignment chain --
+      // produces whatever its RESULT SPINE ends in, which is what has to be
+      // classified. Reading the top node instead made every one of these
+      // owning, so a block around a borrow-returning call got a scope-end
+      // drop that freed an element its container still owned. Tags 10..13
+      // reached the same default through the catch-all below; they are
+      // pulled in here so one rule covers the whole wrapper class.
+      //
+      // Only the borrowed direction changes: a spine this cannot place still
+      // falls through to heap exactly as before.
+      let spine_self = Array::get(local_names, local_idx)
+      Array::set(local_names, local_idx, "")
+      let spine_borrowed = value_spine_borrowed(value, local_names, array_empty(), array_empty(), ctx)
+      Array::set(local_names, local_idx, spine_self)
+      if spine_borrowed {
+        // Decline the drop, and mark the binding borrow-bound for its body
+        // scope so a consuming use dups it -- the same shape the
+        // `is_borrow_ret` arm above takes for a call value node.
+        is_borrow_ret_ext = true
+      } else {
+        rc_kind = 2
+        Array::push(ctx.heap_binding_names, name)
+      }
     } else {
       let __sf_tag = expr_tag(value)
       if is_eident(value) || __sf_tag == 0 || __sf_tag == 1 || __sf_tag == 2 || __sf_tag == 3 || __sf_tag == 22 {
@@ -1437,6 +1476,128 @@ fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[String], c
     EAssignOp(_, _, _, b) => path_value_owned(b, local_names, bound, ctx),
     _ => false
   }
+}
+
+/// #2733: does this value's RESULT SPINE hand the binding back a reference
+/// the scope does not own?
+///
+/// Every borrow test in this file reads the value's TOP node, so a WRAPPER --
+/// a block, i.e. an `ELet` / `ESeq` chain -- hides what the value actually
+/// produces. `classify_let_value_heap` consults a callee only at
+/// `expr_tag(value) == 8`, `value_has_borrowed_branch_tail` is consulted only
+/// for an if/match value node, and `pctx_mark_view_call` matches an `ECall`
+/// value only. The binding is then classified as owning a reference it never
+/// acquired, and its scope-end drop frees an element the container still
+/// owns -- silently, since `__rt_rc_drop` hands the block straight back to the
+/// free list for the next allocation to reuse.
+///
+/// ANY leaf answering yes is enough. One drop is emitted for the binding, so
+/// a single path that hands back a borrow makes that drop a premature free.
+/// Unowned leaves:
+///
+/// - an identifier that this wrapper did not bind to an owned value. That is
+///   either a name from an enclosing scope, whose own scope-end drop already
+///   releases the reference, or an inner binder that is itself borrowed --
+///   `bound` / `bound_owned` carry which, so a chain (`let t = <borrow>` then
+///   a branch handing back `t`) stays borrowed all the way out.
+/// - a projection (`EDot`): a field read is a view into its parent.
+/// - a call to a borrow-returning builtin, to a name in #707's
+///   `borrow_ret_names`, or to one that may return an interior view (#768's
+///   `borrow_view_ret`).
+/// - a call through a name bound LOCALLY -- a parameter, or a local closure.
+///   The contract tables are keyed by GLOBAL name, so reading one for a local
+///   spelling answers about a different function; no contract at all is the
+///   fail-closed case. This is the second instance recorded on the issue,
+///   which needs no block to reach the same hole.
+/// - a match arm whose pattern `pvo_pat_binds` cannot enumerate: an unseen
+///   binder is exactly the shadow this scope check exists to catch.
+///
+/// A leaf this cannot place keeps today's answer rather than flipping to
+/// borrowed. `classify_let_value_heap` already defaults an unresolved call to
+/// heap, and a drop on the scalar or string most of them return is a no-op;
+/// widening that default is a separate change with its own measurement.
+fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String], bound_owned: Array[Int], ctx: CompileCtx) -> Bool with Exception {
+  match e {
+    EIdent(x, _) => {
+      let bi = find_local_slot(bound, x)
+      if bi < 0 {
+        true
+      } else {
+        Array::get(bound_owned, bi) == 0
+      }
+    },
+    EDot(_, _, _, _) => true,
+    ECall(callee, _, _) => match callee {
+      EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
+        false
+      } else if find_local_slot(bound, cn) >= 0 || find_local_slot(local_names, cn) >= 0 {
+        true
+      } else {
+        is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0 || bsearch_leftmost(ctx.borrow_view_ret, cn) >= 0
+      },
+      _ => false
+    },
+    EIf(_, t, el) => value_spine_borrowed(t, local_names, bound, bound_owned, ctx) || value_spine_borrowed(el, local_names, bound, bound_owned, ctx),
+    EMatch(_, arms) => {
+      let mut found = false
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        if pvo_pat_binds(ap, bound) {
+          // A pattern binder reads a payload out of the scrutinee, which the
+          // scrutinee still owns -- borrowed, so flag 0.
+          vsb_pad_owned(bound, bound_owned, 0)
+          if value_spine_borrowed(ab, local_names, bound, bound_owned, ctx) {
+            found = true
+          } else {
+            ()
+          }
+        } else {
+          found = true
+        }
+        Array::truncate(bound, mark)
+        Array::truncate(bound_owned, mark)
+        i = i + 1
+      }
+      found
+    },
+    ELet(n, v, b, _) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
+    ELetMut(n, v, b, _) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
+    ELetRec(n, v, b) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
+    ESeq(_, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    EAssign(_, _, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    EAssignOp(_, _, _, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
+    _ => false
+  }
+}
+
+/// Extend `bound_owned` to `bound`'s length with `flag`, so the two stay
+/// index-aligned after `pvo_pat_binds` has pushed an arm's binders.
+fn vsb_pad_owned(bound: Array[String], bound_owned: Array[Int], flag: Int) -> Int {
+  while Array::length(bound_owned) < Array::length(bound) {
+    Array::push(bound_owned, flag)
+  }
+  0
+}
+
+/// Walk a binder's body with `n` recorded as owned or borrowed according to
+/// its own value's spine. Pushed and truncated in lockstep with
+/// `bound_owned`, so a name that shadows an outer binder of the other kind
+/// answers for the inner one (`find_local_slot` takes the LAST match).
+fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bound: Array[String], bound_owned: Array[Int], ctx: CompileCtx) -> Bool with Exception {
+  let v_borrowed = value_spine_borrowed(v, local_names, bound, bound_owned, ctx)
+  let mark = Array::length(bound)
+  Array::push(bound, n)
+  if v_borrowed {
+    Array::push(bound_owned, 0)
+  } else {
+    Array::push(bound_owned, 1)
+  }
+  let r = value_spine_borrowed(b, local_names, bound, bound_owned, ctx)
+  Array::truncate(bound, mark)
+  Array::truncate(bound_owned, mark)
+  r
 }
 
 /// #768: apply the branch-tail retain rewrite (see retain_wrap_branch_tails)

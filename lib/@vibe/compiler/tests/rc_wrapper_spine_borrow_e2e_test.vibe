@@ -1,0 +1,88 @@
+//# Imports
+
+// #2733: a `let` whose value is a WRAPPER -- a block (`ELet` / `ESeq` chain)
+// rather than the call itself -- and whose result spine hands back something
+// the scope does not own. Every borrow test in codegen reads the value's TOP
+// node, so a block hides the borrow: `classify_let_value_heap` consults a
+// callee only at `expr_tag(value) == 8`, `value_has_borrowed_branch_tail` is
+// consulted only for an if/match value node, and `pctx_mark_view_call`
+// matches an `ECall` value only. The binding is then classified as owning a
+// reference it never acquired and its scope-end drop frees an element the
+// container still owns.
+//
+// Same harness as perceus_path_release_e2e_test.vibe: each program compiles
+// through BOTH lanes of THIS checkout's codegen and runs under wasmtime, with
+// the entry's return value as the oracle. A premature drop shows up as the
+// RC lane disagreeing with bump -- silently, with no trap, which is what
+// makes this class P0 rather than P1.
+
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc
+}
+
+//# Functions
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_wrapper_spine_e2e_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_bump_rc_agree(src: String, label: String, expected: String) -> Int with Exception + Fs + Process + Stdout {
+  let bump = run_value(compile_wasi(src, "main"), String::concat(label, "_bump"))
+  let rc = run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc"))
+  inspect(bump, content = expected)
+  inspect(rc, content = expected)
+  0
+}
+
+let prelude = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total: (Node) -> Int = (n) -> {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n"
+
+//# Tests
+
+test "a block ending in a borrow-returning call does not own what it hands back" {
+  // The filed repro. `t` binds `xs[0]` through a block, so no borrow test
+  // sees the `Array::get`; `t`'s scope ends at the end of the `r` block,
+  // before `filler` allocates, so a scope-end drop hands `xs[0]`'s block to
+  // the free list and `filler` is given it straight back. The later read of
+  // `xs[0]` then answers 15 (the filler) instead of 7.
+  let src = String::concat(prelude, "let pick: (Bool) -> Int = (c) -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let t = {\n      let k = 0\n      Array::get(xs, k)\n    }\n    if c {\n      t\n    } else {\n      Leaf(9)\n    }\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick(false)\n}")
+  let _ = assert_bump_rc_agree(src, "block_borrow_call", "90715")
+  ()
+}
+
+test "the same hole with no branch anywhere in the value" {
+  // A straight-line spine has exactly one leaf, so the `if` is not part of
+  // the trigger -- the block wrapper alone is. Recorded on the issue as the
+  // variant that rules out the per-path release work (#2389) as a cause.
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let t = {\n      let k = 0\n      Array::get(xs, k)\n    }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick()\n}")
+  let _ = assert_bump_rc_agree(src, "block_straight_line", "70715")
+  ()
+}
+
+test "a callee held in a parameter has no contract to read" {
+  // The second instance from the issue thread, reached without any block:
+  // `mk` is a NAME that resolves to a parameter holding a closure, so the
+  // global signature tables keyed by that spelling say nothing about it.
+  // Falling through to the heap default plans a drop for a reference the
+  // closure only borrowed.
+  let src = String::concat(prelude, "let use2: (Bool, (Array[Node]) -> Node, Array[Node]) -> Node = (c, mk, xs) -> {\n  let t = mk(xs)\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet pick: (Bool) -> Int = (c) -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> Array::get(ys, 0), xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick(false)\n}")
+  let _ = assert_bump_rc_agree(src, "param_callee", "90715")
+  ()
+}
+
+test "a block ending in an allocation still owns it" {
+  // The control in the other direction: declining a drop is only correct
+  // when the binding really did not acquire a reference. A block whose spine
+  // leaf allocates must keep its ordinary scope-end drop, so this case would
+  // catch a fix that simply stopped classifying block-valued lets as heap.
+  // The leak direction itself is bounded by fixtures/rc_reclaim_leak_test.vibe.
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let k = 1\n    Pair(Leaf(k), Leaf(2))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick()\n}")
+  let _ = assert_bump_rc_agree(src, "block_alloc", "30715")
+  ()
+}

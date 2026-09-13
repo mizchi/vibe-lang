@@ -363,9 +363,13 @@ merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
   They stay so the predicate answers on its own rather than inheriting a
   decision another pass made for another reason.
 
-  A value whose borrow-ness none of these tables can see is a live defect in
-  the ORDINARY scope-end drop rather than this one, tracked as #2733: do not
-  widen the classifications above without reading it.
+  Borrow-ness is read from the value's RESULT SPINE rather than its top node,
+  both here and in the ordinary scope-end drop (#2733), so a block or a binder
+  chain wrapped around a borrow-returning call is declined the same way the
+  bare call is, and so is a callee held in a parameter or a local closure. The
+  one class still over-approximated is a call with NO resolved signature: it
+  defaults to heap, and a drop on the scalar or string most of those return is
+  a no-op. Widening that default is its own change with its own measurement.
 
 - Every occurrence that spends the initial reference must have a source offset.
   A lambda capture has none (the planner walks captures with -1), so codegen
