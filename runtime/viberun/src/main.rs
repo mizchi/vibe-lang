@@ -2929,6 +2929,39 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             Ok(())
         },
     )?;
+    // #2738: Fs::remove_file -- the non-recursive remove, registered here for a
+    // reason stronger than "a program might call it": the GC backend emits its
+    // WHOLE host-import group as soon as any host builtin is used, so leaving
+    // this unregistered makes every gc module that touches Env::/Fs:: at all
+    // fail to instantiate, before a line of user code runs (Codex on #2756).
+    //
+    // The JS runner reaches this through an explicit lstat-then-unlink, because
+    // its `fs_remove` is `rmSync(.., { recursive: true })` and needs the
+    // distinction spelled out. Here the distinction is the std function itself:
+    // `fs::remove_file` removes a file or a symlink and returns Err on a
+    // directory. Note the consequence -- `fs_remove` ABOVE is already
+    // non-recursive on this host, so the two runners have disagreed about
+    // `Fs::remove` all along, and this builtin is what makes the intent
+    // host-independent rather than an accident of which runner you used.
+    //
+    // A directory is a no-op here rather than an error, matching the JS side
+    // and `fs_remove`'s swallow-on-failure posture; loudness belongs at the
+    // call site (#2735).
+    linker.func_wrap(
+        "vibe",
+        "fs_remove_file",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_dir() => Ok(()),
+                Ok(_) => {
+                    let _ = fs::remove_file(&path);
+                    Ok(())
+                }
+                Err(_) => Ok(()),
+            }
+        },
+    )?;
     // #1220: Fs::rename -- declared builtin with real call sites
     // (lib/@vibe/cli/coverage_local_merge.vibe, coverage_acc_tool.vibe's
     // tmp-write + rename atomic-write pattern) but, like fs_remove above,
