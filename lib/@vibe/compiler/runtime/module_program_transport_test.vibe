@@ -1,0 +1,86 @@
+import ./typecheck_fs.vibe {
+  ModuleOutcome, check_module, check_module_with_program_transport
+}
+
+import @vibe/compiler/runtime {
+  ModuleJob
+}
+import @vibe/compiler/checker/artifacts/program {
+  decode_checked_program, encode_checked_program
+}
+import @vibe/compiler/core {
+  BindingOrigin, EnvValueBinding, Type, TypeEnv, env_lookup
+}
+
+fn transport_job(source: String) -> ModuleJob {
+  ModuleJob::{
+    path: "module.vibe",
+    source,
+    deps: ["dep.vibe"],
+    dep_fps: [("dep.vibe", "dep-fingerprint")],
+    dep_envs: [
+      ("dep.vibe", EnvBind("answer", EnvValueBinding::{
+        ty: CtFn([], CtInt, None),
+        origin: BindingOriginModuleExport("dep.vibe", "answer")
+      }, EnvEmpty))
+    ]
+  }
+}
+
+fn outcome_diagnostics(outcome: ModuleOutcome) -> Array[String] {
+  match outcome {
+    Checked(_, _, _, _, _, _, _) => [],
+    Diagnosed(_, diagnostics) => diagnostics
+  }
+}
+
+test "module transport retains the result checked against its actual imports" {
+  let job = transport_job("import ./dep.vibe { answer }\nexport fn run() -> Int { answer() - 2 }")
+  let (outcome, bytes) = check_module_with_program_transport(job)
+  inspect(outcome_diagnostics(outcome), content = "[]")
+  match bytes {
+    Some(encoded) => match decode_checked_program(encoded) {
+      Some(checked) => {
+        inspect(env_lookup(checked.final_env, "run") is Some(CtFn(_, CtInt, _)), content = "true")
+        inspect(Array::length(checked.typed_occurrences) > 0, content = "true")
+        inspect(encode_checked_program(checked) == encoded, content = "true")
+      },
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "module transport preserves diagnosed outcomes and never publishes a failed check" {
+  let sources = [
+    "import ./dep.vibe { answer }\nexport fn run() -> String { answer() }",
+    "import ./dep.vibe { absent }\nexport fn run() -> Int { absent() }",
+    "effect Log { Emit(String) -> Unit }\nexport fn run() -> Int { perform Log::Emit(\"hi\"); 0 }"
+  ]
+  for source in sources {
+    let job = transport_job(source)
+    let ordinary = outcome_diagnostics(check_module(job))
+    let (outcome, bytes) = check_module_with_program_transport(job)
+    inspect(Array::length(ordinary) > 0, content = "true")
+    inspect(outcome_diagnostics(outcome) == ordinary, content = "true")
+    inspect(bytes is None, content = "true")
+  }
+}
+
+fn parse_failure(source: String, transport: Bool) -> String {
+  handle {
+    if transport {
+      let _ = check_module_with_program_transport(transport_job(source))
+    } else {
+      let _ = check_module(transport_job(source))
+    }
+    ""
+  } with { Exception::Throw(message) => message }
+}
+
+test "module transport preserves parse failures without relabeling them" {
+  let source = "export fn broken("
+  let ordinary = parse_failure(source, false)
+  inspect(String::length(ordinary) > 0, content = "true")
+  inspect(parse_failure(source, true) == ordinary, content = "true")
+}
