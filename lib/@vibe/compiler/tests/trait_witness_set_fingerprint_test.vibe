@@ -16,7 +16,7 @@ import @vibe/compiler/runtime {
 }
 
 import @vibe/ast {
-  Stmt, TypeExpr
+  ImportItem, Stmt, TypeExpr
 }
 
 //# Helpers
@@ -155,6 +155,51 @@ test "IMPLICIT impl type parameters are told apart by arity alone" {
   let implicit: Array[Stmt] = [SImpl(["A", "B"], [], "Show", TyName("Pair"))]
   let concrete: Array[Stmt] = [SImpl([], [], "Show", TyName("Pair"))]
   inspect(show_eq(fp([implicit]), fp([concrete])), "moved")
+}
+
+test "a derive REGISTERS a witness, so it is part of the set" {
+  // Codex on #2742 (P1). checker_stmt.vibe pushes an `EnvTraitImpl` for each
+  // of Show / Hash / Default on both the enum and the struct arm, so adding or
+  // removing a derive changes the reachable witness set exactly as an `impl`
+  // does -- and a scan accepting only SImpl would miss it entirely.
+  let struct_show: Array[Stmt] = [
+    SStruct(true, "Pt", [("x", TyName("Int"))], ["Show"], [], [])
+  ]
+  let struct_none: Array[Stmt] = [
+    SStruct(true, "Pt", [("x", TyName("Int"))], [], [], [])
+  ]
+  let struct_hash: Array[Stmt] = [
+    SStruct(true, "Pt", [("x", TyName("Int"))], ["Hash"], [], [])
+  ]
+  let enum_show: Array[Stmt] = [SEnum(true, "E", [], [("A", [])], ["Show"])]
+  let enum_none: Array[Stmt] = [SEnum(true, "E", [], [("A", [])], [])]
+  inspect("struct-added=\{show_eq(fp([struct_none]), fp([struct_show]))}" + " struct-swapped=\{show_eq(fp([struct_show]), fp([struct_hash]))}" + " enum-added=\{show_eq(fp([enum_none]), fp([enum_show]))}", "struct-added=moved struct-swapped=moved enum-added=moved",)
+}
+
+test "WHICH module a target name is imported from is part of the set" {
+  // Codex on #2742 (P1). Two dependencies expose different aliases under the
+  // same name. The impl-owning module switches which one it imports while
+  // `impl Marker for Target` is unchanged -- both alias rows still exist and
+  // the impl row is identical, so without the import row nothing moves while
+  // the checked `EnvTraitImpl` target goes from `Int` to `String`.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep_a: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let dep_b: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("String"))]
+  let via_a: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  let via_b: Array[Stmt] = [
+    SImport("b.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  // Both dependencies are present and unchanged in both runs. Only the
+  // importer's choice differs.
+  inspect(show_eq(fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, via_a]), fp_paths([
+    "a.vibe",
+    "b.vibe",
+    "c.vibe"
+  ], [dep_a, dep_b, via_b]),), "moved",)
 }
 
 test "bound ORDER is not part of what an impl means" {

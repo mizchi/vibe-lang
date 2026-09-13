@@ -3797,6 +3797,55 @@ fn trait_impl_identity_line(tparams: Array[String], tbounds: Array[(String, Arra
   StringBuilder::freeze(out)
 }
 
+/// `derive (Show)` and friends REGISTER A WITNESS: checker_stmt.vibe pushes an
+/// `EnvTraitImpl` for each of `Show`, `Hash` and `Default` on both the enum
+/// arm (lines 2862 / 2877 / 2889) and the struct arm (3014 / 3035 / 3047). A
+/// type gaining or losing a derive therefore changes the reachable witness set
+/// exactly as an `impl` does, and a scan that accepts only `SImpl` misses it
+/// (Codex on #2742, P1).
+///
+/// EVERY derive name is emitted, not only the three known to produce a witness
+/// today. A list here would be a second place to keep in step with the
+/// checker, and getting it wrong fails in the unsafe direction; an extra name
+/// only costs an invalidation.
+///
+/// A type with NO derives emits no row at all, so declaring or deleting a
+/// plain struct does not move the set. Gaining a first derive makes the row
+/// appear and losing the last one makes it vanish, which is the change that
+/// matters.
+fn trait_witness_derive_line(path: String, name: String, derives: Array[String]) -> String {
+  String::concat(interface_segment(path), String::concat("derive:", String::concat(interface_segment(name), interface_bracketed(interface_sorted_unique(derives), ","),),),)
+}
+
+/// What a type name in an impl head RESOLVES to depends on where it was
+/// imported from. Two dependencies can expose different aliases under the same
+/// exposed name, and the impl-owning module can switch which one it imports
+/// while `impl Marker for Target` is unchanged -- both alias rows still exist
+/// and the impl row is identical, so without this row nothing moves while the
+/// checked `EnvTraitImpl` target changes (Codex on #2742, P1).
+///
+/// The import KIND is recorded only as present/absent. Distinguishing the
+/// variants would mean enumerating them here and re-enumerating whenever one
+/// is added; the name-to-source association is what decides resolution.
+fn trait_witness_import_line(path: String, raw_path: String, items: Array[ImportItem]) -> String {
+  let rows = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    let alias = match item.alias {
+      Some(value) => value,
+      None => ""
+    }
+    let kind = match item.kind {
+      Some(_) => "k",
+      None => "-"
+    }
+    Array::push(rows, String::concat(interface_segment(item.name), String::concat(interface_segment(alias), kind)),)
+    i = i + 1
+  }
+  String::concat(interface_segment(path), String::concat("import:", String::concat(interface_segment(raw_path), interface_bracketed(rows, ";")),),)
+}
+
 /// Everything in ONE module that decides which witnesses exist, as canonical
 /// lines, each carrying the module it came from.
 ///
@@ -3832,6 +3881,19 @@ export fn trait_witness_set_lines(path: String, stmts: Array[Stmt]) -> Array[Str
       Array::push(lines, String::concat(interface_segment(path), trait_impl_identity_line(tparams, tbounds, trait_name, target),),),
       STypeAlias(_, name, params, body) =>
       Array::push(lines, String::concat(interface_segment(path), String::concat("alias:", String::concat(interface_segment(name), interface_segment(interface_canonical_type_expr(body, params)),),),),),
+      SEnum(_, name, _, _, derives) =>
+      if Array::length(derives) > 0 {
+        Array::push(lines, trait_witness_derive_line(path, name, derives))
+      } else {
+        ()
+      },
+      SStruct(_, name, _, derives, _, _) =>
+      if Array::length(derives) > 0 {
+        Array::push(lines, trait_witness_derive_line(path, name, derives))
+      } else {
+        ()
+      },
+      SImport(raw_path, items) => Array::push(lines, trait_witness_import_line(path, raw_path, items)),
       _ => ()
     }
     i = i + 1
