@@ -1,0 +1,44 @@
+//# #2745: a `loop` PARAMETER assigned into a slot read after the loop.
+//
+// Self-probed after round 14, and this one was ALREADY correct -- it is pinned
+// rather than fixed. The standing rule the last three rounds kept re-teaching
+// is "a binder that can be typed from what it is bound to must be, and masking
+// is only the fallback for one that cannot": round 12 applied it to match arms,
+// round 14 to `for` binders, and `dtd_interp_absorb_into`'s `ELoop` arm still
+// masks every parameter with "" although each has an initializer sitting right
+// there. So this looked like the next finding.
+//
+// Measured on `1164350`: refused, and the concrete twin
+// (`loop_param_concrete` in lambda_bound_nested_concrete_test.vibe) renders
+// `4`. The route is closed by the LOWERING -- a loop parameter becomes an
+// ordinary mutable binding ahead of the loop, so it is classified by the
+// let-form arm and never reaches the mask. That is why this file exists: the
+// answer is right for a reason that lives in another pass, and a change to how
+// `loop` lowers would take it away silently.
+//
+// `break a` is a different route with its own fixture
+// (`lambda_bound_erased_interp_loop_refused.vibe`, round 5) -- that one is
+// about the value the loop RETURNS, this one about what it BINDS.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) -> U {
+      u
+    }
+    "\{ { let mut y = idf(a)
+    loop (p = a) {
+      y = p
+      break 0
+    }
+    y } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}
