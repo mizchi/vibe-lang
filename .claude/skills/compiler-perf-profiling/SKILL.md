@@ -110,16 +110,20 @@ for fn, us in c.most_common(20):
 
 ### Reading the profile
 
-- **wasm functions appear under their name-section names.** User functions
-  look like `foo_exp_lib__vibe_compiler_..._vibe`; generated runtime
-  helpers are `__rt_str_eq` / `__rt_arr_get` / `__rt_rc_drop` etc. (named
-  since #799 — if a `wasm-function[N]` frame ranks high, that is a naming
-  gap: add it to gen_sec_names in linked_compile.vibe).
-- **Since ADR-0077 release builds strip the name section by default.**
-  Rebuild the stage2/CLI wasm you profile **with `VIBE_WASM_NAMES=1`**
-  (e.g. `VIBE_WASM_NAMES=1 bash scripts/generations.sh build --out-dir
-  /tmp/prof_gen`). If every frame is `wasm-function[N]`, you are profiling
-  a stripped wasm.
+- **A `wasm-function[N]` frame almost always means a STRIPPED wasm, not a
+  naming gap.** Since ADR-0077 release builds drop the name section, and
+  `scripts/generations.sh build` does not opt out, so every ordinary stage2
+  is stripped. Rebuild the stage2/CLI wasm you profile **with
+  `VIBE_WASM_NAMES=1`** (e.g. `VIBE_WASM_NAMES=1 bash
+  scripts/generations.sh build --out-dir /tmp/prof_gen`).
+  `scripts/profile_compile.sh` now refuses a stripped artifact up front
+  rather than spending minutes on a table of `wasm-function[N]`.
+- **Only once the artifact HAS a name section** is a high-ranking
+  `wasm-function[N]` a real naming gap — a generated helper whose slot
+  `gen_sec_names` (linked_compile.vibe) left at the generic label. Named
+  user functions look like `foo_exp_lib__vibe_compiler_..._vibe`; generated
+  runtime helpers are `__rt_str_eq` / `__rt_arr_get` / `__rt_rc_drop` etc.
+  (named since #799).
 - **`(garbage collector)`** = V8. Usually caused by wasm linear-memory
   grow copies or allocation churn in the runner JS.
 - **Runner JS functions** (findClosureEnv etc.) ranking high means a
