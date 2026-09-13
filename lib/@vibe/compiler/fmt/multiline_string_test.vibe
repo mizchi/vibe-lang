@@ -1,0 +1,38 @@
+import @vibe/compiler/fmt {
+  format_script
+}
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn string_and_next(source: String) -> (String, Int) with Exception {
+  let program = parse_program(lex(source))
+  let value = match Array::get(program, 0) {
+    SLet(_, _, _, _, EString(text)) => text,
+    _ => throw("expected a string binding")
+  }
+  let next = match Array::get(program, 1) {
+    SLet(_, _, _, _, EInt(value)) => value,
+    _ => throw("expected a following integer binding")
+  }
+  (value, next)
+}
+
+test "formatter preserves multiline string content and the following statement" {
+  let sources = [
+    "let value =\n  #|first\n  #|second\nlet next = 42\n",
+    "let value =\n  #|\n  #|  indented\n\nlet next = 42\n",
+    "let value =\n  #|one line\n// comment\nlet next = 42\n"
+  ]
+  for source in sources {
+    let before = string_and_next(source)
+    let formatted = format_script(source)
+    let after = string_and_next(formatted)
+    inspect(after == before, content = "true")
+    inspect(format_script(formatted) == formatted, content = "true")
+    inspect(String::contains(formatted, "\nlet next"), content = "true")
+  }
+}
