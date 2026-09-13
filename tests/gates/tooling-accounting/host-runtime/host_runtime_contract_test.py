@@ -195,17 +195,35 @@ class GcHostListTest(unittest.TestCase):
             )
         )
 
-    def test_import_absent_from_the_manifest_fails_even_when_self_consistent(self):
-        # Same discovery: renaming ONE side trips the positional check, so it
-        # never exercised manifest membership. Rename all three gc lists
-        # consistently and the backend is internally coherent -- which is
-        # exactly "added a builtin everywhere in the gc backend and forgot the
-        # contract". Only the manifest check sees it.
+    def test_import_absent_from_the_manifest_bands_fails(self):
+        # Renaming ONE side trips the positional check, so it never exercised
+        # band membership. Rename all three gc lists consistently -- "added a
+        # builtin everywhere in the gc backend and forgot the contract".
+        #
+        # That alone is now caught by the importTypes check instead, so the
+        # mutation also GIVES the new name an importTypes row with a matching
+        # type. The backend is then fully self-consistent and typed, and the
+        # only thing left that can see it is band membership. Found by the
+        # disable-each-assertion sweep, which reported this assertion as
+        # uncovered once the type check started failing closed.
         mutated = self.text.replace('stmts_use_builtin(stmts, fn_names_list, "Fs::exists")',
                                     'stmts_use_builtin(stmts, fn_names_list, "Fs::invented")', 1)
         mutated = mutated.replace('("Fs::exists", 1, 5, 1)', '("Fs::invented", 1, 5, 1)', 1)
         mutated = mutated.replace('("fs_exists", 3)', '("fs_invented", 3)', 1)
-        self.assert_mutation_fails(mutated)
+        typed = dict(self.import_types)
+        typed["fs_invented"] = "3"
+        with self.assertRaises(SystemExit):
+            module.validate_gc_lists(self.names, mutated, typed, self.core_sigs)
+
+    def test_import_missing_from_importTypes_fails_closed(self):
+        # The type comparison must fail closed on an absent entry: band
+        # membership and an importTypes row are separate keys, so one does not
+        # imply the other, and silence there is "unchecked" rather than "safe".
+        dropped = dict(self.import_types)
+        del dropped["fs_exists"]
+        self.assertNotEqual(dropped, self.import_types, "mutation did not apply")
+        with self.assertRaises(SystemExit):
+            module.validate_gc_lists(self.names, self.text, dropped, self.core_sigs)
 
     def test_host_def_arity_drifting_from_its_import_signature_fails(self):
         # Codex on #2765 (P2, third round). host_defs's `params`/`ret` feed
@@ -220,10 +238,55 @@ class GcHostListTest(unittest.TestCase):
         self.assert_mutation_fails(self.text.replace('("Fs::exists", 1, 5, 1)', '("Fs::exists", 1, 5, 0)', 1))
 
     def test_core_signature_shape_parses_the_manifest_forms(self):
-        self.assertEqual(module.core_signature_shape("(i64) -> i64"), (1, 1))
-        self.assertEqual(module.core_signature_shape("() -> ()"), (0, 0))
-        self.assertEqual(module.core_signature_shape("(i64, i64) -> ()"), (2, 0))
-        self.assertEqual(module.core_signature_shape("() -> i64"), (0, 1))
+        for signature, shape in (
+            ("(i64) -> i64", (1, 1)),
+            ("() -> ()", (0, 0)),
+            ("(i64, i64) -> ()", (2, 0)),
+            ("() -> i64", (0, 1)),
+            ("(i32, i32) -> ()", (2, 0)),                    # dbg_line_type_idx
+            ("(i64, i64, i64, i64) -> i64", (4, 1)),         # http_request_type_idx
+            ("(f64) -> f32", (1, 1)),                        # no entry uses these yet
+        ):
+            with self.subTest(signature=signature):
+                self.assertEqual(module.core_signature_shape(signature), shape)
+
+    def test_core_signature_value_types_are_the_four_numeric_ones(self):
+        # Pinning the SET, not just the parse: this is the knob that decides
+        # whether a typo is a rejection or a certification, so widening it
+        # (back to an identifier class, or to reference types the boundary
+        # cannot carry) has to be a visible edit rather than a silent one.
+        self.assertEqual(module._CORE_VALUE_TYPES, ("i32", "i64", "f32", "f64"))
+
+    def test_core_signature_shape_rejects_anything_that_is_not_a_signature(self):
+        # Codex on #2768 (P2). The first parser split on `->` and inferred the
+        # rest, so EVERY malformed form still produced a shape rather than an
+        # error -- it named `()` becoming (0, 1); measured, all of these did the
+        # same, including a missing paren and a wrong arrow. A contract entry
+        # that no longer describes an ABI signature would then silently agree
+        # with whatever host_defs claimed.
+        #
+        # Codex on #2770 (P2) found the same hole one level in: the repaired
+        # regex still spelled a value type as `[a-z][a-z0-9]*`, so a TYPE typo
+        # parsed and handed back an arity. It named `(i65) -> i64` and
+        # `(string) -> bool`; measured, any lowercase identifier did it.
+        for signature in (
+            "()", "(i64)", "i64 -> i64", "", "(i64) => i64", "(i64) -> ",
+            "(,) -> i64", "(i64 i64) -> i64",
+            "(i65) -> i64", "(string) -> bool", "(zzz) -> qqq",
+            "(i64) -> i65", "(I64) -> i64", "(i64, i65) -> ()",
+        ):
+            with self.subTest(signature=signature):
+                with self.assertRaises(SystemExit):
+                    module.core_signature_shape(signature)
+
+    def test_every_manifest_signature_parses(self):
+        # The strict parser must accept the contract as it actually stands --
+        # a rejection battery that also rejected the real entries would fail
+        # closed on everything and prove nothing.
+        manifest = json.loads((ROOT / "docs/wasm/host-runtime-contract.json").read_text())
+        for type_id, signature in manifest["coreTypeSignatures"].items():
+            with self.subTest(type_id=type_id):
+                module.core_signature_shape(signature)
 
     def test_every_gc_import_name_is_derivable_or_declared(self):
         # The exception table is a seventh hand-maintained list, which is what

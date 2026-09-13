@@ -169,14 +169,42 @@ def gc_lists(text: str) -> tuple[list[str], list[tuple[str, int]], list[str], in
     return use_host, host_defs, host_imports, hbo, int(header.group(1))
 
 
+# The core value types a host import may carry. Deliberately the four wasm
+# NUMERIC types and nothing else: this boundary passes tagged scalars, so a
+# vector or reference type in the contract would describe a call the runtime
+# cannot make. Narrow on purpose -- if a host import ever does take one, the
+# rejection below names the file and the token, which is a one-line edit here;
+# the opposite mistake is silent (Codex on #2770, P2: `[a-z][a-z0-9]*` accepted
+# `(i65) -> i64` and `(string) -> bool`, and `core_signature_shape` then handed
+# back an arity, so the checker CERTIFIED an entry that is not an ABI signature).
+_CORE_VALUE_TYPES = ("i32", "i64", "f32", "f64")
+_VALUE_TYPE = "(?:" + "|".join(_CORE_VALUE_TYPES) + ")"
+
+# `(i64, i64) -> ()` and `() -> i64`, and nothing else. Anchored on both ends so
+# a partial match cannot pass.
+_CORE_SIGNATURE = re.compile(
+    rf"^\(\s*(?:{_VALUE_TYPE}(?:\s*,\s*{_VALUE_TYPE})*\s*)?\)\s*->\s*(?:\(\s*\)|{_VALUE_TYPE})$"
+)
+
+
 def core_signature_shape(signature: str) -> tuple[int, int]:
     """`(i64, i64) -> ()` becomes (2, 0): parameter count and whether it returns.
 
     Parsed from the manifest's own `coreTypeSignatures` rather than transcribed,
-    so the arity check below introduces no table of its own.
+    so the arity check introduces no table of its own -- but parsed STRICTLY.
+
+    The first version split on `->` with `partition` and inferred the rest, so
+    every malformed form still produced a shape instead of an error: `()` and
+    `""` both became (0, 1), `(i64)` became (1, 1), and neither a missing paren
+    (`i64 -> i64`) nor a wrong arrow (`(i64) => i64`) was noticed. A contract
+    entry that no longer describes an ABI signature would then silently agree
+    with whatever host_defs claimed (Codex on #2768, P2 -- it named the `()`
+    case; measured, all five behave the same way).
     """
+    if not _CORE_SIGNATURE.match(signature.strip()):
+        die(f"host-runtime contract coreTypeSignatures entry is not an ABI signature: {signature!r}")
     lhs, _, rhs = signature.partition("->")
-    inner = lhs.strip().strip("()").strip()
+    inner = lhs.strip()[1:-1].strip()
     params = len([part for part in inner.split(",") if part.strip()]) if inner else 0
     return params, 0 if rhs.strip() == "()" else 1
 
@@ -239,8 +267,23 @@ def validate_gc_lists(
     if import_types is not None:
         for import_name, type_id in host_imports:
             declared = import_types.get(import_name)
-            if declared is not None and declared != type_id:
-                die(f"gc host_imports {import_name!r} declares ABI type {type_id}, contract says {declared}")
+            # Fail CLOSED on a missing entry. `declared is not None and ...`
+            # skipped the check for any import the manifest's importTypes did
+            # not carry, and band membership does not imply an importTypes row --
+            # they are separate keys. Silence there is "unchecked", not "safe",
+            # and the two are indistinguishable from the outside. Found by
+            # auditing this extractor after three review rounds each found a
+            # real gap in it; a duplicate name in `use_host` was the other
+            # candidate and is deliberately NOT asserted, because that list is a
+            # boolean OR chain where `A || A` is `A`.
+            # ONE assertion, not two. A separate `declared is None` branch reads
+            # like a second check but cannot be isolated by any mutation: the
+            # comparison below already fails closed on None, so disabling the
+            # None branch changes nothing. The sweep caught that -- an assertion
+            # no test can distinguish is a branch, not a guarantee.
+            if declared != type_id:
+                detail = "the contract has no importTypes entry for it" if declared is None else f"the contract says {declared}"
+                die(f"gc host_imports {import_name!r} declares ABI type {type_id}, but {detail}")
 
     # host_defs's `params` and `ret` are not derived from the import's type id --
     # they feed `fn_param_counts` and `fn_returns_list` independently, so either
