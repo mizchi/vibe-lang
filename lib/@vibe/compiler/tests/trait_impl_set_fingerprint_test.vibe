@@ -1,0 +1,129 @@
+//# #2510 (criterion 5, option C part 2): the reachable trait-impl set gets ONE
+//# fingerprint, folded into every module's typing key.
+//#
+//# Impls ride the TypeEnv as `EnvTraitImpl` / `EnvTraitImplGen` and compose
+//# along the import closure, so an impl belongs to a module's whole reachable
+//# set rather than to any one dependency EDGE. That is why this is a set
+//# fingerprint and not a per-module interface field.
+//#
+//# The two errors are not symmetric. An extra invalidation costs a re-check; a
+//# missed one reuses a checked environment across a real change. So the rows
+//# below assert sensitivity on every field that can change what an impl MEANS,
+//# and assert insensitivity only where two spellings are the same impl.
+
+import @vibe/compiler/runtime {
+  trait_impl_identity_lines, trait_impl_set_fingerprint
+}
+
+import @vibe/ast {
+  Stmt, TypeExpr
+}
+
+//# Helpers
+
+fn fp(stmt_groups: Array[Array[Stmt]]) -> String {
+  let lines: Array[String] = []
+  let mut g = 0
+  while g < Array::length(stmt_groups) {
+    let group = trait_impl_identity_lines(Array::get(stmt_groups, g))
+    let mut i = 0
+    while i < Array::length(group) {
+      Array::push(lines, Array::get(group, i))
+      i = i + 1
+    }
+    g = g + 1
+  }
+  trait_impl_set_fingerprint(lines)
+}
+
+fn show_eq(left: String, right: String) -> String {
+  if left == right {
+    "same"
+  } else {
+    "moved"
+  }
+}
+
+test "an impl set is a SET: module order and duplicate reach do not move it" {
+  let a: Array[Stmt] = [SImpl([], [], "Show", TyName("Pt"))]
+  let b: Array[Stmt] = [SImpl([], [], "Eq", TyName("Pt"))]
+  // Same two impls, opposite module order.
+  let order = show_eq(fp([a, b]), fp([b, a]))
+  // The same impl reached twice along two import paths.
+  let dup = show_eq(fp([a, b]), fp([a, b, a]))
+  inspect("order=\{order} duplicate-reach=\{dup}", "order=same duplicate-reach=same")
+}
+
+test "adding, removing or retargeting an impl moves the fingerprint" {
+  let base: Array[Stmt] = [SImpl([], [], "Show", TyName("Pt"))]
+  let added: Array[Stmt] = [
+    SImpl([], [], "Show", TyName("Pt")),
+    SImpl([], [], "Eq", TyName("Pt"))
+  ]
+  let retargeted: Array[Stmt] = [SImpl([], [], "Show", TyName("Line"))]
+  let other_trait: Array[Stmt] = [SImpl([], [], "Eq", TyName("Pt"))]
+  let empty: Array[Stmt] = []
+  inspect("added=\{show_eq(fp([base]), fp([added]))}" + " retargeted=\{show_eq(fp([base]), fp([retargeted]))}" + " other-trait=\{show_eq(fp([base]), fp([other_trait]))}" + " removed=\{show_eq(fp([base]), fp([empty]))}", "added=moved retargeted=moved other-trait=moved removed=moved",)
+}
+
+test "a type parameter is alpha-normal, but its arity and bounds are not" {
+  let a: Array[Stmt] = [SImpl(["A"], [], "Show", TyApp("Box", [TyName("A")]))]
+  let b: Array[Stmt] = [SImpl(["B"], [], "Show", TyApp("Box", [TyName("B")]))]
+  // No parameter at all is a different impl from one that takes a parameter.
+  let concrete: Array[Stmt] = [
+    SImpl([], [], "Show", TyApp("Box", [TyName("Int")]))
+  ]
+  let bounded: Array[Stmt] = [
+    SImpl(["A"], [("A", ["Show"])], "Show", TyApp("Box", [TyName("A")]))
+  ]
+  let bounded2: Array[Stmt] = [
+    SImpl(["A"], [("A", ["Eq"])], "Show", TyApp("Box", [TyName("A")]))
+  ]
+  inspect("renamed-param=\{show_eq(fp([a]), fp([b]))}" + " concrete=\{show_eq(fp([a]), fp([concrete]))}" + " bound-added=\{show_eq(fp([a]), fp([bounded]))}" + " bound-changed=\{show_eq(fp([bounded]), fp([bounded2]))}", "renamed-param=same concrete=moved bound-added=moved bound-changed=moved",)
+}
+
+test "IMPLICIT impl type parameters are told apart by arity alone" {
+  // checker_stmt's SImpl arm rejects a type parameter that is not used in the
+  // target -- except when the target is a bare name whose DECLARED arity
+  // equals the parameter count, which makes the parameters implicit. Both
+  // spellings below then render the same target, so the arity is the only
+  // thing separating them. Without it in the line they collide, and one impl
+  // silently stands in for the other.
+  let implicit: Array[Stmt] = [SImpl(["A", "B"], [], "Show", TyName("Pair"))]
+  let concrete: Array[Stmt] = [SImpl([], [], "Show", TyName("Pair"))]
+  inspect(show_eq(fp([implicit]), fp([concrete])), "moved")
+}
+
+test "bound ORDER is not part of what an impl means" {
+  let one: Array[Stmt] = [
+    SImpl(["A", "B"], [("A", ["Show"]), ("B", ["Eq"])], "Pair", TyApp("P", [
+      TyName("A"),
+      TyName("B")
+    ]))
+  ]
+  let other: Array[Stmt] = [
+    SImpl(["A", "B"], [("B", ["Eq"]), ("A", ["Show"])], "Pair", TyApp("P", [
+      TyName("A"),
+      TyName("B")
+    ]))
+  ]
+  inspect(show_eq(fp([one]), fp([other])), "same")
+}
+
+test "the trait is recorded by SPELLING, which is the safe direction" {
+  // `Mod::Show` and `Show` may well be one trait. Recording the spelling moves
+  // the fingerprint anyway: that costs one re-check, where resolving the two
+  // together and getting it wrong would reuse across a real change.
+  let plain: Array[Stmt] = [SImpl([], [], "Show", TyName("Pt"))]
+  let qualified: Array[Stmt] = [SImpl([], [], "Mod::Show", TyName("Pt"))]
+  inspect(show_eq(fp([plain]), fp([qualified])), "moved")
+}
+
+test "statements that are not impls contribute nothing" {
+  let impls: Array[Stmt] = [SImpl([], [], "Show", TyName("Pt"))]
+  let with_noise: Array[Stmt] = [
+    SImpl([], [], "Show", TyName("Pt")),
+    SStruct(true, "Pt", [("x", TyName("Int"))], [], [], []),
+  ]
+  inspect(show_eq(fp([impls]), fp([with_noise])), "same")
+}

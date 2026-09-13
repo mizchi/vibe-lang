@@ -3760,6 +3760,79 @@ fn incremental_interface_identity(source: String, env: TypeEnv) -> String with E
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
 
+/// #2510 (criterion 5, option C part 2): the canonical line for ONE `impl`.
+///
+/// Trait resolution composes along the import closure -- impls ride the
+/// TypeEnv as `EnvTraitImpl` / `EnvTraitImplGen` nodes -- so a module sees the
+/// impls of its transitive dependencies. An impl is therefore not a property
+/// of any single dependency EDGE and cannot be attributed to one, which is
+/// what makes "put impls in the per-module interface identity" the wrong
+/// shape. The whole reachable SET gets one fingerprint instead.
+///
+/// Deliberately OVER-sensitive where that is cheap, because the two errors are
+/// not symmetric: an extra invalidation costs a re-check, a missed one reuses
+/// across a real change. So the trait is recorded by the SPELLING at the impl
+/// head rather than by a resolved identity -- writing `Mod::Show` where `Show`
+/// was written moves the fingerprint even though it is the same trait -- and
+/// the type-parameter arity is recorded even when no parameter is used.
+///
+/// The target and the bounds ARE canonicalized against the impl's own type
+/// parameters, so `impl[A] Show for Box[A]` and `impl[B] Show for Box[B]` are
+/// one impl rather than two. Bounds are sorted: their declaration order is not
+/// part of what an impl means.
+fn trait_impl_identity_line(tparams: Array[String], tbounds: Array[(String, Array[String])], trait_name: String, target: TypeExpr,) -> String {
+  let bounds = array_empty()
+  let mut i = 0
+  while i < Array::length(tbounds) {
+    let (bound_param, bound_traits) = Array::get(tbounds, i)
+    Array::push(bounds, String::concat(interface_segment(interface_lookup_type_param(tparams, bound_param)), interface_bracketed(interface_sorted_unique(bound_traits), ","),),)
+    i = i + 1
+  }
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "impl:")
+  StringBuilder::push(out, interface_segment(trait_name))
+  StringBuilder::push(out, interface_segment("\{Array::length(tparams)}"))
+  StringBuilder::push(out, interface_bracketed(interface_sorted_unique(bounds), ";"))
+  StringBuilder::push(out, interface_segment(interface_canonical_type_expr(target, tparams)))
+  StringBuilder::freeze(out)
+}
+
+/// Every `impl` in one module's statements, as canonical lines. Exported so a
+/// caller can collect per module and combine once over the closure.
+export fn trait_impl_identity_lines(stmts: Array[Stmt]) -> Array[String] {
+  let lines = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SImpl(tparams, tbounds, trait_name, target) =>
+      Array::push(lines, trait_impl_identity_line(tparams, tbounds, trait_name, target)),
+      _ => ()
+    }
+    i = i + 1
+  }
+  lines
+}
+
+/// The fingerprint of a reachable impl SET.
+///
+/// A set, so the lines are sorted and deduplicated: the same impls reached
+/// through a different module order, or one impl reached twice along two
+/// import paths, give one fingerprint. That is the property that lets this be
+/// folded into every module's typing key without making the key depend on the
+/// order modules happened to be walked in.
+export fn trait_impl_set_fingerprint(lines: Array[String]) -> String {
+  let sorted = interface_sorted_unique(lines)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-trait-impl-set:v1\n")
+  let mut i = 0
+  while i < Array::length(sorted) {
+    StringBuilder::push(out, Array::get(sorted, i))
+    StringBuilder::push(out, "\n")
+    i = i + 1
+  }
+  compact_string_fingerprint(StringBuilder::freeze(out))
+}
+
 /// A trace-only canonical identity for the checked effective value environment.
 /// `env_flat_bindings` deliberately excludes trait/impl/type/effect declarations;
 /// duplicate names resolve through the same first-binding lookup used by the
