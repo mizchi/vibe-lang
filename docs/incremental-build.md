@@ -2449,6 +2449,58 @@ warm hit parity, dependency-content and exact plan sensitivity, config and
 resolution-context shadow sensitivity without a corresponding production-key
 claim, and failed/no-nonce plus LSP/check-only stale-sidecar removal.
 
+### Incremental typecheck telemetry on a COMPILE (#2735)
+
+The four counters above were readable only from `vibe check`. A build asks a
+different question -- how much of the typing walk a `vibe build` / `vibe run`
+/ `vibe test` actually reused -- and until #2735 there was no way to answer it
+without changing the lane you were measuring.
+
+```text
+VIBE_INCREMENTAL_TELEMETRY_OUT=<sidecar.json>
+```
+
+On the FS compile lane this publishes the same `schema: 2` counter document the
+check lane publishes. The counters are CAPTURED at the typing walk's boundary
+and PUBLISHED at the compile's, so they describe the walk and nothing after it,
+and a sidecar exists only for a compile that finished: a throw anywhere above
+removes it. Measured on the compiler's own closure, a cold build reports
+`modules_planned: 219`, which is `vibe deps` (218) plus the entry.
+
+**The destination is not a free-form path.** It names a file the CLI DELETES
+before the compile -- so a sidecar left by an earlier run cannot be read as
+this run's result -- and WRITES after it. Both are destructive, so a request
+is refused, before anything is removed, when the destination names:
+
+| the destination is | why it is refused |
+|---|---|
+| the compile input | the clear deletes the entry source, and no later refusal returns it |
+| the compile output | the publication replaces the wasm with JSON under a zero exit |
+| `VIBE_ARTIFACT_INPUT_TRACE_OUT` | the second write replaces the first observation, and the trace validation admits a telemetry request beside it |
+| a directory | `Fs::remove` is recursive, so clearing `lib` deletes the tree |
+
+Aliasing is decided by filesystem identity, not by spelling: equal strings, or
+equal `Fs::stat_token` when both paths exist. `stat_token` mixes the inode, so
+`build/out.wasm` and `build/./out.wasm` are one file. Needing both paths to
+exist is not a gap where it is asked -- a clear only deletes a path that
+exists, and a write only destroys a file that exists -- which is why the
+artifact and the trace are re-checked at the publication boundary as well,
+where a first build has finally put them on disk. A symlinked destination is
+not resolved (`stat_token` is an lstat by design and there is no realpath
+builtin) and does not need to be: `Fs::remove` unlinks the link rather than
+its target.
+
+The other four sidecar clears still accept a directory destination and delete
+the tree; that is #2738, which proposes a non-recursive remove builtin rather
+than a fifth `is_dir` guard.
+
+`scripts/check_telemetry_sidecar_guards.sh` asks the running compiler for all
+of this (`pkf run check-telemetry-sidecar-guards`). Its positive row -- a
+plain request publishes a well-formed sidecar -- is what makes the refusals
+mean "refused" rather than "not implemented": a compiler that ignores the
+variable destroys nothing and would pass every refusal row, which is exactly
+what the committed seed does.
+
 ## Delivery order
 
 1. Record the current edit-cycle baseline and add cache/invalidation telemetry.

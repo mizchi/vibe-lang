@@ -660,6 +660,27 @@ local checkRcDefault = new Task {
   }
   deps { selfhostGeneration }
 }
+// #2510/#2735: an opt-in observation must never destroy what it observes.
+// `VIBE_INCREMENTAL_TELEMETRY_OUT` names a file the CLI deletes before the
+// compile and writes after it, and the two sit ~600 lines apart in cli_main,
+// so five review rounds each found one more path where the pair was ordered
+// wrongly. Asked of the running compiler rather than read off the source.
+local checkTelemetrySidecarGuards = new Task {
+  name = "check-telemetry-sidecar-guards"
+  description =
+    "an incremental-telemetry request never deletes or overwrites the source, the artifact or a sibling sidecar"
+  cmd = "bash scripts/check_telemetry_sidecar_guards.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+  }
+  deps { selfhostGeneration }
+}
+local testCheckTelemetrySidecarGuards =
+  scriptTask(
+    "test-check-telemetry-sidecar-guards",
+    "scripts/check_telemetry_sidecar_guards_test.sh",
+  )
 // #2497: the compile-only artifact (scripts/build_compile_only.sh) has exactly
 // the lanes it claims, asked of the wasm: no gc-backend / instrumentation /
 // rc-shadow function bodies (read from the name section), and every switch
@@ -1920,6 +1941,8 @@ local releaseCheck = new Task {
     checkPackageSiblingScope
     checkDocCommands
     checkRcDefault
+    checkTelemetrySidecarGuards
+    testCheckTelemetrySidecarGuards
     checkCompileOnlyLanes
     testCheckCompileOnlyLanes
     checkTaskInputs
@@ -2028,6 +2051,8 @@ tasks {
   checkPackageSiblingScope
   checkDocCommands
   checkRcDefault
+  checkTelemetrySidecarGuards
+  testCheckTelemetrySidecarGuards
   checkCompileOnlyLanes
   testCheckCompileOnlyLanes
   checkTaskInputs
