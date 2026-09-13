@@ -1907,7 +1907,7 @@ semantically irrelevant and avoid quadratic canonical serialization. TDRE9 does
 not replace exact transport text with a compact fingerprint. It validates and
 republishes the decoded environment under the ordinary conservative fingerprint.
 It does not use the
-trace-only `vibe-module-interface:v4` observation as a production key, and
+trace-only `vibe-module-interface:v5` observation as a production key, and
 malformed, missing, stale, torn, or cross-spliced aliases, witnesses, and targets
 fall back to a full check. The alias remains incompatible with the incremental
 invalidation trace lane so the two identities cannot be confused.
@@ -2382,7 +2382,7 @@ The historical private-body observation is emitted under the explicit
 classification `private_dependency_edit_externally_unchanged`. That classifier
 fails closed unless `app` has exactly `library` as its sole direct dependency in
 both snapshots, the dependency's source and provisional token-stream
-implementation identities change, its interface-v4 identity does not change,
+implementation identities change, its interface identity does not change,
 and all of the consumer's own observed identities stay unchanged. The
 persistent TypeEnv-v9 transport result for the dependency is reported as a
 separate `changed`/`unchanged` observation rather than being treated as the

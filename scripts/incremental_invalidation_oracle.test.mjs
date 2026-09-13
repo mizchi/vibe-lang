@@ -25,7 +25,7 @@ const validTrace = {
       implementation_fingerprint: "30:1:2",
       implementation_fingerprint_kind: "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))",
       interface_fingerprint: "31:1:2",
-      interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v4 canonical exported surface including kinded applications)",
+      interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v5 canonical exported surface including kinded applications)",
       checked_env_fingerprint: "32:1:2",
       checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)",
       persistent_type_env_transport_fingerprint: "33:1:2",
@@ -260,10 +260,10 @@ test("private dependency classifier is explicit, fail-closed, and reports TypeEn
     },
     dependency_identity: {
       source: "changed",
-      implementation_token_stream_v1: "changed",
-      interface_v3: "unchanged",
+      implementation_token_stream: "changed",
+      interface: "unchanged",
     },
-    dependency_type_env_transport_v5: "unchanged",
+    dependency_type_env_transport: "unchanged",
     consumer_own_identities: {
       source_fingerprint: "unchanged",
       implementation_fingerprint: "unchanged",
@@ -277,7 +277,7 @@ test("private dependency classifier is explicit, fail-closed, and reports TypeEn
   const transportChanged = structuredClone(after);
   transportChanged.modules[1].persistent_type_env_transport_fingerprint = "persistent-type-env-transport:library:changed";
   assert.equal(
-    classifyPrivateDependencyEditExternallyUnchanged(before, transportChanged, "library", "app").dependency_type_env_transport_v5,
+    classifyPrivateDependencyEditExternallyUnchanged(before, transportChanged, "library", "app").dependency_type_env_transport,
     "changed",
   );
 
@@ -286,7 +286,7 @@ test("private dependency classifier is explicit, fail-closed, and reports TypeEn
     ["after relation", (_, right) => { right.modules[2].direct_dependencies = []; }, /after direct relation/],
     ["source", (_, right) => { right.modules[1].source_fingerprint = before.modules[1].source_fingerprint; }, /did not change dependency source/],
     ["implementation", (_, right) => { right.modules[1].implementation_fingerprint = before.modules[1].implementation_fingerprint; }, /did not change dependency implementation/],
-    ["interface", (_, right) => { right.modules[1].interface_fingerprint = "interface:library:changed"; }, /changed dependency interface-v4/],
+    ["interface", (_, right) => { right.modules[1].interface_fingerprint = "interface:library:changed"; }, /changed dependency interface identity/],
     ["consumer identity", (_, right) => { right.modules[2].source_fingerprint = "source:app:changed"; }, /changed consumer own source_fingerprint/],
     ["missing transport", (_, right) => { delete right.modules[1].persistent_type_env_transport_fingerprint; }, /missing after dependency persistent_type_env_transport_fingerprint/],
     ["consumer decision", (_, right) => { right.modules[2].decision = "reused"; }, /no longer conservatively rechecked/],

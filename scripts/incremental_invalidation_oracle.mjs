@@ -36,7 +36,7 @@ const telemetryKeys = [
 const fingerprintNote = "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint, checked_env_fingerprint, and persistent_type_env_transport_fingerprint are observation only; persistent_type_env_transport_fingerprint is TypeEnv transport only, not CheckedProgram, typed IR, exported interface, cache key, or reuse decision; none is a production cache key";
 const sourceFingerprintKind = "compact_string_fingerprint(ingested_source)";
 const implementationFingerprintKind = "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))";
-const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v4 canonical exported surface including kinded applications)";
+const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v5 canonical exported surface including kinded applications)";
 const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)";
 const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v9 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
 
@@ -395,7 +395,11 @@ function ownerNames(paths) {
 /// Classify the bounded library-body edit without promoting any observation to
 /// production policy. The consumer must name exactly the edited dependency in
 /// both snapshots: extra, missing, reordered, or changed edges fail closed.
-/// TypeEnv-v9 transport state is reported independently from interface-v4.
+/// TypeEnv transport state is reported independently from the interface
+/// identity. Neither name carries a version: the versions live in the trace's
+/// own *_kind strings, which this oracle pins, and a version repeated in prose
+/// or in a diagnostic is a copy nothing keeps in step (Codex on #2751, P2 --
+/// the second round of exactly that, after the field names).
 export function classifyPrivateDependencyEditExternallyUnchanged(before, after, dependencyName, consumerName) {
   const beforeDependency = moduleByName(before, dependencyName);
   const afterDependency = moduleByName(after, dependencyName);
@@ -427,7 +431,7 @@ export function classifyPrivateDependencyEditExternallyUnchanged(before, after, 
     fail("private dependency edit did not change dependency implementation identity");
   }
   if (beforeDependency.interface_fingerprint !== afterDependency.interface_fingerprint) {
-    fail("private dependency edit changed dependency interface-v4 identity");
+    fail("private dependency edit changed dependency interface identity");
   }
 
   const consumerIdentityFields = [
@@ -454,12 +458,17 @@ export function classifyPrivateDependencyEditExternallyUnchanged(before, after, 
       before: [`${consumerName}->${dependencyName}`],
       after: [`${consumerName}->${dependencyName}`],
     },
+    // No version suffix in these names on purpose. They used to carry one --
+    // interface_v3 while the identity was at v5, dependency_type_env_transport_v5
+    // while the transport was at v9 -- because nothing kept a field NAME in step
+    // with a preimage. The versions live in the trace's own *_kind strings, which
+    // this oracle pins and which fail loudly when they drift (Codex on #2747, P2).
     dependency_identity: {
       source: "changed",
-      implementation_token_stream_v1: "changed",
-      interface_v3: "unchanged",
+      implementation_token_stream: "changed",
+      interface: "unchanged",
     },
-    dependency_type_env_transport_v5: beforeDependency.persistent_type_env_transport_fingerprint === afterDependency.persistent_type_env_transport_fingerprint
+    dependency_type_env_transport: beforeDependency.persistent_type_env_transport_fingerprint === afterDependency.persistent_type_env_transport_fingerprint
       ? "unchanged"
       : "changed",
     consumer_own_identities: Object.fromEntries(consumerIdentityFields.map((field) => [field, "unchanged"])),
