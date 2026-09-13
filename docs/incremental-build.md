@@ -1783,7 +1783,8 @@ are also rejected. Version 2 additionally records a separate compiler-owned
 and source-group cache probes/hits/misses, list-to-group reconstruction,
 cold collection, module-header probes and parse scans, entry/final/linked/warning
 parses. Probe partitions and the reconstruction partition are exact; final
-semantic parses must equal schema-2 current-source parse executions. These
+semantic parses must equal the incremental sidecar's current-source parse
+executions. These
 counters remain separate from `work_summary.parsed_files`, whose TypeDb scope is
 unchanged. Phase summaries expose ingestion-pipeline before/after/deltas beside,
 not inside, the five established work-summary metrics.

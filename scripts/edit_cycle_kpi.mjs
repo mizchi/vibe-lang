@@ -449,7 +449,7 @@ function main() {
       `edit-cycle-kpi: ${caseName} ingestion pipeline telemetry`,
     );
     if (ingestionPipeline.final_semantic_source_parse_executions !== telemetry.current_source_parse_executions) {
-      throw new Error(`edit-cycle-kpi: ${caseName} ingestion pipeline final semantic parses disagree with schema 2`);
+      throw new Error(`edit-cycle-kpi: ${caseName} ingestion pipeline final semantic parses disagree with the incremental sidecar`);
     }
     if (!existsSync(hostFsScopePath)) {
       throw new Error(`edit-cycle-kpi: ${caseName} omitted host filesystem telemetry sidecar`);

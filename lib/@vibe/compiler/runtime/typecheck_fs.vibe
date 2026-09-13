@@ -6264,7 +6264,22 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
         // question became decidable -- `ast_cache_prefetches` reporting 420
         // means a slower warm build is the cache losing on its merits, not
         // the cache failing to run.
-        if ast_cache_prefetch_fs(path, source) {
+        // ...and NOT when the checked-module artifact cache is on or
+        // verifying. That cache is the merge lane's AST supplier in those
+        // modes -- `parse_program_with_path` consults
+        // `checked_module_artifact_stmts` before the shared memo -- so a
+        // per-file prefetch is a second decode of the same tree that nothing
+        // then reads. Measured on the full CLI closure, warm, with
+        // VIBE_CHECKED_MODULE_CACHE=on: `non_walk_parse_operations` is 0
+        // whether the per-file cache is on or off (417 artifact hits serve
+        // the merge either way), and turning it on cost +360.7 MiB (+11.3%)
+        // for 420 prefetches consumed by nothing. Codex on #2771, P2.
+        //
+        // The 3 modules an on-mode warm build still rechecks are the ones
+        // with no usable artifact, and their stored AST is keyed by the same
+        // source fingerprint that made the artifact unusable -- so it would
+        // miss too. Skipping costs nothing real.
+        if checked_module_cache_mode() == "off" && ast_cache_prefetch_fs(path, source) {
           incremental_typecheck_telemetry_add(11, 1)
         } else {
           ()

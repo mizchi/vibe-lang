@@ -46,13 +46,18 @@ function telemetry(path) {
   // 4 and 5 are the same counter set apart from the checked-module reuse
   // class; both carry the two lane-parse counters this oracle reads.
   if (value.schema !== 4 && value.schema !== 5) fail(`unexpected telemetry schema ${JSON.stringify(value.schema)}`);
-  for (const key of ["modules_planned", "parse_operations", "non_walk_parse_operations", "ast_cache_prefetches"]) {
+  const keys = ["modules_planned", "parse_operations", "non_walk_parse_operations", "ast_cache_prefetches"];
+  // Only schema 5 carries the checked-module reuse class; the stand-down
+  // scenario reads it, so validate it exactly where it is supposed to exist
+  // rather than letting an absent field read as undefined.
+  if (value.schema === 5) keys.push("modules_reused_checked_module_artifact");
+  for (const key of keys) {
     if (!Number.isInteger(value[key]) || value[key] < 0) fail(`invalid ${key} in ${path}`);
   }
   return value;
 }
 
-function build(stage2, project, cache, astCache, name) {
+function build(stage2, project, cache, astCache, name, checkedModuleCache = "off") {
   const out = `${name}.wasm`;
   const telemetryOut = `${name}.telemetry.json`;
   const result = spawnSync("bash", [join(root, "scripts/run_wasm_vibe_host_runner.sh"), "--invoke", "cli_main", stage2, "app.vibe", out, "main"], {
@@ -66,6 +71,14 @@ function build(stage2, project, cache, astCache, name) {
       VIBE_HOME: join(project, ".home"),
       VIBE_PREOPEN_DIR: project,
       VIBE_EXPERIMENTAL_AST_CACHE: astCache ? "1" : "",
+      // PINNED, never inherited (#2252: a gate must not assume its
+      // environment). `on` and `verify` populate
+      // `checked_module_artifact_stmts`, which serves the merge before the
+      // shared parse memo is consulted -- so an ambient setting would make
+      // even the cache-OFF control parse nothing, and the control below
+      // would fail for a reason that has nothing to do with the AST cache.
+      // `tests/gates/bootstrap/run.sh` invokes this with only VIBE_RC=0.
+      VIBE_CHECKED_MODULE_CACHE: checkedModuleCache,
       VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryOut,
     },
   });
@@ -114,7 +127,27 @@ function main() {
       fail("the AST cache changed the emitted program");
     }
 
-    console.log(`ast-cache-prefetch-oracle: ok (warm prefetches=${warmOn.telemetry.ast_cache_prefetches}; merge-lane parses cold=${coldParses} warm-off=${warmOff.telemetry.non_walk_parse_operations} warm-on=${warmOn.telemetry.non_walk_parse_operations})`);
+    // And the prefetch must STAND DOWN where a second AST cache already
+    // serves the merge. With VIBE_CHECKED_MODULE_CACHE=on,
+    // `parse_program_with_path` answers from `checked_module_artifact_stmts`
+    // before the shared memo, so a per-file prefetch decodes trees nothing
+    // reads: measured on the full CLI closure that was +360.7 MiB (+11.3%)
+    // of warm heap for 420 prefetches consumed by nothing, with
+    // `non_walk_parse_operations` at 0 either way (Codex on #2771, P2).
+    const artifactProject = join(work, "artifact-project");
+    const artifactCache = join(work, "artifact-cache");
+    makeProject(artifactProject);
+    mkdirSync(artifactCache, { recursive: true });
+    build(stage2, artifactProject, artifactCache, true, "artifact-cold", "on");
+    const artifactWarm = build(stage2, artifactProject, artifactCache, true, "artifact-warm", "on");
+    if (artifactWarm.telemetry.modules_reused_checked_module_artifact < 1) {
+      fail("the checked-module artifact cache served nothing on a warm build, so the stand-down below is vacuous");
+    }
+    if (artifactWarm.telemetry.ast_cache_prefetches !== 0) {
+      fail(`the per-file AST prefetch ran ${artifactWarm.telemetry.ast_cache_prefetches} times while the checked-module artifact cache was serving the merge: those trees are consumed by nothing`);
+    }
+
+    console.log(`ast-cache-prefetch-oracle: ok (warm prefetches=${warmOn.telemetry.ast_cache_prefetches}; merge-lane parses cold=${coldParses} warm-off=${warmOff.telemetry.non_walk_parse_operations} warm-on=${warmOn.telemetry.non_walk_parse_operations}; stands down under the checked-module artifact cache, ${artifactWarm.telemetry.modules_reused_checked_module_artifact} artifact hits)`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
