@@ -2809,19 +2809,48 @@ fn generic_impl_bound_target(gens: Array[DictGen], method_name: String, type_par
 /// Find the dict parameter to dispatch a `head::member` call against, given the
 /// dict bindings in scope: the binding whose type-param is `head` and whose
 /// trait declares `member`.
+///
+/// #2737: a binding matches by SPELLING, and `dict_binds` describes only the
+/// transformed generic's own binder -- but `rewrite_expr` pushes a nested
+/// lambda's formals onto the same scope stack while passing the outer
+/// dictionaries into its body. So a lambda rebinding the outer spelling used to
+/// resolve here to a dictionary for an unrelated type. Measured on main at
+/// 8b00869, with `fn outer[T: Eq]` instantiated at `Pt` containing
+/// `let inner = [T: Eq](a: T, b: T) -> Bool { ... }` invoked as `inner(7, 8)`:
+/// both `T::equals(a, b)` and `a.equals(b)` answered `true`, having compared two
+/// Ints through `Pt::equals`.
+///
+/// A nested lambda binder gets no dictionary of its own -- `build_gens` registers
+/// top-level generics, and the `EFn` arm drops a nested lambda's own bounds -- so
+/// there is no right dictionary to return here, only a wrong one to withhold.
+///
+/// Withholding is half the answer and not the whole one: it stops the dispatch
+/// from running the wrong witness, and what remains is an unresolved name that
+/// codegen turns into garbage. `dtd_check_unthreaded_dispatch` is the other half,
+/// and the two are a pair -- this declines, that refuses.
+///
+/// The guard lives in the LOOKUP rather than at its callers because every
+/// dispatch through a dictionary shares the hazard, not just equality -- the
+/// same shape sent `to_string` to the wrong `Show` witness (measured: a `Qt`
+/// printed `Pt!`). #2734 added the equivalent check to the `==` rung before this
+/// one existed; it now inherits this.
 fn find_dict_for_method(dict_binds: Array[(String, String, String, Array[String])], head: String, member: String) -> Option[String] {
-  let mut i = 0
-  let mut result = None
-  while i < Array::length(dict_binds) {
-    let (tp, _, dict_pname, methods) = Array::get(dict_binds, i)
-    if tp == head && str_array_contains(methods, member) {
-      result = Some(dict_pname)
-      i = Array::length(dict_binds)
-    } else {
-      i = i + 1
+  if dtd_formal_is_shadowed(head) {
+    None
+  } else {
+    let mut i = 0
+    let mut result = None
+    while i < Array::length(dict_binds) {
+      let (tp, _, dict_pname, methods) = Array::get(dict_binds, i)
+      if tp == head && str_array_contains(methods, member) {
+        result = Some(dict_pname)
+        i = Array::length(dict_binds)
+      } else {
+        i = i + 1
+      }
     }
+    result
   }
-  result
 }
 
 /// Find the in-scope dict parameter bound to type-param `tparam` for `trait_name`
@@ -2993,6 +3022,156 @@ fn dtd_formal_is_shadowed(n: String) -> Bool {
     i = i + 1
   }
   seen > 1
+}
+
+/// #2737: the bound the INNERMOST binder of `n` declared, and whether that bound
+/// promises `member`.
+///
+/// `flatten_traits` runs at this pass's entry and copies a supertrait's methods
+/// into the sub-trait's sigs, so an inherited method counts -- the same reading
+/// `dtd_bound_entails_eq` relies on (#2739).
+fn dtd_formal_bound_promises(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], n: String, member: String) -> Bool {
+  let mut i = Array::length(dtd_scope_formals)
+  let mut keys = empty_str_array()
+  let mut found = false
+  while i > 0 && !found {
+    i = i - 1
+    if Array::get(dtd_scope_formals, i) == n {
+      keys = Array::get(dtd_scope_formal_bounds, i)
+      found = true
+    } else {
+      ()
+    }
+  }
+  let mut j = 0
+  let mut promises = false
+  while j < Array::length(keys) {
+    match lookup_trait_sigs(traits, trait_ref_name(Array::get(keys, j))) {
+      Some(sigs) => if str_array_contains(method_names_of_sigs(sigs), member) {
+        promises = true
+        j = Array::length(keys)
+      } else {
+        j = j + 1
+      },
+      None => j = j + 1
+    }
+  }
+  promises
+}
+
+/// #2737: was the INNERMOST binder of `n` pushed by a lambda (`rewrite_expr`'s
+/// EFn arm) rather than by the top-level threaded path?
+///
+/// The refusal names an edit that only makes sense for a lambda ("move it to a
+/// top-level declaration"), so it is gated on the fact rather than on the
+/// absence of a dictionary, which is a different thing that merely coincides.
+fn dtd_formal_innermost_is_nested(n: String) -> Bool {
+  let mut i = Array::length(dtd_scope_formals)
+  let mut nested = false
+  let mut found = false
+  while i > 0 && !found {
+    i = i - 1
+    if Array::get(dtd_scope_formals, i) == n {
+      nested = Array::get(dtd_scope_formal_nested, i)
+      found = true
+    } else {
+      ()
+    }
+  }
+  found && nested
+}
+
+/// #2737: the program dispatched `<tp>::<member>` where `tp`'s own binder
+/// declared a bound promising `member`, and no dictionary in scope can serve it.
+///
+/// Only a TOP-LEVEL generic is threaded (`build_gens` / `thread_dict_params`);
+/// `rewrite_expr`'s EFn arm rebuilds a nested lambda with its bounds untouched
+/// and never extends `dict_binds`, so a bound written on a lambda binder is
+/// accepted by the parser and the checker and then honoured by nothing.
+///
+/// Refusing is not a choice between a diagnostic and a working program -- it is a
+/// choice between a diagnostic and undefined behaviour. Left alone, the call
+/// keeps its written spelling, which resolves to no function, and codegen lowers
+/// it to a table call on a bogus index. Measured on main at 8f70aa1, the same
+/// `U::equals(a, b)` inside a nested `[U: Eq]` lambda applied to `7, 8`:
+///
+///   two impls in the program     `true`  -- landed on `Pt::equals`
+///   three impls in the program   trap: null function or signature mismatch
+///   no enclosing generic         trap: null function or signature mismatch
+///
+/// So the answer was a function of the module's function-table layout. The
+/// shadowing case #2737 reports is the same defect reached by a second route:
+/// there `find_dict_for_method` did find a dictionary, the enclosing binder's,
+/// and dispatched an `Int` through `Pt::equals`.
+///
+/// The edit named is the one that works today, not the feature: a top-level
+/// binder's bound IS threaded. Threading a lambda binder's own bound is the rest
+/// of #2737.
+fn dtd_unthreaded_bound_msg(tp: String, member: String) -> String {
+  let mut base = String::concat("cannot dispatch `", tp)
+  base = String::concat(base, "::")
+  base = String::concat(base, member)
+  base = String::concat(base, "`: the bound on type parameter `")
+  base = String::concat(base, tp)
+  base = String::concat(base, "` is declared by a lambda binder, and only a top-level `fn` / `let` binder threads its witness -- move the lambda to a top-level declaration (its bound is threaded there), or call the method at a concrete type (#2737)")
+  let self_fn = Array::get(dtd_show_self_fn, 0)
+  if String::length(self_fn) > 0 {
+    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  } else {
+    base
+  }
+}
+
+/// Raise `dtd_unthreaded_bound_msg` when `resolved` found nothing and the head is
+/// a bound-carrying formal -- i.e. when the fallthrough would be an unresolved
+/// name. A concrete function of the qualified spelling wins (the #2141 case: a
+/// formal whose spelling collides with a declared type that really does have the
+/// method), and a formal whose bound does not promise `member` is left alone, so
+/// this fires only where the program asked for a witness and nothing can answer.
+fn dtd_check_unthreaded_dispatch(resolved: Option[String], head: String, member: String, qualified: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_returns: Array[(String, String)]) -> Unit with Exception {
+  match resolved {
+    Some(_) => (),
+    None => if formal_in_scope(head) && dtd_formal_innermost_is_nested(head) && !fn_exists(fn_returns, qualified) && dtd_formal_bound_promises(traits, head, member) {
+      throw(dtd_unthreaded_bound_msg(head, member))
+    } else {
+      ()
+    }
+  }
+}
+
+/// #2737: the interpolation flavour of `dtd_unthreaded_bound_msg`. The author
+/// wrote `"\{x}"`, not `T::to_string`, so the message names that.
+///
+/// This rung needs the refusal for the same reason the explicit ones do, which is
+/// not obvious: interpolation has a total builtin renderer, so it looks like a
+/// rung that can fall through honestly. It cannot. The renderer reads the value's
+/// representation, and a formal-typed value is ERASED -- measured on main at
+/// 8f70aa1, a `Qt` interpolated inside a nested `[T: Show]` lambda printed `Pt!`
+/// (the enclosing binder's witness, a lie about the type), and with the
+/// dictionary withheld it printed `284`, the tagged pointer. Neither is the value.
+/// A scalar does render truthfully, but it never reaches here: `interp_shape`
+/// answers first, which is why a top-level `[T: Show]` at `Int` prints `7` rather
+/// than going through `Int::to_string` at all.
+fn dtd_unthreaded_interp_msg(tp: String) -> String {
+  let mut base = String::concat("cannot interpolate a value of type parameter `", tp)
+  base = String::concat(base, "`: its `Show` bound is declared by a lambda binder, and only a top-level `fn` / `let` binder threads its witness -- move the lambda to a top-level declaration (its bound is threaded there), or interpolate at a concrete type (#2737)")
+  let self_fn = Array::get(dtd_show_self_fn, 0)
+  if String::length(self_fn) > 0 {
+    String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
+  } else {
+    base
+  }
+}
+
+fn dtd_check_unthreaded_interp(resolved: Option[String], head: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_returns: Array[(String, String)]) -> Unit with Exception {
+  match resolved {
+    Some(_) => (),
+    None => if formal_in_scope(head) && dtd_formal_innermost_is_nested(head) && !fn_exists(fn_returns, String::concat(head, "::to_string")) && dtd_formal_bound_promises(traits, head, "to_string") {
+      throw(dtd_unthreaded_interp_msg(head))
+    } else {
+      ()
+    }
+  }
 }
 
 /// #2523: the dict parameter to dispatch `==` / `!=` through, or None.
@@ -8536,7 +8715,11 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
   if String::length(sh) > 0 {
     Some(interp_expand_shape(arg, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
   } else {
-    match find_dict_for_method(dict_binds, head, "to_string") {
+    let as_show = find_dict_for_method(dict_binds, head, "to_string")
+    // #2737: a promised `Show` witness with no dictionary renders the value's
+    // representation rather than the value, so it is refused here too.
+    dtd_check_unthreaded_interp(as_show, head, traits, fn_returns)
+    match as_show {
       Some(dict_pname) => Some(ECall(EDot(EIdent(dict_pname, -1), "to_string", -1, -1), [
         arg
       ], -1)),
@@ -9046,11 +9229,27 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
     EIdent(name, off) => match split_qualified(name) {
       Some(parts) => {
         let (head, member) = parts
-        match find_dict_for_method(dict_binds, head, member) {
+        let as_method = find_dict_for_method(dict_binds, head, member)
+        match as_method {
           Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1, -1),
           None => match qual_ctor_member(head, member, struct_sets, fn_returns) {
             Some(m) => EIdent(m, off),
-            None => expr
+            None => {
+              // #2737 (Codex, P1 on the first commit): a trait method taken as a
+              // VALUE -- `let cmp = T::equals` -- is a fourth route into the same
+              // hole, and it reaches this arm rather than either call site. Left
+              // alone the name stayed unresolved exactly as the qualified CALL
+              // did: measured, `cmp(a, b)` for `7, 8` inside a shadowing
+              // `[T: Eq]` lambda answered `true` through `Pt::equals`, both
+              // before this pass's guard and after it.
+              //
+              // Placed on the LAST branch, after the constructor lookup: a
+              // formal's spelling can collide with an enum whose
+              // `Enum::Variant` this arm resolves, and that is a real
+              // resolution, not a missing witness.
+              dtd_check_unthreaded_dispatch(as_method, head, member, name, traits, fn_returns)
+              expr
+            }
           }
         }
       },
@@ -9315,6 +9514,16 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                 },
                 None => None
               }
+              // #2737: a promised witness with no dictionary is refused here
+              // rather than left to codegen, which lowers the unresolved name to
+              // a table call on a bogus index.
+              match split_qualified(name) {
+                Some(promised) => {
+                  let (phead, pmember) = promised
+                  dtd_check_unthreaded_dispatch(as_method, phead, pmember, name, traits, fn_returns)
+                },
+                None => ()
+              }
               let array_intrinsic = iterator_array_intrinsic(name, args, gens, struct_sets, var_types, fn_returns)
               match array_intrinsic {
                 Some(intrinsic) => ECall(EIdent(intrinsic, coff), rwargs, off),
@@ -9370,6 +9579,17 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                   },
                   None => None
                 }
+              }
+              // #2737: same refusal as the qualified spelling -- an EDot that
+              // resolves to neither a dictionary nor a concrete method is
+              // compiled as a struct-field read, so the fallthrough is a
+              // null-function call rather than an error.
+              match recv_tn {
+                Some(rtn) => dtd_check_unthreaded_dispatch(match as_tparam_dict {
+                  Some(d) => Some(d),
+                  None => as_recv_method
+                }, rtn, m, String::concat(rtn, String::concat("::", m)), traits, fn_returns),
+                None => ()
               }
               match as_tparam_dict {
                 Some(dict_pname) => ECall(EDot(EIdent(dict_pname, -1), m, -1, -1), prepend_expr(robj, rwargs), off),
@@ -9929,7 +10149,9 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
     EUnaryOp(op, e) => EUnaryOp(op, rewrite_expr(e, gens, traits, struct_sets, dict_binds, var_types, fn_returns)),
     EFn(tp, bs, ps, ret, eff, body) => {
       // #2141: the binder frame scopes the body -- see dtd_scope_formals.
-      scope_formals_push(tp)
+      // #2737: the frame carries `bs` so a dispatch inside the body can tell
+      // this binder's own bound from an enclosing one's.
+      scope_formals_push(tp, bs, true)
       let rbody = rewrite_expr(body, gens, traits, struct_sets, dict_binds, seed_var_types(ps, tp, var_types), fn_returns)
       scope_formals_pop()
       EFn(tp, bs, ps, ret, eff, rbody)
@@ -10031,7 +10253,7 @@ fn rewrite_stmt(stmt: Stmt, gens: Array[DictGen], traits: Array[(String, Array[(
           // EFn itself, so rewrite_expr's EFn arm never pushes the binder
           // frame for it -- a `[T: Trait]` formal colliding with an imported
           // `struct T` still dispatched `T::equals` on erased operands.
-          scope_formals_push(tparams)
+          scope_formals_push(tparams, bounds, false)
           let new_body = rewrite_expr(fbody, gens, traits, struct_sets, binds, seeded, fn_returns)
           scope_formals_pop()
           SLet(exp, isrec, fname, ann, EFn(tparams, bounds, new_params, ret, eff, new_body))
@@ -10374,16 +10596,88 @@ let dtd_scope_formals: Array[String] = empty_str_array()
 
 let dtd_scope_formal_marks: Array[Int] = [0]
 
+// #2737: the trait keys each entry of `dtd_scope_formals` was DECLARED with
+// (empty for an unbounded formal). Parallel to `dtd_scope_formals`, so the
+// INNERMOST binder of a spelling answers for its own bound rather than an
+// enclosing binder's.
+//
+// This is what a dispatch site needs to tell "the program promised this witness
+// and the pass cannot produce it" (refuse) from "the head is not a witness
+// dispatch at all" (leave alone). `dict_binds` cannot answer it: it lists the
+// bounds that DID get a dictionary, so a binder whose bound was dropped looks
+// exactly like a binder that declared nothing.
+//
+// Kept as an array of arrays rather than a joined string: a trait key carries
+// its arguments (`Iter[Int]`, and `trait_ref_key` would render a two-argument
+// reference with a comma in it), so any separator a join could pick is a
+// separator a key could contain.
+let dtd_scope_formal_bounds: Array[Array[String]] = []
+
+// #2737 (Codex round 2, P2): whether each entry's frame was pushed by
+// `rewrite_expr`'s EFn arm -- a LAMBDA binder -- rather than by `rewrite_stmt`'s
+// threaded path, which is the top-level one.
+//
+// The refusal used to infer that from "the bound promises the method and no
+// dictionary was produced", and absence of a dictionary is not the same fact.
+// It happens that the top-level shapes `build_gens` skips are caught earlier and
+// more accurately (measured: `fn same[T: Eq](a: Option[T], b: Option[T])` calling
+// `T::equals` is refused with "no parameter of `same` carries the `[T: Eq]`
+// witness", on this compiler and on main alike), so the inference was not wrong
+// in practice -- but it was an inference, and this records the fact instead. A
+// message that tells the author to move a lambda must never be reachable from a
+// binder that is not one.
+let dtd_scope_formal_nested: Array[Bool] = []
+
 fn scope_formals_reset() -> Unit {
   Array::truncate(dtd_scope_formals, 0)
+  Array::truncate(dtd_scope_formal_bounds, 0)
+  Array::truncate(dtd_scope_formal_nested, 0)
   Array::truncate(dtd_scope_formal_marks, 0)
 }
 
-fn scope_formals_push(tparams: Array[String]) -> Unit {
+/// Every trait key `bounds` declares for `tp` (a binder may repeat a formal,
+/// and `[T: A + B]` lands as one entry carrying both).
+///
+/// Matches on the key AND on its canonical name, because a kinded binder is
+/// spelled as a key (`type_param_key`: `F[_]` is `<prefix>1$F`) and the two
+/// arrays need not agree on which spelling they carry.
+fn scope_bound_keys_of(bounds: Array[(String, Array[String])], tp: String) -> Array[String] {
+  let out = empty_str_array()
+  let canonical = type_param_name(tp)
+  let mut i = 0
+  while i < Array::length(bounds) {
+    let (bt, traits_of) = Array::get(bounds, i)
+    if bt == tp || type_param_name(bt) == canonical {
+      let mut j = 0
+      while j < Array::length(traits_of) {
+        Array::push(out, Array::get(traits_of, j))
+        j = j + 1
+      }
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// #2737 (Codex round 2, P1): the spelling stored is the CANONICAL name, not the
+/// key. A kinded binder arrives as `type_param_key(name, arity)` -- `F[_]` is
+/// `<prefix>1$F` -- while every lookup here passes a bare head: `split_qualified`
+/// gives `F` for `F::map`, `infer_arg_type_name` gives `F`, and `build_gens`
+/// already canonicalizes via `type_param_name`. Stored as the key, a kinded
+/// binder was invisible to `formal_in_scope`, `dtd_formal_is_shadowed` and
+/// `dtd_formal_bound_promises` alike -- so the withholding guard and the refusal
+/// both skipped it. The BOUNDS are read with the raw key (that is what the
+/// binder's own bounds list carries), then the name is canonicalized.
+fn scope_formals_push(tparams: Array[String], bounds: Array[(String, Array[String])], nested: Bool) -> Unit {
   Array::push(dtd_scope_formal_marks, Array::length(dtd_scope_formals))
   let mut i = 0
   while i < Array::length(tparams) {
-    Array::push(dtd_scope_formals, Array::get(tparams, i))
+    let raw = Array::get(tparams, i)
+    Array::push(dtd_scope_formals, type_param_name(raw))
+    Array::push(dtd_scope_formal_bounds, scope_bound_keys_of(bounds, raw))
+    Array::push(dtd_scope_formal_nested, nested)
     i = i + 1
   }
 }
@@ -10395,6 +10689,8 @@ fn scope_formals_pop() -> Unit {
     let mark = Array::get(dtd_scope_formal_marks, Array::length(dtd_scope_formal_marks) - 1)
     Array::truncate(dtd_scope_formal_marks, Array::length(dtd_scope_formal_marks) - 1)
     Array::truncate(dtd_scope_formals, mark)
+    Array::truncate(dtd_scope_formal_bounds, mark)
+    Array::truncate(dtd_scope_formal_nested, mark)
   }
 }
 
