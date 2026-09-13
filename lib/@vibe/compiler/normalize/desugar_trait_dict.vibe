@@ -3246,16 +3246,27 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
         dtd_erased_interp_formal(alt, struct_sets, var_types, fn_returns)
       }
     },
-    EMatch(_, arms) => dtd_erased_interp_arms(arms, struct_sets, var_types, fn_returns),
+    EMatch(scrutinee, arms) => dtd_erased_interp_arms(arms, dtd_erased_interp_formal(scrutinee, struct_sets, var_types, fn_returns), struct_sets, var_types, fn_returns),
     EHandle(body, arms) => {
       let from_body = dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns)
       if String::length(from_body) > 0 {
         from_body
       } else {
-        dtd_erased_interp_arms(arms, struct_sets, var_types, fn_returns)
+        dtd_erased_interp_arms(arms, "", struct_sets, var_types, fn_returns)
       }
     },
     ESeq(_, last) => dtd_erased_interp_formal(last, struct_sets, var_types, fn_returns),
+    // #2745 (Codex, P1 round 4 on #2761): an assignment's value is its
+    // CONTINUATION, exactly like `ESeq`'s. Without these two arms
+    // `{ let mut b = a; b = a; b }` fell to the leaf at the assignment, which
+    // reported nothing -- measured, it printed `260`.
+    EAssign(_, _, continuation) => dtd_erased_interp_formal(continuation, struct_sets, var_types, fn_returns),
+    EAssignOp(_, _, _, continuation) => dtd_erased_interp_formal(continuation, struct_sets, var_types, fn_returns),
+    // A loop's value arrives through a `break` inside its body, which this walk
+    // does not follow. Named explicitly rather than left to the leaf below, so a
+    // reader sees it was decided and not forgotten -- the enumeration being
+    // REACTIVE is what produced four review rounds of this shape.
+    ELoop(_, _) => "",
     ELet(name, val, body, _) => dtd_erased_interp_formal(body, struct_sets, dtd_interp_bind_local(var_types, name, val, struct_sets, fn_returns), fn_returns),
     ELetMut(name, val, body, _) => dtd_erased_interp_formal(body, struct_sets, dtd_interp_bind_local(var_types, name, val, struct_sets, fn_returns), fn_returns),
     ELetRec(name, val, body) => dtd_erased_interp_formal(body, struct_sets, dtd_interp_bind_local(var_types, name, val, struct_sets, fn_returns), fn_returns),
@@ -3293,21 +3304,43 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
 /// operand it cannot type.
 fn dtd_interp_bind_local(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
   let out = clone_var_types(var_types)
-  let bound = match infer_arg_type_name(val, struct_sets, var_types, fn_returns) {
-    Some(tn) => tn,
-    None => ""
+  // #2745 (Codex, P1 round 4 on #2761): the initializer gets the SAME walk as the
+  // body, not a bare `infer_arg_type_name`. That answers None for every compound,
+  // so `{ let b = if true { a } else { a }; b } ` recorded `b` as unknown and the
+  // refusal declined -- measured, it printed `260`. Asking the walker keeps the
+  // two halves of this check reading the same language.
+  let from_walk = dtd_erased_interp_formal(val, struct_sets, var_types, fn_returns)
+  let bound = if String::length(from_walk) > 0 {
+    from_walk
+  } else {
+    match infer_arg_type_name(val, struct_sets, var_types, fn_returns) {
+      Some(tn) => tn,
+      None => ""
+    }
   }
   Array::push(out, (name, bound))
   out
 }
 
 /// The first arm whose value is an erased nested formal; "" when none is.
-fn dtd_erased_interp_arms(arms: Array[(Pat, Expr)], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+///
+/// #2745 (Codex, P1 round 4 on #2761): each arm is read in ITS OWN environment.
+/// Discarding the pattern was wrong in both directions, both measured:
+/// `"\{match a { b => b }}"` with `a: T` printed `260` (the arm binder was
+/// unknown), and `"\{match 1 { a => a }}"` was REFUSED (the outer `a: T`
+/// survived a pattern that rebinds the spelling at `Int`).
+///
+/// `scrutinee_formal` is the scrutinee's erased formal, or "". A whole-value
+/// binder (`PBind`) takes it; every other binder takes a payload this pass cannot
+/// type, so it is bound to "" -- which SHADOWS rather than inherits, the same rule
+/// the let-forms follow.
+fn dtd_erased_interp_arms(arms: Array[(Pat, Expr)], scrutinee_formal: String, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   let mut i = 0
   let mut found = ""
   while i < Array::length(arms) {
-    let (_, body) = Array::get(arms, i)
-    let from_arm = dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns)
+    let (pat, body) = Array::get(arms, i)
+    let arm_vars = dtd_interp_bind_pattern(var_types, pat, scrutinee_formal)
+    let from_arm = dtd_erased_interp_formal(body, struct_sets, arm_vars, fn_returns)
     if String::length(from_arm) > 0 {
       found = from_arm
       i = Array::length(arms)
@@ -3316,6 +3349,26 @@ fn dtd_erased_interp_arms(arms: Array[(Pat, Expr)], struct_sets: Array[(String, 
     }
   }
   found
+}
+
+/// Bind an arm's pattern variables. A bare `PBind` names the whole scrutinee and
+/// takes its type; anything nested names a payload this pass cannot type, and
+/// takes "" so the outer binding of that spelling cannot leak in.
+fn dtd_interp_bind_pattern(var_types: Array[(String, String)], pat: Pat, scrutinee_formal: String) -> Array[(String, String)] {
+  let out = clone_var_types(var_types)
+  match pat {
+    PBind(n) => Array::push(out, (n, scrutinee_formal)),
+    _ => {
+      let names = empty_str_array()
+      collect_pat_binders(pat, names)
+      let mut i = 0
+      while i < Array::length(names) {
+        Array::push(out, (Array::get(names, i), ""))
+        i = i + 1
+      }
+    }
+  }
+  out
 }
 
 fn dtd_check_unthreaded_interp(resolved: Option[String], head: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_returns: Array[(String, String)]) -> Unit with Exception {
