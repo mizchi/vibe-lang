@@ -9523,6 +9523,10 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // caller hit "undefined variable (local): Fs::remove @call". Gated on use so
   // non-users reserve no import (fixpoint-safe).
   let need_fs_remove_builtin = Map::has_key(used_builtin_names, "Fs::remove")
+  // #2738: `Fs::remove_file(path) -> Unit` -- the NON-recursive sibling of
+  // Fs::remove. Same `(i64) -> ()` shape and the same gating, so a non-user
+  // reserves no import.
+  let need_fs_remove_file_builtin = Map::has_key(used_builtin_names, "Fs::remove_file")
   // #768: `Fs::mkdir_p(path) -> Unit` (recursive mkdir) — same shape/import
   // type as Fs::remove. Same gap: checker-recognized (builtins_fs.vibe's
   // lookup_fs_mkdir_p) but had no codegen wiring at all.
@@ -9807,6 +9811,15 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // #768: reserved immediately after resolve_path; the import emission below
   // must stay in this same order so the index matches the descriptor.
   let fs_remove_import_idx = if need_fs_remove_builtin {
+    let idx = next_import_idx
+    next_import_idx = next_import_idx + 1
+    idx
+  } else {
+    -1
+  }
+  // #2738: reserved immediately after fs_remove; the import emission below must
+  // stay in this same order so the index matches the descriptor.
+  let fs_remove_file_import_idx = if need_fs_remove_file_builtin {
     let idx = next_import_idx
     next_import_idx = next_import_idx + 1
     idx
@@ -10382,6 +10395,12 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   } else {
     env_args_len_idx
   }
+  // #2738: Fs::remove_file call target -- same fallback shape as fs_remove_idx.
+  let fs_remove_file_idx = if fs_remove_file_import_idx >= 0 {
+    fs_remove_file_import_idx
+  } else {
+    env_args_len_idx
+  }
   // #768: Fs::mkdir_p call target — same fallback shape as fs_remove_idx.
   let fs_mkdir_p_idx = if fs_mkdir_p_import_idx >= 0 {
     fs_mkdir_p_import_idx
@@ -10708,6 +10727,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         // #729/#730: RAW half of Fs::readdir -- compile_call lowers the surface.
         "vibe_fs_read_dir_raw" => fs_read_dir_idx,
         "Fs::remove" => fs_remove_idx,
+        "Fs::remove_file" => fs_remove_file_idx,
         "Fs::mkdir_p" => fs_mkdir_p_idx,
         "Fs::mkdir" => fs_mkdir_idx,
         "Fs::chdir" => fs_chdir_idx,
@@ -13353,6 +13373,16 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   if fs_remove_import_idx >= 0 {
     emit_name(import_content, "vibe")
     emit_name(import_content, "fs_remove")
+    bytebuf_push(import_content, 0)
+    leb128_encode_u32(import_content, 1)
+  } else {
+    ()
+  }
+  // #2738: `vibe.fs_remove_file (i64) -> ()` (type 1, like fs_remove) --
+  // reserved immediately after fs_remove, matching allocation order above.
+  if fs_remove_file_import_idx >= 0 {
+    emit_name(import_content, "vibe")
+    emit_name(import_content, "fs_remove_file")
     bytebuf_push(import_content, 0)
     leb128_encode_u32(import_content, 1)
   } else {

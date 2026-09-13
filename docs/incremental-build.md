@@ -138,8 +138,8 @@ is only a wrapper over this attestation path. Ordinary checks never enter this
 validator. Its attempt counter is test observation, not production telemetry.
 
 The aggregate and its complete-encoding fingerprint are shadow comparison data
-only. They are not wired to TypeDb, the TypeEnv v5 transport and persistent cache
-namespace v19, TDRE5, interface-v2, artifact-input traces, planner decisions,
+only. They are not wired to TypeDb, the TypeEnv v9 transport and persistent cache
+namespace v19, TDRE5, interface-v6, artifact-input traces, planner decisions,
 reuse, CLI, or a persistent cache namespace. Decoded values establish canonical
 bytes, not a checker invocation. Runtime retains v2 bytes only in an opaque,
 in-memory successful `ModuleOutcome`; it does not publish or persist them.
@@ -1794,7 +1794,7 @@ unaffected modules merely because it is public.
 
 The edited owner misses because the production TDRE5 logical input includes its
 byte-exact source. After that owner is checked successfully, its checked public
-TypeEnv-v5 authority lets unchanged consumers reuse their existing typing
+TypeEnv-v9 authority lets unchanged consumers reuse their existing typing
 results. This is consumer typing reuse only: final builds still merge and
 code-generate the whole program, and this evidence makes no build, codegen, or
 LSP incrementality claim.
@@ -1907,7 +1907,7 @@ semantically irrelevant and avoid quadratic canonical serialization. TDRE9 does
 not replace exact transport text with a compact fingerprint. It validates and
 republishes the decoded environment under the ordinary conservative fingerprint.
 It does not use the
-trace-only `vibe-module-interface:v5` observation as a production key, and
+trace-only `vibe-module-interface:v6` observation as a production key, and
 malformed, missing, stale, torn, or cross-spliced aliases, witnesses, and targets
 fall back to a full check. The alias remains incompatible with the incremental
 invalidation trace lane so the two identities cannot be confused.
@@ -2150,9 +2150,16 @@ version-tagged `implementation_fingerprint`, `interface_fingerprint`,
 `checked_env_fingerprint`, and `persistent_type_env_transport_fingerprint`,
 the observed current TypeDb decision (`rechecked`
 or `reused`), and aggregate work telemetry. The interface identity hashes a canonical
-`vibe-module-interface:v2` serialization of exported inferred value/function
+`vibe-module-interface:v6` serialization of exported inferred value/function
 types (including effects), exported public type/trait/effect/effectset
-declarations, and re-exports. For exported traits, schema 6 serializes
+declarations, and re-exports. A name an aggregate `export { .. }` lists is
+looked up as a value first; the three kinds that have no value binding --
+measured, a locally declared trait, effect or effectset -- are recorded as an
+`export-<kind>:` membership row rather than demanded as values, which is what
+they were before #2744 (a struct, an enum, a type alias, a builtin declaration
+such as `export { Option }`, an imported trait republished by name, and a
+re-export all carry a binding and take the `value:` row). A name that is
+neither bound nor declared is still refused. For exported traits, schema 6 serializes
 header-binder arity and positional association plus every method's positional
 generic-binder row, bounds, and signature. Method binders explicitly shadow
 trait-header binders; names outside either binder scope remain free/nominal
@@ -2197,15 +2204,15 @@ changed only the trace-only interface observation: method-generic provenance was
 consumed from the source `STrait` to canonicalize trait methods. The provenance
 was also retained in `EnvTraitDef` and the then-current TypeEnv v3 transport,
 but no full checked artifact existed. Current production has since moved to
-TypeEnv-v5; the transport remains TypeEnv-only—not a `CheckedProgram`, typed IR,
+TypeEnv-v9; the transport remains TypeEnv-only—not a `CheckedProgram`, typed IR,
 exported interface, cache key, or reuse decision.
 
 These observation identities have intentionally different authorities.
-`vibe-module-interface:v2` covers only the exported API surface. In particular,
+`vibe-module-interface:v6` covers only the exported API surface. In particular,
 `SImpl` has no exported/public bit, so impl declarations are excluded from that
 interface identity rather than being silently treated as public declarations.
 Impl bounds and targets are module-visible trait-resolution state and are
-observed by the complete persistent TypeEnv v5 transport identity instead.
+observed by the complete persistent TypeEnv v9 transport identity instead.
 Neither identity establishes final linked-artifact freshness: the current
 runnable-artifact lane continues to use its whole resolved source-group input
 identity and compile configuration. Consequently an impl-only edit is expected
@@ -2258,7 +2265,7 @@ clean/warm parity, alpha-rename invariance under method-over-header scope, and
 identity changes for binder association, arity, bounds, signatures, and free
 nominal names. The interface observation deliberately continues to read method
 generic rows from source `STrait`; the same provenance is independently retained
-in TypeEnv v5. Issue #1379 additionally defines a narrow, length-delimited
+in TypeEnv v9. Issue #1379 additionally defines a narrow, length-delimited
 `CheckedTypeDefsArtifact` v1 for retained `type_defs`, aligned declaration
 binders, and the authoritative semantic `final_subst` chain. `SubstCached`
 acceleration-bearing substitutions are rejected rather than normalized or
@@ -2268,7 +2275,7 @@ fixed. It is not a full
 CheckedProgram/TypeEnv artifact, typed IR, cache key/reuse input, interface,
 import contract, or trace schema; that historical slice left schema 6,
 interface v2, and the then-current TypeEnv v3 unchanged. Current production has
-since moved to TypeEnv-v5. `TDEffect` operation declarations, `CtFn` effect text,
+since moved to TypeEnv-v9 and interface-v6. `TDEffect` operation declarations, `CtFn` effect text,
 and accepted final `SubstEffBind` chains are therefore already inside that
 narrow artifact. Effect-set declarations are retained separately as the opaque
 `CheckedEffectSetDeclarationsObservation`, derived from a successful
@@ -2350,11 +2357,11 @@ type-free, post-desugar/artifact-local rather than source- or edit-stable, and
 is not connected to full checked bodies, typed IR, imports, interfaces, traces,
 caches, or reuse policy.
 Trait/impl regressions prove impl-bound and impl-target edits change the
-complete persistent TypeEnv v5 transport observation while leaving the
+complete persistent TypeEnv v9 transport observation while leaving the
 exported-interface observation unchanged; the bound case also leaves the
 value-only checked-env observation unchanged. Exported type derives,
 trait-supertrait edges, effect operation signatures, and effectset members are
-separately covered by clean/warm interface-v2 parity and sensitivity checks.
+separately covered by clean/warm interface-v6 parity and sensitivity checks.
 An external
 executable shadow planner treats source changes as ingestion telemetry, derives
 owner typing invalidation from canonical token-stream implementation changes
@@ -2464,7 +2471,7 @@ ordinary production compile. Because it is a post-compile recollection, the
 sidecar is not an atomic snapshot of the bytes used to produce the wasm; a
 concurrent filesystem or resolution-context change may describe a later
 snapshot. It never changes cache namespace `v19`, artifact
-fingerprints, artifact lookup/store/reuse decisions, interface-v2, TypeEnv-v5,
+fingerprints, artifact lookup/store/reuse decisions, interface-v6, TypeEnv-v9,
 TDRE5, or trace schema 6. A separately named shadow fingerprint uses a versioned,
 fixed-order, length-prefixed `vibe-artifact-input-observation:v2` preimage and
 existing compact fingerprint. It is observation-only and is never passed to a

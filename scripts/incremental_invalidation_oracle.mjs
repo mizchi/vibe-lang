@@ -36,7 +36,7 @@ const telemetryKeys = [
 const fingerprintNote = "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint, checked_env_fingerprint, and persistent_type_env_transport_fingerprint are observation only; persistent_type_env_transport_fingerprint is TypeEnv transport only, not CheckedProgram, typed IR, exported interface, cache key, or reuse decision; none is a production cache key";
 const sourceFingerprintKind = "compact_string_fingerprint(ingested_source)";
 const implementationFingerprintKind = "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))";
-const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v5 canonical exported surface including kinded applications)";
+const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v6 canonical exported surface including kinded applications)";
 const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)";
 const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v9 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
 
@@ -724,6 +724,44 @@ function run(stage2) {
     const appDependencies = moduleByName(planEdit, "app").direct_dependencies.map((path) => basename(path));
     if (appDependencies.join(",") !== "base.vibe,library.vibe") fail("dependency-plan trace did not record the added base import in declaration order");
     runPlannerCase("dependency_plan_edit", implTargetArray, planEdit);
+
+    // #2744: an aggregate `export { .. }` may name something with no VALUE
+    // binding, and the interface observation used to throw on it -- so a
+    // module that checks clean without the trace failed to check with it on.
+    //
+    // Measured: only three kinds have no flat binding, all declared locally --
+    // a trait, an effect and an effectset. (A struct, an enum, a type alias, a
+    // builtin declaration such as `export { Option }`, an imported trait
+    // republished by name, and a re-export all carry one and take the `value:`
+    // row.) Each pair below differs ONLY by the aggregate export, so it is a
+    // red test for two different wrong fixes: without any fix `check` fails
+    // outright, and with a "skip a name that is not a value" fix the two
+    // identities are equal and the assertion fails. Publishing this way is not
+    // cosmetic -- adding `export { Marker }` to a PRIVATE trait publishes its
+    // impls, so a consumer's `[T: Marker]` bound starts resolving.
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\ntrait AggregateMarker\nimpl AggregateMarker for Int\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const aggregateTraitPrivate = check("aggregate_trait_private");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\ntrait AggregateMarker\nimpl AggregateMarker for Int\nexport { AggregateMarker }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const aggregateTraitExported = check("aggregate_trait_exported");
+    if (interfaceOwnersChanged(aggregateTraitPrivate, aggregateTraitExported).join(",") !== "library") {
+      fail("aggregate export of a trait did not change the interface identity");
+    }
+
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect AggregateLog { Note(String) -> Unit }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const aggregateEffectPlain = check("aggregate_effect_plain");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect AggregateLog { Note(String) -> Unit }\nexport { AggregateLog }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const aggregateEffectExported = check("aggregate_effect_exported");
+    if (interfaceOwnersChanged(aggregateEffectPlain, aggregateEffectExported).join(",") !== "library") {
+      fail("aggregate export of an effect did not change the interface identity");
+    }
+
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect AggregateLog { Note(String) -> Unit }\nexport effectset AggregateAll = { AggregateLog::Note }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const aggregateEffectsetPlain = check("aggregate_effectset_plain");
+    writeFileSync(join(project, "library.vibe"), "import ./base.vibe { base_value }\nexport effect AggregateLog { Note(String) -> Unit }\nexport effectset AggregateAll = { AggregateLog::Note }\nexport { AggregateAll }\nexport let library_value = \"changed\"\nfn private_offset() -> Int { 2 }\n");
+    const aggregateEffectsetExported = check("aggregate_effectset_exported");
+    if (interfaceOwnersChanged(aggregateEffectsetPlain, aggregateEffectsetExported).join(",") !== "library") {
+      fail("aggregate export of an effectset did not change the interface identity");
+    }
 
     // Integration regressions for the renderer: JSON requires every U+0000–
     // U+001F control character to be escaped, and POSIX paths may contain TAB.
