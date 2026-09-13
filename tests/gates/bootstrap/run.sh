@@ -131,6 +131,17 @@ node scripts/ingestion_stamp_oracle.mjs "$stage2_wasm"
 echo "[compiler-gate] 3ac/3 experimental typing dependency-env reuse oracle"
 VIBE_RC=0 node scripts/experimental_typing_env_reuse_oracle.mjs "$stage2_wasm"
 
+# 3ad. #2767: the per-file AST cache is written on every cold build and was
+# read on none -- the prefetch was hung on the module-header pass, which a warm
+# build never reaches because planning answers from the persistent dep list
+# first. Nothing said so: the warm heap was byte-identical with the cache on
+# and off. This runs a real BUILD (the merge/flatten lane is what re-parses)
+# and reads the lane signature off the telemetry, with the cache-off run as the
+# control it asserts FIRST -- if the control stops parsing, the comparison is
+# vacuous and the oracle says so rather than passing.
+echo "[compiler-gate] 3ad/3 AST cache prefetch reaches the merge lane"
+VIBE_RC=0 node scripts/ast_cache_prefetch_oracle.mjs "$stage2_wasm"
+
 # 3b. RC bootstrap gate (#556) -- CAVEAT: this reuses the manifest from the
 # bump-pinned build above (VIBE_RC=0, line ~11), so it does NOT perform a
 # fresh seed-compiles-stage1-under-RC build; it only re-checks that

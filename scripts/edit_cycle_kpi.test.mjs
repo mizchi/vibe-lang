@@ -14,7 +14,7 @@ import {
 } from "./edit_cycle_kpi.mjs";
 
 const validSidecar = JSON.stringify({
-  schema: 2,
+  schema: 4,
   modules_planned: 2,
   modules_rechecked: 1,
   modules_reused: 1,
@@ -24,6 +24,8 @@ const validSidecar = JSON.stringify({
   checker_executions: 1,
   modules_reused_conservative_fingerprint: 0,
   modules_reused_dependency_transport_env: 1,
+  non_walk_parse_operations: 2,
+  ast_cache_prefetches: 0,
 });
 
 const validIngestionFingerprint = {
@@ -82,9 +84,9 @@ test("edit-cycle KPI accepts a complete incremental typecheck sidecar", () => {
   assert.deepEqual(parseIncrementalTelemetry(validSidecar), JSON.parse(validSidecar));
 });
 
-test("edit-cycle KPI validates checked-module reuse as its own v3 reason", () => {
+test("edit-cycle KPI validates checked-module reuse as its own v5 reason", () => {
   const sidecar = {
-    ...JSON.parse(validSidecar), schema: 3,
+    ...JSON.parse(validSidecar), schema: 5,
     modules_reused_dependency_transport_env: 0,
     modules_reused_checked_module_artifact: 1,
   };

@@ -1324,9 +1324,43 @@ that flag every frame is `wasm-function[N]` and the profile says nothing:
 **The back end dominates**: codegen + normalize + perceus is 45.4%. The parser
 is 6.9%, which is the CEILING on what a perfect AST cache can remove from a
 warm build — and the loader, where such a cache has to live because it is the
-only lane with an `Fs` row, is 0.1%. That is the direct measurement behind the
-observation in #2668 that turning the AST cache on left the warm heap
-byte-identical: the code that consults it barely runs.
+only lane with an `Fs` row, is 0.1%.
+
+That last row was read as the explanation for #2668's observation that turning
+the AST cache on left the warm heap byte-identical, and it is not: 0.1% is
+what the consulting code costs, not evidence about whether it runs. It did not
+run. The prefetch that hands a stored AST to the merge lane was hung on the
+module-header pass, and planning asks `load_persistent_dep_list` FIRST — on a
+warm build that hits for every module in the closure, so the header pass never
+runs and the prefetch fired zero times per build. The ASTs were written on
+every cold build and read on none.
+
+Measured on the full CLI closure (420 modules, `VIBE_EXPERIMENTAL_AST_CACHE=1`,
+one cache directory per run):
+
+| warm build | bump-heap high-water |
+|---|---:|
+| AST cache off | 1,912,339,944 B |
+| AST cache on, prefetch on the header pass only | 1,912,339,944 B |
+| same cache with the dep-list entries deleted (forcing the header pass) | 1,843,064,752 B |
+
+The first two are byte-identical — the cache doing literally nothing, #2668's
+result reproduced with its cause named. The third is the same stored ASTs
+actually being read: −69.3 MB. (It came from a second cold/warm pair whose own
+cache-on control read 1,912,339,864: 80 bytes of temp-path jitter across a
+1.9 GB build, not a third behaviour.)
+
+#2767 moves the prefetch to the head of the FS planner's walk, so a warm build
+gets the third row without deleting anything. The placement is the point: the
+prefetch has to sit where every planned module passes through, not on a
+particular fast path. Planning settles a module without parsing in five
+different ways — a valid persistent leaf fingerprint, an in-process reuse
+decision, `ripple_get_deps`, the persistent dep list, and finally the
+module-header text cache — and the prefetch was hung on the last of them.
+Moving it to the dep-list branch was measured too, and covered 2 of 3 modules
+in a three-module project: a LEAF resolves no dependencies, so it reached
+neither branch. `ast_cache_prefetches` in the incremental telemetry says how
+many stored ASTs a build actually reused.
 
 (CPU share, not allocation; the KPI is allocation and the two are correlated
 rather than identical. N=1, which is enough for a structural read — a 0.1%
@@ -2238,23 +2272,39 @@ either observation into a production key or reuse decision.
 
 The token-stream, interface, checked-environment, and transport reconstructions
 are not charged to the existing TypeDb `parse_operations` counter. Standalone
-incremental telemetry schema 2, used with `VIBE_CHECKED_MODULE_CACHE=off`, retains that historical counter and its
+incremental telemetry schema 4, used with `VIBE_CHECKED_MODULE_CACHE=off`, retains that historical counter and its
 `modules_rechecked` / `modules_reused` decisions, while independently reporting
 actual `ModuleJob.source` parse-memo misses, checker calls, conservative
 fingerprint reuse, and validated TDRE9 dependency-transport reuse. The two reuse
-classes must sum exactly to `modules_reused`. These counters cover only the
-filesystem TypeDb walk: loader/source-group parsing and later linked validation
-remain outside this boundary. Invalidation trace schema 6 deliberately embeds
-the legacy schema-1 aggregate; exposing schema-2 counters there requires a
-future explicit trace schema bump.
+classes must sum exactly to `modules_reused`. Invalidation trace schema 6
+deliberately embeds the legacy schema-1 aggregate; exposing the newer counters
+there requires a future explicit trace schema bump.
+
+`parse_operations` covers only the filesystem TypeDb walk — planning and the
+walk proper — and that is the whole story for a `vibe check` and was never the
+whole story for a `vibe build`. The merge/flatten lane parses through
+`parse_program_with_path`, outside the walk, so a warm build used to report
+`parse_operations: 0` while parsing every source in its closure (#2766). That
+work is `non_walk_parse_operations`, counted only when the parser actually
+ran, so a shared-memo or AST-cache hand-out does not inflate it; the two
+counters are disjoint and neither subsumes the other. `ast_cache_prefetches`
+counts the modules whose stored binary AST was loaded into the shared parse
+memo, and is zero unless `VIBE_EXPERIMENTAL_AST_CACHE=1`.
 
 With `VIBE_CHECKED_MODULE_CACHE=on` or `verify`, standalone telemetry uses schema
-3 and adds `modules_reused_checked_module_artifact`. This reason is separate:
+5 and adds `modules_reused_checked_module_artifact`. This reason is separate:
 an exact checked-module input can still match after a private dependency body
 edit changes the conservative fingerprint. All three reasons must sum to
 `modules_reused`. Verification checks afresh, so it records zero artifact hits.
 The [checked-module parity gate](checked-body-transport.md) validates these
 counts through the real compile CLI; the edit-cycle reader accepts both schemas.
+`scripts/ast_cache_prefetch_oracle.mjs` pins the lane signature on a real
+build, stated relative to the cold build rather than against zero: a warm
+build with the cache reports the same `non_walk_parse_operations` as the cold
+one (planning fills the shared memo cold, the prefetch fills it warm), while
+the same warm cache with the flag off reports strictly more. The control is
+asserted first — if the cache-off run stopped parsing, the claim would be two
+runs that both parse nothing.
 
 The `rechecked`/`reused` report describes the completed module walk. Sidecar
 encoding, decoding and I/O costs need separate measurement. None of these fields is read by a production
