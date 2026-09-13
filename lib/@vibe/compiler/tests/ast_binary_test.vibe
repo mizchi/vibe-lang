@@ -197,6 +197,31 @@ test "ast_binary: empty string roundtrip" {
   assert(s == "")
 }
 
+test "ast_binary: byte strings survive chunk boundaries and input mutation" {
+  let buf = Bytes::new()
+  ast_binary_write_varint(buf, 2051)
+  let mut i = 0
+  while i < 2051 {
+    Bytes::push(buf, i % 256)
+    i = i + 1
+  }
+  let reader = ast_binary_reader_new(buf)
+  let decoded = ast_binary_read_string(reader)
+  inspect(String::length(decoded), content = "2051")
+  let mut exact = true
+  i = 0
+  while i < 2051 {
+    if String::char_code_at(decoded, i) != i % 256 {
+      exact = false
+    }
+    i = i + 1
+  }
+  inspect(exact, content = "true")
+  Bytes::set(buf, 2, 99)
+  inspect(String::char_code_at(decoded, 0), content = "0")
+  inspect(ast_binary_read_byte(reader), content = "-1")
+}
+
 test "ast_binary: optstr roundtrip" {
   let bn = Bytes::new()
   ast_binary_write_optstr(bn, None)

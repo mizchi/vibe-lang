@@ -61,6 +61,18 @@ import @vibe/compiler/checker/artifacts/program {
   encode_checked_program
 }
 
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact
+}
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_artifact_stmts,
+  checked_module_cache_input_identity,
+  checked_module_cache_mode,
+  checked_module_cache_reset,
+  commit_checked_module_artifact,
+  load_checked_module_artifact
+}
+
 import @vibe/compiler/core {
   BindingOrigin,
   Expr,
@@ -2566,6 +2578,7 @@ fn collect_module_diagnostics() -> Bool {
 ///   6 checker executions
 ///   7 modules reused by conservative fingerprint authority
 ///   8 modules reused by validated TDRE9 dependency transport authority
+///   9 modules reused by the complete checked-module artifact
 ///
 /// `parse_operations` is parser work, not a unique-module count: a cold
 /// module can need one header parse during planning and one full parse for its
@@ -2626,7 +2639,7 @@ export fn set_incremental_typecheck_telemetry_enabled(enabled: Bool) -> Unit {
   Array::truncate(incremental_typecheck_telemetry_counters, 0)
   Array::truncate(incremental_typecheck_telemetry_decisions, 0)
   let mut i = 0
-  while i < 9 {
+  while i < 10 {
     Array::push(incremental_typecheck_telemetry_counters, 0)
     i = i + 1
   }
@@ -2733,8 +2746,13 @@ fn incremental_typecheck_telemetry_v1_json() -> String {
 }
 
 export fn incremental_typecheck_telemetry_json() -> String {
+  let artifact_mode = checked_module_cache_mode() != "off"
   let out = StringBuilder::new()
-  StringBuilder::push(out, "{\"schema\":2,\"modules_planned\":")
+  StringBuilder::push(out, if artifact_mode {
+    "{\"schema\":3,\"modules_planned\":"
+  } else {
+    "{\"schema\":2,\"modules_planned\":"
+  })
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(0)))
   StringBuilder::push(out, ",\"modules_rechecked\":")
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(1)))
@@ -2752,6 +2770,10 @@ export fn incremental_typecheck_telemetry_json() -> String {
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(7)))
   StringBuilder::push(out, ",\"modules_reused_dependency_transport_env\":")
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(8)))
+  if artifact_mode {
+    StringBuilder::push(out, ",\"modules_reused_checked_module_artifact\":")
+    StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(9)))
+  }
   StringBuilder::push(out, "}")
   StringBuilder::freeze(out)
 }
@@ -3998,7 +4020,10 @@ fn parse_program_with_path_impl(path: String, source: String, observe_current_so
 }
 
 export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
-  parse_program_with_path_impl(path, source, false)
+  match checked_module_artifact_stmts(path, source) {
+    Some(stmts) => stmts,
+    None => parse_program_with_path_impl(path, source, false)
+  }
 }
 
 fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Exception + Fs {
@@ -4989,11 +5014,19 @@ export fn checked_module_typing_artifact_observation_is_fresh_for_job(job: Modul
 /// Pure module check implementation. Artifact observation is explicitly opt-in:
 /// the production incremental path must not allocate canonical shadow bytes for
 /// every checked module when no observer consumes them.
-fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]]) -> ModuleOutcome with Exception {
+fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]], artifact_output: Option[(Bytes, Array[CheckedModuleArtifact])]) -> ModuleOutcome with Exception {
   // Parse stays OUTSIDE the handler below: parse errors currently
   // propagate verbatim, while type errors get located and path-prefixed.
   // Folding both into one handler would relabel every parse diagnostic.
   let stmts = parse_program_with_path_impl(job.path, job.source, true)
+  // Match the shared parser's ownership contract: Stmt values are immutable,
+  // while checker desugars replace entries in their top-level array.
+  let parsed_snapshot: Array[Stmt] = []
+  if artifact_output is Some(_) {
+    for stmt in stmts {
+      Array::push(parsed_snapshot, stmt)
+    }
+  }
   // #1521: importing a name the dependency does not export used to bind
   // CtUnknown silently, so `vibe check` said ok and `vibe build` died in
   // codegen with `undefined variable (ident): X` -- no file, no line. The
@@ -5064,6 +5097,20 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
         Some(output) => Array::push(output, encode_checked_program(checked_program)),
         None => ()
       }
+      match artifact_output {
+        Some((input_identity, output)) => Array::push(output, CheckedModuleArtifact::{
+          input_identity,
+          parsed_stmts: parsed_snapshot,
+          checked_program,
+          lowering_offsets: match located_offsets {
+            Some(offsets) => offsets,
+            None => array_empty()
+          },
+          eq_offsets: eq_offs,
+          eq_keys
+        }),
+        None => ()
+      }
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
     } with { Exception::Throw(msg) => {
       let located = locate_type_error(job.source, msg)
@@ -5078,13 +5125,13 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
 /// Production module check. No Fs: dependency environments are already values
 /// inside the job. Shadow artifact observation stays disabled by default.
 export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
-  check_module_impl(job, false, None)
+  check_module_impl(job, false, None, None)
 }
 
 /// Opt-in trusted #1550 observation producer. This runs the same complete module
 /// checker and retains canonical bytes only in its opaque successful outcome.
 export fn check_module_with_typing_artifact_observation(job: ModuleJob) -> ModuleOutcome with Exception {
-  check_module_impl(job, true, None)
+  check_module_impl(job, true, None, None)
 }
 
 /// Check against the job's actual import environment and retain the complete
@@ -5093,7 +5140,7 @@ export fn check_module_with_typing_artifact_observation(job: ModuleJob) -> Modul
 /// persistent identity or cache authority until a coordinator binds its inputs.
 export fn check_module_with_program_transport(job: ModuleJob) -> (ModuleOutcome, Option[Bytes]) with Exception {
   let output: Array[Bytes] = []
-  let outcome = check_module_impl(job, false, Some(output))
+  let outcome = check_module_impl(job, false, Some(output), None)
   let bytes = if Array::length(output) == 1 {
     Some(Array::get(output, 0))
   } else {
@@ -5398,6 +5445,65 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exc
     i = i + 1
   }
 }
+/// Recover publication from the same complete checked result. Re-export
+/// projection reads the current dependency environments already bound by the
+/// exact input identity; it performs no type inference.
+fn checked_module_artifact_outcome(job: ModuleJob, artifact: CheckedModuleArtifact) -> ModuleOutcome with Exception {
+  let unresolved: Array[String] = []
+  let (_, reexports) = build_import_envs_collecting(artifact.parsed_stmts, dir_of_path(job.path), job.dep_envs, unresolved)
+  if Array::length(unresolved) > 0 {
+    throw("checked module: validated imports no longer resolve")
+  }
+  let fingerprint = build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
+  let env = checked_module_public_env_with_reexport_declarations(artifact.parsed_stmts, artifact.checked_program.final_env, reexports)
+  module_typed_lowering_memo_put(job.path, fingerprint, artifact.lowering_offsets, artifact.eq_offsets, artifact.eq_keys)
+  let tracing = incremental_interface_trace_enabled()
+  Checked(job.path, fingerprint, env, if tracing {
+    incremental_interface_identity(job.source, env)
+  } else {
+    ""
+  }, if tracing {
+    incremental_checked_env_identity(env)
+  } else {
+    ""
+  }, if tracing {
+    incremental_persistent_type_env_transport_identity(env)
+  } else {
+    ""
+  }, None)
+}
+
+/// One accepting edge for complete artifacts. An unchanged public dependency
+/// environment preserves this module's input even when its dependency's body
+/// changed. The conservative fingerprint remains available to older consumers.
+fn finish_checked_module_artifact_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
+  let coordinated = ensure_env_cache_for_paths(rdb, env_cache, deps)
+  let projected = project_exact_dependency_envs(deps, coordinated)
+  let job = ModuleJob::{ path, source, deps, dep_fps, dep_envs: projected }
+  let input_identity = checked_module_cache_input_identity(path, source, typing_semantics_seed(), projected)
+  if checked_module_cache_mode() == "on" {
+    match load_checked_module_artifact(path, input_identity) {
+      Some(artifact) => {
+        let outcome = checked_module_artifact_outcome(job, artifact)
+        let committed = commit_module_outcome(rdb, coordinated, dep_source_cache, parse_count, job, outcome, Some(false), None)
+        commit_checked_module_artifact(path, source, artifact, false)
+        incremental_typecheck_telemetry_add(9, 1)
+        return committed
+      },
+      None => ()
+    }
+  }
+  let output: Array[CheckedModuleArtifact] = []
+  let outcome = check_module_impl(job, false, None, Some((input_identity, output)))
+  if Array::length(output) == 0 {
+    // Preserve the existing diagnosed/parse failure behavior and publish nothing.
+    return commit_module_outcome(rdb, coordinated, dep_source_cache, parse_count + 1, job, outcome, Some(false), None)
+  }
+  let artifact = Array::get(output, 0)
+  commit_checked_module_artifact(path, source, artifact, true)
+  commit_module_outcome(rdb, coordinated, dep_source_cache, parse_count + 1, job, outcome, Some(false), None)
+}
+
 /// `fingerprint` is the already-folded build_fingerprint(source, dep_fps)
 /// every call site computed to decide whether to call this function at all
 /// (the Fs::exists / ripple_record_eval fast path below needs that folded
@@ -5614,7 +5720,7 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
     match ripple_get_source(rdb, path) {
       None => (),
       Some(source) => {
-        let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
+        let reusable = if checked_module_cache_mode() == "off" && dep_source_cache_is_current(dep_source_cache, path, source) {
           match ripple_get_fingerprint(rdb, path) {
             // #2391: reuse needs BOTH cache halves -- the TypeEnv and the
             // module's float-offsets sidecar -- or the walk must re-check.
@@ -5752,6 +5858,9 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
     i = i + 1
   }
   let fingerprint = build_fingerprint(path, source, dep_fps, typing_semantics_seed())
+  if checked_module_cache_mode() != "off" {
+    return finish_checked_module_artifact_fs(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps)
+  }
   match ripple_get_fingerprint(rdb, path) {
     Some(cached_fp) =>
     if cached_fp == fingerprint {
@@ -5797,6 +5906,17 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
   match loaded_source {
     None => (String::concat("missing:", path), rdb_loaded, env_cache, dep_source_cache, parse_count),
     Some(source) => {
+      if checked_module_cache_mode() != "off" {
+        let deps = match plan_deps_of(plan_edges, path) {
+          Some(planned) => planned,
+          None => if (lookup_string_pair(plan_leaf_fps, path) is Some(_)) || is_vpkg_types_stub_path(path) {
+            empty_stack()
+          } else {
+            throw(String::concat("type_db: module missing from the import plan: ", path))
+          }
+        }
+        return commit_with_deps_fs(fps, rdb_loaded, env_cache, dep_source_cache, parse_count, path, source, deps)
+      }
       let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
         match ripple_get_fingerprint(rdb_loaded, path) {
           // #2391: both cache halves, or no reuse (see ensure_module_typed_lowering_offsets).
@@ -6184,6 +6304,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   // earlier compile of a since-edited file, without any eviction policy that
   // could drop a row the ACTIVE compile still needs.
   module_typed_lowering_memo_reset()
+  checked_module_cache_reset()
   // #2386: the source-text fingerprint memo spans one compile too.
   compact_source_fingerprint_memo_reset()
   let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)

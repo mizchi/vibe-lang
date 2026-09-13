@@ -256,19 +256,40 @@ export fn ast_binary_read_bool(r: AstBinaryReader) -> Bool {
 //# UTF-8 for anything read through `ast_binary_read_string_checked`, so this
 //# does not re-validate; a caller reading untrusted bytes through the raw
 //# reader gets the bytes it was given.
+let ast_binary_byte_strings: Array[String] = []
+
 export fn ast_binary_read_string(r: AstBinaryReader) -> String {
   let byte_len = ast_binary_read_varint(r)
+  if Array::length(ast_binary_byte_strings) == 0 {
+    let mut byte = 0
+    while byte < 256 {
+      Array::push(ast_binary_byte_strings, String::from_byte(byte))
+      byte = byte + 1
+    }
+  }
+  // Reuse a bounded array of byte references. One temporary String and one
+  // builder slot per byte exhausted wasm memory on compiler bundle literals.
+  // join copies verbatim, including UTF-8 sequences split across chunks.
+  let chunk: Array[String] = []
   let out = StringBuilder::new()
   let mut i = 0
-  while i < byte_len {
-    let b = ast_binary_read_byte(r)
-    if b < 0 {
-      ()
+  let mut used = 0
+  while i < byte_len && ast_binary_reader_remaining(r) > 0 {
+    let byte = Array::get(ast_binary_byte_strings, ast_binary_read_byte(r))
+    if used < Array::length(chunk) {
+      Array::set(chunk, used, byte)
     } else {
-      StringBuilder::push(out, String::from_byte(b))
+      Array::push(chunk, byte)
+    }
+    used = used + 1
+    if used == 1024 {
+      StringBuilder::push(out, String::join(chunk, ""))
+      used = 0
     }
     i = i + 1
   }
+  Array::truncate(chunk, used)
+  StringBuilder::push(out, String::join(chunk, ""))
   StringBuilder::freeze(out)
 }
 

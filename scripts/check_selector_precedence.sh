@@ -60,8 +60,10 @@ adapter, launcher, mode, enforced = sys.argv[1], sys.argv[2], sys.argv[3], sys.a
 # shape: it turns typing-dependency env reuse on for whichever COMPILE lane was
 # already selected, and every compile lane is later in the order, so ordering it
 # would have selector_clears_before unset it on exactly the lanes it exists for.
+# VIBE_CHECKED_MODULE_CACHE configures reuse within the selected lane.
 OBSERVATION_ONLY = {"VIBE_DIAGNOSTICS_ALL", "VIBE_PROFILE_MEMORY_MARKS", "VIBE_UNSTABLE",
-                    "VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE"}
+                    "VIBE_UNSTABLE_TYPING_DEP_ENV_REUSE_COMPILE",
+                    "VIBE_CHECKED_MODULE_CACHE"}
 
 # The order is SOURCE ORDER, and a selector counts wherever it is tested --
 # `let bytes = if Env::get("VIBE_COVERAGE") == "1" { .. } else if

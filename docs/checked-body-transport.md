@@ -11,10 +11,22 @@ using the job's actual dependency environments. Diagnosed modules return no
 bytes; parse failures propagate unchanged. Ordinary `check_module` does not
 construct this transport.
 
-These bytes are **transport, not evidence that a module is reusable**. A decoder
-cannot establish that bytes came from a successful producer. Persistent storage,
-current-input validation and production cache consumption are not connected to
-this format yet.
+`checker/artifacts/module` joins that program with its original located parser
+input and all per-module lowering rows. The FS coordinator persists and consumes
+this artifact through `runtime/checked_module_cache` when
+`VIBE_CHECKED_MODULE_CACHE` is `on`. The mode is opt-in; an empty setting or `off`
+uses the existing path. `verify` always checks afresh, compares any stored module
+with the new complete artifact, and sends the fresh result to codegen.
+
+A successful reuse supplies the parser AST to merge and the typed rows to the
+lowering/prelude consumers. It does not rerun inference or parse that body for
+codegen. The original parser AST is retained separately because codegen owns
+its desugars: replacing it with `CheckedProgram.checked_stmts` would apply some
+transformations twice. Existing header discovery and whole-program link work
+remain in their current phases.
+
+These bytes establish transport integrity and exact input agreement. They do
+not authenticate a producer against a party able to forge complete cache files.
 
 ## Complete program payload
 
@@ -27,9 +39,8 @@ this format yet.
 | `typed_occurrences` | Append-ordered `(offset, Type)` rows, including duplicate offsets |
 
 `typed_occurrences` is what the production checker records, not a fully
-elaborated typed IR. Additional lowering channels, including typed-equality
-keys, must join the enclosing module artifact before it can replace all
-codegen inputs.
+elaborated typed IR. The enclosing module artifact also retains the packed lowering-offset table
+and typed-equality offset/key rows that codegen reads independently of it.
 
 Syntax trees use the existing [AST Binary ABI](ast_binary_abi.md), including
 exact IEEE-754 float bits. There is no second syntax codec.
@@ -78,12 +89,61 @@ must describe typed public declarations independently of private bodies. Source
 or full program bytes must never stand in for public identity. Docs and positions
 must refresh even when the typed public interface is unchanged.
 
-The remaining #2505 integration must bind program, source/binder data, public
-interface, dependency assumptions, mode and lowering tables in one validated
-module artifact. Fresh and transported builds must agree on output **and
-diagnostics** across the full corpus before production reuse is enabled.
-Missing, stale, cross-mode or corrupt artifacts must fall back to checking.
-The per-module prelude (#2510) then consumes the artifact's tables.
+## Module format and cache policy
+
+`vMOD` version 1 starts with four magic bytes, a canonical unsigned version
+varint, then two little-endian unsigned 32-bit checksum fields. Its payload is
+an exact binary input identity, the complete located parser AST, the five
+`vCHK` program fields, packed lowering offsets, equality offsets and equality
+type keys. The program fields use the same codec directly, without a nested
+envelope or buffer copy. Counts frame variable-length fields. The two checksums
+use the arithmetic above and cover every payload byte; equality row counts must
+agree, and trailing data is refused. The existing atomic `VART1` artifact store
+is the outer envelope.
+
+The encoder writes directly into one buffer and fills the fixed checksum slots
+afterward. Verification compares that one encoding with stored bytes: exact
+agreement with the fresh result validates them without another decode or write.
+A difference is decoded to distinguish a corrupt entry (repair) from a valid
+artifact that disagrees with the checker (verification failure). The AST reader
+joins byte strings in bounded chunks, avoiding one allocation per byte of a
+compiler bundle literal.
+
+The input identity contains the compiler/cache version, typing semantics,
+`#cfg` flags, resolution context, normalized owner path, exact source and every
+resolved dependency environment in its actual order. Environments use the
+complete binary codec, including cached binding indexes and provenance. The
+older persistent TypeEnv text rebuilds those indexes and therefore cannot serve
+as this exact identity. A compact fingerprint only chooses the lookup slot;
+acceptance compares every input byte, even after a valid file is copied into a
+foreign slot.
+
+The identity excludes dependency implementation fingerprints. A private body
+edit can reuse consumers whose public dependency environments stayed equal;
+a public type edit invalidates the consumers whose inputs changed. The ordinary
+conservative fingerprint and public TypeEnv publication remain available to
+existing consumers. Comment, whitespace and doc edits change the owner's exact
+source identity and refresh its AST and offsets.
+
+Every module accepted by the enabled FS walk passes through this validation.
+Old TypeEnv/sidecar-only shortcuts cannot skip it. Missing, corrupt or foreign
+artifacts run the ordinary check and republish only after success. Diagnosed
+modules produce no artifact. The codegen AST memo is reset per compilation,
+checks exact source and context, and hands out a fresh top-level array so merge
+cannot mutate another consumer's input.
+
+Default activation and the remaining phase separation stay subject to corpus
+parity and compiler-sized cost measurements. The #2510 work still owns caching
+the prelude's derived tables and limiting its execution to edited modules; this
+artifact already supplies its AST and checker-owned lowering inputs.
+
+When this cache is enabled, `VIBE_INCREMENTAL_TELEMETRY_OUT` uses schema 3 and
+reports `modules_reused_checked_module_artifact` separately from conservative
+fingerprint and TDRE9 hits. The three reuse reasons sum to `modules_reused`.
+With the cache off, the existing schema 2 remains available. The edit-cycle KPI
+reader accepts both schemas and validates their exact fields and sums.
+The existing check-only KPI benchmark pins this cache off to preserve its
+documented TDRE9 measurement; the parity gate measures checked-module reuse.
 
 ## Verification
 
@@ -95,3 +155,22 @@ The existing AST binary tests cover every embedded syntax constructor.
 `runtime/module_program_transport_test.vibe` checks against a dependency
 environment and proves type, import, effect and parse failures retain ordinary
 checker diagnostics and produce no successful transport.
+
+`runtime/checked_module_cache/cache_test.vibe` proves actual codegen consumption,
+nonzero reuse after a meaning-changing private body edit, invalidation on a
+public type edit, diagnostic parity and exact input dimensions. Each execution
+uses a fresh directory so a previous test cannot supply its edited variants.
+
+`pkf run test-checked-module-cache-parity` compares Wasm bytes and complete
+diagnostics for every `fixtures/typecheck/expected.tsv` row with both entry
+choices, across off/verify/on modes. It requires real module publication and
+canonical repair after deletion, truncation, same-length corruption, a foreign
+source artifact and a cross-typing-mode artifact, in both on and verify modes.
+It requires telemetry to prove that reuse skipped real checker calls, and an
+invalid mode must refuse while clearing stale success telemetry.
+`--units` additionally checks
+every active file discovered by the unit runner. Pass `VIBE_STAGE2_WASM` to select
+the freshly built compiler; the gate records its SHA-256 and retains evidence.
+Both selections also repeat a compiler-import fixture after publication to
+exercise warm verification with large bundle literals. The default selection
+runs in the operation gate's early lane.

@@ -1,0 +1,130 @@
+import @vibe/compiler/cache {
+  ast_binary_write_string, ast_binary_write_varint, load_persistent_artifact, persistent_artifact_input_context, store_persistent_artifact
+}
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact, checked_module_input_fingerprint, decode_checked_module_artifact, encode_checked_module_artifact
+}
+import @vibe/compiler/core {
+  Stmt, TypeEnv, normalize_path
+}
+import @vibe/compiler/checker/artifacts/program {
+  write_checked_environment
+}
+
+let checked_cache_mode: Array[String] = ["off"]
+let checked_cache_paths: Array[String] = []
+let checked_cache_sources: Array[String] = []
+let checked_cache_stmts: Array[Array[Stmt]] = []
+let checked_cache_counts: Array[Int] = [0, 0, 0]
+let checked_cache_version: Array[String] = []
+
+export fn set_checked_module_cache_mode(mode: String) -> Unit with Exception {
+  if mode != "off" && mode != "verify" && mode != "on" {
+    throw("set VIBE_CHECKED_MODULE_CACHE to off, verify, or on")
+  }
+  Array::set(checked_cache_mode, 0, mode)
+  checked_module_cache_reset()
+}
+
+export fn checked_module_cache_mode() -> String {
+  Array::get(checked_cache_mode, 0)
+}
+
+/// Rows belong to one completed module walk. No previous compilation or mode
+/// may supply the AST of a file that this walk did not validate.
+export fn checked_module_cache_reset() -> Unit {
+  Array::truncate(checked_cache_paths, 0)
+  Array::truncate(checked_cache_sources, 0)
+  Array::truncate(checked_cache_stmts, 0)
+  Array::truncate(checked_cache_version, 0)
+  Array::push(checked_cache_version, persistent_artifact_input_context())
+  let mut i = 0
+  while i < 3 {
+    Array::set(checked_cache_counts, i, 0)
+    i = i + 1
+  }
+}
+
+/// Reused modules, freshly checked modules, AST hand-outs to merge/codegen.
+export fn checked_module_cache_stats() -> (Int, Int, Int) {
+  (Array::get(checked_cache_counts, 0), Array::get(checked_cache_counts, 1), Array::get(checked_cache_counts, 2))
+}
+
+export fn checked_module_cache_input_identity(path: String, source: String, semantics_seed: String, deps: Array[(String, TypeEnv)]) -> Bytes {
+  let out = Bytes::new()
+  ast_binary_write_string(out, "checked-module-input-v1")
+  ast_binary_write_string(out, persistent_artifact_input_context())
+  ast_binary_write_string(out, normalize_path(path))
+  ast_binary_write_string(out, source)
+  ast_binary_write_string(out, semantics_seed)
+  ast_binary_write_varint(out, Array::length(deps))
+  for dep in deps {
+    ast_binary_write_string(out, dep.0)
+    write_checked_environment(out, dep.1)
+  }
+  out
+}
+
+export fn load_checked_module_artifact(path: String, input_identity: Bytes) -> Option[CheckedModuleArtifact] with Exception + Fs {
+  match load_persistent_artifact("checked-module-v1", path, checked_module_input_fingerprint(input_identity)) {
+    Some(bytes) => decode_checked_module_artifact(bytes, input_identity),
+    None => None
+  }
+}
+
+export fn commit_checked_module_artifact(path: String, source: String, artifact: CheckedModuleArtifact, fresh: Bool) -> Unit with Exception + Fs {
+  if fresh {
+    let encoded = encode_checked_module_artifact(artifact)
+    let fingerprint = checked_module_input_fingerprint(artifact.input_identity)
+    let mut already_canonical = false
+    if checked_module_cache_mode() == "verify" {
+      match load_persistent_artifact("checked-module-v1", path, fingerprint) {
+        Some(previous) => if previous == encoded {
+          // Exact agreement with a fresh checker result validates every byte.
+          // No second tree or replacement envelope needs to be allocated.
+          already_canonical = true
+        } else {
+          match decode_checked_module_artifact(previous, artifact.input_identity) {
+            Some(_) => throw(String::concat("checked module cache verification mismatch: ", path)),
+            None => ()
+          }
+        },
+        None => ()
+      }
+    }
+    if already_canonical {
+      ()
+    } else {
+      store_persistent_artifact("checked-module-v1", path, fingerprint, encoded)
+    }
+  }
+  let slot = if fresh {
+    1
+  } else {
+    0
+  }
+  Array::set(checked_cache_counts, slot, Array::get(checked_cache_counts, slot) + 1)
+  Array::push(checked_cache_paths, path)
+  Array::push(checked_cache_sources, source)
+  Array::push(checked_cache_stmts, artifact.parsed_stmts)
+}
+
+export fn checked_module_artifact_stmts(path: String, source: String) -> Option[Array[Stmt]] {
+  if checked_module_cache_mode() == "off" || Array::length(checked_cache_version) == 0 ||
+  Array::get(checked_cache_version, 0) != persistent_artifact_input_context() {
+    return None
+  }
+  let mut i = 0
+  while i < Array::length(checked_cache_paths) {
+    if Array::get(checked_cache_paths, i) == path && Array::get(checked_cache_sources, i) == source {
+      let out: Array[Stmt] = []
+      for stmt in Array::get(checked_cache_stmts, i) {
+        Array::push(out, stmt)
+      }
+      Array::set(checked_cache_counts, 2, Array::get(checked_cache_counts, 2) + 1)
+      return Some(out)
+    }
+    i = i + 1
+  }
+  None
+}

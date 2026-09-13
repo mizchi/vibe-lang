@@ -36,6 +36,11 @@ if [ "$fsres" != "42" ]; then
 fi
 echo "[compiler-gate] multi-file FS-compile ok (42)"
 
+# Keep complete checked-module transport aligned with the real FS output and
+# diagnostics corpus, including compiler-sized input and hostile cache repair.
+echo "[compiler-gate] checked-module cache parity (#2505)"
+VIBE_STAGE2_WASM="$stage2_wasm" bash scripts/checked_module_cache_parity.sh
+
 # 4b. deep-recursion effect resume regression (#737): a perform issued from a
 #     RECURSIVE frame, handled by an in-language handler OUTSIDE the recursion
 #     that bridges to a host builtin, used to deliver the FIRST resume's value
