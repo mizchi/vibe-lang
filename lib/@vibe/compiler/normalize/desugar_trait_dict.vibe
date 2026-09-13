@@ -3225,15 +3225,66 @@ fn dtd_erased_interp_msg(tp: String) -> String {
 
 /// The formal this interpolation would render, when it is one a nested binder
 /// bound; "" otherwise (a concrete type, a top-level formal, or no answer).
+///
+/// #2745 (Codex, P1 round 2 on #2761): walks THROUGH the forms whose value comes
+/// from a sub-expression. `infer_arg_type_name` answers None for them, so
+/// `"\{if c { a } else { a }}"` with `a: T` slipped past the refusal and printed
+/// the representation -- measured `260`, the tagged pointer, for both the `if`
+/// and the `match` spelling. Wrapping the operand is not a different program.
+///
+/// ANY branch decides, not agreement between them: a branch whose value is an
+/// erased formal renders that branch's representation whatever the others hold,
+/// so `if c { a } else { "s" }` is unsound exactly when the first arm is taken.
+/// Fail-closed is the same reading the rest of this refusal takes.
 fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
-  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-    Some(tn) => if formal_in_scope(tn) && dtd_formal_innermost_is_nested(tn) {
-      tn
-    } else {
-      ""
+  match arg {
+    EIf(_, conseq, alt) => {
+      let from_conseq = dtd_erased_interp_formal(conseq, struct_sets, var_types, fn_returns)
+      if String::length(from_conseq) > 0 {
+        from_conseq
+      } else {
+        dtd_erased_interp_formal(alt, struct_sets, var_types, fn_returns)
+      }
     },
-    None => ""
+    EMatch(_, arms) => dtd_erased_interp_arms(arms, struct_sets, var_types, fn_returns),
+    EHandle(body, arms) => {
+      let from_body = dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns)
+      if String::length(from_body) > 0 {
+        from_body
+      } else {
+        dtd_erased_interp_arms(arms, struct_sets, var_types, fn_returns)
+      }
+    },
+    ESeq(_, last) => dtd_erased_interp_formal(last, struct_sets, var_types, fn_returns),
+    ELet(_, _, body, _) => dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns),
+    ELetMut(_, _, body, _) => dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns),
+    ELetRec(_, _, body) => dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns),
+    _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+      Some(tn) => if formal_in_scope(tn) && dtd_formal_innermost_is_nested(tn) {
+        tn
+      } else {
+        ""
+      },
+      None => ""
+    }
   }
+}
+
+/// The first arm whose value is an erased nested formal; "" when none is.
+fn dtd_erased_interp_arms(arms: Array[(Pat, Expr)], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(arms) {
+    let (_, body) = Array::get(arms, i)
+    let from_arm = dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns)
+    if String::length(from_arm) > 0 {
+      found = from_arm
+      i = Array::length(arms)
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 fn dtd_check_unthreaded_interp(resolved: Option[String], head: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], fn_returns: Array[(String, String)]) -> Unit with Exception {
