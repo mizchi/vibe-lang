@@ -162,3 +162,15 @@ test "a callee with no top-level signature is declined and still answers" {
   let _ = assert_bump_rc_agree(src, "indirect", "709")
   ()
 }
+
+test "a local binding shadowing a heap-returning global is declined" {
+  // The three contract tables are keyed by GLOBAL name; the call dispatches to
+  // whatever `mk` resolves to here, which is the local closure handing back an
+  // element `xs` owns. Without the scope check the guarded drop is emitted for
+  // it (+18 B of code, measured); the answer does not change, because `t`'s
+  // scope runs past the reads -- so this pins the decline, and the code
+  // difference is what the check actually buys.
+  let src = String::concat(prelude, "let mk: (Array[Node]) -> Node = (zs) -> Pair(Leaf(1), Leaf(1))\nlet pick: (Bool) -> Node = (c) -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let mk: (Array[Node]) -> Node = (ys) -> Array::get(ys, 0)\n  let t = mk(xs)\n  if c {\n    t\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
+  let _ = assert_bump_rc_agree(src, "local_shadow", "709")
+  ()
+}

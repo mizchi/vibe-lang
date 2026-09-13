@@ -348,46 +348,31 @@ merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
   literal or an arithmetic value (it holds no reference at all); a lambda; a
   loop; a `handle`.
 
-  The heap-return requirement is the load-bearing half, and the borrow and
-  view tests beside it are belt-and-braces: a function can be declared
-  heap-returning AND borrow-returning, so the contract has to read all three,
-  but every shape tried where only those two decide is already declined by a
-  guard computed elsewhere (`is_borrow_ret_ext` for a direct call,
-  `value_borrow_like` for an if/match value). Removing them from the leaf did
-  not change an answer in any case built for it. They stay because the
-  predicate should answer on its own rather than inherit a decision another
-  pass made for another reason, and they are pinned as regression guards in
-  `perceus_path_release_e2e_test.vibe` -- honestly labelled there as guards,
-  not as red tests.
+  All three tables are keyed by GLOBAL name while the call dispatches to
+  whatever the name resolves to at the site, so a callee bound LOCALLY -- a
+  parameter, or a local closure shadowing a heap-returning global -- is
+  declined before any of them is read. The `agg_ret` lookup in the same
+  function excludes a local for the same reason (#724 round 2).
 
-  Looking for a red test for them turned up a REAL defect, in the ordinary
-  drop rather than this one: `let t = { let k = 0; Array::get(xs, k) }` binds
-  an unowned view that nothing classifies as one, because
+  The heap-return requirement is the load-bearing half of the contract. The
+  borrow and view tests beside it are belt-and-braces: a function can be
+  declared heap-returning AND borrow-returning, so all three have to be read,
+  but in every shape built for them the binding is already declined by a guard
+  computed elsewhere (`is_borrow_ret_ext` for a direct call, `value_borrow_like`
+  for an if/match value), and removing them from the leaf changed no answer.
+  They stay so the predicate answers on its own rather than inheriting a
+  decision another pass made for another reason.
+
+  **Adjacent, and not fixed by any of this: #2733.** `let t = { let k = 0;
+  Array::get(xs, k) }` binds an unowned view that nothing classifies as one --
   `classify_let_value_heap` reads a callee only when the value node IS the
   call, `value_has_borrowed_branch_tail` runs only for an if/match value node,
-  and `pctx_mark_view_call` matches only an `ECall` value. The scope-end drop
-  then frees an element the array still owns -- measured on `79c8688`, a
-  20-line program answers 91515 under `VIBE_RC=1` against 90715 on bump, with
-  no trap. That is **#2733**, filed rather than fixed here: it reproduces with
-  no branch at all, so it is not this feature's, and the fix changes how every
-  block-valued `let` in the compiler is classified.
+  and `pctx_mark_view_call` matches only an `ECall` value. The ORDINARY
+  scope-end drop then frees an element the array still owns: 91515 against
+  bump's 90715, no trap. It needs no branch, so it is not this feature's, and
+  the same hole reaches a call through a parameter. Read that issue before
+  widening any of the classifications above.
 
-  **The call class was excluded for a reason that did not survive
-  re-measurement, and that is worth recording.** The first version of this
-  section said admitting call results "miscompiled the compiler itself" --
-  five unit files answering wrongly with no trap (`eq_unbounded_formal_test`,
-  `parser_test`, and three #2357 trait-dict files) -- because excluding
-  exactly that class made all five green again. Re-measured on this tree with
-  the whole class admitted, all five PASS. The bisection that produced the
-  exclusion ran BEFORE the alias-transfer bug below was found, and that bug
-  (an occurrence spending the initial reference outside `pe_use`, so the
-  guarded drop freed a moved value) is what the five files were failing on.
-  Narrowing the value shape removed enough guarded drops to hide it. So
-  "call-valued" was a PROXY for the real defect, not a cause -- the failure
-  mode `CLAUDE.md` warns about when it says a check means nothing until it is
-  shown able to fail, here in the choice of a rule rather than in a gate. What
-  the rule tests now is the property itself: does the binding hold a reference
-  this scope owns?
 - Every occurrence that spends the initial reference must have a source offset.
   A lambda capture has none (the planner walks captures with -1), so codegen
   would have no site to set the flag at; the binding keeps today's behavior

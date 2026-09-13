@@ -1295,7 +1295,17 @@ fn value_has_borrowed_branch_tail(e: Expr, ctx: CompileCtx) -> Bool {
 /// - a call to a NAMED function whose DECLARED return type is heap
 ///   (`ctx.heap_ret_names`, #791's signature scan) and which neither returns a
 ///   borrow (#707's `borrow_ret_names` / the intrinsic set) nor may return an
-///   interior view (#768's `borrow_view_ret`). That is the callee's own
+///   interior view (#768's `borrow_view_ret`) -- and whose name is not bound
+///   LOCALLY, since all three of those tables are keyed by global name while
+///   the call dispatches to whatever the name resolves to here. A parameter or
+///   a local closure shadowing a heap-returning global would otherwise be read
+///   through the global's contract, exactly the case the `agg_ret` lookup
+///   below already excludes for the same reason (#724 round 2). Measured: with
+///   the scope check removed, `let mk = (ys) -> Array::get(ys, 0); let t =
+///   mk(xs)` under a heap-returning global `mk` emits the guarded drop for a
+///   binding holding an element `xs` owns (+18 B of code); no arrangement of
+///   it was found that turns that into a wrong answer, so the check is taken
+///   for the rule, not for a repro. That is the callee's own
 ///   contract, read off its signature -- NOT the "any ECall is heap" default
 ///   `classify_let_value_heap` falls back to. That default is an
 ///   over-approximation deliberately chosen because a dup/drop no-ops on what
@@ -1313,7 +1323,7 @@ fn value_has_borrowed_branch_tail(e: Expr, ctx: CompileCtx) -> Bool {
 /// local, two stores and a guarded `rc_drop` for a heap figure that did not
 /// move -- 32,828 B either way -- and +2.84% fuel); a lambda; a loop; a
 /// `handle`.
-fn path_value_owned(e: Expr, ctx: CompileCtx) -> Bool {
+fn path_value_owned(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
   match e {
     ETuple(_) => true,
     EArray(_) => true,
@@ -1322,11 +1332,11 @@ fn path_value_owned(e: Expr, ctx: CompileCtx) -> Bool {
       EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
         true
       } else {
-        bsearch_leftmost(ctx.heap_ret_names, cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(ctx.borrow_ret_names, cn) < 0 && bsearch_leftmost(ctx.borrow_view_ret, cn) < 0
+        find_local_slot(local_names, cn) < 0 && bsearch_leftmost(ctx.heap_ret_names, cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(ctx.borrow_ret_names, cn) < 0 && bsearch_leftmost(ctx.borrow_view_ret, cn) < 0
       },
       _ => false
     },
-    EIf(_, t, el) => path_value_owned(t, ctx) && path_value_owned(el, ctx),
+    EIf(_, t, el) => path_value_owned(t, local_names, ctx) && path_value_owned(el, local_names, ctx),
     // An arm-less match produces no value on any path, so there is nothing to
     // own; `&&` over zero arms would answer true.
     EMatch(_, arms) => if Array::length(arms) == 0 {
@@ -1336,7 +1346,7 @@ fn path_value_owned(e: Expr, ctx: CompileCtx) -> Bool {
       let mut i = 0
       while i < Array::length(arms) {
         let (_, ab) = Array::get(arms, i)
-        if path_value_owned(ab, ctx) {
+        if path_value_owned(ab, local_names, ctx) {
           ()
         } else {
           ok = false
@@ -1345,12 +1355,12 @@ fn path_value_owned(e: Expr, ctx: CompileCtx) -> Bool {
       }
       ok
     },
-    ELet(_, _, b, _) => path_value_owned(b, ctx),
-    ELetMut(_, _, b, _) => path_value_owned(b, ctx),
-    ELetRec(_, _, b) => path_value_owned(b, ctx),
-    ESeq(_, b) => path_value_owned(b, ctx),
-    EAssign(_, _, b) => path_value_owned(b, ctx),
-    EAssignOp(_, _, _, b) => path_value_owned(b, ctx),
+    ELet(_, _, b, _) => path_value_owned(b, local_names, ctx),
+    ELetMut(_, _, b, _) => path_value_owned(b, local_names, ctx),
+    ELetRec(_, _, b) => path_value_owned(b, local_names, ctx),
+    ESeq(_, b) => path_value_owned(b, local_names, ctx),
+    EAssign(_, _, b) => path_value_owned(b, local_names, ctx),
+    EAssignOp(_, _, _, b) => path_value_owned(b, local_names, ctx),
     _ => false
   }
 }
@@ -1628,7 +1638,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // the program and every one on the bump lane, never pays for
     // `path_value_owned`. Every operand is pure, so the order is a cost
     // choice only.
-    let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(ctx.rc_path_drop_names, name) && path_value_owned(value, ctx) && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
+    let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(ctx.rc_path_drop_names, name) && path_value_owned(value, local_names, ctx) && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
     let path_flag_l = if path_drop {
       // `local_names` is indexed BY wasm local index (compile_expr resolves an
       // identifier to its slot by position), so a flag local may only be
