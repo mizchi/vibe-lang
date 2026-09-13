@@ -57,6 +57,10 @@ import @vibe/compiler/checker/artifacts {
   shadow_unattested_checked_module_typing_artifact_v2_from_checked_program
 }
 
+import @vibe/compiler/checker/artifacts/program {
+  encode_checked_program
+}
+
 import @vibe/compiler/core {
   BindingOrigin,
   Expr,
@@ -4985,7 +4989,7 @@ export fn checked_module_typing_artifact_observation_is_fresh_for_job(job: Modul
 /// Pure module check implementation. Artifact observation is explicitly opt-in:
 /// the production incremental path must not allocate canonical shadow bytes for
 /// every checked module when no observer consumes them.
-fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOutcome with Exception {
+fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]]) -> ModuleOutcome with Exception {
   // Parse stays OUTSIDE the handler below: parse errors currently
   // propagate verbatim, while type errors get located and path-prefixed.
   // Folding both into one handler would relabel every parse diagnostic.
@@ -5056,6 +5060,10 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
       } else {
         None
       }
+      match program_transport {
+        Some(output) => Array::push(output, encode_checked_program(checked_program)),
+        None => ()
+      }
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
     } with { Exception::Throw(msg) => {
       let located = locate_type_error(job.source, msg)
@@ -5070,13 +5078,28 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool) -> ModuleOut
 /// Production module check. No Fs: dependency environments are already values
 /// inside the job. Shadow artifact observation stays disabled by default.
 export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
-  check_module_impl(job, false)
+  check_module_impl(job, false, None)
 }
 
 /// Opt-in trusted #1550 observation producer. This runs the same complete module
 /// checker and retains canonical bytes only in its opaque successful outcome.
 export fn check_module_with_typing_artifact_observation(job: ModuleJob) -> ModuleOutcome with Exception {
-  check_module_impl(job, true)
+  check_module_impl(job, true, None)
+}
+
+/// Check against the job's actual import environment and retain the complete
+/// result from that one successful invocation. Diagnosed modules have no bytes;
+/// parse failures propagate exactly as in check_module. This transport has no
+/// persistent identity or cache authority until a coordinator binds its inputs.
+export fn check_module_with_program_transport(job: ModuleJob) -> (ModuleOutcome, Option[Bytes]) with Exception {
+  let output: Array[Bytes] = []
+  let outcome = check_module_impl(job, false, Some(output))
+  let bytes = if Array::length(output) == 1 {
+    Some(Array::get(output, 0))
+  } else {
+    None
+  }
+  (outcome, bytes)
 }
 
 /// Coordinator-owned commit. Every filesystem and accumulator write for a

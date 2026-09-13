@@ -1,0 +1,305 @@
+import @vibe/compiler/checker/artifacts/program {
+  decode_checked_program, encode_checked_program
+}
+
+import @vibe/compiler/checker/artifacts {
+  checked_exported_interface_artifact_fingerprint_v1, checked_exported_interface_artifact_from_checked_program
+}
+
+import @vibe/compiler/checker {
+  CheckedProgram, check_program_result
+}
+
+import @vibe/compiler/core {
+  BindingOrigin,
+  EnvValueBinding,
+  Expr,
+  Stmt,
+  Subst,
+  Type,
+  TypeDef,
+  TypeEnv,
+  TypeExpr,
+  env_lookup,
+  env_lookup_binding,
+  env_mut_escape,
+  env_selectable_type_defs,
+  subst_apply,
+  trait_defined,
+  type_to_string
+}
+
+import @vibe/compiler/cache {
+  ast_binary_write_varint
+}
+
+import @vibe/compiler/codegen/wasi {
+  compile_wasi_module_rc_impl
+}
+
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+
+fn checked_source(source: String) -> CheckedProgram with Exception {
+  let (tokens, offsets, _) = lex_with_offsets(source)
+  check_program_result(parse_program_located(tokens, offsets, source))
+}
+
+fn restored(checked: CheckedProgram) -> CheckedProgram with Exception {
+  match decode_checked_program(encode_checked_program(checked)) {
+    Some(value) => value,
+    None => throw("checked program did not decode")
+  }
+}
+
+fn public_identity(checked: CheckedProgram) -> String with Exception {
+  match checked_exported_interface_artifact_from_checked_program(checked) {
+    Some(artifact) => checked_exported_interface_artifact_fingerprint_v1(artifact),
+    None => throw("missing public interface")
+  }
+}
+
+test "transport keeps public identity separate from private body and location edits" {
+  let before = restored(checked_source("fn hidden() -> Int { 1 }\nexport let api = 42"))
+  let body_edit = restored(checked_source("fn hidden() -> Int { 2 }\nexport let api = 42"))
+  let location_edit = restored(checked_source("// changed location\nfn hidden() -> Int { 1 }\nexport let api = 42"))
+  let public_edit = restored(checked_source("fn hidden() -> Int { 1 }\nexport let api = \"42\""))
+  inspect(public_identity(before) == public_identity(body_edit), content = "true")
+  inspect(public_identity(before) == public_identity(location_edit), content = "true")
+  inspect(public_identity(before) != public_identity(public_edit), content = "true")
+  inspect(encode_checked_program(before) != encode_checked_program(body_edit), content = "true")
+}
+
+test "checked program transport restores a complete production result" {
+  let source =
+  "export struct Box[T] { value: T }\nexport fn make(n: Int) -> Box[Int] { Box[Int]::{ value: n } }\nfn value(n: Int) -> Int { let p = make(n); p.value }\nlet answer = value(42)"
+  let original = checked_source(source)
+  let decoded = restored(original)
+  inspect(Array::length(decoded.checked_stmts), content = "4")
+  inspect(Array::length(decoded.type_defs) == Array::length(original.type_defs), content = "true")
+  inspect(Array::length(decoded.typed_occurrences) == Array::length(original.typed_occurrences), content = "true")
+  inspect(Array::length(decoded.typed_occurrences) > 0, content = "true")
+  inspect(env_lookup(decoded.final_env, "answer") is Some(CtInt), content = "true")
+  inspect(encode_checked_program(decoded) == encode_checked_program(original), content = "true")
+}
+
+test "checked program transport preserves lookup order provenance and cached substitution" {
+  let exported = EnvValueBinding::{
+    ty: CtString,
+    origin: BindingOriginModuleExport("dep.vibe", "public")
+  }
+  let hidden = EnvValueBinding::{ ty: CtInt, origin: BindingOriginUnavailable }
+  let env = EnvCached(["x", "x"], [exported, hidden], EnvMutCell("cell", true, EnvBind("x", exported, EnvFlat([
+    ("x", hidden)
+  ]))))
+  let subst = SubstCached(Map::from_pairs([
+    ("7", CtDouble),
+    ("8", CtString),
+    ("9", CtInt)
+  ]), Map::from_pairs([("7", ["Eq"]), ("8", ["Show"])]), SubstEffBind("e", "Stdout", SubstBound(7, [
+    "Eq"
+  ], SubstBind(7, CtDouble, SubstEmpty))))
+  let original = CheckedProgram::{
+    checked_stmts: [SExpr(EInt(42))],
+    final_env: env,
+    type_defs: [],
+    final_subst: subst,
+    typed_occurrences: [(17, CtVar(7)), (17, CtString)]
+  }
+  let decoded = restored(original)
+  inspect(encode_checked_program(decoded) == encode_checked_program(original), content = "true")
+  inspect(env_lookup(decoded.final_env, "x") is Some(CtString), content = "true")
+  inspect(env_mut_escape(decoded.final_env, "cell") is Some(true), content = "true")
+  match env_lookup_binding(decoded.final_env, "x") {
+    Some(binding) => match binding.origin {
+      BindingOriginModuleExport(path, name) => inspect((path, name), content = "(dep.vibe, public)"),
+      _ => assert(false)
+    },
+    None => assert(false)
+  }
+  inspect(subst_apply(decoded.final_subst, CtVar(7)) is CtDouble, content = "true")
+  inspect(subst_apply(decoded.final_subst, CtVar(8)) is CtString, content = "true")
+  let rows: Array[(Int, String)] = for row in decoded.typed_occurrences {
+    (row.0, type_to_string(row.1))
+  }
+  inspect(rows, content = "[(17, ?t7), (17, String)]")
+}
+
+test "checked program transport rejects truncation trailing bytes and unknown versions" {
+  let encoded = encode_checked_program(checked_source("let answer = 42"))
+  let mut end = 0
+  while end < 32 && end < Bytes::length(encoded) {
+    inspect(decode_checked_program(Bytes::slice(encoded, 0, end)) is None, content = "true")
+    inspect(decode_checked_program(Bytes::slice(encoded, 0, Bytes::length(encoded) - end - 1)) is None, content = "true")
+    end = end + 1
+  }
+  let trailing = Bytes::slice(encoded, 0, Bytes::length(encoded))
+  Bytes::push(trailing, 0)
+  inspect(decode_checked_program(trailing) is None, content = "true")
+  let version = Bytes::slice(encoded, 0, Bytes::length(encoded))
+  Bytes::set(version, 4, 255)
+  inspect(decode_checked_program(version) is None, content = "true")
+  let changed = Bytes::slice(encoded, 0, Bytes::length(encoded))
+  let last = Bytes::length(changed) - 1
+  Bytes::set(changed, last, Bytes::get(changed, last)^1)
+  inspect(decode_checked_program(changed) is None, content = "true")
+}
+
+test "checked program transport covers every semantic type and declaration" {
+  let types: Array[Type] = [
+    CtInt,
+    CtDouble,
+    CtBool,
+    CtString,
+    CtChar,
+    CtUnit,
+    CtTuple([CtInt, CtString]),
+    CtArray(CtDouble),
+    CtOption(CtChar),
+    CtFn([CtInt, CtChar], CtString, Some("Stdout")),
+    CtFn([], CtUnit, None),
+    CtEnum("Choice"),
+    CtStruct("Point"),
+    CtBytes,
+    CtNamed("Box", [CtInt]),
+    CtConstructor("Array", 1),
+    CtApplied(CtVar(7), [CtString]),
+    CtVar(8),
+    CtForAll([9, 10], [(10, ["Eq", "Ord"])], CtFn([CtVar(9)], CtVar(10), Some("e"))),
+    CtUnknown,
+    CtRecord([("a", CtInt), ("b", CtString)])
+  ]
+  let defs: Array[TypeDef] = [
+    TDEnum("Choice", ["T"], [("Value", [CtNamed("T", [])]), ("Empty", [])]),
+    TDStruct("Point", [("x", CtInt)], ["x"], []),
+    TDAlias("Count", [], CtInt),
+    TDEffect("Log", [("Emit", [CtString], CtUnit)], ["T"]),
+    TDEffectSet("Console", ["Log"])
+  ]
+  let env = EnvTraitDef("Show", ["Eq"], false, [
+    ("show", [TyName("Self"), TyTuple([TyUnit])], TyFn([], TyName("String"), Some("Log")))
+  ], EnvTraitImpl("Show", CtInt, EnvTraitImplGen("Eq", ["T"], [("T", ["Eq"])], CtNamed("Box", [
+    CtNamed("T", [])
+  ]), EnvTypeDefs(defs, ["Choice", "Point"], EnvBind("surface", EnvValueBinding::{
+    ty: CtInt,
+    origin: BindingOriginReExportSurface("facade.vibe", "answer")
+  }, EnvEmpty)))), ["Self"], [("show", ["U"], [("U", ["Show"])])])
+  let rows: Array[(Int, Type)] = []
+  let mut i = 0
+  while i < Array::length(types) {
+    Array::push(rows, (i, Array::get(types, i)))
+    i = i + 1
+  }
+  let original = CheckedProgram::{
+    checked_stmts: [],
+    final_env: env,
+    type_defs: defs,
+    final_subst: SubstEmpty,
+    typed_occurrences: rows
+  }
+  let decoded = restored(original)
+  inspect(encode_checked_program(decoded) == encode_checked_program(original), content = "true")
+  inspect(env_selectable_type_defs(decoded.final_env), content = "[Choice, Point]")
+  inspect(trait_defined(decoded.final_env, "Show"), content = "true")
+  let names: Array[String] = for row in decoded.typed_occurrences {
+    type_to_string(row.1)
+  }
+  inspect(Array::length(names), content = "21")
+  inspect(Array::get(names, 1), content = "Double")
+  inspect(Array::get(names, 17), content = "?t8")
+}
+
+// Handcrafted wire payloads exercise the decoder independently of its writer.
+fn test_wire(payload: Array[Int]) -> Bytes {
+  let out = Bytes::from_array([118, 67, 72, 75, 1])
+  let mut first = 17
+  let mut second = 29
+  for byte in payload {
+    first = (first * 131 + byte) % 2147483647
+    second = (second * 137 + byte) % 2147483629
+  }
+  ast_binary_write_varint(out, first)
+  ast_binary_write_varint(out, second)
+  Bytes::append(out, Bytes::from_array(payload))
+  out
+}
+
+test "checked program transport validates structure even with a valid checksum" {
+  // Empty AST, empty environment, no declarations, empty substitution, no rows.
+  let empty = test_wire([118, 65, 83, 84, 1, 0, 1, 0, 1, 0])
+  inspect(decode_checked_program(empty) is Some(_), content = "true")
+  let minimal = CheckedProgram::{
+    checked_stmts: [],
+    final_env: EnvEmpty,
+    type_defs: [],
+    final_subst: SubstEmpty,
+    typed_occurrences: []
+  }
+  inspect(encode_checked_program(minimal) == empty, content = "true")
+  // Unknown environment tag; unknown substitution tag; trailing payload.
+  inspect(decode_checked_program(test_wire([118, 65, 83, 84, 1, 0, 255, 0, 1, 0])) is None, content = "true")
+  inspect(decode_checked_program(test_wire([118, 65, 83, 84, 1, 0, 1, 0, 255, 0])) is None, content = "true")
+  inspect(decode_checked_program(test_wire([
+    118,
+    65,
+    83,
+    84,
+    1,
+    0,
+    1,
+    0,
+    1,
+    0,
+    0
+  ])) is None, content = "true")
+  // An EnvCached with one name but no values cannot be a usable index.
+  inspect(decode_checked_program(test_wire([
+    118,
+    65,
+    83,
+    84,
+    1,
+    0,
+    9,
+    1,
+    1,
+    120,
+    0,
+    1,
+    0,
+    1,
+    0
+  ])) is None, content = "true")
+  // A noncanonical zero count must not be accepted as an empty AST.
+  inspect(decode_checked_program(test_wire([
+    118,
+    65,
+    83,
+    84,
+    1,
+    128,
+    0,
+    1,
+    0,
+    1,
+    0
+  ])) is None, content = "true")
+}
+
+test "checked program transport generates the same wasm as a fresh check" {
+  let sources = [
+    "fn run() -> Int { 42 }",
+    "fn run() -> Int { let mut n = 0; while n < 10 { n = n + 1 }; n }",
+    "struct Box[T] { value: T }\nfn run() -> Int { let b = Box[Int]::{ value: 42 }; b.value }",
+    "fn run() -> Int { let x = 9; let f = (n) -> { x - n }; f(2) }",
+    "enum Choice { A(Int); B }\nfn run() -> Int { match A(42) { A(n) => n, B => 0 } }"
+  ]
+  for source in sources {
+    let original = checked_source(source)
+    let decoded = restored(original)
+    let fresh = compile_wasi_module_rc_impl(original.checked_stmts, "run")
+    let transported = compile_wasi_module_rc_impl(decoded.checked_stmts, "run")
+    inspect(fresh == transported, content = "true")
+  }
+}

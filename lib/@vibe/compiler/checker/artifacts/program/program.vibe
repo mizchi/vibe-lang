@@ -1,0 +1,1042 @@
+import @vibe/compiler/cache {
+  AstBinaryReader,
+  ast_binary_read_bool_checked,
+  ast_binary_read_byte_checked,
+  ast_binary_read_count_checked,
+  ast_binary_read_module,
+  ast_binary_read_optstr_checked,
+  ast_binary_read_string_checked,
+  ast_binary_read_svarint_checked,
+  ast_binary_read_type_expr,
+  ast_binary_read_varint_checked,
+  ast_binary_reader_new,
+  ast_binary_reader_remaining,
+  ast_binary_write_bool,
+  ast_binary_write_module,
+  ast_binary_write_optstr,
+  ast_binary_write_string,
+  ast_binary_write_svarint,
+  ast_binary_write_type_expr,
+  ast_binary_write_varint
+}
+import @vibe/compiler/checker {
+  CheckedProgram
+}
+import @vibe/compiler/core {
+  BindingOrigin, EnvValueBinding, Subst, Type, TypeDef, TypeEnv, TypeExpr
+}
+
+/// Lossless transport of the production checker's result. Encoding does not
+/// attest checker success: cache policy must bind these bytes to trusted inputs.
+export fn encode_checked_program(checked: CheckedProgram) -> Bytes {
+  let payload = Bytes::new()
+  ast_binary_write_module(payload, checked.checked_stmts)
+  cp_write_env(payload, checked.final_env)
+  cp_write_array_type_def(payload, checked.type_defs)
+  cp_write_subst(payload, checked.final_subst)
+  cp_write_array_tuple_int_type(payload, checked.typed_occurrences)
+  let out = Bytes::new()
+  Bytes::push(out, 'v')
+  Bytes::push(out, 'C')
+  Bytes::push(out, 'H')
+  Bytes::push(out, 'K')
+  ast_binary_write_varint(out, 1)
+  let (first, second) = cp_checksum(payload, 0)
+  ast_binary_write_varint(out, first)
+  ast_binary_write_varint(out, second)
+  Bytes::append(out, payload)
+  out
+}
+
+/// Malformed or corrupt transport is a miss. No reconstruction parses source
+/// or reruns inference; every restored field comes from its encoded value.
+export fn decode_checked_program(bytes: Bytes) -> Option[CheckedProgram] {
+  handle {
+    let reader = ast_binary_reader_new(bytes)
+    if ast_binary_read_byte_checked(reader) != 'v' ||
+    ast_binary_read_byte_checked(reader) != 'C' ||
+    ast_binary_read_byte_checked(reader) != 'H' ||
+    ast_binary_read_byte_checked(reader) != 'K' ||
+    ast_binary_read_varint_checked(reader) != 1 {
+      throw("checked program: unsupported header")
+    }
+    let first = ast_binary_read_varint_checked(reader)
+    let second = ast_binary_read_varint_checked(reader)
+    let start = Bytes::length(bytes) - ast_binary_reader_remaining(reader)
+    let (expected_first, expected_second) = cp_checksum(bytes, start)
+    if first != expected_first || second != expected_second {
+      throw("checked program: checksum mismatch")
+    }
+    let checked_stmts = ast_binary_read_module(reader)
+    let final_env = cp_read_env(reader)
+    let type_defs = cp_read_array_type_def(reader)
+    let final_subst = cp_read_subst(reader)
+    let typed_occurrences = cp_read_array_tuple_int_type(reader)
+    if ast_binary_reader_remaining(reader) != 0 {
+      throw("checked program: trailing bytes")
+    }
+    Some(CheckedProgram::{
+      checked_stmts,
+      final_env,
+      type_defs,
+      final_subst,
+      typed_occurrences
+    })
+  } with { Exception::Throw(_) => None }
+}
+
+// Same corruption-detection arithmetic as the production codegen body cache.
+// This is not a proof of checker success or a substitute for input validation.
+fn cp_checksum(bytes: Bytes, start: Int) -> (Int, Int) {
+  let mut first = 17
+  let mut second = 29
+  let mut i = start
+  while i < Bytes::length(bytes) {
+    let byte = Bytes::get(bytes, i)
+    first = (first * 131 + byte) % 2147483647
+    second = (second * 137 + byte) % 2147483629
+    i = i + 1
+  }
+  (first, second)
+}
+
+fn cp_write_type(out: Bytes, value: Type) -> Unit {
+  match value {
+    CtInt => {
+      Bytes::push(out, 1)
+    },
+    CtDouble => {
+      Bytes::push(out, 2)
+    },
+    CtBool => {
+      Bytes::push(out, 3)
+    },
+    CtString => {
+      Bytes::push(out, 4)
+    },
+    CtChar => {
+      Bytes::push(out, 5)
+    },
+    CtUnit => {
+      Bytes::push(out, 6)
+    },
+    CtTuple(field_0) => {
+      Bytes::push(out, 7)
+      cp_write_array_type(out, field_0)
+    },
+    CtArray(field_0) => {
+      Bytes::push(out, 8)
+      cp_write_type(out, field_0)
+    },
+    CtOption(field_0) => {
+      Bytes::push(out, 9)
+      cp_write_type(out, field_0)
+    },
+    CtFn(field_0, field_1, field_2) => {
+      Bytes::push(out, 10)
+      cp_write_array_type(out, field_0)
+      cp_write_type(out, field_1)
+      ast_binary_write_optstr(out, field_2)
+    },
+    CtEnum(field_0) => {
+      Bytes::push(out, 11)
+      ast_binary_write_string(out, field_0)
+    },
+    CtStruct(field_0) => {
+      Bytes::push(out, 12)
+      ast_binary_write_string(out, field_0)
+    },
+    CtBytes => {
+      Bytes::push(out, 13)
+    },
+    CtNamed(field_0, field_1) => {
+      Bytes::push(out, 14)
+      ast_binary_write_string(out, field_0)
+      cp_write_array_type(out, field_1)
+    },
+    CtConstructor(field_0, field_1) => {
+      Bytes::push(out, 15)
+      ast_binary_write_string(out, field_0)
+      ast_binary_write_svarint(out, field_1)
+    },
+    CtApplied(field_0, field_1) => {
+      Bytes::push(out, 16)
+      cp_write_type(out, field_0)
+      cp_write_array_type(out, field_1)
+    },
+    CtVar(field_0) => {
+      Bytes::push(out, 17)
+      ast_binary_write_svarint(out, field_0)
+    },
+    CtForAll(field_0, field_1, field_2) => {
+      Bytes::push(out, 18)
+      cp_write_array_int(out, field_0)
+      cp_write_array_tuple_int_array_string(out, field_1)
+      cp_write_type(out, field_2)
+    },
+    CtUnknown => {
+      Bytes::push(out, 19)
+    },
+    CtRecord(field_0) => {
+      Bytes::push(out, 20)
+      cp_write_array_tuple_string_type(out, field_0)
+    },
+  }
+}
+
+fn cp_read_type(reader: AstBinaryReader) -> Type with Exception {
+  let tag = ast_binary_read_byte_checked(reader)
+  match tag {
+    1 => {
+      CtInt
+    },
+    2 => {
+      CtDouble
+    },
+    3 => {
+      CtBool
+    },
+    4 => {
+      CtString
+    },
+    5 => {
+      CtChar
+    },
+    6 => {
+      CtUnit
+    },
+    7 => {
+      let field_0 = cp_read_array_type(reader)
+      CtTuple(field_0)
+    },
+    8 => {
+      let field_0 = cp_read_type(reader)
+      CtArray(field_0)
+    },
+    9 => {
+      let field_0 = cp_read_type(reader)
+      CtOption(field_0)
+    },
+    10 => {
+      let field_0 = cp_read_array_type(reader)
+      let field_1 = cp_read_type(reader)
+      let field_2 = ast_binary_read_optstr_checked(reader)
+      CtFn(field_0, field_1, field_2)
+    },
+    11 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      CtEnum(field_0)
+    },
+    12 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      CtStruct(field_0)
+    },
+    13 => {
+      CtBytes
+    },
+    14 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_array_type(reader)
+      CtNamed(field_0, field_1)
+    },
+    15 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = ast_binary_read_svarint_checked(reader)
+      CtConstructor(field_0, field_1)
+    },
+    16 => {
+      let field_0 = cp_read_type(reader)
+      let field_1 = cp_read_array_type(reader)
+      CtApplied(field_0, field_1)
+    },
+    17 => {
+      let field_0 = ast_binary_read_svarint_checked(reader)
+      CtVar(field_0)
+    },
+    18 => {
+      let field_0 = cp_read_array_int(reader)
+      let field_1 = cp_read_array_tuple_int_array_string(reader)
+      let field_2 = cp_read_type(reader)
+      CtForAll(field_0, field_1, field_2)
+    },
+    19 => {
+      CtUnknown
+    },
+    20 => {
+      let field_0 = cp_read_array_tuple_string_type(reader)
+      CtRecord(field_0)
+    },
+    _ => throw("checked program: unknown Type tag")
+  }
+}
+
+fn cp_write_type_def(out: Bytes, value: TypeDef) -> Unit {
+  match value {
+    TDEnum(field_0, field_1, field_2) => {
+      Bytes::push(out, 1)
+      ast_binary_write_string(out, field_0)
+      cp_write_array_string(out, field_1)
+      cp_write_array_tuple_string_array_type(out, field_2)
+    },
+    TDStruct(field_0, field_1, field_2, field_3) => {
+      Bytes::push(out, 2)
+      ast_binary_write_string(out, field_0)
+      cp_write_array_tuple_string_type(out, field_1)
+      cp_write_array_string(out, field_2)
+      cp_write_array_string(out, field_3)
+    },
+    TDAlias(field_0, field_1, field_2) => {
+      Bytes::push(out, 3)
+      ast_binary_write_string(out, field_0)
+      cp_write_array_string(out, field_1)
+      cp_write_type(out, field_2)
+    },
+    TDEffect(field_0, field_1, field_2) => {
+      Bytes::push(out, 4)
+      ast_binary_write_string(out, field_0)
+      cp_write_array_tuple_string_array_type_type(out, field_1)
+      cp_write_array_string(out, field_2)
+    },
+    TDEffectSet(field_0, field_1) => {
+      Bytes::push(out, 5)
+      ast_binary_write_string(out, field_0)
+      cp_write_array_string(out, field_1)
+    },
+  }
+}
+
+fn cp_read_type_def(reader: AstBinaryReader) -> TypeDef with Exception {
+  let tag = ast_binary_read_byte_checked(reader)
+  match tag {
+    1 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_array_string(reader)
+      let field_2 = cp_read_array_tuple_string_array_type(reader)
+      TDEnum(field_0, field_1, field_2)
+    },
+    2 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_array_tuple_string_type(reader)
+      let field_2 = cp_read_array_string(reader)
+      let field_3 = cp_read_array_string(reader)
+      TDStruct(field_0, field_1, field_2, field_3)
+    },
+    3 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_array_string(reader)
+      let field_2 = cp_read_type(reader)
+      TDAlias(field_0, field_1, field_2)
+    },
+    4 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_array_tuple_string_array_type_type(reader)
+      let field_2 = cp_read_array_string(reader)
+      TDEffect(field_0, field_1, field_2)
+    },
+    5 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_array_string(reader)
+      TDEffectSet(field_0, field_1)
+    },
+    _ => throw("checked program: unknown TypeDef tag")
+  }
+}
+
+fn cp_write_origin(out: Bytes, value: BindingOrigin) -> Unit {
+  match value {
+    BindingOriginUnavailable => {
+      Bytes::push(out, 1)
+    },
+    BindingOriginModuleExport(field_0, field_1) => {
+      Bytes::push(out, 2)
+      ast_binary_write_string(out, field_0)
+      ast_binary_write_string(out, field_1)
+    },
+    BindingOriginReExportSurface(field_0, field_1) => {
+      Bytes::push(out, 3)
+      ast_binary_write_string(out, field_0)
+      ast_binary_write_string(out, field_1)
+    },
+  }
+}
+
+fn cp_read_origin(reader: AstBinaryReader) -> BindingOrigin with Exception {
+  let tag = ast_binary_read_byte_checked(reader)
+  match tag {
+    1 => {
+      BindingOriginUnavailable
+    },
+    2 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = ast_binary_read_string_checked(reader)
+      BindingOriginModuleExport(field_0, field_1)
+    },
+    3 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = ast_binary_read_string_checked(reader)
+      BindingOriginReExportSurface(field_0, field_1)
+    },
+    _ => throw("checked program: unknown BindingOrigin tag")
+  }
+}
+
+fn cp_write_env(out: Bytes, value: TypeEnv) -> Unit {
+  match value {
+    EnvEmpty => {
+      Bytes::push(out, 1)
+    },
+    EnvBind(field_0, field_1, field_2) => {
+      Bytes::push(out, 2)
+      ast_binary_write_string(out, field_0)
+      cp_write_binding(out, field_1)
+      cp_write_env(out, field_2)
+    },
+    EnvTraitDef(field_0, field_1, field_2, field_3, field_4, field_5, field_6) => {
+      Bytes::push(out, 3)
+      ast_binary_write_string(out, field_0)
+      cp_write_array_string(out, field_1)
+      ast_binary_write_bool(out, field_2)
+      cp_write_array_tuple_string_array_surface_type_surface_type(out, field_3)
+      cp_write_env(out, field_4)
+      cp_write_array_string(out, field_5)
+      cp_write_array_tuple_string_array_string_array_tuple_string_array_string(out, field_6)
+    },
+    EnvTraitImpl(field_0, field_1, field_2) => {
+      Bytes::push(out, 4)
+      ast_binary_write_string(out, field_0)
+      cp_write_type(out, field_1)
+      cp_write_env(out, field_2)
+    },
+    EnvTraitImplGen(field_0, field_1, field_2, field_3, field_4) => {
+      Bytes::push(out, 5)
+      ast_binary_write_string(out, field_0)
+      cp_write_array_string(out, field_1)
+      cp_write_array_tuple_string_array_string(out, field_2)
+      cp_write_type(out, field_3)
+      cp_write_env(out, field_4)
+    },
+    EnvTypeDefs(field_0, field_1, field_2) => {
+      Bytes::push(out, 6)
+      cp_write_array_type_def(out, field_0)
+      cp_write_array_string(out, field_1)
+      cp_write_env(out, field_2)
+    },
+    EnvMutCell(field_0, field_1, field_2) => {
+      Bytes::push(out, 7)
+      ast_binary_write_string(out, field_0)
+      ast_binary_write_bool(out, field_1)
+      cp_write_env(out, field_2)
+    },
+    EnvFlat(field_0) => {
+      Bytes::push(out, 8)
+      cp_write_array_tuple_string_binding(out, field_0)
+    },
+    EnvCached(field_0, field_1, field_2) => {
+      Bytes::push(out, 9)
+      cp_write_array_string(out, field_0)
+      cp_write_array_binding(out, field_1)
+      cp_write_env(out, field_2)
+    },
+  }
+}
+
+fn cp_read_env(reader: AstBinaryReader) -> TypeEnv with Exception {
+  let tag = ast_binary_read_byte_checked(reader)
+  match tag {
+    1 => {
+      EnvEmpty
+    },
+    2 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_binding(reader)
+      let field_2 = cp_read_env(reader)
+      EnvBind(field_0, field_1, field_2)
+    },
+    3 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_array_string(reader)
+      let field_2 = ast_binary_read_bool_checked(reader)
+      let field_3 = cp_read_array_tuple_string_array_surface_type_surface_type(reader)
+      let field_4 = cp_read_env(reader)
+      let field_5 = cp_read_array_string(reader)
+      let field_6 = cp_read_array_tuple_string_array_string_array_tuple_string_array_string(reader)
+      EnvTraitDef(field_0, field_1, field_2, field_3, field_4, field_5, field_6)
+    },
+    4 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_type(reader)
+      let field_2 = cp_read_env(reader)
+      EnvTraitImpl(field_0, field_1, field_2)
+    },
+    5 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = cp_read_array_string(reader)
+      let field_2 = cp_read_array_tuple_string_array_string(reader)
+      let field_3 = cp_read_type(reader)
+      let field_4 = cp_read_env(reader)
+      EnvTraitImplGen(field_0, field_1, field_2, field_3, field_4)
+    },
+    6 => {
+      let field_0 = cp_read_array_type_def(reader)
+      let field_1 = cp_read_array_string(reader)
+      let field_2 = cp_read_env(reader)
+      EnvTypeDefs(field_0, field_1, field_2)
+    },
+    7 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = ast_binary_read_bool_checked(reader)
+      let field_2 = cp_read_env(reader)
+      EnvMutCell(field_0, field_1, field_2)
+    },
+    8 => {
+      let field_0 = cp_read_array_tuple_string_binding(reader)
+      EnvFlat(field_0)
+    },
+    9 => {
+      let field_0 = cp_read_array_string(reader)
+      let field_1 = cp_read_array_binding(reader)
+      let field_2 = cp_read_env(reader)
+      if Array::length(field_0) != Array::length(field_1) {
+        throw("checked program: cached environment rows disagree")
+      }
+      EnvCached(field_0, field_1, field_2)
+    },
+    _ => throw("checked program: unknown TypeEnv tag")
+  }
+}
+
+fn cp_write_subst(out: Bytes, value: Subst) -> Unit {
+  match value {
+    SubstEmpty => {
+      Bytes::push(out, 1)
+    },
+    SubstBind(field_0, field_1, field_2) => {
+      Bytes::push(out, 2)
+      ast_binary_write_svarint(out, field_0)
+      cp_write_type(out, field_1)
+      cp_write_subst(out, field_2)
+    },
+    SubstBound(field_0, field_1, field_2) => {
+      Bytes::push(out, 3)
+      ast_binary_write_svarint(out, field_0)
+      cp_write_array_string(out, field_1)
+      cp_write_subst(out, field_2)
+    },
+    SubstCached(field_0, field_1, field_2) => {
+      Bytes::push(out, 4)
+      cp_write_map_type(out, field_0)
+      cp_write_map_array_string(out, field_1)
+      cp_write_subst(out, field_2)
+    },
+    SubstEffBind(field_0, field_1, field_2) => {
+      Bytes::push(out, 5)
+      ast_binary_write_string(out, field_0)
+      ast_binary_write_string(out, field_1)
+      cp_write_subst(out, field_2)
+    },
+  }
+}
+
+fn cp_read_subst(reader: AstBinaryReader) -> Subst with Exception {
+  let tag = ast_binary_read_byte_checked(reader)
+  match tag {
+    1 => {
+      SubstEmpty
+    },
+    2 => {
+      let field_0 = ast_binary_read_svarint_checked(reader)
+      let field_1 = cp_read_type(reader)
+      let field_2 = cp_read_subst(reader)
+      SubstBind(field_0, field_1, field_2)
+    },
+    3 => {
+      let field_0 = ast_binary_read_svarint_checked(reader)
+      let field_1 = cp_read_array_string(reader)
+      let field_2 = cp_read_subst(reader)
+      SubstBound(field_0, field_1, field_2)
+    },
+    4 => {
+      let field_0 = cp_read_map_type(reader)
+      let field_1 = cp_read_map_array_string(reader)
+      let field_2 = cp_read_subst(reader)
+      SubstCached(field_0, field_1, field_2)
+    },
+    5 => {
+      let field_0 = ast_binary_read_string_checked(reader)
+      let field_1 = ast_binary_read_string_checked(reader)
+      let field_2 = cp_read_subst(reader)
+      SubstEffBind(field_0, field_1, field_2)
+    },
+    _ => throw("checked program: unknown Subst tag")
+  }
+}
+
+fn cp_write_binding(out: Bytes, value: EnvValueBinding) -> Unit {
+  cp_write_type(out, value.ty)
+  cp_write_origin(out, value.origin)
+}
+
+fn cp_read_binding(reader: AstBinaryReader) -> EnvValueBinding with Exception {
+  let ty = cp_read_type(reader)
+  let origin = cp_read_origin(reader)
+  EnvValueBinding::{ ty, origin }
+}
+
+fn cp_write_array_type_def(out: Bytes, value: Array[TypeDef]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_type_def(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_type_def(reader: AstBinaryReader) -> Array[TypeDef] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[TypeDef] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_type_def(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_tuple_int_type(out: Bytes, value: Array[(Int, Type)]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_tuple_int_type(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_tuple_int_type(reader: AstBinaryReader) -> Array[(Int, Type)] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[(Int, Type)] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_tuple_int_type(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_type(out: Bytes, value: Array[Type]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_type(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_type(reader: AstBinaryReader) -> Array[Type] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[Type] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_type(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_int(out: Bytes, value: Array[Int]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    ast_binary_write_svarint(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_int(reader: AstBinaryReader) -> Array[Int] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[Int] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, ast_binary_read_svarint_checked(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_tuple_int_array_string(out: Bytes, value: Array[(Int, Array[String])]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_tuple_int_array_string(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_tuple_int_array_string(reader: AstBinaryReader) -> Array[(Int, Array[String])] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[(Int, Array[String])] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_tuple_int_array_string(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_tuple_string_type(out: Bytes, value: Array[(String, Type)]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_tuple_string_type(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_tuple_string_type(reader: AstBinaryReader) -> Array[(String, Type)] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[(String, Type)] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_tuple_string_type(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_string(out: Bytes, value: Array[String]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    ast_binary_write_string(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_string(reader: AstBinaryReader) -> Array[String] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[String] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, ast_binary_read_string_checked(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_tuple_string_array_type(out: Bytes, value: Array[(String, Array[Type])]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_tuple_string_array_type(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_tuple_string_array_type(reader: AstBinaryReader) -> Array[(String, Array[Type])] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[(String, Array[Type])] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_tuple_string_array_type(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_tuple_string_array_type_type(out: Bytes, value: Array[(String, Array[Type], Type)]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_tuple_string_array_type_type(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_tuple_string_array_type_type(reader: AstBinaryReader) -> Array[(String, Array[Type], Type)] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[(String, Array[Type], Type)] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_tuple_string_array_type_type(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_tuple_string_array_surface_type_surface_type(out: Bytes, value: Array[(String, Array[TypeExpr], TypeExpr)]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_tuple_string_array_surface_type_surface_type(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_tuple_string_array_surface_type_surface_type(reader: AstBinaryReader) -> Array[(String, Array[TypeExpr], TypeExpr)] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[(String, Array[TypeExpr], TypeExpr)] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_tuple_string_array_surface_type_surface_type(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_tuple_string_array_string_array_tuple_string_array_string(out: Bytes, value: Array[(String, Array[String], Array[(String, Array[String])])]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_tuple_string_array_string_array_tuple_string_array_string(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_tuple_string_array_string_array_tuple_string_array_string(reader: AstBinaryReader) -> Array[(String, Array[String], Array[(String, Array[String])])] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[(String, Array[String], Array[(String, Array[String])])] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_tuple_string_array_string_array_tuple_string_array_string(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_tuple_string_array_string(out: Bytes, value: Array[(String, Array[String])]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_tuple_string_array_string(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_tuple_string_array_string(reader: AstBinaryReader) -> Array[(String, Array[String])] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[(String, Array[String])] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_tuple_string_array_string(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_tuple_string_binding(out: Bytes, value: Array[(String, EnvValueBinding)]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_tuple_string_binding(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_tuple_string_binding(reader: AstBinaryReader) -> Array[(String, EnvValueBinding)] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[(String, EnvValueBinding)] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_tuple_string_binding(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_array_binding(out: Bytes, value: Array[EnvValueBinding]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    cp_write_binding(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_binding(reader: AstBinaryReader) -> Array[EnvValueBinding] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[EnvValueBinding] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, cp_read_binding(reader))
+    i = i + 1
+  }
+  items
+}
+
+fn cp_write_map_type(out: Bytes, value: Map[String, Type]) -> Unit {
+  let keys = Map::keys(value)
+  ast_binary_write_varint(out, Array::length(keys))
+  let mut i = 0
+  while i < Array::length(keys) {
+    let key = Array::get(keys, i)
+    ast_binary_write_string(out, key)
+    cp_write_type(out, Map::get(value, key))
+    i = i + 1
+  }
+}
+
+fn cp_read_map_type(reader: AstBinaryReader) -> Map[String, Type] with Exception {
+  let pairs = cp_read_array_tuple_string_type(reader)
+  let mut result: Map[String, Type] = Map::new()
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (key, value) = Array::get(pairs, i)
+    if Map::has_key(result, key) {
+      throw("checked program: duplicate substitution cache key")
+    }
+    result = Map::set(result, key, value)
+    i = i + 1
+  }
+  result
+}
+
+fn cp_write_map_array_string(out: Bytes, value: Map[String, Array[String]]) -> Unit {
+  let keys = Map::keys(value)
+  ast_binary_write_varint(out, Array::length(keys))
+  let mut i = 0
+  while i < Array::length(keys) {
+    let key = Array::get(keys, i)
+    ast_binary_write_string(out, key)
+    cp_write_array_string(out, Map::get(value, key))
+    i = i + 1
+  }
+}
+
+fn cp_read_map_array_string(reader: AstBinaryReader) -> Map[String, Array[String]] with Exception {
+  let pairs = cp_read_array_tuple_string_array_string(reader)
+  let mut result: Map[String, Array[String]] = Map::new()
+  let mut i = 0
+  while i < Array::length(pairs) {
+    let (key, value) = Array::get(pairs, i)
+    if Map::has_key(result, key) {
+      throw("checked program: duplicate substitution bound cache key")
+    }
+    result = Map::set(result, key, value)
+    i = i + 1
+  }
+  result
+}
+
+fn cp_write_tuple_int_type(out: Bytes, value: (Int, Type)) -> Unit {
+  ast_binary_write_svarint(out, value.0)
+  cp_write_type(out, value.1)
+}
+
+fn cp_read_tuple_int_type(reader: AstBinaryReader) -> (Int, Type) with Exception {
+  let field_0 = ast_binary_read_svarint_checked(reader)
+  let field_1 = cp_read_type(reader)
+  (field_0, field_1)
+}
+
+fn cp_write_tuple_int_array_string(out: Bytes, value: (Int, Array[String])) -> Unit {
+  ast_binary_write_svarint(out, value.0)
+  cp_write_array_string(out, value.1)
+}
+
+fn cp_read_tuple_int_array_string(reader: AstBinaryReader) -> (Int, Array[String]) with Exception {
+  let field_0 = ast_binary_read_svarint_checked(reader)
+  let field_1 = cp_read_array_string(reader)
+  (field_0, field_1)
+}
+
+fn cp_write_tuple_string_type(out: Bytes, value: (String, Type)) -> Unit {
+  ast_binary_write_string(out, value.0)
+  cp_write_type(out, value.1)
+}
+
+fn cp_read_tuple_string_type(reader: AstBinaryReader) -> (String, Type) with Exception {
+  let field_0 = ast_binary_read_string_checked(reader)
+  let field_1 = cp_read_type(reader)
+  (field_0, field_1)
+}
+
+fn cp_write_tuple_string_array_type(out: Bytes, value: (String, Array[Type])) -> Unit {
+  ast_binary_write_string(out, value.0)
+  cp_write_array_type(out, value.1)
+}
+
+fn cp_read_tuple_string_array_type(reader: AstBinaryReader) -> (String, Array[Type]) with Exception {
+  let field_0 = ast_binary_read_string_checked(reader)
+  let field_1 = cp_read_array_type(reader)
+  (field_0, field_1)
+}
+
+fn cp_write_tuple_string_array_type_type(out: Bytes, value: (String, Array[Type], Type)) -> Unit {
+  ast_binary_write_string(out, value.0)
+  cp_write_array_type(out, value.1)
+  cp_write_type(out, value.2)
+}
+
+fn cp_read_tuple_string_array_type_type(reader: AstBinaryReader) -> (String, Array[Type], Type) with Exception {
+  let field_0 = ast_binary_read_string_checked(reader)
+  let field_1 = cp_read_array_type(reader)
+  let field_2 = cp_read_type(reader)
+  (field_0, field_1, field_2)
+}
+
+fn cp_write_tuple_string_array_surface_type_surface_type(out: Bytes, value: (String, Array[TypeExpr], TypeExpr)) -> Unit {
+  ast_binary_write_string(out, value.0)
+  cp_write_array_surface_type(out, value.1)
+  ast_binary_write_type_expr(out, value.2)
+}
+
+fn cp_read_tuple_string_array_surface_type_surface_type(reader: AstBinaryReader) -> (String, Array[TypeExpr], TypeExpr) with Exception {
+  let field_0 = ast_binary_read_string_checked(reader)
+  let field_1 = cp_read_array_surface_type(reader)
+  let field_2 = ast_binary_read_type_expr(reader)
+  (field_0, field_1, field_2)
+}
+
+fn cp_write_tuple_string_array_string_array_tuple_string_array_string(out: Bytes, value: (String, Array[String], Array[(String, Array[String])])) -> Unit {
+  ast_binary_write_string(out, value.0)
+  cp_write_array_string(out, value.1)
+  cp_write_array_tuple_string_array_string(out, value.2)
+}
+
+fn cp_read_tuple_string_array_string_array_tuple_string_array_string(reader: AstBinaryReader) -> (String, Array[String], Array[(String, Array[String])]) with Exception {
+  let field_0 = ast_binary_read_string_checked(reader)
+  let field_1 = cp_read_array_string(reader)
+  let field_2 = cp_read_array_tuple_string_array_string(reader)
+  (field_0, field_1, field_2)
+}
+
+fn cp_write_tuple_string_array_string(out: Bytes, value: (String, Array[String])) -> Unit {
+  ast_binary_write_string(out, value.0)
+  cp_write_array_string(out, value.1)
+}
+
+fn cp_read_tuple_string_array_string(reader: AstBinaryReader) -> (String, Array[String]) with Exception {
+  let field_0 = ast_binary_read_string_checked(reader)
+  let field_1 = cp_read_array_string(reader)
+  (field_0, field_1)
+}
+
+fn cp_write_tuple_string_binding(out: Bytes, value: (String, EnvValueBinding)) -> Unit {
+  ast_binary_write_string(out, value.0)
+  cp_write_binding(out, value.1)
+}
+
+fn cp_read_tuple_string_binding(reader: AstBinaryReader) -> (String, EnvValueBinding) with Exception {
+  let field_0 = ast_binary_read_string_checked(reader)
+  let field_1 = cp_read_binding(reader)
+  (field_0, field_1)
+}
+
+fn cp_write_array_surface_type(out: Bytes, value: Array[TypeExpr]) -> Unit {
+  ast_binary_write_varint(out, Array::length(value))
+  let mut i = 0
+  while i < Array::length(value) {
+    ast_binary_write_type_expr(out, Array::get(value, i))
+    i = i + 1
+  }
+}
+
+fn cp_read_array_surface_type(reader: AstBinaryReader) -> Array[TypeExpr] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let items: Array[TypeExpr] = []
+  let mut i = 0
+  while i < count {
+    Array::push(items, ast_binary_read_type_expr(reader))
+    i = i + 1
+  }
+  items
+}
