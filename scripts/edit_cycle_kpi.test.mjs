@@ -95,7 +95,7 @@ test("edit-cycle KPI validates checked-module reuse as its own v5 reason", () =>
     ...sidecar, modules_reused_checked_module_artifact: 0,
   })), /reuse-class counters must sum/);
   delete sidecar.modules_reused_checked_module_artifact;
-  assert.throws(() => parseIncrementalTelemetry(JSON.stringify(sidecar)), /exactly the incremental telemetry v3 fields/);
+  assert.throws(() => parseIncrementalTelemetry(JSON.stringify(sidecar)), /exactly the incremental telemetry v5 fields/);
 });
 
 test("edit-cycle KPI rejects malformed or internally inconsistent telemetry", () => {
@@ -122,11 +122,11 @@ test("edit-cycle KPI rejects malformed or internally inconsistent telemetry", ()
   delete missing.checker_executions;
   assert.throws(
     () => parseIncrementalTelemetry(JSON.stringify(missing)),
-    /exactly the incremental telemetry v2 fields/,
+    /exactly the incremental telemetry v4 fields/,
   );
   assert.throws(
     () => parseIncrementalTelemetry(JSON.stringify({ ...JSON.parse(validSidecar), extra: 1 })),
-    /exactly the incremental telemetry v2 fields/,
+    /exactly the incremental telemetry v4 fields/,
   );
 });
 
