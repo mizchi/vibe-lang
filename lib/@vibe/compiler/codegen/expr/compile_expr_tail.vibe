@@ -1275,6 +1275,86 @@ fn value_has_borrowed_branch_tail(e: Expr, ctx: CompileCtx) -> Bool {
   }
 }
 
+/// #2389 per-path release: does this value hand the binding a reference the
+/// scope OWNS -- the one the ordinary rule would have planned a scope-end drop
+/// for, had the branch merge not zeroed the count?
+///
+/// Reads the value's RESULT SPINE recursively -- through block bodies (`let` /
+/// `;` chains) and conditional branches -- and requires EVERY leaf to answer
+/// yes. The recursion mirrors `value_has_borrowed_branch_tail` above, which is
+/// the existing precedent for reading a `let` value this way. At each leaf it
+/// is an ALLOW-LIST: a shape nobody enumerated fails closed, because a
+/// denylist over an open set of shapes cannot be finished (this test began as
+/// `expr_tag(value) != 8` and was holed twice in one review -- a call wrapped
+/// in a block, and an `if` whose branches are calls, are neither tag 8).
+///
+/// Admitted:
+///
+/// - an allocation made at the SITE: a tuple, a record, an array literal, a
+///   constructor call. Owned by construction.
+/// - a call to a NAMED function whose DECLARED return type is heap
+///   (`ctx.heap_ret_names`, #791's signature scan) and which neither returns a
+///   borrow (#707's `borrow_ret_names` / the intrinsic set) nor may return an
+///   interior view (#768's `borrow_view_ret`). That is the callee's own
+///   contract, read off its signature -- NOT the "any ECall is heap" default
+///   `classify_let_value_heap` falls back to. That default is an
+///   over-approximation deliberately chosen because a dup/drop no-ops on what
+///   it gets wrong (an even-tagged scalar, a string/bytes fat pointer). The
+///   drop this pass gives back is no such no-op, so it reads a contract or
+///   declines. `String` and `Bytes` are not heap to `type_expr_is_heap`, which
+///   is the same answer `__rt_rc_drop` gives them (it returns early on a fat
+///   pointer), so a `-> String` callee declines here and costs nothing.
+///
+/// Declined, each for its own reason: an INDIRECT call (there is no signature
+/// to read); an alias or a projection (their reference is acquired by the
+/// alias-dup / projection-dup machinery, whose own bookkeeping owns that
+/// question); a literal or an arithmetic value (it holds no reference at all,
+/// and `bench/exec/sort_ints.vibe`'s `let mid = (lo + hi) / 2` took a flag
+/// local, two stores and a guarded `rc_drop` for a heap figure that did not
+/// move -- 32,828 B either way -- and +2.84% fuel); a lambda; a loop; a
+/// `handle`.
+fn path_value_owned(e: Expr, ctx: CompileCtx) -> Bool {
+  match e {
+    ETuple(_) => true,
+    EArray(_) => true,
+    ERecord(_, _, _) => true,
+    ECall(callee, _, _) => match callee {
+      EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
+        true
+      } else {
+        bsearch_leftmost(ctx.heap_ret_names, cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(ctx.borrow_ret_names, cn) < 0 && bsearch_leftmost(ctx.borrow_view_ret, cn) < 0
+      },
+      _ => false
+    },
+    EIf(_, t, el) => path_value_owned(t, ctx) && path_value_owned(el, ctx),
+    // An arm-less match produces no value on any path, so there is nothing to
+    // own; `&&` over zero arms would answer true.
+    EMatch(_, arms) => if Array::length(arms) == 0 {
+      false
+    } else {
+      let mut ok = true
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (_, ab) = Array::get(arms, i)
+        if path_value_owned(ab, ctx) {
+          ()
+        } else {
+          ok = false
+        }
+        i = i + 1
+      }
+      ok
+    },
+    ELet(_, _, b, _) => path_value_owned(b, ctx),
+    ELetMut(_, _, b, _) => path_value_owned(b, ctx),
+    ELetRec(_, _, b) => path_value_owned(b, ctx),
+    ESeq(_, b) => path_value_owned(b, ctx),
+    EAssign(_, _, b) => path_value_owned(b, ctx),
+    EAssignOp(_, _, _, b) => path_value_owned(b, ctx),
+    _ => false
+  }
+}
+
 /// #768: apply the branch-tail retain rewrite (see retain_wrap_branch_tails)
 /// when this binding's scope-end drop is planned AND we are inside a loop
 /// (loop_borrowed_names non-empty -- empty outside loops and under bump, so
@@ -1522,40 +1602,33 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     //   if/match whose branch tail is borrowed). It holds a reference it never
     //   acquired, exactly as the ordinary scope-end drop below leaves it to
     //   loop_borrowed_names.
-    // - the value is an allocation made at the SITE. An ALLOW-LIST: a tuple, a
-    //   record, an array literal, a constructor call, and nothing else.
-    //
-    //   A call's result is the callee's contract instead, and the
-    //   classifications that describe it (borrow-returning, may-return-view)
-    //   are the ones the planner already uses to decide whether to plan a drop
-    //   at all -- they do not answer whether to give back one it eliminated.
-    //   Measured: admitting call results miscompiled the compiler itself, five
-    //   unit files answering wrongly with no trap (`eq_unbounded_formal_test`,
-    //   `parser_test`, and three #2357 trait-dict files), and excluding
-    //   exactly that class made all five green again. It is 1,193 of the 1,806
-    //   candidates in the compiler's own sources.
-    //
-    //   This began as a DENYLIST (`expr_tag(value) != 8`) and was holed twice
-    //   in review: a call wrapped in a block or an `ESeq` is not tag 8, and
-    //   neither is an `if` whose branches are calls, so `let t = { let _ = 0;
-    //   Array::get(xs, 0) }` bound an unowned view and the guarded drop would
-    //   release an element `xs` still owns. A denylist over an open set of
-    //   shapes cannot be finished. Reading the initializer's result spine
-    //   recursively -- through block bodies, `ESeq` tails and conditional
-    //   branches -- would admit those safely and is the obvious next slice;
-    //   until then they fail closed like everything nobody enumerated.
+    // - every leaf of the value's RESULT SPINE is a reference this scope owns
+    //   (`path_value_owned` above, an allow-list read through block bodies and
+    //   conditional branches).
     //
     // - not an Int-valued binding: it holds no reference at all, so a guarded
-    //   drop over it is pure instruction cost. `bench/exec/sort_ints.vibe`'s
-    //   `let mid = (lo + hi) / 2` took a flag local, two flag stores and a
-    //   guarded `rc_drop` for a heap figure that did not move (32,828 B either
-    //   way) and +2.84% fuel. The planner cannot see it -- its
-    //   `is_scalar_expr` knows only literals and borrow-returning calls -- but
-    //   this classifier can. Redundant under the allow-list above for the
-    //   forms it admits, kept because it is the reason a value holding no
-    //   reference must never be guarded.
-    let path_value_ok = (is_etuple(value) || is_erecord(value) || expr_tag(value) == 17 || is_ctor_call(value, ctx.ctor_table)) && !expr_is_intish(value, local_names, ctx)
-    let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && path_value_ok && array_contains_str(ctx.rc_path_drop_names, name)
+    //   drop over it is pure instruction cost. Redundant under the allow-list
+    //   for the forms it admits, kept because it is the reason a value holding
+    //   no reference must never be guarded (see `path_value_owned`).
+    //
+    // - the flag local's index is the one `local_names` is about to record it
+    //   at. `local_names` is indexed BY wasm local index, and the value's own
+    //   compile may have taken scratch locals without naming them, so the
+    //   allocation below pads up to `nl_after_reuse` first. Padding cannot fix
+    //   the other direction: an array already LONGER than the index would put
+    //   the flag's name at one position and its slot at another, and from
+    //   there every later binding reads a slot that is not its own -- wrong
+    //   values, no trap. No shape was found that reaches it; it costs one
+    //   comparison and turns a silent aliasing bug into a declined binding.
+    //
+    // Ordered so the plan-row membership test comes BEFORE the spine walk:
+    // `&&` short-circuits (compile_expr's own lowering for it does), and
+    // `rc_path_drop_names` holds only the split bindings of the function being
+    // compiled -- so a `let` that is not in it, which is almost every `let` in
+    // the program and every one on the bump lane, never pays for
+    // `path_value_owned`. Every operand is pure, so the order is a cost
+    // choice only.
+    let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(ctx.rc_path_drop_names, name) && path_value_owned(value, ctx) && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
     let path_flag_l = if path_drop {
       // `local_names` is indexed BY wasm local index (compile_expr resolves an
       // identifier to its slot by position), so a flag local may only be
