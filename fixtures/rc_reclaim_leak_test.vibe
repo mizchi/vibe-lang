@@ -175,6 +175,49 @@ let only_then = (c: Bool, i: Int) -> Tree {
   }
 }
 
+// #2389 per-path release, the classes the CALL-CONTRACT admission rule added.
+// Same split as `only_then` -- `c` is false every iteration, so the branch
+// that consumes `t` never runs -- but the value reaches the binding through
+// the two shapes a FLAT test on the value node cannot see:
+//
+//   `via_call`: a call whose callee's DECLARED return type is heap and which
+//   neither borrow set claims. Measured before the rule read that contract:
+//   80 B per iteration, 1,600,024 B at N=20000, exactly `only_then`'s leak.
+//
+//   `via_spine`: a block whose tail is a conditional whose every branch
+//   allocates at the site. The value node is an `ELet`, not an allocation, so
+//   only the recursive result-spine read reaches it.
+//
+// Both add 0 to `total`: the path that runs answers `Leaf(0)`.
+let mk_pair = (i: Int) -> Tree {
+  Node(Leaf(i), Leaf(i + 1))
+}
+
+let via_call = (c: Bool, i: Int) -> Tree {
+  let t = mk_pair(i)
+  if c {
+    t
+  } else {
+    Leaf(0)
+  }
+}
+
+let via_spine = (c: Bool, i: Int) -> Tree {
+  let t = {
+    let k = i + 1
+    if k > 0 {
+      Node(Leaf(i), Leaf(k))
+    } else {
+      Node(Leaf(0), Leaf(k))
+    }
+  }
+  if c {
+    t
+  } else {
+    Leaf(0)
+  }
+}
+
 // #2671 HOF ownership guards. Each Array higher-order lowering (map /
 // filter / fold / any / all / find / reverse / concat) consumes the array it
 // is handed and owns the callback reference, so on the RC lane it must
@@ -377,6 +420,7 @@ let main = () -> Int {
     // #2389 (see only_then above): `i > 1000000` is false for every
     // iteration, but not a constant the folder can see.
     total = total + sumt(only_then(i > 1000000, i))
+    total = total + sumt(via_call(i > 1000000, i)) + sumt(via_spine(i > 1000000, i))
     total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum + asum
     i = i + 1
   }
