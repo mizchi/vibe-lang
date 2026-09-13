@@ -363,15 +363,9 @@ merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
   They stay so the predicate answers on its own rather than inheriting a
   decision another pass made for another reason.
 
-  **Adjacent, and not fixed by any of this: #2733.** `let t = { let k = 0;
-  Array::get(xs, k) }` binds an unowned view that nothing classifies as one --
-  `classify_let_value_heap` reads a callee only when the value node IS the
-  call, `value_has_borrowed_branch_tail` runs only for an if/match value node,
-  and `pctx_mark_view_call` matches only an `ECall` value. The ORDINARY
-  scope-end drop then frees an element the array still owns: 91515 against
-  bump's 90715, no trap. It needs no branch, so it is not this feature's, and
-  the same hole reaches a call through a parameter. Read that issue before
-  widening any of the classifications above.
+  A value whose borrow-ness none of these tables can see is a live defect in
+  the ORDINARY scope-end drop rather than this one, tracked as #2733: do not
+  widen the classifications above without reading it.
 
 - Every occurrence that spends the initial reference must have a source offset.
   A lambda capture has none (the planner walks captures with -1), so codegen
@@ -420,11 +414,21 @@ come from: it runs the planner over a flat source, finds each `PaPathDrop`
 row's `let`, and classifies it by the codegen's own rule -- admitted, admitted
 only through the recursive spine read, or the leaf kind that disqualified it.
 On the compiler's own sources, of 1,833 rows: 129 admitted (125 at the value
-node, 4 only through the spine read), and of the rest the largest groups are
-1,126 calls whose callee declares no heap return (the great majority builtins
-returning an `Int` or a `String` -- `Array::length`, `String::index_of`,
-`String::concat` -- for which a drop would be a no-op anyway), 245 arithmetic
-values, 181 aliases, 72 literals, 42 projections and 30 indirect calls.
+node, 4 only through the spine read), and of the rest 1,126 calls, 245
+arithmetic values, 181 aliases, 72 literals, 42 projections and 30 indirect
+calls. The declined calls read, by what the callee's contract says: 1,070
+unresolved -- the great majority builtins returning an `Int` or a `String`
+(`Array::length`, `String::index_of`, `String::concat`), for which a drop
+would be a no-op anyway -- 30 indirect, 23 bound locally, 20 may-return-view,
+13 borrow-returning.
+
+The probe answers with the shipped rule rather than an approximation of it: it
+carries the enclosing function's bound names so a locally bound callee is not
+read through the global tables, and it reports the callee of the leaf that
+DISQUALIFIED the binding rather than of the wrapper around it -- without
+either, a `{ let k = 0; f(k) }` row read as `-` and the wrapped-call
+population, which is what the spine read exists to look at, was missing from
+the summary.
 
 The codegen's bookkeeping is name-keyed, which is safe here without a check
 because every planned body has been through `uniquify_shadowed_bindings_fresh`

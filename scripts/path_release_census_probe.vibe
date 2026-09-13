@@ -74,7 +74,102 @@ fn name_in(arr: Array[String], s: String) -> Bool {
 
 /// Leaf kind of one result-spine leaf. Only the first four are allocations
 /// made at the site, which is what the guarded drop needs the value to be.
-fn leaf_kind(e: Expr, ctors: Array[String], borrow_ret: Array[String], view_ret: Array[String], heap_ret: Array[String]) -> String {
+fn pat_bound_names(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        pat_bound_names(Array::get(ps, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(ps) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        pat_bound_names(Array::get(ps, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      pat_bound_names(a, out)
+      pat_bound_names(b, out)
+    },
+    PStruct(_, fs) => {
+      let mut i = 0
+      while i < Array::length(fs) {
+        let (_, fp) = Array::get(fs, i)
+        pat_bound_names(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// Every name BOUND inside one function body -- `let` / `let mut` / `let rec`
+/// binders, `for`-in binders, lambda parameters, pattern binds. The shipped
+/// rule declines a callee that resolves to a local slot (`find_local_slot`
+/// over `local_names`); this is the probe's stand-in for that, and it over-
+/// approximates the same way `local_names` does, since compile_expr_tail
+/// never truncates a `let`'s name after its body.
+fn collect_bound_names(e: Expr, out: Array[String]) -> Unit {
+  match e {
+    ELet(n, v, b, _) => {
+      Array::push(out, n)
+      collect_bound_names(v, out)
+      collect_bound_names(b, out)
+    },
+    ELetMut(n, v, b, _) => {
+      Array::push(out, n)
+      collect_bound_names(v, out)
+      collect_bound_names(b, out)
+    },
+    ELetRec(n, v, b) => {
+      Array::push(out, n)
+      collect_bound_names(v, out)
+      collect_bound_names(b, out)
+    },
+    EForIn(n, io, seq, body) => {
+      Array::push(out, n)
+      match io {
+        Some(i2) => Array::push(out, i2),
+        None => ()
+      }
+      collect_bound_names(seq, out)
+      collect_bound_names(body, out)
+    },
+    EMatch(sc, arms) => {
+      collect_bound_names(sc, out)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, i)
+        pat_bound_names(ap, out)
+        collect_bound_names(ab, out)
+        i = i + 1
+      }
+    },
+    EFn(_, _, ps, _, _, fb) => {
+      let mut i = 0
+      while i < Array::length(ps) {
+        let (pn, _) = Array::get(ps, i)
+        Array::push(out, pn)
+        i = i + 1
+      }
+      collect_bound_names(fb, out)
+    },
+    _ => {
+      let kids = expr_children(e)
+      let mut i = 0
+      while i < Array::length(kids) {
+        collect_bound_names(Array::get(kids, i), out)
+        i = i + 1
+      }
+    }
+  }
+}
+
+fn leaf_kind(e: Expr, ctors: Array[String], bound: Array[String], borrow_ret: Array[String], view_ret: Array[String], heap_ret: Array[String]) -> String {
   match e {
     ETuple(_) => "tuple",
     ERecord(_, _, _) => "record",
@@ -82,7 +177,7 @@ fn leaf_kind(e: Expr, ctors: Array[String], borrow_ret: Array[String], view_ret:
     ECall(callee, _, _) => match callee {
       EIdent(f, _) => if name_in(ctors, f) {
         "ctor"
-      } else if name_in(heap_ret, f) && !is_borrow_ret_builtin(f) && !name_in(borrow_ret, f) && !name_in(view_ret, f) {
+      } else if !name_in(bound, f) && name_in(heap_ret, f) && !is_borrow_ret_builtin(f) && !name_in(borrow_ret, f) && !name_in(view_ret, f) {
         "call_heap_ret"
       } else {
         "call"
@@ -128,11 +223,15 @@ fn leaf_callee(e: Expr) -> String {
 /// result: the three sets `classify_let_value_heap` already consults
 /// (compile_expr_tail.vibe), plus "unresolved" for the callee it falls back to
 /// its "any ECall is heap" over-approximation for.
-fn call_contract(e: Expr, borrow_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String]) -> String {
+fn call_contract(e: Expr, bound: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String]) -> String {
   match e {
     ECall(callee, _, _) => match callee {
-      EIdent(f, _) => if is_borrow_ret_builtin(f) || name_in(borrow_ret, f) {
+      EIdent(f, _) => if name_in(bound, f) {
+        "local"
+      } else if is_borrow_ret_builtin(f) || name_in(borrow_ret, f) {
         "borrow_ret"
+      } else if name_in(view_ret, f) {
+        "view_ret"
       } else if name_in(scalar_ret, f) {
         "scalar_ret"
       } else if name_in(heap_ret, f) {
@@ -154,33 +253,35 @@ fn owned_leaf(k: String) -> Bool {
 /// handed, looked at through the wrappers that do not change it. Mirrors
 /// `value_has_borrowed_branch_tail`'s recursion (compile_expr_tail.vibe),
 /// which is the existing precedent for reading a `let` value this way.
-fn spine_leaves(e: Expr, ctors: Array[String], borrow_ret: Array[String], view_ret: Array[String], heap_ret: Array[String], out: Array[String]) -> Unit {
+/// Collects the leaf EXPRESSIONS, so a row can name the callee of the leaf
+/// that disqualified the binding rather than of the wrapper around it.
+fn spine_leaves(e: Expr, out: Array[Expr]) -> Unit {
   match e {
     EIf(_, t, el) => {
-      spine_leaves(t, ctors, borrow_ret, view_ret, heap_ret, out)
-      spine_leaves(el, ctors, borrow_ret, view_ret, heap_ret, out)
+      spine_leaves(t, out)
+      spine_leaves(el, out)
     },
     EMatch(_, arms) => if Array::length(arms) == 0 {
-      Array::push(out, "empty_match")
+      Array::push(out, EUnit)
     } else {
       let mut i = 0
       while i < Array::length(arms) {
         let (_, ab) = Array::get(arms, i)
-        spine_leaves(ab, ctors, borrow_ret, view_ret, heap_ret, out)
+        spine_leaves(ab, out)
         i = i + 1
       }
     },
-    ELet(_, _, b, _) => spine_leaves(b, ctors, borrow_ret, view_ret, heap_ret, out),
-    ELetMut(_, _, b, _) => spine_leaves(b, ctors, borrow_ret, view_ret, heap_ret, out),
-    ELetRec(_, _, b) => spine_leaves(b, ctors, borrow_ret, view_ret, heap_ret, out),
-    ESeq(_, b) => spine_leaves(b, ctors, borrow_ret, view_ret, heap_ret, out),
-    EAssign(_, _, b) => spine_leaves(b, ctors, borrow_ret, view_ret, heap_ret, out),
-    EAssignOp(_, _, _, b) => spine_leaves(b, ctors, borrow_ret, view_ret, heap_ret, out),
-    _ => Array::push(out, leaf_kind(e, ctors, borrow_ret, view_ret, heap_ret))
+    ELet(_, _, b, _) => spine_leaves(b, out),
+    ELetMut(_, _, b, _) => spine_leaves(b, out),
+    ELetRec(_, _, b) => spine_leaves(b, out),
+    ESeq(_, b) => spine_leaves(b, out),
+    EAssign(_, _, b) => spine_leaves(b, out),
+    EAssignOp(_, _, _, b) => spine_leaves(b, out),
+    _ => Array::push(out, e)
   }
 }
 
-fn top_kind(e: Expr, ctors: Array[String], borrow_ret: Array[String], view_ret: Array[String], heap_ret: Array[String]) -> String {
+fn top_kind(e: Expr, ctors: Array[String], bound: Array[String], borrow_ret: Array[String], view_ret: Array[String], heap_ret: Array[String]) -> String {
   match e {
     EIf(_, _, _) => "if",
     EMatch(_, _) => "match",
@@ -190,7 +291,7 @@ fn top_kind(e: Expr, ctors: Array[String], borrow_ret: Array[String], view_ret: 
     ESeq(_, _) => "seq",
     EAssign(_, _, _) => "assign",
     EAssignOp(_, _, _, _) => "assignop",
-    _ => leaf_kind(e, ctors, borrow_ret, view_ret, heap_ret)
+    _ => leaf_kind(e, ctors, bound, borrow_ret, view_ret, heap_ret)
   }
 }
 
@@ -254,21 +355,29 @@ fn uniq_sorted(xs: Array[String]) -> String {
   StringBuilder::freeze(sb)
 }
 
-fn report(fname: String, name: String, value: Expr, ctors: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String]) -> Unit with Stdout {
-  let leaves: Array[String] = []
-  spine_leaves(value, ctors, borrow_ret, view_ret, heap_ret, leaves)
-  let flat = owned_leaf(leaf_kind(value, ctors, borrow_ret, view_ret, heap_ret))
-  let mut all_site = Array::length(leaves) > 0
+fn report(fname: String, name: String, value: Expr, ctors: Array[String], bound: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String]) -> Unit with Stdout {
+  let leaves: Array[Expr] = []
+  spine_leaves(value, leaves)
+  let kinds: Array[String] = []
+  let mut li = 0
+  while li < Array::length(leaves) {
+    Array::push(kinds, leaf_kind(Array::get(leaves, li), ctors, bound, borrow_ret, view_ret, heap_ret))
+    li = li + 1
+  }
+  let flat = owned_leaf(leaf_kind(value, ctors, bound, borrow_ret, view_ret, heap_ret))
+  let mut all_site = Array::length(kinds) > 0
   let mut first_bad = ""
+  let mut bad_at = 0 - 1
   let mut i = 0
-  while i < Array::length(leaves) {
-    let k = Array::get(leaves, i)
+  while i < Array::length(kinds) {
+    let k = Array::get(kinds, i)
     if owned_leaf(k) {
       ()
     } else {
       all_site = false
       if first_bad == "" {
         first_bad = k
+        bad_at = i
       } else {
         ()
       }
@@ -284,26 +393,35 @@ fn report(fname: String, name: String, value: Expr, ctors: Array[String], borrow
   } else {
     first_bad
   }
+  // The callee and contract come from the LEAF that disqualified the binding,
+  // not from the wrapper around it: for `{ let k = 0; unknown(k) }` the value
+  // node is an `ELet` and would report "-", which would drop exactly the
+  // wrapped-call population the spine read exists to look at.
+  let subject = if bad_at >= 0 {
+    Array::get(leaves, bad_at)
+  } else {
+    value
+  }
   let line = StringBuilder::new()
   StringBuilder::push(line, fname)
   StringBuilder::push(line, "\t")
   StringBuilder::push(line, name)
   StringBuilder::push(line, "\ttop=")
-  StringBuilder::push(line, top_kind(value, ctors, borrow_ret, view_ret, heap_ret))
+  StringBuilder::push(line, top_kind(value, ctors, bound, borrow_ret, view_ret, heap_ret))
   StringBuilder::push(line, "\tflat=")
   StringBuilder::push(line, yn(flat))
   StringBuilder::push(line, "\tspine=")
   StringBuilder::push(line, yn(all_site))
   StringBuilder::push(line, "\tnleaves=")
-  StringBuilder::push(line, __to_string(Array::length(leaves)))
+  StringBuilder::push(line, __to_string(Array::length(kinds)))
   StringBuilder::push(line, "\tkinds=")
-  StringBuilder::push(line, uniq_sorted(leaves))
+  StringBuilder::push(line, uniq_sorted(kinds))
   StringBuilder::push(line, "\tverdict=")
   StringBuilder::push(line, verdict)
   StringBuilder::push(line, "\tcallee=")
-  StringBuilder::push(line, leaf_callee(value))
+  StringBuilder::push(line, leaf_callee(subject))
   StringBuilder::push(line, "\tcontract=")
-  StringBuilder::push(line, call_contract(value, borrow_ret, scalar_ret, heap_ret))
+  StringBuilder::push(line, call_contract(subject, bound, borrow_ret, view_ret, scalar_ret, heap_ret))
   println(StringBuilder::freeze(line))
 }
 
@@ -367,6 +485,16 @@ fn census(source: String) -> Unit with Exception + Stdout {
           match norm {
             EFn(_, _, nparams, _, _, nbody) => {
               let plan = build_perceus_plan_with_params(nparams, nbody, borrow_ret, borrow_param, masks, view_ret)
+              // What the shipped rule sees as "bound here": this function's
+              // own parameters plus every binder in its body.
+              let bound: Array[String] = []
+              let mut pi = 0
+              while pi < Array::length(nparams) {
+                let (pn, _) = Array::get(nparams, pi)
+                Array::push(bound, pn)
+                pi = pi + 1
+              }
+              collect_bound_names(nbody, bound)
               let mut k = 0
               while k < Array::length(plan) {
                 let a = Array::get(plan, k)
@@ -374,7 +502,7 @@ fn census(source: String) -> Unit with Exception + Stdout {
                   let found: Array[Expr] = []
                   find_let_value(nbody, a.name, found)
                   if Array::length(found) == 1 {
-                    report(name, a.name, Array::get(found, 0), ctors, borrow_ret, view_ret, scalar_ret, heap_ret)
+                    report(name, a.name, Array::get(found, 0), ctors, bound, borrow_ret, view_ret, scalar_ret, heap_ret)
                   } else {
                     // Not a `let` in this body (a pattern bind or a parameter),
                     // or -- never observed -- an ambiguous name.
