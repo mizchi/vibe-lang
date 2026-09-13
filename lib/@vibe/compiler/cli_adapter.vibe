@@ -736,7 +736,83 @@ fn fs_paths_name_same_file(left: String, right: String) -> Bool with Fs {
   } else if Fs::exists(left) && Fs::exists(right) {
     Fs::stat_token(left) == Fs::stat_token(right)
   } else {
-    false
+    // At least one path is not on disk, so there is nothing to stat. That is
+    // the NORMAL case for `<output>.diag`: a successful compile never writes
+    // one, which is how a `build/./out.wasm.diag` destination slipped past
+    // both guards and landed telemetry on the canonical diag path, for
+    // `runtime/vibe` to delete once it saw the artifact. Measured on d836c22:
+    // exit 0, and `<output>.diag` holding the counters.
+    //
+    // Decide it one level up. The final component is plain text and compares
+    // as text; the containing directory is on disk in every case this is
+    // asked -- the compile writes the artifact and its sidecars into it -- so
+    // it has an inode and compares exactly, which is what makes `build/.` and
+    // `build` one directory.
+    //
+    // The text test comes FIRST and is what keeps this narrow: a destination
+    // whose last component differs from every protected path's is never
+    // refused, whatever its directory looks like. Only once the components
+    // match does the directory decide, and where it CANNOT be decided -- a
+    // parent that is an unresolved link, or is itself missing -- this answers
+    // true, refusing a request it cannot prove safe rather than accepting one
+    // it cannot prove unsafe.
+    if fs_path_final_component(left) != fs_path_final_component(right) {
+      false
+    } else {
+      let left_dir = fs_path_parent_dir(left)
+      let right_dir = fs_path_parent_dir(right)
+      if fs_path_is_unresolved_link(left_dir) || fs_path_is_unresolved_link(right_dir) {
+        true
+      } else if Fs::exists(left_dir) && Fs::exists(right_dir) {
+        Fs::stat_token(left_dir) == Fs::stat_token(right_dir)
+      } else {
+        true
+      }
+    }
+  }
+}
+
+/// The last `/`-separated component of a path, or the whole path when it has
+/// no separator. Plain text: no filesystem access, and none needed.
+fn fs_path_final_component(path: String) -> String {
+  let len = String::length(path)
+  let mut last_slash = -1
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(path, i) == 47 {
+      last_slash = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if last_slash < 0 {
+    path
+  } else {
+    path[last_slash + 1: len]
+  }
+}
+
+/// The directory holding a path: everything before the last `/`, `"/"` when
+/// that separator is the first character, and `"."` when there is none.
+fn fs_path_parent_dir(path: String) -> String {
+  let len = String::length(path)
+  let mut last_slash = -1
+  let mut i = 0
+  while i < len {
+    if String::char_code_at(path, i) == 47 {
+      last_slash = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if last_slash < 0 {
+    "."
+  } else if last_slash == 0 {
+    "/"
+  } else {
+    path[0: last_slash]
   }
 }
 

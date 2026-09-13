@@ -32,6 +32,16 @@
 #                       |   this build to produce        |
 #   = <output>.funcmap  | exit 0, BACKTRACE MAP REPLACED | refused
 #
+# And against the build that carried those rows but compared identity only for
+# paths that EXIST (d836c22):
+#
+#   telemetry path           | there                     | here
+#   -------------------------+---------------------------+----------
+#   = build/./out.wasm.diag  | exit 0, and the canonical | refused
+#     on a successful compile|   <output>.diag holds the |
+#                            |   counters, for runtime/  |
+#                            |   vibe to then delete     |
+#
 # The positive case is not decoration. A compiler that ignores the variable
 # entirely destroys nothing and would pass every row above: measured, the
 # committed seed does exactly that. Asserting that a plain request PUBLISHES a
@@ -153,6 +163,13 @@ restore
 # sidecar published there is deleted by the build that was asked for it; the
 # second annotates runtime backtraces.
 refuse "the derived .diag sidecar" "$OUT.diag"
+# `<output>.diag` is the one derived path a SUCCESSFUL compile never writes, so
+# the identity test has nothing to stat and a second spelling of it reached the
+# publication. Clear it first, so this row runs in exactly that state.
+rm -f "$OUT.diag"
+refuse "the derived .diag sidecar, a second spelling" "$WORK/build/./out.wasm.diag"
+grep -q '"modules_planned"' "$OUT.diag" 2>/dev/null &&
+  fail "telemetry landed on the canonical <output>.diag"
 refuse "the derived .funcmap sidecar" "$OUT.funcmap"
 [ -s "$OUT.funcmap" ] || fail "the compile left no .funcmap, so that row proves nothing"
 grep -q '"modules_planned"' "$OUT.funcmap" 2>/dev/null &&
