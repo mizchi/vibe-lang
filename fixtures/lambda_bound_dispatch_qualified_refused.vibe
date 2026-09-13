@@ -1,0 +1,60 @@
+//# #2737: a qualified witness call on a LAMBDA binder's bound is refused.
+//
+// Only a top-level generic is threaded (`build_gens` / `thread_dict_params`).
+// `rewrite_expr`'s EFn arm rebuilds a nested lambda with its bounds untouched and
+// never extends `dict_binds`, so `[T: Eq]` on a lambda binder is accepted by the
+// parser and the checker and then honoured by nothing.
+//
+// Left alone, `T::equals(a, b)` keeps its written spelling, which resolves to no
+// function, and codegen lowers it to a table call on a bogus index. Measured on
+// main at 8f70aa1, the answer was a function of the module's function-table
+// layout rather than of the program:
+//
+//   this program (two impls)           `true`  -- landed on `Pt::equals`
+//   the same plus one more impl        trap: null function or signature mismatch
+//   the same with no enclosing generic trap: null function or signature mismatch
+//
+// `7 != 8`, so `true` is wrong, and wrong with nothing to notice. The refusal is
+// not a diagnostic standing in for a working program -- it is a diagnostic
+// standing in for undefined behaviour.
+//
+// The inner binder reuses the OUTER spelling, which is the shape #2737 reports:
+// before the fix `find_dict_for_method` matched `tp == head` and handed back
+// `outer`'s dictionary, so two Ints were compared through `Pt::equals`. Refusing
+// and withholding are the same answer from two directions -- see the `_unshadowed`
+// fixture for the case where no dictionary was ever in reach.
+
+trait Eq {
+  equals(Self, Self) -> Bool
+}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {
+  equals(a: Pt, b: Pt) -> Bool {
+    a.v == b.v
+  }
+}
+
+impl Eq for Int {
+  equals(a: Int, b: Int) -> Bool {
+    a == b
+  }
+}
+
+fn outer_qualified[T: Eq](x: T, y: T) -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    T::equals(a, b)
+  }
+  inner(7, 8)
+}
+
+export fn _start() -> Int {
+  if outer_qualified(Pt::{ v: 1 }, Pt::{ v: 2 }) {
+    1
+  } else {
+    0
+  }
+}

@@ -1,0 +1,47 @@
+//# #2737: the UFCS spelling of the same dispatch is refused identically.
+//
+// `a.equals(b)` where `a`'s inferred type name is a type formal is the #931 rung:
+// it routes through the SAME threaded dictionary as `T::equals(a, b)` so both
+// spellings resolve alike. A lambda binder has no dictionary to route to, and an
+// EDot that resolves to neither a dictionary nor a concrete method is compiled as
+// a struct-field read -- so the fallthrough is a null-function call, not an error.
+//
+// Measured on main at 8f70aa1 this answered `true` for `inner(7, 8)`, through
+// `outer`'s `Pt::equals`. Pinned as its own file because the two rungs are
+// separate code paths that have diverged before (#931 exists because the
+// qualified one was fixed and this one was not).
+
+trait Eq {
+  equals(Self, Self) -> Bool
+}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {
+  equals(a: Pt, b: Pt) -> Bool {
+    a.v == b.v
+  }
+}
+
+impl Eq for Int {
+  equals(a: Int, b: Int) -> Bool {
+    a == b
+  }
+}
+
+fn outer_ufcs[T: Eq](x: T, y: T) -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    a.equals(b)
+  }
+  inner(7, 8)
+}
+
+export fn _start() -> Int {
+  if outer_ufcs(Pt::{ v: 1 }, Pt::{ v: 2 }) {
+    1
+  } else {
+    0
+  }
+}

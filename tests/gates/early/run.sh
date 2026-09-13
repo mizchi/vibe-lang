@@ -2039,6 +2039,14 @@ for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe fixtures
     exit 1
   fi
 done
+# #2737: a witness dispatch on a bound declared by a LAMBDA binder is refused,
+# with a message that names the edit. The checks, the measurements behind them,
+# and the red test that proves they can fail live in the gate script and its
+# self-test (scripts/check_lambda_bound_refusal{,_test}.sh); this lane hands it
+# the compiler rather than letting it pick one.
+echo "[compiler-gate] a witness dispatch on a lambda binder's bound is refused (#2737)"
+LAMBDA_BOUND_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_lambda_bound_refusal.sh
+
 # #2378: `vibe check` reports a qualified `fn` definition of a builtin name.
 #
 # The leak is narrow and so is the rule. Measured on the seed: a BARE `fn eq` in

@@ -2556,6 +2556,55 @@ Pinned by `fixtures/builtin_value_form_test.vibe` (the runtime answers, all
 three lanes) and `lib/@vibe/compiler/tests/builtin_ident_value_test.vibe` (the
 admission rule and every diagnostic quoted above).
 
+### A lambda binder's trait BOUND is not honoured (#2737)
+
+A binder on a lambda works (previous entry). A **bound** on one does not: only a
+top-level `fn` / `let` generic gets a witness dictionary threaded, so
+`[T: Eq]` on a lambda binder declares something nothing implements. Each rung is
+refused against ITS OWN bound — interpolation needs a `Show` that declares
+`to_string`, so an `Eq` bound does not make the third line below fail (measured:
+with an `Eq` bound it compiles and prints `284`, the tagged pointer):
+
+```vibe skip
+trait Eq {
+  equals(Self, Self) -> Bool
+}
+
+trait Show {
+  to_string(Self) -> String
+}
+
+fn outer[T: Eq + Show](x: T, y: T) -> Bool {
+  // -- all three rejected: the bound is on a LAMBDA binder
+  let by_name = [T: Eq](a: T, b: T) -> Bool { T::equals(a, b) }
+  let by_ufcs = [T: Eq](a: T, b: T) -> Bool { a.equals(b) }
+  let by_interp = [T: Show](a: T) -> String { "\{a}" }
+  true
+}
+
+// -- accepted: at a TOP-LEVEL binder the bound is threaded
+fn lifted_by_name[T: Eq](a: T, b: T) -> Bool {
+  T::equals(a, b)
+}
+
+fn lifted_by_interp[T: Show](a: T) -> String {
+  "\{a}"
+}
+```
+
+Lifting the lambda to a top-level declaration is the edit the message names, and
+it is the whole fix. Note that the binder's spelling is irrelevant — `[U: Eq]`
+is refused exactly like the `[T: Eq]` that shadows the outer one, because the
+condition is which binder declared the bound, not whether a spelling repeats.
+
+The refusal lands on `vibe build` / `vibe run` / `vibe test`, not on
+`vibe check`: the pass that knows a dictionary is missing is a normalize pass
+the check lane does not run (same lane as #2475's refusal).
+
+`==` is NOT refused under such a bound — it falls back to reference identity for
+an aggregate, which is #2523's subject. What is refused is the dispatch that
+would otherwise reach codegen as an unresolved name.
+
 ### A generic binder may not quantify a slot the lambda CAPTURED
 
 An explicit binder (`[T]`) makes a lambda generic per call. That is only sound

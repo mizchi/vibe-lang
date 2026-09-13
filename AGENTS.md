@@ -132,6 +132,37 @@ the fix, and landing it removes the arm rather than working around it.
 `fixtures/structural_eq_contexts_test.vibe`,
 `lib/@vibe/compiler/tests/marker_cmp_bound_test.vibe` and
 `fixtures/err_type_{eq,ord}_marker_bound_struct.vibe` hold the regression.
+**A bound only works on a TOP-LEVEL binder** (#2737). `build_gens` /
+`thread_dict_params` thread a witness dictionary for a top-level `fn` / `let`
+generic; `rewrite_expr`'s `EFn` arm rebuilds a nested lambda with its bounds
+untouched and never extends `dict_binds`. So `let inner = [T: Eq](a: T, b: T)`
+declares a bound the parser accepts, the checker accepts — #2474's message even
+suggests writing it — and nothing honours. The fallthrough was not a worse
+answer but undefined behaviour: the dispatch kept its written spelling, which
+resolves to no function, and codegen lowered it to a table call on a bogus
+index. Measured on main at 8f70aa1, `U::equals(a, b)` inside a nested `[U: Eq]`
+applied to `7, 8` answered `true` with two impls in the program (landing on
+`Pt::equals`) and trapped `null function or function signature mismatch` with
+three — the answer was a function of the module's function-table layout. The
+shadowing route reported in #2737 reached the same place differently:
+`find_dict_for_method` matched `tp == head` by spelling and handed back the
+ENCLOSING binder's dictionary. **Three rungs are now refused at build time with
+a message naming the edit** (lift the lambda to a top-level declaration): the
+qualified spelling, the UFCS spelling (#931's rung), and interpolation — the
+last one too, because a formal-typed value is erased, so the builtin renderer
+prints the representation and not the value (`Pt!` through the wrong witness,
+`284` — a tagged pointer — with the witness withheld). A scalar is unaffected:
+`interp_shape` answers before the dictionary is consulted, which is also why a
+top-level `[T: Show]` at `Int` prints `7` rather than going through
+`Int::to_string`. `==` is NOT refused — it falls back to the ladder, which is
+#2523's subject, not this one. The condition reads the INNERMOST binder's own
+bound (`dtd_scope_formal_bounds`), so it is about the binder and not about a
+spelling collision; pinned by `fixtures/lambda_bound_dispatch_*_refused.vibe`
+(the refusals, message asserted by `scripts/check_lambda_bound_refusal.sh`) and
+`fixtures/lambda_bound_toplevel_witness_test.vibe` (the same three rungs at a
+top-level binder, which is what would catch a refusal that grew too wide).
+Threading a lambda binder's own bound is the remaining half of #2737.
+
 **The bound itself is required** (#2474): `==` / `!=`
 on an operand whose type mentions a formal with no `Eq` bound (bare `T`,
 `Option[T]`, `(T, Int)`, `Array[T]`) is rejected by the checker, because the
