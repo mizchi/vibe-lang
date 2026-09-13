@@ -6246,13 +6246,24 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
         // build reaches only when the dep list missed, so it fired zero times
         // per warm build and the merge lane re-parsed the whole closure.
         // Measured on the full CLI closure (420 modules, one cache directory
-        // per run): a warm build's bump-heap high-water was 1912339944 with
-        // VIBE_EXPERIMENTAL_AST_CACHE=1 and 1912339944 with it off --
-        // byte-identical, the cache doing literally nothing.
+        // per run): a warm build's bump-heap high-water was byte-identical
+        // with VIBE_EXPERIMENTAL_AST_CACHE=1 and with it off, while every
+        // cold build wrote 42 MB of artifacts nobody read.
         //
         // Then measured again at the dep-list branch alone, which is how this
         // ended up here: 2 of 3 modules prefetched and the third still parsed
         // in the merge, because a LEAF never resolves dependencies at all.
+        //
+        // This does NOT make the warm build cheaper -- measured N=3 on that
+        // closure, it makes it worse. With the prefetch reaching all 420
+        // modules a warm build decodes 420 stored ASTs instead of parsing 420
+        // sources, and that is +38.7 MiB of heap (+2.1%) and +1.07 s of wall
+        // (+12%) against the same build with the cache off: the decode
+        // allocates the AST the parse would have allocated and reads 42 MB to
+        // do it. The flag stays opt-in and off. What changed is that the
+        // question became decidable -- `ast_cache_prefetches` reporting 420
+        // means a slower warm build is the cache losing on its merits, not
+        // the cache failing to run.
         if ast_cache_prefetch_fs(path, source) {
           incremental_typecheck_telemetry_add(11, 1)
         } else {

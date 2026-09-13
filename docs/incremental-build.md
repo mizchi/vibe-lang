@@ -1342,25 +1342,48 @@ one cache directory per run):
 |---|---:|
 | AST cache off | 1,912,339,944 B |
 | AST cache on, prefetch on the header pass only | 1,912,339,944 B |
-| same cache with the dep-list entries deleted (forcing the header pass) | 1,843,064,752 B |
 
-The first two are byte-identical — the cache doing literally nothing, #2668's
-result reproduced with its cause named. The third is the same stored ASTs
-actually being read: −69.3 MB. (It came from a second cold/warm pair whose own
-cache-on control read 1,912,339,864: 80 bytes of temp-path jitter across a
-1.9 GB build, not a third behaviour.)
+Byte-identical — the cache doing literally nothing, #2668's result reproduced
+with its cause named, while every cold build wrote 42 MB of artifacts nobody
+read.
 
-#2767 moves the prefetch to the head of the FS planner's walk, so a warm build
-gets the third row without deleting anything. The placement is the point: the
-prefetch has to sit where every planned module passes through, not on a
-particular fast path. Planning settles a module without parsing in five
+#2767 moves the prefetch to the head of the FS planner's walk. The placement
+is the point: it has to sit where every planned module passes through, not on
+a particular fast path. Planning settles a module without parsing in five
 different ways — a valid persistent leaf fingerprint, an in-process reuse
 decision, `ripple_get_deps`, the persistent dep list, and finally the
 module-header text cache — and the prefetch was hung on the last of them.
 Moving it to the dep-list branch was measured too, and covered 2 of 3 modules
 in a three-module project: a LEAF resolves no dependencies, so it reached
-neither branch. `ast_cache_prefetches` in the incremental telemetry says how
-many stored ASTs a build actually reused.
+neither branch.
+
+### And with the cache working, it does not pay
+
+On the full CLI closure, warm, `ast_cache_prefetches` reports **420 of 420**
+and `non_walk_parse_operations` drops from 420 to 0: the merge lane's parses
+are entirely replaced by decodes. That costs more than it saves. N=3, fresh
+cache directory per repetition, cold-vs-cold and warm-vs-warm (#2393):
+
+| | cache off | cache on | delta |
+|---|---:|---:|---:|
+| cold heap | 2,496,792,016 B | 2,707,974,464 B | **+201.4 MiB (+8.5%)** |
+| warm heap | 1,901,348,896 B | 1,941,911,080 B | **+38.7 MiB (+2.1%)** |
+| cold wall (median) | 11.94 s | 13.09 s | +1.15 s (+9.7%) |
+| warm wall (median) | 8.94 s | 10.02 s | +1.07 s (+12.0%) |
+
+Heap is byte-identical across repetitions in every configuration; the emitted
+wasm is identical across all twelve runs. The decode allocates the same AST
+the parse would have allocated and reads 42 MB of artifacts to do it, against
+a parser that is only ~6.9% of the warm build to begin with — the ceiling
+above. So the flag stays opt-in and off.
+
+The value of the wiring is not a speedup; it is that **the question became
+decidable**. Before it, the cache could not be evaluated at all: it was paying
+its full write cost on every cold build and being read on none, and the only
+signal available — a byte-identical warm heap — was indistinguishable from
+"the cache does not help". Now `ast_cache_prefetches` says the cache is being
+read, so a warm build that is slower with it on is the per-file AST cache
+losing on its merits. That is the answer to #2510 criterion 4 on this corpus.
 
 (CPU share, not allocation; the KPI is allocation and the two are correlated
 rather than identical. N=1, which is enough for a structural read — a 0.1%
