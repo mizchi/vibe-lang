@@ -188,35 +188,61 @@ fn owned_leaf(k: String) -> Bool {
   k == "tuple" || k == "record" || k == "array" || k == "ctor" || k == "call_heap_ret"
 }
 
-/// Every leaf of the value's RESULT spine: what the binding is actually
-/// handed, looked at through the wrappers that do not change it. Mirrors
-/// `value_has_borrowed_branch_tail`'s recursion (compile_expr_tail.vibe),
-/// which is the existing precedent for reading a `let` value this way.
-/// Collects the leaf EXPRESSIONS, so a row can name the callee of the leaf
-/// that disqualified the binding rather than of the wrapper around it.
-fn spine_leaves(e: Expr, out: Array[Expr]) -> Unit {
+/// Every leaf of the value's RESULT spine, CLASSIFIED WHERE IT SITS: the walk
+/// carries the scope down with it, so a call under `{ let mk = ...; mk(xs) }`
+/// is read with `mk` bound exactly as `path_value_owned` reads it. Collecting
+/// the leaves first and classifying them afterwards cannot do that -- the
+/// binder is gone by then -- which is why the kind, the callee and the
+/// contract are all produced here rather than by the caller. Mirrors
+/// `value_has_borrowed_branch_tail`'s recursion (compile_expr_tail.vibe), the
+/// existing precedent for reading a `let` value this way.
+fn spine_walk(e: Expr, scope: Array[String], ctors: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String], out_kinds: Array[String], out_callees: Array[String], out_contracts: Array[String]) -> Unit {
   match e {
     EIf(_, t, el) => {
-      spine_leaves(t, out)
-      spine_leaves(el, out)
+      spine_walk(t, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
+      spine_walk(el, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
     },
     EMatch(_, arms) => if Array::length(arms) == 0 {
-      Array::push(out, EUnit)
+      Array::push(out_kinds, "unit")
+      Array::push(out_callees, "-")
+      Array::push(out_contracts, "-")
     } else {
       let mut i = 0
       while i < Array::length(arms) {
-        let (_, ab) = Array::get(arms, i)
-        spine_leaves(ab, out)
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(scope)
+        pat_bound_names(ap, scope)
+        spine_walk(ab, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
+        Array::truncate(scope, mark)
         i = i + 1
       }
     },
-    ELet(_, _, b, _) => spine_leaves(b, out),
-    ELetMut(_, _, b, _) => spine_leaves(b, out),
-    ELetRec(_, _, b) => spine_leaves(b, out),
-    ESeq(_, b) => spine_leaves(b, out),
-    EAssign(_, _, b) => spine_leaves(b, out),
-    EAssignOp(_, _, _, b) => spine_leaves(b, out),
-    _ => Array::push(out, e)
+    ELet(n, _, b, _) => {
+      let mark = Array::length(scope)
+      Array::push(scope, n)
+      spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
+      Array::truncate(scope, mark)
+    },
+    ELetMut(n, _, b, _) => {
+      let mark = Array::length(scope)
+      Array::push(scope, n)
+      spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
+      Array::truncate(scope, mark)
+    },
+    ELetRec(n, _, b) => {
+      let mark = Array::length(scope)
+      Array::push(scope, n)
+      spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts)
+      Array::truncate(scope, mark)
+    },
+    ESeq(_, b) => spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts),
+    EAssign(_, _, b) => spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts),
+    EAssignOp(_, _, _, b) => spine_walk(b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, out_kinds, out_callees, out_contracts),
+    _ => {
+      Array::push(out_kinds, leaf_kind(e, ctors, scope, borrow_ret, view_ret, heap_ret))
+      Array::push(out_callees, leaf_callee(e))
+      Array::push(out_contracts, call_contract(e, scope, borrow_ret, view_ret, scalar_ret, heap_ret))
+    }
   }
 }
 
@@ -350,16 +376,12 @@ fn uniq_sorted(xs: Array[String]) -> String {
   StringBuilder::freeze(sb)
 }
 
-fn report(fname: String, name: String, value: Expr, ctors: Array[String], bound: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String]) -> Unit with Stdout {
-  let leaves: Array[Expr] = []
-  spine_leaves(value, leaves)
+fn report(fname: String, name: String, value: Expr, ctors: Array[String], row_scope: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String]) -> Unit with Stdout {
   let kinds: Array[String] = []
-  let mut li = 0
-  while li < Array::length(leaves) {
-    Array::push(kinds, leaf_kind(Array::get(leaves, li), ctors, bound, borrow_ret, view_ret, heap_ret))
-    li = li + 1
-  }
-  let flat = owned_leaf(leaf_kind(value, ctors, bound, borrow_ret, view_ret, heap_ret))
+  let callees: Array[String] = []
+  let contracts: Array[String] = []
+  spine_walk(value, row_scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, kinds, callees, contracts)
+  let flat = owned_leaf(leaf_kind(value, ctors, row_scope, borrow_ret, view_ret, heap_ret))
   let mut all_site = Array::length(kinds) > 0
   let mut first_bad = ""
   let mut bad_at = 0 - 1
@@ -389,20 +411,25 @@ fn report(fname: String, name: String, value: Expr, ctors: Array[String], bound:
     first_bad
   }
   // The callee and contract come from the LEAF that disqualified the binding,
-  // not from the wrapper around it: for `{ let k = 0; unknown(k) }` the value
-  // node is an `ELet` and would report "-", which would drop exactly the
-  // wrapped-call population the spine read exists to look at.
-  let subject = if bad_at >= 0 {
-    Array::get(leaves, bad_at)
+  // classified in ITS scope: for `{ let k = 0; unknown(k) }` the value node is
+  // an `ELet` and would report "-", which would drop exactly the wrapped-call
+  // population the spine read exists to look at.
+  let callee = if bad_at >= 0 {
+    Array::get(callees, bad_at)
   } else {
-    value
+    leaf_callee(value)
+  }
+  let contract = if bad_at >= 0 {
+    Array::get(contracts, bad_at)
+  } else {
+    call_contract(value, row_scope, borrow_ret, view_ret, scalar_ret, heap_ret)
   }
   let line = StringBuilder::new()
   StringBuilder::push(line, fname)
   StringBuilder::push(line, "\t")
   StringBuilder::push(line, name)
   StringBuilder::push(line, "\ttop=")
-  StringBuilder::push(line, top_kind(value, ctors, bound, borrow_ret, view_ret, heap_ret))
+  StringBuilder::push(line, top_kind(value, ctors, row_scope, borrow_ret, view_ret, heap_ret))
   StringBuilder::push(line, "\tflat=")
   StringBuilder::push(line, yn(flat))
   StringBuilder::push(line, "\tspine=")
@@ -414,9 +441,9 @@ fn report(fname: String, name: String, value: Expr, ctors: Array[String], bound:
   StringBuilder::push(line, "\tverdict=")
   StringBuilder::push(line, verdict)
   StringBuilder::push(line, "\tcallee=")
-  StringBuilder::push(line, leaf_callee(subject))
+  StringBuilder::push(line, callee)
   StringBuilder::push(line, "\tcontract=")
-  StringBuilder::push(line, call_contract(subject, bound, borrow_ret, view_ret, scalar_ret, heap_ret))
+  StringBuilder::push(line, contract)
   println(StringBuilder::freeze(line))
 }
 

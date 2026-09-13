@@ -174,3 +174,15 @@ test "a local binding shadowing a heap-returning global is declined" {
   let _ = assert_bump_rc_agree(src, "local_shadow", "709")
   ()
 }
+
+test "a binding named after the global it calls is still admitted" {
+  // A non-recursive `let` binder is not in scope inside its own initializer
+  // (#1120), so `let mk = mk(3)` calls the GLOBAL `mk` and its result is
+  // owned. The binding's own slot has been restored in `local_names` by the
+  // time the admission test runs, so it is masked for the scope read the same
+  // way the value compile masks it. Measured: without the mask this shape
+  // compiles 18 B smaller -- the guarded drop declined, and the leak kept.
+  let src = String::concat(prelude, "let mk: (Int) -> Node = (i) -> Pair(Leaf(i), Leaf(i + 1))\nlet pick: (Bool) -> Node = (c) -> {\n  let mk = mk(3)\n  if c {\n    mk\n  } else {\n    Leaf(9)\n  }\n}\nlet main: () -> Int = () -> {\n  total(pick(true)) * 100 + total(pick(false))\n}")
+  let _ = assert_bump_rc_agree(src, "self_named_shadow", "709")
+  ()
+}
