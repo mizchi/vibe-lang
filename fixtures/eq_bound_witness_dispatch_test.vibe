@@ -1,0 +1,95 @@
+//# `==` under an `Eq` bound dispatches through the witness dictionary (#2523).
+//
+// A generic body is lowered exactly ONCE, so it cannot carry a
+// per-instantiation comparator: `x == y` on an operand whose type is the formal
+// `T` reached `dtd_typed_eq_residual` and stayed a raw binop, which is
+// REFERENCE identity for anything but the five scalars.
+//
+// Measured on a stage2 built from main at 8b00869, this exact program answered
+//
+//   via_op(p1, p2)       equal, distinct     FALSE   <- the bug
+//   via_witness(p1, p2)  explicit T::equals  true    <- the dictionary was right there
+//   via_op(p, p)         same object         TRUE    <- reference identity
+//   via_op(p1, p3)       different           false
+//   via_op(1, 1)         Int                 true
+//
+// The comparator existed and was correct; the operator never reached it.
+//
+// The `trait Eq` below is the program's OWN and carries a method. The prelude's
+// `Eq` is still a marker, so `[T: Eq]` at an aggregate is refused there by
+// #2612's guard -- which stands down for a method-bearing `Eq`, that being its
+// stated deletion condition. Giving the prelude's `Eq` this method is the rest
+// of #2523; this file pins the mechanism that step depends on.
+
+trait Eq {
+  equals(Self, Self) -> Bool
+}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {
+  equals(a: Pt, b: Pt) -> Bool {
+    a.v == b.v
+  }
+}
+
+impl Eq for Int {
+  equals(a: Int, b: Int) -> Bool {
+    a == b
+  }
+}
+
+fn via_op[T: Eq](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn via_op_ne[T: Eq](x: T, y: T) -> Bool {
+  x != y
+}
+
+fn via_witness[T: Eq](x: T, y: T) -> Bool {
+  T::equals(x, y)
+}
+
+fn equality_snapshot(value: Bool) -> String {
+  if value {
+    "true"
+  } else {
+    "false"
+  }
+}
+
+test "a bounded == compares two equal, distinct values by content" {
+  inspect(equality_snapshot(via_op(Pt::{ v: 1 }, Pt::{ v: 1 })), content = "true")
+}
+
+test "a bounded == still separates different values" {
+  inspect(equality_snapshot(via_op(Pt::{ v: 1 }, Pt::{ v: 2 })), content = "false")
+}
+
+test "a bounded == answers by content for one value compared with itself" {
+  let p = Pt::{ v: 1 }
+  inspect(equality_snapshot(via_op(p, p)), content = "true")
+}
+
+test "a bounded != negates the witness" {
+  inspect(equality_snapshot(via_op_ne(Pt::{ v: 1 }, Pt::{ v: 1 })), content = "false")
+}
+
+test "a bounded != separates different values" {
+  inspect(equality_snapshot(via_op_ne(Pt::{ v: 1 }, Pt::{ v: 2 })), content = "true")
+}
+
+test "a bounded == at a scalar instantiation is unchanged" {
+  inspect(equality_snapshot(via_op(1, 1)), content = "true")
+}
+
+test "the witness called by name agrees with the operator" {
+  inspect(equality_snapshot(via_witness(Pt::{ v: 1 }, Pt::{ v: 1 })), content = "true")
+}
+
+test "a concrete == keeps its structural lowering" {
+  inspect(equality_snapshot(Pt::{ v: 1 } == Pt::{ v: 1 }), content = "true")
+}
