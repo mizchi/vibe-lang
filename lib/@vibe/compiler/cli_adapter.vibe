@@ -717,14 +717,17 @@ fn own_host_string(value: String) -> String {
 /// guard the file whose destruction is in question is already on disk, and
 /// the aliasing spelling therefore exists too.
 ///
-/// It does not see through a SYMLINK: `Fs::stat_token` is an lstat by design
-/// (module loading needs a link to be distinguishable from its target, so a
-/// link answers -1) and there is no realpath builtin. That direction is safe
-/// anyway -- `Fs::remove` unlinks the link rather than its target, so the
-/// clear turns a symlinked destination into a plain missing path and the
-/// later write creates a regular file instead of writing through the link.
-/// Two DISTINCT symlinks both answer -1 and are refused as aliases, which is
-/// the conservative direction.
+/// It does not see through a SYMLINK, and this function does not pretend to:
+/// `Fs::stat_token` is an lstat by design (module loading needs a link to be
+/// distinguishable from its target, so a link answers -1) and there is no
+/// realpath builtin, so a link and its target answer DIFFERENT tokens and
+/// this returns false for two names of one file. Callers must therefore rule
+/// a link out first, with `fs_path_is_unresolved_link` -- the comment here
+/// once claimed the symlink direction was "safe anyway" because `Fs::remove`
+/// unlinks the link rather than its target. That is true only when the LINK
+/// is the destination. Measured the other way round, with the compile entry
+/// reached through a link and the destination naming its target: the clear
+/// deleted the real source and left the entry dangling.
 fn fs_paths_name_same_file(left: String, right: String) -> Bool with Fs {
   if left == "" || right == "" {
     false
@@ -734,6 +737,89 @@ fn fs_paths_name_same_file(left: String, right: String) -> Bool with Fs {
     Fs::stat_token(left) == Fs::stat_token(right)
   } else {
     false
+  }
+}
+
+/// Is this path a symlink whose target this cannot resolve?
+///
+/// `Fs::exists` FOLLOWS a link and `Fs::stat_token` does not, so the pair
+/// separates the three cases exactly: a regular file answers a non-negative
+/// hash, a link to an existing target answers -1, and a dangling link or a
+/// missing path does not exist at all. -1 is unambiguous because the hash is
+/// an unsigned 61-bit value.
+///
+/// A dangling link is deliberately NOT flagged: nothing it could alias exists,
+/// the clear would unlink the link itself, and a later write creates a regular
+/// file at that name.
+fn fs_path_is_unresolved_link(path: String) -> Bool with Fs {
+  path != "" && Fs::exists(path) && Fs::stat_token(path) == -1
+}
+
+/// `<output>.<suffix>`, or "" when there is no output path to derive from --
+/// so the comparison against it cannot accidentally match a bare ".diag".
+fn derived_output_sidecar(output: String, suffix: String) -> String {
+  if output == "" {
+    ""
+  } else {
+    String::concat(output, suffix)
+  }
+}
+
+/// What does the telemetry destination collide with? "" when nothing.
+///
+/// One list, asked at both guards, because every entry names something this
+/// invocation would DELETE (the clear) or OVERWRITE (the publication):
+///
+///   - the compile INPUT -- the clear deletes the entry source, and no later
+///     refusal returns it;
+///   - the compile OUTPUT -- the publication replaces the wasm with JSON while
+///     the invocation still reports success;
+///   - `<output>.diag` and `<output>.funcmap`, which the compiler derives and
+///     owns. `runtime/vibe` removes `<output>.diag` once it sees a non-empty
+///     artifact, so a telemetry sidecar published there is deleted by the very
+///     build that was asked to produce it; a `.funcmap` collision replaces the
+///     map that annotates runtime backtraces;
+///   - `VIBE_ARTIFACT_INPUT_TRACE_OUT`, whose own validation admits a telemetry
+///     request beside it, so both sidecars can be asked for at one path and the
+///     second write silently replaces the first observation.
+///
+/// A DIRECTORY is refused outright: `Fs::remove` is recursive, so a clear of
+/// `lib` deletes the tree rather than a stale sidecar.
+///
+/// A SYMLINK anywhere in the comparison is refused rather than guessed. The
+/// identity test cannot resolve one, so "different tokens" would mean "not the
+/// same file" when it may well be -- which is how a measured run deleted a real
+/// source through a symlinked entry. The refusal names the edit, and it costs
+/// only an opt-in observation.
+fn telemetry_destination_conflict(destination: String, input: String, output: String, trace: String,) -> String with Fs {
+  if destination == "" {
+    ""
+  } else if Fs::is_dir(destination) {
+    "a directory (Fs::remove is recursive)"
+  } else if fs_path_is_unresolved_link(destination) || fs_path_is_unresolved_link(input) || fs_path_is_unresolved_link(output) {
+    "a path reached through a symlink, which the identity check cannot resolve -- pass the real path"
+  } else if fs_paths_name_same_file(destination, input) {
+    "the compile input path"
+  } else if fs_paths_name_same_file(destination, output) {
+    "the compile output path"
+  } else if fs_paths_name_same_file(destination, derived_output_sidecar(output, ".diag")) {
+    "the compiler's <output>.diag sidecar"
+  } else if fs_paths_name_same_file(destination, derived_output_sidecar(output, ".funcmap")) {
+    "the compiler's <output>.funcmap sidecar"
+  } else if fs_paths_name_same_file(destination, trace) {
+    "VIBE_ARTIFACT_INPUT_TRACE_OUT"
+  } else {
+    ""
+  }
+}
+
+/// Throw if the destination collides, with a message that names the edit.
+fn refuse_telemetry_destination_conflict(destination: String, input: String, output: String, trace: String,) -> Unit with Fs + Exception {
+  let conflict = telemetry_destination_conflict(destination, input, output, trace)
+  if conflict != "" {
+    throw(String::concat("VIBE_INCREMENTAL_TELEMETRY_OUT must not name ", conflict))
+  } else {
+    ()
   }
 }
 
@@ -1184,42 +1270,21 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // each round found a failure point earlier or later than the last. The
   // mechanism already existed; the fix was to use it.
   let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
-  // #2510: an observation must never be able to destroy what it observes. If
-  // the telemetry destination aliases the primary output, the compile writes
-  // the artifact and the sidecar publication then overwrites it with JSON,
-  // while the invocation still reports success -- a silently corrupt build
-  // produced by asking for a measurement. Checked for EVERY lane, because the
-  // check-only branch publishes to the same variable.
+  // #2510: an observation must never be able to destroy what it observes. The
+  // destination is a file this invocation DELETES below and WRITES ~600 lines
+  // further down, so every path it could name and destroy is refused here --
+  // the list, and why each entry is on it, is on
+  // `telemetry_destination_conflict`.
   //
-  // Refused BEFORE the clear below rather than after it. Measured with the
-  // refusal sitting further down: the request was rejected AND the artifact it
-  // named was already gone, because the clear had removed it -- so the refusal
-  // held for the write and not for the delete, which is the destruction it
-  // exists to prevent minus the compile. read_arg_or_env is total (it returns
-  // "" when neither the positional argument nor the variable is set), so
-  // probing the paths this early is safe on the lanes that have no input or
-  // output argument at all.
-  //
-  // The INPUT is checked for the same reason and is the worst case: the clear
-  // below would delete the entry source the compile is about to read, and no
-  // later refusal can give it back. The artifact-input trace is checked
-  // because its validation admits a telemetry request alongside it, so the two
-  // sidecars can be asked for at one path and the second write would silently
-  // replace the first observation under a zero exit.
-  //
-  // A DIRECTORY destination is refused outright: `Fs::remove` is recursive, so
-  // a clear of `lib` would delete the tree rather than a stale sidecar.
-  if fs_telemetry_out != "" && Fs::is_dir(fs_telemetry_out) {
-    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name a directory")
-  } else if fs_telemetry_out != "" && fs_paths_name_same_file(fs_telemetry_out, own_host_string(read_arg_or_env(0, "VIBE_INPUT"))) {
-    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name the compile input path")
-  } else if fs_telemetry_out != "" && fs_paths_name_same_file(fs_telemetry_out, own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))) {
-    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name the compile output path")
-  } else if fs_telemetry_out != "" && fs_paths_name_same_file(fs_telemetry_out, Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT")) {
-    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name VIBE_ARTIFACT_INPUT_TRACE_OUT")
-  } else {
-    ()
-  }
+  // Refused BEFORE the clear rather than after it. Measured with the refusal
+  // sitting further down: the request was rejected AND the artifact it named
+  // was already gone, because the clear had removed it -- so the refusal held
+  // for the write and not for the delete, which is the destruction it exists
+  // to prevent minus the compile. read_arg_or_env is total (it returns "" when
+  // neither the positional argument nor the variable is set), so probing the
+  // paths this early is safe on the lanes that have no input or output
+  // argument at all.
+  refuse_telemetry_destination_conflict(fs_telemetry_out, own_host_string(read_arg_or_env(0, "VIBE_INPUT")), own_host_string(read_arg_or_env(1, "VIBE_OUTPUT")), Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
   if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
     Fs::remove(fs_telemetry_out)
   } else {
@@ -1856,22 +1921,19 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       // exists to explain. The counters were captured at the typing walk's
       // boundary, so publishing here does not widen what they describe.
       //
-      // Re-checked against the artifact and the artifact-input trace HERE as
-      // well as before the compile. The early refusal can only compare
-      // spellings for paths that already exist, and on a first build neither
-      // of those two files is on disk yet, so an aliasing destination spelled
-      // any other way passes it. Both exist by now, which is exactly what
-      // makes the stat-token comparison exact -- and it is exactly when they
-      // exist that writing here would destroy one of them. Refusing costs a
-      // failed build; writing would cost a wasm silently replaced by JSON, or
-      // a requested trace silently replaced by counters, under a zero exit.
+      // Re-checked HERE as well as before the compile. The early refusal can
+      // only compare spellings for paths that already exist, and on a first
+      // build neither the artifact nor its derived sidecars nor the
+      // artifact-input trace is on disk yet, so an aliasing destination
+      // spelled any other way passes it. They exist by now, which is exactly
+      // what makes the identity comparison exact -- and it is exactly when
+      // they exist that writing here would destroy one of them. Refusing costs
+      // a failed build; writing would cost a wasm silently replaced by JSON,
+      // or a requested trace silently replaced by counters, under a zero exit.
       if fs_telemetry_out == "" {
         ()
-      } else if fs_paths_name_same_file(fs_telemetry_out, output_path) {
-        throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name the compile output path")
-      } else if fs_paths_name_same_file(fs_telemetry_out, Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT")) {
-        throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name VIBE_ARTIFACT_INPUT_TRACE_OUT")
       } else {
+        refuse_telemetry_destination_conflict(fs_telemetry_out, input_path, output_path, Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
         Fs::write_file(fs_telemetry_out, fs_telemetry_json)
       }
       0

@@ -20,6 +20,18 @@
 #   = a directory       | exit 0, TREE DELETED           | refused, intact
 #   = the trace sidecar | exit 0, TRACE REPLACED         | refused
 #
+# And against the build that carried the identity check but not the symlink or
+# derived-path rows (e88ab7b):
+#
+#   telemetry path      | there                          | here
+#   --------------------+--------------------------------+-----------------
+#   = a symlinked entry | exit 1, REAL SOURCE DELETED    | refused, intact
+#     entry's target    |   and the entry left dangling  |
+#   = <output>.diag     | exit 0, and runtime/vibe then  | refused
+#                       |   deletes the sidecar it asked |
+#                       |   this build to produce        |
+#   = <output>.funcmap  | exit 0, BACKTRACE MAP REPLACED | refused
+#
 # The positive case is not decoration. A compiler that ignores the variable
 # entirely destroys nothing and would pass every row above: measured, the
 # committed seed does exactly that. Asserting that a plain request PUBLISHES a
@@ -135,6 +147,35 @@ if grep -q '"modules_planned"' "$WORK/both.json" 2>/dev/null; then
   fail "the requested artifact-input trace was replaced by telemetry counters"
 fi
 restore
+
+# `<output>.diag` and `<output>.funcmap` are derived and compiler-owned. The
+# first is removed by runtime/vibe once it sees a non-empty artifact, so a
+# sidecar published there is deleted by the build that was asked for it; the
+# second annotates runtime backtraces.
+refuse "the derived .diag sidecar" "$OUT.diag"
+refuse "the derived .funcmap sidecar" "$OUT.funcmap"
+[ -s "$OUT.funcmap" ] || fail "the compile left no .funcmap, so that row proves nothing"
+grep -q '"modules_planned"' "$OUT.funcmap" 2>/dev/null &&
+  fail "the backtrace map holds telemetry JSON"
+restore
+
+# The ENTRY reached through a symlink, with the destination naming its target.
+# The identity check cannot resolve a link, so "different tokens" would read as
+# "different files" here -- measured, that deleted the real source and left the
+# entry dangling.
+mkdir -p "$WORK/link"
+cp "$WORK/prog.vibe.orig" "$WORK/link/real.vibe"
+ln -sf real.vibe "$WORK/link/entry.vibe"
+set +e
+env VIBE_FS_COMPILE=1 VIBE_RC=0 VIBE_BUILD_CACHE_DIR="$WORK/cache" \
+    VIBE_INCREMENTAL_TELEMETRY_OUT="$WORK/link/real.vibe" \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+    "$STAGE2" "$WORK/link/entry.vibe" "$WORK/build/link.wasm" main >"$WORK/run.log" 2>&1
+link_status=$?
+set -e
+[ "$link_status" != "0" ] || fail "a symlinked entry aliasing its target: accepted (exit 0)"
+[ -f "$WORK/link/real.vibe" ] || fail "the real source behind a symlinked entry was deleted"
+[ -e "$WORK/link/entry.vibe" ] || fail "the symlinked entry was left dangling"
 
 # The artifact is absent here, so neither path exists when the early refusal
 # runs and only the one at the publication boundary can see the alias.
