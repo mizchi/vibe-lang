@@ -1189,6 +1189,44 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
   (rc_kind, is_borrow_ret_ext)
 }
 
+/// Does a `let mut` initializer hand the slot a borrowed call result, reached
+/// through a straight-line wrapper if there is one? The twin of `pc_count`'s
+/// ELetMut `borrowed_call`: the retain this gates and the owning plan that
+/// arm records must cover the same values, or codegen and the planner
+/// disagree about what the slot holds.
+fn mut_init_borrowed_call(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let binders = array_empty()
+  let leaf = mib_spine_leaf(value, binders)
+  match leaf {
+    ECall(EIdent(cn, _), _, _) => !array_contains_str(binders, cn) && call_returns_borrow(leaf, local_names, ctx),
+    _ => false
+  }
+}
+
+/// The leaf of a STRAIGHT-LINE spine, collecting the names it binds. Mirrors
+/// `pmvc_spine_leaf` in perceus.vibe; branching stops the walk because the
+/// plan it pairs with records one answer per binding.
+fn mib_spine_leaf(e: Expr, binders: Array[String]) -> Expr {
+  match e {
+    ELet(n, _, b, _) => {
+      Array::push(binders, n)
+      mib_spine_leaf(b, binders)
+    },
+    ELetMut(n, _, b, _) => {
+      Array::push(binders, n)
+      mib_spine_leaf(b, binders)
+    },
+    ELetRec(n, _, b) => {
+      Array::push(binders, n)
+      mib_spine_leaf(b, binders)
+    },
+    ESeq(_, b) => mib_spine_leaf(b, binders),
+    EAssign(_, _, b) => mib_spine_leaf(b, binders),
+    EAssignOp(_, _, _, b) => mib_spine_leaf(b, binders),
+    _ => e
+  }
+}
+
 /// The direct-call borrow contract, shared by initialization and assignment.
 ///
 /// The tables are keyed by GLOBAL name, so a callee whose spelling resolves
@@ -2205,7 +2243,12 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // Retain now: even an unassigned slot may be returned through a wrapper
       // without taking a reference away from the original container.
       // pc_count's ELetMut arm supplies the matching ordinary owning plan.
-      if ctx.enable_rc && _mut_is_borrow_ret_ext && expr_tag(value) == 8 {
+      // The initializer may WRAP the call. This must fire on exactly the
+      // values `pc_count`'s ELetMut arm plans as owning, so it reads the same
+      // straight-line spine leaf rather than `_mut_is_borrow_ret_ext`, whose
+      // wrapper answer is broader (branches, projections, aliases) than the
+      // plan's.
+      if ctx.enable_rc && mut_init_borrowed_call(value, local_names, ctx) {
         emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         Array::push(ctx.heap_binding_names, name)
       } else {

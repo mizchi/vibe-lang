@@ -2918,8 +2918,18 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
       // scalar exemption nor the view-only lifetime can describe the slot.
       // compile_expr_tail retains the borrowed initializer to match this
       // ordinary owning plan, including its assignment dup/drop budget.
-      let borrowed_call = match value {
-        ECall(EIdent(fname, _), _, _) => is_borrow_ret_fname(ctx, fname),
+      // #2750 review: the initializer may WRAP the call -- `let mut x = { let
+      // k = 0; Array::get(xs, k) }` produces the same borrowed value through
+      // a block. Reading the top node only left the slot view-classified and
+      // out of `heap_binding_names`, so a later assignment of a fresh
+      // allocation saw `is_heap_mut == false` and nothing dropped it (80 B
+      // per iteration, measured). Straight-line only, and a callee the spine
+      // itself bound is a local with no contract -- both matching the retain
+      // in compile_expr_tail's ELetMut arm, which must fire on exactly the
+      // same values as this plan or the two sides desync.
+      let bc_binders = array_empty()
+      let borrowed_call = match pmvc_spine_leaf(value, bc_binders) {
+        ECall(EIdent(fname, _), _, _) => !array_contains_str_pctx(bc_binders, fname) && is_borrow_ret_fname(ctx, fname),
         _ => false
       }
       let id = pc_declare(ctx, name, !borrowed_call && is_scalar_expr(ctx, value))
