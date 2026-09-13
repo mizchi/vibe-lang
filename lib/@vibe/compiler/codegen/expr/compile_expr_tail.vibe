@@ -1093,7 +1093,7 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
       }
     } else if expr_tag(value) == 8 {
       let callee = get_ecall_callee(value)
-      let is_borrow_ret = call_returns_borrow(value, ctx)
+      let is_borrow_ret = call_returns_borrow(value, local_names, ctx)
       // #791: consult the DECLARED return-type table (compute_heap_returning,
       // built once from a syntactic scan of top-level signatures -- see its
       // doc comment) before falling back to the blanket "any ECall is heap"
@@ -1190,9 +1190,17 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
 }
 
 /// The direct-call borrow contract, shared by initialization and assignment.
-fn call_returns_borrow(value: Expr, ctx: CompileCtx) -> Bool {
+///
+/// The tables are keyed by GLOBAL name, so a callee whose spelling resolves
+/// to a LOCAL -- a parameter or a local closure shadowing a borrow-returning
+/// top-level function -- is not described by them. Reading one anyway calls a
+/// fresh owned result borrowed; on the assignment path that adds a retain
+/// nothing spends, measured at 80 B per iteration (244 B on main against
+/// 1,600,164 B at N=20000). A local resolves to no contract, which is not the
+/// same as a borrow contract.
+fn call_returns_borrow(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
   match value {
-    ECall(EIdent(cn, _), _, _) => is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0,
+    ECall(EIdent(cn, _), _, _) => find_local_slot(local_names, cn) < 0 && (is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0),
     _ => false
   }
 }
@@ -2330,7 +2338,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // An owning mutable slot must acquire a borrowed replacement just
         // as it acquires a borrowed initializer. Otherwise its next drop
         // would release the container's reference instead of its own.
-        if is_heap_mut && ((!is_self && is_edot(value)) || call_returns_borrow(value, ctx)) {
+        if is_heap_mut && ((!is_self && is_edot(value)) || call_returns_borrow(value, local_names, ctx)) {
           emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
           ()
