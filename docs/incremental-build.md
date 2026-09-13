@@ -2476,19 +2476,33 @@ is refused, before anything is removed, when the destination names:
 |---|---|
 | the compile input | the clear deletes the entry source, and no later refusal returns it |
 | the compile output | the publication replaces the wasm with JSON under a zero exit |
+| `<output>.diag` | compiler-owned; `runtime/vibe` removes it once it sees a non-empty artifact, so the build deletes the observation it was asked to produce |
+| `<output>.funcmap` | compiler-owned; the map that annotates runtime backtraces is replaced by counters, under a zero exit |
 | `VIBE_ARTIFACT_INPUT_TRACE_OUT` | the second write replaces the first observation, and the trace validation admits a telemetry request beside it |
 | a directory | `Fs::remove` is recursive, so clearing `lib` deletes the tree |
+| anything reached through a symlink | the identity check cannot resolve one, so "different tokens" cannot be read as "different files" |
+
+The list is one function asked at **both** guards, because an entry names
+something the invocation would delete or overwrite and both ends can do it.
 
 Aliasing is decided by filesystem identity, not by spelling: equal strings, or
 equal `Fs::stat_token` when both paths exist. `stat_token` mixes the inode, so
 `build/out.wasm` and `build/./out.wasm` are one file. Needing both paths to
 exist is not a gap where it is asked -- a clear only deletes a path that
 exists, and a write only destroys a file that exists -- which is why the
-artifact and the trace are re-checked at the publication boundary as well,
-where a first build has finally put them on disk. A symlinked destination is
-not resolved (`stat_token` is an lstat by design and there is no realpath
-builtin) and does not need to be: `Fs::remove` unlinks the link rather than
-its target.
+artifact, its derived sidecars and the trace are re-checked at the publication
+boundary as well, where a first build has finally put them on disk.
+
+A **symlink** is refused rather than resolved. `Fs::stat_token` is an lstat by
+design (module loading needs a link to be distinguishable from its target, so
+a link answers `-1`) and there is no realpath builtin, so a link and its target
+answer different tokens -- the identity check reports "different files" for two
+names of one file. This paragraph previously said the case "does not need to
+be" resolved because `Fs::remove` unlinks the link rather than its target. That
+holds only when the LINK is the destination. Measured the other way round, with
+the compile entry reached through a link and the destination naming its target,
+the clear deleted the real source and left the entry dangling. A dangling link
+is still not flagged: nothing it could alias exists.
 
 The other four sidecar clears still accept a directory destination and delete
 the tree; that is #2738, which proposes a non-recursive remove builtin rather
