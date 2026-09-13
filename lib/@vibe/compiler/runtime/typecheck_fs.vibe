@@ -2054,6 +2054,11 @@ fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, 
 /// `build_import_env`, additionally collecting the imported names the
 /// dependency does not export (#1521 -- see
 /// `bind_import_names_from_cache_collecting`).
+/// #2510 part 2: the arms matched below are the COMPLETE set of statements
+/// that bind a name from another module, and `trait_witness_binding_line` reads
+/// its tags off this list rather than arguing one. Adding an arm here without
+/// a matching tag there lets an impl target silently re-resolve while the
+/// witness-set fingerprint stays put.
 fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> (TypeEnv, TypeEnv) {
   let trait_claims = array_empty()
   let len = Array::length(stmts)
@@ -3817,17 +3822,24 @@ fn trait_witness_derive_line(path: String, name: String, derives: Array[String])
   String::concat(interface_segment(path), String::concat("derive:", String::concat(interface_segment(name), interface_bracketed(interface_sorted_unique(derives), ","),),),)
 }
 
-/// What a type name in an impl head RESOLVES to depends on where it was
-/// imported from. Two dependencies can expose different aliases under the same
-/// exposed name, and the impl-owning module can switch which one it imports
-/// while `impl Marker for Target` is unchanged -- both alias rows still exist
-/// and the impl row is identical, so without this row nothing moves while the
-/// checked `EnvTraitImpl` target changes (Codex on #2742, P1).
+/// What a type name in an impl head RESOLVES to depends on where it was bound
+/// from. Two dependencies can expose different aliases under the same exposed
+/// name, and the impl-owning module can switch which one it binds while `impl
+/// Marker for Target` is unchanged -- both alias rows still exist and the impl
+/// row is identical, so without this row nothing moves while the checked
+/// `EnvTraitImpl` target changes (Codex on #2742, P1 twice: once for `import`,
+/// then again for `reexport`, which binds the name locally just the same).
 ///
-/// The import KIND is recorded only as present/absent. Distinguishing the
+/// WHICH statements bind a name from elsewhere is not argued here, it is read
+/// off `build_import_envs_collecting` above: that resolver matches exactly
+/// `SImport` and `SReExport`, and those are exactly the two tags this emits. A
+/// third arm there needs a third tag here -- the comment on that function says
+/// so from its side.
+///
+/// The item KIND is recorded only as present/absent. Distinguishing the
 /// variants would mean enumerating them here and re-enumerating whenever one
 /// is added; the name-to-source association is what decides resolution.
-fn trait_witness_import_line(path: String, raw_path: String, items: Array[ImportItem]) -> String {
+fn trait_witness_binding_line(path: String, tag: String, raw_path: String, items: Array[ImportItem],) -> String {
   let rows = array_empty()
   let mut i = 0
   while i < Array::length(items) {
@@ -3843,7 +3855,7 @@ fn trait_witness_import_line(path: String, raw_path: String, items: Array[Import
     Array::push(rows, String::concat(interface_segment(item.name), String::concat(interface_segment(alias), kind)),)
     i = i + 1
   }
-  String::concat(interface_segment(path), String::concat("import:", String::concat(interface_segment(raw_path), interface_bracketed(rows, ";")),),)
+  String::concat(interface_segment(path), String::concat(tag, String::concat(interface_segment(raw_path), interface_bracketed(rows, ";")),),)
 }
 
 /// Everything in ONE module that decides which witnesses exist, as canonical
@@ -3893,7 +3905,10 @@ export fn trait_witness_set_lines(path: String, stmts: Array[Stmt]) -> Array[Str
       } else {
         ()
       },
-      SImport(raw_path, items) => Array::push(lines, trait_witness_import_line(path, raw_path, items)),
+      SImport(raw_path, items) =>
+      Array::push(lines, trait_witness_binding_line(path, "import:", raw_path, items)),
+      SReExport(raw_path, items) =>
+      Array::push(lines, trait_witness_binding_line(path, "reexport:", raw_path, items)),
       _ => ()
     }
     i = i + 1

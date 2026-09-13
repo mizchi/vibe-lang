@@ -202,6 +202,35 @@ test "WHICH module a target name is imported from is part of the set" {
   ], [dep_a, dep_b, via_b]),), "moved",)
 }
 
+test "a RE-EXPORT binds a target name too, not just an import" {
+  // Codex on #2742 (P1, round 3). `build_import_envs_collecting` matches
+  // exactly two arms -- SImport and SReExport -- so a re-export binds the name
+  // locally just as an import does. Switching which dependency a name is
+  // re-exported from re-resolves `impl Marker for Target` while every other
+  // row is unchanged.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep_a: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let dep_b: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("String"))]
+  let via_a: Array[Stmt] = [
+    SReExport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  let via_b: Array[Stmt] = [
+    SReExport("b.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  // An import and a re-export of the same name from the same module are
+  // different statements, and are told apart too.
+  let imported: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  inspect("switched-source=\{show_eq(
+      fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, via_a]),
+      fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, via_b]),
+    )}" + " import-vs-reexport=\{show_eq(fp([via_a]), fp([imported]))}", "switched-source=moved import-vs-reexport=moved",)
+}
+
 test "bound ORDER is not part of what an impl means" {
   let one: Array[Stmt] = [
     SImpl(["A", "B"], [("A", ["Show"]), ("B", ["Eq"])], "Pair", TyApp("P", [
