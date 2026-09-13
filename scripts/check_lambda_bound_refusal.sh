@@ -8,7 +8,7 @@
 # parser and by the checker -- which even suggests writing it (#2474) -- and then
 # honoured by nothing.
 #
-# Left alone, the three rungs do not degrade into a worse answer; they produce
+# Left alone, the four rungs do not degrade into a worse answer; they produce
 # undefined behaviour. Measured on main at 8f70aa1:
 #
 #   T::equals / a.equals   an unresolved name reaching codegen, lowered to a table
@@ -26,10 +26,16 @@
 # The MESSAGE is asserted and not merely the refusal: "did not compile" is
 # satisfied by any unrelated breakage, which is how a gate ends up green about
 # something it never saw. The green side is a separate, committed fixture
-# (`fixtures/lambda_bound_toplevel_witness_test.vibe`, the same three rungs with
+# (`fixtures/lambda_bound_toplevel_witness_test.vibe`, the same four rungs with
 # the binder at the top level) running in the unit lane -- each condition here is
 # one step from rejecting the shape the language DOES support, and a refusal that
 # grew that wide would leave every assertion below passing.
+#
+# The fourth rung arrived from review (Codex, P1 on the first commit): a method
+# taken as a VALUE (`let cmp = T::equals`) reaches the qualified EIdent arm rather
+# than either call site, so two refusals at the call sites left it unrefused and
+# still answering `true` for `equals(7, 8)`. The corpus is a GLOB for that reason
+# -- a route found later joins by adding a file, not by editing this script.
 set -euo pipefail
 # Overridable ONLY so this gate's own self-test can run a MUTATED COPY of this
 # script from a scratch directory -- the same escape hatch, for the same reason,

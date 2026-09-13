@@ -146,12 +146,14 @@ applied to `7, 8` answered `true` with two impls in the program (landing on
 three — the answer was a function of the module's function-table layout. The
 shadowing route reported in #2737 reached the same place differently:
 `find_dict_for_method` matched `tp == head` by spelling and handed back the
-ENCLOSING binder's dictionary. **Three rungs are now refused at build time with
+ENCLOSING binder's dictionary. **Four rungs are now refused at build time with
 a message naming the edit** (lift the lambda to a top-level declaration): the
-qualified spelling, the UFCS spelling (#931's rung), and interpolation — the
-last one too, because a formal-typed value is erased, so the builtin renderer
-prints the representation and not the value (`Pt!` through the wrong witness,
-`284` — a tagged pointer — with the witness withheld). A scalar is unaffected:
+qualified spelling, the UFCS spelling (#931's rung), the method taken as a VALUE
+(`let cmp = T::equals`, which reaches the qualified EIdent arm rather than either
+call site — it answered `true` for `equals(7, 8)` until a review round found it),
+and interpolation — the last one too, because a formal-typed value is erased, so
+the builtin renderer prints the representation and not the value (`Pt!` through
+the wrong witness, `284` — a tagged pointer — with the witness withheld). A scalar is unaffected:
 `interp_shape` answers before the dictionary is consulted, which is also why a
 top-level `[T: Show]` at `Int` prints `7` rather than going through
 `Int::to_string`. `==` is NOT refused — it falls back to the ladder, which is
@@ -159,7 +161,7 @@ top-level `[T: Show]` at `Int` prints `7` rather than going through
 bound (`dtd_scope_formal_bounds`), so it is about the binder and not about a
 spelling collision; pinned by `fixtures/lambda_bound_dispatch_*_refused.vibe`
 (the refusals, message asserted by `scripts/check_lambda_bound_refusal.sh`) and
-`fixtures/lambda_bound_toplevel_witness_test.vibe` (the same three rungs at a
+`fixtures/lambda_bound_toplevel_witness_test.vibe` (the same four rungs at a
 top-level binder, which is what would catch a refusal that grew too wide).
 Threading a lambda binder's own bound is the remaining half of #2737.
 

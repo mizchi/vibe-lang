@@ -1,0 +1,53 @@
+//# #2737: a trait method taken as a VALUE is refused like the call spellings.
+//
+// `let cmp = T::equals` reaches `rewrite_expr`'s qualified EIdent arm, not either
+// call site, so the first commit's refusals missed it (Codex, P1). The name stayed
+// unresolved exactly as the qualified CALL did before it was refused, and the
+// answer came from the function-table layout: measured, `cmp(a, b)` for `7, 8`
+// inside this shadowing `[T: Eq]` lambda answered `true` through `Pt::equals`,
+// both on main at 8f70aa1 and with the withholding guard alone.
+//
+// It is the same defect, so it gets the same message -- and the refusal goes on
+// the arm's LAST branch, after the `Enum::Variant` lookup: a formal's spelling can
+// collide with an enum this arm really does resolve, and that is a resolution
+// rather than a missing witness.
+//
+// The working shape is one binder away and must keep working:
+// `fixtures/lambda_bound_toplevel_witness_test.vibe` holds `let cmp = T::equals`
+// at a TOP-LEVEL binder, measured to compare two equal `Pt` by content.
+
+trait Eq {
+  equals(Self, Self) -> Bool
+}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {
+  equals(a: Pt, b: Pt) -> Bool {
+    a.v == b.v
+  }
+}
+
+impl Eq for Int {
+  equals(a: Int, b: Int) -> Bool {
+    a == b
+  }
+}
+
+fn outer_value[T: Eq](x: T, y: T) -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    let cmp = T::equals
+    cmp(a, b)
+  }
+  inner(7, 8)
+}
+
+export fn _start() -> Int {
+  if outer_value(Pt::{ v: 1 }, Pt::{ v: 2 }) {
+    1
+  } else {
+    0
+  }
+}

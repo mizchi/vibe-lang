@@ -2562,8 +2562,8 @@ A binder on a lambda works (previous entry). A **bound** on one does not: only a
 top-level `fn` / `let` generic gets a witness dictionary threaded, so
 `[T: Eq]` on a lambda binder declares something nothing implements. Each rung is
 refused against ITS OWN bound — interpolation needs a `Show` that declares
-`to_string`, so an `Eq` bound does not make the third line below fail (measured:
-with an `Eq` bound it compiles and prints `284`, the tagged pointer):
+`to_string`, so an `Eq` bound does not make the interpolation below fail
+(measured: with an `Eq` bound it compiles and prints `284`, the tagged pointer):
 
 ```vibe skip
 trait Eq {
@@ -2575,9 +2575,10 @@ trait Show {
 }
 
 fn outer[T: Eq + Show](x: T, y: T) -> Bool {
-  // -- all three rejected: the bound is on a LAMBDA binder
+  // -- all four rejected: the bound is on a LAMBDA binder
   let by_name = [T: Eq](a: T, b: T) -> Bool { T::equals(a, b) }
   let by_ufcs = [T: Eq](a: T, b: T) -> Bool { a.equals(b) }
+  let by_value = [T: Eq](a: T, b: T) -> Bool { let cmp = T::equals; cmp(a, b) }
   let by_interp = [T: Show](a: T) -> String { "\{a}" }
   true
 }

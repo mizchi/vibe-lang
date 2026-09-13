@@ -9207,11 +9207,27 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
     EIdent(name, off) => match split_qualified(name) {
       Some(parts) => {
         let (head, member) = parts
-        match find_dict_for_method(dict_binds, head, member) {
+        let as_method = find_dict_for_method(dict_binds, head, member)
+        match as_method {
           Some(dict_pname) => EDot(EIdent(dict_pname, -1), member, -1, -1),
           None => match qual_ctor_member(head, member, struct_sets, fn_returns) {
             Some(m) => EIdent(m, off),
-            None => expr
+            None => {
+              // #2737 (Codex, P1 on the first commit): a trait method taken as a
+              // VALUE -- `let cmp = T::equals` -- is a fourth route into the same
+              // hole, and it reaches this arm rather than either call site. Left
+              // alone the name stayed unresolved exactly as the qualified CALL
+              // did: measured, `cmp(a, b)` for `7, 8` inside a shadowing
+              // `[T: Eq]` lambda answered `true` through `Pt::equals`, both
+              // before this pass's guard and after it.
+              //
+              // Placed on the LAST branch, after the constructor lookup: a
+              // formal's spelling can collide with an enum whose
+              // `Enum::Variant` this arm resolves, and that is a real
+              // resolution, not a missing witness.
+              dtd_check_unthreaded_dispatch(as_method, head, member, name, traits, fn_returns)
+              expr
+            }
           }
         }
       },
