@@ -1569,7 +1569,27 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
       found
     },
     ELet(n, v, b, _) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
-    ELetMut(n, v, b, _) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
+    // A MUTABLE binder carries no borrow-ness. Its value can be replaced
+    // after this walk records it -- `let mut t = <borrow>; t = <alloc>; t`
+    // hands back the allocation, and an `EAssign` walks its continuation, not
+    // its target -- so a flag taken from the initial value is a statement
+    // about a value the binding may no longer hold. Recording it as owned is
+    // today's answer and keeps the assignment from being able to invalidate
+    // anything: only an `ELetMut` binder is assignable, so no flag this walk
+    // does record can go stale. Measured at 80 B per iteration when it did;
+    // the shape is `via_mut` in fixtures/rc_reclaim_leak_test.vibe.
+    //
+    // It is still PUSHED, so that a leaf spelling it reads this binder and
+    // not an outer one this wrapper marked borrowed.
+    ELetMut(n, _, b, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, n)
+      Array::push(bound_owned, 1)
+      let r = value_spine_borrowed(b, local_names, bound, bound_owned, ctx)
+      Array::truncate(bound, mark)
+      Array::truncate(bound_owned, mark)
+      r
+    },
     ELetRec(n, v, b) => vsb_under_binder(n, v, b, local_names, bound, bound_owned, ctx),
     ESeq(_, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
     EAssign(_, _, b) => value_spine_borrowed(b, local_names, bound, bound_owned, ctx),
