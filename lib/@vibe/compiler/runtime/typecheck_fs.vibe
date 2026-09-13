@@ -3528,12 +3528,19 @@ fn interface_bracketed(items: Array[String], separator: String) -> String {
   StringBuilder::freeze(out)
 }
 
-fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
+/// The 7 statement kinds below ARE the type-level namespace of a module: the
+/// declarations that introduce a name a type expression can resolve to. The
+/// interface identity wants only the exported ones; the witness set
+/// (`trait_witness_set_lines`) wants them all, because a PRIVATE declaration
+/// can shadow an imported name and re-resolve an impl target without appearing
+/// in any interface (Codex on #2742, P1). One serializer, two callers, so the
+/// two cannot drift apart.
+fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[String] {
   let lines = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SEnum(exported, name, params, variants, derives) => if exported {
+      SEnum(exported, name, params, variants, derives) => if exported || include_private {
         let vs = array_empty()
         let mut j = 0
         while j < Array::length(variants) {
@@ -3555,7 +3562,7 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
       } else {
         ()
       },
-      SSuberror(exported, name, variants) => if exported {
+      SSuberror(exported, name, variants) => if exported || include_private {
         let vs = array_empty()
         let mut j = 0
         while j < Array::length(variants) {
@@ -3573,7 +3580,7 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
       } else {
         ()
       },
-      SStruct(exported, name, fields, derives, mut_fields, params) => if exported {
+      SStruct(exported, name, fields, derives, mut_fields, params) => if exported || include_private {
         let fs = array_empty()
         let mut j = 0
         while j < Array::length(fields) {
@@ -3594,12 +3601,12 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
       } else {
         ()
       },
-      STypeAlias(exported, name, params, body) => if exported {
+      STypeAlias(exported, name, params, body) => if exported || include_private {
         Array::push(lines, String::concat("alias:", String::concat(interface_segment(name), interface_canonical_type_expr(body, params))))
       } else {
         ()
       },
-      STrait(exported, name, supers, methods, method_gens, header_params) => if exported {
+      STrait(exported, name, supers, methods, method_gens, header_params) => if exported || include_private {
         let ms = array_empty()
         let mut j = 0
         while j < Array::length(methods) {
@@ -3681,7 +3688,7 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
       } else {
         ()
       },
-      SEffectDef(exported, name, params, ops) => if exported {
+      SEffectDef(exported, name, params, ops) => if exported || include_private {
         let os = array_empty()
         let mut j = 0
         while j < Array::length(ops) {
@@ -3699,7 +3706,7 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
       } else {
         ()
       },
-      SEffectSet(exported, name, members) => if exported {
+      SEffectSet(exported, name, members) => if exported || include_private {
         Array::push(lines, interface_decl_line("effectset:", name, interface_bracketed(interface_sorted_unique(members), ",")))
       } else {
         ()
@@ -3709,6 +3716,10 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
     i = i + 1
   }
   interface_sorted_unique(lines)
+}
+
+fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
+  interface_decl_lines(stmts, false)
 }
 
 /// A trace-only canonical token-stream identity. It length-delimits each token's
@@ -3802,26 +3813,6 @@ fn trait_impl_identity_line(tparams: Array[String], tbounds: Array[(String, Arra
   StringBuilder::freeze(out)
 }
 
-/// `derive (Show)` and friends REGISTER A WITNESS: checker_stmt.vibe pushes an
-/// `EnvTraitImpl` for each of `Show`, `Hash` and `Default` on both the enum
-/// arm (lines 2862 / 2877 / 2889) and the struct arm (3014 / 3035 / 3047). A
-/// type gaining or losing a derive therefore changes the reachable witness set
-/// exactly as an `impl` does, and a scan that accepts only `SImpl` misses it
-/// (Codex on #2742, P1).
-///
-/// EVERY derive name is emitted, not only the three known to produce a witness
-/// today. A list here would be a second place to keep in step with the
-/// checker, and getting it wrong fails in the unsafe direction; an extra name
-/// only costs an invalidation.
-///
-/// A type with NO derives emits no row at all, so declaring or deleting a
-/// plain struct does not move the set. Gaining a first derive makes the row
-/// appear and losing the last one makes it vanish, which is the change that
-/// matters.
-fn trait_witness_derive_line(path: String, name: String, derives: Array[String]) -> String {
-  String::concat(interface_segment(path), String::concat("derive:", String::concat(interface_segment(name), interface_bracketed(interface_sorted_unique(derives), ","),),),)
-}
-
 /// What a type name in an impl head RESOLVES to depends on where it was bound
 /// from. Two dependencies can expose different aliases under the same exposed
 /// name, and the impl-owning module can switch which one it binds while `impl
@@ -3886,25 +3877,24 @@ fn trait_witness_binding_line(path: String, tag: String, raw_path: String, items
 /// the impl rows already impose.
 export fn trait_witness_set_lines(path: String, stmts: Array[Stmt]) -> Array[String] {
   let lines = array_empty()
+  // Every TYPE-LEVEL DECLARATION, private ones included. `interface_decl_lines`
+  // enumerates exactly the 7 statement kinds that introduce a name a type
+  // expression can resolve to, and each line already carries that
+  // declaration's derives, so a `derive` change moves the set through the same
+  // row (Codex on #2742, P1 twice: once for derives, then again for a private
+  // `struct Target` shadowing an imported `type Target = Int`, which
+  // re-resolves the impl target with nothing else on the module changing).
+  let decls = interface_decl_lines(stmts, true)
+  let mut d = 0
+  while d < Array::length(decls) {
+    Array::push(lines, String::concat(interface_segment(path), Array::get(decls, d)))
+    d = d + 1
+  }
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SImpl(tparams, tbounds, trait_name, target) =>
       Array::push(lines, String::concat(interface_segment(path), trait_impl_identity_line(tparams, tbounds, trait_name, target),),),
-      STypeAlias(_, name, params, body) =>
-      Array::push(lines, String::concat(interface_segment(path), String::concat("alias:", String::concat(interface_segment(name), interface_segment(interface_canonical_type_expr(body, params)),),),),),
-      SEnum(_, name, _, _, derives) =>
-      if Array::length(derives) > 0 {
-        Array::push(lines, trait_witness_derive_line(path, name, derives))
-      } else {
-        ()
-      },
-      SStruct(_, name, _, derives, _, _) =>
-      if Array::length(derives) > 0 {
-        Array::push(lines, trait_witness_derive_line(path, name, derives))
-      } else {
-        ()
-      },
       SImport(raw_path, items) =>
       Array::push(lines, trait_witness_binding_line(path, "import:", raw_path, items)),
       SReExport(raw_path, items) =>

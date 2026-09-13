@@ -16,7 +16,7 @@ import @vibe/compiler/runtime {
 }
 
 import @vibe/ast {
-  ImportItem, Stmt, TypeExpr
+  Expr, ImportItem, Stmt, TypeExpr
 }
 
 //# Helpers
@@ -256,11 +256,36 @@ test "the trait is recorded by SPELLING, which is the safe direction" {
   inspect(show_eq(fp([plain]), fp([qualified])), "moved")
 }
 
-test "statements that are not impls contribute nothing" {
-  let impls: Array[Stmt] = [SImpl([], [], "Show", TyName("Pt"))]
-  let with_noise: Array[Stmt] = [
-    SImpl([], [], "Show", TyName("Pt")),
-    SStruct(true, "Pt", [("x", TyName("Int"))], [], [], []),
+test "a PRIVATE nominal declaration is part of the set; a value one is not" {
+  // Codex on #2742 (P1, round 4). Adding a local `struct Target` shadows an
+  // imported transparent `type Target = Int`, so `impl Marker for Target`
+  // re-resolves from Int to the struct with the import row, the alias row and
+  // the impl row all unchanged. Private declarations are in no interface
+  // identity either, so nothing else would catch it.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let plain: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
   ]
-  inspect(show_eq(fp([impls]), fp([with_noise])), "same")
+  let shadowed: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SStruct(false, "Target", [("x", TyName("Int"))], [], [], []),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  // A VALUE declaration introduces no type-level name, so it cannot re-resolve
+  // a target and must not move the set. That is what keeps the rule narrow
+  // enough to be worth having: ordinary edits still do not invalidate.
+  let with_value: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SFnDecl(false, "helper", EUnit, [], []),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  inspect("private-shadow=\{show_eq(
+      fp_paths(["a.vibe", "c.vibe"], [dep, plain]),
+      fp_paths(["a.vibe", "c.vibe"], [dep, shadowed]),
+    )}" + " value-decl=\{show_eq(
+        fp_paths(["a.vibe", "c.vibe"], [dep, plain]),
+        fp_paths(["a.vibe", "c.vibe"], [dep, with_value]),
+      )}", "private-shadow=moved value-decl=same",)
 }
