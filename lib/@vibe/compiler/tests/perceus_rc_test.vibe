@@ -1,11 +1,18 @@
 //# Imports
 
 import @vibe/compiler/perceus {
-  PerceusAction, build_perceus_plan, build_perceus_plan_with_params, pa_is_alias_dup, pa_is_drop, pa_is_dup
+  PerceusAction,
+  build_perceus_plan,
+  build_perceus_plan_with_params,
+  elaborate_heap_params,
+  pa_is_alias_dup,
+  pa_is_drop,
+  pa_is_dup,
+  type_expr_is_heap
 }
 
 import @vibe/compiler/core {
-  Expr, Pat
+  Expr, Pat, Stmt, TypeExpr
 }
 
 //# Misc
@@ -472,4 +479,109 @@ test "perceus: branch-local shadow keeps its dups through the merge" {
   // The ESeq scratch binding is id 1, so the branch-local shadow is id 2.
   inspect(dup_binding_ids(plan, "out"), "[2, 0]")
   inspect(dup_use_offsets(plan, "out"), "[202, 404]")
+}
+
+fn inference_lambda() -> Expr {
+  EFn([], [], [("p", None)], None, None, EInt(0))
+}
+
+fn inference_call(arg: Expr) -> Expr {
+  ECall(EIdent("target", 0), [arg], 0)
+}
+
+fn inferred_top_parameter(stmts: Array[Stmt]) -> Bool {
+  let out = elaborate_heap_params(stmts)
+  let mut found = false
+  let mut heap = false
+  let mut i = 0
+  while i < Array::length(out) {
+    match Array::get(out, i) {
+      SLet(_, _, "target", _, EFn(_, _, params, _, _, _)) => {
+        found = true
+        let (_, ty) = Array::get(params, 0)
+        heap = type_expr_is_heap(ty)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  assert(found)
+  heap
+}
+
+test "heap inference keeps top-level overwrite order and local shadowing" {
+  let heap_value = SLet(false, false, "value", None, EArray([EInt(1)]))
+  let scalar_value = SLet(false, false, "value", None, EInt(1))
+  let target = SLet(false, false, "target", None, inference_lambda())
+  let call = SExpr(inference_call(EIdent("value", 0)))
+  inspect(inferred_top_parameter([heap_value, target, call]), "true")
+  inspect(inferred_top_parameter([target, call, heap_value]), "true")
+  inspect(inferred_top_parameter([heap_value, scalar_value, target, call]), "false")
+  inspect(inferred_top_parameter([scalar_value, heap_value, target, call]), "true")
+  inspect(inferred_top_parameter([
+    heap_value,
+    target,
+    SExpr(ELet("value", EInt(2), inference_call(EIdent("value", 0)), 0))
+  ]), "false")
+  inspect(inferred_top_parameter([
+    scalar_value,
+    target,
+    SExpr(ELet("value", EArray([EInt(2)]), inference_call(EIdent("value", 0)), 0))
+  ]), "true")
+  inspect(inferred_top_parameter([target, call]), "false")
+  // Each program owns its table; the preceding heap binding must not leak.
+  inspect(inferred_top_parameter([heap_value, target, call]), "true")
+  inspect(inferred_top_parameter([target, call]), "false")
+}
+
+test "local lambda inference still sees top-level values without a top-level candidate" {
+  let local = ELet("target", inference_lambda(), inference_call(EIdent("value", 0)), 0)
+  let stmts = [
+    SLet(false, false, "value", None, EArray([EInt(1)])),
+    SLet(false, false, "outer", None, EFn([], [], [], None, None, local))
+  ]
+  let out = elaborate_heap_params(stmts)
+  match Array::get(out, 1) {
+    SLet(_, _, _, _, EFn(_, _, _, _, _, ELet(_, EFn(_, _, params, _, _, _), _, _))) => {
+      let (_, ty) = Array::get(params, 0)
+      inspect(type_expr_is_heap(ty), "true")
+    },
+    _ => assert(false)
+  }
+}
+
+test "heap inference keeps classifications aligned when sorting mixed bindings" {
+  let bindings = [
+    ("z", true),
+    ("a", false),
+    ("m", true),
+    ("b", false),
+    ("y", false),
+    ("c", true),
+    ("x", true),
+    ("d", false)
+  ]
+  let stmts: Array[Stmt] = []
+  let mut i = 0
+  while i < Array::length(bindings) {
+    let (name, heap) = Array::get(bindings, i)
+    let value = if heap {
+      EArray([EInt(i)])
+    } else {
+      EInt(i)
+    }
+    Array::push(stmts, SLet(false, false, name, None, value))
+    i = i + 1
+  }
+  Array::push(stmts, SLet(false, false, "target", None, inference_lambda()))
+  let observed: Array[Bool] = []
+  i = 0
+  while i < Array::length(bindings) {
+    let (name, _) = Array::get(bindings, i)
+    let program = Array::slice(stmts, 0, Array::length(stmts))
+    Array::push(program, SExpr(inference_call(EIdent(name, 0))))
+    Array::push(observed, inferred_top_parameter(program))
+    i = i + 1
+  }
+  inspect(observed, "[true, false, true, false, false, true, true, false]")
 }

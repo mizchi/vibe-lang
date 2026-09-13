@@ -1,0 +1,48 @@
+import @vibe/compiler/core {
+  Expr, Stmt, TypeExpr
+}
+
+import @vibe/compiler/perceus {
+  elaborate_heap_params, type_expr_is_heap
+}
+
+fn program(needs_inference: Bool) -> Array[Stmt] {
+  let stmts: Array[Stmt] = []
+  let mut i = 0
+  while i < 1024 {
+    Array::push(stmts, SLet(false, false, String::concat("global_", __to_string(i)), None, EArray([
+      EInt(i)
+    ])))
+    i = i + 1
+  }
+  let params = if needs_inference {
+    [("p", None)]
+  } else {
+    [("p", Some(TyApp("Array", [TyName("Int")])))]
+  }
+  Array::push(stmts, SLet(false, false, "target", None, EFn([], [], params, None, None, EInt(0))))
+  Array::push(stmts, SExpr(ECall(EIdent("target", 0), [EIdent("global_1023", 0)], 0)))
+  stmts
+}
+
+let inferred_program = program(true)
+let annotated_program = program(false)
+
+fn check_program(stmts: Array[Stmt]) -> Unit {
+  let out = elaborate_heap_params(stmts)
+  match Array::get(out, 1024) {
+    SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => {
+      let (_, ty) = Array::get(params, 0)
+      assert(type_expr_is_heap(ty))
+    },
+    _ => assert(false)
+  }
+}
+
+bench "heap_inference_globals_1024" {
+  check_program(inferred_program)
+}
+
+bench "heap_inference_annotated_1024" {
+  check_program(annotated_program)
+}
