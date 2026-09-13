@@ -1495,11 +1495,21 @@ fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[String], c
 /// a single path that hands back a borrow makes that drop a premature free.
 /// Unowned leaves:
 ///
-/// - an identifier that this wrapper did not bind to an owned value. That is
-///   either a name from an enclosing scope, whose own scope-end drop already
-///   releases the reference, or an inner binder that is itself borrowed --
-///   `bound` / `bound_owned` carry which, so a chain (`let t = <borrow>` then
-///   a branch handing back `t`) stays borrowed all the way out.
+/// - an identifier THIS WRAPPER bound to a borrowed value, so the borrow
+///   propagates: `let t = <borrow>` followed by a branch handing back `t`
+///   stays borrowed all the way out. `bound` / `bound_owned` carry the flag,
+///   and a later binder of the same spelling shadows an earlier one because
+///   the lookup takes the last match.
+///
+///   An identifier from an ENCLOSING scope is NOT one of these. It is either
+///   a borrow the outer binding will release itself, or the last owning use
+///   of that binding -- in which case the planner MOVES the reference here
+///   and the outer binding gets no scope-end drop, so declining this one
+///   leaks the allocation (measured at 80 B per iteration; the shape is
+///   `via_move` in fixtures/rc_reclaim_leak_test.vibe). Codegen cannot tell
+///   the two apart from syntax, and the alias-dup machinery the top-level
+///   `is_eident` arm drives already answers it, so this leaves that class
+///   exactly as it was.
 /// - a projection (`EDot`): a field read is a view into its parent.
 /// - a call to a borrow-returning builtin, to a name in #707's
 ///   `borrow_ret_names`, or to one that may return an interior view (#768's
@@ -1521,7 +1531,7 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
     EIdent(x, _) => {
       let bi = find_local_slot(bound, x)
       if bi < 0 {
-        true
+        false
       } else {
         Array::get(bound_owned, bi) == 0
       }
@@ -1544,17 +1554,18 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
       while i < Array::length(arms) {
         let (ap, ab) = Array::get(arms, i)
         let mark = Array::length(bound)
-        if pvo_pat_binds(ap, bound) {
-          // A pattern binder reads a payload out of the scrutinee, which the
-          // scrutinee still owns -- borrowed, so flag 0.
-          vsb_pad_owned(bound, bound_owned, 0)
-          if value_spine_borrowed(ab, local_names, bound, bound_owned, ctx) {
-            found = true
-          } else {
-            ()
-          }
-        } else {
+        // `pvo_pat_binds` is consulted only to SHADOW: an arm binder is a
+        // fresh name, so a leaf spelling it reads the payload and not an
+        // outer binder this wrapper marked borrowed. Whatever it enumerates
+        // is flagged owned, and a pattern it cannot enumerate needs no
+        // special case -- an unpushed binder reads as owned too, which is
+        // the answer a leaf outside `bound` already gets.
+        let _pb = pvo_pat_binds(ap, bound)
+        vsb_pad_owned(bound, bound_owned, 1)
+        if value_spine_borrowed(ab, local_names, bound, bound_owned, ctx) {
           found = true
+        } else {
+          ()
         }
         Array::truncate(bound, mark)
         Array::truncate(bound_owned, mark)

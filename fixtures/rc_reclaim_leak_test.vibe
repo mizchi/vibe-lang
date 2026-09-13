@@ -193,6 +193,22 @@ let mk_pair = (i: Int) -> Tree {
   Node(Leaf(i), Leaf(i + 1))
 }
 
+// #2733 review (Codex P1): the wrapper's result spine ends in an OUTER
+// identifier whose LAST owning use this is, so the planner MOVES `x`'s
+// reference into `y` and `x` gets no scope-end drop. `y`'s drop is then the
+// only one that balances the allocation. Classifying the spine leaf as
+// borrowed because the name comes from an enclosing scope suppresses that
+// drop too and leaks the node -- 80 B per iteration, the same rate as
+// `only_then` and `via_call`. Adds 0 to `total`.
+let via_move = (i: Int) -> Tree {
+  let x = mk_pair(i)
+  let y = {
+    let k = i
+    x
+  }
+  Leaf(sumt(y) * 0)
+}
+
 let via_call = (c: Bool, i: Int) -> Tree {
   let t = mk_pair(i)
   if c {
@@ -420,7 +436,7 @@ let main = () -> Int {
     // #2389 (see only_then above): `i > 1000000` is false for every
     // iteration, but not a constant the folder can see.
     total = total + sumt(only_then(i > 1000000, i))
-    total = total + sumt(via_call(i > 1000000, i)) + sumt(via_spine(i > 1000000, i))
+    total = total + sumt(via_call(i > 1000000, i)) + sumt(via_spine(i > 1000000, i)) + sumt(via_move(i))
     total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum + asum
     i = i + 1
   }
