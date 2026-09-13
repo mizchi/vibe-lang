@@ -3649,7 +3649,7 @@ fn dtd_interp_bind_local(var_types: Array[(String, String)], name: String, val: 
       None => ""
     }
   }
-  dtd_interp_record_tuple_elems(out, name, val, struct_sets, var_types, fn_returns)
+  dtd_interp_record_shape(out, name, val, struct_sets, var_types, fn_returns)
   Array::push(out, (name, bound))
   out
 }
@@ -3705,12 +3705,29 @@ fn dtd_interp_bind_pattern(var_types: Array[(String, String)], pat: Pat, scrutin
   out
 }
 
-/// A synthetic KEY for the i-th element of a TUPLE literal bound to `name`.
+/// A synthetic KEY for the i-th element of an aggregate bound to `name`.
 /// `$` is not a valid identifier character, so this cannot collide with a real
 /// binding -- the same device `array_elem_key` uses.
 fn dtd_interp_tuple_elem_key(name: String, i: Int) -> String {
   let base = String::concat("__Vtupelem$", name)
   String::concat(base, String::concat("$", digit_str(i)))
+}
+
+/// What KIND of aggregate `name` holds: `dtd_interp_tuple_shape` for a tuple
+/// literal, or the constructor's name for a constructor call.
+///
+/// #2745 (Codex, P1 round 8 on #2761): without this, a pattern could only pair
+/// against a name whose shape it had to assume. A `PTuple` may assume it (only
+/// a tuple matches a tuple pattern) but a `PCtor` may not -- its constructor has
+/// to equal the value's, or `match x { Some(b) => b }` would take an unrelated
+/// aggregate's elements apart. Recording the kind is what lets the constructor
+/// route exist at all.
+fn dtd_interp_shape_key(name: String) -> String {
+  String::concat("__Vshape$", name)
+}
+
+fn dtd_interp_tuple_shape() -> String {
+  "#tuple"
 }
 
 /// #2745 (Codex, P1 round 6 on #2761): a tuple literal bound to a NAME is still
@@ -3727,17 +3744,51 @@ fn dtd_interp_tuple_elem_key(name: String, i: Int) -> String {
 ///
 /// Elements are classified in the OUTER environment, which is where a tuple
 /// literal's elements are evaluated.
-fn dtd_interp_record_tuple_elems(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
+fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
   match val {
     ETuple(es) => {
+      Array::push(out, (dtd_interp_shape_key(name), dtd_interp_tuple_shape()))
+      dtd_interp_record_elems(out, name, es, struct_sets, var_types, fn_returns)
+    },
+    // #2745 (Codex, P1 round 8 on #2761): a CONSTRUCTOR bound to a name, then
+    // destructured -- `{ let x = B(a); match x { B(b) => b } }` printed `252`.
+    // Round 6 paired a `PCtor` against an inline `ECall` only. The constructor's
+    // NAME is recorded alongside the payloads so the pattern can require it to
+    // match, which is the check an inline call did not need.
+    //
+    // Only a constructor-SHAPED callee is recorded. An ordinary call's result is
+    // not its arguments, and a `PCtor` pattern naming a lowercase function does
+    // not exist, so recording one could only mispair.
+    ECall(callee, cargs, _) => match callee {
+      EIdent(cn, _) => if dtd_name_is_constructor_shaped(cn) {
+        Array::push(out, (dtd_interp_shape_key(name), cn))
+        dtd_interp_record_elems(out, name, cargs, struct_sets, var_types, fn_returns)
+      } else {
+        ()
+      },
+      _ => ()
+    },
+    // #2745 (Codex, P1 round 8 on #2761): `{ let xs = [a]; Array::get(xs, 0) }`
+    // printed `252`. This one needs NO new read path: `infer_arg_type_name`'s
+    // `Array::get` arm already reads `array_elem_key`, so recording into that
+    // same key is what makes the two agree. Writing a third table beside it is
+    // the mistake the projection bug in the previous commit was made of.
+    EArray(es) => {
       let mut i = 0
-      // `digit_str` saturates at 9, so index 9 and above would share a key.
-      // Stopping at 8 keeps every key distinct; a wider tuple simply records
-      // nothing and the pairing blanks, which is this walk's fail-open answer.
-      while i < Array::length(es) && i < 9 {
-        let el = Array::get(es, i)
-        Array::push(out, (dtd_interp_tuple_elem_key(name, i), dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns)))
+      let mut found = ""
+      while i < Array::length(es) {
+        let f = dtd_erased_interp_formal(Array::get(es, i), struct_sets, var_types, fn_returns)
+        if String::length(f) > 0 && String::length(found) == 0 {
+          found = f
+        } else {
+          ()
+        }
         i = i + 1
+      }
+      if String::length(found) > 0 {
+        Array::push(out, (array_elem_key(name), found))
+      } else {
+        ()
       }
     },
     // #2745 (Codex, P1 round 7 on #2761): the tuple reaches the pattern through
@@ -3752,6 +3803,14 @@ fn dtd_interp_record_tuple_elems(out: Array[(String, String)], name: String, val
     // pairing rejects a length it cannot confirm, and half a copy would defeat
     // that.
     EIdent(src, _) => {
+      match lookup_var_type(var_types, dtd_interp_shape_key(src)) {
+        Some(k) => Array::push(out, (dtd_interp_shape_key(name), k)),
+        None => ()
+      }
+      match lookup_var_type(var_types, array_elem_key(src)) {
+        Some(t) => Array::push(out, (array_elem_key(name), t)),
+        None => ()
+      }
       let mut i = 0
       let mut more = true
       while more && i < 9 {
@@ -3792,7 +3851,7 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
     // same recorder the let-forms use carries the shape across, which keeps the
     // two routes to a named tuple answering identically.
     PBind(n) => {
-      dtd_interp_record_tuple_elems(out, n, scrut, struct_sets, var_types, fn_returns)
+      dtd_interp_record_shape(out, n, scrut, struct_sets, var_types, fn_returns)
       Array::push(out, (n, scrut_formal))
     },
     PTuple(ps) => match scrut {
@@ -3807,13 +3866,13 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
         dtd_interp_blank_binders(out, pat)
       },
       // The tuple was bound to a NAME first. Its elements were recorded under
-      // reserved keys at that binding (dtd_interp_record_tuple_elems); a missing
+      // reserved keys at that binding (dtd_interp_record_shape); a missing
       // key means the name does not hold a tuple literal this walk saw, so the
       // whole pattern blanks rather than pairing against half an answer.
       // `EUnit` as each element's scrutinee is deliberate: only a `PBind`
       // sub-pattern can take the recorded formal, and anything nested blanks --
       // this route carries a classification, not an expression to descend into.
-      EIdent(sname, _) => if dtd_interp_tuple_elems_known(var_types, sname, Array::length(ps)) {
+      EIdent(sname, _) => if dtd_interp_shape_is(var_types, sname, dtd_interp_tuple_shape()) && dtd_interp_tuple_elems_known(var_types, sname, Array::length(ps)) {
         let mut i = 0
         while i < Array::length(ps) {
           let ef = match lookup_var_type(var_types, dtd_interp_tuple_elem_key(sname, i)) {
@@ -3842,6 +3901,23 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
         },
         _ => dtd_interp_blank_binders(out, pat)
       },
+      // #2745 round 8: the constructor was bound to a NAME first. Its payloads
+      // were recorded at that binding, and the recorded CONSTRUCTOR must equal
+      // this pattern's -- an inline call carries its constructor in the
+      // expression, a name does not.
+      EIdent(sname, _) => if dtd_interp_shape_is(var_types, sname, cname) && dtd_interp_tuple_elems_known(var_types, sname, Array::length(ps)) {
+        let mut i = 0
+        while i < Array::length(ps) {
+          let ef = match lookup_var_type(var_types, dtd_interp_tuple_elem_key(sname, i)) {
+            Some(t) => t,
+            None => ""
+          }
+          dtd_interp_bind_pat_into(out, Array::get(ps, i), EUnit, ef, struct_sets, var_types, fn_returns)
+          i = i + 1
+        }
+      } else {
+        dtd_interp_blank_binders(out, pat)
+      },
       _ => dtd_interp_blank_binders(out, pat)
     },
     PStruct(sname, fps) => match scrut {
@@ -3866,6 +3942,28 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
     // through `(b, _) | (_, b)` keeps today's fail-open answer.
     POr(_, _) => dtd_interp_blank_binders(out, pat),
     _ => dtd_interp_blank_binders(out, pat)
+  }
+}
+
+/// Does `name` hold the aggregate kind `want`? A missing record answers false,
+/// so a pattern pairs only against a shape this walk actually saw.
+fn dtd_interp_shape_is(var_types: Array[(String, String)], name: String, want: String) -> Bool {
+  match lookup_var_type(var_types, dtd_interp_shape_key(name)) {
+    Some(k) => k == want,
+    None => false
+  }
+}
+
+/// Record each element's classification under its index key. `digit_str`
+/// saturates at 9, so index 9 and above would share a key; stopping at 8 keeps
+/// every key distinct, and a wider aggregate records nothing, which makes the
+/// pairing blank -- this walk's fail-open answer.
+fn dtd_interp_record_elems(out: Array[(String, String)], name: String, es: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
+  let mut i = 0
+  while i < Array::length(es) && i < 9 {
+    let el = Array::get(es, i)
+    Array::push(out, (dtd_interp_tuple_elem_key(name, i), dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns)))
+    i = i + 1
   }
 }
 
