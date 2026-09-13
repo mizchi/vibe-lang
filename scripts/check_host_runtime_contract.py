@@ -239,8 +239,23 @@ def validate_gc_lists(
     if import_types is not None:
         for import_name, type_id in host_imports:
             declared = import_types.get(import_name)
-            if declared is not None and declared != type_id:
-                die(f"gc host_imports {import_name!r} declares ABI type {type_id}, contract says {declared}")
+            # Fail CLOSED on a missing entry. `declared is not None and ...`
+            # skipped the check for any import the manifest's importTypes did
+            # not carry, and band membership does not imply an importTypes row --
+            # they are separate keys. Silence there is "unchecked", not "safe",
+            # and the two are indistinguishable from the outside. Found by
+            # auditing this extractor after three review rounds each found a
+            # real gap in it; a duplicate name in `use_host` was the other
+            # candidate and is deliberately NOT asserted, because that list is a
+            # boolean OR chain where `A || A` is `A`.
+            # ONE assertion, not two. A separate `declared is None` branch reads
+            # like a second check but cannot be isolated by any mutation: the
+            # comparison below already fails closed on None, so disabling the
+            # None branch changes nothing. The sweep caught that -- an assertion
+            # no test can distinguish is a branch, not a guarantee.
+            if declared != type_id:
+                detail = "the contract has no importTypes entry for it" if declared is None else f"the contract says {declared}"
+                die(f"gc host_imports {import_name!r} declares ABI type {type_id}, but {detail}")
 
     # host_defs's `params` and `ret` are not derived from the import's type id --
     # they feed `fn_param_counts` and `fn_returns_list` independently, so either

@@ -195,17 +195,35 @@ class GcHostListTest(unittest.TestCase):
             )
         )
 
-    def test_import_absent_from_the_manifest_fails_even_when_self_consistent(self):
-        # Same discovery: renaming ONE side trips the positional check, so it
-        # never exercised manifest membership. Rename all three gc lists
-        # consistently and the backend is internally coherent -- which is
-        # exactly "added a builtin everywhere in the gc backend and forgot the
-        # contract". Only the manifest check sees it.
+    def test_import_absent_from_the_manifest_bands_fails(self):
+        # Renaming ONE side trips the positional check, so it never exercised
+        # band membership. Rename all three gc lists consistently -- "added a
+        # builtin everywhere in the gc backend and forgot the contract".
+        #
+        # That alone is now caught by the importTypes check instead, so the
+        # mutation also GIVES the new name an importTypes row with a matching
+        # type. The backend is then fully self-consistent and typed, and the
+        # only thing left that can see it is band membership. Found by the
+        # disable-each-assertion sweep, which reported this assertion as
+        # uncovered once the type check started failing closed.
         mutated = self.text.replace('stmts_use_builtin(stmts, fn_names_list, "Fs::exists")',
                                     'stmts_use_builtin(stmts, fn_names_list, "Fs::invented")', 1)
         mutated = mutated.replace('("Fs::exists", 1, 5, 1)', '("Fs::invented", 1, 5, 1)', 1)
         mutated = mutated.replace('("fs_exists", 3)', '("fs_invented", 3)', 1)
-        self.assert_mutation_fails(mutated)
+        typed = dict(self.import_types)
+        typed["fs_invented"] = "3"
+        with self.assertRaises(SystemExit):
+            module.validate_gc_lists(self.names, mutated, typed, self.core_sigs)
+
+    def test_import_missing_from_importTypes_fails_closed(self):
+        # The type comparison must fail closed on an absent entry: band
+        # membership and an importTypes row are separate keys, so one does not
+        # imply the other, and silence there is "unchecked" rather than "safe".
+        dropped = dict(self.import_types)
+        del dropped["fs_exists"]
+        self.assertNotEqual(dropped, self.import_types, "mutation did not apply")
+        with self.assertRaises(SystemExit):
+            module.validate_gc_lists(self.names, self.text, dropped, self.core_sigs)
 
     def test_host_def_arity_drifting_from_its_import_signature_fails(self):
         # Codex on #2765 (P2, third round). host_defs's `params`/`ret` feed
