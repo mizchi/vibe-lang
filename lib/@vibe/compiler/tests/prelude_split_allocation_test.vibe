@@ -1,0 +1,73 @@
+import @vibe/parser {
+  lex, parse_program, print_stmt
+}
+import @vibe/compiler/codegen/common_base {
+  ModuleSplit, module_split_none
+}
+import @vibe/compiler/codegen/wasi {
+  effect_lowering_prelude, effect_lowering_prelude_split, prelude_split_last_module_count
+}
+
+fn source() -> String {
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < 64 {
+    StringBuilder::push(out, "export fn f\{i}(xs: Array[Int]) -> Int { ")
+    if i == 0 {
+      StringBuilder::push(out, "Array::length(xs)")
+    } else {
+      StringBuilder::push(out, "f\{i - 1}(xs)")
+    }
+    StringBuilder::push(out, " }\n")
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+test "the production split does not run the oracle analysis suite" {
+  let a = parse_program(lex(source()))
+  let b = parse_program(lex(source()))
+  let ids: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(b) {
+    Array::push(ids, if i < 32 {
+      0
+    } else {
+      1
+    })
+    i = i + 1
+  }
+  let split = ModuleSplit::{
+    closure_exact: true,
+    file_count: 2,
+    stmt_file_id: ids,
+    import_closure: [[1], [0]]
+  }
+  let before = Profiler::heap_bytes()
+  let ea = effect_lowering_prelude(a, "__no_entry__", [], [], [], [], [])
+  let whole_bytes = Profiler::heap_bytes() - before
+  let before_split = Profiler::heap_bytes()
+  let eb = effect_lowering_prelude_split(b, "__no_entry__", [], [], [], [], [], split, print_stmt)
+  let split_bytes = Profiler::heap_bytes() - before_split
+  inspect(prelude_split_last_module_count(), content = "2")
+  inspect(Array::length(ea), content = "0")
+  inspect(Array::length(eb), content = "0")
+  inspect(Array::length(a), content = "64")
+  inspect(Array::length(b), content = "64")
+  let mut row = 0
+  while row < Array::length(a) {
+    assert_eq(print_stmt(Array::get(a, row)), print_stmt(Array::get(b, row)))
+    row = row + 1
+  }
+  // The input, partition and output are identical, so this bounds the cost
+  // of decomposition itself. The old driver spent 872044 bytes against
+  // 440280 on the whole lane by also running the oracle's borrow analyses.
+  // Allow 50% overhead for partitioning and interface setup, independent of
+  // allocator word sizes or an absolute compiler-version-specific budget.
+  inspect(split_bytes * 2 <= whole_bytes * 3, content = "true")
+  let fallback = parse_program(lex(source()))
+  let errors = effect_lowering_prelude_split(fallback, "__no_entry__", [], [], [
+  ], [], [], module_split_none(), print_stmt)
+  inspect(Array::length(errors), content = "0")
+  inspect(prelude_split_last_module_count(), content = "0")
+}
