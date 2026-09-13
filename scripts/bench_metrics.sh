@@ -2,7 +2,7 @@
 # Collect the per-commit performance metrics snapshot the continuous perf
 # pipeline tracks (the perf-metrics job in .github/workflows/ci.yml, bench/perf/README.md).
 #
-#   scripts/bench_metrics.sh <stage2.wasm> [out.json]
+#   scripts/bench_metrics.sh <stage2.wasm> [out.json] [selfhost-build-metrics.json]
 #
 # Metric classes:
 #   DETERMINISTIC (byte-stable for a fixed commit -> tight regression flags):
@@ -47,7 +47,12 @@ cd "$ROOT_DIR"
 
 STAGE2="${1:-}"
 OUT_JSON="${2:-_build/bench_metrics.json}"
+BUILD_METRICS="${3:-}"
 [ -n "$STAGE2" ] && [ -s "$STAGE2" ] || { echo "usage: scripts/bench_metrics.sh <stage2.wasm> [out.json]" >&2; exit 2; }
+if [ -n "$BUILD_METRICS" ] && [ ! -s "$BUILD_METRICS" ]; then
+  echo "[bench-metrics] missing selfhost build metrics: $BUILD_METRICS" >&2
+  exit 2
+fi
 mkdir -p "$(dirname "$OUT_JSON")"
 
 KPI_RUNS="${VIBE_BENCH_KPI_RUNS:-3}"
@@ -270,7 +275,7 @@ BM_MICRO_STATUS="$micro_status" \
 BM_EXEC_STATUS="$exec_status" BM_WASMTIME="$wasmtime_version" \
 BM_CALIB_NS="$calib_ns" BM_CALIB_SEED_SHA="$calib_seed_sha" \
 BM_CALIB_RUNNER_SHA="$calib_runner_sha" BM_CALIB_BENCH_SHA="$calib_bench_sha" \
-BM_CALIB_LABEL="$CALIB_KEY" \
+BM_CALIB_LABEL="$CALIB_KEY" BM_BUILD_METRICS="$BUILD_METRICS" \
 node - "$OUT_JSON" "$samples_tsv" "$bench_tsv" "$exec_tsv" <<'NODE'
 const fs = require("fs");
 const [out, samplesTsv, benchTsv, execTsv] = process.argv.slice(2);
@@ -306,6 +311,11 @@ const doc = {
     wall_ms_median: +process.env.BM_WALL_MEDIAN,
     wall_ms_runs: process.env.BM_WALL_RUNS.split(/\s+/).filter(Boolean).map(Number),
   },
+  // Optional for standalone callers, required by the CI invocation. Keep the
+  // complete paired samples/provenance in main.jsonl, not just rounded cells.
+  ...(process.env.BM_BUILD_METRICS ? {
+    selfhost_build: JSON.parse(fs.readFileSync(process.env.BM_BUILD_METRICS, "utf8")),
+  } : {}),
   // Runner-normalization calibration (see file header): null fields mean the
   // calibration run didn't produce data (older snapshot, or runner/seed
   // unavailable) -- consumers must treat that as "normalization unavailable",
