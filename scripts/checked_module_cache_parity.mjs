@@ -89,7 +89,9 @@ class Compiler {
     if (!bytes && !diagnostic) throw new Error(`neither output nor diagnostic: ${source}`);
     if (bytes) {
       const counters = parseIncrementalTelemetry(fs.readFileSync(this.telemetry, "utf8"), this.telemetry);
-      const expectedSchema = this.mode === "off" ? 2 : 3;
+      // 4/5 is 2/3 plus the two lane-parse counters (#2766/#2767): 5 carries
+      // the checked-module-artifact reuse class, 4 does not, as 3 and 2 did.
+      const expectedSchema = this.mode === "off" ? 4 : 5;
       if (counters.schema !== expectedSchema) throw new Error(`expected telemetry schema ${expectedSchema} in ${this.mode}`);
       this.hits += counters.modules_reused_checked_module_artifact || 0;
       this.checks += counters.checker_executions;
