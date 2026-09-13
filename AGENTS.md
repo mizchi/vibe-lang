@@ -147,7 +147,8 @@ three — the answer was a function of the module's function-table layout. The
 shadowing route reported in #2737 reached the same place differently:
 `find_dict_for_method` matched `tp == head` by spelling and handed back the
 ENCLOSING binder's dictionary. **Four rungs are now refused at build time with
-a message naming the edit** (lift the lambda to a top-level declaration): the
+a message LEADING with the edit** (move the lambda to a top-level declaration —
+the order is asserted by the gate, not just the presence of both clauses): the
 qualified spelling, the UFCS spelling (#931's rung), the method taken as a VALUE
 (`let cmp = T::equals`, which reaches the qualified EIdent arm rather than either
 call site — it answered `true` for `equals(7, 8)` until a review round found it),

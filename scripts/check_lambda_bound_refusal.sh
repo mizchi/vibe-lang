@@ -58,6 +58,11 @@ STAGE2="$(resolve_stage2 lambda-bound-refusal "${LAMBDA_BOUND_REFUSAL_STAGE2:-}"
 # corpus instead of editing the tree's own fixtures.
 FIXTURE_GLOB="${LAMBDA_BOUND_REFUSAL_FIXTURES:-fixtures/lambda_bound_dispatch_*_refused.vibe}"
 
+# The two clauses whose ORDER is asserted below, named once so the mutation the
+# self-test applies is a single edit rather than four.
+EDIT_NEEDLE="move the lambda binding"
+REASON_NEEDLE="has no"
+
 WORK="$ROOT_DIR/_build/_lambda_bound_refusal"
 rm -rf "$WORK"; mkdir -p "$WORK"
 
@@ -74,13 +79,32 @@ for src in $FIXTURE_GLOB; do
     echo "[lambda-bound-refusal] FAIL: $src compiled; expected a compile-time refusal (#2737)" >&2
     exit 1
   fi
-  if ! grep -qE 'cannot (dispatch|interpolate a value of type parameter)' "$out.diag" 2>/dev/null; then
+  if ! grep -qF "only a top-level binder threads a bound's dictionary" "$out.diag" 2>/dev/null; then
     echo "[lambda-bound-refusal] FAIL: $src was refused without the #2737 message" >&2
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
-  if ! grep -qF 'move the lambda to a top-level declaration' "$out.diag" 2>/dev/null; then
+  if ! grep -qE 'move the lambda binding .* to a top-level' "$out.diag" 2>/dev/null; then
     echo "[lambda-bound-refusal] FAIL: $src refusal does not name an edit" >&2
+    cat "$out.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  # AGENTS.md: a diagnostic LEADS with the edit that fixes it. Asserting that both
+  # clauses are merely PRESENT would pass on a message that buries the edit behind
+  # the reason, which is what this one did until review (Codex round 3) pointed at
+  # it -- so the ORDER is what is checked. Both needles must land on one line, the
+  # edit before the diagnosis; the offsets come from awk rather than from reading
+  # the string, since the diag line carries a path prefix.
+  order_ok="$(awk '
+    {
+      e = index($0, "'"$EDIT_NEEDLE"'")
+      r = index($0, "'"$REASON_NEEDLE"'")
+      if (e > 0 && r > 0 && e < r) { print "ok"; exit }
+    }
+  ' "$out.diag" 2>/dev/null || true)"
+  if [ "$order_ok" != "ok" ]; then
+    echo "[lambda-bound-refusal] FAIL: $src refusal does not LEAD with the edit" >&2
+    echo "  AGENTS.md: a diagnostic leads with the edit that fixes it, then the reason" >&2
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
@@ -93,4 +117,4 @@ if [ "$found" -eq 0 ]; then
   exit 1
 fi
 
-echo "[lambda-bound-refusal] ok ($found fixtures refused with an actionable message)"
+echo "[lambda-bound-refusal] ok ($found fixtures refused with an actionable message, edit first)"
