@@ -115,10 +115,11 @@ The `perf-metrics` job in `.github/workflows/ci.yml` runs on every PR and every 
     **exec corpus** (below),
   - **advisory** (wall time, noisy on shared runners): selfcompile `wall_ms`
     (median of 3) and `ns_p50` per tracked bench — recorded in the snapshot
-    for history, **not rendered** in the report (below).
+    for history. The full CLI cold/warm series below also displays raw wall
+    times, with no time deltas or regression flags.
 - `scripts/bench_report.mjs current.json [baseline.json] [coverage.json]`
-  renders the markdown comparison — **deterministic rows only**, flagged at
-  ±2%. Advisory wall times are deliberately absent: runner-speed variance
+  renders the markdown comparison — allocation and size deltas are flagged at
+  ±2%. General advisory wall times stay absent: runner-speed variance
   swung every wall row ±15-40% on unrelated PRs, which made the section noise
   for human and LLM readers alike (the #1207/#1867 reports are the record).
   The readings stay in the `bench-data` snapshots for offline analysis.
@@ -136,6 +137,9 @@ The `perf-metrics` job in `.github/workflows/ci.yml` runs on every PR and every 
   It used to render every tracked series instead: ~50 rows, of which ~48 read
   `±0` on an ordinary PR. A reader cannot find the row that moved in that, so
   the report got skipped rather than read.
+
+  The Large section additionally shows cold/warm production-prelude allocation
+  and the latest full CLI build pair, described below.
 
   The representatives are named constants (`REPRESENTATIVE` in the script),
   never computed from the data — a row whose subject changes when the data
@@ -160,6 +164,69 @@ The `perf-metrics` job in `.github/workflows/ci.yml` runs on every PR and every 
   git show origin/bench-data:data/main.jsonl | tail -20 \
     | node -e 'process.stdin.on("data",()=>{}); ...'   # or jq
   ```
+
+### Paired prelude allocation and full CLI builds
+
+`scripts/selfhost_build_metrics.mjs` builds one measurement probe from the
+current compiler sources using the explicit stage2 already produced by
+`compiler-build`. The probe uses the ordinary FS compiler with the codegen
+body cache off. Its own executable uses the bump allocator (`VIBE_RC=0`), so
+`Profiler::heap_bytes` measures allocation volume; it does not measure live
+memory. The collector clears ambient `VIBE_*` / `NODE_*` selectors and fixes
+the ABI, backend and cache modes. Checked-module and experimental AST caches
+are off. The probe-build cache is separate from all measured caches.
+
+- **Every PR and main push:** one cold/warm pair for each of the whole and
+  production-split preludes, on
+  `lib/@vibe/compiler/tests/codegen_lexer_test.vibe` (the compiler closure).
+  Each of the four allocation readings has its own delta against main and
+  ±2% warning. The existing allocation unit test and required cold-heap gate
+  remain the blocking checks.
+- **Main pushes only:** one additional cold/warm pair rebuilding
+  `lib/@vibe/cli/entry.vibe`, entry `cli_main`. This is a full CLI build through
+  the FS compiler, excluding seed generation, bundle generation and tool
+  installation. PR reports label these inherited readings as **measured on
+  main**, with the source commit; they never describe them as PR measurements.
+
+Each sample starts a fresh process. Cold gets a new empty cache directory;
+warm gets the directory populated by that cold compile. The compiler still
+emits Wasm on warm builds. Both outputs must be nonempty and byte-identical
+within each lane; whole and split retain their existing helper-order
+difference and are not byte-compared with each other. A split sample must
+report at least two modules actually lowered by the production prelude.
+Missing metrics, fallback, failed compiles and output mismatches fail the
+advisory job instead of publishing a successful snapshot.
+
+Snapshots retain every sample's wall time, allocation delta, process bump-heap
+high-water, committed pages, module count and output hash/size under
+`selfhost_build`. Compiler and probe hashes record provenance. A protocol hash
+covers the collector, probe and runner; comparisons require this hash and the
+Node version/platform/architecture to match, as well as the input and entry.
+Changing the measurement protocol starts a new baseline; it cannot silently
+claim an improvement against an incompatible reading. Source/compiler changes
+are the subject being tracked, so their hashes do not need to match main.
+Allocation is repeatable for a fixed materialized source tree; normal FS stat
+tokens still reflect that tree's metadata, so tiny reconstruction differences
+can occur. This is an advisory comparison, not a new absolute allocation gate.
+
+CLI wall time includes runner startup and output writing. CI uses **N=1** to
+bound cost; raw times are advisory and have no percentage delta or pass/fail
+threshold. For a local investigation, request at least three rounds (prelude
+lane order alternates between rounds):
+
+```bash
+node scripts/selfhost_build_metrics.mjs path/to/stage2.wasm _build/build-metrics.json full 3
+# Cheap per-PR protocol (four measured compiles plus one probe build):
+node scripts/selfhost_build_metrics.mjs path/to/stage2.wasm _build/build-metrics.json prelude
+bash scripts/bench_metrics.sh path/to/stage2.wasm _build/bench_metrics.json _build/build-metrics.json
+pkf run test-perf-report
+```
+
+The existing sticky PR report and `bench-data` main history carry the new
+fields. `collection_wall_ms` exposes the added collection cost. Per-process
+logs are uploaded even on failure; temporary Wasm/cache products are removed.
+The job stays advisory and is outside `ci-required`; there is no extra
+compiler generation or dependency on the required CI path.
 
 ### Exec corpus: deterministic fuel / memory / backend parity (`bench/exec/`)
 

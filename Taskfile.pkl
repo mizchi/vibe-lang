@@ -660,6 +660,49 @@ local checkRcDefault = new Task {
   }
   deps { selfhostGeneration }
 }
+// #2737: a witness dispatch on a bound declared by a LAMBDA binder is refused.
+// Only a top-level generic is threaded, so `[T: Eq]` on a lambda binder is
+// accepted by the parser and the checker and honoured by nothing -- and the
+// fallthrough was not a worse answer but undefined behaviour (an unresolved name
+// lowered to a table call on a bogus index; the erased representation printed for
+// an interpolation). Asked of the running compiler, message included.
+local checkLambdaBoundRefusal = new Task {
+  name = "check-lambda-bound-refusal"
+  description =
+    "a witness dispatch on a lambda binder's bound is refused, with a message naming the edit"
+  cmd = "bash scripts/check_lambda_bound_refusal.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "fixtures/lambda_bound_dispatch_qualified_refused.vibe"
+    "fixtures/lambda_bound_dispatch_ufcs_refused.vibe"
+    "fixtures/lambda_bound_dispatch_unshadowed_refused.vibe"
+    "fixtures/lambda_bound_dispatch_interp_refused.vibe"
+    "fixtures/lambda_bound_dispatch_value_refused.vibe"
+    "fixtures/lambda_bound_dispatch_kinded_refused.vibe"
+  }
+  deps { selfhostGeneration }
+}
+// Not `scriptTask`: three of its four red cases need a compiler that actually
+// refuses, so it probes the compiler and must declare the dependency (AGENTS.md,
+// "Which compiler answered?"). It reads the lane's compiler from
+// VIBE_STAGE2_WASM, which is what makes the selftests lane share the
+// compiler-gate matrix.
+local testCheckLambdaBoundRefusal = new Task {
+  name = "test-check-lambda-bound-refusal"
+  cmd = "bash scripts/check_lambda_bound_refusal_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "fixtures/lambda_bound_dispatch_qualified_refused.vibe"
+    "fixtures/lambda_bound_dispatch_ufcs_refused.vibe"
+    "fixtures/lambda_bound_dispatch_unshadowed_refused.vibe"
+    "fixtures/lambda_bound_dispatch_interp_refused.vibe"
+    "fixtures/lambda_bound_dispatch_value_refused.vibe"
+    "fixtures/lambda_bound_dispatch_kinded_refused.vibe"
+  }
+  deps { selfhostGeneration }
+}
 // #2510/#2735: an opt-in observation must never destroy what it observes.
 // `VIBE_INCREMENTAL_TELEMETRY_OUT` names a file the CLI deletes before the
 // compile and writes after it, and the two sit ~600 lines apart in cli_main,
@@ -966,12 +1009,15 @@ local testSimdEmitWasmtime =
 
 local testPerfReport = new Task {
   name = "test-perf-report"
-  cmd = "node --test scripts/bench_report.test.mjs scripts/coverage_bench_snapshot.test.mjs"
+  cmd =
+    "node --test scripts/bench_report.test.mjs scripts/coverage_bench_snapshot.test.mjs scripts/selfhost_build_metrics.test.mjs"
   inputs {
     "scripts/bench_report.mjs"
     "scripts/bench_report.test.mjs"
     "scripts/coverage_bench_snapshot.mjs"
     "scripts/coverage_bench_snapshot.test.mjs"
+    "scripts/selfhost_build_metrics.mjs"
+    "scripts/selfhost_build_metrics.test.mjs"
   }
 }
 
@@ -1957,6 +2003,8 @@ local releaseCheck = new Task {
     checkPackageSiblingScope
     checkDocCommands
     checkRcDefault
+    checkLambdaBoundRefusal
+    testCheckLambdaBoundRefusal
     checkTelemetrySidecarGuards
     testCheckTelemetrySidecarGuards
     testProfileCompile
@@ -2068,6 +2116,8 @@ tasks {
   checkPackageSiblingScope
   checkDocCommands
   checkRcDefault
+  checkLambdaBoundRefusal
+  testCheckLambdaBoundRefusal
   checkTelemetrySidecarGuards
   testCheckTelemetrySidecarGuards
   testProfileCompile

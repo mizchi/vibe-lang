@@ -570,6 +570,14 @@ evidence that the guarded split ran. No parsing or split-shape query precedes
 the measured compile. Reports and outputs remain under
 `_build/prelude-split-memory.*/`.
 
+The continuous `perf-metrics` job now records a bounded cold/warm pair for
+both prelude lanes on every PR, and full CLI cold/warm builds on main. Each
+allocation reading is compared with the previous main snapshot. See
+[the sampling protocol and retained history](../bench/perf/README.md#paired-prelude-allocation-and-full-cli-builds).
+This series fixes the probe to the bump allocator and records its own protocol
+identity; its absolute readings should not be mixed with the historical
+before/after experiment above.
+
 Persisted module preludes and the remaining whole-program passes are still
 required. Cached codegen bodies also need either stable function indices or
 relocations, because a call immediate depends on the linked program's index

@@ -24,7 +24,8 @@
 //
 // Snapshots also carry advisory wall-time readings (wall_ms, ns_p50) and the
 // runner calibration record -- those stay in the bench-data history for
-// offline analysis but are deliberately NOT rendered: shared-runner speed
+// offline analysis. The explicit cold/warm CLI build series below shows raw
+// times as requested, without time deltas or regression flags: shared-runner speed
 // swings every wall row ±15-40% on unrelated PRs (see the #1207/#1209
 // postmortems and bench/perf/README.md "Runner normalization"). Never exits
 // non-zero on regressions: this is a report, the blocking gate for allocation
@@ -180,6 +181,65 @@ lines.push(`| selfcompile | ${cell(fmtBytes, cur.selfcompile?.heap_ptr_bytes, ba
   `${cell(fmtBytes, cur.sizes?.stage2_wasm, base?.sizes?.stage2_wasm)} | ` +
   `${cell(fmtBytes, cur.benches?.[REPRESENTATIVE.largeBench]?.bytes_per_op, base?.benches?.[REPRESENTATIVE.largeBench]?.bytes_per_op)} |`);
 lines.push("");
+
+// Two paired allocation readings protect the optional production prelude.
+// The large CLI build runs on main only; PRs show its latest main reading
+// explicitly as main's, like coverage, to keep the per-PR collection bounded.
+const build = cur.selfhost_build;
+const buildBase = base?.selfhost_build;
+if (!build && buildBase) {
+  lines.push("> ⚠️ compiler build metrics missing in this snapshot — instrumentation gap");
+  lines.push("");
+}
+if (build) {
+  const comparable = !!buildBase && ["schema", "protocol_sha256", "node", "platform", "arch"].every(k => build[k] != null && build[k] === buildBase[k]);
+  if (buildBase && !comparable) lines.push("> build metrics not comparable: measurement protocol or runtime changed; allocation deltas omitted");
+  const preludeComparable = comparable && build.prelude?.input === buildBase.prelude?.input && build.prelude?.entry === buildBase.prelude?.entry;
+  const missing = [];
+  const measured = (sample, key, label) => {
+    const value = sample?.[key];
+    if (!Number.isFinite(value) || value <= 0) { missing.push(label); return null; }
+    return value;
+  };
+  lines.push("| allocation volume | whole | production split |");
+  lines.push("|---|---:|---:|");
+  for (const temp of ["cold", "warm"]) {
+    const cells = ["whole", "split"].map(lane => cell(fmtBytes,
+      measured(build.prelude?.[lane]?.[temp], "heap_delta_bytes", `prelude ${lane} ${temp}`),
+      buildBase?.prelude?.[lane]?.[temp]?.heap_delta_bytes, preludeComparable));
+    lines.push(`| prelude ${temp} | ${cells.join(" | ")} |`);
+  }
+  lines.push("");
+  const modules = build.prelude?.split?.cold?.modules;
+  lines.push(`> compiler closure: \`${build.prelude?.input ?? "?"}\`; production split ${modules ?? "?"} modules; allocation volume, not live memory. Cold starts with an empty cache; warm reuses that cache in a fresh process. Body and checked-module caches are off.`);
+  lines.push("");
+  const ownCli = build.selfhost?.status === "ok";
+  const inherited = build.selfhost?.status === "main-only" && buildBase?.selfhost?.status === "ok";
+  const cli = ownCli ? build.selfhost : inherited ? buildBase.selfhost : null;
+  if (cli) {
+    const label = ownCli ? "this snapshot" : `measured on main \`${(base.commit || "?").slice(0, 9)}\`, not this PR`;
+    lines.push(`**Selfhost CLI build — ${label}**`);
+    lines.push("");
+    lines.push("| build | bump-heap high-water | wall time (advisory) |");
+    lines.push("|---|---:|---:|");
+    const cliComparable = ownCli && comparable && cli.input === buildBase.selfhost?.input && cli.entry === buildBase.selfhost?.entry;
+    for (const temp of ["cold", "warm"]) {
+      const heap = measured(cli[temp], "heap_ptr_bytes", `CLI ${temp} heap`);
+      const wall = measured(cli[temp], "wall_ms_median", `CLI ${temp} time`);
+      lines.push(`| CLI ${temp} | ${cell(fmtBytes, heap, buildBase?.selfhost?.[temp]?.heap_ptr_bytes, cliComparable)} | ${wall == null ? "–" : `${(wall / 1000).toFixed(2)} s`} |`);
+    }
+    lines.push("");
+    const rounds = ownCli ? build.rounds : buildBase.rounds;
+    lines.push(`> \`${cli.input}\` → \`${cli.entry}\`; ${rounds} sample${rounds === 1 ? "" : "s"} per temperature; wall time is advisory (process startup and output write included, no time regression gate). This rebuilds the CLI from source through the FS compiler, excluding seed/bootstrap generation and tool installation.`);
+  } else if (build.selfhost?.status === "main-only") {
+    lines.push("> full CLI build: awaiting the first main snapshot (main-only to bound CI cost)");
+  } else {
+    missing.push("full CLI build");
+  }
+  if (missing.length) lines.push(`> ⚠️ missing build measurements: ${missing.join(" · ")} — instrumentation gap`);
+  lines.push(`> additional collection: ${(build.collection_wall_ms / 1000).toFixed(1)} s; ${build.rounds} round(s). Raw samples are retained in the metrics artifact and main history.`);
+  lines.push("");
+}
 
 // --- Medium: a real program ------------------------------------------------------
 const medName = REPRESENTATIVE.medium;
@@ -345,6 +405,6 @@ if (cur.micro_status && cur.micro_status !== "ok") {
   lines.push(`> micro benches: ${cur.micro_status}`);
   lines.push("");
 }
-lines.push(`<sub>one representative per tier; every other tracked series is re-checked for ±2% drift above · wall times & runner calibration: recorded in the \`bench-data\` snapshots, not rendered (runner-speed noise — see bench/perf/README.md) · tracked series: bench/perf/tracked_benches.txt · docs: bench/perf/README.md</sub>`);
+lines.push(`<sub>one representative per tier plus paired compiler builds; every other tracked series is re-checked for ±2% drift above · ${build ? "other " : ""}wall times & runner calibration: recorded in the \`bench-data\` snapshots, not rendered (runner-speed noise — see bench/perf/README.md) · tracked series: bench/perf/tracked_benches.txt · docs: bench/perf/README.md</sub>`);
 
 console.log(lines.join("\n"));
