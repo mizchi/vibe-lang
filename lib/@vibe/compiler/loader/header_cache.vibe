@@ -808,17 +808,28 @@ fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[St
 /// planner therefore calls it once per module at the head of its walk, which
 /// is the one point all five branches pass through; this call site stays for
 /// the header pass's other callers and is a no-op when the memo is filled.
+/// Whether the per-file AST cache should do anything at all.
+///
+/// `ast_cache_enabled()` is the flag; this is the flag AND nobody else
+/// already serving this lane. The checked-module artifact cache is the merge
+/// lane's AST supplier when it is on or verifying -- `parse_program_with_path`
+/// answers from `checked_module_artifact_stmts` BEFORE the shared memo -- so
+/// with both on, the per-file cache decodes trees nothing reads and stores
+/// trees nothing will load. Measured on the full CLI closure, warm, with the
+/// artifact cache on: +360.7 MiB (+11.3%) for 420 prefetches consumed by
+/// nothing, `non_walk_parse_operations` 0 either way (Codex on #2771, P2);
+/// and the cold build wrote 420 per-file artifacts on top of its 423.
+///
+/// ONE predicate for every decision this cache makes -- the prefetch, the
+/// load, and the store. Written at one of them and not the others, the cache
+/// half-runs: the first version of this guard sat at the planner's prefetch
+/// call, and the header pass went on prefetching anyway.
+fn ast_cache_active() -> Bool {
+  ast_cache_enabled() && checked_module_cache_mode() == "off"
+}
+
 export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Exception + Fs {
-  // The checked-module artifact cache is the merge lane's AST supplier when
-  // it is on or verifying: `parse_program_with_path` answers from
-  // `checked_module_artifact_stmts` BEFORE the shared memo, so a per-file
-  // prefetch decodes trees nothing reads. Measured on the full CLI closure,
-  // warm, with that cache on: +360.7 MiB (+11.3%) for 420 prefetches, with
-  // `non_walk_parse_operations` at 0 either way (Codex on #2771, P2).
-  //
-  // Decided HERE rather than at the planner, because the header pass is a
-  // second call site and guarding only the planner left it firing.
-  if !ast_cache_enabled() || checked_module_cache_mode() != "off" {
+  if !ast_cache_active() {
     false
   } else {
     let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
@@ -860,7 +871,7 @@ export fn parse_program_located_shared_fs(path: String, source: String) -> Array
   let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
   let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
   let memo_hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv()) >= 0
-  if memo_hit || !ast_cache_enabled() {
+  if memo_hit || !ast_cache_active() {
     parse_program_located_shared(path, source)
   } else {
     let fingerprint = compact_source_fingerprint_memo(path, source)
