@@ -3322,8 +3322,47 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
       },
       _ => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
     },
+    // #2745 (self-probed after round 7, fixed in the same commit): an element
+    // read OUT of a recorded tuple by PROJECTION. `let pair = (a, 1); let b =
+    // pair.0` typed `b` through `infer_arg_type_name`, whose own `EDot` arm
+    // reads the CHECKER's tuple-shape record -- a different table that this
+    // walk does not populate -- so `b` was unknown and the refusal declined.
+    // Measured, it printed `252`.
+    //
+    // A missing key falls through to the leaf, which is the answer for every
+    // non-tuple projection (`h.node` has no index, so it never gets here).
+    EDot(obj, field, _, _) => match obj {
+      EIdent(on, _) => {
+        let idx = dtd_interp_index_of_field(field)
+        if idx >= 0 {
+          match lookup_var_type(var_types, dtd_interp_tuple_elem_key(on, idx)) {
+            Some(t) => t,
+            None => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+          }
+        } else {
+          dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+        }
+      },
+      _ => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+    },
     _ => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
   }
+}
+
+/// A tuple field's index (`"0"` -> 0), or -1 when `field` is not one this walk
+/// records. The inverse of `digit_str`, and bounded the same way.
+fn dtd_interp_index_of_field(field: String) -> Int {
+  let mut i = 0
+  let mut found = 0 - 1
+  while i < 9 {
+    if digit_str(i) == field {
+      found = i
+      i = 9
+    } else {
+      i = i + 1
+    }
+  }
+  found
 }
 
 /// The first argument that classifies as an erased nested formal; "" when none
@@ -3701,6 +3740,30 @@ fn dtd_interp_record_tuple_elems(out: Array[(String, String)], name: String, val
         i = i + 1
       }
     },
+    // #2745 (Codex, P1 round 7 on #2761): the tuple reaches the pattern through
+    // ANOTHER name -- `let pair1 = (a, 1); let pair2 = pair1; match pair2 { .. }`
+    // -- and `pair2` had no keys of its own, so the pattern blanked again.
+    // Measured, it printed `252`.
+    //
+    // Copying the source's keys makes the alias relation TRANSITIVE by
+    // construction: `pair3 = pair2` copies what `pair2` itself copied, so a
+    // chain of any length resolves without a rule per hop. The copy stops at
+    // the first missing index, which preserves the recorded ARITY -- the
+    // pairing rejects a length it cannot confirm, and half a copy would defeat
+    // that.
+    EIdent(src, _) => {
+      let mut i = 0
+      let mut more = true
+      while more && i < 9 {
+        match lookup_var_type(var_types, dtd_interp_tuple_elem_key(src, i)) {
+          Some(t) => {
+            Array::push(out, (dtd_interp_tuple_elem_key(name, i), t))
+            i = i + 1
+          },
+          None => more = false
+        }
+      }
+    },
     _ => ()
   }
 }
@@ -3723,7 +3786,15 @@ fn dtd_interp_blank_binders(out: Array[(String, String)], pat: Pat) -> Unit {
 /// `dtd_interp_bind_pattern` for why the written shape is the condition.
 fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr, scrut_formal: String, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
   match pat {
-    PBind(n) => Array::push(out, (n, scrut_formal)),
+    // #2745 (self-probed after round 7): a binder naming the WHOLE scrutinee
+    // took its formal but not its element shape, so `match (a, 1) { p => match
+    // p { (b, _) => b } }` blanked `b` one hop later -- measured `252`. The
+    // same recorder the let-forms use carries the shape across, which keeps the
+    // two routes to a named tuple answering identically.
+    PBind(n) => {
+      dtd_interp_record_tuple_elems(out, n, scrut, struct_sets, var_types, fn_returns)
+      Array::push(out, (n, scrut_formal))
+    },
     PTuple(ps) => match scrut {
       ETuple(es) => if Array::length(es) == Array::length(ps) {
         let mut i = 0
