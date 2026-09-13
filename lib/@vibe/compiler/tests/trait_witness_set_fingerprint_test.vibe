@@ -1,0 +1,415 @@
+//# #2510 (criterion 5, option C part 2): the reachable trait-impl set gets ONE
+//# fingerprint, folded into every module's typing key.
+//#
+//# Impls ride the TypeEnv as `EnvTraitImpl` / `EnvTraitImplGen` and compose
+//# along the import closure, so an impl belongs to a module's whole reachable
+//# set rather than to any one dependency EDGE. That is why this is a set
+//# fingerprint and not a per-module interface field.
+//#
+//# The two errors are not symmetric. An extra invalidation costs a re-check; a
+//# missed one reuses a checked environment across a real change. So the rows
+//# below assert sensitivity on every field that can change what an impl MEANS,
+//# and assert insensitivity only where two spellings are the same impl.
+
+import @vibe/compiler/runtime {
+  trait_witness_module_row, trait_witness_set_fingerprint
+}
+
+import @vibe/ast {
+  Expr, ImportItem, Stmt, TypeExpr
+}
+
+//# Helpers
+
+//# `fp` gives every group a DISTINCT module path, so the rows below describe
+//# separate dependencies. `fp_same_module` gives two groups the SAME path,
+//# which is what "one module reached twice along two import paths" means.
+
+fn fp_paths(paths: Array[String], stmt_groups: Array[Array[Stmt]]) -> String {
+  let rows: Array[String] = []
+  let mut g = 0
+  while g < Array::length(stmt_groups) {
+    Array::push(rows, trait_witness_module_row(Array::get(paths, g), Array::get(stmt_groups, g)))
+    g = g + 1
+  }
+  trait_witness_set_fingerprint(rows)
+}
+
+fn fp(stmt_groups: Array[Array[Stmt]]) -> String {
+  let paths: Array[String] = []
+  let mut g = 0
+  while g < Array::length(stmt_groups) {
+    Array::push(paths, "m\{g}.vibe")
+    g = g + 1
+  }
+  fp_paths(paths, stmt_groups)
+}
+
+fn show_eq(left: String, right: String) -> String {
+  if left == right {
+    "same"
+  } else {
+    "moved"
+  }
+}
+
+test "a witness set is a SET: module order and repeated reach do not move it" {
+  let a: Array[Stmt] = [SImpl([], [], "Show", TyName("Pt"))]
+  let b: Array[Stmt] = [SImpl([], [], "Eq", TyName("Pt"))]
+  // The same two modules, walked in the opposite order.
+  let order = show_eq(fp_paths(["a.vibe", "b.vibe"], [a, b]), fp_paths([
+    "b.vibe",
+    "a.vibe"
+  ], [b, a]))
+  // ONE module reached twice along two import paths -- same path, so its rows
+  // are identical text and collapse.
+  let dup = show_eq(fp_paths(["a.vibe", "b.vibe"], [a, b]), fp_paths([
+    "a.vibe",
+    "b.vibe",
+    "a.vibe"
+  ], [a, b, a]),)
+  inspect("order=\{order} repeated-reach=\{dup}", "order=same repeated-reach=same")
+}
+
+test "two modules declaring the same-spelled impl are TWO impls" {
+  // Codex on #2742 (P1). `export trait Marker; impl Marker for Int` in two
+  // dependencies is two nominally distinct traits that a consumer imports
+  // under distinct aliases, and the two impl lines are identical text.
+  // Deduplicating that text would collapse them, so deleting one module's
+  // impl would leave the other's line and the fingerprint would not move --
+  // while one imported trait has lost its witness.
+  let impl_row: Array[Stmt] = [SImpl([], [], "Marker", TyName("Int"))]
+  let none: Array[Stmt] = []
+  let both = fp_paths(["a.vibe", "b.vibe"], [impl_row, impl_row])
+  let one_deleted = fp_paths(["a.vibe", "b.vibe"], [impl_row, none])
+  let single = fp_paths(["a.vibe"], [impl_row])
+  inspect("delete-one=\{show_eq(both, one_deleted)} two-vs-one=\{show_eq(both, single)}", "delete-one=moved two-vs-one=moved",)
+}
+
+test "a PRIVATE alias an impl targets is part of the set" {
+  // Codex on #2742 (P1). An alias is transparent, so `type Hidden = Int;
+  // impl Marker for Hidden` is an impl for `Int`. Retargeting the alias
+  // changes the published witness while the impl row's own text does not
+  // move, and a private alias is in no module's interface identity either --
+  // so nothing else would catch it.
+  let as_int: Array[Stmt] = [
+    STypeAlias(false, "Hidden", [], TyName("Int")),
+    SImpl([], [], "Marker", TyName("Hidden")),
+  ]
+  let as_string: Array[Stmt] = [
+    STypeAlias(false, "Hidden", [], TyName("String")),
+    SImpl([], [], "Marker", TyName("Hidden")),
+  ]
+  // An alias in ANOTHER module counts too: an impl target can name an
+  // imported alias, so every alias in the closure is emitted.
+  let elsewhere_int: Array[Stmt] = [
+    STypeAlias(false, "Hidden", [], TyName("Int"))
+  ]
+  let elsewhere_string: Array[Stmt] = [
+    STypeAlias(false, "Hidden", [], TyName("String"))
+  ]
+  let impl_only: Array[Stmt] = [SImpl([], [], "Marker", TyName("Hidden"))]
+  inspect("same-module=\{show_eq(fp([as_int]), fp([as_string]))}" + " imported=\{show_eq(fp([elsewhere_int, impl_only]), fp([elsewhere_string, impl_only]))}", "same-module=moved imported=moved",)
+}
+
+test "adding, removing or retargeting an impl moves the fingerprint" {
+  let base: Array[Stmt] = [SImpl([], [], "Show", TyName("Pt"))]
+  let added: Array[Stmt] = [
+    SImpl([], [], "Show", TyName("Pt")),
+    SImpl([], [], "Eq", TyName("Pt"))
+  ]
+  let retargeted: Array[Stmt] = [SImpl([], [], "Show", TyName("Line"))]
+  let other_trait: Array[Stmt] = [SImpl([], [], "Eq", TyName("Pt"))]
+  let empty: Array[Stmt] = []
+  inspect("added=\{show_eq(fp([base]), fp([added]))}" + " retargeted=\{show_eq(fp([base]), fp([retargeted]))}" + " other-trait=\{show_eq(fp([base]), fp([other_trait]))}" + " removed=\{show_eq(fp([base]), fp([empty]))}", "added=moved retargeted=moved other-trait=moved removed=moved",)
+}
+
+test "a type parameter is alpha-normal, but its arity and bounds are not" {
+  let a: Array[Stmt] = [SImpl(["A"], [], "Show", TyApp("Box", [TyName("A")]))]
+  let b: Array[Stmt] = [SImpl(["B"], [], "Show", TyApp("Box", [TyName("B")]))]
+  // No parameter at all is a different impl from one that takes a parameter.
+  let concrete: Array[Stmt] = [
+    SImpl([], [], "Show", TyApp("Box", [TyName("Int")]))
+  ]
+  let bounded: Array[Stmt] = [
+    SImpl(["A"], [("A", ["Show"])], "Show", TyApp("Box", [TyName("A")]))
+  ]
+  let bounded2: Array[Stmt] = [
+    SImpl(["A"], [("A", ["Eq"])], "Show", TyApp("Box", [TyName("A")]))
+  ]
+  inspect("renamed-param=\{show_eq(fp([a]), fp([b]))}" + " concrete=\{show_eq(fp([a]), fp([concrete]))}" + " bound-added=\{show_eq(fp([a]), fp([bounded]))}" + " bound-changed=\{show_eq(fp([bounded]), fp([bounded2]))}", "renamed-param=same concrete=moved bound-added=moved bound-changed=moved",)
+}
+
+test "IMPLICIT impl type parameters are told apart by arity alone" {
+  // checker_stmt's SImpl arm rejects a type parameter that is not used in the
+  // target -- except when the target is a bare name whose DECLARED arity
+  // equals the parameter count, which makes the parameters implicit. Both
+  // spellings below then render the same target, so the arity is the only
+  // thing separating them. Without it in the line they collide, and one impl
+  // silently stands in for the other.
+  let implicit: Array[Stmt] = [SImpl(["A", "B"], [], "Show", TyName("Pair"))]
+  let concrete: Array[Stmt] = [SImpl([], [], "Show", TyName("Pair"))]
+  inspect(show_eq(fp([implicit]), fp([concrete])), "moved")
+}
+
+test "a derive REGISTERS a witness, so it is part of the set" {
+  // Codex on #2742 (P1). checker_stmt.vibe pushes an `EnvTraitImpl` for each
+  // of Show / Hash / Default on both the enum and the struct arm, so adding or
+  // removing a derive changes the reachable witness set exactly as an `impl`
+  // does -- and a scan accepting only SImpl would miss it entirely.
+  let struct_show: Array[Stmt] = [
+    SStruct(true, "Pt", [("x", TyName("Int"))], ["Show"], [], [])
+  ]
+  let struct_none: Array[Stmt] = [
+    SStruct(true, "Pt", [("x", TyName("Int"))], [], [], [])
+  ]
+  let struct_hash: Array[Stmt] = [
+    SStruct(true, "Pt", [("x", TyName("Int"))], ["Hash"], [], [])
+  ]
+  let enum_show: Array[Stmt] = [SEnum(true, "E", [], [("A", [])], ["Show"])]
+  let enum_none: Array[Stmt] = [SEnum(true, "E", [], [("A", [])], [])]
+  inspect("struct-added=\{show_eq(fp([struct_none]), fp([struct_show]))}" + " struct-swapped=\{show_eq(fp([struct_show]), fp([struct_hash]))}" + " enum-added=\{show_eq(fp([enum_none]), fp([enum_show]))}", "struct-added=moved struct-swapped=moved enum-added=moved",)
+}
+
+test "WHICH module a target name is imported from is part of the set" {
+  // Codex on #2742 (P1). Two dependencies expose different aliases under the
+  // same name. The impl-owning module switches which one it imports while
+  // `impl Marker for Target` is unchanged -- both alias rows still exist and
+  // the impl row is identical, so without the import row nothing moves while
+  // the checked `EnvTraitImpl` target goes from `Int` to `String`.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep_a: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let dep_b: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("String"))]
+  let via_a: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  let via_b: Array[Stmt] = [
+    SImport("b.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  // Both dependencies are present and unchanged in both runs. Only the
+  // importer's choice differs.
+  inspect(show_eq(fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, via_a]), fp_paths([
+    "a.vibe",
+    "b.vibe",
+    "c.vibe"
+  ], [dep_a, dep_b, via_b]),), "moved",)
+}
+
+test "a RE-EXPORT binds a target name too, not just an import" {
+  // Codex on #2742 (P1, round 3). `build_import_envs_collecting` matches
+  // exactly two arms -- SImport and SReExport -- so a re-export binds the name
+  // locally just as an import does. Switching which dependency a name is
+  // re-exported from re-resolves `impl Marker for Target` while every other
+  // row is unchanged.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep_a: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let dep_b: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("String"))]
+  let via_a: Array[Stmt] = [
+    SReExport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  let via_b: Array[Stmt] = [
+    SReExport("b.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  // An import and a re-export of the same name from the same module are
+  // different statements, and are told apart too.
+  let imported: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  inspect("switched-source=\{show_eq(
+      fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, via_a]),
+      fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, via_b]),
+    )}" + " import-vs-reexport=\{show_eq(fp([via_a]), fp([imported]))}", "switched-source=moved import-vs-reexport=moved",)
+}
+
+test "a declaration NESTED in a module is visible, so it is in the set" {
+  // Codex on #2742 (P1, round 5). `collect_visible_type_stmts` recurses into
+  // `SModule` bodies and flattens them, so a nested `struct Target` shadows an
+  // imported `type Target = Int` and re-resolves `impl Marker for Target`
+  // with nothing at the top level changing.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let plain: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  let nested_decl: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SModule(false, "M", [
+      SStruct(false, "Target", [("x", TyName("Int"))], [], [], [])
+    ]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  // An impl nested in a module body is still an impl.
+  let nested_impl: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SModule(false, "M", [SImpl([], [], "Marker", TyName("Target"))]),
+  ]
+  let no_impl: Array[Stmt] = [SImport("a.vibe", [item])]
+  inspect("nested-decl=\{show_eq(
+      fp_paths(["a.vibe", "c.vibe"], [dep, plain]),
+      fp_paths(["a.vibe", "c.vibe"], [dep, nested_decl]),
+    )}" + " nested-impl=\{show_eq(
+        fp_paths(["a.vibe", "c.vibe"], [dep, no_impl]),
+        fp_paths(["a.vibe", "c.vibe"], [dep, nested_impl]),
+      )}", "nested-decl=moved nested-impl=moved",)
+}
+
+test "binding PRECEDENCE inside a module is semantic and is kept" {
+  // Codex on #2742 (P1, round 6). Resolution stops at the first matching
+  // EnvTypeDefs node and build_import_envs_collecting prepends projections in
+  // source order, so two imports binding the same local name resolve by
+  // precedence. Swapping them retargets the impl while the rows are identical
+  // AS A SET -- which is exactly what a sort over all lines would erase.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep_a: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let dep_b: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("String"))]
+  let a_first: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImport("b.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  let b_first: Array[Stmt] = [
+    SImport("b.vibe", [item]),
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  // A declaration and an import also keep their relative position: collecting
+  // declarations first would order every declaration ahead of every import.
+  let decl_first: Array[Stmt] = [
+    STypeAlias(false, "Target", [], TyName("Bool")),
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  let import_first: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    STypeAlias(false, "Target", [], TyName("Bool")),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  inspect("swapped-imports=\{show_eq(
+      fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, a_first]),
+      fp_paths(["a.vibe", "b.vibe", "c.vibe"], [dep_a, dep_b, b_first]),
+    )}" + " decl-vs-import=\{show_eq(fp([decl_first]), fp([import_first]))}", "swapped-imports=moved decl-vs-import=moved",)
+}
+
+test "a module BOUNDARY is part of the row, not just its contents" {
+  // Codex on #2742 (P1, round 7). Depth-first flattening serialises these two
+  // identically -- `alias Int`, `alias String`, `impl` in both -- while
+  // `reorder_type_decls_first` takes the OUTER alias before the module in each
+  // and first-match-wins resolves the target to String in one and Int in the
+  // other.
+  let a: Array[Stmt] = [
+    SModule(false, "M", [STypeAlias(false, "Target", [], TyName("Int"))]),
+    STypeAlias(false, "Target", [], TyName("String")),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  let b: Array[Stmt] = [
+    STypeAlias(false, "Target", [], TyName("Int")),
+    SModule(false, "M", [STypeAlias(false, "Target", [], TyName("String"))]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  // The boundary is a bracket, so a declaration inside a module and the same
+  // declaration beside it are told apart too.
+  let inside: Array[Stmt] = [
+    SModule(false, "M", [STypeAlias(false, "T", [], TyName("Int"))])
+  ]
+  let outside: Array[Stmt] = [STypeAlias(false, "T", [], TyName("Int"))]
+  inspect("straddling=\{show_eq(fp([a]), fp([b]))} nested-vs-flat=\{show_eq(fp([inside]), fp([outside]))}", "straddling=moved nested-vs-flat=moved",)
+}
+
+test "bound ORDER is not part of what an impl means" {
+  let one: Array[Stmt] = [
+    SImpl(["A", "B"], [("A", ["Show"]), ("B", ["Eq"])], "Pair", TyApp("P", [
+      TyName("A"),
+      TyName("B")
+    ]))
+  ]
+  let other: Array[Stmt] = [
+    SImpl(["A", "B"], [("B", ["Eq"]), ("A", ["Show"])], "Pair", TyApp("P", [
+      TyName("A"),
+      TyName("B")
+    ]))
+  ]
+  inspect(show_eq(fp([one]), fp([other])), "same")
+}
+
+test "the trait is recorded by SPELLING, which is the safe direction" {
+  // `Mod::Show` and `Show` may well be one trait. Recording the spelling moves
+  // the fingerprint anyway: that costs one re-check, where resolving the two
+  // together and getting it wrong would reuse across a real change.
+  let plain: Array[Stmt] = [SImpl([], [], "Show", TyName("Pt"))]
+  let qualified: Array[Stmt] = [SImpl([], [], "Mod::Show", TyName("Pt"))]
+  inspect(show_eq(fp([plain]), fp([qualified])), "moved")
+}
+
+test "a PRIVATE nominal declaration is part of the set; a value one is not" {
+  // Codex on #2742 (P1, round 4). Adding a local `struct Target` shadows an
+  // imported transparent `type Target = Int`, so `impl Marker for Target`
+  // re-resolves from Int to the struct with the import row, the alias row and
+  // the impl row all unchanged. Private declarations are in no interface
+  // identity either, so nothing else would catch it.
+  let item = ImportItem::{ kind: None, name: "Target", alias: None }
+  let dep: Array[Stmt] = [STypeAlias(true, "Target", [], TyName("Int"))]
+  let plain: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SImpl([], [], "Marker", TyName("Target"))
+  ]
+  let shadowed: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SStruct(false, "Target", [("x", TyName("Int"))], [], [], []),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  // A VALUE declaration introduces no type-level name, so it cannot re-resolve
+  // a target and must not move the set. That is what keeps the rule narrow
+  // enough to be worth having: ordinary edits still do not invalidate.
+  let with_value: Array[Stmt] = [
+    SImport("a.vibe", [item]),
+    SFnDecl(false, "helper", EUnit, [], []),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  inspect("private-shadow=\{show_eq(
+      fp_paths(["a.vibe", "c.vibe"], [dep, plain]),
+      fp_paths(["a.vibe", "c.vibe"], [dep, shadowed]),
+    )}" + " value-decl=\{show_eq(
+        fp_paths(["a.vibe", "c.vibe"], [dep, plain]),
+        fp_paths(["a.vibe", "c.vibe"], [dep, with_value]),
+      )}", "private-shadow=moved value-decl=same",)
+}
+
+test "what a module PUBLISHES decides which witnesses cross" {
+  // Codex on #2742 (P1, round 8). A witness only reaches a consumer if the
+  // module publishes it: `interface_public_trait_names` builds the trait
+  // surface and `restrict_env_to_export_surface` keeps an `EnvTraitImpl` only
+  // when its trait is in that surface. So the two statements that decide the
+  // surface move the set even though neither the trait's own text nor the
+  // impl's own text changes.
+  let impl_int: Stmt = SImpl([], [], "Marker", TyName("Int"))
+  // An aggregate `export { Marker }` naming a PRIVATE trait publishes every
+  // impl of it. This was Codex's case.
+  let hidden: Array[Stmt] = [STrait(false, "Marker", [], [], [], []), impl_int]
+  let named: Array[Stmt] = [
+    STrait(false, "Marker", [], [], [], []),
+    impl_int,
+    SExport(["Marker"])
+  ]
+  // ... and naming something else does not.
+  let named_other: Array[Stmt] = [
+    STrait(false, "Marker", [], [], [], []),
+    impl_int,
+    SExport(["Other"])
+  ]
+  // The export FLAG on the declaration itself does the same thing directly,
+  // and `include_private` is exactly what made it invisible: with private
+  // declarations in the list, the flag is the only thing telling the two
+  // apart, so dropping it makes `export trait Marker` and `trait Marker` one
+  // line.
+  let flagged: Array[Stmt] = [STrait(true, "Marker", [], [], [], []), impl_int]
+  inspect("aggregate-export=\{show_eq(fp([hidden]), fp([named]))}" + " which-name=\{show_eq(
+        fp([named]),
+        fp([named_other]),
+      )}" + " export-flag=\{show_eq(fp([hidden]), fp([flagged]))}", "aggregate-export=moved which-name=moved export-flag=moved",)
+}
