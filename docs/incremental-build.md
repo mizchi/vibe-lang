@@ -530,36 +530,50 @@ and it is not closable without reproducing the trait-dict pass's whole-program
 discovery order inside each module, which is a dependency on one pass's
 traversal that is not worth taking.
 
-#### What the per-module lane costs before any cache (#2510)
+#### Production prelude allocation (#2510)
 
-#2510 frames the work as "make the prelude per-module AND cache it", and sizes
-it against 1.3-1.5 s spent in `effect_lowering_prelude` on a warm compile. What
-it does not say is what the per-module decomposition costs on its own, which the
-FS-lane split now makes measurable. Compiler's own closure, `cache_mode = "off"`
-(a real bypass since #2647 round 5), a fresh `VIBE_BUILD_CACHE_DIR` per run,
-cold vs cold, three runs each:
+The production split carries `PreludeLinkState`: synthesized declaration keys,
+append ranks, diagnostics and synthesis collisions. The oracle opts into a
+separate `PreludeObservations` record. Only that opt-in runs per-module
+validator comparisons, context-use classification, evidence summaries, borrow
+analyses, link-round comparisons and duplicate-count controls. Production does
+not retain the oracle's pre-link AST copies. Both callers use the same pass
+and assembly implementation, and codegen still runs its required borrow
+analyses after final lowering and DCE.
 
-| lane | mean | min | max |
+Measured on 2026-09-13, with the compiler's 219-module / 5029-statement closure,
+body caching off, separate processes and separate persistent cache directories:
+
+| production split | before | after | allocation saved |
 |---|---:|---:|---:|
-| whole-program | 49,994 ms | 49,291 | 50,372 |
-| per-module (split) | 52,631 ms | 51,837 | 53,445 |
+| cold | 1,245,525,708 B | 1,152,199,348 B | 93,326,360 B |
+| unchanged warm | 879,093,612 B | 785,765,964 B | 93,327,648 B |
+| private leaf body edit | 1,147,366,068 B | 1,054,039,228 B | 93,326,840 B |
 
-**5.3% overhead.** Running 365 modules through passes 0..11 individually,
-building each module's interface context, and linking, costs about a twentieth
-more than one whole-program pass -- not the multiple that would force a cache to
-clear a deficit before winning anything. The decomposition is close to free, so
-the cache is upside rather than a rescue, and there is no schedule pressure to
-force pass 4 per-module if it turns out not to fit (see the audit above).
+The private edit changes the copied `Default for Int` method body from `0` to
+`1`. Each lane's emitted Wasm is byte-identical before and after this compiler
+change. Whole and split retain their existing synthesized-helper placement
+difference, so this comparison pairs the same lane across compiler versions.
+These are deterministic allocation-volume measurements, not timings or a live
+set. The unchanged warm split still allocates about 118 MB more than the
+whole-program lane; removing observation work does not implement persistence
+or satisfy #2510's memory criterion.
 
-This is a whole-compile wall time, so the prelude's own share of the change is
-smaller than the 5.3% suggests; it bounds the cost rather than attributing it.
+`scripts/prelude_split_memory.sh` requires
+`VIBE_PRELUDE_SPLIT_CLI_WASM=<stage2.wasm>` explicitly, compiles its probe from
+the current checkout, and measures a copied library tree. It runs three rounds
+with alternating lane order, isolated caches, and cold / warm / comment-edited /
+edited-warm temperatures. The comment edit preserves the program and each
+lane's output is byte-compared across temperatures. It reports the modules the
+production prelude actually lowered; constructing a split descriptor is not
+evidence that the guarded split ran. No parsing or split-shape query precedes
+the measured compile. Reports and outputs remain under
+`_build/prelude-split-memory.*/`.
 
-**The consequence for the cache (#2510) is the useful part.** A cached function
-body contains call immediates, and those depend on GLOBAL function index
-assignment. A per-module body cache therefore cannot store a body and replay it
-into a build where indices moved — the stored form or the cache key has to
-account for index assignment. That constraint came out of this measurement; no
-amount of comparing declarations would have produced it.
+Persisted module preludes and the remaining whole-program passes are still
+required. Cached codegen bodies also need either stable function indices or
+relocations, because a call immediate depends on the linked program's index
+assignment.
 
 ##### How far they actually move (#2669)
 
