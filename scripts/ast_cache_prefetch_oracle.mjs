@@ -212,7 +212,25 @@ function main() {
       fail("deleting every stored AST did not make the merge lane parse, so the prefetch above was not what kept it at zero");
     }
 
-    console.log(`ast-cache-prefetch-oracle: ok (warm prefetches=${warmOn.telemetry.ast_cache_prefetches}; merge-lane parses cold=${coldParses} warm-off=${warmOff.telemetry.non_walk_parse_operations} warm-on=${warmOn.telemetry.non_walk_parse_operations}; stands down under the checked-module artifact cache, ${artifactWarm.telemetry.modules_reused_checked_module_artifact} artifact hits; incremental prefetches=${edited.telemetry.ast_cache_prefetches}, control parses ${withoutArtifacts.telemetry.non_walk_parse_operations})`);
+    // `verify` is NOT `on`: it re-checks every module instead of reusing an
+    // artifact, so those parses are real and a stored AST can serve them. The
+    // stand-down is for `on` alone -- a guard reading "the artifact cache is
+    // not off" disabled the per-file cache here too, and a warm verify run
+    // parsed every module with the answer sitting in the cache.
+    const verifyProject = join(work, "verify-project");
+    const verifyCache = join(work, "verify-cache");
+    makeProject(verifyProject);
+    mkdirSync(verifyCache, { recursive: true });
+    build(stage2, verifyProject, verifyCache, true, "verify-cold", "verify");
+    const verifyWarm = build(stage2, verifyProject, verifyCache, true, "verify-warm", "verify");
+    if (verifyWarm.telemetry.modules_rechecked < 1) {
+      fail("a warm verify run rechecked nothing, so it has no parses for a prefetch to serve and the row below proves nothing");
+    }
+    if (verifyWarm.telemetry.ast_cache_prefetches < 1) {
+      fail("the per-file AST prefetch stood down under VIBE_CHECKED_MODULE_CACHE=verify, which re-checks every module rather than reusing an artifact: those parses are real (#2771)");
+    }
+
+    console.log(`ast-cache-prefetch-oracle: ok (warm prefetches=${warmOn.telemetry.ast_cache_prefetches}; merge-lane parses cold=${coldParses} warm-off=${warmOff.telemetry.non_walk_parse_operations} warm-on=${warmOn.telemetry.non_walk_parse_operations}; stands down under the checked-module artifact cache, ${artifactWarm.telemetry.modules_reused_checked_module_artifact} artifact hits; incremental prefetches=${edited.telemetry.ast_cache_prefetches}, control parses ${withoutArtifacts.telemetry.non_walk_parse_operations}; verify keeps prefetching, ${verifyWarm.telemetry.ast_cache_prefetches})`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

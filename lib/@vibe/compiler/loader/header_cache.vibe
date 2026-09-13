@@ -811,21 +811,30 @@ fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[St
 /// Whether the per-file AST cache should do anything at all.
 ///
 /// `ast_cache_enabled()` is the flag; this is the flag AND nobody else
-/// already serving this lane. The checked-module artifact cache is the merge
-/// lane's AST supplier when it is on or verifying -- `parse_program_with_path`
-/// answers from `checked_module_artifact_stmts` BEFORE the shared memo -- so
-/// with both on, the per-file cache decodes trees nothing reads and stores
-/// trees nothing will load. Measured on the full CLI closure, warm, with the
-/// artifact cache on: +360.7 MiB (+11.3%) for 420 prefetches consumed by
-/// nothing, `non_walk_parse_operations` 0 either way (Codex on #2771, P2);
-/// and the cold build wrote 420 per-file artifacts on top of its 423.
+/// already serving this lane.
+///
+/// `"on"` is that somebody: it reuses a stored `CheckedModuleArtifact` for the
+/// walk AND serves the merge from `checked_module_artifact_stmts`, which
+/// `parse_program_with_path` consults BEFORE the shared memo -- so the
+/// per-file cache decodes trees nothing reads and stores trees nothing will
+/// load. Measured on the full CLI closure, warm: +360.7 MiB (+11.3%) for 420
+/// prefetches consumed by nothing, `non_walk_parse_operations` 0 either way.
+///
+/// `"verify"` is NOT (Codex on #2771, P2). It deliberately re-checks every
+/// module -- `finish_checked_module_artifact_fs` loads an artifact only for
+/// `"on"` and otherwise calls `check_module_impl`, which parses through the
+/// shared memo -- so a warm verify run has real parses for a prefetch to
+/// serve. Measured on a three-module project, warm, with the per-file cache
+/// on: `off` gives parse_operations 0 / prefetches 3, `on` gives 0 / 0, and
+/// `verify` gave 3 / 0 while this read `== "off"`: three parses the cache was
+/// holding the answer to.
 ///
 /// ONE predicate for every decision this cache makes -- the prefetch, the
 /// load, and the store. Written at one of them and not the others, the cache
 /// half-runs: the first version of this guard sat at the planner's prefetch
 /// call, and the header pass went on prefetching anyway.
 fn ast_cache_active() -> Bool {
-  ast_cache_enabled() && checked_module_cache_mode() == "off"
+  ast_cache_enabled() && checked_module_cache_mode() != "on"
 }
 
 export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Exception + Fs {

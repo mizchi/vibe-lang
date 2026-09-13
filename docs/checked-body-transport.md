@@ -151,8 +151,11 @@ here: `parse_program_with_path` serves the merge from the checked-module
 artifact before the shared parse memo is consulted, so the per-file prefetch's
 trees are consumed by nothing. Measured on the full CLI closure, warm, with
 this cache on: `non_walk_parse_operations` is 0 either way, and turning the
-per-file cache on costs **+360.7 MiB (+11.3%)**. The planner therefore skips
-the per-file prefetch entirely whenever this cache is on or verifying.
+per-file cache on costs **+360.7 MiB (+11.3%)**. The per-file cache therefore
+stands down entirely -- prefetch, load and store -- while this one is `on`.
+`verify` is different and keeps it active: verification re-checks every
+module rather than reusing an artifact, so those parses are real and a
+stored AST can serve them.
 The existing check-only KPI benchmark pins this cache off to preserve its
 documented TDRE9 measurement; the parity gate measures checked-module reuse.
 
