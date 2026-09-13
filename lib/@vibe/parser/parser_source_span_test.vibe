@@ -7,6 +7,49 @@ import ./lexer.vibe {
 import ./printer.vibe {
   print_program
 }
+import @vibe/ast {
+  Pat, TypeExpr
+}
+import ./parser_binder_context.vibe {
+  ParserBinderContext, binder_capture_context
+}
+import ./parser_source_span.vibe {
+  source_expr_context, source_pat_range, source_set_pat_qualifier, source_type_range, source_wrap_pat, source_wrap_type
+}
+
+fn assert_unlocated_wrapping_allocates_nothing(context: Option[ParserBinderContext]) -> Unit with Profiler + Stdout {
+  let pat = PBind("value")
+  let ty = TyName("Int")
+  let before = Profiler::heap_bytes()
+  let wrapped_pat = source_wrap_pat(pat, 0, 1, context)
+  let wrapped_ty = source_wrap_type(ty, 0, 1, context)
+  let qualified_pat = source_set_pat_qualifier(wrapped_pat, 0, 1, context)
+  let allocated = Profiler::heap_bytes() - before
+  inspect(allocated, content = "0")
+  inspect(match qualified_pat {
+    PBind("value") => true,
+    _ => false
+  }, content = "true")
+  inspect(match wrapped_ty {
+    TyName("Int") => true,
+    _ => false
+  }, content = "true")
+}
+
+test "ordinary parsing does not allocate source span metadata" {
+  assert_unlocated_wrapping_allocates_nothing(None)
+}
+
+test "binder-only parsing does not allocate source span metadata" {
+  let context = binder_capture_context([0], [5])
+  assert_unlocated_wrapping_allocates_nothing(Some(context))
+}
+
+test "tooling parsing still annotates pattern and type ranges" {
+  let context = Some(source_expr_context([2], [7]))
+  inspect(source_pat_range(source_wrap_pat(PBind("value"), 0, 1, context)), content = "(2, 7)")
+  inspect(source_type_range(source_wrap_type(TyName("Value"), 0, 1, context)), content = "(2, 7)")
+}
 
 fn assert_source_parse_parity(source: String) -> Unit with Exception + Stdout {
   let (tokens, starts, _) = lex_with_offsets(source)
@@ -18,6 +61,8 @@ fn assert_source_parse_parity(source: String) -> Unit with Exception + Stdout {
 test "source annotations preserve parser lowering and printed syntax" {
   for source in [
     "let x = add(1, 2)",
+    "let f: (x: Int, y?: String,) -> Map[Int, Array[String],] = g",
+    "let x: (Int, Array[String],) = value",
     "fn f() -> Int { let x = 1; x + 2 }",
     "let f: (Int) -> Int = (x) -> { x + 1 }",
     "let x = (1 + 2) * (3 - 4)",

@@ -1387,25 +1387,28 @@ export fn parse_effect_row(tokens: Array[Token], pos: Int) -> (String, Int) with
   }
 }
 
+// Carry the optional tooling context as an argument: allocating a capturing
+// recursive closure for every type also charges atomic, comma-free types.
+fn parse_type_list_rest(tokens: Array[Token], pos: Int, b: ArrayBuilder[TypeExpr], context: Option[ParserBinderContext]) -> (Array[TypeExpr], Int) with Exception {
+  match peek(tokens, pos) {
+    TComma => match peek(tokens, pos + 1) {
+      TRParen|TRBracket => (ArrayBuilder::freeze(b), pos + 1),
+      _ => {
+        let (ts, ts_opt) = labeled_type_start(tokens, pos + 1)
+        let (ty, next) = parse_type_with_source_context(tokens, ts, 0, context)
+        ArrayBuilder::push(b, optional_param_type(ty, ts_opt))
+        parse_type_list_rest(tokens, next, b, context)
+      }
+    }
+    ,
+    _ => (ArrayBuilder::freeze(b), pos)
+  }
+}
+
 export fn parse_type_with_source_context(tokens: Array[Token], pos: Int, mode: Int, context: Option[ParserBinderContext]) -> (TypeExpr, Int) with Exception {
   match peek(tokens, pos) {
     TIdent(name) => source_record_slot("type_head", name, pos, pos + 1, context),
     _ => ()
-  }
-  let rec type_list_rest: (Array[Token], Int, ArrayBuilder[TypeExpr]) -> (Array[TypeExpr], Int) with Exception = (tokens, pos, b) -> {
-    match peek(tokens, pos) {
-      TComma => match peek(tokens, pos + 1) {
-        TRParen|TRBracket => (ArrayBuilder::freeze(b), pos + 1),
-        _ => {
-          let (ts, ts_opt) = labeled_type_start(tokens, pos + 1)
-          let (ty, next) = parse_type_with_source_context(tokens, ts, 0, context)
-          ArrayBuilder::push(b, optional_param_type(ty, ts_opt))
-          type_list_rest(tokens, next, b)
-        }
-      }
-      ,
-      _ => (ArrayBuilder::freeze(b), pos)
-    }
   }
   // The optional effect row after a function type's return (#1429: `with
   // A + B`, or `with ()` for the empty row).
@@ -1456,7 +1459,7 @@ export fn parse_type_with_source_context(tokens: Array[Token], pos: Int, mode: I
             TComma => {
               let b = ArrayBuilder::new()
               ArrayBuilder::push(b, first)
-              let (rest, end) = type_list_rest(tokens, n1, b)
+              let (rest, end) = parse_type_list_rest(tokens, n1, b, context)
               let en = expect_tk(tokens, end, ")");
               (rest, en)
             },
@@ -1511,7 +1514,7 @@ export fn parse_type_with_source_context(tokens: Array[Token], pos: Int, mode: I
             TComma => {
               let b = ArrayBuilder::new()
               ArrayBuilder::push(b, first)
-              let (rest, end) = type_list_rest(tokens, n1, b)
+              let (rest, end) = parse_type_list_rest(tokens, n1, b, context)
               let en = expect_tk(tokens, end, ")");
               (TyTuple(rest), en)
             },
@@ -1527,7 +1530,7 @@ export fn parse_type_with_source_context(tokens: Array[Token], pos: Int, mode: I
             TComma => {
               let b = ArrayBuilder::new()
               ArrayBuilder::push(b, first)
-              let (rest, end) = type_list_rest(tokens, n1, b)
+              let (rest, end) = parse_type_list_rest(tokens, n1, b, context)
               let en = expect_tk(tokens, end, "]");
               (TyApp(name, rest), en)
             },

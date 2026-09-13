@@ -545,3 +545,21 @@ test "Array::iter does not replace builtin Array for-loop lowering" {
   assert(String::contains(out, "for x in xs"))
   assert(!String::contains(out, "Pull::next(__iter_cur)"))
 }
+
+test "constructor witness tracking resets between programs with and without receivers" {
+  let source = "trait Measure { measure(Self) -> Int }\nimpl Measure for Int { measure(self) -> Int { self } }\nlet answer = Measure::measure(42)"
+  let before = parse_program(lex(source))
+  desugar_trait_dicts(before)
+  let expected = print_program(before)
+  let constructor_before = desugared_constructor_map(false, true)
+  let after = parse_program(lex(source))
+  desugar_trait_dicts(after)
+  inspect(print_program(after) == expected, content = "true")
+  // Rendering helpers use fresh local names across invocations. Compare the
+  // selected witnesses rather than those unrelated generated spellings.
+  for out in [constructor_before, desugared_constructor_map(false, true)] {
+    inspect(String::contains(out, "Mappable::map(MappableDict[Array]::{ map:"), content = "true")
+    inspect(String::contains(out, "Mappable::map(MappableDict[Option]::{ map:"), content = "true")
+    inspect(String::contains(out, "F::map("), content = "false")
+  }
+}

@@ -119,41 +119,54 @@ export fn source_pat_range(pat: Pat) -> (Int, Int) {
   }
 }
 
+// Ordinary and binder-only parses carry no tooling ranges. Check the mode
+// before constructing the temporary expression and range pair.
+fn source_captures_spans(context: Option[ParserBinderContext]) -> Bool {
+  match context {
+    Some(c) => c.capture_source_spans,
+    None => false
+  }
+}
+
 export fn source_wrap_pat(pat: Pat, first: Int, next: Int, context: Option[ParserBinderContext]) -> Pat {
-  let (start, end) = source_expr_range(source_wrap_expr(EUnit, first, next, context))
-  if start < 0 {
+  if !source_captures_spans(context) {
     pat
   } else {
-    match pat {
-      PCtor("$source_span", args) => PCtor("$source_span", [
-        Array::get(args, 0),
-        PInt(start),
-        PInt(end),
-        Array::get(args, 3),
-        Array::get(args, 4),
-        Array::get(args, 5),
-        Array::get(args, 6)
-      ]),
-      _ => {
-        let name = match pat {
-          PCtor(n, _) => n,
-          PStruct(n, _) => n,
-          _ => ""
-        }
-        let slot = match context {
-          Some(c) => source_named_slot("pat_head", name, start, end, c),
-          None => source_slot_node(-1, -1)
-        }
-        let (head_start, head_end) = source_slot_range(slot)
-        PCtor("$source_span", [
-          pat,
+    let (start, end) = source_expr_range(source_wrap_expr(EUnit, first, next, context))
+    if start < 0 {
+      pat
+    } else {
+      match pat {
+        PCtor("$source_span", args) => PCtor("$source_span", [
+          Array::get(args, 0),
           PInt(start),
           PInt(end),
-          PInt(head_start),
-          PInt(head_end),
-          PInt(-1),
-          PInt(-1)
-        ])
+          Array::get(args, 3),
+          Array::get(args, 4),
+          Array::get(args, 5),
+          Array::get(args, 6)
+        ]),
+        _ => {
+          let name = match pat {
+            PCtor(n, _) => n,
+            PStruct(n, _) => n,
+            _ => ""
+          }
+          let slot = match context {
+            Some(c) => source_named_slot("pat_head", name, start, end, c),
+            None => source_slot_node(-1, -1)
+          }
+          let (head_start, head_end) = source_slot_range(slot)
+          PCtor("$source_span", [
+            pat,
+            PInt(start),
+            PInt(end),
+            PInt(head_start),
+            PInt(head_end),
+            PInt(-1),
+            PInt(-1)
+          ])
+        }
       }
     }
   }
@@ -189,30 +202,34 @@ export fn source_type_range(ty: TypeExpr) -> (Int, Int) {
 }
 
 export fn source_wrap_type(ty: TypeExpr, first: Int, next: Int, context: Option[ParserBinderContext]) -> TypeExpr {
-  let (start, end) = source_expr_range(source_wrap_expr(EUnit, first, next, context))
-  if start < 0 {
+  if !source_captures_spans(context) {
     ty
   } else {
-    match ty {
-      TyApp("$source_span", _) => ty,
-      _ => {
-        let name = match ty {
-          TyApp(n, _) => n,
-          TyName(n) => n,
-          _ => ""
+    let (start, end) = source_expr_range(source_wrap_expr(EUnit, first, next, context))
+    if start < 0 {
+      ty
+    } else {
+      match ty {
+        TyApp("$source_span", _) => ty,
+        _ => {
+          let name = match ty {
+            TyApp(n, _) => n,
+            TyName(n) => n,
+            _ => ""
+          }
+          let slot = match context {
+            Some(c) => source_named_slot("type_head", name, start, end, c),
+            None => source_slot_node(-1, -1)
+          }
+          let (head_start, head_end) = source_slot_range(slot)
+          TyApp("$source_span", [
+            ty,
+            TyName(__to_string(start)),
+            TyName(__to_string(end)),
+            source_span_type_number(head_start),
+            source_span_type_number(head_end)
+          ])
         }
-        let slot = match context {
-          Some(c) => source_named_slot("type_head", name, start, end, c),
-          None => source_slot_node(-1, -1)
-        }
-        let (head_start, head_end) = source_slot_range(slot)
-        TyApp("$source_span", [
-          ty,
-          TyName(__to_string(start)),
-          TyName(__to_string(end)),
-          source_span_type_number(head_start),
-          source_span_type_number(head_end)
-        ])
       }
     }
   }
@@ -516,17 +533,19 @@ export fn source_clear_type_head(ty: TypeExpr) -> TypeExpr {
 /// Preserve the independently spelled effect qualifier when handler parsing
 /// prefixes an operation name. Its interval may live in the `with E` header.
 export fn source_set_pat_qualifier(pat: Pat, first: Int, next: Int, context: Option[ParserBinderContext]) -> Pat {
-  let (start, end) = source_expr_range(source_wrap_expr(EUnit, first, next, context))
   match pat {
-    PCtor("$source_span", args) => PCtor("$source_span", [
-      Array::get(args, 0),
-      Array::get(args, 1),
-      Array::get(args, 2),
-      Array::get(args, 3),
-      Array::get(args, 4),
-      PInt(start),
-      PInt(end)
-    ]),
+    PCtor("$source_span", args) => {
+      let (start, end) = source_expr_range(source_wrap_expr(EUnit, first, next, context))
+      PCtor("$source_span", [
+        Array::get(args, 0),
+        Array::get(args, 1),
+        Array::get(args, 2),
+        Array::get(args, 3),
+        Array::get(args, 4),
+        PInt(start),
+        PInt(end)
+      ])
+    },
     _ => pat
   }
 }
