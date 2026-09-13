@@ -121,10 +121,15 @@ grep -qF 'refused without the #2737 message' "$WORK/out" \
 # would look like.
 mkdir -p "$WORK/r3"
 cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r3/keep_refused.vibe"
-sed 's/move the lambda to a top-level declaration/RED3 edit clause removed/' \
+# Targets the "names an edit" grep specifically: its pattern carries the
+# ` .* to a top-level` suffix that EDIT_NEEDLE does not, so the ordering check
+# below is left intact and a failure here can only come from this assertion.
+sed 's/move the lambda binding .\* to a top-level/RED3 edit clause removed/' \
   scripts/check_lambda_bound_refusal.sh > "$WORK/r3/gate.sh"
 grep -q 'RED3 edit clause removed' "$WORK/r3/gate.sh" \
-  || fail "RED 3 mutation did not land (the edit clause was not renamed)"
+  || fail "RED 3 mutation did not land (the edit-clause pattern was not renamed)"
+grep -q '^EDIT_NEEDLE="move the lambda binding"$' "$WORK/r3/gate.sh" \
+  || fail "RED 3 mutation hit the ordering check too; it must isolate the edit-clause assertion"
 if [ -n "$STAGE2_OVERRIDE" ]; then
   VIBE_LAMBDA_BOUND_REFUSAL_ROOT="$ROOT_DIR" LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" \
     LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/r3/*.vibe" \
@@ -138,6 +143,37 @@ fi
 grep -qF 'refusal does not name an edit' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 3 failed for the wrong reason"; }
 
+# RED 5: the leads-check asserts BEGINS-WITH, not CONTAINS. This is the
+# distinction Codex round 4 on #2753 found missing from the first version, so it
+# is the one the red case has to exercise: point EDIT_NEEDLE at a phrase that is
+# genuinely IN the message but not at its start. "Contains" would pass; "begins
+# with" must fail.
+mkdir -p "$WORK/r5"
+cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r5/keep_refused.vibe"
+sed 's/^EDIT_NEEDLE="move the lambda binding"$/EDIT_NEEDLE="has no witness here"/' \
+  scripts/check_lambda_bound_refusal.sh > "$WORK/r5/gate.sh"
+grep -q '^EDIT_NEEDLE="has no witness here"$' "$WORK/r5/gate.sh" \
+  || fail "RED 5 mutation did not land (EDIT_NEEDLE was not repointed)"
+# The mutation only proves anything if the phrase really is present in the
+# message -- a needle that matched nothing would fail the check for the wrong
+# reason and show the same verdict.
+LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/r5/*.vibe" \
+  bash scripts/check_lambda_bound_refusal.sh >/dev/null 2>&1 || true
+grep -qF 'has no witness here' "$ROOT_DIR/_build/_lambda_bound_refusal/keep_refused.wasm.diag" 2>/dev/null \
+  || fail "RED 5 needle is absent from the message; the case would fail for the wrong reason"
+if [ -n "$STAGE2_OVERRIDE" ]; then
+  VIBE_LAMBDA_BOUND_REFUSAL_ROOT="$ROOT_DIR" LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" \
+    LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/r5/*.vibe" \
+    bash "$WORK/r5/gate.sh" >"$WORK/out" 2>&1 && red5_passed=1 || red5_passed=0
+else
+  VIBE_LAMBDA_BOUND_REFUSAL_ROOT="$ROOT_DIR" LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/r5/*.vibe" \
+    bash "$WORK/r5/gate.sh" >"$WORK/out" 2>&1 && red5_passed=1 || red5_passed=0
+fi
+[ "$red5_passed" -eq 0 ] \
+  || fail "RED 5: the leads-check accepts a clause that merely OCCURS in the message (it is a contains, not a begins-with)"
+grep -qF 'does not BEGIN with the edit' "$WORK/out" \
+  || { cat "$WORK/out" >&2; fail "RED 5 failed for the wrong reason"; }
+
 # RED 4: an empty corpus. Silence is "unchecked", not "clean".
 mkdir -p "$WORK/r4"
 if run_gate "$WORK/r4/*.vibe"; then
@@ -146,4 +182,4 @@ fi
 grep -qF 'no fixtures matched' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 4 failed for the wrong reason"; }
 
-echo "[lambda-bound-refusal-test] ok (4 red cases, each mutation verified to land)"
+echo "[lambda-bound-refusal-test] ok (5 red cases, each mutation verified to land)"

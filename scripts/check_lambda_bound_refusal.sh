@@ -58,6 +58,10 @@ STAGE2="$(resolve_stage2 lambda-bound-refusal "${LAMBDA_BOUND_REFUSAL_STAGE2:-}"
 # corpus instead of editing the tree's own fixtures.
 FIXTURE_GLOB="${LAMBDA_BOUND_REFUSAL_FIXTURES:-fixtures/lambda_bound_dispatch_*_refused.vibe}"
 
+# The clause the diagnostic must BEGIN with, named once so the self-test's
+# mutation is a single edit.
+EDIT_NEEDLE="move the lambda binding"
+
 WORK="$ROOT_DIR/_build/_lambda_bound_refusal"
 rm -rf "$WORK"; mkdir -p "$WORK"
 
@@ -74,13 +78,41 @@ for src in $FIXTURE_GLOB; do
     echo "[lambda-bound-refusal] FAIL: $src compiled; expected a compile-time refusal (#2737)" >&2
     exit 1
   fi
-  if ! grep -qE 'cannot (dispatch|interpolate a value of type parameter)' "$out.diag" 2>/dev/null; then
+  if ! grep -qF "only a top-level binder threads a bound's dictionary" "$out.diag" 2>/dev/null; then
     echo "[lambda-bound-refusal] FAIL: $src was refused without the #2737 message" >&2
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
-  if ! grep -qF 'move the lambda to a top-level declaration' "$out.diag" 2>/dev/null; then
+  if ! grep -qE 'move the lambda binding .* to a top-level' "$out.diag" 2>/dev/null; then
     echo "[lambda-bound-refusal] FAIL: $src refusal does not name an edit" >&2
+    cat "$out.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+  # AGENTS.md: a diagnostic LEADS with the edit that fixes it.
+  #
+  # Asserting that both clauses are merely PRESENT passes on a message that buries
+  # the edit behind the reason -- which is what this one did until Codex round 3 on
+  # #2746. The first attempt at fixing that asserted the edit appears BEFORE the
+  # word "has no", and Codex round 4 on #2753 pointed out that this is a proxy too:
+  # `cannot dispatch ...; move the lambda binding ...: T::equals has no witness`
+  # satisfies it while leading with the failure. That is #2248's rule about gates
+  # exactly ("検証が性質そのものではなく代理を信用していた"), landing on a gate
+  # written to enforce a different instance of the same rule.
+  #
+  # So the property itself: the payload BEGINS with the edit. An optional
+  # `<path>:` prefix is stripped first -- this lane's diag carries none, but a lane
+  # that adds one must not silently turn "begins with" into "contains".
+  leads_ok="$(awk -v edit="$EDIT_NEEDLE" '
+    {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      sub(/^[^[:space:]]*\.vibe[^[:space:]]*:[[:space:]]*/, "", line)
+      if (index(line, edit) == 1) { print "ok"; exit }
+    }
+  ' "$out.diag" 2>/dev/null || true)"
+  if [ "$leads_ok" != "ok" ]; then
+    echo "[lambda-bound-refusal] FAIL: $src refusal does not BEGIN with the edit" >&2
+    echo "  AGENTS.md: a diagnostic leads with the edit that fixes it, then the reason" >&2
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
@@ -93,4 +125,4 @@ if [ "$found" -eq 0 ]; then
   exit 1
 fi
 
-echo "[lambda-bound-refusal] ok ($found fixtures refused with an actionable message)"
+echo "[lambda-bound-refusal] ok ($found fixtures refused with an actionable message, edit first)"
