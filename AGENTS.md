@@ -158,8 +158,16 @@ the wrong witness, `284` — a tagged pointer — with the witness withheld). A 
 top-level `[T: Show]` at `Int` prints `7` rather than going through
 `Int::to_string`. `==` is NOT refused — it falls back to the ladder, which is
 #2523's subject, not this one. The condition reads the INNERMOST binder's own
-bound (`dtd_scope_formal_bounds`), so it is about the binder and not about a
-spelling collision; pinned by `fixtures/lambda_bound_dispatch_*_refused.vibe`
+bound (`dtd_scope_formal_bounds`) and whether that binder is a lambda's
+(`dtd_scope_formal_nested`), so it is about the binder — not about a spelling
+collision, and not about a dictionary merely being absent, which is a different
+fact that happens to coincide. **The stack stores the CANONICAL name**: a kinded
+formal arrives as `type_param_key(name, arity)` (`F[_]` is `<prefix>1$F`) while
+every lookup passes a bare head, so stored as the key a kinded binder was
+invisible to `formal_in_scope`, `dtd_formal_is_shadowed` and
+`dtd_formal_bound_promises` alike — its nested dispatch died on a bare
+`trap: RuntimeError: unreachable` instead of carrying the message. Pinned by
+`fixtures/lambda_bound_dispatch_*_refused.vibe`
 (the refusals, message asserted by `scripts/check_lambda_bound_refusal.sh`) and
 `fixtures/lambda_bound_toplevel_witness_test.vibe` (the same four rungs at a
 top-level binder, which is what would catch a refusal that grew too wide).

@@ -2596,7 +2596,9 @@ fn lifted_by_interp[T: Show](a: T) -> String {
 Lifting the lambda to a top-level declaration is the edit the message names, and
 it is the whole fix. Note that the binder's spelling is irrelevant — `[U: Eq]`
 is refused exactly like the `[T: Eq]` that shadows the outer one, because the
-condition is which binder declared the bound, not whether a spelling repeats.
+condition is which binder declared the bound, not whether a spelling repeats. A
+**kinded** binder is the same: `[F[_]: Mappable[F]]` on a lambda is refused, while
+that bound on a top-level `fn` works and dispatches `F::map` through the witness.
 
 The refusal lands on `vibe build` / `vibe run` / `vibe test`, not on
 `vibe check`: the pass that knows a dictionary is missing is a normalize pass

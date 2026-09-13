@@ -36,6 +36,13 @@
 # than either call site, so two refusals at the call sites left it unrefused and
 # still answering `true` for `equals(7, 8)`. The corpus is a GLOB for that reason
 # -- a route found later joins by adding a file, not by editing this script.
+#
+# Round 2 added the KINDED case the same way. A formal declared `F[_]` is stored as
+# `type_param_key(name, arity)` while every lookup passes a bare head, so the whole
+# condition was blind to it and its nested dispatch died on a bare
+# `trap: RuntimeError: unreachable`. Both rounds are the same shape of mistake: the
+# condition was stated once and then applied through whatever spelling or arm
+# happened to be in front of it.
 set -euo pipefail
 # Overridable ONLY so this gate's own self-test can run a MUTATED COPY of this
 # script from a scratch directory -- the same escape hatch, for the same reason,
