@@ -706,6 +706,37 @@ fn own_host_string(value: String) -> String {
   String::concat("", value)
 }
 
+/// Do two path spellings name the same file on disk right now?
+///
+/// `Fs::stat_token` mixes the inode, so equal tokens mean one file under two
+/// names: it sees through `./`, a doubled slash, a trailing slash, a
+/// relative-vs-absolute spelling and a hard link -- everything a string
+/// comparison misses. It needs both paths to EXIST, which is not a weakness
+/// at the two places this is asked. A stale-sidecar clear only deletes a path
+/// that exists, and an overwrite only destroys a file that exists, so at each
+/// guard the file whose destruction is in question is already on disk, and
+/// the aliasing spelling therefore exists too.
+///
+/// It does not see through a SYMLINK: `Fs::stat_token` is an lstat by design
+/// (module loading needs a link to be distinguishable from its target, so a
+/// link answers -1) and there is no realpath builtin. That direction is safe
+/// anyway -- `Fs::remove` unlinks the link rather than its target, so the
+/// clear turns a symlinked destination into a plain missing path and the
+/// later write creates a regular file instead of writing through the link.
+/// Two DISTINCT symlinks both answer -1 and are refused as aliases, which is
+/// the conservative direction.
+fn fs_paths_name_same_file(left: String, right: String) -> Bool with Fs {
+  if left == "" || right == "" {
+    false
+  } else if left == right {
+    true
+  } else if Fs::exists(left) && Fs::exists(right) {
+    Fs::stat_token(left) == Fs::stat_token(right)
+  } else {
+    false
+  }
+}
+
 fn has_control_character(value: String) -> Bool {
   let mut i = 0
   let mut found = false
@@ -1166,11 +1197,26 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // held for the write and not for the delete, which is the destruction it
   // exists to prevent minus the compile. read_arg_or_env is total (it returns
   // "" when neither the positional argument nor the variable is set), so
-  // probing the output path this early is safe on the lanes that have no
-  // output argument, and the guard can only fire when both are non-empty and
-  // name the same file.
-  if fs_telemetry_out != "" && fs_telemetry_out == own_host_string(read_arg_or_env(1, "VIBE_OUTPUT")) {
+  // probing the paths this early is safe on the lanes that have no input or
+  // output argument at all.
+  //
+  // The INPUT is checked for the same reason and is the worst case: the clear
+  // below would delete the entry source the compile is about to read, and no
+  // later refusal can give it back. The artifact-input trace is checked
+  // because its validation admits a telemetry request alongside it, so the two
+  // sidecars can be asked for at one path and the second write would silently
+  // replace the first observation under a zero exit.
+  //
+  // A DIRECTORY destination is refused outright: `Fs::remove` is recursive, so
+  // a clear of `lib` would delete the tree rather than a stale sidecar.
+  if fs_telemetry_out != "" && Fs::is_dir(fs_telemetry_out) {
+    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name a directory")
+  } else if fs_telemetry_out != "" && fs_paths_name_same_file(fs_telemetry_out, own_host_string(read_arg_or_env(0, "VIBE_INPUT"))) {
+    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name the compile input path")
+  } else if fs_telemetry_out != "" && fs_paths_name_same_file(fs_telemetry_out, own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))) {
     throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name the compile output path")
+  } else if fs_telemetry_out != "" && fs_paths_name_same_file(fs_telemetry_out, Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT")) {
+    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name VIBE_ARTIFACT_INPUT_TRACE_OUT")
   } else {
     ()
   }
@@ -1809,10 +1855,24 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       // so an opt-in observation never lands inside the phase numbers it
       // exists to explain. The counters were captured at the typing walk's
       // boundary, so publishing here does not widen what they describe.
-      if fs_telemetry_out != "" {
-        Fs::write_file(fs_telemetry_out, fs_telemetry_json)
-      } else {
+      //
+      // Re-checked against the artifact and the artifact-input trace HERE as
+      // well as before the compile. The early refusal can only compare
+      // spellings for paths that already exist, and on a first build neither
+      // of those two files is on disk yet, so an aliasing destination spelled
+      // any other way passes it. Both exist by now, which is exactly what
+      // makes the stat-token comparison exact -- and it is exactly when they
+      // exist that writing here would destroy one of them. Refusing costs a
+      // failed build; writing would cost a wasm silently replaced by JSON, or
+      // a requested trace silently replaced by counters, under a zero exit.
+      if fs_telemetry_out == "" {
         ()
+      } else if fs_paths_name_same_file(fs_telemetry_out, output_path) {
+        throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name the compile output path")
+      } else if fs_paths_name_same_file(fs_telemetry_out, Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT")) {
+        throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name VIBE_ARTIFACT_INPUT_TRACE_OUT")
+      } else {
+        Fs::write_file(fs_telemetry_out, fs_telemetry_json)
       }
       0
     } with {
