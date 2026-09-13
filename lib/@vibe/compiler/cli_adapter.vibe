@@ -1153,6 +1153,27 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // each round found a failure point earlier or later than the last. The
   // mechanism already existed; the fix was to use it.
   let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+  // #2510: an observation must never be able to destroy what it observes. If
+  // the telemetry destination aliases the primary output, the compile writes
+  // the artifact and the sidecar publication then overwrites it with JSON,
+  // while the invocation still reports success -- a silently corrupt build
+  // produced by asking for a measurement. Checked for EVERY lane, because the
+  // check-only branch publishes to the same variable.
+  //
+  // Refused BEFORE the clear below rather than after it. Measured with the
+  // refusal sitting further down: the request was rejected AND the artifact it
+  // named was already gone, because the clear had removed it -- so the refusal
+  // held for the write and not for the delete, which is the destruction it
+  // exists to prevent minus the compile. read_arg_or_env is total (it returns
+  // "" when neither the positional argument nor the variable is set), so
+  // probing the output path this early is safe on the lanes that have no
+  // output argument, and the guard can only fire when both are non-empty and
+  // name the same file.
+  if fs_telemetry_out != "" && fs_telemetry_out == own_host_string(read_arg_or_env(1, "VIBE_OUTPUT")) {
+    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name the compile output path")
+  } else {
+    ()
+  }
   if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
     Fs::remove(fs_telemetry_out)
   } else {
@@ -1236,17 +1257,6 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   }
   let input_path = own_host_string(read_arg_or_env(0, "VIBE_INPUT"))
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
-  // #2510: an observation must never be able to destroy what it observes. If
-  // the telemetry destination aliases the primary output, the compile writes
-  // the artifact and the sidecar publication then overwrites it with JSON,
-  // while the invocation still reports success -- a silently corrupt build
-  // produced by asking for a measurement. Checked for EVERY lane, because the
-  // check-only branch publishes to the same variable.
-  if fs_telemetry_out != "" && fs_telemetry_out == output_path {
-    throw("VIBE_INCREMENTAL_TELEMETRY_OUT must not name the compile output path")
-  } else {
-    ()
-  }
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
   // #730 (D-2): `vibe hash` — print a contract package's content-addressing
