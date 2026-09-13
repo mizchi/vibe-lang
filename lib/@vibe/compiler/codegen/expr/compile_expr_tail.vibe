@@ -1511,9 +1511,18 @@ fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[String], c
 ///   `is_eident` arm drives already answers it, so this leaves that class
 ///   exactly as it was.
 /// - a projection (`EDot`): a field read is a view into its parent.
-/// - a call to a borrow-returning builtin, to a name in #707's
-///   `borrow_ret_names`, or to one that may return an interior view (#768's
-///   `borrow_view_ret`).
+/// - a call to a borrow-returning builtin or to a name in #707's
+///   `borrow_ret_names`. Those never hand back a fresh allocation, which is
+///   what makes declining the drop safe.
+///
+///   #768's `borrow_view_ret` is deliberately NOT one of them. A may-return-
+///   view callee MAY also return fresh, so its binding has to KEEP its
+///   scope-end drop or the fresh result leaks -- which is why the direct-call
+///   arm above does not consult that set either, and why the planner marks
+///   the binding through `pctx_mark_view_call` instead. Reading it here made
+///   the wrapped form more aggressive than the bare call and leaked: measured
+///   at +5,952 and +7,104 bytes/op on the two parser benches the
+///   `bench-regression` gate tracks.
 /// - a call through a name bound LOCALLY -- a parameter, or a local closure.
 ///   The contract tables are keyed by GLOBAL name, so reading one for a local
 ///   spelling answers about a different function; no contract at all is the
@@ -1543,7 +1552,7 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
       } else if find_local_slot(bound, cn) >= 0 || find_local_slot(local_names, cn) >= 0 {
         true
       } else {
-        is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0 || bsearch_leftmost(ctx.borrow_view_ret, cn) >= 0
+        is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0
       },
       _ => false
     },
