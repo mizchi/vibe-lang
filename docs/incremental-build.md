@@ -2374,7 +2374,7 @@ The historical private-body observation is emitted under the explicit
 classification `private_dependency_edit_externally_unchanged`. That classifier
 fails closed unless `app` has exactly `library` as its sole direct dependency in
 both snapshots, the dependency's source and provisional token-stream
-implementation identities change, its interface-v4 identity does not change,
+implementation identities change, its interface identity does not change,
 and all of the consumer's own observed identities stay unchanged. The
 persistent TypeEnv-v9 transport result for the dependency is reported as a
 separate `changed`/`unchanged` observation rather than being treated as the

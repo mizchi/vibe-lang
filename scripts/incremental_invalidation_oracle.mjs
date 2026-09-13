@@ -395,7 +395,11 @@ function ownerNames(paths) {
 /// Classify the bounded library-body edit without promoting any observation to
 /// production policy. The consumer must name exactly the edited dependency in
 /// both snapshots: extra, missing, reordered, or changed edges fail closed.
-/// TypeEnv-v9 transport state is reported independently from interface-v4.
+/// TypeEnv transport state is reported independently from the interface
+/// identity. Neither name carries a version: the versions live in the trace's
+/// own *_kind strings, which this oracle pins, and a version repeated in prose
+/// or in a diagnostic is a copy nothing keeps in step (Codex on #2751, P2 --
+/// the second round of exactly that, after the field names).
 export function classifyPrivateDependencyEditExternallyUnchanged(before, after, dependencyName, consumerName) {
   const beforeDependency = moduleByName(before, dependencyName);
   const afterDependency = moduleByName(after, dependencyName);
@@ -427,7 +431,7 @@ export function classifyPrivateDependencyEditExternallyUnchanged(before, after, 
     fail("private dependency edit did not change dependency implementation identity");
   }
   if (beforeDependency.interface_fingerprint !== afterDependency.interface_fingerprint) {
-    fail("private dependency edit changed dependency interface-v4 identity");
+    fail("private dependency edit changed dependency interface identity");
   }
 
   const consumerIdentityFields = [

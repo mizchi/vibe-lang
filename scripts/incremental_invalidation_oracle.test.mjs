@@ -286,7 +286,7 @@ test("private dependency classifier is explicit, fail-closed, and reports TypeEn
     ["after relation", (_, right) => { right.modules[2].direct_dependencies = []; }, /after direct relation/],
     ["source", (_, right) => { right.modules[1].source_fingerprint = before.modules[1].source_fingerprint; }, /did not change dependency source/],
     ["implementation", (_, right) => { right.modules[1].implementation_fingerprint = before.modules[1].implementation_fingerprint; }, /did not change dependency implementation/],
-    ["interface", (_, right) => { right.modules[1].interface_fingerprint = "interface:library:changed"; }, /changed dependency interface-v4/],
+    ["interface", (_, right) => { right.modules[1].interface_fingerprint = "interface:library:changed"; }, /changed dependency interface identity/],
     ["consumer identity", (_, right) => { right.modules[2].source_fingerprint = "source:app:changed"; }, /changed consumer own source_fingerprint/],
     ["missing transport", (_, right) => { delete right.modules[1].persistent_type_env_transport_fingerprint; }, /missing after dependency persistent_type_env_transport_fingerprint/],
     ["consumer decision", (_, right) => { right.modules[2].decision = "reused"; }, /no longer conservatively rechecked/],
