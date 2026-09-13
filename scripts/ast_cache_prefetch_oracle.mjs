@@ -25,7 +25,7 @@
 // warmed the same way, so the flag is the only difference between them -- and
 // they must produce a byte-identical program, because a cache that changes the
 // output is not a cache.
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -39,6 +39,19 @@ function makeProject(project) {
   writeFileSync(join(project, "leaf.vibe"), "export fn leaf() -> Int { 1 }\n");
   writeFileSync(join(project, "middle.vibe"), "import ./leaf.vibe { leaf }\nexport fn middle() -> Int { leaf() + 1 }\n");
   writeFileSync(join(project, "app.vibe"), "import ./middle.vibe { middle }\nfn main() -> Int { middle() }\n");
+}
+
+// Two independent leaves, so editing one leaves the other REUSED -- which is
+// the state in which a stored AST has to serve the merge.
+function makeSplitProject(project) {
+  mkdirSync(project, { recursive: true });
+  writeFileSync(join(project, "a.vibe"), "export fn a() -> Int { 1 }\n");
+  writeFileSync(join(project, "b.vibe"), "export fn b() -> Int { 2 }\n");
+  writeFileSync(join(project, "app.vibe"), "import ./a.vibe { a }\nimport ./b.vibe { b }\nfn main() -> Int { a() + b() }\n");
+}
+
+function editA(project, marker) {
+  writeFileSync(join(project, "a.vibe"), `export fn a() -> Int { let unused${marker} = 0\n1 }\n`);
 }
 
 function telemetry(path) {
@@ -147,7 +160,41 @@ function main() {
       fail(`the per-file AST prefetch ran ${artifactWarm.telemetry.ast_cache_prefetches} times while the checked-module artifact cache was serving the merge: those trees are consumed by nothing`);
     }
 
-    console.log(`ast-cache-prefetch-oracle: ok (warm prefetches=${warmOn.telemetry.ast_cache_prefetches}; merge-lane parses cold=${coldParses} warm-off=${warmOff.telemetry.non_walk_parse_operations} warm-on=${warmOn.telemetry.non_walk_parse_operations}; stands down under the checked-module artifact cache, ${artifactWarm.telemetry.modules_reused_checked_module_artifact} artifact hits)`);
+    // An INCREMENTAL build is where the count was wrong, and it is the case
+    // the counter exists for. The header pass runs from the
+    // source-collection walk BEFORE the planner, so a count kept at the
+    // planner reads 0 for a prefetch the header pass performed -- measured
+    // exactly that way: with the stored ASTs present the merge lane parsed 0,
+    // with the same ASTs deleted it parsed 1, and the counter said 0 both
+    // times (Codex on #2771, P2).
+    const splitProject = join(work, "split-project");
+    const splitCache = join(work, "split-cache");
+    makeSplitProject(splitProject);
+    mkdirSync(splitCache, { recursive: true });
+    build(stage2, splitProject, splitCache, true, "split-cold");
+    editA(splitProject, "1");
+    const edited = build(stage2, splitProject, splitCache, true, "split-edit");
+    if (edited.telemetry.modules_reused < 1) {
+      fail("the edit rechecked every module, so no stored AST could have served the merge and the count below proves nothing");
+    }
+    if (edited.telemetry.ast_cache_prefetches < 1) {
+      fail("an incremental build reported ast_cache_prefetches=0; a prefetch performed by the header pass is invisible to a count kept at the planner (#2771)");
+    }
+    if (edited.telemetry.non_walk_parse_operations !== 0) {
+      fail(`an incremental build parsed ${edited.telemetry.non_walk_parse_operations} sources in the merge lane with the AST cache on`);
+    }
+    // ...and the control, which is what makes the row above mean anything:
+    // delete the stored ASTs and the same shape of edit DOES reach the parser.
+    for (const entry of readdirSync(splitCache)) {
+      if (entry.startsWith("vibe_selfhost_artifact_") && entry.endsWith(".bin")) rmSync(join(splitCache, entry));
+    }
+    editA(splitProject, "2");
+    const withoutArtifacts = build(stage2, splitProject, splitCache, true, "split-edit-no-artifacts");
+    if (withoutArtifacts.telemetry.non_walk_parse_operations < 1) {
+      fail("deleting every stored AST did not make the merge lane parse, so the prefetch above was not what kept it at zero");
+    }
+
+    console.log(`ast-cache-prefetch-oracle: ok (warm prefetches=${warmOn.telemetry.ast_cache_prefetches}; merge-lane parses cold=${coldParses} warm-off=${warmOff.telemetry.non_walk_parse_operations} warm-on=${warmOn.telemetry.non_walk_parse_operations}; stands down under the checked-module artifact cache, ${artifactWarm.telemetry.modules_reused_checked_module_artifact} artifact hits; incremental prefetches=${edited.telemetry.ast_cache_prefetches}, control parses ${withoutArtifacts.telemetry.non_walk_parse_operations})`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

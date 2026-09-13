@@ -139,6 +139,8 @@ import @vibe/compiler/contract {
 }
 
 import @vibe/compiler/loader {
+  ast_cache_prefetch_count,
+  ast_cache_prefetch_count_reset,
   ast_cache_prefetch_fs,
   ingest_source_text_fs,
   ingestion_pipeline_telemetry_add,
@@ -2587,7 +2589,11 @@ fn collect_module_diagnostics() -> Bool {
 ///   8 modules reused by validated TDRE9 dependency transport authority
 ///   9 modules reused by the complete checked-module artifact
 ///  10 non-walk parse operations (the build's merge lane and friends)
-///  11 modules whose stored AST was prefetched into the shared parse memo
+///
+/// `ast_cache_prefetches` is NOT one of these. It is kept by the loader, in
+/// `ast_cache_prefetch_fs` itself, and read here at emission: that function
+/// has two call sites with different timing, and a count written at one of
+/// them reads 0 for work the other did (Codex on #2771, P2).
 ///
 /// `parse_operations` is parser work, not a unique-module count: a cold
 /// module can need one header parse during planning and one full parse for its
@@ -2663,8 +2669,9 @@ export fn set_incremental_typecheck_telemetry_enabled(enabled: Bool) -> Unit {
   Array::push(incremental_typecheck_telemetry_enabled_cell, enabled)
   Array::truncate(incremental_typecheck_telemetry_counters, 0)
   Array::truncate(incremental_typecheck_telemetry_decisions, 0)
+  ast_cache_prefetch_count_reset()
   let mut i = 0
-  while i < 12 {
+  while i < 11 {
     Array::push(incremental_typecheck_telemetry_counters, 0)
     i = i + 1
   }
@@ -2802,7 +2809,7 @@ export fn incremental_typecheck_telemetry_json() -> String {
   StringBuilder::push(out, ",\"non_walk_parse_operations\":")
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(10)))
   StringBuilder::push(out, ",\"ast_cache_prefetches\":")
-  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(11)))
+  StringBuilder::push(out, __to_string(ast_cache_prefetch_count()))
   StringBuilder::push(out, "}")
   StringBuilder::freeze(out)
 }
@@ -6264,26 +6271,13 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
         // question became decidable -- `ast_cache_prefetches` reporting 420
         // means a slower warm build is the cache losing on its merits, not
         // the cache failing to run.
-        // ...and NOT when the checked-module artifact cache is on or
-        // verifying. That cache is the merge lane's AST supplier in those
-        // modes -- `parse_program_with_path` consults
-        // `checked_module_artifact_stmts` before the shared memo -- so a
-        // per-file prefetch is a second decode of the same tree that nothing
-        // then reads. Measured on the full CLI closure, warm, with
-        // VIBE_CHECKED_MODULE_CACHE=on: `non_walk_parse_operations` is 0
-        // whether the per-file cache is on or off (417 artifact hits serve
-        // the merge either way), and turning it on cost +360.7 MiB (+11.3%)
-        // for 420 prefetches consumed by nothing. Codex on #2771, P2.
-        //
-        // The 3 modules an on-mode warm build still rechecks are the ones
-        // with no usable artifact, and their stored AST is keyed by the same
-        // source fingerprint that made the artifact unusable -- so it would
-        // miss too. Skipping costs nothing real.
-        if checked_module_cache_mode() == "off" && ast_cache_prefetch_fs(path, source) {
-          incremental_typecheck_telemetry_add(11, 1)
-        } else {
-          ()
-        }
+        // Unguarded and uncounted HERE on purpose: `ast_cache_prefetch_fs`
+        // owns both. It has a second call site -- the module-header pass,
+        // reached from `module_plan_data_fs`'s source-collection walk, which
+        // runs before this one -- and a policy or a count written at one call
+        // site is simply absent at the other. Both were, until Codex found
+        // them on #2771.
+        let _ = ast_cache_prefetch_fs(path, source)
         let reusable = if checked_module_cache_mode() == "off" && dep_source_cache_is_current(dep_source_cache, path, source) {
           match ripple_get_fingerprint(rdb, path) {
             // #2391: reuse needs BOTH cache halves -- the TypeEnv and the

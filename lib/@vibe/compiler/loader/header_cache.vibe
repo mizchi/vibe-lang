@@ -35,6 +35,10 @@ import @vibe/compiler/core {
   resolve_import_path_probe
 }
 
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_cache_mode
+}
+
 import @vibe/compiler/runtime/eval_loader {
   collect_exports
 }
@@ -594,6 +598,28 @@ let located_parse_memo_size: Array[Int] = [0]
 
 let located_parse_memo_ran_parser: Array[Bool] = [false]
 
+/// How many stored ASTs `ast_cache_prefetch_fs` has put into the memo.
+///
+/// Counted HERE, in the function that performs the prefetch, and not at its
+/// call sites -- which is the whole point (Codex on #2771, P2). It has two
+/// call sites with different timing: the module-header pass, reached from
+/// `module_plan_data_fs`'s source-collection walk, runs BEFORE the FS
+/// planner's own call. Counted at the planner, an incremental build read
+/// `ast_cache_prefetches: 0` while a stored AST demonstrably served the
+/// merge -- measured: with the artifacts present the merge lane parsed 0,
+/// with the same artifacts deleted it parsed 1, and the counter said 0 both
+/// times. A count that lives where the work happens cannot be forgotten by
+/// a call site.
+let ast_cache_prefetch_hits: Array[Int] = [0]
+
+export fn ast_cache_prefetch_count() -> Int {
+  Array::get(ast_cache_prefetch_hits, 0)
+}
+
+export fn ast_cache_prefetch_count_reset() -> Unit {
+  Array::set(ast_cache_prefetch_hits, 0, 0)
+}
+
 /// Per version: whether a module check has consumed this parse yet. The
 /// typecheck walk's `current_source_parse_executions` counts the first
 /// semantic use of a (path, text) in the process -- the observable it had
@@ -783,7 +809,16 @@ fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[St
 /// is the one point all five branches pass through; this call site stays for
 /// the header pass's other callers and is a no-op when the memo is filled.
 export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Exception + Fs {
-  if !ast_cache_enabled() {
+  // The checked-module artifact cache is the merge lane's AST supplier when
+  // it is on or verifying: `parse_program_with_path` answers from
+  // `checked_module_artifact_stmts` BEFORE the shared memo, so a per-file
+  // prefetch decodes trees nothing reads. Measured on the full CLI closure,
+  // warm, with that cache on: +360.7 MiB (+11.3%) for 420 prefetches, with
+  // `non_walk_parse_operations` at 0 either way (Codex on #2771, P2).
+  //
+  // Decided HERE rather than at the planner, because the header pass is a
+  // second call site and guarding only the planner left it firing.
+  if !ast_cache_enabled() || checked_module_cache_mode() != "off" {
     false
   } else {
     let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
@@ -794,6 +829,7 @@ export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Excep
       let slot = ast_cache_slot_fs(path, compact_source_fingerprint_memo(path, source))
       if Array::length(slot) == 1 {
         located_parse_record(path, source, Array::get(slot, 0))
+        Array::set(ast_cache_prefetch_hits, 0, Array::get(ast_cache_prefetch_hits, 0) + 1)
         true
       } else {
         false
