@@ -243,51 +243,62 @@ fn uniq_sorted(xs: Array[String]) -> String {
   StringBuilder::freeze(sb)
 }
 
+/// One census row for a wrapper-valued binding, classified by its result
+/// spine's worst leaf. Shared by the `ELet` and `ELetMut` arms: the codegen
+/// rule this measures does not distinguish them.
+fn emit_census_row(fname: String, n: String, v: Expr, scope: Array[String], ctors: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String]) -> Unit with Stdout {
+  let wk = wrapper_kind(v)
+  if wk == "-" {
+    ()
+  } else {
+    let kinds: Array[String] = []
+    spine_walk(v, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, kinds)
+    let mut worst = "other"
+    let mut worst_rank = 99
+    let mut i = 0
+    while i < Array::length(kinds) {
+      let k = Array::get(kinds, i)
+      if leaf_rank(k) < worst_rank {
+        worst_rank = leaf_rank(k)
+        worst = k
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    let line = StringBuilder::new()
+    StringBuilder::push(line, fname)
+    StringBuilder::push(line, "\t")
+    StringBuilder::push(line, n)
+    StringBuilder::push(line, "\ttop=")
+    StringBuilder::push(line, wk)
+    StringBuilder::push(line, "\tleaves=")
+    StringBuilder::push(line, __to_string(Array::length(kinds)))
+    StringBuilder::push(line, "\tkinds=")
+    StringBuilder::push(line, uniq_sorted(kinds))
+    StringBuilder::push(line, "\tverdict=")
+    StringBuilder::push(line, worst)
+    println(StringBuilder::freeze(line))
+  }
+}
+
 fn walk_lets(fname: String, e: Expr, scope: Array[String], ctors: Array[String], borrow_ret: Array[String], view_ret: Array[String], scalar_ret: Array[String], heap_ret: Array[String]) -> Unit with Stdout {
   match e {
     // A lambda body is classified in its own frame.
     EFn(_, _, _, _, _, _) => (),
     ELet(n, v, b, _) => {
-      let wk = wrapper_kind(v)
-      if wk == "-" {
-        ()
-      } else {
-        let kinds: Array[String] = []
-        spine_walk(v, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret, kinds)
-        let mut worst = "other"
-        let mut worst_rank = 99
-        let mut i = 0
-        while i < Array::length(kinds) {
-          let k = Array::get(kinds, i)
-          if leaf_rank(k) < worst_rank {
-            worst_rank = leaf_rank(k)
-            worst = k
-          } else {
-            ()
-          }
-          i = i + 1
-        }
-        let line = StringBuilder::new()
-        StringBuilder::push(line, fname)
-        StringBuilder::push(line, "\t")
-        StringBuilder::push(line, n)
-        StringBuilder::push(line, "\ttop=")
-        StringBuilder::push(line, wk)
-        StringBuilder::push(line, "\tleaves=")
-        StringBuilder::push(line, __to_string(Array::length(kinds)))
-        StringBuilder::push(line, "\tkinds=")
-        StringBuilder::push(line, uniq_sorted(kinds))
-        StringBuilder::push(line, "\tverdict=")
-        StringBuilder::push(line, worst)
-        println(StringBuilder::freeze(line))
-      }
+      emit_census_row(fname, n, v, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret)
       walk_lets(fname, v, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret)
       let mark = Array::length(scope)
       Array::push(scope, n)
       walk_lets(fname, b, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret)
       Array::truncate(scope, mark)
     },
+    // `classify_let_value_heap` applies the wrapper rule to a `let mut` too
+    // (tag 11), so a census that walked past one understated the population
+    // it reports. Same row, same classification.
     ELetMut(n, v, b, _) => {
+      emit_census_row(fname, n, v, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret)
       walk_lets(fname, v, scope, ctors, borrow_ret, view_ret, scalar_ret, heap_ret)
       let mark = Array::length(scope)
       Array::push(scope, n)
