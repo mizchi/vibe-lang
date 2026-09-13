@@ -775,6 +775,21 @@ fi
 rm -rf "$gcabidir" _build/gc_host_abi_probe
 echo "[compiler-gate] wasm-gc host ABI declaration ok (linear + gc, =160)"
 
+# 40h-4b. #2759: the STATIC counterpart to the runtime probe below. Adding one
+#         host import means editing SIX lists, and `check-host-runtime-contract`
+#         -- the one machine check over them -- was its own pkf task inside
+#         `release-check` and ran in NO lane of `scripts/compiler_gate.sh`. On
+#         #2756 I ran the compiler gate, saw `[compiler-gate] ok`, and treated a
+#         change that emits a new import as validated; measured afterwards, that
+#         check catches both of the review findings that followed, in sequence,
+#         from the first commit. It runs here, next to the runtime probe it is
+#         the static half of, and costs well under a second (it reads five
+#         files and never touches a stage2).
+echo "[compiler-gate] 40h-4b/40 host-runtime ABI contract (#2759)"
+python3 scripts/check_host_runtime_contract.py
+python3 tests/gates/tooling-accounting/host-runtime/host_runtime_contract_test.py
+echo "[compiler-gate] host-runtime ABI contract ok"
+
 # 40h-5. #1262: the gc lane's host-import surface, extended by five builtins
 #        that were "unknown constructor or function" there. Runs with NO
 #        VIBE_IMPORT_ABI for the same reason as 40h-4 -- the module declares

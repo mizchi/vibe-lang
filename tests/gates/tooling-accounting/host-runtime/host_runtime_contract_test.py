@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -74,6 +75,138 @@ leb128_encode_u32(import_content, 3)'''
     def test_manifest_is_valid_json(self):
         manifest = ROOT / "docs/wasm/host-runtime-contract.json"
         self.assertEqual(json.loads(manifest.read_text())["schema"], 1)
+
+
+class GcHostListTest(unittest.TestCase):
+    """#2759: the wasm-gc backend hand-maintains FOUR parallel lists plus an
+    import-vec header, and nothing read them -- this checker's EMITTER is the
+    LINEAR lane. Each case below mutates ONE list in the real backend source
+    and asserts the checker fails, because a gate means nothing until it is
+    shown it can fail (#2248).
+    """
+
+    GC = ROOT / "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
+
+    def setUp(self):
+        self.text = self.GC.read_text()
+        manifest = json.loads((ROOT / "docs/wasm/host-runtime-contract.json").read_text())
+        self.names = set()
+        for band in ("portableCore", "nodeCoreOnly", "viberunDebugOnly", "componentAdapterOnly"):
+            self.names |= set(manifest[band])
+        self.import_types = manifest.get("importTypes", {})
+
+    def assert_mutation_fails(self, mutated):
+        # A mutation that did not apply would make the case pass while proving
+        # nothing -- the trap #2248 calls out by name.
+        self.assertNotEqual(mutated, self.text, "mutation did not apply")
+        with self.assertRaises(SystemExit):
+            module.validate_gc_lists(self.names, mutated, self.import_types)
+
+    def test_real_backend_satisfies_every_invariant(self):
+        self.assertEqual(module.validate_gc_lists(self.names, self.text, self.import_types), 22)
+
+    def test_use_host_losing_a_builtin_fails(self):
+        self.assert_mutation_fails(
+            self.text.replace(' || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir")', "", 1)
+        )
+
+    def test_host_defs_index_out_of_order_fails(self):
+        self.assert_mutation_fails(self.text.replace('("Fs::exists", 1, 5, 1)', '("Fs::exists", 1, 9, 1)', 1))
+
+    def test_host_imports_losing_an_entry_fails(self):
+        self.assert_mutation_fails(self.text.replace('      ("fs_exists", 3),\n', "", 1))
+
+    def test_hbo_desynced_from_host_defs_fails(self):
+        # The sharpest case, and the one that needed a second look. hbo is an
+        # OFFSET: corrupting it leaves every name present and simply shifts
+        # every generated body index, so a name-set check stays green.
+        #
+        # Mutating hbo ALONE does not isolate its assertion -- the header check
+        # (`header == hbo + 1`) catches that too, so the case passed against a
+        # checker with the hbo assertion deleted. Measured, not assumed: I
+        # removed that assertion and this file still reported OK.
+        #
+        # So mutate hbo AND the header together, consistently. That is also the
+        # realistic desync -- someone decrements hbo and "helpfully" adjusts the
+        # header to match -- and only `hbo == len(host_defs)` can catch it.
+        desynced = re.sub(r"(let hbo = if use_host \{\s*\n\s*)22", r"\g<1>21", self.text, count=1)
+        desynced = desynced.replace("bytebuf_push_vec_header(imp_content, 23)", "bytebuf_push_vec_header(imp_content, 22)", 1)
+        self.assert_mutation_fails(desynced)
+
+    def test_import_vector_header_off_by_one_fails(self):
+        self.assert_mutation_fails(
+            self.text.replace("bytebuf_push_vec_header(imp_content, 23)", "bytebuf_push_vec_header(imp_content, 22)", 1)
+        )
+
+    def test_host_import_name_absent_from_the_contract_fails(self):
+        self.assert_mutation_fails(self.text.replace('("fs_exists", 3)', '("fs_exists_typo", 3)', 1))
+
+    def test_same_abi_type_import_reorder_fails(self):
+        # Codex on #2765 (P2). Import ORDER fixes the wasm function indices that
+        # host_defs's absolute call indices address, so swapping two entries of
+        # the same ABI type yields a module that validates and calls the wrong
+        # host function -- `Fs::is_dir` running `is_file`. Length and name
+        # membership both survive that swap, which is why it needs its own case.
+        self.assert_mutation_fails(
+            self.text.replace(
+                '      ("fs_is_dir", 3),\n      ("fs_is_file", 3),',
+                '      ("fs_is_file", 3),\n      ("fs_is_dir", 3),',
+                1,
+            )
+        )
+
+    def test_import_abi_type_change_fails(self):
+        # Codex on #2765 (P2). The extractor dropped the type id, so a
+        # name-preserving type edit was invisible: type 5 is ()->i64 while
+        # fs_exists takes one argument. Checked against the manifest's own
+        # importTypes -- all 22 already agree, so this adds no list to maintain.
+        self.assert_mutation_fails(self.text.replace('("fs_exists", 3)', '("fs_exists", 5)', 1))
+
+    def test_host_imports_gaining_an_entry_fails(self):
+        # The DROP case above is now caught by the positional name check, which
+        # made the count assertion pass for the wrong reason -- found by
+        # disabling each assertion in turn and seeing which test noticed. An
+        # APPEND is the mutation only the count can catch: `zip` truncates, so
+        # all 22 pairs still line up. The appended name must be one the manifest
+        # ALREADY knows -- an invented name is caught by the membership check
+        # instead, which is how the first attempt at this test passed while
+        # proving nothing about the count.
+        self.assert_mutation_fails(
+            self.text.replace(
+                '      ("fs_remove_file", 1)\n    ]',
+                '      ("fs_remove_file", 1),\n      ("fs_exists", 3)\n    ]',
+                1,
+            )
+        )
+
+    def test_import_absent_from_the_manifest_fails_even_when_self_consistent(self):
+        # Same discovery: renaming ONE side trips the positional check, so it
+        # never exercised manifest membership. Rename all three gc lists
+        # consistently and the backend is internally coherent -- which is
+        # exactly "added a builtin everywhere in the gc backend and forgot the
+        # contract". Only the manifest check sees it.
+        mutated = self.text.replace('stmts_use_builtin(stmts, fn_names_list, "Fs::exists")',
+                                    'stmts_use_builtin(stmts, fn_names_list, "Fs::invented")', 1)
+        mutated = mutated.replace('("Fs::exists", 1, 5, 1)', '("Fs::invented", 1, 5, 1)', 1)
+        mutated = mutated.replace('("fs_exists", 3)', '("fs_invented", 3)', 1)
+        self.assert_mutation_fails(mutated)
+
+    def test_every_gc_import_name_is_derivable_or_declared(self):
+        # The exception table is a seventh hand-maintained list, which is what
+        # #2759 is about; it earns its place by being checked from both sides.
+        self.assertEqual(module.gc_import_name_for("Fs::read_file"), "fs_read_file")
+        self.assertEqual(module.gc_import_name_for("Env::get"), "env-get")
+        self.assertEqual(set(module.GC_IMPORT_NAME_EXCEPTIONS), {
+            "Env::get", "Env::args_len", "Env::args_get",
+            "Profiler::now_us", "vibe_fs_read_dir_raw", "vibe_process_exit_raw",
+        })
+
+    def test_lowered_alias_is_not_a_drift(self):
+        # `use_host` lists what a USER can write; `host_defs` registers what it
+        # lowers to. Measured: `vibe_fs_read_dir_raw` is `unknown name` from
+        # user code, while `vibe_process_exit_raw` resolves and needs
+        # { Process } -- which is why only one of the two appears in both lists.
+        self.assertEqual(module.GC_LOWERED_ALIASES, {"Fs::readdir": "vibe_fs_read_dir_raw"})
 
 
 if __name__ == "__main__":
