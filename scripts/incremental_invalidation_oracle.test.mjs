@@ -25,7 +25,7 @@ const validTrace = {
       implementation_fingerprint: "30:1:2",
       implementation_fingerprint_kind: "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))",
       interface_fingerprint: "31:1:2",
-      interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v6 canonical exported surface including kinded applications)",
+      interface_fingerprint_kind: "compact_string_fingerprint(vibe-module-interface:v7 canonical exported surface including kinded applications)",
       checked_env_fingerprint: "32:1:2",
       checked_env_fingerprint_kind: "compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)",
       persistent_type_env_transport_fingerprint: "33:1:2",

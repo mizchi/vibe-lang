@@ -36,7 +36,7 @@ const telemetryKeys = [
 const fingerprintNote = "source_fingerprint is ingestion telemetry; implementation_fingerprint remains the provisional canonical token-stream identity; interface_fingerprint, checked_env_fingerprint, and persistent_type_env_transport_fingerprint are observation only; persistent_type_env_transport_fingerprint is TypeEnv transport only, not CheckedProgram, typed IR, exported interface, cache key, or reuse decision; none is a production cache key";
 const sourceFingerprintKind = "compact_string_fingerprint(ingested_source)";
 const implementationFingerprintKind = "compact_string_fingerprint(vibe-module-token-stream:v1 length_delimited(token_kind,source_lexeme))";
-const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v6 canonical exported surface including kinded applications)";
+const interfaceFingerprintKind = "compact_string_fingerprint(vibe-module-interface:v7 canonical exported surface including kinded applications)";
 const checkedEnvFingerprintKind = "compact_string_fingerprint(vibe-module-checked-env:v3 canonical effective TypeEnv value bindings including kinded applications)";
 const persistentTypeEnvTransportFingerprintKind = "compact_string_fingerprint(persistent_type_env_cache_text:v9 complete TypeEnv transport only; not CheckedProgram, typed IR, exported interface, cache key, or reuse decision)";
 
@@ -761,6 +761,38 @@ function run(stage2) {
     const aggregateEffectsetExported = check("aggregate_effectset_exported");
     if (interfaceOwnersChanged(aggregateEffectsetPlain, aggregateEffectsetExported).join(",") !== "library") {
       fail("aggregate export of an effectset did not change the interface identity");
+    }
+
+    // Codex on #2756 (P2), measured wider than reported. Publishing a private
+    // declaration through `export { Name }` put the NAME in the export surface
+    // but left the serializer reading the declaration's own `exported` flag, so
+    // its CONTENTS never reached the interface identity. Measured before the
+    // fix, every one of these edits left `interface_fingerprint` byte-identical
+    // while the declaration was published -- and it was not confined to the
+    // kinds with no value binding, which is the easy half to miss: a struct's
+    // and an alias's TYPE do move the identity through the `value:` row their
+    // constructor produces, so only what that row cannot carry went missing.
+    // Each pair below edits the BODY and keeps the export, so it is red exactly
+    // on the serializer's flag and not on anything the earlier pairs cover.
+    const bodyPairs = [
+      ["trait_method", 'trait BodyMarker {\n  tag(Self) -> Int\n}\nexport { BodyMarker }\n',
+                       'trait BodyMarker {\n  tag(Self) -> Int;\n  extra(Self) -> Int\n}\nexport { BodyMarker }\n'],
+      ["effect_op",    'effect BodyLog {\n  Note(String) -> Unit\n}\nexport { BodyLog }\n',
+                       'effect BodyLog {\n  Jot(String) -> Unit\n}\nexport { BodyLog }\n'],
+      ["struct_derive", 'struct BodyPoint {\n  x: Int\n} derive(Eq)\nexport { BodyPoint }\n',
+                        'struct BodyPoint {\n  x: Int\n} derive(Eq, Show)\nexport { BodyPoint }\n'],
+      ["enum_variant", 'enum BodyHue {\n  Red\n}\nexport { BodyHue }\n',
+                       'enum BodyHue {\n  Red;\n  Blue\n}\nexport { BodyHue }\n'],
+    ];
+    for (const [label, before, after] of bodyPairs) {
+      const source = (body) => `import ./base.vibe { base_value }\n${body}export let library_value = "changed"\nfn private_offset() -> Int { 2 }\n`;
+      writeFileSync(join(project, "library.vibe"), source(before));
+      const bodyBefore = check(`aggregate_body_${label}_before`);
+      writeFileSync(join(project, "library.vibe"), source(after));
+      const bodyAfter = check(`aggregate_body_${label}_after`);
+      if (interfaceOwnersChanged(bodyBefore, bodyAfter).join(",") !== "library") {
+        fail(`aggregate-exported ${label} body edit did not change the interface identity`);
+      }
     }
 
     // Integration regressions for the renderer: JSON requires every U+0000–
