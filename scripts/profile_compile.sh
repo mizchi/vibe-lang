@@ -23,6 +23,12 @@
 #   VIBE_PROFILE_OUT_DIR  keep the .cpuprofile/out.wasm here instead of a
 #                         throwaway temp dir (open the .cpuprofile in
 #                         chrome://inspect or speedscope for the full tree)
+#
+# The <stage2.wasm> must have been built with VIBE_WASM_NAMES=1, or the profile
+# names nothing; this script refuses a stripped artifact rather than spend
+# minutes producing a table of wasm-function[N]. To warm the cache first (so
+# the profile is of an INCREMENTAL compile), run the same compile once with the
+# same VIBE_BUILD_CACHE_DIR before this script -- it inherits that variable.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -37,6 +43,43 @@ if [ -z "$STAGE2" ] || [ ! -f "$STAGE2" ]; then
 fi
 if [ ! -f "$INPUT" ]; then
   echo "[profile-compile] input not found: $INPUT" >&2
+  exit 2
+fi
+
+# A compiler artifact carries a "name" custom section only when it was built
+# with VIBE_WASM_NAMES=1: `strip_executable_wasm_env` (cli_support.vibe) drops
+# it otherwise, and `scripts/generations.sh build` does not set it. Profiling a
+# stripped stage2 still produces a table -- every row reading
+# `wasm-function[N]`, which names nothing. Refuse up front instead: the run
+# takes minutes and its output cannot be acted on.
+if ! python3 - "$STAGE2" <<'NAMECHECK'
+import sys
+d = open(sys.argv[1], "rb").read()
+i = 8
+while i < len(d):
+    sec = d[i]; i += 1
+    size = 0; shift = 0
+    while True:
+        b = d[i]; i += 1
+        size |= (b & 0x7f) << shift; shift += 7
+        if not b & 0x80: break
+    end = i + size
+    if sec == 0:
+        j = i; n = 0; shift = 0
+        while True:
+            b = d[j]; j += 1
+            n |= (b & 0x7f) << shift; shift += 7
+            if not b & 0x80: break
+        if d[j:j + n] == b"name":
+            sys.exit(0)
+    i = end
+sys.exit(1)
+NAMECHECK
+then
+  echo "[profile-compile] $STAGE2 has no wasm name section, so every profile row would read wasm-function[N]." >&2
+  echo "[profile-compile] Rebuild the compiler with names kept:" >&2
+  echo "[profile-compile]   VIBE_WASM_NAMES=1 bash scripts/generations.sh build --out-dir _build/selfhost/named" >&2
+  echo "[profile-compile] then profile _build/selfhost/named/stage2.wasm." >&2
   exit 2
 fi
 
@@ -83,7 +126,9 @@ for fn, us in c.most_common(top_n):
     print(f"  {us/1000:8.1f}ms {us*100/total:5.1f}%  {fn[:100]}")
 anon = sum(us for fn, us in c.items() if fn.startswith("wasm-function["))
 if anon:
-    print(f"[profile-compile] WARNING: {anon/1000:.1f}ms in unnamed wasm-function[N] "
-          f"frames -- name section gap? (see linked_compile.vibe gen_sec_names)")
+    print(f"[profile-compile] WARNING: {anon/1000:.1f}ms in unnamed wasm-function[N] frames. "
+          f"The artifact HAS a name section (checked above), so these are frames it does not "
+          f"cover -- host/JS frames, or a generated function whose slot linked_compile.vibe "
+          f"left at the generic label. A few ms is normal; a large share is a real gap.")
 PY
 echo "[profile-compile] cpuprofile: $OUT_DIR/$PROFILE_NAME"
