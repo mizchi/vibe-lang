@@ -3831,7 +3831,67 @@ export fn incremental_trait_generic_provenance_markers_for_test(header_params: A
 /// A version that can be bumped in one place and not the other is not a
 /// version. Both sites read this.
 fn interface_identity_version() -> String {
-  "vibe-module-interface:v5"
+  "vibe-module-interface:v6"
+}
+
+/// What an aggregate `export { .. }` names when it does NOT name a value.
+///
+/// `interface_public_value_names` pushes every name an `SExport` lists,
+/// whatever namespace it belongs to, and the identity below then demands a
+/// flat binding for each -- so a name with none threw on a program that checks
+/// clean without the trace (#2744).
+///
+/// Measured 2026-09-13, one probe module per kind against a stage1 built from
+/// the head, with the invalidation trace on. Almost every kind already carries
+/// a flat binding and so takes the `value:` row: a private struct, a private
+/// enum, a private type alias, a builtin declaration (`export { Option }`, the
+/// shape `lib/@vibe/builtin/option.vibe` opens with), an IMPORTED trait
+/// republished by name, and a re-export (`export ./dep.vibe { Trait }`) all
+/// observed clean. Exactly three kinds have none, all of them declared
+/// LOCALLY: a trait, an effect and an effectset. A name this module does not
+/// declare at all keeps throwing, which is the fail-closed answer.
+///
+/// So the classification is syntactic -- the module's own statements -- rather
+/// than a second environment query. The three throwing kinds are precisely the
+/// ones a local declaration identifies, and reading the statements cannot
+/// disagree with an environment it never consults.
+///
+/// The row records MEMBERSHIP in the export surface, not the declaration's
+/// content: an aggregate export is the one thing that moves the published
+/// surface without touching any declaration's own text (adding
+/// `export { Marker }` to a private `trait Marker` publishes its impls --
+/// measured: a consumer's `[T: Marker]` bound is satisfied only with it). The
+/// content is already carried, for a private declaration too, by the witness
+/// set's `include_private` row -- which ALSO moves for this exact edit, pinned
+/// as `aggregate-export=moved` in `trait_witness_set_fingerprint_test.vibe`.
+/// So the row is not what makes such an edit invalidate. It is what keeps this
+/// identity a faithful description of the export surface, and what tells this
+/// fix apart from a silent skip.
+fn interface_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, decl_name, _, _, _, _) => if decl_name == name {
+        found = Some("trait")
+      } else {
+        ()
+      },
+      SEffectDef(_, decl_name, _, _) => if decl_name == name {
+        found = Some("effect")
+      } else {
+        ()
+      },
+      SEffectSet(_, decl_name, _) => if decl_name == name {
+        found = Some("effectset")
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn incremental_interface_identity(source: String, env: TypeEnv) -> String with Exception {
@@ -3844,7 +3904,10 @@ fn incremental_interface_identity(source: String, env: TypeEnv) -> String with E
     let name = Array::get(names, i)
     match env_lookup_flat(env_flat_bindings(env), name) {
       Some(ty) => StringBuilder::push(out, String::concat("value:", String::concat(interface_segment(name), String::concat(":", interface_canonical_type(ty, array_empty(), array_empty()))))),
-      None => throw(String::concat("incremental interface observation: exported name missing from checked environment: ", name))
+      None => match interface_local_nonvalue_kind(stmts, name) {
+        Some(kind) => StringBuilder::push(out, String::concat("export-", String::concat(kind, String::concat(":", interface_segment(name))))),
+        None => throw(String::concat("incremental interface observation: exported name missing from checked environment: ", name))
+      }
     }
     StringBuilder::push(out, "\n")
     i = i + 1
