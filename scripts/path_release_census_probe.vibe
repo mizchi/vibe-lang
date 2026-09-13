@@ -107,8 +107,8 @@ fn pat_bound_names(p: Pat, out: Array[String]) -> Unit {
   }
 }
 
-/// Every name BOUND inside one function body -- `let` / `let mut` / `let rec`
-/// binders, `for`-in binders, lambda parameters, pattern binds. The shipped
+/// Every name BOUND inside one function's OWN frame -- `let` / `let mut` /
+/// `let rec` binders, `for`-in binders, pattern binds. The shipped
 /// rule declines a callee that resolves to a local slot (`find_local_slot`
 /// over `local_names`); this is the probe's stand-in for that, and it over-
 /// approximates the same way `local_names` does, since compile_expr_tail
@@ -149,15 +149,12 @@ fn collect_bound_names(e: Expr, out: Array[String]) -> Unit {
         i = i + 1
       }
     },
-    EFn(_, _, ps, _, _, fb) => {
-      let mut i = 0
-      while i < Array::length(ps) {
-        let (pn, _) = Array::get(ps, i)
-        Array::push(out, pn)
-        i = i + 1
-      }
-      collect_bound_names(fb, out)
-    },
+    // NOT descended into: a lambda compiles in its own frame with its own
+    // locals array (compile_lambda.vibe's `lam_locals`), so neither its
+    // parameters nor its body's binders shadow anything at a call site in the
+    // enclosing function. Adding them here would make the probe decline a
+    // global call production admits.
+    EFn(_, _, _, _, _, _) => (),
     _ => {
       let kids = expr_children(e)
       let mut i = 0
@@ -300,6 +297,10 @@ fn top_kind(e: Expr, ctors: Array[String], bound: Array[String], borrow_ret: Arr
 /// `let` in the function carries the name.
 fn find_let_value(e: Expr, name: String, out: Array[Expr]) -> Unit {
   match e {
+    // A lambda's body is planned in its own frame (the same exclusion
+    // scripts/reuse_census_probe.vibe makes), so a `let` inside one is not a
+    // row of this function's plan.
+    EFn(_, _, _, _, _, _) => (),
     ELet(n, v, b, _) => {
       if n == name {
         Array::push(out, v)
