@@ -143,21 +143,24 @@ fi
 grep -qF 'refusal does not name an edit' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 3 failed for the wrong reason"; }
 
-# RED 5: the ORDER assertion binds. The compiler emits one message, so the
-# mutation has to be to the gate: swap the two needles, which makes the gate look
-# for the diagnosis before the edit -- the opposite of what the real message does.
-# If the check were "both clauses present" rather than "edit first", the swap
-# would change nothing and this would pass.
+# RED 5: the leads-check asserts BEGINS-WITH, not CONTAINS. This is the
+# distinction Codex round 4 on #2753 found missing from the first version, so it
+# is the one the red case has to exercise: point EDIT_NEEDLE at a phrase that is
+# genuinely IN the message but not at its start. "Contains" would pass; "begins
+# with" must fail.
 mkdir -p "$WORK/r5"
 cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r5/keep_refused.vibe"
-sed -e 's/^EDIT_NEEDLE="move the lambda binding"$/EDIT_NEEDLE="RED5_SWAP_EDIT"/' \
-    -e 's/^REASON_NEEDLE="has no"$/REASON_NEEDLE="move the lambda binding"/' \
-    -e 's/^EDIT_NEEDLE="RED5_SWAP_EDIT"$/EDIT_NEEDLE="has no"/' \
-    scripts/check_lambda_bound_refusal.sh > "$WORK/r5/gate.sh"
-grep -q '^EDIT_NEEDLE="has no"$' "$WORK/r5/gate.sh" \
-  || fail "RED 5 mutation did not land (the needles were not swapped)"
-grep -q '^REASON_NEEDLE="move the lambda binding"$' "$WORK/r5/gate.sh" \
-  || fail "RED 5 mutation did not land (the reason needle was not swapped)"
+sed 's/^EDIT_NEEDLE="move the lambda binding"$/EDIT_NEEDLE="has no witness here"/' \
+  scripts/check_lambda_bound_refusal.sh > "$WORK/r5/gate.sh"
+grep -q '^EDIT_NEEDLE="has no witness here"$' "$WORK/r5/gate.sh" \
+  || fail "RED 5 mutation did not land (EDIT_NEEDLE was not repointed)"
+# The mutation only proves anything if the phrase really is present in the
+# message -- a needle that matched nothing would fail the check for the wrong
+# reason and show the same verdict.
+LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/r5/*.vibe" \
+  bash scripts/check_lambda_bound_refusal.sh >/dev/null 2>&1 || true
+grep -qF 'has no witness here' "$ROOT_DIR/_build/_lambda_bound_refusal/keep_refused.wasm.diag" 2>/dev/null \
+  || fail "RED 5 needle is absent from the message; the case would fail for the wrong reason"
 if [ -n "$STAGE2_OVERRIDE" ]; then
   VIBE_LAMBDA_BOUND_REFUSAL_ROOT="$ROOT_DIR" LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" \
     LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/r5/*.vibe" \
@@ -167,8 +170,8 @@ else
     bash "$WORK/r5/gate.sh" >"$WORK/out" 2>&1 && red5_passed=1 || red5_passed=0
 fi
 [ "$red5_passed" -eq 0 ] \
-  || fail "RED 5: the order assertion does not bind (the gate passed with the clauses expected in the wrong order)"
-grep -qF 'does not LEAD with the edit' "$WORK/out" \
+  || fail "RED 5: the leads-check accepts a clause that merely OCCURS in the message (it is a contains, not a begins-with)"
+grep -qF 'does not BEGIN with the edit' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 5 failed for the wrong reason"; }
 
 # RED 4: an empty corpus. Silence is "unchecked", not "clean".
