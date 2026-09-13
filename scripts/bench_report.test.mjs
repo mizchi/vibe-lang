@@ -69,7 +69,7 @@ function render(cur, base, cov) {
   });
 }
 
-test("advisory wall-time and calibration data are never rendered", () => {
+test("legacy advisory wall-time and calibration data stay out of the report", () => {
   // Wildly different wall readings and an implausible calibration factor must
   // leave zero trace -- no wall rows, no ns/op rows, no calibration notes.
   for (const [factor, wall] of [[0.586, 80], [1.132, 500]]) {
@@ -302,4 +302,72 @@ test("coverage leads the report, renders as main's, and degrades when absent", (
     assert.doesNotMatch(withEmpty, /Coverage/);
     assert.match(withEmpty, /baseline: _none yet_/);
   });
+});
+
+const buildSnapshot = () => {
+  const cold = { heap_delta_bytes: 1000, heap_ptr_bytes: 1100, wall_ms_median: 3000, modules: 219, samples: [{}] };
+  const warm = { ...cold, heap_delta_bytes: 600, heap_ptr_bytes: 700, wall_ms_median: 2000 };
+  return {
+    schema: 1, protocol_sha256: "protocol", node: "v24", platform: "linux", arch: "x64", rounds: 1,
+    prelude: { input: "compiler-test.vibe", entry: "__no_entry__", whole: { cold, warm }, split: { cold: { ...cold }, warm: { ...warm } } },
+    selfhost: { status: "ok", input: "lib/@vibe/cli/entry.vibe", entry: "cli_main", cold, warm },
+    collection_wall_ms: 22000,
+  };
+};
+
+test("prelude cold and warm allocations are visible and flag regressions independently", () => {
+  const cur = flatSnapshot("current"), base = flatSnapshot("baseline");
+  cur.selfhost_build = buildSnapshot();
+  base.selfhost_build = buildSnapshot();
+  cur.selfhost_build.prelude.split.warm.heap_delta_bytes = 660;
+  const report = render(cur, base);
+  assert.match(report, /\| prelude cold \| 1000 B \(±0\) \| 1000 B \(±0\)/);
+  assert.match(report, /\| prelude warm \| 600 B \(±0\) \| 660 B \(\+10\.00% ⚠️\)/);
+  assert.match(report, /219 modules/);
+  assert.match(report, /allocation volume, not live memory/);
+});
+
+test("measurement protocol or runtime drift suppresses allocation comparisons", () => {
+  for (const key of ["protocol_sha256", "node", "platform", "arch"]) {
+    const cur = flatSnapshot("current"), base = flatSnapshot("baseline");
+    cur.selfhost_build = buildSnapshot();
+    base.selfhost_build = buildSnapshot();
+    cur.selfhost_build[key] = "changed";
+    const report = render(cur, base);
+    assert.match(report, /build metrics not comparable/);
+    assert.match(report, /\| prelude warm \| 600 B \(–\) \| 600 B \(–\)/);
+  }
+});
+
+test("full CLI builds show cold/warm wall readings without a noisy time delta", () => {
+  const cur = flatSnapshot("current"), base = flatSnapshot("baseline");
+  cur.selfhost_build = buildSnapshot();
+  base.selfhost_build = buildSnapshot();
+  base.selfhost_build.selfhost.cold.wall_ms_median = 1000;
+  const report = render(cur, base);
+  assert.match(report, /Selfhost CLI build — this snapshot/);
+  assert.match(report, /\| CLI cold \| 1\.07 KiB \(±0\) \| 3\.00 s \|/);
+  assert.match(report, /\| CLI warm \| 700 B \(±0\) \| 2\.00 s \|/);
+  assert.match(report, /1 sample per temperature; wall time is advisory/);
+  assert.doesNotMatch(report, /\+200\.00%/);
+});
+
+test("PRs label inherited main CLI readings as main, never as this PR's build", () => {
+  const cur = flatSnapshot("current"), base = flatSnapshot("baseline");
+  cur.selfhost_build = buildSnapshot();
+  base.selfhost_build = buildSnapshot();
+  cur.selfhost_build.selfhost = { status: "main-only" };
+  const report = render(cur, base);
+  assert.match(report, /Selfhost CLI build — measured on main `baseline`, not this PR/);
+  assert.match(report, /\| CLI cold \| 1\.07 KiB \(–\) \| 3\.00 s \|/);
+  assert.match(render(cur), /full CLI build: awaiting the first main snapshot/);
+});
+
+test("missing build metrics are named as missing instrumentation", () => {
+  const cur = flatSnapshot("current"), base = flatSnapshot("baseline");
+  base.selfhost_build = buildSnapshot();
+  assert.match(render(cur, base), /compiler build metrics missing in this snapshot/);
+  cur.selfhost_build = buildSnapshot();
+  delete cur.selfhost_build.prelude.split.warm;
+  assert.match(render(cur, base), /missing build measurements: prelude split warm/);
 });

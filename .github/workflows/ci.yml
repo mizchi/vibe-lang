@@ -1764,9 +1764,19 @@ jobs:
         # Same reason as the two gate jobs above: cargo alone rebuilds every
         # run because checkout moves the source mtimes.
         run: bash scripts/ensure_viberun.sh
+      - name: Test performance collection and reporting
+        run: node --test scripts/bench_report.test.mjs scripts/selfhost_build_metrics.test.mjs
+      - name: Collect paired compiler build metrics
+        # Advisory job only. One cold/warm pair per prelude lane on PRs; add
+        # the heavier full CLI pair on main. Reuse this run's stage2 to build
+        # one measurement probe; never regenerate the compiler here.
+        timeout-minutes: 5
+        env:
+          BUILD_METRICS_MODE: ${{ github.event_name == 'push' && 'full' || 'prelude' }}
+        run: node scripts/selfhost_build_metrics.mjs _build/_ci_shard_gen/stage2.wasm _build/selfhost_build_metrics.json "$BUILD_METRICS_MODE"
       - name: Collect metrics
         run: |
-          bash scripts/bench_metrics.sh _build/_ci_shard_gen/stage2.wasm _build/bench_metrics.json
+          bash scripts/bench_metrics.sh _build/_ci_shard_gen/stage2.wasm _build/bench_metrics.json _build/selfhost_build_metrics.json
           cat _build/bench_metrics.json
       - name: Fetch baseline from bench-data branch
         # latest.json = perf baseline (last main perf snapshot);
@@ -1840,12 +1850,15 @@ jobs:
           done
           git worktree remove --force _build/bench-data || true
       - name: Upload metrics artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bench-metrics
           path: |
             _build/bench_metrics.json
             _build/bench_report.md
+            _build/selfhost_build_metrics.json
+            _build/selfhost-build-metrics.*/logs/*.log
 
   # Aggregate required check (branch protection requires "ci-required").
   ci-required:
