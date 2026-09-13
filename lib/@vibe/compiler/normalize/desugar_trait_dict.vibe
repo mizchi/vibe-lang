@@ -3256,9 +3256,9 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
       }
     },
     ESeq(_, last) => dtd_erased_interp_formal(last, struct_sets, var_types, fn_returns),
-    ELet(_, _, body, _) => dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns),
-    ELetMut(_, _, body, _) => dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns),
-    ELetRec(_, _, body) => dtd_erased_interp_formal(body, struct_sets, var_types, fn_returns),
+    ELet(name, val, body, _) => dtd_erased_interp_formal(body, struct_sets, dtd_interp_bind_local(var_types, name, val, struct_sets, fn_returns), fn_returns),
+    ELetMut(name, val, body, _) => dtd_erased_interp_formal(body, struct_sets, dtd_interp_bind_local(var_types, name, val, struct_sets, fn_returns), fn_returns),
+    ELetRec(name, val, body) => dtd_erased_interp_formal(body, struct_sets, dtd_interp_bind_local(var_types, name, val, struct_sets, fn_returns), fn_returns),
     _ => match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
       Some(tn) => if formal_in_scope(tn) && dtd_formal_innermost_is_nested(tn) {
         tn
@@ -3268,6 +3268,37 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
       None => ""
     }
   }
+}
+
+/// #2745 (Codex, P1 round 3 on #2761): the binding a let-form introduces, so the
+/// body is read in the environment it actually has.
+///
+/// Recursing with the OUTER `var_types` was wrong in both directions, and both
+/// were measured on `"\{ { .. } }"`, which is how a let reaches here (a bare
+/// `let` inside the braces does not parse):
+///
+///   { let b = a; b }   with `a: T`   printed `260` -- `b` was unknown, so the
+///                                    refusal declined on a value that IS erased
+///   { let a = 1; a }   shadowing     REFUSED -- the stale outer `a: T` survived,
+///                                    so a program rendering an Int was rejected
+///
+/// The control separates the two: `{ let n = 5; n }`, a fresh name, printed `5`
+/// both before and after, which is what pins the cause to the binding rather than
+/// to the walk.
+///
+/// An unknown value type must still SHADOW: `extend_var_types` returns the
+/// environment unchanged for None, which is what left the stale entry in place.
+/// Binding to "" masks it, and "" is not a formal, so the body reports no answer
+/// and the refusal declines -- the same fail-open the leaf already takes for an
+/// operand it cannot type.
+fn dtd_interp_bind_local(var_types: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Array[(String, String)] {
+  let out = clone_var_types(var_types)
+  let bound = match infer_arg_type_name(val, struct_sets, var_types, fn_returns) {
+    Some(tn) => tn,
+    None => ""
+  }
+  Array::push(out, (name, bound))
+  out
 }
 
 /// The first arm whose value is an erased nested formal; "" when none is.
