@@ -2841,6 +2841,77 @@ fn find_dict_for_trait(dict_binds: Array[(String, String, String, Array[String])
   result
 }
 
+/// The comparison witness's spelling (ADR-0097's `equals(Self, Self) -> Bool`).
+/// One place, because the operator rung below and any later `derive (Eq)`
+/// registration must agree on it.
+fn dtd_eq_witness_method() -> String {
+  "equals"
+}
+
+fn dtd_ty_is_bool(te: TypeExpr) -> Bool {
+  match te {
+    TyName(n) => n == "Bool",
+    _ => false
+  }
+}
+
+/// Does `trait_name` declare `method` with the shape a comparison witness
+/// needs -- two parameters returning `Bool`?
+fn dtd_trait_has_binary_bool(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, method: String) -> Bool {
+  match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
+    None => false,
+    Some(sigs) => {
+      let mut i = 0
+      let mut ok = false
+      while i < Array::length(sigs) {
+        let (m, params, ret) = Array::get(sigs, i)
+        if m == method {
+          ok = Array::length(params) == 2 && dtd_ty_is_bool(ret)
+          i = Array::length(sigs)
+        } else {
+          i = i + 1
+        }
+      }
+      ok
+    }
+  }
+}
+
+/// #2523: the dict parameter to dispatch `==` / `!=` through, or None.
+///
+/// Fires ONLY when the operand type names a type FORMAL in scope whose bound
+/// trait carries the comparison witness. A concrete operand keeps the
+/// structural lowering the ladder below gives it and costs nothing: this is the
+/// one shape that had no answer, because a generic body is lowered exactly once
+/// and so cannot hold a per-instantiation comparator. Without it `x == y` under
+/// a bound reached `dtd_typed_eq_residual` and stayed a raw binop -- REFERENCE
+/// identity, measured as two equal `Pt` answering `false` while the adjacent
+/// `T::equals(x, y)` answered `true` off the same dictionary.
+///
+/// The arity and return check is not decoration. The checker admits `x == y` on
+/// a formal whose bound is spelled `Eq` (#2474), so a program declaring its own
+/// `trait Eq { equals(Self) -> Int }` reaches here; emitting a two-argument call
+/// to a one-parameter method is invalid wasm, which is a crash where today's
+/// answer is merely wrong. A witness of the wrong shape falls through instead.
+fn dtd_eq_witness_dict(dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], t: String) -> Option[String] {
+  if !formal_in_scope(t) {
+    None
+  } else {
+    let mut i = 0
+    let mut result = None
+    while i < Array::length(dict_binds) {
+      let (tp, trait_name, dict_pname, methods) = Array::get(dict_binds, i)
+      if tp == t && str_array_contains(methods, dtd_eq_witness_method()) && dtd_trait_has_binary_bool(traits, trait_name, dtd_eq_witness_method()) {
+        result = Some(dict_pname)
+        i = Array::length(dict_binds)
+      } else {
+        i = i + 1
+      }
+    }
+    result
+  }
+}
+
 fn collect_constructor_recvs(tparams: Array[String], params: Array[(String, Option[TypeExpr])], stmts: Array[Stmt]) -> Array[(String, Int)] {
   let out = array_empty()
   let mut i = 0
@@ -9573,86 +9644,105 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                       None => infer_arg_type_name(r, struct_sets, var_types, fn_returns)
                     }
                     match ty {
-                      // #2141: a spelling that is a type parameter of an
-                      // enclosing binder is a FORMAL here, whatever else the
-                      // (merged) program declares under that name -- the
-                      // struct dispatch would call `T::equals` on erased
-                      // operands and read garbage.
-                      Some(t) => if struct_set_has(struct_sets, t) && !formal_in_scope(t) {
-                        let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
-                          rl,
-                          rr
-                        ], -1)
-                        if op == "==" {
-                          call
-                        } else {
-                          ECall(EIdent("not", -1), [call], -1)
-                        }
-                      } else if t == "Option" {
-                        // Bare `==` on Option-typed operands (e.g. `let a = None; a == b`)
-                        // dispatches to a structural match; the runtime would otherwise
-                        // identity-compare the heap-allocated nullary `None`. Payloads
-                        // compare with `==` — correct for scalar payloads (the common
-                        // case); an aggregate-payload bare-Option variable is a #695
-                        // residual (route it through a struct field for full recursion).
-                        // #2457: the structural match compares each payload
-                        // with a raw `==`, which codegen cannot classify (a
-                        // match binder), so an `Int` payload went through the
-                        // generic `eq` and `mk(64 << 32) == mk(65 << 32)`
-                        // answered `true`. When the checker's row for this
-                        // site names an admitted type (`Option[Int]`), the
-                        // typed comparator compares that payload exactly;
-                        // with no row, or a type the allow-list refuses, the
-                        // match stays as it was.
-                        // Codex round 4 on #2471: a row spelling a scalar the
-                        // source also declares is ambiguous (see
-                        // ty_mentions_owned_scalar) and fails closed.
-                        let eqm = match dtd_typed_eq_admitted_ty(boff) {
-                          Some(te) => if ty_mentions_owned_scalar(te) {
-                            eq_fail_closed("==", owned_scalar_name_in(te))
+                      Some(t) => match dtd_eq_witness_dict(dict_binds, traits, t) {
+                        // #2523: the operand is a formal carrying a witness --
+                        // dispatch through the threaded dictionary, the way the
+                        // qualified spelling `T::equals(x, y)` and the UFCS
+                        // spelling `x.equals(y)` already do. Everything else in
+                        // this ladder is a CONCRETE operand type and is
+                        // unaffected.
+                        Some(dict_pname) => {
+                          let call = ECall(EDot(EIdent(dict_pname, -1), dtd_eq_witness_method(), -1, -1), [
+                            rl,
+                            rr
+                          ], -1)
+                          if op == "==" {
+                            call
                           } else {
-                            eq_for_typed(te, rl, rr, dtd_eq_known_types)
-                          },
-                          None => opt_eq_match(rl, rr)
-                        }
-                        if op == "==" {
-                          eqm
-                        } else {
-                          ECall(EIdent("not", -1), [eqm], -1)
-                        }
-                      } else if t == "Result" {
-                        let eqm = match dtd_typed_eq_admitted_ty(boff) {
-                          Some(te) => if ty_mentions_owned_scalar(te) {
-                            eq_fail_closed("==", owned_scalar_name_in(te))
+                            ECall(EIdent("not", -1), [call], -1)
+                          }
+                        },
+                        // #2141: a spelling that is a type parameter of an
+                        // enclosing binder is a FORMAL here, whatever else the
+                        // (merged) program declares under that name -- the
+                        // struct dispatch would call `T::equals` on erased
+                        // operands and read garbage.
+                        None => if struct_set_has(struct_sets, t) && !formal_in_scope(t) {
+                          let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
+                            rl,
+                            rr
+                          ], -1)
+                          if op == "==" {
+                            call
                           } else {
-                            eq_for_typed(te, rl, rr, dtd_eq_known_types)
-                          },
-                          None => result_eq_match(rl, rr)
-                        }
-                        if op == "==" {
-                          eqm
+                            ECall(EIdent("not", -1), [call], -1)
+                          }
+                        } else if t == "Option" {
+                          // Bare `==` on Option-typed operands (e.g. `let a = None; a == b`)
+                          // dispatches to a structural match; the runtime would otherwise
+                          // identity-compare the heap-allocated nullary `None`. Payloads
+                          // compare with `==` — correct for scalar payloads (the common
+                          // case); an aggregate-payload bare-Option variable is a #695
+                          // residual (route it through a struct field for full recursion).
+                          // #2457: the structural match compares each payload
+                          // with a raw `==`, which codegen cannot classify (a
+                          // match binder), so an `Int` payload went through the
+                          // generic `eq` and `mk(64 << 32) == mk(65 << 32)`
+                          // answered `true`. When the checker's row for this
+                          // site names an admitted type (`Option[Int]`), the
+                          // typed comparator compares that payload exactly;
+                          // with no row, or a type the allow-list refuses, the
+                          // match stays as it was.
+                          // Codex round 4 on #2471: a row spelling a scalar the
+                          // source also declares is ambiguous (see
+                          // ty_mentions_owned_scalar) and fails closed.
+                          let eqm = match dtd_typed_eq_admitted_ty(boff) {
+                            Some(te) => if ty_mentions_owned_scalar(te) {
+                              eq_fail_closed("==", owned_scalar_name_in(te))
+                            } else {
+                              eq_for_typed(te, rl, rr, dtd_eq_known_types)
+                            },
+                            None => opt_eq_match(rl, rr)
+                          }
+                          if op == "==" {
+                            eqm
+                          } else {
+                            ECall(EIdent("not", -1), [eqm], -1)
+                          }
+                        } else if t == "Result" {
+                          let eqm = match dtd_typed_eq_admitted_ty(boff) {
+                            Some(te) => if ty_mentions_owned_scalar(te) {
+                              eq_fail_closed("==", owned_scalar_name_in(te))
+                            } else {
+                              eq_for_typed(te, rl, rr, dtd_eq_known_types)
+                            },
+                            None => result_eq_match(rl, rr)
+                          }
+                          if op == "==" {
+                            eqm
+                          } else {
+                            ECall(EIdent("not", -1), [eqm], -1)
+                          }
+                        } else if t == "Bytes" {
+                          // #1526 (ADR-0097): a Bytes-typed operand (annotation or
+                          // recorded binding) — content equality, same helper the
+                          // typed contexts dispatch to.
+                          bytes_eq_needed_record()
+                          let call = ECall(EIdent(bytes_equals_name(), -1), [
+                            rl,
+                            rr
+                          ], -1)
+                          if op == "==" {
+                            call
+                          } else {
+                            ECall(EIdent("not", -1), [call], -1)
+                          }
                         } else {
-                          ECall(EIdent("not", -1), [eqm], -1)
+                          // #2441: an inferred head name with no actionable
+                          // rung (e.g. `Array` with an unknown element) falls
+                          // to the typed channel before staying raw.
+                          dtd_typed_eq_residual(op, rl, rr, boff)
                         }
-                      } else if t == "Bytes" {
-                        // #1526 (ADR-0097): a Bytes-typed operand (annotation or
-                        // recorded binding) — content equality, same helper the
-                        // typed contexts dispatch to.
-                        bytes_eq_needed_record()
-                        let call = ECall(EIdent(bytes_equals_name(), -1), [
-                          rl,
-                          rr
-                        ], -1)
-                        if op == "==" {
-                          call
-                        } else {
-                          ECall(EIdent("not", -1), [call], -1)
-                        }
-                      } else {
-                        // #2441: an inferred head name with no actionable
-                        // rung (e.g. `Array` with an unknown element) falls
-                        // to the typed channel before staying raw.
-                        dtd_typed_eq_residual(op, rl, rr, boff)
                       },
                       None => dtd_typed_eq_residual(op, rl, rr, boff)
                     }
