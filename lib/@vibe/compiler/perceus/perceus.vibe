@@ -2913,8 +2913,22 @@ export fn pc_count(ctx: PCtx, scope: Map[String, Int], expr: Expr) -> Int {
     },
     ELetMut(name, value, body, _) => {
       pc_count(ctx, scope, value)
-      let id = pc_declare(ctx, name, is_scalar_expr(ctx, value))
-      let _ = pctx_mark_view_call(ctx, scope, id, value)
+      // A mutable call binding acquires its own reference even when the
+      // initializer borrows. Assignments replace that value, so neither the
+      // scalar exemption nor the view-only lifetime can describe the slot.
+      // compile_expr_tail retains the borrowed initializer to match this
+      // ordinary owning plan, including its assignment dup/drop budget.
+      let borrowed_call = match value {
+        ECall(EIdent(fname, _), _, _) => is_borrow_ret_fname(ctx, fname),
+        _ => false
+      }
+      let id = pc_declare(ctx, name, !borrowed_call && is_scalar_expr(ctx, value))
+      if !borrowed_call {
+        let _ = pctx_mark_view_call(ctx, scope, id, value)
+        ()
+      } else {
+        ()
+      }
       pc_count(ctx, Map::set(scope, name, id), body)
     },
     ELetRec(name, value, body) => {

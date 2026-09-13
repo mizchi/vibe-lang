@@ -1093,12 +1093,7 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
       }
     } else if expr_tag(value) == 8 {
       let callee = get_ecall_callee(value)
-      let is_borrow_ret = if is_eident(callee) {
-        let cn = get_eident_name(callee)
-        is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0
-      } else {
-        false
-      }
+      let is_borrow_ret = call_returns_borrow(value, ctx)
       // #791: consult the DECLARED return-type table (compute_heap_returning,
       // built once from a syntactic scan of top-level signatures -- see its
       // doc comment) before falling back to the blanket "any ECall is heap"
@@ -1192,6 +1187,14 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
     ()
   }
   (rc_kind, is_borrow_ret_ext)
+}
+
+/// The direct-call borrow contract, shared by initialization and assignment.
+fn call_returns_borrow(value: Expr, ctx: CompileCtx) -> Bool {
+  match value {
+    ECall(EIdent(cn, _), _, _) => is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0,
+    _ => false
+  }
 }
 
 /// #768 (heap-corruption root cause): a `let` whose value is an if/match and
@@ -2211,6 +2214,18 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // that repeatedly drifted out of sync with ELet's (the #715/#791 bug
       // family); sharing one function makes that drift impossible.
       let (_mut_rc_kind, _mut_is_borrow_ret_ext) = classify_let_value_heap(buf, value, name, local_idx, local_names, ctx)
+      // A borrowed call initializes an owning mutable slot. Its later value
+      // may be a fresh allocation, so keeping the initializer's borrow flag
+      // would suppress both the slot's drop and a wrapper result's drop.
+      // Retain now: even an unassigned slot may be returned through a wrapper
+      // without taking a reference away from the original container.
+      // pc_count's ELetMut arm supplies the matching ordinary owning plan.
+      if ctx.enable_rc && _mut_is_borrow_ret_ext && expr_tag(value) == 8 {
+        emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        Array::push(ctx.heap_binding_names, name)
+      } else {
+        ()
+      }
       // #715: the ELet path (tag 9) emits every dup the Perceus plan budgeted
       // for a binding (ctx.rc_dup_names) at its declaration site -- this
       // ELetMut path never did, while the matching scope-end drop below DID
@@ -2359,7 +2374,10 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           sm_removed = sm_removed - 1
         }
         emit_local_set(buf, idx)
-        if is_heap_mut && !is_self && is_edot(value) {
+        // An owning mutable slot must acquire a borrowed replacement just
+        // as it acquires a borrowed initializer. Otherwise its next drop
+        // would release the container's reference instead of its own.
+        if is_heap_mut && ((!is_self && is_edot(value)) || call_returns_borrow(value, ctx)) {
           emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
           ()

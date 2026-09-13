@@ -105,3 +105,33 @@ test "a pattern payload returned through a block owns its retained reference" {
   let _ = assert_bump_rc_agree(src, "borrowed_pattern_payload", "30715")
   ()
 }
+
+test "an inner borrow-returning call alias keeps the container alive" {
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\nlet t = { let x = Array::get(xs, 0); x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
+  let _ = assert_bump_rc_agree(src, "inner_borrowed_alias", "70715")
+  ()
+}
+
+test "an unassigned outer mutable borrow owns a retained reference" {
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\nlet mut x = Array::get(xs, 0)\nlet t = { let k = 0; x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
+  let _ = assert_bump_rc_agree(src, "outer_mut_unassigned", "70715")
+  ()
+}
+
+test "an assigned outer mutable value preserves the original container" {
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\nlet mut x = Array::get(xs, 0)\nx = Pair(Leaf(5), Leaf(6))\nlet t = { let k = 0; x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
+  let _ = assert_bump_rc_agree(src, "outer_mut_assigned", "110715")
+  ()
+}
+
+test "an assigned outer mutable value remains alive after the wrapper drops" {
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\nlet mut x = Array::get(xs, 0)\nx = Pair(Leaf(5), Leaf(6))\nlet z = { let t = { let k = 0; x }; Leaf(total(t)) }\nlet junk = Pair(Leaf(8), Leaf(9))\nlet t = x\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
+  let _ = assert_bump_rc_agree(src, "outer_mut_live", "110715")
+  ()
+}
+
+test "a mutable slot retains a borrowed replacement" {
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let mut x = Array::get(xs, 0)\n    x = Array::get(xs, 0)\n    let t = { let k = 0; x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
+  let _ = assert_bump_rc_agree(src, "outer_mut_reborrow", "70715")
+  ()
+}

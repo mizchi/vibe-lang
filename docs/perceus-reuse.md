@@ -384,6 +384,21 @@ merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
   match payload also acquires a reference. Returning either binding through
   a block transfers that reference and must keep the destination's drop.
 
+  An unboxed mutable binding initialized by a borrow-returning call retains its own
+  reference. Its planner entry is owning, so assignment and scope exit use
+  the same accounting as a mutable binding initialized by an allocation.
+  Assigning another borrow-returning call also retains the replacement.
+  The initial call's borrowed classification cannot survive assignment: a
+  later wrapper may transfer an allocation stored into that slot. Tests
+  cover both assigned and unassigned bindings, later reads, and replacement
+  with another borrowed value.
+
+  An immutable inner alias of a direct borrow-returning call remains borrowed:
+  the planner's scalar exemption prevents a last-view-use retain in that
+  case. The reclamation guard checks both read and ignored wrapper results;
+  treating every inner alias as owned would prematurely free its container's
+  element.
+
   The ordinary wrapper classifier uses the same borrow-returning call set as
   the direct-call classifier. The broader may-return-view analysis remains
   in the planner's straight-line rule. Applying that conservative set to all
