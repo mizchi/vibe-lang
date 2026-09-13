@@ -21,6 +21,7 @@ import @vibe/compiler/core {
   expr_children_push,
   expr_children_top,
   is_exception_throw_operation,
+  sort_perm_by_names,
   sorted_names_of
 }
 
@@ -148,7 +149,8 @@ struct HeapInferCtx {
   // `let` and each lambda parameter the call analysis walked copy the whole
   // module's bindings -- the bump-built compiler ran out of memory compiling
   // the split CLI (compiler gate 3cli/3) before this was a separate lookup.
-  top_env: Map[String, Bool]
+  top_names: Array[String];
+  top_heaps: Array[Bool]
 }
 
 //# Functions
@@ -1583,10 +1585,9 @@ fn arg_class(arg: Expr, env: Map[String, Bool], hctx: HeapInferCtx) -> Bool {
     match arg {
       EIdent(n, _) => if Map::has_key(env, n) {
         Map::get(env, n)
-      } else if Map::has_key(hctx.top_env, n) {
-        Map::get(hctx.top_env, n)
       } else {
-        false
+        let slot = bsearch_leftmost(hctx.top_names, n)
+        slot >= 0 && Array::get(hctx.top_heaps, slot)
       },
       _ => false
     }
@@ -2090,7 +2091,7 @@ fn fill_top_lambda_params(name: String, efn: Expr, scope: Array[Expr], scope_ref
         // Only the statements that mention the lambda can hold a call to it
         // or let it escape; the others are skipped without a walk. The
         // top-level bindings' heap-ness reaches arg_class through
-        // hctx.top_env, so the threaded environment starts empty.
+        // the top-level index, so the threaded environment starts empty.
         if bsearch_leftmost(Array::get(scope_refs, si), name) >= 0 {
           analyze_calls(name, Array::get(scope, si), env0, calls, esc, hctx)
         } else {
@@ -2120,6 +2121,21 @@ fn params_have_unannotated(params: Array[(String, Option[TypeExpr])]) -> Bool {
   found
 }
 
+fn has_top_heap_param_candidate(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(stmts) && !found {
+    match Array::get(stmts, i) {
+      SLet(_, _, _, _, EFn(_, _, params, _, _, _)) => {
+        found = params_have_unannotated(params)
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// Every expression a top-level statement carries: the scope a top-level
 /// lambda's calls are collected from (#2681). Impl methods are top-level
 /// lets by the time the planner runs.
@@ -2145,29 +2161,39 @@ fn top_level_call_scope(stmts: Array[Stmt], out: Array[Expr]) -> Unit {
 /// The top-level `let` bindings' heap-ness, the environment the top-level
 /// call analysis starts from (#2681): an annotated binding by its type, an
 /// unannotated one by its value.
-fn top_level_heap_env(stmts: Array[Stmt], hctx: HeapInferCtx) -> Map[String, Bool] {
-  // Built through a MapBuilder: a `Map::set` chain copies the map at every
-  // step, which is quadratic in the module's binding count. The value
-  // classification sees an empty local environment, so a top-level function
-  // is judged by hctx.ctors / hctx.heap_fns rather than shadowed by its own
-  // binding.
-  let builder = MapBuilder::new()
+fn top_level_heap_env(stmts: Array[Stmt], hctx: HeapInferCtx) -> (Array[String], Array[Bool]) {
+  // MapBuilder::set scans prior keys on each insertion. Build a sorted index
+  // once instead. Visit bindings backwards so the stable sort + leftmost
+  // lookup preserves the original last-binding-wins rule, including false.
+  let names: Array[String] = []
+  let heaps: Array[Bool] = []
   let empty_env: Map[String, Bool] = Map::new()
-  let mut i = 0
-  while i < Array::length(stmts) {
+  let mut i = Array::length(stmts)
+  while i > 0 {
+    i = i - 1
     match Array::get(stmts, i) {
       SLet(_, _, n, ty, e) => {
         let heap = match ty {
           Some(_) => type_expr_is_heap(ty),
           None => is_heap_value(e, empty_env, hctx)
         }
-        MapBuilder::set(builder, n, heap)
+        Array::push(names, n)
+        Array::push(heaps, heap)
       },
       _ => ()
     }
+  }
+  let perm = sort_perm_by_names(names)
+  let sorted_names: Array[String] = []
+  let sorted_heaps: Array[Bool] = []
+  i = 0
+  while i < Array::length(perm) {
+    let slot = Array::get(perm, i)
+    Array::push(sorted_names, Array::get(names, slot))
+    Array::push(sorted_heaps, Array::get(heaps, slot))
     i = i + 1
   }
-  MapBuilder::freeze(builder)
+  (sorted_names, sorted_heaps)
 }
 
 /// The identifiers each top-level expression mentions, sorted, one list per
@@ -3301,21 +3327,27 @@ fn collect_heap_ret_fns(stmts: Array[Stmt]) -> Array[String] {
 export fn elaborate_heap_params(stmts: Array[Stmt]) -> Array[Stmt] {
   let ctors = collect_ctor_names(stmts)
   let heap_fns = collect_heap_ret_fns(stmts)
-  let no_env: Map[String, Bool] = Map::new()
   let hctx0 = HeapInferCtx::{
     ctors: ctors,
     heap_fns: heap_fns,
-    top_env: no_env
+    top_names: [],
+    top_heaps: []
   }
-  // #2681: the scope the top-level lambdas' calls are collected from and the
-  // top-level bindings' heap-ness, built once for the whole program.
+  // Only a top-level lambda with an unannotated parameter reads the call
+  // scope index. Local inference still needs the top-level heap table below.
   let scope: Array[Expr] = []
-  top_level_call_scope(stmts, scope)
-  let scope_refs = top_level_scope_refs(scope)
+  let scope_refs = if has_top_heap_param_candidate(stmts) {
+    top_level_call_scope(stmts, scope)
+    top_level_scope_refs(scope)
+  } else {
+    []
+  }
+  let (top_names, top_heaps) = top_level_heap_env(stmts, hctx0)
   let hctx = HeapInferCtx::{
     ctors: ctors,
     heap_fns: heap_fns,
-    top_env: top_level_heap_env(stmts, hctx0)
+    top_names: top_names,
+    top_heaps: top_heaps
   }
   let out = Array::slice(stmts, 0, 0)
   let mut i = 0
