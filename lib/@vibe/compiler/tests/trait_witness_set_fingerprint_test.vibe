@@ -413,3 +413,35 @@ test "what a module PUBLISHES decides which witnesses cross" {
         fp([named_other]),
       )}" + " export-flag=\{show_eq(fp([hidden]), fp([flagged]))}", "aggregate-export=moved which-name=moved export-flag=moved",)
 }
+
+test "declared type-parameter ARITY is part of a declaration, payloads or not" {
+  // Codex on #2742 (P1, round 9). `params` reached the row only through
+  // `interface_canonical_type_expr(payload, params)`, so a declaration whose
+  // payloads never mention a parameter serialized identically at every arity:
+  // `enum E[A] { Only }` and `enum E[A, B] { Only }` were ONE line. The
+  // checker registers a derived witness against `E[A]` and `E[A, B]`
+  // respectively, so the reachable witness set moves while this does not.
+  //
+  // Recorded as the COUNT, not the names: `E[A]` and `E[B]` are the same
+  // declaration, which is why the impl row already carries arity alone.
+  let e1: Array[Stmt] = [SEnum(true, "E", ["A"], [("Only", [])], ["Show"])]
+  let e2: Array[Stmt] = [SEnum(true, "E", ["A", "B"], [("Only", [])], ["Show"])]
+  let s1: Array[Stmt] = [SStruct(true, "S", [("x", TyName("Int"))], [], [], ["A"])]
+  let s2: Array[Stmt] = [
+    SStruct(true, "S", [("x", TyName("Int"))], [], [], ["A", "B"])
+  ]
+  let a1: Array[Stmt] = [STypeAlias(true, "T", ["A"], TyName("Int"))]
+  let a2: Array[Stmt] = [STypeAlias(true, "T", ["A", "B"], TyName("Int"))]
+  let f1: Array[Stmt] = [SEffectDef(true, "Ef", ["A"], [])]
+  let f2: Array[Stmt] = [SEffectDef(true, "Ef", ["A", "B"], [])]
+  // Renaming a parameter is NOT a change: the two declarations are the same
+  // one, so this must stay `same` while every row above moves.
+  let rename: Array[Stmt] = [SEnum(true, "E", ["Z"], [("Only", [])], ["Show"])]
+  inspect("enum=\{show_eq(fp([e1]), fp([e2]))}" + " struct=\{show_eq(
+        fp([s1]),
+        fp([s2]),
+      )}" + " alias=\{show_eq(fp([a1]), fp([a2]))}" + " effect=\{show_eq(
+        fp([f1]),
+        fp([f2]),
+      )}" + " rename=\{show_eq(fp([e1]), fp([rename]))}", "enum=moved struct=moved alias=moved effect=moved rename=same",)
+}

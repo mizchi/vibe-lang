@@ -3534,10 +3534,29 @@ export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEn
   checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, EnvEmpty)
 }
 
-fn interface_decl_line(prefix: String, name: String, body: String) -> String {
+/// Every declaration line, with its declared type-parameter ARITY.
+///
+/// `params` used to reach a line only through
+/// `interface_canonical_type_expr(payload, params)`, so a declaration whose
+/// payloads never mention a parameter serialized identically at every arity --
+/// `enum E[A] { Only }` and `enum E[A, B] { Only }` were one line, while the
+/// checker registers a derived witness against `E[A]` and `E[A, B]`
+/// respectively (Codex on #2742, P1). Measured, the same hole was open in the
+/// enum, struct, alias and effect arms.
+///
+/// Taking `params` as a PARAMETER rather than folding the count in at each arm
+/// is the point: every arm has to state its own, so a new one cannot quietly
+/// omit it. Forms with no type parameters pass an empty array.
+///
+/// The COUNT, not the names: `E[A]` and `E[B]` are the same declaration, so
+/// recording names would report a rename as a change. That is the same
+/// invariant `trait_impl_identity_line` already records for an impl's own
+/// parameters.
+fn interface_decl_line(prefix: String, name: String, params: Array[String], body: String) -> String {
   let out = StringBuilder::new()
   StringBuilder::push(out, prefix)
   StringBuilder::push(out, interface_segment(name))
+  StringBuilder::push(out, interface_segment("\{Array::length(params)}"))
   StringBuilder::push(out, body)
   StringBuilder::freeze(out)
 }
@@ -3608,7 +3627,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
         StringBuilder::push(enum_body, interface_bracketed(vs, ";"))
         StringBuilder::push(enum_body, "derive")
         StringBuilder::push(enum_body, interface_bracketed(interface_sorted_unique(derives), ","))
-        interface_push_decl_line(lines, exported, include_private, interface_decl_line("enum:", name, StringBuilder::freeze(enum_body)))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("enum:", name, params, StringBuilder::freeze(enum_body)))
       } else {
         ()
       },
@@ -3626,7 +3645,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
           Array::push(vs, String::concat(interface_segment(vname), String::concat("[", String::concat(String::join(fs, ";"), "]"))))
           j = j + 1
         }
-        interface_push_decl_line(lines, exported, include_private, interface_decl_line("suberror:", name, interface_bracketed(vs, ";")))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("suberror:", name, array_empty(), interface_bracketed(vs, ";")))
       } else {
         ()
       },
@@ -3647,12 +3666,12 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
         StringBuilder::push(struct_body, interface_bracketed(fs, ";"))
         StringBuilder::push(struct_body, "derive")
         StringBuilder::push(struct_body, interface_bracketed(interface_sorted_unique(derives), ","))
-        interface_push_decl_line(lines, exported, include_private, interface_decl_line("struct:", name, StringBuilder::freeze(struct_body)))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("struct:", name, params, StringBuilder::freeze(struct_body)))
       } else {
         ()
       },
       STypeAlias(exported, name, params, body) => if exported || include_private {
-        interface_push_decl_line(lines, exported, include_private, String::concat("alias:", String::concat(interface_segment(name), interface_canonical_type_expr(body, params))))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("alias:", name, params, interface_canonical_type_expr(body, params)))
       } else {
         ()
       },
@@ -3734,7 +3753,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
         StringBuilder::push(trait_body, interface_bracketed(ms, ";"))
         StringBuilder::push(trait_body, "surplus-method-generics")
         StringBuilder::push(trait_body, interface_bracketed(surplus_method_rows, ";"))
-        interface_push_decl_line(lines, exported, include_private, interface_decl_line("trait:", name, StringBuilder::freeze(trait_body)))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("trait:", name, header_params, StringBuilder::freeze(trait_body)))
       } else {
         ()
       },
@@ -3752,12 +3771,12 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[Stri
           Array::push(os, String::concat(interface_segment(opname), String::concat("[", String::concat(String::join(arg_lines, ";"), String::concat("]", interface_canonical_type_expr(ret, params))))))
           j = j + 1
         }
-        interface_push_decl_line(lines, exported, include_private, interface_decl_line("effect:", name, interface_bracketed(os, ";")))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("effect:", name, params, interface_bracketed(os, ";")))
       } else {
         ()
       },
       SEffectSet(exported, name, members) => if exported || include_private {
-        interface_push_decl_line(lines, exported, include_private, interface_decl_line("effectset:", name, interface_bracketed(interface_sorted_unique(members), ",")))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("effectset:", name, array_empty(), interface_bracketed(interface_sorted_unique(members), ",")))
       } else {
         ()
       },
@@ -3804,7 +3823,7 @@ export fn incremental_trait_generic_provenance_markers_for_test(header_params: A
 fn incremental_interface_identity(source: String, env: TypeEnv) -> String with Exception {
   let stmts = parse_program_with_path("<incremental-interface-observation>", source)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-module-interface:v4\n")
+  StringBuilder::push(out, "vibe-module-interface:v5\n")
   let names = interface_public_value_names(stmts)
   let mut i = 0
   while i < Array::length(names) {
@@ -4082,7 +4101,7 @@ fn trait_witness_collect_into(stmts: Array[Stmt], lines: Array[String]) -> Unit 
 export fn trait_witness_set_fingerprint(module_rows: Array[String]) -> String {
   let sorted = interface_sorted_unique(module_rows)
   let out = StringBuilder::new()
-  StringBuilder::push(out, "vibe-trait-witness-set:v4\n")
+  StringBuilder::push(out, "vibe-trait-witness-set:v5\n")
   let mut i = 0
   while i < Array::length(sorted) {
     StringBuilder::push(out, Array::get(sorted, i))
