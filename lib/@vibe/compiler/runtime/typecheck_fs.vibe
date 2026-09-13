@@ -5081,7 +5081,12 @@ export fn check_module_with_typing_artifact_observation(job: ModuleJob) -> Modul
 
 /// Coordinator-owned commit. Every filesystem and accumulator write for a
 /// module happens here and nowhere else.
-fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
+/// #2728 slice 1: `reuse_eligible` and `reuse_input_key` are what the caller
+/// already computed for the TDRE9 lookup, threaded in rather than recomputed.
+/// `None` for either means the caller did not compute it, and this function
+/// falls back to computing it itself -- so the fallback keeps the old
+/// behaviour if a second call site ever appears.
+fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, job: ModuleJob, outcome: ModuleOutcome, reuse_eligible: Option[Bool], reuse_input_key: Option[String]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
   match outcome {
     // Diagnostics are values as far as the worker is concerned, but the
     // driver still fails fast on the first one so the observable behaviour
@@ -5110,8 +5115,15 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       // alias last. Diagnosed/thrown checks never enter this Checked arm. Keep
       // the extra canonical target text and input serialization wholly inside
       // the enabled, transitively eligible experimental lane.
-      if experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(job.dep_fps) {
-        let input_key = typing_dependency_transport_input_key(path, job.source, typing_semantics_seed(), job.dep_envs)
+      let eligible_here = match reuse_eligible {
+        Some(known) => known,
+        None => experimental_typing_dependency_env_reuse_enabled() && typing_dependency_env_reuse_is_eligible(job.dep_fps)
+      }
+      if eligible_here {
+        let input_key = match reuse_input_key {
+          Some(known_key) => known_key,
+          None => typing_dependency_transport_input_key(path, job.source, typing_semantics_seed(), job.dep_envs)
+        }
         publish_typing_dependency_env_reuse_eligibility(input_key, fingerprint, target_text)
         write_typing_dependency_env_reuse_sidecar(input_key, fingerprint, target_text)
       } else {
@@ -5399,9 +5411,39 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
       // once: lookup, check, and publication must describe the same value.
       let coordinated_env_cache = ensure_env_cache_for_paths(rdb, env_cache, deps)
       let projected_dep_envs = project_exact_dependency_envs(deps, coordinated_env_cache)
-      let reused_env = if experimental_typing_dependency_env_reuse_enabled() {
-        if typing_dependency_env_reuse_is_eligible(dep_fps) {
-          let input_key = typing_dependency_transport_input_key(path, source, typing_semantics_seed(), projected_dep_envs)
+      // #2728 slice 1: the eligibility walk and the input key are computed
+      // HERE and threaded to `commit_module_outcome`, which used to recompute
+      // both from `job.dep_fps` / `job.source` / `job.dep_envs` and the
+      // `Checked`-bound path. Those are the same values by construction -- the
+      // `ModuleJob` below is built from exactly these, `commit_module_outcome`
+      // has one call site, and `Checked` is constructed only from `job.path`
+      // -- so this removes a duplicate, not a difference.
+      //
+      // Neither is cheap. The walk reads and parses every dependency's
+      // canonical target env text, and the key embeds this module's verbatim
+      // source plus each dependency's exact env text, so both scale with text
+      // and dependency count rather than with anything being reused. Paying
+      // them twice per module is a term of the cold regression #2728 measures.
+      //
+      // Hoisting is also safe in TIME, not only in the values: the second
+      // evaluation used to happen after `check_module`, and the walk reads one
+      // WITNESS per dependency. A module's dependencies are checked before it
+      // -- they have to be, they feed `projected_dep_envs` -- so each of their
+      // witnesses is already published or already absent by the time this
+      // module is looked at, and nothing between these two points writes one.
+      // The later evaluation could therefore never have answered differently.
+      let reuse_eligible = if experimental_typing_dependency_env_reuse_enabled() {
+        typing_dependency_env_reuse_is_eligible(dep_fps)
+      } else {
+        false
+      }
+      let reuse_input_key = if reuse_eligible {
+        Some(typing_dependency_transport_input_key(path, source, typing_semantics_seed(), projected_dep_envs))
+      } else {
+        None
+      }
+      let reused_env = match reuse_input_key {
+        Some(input_key) => {
           match load_typing_dependency_env_reuse_target(input_key) {
             // #2391: the transported env must bring the module's float
             // offsets along, or the reuse would publish a conservative env
@@ -5421,11 +5463,8 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
             },
             None => None
           }
-        } else {
-          None
-        }
-      } else {
-        None
+        },
+        None => None
       }
       match reused_env {
         Some((input_key, target_fingerprint, target_text, target_env)) => {
@@ -5460,7 +5499,7 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
             dep_envs: projected_dep_envs
           }
           let outcome = check_module(job)
-          commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome)
+          commit_module_outcome(rdb, coordinated_env_cache, dep_source_cache, parse_count + 1, job, outcome, Some(reuse_eligible), reuse_input_key)
         }
       }
     }
