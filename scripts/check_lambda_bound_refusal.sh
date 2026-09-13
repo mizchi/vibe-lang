@@ -60,7 +60,7 @@ FIXTURE_GLOB="${LAMBDA_BOUND_REFUSAL_FIXTURES:-fixtures/lambda_bound_dispatch_*_
 
 # The clause the diagnostic must BEGIN with, named once so the self-test's
 # mutation is a single edit.
-EDIT_NEEDLE="move the lambda binding"
+EDIT_NEEDLE="move the lambda that binds"
 
 WORK="$ROOT_DIR/_build/_lambda_bound_refusal"
 rm -rf "$WORK"; mkdir -p "$WORK"
@@ -83,7 +83,7 @@ for src in $FIXTURE_GLOB; do
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
-  if ! grep -qE 'move the lambda binding .* to a top-level' "$out.diag" 2>/dev/null; then
+  if ! grep -qE 'move the lambda that binds .* to a top-level' "$out.diag" 2>/dev/null; then
     echo "[lambda-bound-refusal] FAIL: $src refusal does not name an edit" >&2
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
@@ -96,8 +96,9 @@ for src in $FIXTURE_GLOB; do
   # word "has no", and Codex round 4 on #2753 pointed out that this is a proxy too:
   # `cannot dispatch ...; move the lambda binding ...: T::equals has no witness`
   # satisfies it while leading with the failure. That is #2248's rule about gates
-  # exactly ("検証が性質そのものではなく代理を信用していた"), landing on a gate
-  # written to enforce a different instance of the same rule.
+  # exactly -- its finding was that each broken gate had trusted a PROXY rather
+  # than the property itself -- landing on a gate written to enforce a different
+  # instance of the same rule.
   #
   # So the property itself: the payload BEGINS with the edit. An optional
   # `<path>:` prefix is stripped first -- this lane's diag carries none, but a lane

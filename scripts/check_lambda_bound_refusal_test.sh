@@ -122,13 +122,13 @@ grep -qF 'refused without the #2737 message' "$WORK/out" \
 mkdir -p "$WORK/r3"
 cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r3/keep_refused.vibe"
 # Targets the "names an edit" grep specifically: its pattern carries the
-# ` .* to a top-level` suffix that EDIT_NEEDLE does not, so the ordering check
+# ` .* to a top-level` suffix that EDIT_NEEDLE does not, so the leads-check
 # below is left intact and a failure here can only come from this assertion.
-sed 's/move the lambda binding .\* to a top-level/RED3 edit clause removed/' \
+sed 's/move the lambda that binds .\* to a top-level/RED3 edit clause removed/' \
   scripts/check_lambda_bound_refusal.sh > "$WORK/r3/gate.sh"
 grep -q 'RED3 edit clause removed' "$WORK/r3/gate.sh" \
   || fail "RED 3 mutation did not land (the edit-clause pattern was not renamed)"
-grep -q '^EDIT_NEEDLE="move the lambda binding"$' "$WORK/r3/gate.sh" \
+grep -q '^EDIT_NEEDLE="move the lambda that binds"$' "$WORK/r3/gate.sh" \
   || fail "RED 3 mutation hit the ordering check too; it must isolate the edit-clause assertion"
 if [ -n "$STAGE2_OVERRIDE" ]; then
   VIBE_LAMBDA_BOUND_REFUSAL_ROOT="$ROOT_DIR" LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" \
@@ -150,7 +150,7 @@ grep -qF 'refusal does not name an edit' "$WORK/out" \
 # with" must fail.
 mkdir -p "$WORK/r5"
 cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r5/keep_refused.vibe"
-sed 's/^EDIT_NEEDLE="move the lambda binding"$/EDIT_NEEDLE="has no witness here"/' \
+sed 's/^EDIT_NEEDLE="move the lambda that binds"$/EDIT_NEEDLE="has no witness here"/' \
   scripts/check_lambda_bound_refusal.sh > "$WORK/r5/gate.sh"
 grep -q '^EDIT_NEEDLE="has no witness here"$' "$WORK/r5/gate.sh" \
   || fail "RED 5 mutation did not land (EDIT_NEEDLE was not repointed)"
