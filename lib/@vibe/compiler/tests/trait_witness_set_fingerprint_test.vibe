@@ -296,6 +296,31 @@ test "binding PRECEDENCE inside a module is semantic and is kept" {
     )}" + " decl-vs-import=\{show_eq(fp([decl_first]), fp([import_first]))}", "swapped-imports=moved decl-vs-import=moved",)
 }
 
+test "a module BOUNDARY is part of the row, not just its contents" {
+  // Codex on #2742 (P1, round 7). Depth-first flattening serialises these two
+  // identically -- `alias Int`, `alias String`, `impl` in both -- while
+  // `reorder_type_decls_first` takes the OUTER alias before the module in each
+  // and first-match-wins resolves the target to String in one and Int in the
+  // other.
+  let a: Array[Stmt] = [
+    SModule(false, "M", [STypeAlias(false, "Target", [], TyName("Int"))]),
+    STypeAlias(false, "Target", [], TyName("String")),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  let b: Array[Stmt] = [
+    STypeAlias(false, "Target", [], TyName("Int")),
+    SModule(false, "M", [STypeAlias(false, "Target", [], TyName("String"))]),
+    SImpl([], [], "Marker", TyName("Target")),
+  ]
+  // The boundary is a bracket, so a declaration inside a module and the same
+  // declaration beside it are told apart too.
+  let inside: Array[Stmt] = [
+    SModule(false, "M", [STypeAlias(false, "T", [], TyName("Int"))])
+  ]
+  let outside: Array[Stmt] = [STypeAlias(false, "T", [], TyName("Int"))]
+  inspect("straddling=\{show_eq(fp([a]), fp([b]))} nested-vs-flat=\{show_eq(fp([inside]), fp([outside]))}", "straddling=moved nested-vs-flat=moved",)
+}
+
 test "bound ORDER is not part of what an impl means" {
   let one: Array[Stmt] = [
     SImpl(["A", "B"], [("A", ["Show"]), ("B", ["Eq"])], "Pair", TyApp("P", [

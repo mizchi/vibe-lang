@@ -3901,6 +3901,33 @@ export fn trait_witness_module_row(path: String, stmts: Array[Stmt]) -> String {
   StringBuilder::freeze(out)
 }
 
+/// A module BOUNDARY, not just its contents.
+///
+/// Flattening a nested module into the surrounding row makes two programs that
+/// the checker schedules DIFFERENTLY serialize identically (Codex on #2742,
+/// P1):
+///
+///   module M { type Target = Int }; type Target = String; impl .. for Target
+///   type Target = Int; module M { type Target = String }; impl .. for Target
+///
+/// Depth-first both give `alias Int`, `alias String`, `impl`, while
+/// `reorder_type_decls_first` takes the OUTER alias before the module in each
+/// and first-match-wins then resolves the target to `String` in one and `Int`
+/// in the other.
+///
+/// The fix is NOT to replicate the checker's schedule here -- that is a second
+/// copy of a rule that can drift. Bracketing the body instead makes the row a
+/// faithful encoding of the tree, so any structural difference shows, and a
+/// structural difference is what a schedule difference is made of. The module
+/// NAME rides along too: it cannot change type visibility (the collector
+/// flattens and ignores it), which makes including it the over-sensitive and
+/// therefore safe direction.
+fn trait_witness_push_module(name: String, body: Array[Stmt], lines: Array[String]) -> Unit {
+  Array::push(lines, String::concat("module{:", interface_segment(name)))
+  trait_witness_collect_into(body, lines)
+  Array::push(lines, "}module")
+}
+
 /// Recursive because the checker's own visibility collector is: a nested
 /// `module M { struct Target }` is a VISIBLE type declaration, since
 /// `collect_visible_type_stmts` (checker_stmt.vibe) recurses into `SModule`
@@ -3933,7 +3960,7 @@ fn trait_witness_collect_into(stmts: Array[Stmt], lines: Array[String]) -> Unit 
       SImport(raw_path, items) => Array::push(lines, trait_witness_binding_line("import:", raw_path, items)),
       SReExport(raw_path, items) =>
       Array::push(lines, trait_witness_binding_line("reexport:", raw_path, items)),
-      SModule(_, _, body) => trait_witness_collect_into(body, lines),
+      SModule(_, name, body) => trait_witness_push_module(name, body, lines),
       _ => ()
     }
     i = i + 1
