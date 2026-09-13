@@ -2248,7 +2248,19 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // straight-line spine leaf rather than `_mut_is_borrow_ret_ext`, whose
       // wrapper answer is broader (branches, projections, aliases) than the
       // plan's.
-      if ctx.enable_rc && mut_init_borrowed_call(value, local_names, ctx) {
+      // The binder's own slot is already restored in `local_names` by the
+      // time this runs, but it is NOT in scope in its own initializer -- a
+      // non-recursive `let mut peek = peek(xs, 0)` calls the GLOBAL. Leaving
+      // it visible makes the local test reject the global contract here while
+      // `pc_count`, which reads the initializer before declaring the binder,
+      // still selects the owning plan: the twins would disagree on exactly
+      // the shape they exist to agree on. Mask it, as the wrapper-spine read
+      // does for the same reason.
+      let mib_self = Array::get(local_names, local_idx)
+      Array::set(local_names, local_idx, "")
+      let mib_borrowed = mut_init_borrowed_call(value, local_names, ctx)
+      Array::set(local_names, local_idx, mib_self)
+      if ctx.enable_rc && mib_borrowed {
         emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         Array::push(ctx.heap_binding_names, name)
       } else {
