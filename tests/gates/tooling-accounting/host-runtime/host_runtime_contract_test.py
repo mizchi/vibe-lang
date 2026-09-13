@@ -245,9 +245,17 @@ class GcHostListTest(unittest.TestCase):
             ("() -> i64", (0, 1)),
             ("(i32, i32) -> ()", (2, 0)),                    # dbg_line_type_idx
             ("(i64, i64, i64, i64) -> i64", (4, 1)),         # http_request_type_idx
+            ("(f64) -> f32", (1, 1)),                        # no entry uses these yet
         ):
             with self.subTest(signature=signature):
                 self.assertEqual(module.core_signature_shape(signature), shape)
+
+    def test_core_signature_value_types_are_the_four_numeric_ones(self):
+        # Pinning the SET, not just the parse: this is the knob that decides
+        # whether a typo is a rejection or a certification, so widening it
+        # (back to an identifier class, or to reference types the boundary
+        # cannot carry) has to be a visible edit rather than a silent one.
+        self.assertEqual(module._CORE_VALUE_TYPES, ("i32", "i64", "f32", "f64"))
 
     def test_core_signature_shape_rejects_anything_that_is_not_a_signature(self):
         # Codex on #2768 (P2). The first parser split on `->` and inferred the
@@ -256,7 +264,17 @@ class GcHostListTest(unittest.TestCase):
         # same, including a missing paren and a wrong arrow. A contract entry
         # that no longer describes an ABI signature would then silently agree
         # with whatever host_defs claimed.
-        for signature in ("()", "(i64)", "i64 -> i64", "", "(i64) => i64", "(i64) -> ", "(,) -> i64", "(i64 i64) -> i64"):
+        #
+        # Codex on #2770 (P2) found the same hole one level in: the repaired
+        # regex still spelled a value type as `[a-z][a-z0-9]*`, so a TYPE typo
+        # parsed and handed back an arity. It named `(i65) -> i64` and
+        # `(string) -> bool`; measured, any lowercase identifier did it.
+        for signature in (
+            "()", "(i64)", "i64 -> i64", "", "(i64) => i64", "(i64) -> ",
+            "(,) -> i64", "(i64 i64) -> i64",
+            "(i65) -> i64", "(string) -> bool", "(zzz) -> qqq",
+            "(i64) -> i65", "(I64) -> i64", "(i64, i65) -> ()",
+        ):
             with self.subTest(signature=signature):
                 with self.assertRaises(SystemExit):
                     module.core_signature_shape(signature)

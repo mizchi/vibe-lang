@@ -169,10 +169,21 @@ def gc_lists(text: str) -> tuple[list[str], list[tuple[str, int]], list[str], in
     return use_host, host_defs, host_imports, hbo, int(header.group(1))
 
 
+# The core value types a host import may carry. Deliberately the four wasm
+# NUMERIC types and nothing else: this boundary passes tagged scalars, so a
+# vector or reference type in the contract would describe a call the runtime
+# cannot make. Narrow on purpose -- if a host import ever does take one, the
+# rejection below names the file and the token, which is a one-line edit here;
+# the opposite mistake is silent (Codex on #2770, P2: `[a-z][a-z0-9]*` accepted
+# `(i65) -> i64` and `(string) -> bool`, and `core_signature_shape` then handed
+# back an arity, so the checker CERTIFIED an entry that is not an ABI signature).
+_CORE_VALUE_TYPES = ("i32", "i64", "f32", "f64")
+_VALUE_TYPE = "(?:" + "|".join(_CORE_VALUE_TYPES) + ")"
+
 # `(i64, i64) -> ()` and `() -> i64`, and nothing else. Anchored on both ends so
 # a partial match cannot pass.
 _CORE_SIGNATURE = re.compile(
-    r"^\(\s*(?:[a-z][a-z0-9]*(?:\s*,\s*[a-z][a-z0-9]*)*\s*)?\)\s*->\s*(?:\(\s*\)|[a-z][a-z0-9]*)$"
+    rf"^\(\s*(?:{_VALUE_TYPE}(?:\s*,\s*{_VALUE_TYPE})*\s*)?\)\s*->\s*(?:\(\s*\)|{_VALUE_TYPE})$"
 )
 
 
