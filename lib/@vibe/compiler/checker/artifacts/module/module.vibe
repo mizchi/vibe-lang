@@ -1,0 +1,157 @@
+import @vibe/compiler/cache {
+  AstBinaryReader,
+  ast_binary_read_byte_checked,
+  ast_binary_read_count_checked,
+  ast_binary_read_module,
+  ast_binary_read_string_checked,
+  ast_binary_read_svarint_checked,
+  ast_binary_read_varint_checked,
+  ast_binary_reader_new,
+  ast_binary_reader_remaining,
+  ast_binary_write_module,
+  ast_binary_write_string,
+  ast_binary_write_svarint,
+  ast_binary_write_varint
+}
+import @vibe/compiler/checker {
+  CheckedProgram
+}
+import @vibe/compiler/checker/artifacts/program {
+  read_checked_program_fields, write_checked_program_fields
+}
+import @vibe/compiler/core {
+  Stmt
+}
+
+export struct CheckedModuleArtifact {
+  input_identity: Bytes;
+  parsed_stmts: Array[Stmt];
+  checked_program: CheckedProgram;
+  lowering_offsets: Array[Int];
+  eq_offsets: Array[Int];
+  eq_keys: Array[String]
+}
+
+fn module_artifact_checksum(bytes: Bytes, start: Int) -> (Int, Int) {
+  let mut first = 17
+  let mut second = 29
+  let mut i = start
+  while i < Bytes::length(bytes) {
+    let byte = Bytes::get(bytes, i)
+    first = (first * 131 + byte) % 2147483647
+    second = (second * 137 + byte) % 2147483629
+    i = i + 1
+  }
+  (first, second)
+}
+
+export fn encode_checked_module_artifact(artifact: CheckedModuleArtifact) -> Bytes {
+  // Fixed checksum slots let every field stream into one buffer.
+  let payload = Bytes::from_array([118, 77, 79, 68, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+  ast_binary_write_varint(payload, Bytes::length(artifact.input_identity))
+  Bytes::append(payload, artifact.input_identity)
+  ast_binary_write_module(payload, artifact.parsed_stmts)
+  write_checked_program_fields(payload, artifact.checked_program)
+  ast_binary_write_varint(payload, Array::length(artifact.lowering_offsets))
+  for offset in artifact.lowering_offsets {
+    ast_binary_write_svarint(payload, offset)
+  }
+  ast_binary_write_varint(payload, Array::length(artifact.eq_offsets))
+  for offset in artifact.eq_offsets {
+    ast_binary_write_svarint(payload, offset)
+  }
+  ast_binary_write_varint(payload, Array::length(artifact.eq_keys))
+  for key in artifact.eq_keys {
+    ast_binary_write_string(payload, key)
+  }
+  let (first, second) = module_artifact_checksum(payload, 13)
+  let mut i = 0
+  while i < 4 {
+    Bytes::set(payload, 5 + i, (first>>(i * 8))&255)
+    Bytes::set(payload, 9 + i, (second>>(i * 8))&255)
+    i = i + 1
+  }
+  payload
+}
+
+fn module_artifact_read_offsets(reader: AstBinaryReader) -> Array[Int] with Exception {
+  let count = ast_binary_read_count_checked(reader)
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < count {
+    Array::push(out, ast_binary_read_svarint_checked(reader))
+    i = i + 1
+  }
+  out
+}
+
+/// A checksum verifies transport integrity, while the exact input comparison
+/// binds owner, source, dependencies and mode. Neither proves producer honesty.
+export fn decode_checked_module_artifact(bytes: Bytes, input_identity: Bytes) -> Option[CheckedModuleArtifact] {
+  handle {
+    let reader = ast_binary_reader_new(bytes)
+    if ast_binary_read_byte_checked(reader) != 118 ||
+    ast_binary_read_byte_checked(reader) != 77 ||
+    ast_binary_read_byte_checked(reader) != 79 ||
+    ast_binary_read_byte_checked(reader) != 68 ||
+    ast_binary_read_varint_checked(reader) != 1 {
+      throw("checked module: unsupported header")
+    }
+    let first = module_artifact_read_checksum(reader)
+    let second = module_artifact_read_checksum(reader)
+    let start = Bytes::length(bytes) - ast_binary_reader_remaining(reader)
+    let expected = module_artifact_checksum(bytes, start)
+    if first != expected.0 || second != expected.1 {
+      throw("checked module: checksum mismatch")
+    }
+    let input_count = ast_binary_read_count_checked(reader)
+    if input_count != Bytes::length(input_identity) {
+      throw("checked module: inputs changed")
+    }
+    let mut input_index = 0
+    while input_index < input_count {
+      if ast_binary_read_byte_checked(reader) != Bytes::get(input_identity, input_index) {
+        throw("checked module: inputs changed")
+      }
+      input_index = input_index + 1
+    }
+    let parsed_stmts = ast_binary_read_module(reader)
+    let checked_program = read_checked_program_fields(reader)
+    let lowering_offsets = module_artifact_read_offsets(reader)
+    let eq_offsets = module_artifact_read_offsets(reader)
+    let key_count = ast_binary_read_count_checked(reader)
+    let eq_keys: Array[String] = []
+    let mut ki = 0
+    while ki < key_count {
+      Array::push(eq_keys, ast_binary_read_string_checked(reader))
+      ki = ki + 1
+    }
+    if Array::length(eq_offsets) != Array::length(eq_keys) || ast_binary_reader_remaining(reader) != 0 {
+      throw("checked module: inconsistent lowering rows or trailing bytes")
+    }
+    Some(CheckedModuleArtifact::{
+      input_identity,
+      parsed_stmts,
+      checked_program,
+      lowering_offsets,
+      eq_offsets,
+      eq_keys
+    })
+  } with { Exception::Throw(_) => None }
+}
+
+fn module_artifact_read_checksum(reader: AstBinaryReader) -> Int with Exception {
+  let mut value = 0
+  let mut i = 0
+  while i < 4 {
+    value = value|(ast_binary_read_byte_checked(reader)<<(i * 8))
+    i = i + 1
+  }
+  value
+}
+
+/// Lookup accelerator only: acceptance still compares every input byte.
+export fn checked_module_input_fingerprint(input_identity: Bytes) -> String {
+  let (first, second) = module_artifact_checksum(input_identity, 0)
+  "\{Bytes::length(input_identity)}:\{first}:\{second}"
+}

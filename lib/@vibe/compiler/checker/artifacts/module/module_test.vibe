@@ -1,0 +1,145 @@
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact, decode_checked_module_artifact, encode_checked_module_artifact
+}
+import @vibe/compiler/checker {
+  CheckedProgram, check_program_result
+}
+import @vibe/compiler/syntax {
+  lex_with_offsets, parse_program_located
+}
+import @vibe/compiler/core {
+  Subst, Type, TypeEnv, env_lookup
+}
+
+test "module wire has fixed checksums and directly framed program fields" {
+  let identity = Bytes::from_array([0, 128, 255])
+  let artifact = CheckedModuleArtifact::{
+    input_identity: identity,
+    parsed_stmts: [],
+    checked_program: CheckedProgram::{
+      checked_stmts: [],
+      final_env: EnvEmpty,
+      type_defs: [],
+      final_subst: SubstEmpty,
+      typed_occurrences: []
+    },
+    lowering_offsets: [-1, 0, 130],
+    eq_offsets: [],
+    eq_keys: []
+  }
+  // Independently calculated little-endian checksums over the 27 payload bytes.
+  let wire = Bytes::from_array([
+    118,
+    77,
+    79,
+    68,
+    1,
+    45,
+    218,
+    176,
+    5,
+    80,
+    55,
+    31,
+    118,
+    3,
+    0,
+    128,
+    255,
+    118,
+    65,
+    83,
+    84,
+    1,
+    0,
+    118,
+    65,
+    83,
+    84,
+    1,
+    0,
+    1,
+    0,
+    1,
+    0,
+    3,
+    127,
+    0,
+    130,
+    1,
+    0,
+    0
+  ])
+  inspect(encode_checked_module_artifact(artifact) == wire, content = "true")
+  match decode_checked_module_artifact(wire, identity) {
+    Some(decoded) => {
+      let offsets: Array[Int] = decoded.lowering_offsets
+      inspect(offsets, content = "[-1, 0, 130]")
+    },
+    None => assert(false)
+  }
+}
+
+fn sample_module() -> CheckedModuleArtifact with Exception {
+  let source = "export fn answer() -> Double { 42.5 }"
+  let (tokens, offsets, _) = lex_with_offsets(source)
+  let parsed_stmts = parse_program_located(tokens, offsets, source)
+  CheckedModuleArtifact::{
+    input_identity: Bytes::from_array([0, 128, 255, 7]),
+    parsed_stmts,
+    checked_program: check_program_result(parsed_stmts),
+    lowering_offsets: [7, 18],
+    eq_offsets: [23],
+    eq_keys: ["Int"]
+  }
+}
+
+test "module artifact joins checker result parser input and lowering tables" {
+  let original = sample_module()
+  let bytes = encode_checked_module_artifact(original)
+  match decode_checked_module_artifact(bytes, original.input_identity) {
+    Some(decoded) => {
+      inspect(encode_checked_module_artifact(decoded) == bytes, content = "true")
+      inspect(env_lookup(decoded.checked_program.final_env, "answer") is Some(CtFn(_, CtDouble, _)), content = "true")
+      let offsets: Array[Int] = decoded.lowering_offsets
+      inspect(offsets, content = "[7, 18]")
+      let eq_offsets: Array[Int] = decoded.eq_offsets
+      let eq_keys: Array[String] = decoded.eq_keys
+      inspect((eq_offsets, eq_keys), content = "([23], [Int])")
+      inspect(Array::length(decoded.parsed_stmts), content = "1")
+    },
+    None => assert(false)
+  }
+}
+
+test "module artifact rejects foreign inputs and damaged payloads" {
+  let original = sample_module()
+  let bytes = encode_checked_module_artifact(original)
+  inspect(decode_checked_module_artifact(bytes, Bytes::from_array([
+    0,
+    128,
+    255,
+    8
+  ])) is None, content = "true")
+  let changed = Bytes::slice(bytes, 0, Bytes::length(bytes))
+  let last = Bytes::length(changed) - 1
+  Bytes::set(changed, last, Bytes::get(changed, last)^1)
+  inspect(decode_checked_module_artifact(changed, original.input_identity) is None, content = "true")
+  inspect(decode_checked_module_artifact(Bytes::slice(bytes, 0, last), original.input_identity) is None, content = "true")
+  let trailing = Bytes::slice(bytes, 0, Bytes::length(bytes))
+  Bytes::push(trailing, 0)
+  inspect(decode_checked_module_artifact(trailing, original.input_identity) is None, content = "true")
+}
+
+test "module artifact refuses incomplete equality rows" {
+  let original = sample_module()
+  let malformed = CheckedModuleArtifact::{
+    input_identity: original.input_identity,
+    parsed_stmts: original.parsed_stmts,
+    checked_program: original.checked_program,
+    lowering_offsets: original.lowering_offsets,
+    eq_offsets: [23, 24],
+    eq_keys: ["Int"]
+  }
+  inspect(decode_checked_module_artifact(encode_checked_module_artifact(malformed), original.input_identity) is None, content = "true")
+}

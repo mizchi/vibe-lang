@@ -61,6 +61,18 @@ import @vibe/compiler/checker/artifacts/program {
   encode_checked_program
 }
 
+import @vibe/compiler/checker/artifacts/module {
+  CheckedModuleArtifact
+}
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_artifact_stmts,
+  checked_module_cache_input_identity,
+  checked_module_cache_mode,
+  checked_module_cache_reset,
+  commit_checked_module_artifact,
+  load_checked_module_artifact
+}
+
 import @vibe/compiler/core {
   BindingOrigin,
   Expr,
@@ -2054,6 +2066,11 @@ fn build_import_env(stmts: Array[Stmt], base_dir: String, cache: Array[(String, 
 /// `build_import_env`, additionally collecting the imported names the
 /// dependency does not export (#1521 -- see
 /// `bind_import_names_from_cache_collecting`).
+/// #2510 part 2: the arms matched below are the COMPLETE set of statements
+/// that bind a name from another module, and `trait_witness_binding_line` reads
+/// its tags off this list rather than arguing one. Adding an arm here without
+/// a matching tag there lets an impl target silently re-resolve while the
+/// witness-set fingerprint stays put.
 fn build_import_envs_collecting(stmts: Array[Stmt], base_dir: String, cache: Array[(String, TypeEnv)], unresolved: Array[String]) -> (TypeEnv, TypeEnv) {
   let trait_claims = array_empty()
   let len = Array::length(stmts)
@@ -2566,6 +2583,7 @@ fn collect_module_diagnostics() -> Bool {
 ///   6 checker executions
 ///   7 modules reused by conservative fingerprint authority
 ///   8 modules reused by validated TDRE9 dependency transport authority
+///   9 modules reused by the complete checked-module artifact
 ///
 /// `parse_operations` is parser work, not a unique-module count: a cold
 /// module can need one header parse during planning and one full parse for its
@@ -2626,7 +2644,7 @@ export fn set_incremental_typecheck_telemetry_enabled(enabled: Bool) -> Unit {
   Array::truncate(incremental_typecheck_telemetry_counters, 0)
   Array::truncate(incremental_typecheck_telemetry_decisions, 0)
   let mut i = 0
-  while i < 9 {
+  while i < 10 {
     Array::push(incremental_typecheck_telemetry_counters, 0)
     i = i + 1
   }
@@ -2733,8 +2751,13 @@ fn incremental_typecheck_telemetry_v1_json() -> String {
 }
 
 export fn incremental_typecheck_telemetry_json() -> String {
+  let artifact_mode = checked_module_cache_mode() != "off"
   let out = StringBuilder::new()
-  StringBuilder::push(out, "{\"schema\":2,\"modules_planned\":")
+  StringBuilder::push(out, if artifact_mode {
+    "{\"schema\":3,\"modules_planned\":"
+  } else {
+    "{\"schema\":2,\"modules_planned\":"
+  })
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(0)))
   StringBuilder::push(out, ",\"modules_rechecked\":")
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(1)))
@@ -2752,6 +2775,10 @@ export fn incremental_typecheck_telemetry_json() -> String {
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(7)))
   StringBuilder::push(out, ",\"modules_reused_dependency_transport_env\":")
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(8)))
+  if artifact_mode {
+    StringBuilder::push(out, ",\"modules_reused_checked_module_artifact\":")
+    StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(9)))
+  }
   StringBuilder::push(out, "}")
   StringBuilder::freeze(out)
 }
@@ -3523,12 +3550,47 @@ fn interface_bracketed(items: Array[String], separator: String) -> String {
   StringBuilder::freeze(out)
 }
 
-fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
+/// The export FLAG belongs on the line exactly when `include_private` is on.
+///
+/// With it off every emitted line is exported by construction, so the flag is
+/// constant and recording it would only churn the interface identity's
+/// preimage. With it on BOTH kinds are in the list, and the flag is then the
+/// only thing telling them apart -- which matters because it is not
+/// decoration: `interface_public_trait_names` puts a trait in the export
+/// surface only when its declaration is exported (or an `SExport` names it),
+/// and `restrict_env_to_export_surface` keeps an `EnvTraitImpl` only when its
+/// trait is in that surface. Flipping `export trait Marker` to `trait Marker`
+/// therefore withdraws every `Marker` impl from the published environment with
+/// the trait's own text unchanged (Codex on #2742, P1: the same mechanism it
+/// found for `SExport`).
+///
+/// Every arm goes through this one door so a new one cannot quietly emit an
+/// unstamped line.
+fn interface_push_decl_line(lines: Array[String], exported: Bool, include_private: Bool, line: String) -> Unit {
+  if include_private {
+    Array::push(lines, String::concat(if exported {
+      "pub:"
+    } else {
+      "prv:"
+    }, line))
+  } else {
+    Array::push(lines, line)
+  }
+}
+
+/// The 7 statement kinds below ARE the type-level namespace of a module: the
+/// declarations that introduce a name a type expression can resolve to. The
+/// interface identity wants only the exported ones; the witness set
+/// (`trait_witness_module_row`) wants them all, because a PRIVATE declaration
+/// can shadow an imported name and re-resolve an impl target without appearing
+/// in any interface (Codex on #2742, P1). One serializer, two callers, so the
+/// two cannot drift apart.
+fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool) -> Array[String] {
   let lines = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SEnum(exported, name, params, variants, derives) => if exported {
+      SEnum(exported, name, params, variants, derives) => if exported || include_private {
         let vs = array_empty()
         let mut j = 0
         while j < Array::length(variants) {
@@ -3546,11 +3608,11 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
         StringBuilder::push(enum_body, interface_bracketed(vs, ";"))
         StringBuilder::push(enum_body, "derive")
         StringBuilder::push(enum_body, interface_bracketed(interface_sorted_unique(derives), ","))
-        Array::push(lines, interface_decl_line("enum:", name, StringBuilder::freeze(enum_body)))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("enum:", name, StringBuilder::freeze(enum_body)))
       } else {
         ()
       },
-      SSuberror(exported, name, variants) => if exported {
+      SSuberror(exported, name, variants) => if exported || include_private {
         let vs = array_empty()
         let mut j = 0
         while j < Array::length(variants) {
@@ -3564,11 +3626,11 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
           Array::push(vs, String::concat(interface_segment(vname), String::concat("[", String::concat(String::join(fs, ";"), "]"))))
           j = j + 1
         }
-        Array::push(lines, interface_decl_line("suberror:", name, interface_bracketed(vs, ";")))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("suberror:", name, interface_bracketed(vs, ";")))
       } else {
         ()
       },
-      SStruct(exported, name, fields, derives, mut_fields, params) => if exported {
+      SStruct(exported, name, fields, derives, mut_fields, params) => if exported || include_private {
         let fs = array_empty()
         let mut j = 0
         while j < Array::length(fields) {
@@ -3585,16 +3647,16 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
         StringBuilder::push(struct_body, interface_bracketed(fs, ";"))
         StringBuilder::push(struct_body, "derive")
         StringBuilder::push(struct_body, interface_bracketed(interface_sorted_unique(derives), ","))
-        Array::push(lines, interface_decl_line("struct:", name, StringBuilder::freeze(struct_body)))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("struct:", name, StringBuilder::freeze(struct_body)))
       } else {
         ()
       },
-      STypeAlias(exported, name, params, body) => if exported {
-        Array::push(lines, String::concat("alias:", String::concat(interface_segment(name), interface_canonical_type_expr(body, params))))
+      STypeAlias(exported, name, params, body) => if exported || include_private {
+        interface_push_decl_line(lines, exported, include_private, String::concat("alias:", String::concat(interface_segment(name), interface_canonical_type_expr(body, params))))
       } else {
         ()
       },
-      STrait(exported, name, supers, methods, method_gens, header_params) => if exported {
+      STrait(exported, name, supers, methods, method_gens, header_params) => if exported || include_private {
         let ms = array_empty()
         let mut j = 0
         while j < Array::length(methods) {
@@ -3672,11 +3734,11 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
         StringBuilder::push(trait_body, interface_bracketed(ms, ";"))
         StringBuilder::push(trait_body, "surplus-method-generics")
         StringBuilder::push(trait_body, interface_bracketed(surplus_method_rows, ";"))
-        Array::push(lines, interface_decl_line("trait:", name, StringBuilder::freeze(trait_body)))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("trait:", name, StringBuilder::freeze(trait_body)))
       } else {
         ()
       },
-      SEffectDef(exported, name, params, ops) => if exported {
+      SEffectDef(exported, name, params, ops) => if exported || include_private {
         let os = array_empty()
         let mut j = 0
         while j < Array::length(ops) {
@@ -3690,12 +3752,12 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
           Array::push(os, String::concat(interface_segment(opname), String::concat("[", String::concat(String::join(arg_lines, ";"), String::concat("]", interface_canonical_type_expr(ret, params))))))
           j = j + 1
         }
-        Array::push(lines, interface_decl_line("effect:", name, interface_bracketed(os, ";")))
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("effect:", name, interface_bracketed(os, ";")))
       } else {
         ()
       },
-      SEffectSet(exported, name, members) => if exported {
-        Array::push(lines, interface_decl_line("effectset:", name, interface_bracketed(interface_sorted_unique(members), ",")))
+      SEffectSet(exported, name, members) => if exported || include_private {
+        interface_push_decl_line(lines, exported, include_private, interface_decl_line("effectset:", name, interface_bracketed(interface_sorted_unique(members), ",")))
       } else {
         ()
       },
@@ -3704,6 +3766,10 @@ fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
     i = i + 1
   }
   interface_sorted_unique(lines)
+}
+
+fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
+  interface_decl_lines(stmts, false)
 }
 
 /// A trace-only canonical token-stream identity. It length-delimits each token's
@@ -3756,6 +3822,272 @@ fn incremental_interface_identity(source: String, env: TypeEnv) -> String with E
     StringBuilder::push(out, Array::get(decls, d))
     StringBuilder::push(out, "\n")
     d = d + 1
+  }
+  compact_string_fingerprint(StringBuilder::freeze(out))
+}
+
+/// #2510 (criterion 5, option C part 2): the canonical line for ONE `impl`.
+///
+/// Trait resolution composes along the import closure -- impls ride the
+/// TypeEnv as `EnvTraitImpl` / `EnvTraitImplGen` nodes -- so a module sees the
+/// impls of its transitive dependencies. An impl is therefore not a property
+/// of any single dependency EDGE and cannot be attributed to one, which is
+/// what makes "put impls in the per-module interface identity" the wrong
+/// shape. The whole reachable SET gets one fingerprint instead.
+///
+/// Deliberately OVER-sensitive where that is cheap, because the two errors are
+/// not symmetric: an extra invalidation costs a re-check, a missed one reuses
+/// across a real change. So the trait is recorded by the SPELLING at the impl
+/// head rather than by a resolved identity -- writing `Mod::Show` where `Show`
+/// was written moves the fingerprint even though it is the same trait -- and
+/// the type-parameter arity is recorded even when no parameter is used.
+///
+/// The target and the bounds ARE canonicalized against the impl's own type
+/// parameters, so `impl[A] Show for Box[A]` and `impl[B] Show for Box[B]` are
+/// one impl rather than two. Bounds are sorted: their declaration order is not
+/// part of what an impl means.
+fn trait_impl_identity_line(tparams: Array[String], tbounds: Array[(String, Array[String])], trait_name: String, target: TypeExpr,) -> String {
+  let bounds = array_empty()
+  let mut i = 0
+  while i < Array::length(tbounds) {
+    let (bound_param, bound_traits) = Array::get(tbounds, i)
+    Array::push(bounds, String::concat(interface_segment(interface_lookup_type_param(tparams, bound_param)), interface_bracketed(interface_sorted_unique(bound_traits), ","),),)
+    i = i + 1
+  }
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "impl:")
+  StringBuilder::push(out, interface_segment(trait_name))
+  StringBuilder::push(out, interface_segment("\{Array::length(tparams)}"))
+  StringBuilder::push(out, interface_bracketed(interface_sorted_unique(bounds), ";"))
+  StringBuilder::push(out, interface_segment(interface_canonical_type_expr(target, tparams)))
+  StringBuilder::freeze(out)
+}
+
+/// What a type name in an impl head RESOLVES to depends on where it was bound
+/// from. Two dependencies can expose different aliases under the same exposed
+/// name, and the impl-owning module can switch which one it binds while `impl
+/// Marker for Target` is unchanged -- both alias rows still exist and the impl
+/// row is identical, so without this row nothing moves while the checked
+/// `EnvTraitImpl` target changes (Codex on #2742, P1 twice: once for `import`,
+/// then again for `reexport`, which binds the name locally just the same).
+///
+/// WHICH statements bind a name from elsewhere is not argued here, it is read
+/// off `build_import_envs_collecting` above: that resolver matches exactly
+/// `SImport` and `SReExport`, and those are exactly the two tags this emits. A
+/// third arm there needs a third tag here -- the comment on that function says
+/// so from its side.
+///
+/// The item KIND is recorded only as present/absent. Distinguishing the
+/// variants would mean enumerating them here and re-enumerating whenever one
+/// is added; the name-to-source association is what decides resolution.
+fn trait_witness_binding_line(tag: String, raw_path: String, items: Array[ImportItem]) -> String {
+  let rows = array_empty()
+  let mut i = 0
+  while i < Array::length(items) {
+    let item = Array::get(items, i)
+    let alias = match item.alias {
+      Some(value) => value,
+      None => ""
+    }
+    let kind = match item.kind {
+      Some(_) => "k",
+      None => "-"
+    }
+    Array::push(rows, String::concat(interface_segment(item.name), String::concat(interface_segment(alias), kind)),)
+    i = i + 1
+  }
+  String::concat(tag, String::concat(interface_segment(raw_path), interface_bracketed(rows, ";")))
+}
+
+/// An aggregate `export { .. }` is the OTHER half of what a module publishes.
+///
+/// `interface_public_trait_names` adds every name listed here that names a
+/// trait, so `trait Marker; impl Marker for Int; export { Marker }` publishes
+/// the impl while a module without the last line does not -- with the trait
+/// row and the impl row byte-for-byte identical in both (Codex on #2742, P1).
+/// The same list also feeds `interface_public_value_names` and
+/// `interface_public_type_names`, which is why the whole list is emitted
+/// rather than the subset that happens to name a trait: deciding that subset
+/// needs the checked environment, and the names are cheap.
+///
+/// Source order is kept, like every other line in a row: the surfaces
+/// canonicalize the list themselves, so a reordering cannot change what is
+/// published -- which makes keeping it the over-sensitive and therefore safe
+/// direction.
+fn trait_witness_export_line(items: Array[String]) -> String {
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "export:")
+  let mut i = 0
+  while i < Array::length(items) {
+    StringBuilder::push(out, interface_segment(Array::get(items, i)))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// Everything in ONE module that decides which witnesses exist, as canonical
+/// lines, each carrying the module it came from.
+///
+/// Two rows, and both are needed (Codex on #2742, both P1):
+///
+///   - `impl:` for each `SImpl`, prefixed by the OWNING MODULE. Two
+///     dependencies can each declare `export trait Marker; impl Marker for
+///     Int` -- nominally two different traits, which a consumer imports under
+///     distinct aliases -- and those two impls have identical text.
+///     Deduplicating the text collapses them, so deleting one module's impl
+///     leaves the other's line and the fingerprint does not move, while one
+///     imported trait has lost its witness. With the module in the row,
+///     repeated REACH of one module still collapses and two modules never do.
+///
+///   - `alias:` for each `STypeAlias`, EXPORTED OR NOT. An alias is
+///     transparent, so `type Hidden = Int; impl Marker for Hidden` is an impl
+///     for `Int`, and editing the alias to `= String` re-targets the impl
+///     while the `impl` row's own text does not change. A private alias is in
+///     no module's interface identity either, so nothing else would catch it.
+///     Every alias in the closure is emitted rather than only the ones a local
+///     impl mentions, because an impl target can be an alias IMPORTED from
+///     another module. That costs a full invalidation on any alias edit, which
+///     is cheap at the measured 40 aliases across `lib/`.
+///
+/// The caller must feed EVERY module of the closure -- the same requirement
+/// the impl rows already impose.
+/// One canonical row for ONE module, in SOURCE ORDER.
+///
+/// Order is semantic here and must not be sorted away: resolution stops at the
+/// first matching `EnvTypeDefs` node (core/types.vibe), and
+/// `build_import_envs_collecting` prepends each projection in source order, so
+/// two imports binding the same local name resolve by precedence. Swapping
+/// them retargets an impl while the rows are identical AS A SET (Codex on
+/// #2742, P1).
+///
+/// The set-ness the earlier rounds needed lives one level up instead:
+/// `trait_witness_set_fingerprint` sorts and deduplicates MODULE ROWS, so the
+/// order modules are walked in, and reaching one module twice, still do not
+/// matter. The path is stamped once here rather than on every line.
+export fn trait_witness_module_row(path: String, stmts: Array[Stmt]) -> String {
+  let lines = array_empty()
+  trait_witness_collect_into(stmts, lines)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, interface_segment(path))
+  let mut i = 0
+  while i < Array::length(lines) {
+    StringBuilder::push(out, interface_segment(Array::get(lines, i)))
+    i = i + 1
+  }
+  StringBuilder::freeze(out)
+}
+
+/// A module BOUNDARY, not just its contents.
+///
+/// Flattening a nested module into the surrounding row makes two programs that
+/// the checker schedules DIFFERENTLY serialize identically (Codex on #2742,
+/// P1):
+///
+///   module M { type Target = Int }; type Target = String; impl .. for Target
+///   type Target = Int; module M { type Target = String }; impl .. for Target
+///
+/// Depth-first both give `alias Int`, `alias String`, `impl`, while
+/// `reorder_type_decls_first` takes the OUTER alias before the module in each
+/// and first-match-wins then resolves the target to `String` in one and `Int`
+/// in the other.
+///
+/// The fix is NOT to replicate the checker's schedule here -- that is a second
+/// copy of a rule that can drift. Bracketing the body instead makes the row a
+/// faithful encoding of the tree, so any structural difference shows, and a
+/// structural difference is what a schedule difference is made of. The module
+/// NAME rides along too: it cannot change type visibility (the collector
+/// flattens and ignores it), which makes including it the over-sensitive and
+/// therefore safe direction.
+fn trait_witness_push_module(name: String, body: Array[Stmt], lines: Array[String]) -> Unit {
+  Array::push(lines, String::concat("module{:", interface_segment(name)))
+  trait_witness_collect_into(body, lines)
+  Array::push(lines, "}module")
+}
+
+/// Recursive because the checker's own visibility collector is: a nested
+/// `module M { struct Target }` is a VISIBLE type declaration, since
+/// `collect_visible_type_stmts` (checker_stmt.vibe) recurses into `SModule`
+/// bodies and flattens them into one list. An impl, import or re-export inside
+/// a module body is still one, for the same reason.
+///
+/// ONE PASS over the statements, so a declaration and a binding keep their
+/// relative position. Collecting the declarations first and the bindings after
+/// would order every declaration ahead of every import, which is exactly the
+/// precedence the first-match rule reads.
+///
+/// `interface_decl_lines` is called on a one-statement slice to keep it the
+/// single authority on which declarations are type-level -- the interface
+/// identity calls the same function with `false` -- without losing position.
+///
+/// THREE things move the set, and the third is the one round 8 added:
+///
+///   1. what PRODUCES a witness -- `SImpl`, and the derives that ride inside a
+///      declaration's own line;
+///   2. what decides how the names in it RESOLVE -- every type-level
+///      declaration, and the statements that bind a name from elsewhere;
+///   3. what decides whether the module PUBLISHES it -- a witness that does
+///      not cross the boundary is not in any consumer's set.
+///
+/// The authority for (3) is `interface_public_trait_names` together with
+/// `restrict_env_to_export_surface`: the export flag on a declaration (stamped
+/// by `interface_push_decl_line`), an aggregate `export { .. }`, and a
+/// re-export, which already had a row for reason (2).
+///
+/// One input to (3) is deliberately NOT read here: `interface_public_trait_names`
+/// also collects the trait bounds of every EXPORTED VALUE, so
+/// `trait Marker; impl Marker for Int; export fn f[T: Marker](x: T)` publishes
+/// the impl and deleting `f` withdraws it. Those bounds live inside the
+/// value's `Expr` and reading them means a new hand-written walk -- the exact
+/// move rounds 3 to 6 each had to undo. It is also the one input that is
+/// attributable to a single module's own interface identity in every case: the
+/// value is exported, so it is in that identity by construction, and
+/// `interface_canonical_type` carries its bounds. Part 1 covers it at that
+/// edge. Written down here so it is a stated boundary rather than a gap.
+fn trait_witness_collect_into(stmts: Array[Stmt], lines: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    let stmt = Array::get(stmts, i)
+    let one = array_empty()
+    Array::push(one, stmt)
+    let decl = interface_decl_lines(one, true)
+    let mut d = 0
+    while d < Array::length(decl) {
+      Array::push(lines, Array::get(decl, d))
+      d = d + 1
+    }
+    match stmt {
+      SImpl(tparams, tbounds, trait_name, target) =>
+      Array::push(lines, trait_impl_identity_line(tparams, tbounds, trait_name, target)),
+      SExport(items) => Array::push(lines, trait_witness_export_line(items)),
+      SImport(raw_path, items) => Array::push(lines, trait_witness_binding_line("import:", raw_path, items)),
+      SReExport(raw_path, items) =>
+      Array::push(lines, trait_witness_binding_line("reexport:", raw_path, items)),
+      SModule(_, name, body) => trait_witness_push_module(name, body, lines),
+      _ => ()
+    }
+    i = i + 1
+  }
+}
+
+/// The fingerprint of a reachable witness SET.
+///
+/// A set, so the lines are sorted and deduplicated: modules reached in a
+/// different order, or one module reached twice along two import paths, give
+/// one fingerprint. That is what lets this be folded into every module's
+/// typing key without making the key depend on the order modules happened to
+/// be walked in. Deduplication is only safe because each ROW carries its
+/// owning module, and safe to SORT only because the order that IS semantic --
+/// precedence between bindings inside one module -- is held inside the row
+/// rather than between rows (see `trait_witness_module_row`).
+export fn trait_witness_set_fingerprint(module_rows: Array[String]) -> String {
+  let sorted = interface_sorted_unique(module_rows)
+  let out = StringBuilder::new()
+  StringBuilder::push(out, "vibe-trait-witness-set:v4\n")
+  let mut i = 0
+  while i < Array::length(sorted) {
+    StringBuilder::push(out, Array::get(sorted, i))
+    StringBuilder::push(out, "\n")
+    i = i + 1
   }
   compact_string_fingerprint(StringBuilder::freeze(out))
 }
@@ -3998,7 +4330,10 @@ fn parse_program_with_path_impl(path: String, source: String, observe_current_so
 }
 
 export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
-  parse_program_with_path_impl(path, source, false)
+  match checked_module_artifact_stmts(path, source) {
+    Some(stmts) => stmts,
+    None => parse_program_with_path_impl(path, source, false)
+  }
 }
 
 fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Exception + Fs {
@@ -4989,11 +5324,19 @@ export fn checked_module_typing_artifact_observation_is_fresh_for_job(job: Modul
 /// Pure module check implementation. Artifact observation is explicitly opt-in:
 /// the production incremental path must not allocate canonical shadow bytes for
 /// every checked module when no observer consumes them.
-fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]]) -> ModuleOutcome with Exception {
+fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_transport: Option[Array[Bytes]], artifact_output: Option[(Bytes, Array[CheckedModuleArtifact])]) -> ModuleOutcome with Exception {
   // Parse stays OUTSIDE the handler below: parse errors currently
   // propagate verbatim, while type errors get located and path-prefixed.
   // Folding both into one handler would relabel every parse diagnostic.
   let stmts = parse_program_with_path_impl(job.path, job.source, true)
+  // Match the shared parser's ownership contract: Stmt values are immutable,
+  // while checker desugars replace entries in their top-level array.
+  let parsed_snapshot: Array[Stmt] = []
+  if artifact_output is Some(_) {
+    for stmt in stmts {
+      Array::push(parsed_snapshot, stmt)
+    }
+  }
   // #1521: importing a name the dependency does not export used to bind
   // CtUnknown silently, so `vibe check` said ok and `vibe build` died in
   // codegen with `undefined variable (ident): X` -- no file, no line. The
@@ -5064,6 +5407,20 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
         Some(output) => Array::push(output, encode_checked_program(checked_program)),
         None => ()
       }
+      match artifact_output {
+        Some((input_identity, output)) => Array::push(output, CheckedModuleArtifact::{
+          input_identity,
+          parsed_stmts: parsed_snapshot,
+          checked_program,
+          lowering_offsets: match located_offsets {
+            Some(offsets) => offsets,
+            None => array_empty()
+          },
+          eq_offsets: eq_offs,
+          eq_keys
+        }),
+        None => ()
+      }
       Checked(job.path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, module_typing_artifact)
     } with { Exception::Throw(msg) => {
       let located = locate_type_error(job.source, msg)
@@ -5078,13 +5435,13 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
 /// Production module check. No Fs: dependency environments are already values
 /// inside the job. Shadow artifact observation stays disabled by default.
 export fn check_module(job: ModuleJob) -> ModuleOutcome with Exception {
-  check_module_impl(job, false, None)
+  check_module_impl(job, false, None, None)
 }
 
 /// Opt-in trusted #1550 observation producer. This runs the same complete module
 /// checker and retains canonical bytes only in its opaque successful outcome.
 export fn check_module_with_typing_artifact_observation(job: ModuleJob) -> ModuleOutcome with Exception {
-  check_module_impl(job, true, None)
+  check_module_impl(job, true, None, None)
 }
 
 /// Check against the job's actual import environment and retain the complete
@@ -5093,7 +5450,7 @@ export fn check_module_with_typing_artifact_observation(job: ModuleJob) -> Modul
 /// persistent identity or cache authority until a coordinator binds its inputs.
 export fn check_module_with_program_transport(job: ModuleJob) -> (ModuleOutcome, Option[Bytes]) with Exception {
   let output: Array[Bytes] = []
-  let outcome = check_module_impl(job, false, Some(output))
+  let outcome = check_module_impl(job, false, Some(output), None)
   let bytes = if Array::length(output) == 1 {
     Some(Array::get(output, 0))
   } else {
@@ -5398,6 +5755,65 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exc
     i = i + 1
   }
 }
+/// Recover publication from the same complete checked result. Re-export
+/// projection reads the current dependency environments already bound by the
+/// exact input identity; it performs no type inference.
+fn checked_module_artifact_outcome(job: ModuleJob, artifact: CheckedModuleArtifact) -> ModuleOutcome with Exception {
+  let unresolved: Array[String] = []
+  let (_, reexports) = build_import_envs_collecting(artifact.parsed_stmts, dir_of_path(job.path), job.dep_envs, unresolved)
+  if Array::length(unresolved) > 0 {
+    throw("checked module: validated imports no longer resolve")
+  }
+  let fingerprint = build_fingerprint(job.path, job.source, job.dep_fps, typing_semantics_seed())
+  let env = checked_module_public_env_with_reexport_declarations(artifact.parsed_stmts, artifact.checked_program.final_env, reexports)
+  module_typed_lowering_memo_put(job.path, fingerprint, artifact.lowering_offsets, artifact.eq_offsets, artifact.eq_keys)
+  let tracing = incremental_interface_trace_enabled()
+  Checked(job.path, fingerprint, env, if tracing {
+    incremental_interface_identity(job.source, env)
+  } else {
+    ""
+  }, if tracing {
+    incremental_checked_env_identity(env)
+  } else {
+    ""
+  }, if tracing {
+    incremental_persistent_type_env_transport_identity(env)
+  } else {
+    ""
+  }, None)
+}
+
+/// One accepting edge for complete artifacts. An unchanged public dependency
+/// environment preserves this module's input even when its dependency's body
+/// changed. The conservative fingerprint remains available to older consumers.
+fn finish_checked_module_artifact_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)]) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
+  let coordinated = ensure_env_cache_for_paths(rdb, env_cache, deps)
+  let projected = project_exact_dependency_envs(deps, coordinated)
+  let job = ModuleJob::{ path, source, deps, dep_fps, dep_envs: projected }
+  let input_identity = checked_module_cache_input_identity(path, source, typing_semantics_seed(), projected)
+  if checked_module_cache_mode() == "on" {
+    match load_checked_module_artifact(path, input_identity) {
+      Some(artifact) => {
+        let outcome = checked_module_artifact_outcome(job, artifact)
+        let committed = commit_module_outcome(rdb, coordinated, dep_source_cache, parse_count, job, outcome, Some(false), None)
+        commit_checked_module_artifact(path, source, artifact, false)
+        incremental_typecheck_telemetry_add(9, 1)
+        return committed
+      },
+      None => ()
+    }
+  }
+  let output: Array[CheckedModuleArtifact] = []
+  let outcome = check_module_impl(job, false, None, Some((input_identity, output)))
+  if Array::length(output) == 0 {
+    // Preserve the existing diagnosed/parse failure behavior and publish nothing.
+    return commit_module_outcome(rdb, coordinated, dep_source_cache, parse_count + 1, job, outcome, Some(false), None)
+  }
+  let artifact = Array::get(output, 0)
+  commit_checked_module_artifact(path, source, artifact, true)
+  commit_module_outcome(rdb, coordinated, dep_source_cache, parse_count + 1, job, outcome, Some(false), None)
+}
+
 /// `fingerprint` is the already-folded build_fingerprint(source, dep_fps)
 /// every call site computed to decide whether to call this function at all
 /// (the Fs::exists / ripple_record_eval fast path below needs that folded
@@ -5614,7 +6030,7 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
     match ripple_get_source(rdb, path) {
       None => (),
       Some(source) => {
-        let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
+        let reusable = if checked_module_cache_mode() == "off" && dep_source_cache_is_current(dep_source_cache, path, source) {
           match ripple_get_fingerprint(rdb, path) {
             // #2391: reuse needs BOTH cache halves -- the TypeEnv and the
             // module's float-offsets sidecar -- or the walk must re-check.
@@ -5752,6 +6168,9 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
     i = i + 1
   }
   let fingerprint = build_fingerprint(path, source, dep_fps, typing_semantics_seed())
+  if checked_module_cache_mode() != "off" {
+    return finish_checked_module_artifact_fs(rdb, env_cache, dep_source_cache, parse_count, path, source, deps, dep_fps)
+  }
   match ripple_get_fingerprint(rdb, path) {
     Some(cached_fp) =>
     if cached_fp == fingerprint {
@@ -5797,6 +6216,17 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
   match loaded_source {
     None => (String::concat("missing:", path), rdb_loaded, env_cache, dep_source_cache, parse_count),
     Some(source) => {
+      if checked_module_cache_mode() != "off" {
+        let deps = match plan_deps_of(plan_edges, path) {
+          Some(planned) => planned,
+          None => if (lookup_string_pair(plan_leaf_fps, path) is Some(_)) || is_vpkg_types_stub_path(path) {
+            empty_stack()
+          } else {
+            throw(String::concat("type_db: module missing from the import plan: ", path))
+          }
+        }
+        return commit_with_deps_fs(fps, rdb_loaded, env_cache, dep_source_cache, parse_count, path, source, deps)
+      }
       let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
         match ripple_get_fingerprint(rdb_loaded, path) {
           // #2391: both cache halves, or no reuse (see ensure_module_typed_lowering_offsets).
@@ -6184,6 +6614,7 @@ export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, Ty
   // earlier compile of a since-edited file, without any eviction policy that
   // could drop a row the ACTIVE compile still needs.
   module_typed_lowering_memo_reset()
+  checked_module_cache_reset()
   // #2386: the source-text fingerprint memo spans one compile too.
   compact_source_fingerprint_memo_reset()
   let (plan_leaf_fps, plan_edges, planned_parse_count, plan_diags) = plan_import_graph_fs(rdb, dep_source_cache, parse_count, path)

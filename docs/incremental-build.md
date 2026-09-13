@@ -2194,19 +2194,26 @@ either observation into a production key or reuse decision.
 
 The token-stream, interface, checked-environment, and transport reconstructions
 are not charged to the existing TypeDb `parse_operations` counter. Standalone
-incremental telemetry schema 2 retains that historical counter and its
+incremental telemetry schema 2, used with `VIBE_CHECKED_MODULE_CACHE=off`, retains that historical counter and its
 `modules_rechecked` / `modules_reused` decisions, while independently reporting
 actual `ModuleJob.source` parse-memo misses, checker calls, conservative
-fingerprint reuse, and validated TDRE5 dependency-transport reuse. The two reuse
+fingerprint reuse, and validated TDRE9 dependency-transport reuse. The two reuse
 classes must sum exactly to `modules_reused`. These counters cover only the
 filesystem TypeDb walk: loader/source-group parsing and later linked validation
 remain outside this boundary. Invalidation trace schema 6 deliberately embeds
 the legacy schema-1 aggregate; exposing schema-2 counters there requires a
 future explicit trace schema bump.
 
-The existing `rechecked`/`reused` report therefore remains the current
-conservative cache-path observation rather than a claim about total sidecar
-work. None of these fields is read by a production
+With `VIBE_CHECKED_MODULE_CACHE=on` or `verify`, standalone telemetry uses schema
+3 and adds `modules_reused_checked_module_artifact`. This reason is separate:
+an exact checked-module input can still match after a private dependency body
+edit changes the conservative fingerprint. All three reasons must sum to
+`modules_reused`. Verification checks afresh, so it records zero artifact hits.
+The [checked-module parity gate](checked-body-transport.md) validates these
+counts through the real compile CLI; the edit-cycle reader accepts both schemas.
+
+The `rechecked`/`reused` report describes the completed module walk. Sidecar
+encoding, decoding and I/O costs need separate measurement. None of these fields is read by a production
 cache lookup, incorporated into a cache key, changes a reuse decision, or
 changes a persistent cache format. As with every compiler-source edit, the
 regenerated whole-compiler `codegen_fingerprint.vibe` still invalidates existing
@@ -2487,11 +2494,27 @@ something the invocation would delete or overwrite and both ends can do it.
 
 Aliasing is decided by filesystem identity, not by spelling: equal strings, or
 equal `Fs::stat_token` when both paths exist. `stat_token` mixes the inode, so
-`build/out.wasm` and `build/./out.wasm` are one file. Needing both paths to
-exist is not a gap where it is asked -- a clear only deletes a path that
-exists, and a write only destroys a file that exists -- which is why the
-artifact, its derived sidecars and the trace are re-checked at the publication
-boundary as well, where a first build has finally put them on disk.
+`build/out.wasm` and `build/./out.wasm` are one file. That is also why the
+artifact and the trace are re-checked at the publication boundary -- a first
+build has finally put them on disk by then, and it is exactly when they exist
+that a write would destroy one.
+
+When one of the two paths is **not** on disk there is nothing to stat, so the
+decision moves one level up: the final component is plain text and compares as
+text, and the containing directory is on disk in every case this is asked --
+the compile writes the artifact and its sidecars into it -- so it has an inode
+and `build/.` and `build` compare as one directory. The text test comes first,
+which is what keeps this narrow: a destination whose last component differs
+from every protected path's is never refused, whatever its directory looks
+like. Where the directory cannot be decided -- a parent that is an unresolved
+link, or missing -- the answer is "refuse".
+
+This paragraph previously said that needing both paths to exist "is not a gap
+where it is asked", because a clear only deletes what exists and a write only
+destroys what exists. That is false for `<output>.diag`, the one protected path
+a SUCCESSFUL compile never writes: measured, a `build/./out.wasm.diag`
+destination passed both guards and the counters landed on the canonical
+`<output>.diag`, which `runtime/vibe` then deleted on seeing the artifact.
 
 A **symlink** is refused rather than resolved. `Fs::stat_token` is an lstat by
 design (module loading needs a link to be distinguishable from its target, so

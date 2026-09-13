@@ -28,13 +28,32 @@ import @vibe/compiler/core {
 
 /// Lossless transport of the production checker's result. Encoding does not
 /// attest checker success: cache policy must bind these bytes to trusted inputs.
+export fn write_checked_program_fields(out: Bytes, checked: CheckedProgram) -> Unit {
+  ast_binary_write_module(out, checked.checked_stmts)
+  cp_write_env(out, checked.final_env)
+  cp_write_array_type_def(out, checked.type_defs)
+  cp_write_subst(out, checked.final_subst)
+  cp_write_array_tuple_int_type(out, checked.typed_occurrences)
+}
+
+export fn read_checked_program_fields(reader: AstBinaryReader) -> CheckedProgram with Exception {
+  let checked_stmts = ast_binary_read_module(reader)
+  let final_env = cp_read_env(reader)
+  let type_defs = cp_read_array_type_def(reader)
+  let final_subst = cp_read_subst(reader)
+  let typed_occurrences = cp_read_array_tuple_int_type(reader)
+  CheckedProgram::{
+    checked_stmts,
+    final_env,
+    type_defs,
+    final_subst,
+    typed_occurrences
+  }
+}
+
 export fn encode_checked_program(checked: CheckedProgram) -> Bytes {
   let payload = Bytes::new()
-  ast_binary_write_module(payload, checked.checked_stmts)
-  cp_write_env(payload, checked.final_env)
-  cp_write_array_type_def(payload, checked.type_defs)
-  cp_write_subst(payload, checked.final_subst)
-  cp_write_array_tuple_int_type(payload, checked.typed_occurrences)
+  write_checked_program_fields(payload, checked)
   let out = Bytes::new()
   Bytes::push(out, 'v')
   Bytes::push(out, 'C')
@@ -67,21 +86,11 @@ export fn decode_checked_program(bytes: Bytes) -> Option[CheckedProgram] {
     if first != expected_first || second != expected_second {
       throw("checked program: checksum mismatch")
     }
-    let checked_stmts = ast_binary_read_module(reader)
-    let final_env = cp_read_env(reader)
-    let type_defs = cp_read_array_type_def(reader)
-    let final_subst = cp_read_subst(reader)
-    let typed_occurrences = cp_read_array_tuple_int_type(reader)
+    let checked = read_checked_program_fields(reader)
     if ast_binary_reader_remaining(reader) != 0 {
       throw("checked program: trailing bytes")
     }
-    Some(CheckedProgram::{
-      checked_stmts,
-      final_env,
-      type_defs,
-      final_subst,
-      typed_occurrences
-    })
+    Some(checked)
   } with { Exception::Throw(_) => None }
 }
 
@@ -1039,4 +1048,10 @@ fn cp_read_array_surface_type(reader: AstBinaryReader) -> Array[TypeExpr] with E
     i = i + 1
   }
   items
+}
+
+/// Exact environment bytes for checked-module input identity. Cache indexes,
+/// row order and provenance are retained just as in the program transport.
+export fn write_checked_environment(out: Bytes, env: TypeEnv) -> Unit {
+  cp_write_env(out, env)
 }

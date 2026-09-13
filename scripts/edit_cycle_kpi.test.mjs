@@ -82,6 +82,20 @@ test("edit-cycle KPI accepts a complete incremental typecheck sidecar", () => {
   assert.deepEqual(parseIncrementalTelemetry(validSidecar), JSON.parse(validSidecar));
 });
 
+test("edit-cycle KPI validates checked-module reuse as its own v3 reason", () => {
+  const sidecar = {
+    ...JSON.parse(validSidecar), schema: 3,
+    modules_reused_dependency_transport_env: 0,
+    modules_reused_checked_module_artifact: 1,
+  };
+  assert.deepEqual(parseIncrementalTelemetry(JSON.stringify(sidecar)), sidecar);
+  assert.throws(() => parseIncrementalTelemetry(JSON.stringify({
+    ...sidecar, modules_reused_checked_module_artifact: 0,
+  })), /reuse-class counters must sum/);
+  delete sidecar.modules_reused_checked_module_artifact;
+  assert.throws(() => parseIncrementalTelemetry(JSON.stringify(sidecar)), /exactly the incremental telemetry v3 fields/);
+});
+
 test("edit-cycle KPI rejects malformed or internally inconsistent telemetry", () => {
   assert.throws(
     () => parseIncrementalTelemetry("not json"),
@@ -179,10 +193,12 @@ test("edit-cycle KPI pins authority modes after ambient environment", () => {
     KEEP: "yes",
     VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP: "1",
     VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "1",
+    VIBE_CHECKED_MODULE_CACHE: "on",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: "/tmp/ambient",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "ambient",
   });
   assert.equal(env.KEEP, "yes");
+  assert.equal(env.VIBE_CHECKED_MODULE_CACHE, "off");
   for (const key of [
     "VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP",
     "VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE",
