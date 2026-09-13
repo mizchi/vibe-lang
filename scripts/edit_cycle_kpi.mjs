@@ -117,6 +117,9 @@ export function pinEditCycleModes(env) {
     ...env,
     VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP: "",
     VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE: "",
+    // This benchmark measures its documented TDRE9 check-only baseline.
+    // Ambient checked-module reuse must not silently replace that authority.
+    VIBE_CHECKED_MODULE_CACHE: "off",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT: "",
     VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE: "",
   };
@@ -174,14 +177,16 @@ export function parseIncrementalTelemetry(text, source = "incremental telemetry"
   if (telemetry === null || typeof telemetry !== "object" || Array.isArray(telemetry)) {
     throw new Error(`${source}: expected a JSON object`);
   }
-  if (telemetry.schema !== 2) {
+  if (telemetry.schema !== 2 && telemetry.schema !== 3) {
     throw new Error(`${source}: unsupported schema ${JSON.stringify(telemetry.schema)}`);
   }
-  const exactKeys = ["schema", ...telemetryKeys];
+  const countKeys = telemetry.schema === 3
+    ? [...telemetryKeys, "modules_reused_checked_module_artifact"] : telemetryKeys;
+  const exactKeys = ["schema", ...countKeys];
   if (Object.keys(telemetry).length !== exactKeys.length || exactKeys.some((key) => !Object.hasOwn(telemetry, key))) {
-    throw new Error(`${source}: expected exactly the incremental telemetry v2 fields`);
+    throw new Error(`${source}: expected exactly the incremental telemetry v${telemetry.schema} fields`);
   }
-  for (const key of telemetryKeys) {
+  for (const key of countKeys) {
     if (!Number.isSafeInteger(telemetry[key]) || telemetry[key] < 0) {
       throw new Error(`${source}: ${key} must be a non-negative safe integer`);
     }
@@ -199,6 +204,7 @@ export function parseIncrementalTelemetry(text, source = "incremental telemetry"
   if (
     telemetry.modules_reused_conservative_fingerprint
       + telemetry.modules_reused_dependency_transport_env
+      + (telemetry.schema === 3 ? telemetry.modules_reused_checked_module_artifact : 0)
       !== telemetry.modules_reused
   ) {
     throw new Error(`${source}: reuse-class counters must sum to modules_reused`);

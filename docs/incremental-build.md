@@ -2194,19 +2194,26 @@ either observation into a production key or reuse decision.
 
 The token-stream, interface, checked-environment, and transport reconstructions
 are not charged to the existing TypeDb `parse_operations` counter. Standalone
-incremental telemetry schema 2 retains that historical counter and its
+incremental telemetry schema 2, used with `VIBE_CHECKED_MODULE_CACHE=off`, retains that historical counter and its
 `modules_rechecked` / `modules_reused` decisions, while independently reporting
 actual `ModuleJob.source` parse-memo misses, checker calls, conservative
-fingerprint reuse, and validated TDRE5 dependency-transport reuse. The two reuse
+fingerprint reuse, and validated TDRE9 dependency-transport reuse. The two reuse
 classes must sum exactly to `modules_reused`. These counters cover only the
 filesystem TypeDb walk: loader/source-group parsing and later linked validation
 remain outside this boundary. Invalidation trace schema 6 deliberately embeds
 the legacy schema-1 aggregate; exposing schema-2 counters there requires a
 future explicit trace schema bump.
 
-The existing `rechecked`/`reused` report therefore remains the current
-conservative cache-path observation rather than a claim about total sidecar
-work. None of these fields is read by a production
+With `VIBE_CHECKED_MODULE_CACHE=on` or `verify`, standalone telemetry uses schema
+3 and adds `modules_reused_checked_module_artifact`. This reason is separate:
+an exact checked-module input can still match after a private dependency body
+edit changes the conservative fingerprint. All three reasons must sum to
+`modules_reused`. Verification checks afresh, so it records zero artifact hits.
+The [checked-module parity gate](checked-body-transport.md) validates these
+counts through the real compile CLI; the edit-cycle reader accepts both schemas.
+
+The `rechecked`/`reused` report describes the completed module walk. Sidecar
+encoding, decoding and I/O costs need separate measurement. None of these fields is read by a production
 cache lookup, incorporated into a cache key, changes a reuse decision, or
 changes a persistent cache format. As with every compiler-source edit, the
 regenerated whole-compiler `codegen_fingerprint.vibe` still invalidates existing
