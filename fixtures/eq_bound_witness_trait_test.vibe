@@ -1,0 +1,44 @@
+//# The equality witness comes from the `Eq` bound, not any trait with an `equals` (#2523).
+//
+// Codex on #2734. The rung that lowers `x == y` under a bound scanned the
+// threaded dictionaries for ANY whose trait declares
+// `equals(Self, Self) -> Bool`. `Eq` is a marker today and threads no
+// dictionary, so an unrelated method-bearing bound on the same formal won the
+// scan -- and hijacked an answer that was correct before the rung existed.
+//
+// Measured with the method-only scan: `same(1, 1)` answered `false`, having
+// dispatched scalar equality to `Weird::equals`.
+//
+// `==` is licensed by an `Eq` bound and nothing else (#2474 rejects the operator
+// on a formal without one), so the dictionary it dispatches through has to be
+// that bound's.
+
+trait Weird {
+  equals(Self, Self) -> Bool
+}
+
+impl Weird for Int {
+  equals(a: Int, b: Int) -> Bool {
+    false
+  }
+}
+
+fn same[T: Eq + Weird](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn equality_snapshot(value: Bool) -> String {
+  if value {
+    "true"
+  } else {
+    "false"
+  }
+}
+
+test "an unrelated bound's equals does not capture scalar equality" {
+  inspect(equality_snapshot(same(1, 1)), content = "true")
+}
+
+test "an unrelated bound's equals does not invert inequality either" {
+  inspect(equality_snapshot(same(1, 2)), content = "false")
+}

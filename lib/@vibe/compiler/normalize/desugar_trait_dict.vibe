@@ -2848,6 +2848,80 @@ fn dtd_eq_witness_method() -> String {
   "equals"
 }
 
+/// The trait the witness must come from.
+fn dtd_eq_witness_trait() -> String {
+  "Eq"
+}
+
+/// Each trait's declared supertraits, for THIS program. Populated where the
+/// flattened trait table is built, because the entailment test below needs the
+/// graph the flattening already walked.
+let dtd_trait_supers: Array[(String, Array[String])] = array_empty()
+
+fn dtd_trait_supers_set(supers_map: Array[(String, Array[String])]) -> Unit {
+  Array::truncate(dtd_trait_supers, 0)
+  let mut i = 0
+  while i < Array::length(supers_map) {
+    Array::push(dtd_trait_supers, Array::get(supers_map, i))
+    i = i + 1
+  }
+}
+
+fn dtd_supers_of(name: String) -> Array[String] {
+  let mut i = 0
+  let mut out = empty_str_array()
+  while i < Array::length(dtd_trait_supers) {
+    let (tname, supers) = Array::get(dtd_trait_supers, i)
+    if tname == name {
+      out = supers
+      i = Array::length(dtd_trait_supers)
+    } else {
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// Does this bound entail `Eq` -- is it `Eq`, or does it inherit it?
+///
+/// This mirrors the checker's `bound_entails_eq` (`checker.vibe`), and must: the
+/// checker admits `x == y` on a formal exactly when its bound entails `Eq`, so a
+/// narrower rule here rejects a witness the program was promised.
+///
+/// Codex on #2739 measured both sides of that. Keying on the method alone let an
+/// unrelated `Weird` with its own `equals` hijack scalar equality
+/// (`same(1, 1)` answered `false`). Keying on the NAME `Eq` then rejected a real
+/// witness: with `trait Key: Eq`, `flatten_traits` puts the inherited `equals`
+/// in `KeyDict`, so `[T: Key]` has a perfectly good dictionary -- and requiring
+/// the immediate name sent two equal, distinct structs back to reference
+/// identity (`via_key` answered `false` where the method-only scan answered
+/// `true`). Entailment is the rule that admits the second without admitting the
+/// first; there is nothing extra to thread, because the sub-trait's own
+/// dictionary already carries the method.
+fn dtd_bound_entails_eq(trait_name: String) -> Bool {
+  let pending = [trait_ref_name(trait_name)]
+  let seen = empty_str_array()
+  let mut found = false
+  while !found && Array::length(pending) > 0 {
+    let cur = Array::get(pending, Array::length(pending) - 1)
+    Array::truncate(pending, Array::length(pending) - 1)
+    if cur == dtd_eq_witness_trait() {
+      found = true
+    } else if str_array_contains(seen, cur) {
+      ()
+    } else {
+      Array::push(seen, cur)
+      let supers = dtd_supers_of(cur)
+      let mut i = 0
+      while i < Array::length(supers) {
+        Array::push(pending, trait_ref_name(Array::get(supers, i)))
+        i = i + 1
+      }
+    }
+  }
+  found
+}
+
 fn dtd_ty_is_bool(te: TypeExpr) -> Bool {
   match te {
     TyName(n) => n == "Bool",
@@ -2932,11 +3006,12 @@ fn dtd_formal_is_shadowed(n: String) -> Bool {
 /// identity, measured as two equal `Pt` answering `false` while the adjacent
 /// `T::equals(x, y)` answered `true` off the same dictionary.
 ///
-/// Two conditions narrow it, and both were measured as holes rather than
-/// imagined: the witness must be declared `(Self, Self) -> Bool`
+/// Three conditions narrow it, and all three were measured as holes rather than
+/// imagined: the dictionary's bound must ENTAIL `Eq`
+/// (`dtd_bound_entails_eq`), the witness must be declared `(Self, Self) -> Bool`
 /// (`dtd_trait_has_self_eq_method`), and the formal's spelling must not be
 /// rebound by a nested binder (`dtd_formal_is_shadowed`). The checker can
-/// establish neither -- it admits `x == y` from the bound's spelling alone
+/// establish none of them -- it admits `x == y` from the bound's spelling alone
 /// (#2474) and never sees the call this pass synthesizes.
 fn dtd_eq_witness_dict(dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], t: String) -> Option[String] {
   if !formal_in_scope(t) || dtd_formal_is_shadowed(t) {
@@ -2946,7 +3021,7 @@ fn dtd_eq_witness_dict(dict_binds: Array[(String, String, String, Array[String])
     let mut result = None
     while i < Array::length(dict_binds) {
       let (tp, trait_name, dict_pname, methods) = Array::get(dict_binds, i)
-      if tp == t && str_array_contains(methods, dtd_eq_witness_method()) && dtd_trait_has_self_eq_method(traits, trait_name, dtd_eq_witness_method()) {
+      if tp == t && dtd_bound_entails_eq(trait_name) && str_array_contains(methods, dtd_eq_witness_method()) && dtd_trait_has_self_eq_method(traits, trait_name, dtd_eq_witness_method()) {
         result = Some(dict_pname)
         i = Array::length(dict_binds)
       } else {
@@ -20148,6 +20223,9 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   let trait_type_params = collect_trait_type_params(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)
+  // #2523: the `==` rung's entailment test reads the same graph the flattening
+  // walked -- see dtd_bound_entails_eq.
+  dtd_trait_supers_set(supers_map)
   // Rank-1 method generics (#684): re-attach each trait method's `[X: Bound]`
   // binder to its impl free functions (and annotate their params) BEFORE
   // build_gens, so `C::m` is registered as a bounded generic and the existing
