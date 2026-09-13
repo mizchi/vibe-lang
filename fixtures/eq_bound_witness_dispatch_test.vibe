@@ -90,6 +90,24 @@ test "the witness called by name agrees with the operator" {
   inspect(equality_snapshot(via_witness(Pt::{ v: 1 }, Pt::{ v: 1 })), content = "true")
 }
 
+// Codex on #2734: a nested generic lambda may rebind the OUTER binder's
+// spelling, and `rewrite_expr` keeps passing the outer dictionaries into its
+// body -- so `a == b` below would take `outer`'s `__dict_Eq_T`, which describes
+// `Pt`, and compare two Ints through `Pt::equals`. Measured before the fix:
+// `inner(7, 8)` answered `true`. A lambda binder gets no dictionary of its own,
+// so there is no right one to pick and the rung declines; the operand keeps the
+// answer it had before the rung existed, which for two Ints is the correct one.
+fn outer_shadowed[T: Eq](x: T, y: T) -> Bool {
+  let inner = [T: Eq](a: T, b: T) -> Bool {
+    a == b
+  }
+  inner(7, 8)
+}
+
+test "a nested binder reusing the spelling does not borrow the outer dictionary" {
+  inspect(equality_snapshot(outer_shadowed(Pt::{ v: 1 }, Pt::{ v: 2 })), content = "false")
+}
+
 test "a concrete == keeps its structural lowering" {
   inspect(equality_snapshot(Pt::{ v: 1 } == Pt::{ v: 1 }), content = "true")
 }

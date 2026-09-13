@@ -1,0 +1,48 @@
+//# A comparison witness not declared over `Self` is NOT the equality witness (#2523).
+//
+// Codex on #2734. The rung that lowers `x == y` under a bound to the threaded
+// dictionary first asked only that the bound trait's `equals` take two
+// parameters and return `Bool`. This program satisfies that and nothing else:
+// the method is declared over `Int`, so dispatching hands it two erased `Pt`.
+//
+// Measured with the count-only predicate, the body below being a constant so the
+// two paths differ: `via_op(Pt::{ v: 1 }, Pt::{ v: 2 })` -- two DIFFERENT values
+// -- answered `true`. The checker cannot catch it: it admits `x == y` from the
+// bound's SPELLING alone (#2474) and never sees the call the desugar
+// synthesizes. So the witness's shape is the desugar's to establish, and a
+// witness over anything but `Self` falls through to the ladder instead.
+//
+// The fallback answer below is reference identity, which is the pre-existing
+// #2523 symptom rather than something this file endorses: `false` for two equal
+// values is what a marker-`Eq` bound has always given. What it pins is that a
+// wrong-shaped witness is not dispatched to.
+
+trait Eq {
+  equals(Int, Int) -> Bool
+}
+
+struct Pt {
+  v: Int
+}
+
+impl Eq for Pt {
+  equals(a: Int, b: Int) -> Bool {
+    true
+  }
+}
+
+fn via_op[T: Eq](x: T, y: T) -> Bool {
+  x == y
+}
+
+fn equality_snapshot(value: Bool) -> String {
+  if value {
+    "true"
+  } else {
+    "false"
+  }
+}
+
+test "a witness declared over Int is not dispatched to for an erased formal" {
+  inspect(equality_snapshot(via_op(Pt::{ v: 1 }, Pt::{ v: 2 })), content = "false")
+}

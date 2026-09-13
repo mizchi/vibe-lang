@@ -2855,9 +2855,24 @@ fn dtd_ty_is_bool(te: TypeExpr) -> Bool {
   }
 }
 
+fn dtd_ty_is_self(te: TypeExpr) -> Bool {
+  match te {
+    TyName(n) => n == "Self",
+    _ => false
+  }
+}
+
 /// Does `trait_name` declare `method` with the shape a comparison witness
-/// needs -- two parameters returning `Bool`?
-fn dtd_trait_has_binary_bool(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, method: String) -> Bool {
+/// needs -- `(Self, Self) -> Bool`?
+///
+/// Both parameters must be spelled `Self`, not merely counted. Codex on #2734
+/// measured the hole: `trait Eq { equals(Int, Int) -> Bool }` with a constant
+/// body answered `true` for two DIFFERENT `Pt`, because the rung handed erased
+/// `Pt` values to a method declared over `Int`. The checker cannot catch it --
+/// it admits `x == y` from the bound's spelling alone (#2474) and never sees
+/// the call this pass synthesizes -- so the shape is this predicate's to
+/// establish. A witness over anything but `Self` falls through to the ladder.
+fn dtd_trait_has_self_eq_method(traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], trait_name: String, method: String) -> Bool {
   match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
     None => false,
     Some(sigs) => {
@@ -2866,7 +2881,7 @@ fn dtd_trait_has_binary_bool(traits: Array[(String, Array[(String, Array[TypeExp
       while i < Array::length(sigs) {
         let (m, params, ret) = Array::get(sigs, i)
         if m == method {
-          ok = Array::length(params) == 2 && dtd_ty_is_bool(ret)
+          ok = Array::length(params) == 2 && dtd_ty_is_self(Array::get(params, 0)) && dtd_ty_is_self(Array::get(params, 1)) && dtd_ty_is_bool(ret)
           i = Array::length(sigs)
         } else {
           i = i + 1
@@ -2875,6 +2890,35 @@ fn dtd_trait_has_binary_bool(traits: Array[(String, Array[(String, Array[TypeExp
       ok
     }
   }
+}
+
+/// Is this formal's spelling bound by more than one binder in scope?
+///
+/// `dtd_scope_formals` is a stack of spellings, and `dict_binds` describes only
+/// the transformed generic's OWN binder -- a nested generic lambda pushes its
+/// formals onto the same stack while `rewrite_expr` keeps passing the outer
+/// dictionaries down. So a lambda that reuses the outer spelling makes
+/// `find_dict_for_method` answer with a dictionary for an unrelated type.
+///
+/// Codex on #2734 measured that too: `fn outer[T: Eq]` at `Pt` containing
+/// `let inner = [T: Eq](a: T, b: T) -> Bool { a == b }` invoked as
+/// `inner(7, 8)` answered `true`, having compared two Ints through
+/// `Pt::equals`. A lambda binder gets no dictionary of its own (threading them
+/// is separate work), so there is no right dictionary to pick here and the
+/// honest move is to decline: the operand falls through to the ladder and keeps
+/// the answer it had before this rung existed.
+fn dtd_formal_is_shadowed(n: String) -> Bool {
+  let mut i = 0
+  let mut seen = 0
+  while i < Array::length(dtd_scope_formals) {
+    if Array::get(dtd_scope_formals, i) == n {
+      seen = seen + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  seen > 1
 }
 
 /// #2523: the dict parameter to dispatch `==` / `!=` through, or None.
@@ -2888,20 +2932,21 @@ fn dtd_trait_has_binary_bool(traits: Array[(String, Array[(String, Array[TypeExp
 /// identity, measured as two equal `Pt` answering `false` while the adjacent
 /// `T::equals(x, y)` answered `true` off the same dictionary.
 ///
-/// The arity and return check is not decoration. The checker admits `x == y` on
-/// a formal whose bound is spelled `Eq` (#2474), so a program declaring its own
-/// `trait Eq { equals(Self) -> Int }` reaches here; emitting a two-argument call
-/// to a one-parameter method is invalid wasm, which is a crash where today's
-/// answer is merely wrong. A witness of the wrong shape falls through instead.
+/// Two conditions narrow it, and both were measured as holes rather than
+/// imagined: the witness must be declared `(Self, Self) -> Bool`
+/// (`dtd_trait_has_self_eq_method`), and the formal's spelling must not be
+/// rebound by a nested binder (`dtd_formal_is_shadowed`). The checker can
+/// establish neither -- it admits `x == y` from the bound's spelling alone
+/// (#2474) and never sees the call this pass synthesizes.
 fn dtd_eq_witness_dict(dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], t: String) -> Option[String] {
-  if !formal_in_scope(t) {
+  if !formal_in_scope(t) || dtd_formal_is_shadowed(t) {
     None
   } else {
     let mut i = 0
     let mut result = None
     while i < Array::length(dict_binds) {
       let (tp, trait_name, dict_pname, methods) = Array::get(dict_binds, i)
-      if tp == t && str_array_contains(methods, dtd_eq_witness_method()) && dtd_trait_has_binary_bool(traits, trait_name, dtd_eq_witness_method()) {
+      if tp == t && str_array_contains(methods, dtd_eq_witness_method()) && dtd_trait_has_self_eq_method(traits, trait_name, dtd_eq_witness_method()) {
         result = Some(dict_pname)
         i = Array::length(dict_binds)
       } else {
