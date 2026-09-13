@@ -171,3 +171,74 @@ fn shadowing_match[T](a: T) -> String {
 test "#2745: a match arm that shadows the formal renders the Int" {
   inspect(shadowing_match(7), content = "1")
 }
+
+// #2745 (Codex, P1 round 5 on #2761): the walk now pairs a DESTRUCTURING
+// pattern's payloads against the scrutinee, and absorbs what an evaluated
+// sub-expression ASSIGNS. Both widenings are one condition away from rejecting a
+// correct program, and neither `lambda_bound_erased_interp_destructure_refused`
+// nor `..._loop_refused` can catch that -- they would keep refusing either way.
+fn destructure_concrete[T](a: T) -> String {
+  "\{match (3, 4) { (b, _) => b }}"
+}
+
+fn destructure_shadowing[T](a: T) -> String {
+  "\{match (1, 2) { (a, _) => a }}"
+}
+
+fn destructure_other_slot[T](a: T) -> String {
+  "\{match (a, 9) { (_, c) => c }}"
+}
+
+fn loop_concrete[T](a: T) -> String {
+  "\{loop (i = 0) { break 6 }}"
+}
+
+fn assign_concrete[T](a: T) -> String {
+  "\{ { let mut b = 0
+  b = 8
+  b } }"
+}
+
+test "#2745: a destructuring match over a concrete tuple renders the element" {
+  inspect(destructure_concrete(7), content = "3")
+}
+
+test "#2745: a destructuring pattern that shadows the formal renders the Int" {
+  inspect(destructure_shadowing(7), content = "1")
+}
+
+test "#2745: a destructured slot that is NOT the formal still renders" {
+  inspect(destructure_other_slot(7), content = "9")
+}
+
+test "#2745: a loop breaking a concrete value still renders it" {
+  inspect(loop_concrete(7), content = "6")
+}
+
+test "#2745: an assignment of a concrete value still renders it" {
+  inspect(assign_concrete(7), content = "8")
+}
+
+// #2745: a call that returns its own type parameter is refused only when an
+// ARGUMENT is erased. This is the cost boundary of that arm, and the refusal
+// fixture cannot see it -- `lambda_bound_erased_interp_generic_call_refused`
+// would keep refusing either way.
+fn keep_it[U](x: U) -> U {
+  x
+}
+
+fn generic_call_concrete[T](a: T) -> String {
+  "\{keep_it(5)}"
+}
+
+fn generic_call_string[T](a: T) -> String {
+  "\{keep_it("s")}"
+}
+
+test "#2745: a generic call with a concrete argument still renders" {
+  inspect(generic_call_concrete(7), content = "5")
+}
+
+test "#2745: and with a String argument" {
+  inspect(generic_call_string(7), content = "s")
+}
