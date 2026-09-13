@@ -3178,6 +3178,13 @@ fn dtd_unthreaded_interp_msg(tp: String) -> String {
   }
 }
 
+/// The method a `Show`-shaped bound must declare for a value to be renderable
+/// through a witness. Named once, next to `dtd_eq_witness_method`, so the two
+/// refusals and the dictionary lookup cannot drift apart on the spelling.
+fn dtd_show_witness_method() -> String {
+  "to_string"
+}
+
 /// #2745: the interpolated value's type is a formal bound by a NESTED binder, so
 /// its values are erased and nothing here can render them.
 ///
@@ -9334,6 +9341,41 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       // call site. Slice 1 (the argument's type names a `T::to_string`) wins
       // over slice 2 (the argument is, or is headed by, a wrapper).
       let interp_repl = if is_interp_to_string_call(callee, args) || is_show_shim_call(callee, args) {
+        // #2745 (Codex, P1 on #2761): FIRST, ahead of every rendering path below.
+        // All of them key on the argument's type NAME, and a nested formal is a
+        // NAME -- so a binder spelled like a type they recognise takes that
+        // type's rendering on an erased value.
+        //
+        // Measured on the first cut of this fix, which ran the check after them:
+        // `let inner = [Bool](a: Bool) -> String { "\{a}" }` applied to a struct
+        // printed `true`, the struct's pointer read as a Bool by
+        // `interp_arg_is_bool`; `[Option]` reached the wrapper arm and trapped.
+        //
+        // The BUILTIN spellings are what leak, and only they: a formal named
+        // after a DECLARED type is refused upstream by #2141's shadowing guard
+        // (measured -- `[Qt]` where `struct Qt` exists gives "type parameter `Qt`
+        // ... shadows the declared type"), which never sees `Bool` / `Option` /
+        // `Result` because they are not declarations. Rather than enumerate them
+        // here -- the enumeration is the bug, a condition applied through
+        // whichever spelling happened to be in front of it -- this asks about the
+        // BINDER before any spelling is consulted.
+        // WHICH message, decided here rather than by which check happens to run
+        // first. Hoisting this above the rendering paths also lifted it above
+        // #2737's interp refusal, and a `[T: Show]` lambda is BOTH -- erased, and
+        // carrying a bound nothing honours. They name the same edit, but #2737's
+        // is the more specific diagnosis (the bound you wrote is not threaded),
+        // so it wins when the binder's bound promised a renderer. Choosing on the
+        // FACT keeps that true no matter where either check sits.
+        let erased = dtd_erased_interp_formal(Array::get(args, 0), struct_sets, var_types, fn_returns)
+        if erased != "" {
+          if dtd_formal_bound_promises(traits, erased, dtd_show_witness_method()) {
+            throw(dtd_unthreaded_interp_msg(erased))
+          } else {
+            throw(dtd_erased_interp_msg(erased))
+          }
+        } else {
+          ()
+        }
         let show_target = interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
         if show_target != "" {
           Some(ECall(EIdent(show_target, -1), Array::slice([
@@ -9361,15 +9403,8 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
             expanded
           } else {
             let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
-            let erased = dtd_erased_interp_formal(Array::get(args, 0), struct_sets, var_types, fn_returns)
             if missing != "" {
               throw(interp_missing_show_msg(missing))
-            } else if erased != "" {
-              // #2745: same shape as the #1445 arm above, for the type this pass
-              // cannot name -- a formal a nested binder bound, whose values are
-              // erased. Placed AFTER it so a concrete type keeps the message that
-              // names it.
-              throw(dtd_erased_interp_msg(erased))
             } else if is_show_shim_call(callee, args) {
               // #2468: nothing HERE resolved it, and for a shim call leaving
               // the call standing is not the same as leaving a `__to_string`
