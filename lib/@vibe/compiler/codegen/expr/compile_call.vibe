@@ -642,8 +642,16 @@ export fn cc_is_borrow_ret_call(e: Expr, ctx: CompileCtx) -> Bool {
 /// borrow-returning builtins (Array::get / Map::get / __index), the user fns
 /// that tail-reach one of them (borrow_ret_names), and the user fns the
 /// may-return-view analysis flagged (borrow_view_ret).
+///
+/// #2752: `borrow_view_ret` is BINARY-searched, like `borrow_ret_names` beside
+/// it. Both are built the same way -- `sorted_names_of(compute_*(stmts))`,
+/// linked_compile.vibe:8498 and :8555 -- and the other reader of this very
+/// array already binary-searches it (compile_expr_tail.vibe). This one was the
+/// odd site out, scanning a sorted array linearly, and the profile put 269.4 ms
+/// there: 2.8% of a warm full-CLI build, 84.6% of all `array_contains_str`
+/// time, in one call.
 fn cc_callee_may_return_view(f: String, ctx: CompileCtx) -> Bool {
-  is_borrow_ret_builtin(f) || bsearch_leftmost(ctx.borrow_ret_names, f) >= 0 || array_contains_str(ctx.borrow_view_ret, f)
+  is_borrow_ret_builtin(f) || bsearch_leftmost(ctx.borrow_ret_names, f) >= 0 || bsearch_leftmost(ctx.borrow_view_ret, f) >= 0
 }
 
 /// #2682: does `e` produce a fresh OWNED heap value that no binding holds --
