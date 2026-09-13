@@ -172,16 +172,35 @@ EOF
 #
 # Whoever tries this again needs more than a faster loop: the companions would
 # each need their own tree, and then they would no longer be testing this one.
+# One companion, run the way its spelling requires. `node --test` is how
+# Taskfile.pkl already runs the `.test.mjs` ones.
+run_companion() {
+  case "$1" in
+    *.test.mjs) node --test "$1" ;;
+    *) bash "$1" ;;
+  esac
+}
+
 failed_tests=""
 repaired=""
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
-  for t in scripts/check_*_test.sh scripts/lint_*_test.sh scripts/*_gate_test.sh scripts/*_oracle_test.sh; do
+  # `.test.mjs` companions are in this list too, and they have to be: accepting
+  # that spelling above while globbing only `*_test.sh` here would mark an
+  # oracle covered and never run its companion -- the gate crediting a FILE,
+  # which is the one thing the comment above says it will not do. It was
+  # exactly that for one commit (#2771), and it had already been that for
+  # artifact_input_trace_oracle and incremental_invalidation_oracle, whose
+  # companions this loop never reached.
+  for t in scripts/check_*_test.sh scripts/lint_*_test.sh scripts/*_gate_test.sh \
+           scripts/*_oracle_test.sh scripts/*_oracle.test.mjs; do
     [ -e "$t" ] || continue
     # Only companions OF a gate in this tree; an orphan is reported below.
     # A `.mjs` gate counts -- discovery above asks those for a companion, so
-    # refusing to RUN theirs would credit the file for existing, which is the
-    # one thing this loop's comment says it will not do.
-    [ -f "${t%_test.sh}.sh" ] || [ -f "${t%_test.sh}.mjs" ] || continue
+    # refusing to RUN theirs would credit the file for existing.
+    case "$t" in
+      *.test.mjs) [ -f "${t%.test.mjs}.mjs" ] || [ -f "${t%.test.mjs}.sh" ] || continue ;;
+      *) [ -f "${t%_test.sh}.sh" ] || [ -f "${t%_test.sh}.mjs" ] || continue ;;
+    esac
     base="${t#scripts/}"
     if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then
       # A known-failing exemption is still RUN, because the interesting case is
@@ -190,13 +209,13 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
       # any later regression in it is invisible until someone edits the list by
       # hand (#2248 review). The ratchet has to notice its own entries going
       # stale, exactly as the no-test allowlist does.
-      if bash "$t" >"$WORK_LOG" 2>&1 \
+      if run_companion "$t" >"$WORK_LOG" 2>&1 \
          && printf '%s\n' "$failing_broken" | grep -qxF "$base"; then
         repaired="$repaired $base"
       fi
       continue
     fi
-    if ! bash "$t" >"$WORK_LOG" 2>&1; then
+    if ! run_companion "$t" >"$WORK_LOG" 2>&1; then
       failed_tests="$failed_tests $t"
       echo "[gate-self-tests] --- $t ---" >&2
       tail -20 "$WORK_LOG" >&2

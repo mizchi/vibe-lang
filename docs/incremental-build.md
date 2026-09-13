@@ -1326,36 +1326,25 @@ is 6.9%, which is the CEILING on what a perfect AST cache can remove from a
 warm build — and the loader, where such a cache has to live because it is the
 only lane with an `Fs` row, is 0.1%.
 
-That last row was read as the explanation for #2668's observation that turning
-the AST cache on left the warm heap byte-identical, and it is not: 0.1% is
-what the consulting code costs, not evidence about whether it runs. It did not
-run. The prefetch that hands a stored AST to the merge lane was hung on the
-module-header pass, and planning asks `load_persistent_dep_list` FIRST — on a
-warm build that hits for every module in the closure, so the header pass never
-runs and the prefetch fired zero times per build. The ASTs were written on
-every cold build and read on none.
+That last row does not explain #2668's observation that turning the AST cache
+on left the warm heap byte-identical, though it was read that way: 0.1% is what
+the consulting code costs, not evidence about whether it runs.
 
-Measured on the full CLI closure (420 modules, `VIBE_EXPERIMENTAL_AST_CACHE=1`,
-one cache directory per run):
+**The prefetch runs at the head of the FS planner's walk, and it has to.** That
+is the one point every planned module passes through exactly once, before any
+branch decides it needs no parsing. Planning settles a module without parsing
+in five different ways — a valid persistent leaf fingerprint, an in-process
+reuse decision, `ripple_get_deps`, the persistent dep list, and the
+module-header text cache — so a prefetch attached to any one of them serves
+only the modules that happen to take that branch, and a warm build takes a
+different one for every module in the closure. A leaf, for instance, never
+resolves dependencies at all.
 
-| warm build | bump-heap high-water |
-|---|---:|
-| AST cache off | 1,912,339,944 B |
-| AST cache on, prefetch on the header pass only | 1,912,339,944 B |
-
-Byte-identical — the cache doing literally nothing, #2668's result reproduced
-with its cause named, while every cold build wrote 42 MB of artifacts nobody
-read.
-
-#2767 moves the prefetch to the head of the FS planner's walk. The placement
-is the point: it has to sit where every planned module passes through, not on
-a particular fast path. Planning settles a module without parsing in five
-different ways — a valid persistent leaf fingerprint, an in-process reuse
-decision, `ripple_get_deps`, the persistent dep list, and finally the
-module-header text cache — and the prefetch was hung on the last of them.
-Moving it to the dep-list branch was measured too, and covered 2 of 3 modules
-in a three-module project: a LEAF resolves no dependencies, so it reached
-neither branch.
+`ast_cache_prefetch_fs` owns the decision and the count for the same reason:
+it has two call sites with different timing (the header pass runs before the
+planner), and a policy or a counter written at one of them is simply absent at
+the other. `ast_cache_prefetches` in the incremental telemetry is what says the
+cache is being read at all.
 
 ### And with the cache working, it does not pay
 
