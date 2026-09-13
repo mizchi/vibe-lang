@@ -94,16 +94,19 @@ class GcHostListTest(unittest.TestCase):
         for band in ("portableCore", "nodeCoreOnly", "viberunDebugOnly", "componentAdapterOnly"):
             self.names |= set(manifest[band])
         self.import_types = manifest.get("importTypes", {})
+        self.core_sigs = manifest.get("coreTypeSignatures", {})
 
     def assert_mutation_fails(self, mutated):
         # A mutation that did not apply would make the case pass while proving
         # nothing -- the trap #2248 calls out by name.
         self.assertNotEqual(mutated, self.text, "mutation did not apply")
         with self.assertRaises(SystemExit):
-            module.validate_gc_lists(self.names, mutated, self.import_types)
+            module.validate_gc_lists(self.names, mutated, self.import_types, self.core_sigs)
 
     def test_real_backend_satisfies_every_invariant(self):
-        self.assertEqual(module.validate_gc_lists(self.names, self.text, self.import_types), 22)
+        self.assertEqual(
+            module.validate_gc_lists(self.names, self.text, self.import_types, self.core_sigs), 22
+        )
 
     def test_use_host_losing_a_builtin_fails(self):
         self.assert_mutation_fails(
@@ -155,12 +158,25 @@ class GcHostListTest(unittest.TestCase):
             )
         )
 
-    def test_import_abi_type_change_fails(self):
+    def test_import_abi_type_disagreeing_with_the_manifest_fails(self):
         # Codex on #2765 (P2). The extractor dropped the type id, so a
-        # name-preserving type edit was invisible: type 5 is ()->i64 while
-        # fs_exists takes one argument. Checked against the manifest's own
-        # importTypes -- all 22 already agree, so this adds no list to maintain.
-        self.assert_mutation_fails(self.text.replace('("fs_exists", 3)', '("fs_exists", 5)', 1))
+        # name-preserving type edit was invisible.
+        #
+        # Mutating the BACKEND's type id no longer isolates this assertion: the
+        # arity check added in the third round catches that too, because no two
+        # coreTypeSignatures entries share a (params, ret) shape. Found by the
+        # same disable-each-assertion sweep that caught the hbo and count cases.
+        #
+        # The two assertions guard different PAIRINGS -- this one is backend
+        # against the manifest's importTypes, the arity one is the backend's two
+        # lists against coreTypeSignatures. So mutate the MANIFEST side: the
+        # backend stays at type 3 and keeps its matching shape, and only the
+        # contract disagrees.
+        drifted = dict(self.import_types)
+        drifted["fs_exists"] = "5"
+        self.assertNotEqual(drifted, self.import_types, "mutation did not apply")
+        with self.assertRaises(SystemExit):
+            module.validate_gc_lists(self.names, self.text, drifted, self.core_sigs)
 
     def test_host_imports_gaining_an_entry_fails(self):
         # The DROP case above is now caught by the positional name check, which
@@ -190,6 +206,24 @@ class GcHostListTest(unittest.TestCase):
         mutated = mutated.replace('("Fs::exists", 1, 5, 1)', '("Fs::invented", 1, 5, 1)', 1)
         mutated = mutated.replace('("fs_exists", 3)', '("fs_invented", 3)', 1)
         self.assert_mutation_fails(mutated)
+
+    def test_host_def_arity_drifting_from_its_import_signature_fails(self):
+        # Codex on #2765 (P2, third round). host_defs's `params`/`ret` feed
+        # fn_param_counts and fn_returns_list independently of the import's type
+        # id, so either can drift while the import still declares the old
+        # signature and the call is emitted against the wrong shape. Checked
+        # against the manifest's own coreTypeSignatures -- measured, all 22
+        # already agree, so no table is introduced.
+        self.assert_mutation_fails(self.text.replace('("Fs::exists", 1, 5, 1)', '("Fs::exists", 0, 5, 1)', 1))
+
+    def test_host_def_return_drifting_from_its_import_signature_fails(self):
+        self.assert_mutation_fails(self.text.replace('("Fs::exists", 1, 5, 1)', '("Fs::exists", 1, 5, 0)', 1))
+
+    def test_core_signature_shape_parses_the_manifest_forms(self):
+        self.assertEqual(module.core_signature_shape("(i64) -> i64"), (1, 1))
+        self.assertEqual(module.core_signature_shape("() -> ()"), (0, 0))
+        self.assertEqual(module.core_signature_shape("(i64, i64) -> ()"), (2, 0))
+        self.assertEqual(module.core_signature_shape("() -> i64"), (0, 1))
 
     def test_every_gc_import_name_is_derivable_or_declared(self):
         # The exception table is a seventh hand-maintained list, which is what
