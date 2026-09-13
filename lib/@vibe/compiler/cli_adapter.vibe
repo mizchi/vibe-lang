@@ -1623,6 +1623,30 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       // has loaded them. Reset here so the record describes THIS compile --
       // the unit-test batch runs many compiles in one daemon.
       unstable_closure_reset()
+      // #2510: the incremental typecheck telemetry, for a COMPILE. It used to
+      // be reachable only from the `VIBE_CHECK_ONLY` branch, which made "how
+      // many modules did this compile re-check?" unanswerable from the CLI --
+      // and that is the number criterion 5 is steered by: a leaf-edited
+      // compile pays 351.3 MB in its check phase against an unchanged build's
+      // 11.9 MB, and nothing said whether that was one module or two hundred.
+      //
+      // The counters are not check-only: the compile path reaches them through
+      // `prepare_file_fs_from_source_groups_persistent_cached` ->
+      // `db_typecheck_fs` -> `ensure_fingerprint_fs_impl`, which is where
+      // `modules_planned` is added. So this reports the real walk rather than
+      // a lane that happens to look similar.
+      //
+      // Set from the env on every invocation, not merely enabled: a long-lived
+      // instance that served a telemetry request must not leave counting on
+      // for the next caller. Published only after a successful compile, so a
+      // previous run never looks like telemetry for a failed one.
+      let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+      if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
+        Fs::remove(fs_telemetry_out)
+      } else {
+        ()
+      }
+      set_incremental_typecheck_telemetry_enabled(fs_telemetry_out != "")
       let artifact_input_trace_nonce = Env::get("VIBE_ARTIFACT_INPUT_TRACE_NONCE")
       let fs_lane = fs_lane_request(mark_memory, artifact_input_trace_out, artifact_input_trace_nonce, artifact_input_trace_checked_error_row_mode, artifact_input_trace_diagnostics_mode, artifact_input_trace_dep_order_seed)
       // Record the lane that will actually produce `bytes`; raw Env presence
@@ -1642,6 +1666,11 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       set_executable_exports_stripped(!fs_lane_is_instrumented(fs_lane) && executable_exports_stripped(entry_name))
       let (bytes, artifact_input_trace) = fs_lanes(fs_lane, input_path, entry_name)
       set_executable_exports_stripped(false)
+      if fs_telemetry_out != "" {
+        Fs::write_file(fs_telemetry_out, incremental_typecheck_telemetry_json())
+      } else {
+        ()
+      }
       // Binary-size (#1100): release executables ship without the name
       // section / module-linking exports. Instrumented builds (coverage /
       // trace / break / rc-shadow) are debug artifacts whose tooling reads
