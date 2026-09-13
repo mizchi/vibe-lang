@@ -3331,16 +3331,24 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
     //
     // A missing key falls through to the leaf, which is the answer for every
     // non-tuple projection (`h.node` has no index, so it never gets here).
+    // #2745 (Codex, P1 round 13 on #2761): this read the numeric index keys and
+    // stopped there, so a NAMED field fell through to the leaf -- which infers
+    // the DECLARED field type, and for `struct Box[U] { value: U }` that is the
+    // struct's own formal `U`, not the nested binder's `T`. Measured:
+    // `{ let r = Box::{ value: a }; r.value }` printed a 3-digit pointer
+    // decimal. A projection is one question, and `.0` and `.value` differ only
+    // in which key family holds the answer.
     EDot(obj, field, _, _) => match obj {
       EIdent(on, _) => {
         let idx = dtd_interp_index_of_field(field)
-        if idx >= 0 {
-          match lookup_var_type(var_types, dtd_interp_tuple_elem_key(on, idx)) {
-            Some(t) => t,
-            None => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
-          }
+        let key = if idx >= 0 {
+          dtd_interp_tuple_elem_key(on, idx)
         } else {
-          dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+          dtd_interp_field_key(on, field)
+        }
+        match lookup_var_type(var_types, key) {
+          Some(t) => t,
+          None => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
         }
       },
       _ => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
@@ -3574,6 +3582,19 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
       } else {
         ()
       }
+      // #2745 (Codex, P1 round 13 on #2761): the classification above answers
+      // "" for an AGGREGATE literal -- a tuple is not itself a formal -- so
+      // `{ let mut p = idf((a, 1)); p = (a, 1); match p { (b, _) => b } }`
+      // pushed nothing and `p` kept the shape its unclassifiable initializer
+      // gave it, which was none. It printed a 3-digit pointer decimal. An
+      // assignment rebinds the slot, so it masks and records exactly as a `let`
+      // does -- the same recorder, not a second one.
+      //
+      // This does not break the arm's MONOTONE property for well-typed input:
+      // every assignment to one slot has the slot's type, so they agree on
+      // whether that type mentions an erased formal. The property held for the
+      // classification for the same reason.
+      dtd_interp_record_shape(out, n, v, struct_sets, out, fn_returns)
       dtd_interp_absorb_into(out, cont, struct_sets, fn_returns)
     },
     // A compound assignment's result is `n op v`, whose type is the TARGET's, so
@@ -3825,6 +3846,15 @@ fn dtd_interp_field_name(name: String, field: String) -> String {
   String::concat(name, String::concat("$", field))
 }
 
+/// The synthetic NAME of an array's ELEMENT. An array's elements are uniform,
+/// so there is one slot rather than one per index, and it borrows index 0's
+/// spelling: a name bound to an array has no tuple records, so the two cannot
+/// collide, and sharing the spelling means the mask, the scope compaction and
+/// the alias copy need no array-specific arm.
+fn dtd_interp_array_slot_name(name: String) -> String {
+  dtd_interp_elem_name(name, 0)
+}
+
 /// Families whose key is `<family>$<owner>`: what follows the family IS the
 /// owner, so a key may be matched against an owner exactly or by prefix.
 fn dtd_interp_name_key_families() -> Array[String] {
@@ -4009,7 +4039,23 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
     // not its arguments, and a `PCtor` pattern naming a lowercase function does
     // not exist, so recording one could only mispair.
     ECall(callee, cargs, _) => match callee {
-      EIdent(cn, _) => if dtd_name_is_constructor_shaped(cn) {
+      // #2745 round 13, the reading half of the array element slot: what
+      // `Array::get(xs, i)` returns IS `xs`'s element, so the new name takes
+      // that slot's records. Written as a copy rather than a second lookup
+      // path so a nested array resolves by the same alias relation every
+      // other route uses.
+      //
+      // Tested BEFORE the constructor shape, which is not an ordering detail:
+      // `dtd_name_is_constructor_shaped` answers true for ANY name containing
+      // `::`, so behind it this arm is unreachable. Measured -- the fixture
+      // still printed the pointer with the arms the other way round, and the
+      // refusal gate is what said so.
+      EIdent(cn, _) => if cn == "Array::get" && Array::length(cargs) == 2 {
+        match Array::get(cargs, 0) {
+          EIdent(src, _) => dtd_interp_copy_records(out, var_types, name, dtd_interp_array_slot_name(src)),
+          _ => ()
+        }
+      } else if dtd_name_is_constructor_shaped(cn) {
         Array::push(out, (dtd_interp_shape_key(name), cn))
         dtd_interp_record_elems(out, name, cargs, struct_sets, var_types, fn_returns)
       } else {
@@ -4058,6 +4104,18 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
       }
       if String::length(found) > 0 {
         Array::push(out, (array_elem_key(name), found))
+      } else {
+        ()
+      }
+      // #2745 (Codex, P1 round 13 on #2761): the classification above is all
+      // this recorded, and an element that is ITSELF an aggregate classifies as
+      // "" -- so `let xs = [[a]]; let ys = Array::get(xs, 0);
+      // Array::get(ys, 0)` recorded nothing for `xs` and printed a 3-digit
+      // pointer decimal. The element gets a SLOT of its own, recorded by the
+      // same recorder, which is what makes the depth close here as it does for
+      // a tuple or a record.
+      if Array::length(es) > 0 {
+        dtd_interp_record_shape(out, dtd_interp_array_slot_name(name), Array::get(es, 0), struct_sets, var_types, fn_returns)
       } else {
         ()
       }
