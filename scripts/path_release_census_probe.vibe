@@ -26,9 +26,10 @@
 //# return type is heap and which neither borrow set claims -- the shipped
 //# admission rule (`path_value_owned`, compile_expr_tail.vibe).
 //#
-//# Constructor-ness is by declaration here (every `SEnum` / `SSuberror`
-//# variant name of the input), the same set the codegen's `CtorTable` holds
-//# for this source; the codegen consults the table, this consults the decls.
+//# Constructor-ness is by declaration here -- every `SEnum` / `SSuberror`
+//# variant name and every `SStruct` name of the input, which is exactly what
+//# `linked_compile.vibe` pushes into the codegen's `CtorTable`; the codegen
+//# consults the table, this consults the decls.
 
 import @vibe/core {
   array_empty, sorted_names_of
@@ -104,65 +105,6 @@ fn pat_bound_names(p: Pat, out: Array[String]) -> Unit {
       }
     },
     _ => ()
-  }
-}
-
-/// Every name BOUND inside one function's OWN frame -- `let` / `let mut` /
-/// `let rec` binders, `for`-in binders, pattern binds. The shipped
-/// rule declines a callee that resolves to a local slot (`find_local_slot`
-/// over `local_names`); this is the probe's stand-in for that, and it over-
-/// approximates the same way `local_names` does, since compile_expr_tail
-/// never truncates a `let`'s name after its body.
-fn collect_bound_names(e: Expr, out: Array[String]) -> Unit {
-  match e {
-    ELet(n, v, b, _) => {
-      Array::push(out, n)
-      collect_bound_names(v, out)
-      collect_bound_names(b, out)
-    },
-    ELetMut(n, v, b, _) => {
-      Array::push(out, n)
-      collect_bound_names(v, out)
-      collect_bound_names(b, out)
-    },
-    ELetRec(n, v, b) => {
-      Array::push(out, n)
-      collect_bound_names(v, out)
-      collect_bound_names(b, out)
-    },
-    EForIn(n, io, seq, body) => {
-      Array::push(out, n)
-      match io {
-        Some(i2) => Array::push(out, i2),
-        None => ()
-      }
-      collect_bound_names(seq, out)
-      collect_bound_names(body, out)
-    },
-    EMatch(sc, arms) => {
-      collect_bound_names(sc, out)
-      let mut i = 0
-      while i < Array::length(arms) {
-        let (ap, ab) = Array::get(arms, i)
-        pat_bound_names(ap, out)
-        collect_bound_names(ab, out)
-        i = i + 1
-      }
-    },
-    // NOT descended into: a lambda compiles in its own frame with its own
-    // locals array (compile_lambda.vibe's `lam_locals`), so neither its
-    // parameters nor its body's binders shadow anything at a call site in the
-    // enclosing function. Adding them here would make the probe decline a
-    // global call production admits.
-    EFn(_, _, _, _, _, _) => (),
-    _ => {
-      let kids = expr_children(e)
-      let mut i = 0
-      while i < Array::length(kids) {
-        collect_bound_names(Array::get(kids, i), out)
-        i = i + 1
-      }
-    }
   }
 }
 
@@ -292,29 +234,81 @@ fn top_kind(e: Expr, ctors: Array[String], bound: Array[String], borrow_ret: Arr
   }
 }
 
-/// Find the `let` named `name` and report its value. The planner runs on a
-/// body `uniquify_shadowed_bindings_fresh` already made unique, so at most one
+/// Find the `let` named `name`, report its value, and snapshot the names in
+/// scope AT THAT SITE. The planner runs on a body
+/// `uniquify_shadowed_bindings_fresh` already made unique, so at most one
 /// `let` in the function carries the name.
-fn find_let_value(e: Expr, name: String, out: Array[Expr]) -> Unit {
+///
+/// The scope is per-site rather than per-function: `compile_match` truncates
+/// `local_names` between arms and after the match, and `for`-in does the same,
+/// so a binder in an unrelated arm is NOT in scope at this call and must not
+/// make the probe report a global call as locally bound. A lambda is skipped
+/// entirely -- its body is planned in its own frame, so a `let` inside one is
+/// not a row of this function's plan (the exclusion
+/// scripts/reuse_census_probe.vibe already makes for arms).
+fn find_let_value(e: Expr, name: String, scope: Array[String], out: Array[Expr], out_scope: Array[String]) -> Unit {
   match e {
-    // A lambda's body is planned in its own frame (the same exclusion
-    // scripts/reuse_census_probe.vibe makes), so a `let` inside one is not a
-    // row of this function's plan.
     EFn(_, _, _, _, _, _) => (),
     ELet(n, v, b, _) => {
+      // The value is compiled before its own binder is in scope.
+      find_let_value(v, name, scope, out, out_scope)
       if n == name {
         Array::push(out, v)
+        let mut si = 0
+        while si < Array::length(scope) {
+          Array::push(out_scope, Array::get(scope, si))
+          si = si + 1
+        }
       } else {
         ()
       }
-      find_let_value(v, name, out)
-      find_let_value(b, name, out)
+      let mark = Array::length(scope)
+      Array::push(scope, n)
+      find_let_value(b, name, scope, out, out_scope)
+      Array::truncate(scope, mark)
+    },
+    ELetMut(n, v, b, _) => {
+      find_let_value(v, name, scope, out, out_scope)
+      let mark = Array::length(scope)
+      Array::push(scope, n)
+      find_let_value(b, name, scope, out, out_scope)
+      Array::truncate(scope, mark)
+    },
+    ELetRec(n, v, b) => {
+      let mark = Array::length(scope)
+      Array::push(scope, n)
+      find_let_value(v, name, scope, out, out_scope)
+      find_let_value(b, name, scope, out, out_scope)
+      Array::truncate(scope, mark)
+    },
+    EMatch(sc, arms) => {
+      find_let_value(sc, name, scope, out, out_scope)
+      let mut i = 0
+      while i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(scope)
+        pat_bound_names(ap, scope)
+        find_let_value(ab, name, scope, out, out_scope)
+        Array::truncate(scope, mark)
+        i = i + 1
+      }
+    },
+    EForIn(n, io, seq, body) => {
+      find_let_value(seq, name, scope, out, out_scope)
+      let mark = Array::length(scope)
+      Array::push(scope, n)
+      match io {
+        Some(i2) => Array::push(scope, i2),
+        None => ()
+      }
+      find_let_value(body, name, scope, out, out_scope)
+      Array::truncate(scope, mark)
     },
     _ => {
       let kids = expr_children(e)
       let mut i = 0
       while i < Array::length(kids) {
-        find_let_value(Array::get(kids, i), name, out)
+        find_let_value(Array::get(kids, i), name, scope, out, out_scope)
         i = i + 1
       }
     }
@@ -446,6 +440,7 @@ fn collect_ctor_names(stmts: Array[Stmt], out: Array[String]) -> Unit {
           v = v + 1
         }
       },
+      SStruct(_, sname, _, _, _, _) => Array::push(out, sname),
       SModule(_, _, inner) => collect_ctor_names(inner, out),
       _ => ()
     }
@@ -486,24 +481,33 @@ fn census(source: String) -> Unit with Exception + Stdout {
           match norm {
             EFn(_, _, nparams, _, _, nbody) => {
               let plan = build_perceus_plan_with_params(nparams, nbody, borrow_ret, borrow_param, masks, view_ret)
-              // What the shipped rule sees as "bound here": this function's
-              // own parameters plus every binder in its body.
-              let bound: Array[String] = []
+              // This function's own parameters. Everything else in scope at a
+              // row is accumulated per site by find_let_value, because
+              // compile_match and for-in truncate `local_names` at their
+              // boundaries -- a binder in an unrelated arm is not in scope at
+              // this call.
+              let params0: Array[String] = []
               let mut pi = 0
               while pi < Array::length(nparams) {
                 let (pn, _) = Array::get(nparams, pi)
-                Array::push(bound, pn)
+                Array::push(params0, pn)
                 pi = pi + 1
               }
-              collect_bound_names(nbody, bound)
               let mut k = 0
               while k < Array::length(plan) {
                 let a = Array::get(plan, k)
                 if pa_is_path_drop(a) {
                   let found: Array[Expr] = []
-                  find_let_value(nbody, a.name, found)
+                  let row_scope: Array[String] = []
+                  let seed: Array[String] = []
+                  let mut si = 0
+                  while si < Array::length(params0) {
+                    Array::push(seed, Array::get(params0, si))
+                    si = si + 1
+                  }
+                  find_let_value(nbody, a.name, seed, found, row_scope)
                   if Array::length(found) == 1 {
-                    report(name, a.name, Array::get(found, 0), ctors, bound, borrow_ret, view_ret, scalar_ret, heap_ret)
+                    report(name, a.name, Array::get(found, 0), ctors, row_scope, borrow_ret, view_ret, scalar_ret, heap_ret)
                   } else {
                     // Not a `let` in this body (a pattern bind or a parameter),
                     // or -- never observed -- an ambiguous name.

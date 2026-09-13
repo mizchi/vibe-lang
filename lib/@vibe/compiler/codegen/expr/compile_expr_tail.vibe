@@ -1275,6 +1275,48 @@ fn value_has_borrowed_branch_tail(e: Expr, ctx: CompileCtx) -> Bool {
   }
 }
 
+/// Binder names of one match-arm pattern, or `false` when the shape is one
+/// this cannot enumerate (`POr` and `PStruct` have no extractor in this
+/// package). The caller then declines the arm rather than walking it with an
+/// incomplete scope, which is the fail-closed direction: an unseen binder is
+/// exactly the shadow the scope check exists to catch.
+fn pvo_pat_binds(p: Pat, out: Array[String]) -> Bool with Exception {
+  if is_pbind(p) {
+    Array::push(out, get_pbind_name(p))
+    true
+  } else if is_pwild(p) || is_pint(p) || is_pbool(p) || is_pstring(p) {
+    true
+  } else if is_pctor(p) {
+    let args = get_pctor_args(p)
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(args) {
+      if pvo_pat_binds(Array::get(args, i), out) {
+        ()
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  } else if is_ptuple(p) {
+    let ps = get_ptuple_pats(p)
+    let mut ok = true
+    let mut i = 0
+    while i < Array::length(ps) {
+      if pvo_pat_binds(Array::get(ps, i), out) {
+        ()
+      } else {
+        ok = false
+      }
+      i = i + 1
+    }
+    ok
+  } else {
+    false
+  }
+}
+
 /// #2389 per-path release: does this value hand the binding a reference the
 /// scope OWNS -- the one the ordinary rule would have planned a scope-end drop
 /// for, had the branch merge not zeroed the count?
@@ -1295,17 +1337,29 @@ fn value_has_borrowed_branch_tail(e: Expr, ctx: CompileCtx) -> Bool {
 /// - a call to a NAMED function whose DECLARED return type is heap
 ///   (`ctx.heap_ret_names`, #791's signature scan) and which neither returns a
 ///   borrow (#707's `borrow_ret_names` / the intrinsic set) nor may return an
-///   interior view (#768's `borrow_view_ret`) -- and whose name is not bound
-///   LOCALLY, since all three of those tables are keyed by global name while
-///   the call dispatches to whatever the name resolves to here. A parameter or
-///   a local closure shadowing a heap-returning global would otherwise be read
-///   through the global's contract, exactly the case the `agg_ret` lookup
-///   below already excludes for the same reason (#724 round 2). Measured: with
-///   the scope check removed, `let mk = (ys) -> Array::get(ys, 0); let t =
-///   mk(xs)` under a heap-returning global `mk` emits the guarded drop for a
-///   binding holding an element `xs` owns (+18 B of code); no arrangement of
-///   it was found that turns that into a wrong answer, so the check is taken
-///   for the rule, not for a repro. That is the callee's own
+///   interior view (#768's `borrow_view_ret`) -- and whose name is bound
+///   NOWHERE that reaches this call. All three of those tables are keyed by
+///   global name while the call dispatches to whatever the name resolves to
+///   at the site, so a parameter or a local closure shadowing a
+///   heap-returning global would otherwise be read through the global's
+///   contract. The `agg_ret` lookup below excludes a local for the same
+///   reason (#724 round 2).
+///
+///   Scope is read from TWO places because neither alone is complete.
+///   `local_names` is the post-compilation array, and holds the binders of
+///   any straight-line spine the value compiled through -- but a branch
+///   truncates it (`compile_expr`'s if lowering restores `names_len_before`
+///   before the else arm; `compile_match` does the same between arms), so a
+///   shadow introduced INSIDE an arm is already gone from it when this runs.
+///   `bound` is therefore rebuilt as the walk descends: each wrapper carries
+///   its own binder into its body and each arm its pattern binds into that
+///   arm, dropped again on the way out. An arm whose pattern this cannot
+///   enumerate declines rather than being walked with an incomplete scope.
+///   Measured: with the scope check removed, `let mk = (ys) -> Array::get(ys,
+///   0); let t = mk(xs)` under a heap-returning global `mk` emits the guarded
+///   drop for a binding holding an element `xs` owns (+18 B of code); no
+///   arrangement of it was found that turns that into a wrong answer, so the
+///   check is taken for the rule, not for a repro. That is the callee's own
 ///   contract, read off its signature -- NOT the "any ECall is heap" default
 ///   `classify_let_value_heap` falls back to. That default is an
 ///   over-approximation deliberately chosen because a dup/drop no-ops on what
@@ -1323,7 +1377,7 @@ fn value_has_borrowed_branch_tail(e: Expr, ctx: CompileCtx) -> Bool {
 /// local, two stores and a guarded `rc_drop` for a heap figure that did not
 /// move -- 32,828 B either way -- and +2.84% fuel); a lambda; a loop; a
 /// `handle`.
-fn path_value_owned(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[String], ctx: CompileCtx) -> Bool with Exception {
   match e {
     ETuple(_) => true,
     EArray(_) => true,
@@ -1332,11 +1386,11 @@ fn path_value_owned(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Boo
       EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
         true
       } else {
-        find_local_slot(local_names, cn) < 0 && bsearch_leftmost(ctx.heap_ret_names, cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(ctx.borrow_ret_names, cn) < 0 && bsearch_leftmost(ctx.borrow_view_ret, cn) < 0
+        find_local_slot(local_names, cn) < 0 && !array_contains_str(bound, cn) && bsearch_leftmost(ctx.heap_ret_names, cn) >= 0 && !is_borrow_ret_builtin(cn) && bsearch_leftmost(ctx.borrow_ret_names, cn) < 0 && bsearch_leftmost(ctx.borrow_view_ret, cn) < 0
       },
       _ => false
     },
-    EIf(_, t, el) => path_value_owned(t, local_names, ctx) && path_value_owned(el, local_names, ctx),
+    EIf(_, t, el) => path_value_owned(t, local_names, bound, ctx) && path_value_owned(el, local_names, bound, ctx),
     // An arm-less match produces no value on any path, so there is nothing to
     // own; `&&` over zero arms would answer true.
     EMatch(_, arms) => if Array::length(arms) == 0 {
@@ -1345,22 +1399,42 @@ fn path_value_owned(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Boo
       let mut ok = true
       let mut i = 0
       while i < Array::length(arms) {
-        let (_, ab) = Array::get(arms, i)
-        if path_value_owned(ab, local_names, ctx) {
+        let (ap, ab) = Array::get(arms, i)
+        let mark = Array::length(bound)
+        if pvo_pat_binds(ap, bound) && path_value_owned(ab, local_names, bound, ctx) {
           ()
         } else {
           ok = false
         }
+        Array::truncate(bound, mark)
         i = i + 1
       }
       ok
     },
-    ELet(_, _, b, _) => path_value_owned(b, local_names, ctx),
-    ELetMut(_, _, b, _) => path_value_owned(b, local_names, ctx),
-    ELetRec(_, _, b) => path_value_owned(b, local_names, ctx),
-    ESeq(_, b) => path_value_owned(b, local_names, ctx),
-    EAssign(_, _, b) => path_value_owned(b, local_names, ctx),
-    EAssignOp(_, _, _, b) => path_value_owned(b, local_names, ctx),
+    ELet(n, _, b, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, n)
+      let r = path_value_owned(b, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      r
+    },
+    ELetMut(n, _, b, _) => {
+      let mark = Array::length(bound)
+      Array::push(bound, n)
+      let r = path_value_owned(b, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      r
+    },
+    ELetRec(n, _, b) => {
+      let mark = Array::length(bound)
+      Array::push(bound, n)
+      let r = path_value_owned(b, local_names, bound, ctx)
+      Array::truncate(bound, mark)
+      r
+    },
+    ESeq(_, b) => path_value_owned(b, local_names, bound, ctx),
+    EAssign(_, _, b) => path_value_owned(b, local_names, bound, ctx),
+    EAssignOp(_, _, _, b) => path_value_owned(b, local_names, bound, ctx),
     _ => false
   }
 }
@@ -1638,7 +1712,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     // the program and every one on the bump lane, never pays for
     // `path_value_owned`. Every operand is pure, so the order is a cost
     // choice only.
-    let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(ctx.rc_path_drop_names, name) && path_value_owned(value, local_names, ctx) && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
+    let path_drop = ctx.enable_rc && rc_kind > 0 && ctx.rc_drop_func_idx >= 0 && !is_borrow_ret_ext && !value_borrow_like && array_contains_str(ctx.rc_path_drop_names, name) && path_value_owned(value, local_names, array_empty(), ctx) && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
     let path_flag_l = if path_drop {
       // `local_names` is indexed BY wasm local index (compile_expr resolves an
       // identifier to its slot by position), so a flag local may only be
