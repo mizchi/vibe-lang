@@ -156,8 +156,8 @@ def gc_lists(text: str) -> tuple[list[str], list[tuple[str, int]], list[str], in
         return rest[: rest.index("\n    ]")]
 
     host_defs = [
-        (name, int(index))
-        for name, _params, index, _ret in re.findall(
+        (name, int(index), int(params), int(ret))
+        for name, params, index, ret in re.findall(
             r'\("([^"]+)",\s*(\d+),\s*(\d+),\s*(\d+)\)', block("let host_defs = [")
         )
     ]
@@ -169,9 +169,26 @@ def gc_lists(text: str) -> tuple[list[str], list[tuple[str, int]], list[str], in
     return use_host, host_defs, host_imports, hbo, int(header.group(1))
 
 
-def validate_gc_lists(manifest_names: set[str], text: str, import_types: dict[str, str] | None = None) -> int:
+def core_signature_shape(signature: str) -> tuple[int, int]:
+    """`(i64, i64) -> ()` becomes (2, 0): parameter count and whether it returns.
+
+    Parsed from the manifest's own `coreTypeSignatures` rather than transcribed,
+    so the arity check below introduces no table of its own.
+    """
+    lhs, _, rhs = signature.partition("->")
+    inner = lhs.strip().strip("()").strip()
+    params = len([part for part in inner.split(",") if part.strip()]) if inner else 0
+    return params, 0 if rhs.strip() == "()" else 1
+
+
+def validate_gc_lists(
+    manifest_names: set[str],
+    text: str,
+    import_types: dict[str, str] | None = None,
+    core_type_signatures: dict[str, str] | None = None,
+) -> int:
     use_host, host_defs, host_imports, hbo, header = gc_lists(text)
-    def_names = [name for name, _index in host_defs]
+    def_names = [name for name, _index, _params, _ret in host_defs]
 
     # Compared as SETS: `host_defs` is append-only by its own rule while
     # `use_host` is a boolean OR chain, so the two orders legitimately diverge
@@ -185,8 +202,8 @@ def validate_gc_lists(manifest_names: set[str], text: str, import_types: dict[st
 
     # `host_defs` indices ARE the call indices, so they must be 1..n in order.
     expected = list(range(1, len(host_defs) + 1))
-    if [index for _name, index in host_defs] != expected:
-        die(f"gc host_defs indices are not 1..{len(host_defs)} in order: {[i for _n, i in host_defs]}")
+    if [index for _name, index, _p, _r in host_defs] != expected:
+        die(f"gc host_defs indices are not 1..{len(host_defs)} in order: {[i for _n, i, _p, _r in host_defs]}")
 
     if len(host_imports) != len(host_defs):
         die(f"gc host_imports has {len(host_imports)} entries for {len(host_defs)} host_defs")
@@ -195,7 +212,7 @@ def validate_gc_lists(manifest_names: set[str], text: str, import_types: dict[st
     # indices that host_defs's absolute call indices address, so reordering two
     # entries of the same ABI type produces a module that validates and calls
     # the wrong host function (Codex on #2765, P2).
-    for position, ((def_name, _index), (import_name, _type_id)) in enumerate(zip(host_defs, host_imports), start=1):
+    for position, ((def_name, _index, _params, _ret), (import_name, _type_id)) in enumerate(zip(host_defs, host_imports), start=1):
         expected = gc_import_name_for(def_name)
         if expected != import_name:
             die(
@@ -224,6 +241,24 @@ def validate_gc_lists(manifest_names: set[str], text: str, import_types: dict[st
             declared = import_types.get(import_name)
             if declared is not None and declared != type_id:
                 die(f"gc host_imports {import_name!r} declares ABI type {type_id}, contract says {declared}")
+
+    # host_defs's `params` and `ret` are not derived from the import's type id --
+    # they feed `fn_param_counts` and `fn_returns_list` independently, so either
+    # can drift while the paired import still declares the old signature and the
+    # generated call is emitted against the wrong shape. Checked against the
+    # manifest's own coreTypeSignatures, so this adds no table: measured, all 22
+    # already agree (Codex on #2765, P2, third round).
+    if core_type_signatures is not None:
+        for (def_name, _index, params, ret), (import_name, type_id) in zip(host_defs, host_imports):
+            signature = core_type_signatures.get(type_id)
+            if signature is None:
+                die(f"gc host_imports {import_name!r} uses ABI type {type_id}, which the contract does not describe")
+            want_params, want_ret = core_signature_shape(signature)
+            if (params, ret) != (want_params, want_ret):
+                die(
+                    f"gc host_defs {def_name!r} declares {params} param(s)/ret={ret}, but its import"
+                    f" {import_name!r} is ABI type {type_id} = {signature!r} ({want_params} param(s)/ret={want_ret})"
+                )
     return len(host_defs)
 
 
@@ -276,7 +311,9 @@ def main() -> None:
     if bands["componentAdapterOnly"] & (rust | node):
         die("component-adapter-only imports leaked into a standalone provider")
 
-    gc_count = validate_gc_lists(all_names, GC.read_text(), manifest.get("importTypes", {}))
+    gc_count = validate_gc_lists(
+        all_names, GC.read_text(), manifest.get("importTypes", {}), manifest.get("coreTypeSignatures", {})
+    )
 
     print(f"host-runtime-contract: ok ({len(emitted)} static imports; {len(dynamic)} dynamic patterns; {len(portable)} portable; {gc_count} gc host imports)")
 
