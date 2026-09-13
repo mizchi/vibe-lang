@@ -3434,8 +3434,8 @@ fn dtd_interp_absorb_assigns(var_types: Array[(String, String)], e: Expr, struct
   out
 }
 
-/// Walk a binder's BODY, then drop whatever that body recorded for the names the
-/// binder introduced.
+/// Walk a binder's BODY with the names it introduces MASKED, then drop whatever
+/// that body recorded for them.
 ///
 /// #2745 (Codex, P1 round 6 on #2761): the absorb walk had no scope at all, so an
 /// inner `{ let mut x = a; x = a; .. }` pushed `x -> T` into the shared
@@ -3449,13 +3449,43 @@ fn dtd_interp_absorb_assigns(var_types: Array[(String, String)], e: Expr, struct
 /// so a recording the body made for an OUTER name it merely assigned survives --
 /// that one really did happen.
 fn dtd_interp_absorb_scoped(out: Array[(String, String)], names: Array[String], body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+  dtd_interp_absorb_scoped_bound(out, names, "", EUnit, body, struct_sets, fn_returns)
+}
+
+/// `dtd_interp_absorb_scoped`, with the binding each name takes while the body
+/// is walked.
+///
+/// #2745 (Codex, P1 round 11 on #2761): round 6 gave this walk the half that
+/// DROPS a binder's recordings afterwards and not the half that MASKS the outer
+/// spelling during. So `{ { let x = 1; y = x; 0 }; y }` read the OUTER `x: T`
+/// for the inner `x`, recorded `y` erased, and REFUSED a program that renders
+/// `1`. The same bug as round 6 and the opposite half of it.
+///
+/// A let's binder is seeded with its own value's classification and SHAPE; a
+/// pattern or loop binder takes "" and `EUnit`, because this walk cannot type it
+/// and an unknown that SHADOWS is the whole point -- reading the outer one is
+/// exactly what goes wrong.
+///
+/// Recording the shape here is what lets an absorbed assignment take a local
+/// aggregate apart: `{ let p = (a, 1); y = match p { (b, _) => b } }` classifies
+/// `y` through the same named-aggregate routes the value walk uses. Without it
+/// the walk had shapes on one side and not the other, which is the "two tables
+/// answering one question" shape that produced the projection bug in round 7.
+fn dtd_interp_absorb_scoped_bound(out: Array[(String, String)], names: Array[String], bound: String, val: Expr, body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   let mark = Array::length(out)
+  let mut bi = 0
+  while bi < Array::length(names) {
+    let nm = Array::get(names, bi)
+    Array::push(out, (nm, bound))
+    dtd_interp_record_shape(out, nm, val, struct_sets, out, fn_returns)
+    bi = bi + 1
+  }
   dtd_interp_absorb_into(out, body, struct_sets, fn_returns)
   let mut r = mark
   let mut w = mark
   while r < Array::length(out) {
     let e = Array::get(out, r)
-    if str_array_contains(names, e.0) {
+    if str_array_contains(names, e.0) || dtd_interp_key_owned_by(names, e.0) {
       ()
     } else {
       Array::set(out, w, e)
@@ -3466,11 +3496,11 @@ fn dtd_interp_absorb_scoped(out: Array[(String, String)], names: Array[String], 
   Array::truncate(out, w)
 }
 
-/// `dtd_interp_absorb_scoped` for a single binder.
-fn dtd_interp_absorb_scoped1(out: Array[(String, String)], name: String, body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
+/// `dtd_interp_absorb_scoped_bound` for a single binder.
+fn dtd_interp_absorb_scoped1(out: Array[(String, String)], name: String, bound: String, val: Expr, body: Expr, struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
   let names = empty_str_array()
   Array::push(names, name)
-  dtd_interp_absorb_scoped(out, names, body, struct_sets, fn_returns)
+  dtd_interp_absorb_scoped_bound(out, names, bound, val, body, struct_sets, fn_returns)
 }
 
 fn dtd_interp_absorb_exprs(out: Array[(String, String)], es: Array[Expr], struct_sets: Array[(String, Array[String])], fn_returns: Array[(String, String)]) -> Unit {
@@ -3537,16 +3567,16 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
     // the block. See dtd_interp_absorb_scoped.
     ELet(n, v, b, _) => {
       dtd_interp_absorb_into(out, v, struct_sets, fn_returns)
-      dtd_interp_absorb_scoped1(out, n, b, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, dtd_erased_interp_formal(v, struct_sets, out, fn_returns), v, b, struct_sets, fn_returns)
     },
     ELetMut(n, v, b, _) => {
       dtd_interp_absorb_into(out, v, struct_sets, fn_returns)
-      dtd_interp_absorb_scoped1(out, n, b, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, dtd_erased_interp_formal(v, struct_sets, out, fn_returns), v, b, struct_sets, fn_returns)
     },
     // A `let rec` binder is in scope for its own value as well as its body.
     ELetRec(n, v, b) => {
-      dtd_interp_absorb_scoped1(out, n, v, struct_sets, fn_returns)
-      dtd_interp_absorb_scoped1(out, n, b, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, "", EUnit, v, struct_sets, fn_returns)
+      dtd_interp_absorb_scoped1(out, n, dtd_erased_interp_formal(v, struct_sets, out, fn_returns), v, b, struct_sets, fn_returns)
     },
     ESeq(a, b) => {
       dtd_interp_absorb_into(out, a, struct_sets, fn_returns)
@@ -3738,6 +3768,114 @@ fn dtd_interp_field_key(name: String, field: String) -> String {
   String::concat(base, String::concat("$", field))
 }
 
+/// The synthetic NAME of an aggregate slot: the i-th element of `name`, or
+/// `name`'s `field`.
+///
+/// #2745 (Codex, P1 round 11 on #2761): a NESTED aggregate was thrown away.
+/// `let p = ((a, 1), 2); match p { ((b, _), _) => b }` printed `252` -- the
+/// pairing handed each element `EUnit` as its sub-scrutinee, so only a `PBind`
+/// could take the recorded classification and a nested `PTuple` blanked.
+///
+/// A slot gets a name of its own instead, and the sub-pattern is paired against
+/// `EIdent(that name)`. Every route that already answers for a NAMED aggregate
+/// -- the tuple, constructor and record routes below, and the alias copy --
+/// then answers for a nested one with no arm of its own, because a slot's
+/// records are spelled exactly like a binding's. `$` is not an identifier
+/// character, so `p$0` cannot collide with a real name, and a field name cannot
+/// contain `$`, so `p$0` and `p$value` cannot collide with each other.
+fn dtd_interp_elem_name(name: String, i: Int) -> String {
+  String::concat(name, String::concat("$", digit_str(i)))
+}
+
+fn dtd_interp_field_name(name: String, field: String) -> String {
+  String::concat(name, String::concat("$", field))
+}
+
+/// The key families a binding owns. Read by `dtd_interp_copy_records`, which is
+/// the one place that has to know the whole set -- everywhere else names a
+/// family through its own key builder.
+fn dtd_interp_key_families() -> Array[String] {
+  let out = empty_str_array()
+  Array::push(out, "__Vshape$")
+  Array::push(out, "__Vtupelem$")
+  Array::push(out, "__Vfield$")
+  Array::push(out, "__arrelem$")
+  out
+}
+
+/// Is `key` a synthetic record owned by one of `names`, or by one of their
+/// nested slots? A binder's shape must not outlive the binder's scope any more
+/// than its classification does, so the absorb walk's compaction drops both.
+fn dtd_interp_key_owned_by(names: Array[String], key: String) -> Bool {
+  let fams = dtd_interp_key_families()
+  let mut fi = 0
+  let mut hit = false
+  while fi < Array::length(fams) {
+    let f = Array::get(fams, fi)
+    if String::starts_with(key, f) {
+      let rest = String::substring(key, String::length(f), String::length(key))
+      let mut ni = 0
+      while ni < Array::length(names) {
+        let nm = Array::get(names, ni)
+        if rest == nm || String::starts_with(rest, String::concat(nm, "$")) {
+          hit = true
+        } else {
+          ()
+        }
+        ni = ni + 1
+      }
+    } else {
+      ()
+    }
+    fi = fi + 1
+  }
+  hit
+}
+
+/// Copy every synthetic record `src` owns -- its own and every nested slot's --
+/// onto `name`.
+///
+/// A key is `<family>$<owner>` or `<family>$<owner>$<slot>`, and a nested
+/// slot's owner is itself `<owner>$<slot>`, so ONE prefix test per family
+/// carries the whole tree at any depth. Round 7 made the alias relation
+/// transitive across HOPS by construction; this makes it transitive across
+/// DEPTH the same way, rather than growing a rule per level.
+///
+/// Entries are pushed in `var_types` order, so a slot rebound later in the
+/// environment is pushed later and still wins the backward scan.
+fn dtd_interp_copy_records(out: Array[(String, String)], var_types: Array[(String, String)], name: String, src: String) -> Unit {
+  let fams = dtd_interp_key_families()
+  let srcdollar = String::concat(src, "$")
+  // The length is SNAPSHOT, because `out` and `var_types` may be the same
+  // array: the absorb walk records a binder's shape into the environment it is
+  // reading. Re-reading the length there would append to the array being
+  // scanned and never terminate.
+  let n = Array::length(var_types)
+  let mut vi = 0
+  while vi < n {
+    let (k, v) = Array::get(var_types, vi)
+    let mut fi = 0
+    while fi < Array::length(fams) {
+      let f = Array::get(fams, fi)
+      if String::starts_with(k, f) {
+        let rest = String::substring(k, String::length(f), String::length(k))
+        if rest == src {
+          Array::push(out, (String::concat(f, name), v))
+        } else if String::starts_with(rest, srcdollar) {
+          let tail = String::substring(rest, String::length(src), String::length(rest))
+          Array::push(out, (String::concat(f, String::concat(name, tail)), v))
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      fi = fi + 1
+    }
+    vi = vi + 1
+  }
+}
+
 /// #2745 (Codex, P1 round 6 on #2761): a tuple literal bound to a NAME is still
 /// the shape a later `match` takes apart, but the scrutinee then arrives as an
 /// `EIdent` and the pairing blanked every payload -- measured, `{ let pair =
@@ -3753,6 +3891,14 @@ fn dtd_interp_field_key(name: String, field: String) -> String {
 /// Elements are classified in the OUTER environment, which is where a tuple
 /// literal's elements are evaluated.
 fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
+  // #2745 round 11: a binding MASKS whatever an outer one of the same spelling
+  // recorded, and it has to do so even when it records nothing itself. Without
+  // this, `let p = (a, 1); { let p = g(); match p { (b, _) => b } }` reads the
+  // OUTER `p`'s elements for the inner `p` -- the round-6 and round-11 mistake
+  // in its third place. Blanking first and letting each arm push the real shape
+  // afterwards keeps one statement of the rule: `lookup_var_type` scans
+  // backward, so the later push wins.
+  Array::push(out, (dtd_interp_shape_key(name), ""))
   match val {
     ETuple(es) => {
       Array::push(out, (dtd_interp_shape_key(name), dtd_interp_tuple_shape()))
@@ -3797,6 +3943,9 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
       while i < Array::length(fields) {
         let (fname, fe) = Array::get(fields, i)
         Array::push(out, (dtd_interp_field_key(name, fname), dtd_erased_interp_formal(fe, struct_sets, var_types, fn_returns)))
+        // #2745 round 11: the field's own shape, under the field's synthetic
+        // name, so a nested pattern resolves through the named-aggregate routes.
+        dtd_interp_record_shape(out, dtd_interp_field_name(name, fname), fe, struct_sets, var_types, fn_returns)
         i = i + 1
       }
     },
@@ -3829,40 +3978,7 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
     // the first missing index, which preserves the recorded ARITY -- the
     // pairing rejects a length it cannot confirm, and half a copy would defeat
     // that.
-    EIdent(src, _) => {
-      match lookup_var_type(var_types, dtd_interp_shape_key(src)) {
-        Some(k) => Array::push(out, (dtd_interp_shape_key(name), k)),
-        None => ()
-      }
-      match lookup_var_type(var_types, array_elem_key(src)) {
-        Some(t) => Array::push(out, (array_elem_key(name), t)),
-        None => ()
-      }
-      // A record's fields are NAMED, so there is no index range to probe --
-      // the source's keys are found by their prefix instead.
-      let fpre = dtd_interp_field_key(src, "")
-      let mut vi = 0
-      while vi < Array::length(var_types) {
-        let (k, v) = Array::get(var_types, vi)
-        if String::starts_with(k, fpre) {
-          Array::push(out, (dtd_interp_field_key(name, String::substring(k, String::length(fpre), String::length(k))), v))
-        } else {
-          ()
-        }
-        vi = vi + 1
-      }
-      let mut i = 0
-      let mut more = true
-      while more && i < 9 {
-        match lookup_var_type(var_types, dtd_interp_tuple_elem_key(src, i)) {
-          Some(t) => {
-            Array::push(out, (dtd_interp_tuple_elem_key(name, i), t))
-            i = i + 1
-          },
-          None => more = false
-        }
-      }
-    },
+    EIdent(src, _) => dtd_interp_copy_records(out, var_types, name, src),
     _ => ()
   }
 }
@@ -3909,9 +4025,13 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
       // reserved keys at that binding (dtd_interp_record_shape); a missing
       // key means the name does not hold a tuple literal this walk saw, so the
       // whole pattern blanks rather than pairing against half an answer.
-      // `EUnit` as each element's scrutinee is deliberate: only a `PBind`
-      // sub-pattern can take the recorded formal, and anything nested blanks --
-      // this route carries a classification, not an expression to descend into.
+      //
+      // Each element is paired against its own SYNTHETIC NAME rather than
+      // `EUnit`. This route used to pass `EUnit` and say that carrying a
+      // classification rather than an expression was deliberate; it was not --
+      // a nested pattern then blanked, and `((b, _), _)` printed `252`
+      // (#2745 round 11). A slot's records are spelled exactly like a
+      // binding's, so the recursive call lands back in this same arm.
       EIdent(sname, _) => if dtd_interp_shape_is(var_types, sname, dtd_interp_tuple_shape()) && dtd_interp_tuple_elems_known(var_types, sname, Array::length(ps)) {
         let mut i = 0
         while i < Array::length(ps) {
@@ -3919,7 +4039,7 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
             Some(t) => t,
             None => ""
           }
-          dtd_interp_bind_pat_into(out, Array::get(ps, i), EUnit, ef, struct_sets, var_types, fn_returns)
+          dtd_interp_bind_pat_into(out, Array::get(ps, i), EIdent(dtd_interp_elem_name(sname, i), -1), ef, struct_sets, var_types, fn_returns)
           i = i + 1
         }
       } else {
@@ -3952,7 +4072,7 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
             Some(t) => t,
             None => ""
           }
-          dtd_interp_bind_pat_into(out, Array::get(ps, i), EUnit, ef, struct_sets, var_types, fn_returns)
+          dtd_interp_bind_pat_into(out, Array::get(ps, i), EIdent(dtd_interp_elem_name(sname, i), -1), ef, struct_sets, var_types, fn_returns)
           i = i + 1
         }
       } else {
@@ -3983,7 +4103,7 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
         while i < Array::length(fps) {
           let (fname, fpat) = Array::get(fps, i)
           match lookup_var_type(var_types, dtd_interp_field_key(vname, fname)) {
-            Some(ft) => dtd_interp_bind_pat_into(out, fpat, EUnit, ft, struct_sets, var_types, fn_returns),
+            Some(ft) => dtd_interp_bind_pat_into(out, fpat, EIdent(dtd_interp_field_name(vname, fname), -1), ft, struct_sets, var_types, fn_returns),
             None => dtd_interp_blank_binders(out, fpat)
           }
           i = i + 1
@@ -4031,6 +4151,10 @@ fn dtd_interp_record_elems(out: Array[(String, String)], name: String, es: Array
   while i < Array::length(es) && i < 9 {
     let el = Array::get(es, i)
     Array::push(out, (dtd_interp_tuple_elem_key(name, i), dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns)))
+    // #2745 round 11: the element's own shape, under the element's synthetic
+    // name. The recursion is on a STRUCTURALLY SMALLER expression, so it is
+    // bounded by the literal's nesting depth.
+    dtd_interp_record_shape(out, dtd_interp_elem_name(name, i), el, struct_sets, var_types, fn_returns)
     i = i + 1
   }
 }

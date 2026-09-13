@@ -1,0 +1,42 @@
+//# #2745: an ASSIGNMENT that takes a local aggregate apart.
+//
+// Self-probed while fixing round 11, and measured on the round-11 candidate
+// before this landed: `{ let mut y = idf(a); { let p = (a, 1);
+// y = match p { (b, _) => b }; 0 }; y }` printed a 3-digit pointer decimal.
+//
+// The absorb walk -- the half that records what an assignment left in a name --
+// pushed only a binder's CLASSIFICATION, never its shape, while the value walk
+// recorded both. So a name bound to an aggregate inside an absorbed block had a
+// shape on one side of this pass and not the other, and every named-aggregate
+// route declined for the assignment that the value walk answers for a read.
+// That is the "two tables answering one question" shape that produced the
+// projection bug in round 7, here as one table with two writers.
+//
+// `idf` is a nested lambda, so `let mut y = idf(a)` is the initializer this
+// walk declines -- which is what leaves the ASSIGNMENT as the only thing that
+// can classify `y`, and so isolates the hole from the initializer routes that
+// already answer.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) -> U {
+      u
+    }
+    "\{ { let mut y = idf(a)
+    { let p = (a, 1)
+      y = match p {
+        (b, _) => b
+      }
+      0 }
+    y } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

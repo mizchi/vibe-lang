@@ -1,0 +1,257 @@
+//# #2745 control: a NESTED binder whose interpolation is CONCRETE must compile.
+//
+// `lambda_bound_toplevel_witness_test.vibe` pins the edit the refusals name --
+// move the binder to the top level -- and that is what guards a refusal which
+// grew to cover top-level binders. It does NOT guard a refusal that grew too
+// wide AT A NESTED BINDER, and several of its rows were written as though it
+// did: `shadowed_assign_scope` and its neighbours reproduce a false refusal's
+// shape at a top-level binder, where the refusal cannot fire at all. Measured
+// on the round-10 compiler, the round-11 false refusal's shape compiles clean
+// at a top level binder and is REFUSED one binder in, so those rows answer the
+// same either way and prove nothing about the classification.
+//
+// This file is the missing half. Every row keeps the binder NESTED, where the
+// refusal is live, and interpolates a value this walk must classify CONCRETE.
+// A classification that widens by one slot, one hop or one level refuses a row
+// here, and the file stops compiling -- which is the only way a false refusal
+// announces itself, since the `_refused` fixtures keep refusing either way.
+
+struct Qt {
+  w: Int
+}
+
+enum Two {
+  Pair(Int, Int)
+}
+
+struct Hold {
+  hot: Int;
+  cold: Int
+}
+
+struct Box3[U] {
+  pair: (U, Int)
+}
+
+// #2745 round 11: the scoped absorb walk MASKS each binder while the body is
+// walked, not merely drops its recordings afterwards. Without the mask the
+// inner `let x = 1` read the OUTER `x: T`, recorded `y` erased, and this row
+// was refused. Measured: refused on the round-10 compiler, renders `1` here.
+fn absorb_scope_mask(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let x = a
+    let mut y = 0
+    "\{ { { let x = 1
+      y = x
+      0 }
+      y } }"
+  }
+  inner(q)
+}
+
+// #2745 round 6: the opposite half -- an inner `let mut x = a` must not leak
+// `x -> T` out to the concrete outer `x` the tail reads.
+fn shadowed_assign_scope(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let x = 7
+    "\{ { { let mut x = a
+      x = a
+      0 }
+      x } }"
+  }
+  inner(q)
+}
+
+// A named aggregate's slot that is NOT the formal still renders, for each of
+// the three aggregate kinds and for an alias hop and a projection.
+fn tuple_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let pair = (a, 9)
+    match pair {
+      (_, c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn alias_chain_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p1 = (a, 4)
+    let p2 = p1
+    match p2 {
+      (_, c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn tuple_proj_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = (a, 8)
+    p.1 } }"
+  }
+  inner(q)
+}
+
+fn ctor_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let v = Pair(1, 6)
+    match v {
+      Pair(_, c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn record_other_field(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let r = Hold::{ hot: 2, cold: 3 }
+    match r {
+      Hold::{ hot, cold } => cold
+    } } }"
+  }
+  inner(q)
+}
+
+fn array_elem_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let xs = [5]
+    Array::get(xs, 0) } }"
+  }
+  inner(q)
+}
+
+// #2745 round 11, the depth axis on the green side. Each of the three routes
+// that carry a nested shape must leave the NON-formal slot renderable, or the
+// fix that closed the depth axis has closed it too far.
+fn nested_tuple_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = ((a, 1), 2)
+    match p {
+      ((_, c), _) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn nested_alias_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = ((a, 1), 2)
+    let r = p
+    match r {
+      ((_, _), c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn nested_field_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let r = Box3::{ pair: (a, 1) }
+    match r {
+      Box3::{ pair } => match pair {
+        (_, c) => c
+      }
+    } } }"
+  }
+  inner(q)
+}
+
+// #2745 (self-probed while fixing round 11): the ABSORB walk records a
+// binder's shape too, so an assignment that takes a local aggregate apart is
+// classified the same way a read of it is. These two rows are the green side of
+// that: the inner `p` MASKS the outer one, and a slot that is not the formal
+// still renders. Without the mask, recording the shape would have made the
+// first row a false refusal -- the recording and the masking are one change.
+fn absorb_shape_mask(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut y = 0
+    { let p = (a, 1)
+      { let p = (7, 1)
+        y = match p {
+          (b, _) => b
+        } }
+      0 }
+    y } }"
+  }
+  inner(q)
+}
+
+fn absorb_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut y = 0
+    { let p = (a, 6)
+      y = match p {
+        (_, c) => c
+      }
+      0 }
+    y } }"
+  }
+  inner(q)
+}
+
+fn nested_all_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = ((3, 1), 2)
+    match p {
+      ((b, _), _) => b
+    } } }"
+  }
+  inner(q)
+}
+
+test "#2745: a nested binder's masked inner let renders the concrete value" {
+  inspect(absorb_scope_mask(Qt::{ w: 5 }), content = "1")
+}
+
+test "#2745: an inner shadowed assignment does not escape its scope" {
+  inspect(shadowed_assign_scope(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a named tuple's non-formal slot still renders" {
+  inspect(tuple_other_slot(Qt::{ w: 5 }), content = "9")
+}
+
+test "#2745: a chained alias's non-formal slot still renders" {
+  inspect(alias_chain_other_slot(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: a projection of the non-formal slot still renders" {
+  inspect(tuple_proj_other_slot(Qt::{ w: 5 }), content = "8")
+}
+
+test "#2745: a constructor payload that is not the formal still renders" {
+  inspect(ctor_other_slot(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: a record field that is not the formal still renders" {
+  inspect(record_other_field(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: an element of a concrete array still renders" {
+  inspect(array_elem_concrete(Qt::{ w: 5 }), content = "5")
+}
+
+test "#2745: a NESTED tuple's non-formal slot still renders" {
+  inspect(nested_tuple_other_slot(Qt::{ w: 5 }), content = "1")
+}
+
+test "#2745: an aliased nested tuple's outer non-formal slot still renders" {
+  inspect(nested_alias_other_slot(Qt::{ w: 5 }), content = "2")
+}
+
+test "#2745: a nested tuple inside a record field still renders" {
+  inspect(nested_field_other_slot(Qt::{ w: 5 }), content = "1")
+}
+
+test "#2745: a wholly concrete nested tuple still renders" {
+  inspect(nested_all_concrete(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: an absorbed assignment reads the INNER shadowing aggregate" {
+  inspect(absorb_shape_mask(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: an absorbed assignment's non-formal slot still renders" {
+  inspect(absorb_other_slot(Qt::{ w: 5 }), content = "6")
+}

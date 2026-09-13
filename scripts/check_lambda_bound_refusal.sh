@@ -88,10 +88,9 @@ for src in $FIXTURE_GLOB; do
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
     "$src" "$out" _start >/dev/null 2>&1 || true
-  if [ -s "$out" ]; then
-    echo "[lambda-bound-refusal] FAIL: $src compiled; expected a compile-time refusal (#2737)" >&2
-    exit 1
-  fi
+  # Classified BEFORE the refusal test, so the "it compiled" failure can name the
+  # fixture's own issue. It named #2737 for every family, which is wrong for the
+  # 23 erased-interpolation fixtures and sends a reader to the wrong thread.
   case "$name" in
     lambda_bound_erased_interp_*) reason="$erased_reason"; issue="#2745" ;;
     lambda_bound_dispatch_*) reason="$dispatch_reason"; issue="#2737" ;;
@@ -101,6 +100,10 @@ for src in $FIXTURE_GLOB; do
       exit 1
       ;;
   esac
+  if [ -s "$out" ]; then
+    echo "[lambda-bound-refusal] FAIL: $src compiled; expected a compile-time refusal ($issue)" >&2
+    exit 1
+  fi
   if ! grep -qF "$reason" "$out.diag" 2>/dev/null; then
     echo "[lambda-bound-refusal] FAIL: $src was refused without the $issue message" >&2
     cat "$out.diag" >&2 2>/dev/null || true
