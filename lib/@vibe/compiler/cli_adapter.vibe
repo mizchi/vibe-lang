@@ -1594,23 +1594,32 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
     // #cov: `vibe test/run --coverage` sets VIBE_COVERAGE=1 so the user file (and
     // its imports) is compiled with function/branch hit instrumentation; running
     // the produced wasm fills the bitmap that the runner reads via VIBE_COV_OUT.
+    // #2510: the incremental typecheck telemetry request. Three placements,
+    // and each one is load-bearing for the same property -- a sidecar exists
+    // only for an invocation that produced a compile:
+    //
+    //   READ AND CLEARED HERE, outside and before the `handle`, so it covers
+    //   the early `return emit_compile_diag(...)` paths (the ADR-0068 entry
+    //   precheck and the closure gate) which are returns, not throws, and so
+    //   the exception arm below can see the binding at all.
+    //   PUBLISHED LAST inside the block, past every sidecar.
+    //   REMOVED AGAIN in the exception arm.
+    //
+    // The first two rounds of review moved this write later twice, and both
+    // times a later failure point turned up. Ordering alone cannot settle it:
+    // any sidecar added after the write reopens the hole. The exception arm is
+    // what makes the property hold by construction instead.
+    let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+    if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
+      Fs::remove(fs_telemetry_out)
+    } else {
+      ()
+    }
+    // Set from the env on every invocation, not merely enabled: a long-lived
+    // instance that served a telemetry request must not leave counting on for
+    // the next caller.
+    set_incremental_typecheck_telemetry_enabled(fs_telemetry_out != "")
     return handle {
-      // #2510: the incremental typecheck telemetry request, read and CLEARED
-      // first -- before the ADR-0068 precheck below, which returns early on a
-      // rejected entry. Clearing it later would leave an earlier successful
-      // run's sidecar in place for a compile that failed, which is exactly the
-      // "never leave a previous run looking like telemetry for a failed one"
-      // property this is supposed to have (Codex P2 on this PR).
-      let fs_telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
-      if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
-        Fs::remove(fs_telemetry_out)
-      } else {
-        ()
-      }
-      // Set from the env on every invocation, not merely enabled: a long-lived
-      // instance that served a telemetry request must not leave counting on
-      // for the next caller.
-      set_incremental_typecheck_telemetry_enabled(fs_telemetry_out != "")
       // Request validation and stale-sidecar deletion happened before every
       // CLI early return above. This branch now only consumes the validated
       // request while preserving the ordinary compile-path selection below.
@@ -1731,16 +1740,6 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       } else {
         ()
       }
-      // #2510: publish the captured telemetry HERE -- past the closure gate
-      // and past the primary artifact, so a sidecar only ever describes a
-      // compile that produced one. Deliberately AFTER the mark above: the
-      // phase measurement this telemetry exists to steer reads that boundary,
-      // and a write before it would land in the number it is meant to explain.
-      if fs_telemetry_out != "" {
-        Fs::write_file(fs_telemetry_out, fs_telemetry_json)
-      } else {
-        ()
-      }
       // Best-effort `.funcmap` sidecar (entry-file top-level funcs -> line). A
       // failure to build/write it must NOT fail the compile (the wasm is already
       // written), so swallow any Exception::Throw here. The discarded result is bound
@@ -1784,6 +1783,16 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       } else {
         ()
       }
+      // #2510: published LAST, past every sidecar including the
+      // failure-propagating artifact-input trace, and past the completion mark
+      // so an opt-in observation never lands inside the phase numbers it
+      // exists to explain. The counters were captured at the typing walk's
+      // boundary, so publishing here does not widen what they describe.
+      if fs_telemetry_out != "" {
+        Fs::write_file(fs_telemetry_out, fs_telemetry_json)
+      } else {
+        ()
+      }
       0
     } with {
     // #1514: the evidence-passing culprit marker's offsets index whichever
@@ -1791,7 +1800,18 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
     // only when the span provably spells the culprit there (see
     // emit_compile_diag_fs_located). Everything else degrades to the
     // stripped, unlocated message as before.
-    Exception::Throw(msg) => emit_compile_diag_fs_located(output_path, msg, input_path) }
+    Exception::Throw(msg) => {
+      // #2510: a throw anywhere above -- including from a sidecar published
+      // after the telemetry write -- must not leave observations behind. This
+      // is what makes "a sidecar only exists for a compile that produced one"
+      // independent of where the write sits.
+      if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
+        Fs::remove(fs_telemetry_out)
+      } else {
+        ()
+      }
+      emit_compile_diag_fs_located(output_path, msg, input_path)
+    } }
   }
   // #2149 `vibe fmt`: format a source file and write the result. Same
   // (input, output) interface as `vibe normalize` below.
