@@ -1477,43 +1477,18 @@ fn path_value_owned(e: Expr, local_names: Array[String], bound: Array[String], c
 /// a single path that hands back a borrow makes that drop a premature free.
 /// Unowned leaves:
 ///
-/// - an identifier THIS WRAPPER bound to a borrowed value, so the borrow
-///   propagates: `let t = <borrow>` followed by a branch handing back `t`
-///   stays borrowed all the way out. `bound` / `bound_owned` carry the flag,
-///   and a later binder of the same spelling shadows an earlier one because
-///   the lookup takes the last match.
-///
-///   An identifier from an ENCLOSING scope is NOT one of these. It is either
-///   a borrow the outer binding will release itself, or the last owning use
-///   of that binding -- in which case the planner MOVES the reference here
-///   and the outer binding gets no scope-end drop, so declining this one
-///   leaks the allocation (measured at 80 B per iteration; the shape is
-///   `via_move` in fixtures/rc_reclaim_leak_test.vibe). Codegen cannot tell
-///   the two apart from syntax, and the alias-dup machinery the top-level
-///   `is_eident` arm drives already answers it, so this leaves that class
-///   exactly as it was.
+/// - an identifier without an owned reference. For an enclosing binding, use
+///   the heap ownership record used by the direct alias arm, excluding the
+///   borrowed bindings handled by `value_has_borrowed_branch_tail`. Perceus
+///   moves an owner's last reference into this result (or retains a non-last
+///   use); an alias of a borrowed value has no such reference. For an inner
+///   binder, `bound` / `bound_owned` carry the initializer's classification,
+///   keeping a chain (`let t = <borrow>` then a branch returning `t`) borrowed.
 /// - a projection (`EDot`): a field read is a view into its parent.
-/// - a call to a borrow-returning builtin or to a name in #707's
-///   `borrow_ret_names`. Those never hand back a fresh allocation, which is
-///   what makes declining the drop safe.
-///
-///   #768's `borrow_view_ret` is deliberately NOT one of them. A may-return-
-///   view callee MAY also return fresh, so its binding has to KEEP its
-///   scope-end drop or the fresh result leaks -- which is why the direct-call
-///   arm above does not consult that set either, and why the planner marks
-///   the binding through `pctx_mark_view_call` instead. Reading it here made
-///   the wrapped form more aggressive than the bare call and leaked: measured
-///   at +5,952 and +7,104 bytes/op on the two parser benches the
-///   `bench-regression` gate tracks.
-/// A call through a name bound LOCALLY -- a parameter, or a local closure --
-/// is NOT one of them, and is the reason the test above answers `false` for
-/// one rather than falling through to the tables. Those are keyed by GLOBAL
-/// name, so reading one for a local spelling answers about a different
-/// function; but declining on that ground costs +8.6% to +24% of the
-/// allocation in the parser and checker benches (the whole of this rule's
-/// measured cost -- with it out, they are byte-identical to main), against a
-/// silent-wrong that needs the closure to return a borrow. That trade is
-/// #2754, with the per-series numbers, and is deliberately not made here.
+/// - a call to a borrow-returning builtin or to `borrow_ret_names`, matching
+///   the direct-call arm of `classify_let_value_heap`. The planner separately
+///   handles `borrow_view_ret` on straight-line spines; that conservative
+///   may-view set is not a result-ownership contract for branch leaves.
 /// - a match arm whose pattern `pvo_pat_binds` cannot enumerate: an unseen
 ///   binder is exactly the shadow this scope check exists to catch.
 ///
@@ -1526,7 +1501,7 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
     EIdent(x, _) => {
       let bi = find_local_slot(bound, x)
       if bi < 0 {
-        false
+        !array_contains_str(ctx.heap_binding_names, x) || (array_contains_str(ctx.loop_borrowed_names, x) && !array_contains_str(ctx.ref_cell_names, x))
       } else {
         Array::get(bound_owned, bi) == 0
       }
@@ -1536,6 +1511,8 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
       EIdent(cn, _) => if is_ctor_call(e, ctx.ctor_table) {
         false
       } else if find_local_slot(bound, cn) >= 0 || find_local_slot(local_names, cn) >= 0 {
+        // Keep the existing owning-call ABI for callbacks. A local spelling
+        // cannot resolve through the global borrow-return tables.
         false
       } else {
         is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0
@@ -1549,18 +1526,17 @@ fn value_spine_borrowed(e: Expr, local_names: Array[String], bound: Array[String
       while i < Array::length(arms) {
         let (ap, ab) = Array::get(arms, i)
         let mark = Array::length(bound)
-        // `pvo_pat_binds` is consulted only to SHADOW: an arm binder is a
-        // fresh name, so a leaf spelling it reads the payload and not an
-        // outer binder this wrapper marked borrowed. Whatever it enumerates
-        // is flagged owned, and a pattern it cannot enumerate needs no
-        // special case -- an unpushed binder reads as owned too, which is
-        // the answer a leaf outside `bound` already gets.
-        let _pb = pvo_pat_binds(ap, bound)
-        vsb_pad_owned(bound, bound_owned, 1)
-        if value_spine_borrowed(ab, local_names, bound, bound_owned, ctx) {
-          found = true
+        if pvo_pat_binds(ap, bound) {
+          // bind_match_pat retains a payload when the arm consumes it. A
+          // payload returned through this spine transfers that reference.
+          vsb_pad_owned(bound, bound_owned, 1)
+          if value_spine_borrowed(ab, local_names, bound, bound_owned, ctx) {
+            found = true
+          } else {
+            ()
+          }
         } else {
-          ()
+          found = true
         }
         Array::truncate(bound, mark)
         Array::truncate(bound_owned, mark)
@@ -1612,7 +1588,9 @@ fn vsb_pad_owned(bound: Array[String], bound_owned: Array[Int], flag: Int) -> In
 /// `bound_owned`, so a name that shadows an outer binder of the other kind
 /// answers for the inner one (`find_local_slot` takes the LAST match).
 fn vsb_under_binder(n: String, v: Expr, b: Expr, local_names: Array[String], bound: Array[String], bound_owned: Array[Int], ctx: CompileCtx) -> Bool with Exception {
-  let v_borrowed = value_spine_borrowed(v, local_names, bound, bound_owned, ctx)
+  // A bare projection is borrowed, but binding it emits an immediate retain
+  // in classify_let_value_heap. The new name therefore owns its reference.
+  let v_borrowed = !is_edot(v) && value_spine_borrowed(v, local_names, bound, bound_owned, ctx)
   let mark = Array::length(bound)
   Array::push(bound, n)
   if v_borrowed {

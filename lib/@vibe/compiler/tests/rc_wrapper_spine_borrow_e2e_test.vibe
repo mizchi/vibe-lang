@@ -45,7 +45,7 @@ let prelude = "enum Node {\n  Leaf(Int);\n  Pair(Node, Node)\n}\nlet rec total: 
 
 //# Tests
 
-// A fourth shape belongs to this class and is NOT here: a callee held in a
+// Callback return ownership is a separate case: a callee held in a
 // PARAMETER (`let t = mk(xs)` with `mk` a closure argument) reaches the same
 // hole with no wrapper at all, because the contract tables are keyed by
 // global name. Declining on that ground measured +8.6% to +24% of the
@@ -74,12 +74,34 @@ test "the same hole with no branch anywhere in the value" {
 }
 
 test "a block ending in an allocation still owns it" {
-  // The control in the other direction: declining a drop is only correct
-  // when the binding really did not acquire a reference. A block whose spine
-  // leaf allocates must keep its ordinary scope-end drop, so this case would
-  // catch a fix that simply stopped classifying block-valued lets as heap.
-  // The leak direction itself is bounded by fixtures/rc_reclaim_leak_test.vibe.
+  // Check the value result of an allocating leaf. Reclamation needs a heap
+  // assertion: move_through_wrapper in fixtures/rc_reclaim_leak_test.vibe
+  // pins that separately, since a leaked owner still gives the right value.
   let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let k = 1\n    Pair(Leaf(k), Leaf(2))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> {\n  pick()\n}")
   let _ = assert_bump_rc_agree(src, "block_alloc", "30715")
+  ()
+}
+
+test "an outer owner retained for a later use survives a wrapper" {
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let x = Pair(Leaf(3), Leaf(4))\n  let r = {\n    let t = { let k = 0; x }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(x) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
+  let _ = assert_bump_rc_agree(src, "outer_owner_live", "70715")
+  ()
+}
+
+test "a wrapper returning an outer borrowed alias keeps the container alive" {
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let x = Array::get(xs, 0)\n    let alias = x\n    let t = { let k = 0; alias }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
+  let _ = assert_bump_rc_agree(src, "outer_borrow_alias", "70715")
+  ()
+}
+
+test "a bare projection returned through a block stays borrowed" {
+  let src = String::concat(prelude, "struct Holder { node: Node }\nlet pick: () -> Int = () -> {\n  let holder = Holder::{ node: Pair(Leaf(3), Leaf(4)) }\n  let r = {\n    let t = { let k = 0; holder.node }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(holder.node) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
+  let _ = assert_bump_rc_agree(src, "bare_projection", "70715")
+  ()
+}
+
+test "a pattern payload returned through a block owns its retained reference" {
+  let src = String::concat(prelude, "let pick: () -> Int = () -> {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = {\n    let t = {\n      let k = 0\n      match Array::get(xs, 0) {\n        Pair(left, _) => left,\n        Leaf(v) => Leaf(v)\n      }\n    }\n    Leaf(total(t))\n  }\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\nlet main: () -> Int = () -> { pick() }")
+  let _ = assert_bump_rc_agree(src, "borrowed_pattern_payload", "30715")
   ()
 }

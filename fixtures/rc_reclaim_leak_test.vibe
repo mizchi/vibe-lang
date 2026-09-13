@@ -285,6 +285,56 @@ let is_node = (t: Tree) -> Bool {
   }
 }
 
+// #2750: returning an outer owner from a block moves its initial reference
+// into the destination. Neither binding may abandon that reference: treating
+// the block result as borrowed leaked 32 B per call despite correct values.
+struct WrapperPair {
+  a: Int;
+  b: Int
+}
+
+fn move_through_wrapper(i: Int) -> Int {
+  let x = WrapperPair::{ a: i, b: i + 1 }
+  let y = {
+    let k = 0
+    x
+  }
+  y.a + y.b
+}
+
+fn allocate_wrapper_pair(i: Int) -> WrapperPair {
+  WrapperPair::{ a: i, b: i + 1 }
+}
+
+// A field binding acquires a retained reference before the wrapper returns it.
+fn move_projection_through_wrapper(i: Int) -> Int {
+  let x = (allocate_wrapper_pair(i), 0)
+  let y = {
+    let field = x.0
+    field
+  }
+  y.a + y.b
+}
+
+// A consumed pattern payload also acquires a reference from its scrutinee.
+fn move_pattern_through_wrapper(i: Int) -> Int {
+  let x = (allocate_wrapper_pair(i), 0)
+  let y = {
+    let k = 0
+    match x {
+      (field, _) => field
+    }
+  }
+  y.a + y.b
+}
+
+// Recursive parser callbacks return fresh tuples. A callback's result must
+// not lose its ownership merely because the callee is held in a parameter.
+fn consume_callback_pair(make: (Int) -> WrapperPair, i: Int) -> Int {
+  let pair = make(i)
+  pair.a + pair.b
+}
+
 let main = () -> Int {
   let mut total = 0
   let mut i = 0
@@ -453,7 +503,9 @@ let main = () -> Int {
     total = total + t.0 + t.1 + c + sumt(tr) + first + ignored + inlined + blen + looped + Array::length(built) + Array::length(built_if) + sumtri(w) + sumt(h)
     // #2389 (see only_then above): `i > 1000000` is false for every
     // iteration, but not a constant the folder can see.
-    total = total + sumt(only_then(i > 1000000, i))
+    total = total + sumt(only_then(i > 1000000, i)) + move_through_wrapper(i)
+    total = total + consume_callback_pair(allocate_wrapper_pair, i)
+    total = total + move_projection_through_wrapper(i) + move_pattern_through_wrapper(i)
     total = total + sumt(via_call(i > 1000000, i)) + sumt(via_spine(i > 1000000, i)) + sumt(via_move(i)) + sumt(via_mut(i))
     total = total + sumt(ta1) + sumt(hm21) + Array::length(hf) + Array::length(hf2) + hfold + hfind + sumt(hrev0) + Array::length(hcat) + hany + hall + tlen + msum + asum
     i = i + 1
