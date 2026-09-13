@@ -2848,6 +2848,25 @@ fn dtd_eq_witness_method() -> String {
   "equals"
 }
 
+/// The trait the witness must come from. `==` is licensed by an `Eq` bound and
+/// nothing else -- the checker admits the operator on a formal precisely because
+/// the bound is spelled `Eq` (#2474) -- so the dictionary it dispatches through
+/// has to be that bound's.
+///
+/// Codex on #2734 measured what keying on the method alone costs: with
+/// `[T: Eq + Weird]` where an unrelated `Weird` declares its own
+/// `equals(Self, Self) -> Bool` returning `false`, `same(1, 1)` answered
+/// `false`. `Eq` is a marker today and threads no dictionary, so the scan found
+/// `Weird`'s and hijacked SCALAR equality -- a correct answer today turned
+/// wrong by an unrelated trait that happens to share a method name.
+///
+/// A trait that merely has `Eq` among its supers is deliberately NOT accepted
+/// here: entailment would have to thread the super's dictionary, which is its
+/// own change rather than a spelling question.
+fn dtd_eq_witness_trait() -> String {
+  "Eq"
+}
+
 fn dtd_ty_is_bool(te: TypeExpr) -> Bool {
   match te {
     TyName(n) => n == "Bool",
@@ -2932,11 +2951,12 @@ fn dtd_formal_is_shadowed(n: String) -> Bool {
 /// identity, measured as two equal `Pt` answering `false` while the adjacent
 /// `T::equals(x, y)` answered `true` off the same dictionary.
 ///
-/// Two conditions narrow it, and both were measured as holes rather than
-/// imagined: the witness must be declared `(Self, Self) -> Bool`
+/// Three conditions narrow it, and all three were measured as holes rather than
+/// imagined: the dictionary must belong to the `Eq` bound itself
+/// (`dtd_eq_witness_trait`), the witness must be declared `(Self, Self) -> Bool`
 /// (`dtd_trait_has_self_eq_method`), and the formal's spelling must not be
 /// rebound by a nested binder (`dtd_formal_is_shadowed`). The checker can
-/// establish neither -- it admits `x == y` from the bound's spelling alone
+/// establish none of them -- it admits `x == y` from the bound's spelling alone
 /// (#2474) and never sees the call this pass synthesizes.
 fn dtd_eq_witness_dict(dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], t: String) -> Option[String] {
   if !formal_in_scope(t) || dtd_formal_is_shadowed(t) {
@@ -2946,7 +2966,7 @@ fn dtd_eq_witness_dict(dict_binds: Array[(String, String, String, Array[String])
     let mut result = None
     while i < Array::length(dict_binds) {
       let (tp, trait_name, dict_pname, methods) = Array::get(dict_binds, i)
-      if tp == t && str_array_contains(methods, dtd_eq_witness_method()) && dtd_trait_has_self_eq_method(traits, trait_name, dtd_eq_witness_method()) {
+      if tp == t && trait_ref_name(trait_name) == dtd_eq_witness_trait() && str_array_contains(methods, dtd_eq_witness_method()) && dtd_trait_has_self_eq_method(traits, trait_name, dtd_eq_witness_method()) {
         result = Some(dict_pname)
         i = Array::length(dict_binds)
       } else {
