@@ -1195,7 +1195,7 @@ function authorizePolicyRawImport(name, args, instanceRef, config = policyRawFsC
     throw new Error(`policy raw import denied: ${name}`);
   }
   const readOne = new Set(["fs_read_file", "fs_read_bytes", "fs_read_dir", "fs_readdir", "fs_exists", "fs_stat_token", "fs_is_dir", "fs_is_file"]);
-  const writeOne = new Set(["fs_write_file", "fs_publish_immutable_text", "fs_write_bytes", "fs_mkdir", "fs_mkdir_p", "fs_remove", "fs_append", "fs_open_write"]);
+  const writeOne = new Set(["fs_write_file", "fs_publish_immutable_text", "fs_write_bytes", "fs_mkdir", "fs_mkdir_p", "fs_remove", "fs_remove_file", "fs_append", "fs_open_write"]);
   if (readOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), false, config);
   if (writeOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), true, config);
   if (name === "fs_rename" || name === "fs_copy") {
@@ -2710,6 +2710,27 @@ async function main() {
           return 0n;
         }
       },
+      // #2738: the non-recursive sibling. `fs_remove` is a TREE remover, so a
+      // "clear the stale sidecar" call whose path happens to name a directory
+      // deletes it whole; every such clear now asks for this instead.
+      //
+      // lstat, not stat: a symlink pointing AT a directory must still be
+      // unlinked, because removing the link never touches what it points to.
+      // Only a real directory is refused. unlinkSync is the precise primitive
+      // -- it removes a file or a symlink and cannot remove a directory -- so
+      // the refusal holds even if the lstat check were ever dropped.
+      fs_remove_file(pathTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        try {
+          if (fs.lstatSync(filePath).isDirectory()) {
+            return 0n;
+          }
+          fs.unlinkSync(filePath);
+          return 0n;
+        } catch (e) {
+          return 0n;
+        }
+      },
       fs_rename(srcTagged, dstTagged) {
         const src = decodeStringArg(instanceRef, srcTagged);
         const dst = decodeStringArg(instanceRef, dstTagged);
@@ -2948,6 +2969,9 @@ async function main() {
     },
     Remove(pathTagged) {
       return vibeModule.fs_remove(pathTagged);
+    },
+    RemoveFile(pathTagged) {
+      return vibeModule.fs_remove_file(pathTagged);
     },
     Rename(srcTagged, dstTagged) {
       return vibeModule.fs_rename(srcTagged, dstTagged);

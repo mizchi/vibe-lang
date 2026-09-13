@@ -792,6 +792,11 @@ gchb_out=""
 for gchb_be in linear gc; do
   rm -rf _build/gc_host_builtins_probe
   mkdir -p _build/gc_host_builtins_probe/adir _build/gc_host_builtins_probe/rd _build/gc_host_builtins_probe/rd_empty
+  # #2738: Fs::remove_file must REFUSE this one. Recreated per lane because
+  # the probe root is wiped above -- a leftover directory would let a
+  # tree-removing remove_file pass on the second lane.
+  mkdir -p _build/gc_host_builtins_probe/rfdir
+  printf 'keep\n' > _build/gc_host_builtins_probe/rfdir/inside
   printf 'hello\n' > _build/gc_host_builtins_probe/a.txt
   printf 'x\n' > _build/gc_host_builtins_probe/rd/f1
   printf 'y\n' > _build/gc_host_builtins_probe/rd/f2
@@ -812,8 +817,8 @@ for gchb_be in linear gc; do
   fi
 done
 # Pin the value too: agreement alone passes when BOTH lanes break the same way.
-if [ "$gchb_out" != "gc-host-builtins:10101010202" ]; then
-  echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want gc-host-builtins:10101010202) on both lanes (#1262)" >&2
+if [ "$gchb_out" != "gc-host-builtins:101010102021010" ]; then
+  echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want gc-host-builtins:101010102021010) on both lanes (#1262)" >&2
   exit 1
 fi
 # `Fs::readdir` inside a CLOSURE, kept as its own check rather than folded
