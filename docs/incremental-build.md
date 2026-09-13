@@ -1885,7 +1885,7 @@ semantically irrelevant and avoid quadratic canonical serialization. TDRE9 does
 not replace exact transport text with a compact fingerprint. It validates and
 republishes the decoded environment under the ordinary conservative fingerprint.
 It does not use the
-trace-only `vibe-module-interface:v4` observation as a production key, and
+trace-only `vibe-module-interface:v5` observation as a production key, and
 malformed, missing, stale, torn, or cross-spliced aliases, witnesses, and targets
 fall back to a full check. The alias remains incompatible with the incremental
 invalidation trace lane so the two identities cannot be confused.
