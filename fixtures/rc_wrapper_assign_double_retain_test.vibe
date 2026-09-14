@@ -52,6 +52,13 @@ struct Holder {
   node: Node
 }
 
+fn total(n: Node) -> Int {
+  match n {
+    Pair(a, b) => total(a) + total(b),
+    Leaf(v) => v
+  }
+}
+
 fn once() -> Int {
   let mut x = Pair(Leaf(1), Leaf(2))
   x = {
@@ -88,12 +95,34 @@ fn once_proj() -> Int {
   0
 }
 
+// #2786/#2799: an OWNING self-use in the wrapper, with the leaf reading out of
+// ANOTHER container. `let t0 = total(x)` consumes, so the plan records a
+// `PaDup` for `x` and the #791 budget re-application below the store emits it --
+// the slot already gets its reference, and a retain from the assignment arm is
+// a SECOND one.
+//
+// `assign_self_owning_use` in `rc_wrapper_assign_borrow_test.vibe` is the same
+// shape asserted by VALUE, and it cannot see this: the answer stays 770 either
+// way. Measured at N=20000 while #2799 was emitting the retain here: 244 B
+// correct against 1,600,164 B -- 80 B per assignment, the same rate as #2760's
+// leak. Caught by review, not by a gate, which is why the shape is here now.
+fn once_owning_self(xs: Array[Node]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let t0 = total(x)
+    Array::get(xs, t0 - 3)
+  }
+  0
+}
+
 export fn main() -> Int {
+  let xs = [Pair(Leaf(3), Leaf(4))]
   let mut i = 0
   while i < 20000 {
     let r = once()
     let rp = once_proj()
-    i = i + r + rp + 1
+    let ro = once_owning_self(xs)
+    i = i + r + rp + ro + 1
   }
   0
 }
