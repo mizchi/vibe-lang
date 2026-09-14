@@ -31,6 +31,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_closure_call_tail,
   emit_closure_resolve,
   emit_i64_extend_i32_u,
+  md_consume_count_b,
   md_self_reassign_move_arg,
   mut_needs_ref_cell,
   proj_root_ident,
@@ -1262,6 +1263,76 @@ fn cet_record_local_slot(local_names: Array[String], slot: Int) -> Unit {
 /// root is this binder never took that branch.
 fn spine_binder_promoted(root: String, binders: Array[String], ctx: CompileCtx) -> Bool {
   array_contains_str(binders, root) && array_contains_str(ctx.heap_binding_names, root) && array_contains_str(ctx.rc_drop_names, root)
+}
+
+/// After the store, does the plan spend MORE references on this slot than the
+/// #791 budget re-application below hands it?
+///
+/// This is the counterpart #2786's "Fix shape" asks for -- the retain and the
+/// planner have to agree about what the slot holds -- and it is arithmetic over
+/// what the planner itself recorded, not a syntactic property of the value.
+///
+/// A store of an OWNED value gives the slot one reference of its own, so the
+/// plan balances: the dups the budget re-applies plus that one cover the
+/// consumes that follow. A BORROWED value gives it none. So the slot is short
+/// exactly when the consumes after the store outnumber the dups, and the retain
+/// is what puts the missing one back.
+///
+/// The consumes after the store are the scope-end drop, if one is planned
+/// (`rc_drop_names`), plus the owning uses in the assignment's own continuation.
+/// The dups are the occurrences of the name in `rc_dup_names`, which is what the
+/// budget loop below iterates -- reading the same list keeps the two from
+/// disagreeing about the count.
+///
+/// Measured with `vibe rc-plan`, which prints the same plan linked_compile
+/// threads into codegen, on the fixtures that carry each shape:
+///
+///   | fixture case                       | plan for the slot | short |
+///   |------------------------------------|-------------------|------:|
+///   | `assign_self_borrow_unused`        | drop 1            |   yes |
+///   | `assign_self_borrow_use`           | drop 1            |   yes |
+///   | `assign_self_borrow_then_consume`  | dup 1, drop 1     |   yes |
+///   | `once_owning_self`                 | drop 1            |   yes |
+///   | `assign_self_owning_use`           | dup 1             |    no |
+///   | a consuming self-use, later read   | dup 1, drop 1     |    no |
+///   | a leaf derived from the slot       | dup 1, drop 1     |    no |
+///
+/// The first is #2786's repro, which traps in `__rt_rc_alloc` on main. The third
+/// needs the `> dups` arithmetic and not the drop record alone: its consuming
+/// use puts the slot in the budget, and a clause keyed on `rc_drop_names` with
+/// `rc_dup_names` as a veto declines it and leaves that spelling broken.
+///
+/// The last two rows are the ones a bolder clause gets wrong. Retaining a
+/// consuming self-use's slot, or one whose stored value came OUT of the slot,
+/// adds a reference nothing releases -- 80 B per assignment on the shapes
+/// measured, the same rate as #2760's own leak.
+///
+/// `md_consume_count_b` is asked about the CONTINUATION, never about the value.
+/// Asking it about the value was tried (#2799) and is wrong: whether it reads a
+/// call as owning depends on the borrow masks that file's OTHER call sites
+/// produce -- `total` comes back borrow-inferred in one fixture here and not in
+/// another -- so the clause answers differently for the same spelling depending
+/// on its neighbours. The plan does not have that property: it is computed for
+/// the function being compiled. What the continuation contributes is an owning
+/// use the drop record cannot see, and there an under-count only leaves today's
+/// answer standing.
+fn assign_slot_short_after_store(name: String, body: Expr, ctx: CompileCtx) -> Bool {
+  let mut dups = 0
+  let mut i = 0
+  while i < Array::length(ctx.rc_dup_names) {
+    if Array::get(ctx.rc_dup_names, i) == name {
+      dups = dups + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let scope_end = if array_contains_str(ctx.rc_drop_names, name) {
+    1
+  } else {
+    0
+  }
+  scope_end + md_consume_count_b(body, name, ctx.borrow_param_user, ctx.borrow_param_mask) > dups
 }
 
 /// Does a value's STRAIGHT-LINE spine hand a mutable slot a reference the
@@ -2523,7 +2594,6 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           Array::push(ctx.loop_borrowed_names, name)
           sm_removed = sm_removed - 1
         }
-        emit_local_set(buf, idx)
         // An owning mutable slot must acquire a borrowed replacement just
         // as it acquires a borrowed initializer. Otherwise its next drop
         // would release the container's reference instead of its own.
@@ -2539,35 +2609,80 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // clause rather than a replacement so the top-node answers, including
         // the shapes it declines, are untouched.
         //
-        // A self-referential right-hand side keeps MAIN'S ANSWER exactly.
-        // `is_self` is `assign_value_mentions`, i.e. "the value has `name` as a
-        // free variable" -- ANY mention, not just a spine leaf derived from the
-        // slot. An earlier draft of this comment said it excludes "a spine
-        // ending in a projection of the slot itself", which is a different
-        // property than the one `is_self` tests; the arm is written from the
-        // property, so only the comment was wrong.
+        // #2786: a SELF-MENTIONING right-hand side needs the same spine walk,
+        // gated on the plan rather than on the mention. `is_self` is
+        // `assign_value_mentions` -- "the value has `name` as a free variable",
+        // ANY mention -- so it lumps together a wrapper that merely READS the
+        // slot on the way to an unrelated borrow and one whose stored value
+        // comes out of the slot itself. Only the first is short a reference.
         //
-        // The arm is deliberately a no-op against main on this path. Before
-        // this change the condition read
-        // `(!is_self && is_edot(value)) || call_returns_borrow(value, ..)`,
-        // whose first clause is false whenever `is_self` holds -- so main
-        // already answered `call_returns_borrow(value, ..)` here and that is
-        // what this branch still answers. Measured on `6507c60`, three
-        // self-mentioning wrapper spellings -- a discarded `total(x)` in an
-        // `ESeq`, a `let`-bound one, and one whose result feeds the index --
-        // answer 770 on the RC lane on the patched AND the unpatched compiler,
-        // agreeing with bump. So there is no corruption here to widen for, and
-        // widening `is_self` would be a separate change needing its own repro
-        // before its own measurement.
+        // `x = { Array::length(x); Array::get(xss, 0) }` stores a borrow of
+        // `xss` into a slot whose scope-end drop is planned, and nothing gave
+        // that slot a reference: the drop releases what `xss` still owns, the
+        // free list takes the block twice, and the next allocation traps in
+        // `__rt_rc_alloc`. Measured on `b7cd8c1`, still the issue's own repro.
+        //
+        // What separates it from the shapes that must NOT be retained is
+        // `assign_slot_short_after_store` -- see its comment for the plans, and
+        // for why the value's own consume count answers the wrong question here.
+        // Whether the mention is at a borrowed or an owning position is NOT the
+        // test, which is the correction #2786's body needed: the two shapes it
+        // contrasts, `Array::length(x)` and `let t0 = total(x)`, are separated
+        // by what the PLAN records for the slot and not by the position, and the
+        // second of them is short a reference too in the spelling the leak lane
+        // carries.
         let replacement_unowned = if !is_heap_mut {
           false
         } else if is_self {
-          call_returns_borrow(value, local_names, ctx)
+          call_returns_borrow(value, local_names, ctx) || (spine_leaf_unowned(value, local_names, ctx) && assign_slot_short_after_store(name, body, ctx))
         } else {
           is_edot(value) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx)
         }
+        // #2786, the release half. A slot that ACQUIRES its replacement has to
+        // let go of what it held, or the retain trades a use-after-free for a
+        // leak of the same size. The `!is_self` path above already drops the old
+        // value before the store; this path cannot, because the value it is
+        // about to evaluate may READ the slot -- which is what `is_self` means --
+        // so the drop moves after the store and reads a saved copy.
+        //
+        // Measured at N=20000 on the issue's own shape, `x = { Array::length(x);
+        // Array::get(xss, 0) }`: 2,160,328 B with the retain alone against 436 B
+        // on main, where the heap only stayed flat because the unbalanced drop
+        // was handing the container's blocks back to the allocator -- the answer
+        // was wrong (10 against the bump lane's 70) and the heap looked thrifty
+        // for the same reason. With the release: 412 B, the same as the
+        // `!is_self` spelling of the same program.
+        //
+        // TWO conditions, and neither is belt-and-braces. The value must not
+        // have CONSUMED the slot (`let k = sink(x)`), or the saved copy is
+        // already dead and this drop is the second one. And the stored value must
+        // not be derived FROM the slot (`x = { Array::length(x); pick(x) }`, a
+        // user borrow-returning function, the only spelling whose type can match
+        // the slot's own) -- releasing there frees exactly the reference just
+        // stored. No battery shape reaches the second guard, because the plan
+        // budgets a dup for a self-derived leaf and the arithmetic above declines
+        // it first (measured: `dup 1, drop 1` for both `pick(x)` spellings, and
+        // `dup 2, drop 1` once a consuming use is added). It is kept because the
+        // property is structural -- a slot cannot release what it just stored --
+        // and not because a measurement pins it.
+        let release_old = is_self && replacement_unowned && ctx.rc_drop_func_idx >= 0 && md_consume_count_b(value, name, ctx.borrow_param_user, ctx.borrow_param_mask) == 0 && !assign_value_mentions(mib_spine_leaf(value, array_empty()), name)
+        let nl_after = if release_old {
+          emit_local_get(buf, idx)
+          emit_local_set(buf, nl)
+          cet_record_local_slot(local_names, nl)
+          nl + 1
+        } else {
+          nl
+        }
+        emit_local_set(buf, idx)
         if replacement_unowned {
           emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        } else {
+          ()
+        }
+        if release_old {
+          emit_local_get(buf, nl)
+          emit_call(buf, ctx.rc_drop_func_idx)
         } else {
           ()
         }
@@ -2624,7 +2739,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         } else {
           ()
         }
-        compile_expr(buf, body, local_names, nl, ctx, ld)
+        compile_expr(buf, body, local_names, nl_after, ctx, ld)
       }
     }
   } else if __tag == 13 {
