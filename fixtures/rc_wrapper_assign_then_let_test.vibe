@@ -1,0 +1,99 @@
+// #2792: a promoted wrapper assignment followed by another `let` in the same
+// scope.
+//
+// `x = { let ys = [..]; Array::get(ys, 0) }` is lowered by the inner `ELet`'s
+// scope-end PROMOTION: it retains the escaping element into a scratch wasm
+// local, drops `ys`, then reads the element back. The promotion claims that
+// local by returning `nl2 + 1` -- and recorded nothing in `local_names`, the
+// array codegen indexes BY wasm local index. One entry short of the next
+// binding's index, the next `let` in the ENCLOSING scope ran
+// `Array::set(local_names, local_idx, "")` one past the end and the compiler
+// ABORTED: `Array::set: index 12 out of bounds for length 12` -- no diagnostic,
+// no source position, nothing naming an edit.
+//
+// So every function here has a binding AFTER the assignment. That is the whole
+// trigger: delete the trailing `let` and each one compiles, which is why
+// `rc_wrapper_assign_double_retain_test.vibe` ends `once()` at the assignment.
+//
+// The lanes disagreed on whether the program EXISTS: `VIBE_RC=0` has no
+// promotion and compiled all three, `VIBE_RC=1` (the production default)
+// refused all three.
+//
+// Compiling again is only half the contract, so the values are asserted too:
+//
+// - `assign_owning_bound_binder` reads `x` a second time ACROSS a fresh
+//   allocation, so the answer separates a live element from a freed one -- 770
+//   while the promotion's retain holds, 850 when the filler answers in its
+//   place. This is the value lane the OWNING-binder shape could not have while
+//   the abort stood: its sibling in `rc_wrapper_assign_double_retain_test.vibe`
+//   has to end at the assignment, which is why the double-retain leak there is
+//   bounded by heap (gate row 40e2) and not by an answer.
+// - `promoted_then_let_mut` and `promoted_then_let` carry the trigger through a
+//   `let mut` and through the issue's own minimal repro, neither of which uses
+//   a user type at all -- the abort never depended on the element type.
+enum Node {
+  Leaf(Int);
+  Pair(Node, Node)
+}
+
+fn total(n: Node) -> Int {
+  match n {
+    Pair(a, b) => total(a) + total(b),
+    Leaf(v) => v
+  }
+}
+
+// The owning-binder shape, finally asserted by its value: `ys` is bound to an
+// array literal, so `classify_let_value_heap` gives it `rc_kind = 2` and the
+// scope-end promotion fires. A second read of `x` after `filler` allocates is
+// what tells a held reference from a released one.
+fn assign_owning_bound_binder() -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let ys = [Pair(Leaf(3), Leaf(4))]
+    Array::get(ys, 0)
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(x) * 10 + total(filler) * 0
+}
+
+// The trailing binding is a `let mut`, which takes its slot through the same
+// `Array::push` + `Array::set(local_names, local_idx, "")` pair as `let`.
+fn promoted_then_let_mut() -> Int {
+  let mut x = [1, 2]
+  x = {
+    let ys = [[30, 40]]
+    Array::get(ys, 0)
+  }
+  let mut acc = 0
+  let mut i = 0
+  while i < Array::length(x) {
+    acc = acc + Array::get(x, i)
+    i = i + 1
+  }
+  acc
+}
+
+// The issue's own minimal repro, verbatim.
+fn promoted_then_let() -> Int {
+  let mut x = [1, 2]
+  x = {
+    let ys = [[3, 4]]
+    Array::get(ys, 0)
+  }
+  let r = Array::length(x)
+  r
+}
+
+test "2792 a promoted wrapper assignment survives a following let" {
+  inspect(assign_owning_bound_binder(), content = "770")
+}
+
+test "2792 the trigger through a trailing let mut" {
+  inspect(promoted_then_let_mut(), content = "70")
+}
+
+test "2792 the minimal repro, no user types" {
+  inspect(promoted_then_let(), content = "2")
+}

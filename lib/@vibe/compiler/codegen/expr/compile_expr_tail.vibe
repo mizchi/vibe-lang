@@ -1189,6 +1189,39 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
   (rc_kind, is_borrow_ret_ext)
 }
 
+/// Record wasm local `slot` in `local_names`, so the array spans it.
+///
+/// `local_names` is indexed BY wasm local index -- `compile_expr` resolves an
+/// identifier to its slot by position -- so a lowering that CLAIMS a slot has
+/// to give it an entry in the same breath. Every other claim in codegen does:
+/// `compile_call` pushes `__map_arr` .. `__map_uniq`, one name per scratch
+/// local it takes. The scope-end promotion below was the one that did not, and
+/// #2792 is what that cost: it used `nl2` and returned `nl2 + 1` while pushing
+/// nothing, leaving the array one short of the next binding's index, so the
+/// next `let` in the ENCLOSING scope ran `Array::set(local_names, local_idx,
+/// "")` one past the end and the compiler ABORTED -- `Array::set: index 12 out
+/// of bounds for length 12`, no diagnostic, no source position, nothing naming
+/// an edit. The bump lane has no promotion and compiled the same program, so
+/// the two lanes disagreed on whether the program exists.
+///
+/// The entry is the empty no-name marker, never a spelling: the slot is
+/// addressed by index and never looked up by name, and `compile_expr` resolves
+/// identifiers through this array with LAST MATCH WINNING, so a real name here
+/// would make a same-named outer binding read as this scratch slot (Codex on
+/// #2725).
+///
+/// Padding up to `slot` first is what makes this safe to call after a lowering
+/// that already left the array short. It deliberately does NOT push when the
+/// array already spans `slot`: appending there would put the marker at one
+/// index and the slot at another, which is the very misalignment it exists to
+/// prevent -- so a caller that needs the slot to be FRESH tests that itself
+/// (`path_drop` below does).
+fn cet_record_local_slot(local_names: Array[String], slot: Int) -> Unit {
+  while Array::length(local_names) < slot + 1 {
+    Array::push(local_names, "")
+  }
+}
+
 /// Did the spine's own `ELet` lowering already retain the escaping element for
 /// `root`? The assignment retain must not be stacked on top of that one, and
 /// must not be withheld when it was never taken. The two mistakes are not
@@ -2044,24 +2077,13 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
     }
     let path_drop = pd_candidate && path_value_ok && !expr_is_intish(value, local_names, ctx) && Array::length(local_names) <= nl_after_reuse
     let path_flag_l = if path_drop {
-      // `local_names` is indexed BY wasm local index (compile_expr resolves an
-      // identifier to its slot by position), so a flag local may only be
-      // appended where the array already spans every local allocated so far.
-      // It does not always: a construct in `value` can take a scratch local
-      // without naming it (the `scope_tail_proj_root` arm below returns
-      // `nl2 + 1` after using `nl2`), which leaves `next_local` ahead of the
-      // array. Appending there would put every later binding's name one index
-      // short of its own local -- wrong reads, no trap. Pad with the
-      // no-name marker the value compile itself uses first.
-      while Array::length(local_names) < nl_after_reuse {
-        Array::push(local_names, "")
-      }
-      // The flag is addressed by its SLOT below and never looked up by name,
-      // so it takes the empty no-name marker rather than a spelling a user
-      // binding could also have: `local_names` is what compile_expr resolves
-      // identifiers through, last match wins, so a real name here would make
-      // a same-named outer binding read as this i64 flag (Codex on #2725).
-      Array::push(local_names, "")
+      // The flag takes a wasm local of its own, so `local_names` gains its
+      // entry here -- through the same helper the scope-end promotion below
+      // uses, which is what keeps the two copies of this discipline from
+      // drifting apart again (#2792 was one of them forgetting). `path_drop`
+      // above already established that the array does not run PAST this index,
+      // the one direction padding cannot repair.
+      cet_record_local_slot(local_names, nl_after_reuse)
       emit_i64_const(buf, 0)
       emit_local_set(buf, nl_after_reuse)
       Array::push(ctx.rc_path_flag_names, name)
@@ -2122,6 +2144,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         emit_local_get(buf, local_idx)
         emit_call(buf, ctx.rc_drop_func_idx)
         emit_local_get(buf, nl2)
+        cet_record_local_slot(local_names, nl2)
         nl2 + 1
       } else {
         if ctx.rc_drop_func_idx >= 0 {
