@@ -3407,19 +3407,37 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
 }
 
 /// A tuple field's index (`"0"` -> 0), or -1 when `field` is not one this walk
-/// records. The inverse of `digit_str`, and bounded the same way.
+/// records. The inverse of `idx_str`, and total over what it writes.
 fn dtd_interp_index_of_field(field: String) -> Int {
-  let mut i = 0
-  let mut found = 0 - 1
-  while i < 9 {
-    if digit_str(i) == field {
-      found = i
-      i = 9
-    } else {
+  // #2745 (Codex, P1 round 16 on #2761): this compared against `digit_str`,
+  // which SATURATES at 9, so `.9` and every index above it collapsed onto one
+  // answer and a tenth element could not be named at all. Parsed instead, so
+  // the inverse is total over what `idx_str` writes. A field that is not all
+  // digits -- a record's name -- answers -1, which is the whole reason the
+  // record route exists beside this one.
+  let n = String::length(field)
+  if n == 0 {
+    0 - 1
+  } else {
+    let mut i = 0
+    let mut acc = 0
+    let mut ok = true
+    while i < n {
+      let c = String::char_code_at(field, i)
+      if c >= '0' && c <= '9' {
+        acc = acc * 10 + (c - '0')
+      } else {
+        ok = false
+        i = n
+      }
       i = i + 1
     }
+    if ok {
+      acc
+    } else {
+      0 - 1
+    }
   }
-  found
 }
 
 /// The first argument that classifies as an erased nested formal; "" when none
@@ -3882,7 +3900,7 @@ fn dtd_interp_bind_pattern(var_types: Array[(String, String)], pat: Pat, scrutin
 /// binding -- the same device `array_elem_key` uses.
 fn dtd_interp_tuple_elem_key(name: String, i: Int) -> String {
   let base = String::concat("__Vtupelem$", name)
-  String::concat(base, String::concat("$", digit_str(i)))
+  String::concat(base, String::concat("$", idx_str(i)))
 }
 
 /// What KIND of aggregate `name` holds: `dtd_interp_tuple_shape` for a tuple
@@ -3926,7 +3944,7 @@ fn dtd_interp_field_key(name: String, field: String) -> String {
 /// character, so `p$0` cannot collide with a real name, and a field name cannot
 /// contain `$`, so `p$0` and `p$value` cannot collide with each other.
 fn dtd_interp_elem_name(name: String, i: Int) -> String {
-  String::concat(name, String::concat("$", digit_str(i)))
+  String::concat(name, String::concat("$", idx_str(i)))
 }
 
 fn dtd_interp_field_name(name: String, field: String) -> String {
@@ -4014,11 +4032,11 @@ fn dtd_interp_lamret_of(tps: Array[String], params: Array[(String, Option[TypeEx
     Some(TyName(rh)) => if str_array_contains(tps, rh) {
       let mut i = 0
       let mut found = dtd_interp_lamret_any()
-      while i < Array::length(params) && i < 9 {
+      while i < Array::length(params) {
         let (_, pt) = Array::get(params, i)
         match pt {
           Some(TyName(ph)) => if ph == rh && found == dtd_interp_lamret_any() {
-            found = digit_str(i)
+            found = idx_str(i)
           } else {
             ()
           },
@@ -4056,10 +4074,10 @@ fn dtd_interp_lamret_body_param(params: Array[(String, Option[TypeExpr])], body:
     EIdent(bn, _) => {
       let mut i = 0
       let mut found = ""
-      while i < Array::length(params) && i < 9 {
+      while i < Array::length(params) {
         let (pn, _) = Array::get(params, i)
         if pn == bn && String::length(found) == 0 {
-          found = digit_str(i)
+          found = idx_str(i)
         } else {
           ()
         }
@@ -4358,10 +4376,21 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
       // pointer decimal. The element gets a SLOT of its own, recorded by the
       // same recorder, which is what makes the depth close here as it does for
       // a tuple or a record.
-      if Array::length(es) > 0 {
-        dtd_interp_record_shape(out, dtd_interp_array_slot_name(name), Array::get(es, 0), struct_sets, var_types, fn_returns)
-      } else {
-        ()
+      // #2745 (Codex, P1 round 16 on #2761): the slot was recorded from
+      // `es[0]` alone, so `let xs = [[], [a]]` -- an empty leading element --
+      // left it unclassified and both `Array::get` calls lost `T`. The
+      // classification scan above already reads EVERY element; the shape now
+      // does too, masked once and then merged in order so a later element
+      // fills what an earlier one left absent. An array's elements share a
+      // type, so merging cannot mix incompatible shapes, and a later element
+      // winning a key it shares with an earlier one is the fail-CLOSED
+      // direction.
+      let aslot = dtd_interp_array_slot_name(name)
+      dtd_interp_mask_records(out, var_types, aslot)
+      let mut si = 0
+      while si < Array::length(es) {
+        dtd_interp_record_shape_into(out, aslot, Array::get(es, si), struct_sets, var_types, fn_returns)
+        si = si + 1
       }
     },
     // #2745 (Codex, P1 round 7 on #2761): the tuple reaches the pattern through
@@ -4539,13 +4568,16 @@ fn dtd_interp_shape_is(var_types: Array[(String, String)], name: String, want: S
   }
 }
 
-/// Record each element's classification under its index key. `digit_str`
-/// saturates at 9, so index 9 and above would share a key; stopping at 8 keeps
-/// every key distinct, and a wider aggregate records nothing, which makes the
-/// pairing blank -- this walk's fail-open answer.
+/// Record each element's classification under its index key.
+///
+/// This used to stop at index 8, because `digit_str` saturates at 9 and index
+/// 9 and above would have shared a key. `idx_str` -- which was already in this
+/// file -- writes them distinctly, so the cap is gone and a wide tuple records
+/// like any other (#2745, Codex P1 round 16: a ten-element tuple bound to a
+/// name and destructured blanked every binder).
 fn dtd_interp_record_elems(out: Array[(String, String)], name: String, es: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
   let mut i = 0
-  while i < Array::length(es) && i < 9 {
+  while i < Array::length(es) {
     let el = Array::get(es, i)
     Array::push(out, (dtd_interp_tuple_elem_key(name, i), dtd_erased_interp_formal(el, struct_sets, var_types, fn_returns)))
     // #2745 round 11: the element's own shape, under the element's synthetic
@@ -4560,7 +4592,7 @@ fn dtd_interp_record_elems(out: Array[(String, String)], name: String, es: Array
 /// paired against: the recorded arity has to match the pattern's, or the name
 /// does not hold the tuple this pattern takes apart.
 fn dtd_interp_tuple_elems_known(var_types: Array[(String, String)], name: String, n: Int) -> Bool {
-  if n <= 0 || n > 9 {
+  if n <= 0 {
     false
   } else {
     let mut i = 0
