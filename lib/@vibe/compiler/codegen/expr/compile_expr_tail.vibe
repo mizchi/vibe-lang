@@ -1368,7 +1368,7 @@ fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: CompileCtx) 
 /// slot's drop released a reference `xss` still owns. That is a corrupted free
 /// list (`memory access out of bounds` inside `__rt_rc_alloc`), not a leak.
 ///
-/// `borrow_tail_root` rather than `scope_tail_proj_root`, and the difference is
+/// `mib_borrow_root` rather than `scope_tail_proj_root`, and the difference is
 /// load-bearing rather than stylistic. `scope_tail_proj_root` resolves a call
 /// only when the callee is a borrow-returning BUILTIN, and every builtin in
 /// that table returns an ELEMENT of its root -- so a leaf rooted at the slot
@@ -1382,14 +1382,100 @@ fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: CompileCtx) 
 /// reference derived from the slot itself. Measured: that shape passes today,
 /// so this guard is what keeps the fix from turning a correct decline into a
 /// use-after-free.
-fn spine_leaf_roots_at(value: Expr, slot: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
-  let binders = array_empty()
-  let leaf = mib_spine_leaf(value, binders)
-  match leaf {
-    ECall(_, args, _) => Array::length(args) >= 1 && call_returns_borrow(leaf, local_names, ctx) && borrow_tail_root(Array::get(args, 0)) == slot,
-    EDot(_, _, _, _) => proj_root_ident(leaf) == slot,
-    _ => false
+/// The container a borrow-returning expression reads from. Generalizes
+/// `borrow_tail_root` (common_analysis) by asking `call_returns_borrow`, which
+/// consults the whole-program USER borrow-returning set as well as the builtin
+/// table -- `borrow_tail_root` knows only the builtins, and a user
+/// borrow-returning function is precisely how a leaf reaches the slot's own
+/// type.
+fn mib_borrow_root(e: Expr, local_names: Array[String], ctx: CompileCtx) -> String {
+  match e {
+    EIdent(nm, _) => nm,
+    EDot(obj, _, _, _) => mib_borrow_root(obj, local_names, ctx),
+    ECall(_, args, _) => if Array::length(args) >= 1 && call_returns_borrow(e, local_names, ctx) {
+      mib_borrow_root(Array::get(args, 0), local_names, ctx)
+    } else {
+      ""
+    },
+    _ => ""
   }
+}
+
+/// The spine's own bindings, paired with the root each one's value reads from.
+/// `let y = x` and `let y = Array::get(x, 0)` both make `y` another name for
+/// something rooted at `x`, and the retain decision has to see through either.
+fn mib_spine_binder_roots(e: Expr, names: Array[String], roots: Array[String], local_names: Array[String], ctx: CompileCtx) -> Unit {
+  match e {
+    ELet(n, v, b, _) => {
+      Array::push(names, n)
+      Array::push(roots, mib_borrow_root(v, local_names, ctx))
+      mib_spine_binder_roots(b, names, roots, local_names, ctx)
+    },
+    ELetMut(n, v, b, _) => {
+      Array::push(names, n)
+      Array::push(roots, mib_borrow_root(v, local_names, ctx))
+      mib_spine_binder_roots(b, names, roots, local_names, ctx)
+    },
+    ELetRec(n, _, b) => {
+      Array::push(names, n)
+      Array::push(roots, "")
+      mib_spine_binder_roots(b, names, roots, local_names, ctx)
+    },
+    ESeq(_, b) => mib_spine_binder_roots(b, names, roots, local_names, ctx),
+    EAssign(_, _, b) => mib_spine_binder_roots(b, names, roots, local_names, ctx),
+    EAssignOp(_, _, _, b) => mib_spine_binder_roots(b, names, roots, local_names, ctx),
+    _ => ()
+  }
+}
+
+fn spine_leaf_roots_at(value: Expr, slot: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let leaf_binders = array_empty()
+  let leaf = mib_spine_leaf(value, leaf_binders)
+  let leaf_root = match leaf {
+    ECall(_, args, _) => if Array::length(args) >= 1 && call_returns_borrow(leaf, local_names, ctx) {
+      mib_borrow_root(Array::get(args, 0), local_names, ctx)
+    } else {
+      ""
+    },
+    EDot(_, _, _, _) => proj_root_ident(leaf),
+    _ => ""
+  }
+  // Resolve the root through the spine's OWN bindings before comparing it.
+  // `x = { let y = x; borrow_ret_fn(y) }` reaches the slot through an alias,
+  // and comparing the unresolved `y` against `x` answers "not the slot" --
+  // which would emit a retain nothing releases, one leaked reference per
+  // execution (Codex on #2799).
+  //
+  // Over-resolving is the SAFE direction here: a false "yes, it is the slot"
+  // declines the retain, which is exactly main's answer on this path. A false
+  // "no" is the leak. So the walk is deliberately eager.
+  //
+  // #715 alpha-renaming makes every binder in a function unique, so a chain
+  // cannot revisit a name and one pass per binding is enough; the bound is
+  // what keeps a rename bug from spinning here rather than a shape that is
+  // expected to reach it.
+  let names = array_empty()
+  let roots = array_empty()
+  mib_spine_binder_roots(value, names, roots, local_names, ctx)
+  let mut root = leaf_root
+  let mut steps = 0
+  let mut moved = true
+  while moved && steps <= Array::length(names) {
+    moved = false
+    let mut i = 0
+    while i < Array::length(names) {
+      if Array::get(names, i) == root {
+        let next = Array::get(roots, i)
+        if String::length(next) > 0 && next != root {
+          root = next
+          moved = true
+        }
+      }
+      i = i + 1
+    }
+    steps = steps + 1
+  }
+  String::length(root) > 0 && root == slot
 }
 
 /// The leaf of a STRAIGHT-LINE spine, collecting the names it binds. Mirrors
