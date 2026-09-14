@@ -1,0 +1,52 @@
+// #2760 RC leak guard: a wrapper that binds the borrow's OWN SOURCE.
+//
+// The retain #2760 adds for a wrapped borrow must not fire when the spine
+// itself binds what the borrow comes from. `x = { let ys = [..];
+// Array::get(ys, 0) }` is already promoted by the inner `ELet` lowering, which
+// retains the escaping element before dropping `ys` (keyed on
+// `scope_tail_proj_root(body) == n`). Retaining it a second time gives the slot
+// two references while its drop spends one, so every assignment leaks the
+// element permanently.
+//
+// Found in review on #2783, not by a gate -- the answer stays CORRECT, so only
+// a heap bound can see it. Measured on `6507c60` at N=20000:
+//
+//   | compiler                              | heap_used   |
+//   |---------------------------------------|------------:|
+//   | unpatched                             |       164 B |
+//   | #2760 classifying from the leaf callee | 1,600,084 B |
+//   | with the source test (this tree)       |       164 B |
+//
+// 80 B per iteration, so it SCALES -- the middle row is 20000 x 80 plus the
+// steady state, and the bound below separates it by four orders of magnitude.
+//
+// The discriminating fact is WHOSE binder the borrow's root is: `ys` here is
+// the spine's own, so the inner lowering already retained; `xs` in the issue's
+// repro is a parameter, so nothing did and the retain is still required. Both
+// are asserted -- this file for the leak, `rc_wrapper_assign_borrow_test.vibe`
+// for the value.
+//
+// `main` returns 0: every shape here adds 0, so the answer cannot drift with
+// the allocation behaviour being measured.
+enum Node {
+  Leaf(Int);
+  Pair(Node, Node)
+}
+
+fn once() -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let ys = [Pair(Leaf(3), Leaf(4))]
+    Array::get(ys, 0)
+  }
+  0
+}
+
+export fn main() -> Int {
+  let mut i = 0
+  while i < 20000 {
+    let r = once()
+    i = i + r + 1
+  }
+  0
+}

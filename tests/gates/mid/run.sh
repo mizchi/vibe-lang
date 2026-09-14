@@ -463,6 +463,38 @@ fi
 rm -rf "$pjdir"
 echo "[compiler-gate] RC mutable-initializer projection leak guard ok (heap_used=$pj_used B at N=20000)"
 
+# 40e2. #2760: the retain must NOT fire when the wrapper binds the borrow's own
+# source -- the inner ELet lowering already promoted it, and a second retain
+# leaks the element on every assignment. Found in review on #2783, not by a
+# gate: the ANSWER stays correct, so only a heap bound sees it. Measured on
+# 6507c60 at N=20000: 164 B unpatched, 1,600,084 B classifying from the leaf
+# callee alone, 164 B with the source test. 80 B per iteration, so it scales.
+echo "[compiler-gate] 40e2/40 RC wrapper-assign double-retain guard (#2760)"
+drdir="_build/_gate_rc_double_retain"
+rm -rf "$drdir"; mkdir -p "$drdir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_wrapper_assign_double_retain_test.vibe" "$drdir/rc.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$drdir/rc.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_wrapper_assign_double_retain fixture did not compile under VIBE_RC" >&2
+  cat "$drdir/rc.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+dr_json="$(node scripts/measure_heap.mjs "$drdir/rc.wasm" main 2>/dev/null)"
+dr_used="$(printf '%s' "$dr_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+dr_result="$(printf '%s' "$dr_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$dr_used" ]; then
+  echo "[compiler-gate] FAIL: could not measure rc_wrapper_assign_double_retain heap ($dr_json)" >&2; exit 1
+fi
+if [ "$dr_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_wrapper_assign_double_retain wrong result $dr_result (want 0)" >&2; exit 1
+fi
+if [ "$dr_used" -ge 2000 ]; then
+  echo "[compiler-gate] FAIL: rc_wrapper_assign_double_retain heap_used=$dr_used >= 2000 (#2760 regressed; retaining a borrow whose source the spine itself binds measured 1600084 at N=20000)" >&2; exit 1
+fi
+rm -rf "$drdir"
+echo "[compiler-gate] RC wrapper-assign double-retain guard ok (heap_used=$dr_used B at N=20000)"
+
 # 40f. RC shadow-liveness regression guard (#715 recurrence prevention).
 #      Compiles the #715 shape corpus (every minimal shape that once produced
 #      a use-after-free / double-free in the Perceus RC backend) with
