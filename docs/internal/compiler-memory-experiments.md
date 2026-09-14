@@ -237,9 +237,10 @@ not justify its wall-time and peak-RSS costs on these workloads.
 The first two experiments now have implementations and
 [raw measurements](compiler-retain-scratch.json). Direct recursive functions
 infer borrowed parameters by starting with eligible positions and removing
-consumed ones until stable. Other callees keep the complete round-1 snapshot.
-The pass runs after program-wide disqualifiers are linked: a temporary argument
-in another module must also propagate through recursive argument permutations.
+consumed ones until stable. The current solver closes all direct-call
+dependencies, including mutual recursion; see the fixed-point experiment below.
+Program-wide disqualifiers are linked first: a temporary argument in another
+module must also propagate through recursive argument permutations.
 Indirect calls, captures, shadowing and duplicate declarations stay conservative.
 Whole-program and per-module inference share the same pass.
 Global aliases and bodyless declarations have authoritative ownership entries;
@@ -615,3 +616,94 @@ passed: array churn emitted seven native `array.new_default` instructions;
 the local-struct fixture emitted four user `struct.new` instructions plus
 the runtime's reference-cell construction. GC live-heap/collection-pause
 measurements remain unavailable. These focused checks do not replace full CI.
+
+### Borrow-parameter fixed point, 2026-09-14
+
+RC borrow inference now solves direct-call dependencies to a fixed point,
+including deep wrappers and mutually recursive components. It starts with
+globally eligible parameter bits and removes a bit when the existing ownership
+judgment finds a consuming use. A reverse call graph schedules affected callers;
+there is no arbitrary round cap. Global call-site disqualifiers apply before
+iteration, and callee shadows are suppressed for each body. Captures, indirect
+calls, aliases, duplicate declarations, and excluded entry points remain
+conservative. Whole-program and module-link entries use the same solver.
+
+This is ownership optimization, not the language safety borrow checker. It
+changes caller retains and callee drops together; it does not change arena
+lifetimes, the RC runtime, or the wasm-gc representation. The separate body-local
+round-0 oracle remains available for module decomposition checks.
+
+The Red case was an eight-wrapper reader chain: only its last two functions
+were borrowed. The candidate classifies all eight in either declaration order.
+A probe over the same baseline flat compiler AST changes `rewrite_expr`'s mask
+from 0 to 22: `gens`, `traits`, and `dict_binds` become borrowed. `struct_sets`
+and `fn_returns` remain owned; non-identifier call sites also keep `expr` and
+`var_types` owned. This probe runs before later whole-program lowering.
+
+The measured RC compiler contains **87,251 → 75,905 retain call sites**
+(−13.0%); within `rewrite_expr`, **1,012 → 730** (−27.9%). Its Wasm size falls
+from 5,675,999 to 5,517,647 bytes. A separate diagnostic profile measures the
+borrow query, including descendants, at **235.7 → 127.8 ms cold** and
+**219.3 → 122.0 ms warm**. Immediate `rewrite_expr` calls to `rc_dup` sample at
+136.2 → 55.7 ms cold and 145.3 → 56.8 ms warm. Total `rc_dup` self time is
+2,786.0 → 2,114.8 ms cold and 1,932.3 → 1,223.0 ms warm. These single profiles
+explain where work changed; they are not additional wall-time replicates.
+
+[Raw comparisons, controls, profiles, and validation](compiler-borrow-worklist.json)
+contain four alternating pairs per workload/temperature, plus bump and RC A/A
+controls: 128 samples on Node 24.21.0, Apple M5. Every cold sample starts with an
+empty private cache; its warm partner is a new process using that populated
+cache. Other compiler caches are disabled; the OS cache is uncontrolled. The
+generated target always uses linear RC. The runtime column describes the
+compiler executing the build.
+
+| Compiler runtime | Input / cache | Wall median, before → after | Paired wall change | Heap-pointer change | Linear-capacity change |
+|---|---|---:|---:|---:|---:|
+| Bump | Closure / cold | 3.153 → 3.179 s | +0.6% | −8.551 MB | 0 |
+| Bump | Closure / warm | 2.032 → 2.094 s | −2.4% | −8.550 MB | +6.881 MB |
+| Bump | CLI / cold | 7.313 → 7.464 s | +3.0% | −0.797 MB | 0 |
+| Bump | CLI / warm | 5.659 → 5.641 s | −4.7% | −0.796 MB | 0 |
+| RC | Closure / cold | 7.001 → 6.005 s | −15.4% | −22.793 MB | 0 |
+| RC | Closure / warm | 4.842 → 3.773 s | −20.7% | −17.765 MB | 0 |
+| RC | CLI / cold | 15.337 → 15.373 s | +0.1% | −25.681 MB | 0 |
+| RC | CLI / warm | 11.332 → 10.573 s | −12.7% | −16.653 MB | 0 |
+
+Paired changes are medians of within-round ratios, not ratios of the two
+medians. Heap and capacity deltas repeat exactly in all four pairs. Lower heap
+consumption does not guarantee lower reserved capacity: the bump warm closure
+reserves an additional 6.881 MB despite using 8.550 MB less heap. RC peak RSS
+medians decline by 1.7–3.5%; bump declines by 0.1–0.7%, but the A/A CLI-cold RC
+control itself reports a 14.1% RSS decline, so these are not established peak-RSS
+savings.
+
+Wall-time precision is limited by substantial shared-machine variation. A/A
+pairs range from −31.9% to +7.4% for bump and −28.0% to +60.7% for RC, despite
+exactly equal heap and capacity. The RC closure cold candidate is faster in all
+four pairs and CLI warm in all four, but closure warm has a slower pair and CLI
+cold shows no median improvement. Keep the complete samples and do not turn the
+favorable medians into a guaranteed speedup or dismiss the bump cold increases.
+
+Generated RC instructions intentionally differ across implementations. Each
+compiler's outputs match across temperatures and rounds, and the bump/RC runtime
+variants of each implementation produce identical targets. The measured closure
+test exports execute successfully, and both generated CLI programs compile and
+run the same recursive ownership probe with result `88`. The 267 related tests,
+25 bump tests, and 25 RC-shadow tests pass; stage2 equals stage3 and the RC
+compiler reproduces both RC and bump compiler artifacts.
+
+The measured comparison isolates this change on #2791 (`886f3486f`). Afterward,
+main's #2790/#2794 assignment-retain fixes were integrated at `702c134b7`, along
+with contract comment corrections and removal of unused round-0 oracle state.
+The rebased compiler passes 274 related
+tests and 25 additional tests each in bump and RC-shadow, stage2 equals stage3,
+and RC reproduces both compiler variants. The assignment-retain leak guard
+uses 164 B over 20,000 iterations (limit: 2,000 B). The final oracle cleanup
+passes another 36 related tests, stage2/stage3 equality, and RC reproduction of
+both artifacts. Rebased artifacts and validation are recorded separately in the data file; the table does not
+attribute those extra changes to the borrow worklist.
+
+**Decision:** keep the fixed-point solver. It removes the one-round limitation,
+reduces generated retains and deterministic heap consumption, and replaces the
+separate production scans with less code. Precise wall-time and peak-RSS gains
+remain uncertain. Keep the bump self-build default and existing CI performance
+observations; no required CI job or benchmark dependency is added.

@@ -470,17 +470,10 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // here: the corpus is the compiler's own closure, so the code doing the
   // measuring is inside what is being measured, and adding it moves the count.
   //
-  // #2638: and on that same closure the link columns read
-  //
-  //   link_round0=2171/2174:-0:+0:   link_round0_occ=__arr_equals__N8_TypeExpr:1/2
-  //   link_round01=2772/2775:-0:+0:  link_round01_occ=__arr_equals__N8_TypeExpr:1/2
-  //
-  // -- ZERO missing and ZERO extra on both, names and masks alike. The first
-  // is round 0 alone, linked from what each module publishes without
-  // re-reading a body. The second is the WHOLE analysis: `link_round01` is
-  // compared against the shipped `compute_borrow_param_user_fns` itself, not
-  // against a stand-in, so `2772` is the same 2772 the `borrow_fns` row above
-  // reports for the whole-program lane.
+  // The link compares names and masks independently. `link_round0` checks
+  // body-local facts plus global disqualifiers. `link_round01` retains its
+  // report spelling but now checks the final borrow-parameter fixed point,
+  // through the same solver as `compute_borrow_param_user_fns`.
   //
   // #2638: `borrow_ret` is the FIXPOINT, and it decomposes too -- as rounds
   // the LINK drives. Each round asks every module what it can add given the
@@ -547,18 +540,10 @@ test "the whole prelude per module reproduces the whole-program prelude" {
   // implementation serves both" here would be false, and the comment on that
   // function says so.
   //
-  // What `link_round01_occ` reports is a duplicate too, and it is harmless
-  // there for the same reason it turned out to be harmless here: membership is
-  // unaffected. Nothing in these four columns is a duplicate problem.
-  //
-  // So all 89 of `borrow_fns`' unsound extras are gone, and so are its 168
-  // conservative misses. The 89 were callees whose disqualifying call site
-  // lives in another module, and the union of `nonident` is a fact a module
-  // can publish. The 168 needed round ONE, which is why the link runs in two
-  // phases: the link owns round 0 (a module cannot build it), then hands the
-  // table back and each module answers round 1 for its own declarations. No
-  // fixpoint -- round 1 reads the snapshot and never another function's
-  // round-1 result, so the owning module's answer is final.
+  // The final borrow solver counts declarations across all parts and keeps
+  // duplicates owned. It links global call-site disqualifiers before narrowing
+  // masks, so ownership also propagates through deep wrappers and cycles.
+  // Body-local round-0 facts remain a separate oracle comparison.
   //
   // The three-entry size gap is NOT a membership difference, and
   // `link_round0_occ` names it rather than leaving it as an unexplained
@@ -702,9 +687,9 @@ test "the ordinary compile lane carries one module id per merged statement" {
 // #2575 item 4: the may_return / borrow analyses are the phases between the
 // prelude and codegen, and unlike the evidence facts (#2633) all three are
 // INTERPROCEDURAL -- each reads the classification of callees that may live in
-// another module. Two iterate to a fixpoint; `compute_borrow_param_user_fns`
-// is round 0 plus ONE bounded transitive round and stops there. This is the
-// program that shows neither shape decomposes, in BOTH directions at once:
+// another module. All three iterate to a fixed point. This program shows
+// why their final answers cannot be computed by unioning independent module
+// results, in BOTH directions at once:
 //
 //   helper  head_of(xs: Array[Int]) -> Int     reads xs, never consumes it
 //           pick(xs: Array[String]) -> String  returns an interior view
