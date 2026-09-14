@@ -1415,6 +1415,21 @@ fn mib_borrow_root(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Stri
   }
 }
 
+/// Re-point a spine binder's recorded root after an assignment to it. A name
+/// the spine never bound is ignored: it belongs to an enclosing scope, and this
+/// walk only speaks for the spine's own bindings.
+fn mib_rebind_spine_root(n: String, v: Expr, names: Array[String], roots: Array[String], local_names: Array[String], ctx: CompileCtx) -> Unit {
+  let mut i = 0
+  while i < Array::length(names) {
+    if Array::get(names, i) == n {
+      Array::set(roots, i, mib_borrow_root(v, local_names, ctx))
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
 /// The spine's own bindings, paired with the root each one's value reads from.
 /// `let y = x` and `let y = Array::get(x, 0)` both make `y` another name for
 /// something rooted at `x`, and the retain decision has to see through either.
@@ -1436,8 +1451,22 @@ fn mib_spine_binder_roots(e: Expr, names: Array[String], roots: Array[String], l
       mib_spine_binder_roots(b, names, roots, local_names, ctx)
     },
     ESeq(_, b) => mib_spine_binder_roots(b, names, roots, local_names, ctx),
-    EAssign(_, _, b) => mib_spine_binder_roots(b, names, roots, local_names, ctx),
-    EAssignOp(_, _, _, b) => mib_spine_binder_roots(b, names, roots, local_names, ctx),
+    // A spine binder that is REASSIGNED stops being an alias of whatever it was
+    // bound to: `let mut y = x; y = [Leaf(2)]; f(y)` reads `y`'s fresh value,
+    // not `x`. Walking past the assignment left `y -> x` standing, which
+    // resolves the leaf onto the slot and DECLINES a retain the fresh value
+    // needs -- the one direction of this walk that is not safe (Codex on
+    // #2799). Re-record instead of invalidating: the new root is exactly as
+    // good an answer, and for a non-borrow value it is "" anyway, which stops
+    // the resolution and retains.
+    EAssign(n, v, b) => {
+      mib_rebind_spine_root(n, v, names, roots, local_names, ctx)
+      mib_spine_binder_roots(b, names, roots, local_names, ctx)
+    },
+    EAssignOp(n, _, v, b) => {
+      mib_rebind_spine_root(n, v, names, roots, local_names, ctx)
+      mib_spine_binder_roots(b, names, roots, local_names, ctx)
+    },
     _ => ()
   }
 }
