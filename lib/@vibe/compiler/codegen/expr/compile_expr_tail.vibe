@@ -1189,6 +1189,40 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
   (rc_kind, is_borrow_ret_ext)
 }
 
+/// Did the spine's own `ELet` lowering already retain the escaping element for
+/// `root`? The assignment retain must not be stacked on top of that one, and
+/// must not be withheld when it was never taken. The two mistakes are not
+/// symmetric -- the first leaks, the second frees a reference the container
+/// still owns -- so this answers only where it can establish the retain, and
+/// the caller retains wherever it cannot.
+///
+/// The NAME alone does not establish it, which is the correction this function
+/// carries. `x = { let ys = Array::get(xss, 0); Array::get(ys, 0) }` binds `ys`
+/// in the spine exactly as the owning shape does, but `classify_let_value_heap`
+/// leaves a borrow-returning call at `rc_kind == 0`, so that binder gets no
+/// scope-end drop and the promotion guarded by it never runs. Suppressing there
+/// left the owning slot holding a reference nobody took: measured `850` on the
+/// RC lane against the bump lane's `770`, the second read answering with the
+/// filler. Pinned by `assign_borrow_bound_binder` in
+/// fixtures/rc_wrapper_assign_borrow_test.vibe.
+///
+/// So the test mirrors the promotion's OWN guard -- `rc_kind > 0 &&
+/// array_contains_str(ctx.rc_drop_names, name)` -- instead of approximating it.
+/// `heap_binding_names` is the record `classify_let_value_heap` writes on
+/// exactly its `rc_kind = 2` paths, and both callers run after the value is
+/// compiled, so the record is already there to read. Reading those flat
+/// whole-function lists by name is exact rather than approximate because
+/// normalize alpha-renames every shadowing binder (#715): within one function a
+/// name is one binding.
+///
+/// `reuse_fusion` is the promotion's remaining guard and is deliberately not
+/// tested, because it cannot hold here: it requires the binder's body to be an
+/// `EMatch`, and `scope_tail_proj_root` answers "" for one, so a spine whose
+/// root is this binder never took that branch.
+fn spine_binder_promoted(root: String, binders: Array[String], ctx: CompileCtx) -> Bool {
+  array_contains_str(binders, root) && array_contains_str(ctx.heap_binding_names, root) && array_contains_str(ctx.rc_drop_names, root)
+}
+
 /// Does a value's STRAIGHT-LINE spine hand a mutable slot a reference the
 /// scope does not own? The twin of `pc_count`'s ELetMut `borrowed_call`: the
 /// retain this gates and the owning plan that arm records must cover the same
@@ -1222,27 +1256,27 @@ fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: CompileCtx) 
   let leaf = mib_spine_leaf(value, binders)
   match leaf {
     // The spine's own binder must not be retained TWICE. When the wrapper binds
-    // the borrow's SOURCE -- `x = { let ys = [..]; Array::get(ys, 0) }` -- the
-    // inner `ELet` lowering already promotes the escaping element before
-    // dropping `ys`, keyed on `scope_tail_proj_root(body) == n`. Retaining it
-    // again here gives the slot two references and its drop spends one, so
-    // every assignment leaks the element permanently.
+    // the borrow's SOURCE and OWNS it -- `x = { let ys = [..]; Array::get(ys,
+    // 0) }` -- the inner `ELet` lowering already promotes the escaping element
+    // before dropping `ys`, keyed on `scope_tail_proj_root(body) == n`.
+    // Retaining it again here gives the slot two references and its drop spends
+    // one, so every assignment leaks the element permanently.
     //
     // Measured on `6507c60` at N=20000: 164 B unpatched against 1,600,084 B
     // with this clause classifying from the leaf callee alone -- 80 B per
     // iteration, so it SCALES. Bounded by
     // fixtures/rc_wrapper_assign_double_retain_test.vibe (gate row 40e2).
     //
-    // The test asks `scope_tail_proj_root` -- the SAME predicate the inner
-    // lowering keys on -- rather than a second reading of the spine, so the two
-    // cannot answer differently. It names the borrow's root, which is a spine
-    // binder exactly when that lowering already retained: `ys` here, and `xs`
-    // (a parameter) in the issue's own repro, which therefore still retains.
+    // `scope_tail_proj_root` is asked for the root because it is the SAME
+    // predicate the inner lowering keys on, so the two cannot read the spine
+    // differently. But the root being a spine binder is NOT on its own evidence
+    // that the lowering retained, which is what `spine_binder_promoted` exists
+    // to establish -- see its doc comment for the shape that proved it.
     ECall(EIdent(cn, _), _, _) => if array_contains_str(binders, cn) || !call_returns_borrow(leaf, local_names, ctx) {
       false
     } else {
       let tail_root = scope_tail_proj_root(value)
-      String::length(tail_root) == 0 || !array_contains_str(binders, tail_root)
+      String::length(tail_root) == 0 || !spine_binder_promoted(tail_root, binders, ctx)
     },
     // A BARE projection is retained by `classify_let_value_heap`'s own
     // `is_edot(value)` arm, and by the assignment path's own top-node clause.

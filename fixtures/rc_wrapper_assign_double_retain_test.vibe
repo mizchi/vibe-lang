@@ -20,11 +20,23 @@
 // 80 B per iteration, so it SCALES -- the middle row is 20000 x 80 plus the
 // steady state, and the bound below separates it by four orders of magnitude.
 //
-// The discriminating fact is WHOSE binder the borrow's root is: `ys` here is
-// the spine's own, so the inner lowering already retained; `xs` in the issue's
-// repro is a parameter, so nothing did and the retain is still required. Both
-// are asserted -- this file for the leak, `rc_wrapper_assign_borrow_test.vibe`
-// for the value.
+// The discriminating fact is whether the binder the borrow's root names
+// ACQUIRED AN OWNED REFERENCE -- not merely whether the spine bound that name,
+// which is what the first version of this guard tested. `ys` here is bound to
+// an array literal, so `classify_let_value_heap` gives it `rc_kind = 2` and the
+// inner lowering promotes; `xs` in the issue's own repro is a parameter, so
+// nothing promoted and the retain is still required.
+//
+// A THIRD case sits between them and is why the name alone will not do: a
+// binder that is itself a borrow (`let ys = Array::get(xss, 0)`) stays at
+// `rc_kind == 0`, gets no scope-end drop, and promotes nothing -- so declining
+// there frees a reference the container still owns. Measured at 850 against the
+// bump lane's 770; it is asserted by value in
+// `rc_wrapper_assign_borrow_test.vibe` (`assign_borrow_bound_binder`), because
+// that error shows up as a wrong answer and not as a leak.
+//
+// The two directions are opposite errors and each needs its own lane: this file
+// bounds the leak, `rc_wrapper_assign_borrow_test.vibe` asserts the values.
 //
 // `main` returns 0: every shape here adds 0, so the answer cannot drift with
 // the allocation behaviour being measured.
