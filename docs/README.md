@@ -92,7 +92,7 @@ the repo; not the user manual.
 | [internal/design/adr.md](internal/design/adr.md) | Living ADR log |
 | [internal/design/capability-authorization-surface.md](internal/design/capability-authorization-surface.md) | ADR-0088, proposed |
 | [internal/design/compiler-parallelism.md](internal/design/compiler-parallelism.md) | ADR-0068 companion, proposed |
-| [internal/design/concurrency.md](internal/design/concurrency.md) | ADR-0068, proposed. Not the user concurrency guide |
+| [internal/design/concurrency.md](internal/design/concurrency.md) | ADR-0068, proposed. The user concurrency guide is the book's [17_concurrency](../book/en/17_concurrency.vibe.md) |
 | [internal/design/effect-evidence-passing.md](internal/design/effect-evidence-passing.md) | ADR-0076, proposed |
 | [internal/design/effect-taxonomy-entry-policy.md](internal/design/effect-taxonomy-entry-policy.md) | ADR-0084, proposed |
 | [internal/design/effect-taxonomy-review.md](internal/design/effect-taxonomy-review.md) | Review, not the user effect tutorial |
