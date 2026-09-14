@@ -43,8 +43,7 @@
 #                            |   vibe to then delete     |
 #
 # The positive case is not decoration. A compiler that ignores the variable
-# entirely destroys nothing and would pass every row above: measured, the
-# committed seed does exactly that. Asserting that a plain request PUBLISHES a
+# entirely destroys nothing and would pass every row above. Asserting that a plain request PUBLISHES a
 # well-formed sidecar is what makes the refusals mean "refused" rather than
 # "not implemented", and it is the assertion this gate's self-test trips.
 set -euo pipefail
