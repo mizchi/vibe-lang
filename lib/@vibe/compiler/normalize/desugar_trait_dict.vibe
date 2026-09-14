@@ -3477,6 +3477,10 @@ fn dtd_interp_lamret_apply(slot: String, arg: Expr, cargs: Array[Expr], struct_s
     }
   } else if dtd_interp_lamret_elem_arg(slot) >= 0 {
     ""
+  } else if dtd_interp_lamret_tuple_parts(slot).0 >= 0 {
+    // A TUPLE result is not an erased scalar either; its elements are, and the
+    // binding records them.
+    ""
   } else if slot == dtd_interp_lamret_any() {
     dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
   } else {
@@ -4058,6 +4062,35 @@ fn dtd_interp_field_name(name: String, field: String) -> String {
   String::concat(name, String::concat("$", field))
 }
 
+/// The CONSTRUCTOR an expression carries, by whichever spelling it arrives in:
+/// written as a call, or reached through a name whose shape was recorded. ""
+/// when it is not a constructor at all.
+///
+/// One question with one answer -- round 18 asked "is this a constructor call",
+/// which is a different question that happens to agree for the inline spelling
+/// (#2745 round 21).
+fn dtd_interp_ctor_name_of(e: Expr, var_types: Array[(String, String)]) -> String {
+  match e {
+    ECall(ecallee, _, _) => match ecallee {
+      EIdent(cn, _) => if dtd_name_is_constructor_shaped(cn) {
+        cn
+      } else {
+        ""
+      },
+      _ => ""
+    },
+    EIdent(n, _) => match lookup_var_type(var_types, dtd_interp_shape_key(n)) {
+      Some(k) => if String::length(k) > 0 && k != dtd_interp_tuple_shape() && dtd_name_is_constructor_shaped(k) {
+        k
+      } else {
+        ""
+      },
+      None => ""
+    },
+    _ => ""
+  }
+}
+
 /// The synthetic NAME of an array element's records FOR ONE CONSTRUCTOR.
 ///
 /// #2745 (Codex, P1 round 18 on #2761): round 16 merged every element of an
@@ -4118,6 +4151,35 @@ fn dtd_interp_lamret_any() -> String {
 /// `dtd_interp_lamret_elem_arg` is the only reader that takes it apart.
 fn dtd_interp_lamret_elem(k: Int) -> String {
   String::concat("a", idx_str(k))
+}
+
+/// The marker for "returns a TUPLE of `arity` whose positions `positions`
+/// (comma-separated) hold argument `k`".
+///
+/// #2745 (Codex, P1 round 21 on #2761): round 17 handled `-> Array[U]` and
+/// said a deeper shape "would need a type language here, and this pass has
+/// none". A tuple needs only which POSITIONS carry the formal, which is three
+/// numbers -- so `-> (U, Int)` is recorded, and `{ let p = pack(a); p.0 }`
+/// resolves through the ordinary tuple machinery instead of a rule of its own.
+/// Positions the formal does not occupy stay blank, so `p.1` still renders.
+fn dtd_interp_lamret_tuple(k: Int, arity: Int, positions: String) -> String {
+  let head = String::concat("u", String::concat(idx_str(k), ":"))
+  String::concat(head, String::concat(idx_str(arity), String::concat(":", positions)))
+}
+
+/// The three fields behind a `dtd_interp_lamret_tuple` marker: argument index,
+/// arity, and the comma-separated positions. `(-1, 0, "")` when it is not one.
+fn dtd_interp_lamret_tuple_parts(slot: String) -> (Int, Int, String) {
+  if String::length(slot) < 2 || String::char_code_at(slot, 0) != 'u' {
+    (0 - 1, 0, "")
+  } else {
+    let parts = String::split(String::substring(slot, 1, String::length(slot)), ":")
+    if Array::length(parts) != 3 {
+      (0 - 1, 0, "")
+    } else {
+      (dtd_interp_index_of_field(Array::get(parts, 0)), dtd_interp_index_of_field(Array::get(parts, 1)), Array::get(parts, 2))
+    }
+  }
 }
 
 /// The marker for "returns a value of the type spelled `name`", as opposed to
@@ -4261,6 +4323,39 @@ fn dtd_interp_lamret_of(tps: Array[String], params: Array[(String, Option[TypeEx
       }
     } else {
       ""
+    },
+    // Round 21: a TUPLE return. Which positions carry the formal is all this
+    // needs, and that is three numbers rather than a type language.
+    Some(TyTuple(rts)) => {
+      let mut ti = 0
+      let mut at = ""
+      let mut pos = ""
+      while ti < Array::length(rts) {
+        match Array::get(rts, ti) {
+          TyName(eh) => if str_array_contains(tps, eh) {
+            let here = dtd_interp_param_at_type(params, eh)
+            if here != dtd_interp_lamret_any() && (String::length(at) == 0 || at == here) {
+              at = here
+              pos = if String::length(pos) == 0 {
+                idx_str(ti)
+              } else {
+                String::concat(pos, String::concat(",", idx_str(ti)))
+              }
+            } else {
+              ()
+            }
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        ti = ti + 1
+      }
+      if String::length(pos) > 0 {
+        dtd_interp_lamret_tuple(dtd_interp_index_of_field(at), Array::length(rts), pos)
+      } else {
+        ""
+      }
     },
     _ => ""
   }
@@ -4592,6 +4687,31 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
         } else {
           ()
         }
+        // Round 21: and a TUPLE return, recorded as an ordinary tuple so `p.0`
+        // and a destructuring pattern both answer through the machinery that
+        // already exists rather than through a second reader.
+        let tslot = match lookup_var_type(var_types, dtd_interp_lamret_key(cn)) {
+          Some(t) => t,
+          None => ""
+        }
+        let (tk, tarity, tpos) = dtd_interp_lamret_tuple_parts(tslot)
+        if tk >= 0 && tk < Array::length(cargs) && tarity > 0 {
+          let tf = dtd_erased_interp_formal(Array::get(cargs, tk), struct_sets, var_types, fn_returns)
+          Array::push(out, (dtd_interp_shape_key(name), dtd_interp_tuple_shape()))
+          let poss = String::split(tpos, ",")
+          let mut pi = 0
+          while pi < tarity {
+            let here = if str_array_contains(poss, idx_str(pi)) {
+              tf
+            } else {
+              ""
+            }
+            Array::push(out, (dtd_interp_tuple_elem_key(name, pi), here))
+            pi = pi + 1
+          }
+        } else {
+          ()
+        }
       },
       _ => ()
     },
@@ -4673,16 +4793,19 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
         dtd_interp_record_shape_into(out, aslot, ael, struct_sets, var_types, fn_returns)
         // #2745 round 18: and again under THIS element's constructor, because
         // the shared slot can only hold the last one's payloads.
-        match ael {
-          ECall(acallee, _, _) => match acallee {
-            EIdent(acn, _) => if dtd_name_is_constructor_shaped(acn) {
-              dtd_interp_record_shape_into(out, dtd_interp_ctor_slot_name(aslot, acn), ael, struct_sets, var_types, fn_returns)
-            } else {
-              ()
-            },
-            _ => ()
-          },
-          _ => ()
+        //
+        // Round 21 (Codex): the element need not be written as a constructor
+        // CALL. `let av = A(a); let xs = [av, B(0)]` arrives as a NAME, whose
+        // constructor is in its recorded shape -- so the question is "what
+        // constructor does this element have", asked once, rather than "is
+        // this element a constructor call". Measured before: the slot took
+        // `A` from `av`, `B` overwrote it, only `B` got a sub-slot, and
+        // matching on `A` printed a 3-digit pointer decimal.
+        let acn = dtd_interp_ctor_name_of(ael, var_types)
+        if String::length(acn) > 0 {
+          dtd_interp_record_shape_into(out, dtd_interp_ctor_slot_name(aslot, acn), ael, struct_sets, var_types, fn_returns)
+        } else {
+          ()
         }
         si = si + 1
       }
