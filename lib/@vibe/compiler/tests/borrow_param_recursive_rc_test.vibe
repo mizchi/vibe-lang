@@ -28,3 +28,13 @@ test "a returned array remains owned through recursive argument permutations" {
   let src = "fn rotate(a: Array[Int], b: Array[Int], c: Array[Int], n: Int) -> Array[Int] {\n  if n == 0 { a } else { rotate(b, c, a, n - 1) }\n}\nfn main() -> Int {\n  let a = [17]\n  let b = [5, 6]\n  let c = [2, 3, 4]\n  let got = rotate(a, b, c, 2)\n  let churn = [9, 10, 11]\n  Array::get(a, 0) - Array::get(got, 0) + Array::length(churn)\n}"
   assert_lanes(src, "rotate", "18")
 }
+
+test "deep wrappers and mutually recursive readers preserve the caller's array" {
+  let src = "fn left(xs: Array[Int], n: Int) -> Int {\n  if n == 0 { Array::get(xs, 0) } else { right(xs, n - 1) }\n}\nfn right(xs: Array[Int], n: Int) -> Int {\n  if n == 0 { Array::length(xs) } else { left(xs, n - 1) }\n}\nfn mid(xs: Array[Int]) -> Int { left(xs, 20) }\nfn outer(xs: Array[Int]) -> Int { mid(xs) }\nfn main() -> Int {\n  let xs = [7, 2, 9]\n  let mut sum = 0\n  let mut i = 0\n  while i < 50 {\n    sum = sum + outer(xs) + Array::get(xs, 2)\n    i = i + 1\n  }\n  sum\n}"
+  assert_lanes(src, "mutual_wrappers", "800")
+}
+
+test "a shadowing function parameter keeps the owned call convention" {
+  let src = "fn reader(xs: Array[Int]) -> Int { Array::length(xs) }\nfn owned(xs: Array[Int]) -> Array[Int] { xs }\nfn wrapper(xs: Array[Int], reader: (Array[Int]) -> Array[Int]) -> Array[Int] { reader(xs) }\nfn main() -> Int {\n  let xs = [17, 2]\n  let got = wrapper(xs, owned)\n  let churn = [3, 4, 5]\n  Array::get(xs, 0) - Array::get(got, 0) + Array::length(churn)\n}"
+  assert_lanes(src, "parameter_shadow", "3")
+}

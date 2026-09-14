@@ -1637,72 +1637,52 @@ first three in full.
 
 ### The phases after the prelude (#2575 item 4)
 
-Between the prelude and codegen `linked_compile` runs three whole-program
+Between the prelude and codegen, `linked_compile` runs three whole-program
 analyses: `compute_borrow_returning_names`, `compute_borrow_param_user_fns`
-(ADR-0092, per-position masks) and `compute_may_return_view_fns`. The oracle
-samples all three on both lanes after all 17 prelude passes, which is where the
-real compile runs them, and compares the whole-program answer against the union
-of the per-module ones.
+(ADR-0092, per-position masks), and `compute_may_return_view_fns`. All three
+are interprocedural fixed points: a caller's classification depends on callees
+that may live in other modules.
 
-Unlike the evidence facts above, all three are **interprocedural** — each reads
-the classification of callees that may live in another module — so the two lanes
-differ in both directions and the directions do not mean the same thing.
+Borrow-parameter inference starts with every globally eligible position and
+removes borrowed bits when the existing ownership judgment finds a consuming
+use. A reverse call graph schedules only affected callers, including wrappers,
+self calls, and mutually recursive components. The masks only shrink; with at
+most 32 eligible bits per function, termination needs no arbitrary round limit.
+The final mask changes the caller and callee ownership plans together.
 
-Two of them iterate to a fixpoint (`compute_borrow_returning_names`'s `while
-changed`, `compute_may_return_view_fns`' callee-edge worklist).
-`compute_borrow_param_user_fns` does **not**: it is round 0 plus **one bounded
-transitive round** reading round 0's immutable snapshot, and deliberately stops
-there. That distinction constrains the link-time design below — closing it
-transitively would compute a larger borrow set than today's ABI, which is a
-behaviour change rather than the same answer computed differently.
+Eligibility is decided before iteration. Non-identifier call arguments,
+functions used as values, entry exclusions, duplicate declarations, and captures
+must not acquire a speculative borrowed ABI. Aliases and declarations carry
+owned entries when they shadow a builtin; local callee binders suppress that
+callee's mask while the body is checked. These are RC optimization facts, not
+a replacement for the language's safety borrow checker.
 
-Measured on `lib/@vibe/cli/entry.vibe`, 365 modules:
+A module cannot safely publish its final masks in isolation:
 
-```
-ANALYSIS dce_entry=0 borrow_ret=378/363:-15:MutSortedSet::delete+0:
-         borrow_fns=2706/2627:-167:alloc_site_kind_dep_...+88:__arr_equals__N4_Expr
-         borrow_masks=2706/2627:-197:agg_expr_of_ident_exp_...#12+118:__arr_equals__N4_Expr#3
-         view_ret=2123/1943:-180:HashSet::size+0:
-```
+- A name the whole program has and the module union lacks is a conservative
+  miss. A wrapper cannot see the borrowed ABI or returned view of an imported
+  callee.
+- A name the module union has and the whole program lacks is an ownership
+  disagreement. A call in another module may pass a temporary argument and
+  globally disqualify an otherwise eligible position.
+- Matching names are insufficient: two lanes can classify the same function
+  with different borrowed parameter bits. Compare `(name, mask)` pairs too.
 
-- **A name the whole program has and the union lacks** is a module being
-  conservative about a callee it cannot see: `via(xs) = pick(xs)` is not
-  classified view-returning by its own module when `pick` lives across the
-  import. Slower, sound; 167 on the borrow set and 180 on the view set.
-- **A name the union has and the whole program lacks** is a module qualifying a
-  function the whole program **disqualified**. `ca_collect_nonident_args`
-  disqualifies a callee from a *call site*, which may live in another module, so
-  a module reading only its own statements hands back the borrowed ABI for a
-  parameter the program says is consumed. 88 of them, and this is the unsound
-  direction.
+The module collects call-site disqualifiers and retains its bodies. The link
+unions the facts and solves the combined call graph through
+`borrow_fixpoint_link_parts`, the same solver used by the whole-program entry.
+The oracle still compares independently linked body-local round-0 facts with
+`compute_borrow_param_user_fns_round0`; that is a separate decomposition check,
+not the production stopping point. Its existing `link_round01` report field
+now compares the final fixed point, including mask equality.
 
-The net (2706 − 2627 = 79) hides all 88 behind the 167, which is why both
-directions are counted rather than subtracted. The mask row is the same question
-one level finer: 118 against 88 means 30 functions are in **both** sets under
-**different** masks — the names agree and the ABI does not, which a comparison on
-names alone reports as agreement.
-
-`dce_entry` is the sample point's own caveat. Production runs
-`fold_const_bool_params` and `dce_stmts` between the prelude and these
-analyses, gated on the merged program defining `entry_name`; a folded constant
-`Bool` argument can delete a consuming branch and change a borrow mask, and DCE
-can delete a generated helper outright. The oracle cannot reproduce either —
-`dce_stmts` is rooted at the entry and the split lane has no per-module entry —
-so it reports the condition and prints `unmeasured` instead of counts when it
-holds. The closure numbers above are a `dce_entry=0` measurement: the same
-closure through `vibe build` would give different sets, though not a different
-conclusion, since neither transform makes an interprocedural analysis
-decompose.
-
-So these phases do not decompose as written. What a module can compute alone is
-its own contribution; the disqualifications and the callee edges are the
-program's. That makes them the same shape as the evidence pass (#2633) — the
-module collects, the link unions and decides — with two differences that matter.
-An evidence disagreement produces two programs that cannot link, and a borrow
-disagreement produces two that link and disagree about ownership. And the link's
-closing step is not one shape: a fixpoint for the two analyses that iterate, and
-**exactly one** bounded transitive round for the borrow masks, because that is
-what the shipped ABI is.
+`dce_entry` is the oracle's sampling caveat. Production runs
+`fold_const_bool_params` and `dce_stmts` between the prelude and these analyses
+when the merged program defines `entry_name`. A folded constant Boolean can
+remove a consuming branch; DCE can remove a helper. The split oracle cannot
+reproduce entry-rooted DCE independently in each module, so it prints
+`unmeasured` when that condition holds. A `dce_entry=0` comparison describes the
+unpruned closure, not every `vibe build` of that closure.
 
 ## User-visible KPI contract
 

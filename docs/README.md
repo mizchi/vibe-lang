@@ -116,6 +116,7 @@ the repo; not the user manual.
 | [internal/compiler-free-var-callee.json](internal/compiler-free-var-callee.json) | `internal/design/` | Direct callee scan comparison, controls and raw samples |
 | [internal/compiler-annotated-lambda-inference.json](internal/compiler-annotated-lambda-inference.json) | `internal/design/` | Annotated local lambda inference comparison, controls and raw samples |
 | [internal/compiler-free-var-binding-lookup.json](internal/compiler-free-var-binding-lookup.json) | `internal/design/` | Callee binding lookup comparison, controls, fuel probe and raw samples |
+| [internal/compiler-borrow-worklist.json](internal/compiler-borrow-worklist.json) | `internal/design/` | Fixed-point borrow inference comparisons, controls, retain counts and validation |
 | [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
 | [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
 | [simd-data-structures.md](simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |

@@ -1,0 +1,1482 @@
+{
+  "schema": 1,
+  "experiment": "Fixed-point RC borrow-parameter inference",
+  "created_at": "2026-09-14T14:38:57.850962+00:00",
+  "hypothesis": "One bounded transitive round and a separate direct-recursion pass miss deeper readers and mutually recursive borrowed parameters. A shrinking-mask worklist can remove retains while avoiding repeated whole-program rounds.",
+  "scope": "RC ownership optimization, not the language safety borrow checker. No wasm-gc or arena-lifetime change.",
+  "measurement_base_revision": "886f3486f59f4397a87679c0a7d425dd47abdbbe",
+  "integration_base_revision": "702c134b7",
+  "revision_note": "The controlled comparisons isolate the borrow worklist on #2791. After measurement, contract comments were corrected, unused round-0 oracle state was removed, and main PRs #2790/#2794 were integrated. Rebased artifacts were regenerated and tested separately; the timing deltas do not measure those additional changes.",
+  "final_changed_lib_sources": {
+    "lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe": "b9802e0f4ce53eedbbb68698083d2862475d5a69a856bf71bbae8fdb742b3010",
+    "lib/@vibe/compiler/codegen/common_analysis/index.vpkg": "43ec28628b1118fb7d8d63950c7e8c3192b2f8fd511807f062217e03922529f8",
+    "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe": "c669c77a059dc678d571efac0841bef3ec188481c5709124afc0f230c994c730",
+    "lib/@vibe/compiler/tests/borrow_param_fixpoint_test.vibe": "946055e8fec2dee0c7f0864c9d3b8b46d714eddb7fa0bd0efcc5936a45aac6ff",
+    "lib/@vibe/compiler/tests/borrow_param_recursive_rc_test.vibe": "091a9fcdd6b040ce73ebf7064a066798c614d236c509296e48c1f53c473fc112",
+    "lib/@vibe/compiler/tests/borrow_param_transitive_test.vibe": "efc447f9de345142fc46fa5c934bf761cbba05fae0e0d3c9451b9f68ef946b7f",
+    "lib/@vibe/compiler/tests/prelude_module_oracle_test.vibe": "bbeb00a8c27e99fc54c95f874677a7d3f49dc47d748ed12e7808c4f4d8d910dd"
+  },
+  "measured_changed_lib_sources": {
+    "lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe": "5e8fa4404fb0b65d80f7062f234ecaab2b1b40458a0f5f6a50c08a770c62331d",
+    "lib/@vibe/compiler/codegen/common_analysis/index.vpkg": "43ec28628b1118fb7d8d63950c7e8c3192b2f8fd511807f062217e03922529f8",
+    "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe": "7079254cb137bd5c63c849f08f03a1c5b85f18fae25121f7f1361230bbb8cdd5",
+    "lib/@vibe/compiler/tests/borrow_param_recursive_rc_test.vibe": "091a9fcdd6b040ce73ebf7064a066798c614d236c509296e48c1f53c473fc112",
+    "lib/@vibe/compiler/tests/borrow_param_transitive_test.vibe": "efc447f9de345142fc46fa5c934bf761cbba05fae0e0d3c9451b9f68ef946b7f",
+    "lib/@vibe/compiler/tests/borrow_param_fixpoint_test.vibe": "946055e8fec2dee0c7f0864c9d3b8b46d714eddb7fa0bd0efcc5936a45aac6ff"
+  },
+  "measured_patch": "diff --git i/lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe w/lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe\nindex 142ef9832..e74ce4a63 100644\n--- i/lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe\n+++ w/lib/@vibe/compiler/codegen/common_analysis/common_analysis.vibe\n@@ -3554,100 +3554,6 @@ fn bp_param_base_name(raw: String) -> String {\n   }\n }\n \n-/// Cheap worklist predicate for the bounded transitive borrow round. A false\n-/// positive (for example a shadowed direct callee) only causes re-analysis;\n-/// a false negative would lose an optimization, so inspect every AST child.\n-fn bp_calls_round0_borrow(e: Expr, round0_names: Array[String]) -> Bool {\n-  match e {\n-    EInt(_) => false,\n-    EFloat(_) => false,\n-    EString(_) => false,\n-    EBool(_) => false,\n-    EUnit => false,\n-    EStringInterp(_) => false,\n-    EIdent(_, _) => false,\n-    ECall(callee, args, _) => {\n-      let mut found = match callee {\n-        EIdent(fname, _) => bsearch_leftmost(round0_names, fname) >= 0,\n-        _ => bp_calls_round0_borrow(callee, round0_names)\n-      }\n-      let mut i = 0\n-      while !found && i < Array::length(args) {\n-        found = bp_calls_round0_borrow(Array::get(args, i), round0_names)\n-        i = i + 1\n-      }\n-      found\n-    },\n-    ETuple(items) => bp_calls_round0_borrow_list(items, round0_names),\n-    EArray(items) => bp_calls_round0_borrow_list(items, round0_names),\n-    ERecord(_, fields, _) => bp_calls_round0_borrow_fields(fields, round0_names),\n-    EMap(fields) => bp_calls_round0_borrow_fields(fields, round0_names),\n-    EIf(c, t, f) => bp_calls_round0_borrow(c, round0_names) || bp_calls_round0_borrow(t, round0_names) || bp_calls_round0_borrow(f, round0_names),\n-    ELet(_, v, b, _) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),\n-    ELetRec(_, v, b) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),\n-    ELetMut(_, v, b, _) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),\n-    EAssign(_, v, b) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),\n-    EAssignOp(_, _, v, b) => bp_calls_round0_borrow(v, round0_names) || bp_calls_round0_borrow(b, round0_names),\n-    ESeq(a, b) => bp_calls_round0_borrow(a, round0_names) || bp_calls_round0_borrow(b, round0_names),\n-    EMatch(scr, arms) => bp_calls_round0_borrow(scr, round0_names) || bp_calls_round0_borrow_arms(arms, round0_names),\n-    EHandle(body, arms) => bp_calls_round0_borrow(body, round0_names) || bp_calls_round0_borrow_arms(arms, round0_names),\n-    EWhile(c, b) => bp_calls_round0_borrow(c, round0_names) || bp_calls_round0_borrow(b, round0_names),\n-    ELoop(inits, b) => {\n-      let mut found = false\n-      let mut i = 0\n-      while !found && i < Array::length(inits) {\n-        let (_, init) = Array::get(inits, i)\n-        found = bp_calls_round0_borrow(init, round0_names)\n-        i = i + 1\n-      }\n-      found || bp_calls_round0_borrow(b, round0_names)\n-    },\n-    EForIn(_, _, iter, b) => bp_calls_round0_borrow(iter, round0_names) || bp_calls_round0_borrow(b, round0_names),\n-    EBinOp(_, a, b, _) => bp_calls_round0_borrow(a, round0_names) || bp_calls_round0_borrow(b, round0_names),\n-    EUnaryOp(_, a) => bp_calls_round0_borrow(a, round0_names),\n-    EFn(_, _, _, _, _, body) => bp_calls_round0_borrow(body, round0_names),\n-    EDot(obj, _, _, _) => bp_calls_round0_borrow(obj, round0_names),\n-    ELabeledArg(_, _, v) => bp_calls_round0_borrow(v, round0_names),\n-    EReturn(v) => bp_calls_round0_borrow(v, round0_names),\n-    EBreak(Some(v)) => bp_calls_round0_borrow(v, round0_names),\n-    EBreak(None) => false,\n-    EContinue(args) => bp_calls_round0_borrow_list(args, round0_names),\n-    ESpread(v) => bp_calls_round0_borrow(v, round0_names)\n-  }\n-}\n-\n-fn bp_calls_round0_borrow_list(items: Array[Expr], round0_names: Array[String]) -> Bool {\n-  let mut i = 0\n-  let mut found = false\n-  while !found && i < Array::length(items) {\n-    found = bp_calls_round0_borrow(Array::get(items, i), round0_names)\n-    i = i + 1\n-  }\n-  found\n-}\n-\n-fn bp_calls_round0_borrow_fields(fields: Array[(String, Expr)], round0_names: Array[String]) -> Bool {\n-  let mut i = 0\n-  let mut found = false\n-  while !found && i < Array::length(fields) {\n-    let (_, value) = Array::get(fields, i)\n-    found = bp_calls_round0_borrow(value, round0_names)\n-    i = i + 1\n-  }\n-  found\n-}\n-\n-fn bp_calls_round0_borrow_arms(arms: Array[(Pat, Expr)], round0_names: Array[String]) -> Bool {\n-  let mut i = 0\n-  let mut found = false\n-  while !found && i < Array::length(arms) {\n-    let (_, body) = Array::get(arms, i)\n-    found = bp_calls_round0_borrow(body, round0_names)\n-    i = i + 1\n-  }\n-  found\n-}\n-\n /// #2638: the (callee, position) pairs folded into one mask per callee, the\n /// way `compute_borrow_param_user_fns` folds them. Shared so a module's\n /// published facts and the whole program's are built by one function.\n@@ -3795,125 +3701,54 @@ fn bp_round0_scan(stmts: Array[Stmt], nonident: MutMap[String, Int], valued_set:\n   source_shadow_mask\n }\n \n-/// #2638: round 1 of ADR-0092's borrow inference -- the ONE bounded\n-/// transitive round, over the COMPLETE round-0 snapshot it is handed.\n-///\n-/// Round 1 reads `round0_names` / `round0_masks` and never its own updates,\n-/// and it only ever ADDS bits to the mask of the function it is scanning. So\n-/// the module that DECLARES `f` computes `f`'s round-1 mask in full, given\n-/// that snapshot -- which is what lets the per-module lane run this same scan\n-/// against the LINKED round-0 table and the link merely overlay the results.\n-/// One implementation serves both, so that is a fact about this code and not\n-/// a claim about two loops that look alike.\n-///\n-/// Appends to `names` and updates `masks` in place.\n-fn bp_round1_scan(stmts: Array[Stmt], round0_names: Array[String], round0_masks: Array[Int], nonident: MutMap[String, Int], valued_set: MutSet[String], excluded_set: MutSet[String], names: Array[String], masks: MutMap[String, Int]) -> Unit {\n-  // Scratch rows reused across bodies; each use truncates first.\n-  let bp_names: Array[String] = []\n-  let bp_hits: Array[Int] = []\n-  let mut si = 0\n-  // One transitive step captures most of the useful wrapper chains while\n-  // keeping the analysis bounded. Read only the complete round-0 snapshot;\n-  // updates land in `masks` for the final result and never feed this round.\n-  si = 0\n-  while si < Array::length(stmts) {\n-    match Array::get(stmts, si) {\n-      SLet(_, _, fname, _, fval) => match fval {\n-        EFn(_, _, fps, _, _, fbody) => if !MutSet::has(valued_set, fname) && !MutSet::has(excluded_set, fname) && bp_calls_round0_borrow(fbody, round0_names) {\n-          let owned_bits = match MutMap::get(nonident, fname) {\n-            Some(m) => m,\n-            None => 0\n-          }\n-          let prev_mask = match MutMap::get(masks, fname) {\n-            Some(m) => m,\n-            None => 0\n-          }\n-          let mut mask = prev_mask\n-          let body_masks = md_shadow_zeroed_bmasks(fbody, round0_names, round0_masks)\n-          let mut pi = 0\n-          let np = Array::length(fps)\n-          let lim = if np < bmask_max_param() {\n-            np\n-          } else {\n-            bmask_max_param()\n-          }\n-          Array::truncate(bp_names, 0)\n-          Array::truncate(bp_hits, 0)\n-          while pi < lim {\n-            let (praw, _) = Array::get(fps, pi)\n-            let pn = bp_param_base_name(praw)\n-            Array::push(bp_names, pn)\n-            Array::push(bp_hits, if !bmask_has(mask, pi) && pn != \"\" && !bmask_has(owned_bits, pi) {\n-              0\n-            } else {\n-              1\n-            })\n-            pi = pi + 1\n-          }\n-          md_consumed_any(fbody, bp_names, round0_names, body_masks, bp_hits)\n-          pi = 0\n-          while pi < lim {\n-            if Array::get(bp_hits, pi) == 0 && !is_mut_captured_in(fbody, Array::get(bp_names, pi)) {\n-              mask = mask|(1<<pi)\n-            } else {\n-              ()\n-            }\n-            pi = pi + 1\n-          }\n-          if mask != prev_mask {\n-            if prev_mask == 0 {\n-              Array::push(names, fname)\n-            } else {\n-              ()\n-            }\n-            MutMap::set(masks, fname, mask)\n-          } else {\n-            ()\n-          }\n-        } else {\n-          ()\n-        },\n-        _ => ()\n-      },\n-      _ => ()\n-    }\n-    si = si + 1\n+/// Record a conservative reverse call graph. Shadowed names may add work,\n+/// but every expression child is visited so an ownership change reaches all\n+/// possible callers. A generation mark deduplicates edges within each body.\n+fn bp_index_callers(e: Expr, caller: Int, names: Array[String], callers: Array[Array[Int]], seen: Array[Int]) -> Unit {\n+  match e {\n+    ECall(EIdent(name, _), _, _) => {\n+      let slot = bsearch_leftmost(names, name)\n+      if slot >= 0 && Array::get(seen, slot) != caller {\n+        Array::set(seen, slot, caller)\n+        Array::push(Array::get(callers, slot), caller)\n+      }\n+    },\n+    _ => ()\n   }\n+  let mark = expr_children_push(e)\n+  let end = expr_children_top()\n+  let mut i = mark\n+  while i < end {\n+    bp_index_callers(expr_child_at(i), caller, names, callers, seen)\n+    i = i + 1\n+  }\n+  expr_children_pop(mark)\n }\n \n-/// Close direct recursion after the two non-recursive rounds. Other callees\n-/// keep the complete round-1 snapshot; only the current function's slot is\n-/// temporarily changed. Start with all eligible parameters borrowed and remove\n-/// consumed positions until stable. At most one iteration per parameter can\n-/// remove a bit. In particular, an owned position must propagate through a\n-/// recursive permutation of arguments before any mask is published.\n-///\n-/// This runs AFTER linking disqualifiers: applying `local & ~owned_bits` to a\n-/// recursive result would miss that propagation when a temporary call argument\n-/// in another module disqualifies one position. Both compilation lanes share\n-/// this pass over their original parts. Duplicate declarations stay conservative.\n-fn bp_recursive_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int], valued_set: MutSet[String], excluded_set: MutSet[String], names: Array[String], masks: MutMap[String, Int]) -> Unit {\n+/// Greatest fixed point of the existing per-parameter ownership judgment.\n+/// Start with globally eligible positions, then only remove borrowed bits.\n+/// A removed bit revisits its callers, including cycles and self calls. No\n+/// provisional mask leaves this function; at most 32 bits per function can\n+/// be removed, so termination does not depend on a chosen round limit.\n+fn bp_fixpoint_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int], valued: MutSet[String], excluded: MutSet[String], out_masks: Array[Int]) -> Array[String] {\n   let declared: MutMap[String, Int] = MutMap::new_string()\n-  let all_names: Array[String] = []\n+  let unique_names: Array[String] = []\n   let mut pi = 0\n   while pi < Array::length(parts) {\n     let part = Array::get(parts, pi)\n     let mut si = 0\n     while si < Array::length(part) {\n-      // Aliases and declarations also shadow builtin borrow masks. Give\n-      // them authoritative zero entries even though only EFn bodies below\n-      // can acquire new borrowed positions.\n-      let fname = match Array::get(part, si) {\n-        SLet(_, _, name, _, _) => name,\n-        SFnDecl(_, name, _, _, _) => name,\n+      let name = match Array::get(part, si) {\n+        SLet(_, _, n, _, _) => n,\n+        SFnDecl(_, n, _, _, _) => n,\n         _ => \"\"\n       }\n-      if fname != \"\" {\n-        match MutMap::get(declared, fname) {\n-          Some(n) => MutMap::set(declared, fname, n + 1),\n+      if name != \"\" {\n+        match MutMap::get(declared, name) {\n+          Some(n) => MutMap::set(declared, name, n + 1),\n           None => {\n-            MutMap::set(declared, fname, 1)\n-            Array::push(all_names, fname)\n+            Array::push(unique_names, name)\n+            MutMap::set(declared, name, 1)\n           }\n         }\n       }\n@@ -3921,82 +3756,55 @@ fn bp_recursive_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int],\n     }\n     pi = pi + 1\n   }\n-  let snapshot_masks: Array[Int] = []\n-  let snapshot_names = bp_sorted_with_masks(all_names, masks, snapshot_masks)\n-  let self_names: Array[String] = [\"\"]\n-  let param_names: Array[String] = []\n-  let hits: Array[Int] = []\n+  let names = sorted_names_of(unique_names)\n+  let functions: Array[Expr] = []\n+  let masks: Array[Int] = []\n+  let callers: Array[Array[Int]] = []\n+  let shadows: Array[Array[Int]] = []\n+  let seen_calls: Array[Int] = []\n+  let seen_shadows: Array[Int] = []\n+  let checked_captures: Array[Bool] = []\n+  let queued: Array[Bool] = []\n+  let work: Array[Int] = []\n+  let mut i = 0\n+  while i < Array::length(names) {\n+    Array::push(functions, EUnit)\n+    Array::push(masks, 0)\n+    Array::push(callers, [])\n+    Array::push(shadows, [])\n+    Array::push(seen_calls, -1)\n+    Array::push(seen_shadows, -1)\n+    Array::push(checked_captures, false)\n+    Array::push(queued, false)\n+    i = i + 1\n+  }\n+  // Seed every mask before inspecting a body. Aliases, duplicate declarations\n+  // and excluded entries keep authoritative zero slots, even for builtins.\n   pi = 0\n   while pi < Array::length(parts) {\n     let part = Array::get(parts, pi)\n     let mut si = 0\n     while si < Array::length(part) {\n       match Array::get(part, si) {\n-        SLet(_, _, fname, _, EFn(attrs, tps, fps, ret, eff, body)) => {\n-          Array::set(self_names, 0, fname)\n-          if MutMap::get(declared, fname) == Some(1) && !MutSet::has(valued_set, fname) && !MutSet::has(excluded_set, fname) && bp_calls_round0_borrow(body, self_names) {\n-            let self_idx = bsearch_leftmost(snapshot_names, fname)\n-            let prev_mask = Array::get(snapshot_masks, self_idx)\n-            let owned_bits = match MutMap::get(nonident, fname) {\n+        SLet(_, _, name, _, EFn(tps, bounds, params, ret, eff, body)) => {\n+          if MutMap::get(declared, name) == Some(1) && !MutSet::has(valued, name) && !MutSet::has(excluded, name) {\n+            let slot = bsearch_leftmost(names, name)\n+            let owned = match MutMap::get(nonident, name) {\n               Some(m) => m,\n               None => 0\n             }\n-            let lim = if Array::length(fps) < bmask_max_param() {\n-              Array::length(fps)\n-            } else {\n-              bmask_max_param()\n-            }\n-            Array::truncate(param_names, 0)\n-            Array::truncate(hits, 0)\n-            let mut assumed = 0\n+            let mut mask = 0\n             let mut p = 0\n-            while p < lim {\n-              let (raw, _) = Array::get(fps, p)\n-              let pn = bp_param_base_name(raw)\n-              Array::push(param_names, pn)\n-              let eligible = pn != \"\" && !bmask_has(owned_bits, p)\n-              Array::push(hits, if eligible {\n-                0\n-              } else {\n-                1\n-              })\n-              if eligible {\n-                assumed = assumed|(1<<p)\n+            while p < Array::length(params) && p < bmask_max_param() {\n+              let (raw, _) = Array::get(params, p)\n+              if bp_param_base_name(raw) != \"\" && !bmask_has(owned, p) {\n+                mask = mask|(1<<p)\n               }\n               p = p + 1\n             }\n-            if assumed != prev_mask {\n-              Array::set(snapshot_masks, self_idx, assumed)\n-              // Include the outer parameters, which can also shadow callees.\n-              let body_masks = md_shadow_zeroed_bmasks(EFn(attrs, tps, fps, ret, eff, body), snapshot_names, snapshot_masks)\n-              let self_unshadowed = Array::get(body_masks, self_idx) == assumed\n-              let mut changed = self_unshadowed\n-              let mut check_captures = true\n-              while changed && assumed != 0 {\n-                Array::set(body_masks, self_idx, assumed)\n-                md_consumed_any(body, param_names, snapshot_names, body_masks, hits)\n-                let mut narrowed = 0\n-                p = 0\n-                while p < lim {\n-                  if check_captures && Array::get(hits, p) == 0 && !bmask_has(prev_mask, p) && is_mut_captured_in(body, Array::get(param_names, p)) {\n-                    Array::set(hits, p, 1)\n-                  }\n-                  if Array::get(hits, p) == 0 {\n-                    narrowed = narrowed|(1<<p)\n-                  }\n-                  p = p + 1\n-                }\n-                check_captures = false\n-                changed = narrowed != assumed\n-                assumed = narrowed\n-              }\n-              Array::set(snapshot_masks, self_idx, prev_mask)\n-              if self_unshadowed && (assumed|prev_mask) != prev_mask {\n-                if prev_mask == 0 {\n-                  Array::push(names, fname)\n-                }\n-                MutMap::set(masks, fname, assumed|prev_mask)\n-              }\n+            if mask != 0 {\n+              Array::set(functions, slot, EFn(tps, bounds, params, ret, eff, body))\n+              Array::set(masks, slot, mask)\n             }\n           }\n         },\n@@ -4006,6 +3814,113 @@ fn bp_recursive_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int],\n     }\n     pi = pi + 1\n   }\n+  let shadow_names: Array[String] = []\n+  i = 0\n+  while i < Array::length(names) {\n+    if Array::get(masks, i) != 0 {\n+      let value = Array::get(functions, i)\n+      bp_index_callers(value, i, names, callers, seen_calls)\n+      // The outer parameters are binders too. Cache shadowed slots once;\n+      // re-analysis must use the latest callee masks, not a stale copied row.\n+      md_collect_shadow_names(value, shadow_names)\n+      let slots = Array::get(shadows, i)\n+      let mut j = 0\n+      while j < Array::length(shadow_names) {\n+        let slot = bsearch_leftmost(names, Array::get(shadow_names, j))\n+        if slot >= 0 && Array::get(seen_shadows, slot) != i {\n+          Array::set(seen_shadows, slot, i)\n+          Array::push(slots, slot)\n+        }\n+        j = j + 1\n+      }\n+      Array::truncate(shadow_names, 0)\n+      Array::push(work, i)\n+      Array::set(queued, i, true)\n+    }\n+    i = i + 1\n+  }\n+  let param_names: Array[String] = []\n+  let hits: Array[Int] = []\n+  let saved_masks: Array[Int] = []\n+  let mut wi = 0\n+  while wi < Array::length(work) {\n+    let slot = Array::get(work, wi)\n+    Array::set(queued, slot, false)\n+    let previous = Array::get(masks, slot)\n+    if previous != 0 {\n+      match Array::get(functions, slot) {\n+        EFn(_, _, params, _, _, body) => {\n+          Array::truncate(param_names, 0)\n+          Array::truncate(hits, 0)\n+          let mut p = 0\n+          while p < Array::length(params) && p < bmask_max_param() {\n+            let (raw, _) = Array::get(params, p)\n+            Array::push(param_names, bp_param_base_name(raw))\n+            Array::push(hits, if bmask_has(previous, p) {\n+              0\n+            } else {\n+              1\n+            })\n+            p = p + 1\n+          }\n+          let slots = Array::get(shadows, slot)\n+          let mut j = 0\n+          while j < Array::length(slots) {\n+            let shadow = Array::get(slots, j)\n+            Array::push(saved_masks, Array::get(masks, shadow))\n+            Array::set(masks, shadow, 0)\n+            j = j + 1\n+          }\n+          // This pure visitor cannot re-enter inference or publish its table.\n+          md_consumed_any(body, param_names, names, masks, hits)\n+          j = 0\n+          while j < Array::length(slots) {\n+            Array::set(masks, Array::get(slots, j), Array::get(saved_masks, j))\n+            j = j + 1\n+          }\n+          Array::truncate(saved_masks, 0)\n+          let mut narrowed = 0\n+          p = 0\n+          while p < Array::length(param_names) {\n+            if Array::get(hits, p) == 0 {\n+              if Array::get(checked_captures, slot) || !is_mut_captured_in(body, Array::get(param_names, p)) {\n+                narrowed = narrowed|(1<<p)\n+              }\n+            }\n+            p = p + 1\n+          }\n+          Array::set(checked_captures, slot, true)\n+          if narrowed != previous {\n+            Array::set(masks, slot, narrowed)\n+            let affected = Array::get(callers, slot)\n+            j = 0\n+            while j < Array::length(affected) {\n+              let caller = Array::get(affected, j)\n+              if Array::get(masks, caller) != 0 && !Array::get(queued, caller) {\n+                Array::push(work, caller)\n+                Array::set(queued, caller, true)\n+              }\n+              j = j + 1\n+            }\n+          }\n+        },\n+        _ => ()\n+      }\n+    }\n+    wi = wi + 1\n+  }\n+  let result: Array[String] = []\n+  i = 0\n+  while i < Array::length(names) {\n+    let name = Array::get(names, i)\n+    let mask = Array::get(masks, i)\n+    if mask != 0 || name == \"Map::iter_get\" || name == \"Map::__iter_get_unchecked\" {\n+      Array::push(result, name)\n+      Array::push(out_masks, mask)\n+    }\n+    i = i + 1\n+  }\n+  result\n }\n \n /// ADR-0092 borrow-inference: for every top-level fn, which of its\n@@ -4037,15 +3952,10 @@ fn bp_recursive_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int],\n ///     conventional entry names: the host invokes them without consulting\n ///     the set either)\n ///\n-/// Round 0 uses `md_consume_count` without a user borrow set and exactly\n-/// preserves the original conservative result. One bounded transitive round\n-/// then reads that immutable snapshot through `md_consume_count_pre`; it never\n-/// consumes masks being decided in the same round. Only bodies that actually\n-/// call a round-0 borrowed function are revisited. A local callee shadow zeros\n-/// that function's mask before counting, preserving the owned-call fallback.\n-/// Direct recursion then closes against the complete round-1 snapshot via\n-/// bp_recursive_parts. Other callees keep their snapshot masks; mutually\n-/// recursive functions do not infer one another's new borrowed positions.\n+/// The worklist solves all direct-call dependencies together, including\n+/// arbitrary wrapper depth and recursive components. Globally ineligible\n+/// positions start owned; remaining borrowed bits are removed until stable.\n+/// Local callee shadows are neutralized before every ownership judgment.\n ///\n /// Returns the SORTED name array and fills `out_masks` aligned to it, so a\n /// single `bsearch_leftmost` on the names indexes straight into the masks.\n@@ -4060,52 +3970,7 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin\n   let nonident_fns = array_empty()\n   let nonident_pos = array_empty()\n   let _ = ca_walk_stmts_nonident_args(stmts, nonident_fns, nonident_pos)\n-  // Fold the (callee, position) pairs into one mask per callee of the\n-  // positions that must STAY owned, so both rounds share the same index.\n-  let nonident = bp_fold_nonident(nonident_fns, nonident_pos)\n-  // #2386: membership only -- a set instead of two sorted copies queried by\n-  // binary search per function (sorting `valued` was 0.09 s of a warm\n-  // compiler-closure compile; the analysis never reads the order).\n-  let valued_set = bp_name_set(valued)\n-  let excluded_set = bp_name_set(exclude)\n-  let names = array_empty()\n-  let masks: MutMap[String, Int] = MutMap::new_string()\n-  // Round 0, factored out so the per-module lane runs the SAME scan with the\n-  // two program-wide unions empty (#2638).\n-  let source_shadow_mask = bp_round0_scan(stmts, nonident, valued_set, excluded_set, names, masks)\n-  // Round 1, factored out the same way (#2638). The snapshot it reads is\n-  // built here and handed in, because the per-module lane is handed the\n-  // LINKED round-0 table instead of building one from its own module.\n-  let round0_masks: Array[Int] = []\n-  let round0_names = bp_sorted_with_masks(names, masks, round0_masks)\n-  bp_round1_scan(stmts, round0_names, round0_masks, nonident, valued_set, excluded_set, names, masks)\n-  bp_recursive_parts([stmts], nonident, valued_set, excluded_set, names, masks)\n-  // A zero-mask entry is an ownership override, not a borrowed ABI. Callers\n-  // distinguish it by looking up the aligned mask instead of testing name\n-  // membership alone.\n-  if (source_shadow_mask&1) != 0 {\n-    match MutMap::get(masks, \"Map::iter_get\") {\n-      Some(_) => (),\n-      None => {\n-        Array::push(names, \"Map::iter_get\")\n-        MutMap::set(masks, \"Map::iter_get\", 0)\n-      }\n-    }\n-  } else {\n-    ()\n-  }\n-  if (source_shadow_mask&2) != 0 {\n-    match MutMap::get(masks, \"Map::__iter_get_unchecked\") {\n-      Some(_) => (),\n-      None => {\n-        Array::push(names, \"Map::__iter_get_unchecked\")\n-        MutMap::set(masks, \"Map::__iter_get_unchecked\", 0)\n-      }\n-    }\n-  } else {\n-    ()\n-  }\n-  bp_sorted_with_masks(names, masks, out_masks)\n+  borrow_fixpoint_link_parts([stmts], valued, nonident_fns, nonident_pos, exclude, out_masks)\n }\n \n /// #2638: the facts about THIS statement list that ADR-0092's borrow\n@@ -4203,137 +4068,10 @@ export fn borrow_round0_link(local_names: Array[String], local_masks: Array[Int]\n   bp_sorted_with_masks(names, masks, out_masks)\n }\n \n-/// #2638: what a MODULE answers for round 1, given the LINKED round-0 table\n-/// and the program-wide structures PREPARED ONCE by the caller.\n-///\n-/// This is the second phase of the protocol and the reason round 1 needs one:\n-/// a module cannot build the round-0 table (round 0's disqualifiers are a\n-/// union over the program), but once it is handed that table it can run round\n-/// 1 on its own bodies alone, because the scan reads the snapshot and never\n-/// another function's round-1 result.\n-///\n-/// The prepared arguments are why this takes them instead of deriving them:\n-/// `nonident` is folded from EVERY call site in the program, and rebuilding it\n-/// per module ran the compiler's own closure out of memory (365 folds of the\n-/// whole program's pairs). A real driver ships these tables to a module once\n-/// for the same reason.\n-///\n-/// The seed is this module's own slice of `r0`, one entry per DECLARATION\n-/// rather than per table row. Round 0 pushed one row per qualifying\n-/// declaration, so a name two modules both declare gets one seed in each and\n-/// the link ends up with the number of copies the whole-program scan produced,\n-/// instead of each module claiming both.\n-fn bp_round1_local_prepared(stmts: Array[Stmt], round0_names: Array[String], round0_masks: Array[Int], r0: MutMap[String, Int], nonident: MutMap[String, Int], valued_set: MutSet[String], excluded_set: MutSet[String], out_names: Array[String], out_masks: Array[Int]) -> Unit {\n-  let names = array_empty()\n-  let masks: MutMap[String, Int] = MutMap::new_string()\n-  let mut si = 0\n-  while si < Array::length(stmts) {\n-    match Array::get(stmts, si) {\n-      SLet(_, _, fname, _, fval) => match fval {\n-        EFn(_, _, _, _, _, _) => match MutMap::get(r0, fname) {\n-          Some(m) => {\n-            Array::push(names, fname)\n-            MutMap::set(masks, fname, m)\n-          },\n-          None => ()\n-        },\n-        _ => ()\n-      },\n-      _ => ()\n-    }\n-    si = si + 1\n-  }\n-  bp_round1_scan(stmts, round0_names, round0_masks, nonident, valued_set, excluded_set, names, masks)\n-  let part_masks: Array[Int] = []\n-  let part_names = bp_sorted_with_masks(names, masks, part_masks)\n-  let mut oi = 0\n-  while oi < Array::length(part_names) {\n-    Array::push(out_names, Array::get(part_names, oi))\n-    Array::push(out_masks, Array::get(part_masks, oi))\n-    oi = oi + 1\n-  }\n-}\n-\n-/// #2638: PHASE B, whole. Link round 1 over the immutable round-0 table,\n-/// then close direct recursion using the same pass as whole-program inference.\n-///\n-/// Every module in `parts` answers round 1 for the functions IT declares,\n-/// reading only its own statements and the shared tables. Round 1 raises only\n-/// the mask of the function it is scanning, and that function is declared by\n-/// exactly one module, so the owning module's answer is final and the link\n-/// merely overlays it. A name the round-0 table does not carry is pushed for\n-/// the same reason the whole-program scan pushes it: its `prev_mask` was 0 and\n-/// round 1 raised it.\n-///\n-/// Modules are visited in order, so a name two modules declare resolves\n-/// last-wins exactly as the whole-program scan's single `masks` map does.\n-///\n-/// The program-wide folds happen ONCE here rather than per module. That is not\n-/// a convenience: per module they cost 365 folds of every call site in the\n-/// program and exhausted memory on the compiler's own closure.\n-export fn borrow_round1_link_parts(parts: Array[Array[Stmt]], round0_names: Array[String], round0_masks: Array[Int], valued: Array[String], nonident_fns: Array[String], nonident_pos: Array[Int], exclude: Array[String], shadow: Int, out_masks: Array[Int]) -> Array[String] {\n-  let nonident = bp_fold_nonident(nonident_fns, nonident_pos)\n-  let valued_set = bp_name_set(valued)\n-  let excluded_set = bp_name_set(exclude)\n-  let r0: MutMap[String, Int] = MutMap::new_string()\n-  let mut ri = 0\n-  while ri < Array::length(round0_names) {\n-    MutMap::set(r0, Array::get(round0_names, ri), Array::get(round0_masks, ri))\n-    ri = ri + 1\n-  }\n-  let delta_names = array_empty()\n-  let delta_masks: Array[Int] = []\n-  let mut pi = 0\n-  while pi < Array::length(parts) {\n-    bp_round1_local_prepared(Array::get(parts, pi), round0_names, round0_masks, r0, nonident, valued_set, excluded_set, delta_names, delta_masks)\n-    pi = pi + 1\n-  }\n-  let masks: MutMap[String, Int] = MutMap::new_string()\n-  let names = array_empty()\n-  let mut i = 0\n-  while i < Array::length(round0_names) {\n-    let nm = Array::get(round0_names, i)\n-    Array::push(names, nm)\n-    MutMap::set(masks, nm, Array::get(round0_masks, i))\n-    i = i + 1\n-  }\n-  let mut j = 0\n-  while j < Array::length(delta_names) {\n-    let nm = Array::get(delta_names, j)\n-    match MutMap::get(masks, nm) {\n-      Some(_) => (),\n-      None => Array::push(names, nm)\n-    }\n-    MutMap::set(masks, nm, Array::get(delta_masks, j))\n-    j = j + 1\n-  }\n-  bp_recursive_parts(parts, nonident, valued_set, excluded_set, names, masks)\n-  // The same tail `compute_borrow_param_user_fns` appends, from the OR of what\n-  // the modules published. A zero-mask entry is an ownership override, not a\n-  // borrowed ABI.\n-  if (shadow&1) != 0 {\n-    match MutMap::get(masks, \"Map::iter_get\") {\n-      Some(_) => (),\n-      None => {\n-        Array::push(names, \"Map::iter_get\")\n-        MutMap::set(masks, \"Map::iter_get\", 0)\n-      }\n-    }\n-  } else {\n-    ()\n-  }\n-  if (shadow&2) != 0 {\n-    match MutMap::get(masks, \"Map::__iter_get_unchecked\") {\n-      Some(_) => (),\n-      None => {\n-        Array::push(names, \"Map::__iter_get_unchecked\")\n-        MutMap::set(masks, \"Map::__iter_get_unchecked\", 0)\n-      }\n-    }\n-  } else {\n-    ()\n-  }\n-  bp_sorted_with_masks(names, masks, out_masks)\n+/// Link globally collected call-site disqualifiers before solving ownership.\n+/// Whole-program and per-module entry points share the same fixed point.\n+export fn borrow_fixpoint_link_parts(parts: Array[Array[Stmt]], valued: Array[String], nonident_fns: Array[String], nonident_pos: Array[Int], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {\n+  bp_fixpoint_parts(parts, bp_fold_nonident(nonident_fns, nonident_pos), bp_name_set(valued), bp_name_set(exclude), out_masks)\n }\n \n //# ADR-0092 borrow-inference: may-return-view analysis\ndiff --git i/lib/@vibe/compiler/codegen/common_analysis/index.vpkg w/lib/@vibe/compiler/codegen/common_analysis/index.vpkg\nindex 8e362236d..1baeafba6 100644\n--- i/lib/@vibe/compiler/codegen/common_analysis/index.vpkg\n+++ w/lib/@vibe/compiler/codegen/common_analysis/index.vpkg\n@@ -61,7 +61,7 @@ fn compute_borrow_param_user_fns_round0(stmts: Array[Stmt], exclude: Array[Strin\n fn compute_borrow_param_local_masks(stmts: Array[Stmt], out_masks: Array[Int], out_shadow: Array[Int]) -> Array[String]\n fn compute_borrow_disqualifiers(stmts: Array[Stmt], out_valued: Array[String], out_nonident_fns: Array[String], out_nonident_pos: Array[Int]) -> Unit\n fn borrow_round0_link(local_names: Array[String], local_masks: Array[Int], valued: Array[String], nonident_fns: Array[String], nonident_pos: Array[Int], exclude: Array[String], out_masks: Array[Int]) -> Array[String]\n-fn borrow_round1_link_parts(parts: Array[Array[Stmt]], round0_names: Array[String], round0_masks: Array[Int], valued: Array[String], nonident_fns: Array[String], nonident_pos: Array[Int], exclude: Array[String], shadow: Int, out_masks: Array[Int]) -> Array[String]\n+fn borrow_fixpoint_link_parts(parts: Array[Array[Stmt]], valued: Array[String], nonident_fns: Array[String], nonident_pos: Array[Int], exclude: Array[String], out_masks: Array[Int]) -> Array[String]\n fn bmask_max_param() -> Int\n fn bmask_has(mask: Int, i: Int) -> Bool\n fn compute_may_return_view_fns(stmts: Array[Stmt]) -> Array[String]\ndiff --git i/lib/@vibe/compiler/codegen/wasi/linked_compile.vibe w/lib/@vibe/compiler/codegen/wasi/linked_compile.vibe\nindex 7c50df6d1..948eca864 100644\n--- i/lib/@vibe/compiler/codegen/wasi/linked_compile.vibe\n+++ w/lib/@vibe/compiler/codegen/wasi/linked_compile.vibe\n@@ -173,8 +173,8 @@ import @vibe/compiler/codegen/reloc {\n \n import @vibe/compiler/codegen/common_analysis {\n   bmask_has,\n+  borrow_fixpoint_link_parts,\n   borrow_round0_link,\n-  borrow_round1_link_parts,\n   collect_free_vars,\n   collect_strings_stmts,\n   compute_borrow_disqualifiers,\n@@ -6033,26 +6033,13 @@ fn prelude_run_per_module(c: Array[Stmt], c_file_id: Array[Int], file_count: Int\n   }\n   match observations {\n     Some(st) => {\n-      // #2638 PHASE B. Round 0 for the whole program is linkable now, from what\n-      // the loop above published -- so hand that table BACK to every module and\n-      // let each answer ROUND 1 for its own declarations. Two phases and no\n-      // fixpoint, which is the protocol a per-module driver would actually run\n-      // rather than a re-derivation of the whole-program pass.\n-      //\n-      // The link, not a module, owns round 0: a module cannot build it, because\n-      // round 0's disqualifiers are a union over the program. Round 1 is the\n-      // opposite -- given the table it is a map over bodies, since the scan reads\n-      // the snapshot and never another function's round-1 result.\n+      // Compare both link contracts: body-local round-0 facts still fold\n+      // without re-reading a body; final ownership now closes the complete\n+      // call graph against globally collected disqualifiers.\n       let ph_r0mask = lc_fresh_int_array()\n       let ph_r0 = borrow_round0_link(st.an_local_names, st.an_local_masks, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, ph_r0mask)\n-      let mut ph_shadow = 0\n-      let mut shi = 0\n-      while shi < Array::length(st.an_shadow) {\n-        ph_shadow = ph_shadow|Array::get(st.an_shadow, shi)\n-        shi = shi + 1\n-      }\n       let ph_r01mask = lc_fresh_int_array()\n-      let ph_r01 = borrow_round1_link_parts(parts, ph_r0, ph_r0mask, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, ph_shadow, ph_r01mask)\n+      let ph_r01 = borrow_fixpoint_link_parts(parts, st.an_valued, st.an_nonident_fns, st.an_nonident_pos, an_exclude, ph_r01mask)\n       // #2638: and the borrow-returning set, as a fixpoint over the MODULES. This\n       // one genuinely iterates at the link -- whether a module can classify `f`\n       // depends on a callee in another module having entered the set, which is\ndiff --git i/lib/@vibe/compiler/tests/borrow_param_recursive_rc_test.vibe w/lib/@vibe/compiler/tests/borrow_param_recursive_rc_test.vibe\nindex 3f2aa5020..0247704a4 100644\n--- i/lib/@vibe/compiler/tests/borrow_param_recursive_rc_test.vibe\n+++ w/lib/@vibe/compiler/tests/borrow_param_recursive_rc_test.vibe\n@@ -28,3 +28,13 @@ test \"a returned array remains owned through recursive argument permutations\" {\n   let src = \"fn rotate(a: Array[Int], b: Array[Int], c: Array[Int], n: Int) -> Array[Int] {\\n  if n == 0 { a } else { rotate(b, c, a, n - 1) }\\n}\\nfn main() -> Int {\\n  let a = [17]\\n  let b = [5, 6]\\n  let c = [2, 3, 4]\\n  let got = rotate(a, b, c, 2)\\n  let churn = [9, 10, 11]\\n  Array::get(a, 0) - Array::get(got, 0) + Array::length(churn)\\n}\"\n   assert_lanes(src, \"rotate\", \"18\")\n }\n+\n+test \"deep wrappers and mutually recursive readers preserve the caller's array\" {\n+  let src = \"fn left(xs: Array[Int], n: Int) -> Int {\\n  if n == 0 { Array::get(xs, 0) } else { right(xs, n - 1) }\\n}\\nfn right(xs: Array[Int], n: Int) -> Int {\\n  if n == 0 { Array::length(xs) } else { left(xs, n - 1) }\\n}\\nfn mid(xs: Array[Int]) -> Int { left(xs, 20) }\\nfn outer(xs: Array[Int]) -> Int { mid(xs) }\\nfn main() -> Int {\\n  let xs = [7, 2, 9]\\n  let mut sum = 0\\n  let mut i = 0\\n  while i < 50 {\\n    sum = sum + outer(xs) + Array::get(xs, 2)\\n    i = i + 1\\n  }\\n  sum\\n}\"\n+  assert_lanes(src, \"mutual_wrappers\", \"800\")\n+}\n+\n+test \"a shadowing function parameter keeps the owned call convention\" {\n+  let src = \"fn reader(xs: Array[Int]) -> Int { Array::length(xs) }\\nfn owned(xs: Array[Int]) -> Array[Int] { xs }\\nfn wrapper(xs: Array[Int], reader: (Array[Int]) -> Array[Int]) -> Array[Int] { reader(xs) }\\nfn main() -> Int {\\n  let xs = [17, 2]\\n  let got = wrapper(xs, owned)\\n  let churn = [3, 4, 5]\\n  Array::get(xs, 0) - Array::get(got, 0) + Array::length(churn)\\n}\"\n+  assert_lanes(src, \"parameter_shadow\", \"3\")\n+}\ndiff --git i/lib/@vibe/compiler/tests/borrow_param_transitive_test.vibe w/lib/@vibe/compiler/tests/borrow_param_transitive_test.vibe\nindex c1e48084b..33df3cb4c 100644\n--- i/lib/@vibe/compiler/tests/borrow_param_transitive_test.vibe\n+++ w/lib/@vibe/compiler/tests/borrow_param_transitive_test.vibe\n@@ -3,12 +3,7 @@ import @vibe/compiler/core {\n }\n \n import @vibe/compiler/codegen/common_analysis {\n-  borrow_round0_link,\n-  borrow_round1_link_parts,\n-  compute_borrow_disqualifiers,\n-  compute_borrow_param_local_masks,\n-  compute_borrow_param_user_fns,\n-  md_consume_count_pre\n+  borrow_fixpoint_link_parts, compute_borrow_disqualifiers, compute_borrow_param_user_fns, md_consume_count_pre\n }\n \n fn one_param_fn(name: String, param: String, body: Expr) -> Stmt {\n@@ -92,33 +87,15 @@ test \"recursive borrowing keeps indirect calls and host entries owned\" {\n }\n \n fn linked_masks(parts: Array[Array[Stmt]], masks: Array[Int]) -> Array[String] {\n-  let local_names: Array[String] = []\n-  let local_masks: Array[Int] = []\n   let valued: Array[String] = []\n   let nonident_fns: Array[String] = []\n   let nonident_pos: Array[Int] = []\n-  let mut shadow = 0\n   let mut i = 0\n   while i < Array::length(parts) {\n-    let part = Array::get(parts, i)\n-    let pm: Array[Int] = []\n-    let ps: Array[Int] = []\n-    let pn = compute_borrow_param_local_masks(part, pm, ps)\n-    shadow = shadow|Array::get(ps, 0)\n-    let mut j = 0\n-    while j < Array::length(pn) {\n-      Array::push(local_names, Array::get(pn, j))\n-      Array::push(local_masks, Array::get(pm, j))\n-      j = j + 1\n-    }\n-    compute_borrow_disqualifiers(part, valued, nonident_fns, nonident_pos)\n+    compute_borrow_disqualifiers(Array::get(parts, i), valued, nonident_fns, nonident_pos)\n     i = i + 1\n   }\n-  let r0m: Array[Int] = []\n-  let r0n = borrow_round0_link(local_names, local_masks, valued, nonident_fns, nonident_pos, [\n-  ], r0m)\n-  borrow_round1_link_parts(parts, r0n, r0m, valued, nonident_fns, nonident_pos, [\n-  ], shadow, masks)\n+  borrow_fixpoint_link_parts(parts, valued, nonident_fns, nonident_pos, [], masks)\n }\n \n test \"recursive borrowing sees linked callees and global disqualifiers\" {\n",
+  "measured_new_files": {
+    "lib/@vibe/compiler/tests/borrow_param_fixpoint_test.vibe": "import @vibe/compiler/core {\n  Expr, Stmt\n}\nimport @vibe/compiler/codegen/common_analysis {\n  borrow_fixpoint_link_parts, compute_borrow_disqualifiers, compute_borrow_param_user_fns\n}\n\nfn declaration(name: String, params: Array[String], body: Expr) -> Stmt {\n  let ps = Array::map(params, (p) -> (p, None))\n  SLet(false, false, name, None, EFn([], [], ps, None, None, body))\n}\n\nfn call(name: String, args: Array[String]) -> Expr {\n  ECall(EIdent(name, -1), Array::map(args, (a) -> EIdent(a, -1)), -1)\n}\n\nfn masks_for(stmts: Array[Stmt], wanted: Array[String]) -> Array[Int] {\n  let masks: Array[Int] = []\n  let names = compute_borrow_param_user_fns(stmts, [], masks)\n  Array::map(wanted, (name) -> {\n    let mut found = 0\n    let mut i = 0\n    while i < Array::length(names) {\n      if Array::get(names, i) == name {\n        found = Array::get(masks, i)\n      }\n      i = i + 1\n    }\n    found\n  })\n}\n\ntest \"borrow inference follows long wrapper chains in either declaration order\" {\n  let chain: Array[Stmt] = []\n  let wanted: Array[String] = []\n  let mut i = 0\n  while i < 8 {\n    let name = \"reader_\\{i}\"\n    let next = if i == 7 {\n      \"Array::length\"\n    } else {\n      \"reader_\\{i + 1}\"\n    }\n    Array::push(wanted, name)\n    Array::push(chain, declaration(name, [\"xs\"], call(next, [\"xs\"])))\n    i = i + 1\n  }\n  inspect(masks_for(chain, wanted), content = \"[1, 1, 1, 1, 1, 1, 1, 1]\")\n  let reversed: Array[Stmt] = []\n  i = Array::length(chain)\n  while i > 0 {\n    i = i - 1; Array::push(reversed, Array::get(chain, i))\n  }\n  inspect(masks_for(reversed, wanted), content = \"[1, 1, 1, 1, 1, 1, 1, 1]\")\n}\n\ntest \"recursive readers propagate their borrowed ABI back to wrappers\" {\n  let walk = declaration(\"walk\", [\"xs\"], EIf(EBool(true), call(\"Array::length\", [\n    \"xs\"\n  ]), call(\"walk\", [\"xs\"])))\n  let wrapper = declaration(\"wrapper\", [\"xs\"], call(\"walk\", [\"xs\"]))\n  inspect(masks_for([wrapper, walk], [\"wrapper\", \"walk\"]), content = \"[1, 1]\")\n}\n\ntest \"mutually recursive readers reach a borrowed fixed point\" {\n  let left = declaration(\"left\", [\"xs\"], EIf(EBool(true), call(\"Array::length\", [\n    \"xs\"\n  ]), call(\"right\", [\"xs\"])))\n  let right = declaration(\"right\", [\"xs\"], call(\"left\", [\"xs\"]))\n  inspect(masks_for([left, right], [\"left\", \"right\"]), content = \"[1, 1]\")\n}\n\ntest \"an owned return propagates through mutually recursive permutations\" {\n  let left = declaration(\"left\", [\"a\", \"b\", \"c\"], call(\"right\", [\"b\", \"c\", \"a\"]))\n  let right = declaration(\"right\", [\"a\", \"b\", \"c\"], EIf(EBool(true), EIdent(\"a\", -1), call(\"left\", [\n    \"a\",\n    \"b\",\n    \"c\"\n  ])))\n  inspect(masks_for([left, right], [\"left\", \"right\"]), content = \"[0, 0]\")\n}\n\ntest \"temporary arguments propagate ownership through a recursive component\" {\n  let left = declaration(\"left\", [\"a\", \"b\"], call(\"right\", [\"b\", \"a\"]))\n  let right = declaration(\"right\", [\"a\", \"b\"], call(\"left\", [\"a\", \"b\"]))\n  let caller = SExpr(ECall(EIdent(\"right\", -1), [EArray([]), EIdent(\"xs\", -1)], -1))\n  inspect(masks_for([left, right, caller], [\"left\", \"right\"]), content = \"[0, 0]\")\n}\n\ntest \"function parameters shadow transitive callees including labeled spellings\" {\n  let reader = declaration(\"reader\", [\"xs\"], call(\"Array::length\", [\"xs\"]))\n  let wrappers = [\"reader\", \"reader~\", \"reader?\"]\n  let got: Array[Int] = []\n  let mut i = 0\n  while i < Array::length(wrappers) {\n    let wrapper = declaration(\"wrapper\", [\"xs\", Array::get(wrappers, i)], call(\"reader\", [\n      \"xs\"\n    ]))\n    Array::push(got, Array::get(masks_for([reader, wrapper], [\"wrapper\"]), 0)&1)\n    i = i + 1\n  }\n  inspect(got, content = \"[0, 0, 0]\")\n}\n\ntest \"a source-owned builtin cannot seed borrowing into a wrapper\" {\n  let owned = declaration(\"Map::iter_get\", [\"xs\"], EIdent(\"xs\", -1))\n  let wrapper = declaration(\"wrapper\", [\"xs\"], call(\"Map::iter_get\", [\"xs\"]))\n  inspect(masks_for([owned, wrapper], [\"Map::iter_get\", \"wrapper\"]), content = \"[0, 0]\")\n}\n\ntest \"module linking follows transitive edges and global exclusions\" {\n  let leaf = declaration(\"leaf\", [\"xs\"], call(\"Array::length\", [\"xs\"]))\n  let mid = declaration(\"mid\", [\"xs\"], call(\"leaf\", [\"xs\"]))\n  let root = declaration(\"root\", [\"xs\"], call(\"mid\", [\"xs\"]))\n  let parts = [[root], [mid], [leaf]]\n  let valued: Array[String] = []\n  let nonident: Array[String] = []\n  let positions: Array[Int] = []\n  let mut i = 0\n  while i < Array::length(parts) {\n    compute_borrow_disqualifiers(Array::get(parts, i), valued, nonident, positions)\n    i = i + 1\n  }\n  let masks: Array[Int] = []\n  let names = borrow_fixpoint_link_parts(parts, valued, nonident, positions, [], masks)\n  inspect(names, content = \"[leaf, mid, root]\")\n  inspect(masks, content = \"[1, 1, 1]\")\n  let excluded_masks: Array[Int] = []\n  let excluded_names = borrow_fixpoint_link_parts(parts, valued, nonident, positions, [\n    \"leaf\"\n  ], excluded_masks)\n  inspect(excluded_names, content = \"[]\")\n  let valued_masks: Array[Int] = []\n  let valued_names = borrow_fixpoint_link_parts(parts, [\"leaf\"], nonident, positions, [\n  ], valued_masks)\n  inspect(valued_names, content = \"[]\")\n}\n\ntest \"duplicate definitions do not publish a speculative borrowed ABI\" {\n  let leaf = declaration(\"leaf\", [\"xs\"], call(\"Array::length\", [\"xs\"]))\n  let owned = declaration(\"leaf\", [\"xs\"], EIdent(\"xs\", -1))\n  let wrapper = declaration(\"wrapper\", [\"xs\"], call(\"leaf\", [\"xs\"]))\n  inspect(masks_for([leaf, owned, wrapper], [\"leaf\", \"wrapper\"]), content = \"[0, 0]\")\n  inspect(masks_for([owned, leaf, wrapper], [\"leaf\", \"wrapper\"]), content = \"[0, 0]\")\n}\n\ntest \"capturing a parameter keeps its recursive callers owned\" {\n  let closure = EFn([], [], [], None, None, call(\"Array::length\", [\"xs\"]))\n  let left = declaration(\"left\", [\"xs\"], ESeq(closure, call(\"right\", [\"xs\"])))\n  let right = declaration(\"right\", [\"xs\"], call(\"left\", [\"xs\"]))\n  inspect(masks_for([left, right], [\"left\", \"right\"]), content = \"[0, 0]\")\n}\n"
+  },
+  "artifacts": {
+    "final_candidate_bump": {
+      "sha256": "d39d2becff6c64ec3137a1fde8959b921c7c73ed391c3cd3c18895513a2801d8",
+      "bytes": 3640874,
+      "flat_source_sha256": "962348a3a87cd78536b019e262678a0c63aa530533c0bfe29916f4d93b99a858",
+      "wasm_names": true
+    },
+    "final_candidate_rc": {
+      "sha256": "51df7d9607ee1576f8d03bf9d4f5523bee6096f4f90f009f986b10ce19d7458b",
+      "bytes": 5516963,
+      "flat_source_sha256": "962348a3a87cd78536b019e262678a0c63aa530533c0bfe29916f4d93b99a858",
+      "wasm_names": true
+    },
+    "baseline_bump": {
+      "sha256": "a31e816c68f786d609c5d563591f83957447c4d2126ecf30dfbc8ad004325a93",
+      "bytes": 3644476,
+      "flat_source_sha256": "3db349792c61df20cf1fa687f5eb6a0a0a56a792c01c286b456831adf8766d39",
+      "wasm_names": true
+    },
+    "baseline_rc": {
+      "sha256": "f0937cf15e4955efdc2e5bd9182e9fffad469a3d4e8c153d55097fcccca32578",
+      "bytes": 5675999,
+      "flat_source_sha256": "3db349792c61df20cf1fa687f5eb6a0a0a56a792c01c286b456831adf8766d39",
+      "wasm_names": true
+    },
+    "measured_candidate_bump": {
+      "sha256": "44d03839b4eff808baf0801089eb20b6abe85407b18ca9836d5221671f855bf6",
+      "bytes": 3641173,
+      "flat_source_sha256": "5fe6288cf00169a21cda7c01ea88d96d334a2ea28c6639cd81ae5f2dfa10b508",
+      "wasm_names": true
+    },
+    "measured_candidate_rc": {
+      "sha256": "ef2fd3acac1968f1aba25c03527e43f9306d8fefea898acce21696ba2d155e58",
+      "bytes": 5517647,
+      "flat_source_sha256": "5fe6288cf00169a21cda7c01ea88d96d334a2ea28c6639cd81ae5f2dfa10b508",
+      "wasm_names": true
+    },
+    "rebased_before_cleanup_bump": {
+      "sha256": "e68d11415eb8ee832d43a4f2a09fa2dca96b154b0487f819098e5add01e72c41",
+      "bytes": 3641361,
+      "flat_source_sha256": "a024f4dc1b3f237f68756732b66ba3af208eba5842467cb0f45dace42234b2e3",
+      "wasm_names": true
+    },
+    "rebased_before_cleanup_rc": {
+      "sha256": "a5b11ca8bc49c882e6349611d4628ace26324154d6c2958378fabfaf819971e7",
+      "bytes": 5517932,
+      "flat_source_sha256": "a024f4dc1b3f237f68756732b66ba3af208eba5842467cb0f45dace42234b2e3",
+      "wasm_names": true
+    }
+  },
+  "regression": {
+    "red": "An eight-wrapper chain classified only its last two functions as borrowed: [0,0,0,0,0,0,1,1]. The candidate returns eight borrowed masks in both declaration orders.",
+    "cases": [
+      "deep wrappers",
+      "direct recursion through wrappers",
+      "mutual recursion",
+      "owned return propagated through argument permutations",
+      "temporary argument propagated through a recursive component",
+      "outer parameter callee shadows including labeled and optional names",
+      "source-owned Map accessor",
+      "linked module exclusions and value uses",
+      "duplicate declarations in either order",
+      "captured parameters",
+      "runtime preservation through recursive calls and owned callbacks"
+    ]
+  },
+  "mask_probe": {
+    "source_sha256": "3db349792c61df20cf1fa687f5eb6a0a0a56a792c01c286b456831adf8766d39",
+    "source_bytes": 8310484,
+    "statements": 7586,
+    "rewrite_expr_mask_before": 0,
+    "rewrite_expr_mask_after": 22,
+    "new_borrowed_parameters": [
+      "gens",
+      "traits",
+      "dict_binds"
+    ],
+    "probe_source": "import @vibe/parser { parse_program_located, lex_with_offsets }\nimport @vibe/compiler/codegen/common_analysis {\n  compute_borrow_param_user_fns, compute_borrow_disqualifiers, bmask_has\n}\nimport @vibe/compiler/core { Stmt, Expr }\n\nfn main allows Fs + Console + Exception {\n  let source = Fs::read_file(\"_build/top-scope-refs/gen/cli_adapter_module_source.vibe\")\n  let (tokens, starts, _) = lex_with_offsets(source)\n  let stmts = parse_program_located(tokens, starts, source)\n  println(\"source bytes=\\{String::length(source)} statements=\\{Array::length(stmts)}\")\n  let masks: Array[Int] = []\n  let names = compute_borrow_param_user_fns(stmts, [], masks)\n  let valued: Array[String] = []\n  let nonident_names: Array[String] = []\n  let positions: Array[Int] = []\n  compute_borrow_disqualifiers(stmts, valued, nonident_names, positions)\n  let mut i = 0\n  while i < Array::length(stmts) {\n    match Array::get(stmts, i) {\n      SLet(_, _, name, _, EFn(_, _, params, _, _, _)) => {\n        if i < 5 { println(\"first fn=\\{name}\") }\n        if String::starts_with(name, \"rewrite_expr_\") || String::starts_with(name, \"mrv_fresh_\") || String::starts_with(name, \"collect_free_vars_expr_sc_\") {\n          let mut mask = 0\n          let mut j = 0\n          while j < Array::length(names) {\n            if Array::get(names, j) == name { mask = Array::get(masks, j) }\n            j = j + 1\n          }\n          println(\"\\{name}: mask=\\{mask}\")\n          j = 0\n          while j < Array::length(params) {\n            let (param, _) = Array::get(params, j)\n            let mut nonident = false\n            let mut k = 0\n            while k < Array::length(nonident_names) {\n              if Array::get(nonident_names, k) == name && Array::get(positions, k) == j { nonident = true }\n              k = k + 1\n            }\n            println(\"  \\{j} \\{param}: borrowed=\\{bmask_has(mask, j)} nonident=\\{nonident}\")\n            j = j + 1\n          }\n        }\n      },\n      _ => ()\n    }\n    i = i + 1\n  }\n}\n",
+    "before_log": "source bytes=8310484 statements=7586\nrewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe: mask=0\n  0 expr: borrowed=false nonident=true\n  1 gens: borrowed=false nonident=false\n  2 traits: borrowed=false nonident=false\n  3 struct_sets: borrowed=false nonident=false\n  4 dict_binds: borrowed=false nonident=false\n  5 var_types: borrowed=false nonident=true\n  6 fn_returns: borrowed=false nonident=false\ncollect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe: mask=0\n  0 expr: borrowed=false nonident=true\n  1 bound: borrowed=false nonident=false\n  2 fn_names: borrowed=false nonident=false\n  3 encl: borrowed=false nonident=false\n  4 skip_inlined: borrowed=false nonident=false\n  5 out: borrowed=false nonident=false\nmrv_fresh_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe: mask=384\n  0 e: borrowed=false nonident=true\n  1 fresh_names: borrowed=false nonident=false\n  2 tainted: borrowed=false nonident=false\n  3 bound: borrowed=false nonident=false\n  4 gen: borrowed=false nonident=false\n  5 user_fns_srt: borrowed=false nonident=false\n  6 view_set: borrowed=false nonident=false\n  7 ret_view: borrowed=true nonident=false\n  8 callees: borrowed=true nonident=false\n0\n",
+    "after_log": "source bytes=8310484 statements=7586\nrewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe: mask=22\n  0 expr: borrowed=false nonident=true\n  1 gens: borrowed=true nonident=false\n  2 traits: borrowed=true nonident=false\n  3 struct_sets: borrowed=false nonident=false\n  4 dict_binds: borrowed=true nonident=false\n  5 var_types: borrowed=false nonident=true\n  6 fn_returns: borrowed=false nonident=false\ncollect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe: mask=0\n  0 expr: borrowed=false nonident=true\n  1 bound: borrowed=false nonident=false\n  2 fn_names: borrowed=false nonident=false\n  3 encl: borrowed=false nonident=false\n  4 skip_inlined: borrowed=false nonident=false\n  5 out: borrowed=false nonident=false\nmrv_fresh_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe: mask=384\n  0 e: borrowed=false nonident=true\n  1 fresh_names: borrowed=false nonident=false\n  2 tainted: borrowed=false nonident=false\n  3 bound: borrowed=false nonident=false\n  4 gen: borrowed=false nonident=false\n  5 user_fns_srt: borrowed=false nonident=false\n  6 view_set: borrowed=false nonident=false\n  7 ret_view: borrowed=true nonident=false\n  8 callees: borrowed=true nonident=false\n0\n",
+    "note": "Same baseline flat AST for both inference implementations, before subsequent whole-program lowering; not a claim that every context parameter is borrowable."
+  },
+  "static_retain_sites": [
+    {
+      "lane": "baseline",
+      "sha256": "f0937cf15e4955efdc2e5bd9182e9fffad469a3d4e8c153d55097fcccca32578",
+      "bytes": 5675999,
+      "functions": 7311,
+      "total_retain_sites": 87251,
+      "rewrite_expr_retain_sites": {
+        "$rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 1012
+      },
+      "top_retain_sites": [
+        [
+          "$check_expr_capture_impl_dep_lib__vibe_compiler_checker_checker_vibe",
+          3161
+        ],
+        [
+          "$compile_call_core_dep_lib__vibe_compiler_codegen_expr_compile_call_vibe",
+          2241
+        ],
+        [
+          "$compile_wasi_module_linked_impl_with_split_exp_lib__vibe_compiler_codegen_wasi_linked_compile_vibe",
+          1791
+        ],
+        [
+          "$compile_call_gc_exp_lib__vibe_compiler_codegen_gc_backend_call_vibe",
+          1457
+        ],
+        [
+          "$rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe",
+          1012
+        ],
+        [
+          "$check_stmts_with_binders_dep_lib__vibe_compiler_checker_checker_stmt_vibe",
+          758
+        ],
+        [
+          "$compile_wasi_module_gc_impl_dep_lib__vibe_compiler_codegen_gc_backend_body_vibe",
+          647
+        ],
+        [
+          "$compile_expr_gc_exp_lib__vibe_compiler_codegen_gc_backend_expr_vibe",
+          588
+        ],
+        [
+          "$scps_split_tail_dep_lib__vibe_compiler_lowering_effects_suspend_suspend_vibe",
+          423
+        ],
+        [
+          "$comp_generate_stdin_provider_adapter_core_module_dep_lib__vibe_compiler_entry_source_compile_wasi_only_component_codegen_vibe",
+          406
+        ],
+        [
+          "$edp_ar_expr_dep_lib__vibe_compiler_lowering_effects_evidence_evidence_vibe",
+          398
+        ],
+        [
+          "$pc_emit_exp_lib__vibe_compiler_perceus_perceus_vibe",
+          393
+        ]
+      ]
+    },
+    {
+      "lane": "candidate",
+      "sha256": "ef2fd3acac1968f1aba25c03527e43f9306d8fefea898acce21696ba2d155e58",
+      "bytes": 5517647,
+      "functions": 7307,
+      "total_retain_sites": 75905,
+      "rewrite_expr_retain_sites": {
+        "$rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 730
+      },
+      "top_retain_sites": [
+        [
+          "$check_expr_capture_impl_dep_lib__vibe_compiler_checker_checker_vibe",
+          3073
+        ],
+        [
+          "$compile_call_core_dep_lib__vibe_compiler_codegen_expr_compile_call_vibe",
+          2219
+        ],
+        [
+          "$compile_wasi_module_linked_impl_with_split_exp_lib__vibe_compiler_codegen_wasi_linked_compile_vibe",
+          1552
+        ],
+        [
+          "$compile_call_gc_exp_lib__vibe_compiler_codegen_gc_backend_call_vibe",
+          1437
+        ],
+        [
+          "$rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe",
+          730
+        ],
+        [
+          "$check_stmts_with_binders_dep_lib__vibe_compiler_checker_checker_stmt_vibe",
+          714
+        ],
+        [
+          "$compile_wasi_module_gc_impl_dep_lib__vibe_compiler_codegen_gc_backend_body_vibe",
+          607
+        ],
+        [
+          "$compile_expr_gc_exp_lib__vibe_compiler_codegen_gc_backend_expr_vibe",
+          543
+        ],
+        [
+          "$pc_emit_exp_lib__vibe_compiler_perceus_perceus_vibe",
+          393
+        ],
+        [
+          "$analyze_calls_dep_lib__vibe_compiler_perceus_perceus_vibe",
+          367
+        ],
+        [
+          "$za_walk_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe",
+          359
+        ],
+        [
+          "$pc_count_exp_lib__vibe_compiler_perceus_perceus_vibe",
+          353
+        ]
+      ]
+    }
+  ],
+  "validation": {
+    "measured_related_tests": 267,
+    "measured_related_files": 14,
+    "bump_tests": 25,
+    "rc_shadow_tests": 25,
+    "stage2_equals_stage3": true,
+    "rc_reproduction": [
+      {
+        "compiler_runtime": "RC",
+        "target_rc": "1",
+        "matches": "refc",
+        "wall_ms": 50459.82216700213,
+        "sha256": "ef2fd3acac1968f1aba25c03527e43f9306d8fefea898acce21696ba2d155e58"
+      },
+      {
+        "compiler_runtime": "RC",
+        "target_rc": "0",
+        "matches": "bump",
+        "wall_ms": 52353.34837499977,
+        "sha256": "44d03839b4eff808baf0801089eb20b6abe85407b18ca9836d5221671f855bf6"
+      }
+    ],
+    "generated_target_execution": [
+      {
+        "lane": "a",
+        "closure_test": "codegen: compact lexer fixture compiles",
+        "closure_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3",
+        "closure_exit": 0,
+        "cli_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b",
+        "ownership_result": "88"
+      },
+      {
+        "lane": "b",
+        "closure_test": "codegen: compact lexer fixture compiles",
+        "closure_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7",
+        "closure_exit": 0,
+        "cli_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316",
+        "ownership_result": "88"
+      }
+    ],
+    "rebased": {
+      "integration_base_revision": "702c134b7",
+      "related_tests": 274,
+      "processed_files": 16,
+      "files_with_tests": 15,
+      "bump_tests": 25,
+      "rc_shadow_tests": 25,
+      "stage2_equals_stage3": true,
+      "rc_reproduction": [
+        {
+          "compiler_runtime": "RC",
+          "target_rc": "1",
+          "matches": "refc",
+          "wall_ms": 49733.58045900386,
+          "sha256": "a5b11ca8bc49c882e6349611d4628ace26324154d6c2958378fabfaf819971e7"
+        },
+        {
+          "compiler_runtime": "RC",
+          "target_rc": "0",
+          "matches": "bump",
+          "wall_ms": 55962.05308299977,
+          "sha256": "e68d11415eb8ee832d43a4f2a09fa2dca96b154b0487f819098e5add01e72c41"
+        }
+      ],
+      "assignment_retain_leak": {
+        "result": 0,
+        "heap_before": 448,
+        "heap_after": 612,
+        "heap_used": 164
+      },
+      "oracle_cleanup": {
+        "related_tests": 36,
+        "related_files": 4,
+        "stage2_equals_stage3": true,
+        "rc_reproduction": [
+          {
+            "compiler_runtime": "RC",
+            "target_rc": "1",
+            "matches": "refc",
+            "wall_ms": 75643.90070799709,
+            "sha256": "51df7d9607ee1576f8d03bf9d4f5523bee6096f4f90f009f986b10ce19d7458b"
+          },
+          {
+            "compiler_runtime": "RC",
+            "target_rc": "0",
+            "matches": "bump",
+            "wall_ms": 51787.57583300467,
+            "sha256": "d39d2becff6c64ec3137a1fde8959b921c7c73ed391c3cd3c18895513a2801d8"
+          }
+        ]
+      }
+    }
+  },
+  "comparisons": {
+    "aa": {
+      "schema": 1,
+      "created_at": "2026-09-14T14:07:49.631Z",
+      "protocol_sha256": "9772d0a60084a2148b0d01f8063180f557c8269ae7d984b06cfcfd4c3ddc6709",
+      "checkout": {
+        "commit": "886f3486f59f4397a87679c0a7d425dd47abdbbe",
+        "lib_sources_sha256": "a28d2ccb92f7bb05aa835b4e8f6f8fe3bbfac351011c4e8cade27a21c68bf8be"
+      },
+      "baseline": {
+        "path": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/_build/top-scope-refs/gen/stage2.wasm",
+        "sha256": "a31e816c68f786d609c5d563591f83957447c4d2126ecf30dfbc8ad004325a93",
+        "bytes": 3644476
+      },
+      "candidate": {
+        "path": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/_build/top-scope-refs/gen/stage2.wasm",
+        "sha256": "a31e816c68f786d609c5d563591f83957447c4d2126ecf30dfbc8ad004325a93",
+        "bytes": 3644476
+      },
+      "node": "v24.21.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M5",
+      "host_memory_bytes": 34359738368,
+      "rounds": 4,
+      "suite": "full",
+      "output_equivalence": "across-compilers",
+      "target": "linear-rc",
+      "selectors": {
+        "VIBE_PREOPEN_DIR": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup",
+        "VIBE_LIB": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/lib",
+        "VIBE_IMPORT_ABI": "raw",
+        "VIBE_FS_COMPILE": "1",
+        "VIBE_BACKEND": "wasi",
+        "VIBE_RC": "1",
+        "VIBE_CHECKED_MODULE_CACHE": "off",
+        "VIBE_EXPERIMENTAL_AST_CACHE": "0",
+        "VIBE_CODEGEN_BODY_CACHE": "off",
+        "VIBE_WASM_NAMES": "0",
+        "VIBE_WASM_MEMORY_STATS": "1"
+      },
+      "cache": "new process per sample; empty cache for cold, same populated cache for warm; OS cache uncontrolled",
+      "compiler_memory_mode": "determined by supplied binaries, not inferred from names or VIBE_RC",
+      "comparisons": [
+        {
+          "corpus": "closure",
+          "temperature": "cold",
+          "baseline": {
+            "wall_ms": 2277.1208750000005,
+            "heap_ptr_bytes": 950691272,
+            "linear_memory_bytes": 1223098368,
+            "end_rss_bytes": 1194672128,
+            "peak_rss_bytes": 1195048960
+          },
+          "candidate": {
+            "wall_ms": 2239.3364375000037,
+            "heap_ptr_bytes": 950691272,
+            "linear_memory_bytes": 1223098368,
+            "end_rss_bytes": 1190903808,
+            "peak_rss_bytes": 1191280640
+          },
+          "wall_ratio": 0.9834069249837267,
+          "paired_wall_ratio": 0.9855231795449424,
+          "heap_ptr_ratio": 1,
+          "peak_rss_ratio": 0.9968467233342473
+        },
+        {
+          "corpus": "closure",
+          "temperature": "warm",
+          "baseline": {
+            "wall_ms": 1498.6608124999984,
+            "heap_ptr_bytes": 620039040,
+            "linear_memory_bytes": 815398912,
+            "end_rss_bytes": 859734016,
+            "peak_rss_bytes": 859889664
+          },
+          "candidate": {
+            "wall_ms": 1524.7655000000013,
+            "heap_ptr_bytes": 620039040,
+            "linear_memory_bytes": 815398912,
+            "end_rss_bytes": 858005504,
+            "peak_rss_bytes": 858161152
+          },
+          "wall_ratio": 1.0174186762490014,
+          "paired_wall_ratio": 1.0080724323180172,
+          "heap_ptr_ratio": 1,
+          "peak_rss_ratio": 0.9979898444272962
+        },
+        {
+          "corpus": "cli",
+          "temperature": "cold",
+          "baseline": {
+            "wall_ms": 6239.003042,
+            "heap_ptr_bytes": 2664206208,
+            "linear_memory_bytes": 3592028160,
+            "end_rss_bytes": 2717466624,
+            "peak_rss_bytes": 2777694208
+          },
+          "candidate": {
+            "wall_ms": 5711.548833500005,
+            "heap_ptr_bytes": 2664206208,
+            "linear_memory_bytes": 3592028160,
+            "end_rss_bytes": 2850365440,
+            "peak_rss_bytes": 2850766848
+          },
+          "wall_ratio": 0.9154585748797915,
+          "paired_wall_ratio": 0.922624015857056,
+          "heap_ptr_ratio": 1,
+          "peak_rss_ratio": 1.0263069418475024
+        },
+        {
+          "corpus": "cli",
+          "temperature": "warm",
+          "baseline": {
+            "wall_ms": 4512.245186999997,
+            "heap_ptr_bytes": 2063609312,
+            "linear_memory_bytes": 2429485056,
+            "end_rss_bytes": 2241093632,
+            "peak_rss_bytes": 2241486848
+          },
+          "candidate": {
+            "wall_ms": 4557.929375000003,
+            "heap_ptr_bytes": 2063609312,
+            "linear_memory_bytes": 2429485056,
+            "end_rss_bytes": 2242551808,
+            "peak_rss_bytes": 2242928640
+          },
+          "wall_ratio": 1.0101244914907606,
+          "paired_wall_ratio": 1.0104128277677678,
+          "heap_ptr_ratio": 1,
+          "peak_rss_ratio": 1.0006432301850383
+        }
+      ],
+      "samples": [
+        {"round": 0,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 2095.53325,"heap_ptr_bytes": 950691272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1191133184,"peak_rss_bytes": 1191559168,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 1422.954292,"heap_ptr_bytes": 620039040,"linear_memory_bytes": 815398912,"end_rss_bytes": 858112000,"peak_rss_bytes": 858292224,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 2085.402375,"heap_ptr_bytes": 950691272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1190395904,"peak_rss_bytes": 1190789120,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 1410.1533749999999,"heap_ptr_bytes": 620039040,"linear_memory_bytes": 815398912,"end_rss_bytes": 861634560,"peak_rss_bytes": 861798400,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 5412.390167,"heap_ptr_bytes": 2664206208,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2848194560,"peak_rss_bytes": 2848571392,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 4079.196250000001,"heap_ptr_bytes": 2063609312,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2241069056,"peak_rss_bytes": 2241462272,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 5491.680708,"heap_ptr_bytes": 2664206208,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2850422784,"peak_rss_bytes": 2850865152,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 4214.4912079999995,"heap_ptr_bytes": 2063609312,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2242084864,"peak_rss_bytes": 2242461696,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 2242.9994590000024,"heap_ptr_bytes": 950691272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1191706624,"peak_rss_bytes": 1192099840,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 1537.065999999999,"heap_ptr_bytes": 620039040,"linear_memory_bytes": 815398912,"end_rss_bytes": 859045888,"peak_rss_bytes": 859193344,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 2458.9165829999984,"heap_ptr_bytes": 950691272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1198276608,"peak_rss_bytes": 1198653440,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 1531.8986249999944,"heap_ptr_bytes": 620039040,"linear_memory_bytes": 815398912,"end_rss_bytes": 858832896,"peak_rss_bytes": 858996736,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 5684.5144169999985,"heap_ptr_bytes": 2664206208,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2850308096,"peak_rss_bytes": 2850668544,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 4554.781999999999,"heap_ptr_bytes": 2063609312,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2243018752,"peak_rss_bytes": 2243395584,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 7211.800458000005,"heap_ptr_bytes": 2664206208,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2587590656,"peak_rss_bytes": 2707652608,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 4586.927833000002,"heap_ptr_bytes": 2063609312,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2242002944,"peak_rss_bytes": 2242379776,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 2263.3131250000006,"heap_ptr_bytes": 950691272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1194704896,"peak_rss_bytes": 1195065344,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 1493.3918750000012,"heap_ptr_bytes": 620039040,"linear_memory_bytes": 815398912,"end_rss_bytes": 860635136,"peak_rss_bytes": 860782592,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 2275.1763749999955,"heap_ptr_bytes": 950691272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1190952960,"peak_rss_bytes": 1191313408,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 1512.4650000000038,"heap_ptr_bytes": 620039040,"linear_memory_bytes": 815398912,"end_rss_bytes": 856915968,"peak_rss_bytes": 857096192,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 5569.029917,"heap_ptr_bytes": 2664206208,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2847342592,"peak_rss_bytes": 2847735808,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 4437.562540999992,"heap_ptr_bytes": 2063609312,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2241118208,"peak_rss_bytes": 2241511424,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 5979.225041999991,"heap_ptr_bytes": 2664206208,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2851962880,"peak_rss_bytes": 2852356096,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 4561.076750000007,"heap_ptr_bytes": 2063609312,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2241380352,"peak_rss_bytes": 2241757184,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 2235.673416000005,"heap_ptr_bytes": 950691272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1190854656,"peak_rss_bytes": 1191247872,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 1580.3708329999936,"heap_ptr_bytes": 620039040,"linear_memory_bytes": 815398912,"end_rss_bytes": 856965120,"peak_rss_bytes": 857128960,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 2290.9286250000005,"heap_ptr_bytes": 950691272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1194639360,"peak_rss_bytes": 1195032576,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 1503.9297499999957,"heap_ptr_bytes": 620039040,"linear_memory_bytes": 815398912,"end_rss_bytes": 861536256,"peak_rss_bytes": 861700096,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 5738.583250000011,"heap_ptr_bytes": 2664206208,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2849718272,"peak_rss_bytes": 2850127872,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 4622.1541660000075,"heap_ptr_bytes": 2063609312,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2243657728,"peak_rss_bytes": 2244034560,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 6908.976167000001,"heap_ptr_bytes": 2664206208,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2286387200,"peak_rss_bytes": 2688565248,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 6789.065791000001,"heap_ptr_bytes": 2063609312,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2240954368,"peak_rss_bytes": 2241331200,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"}
+      ]
+    },
+    "bump": {
+      "schema": 1,
+      "created_at": "2026-09-14T14:09:46.989Z",
+      "protocol_sha256": "9772d0a60084a2148b0d01f8063180f557c8269ae7d984b06cfcfd4c3ddc6709",
+      "checkout": {
+        "commit": "886f3486f59f4397a87679c0a7d425dd47abdbbe",
+        "lib_sources_sha256": "a28d2ccb92f7bb05aa835b4e8f6f8fe3bbfac351011c4e8cade27a21c68bf8be"
+      },
+      "baseline": {
+        "path": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/_build/top-scope-refs/gen/stage2.wasm",
+        "sha256": "a31e816c68f786d609c5d563591f83957447c4d2126ecf30dfbc8ad004325a93",
+        "bytes": 3644476
+      },
+      "candidate": {
+        "path": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/_build/borrow-worklist/gen/stage2.wasm",
+        "sha256": "44d03839b4eff808baf0801089eb20b6abe85407b18ca9836d5221671f855bf6",
+        "bytes": 3641173
+      },
+      "node": "v24.21.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M5",
+      "host_memory_bytes": 34359738368,
+      "rounds": 4,
+      "suite": "full",
+      "output_equivalence": "within-compiler; semantic parity requires separate execution tests",
+      "target": "linear-rc",
+      "selectors": {
+        "VIBE_PREOPEN_DIR": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup",
+        "VIBE_LIB": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/lib",
+        "VIBE_IMPORT_ABI": "raw",
+        "VIBE_FS_COMPILE": "1",
+        "VIBE_BACKEND": "wasi",
+        "VIBE_RC": "1",
+        "VIBE_CHECKED_MODULE_CACHE": "off",
+        "VIBE_EXPERIMENTAL_AST_CACHE": "0",
+        "VIBE_CODEGEN_BODY_CACHE": "off",
+        "VIBE_WASM_NAMES": "0",
+        "VIBE_WASM_MEMORY_STATS": "1"
+      },
+      "cache": "new process per sample; empty cache for cold, same populated cache for warm; OS cache uncontrolled",
+      "compiler_memory_mode": "determined by supplied binaries, not inferred from names or VIBE_RC",
+      "comparisons": [
+        {
+          "corpus": "closure",
+          "temperature": "cold",
+          "baseline": {
+            "wall_ms": 3152.8604584999957,
+            "heap_ptr_bytes": 950692272,
+            "linear_memory_bytes": 1223098368,
+            "end_rss_bytes": 1191542784,
+            "peak_rss_bytes": 1191936000
+          },
+          "candidate": {
+            "wall_ms": 3178.9667704999993,
+            "heap_ptr_bytes": 942141736,
+            "linear_memory_bytes": 1223098368,
+            "end_rss_bytes": 1186209792,
+            "peak_rss_bytes": 1186586624
+          },
+          "wall_ratio": 1.0082801989950496,
+          "paired_wall_ratio": 1.0061213133354192,
+          "heap_ptr_ratio": 0.9910059897909846,
+          "peak_rss_ratio": 0.9955120274914089
+        },
+        {
+          "corpus": "closure",
+          "temperature": "warm",
+          "baseline": {
+            "wall_ms": 2032.1537915000008,
+            "heap_ptr_bytes": 620039768,
+            "linear_memory_bytes": 815398912,
+            "end_rss_bytes": 858185728,
+            "peak_rss_bytes": 858349568
+          },
+          "candidate": {
+            "wall_ms": 2093.665958499998,
+            "heap_ptr_bytes": 611489328,
+            "linear_memory_bytes": 822280192,
+            "end_rss_bytes": 852443136,
+            "peak_rss_bytes": 852697088
+          },
+          "wall_ratio": 1.0302694447916725,
+          "paired_wall_ratio": 0.9759990852380762,
+          "heap_ptr_ratio": 0.9862098522687016,
+          "peak_rss_ratio": 0.9934147109630747
+        },
+        {
+          "corpus": "cli",
+          "temperature": "cold",
+          "baseline": {
+            "wall_ms": 7312.604271000004,
+            "heap_ptr_bytes": 2664256176,
+            "linear_memory_bytes": 3592028160,
+            "end_rss_bytes": 2847801344,
+            "peak_rss_bytes": 2848235520
+          },
+          "candidate": {
+            "wall_ms": 7463.9567920000045,
+            "heap_ptr_bytes": 2663459624,
+            "linear_memory_bytes": 3592028160,
+            "end_rss_bytes": 2845736960,
+            "peak_rss_bytes": 2846105600
+          },
+          "wall_ratio": 1.0206974855182889,
+          "paired_wall_ratio": 1.0300186963681046,
+          "heap_ptr_ratio": 0.9997010227442933,
+          "peak_rss_ratio": 0.9992521966722752
+        },
+        {
+          "corpus": "cli",
+          "temperature": "warm",
+          "baseline": {
+            "wall_ms": 5658.649041999997,
+            "heap_ptr_bytes": 2063639600,
+            "linear_memory_bytes": 2429485056,
+            "end_rss_bytes": 2243108864,
+            "peak_rss_bytes": 2243485696
+          },
+          "candidate": {
+            "wall_ms": 5641.186957999995,
+            "heap_ptr_bytes": 2062843288,
+            "linear_memory_bytes": 2429485056,
+            "end_rss_bytes": 2240143360,
+            "peak_rss_bytes": 2240520192
+          },
+          "wall_ratio": 0.9969140895873919,
+          "paired_wall_ratio": 0.9533331149545626,
+          "heap_ptr_ratio": 0.9996141225434907,
+          "peak_rss_ratio": 0.9986781712023896
+        }
+      ],
+      "samples": [
+        {"round": 0,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 4698.133375,"heap_ptr_bytes": 950692272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1191460864,"peak_rss_bytes": 1191854080,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 3772.8088340000013,"heap_ptr_bytes": 620039768,"linear_memory_bytes": 815398912,"end_rss_bytes": 857128960,"peak_rss_bytes": 857276416,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 5585.1170839999995,"heap_ptr_bytes": 942141736,"linear_memory_bytes": 1223098368,"end_rss_bytes": 871186432,"peak_rss_bytes": 958840832,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 0,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 3314.7599580000006,"heap_ptr_bytes": 611489328,"linear_memory_bytes": 822280192,"end_rss_bytes": 852344832,"peak_rss_bytes": 852705280,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 0,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 11019.977041999999,"heap_ptr_bytes": 2664256176,"linear_memory_bytes": 3592028160,"end_rss_bytes": 1992540160,"peak_rss_bytes": 1993310208,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 6358.137416999998,"heap_ptr_bytes": 2063639600,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2242117632,"peak_rss_bytes": 2242494464,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 7479.5766250000015,"heap_ptr_bytes": 2663459624,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2845458432,"peak_rss_bytes": 2845835264,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 0,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 5665.532583,"heap_ptr_bytes": 2062843288,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2240299008,"peak_rss_bytes": 2240675840,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 1,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 3485.610332999997,"heap_ptr_bytes": 942141736,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1186971648,"peak_rss_bytes": 1187364864,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 1,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 2239.6312499999985,"heap_ptr_bytes": 611489328,"linear_memory_bytes": 822280192,"end_rss_bytes": 852541440,"peak_rss_bytes": 852688896,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 1,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 3261.7465840000004,"heap_ptr_bytes": 950692272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1191624704,"peak_rss_bytes": 1192017920,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 2121.961958,"heap_ptr_bytes": 620039768,"linear_memory_bytes": 815398912,"end_rss_bytes": 857620480,"peak_rss_bytes": 857784320,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 7615.444749999995,"heap_ptr_bytes": 2663459624,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2846015488,"peak_rss_bytes": 2846375936,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 1,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 5616.841332999989,"heap_ptr_bytes": 2062843288,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2239987712,"peak_rss_bytes": 2240364544,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 1,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 7410.309291999991,"heap_ptr_bytes": 2664256176,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2848030720,"peak_rss_bytes": 2848456704,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 5817.819749999995,"heap_ptr_bytes": 2063639600,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2239856640,"peak_rss_bytes": 2240233472,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 3043.974332999991,"heap_ptr_bytes": 950692272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1191772160,"peak_rss_bytes": 1192165376,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 1942.3456250000017,"heap_ptr_bytes": 620039768,"linear_memory_bytes": 815398912,"end_rss_bytes": 859471872,"peak_rss_bytes": 859619328,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 2872.3232080000016,"heap_ptr_bytes": 942141736,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1185447936,"peak_rss_bytes": 1185808384,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 2,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 1947.7006669999973,"heap_ptr_bytes": 611489328,"linear_memory_bytes": 822280192,"end_rss_bytes": 853524480,"peak_rss_bytes": 853901312,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 2,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 6777.848541999992,"heap_ptr_bytes": 2664256176,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2847571968,"peak_rss_bytes": 2848014336,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 5499.478333999999,"heap_ptr_bytes": 2063639600,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2244100096,"peak_rss_bytes": 2244476928,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 7328.325917000009,"heap_ptr_bytes": 2663459624,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2847178752,"peak_rss_bytes": 2847555584,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 2,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 5176.172499999986,"heap_ptr_bytes": 2062843288,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2238726144,"peak_rss_bytes": 2239119360,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 3,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 2571.397874999995,"heap_ptr_bytes": 942141736,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1187119104,"peak_rss_bytes": 1187512320,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 3,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 1767.6316249999945,"heap_ptr_bytes": 611489328,"linear_memory_bytes": 822280192,"end_rss_bytes": 851853312,"peak_rss_bytes": 852017152,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 3,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 2906.9907079999975,"heap_ptr_bytes": 950692272,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1190805504,"peak_rss_bytes": 1191165952,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 1862.1522909999912,"heap_ptr_bytes": 620039768,"linear_memory_bytes": 815398912,"end_rss_bytes": 858750976,"peak_rss_bytes": 858914816,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 7448.3369590000075,"heap_ptr_bytes": 2663459624,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2673606656,"peak_rss_bytes": 2776236032,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 3,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 6941.124749999988,"heap_ptr_bytes": 2062843288,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2243297280,"peak_rss_bytes": 2243674112,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 3,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 7214.899250000017,"heap_ptr_bytes": 2664256176,"linear_memory_bytes": 3592028160,"end_rss_bytes": 2848768000,"peak_rss_bytes": 2849144832,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 5330.771042000008,"heap_ptr_bytes": 2063639600,"linear_memory_bytes": 2429485056,"end_rss_bytes": 2244771840,"peak_rss_bytes": 2245148672,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"}
+      ]
+    },
+    "aa-rc": {
+      "schema": 1,
+      "created_at": "2026-09-14T14:12:25.061Z",
+      "protocol_sha256": "9772d0a60084a2148b0d01f8063180f557c8269ae7d984b06cfcfd4c3ddc6709",
+      "checkout": {
+        "commit": "886f3486f59f4397a87679c0a7d425dd47abdbbe",
+        "lib_sources_sha256": "a28d2ccb92f7bb05aa835b4e8f6f8fe3bbfac351011c4e8cade27a21c68bf8be"
+      },
+      "baseline": {
+        "path": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/_build/top-scope-refs/rc.wasm",
+        "sha256": "f0937cf15e4955efdc2e5bd9182e9fffad469a3d4e8c153d55097fcccca32578",
+        "bytes": 5675999
+      },
+      "candidate": {
+        "path": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/_build/top-scope-refs/rc.wasm",
+        "sha256": "f0937cf15e4955efdc2e5bd9182e9fffad469a3d4e8c153d55097fcccca32578",
+        "bytes": 5675999
+      },
+      "node": "v24.21.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M5",
+      "host_memory_bytes": 34359738368,
+      "rounds": 4,
+      "suite": "full",
+      "output_equivalence": "across-compilers",
+      "target": "linear-rc",
+      "selectors": {
+        "VIBE_PREOPEN_DIR": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup",
+        "VIBE_LIB": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/lib",
+        "VIBE_IMPORT_ABI": "raw",
+        "VIBE_FS_COMPILE": "1",
+        "VIBE_BACKEND": "wasi",
+        "VIBE_RC": "1",
+        "VIBE_CHECKED_MODULE_CACHE": "off",
+        "VIBE_EXPERIMENTAL_AST_CACHE": "0",
+        "VIBE_CODEGEN_BODY_CACHE": "off",
+        "VIBE_WASM_NAMES": "0",
+        "VIBE_WASM_MEMORY_STATS": "1"
+      },
+      "cache": "new process per sample; empty cache for cold, same populated cache for warm; OS cache uncontrolled",
+      "compiler_memory_mode": "determined by supplied binaries, not inferred from names or VIBE_RC",
+      "comparisons": [
+        {
+          "corpus": "closure",
+          "temperature": "cold",
+          "baseline": {
+            "wall_ms": 8377.736396,
+            "heap_ptr_bytes": 1023445496,
+            "linear_memory_bytes": 1223098368,
+            "end_rss_bytes": 1532919808,
+            "peak_rss_bytes": 1533321216
+          },
+          "candidate": {
+            "wall_ms": 8979.238624999998,
+            "heap_ptr_bytes": 1023445496,
+            "linear_memory_bytes": 1223098368,
+            "end_rss_bytes": 1535598592,
+            "peak_rss_bytes": 1536000000
+          },
+          "wall_ratio": 1.0717977029316879,
+          "paired_wall_ratio": 1.038944336728691,
+          "heap_ptr_ratio": 1,
+          "peak_rss_ratio": 1.0017470468497058
+        },
+        {
+          "corpus": "closure",
+          "temperature": "warm",
+          "baseline": {
+            "wall_ms": 5606.547583500002,
+            "heap_ptr_bytes": 661174048,
+            "linear_memory_bytes": 837353472,
+            "end_rss_bytes": 1164247040,
+            "peak_rss_bytes": 1164615680
+          },
+          "candidate": {
+            "wall_ms": 6049.770541999998,
+            "heap_ptr_bytes": 661174048,
+            "linear_memory_bytes": 837353472,
+            "end_rss_bytes": 1166172160,
+            "peak_rss_bytes": 1166548992
+          },
+          "wall_ratio": 1.0790545254274477,
+          "paired_wall_ratio": 1.069264568912836,
+          "heap_ptr_ratio": 1,
+          "peak_rss_ratio": 1.0016600429078888
+        },
+        {
+          "corpus": "cli",
+          "temperature": "cold",
+          "baseline": {
+            "wall_ms": 19086.074729499975,
+            "heap_ptr_bytes": 2639324144,
+            "linear_memory_bytes": 2845900800,
+            "end_rss_bytes": 3089317888,
+            "peak_rss_bytes": 3090309120
+          },
+          "candidate": {
+            "wall_ms": 20394.017541499983,
+            "heap_ptr_bytes": 2639324144,
+            "linear_memory_bytes": 2845900800,
+            "end_rss_bytes": 2643009536,
+            "peak_rss_bytes": 2655281152
+          },
+          "wall_ratio": 1.0685286435548957,
+          "paired_wall_ratio": 1.069697916536073,
+          "heap_ptr_ratio": 1,
+          "peak_rss_ratio": 0.8592283324718014
+        },
+        {
+          "corpus": "cli",
+          "temperature": "warm",
+          "baseline": {
+            "wall_ms": 13812.860667,
+            "heap_ptr_bytes": 1979010944,
+            "linear_memory_bytes": 2217541632,
+            "end_rss_bytes": 2432548864,
+            "peak_rss_bytes": 2432925696
+          },
+          "candidate": {
+            "wall_ms": 13679.461271000007,
+            "heap_ptr_bytes": 1979010944,
+            "linear_memory_bytes": 2217541632,
+            "end_rss_bytes": 2431582208,
+            "peak_rss_bytes": 2431967232
+          },
+          "wall_ratio": 0.9903423773528176,
+          "paired_wall_ratio": 0.9855877599450593,
+          "heap_ptr_ratio": 1,
+          "peak_rss_ratio": 0.9996060446886743
+        }
+      ],
+      "samples": [
+        {"round": 0,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 8349.886124999999,"heap_ptr_bytes": 1023445496,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1531838464,"peak_rss_bytes": 1532215296,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 5730.468499999999,"heap_ptr_bytes": 661174048,"linear_memory_bytes": 837353472,"end_rss_bytes": 1172389888,"peak_rss_bytes": 1172766720,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 8444.134166999998,"heap_ptr_bytes": 1023445496,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1535000576,"peak_rss_bytes": 1535393792,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 5592.638457999998,"heap_ptr_bytes": 661174048,"linear_memory_bytes": 837353472,"end_rss_bytes": 1164951552,"peak_rss_bytes": 1165328384,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 17727.441166999997,"heap_ptr_bytes": 2639324144,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3090006016,"peak_rss_bytes": 3090432000,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 13666.688250000007,"heap_ptr_bytes": 1979010944,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2432925696,"peak_rss_bytes": 2433302528,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 24029.823416999992,"heap_ptr_bytes": 2639324144,"linear_memory_bytes": 2845900800,"end_rss_bytes": 1840513024,"peak_rss_bytes": 2134818816,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 13596.368917000014,"heap_ptr_bytes": 1979010944,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2432532480,"peak_rss_bytes": 2432909312,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 8950.268125000002,"heap_ptr_bytes": 1023445496,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1536196608,"peak_rss_bytes": 1536606208,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 5902.703999999998,"heap_ptr_bytes": 661174048,"linear_memory_bytes": 837353472,"end_rss_bytes": 1167392768,"peak_rss_bytes": 1167769600,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 8391.390375000003,"heap_ptr_bytes": 1023445496,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1532575744,"peak_rss_bytes": 1532952576,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 5333.515916000004,"heap_ptr_bytes": 661174048,"linear_memory_bytes": 837353472,"end_rss_bytes": 1165508608,"peak_rss_bytes": 1165869056,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 18487.60841700001,"heap_ptr_bytes": 2639324144,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3087368192,"peak_rss_bytes": 3087761408,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 13730.427792000002,"heap_ptr_bytes": 1979010944,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2431041536,"peak_rss_bytes": 2431434752,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 25673.617457999993,"heap_ptr_bytes": 2639324144,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3088629760,"peak_rss_bytes": 3089055744,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 14502.732499999984,"heap_ptr_bytes": 1979010944,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2432172032,"peak_rss_bytes": 2432548864,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 8364.082416999998,"heap_ptr_bytes": 1023445496,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1536688128,"peak_rss_bytes": 1537064960,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 5482.626667000004,"heap_ptr_bytes": 661174048,"linear_memory_bytes": 837353472,"end_rss_bytes": 1162985472,"peak_rss_bytes": 1163362304,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 13445.594666999998,"heap_ptr_bytes": 1023445496,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1536425984,"peak_rss_bytes": 1536786432,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 8577.002958000026,"heap_ptr_bytes": 661174048,"linear_memory_bytes": 837353472,"end_rss_bytes": 1163116544,"peak_rss_bytes": 1163493376,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 18734.422708999977,"heap_ptr_bytes": 2639324144,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3029778432,"peak_rss_bytes": 3090186240,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 13596.22795900001,"heap_ptr_bytes": 1979010944,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2434433024,"peak_rss_bytes": 2434809856,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 21229.112374999968,"heap_ptr_bytes": 2639324144,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3084566528,"peak_rss_bytes": 3084959744,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 16850.492541000014,"heap_ptr_bytes": 1979010944,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2432122880,"peak_rss_bytes": 2432499712,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 9008.209124999994,"heap_ptr_bytes": 1023445496,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1532575744,"peak_rss_bytes": 1532985344,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 6196.837083999999,"heap_ptr_bytes": 661174048,"linear_memory_bytes": 837353472,"end_rss_bytes": 1168457728,"peak_rss_bytes": 1168834560,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 9827.574124999985,"heap_ptr_bytes": 1023445496,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1533263872,"peak_rss_bytes": 1533689856,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 6005.792666000023,"heap_ptr_bytes": 661174048,"linear_memory_bytes": 837353472,"end_rss_bytes": 1065385984,"peak_rss_bytes": 1109377024,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 19558.922708,"heap_ptr_bytes": 2639324144,"linear_memory_bytes": 2845900800,"end_rss_bytes": 2201452544,"peak_rss_bytes": 2225602560,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 13628.494750000013,"heap_ptr_bytes": 1979010944,"linear_memory_bytes": 2217541632,"end_rss_bytes": 1569882112,"peak_rss_bytes": 1701117952,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 19437.726749999973,"heap_ptr_bytes": 2639324144,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3091546112,"peak_rss_bytes": 3091972096,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 13959.033083999995,"heap_ptr_bytes": 1979010944,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2430140416,"peak_rss_bytes": 2430517248,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"}
+      ]
+    },
+    "rc": {
+      "schema": 1,
+      "created_at": "2026-09-14T14:19:08.846Z",
+      "protocol_sha256": "9772d0a60084a2148b0d01f8063180f557c8269ae7d984b06cfcfd4c3ddc6709",
+      "checkout": {
+        "commit": "886f3486f59f4397a87679c0a7d425dd47abdbbe",
+        "lib_sources_sha256": "a28d2ccb92f7bb05aa835b4e8f6f8fe3bbfac351011c4e8cade27a21c68bf8be"
+      },
+      "baseline": {
+        "path": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/_build/top-scope-refs/rc.wasm",
+        "sha256": "f0937cf15e4955efdc2e5bd9182e9fffad469a3d4e8c153d55097fcccca32578",
+        "bytes": 5675999
+      },
+      "candidate": {
+        "path": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/_build/borrow-worklist/rc.wasm",
+        "sha256": "ef2fd3acac1968f1aba25c03527e43f9306d8fefea898acce21696ba2d155e58",
+        "bytes": 5517647
+      },
+      "node": "v24.21.0",
+      "platform": "darwin",
+      "arch": "arm64",
+      "cpu": "Apple M5",
+      "host_memory_bytes": 34359738368,
+      "rounds": 4,
+      "suite": "full",
+      "output_equivalence": "within-compiler; semantic parity requires separate execution tests",
+      "target": "linear-rc",
+      "selectors": {
+        "VIBE_PREOPEN_DIR": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup",
+        "VIBE_LIB": "/Users/mz/ghq/github.com/mizchi/vibe-lang-build-followup/lib",
+        "VIBE_IMPORT_ABI": "raw",
+        "VIBE_FS_COMPILE": "1",
+        "VIBE_BACKEND": "wasi",
+        "VIBE_RC": "1",
+        "VIBE_CHECKED_MODULE_CACHE": "off",
+        "VIBE_EXPERIMENTAL_AST_CACHE": "0",
+        "VIBE_CODEGEN_BODY_CACHE": "off",
+        "VIBE_WASM_NAMES": "0",
+        "VIBE_WASM_MEMORY_STATS": "1"
+      },
+      "cache": "new process per sample; empty cache for cold, same populated cache for warm; OS cache uncontrolled",
+      "compiler_memory_mode": "determined by supplied binaries, not inferred from names or VIBE_RC",
+      "comparisons": [
+        {
+          "corpus": "closure",
+          "temperature": "cold",
+          "baseline": {
+            "wall_ms": 7000.746104500009,
+            "heap_ptr_bytes": 1023423440,
+            "linear_memory_bytes": 1223098368,
+            "end_rss_bytes": 1537589248,
+            "peak_rss_bytes": 1537974272
+          },
+          "candidate": {
+            "wall_ms": 6005.3543125,
+            "heap_ptr_bytes": 1000630544,
+            "linear_memory_bytes": 1223098368,
+            "end_rss_bytes": 1488158720,
+            "peak_rss_bytes": 1488535552
+          },
+          "wall_ratio": 0.8578163274111339,
+          "paired_wall_ratio": 0.8464683782552647,
+          "heap_ptr_ratio": 0.9777287727550974,
+          "peak_rss_ratio": 0.9678546508221433
+        },
+        {
+          "corpus": "closure",
+          "temperature": "warm",
+          "baseline": {
+            "wall_ms": 4841.804687499985,
+            "heap_ptr_bytes": 661160504,
+            "linear_memory_bytes": 837353472,
+            "end_rss_bytes": 1167523840,
+            "peak_rss_bytes": 1167876096
+          },
+          "candidate": {
+            "wall_ms": 3772.5172290000046,
+            "heap_ptr_bytes": 643395648,
+            "linear_memory_bytes": 837353472,
+            "end_rss_bytes": 1126907904,
+            "peak_rss_bytes": 1127161856
+          },
+          "wall_ratio": 0.7791551854083366,
+          "paired_wall_ratio": 0.7932143885389205,
+          "heap_ptr_ratio": 0.9731307966938085,
+          "peak_rss_ratio": 0.9651382195941444
+        },
+        {
+          "corpus": "cli",
+          "temperature": "cold",
+          "baseline": {
+            "wall_ms": 15336.770312499983,
+            "heap_ptr_bytes": 2639267168,
+            "linear_memory_bytes": 2845900800,
+            "end_rss_bytes": 3106004992,
+            "peak_rss_bytes": 3106390016
+          },
+          "candidate": {
+            "wall_ms": 15372.57399999999,
+            "heap_ptr_bytes": 2613586048,
+            "linear_memory_bytes": 2845900800,
+            "end_rss_bytes": 3039682560,
+            "peak_rss_bytes": 3040075776
+          },
+          "wall_ratio": 1.0023344998177892,
+          "paired_wall_ratio": 1.0012743448363874,
+          "heap_ptr_ratio": 0.9902696019897596,
+          "peak_rss_ratio": 0.9786523135670547
+        },
+        {
+          "corpus": "cli",
+          "temperature": "warm",
+          "baseline": {
+            "wall_ms": 11332.060083000004,
+            "heap_ptr_bytes": 1978976704,
+            "linear_memory_bytes": 2217541632,
+            "end_rss_bytes": 2432868352,
+            "peak_rss_bytes": 2433236992
+          },
+          "candidate": {
+            "wall_ms": 10573.256520999988,
+            "heap_ptr_bytes": 1962323648,
+            "linear_memory_bytes": 2217541632,
+            "end_rss_bytes": 2390466560,
+            "peak_rss_bytes": 2390843392
+          },
+          "wall_ratio": 0.9330392217794231,
+          "paired_wall_ratio": 0.8732219613341315,
+          "heap_ptr_ratio": 0.9915850166571744,
+          "peak_rss_ratio": 0.9825772827967922
+        }
+      ],
+      "samples": [
+        {"round": 0,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 6860.230167000001,"heap_ptr_bytes": 1023423440,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1537523712,"peak_rss_bytes": 1537933312,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 4634.61375,"heap_ptr_bytes": 661160504,"linear_memory_bytes": 837353472,"end_rss_bytes": 1169473536,"peak_rss_bytes": 1169833984,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 0,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 5869.3475,"heap_ptr_bytes": 1000630544,"linear_memory_bytes": 1223098368,"end_rss_bytes": 946520064,"peak_rss_bytes": 1328594944,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 0,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 3609.4795000000013,"heap_ptr_bytes": 643395648,"linear_memory_bytes": 837353472,"end_rss_bytes": 1127071744,"peak_rss_bytes": 1127432192,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 0,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 15479.622959,"heap_ptr_bytes": 2639267168,"linear_memory_bytes": 2845900800,"end_rss_bytes": 1970094080,"peak_rss_bytes": 1972289536,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 15723.589832999998,"heap_ptr_bytes": 1978976704,"linear_memory_bytes": 2217541632,"end_rss_bytes": 1587052544,"peak_rss_bytes": 1587888128,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 0,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 17261.225417,"heap_ptr_bytes": 2613586048,"linear_memory_bytes": 2845900800,"end_rss_bytes": 1784299520,"peak_rss_bytes": 2095693824,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 0,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 11284.141166999994,"heap_ptr_bytes": 1962323648,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2393767936,"peak_rss_bytes": 2394144768,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 1,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 7443.202000000005,"heap_ptr_bytes": 1000630544,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1487929344,"peak_rss_bytes": 1488289792,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 1,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 8696.808374999993,"heap_ptr_bytes": 643395648,"linear_memory_bytes": 837353472,"end_rss_bytes": 1126449152,"peak_rss_bytes": 1126809600,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 1,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 14915.740417000008,"heap_ptr_bytes": 1023423440,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1532985344,"peak_rss_bytes": 1533362176,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 7594.159916999997,"heap_ptr_bytes": 661160504,"linear_memory_bytes": 837353472,"end_rss_bytes": 1165574144,"peak_rss_bytes": 1165918208,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 1,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 18528.385916000014,"heap_ptr_bytes": 2613586048,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3039084544,"peak_rss_bytes": 3039461376,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 1,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 11043.559374999983,"heap_ptr_bytes": 1962323648,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2391801856,"peak_rss_bytes": 2392178688,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 1,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 15829.051500000001,"heap_ptr_bytes": 2639267168,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3108323328,"peak_rss_bytes": 3108683776,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 1,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 11495.557375000004,"heap_ptr_bytes": 1978976704,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2431401984,"peak_rss_bytes": 2431762432,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 6415.615125000011,"heap_ptr_bytes": 1023423440,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1537654784,"peak_rss_bytes": 1538015232,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 4693.8631250000035,"heap_ptr_bytes": 661160504,"linear_memory_bytes": 837353472,"end_rss_bytes": 1164623872,"peak_rss_bytes": 1164984320,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 2,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 6030.791125000018,"heap_ptr_bytes": 1000630544,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1495891968,"peak_rss_bytes": 1496252416,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 2,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 3790.8560829999915,"heap_ptr_bytes": 643395648,"linear_memory_bytes": 837353472,"end_rss_bytes": 1135935488,"peak_rss_bytes": 1136328704,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 2,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 15045.57912499999,"heap_ptr_bytes": 2639267168,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3114811392,"peak_rss_bytes": 3115220992,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 11168.562791000004,"heap_ptr_bytes": 1978976704,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2434334720,"peak_rss_bytes": 2434711552,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 2,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 13233.180958000012,"heap_ptr_bytes": 2613586048,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3040280576,"peak_rss_bytes": 3040690176,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 2,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 10102.953666999994,"heap_ptr_bytes": 1962323648,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2388508672,"peak_rss_bytes": 2388901888,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 3,"corpus": "closure","lane": "b","temperature": "cold","wall_ms": 5979.917499999981,"heap_ptr_bytes": 1000630544,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1488388096,"peak_rss_bytes": 1488781312,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 3,"corpus": "closure","lane": "b","temperature": "warm","wall_ms": 3754.1783750000177,"heap_ptr_bytes": 643395648,"linear_memory_bytes": 837353472,"end_rss_bytes": 1126744064,"peak_rss_bytes": 1126891520,"wasm_bytes": 4191069,"wasm_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7"},
+        {"round": 3,"corpus": "closure","lane": "a","temperature": "cold","wall_ms": 7141.262042000017,"heap_ptr_bytes": 1023423440,"linear_memory_bytes": 1223098368,"end_rss_bytes": 1541914624,"peak_rss_bytes": 1542291456,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "closure","lane": "a","temperature": "warm","wall_ms": 4989.746249999967,"heap_ptr_bytes": 661160504,"linear_memory_bytes": 837353472,"end_rss_bytes": 1170538496,"peak_rss_bytes": 1170915328,"wasm_bytes": 4319545,"wasm_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3"},
+        {"round": 3,"corpus": "cli","lane": "b","temperature": "cold","wall_ms": 13483.922582999978,"heap_ptr_bytes": 2613586048,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3059630080,"peak_rss_bytes": 3060023296,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 3,"corpus": "cli","lane": "b","temperature": "warm","wall_ms": 9398.500042000029,"heap_ptr_bytes": 1962323648,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2389131264,"peak_rss_bytes": 2389508096,"wasm_bytes": 39787195,"wasm_sha256": "0b21f51a9e527f2abddffdf4b39468c2f4c5b720fc8bc7cf124987a726b81316"},
+        {"round": 3,"corpus": "cli","lane": "a","temperature": "cold","wall_ms": 15193.917665999965,"heap_ptr_bytes": 2639267168,"linear_memory_bytes": 2845900800,"end_rss_bytes": 3103686656,"peak_rss_bytes": 3104096256,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"},
+        {"round": 3,"corpus": "cli","lane": "a","temperature": "warm","wall_ms": 11164.03125,"heap_ptr_bytes": 1978976704,"linear_memory_bytes": 2217541632,"end_rss_bytes": 2439331840,"peak_rss_bytes": 2439708672,"wasm_bytes": 39933526,"wasm_sha256": "2a22c63aa808aa0e3d5b4df26e89a66cacc85ee3c23a9696350aaea09929179b"}
+      ]
+    }
+  },
+  "profiles": {
+    "note": "Separate instrumented single runs, not wall-time replicates.",
+    "rows": [
+      {
+        "lane": "a",
+        "temperature": "cold",
+        "compiler_sha256": "f0937cf15e4955efdc2e5bd9182e9fffad469a3d4e8c153d55097fcccca32578",
+        "target_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3",
+        "total_ms": 6587.875,
+        "self_ms": {
+          "__rt_rc_dup": 2785.992,
+          "__rt_rc_drop": 291.878,
+          "__rt_rc_alloc": 161.372,
+          "__rt_arr_get": 115.791,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 66.083,
+          "__rt_arr_push": 55.292,
+          "bsearch_leftmost_exp_lib__vibe_core_sorted_index_vibe": 51.417,
+          "array_contains_str_exp_lib__vibe_compiler_codegen_common_extractors_common_extractors_vibe": 48.917,
+          "md_ca_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 24.793,
+          "md_collect_shadow_names_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 21.292,
+          "rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 21.166,
+          "md_cc_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 20.25,
+          "__rt_arr_len": 15.208,
+          "__rt_arr_set": 14.999,
+          "bp_calls_round0_borrow_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 14.708,
+          "elaborate_rw_dep_lib__vibe_compiler_perceus_perceus_vibe": 12.583,
+          "__rt_arr_new": 6.0,
+          "md_is_borrow_arg0_call_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 4.916,
+          "bp_round0_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.542,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "md_ca_pending_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "md_ca_ident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "canonical_builtin_name_exp_lib__vibe_compiler_core_builtin_name_vibe": 1.25,
+          "collect_free_vars_indexed_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "canonical_builtin_resolves_globally_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "fill_top_lambda_params_dep_lib__vibe_compiler_perceus_perceus_vibe": 1.25,
+          "md_borrow_mask_of_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "__rt_arr_truncate": 1.25,
+          "collect_free_var_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "canonical_builtin_name_ladder_dep_lib__vibe_compiler_core_builtin_name_vibe": 1.25
+        },
+        "inclusive_ms": {
+          "__rt_rc_dup": 2785.992,
+          "rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 329.416,
+          "__rt_rc_drop": 291.878,
+          "compute_borrow_param_user_fns_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 235.67,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 205.044,
+          "collect_free_vars_indexed_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 191.376,
+          "__rt_rc_alloc": 161.372,
+          "bsearch_leftmost_exp_lib__vibe_core_sorted_index_vibe": 123.668,
+          "elaborate_heap_params_exp_lib__vibe_compiler_perceus_perceus_vibe": 118.833,
+          "__rt_arr_get": 115.791,
+          "collect_free_vars_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 98.916,
+          "collect_free_vars_indexed_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 96.374,
+          "top_level_scope_refs_dep_lib__vibe_compiler_perceus_perceus_vibe": 85.041,
+          "array_contains_str_exp_lib__vibe_compiler_codegen_common_extractors_common_extractors_vibe": 83.585,
+          "md_ca_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 72.543,
+          "md_consumed_any_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 70.043,
+          "bp_round1_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 57.542,
+          "__rt_arr_push": 55.292,
+          "md_cc_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 53.874,
+          "md_borrow_mask_of_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 53.459,
+          "collect_free_vars_used_builtins_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 45.168,
+          "bp_recursive_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 45.126,
+          "md_consume_count_pre_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 45.125,
+          "bp_round0_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 43.792,
+          "md_collect_shadow_names_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 41.502,
+          "md_shadow_zeroed_bmasks_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 41.417,
+          "md_ca_arms_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 41.292,
+          "bp_calls_round0_borrow_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 34.875,
+          "collect_free_var_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 33.666,
+          "elaborate_rw_dep_lib__vibe_compiler_perceus_perceus_vibe": 30.0,
+          "__rt_arr_new": 21.874,
+          "md_is_borrow_arg0_call_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 17.415,
+          "__rt_arr_len": 15.208,
+          "__rt_arr_set": 14.999,
+          "bp_calls_round0_borrow_arms_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 12.417,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 8.666,
+          "bp_fold_nonident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 7.417,
+          "canonical_builtin_resolves_globally_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.791,
+          "canonical_builtin_name_exp_lib__vibe_compiler_core_builtin_name_vibe": 3.75,
+          "bp_sorted_with_masks_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.75,
+          "fill_top_lambda_params_dep_lib__vibe_compiler_perceus_perceus_vibe": 2.542,
+          "canonical_builtin_name_ladder_dep_lib__vibe_compiler_core_builtin_name_vibe": 2.5,
+          "md_ca_pending_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "md_ca_ident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "is_inlined_scalar_builtin_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "__rt_arr_truncate": 1.25,
+          "collect_free_vars_indexed_self_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25
+        },
+        "top_self_ms": {
+          "__rt_rc_dup": 2785.992,
+          "__rt_rc_drop": 291.878,
+          "__rt_str_eq": 181.379,
+          "__rt_rc_alloc": 161.372,
+          "env_lookup_binding_exp_lib__vibe_compiler_core_types_vibe": 154.542,
+          "__rt_arr_get": 115.791,
+          "hash_string_exp_lib__vibe_core_key_vibe": 77.294,
+          "__rt_str_lex_diff": 77.124,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 66.083,
+          "writeFileUtf8": 64.877,
+          "__rt_eq": 59.999,
+          "__rt_arr_push": 55.292
+        }
+      },
+      {
+        "lane": "a",
+        "temperature": "warm",
+        "compiler_sha256": "f0937cf15e4955efdc2e5bd9182e9fffad469a3d4e8c153d55097fcccca32578",
+        "target_sha256": "b0da0aa2875fce412afc0393d2dad8a8af742ed7ccd4062410bbea3d2ede8ef3",
+        "total_ms": 4443.0,
+        "self_ms": {
+          "__rt_rc_dup": 1932.296,
+          "__rt_rc_drop": 176.287,
+          "__rt_arr_get": 117.168,
+          "__rt_rc_alloc": 78.288,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 61.833,
+          "__rt_arr_push": 40.168,
+          "bsearch_leftmost_exp_lib__vibe_core_sorted_index_vibe": 33.71,
+          "array_contains_str_exp_lib__vibe_compiler_codegen_common_extractors_common_extractors_vibe": 32.5,
+          "rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 31.333,
+          "md_collect_shadow_names_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 28.959,
+          "md_ca_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 22.292,
+          "md_cc_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 19.792,
+          "__rt_arr_set": 18.667,
+          "elaborate_rw_dep_lib__vibe_compiler_perceus_perceus_vibe": 13.751,
+          "__rt_arr_slice": 9.667,
+          "bp_calls_round0_borrow_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 7.5,
+          "__rt_arr_len": 7.459,
+          "md_ca_pending_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 6.125,
+          "collect_free_var_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.834,
+          "md_borrow_mask_of_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "__rt_arr_new": 2.458,
+          "compute_borrow_param_user_fns_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.457,
+          "bp_fold_nonident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "md_is_borrow_arg0_call_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "bp_round1_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "md_ca_ident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "canonical_builtin_name_exp_lib__vibe_compiler_core_builtin_name_vibe": 1.25,
+          "md_shadow_zeroed_bmasks_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.209
+        },
+        "inclusive_ms": {
+          "__rt_rc_dup": 1932.296,
+          "rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 323.621,
+          "compute_borrow_param_user_fns_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 219.29,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 212.46,
+          "collect_free_vars_indexed_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 194.917,
+          "__rt_rc_drop": 176.287,
+          "elaborate_heap_params_exp_lib__vibe_compiler_perceus_perceus_vibe": 123.543,
+          "__rt_arr_get": 117.168,
+          "bsearch_leftmost_exp_lib__vibe_core_sorted_index_vibe": 112.208,
+          "collect_free_vars_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 104.834,
+          "collect_free_vars_indexed_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 102.334,
+          "top_level_scope_refs_dep_lib__vibe_compiler_perceus_perceus_vibe": 88.834,
+          "__rt_rc_alloc": 78.288,
+          "md_ca_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 72.125,
+          "md_cc_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 69.876,
+          "md_consumed_any_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 69.583,
+          "md_consume_count_pre_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 64.875,
+          "array_contains_str_exp_lib__vibe_compiler_codegen_common_extractors_common_extractors_vibe": 62.332,
+          "collect_free_var_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 57.126,
+          "bp_round1_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 52.375,
+          "md_shadow_zeroed_bmasks_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 49.0,
+          "md_collect_shadow_names_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 44.084,
+          "md_ca_arms_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 43.457,
+          "collect_free_vars_used_builtins_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 42.75,
+          "__rt_arr_push": 42.626,
+          "bp_round0_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 42.416,
+          "md_borrow_mask_of_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 41.168,
+          "bp_recursive_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 38.583,
+          "elaborate_rw_dep_lib__vibe_compiler_perceus_perceus_vibe": 30.917,
+          "bp_calls_round0_borrow_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 20.042,
+          "__rt_arr_set": 18.667,
+          "md_is_borrow_arg0_call_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 10.125,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 9.917,
+          "__rt_arr_slice": 9.667,
+          "__rt_arr_len": 7.459,
+          "bp_calls_round0_borrow_arms_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 6.292,
+          "__rt_arr_new": 6.249,
+          "bp_fold_nonident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 6.167,
+          "md_ca_pending_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 6.125,
+          "is_inlined_scalar_builtin_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.75,
+          "bp_sorted_with_masks_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.749,
+          "md_ca_ident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "canonical_builtin_name_exp_lib__vibe_compiler_core_builtin_name_vibe": 2.5,
+          "md_ca_list_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.292,
+          "fill_top_lambda_params_dep_lib__vibe_compiler_perceus_perceus_vibe": 1.25,
+          "canonical_builtin_name_ladder_dep_lib__vibe_compiler_core_builtin_name_vibe": 1.25,
+          "collect_free_vars_indexed_self_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25
+        },
+        "top_self_ms": {
+          "__rt_rc_dup": 1932.296,
+          "__rt_rc_drop": 176.287,
+          "__rt_arr_get": 117.168,
+          "__rt_str_eq": 88.622,
+          "__rt_rc_alloc": 78.288,
+          "__rt_str_lex_diff": 74.457,
+          "hash_string_exp_lib__vibe_core_key_vibe": 67.832,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 61.833,
+          "compile_wasi_module_linked_impl_with_typed_offsets_exp_lib__vibe_compiler_codegen_wasi_linked_compile_vibe": 41.042,
+          "__rt_arr_push": 40.168,
+          "lc_mark_calls_dep_lib__vibe_compiler_codegen_wasi_linked_compile_vibe": 37.293,
+          "rewrite_alias_expr_ix_dep_lib__vibe_compiler_core_import_alias_rewrite_vibe": 37.207
+        }
+      },
+      {
+        "lane": "b",
+        "temperature": "cold",
+        "compiler_sha256": "ef2fd3acac1968f1aba25c03527e43f9306d8fefea898acce21696ba2d155e58",
+        "target_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7",
+        "total_ms": 5734.333,
+        "self_ms": {
+          "__rt_rc_dup": 2114.79,
+          "__rt_rc_drop": 272.124,
+          "__rt_rc_alloc": 172.005,
+          "__rt_arr_get": 115.041,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 60.25,
+          "__rt_arr_push": 59.75,
+          "bsearch_leftmost_exp_lib__vibe_core_sorted_index_vibe": 58.709,
+          "array_contains_str_exp_lib__vibe_compiler_codegen_common_extractors_common_extractors_vibe": 47.208,
+          "rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 26.542,
+          "__rt_arr_set": 21.542,
+          "md_cc_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 16.292,
+          "__rt_arr_len": 13.875,
+          "md_ca_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 13.583,
+          "elaborate_rw_dep_lib__vibe_compiler_perceus_perceus_vibe": 11.29,
+          "__rt_arr_slice": 10.042,
+          "__rt_arr_new": 8.709,
+          "md_collect_shadow_names_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 7.501,
+          "md_ca_pending_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 4.876,
+          "bp_index_callers_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.791,
+          "collect_free_var_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.75,
+          "md_is_borrow_arg0_call_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.542,
+          "canonical_builtin_name_exp_lib__vibe_compiler_core_builtin_name_vibe": 2.5,
+          "__rt_arr_truncate": 2.5,
+          "md_ca_ident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "bp_fixpoint_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.458,
+          "elaborate_heap_params_exp_lib__vibe_compiler_perceus_perceus_vibe": 1.292,
+          "array_contains_str_pctx_dep_lib__vibe_compiler_perceus_perceus_vibe": 1.25,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "md_ca_list_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "md_borrow_mask_of_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "collect_free_vars_indexed_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "top_level_scope_refs_dep_lib__vibe_compiler_perceus_perceus_vibe": 1.208
+        },
+        "inclusive_ms": {
+          "__rt_rc_dup": 2114.79,
+          "__rt_rc_drop": 272.124,
+          "rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 214.502,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 194.623,
+          "collect_free_vars_indexed_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 179.749,
+          "__rt_rc_alloc": 172.005,
+          "bsearch_leftmost_exp_lib__vibe_core_sorted_index_vibe": 136.288,
+          "compute_borrow_param_user_fns_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 127.751,
+          "__rt_arr_get": 115.041,
+          "borrow_fixpoint_link_parts_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 114.001,
+          "elaborate_heap_params_exp_lib__vibe_compiler_perceus_perceus_vibe": 113.793,
+          "bp_fixpoint_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 99.167,
+          "collect_free_vars_indexed_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 98.291,
+          "collect_free_vars_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 98.291,
+          "top_level_scope_refs_dep_lib__vibe_compiler_perceus_perceus_vibe": 82.167,
+          "array_contains_str_exp_lib__vibe_compiler_codegen_common_extractors_common_extractors_vibe": 73.082,
+          "md_ca_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 66.251,
+          "__rt_arr_push": 63.5,
+          "md_consumed_any_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 59.959,
+          "md_borrow_mask_of_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 54.082,
+          "md_cc_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 53.668,
+          "md_ca_arms_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 47.459,
+          "collect_free_var_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 44.539,
+          "collect_free_vars_used_builtins_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 43.709,
+          "elaborate_rw_dep_lib__vibe_compiler_perceus_perceus_vibe": 30.333,
+          "__rt_arr_new": 28.751,
+          "__rt_arr_set": 21.542,
+          "md_consume_count_pre_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 17.292,
+          "bp_index_callers_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 14.458,
+          "__rt_arr_len": 13.875,
+          "__rt_arr_slice": 10.042,
+          "md_collect_shadow_names_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 10.001,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 9.875,
+          "md_is_borrow_arg0_call_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 8.917,
+          "md_shadow_zeroed_bmasks_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 7.459,
+          "md_ca_pending_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 4.876,
+          "canonical_builtin_name_exp_lib__vibe_compiler_core_builtin_name_vibe": 3.792,
+          "bp_fold_nonident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.792,
+          "md_ca_list_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.75,
+          "md_ca_ident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.75,
+          "__rt_arr_truncate": 2.5,
+          "array_contains_str_pctx_dep_lib__vibe_compiler_perceus_perceus_vibe": 2.5,
+          "canonical_builtin_name_ladder_dep_lib__vibe_compiler_core_builtin_name_vibe": 1.292,
+          "canonical_builtin_resolves_globally_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.292,
+          "md_ca_fields_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.291,
+          "fill_top_lambda_params_dep_lib__vibe_compiler_perceus_perceus_vibe": 1.25,
+          "collect_free_vars_indexed_self_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.208
+        },
+        "top_self_ms": {
+          "__rt_rc_dup": 2114.79,
+          "__rt_rc_drop": 272.124,
+          "__rt_rc_alloc": 172.005,
+          "env_lookup_binding_exp_lib__vibe_compiler_core_types_vibe": 167.621,
+          "__rt_str_eq": 141.292,
+          "__rt_arr_get": 115.041,
+          "__rt_str_lex_diff": 92.539,
+          "writeFileUtf8": 77.288,
+          "env_lookup_binding_including_surface_exp_lib__vibe_compiler_core_types_vibe": 62.834,
+          "__rt_eq": 62.126,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 60.25,
+          "__rt_arr_push": 59.75
+        }
+      },
+      {
+        "lane": "b",
+        "temperature": "warm",
+        "compiler_sha256": "ef2fd3acac1968f1aba25c03527e43f9306d8fefea898acce21696ba2d155e58",
+        "target_sha256": "e009cdaca5ccb5c2e5bf7c0dc020a0ce8fa7442697c16bf2250c02c0ec2472b7",
+        "total_ms": 3508.666,
+        "self_ms": {
+          "__rt_rc_dup": 1222.954,
+          "__rt_rc_drop": 152.291,
+          "__rt_arr_get": 94.79,
+          "__rt_rc_alloc": 93.956,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 76.248,
+          "__rt_arr_push": 40.959,
+          "array_contains_str_exp_lib__vibe_compiler_codegen_common_extractors_common_extractors_vibe": 37.584,
+          "rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 31.334,
+          "bsearch_leftmost_exp_lib__vibe_core_sorted_index_vibe": 27.29,
+          "md_ca_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 16.291,
+          "md_cc_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 12.251,
+          "__rt_arr_set": 11.041,
+          "elaborate_rw_dep_lib__vibe_compiler_perceus_perceus_vibe": 10.126,
+          "bp_fixpoint_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 10.043,
+          "bp_index_callers_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 8.749,
+          "__rt_arr_new": 7.541,
+          "__rt_arr_slice": 6.333,
+          "__rt_arr_len": 6.292,
+          "md_ca_pending_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 5.001,
+          "md_collect_shadow_names_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.708,
+          "md_ca_ident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.708,
+          "md_borrow_mask_of_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.542,
+          "collect_free_vars_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.292,
+          "collect_free_var_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.291,
+          "is_inlined_scalar_builtin_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "elaborate_heap_params_exp_lib__vibe_compiler_perceus_perceus_vibe": 1.25,
+          "__rt_arr_truncate": 1.25,
+          "md_shadow_zeroed_bmasks_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "is_inlined_async_builtin_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.166
+        },
+        "inclusive_ms": {
+          "__rt_rc_dup": 1222.954,
+          "rewrite_expr_dep_lib__vibe_compiler_normalize_desugar_trait_dict_vibe": 215.583,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 211.833,
+          "collect_free_vars_indexed_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 195.75,
+          "__rt_rc_drop": 152.291,
+          "compute_borrow_param_user_fns_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 122.042,
+          "elaborate_heap_params_exp_lib__vibe_compiler_perceus_perceus_vibe": 110.625,
+          "borrow_fixpoint_link_parts_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 109.709,
+          "collect_free_vars_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 108.209,
+          "collect_free_vars_indexed_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 103.084,
+          "bsearch_leftmost_exp_lib__vibe_core_sorted_index_vibe": 94.832,
+          "__rt_arr_get": 94.79,
+          "bp_fixpoint_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 94.751,
+          "__rt_rc_alloc": 93.956,
+          "top_level_scope_refs_dep_lib__vibe_compiler_perceus_perceus_vibe": 83.125,
+          "array_contains_str_exp_lib__vibe_compiler_codegen_common_extractors_common_extractors_vibe": 65.044,
+          "md_ca_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 54.708,
+          "md_consumed_any_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 47.167,
+          "md_cc_go_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 45.585,
+          "collect_free_var_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 43.667,
+          "__rt_arr_push": 43.459,
+          "collect_free_vars_used_builtins_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 40.251,
+          "md_ca_arms_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 38.709,
+          "md_borrow_mask_of_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 27.373,
+          "elaborate_rw_dep_lib__vibe_compiler_perceus_perceus_vibe": 21.292,
+          "bp_index_callers_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 19.916,
+          "__rt_arr_new": 17.706,
+          "__rt_arr_set": 11.041,
+          "md_collect_shadow_names_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 8.708,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 8.666,
+          "md_consume_count_pre_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 8.501,
+          "__rt_arr_slice": 6.333,
+          "__rt_arr_len": 6.292,
+          "bp_fold_nonident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 6.292,
+          "md_ca_pending_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 5.001,
+          "md_shadow_zeroed_bmasks_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 5.0,
+          "md_ca_ident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 4.958,
+          "collect_free_vars_indexed_self_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.792,
+          "fill_top_lambda_params_dep_lib__vibe_compiler_perceus_perceus_vibe": 2.5,
+          "md_ca_fields_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "md_is_borrow_arg0_call_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.5,
+          "is_inlined_async_builtin_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 2.416,
+          "is_inlined_scalar_builtin_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "__rt_arr_truncate": 1.25,
+          "bp_param_base_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "md_self_reassign_move_arg_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "canonical_builtin_resolves_globally_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25,
+          "canonical_builtin_name_exp_lib__vibe_compiler_core_builtin_name_vibe": 1.25,
+          "canonical_builtin_name_ladder_dep_lib__vibe_compiler_core_builtin_name_vibe": 1.25
+        },
+        "top_self_ms": {
+          "__rt_rc_dup": 1222.954,
+          "__rt_rc_drop": 152.291,
+          "__rt_arr_get": 94.79,
+          "__rt_rc_alloc": 93.956,
+          "collect_free_vars_expr_sc_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 76.248,
+          "__rt_str_eq": 69.339,
+          "__rt_str_lex_diff": 66.627,
+          "hash_string_exp_lib__vibe_core_key_vibe": 50.042,
+          "__rt_eq": 41.499,
+          "__rt_arr_push": 40.959,
+          "edp_rq_fold_exp_lib__vibe_compiler_lowering_effects_queries_queries_vibe": 38.834,
+          "array_contains_str_exp_lib__vibe_compiler_codegen_common_extractors_common_extractors_vibe": 37.584
+        }
+      }
+    ],
+    "costs": [
+      {
+        "lane": "a",
+        "temperature": "cold",
+        "total_ms": 6587.875,
+        "dup_self_ms": 2785.992,
+        "borrow_inference_inclusive_ms": 235.67,
+        "rewrite_direct_dup_ms": 136.249,
+        "borrow_helpers_inclusive_ms": {
+          "bp_round1_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 57.542,
+          "bp_recursive_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 45.126,
+          "bp_round0_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 43.792,
+          "bp_calls_round0_borrow_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 34.875,
+          "bp_calls_round0_borrow_arms_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 12.417,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 8.666,
+          "bp_fold_nonident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 7.417,
+          "bp_sorted_with_masks_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.75
+        }
+      },
+      {
+        "lane": "a",
+        "temperature": "warm",
+        "total_ms": 4443.0,
+        "dup_self_ms": 1932.296,
+        "borrow_inference_inclusive_ms": 219.29,
+        "rewrite_direct_dup_ms": 145.251,
+        "borrow_helpers_inclusive_ms": {
+          "bp_round1_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 52.375,
+          "bp_round0_scan_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 42.416,
+          "bp_recursive_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 38.583,
+          "bp_calls_round0_borrow_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 20.042,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 9.917,
+          "bp_calls_round0_borrow_arms_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 6.292,
+          "bp_fold_nonident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 6.167,
+          "bp_sorted_with_masks_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.749
+        }
+      },
+      {
+        "lane": "b",
+        "temperature": "cold",
+        "total_ms": 5734.333,
+        "dup_self_ms": 2114.79,
+        "borrow_inference_inclusive_ms": 127.751,
+        "rewrite_direct_dup_ms": 55.667,
+        "borrow_helpers_inclusive_ms": {
+          "borrow_fixpoint_link_parts_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 114.001,
+          "bp_fixpoint_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 99.167,
+          "bp_index_callers_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 14.458,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 9.875,
+          "bp_fold_nonident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 3.792
+        }
+      },
+      {
+        "lane": "b",
+        "temperature": "warm",
+        "total_ms": 3508.666,
+        "dup_self_ms": 1222.954,
+        "borrow_inference_inclusive_ms": 122.042,
+        "rewrite_direct_dup_ms": 56.788,
+        "borrow_helpers_inclusive_ms": {
+          "borrow_fixpoint_link_parts_exp_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 109.709,
+          "bp_fixpoint_parts_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 94.751,
+          "bp_index_callers_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 19.916,
+          "bp_name_set_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 8.666,
+          "bp_fold_nonident_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 6.292,
+          "bp_param_base_name_dep_lib__vibe_compiler_codegen_common_analysis_common_analysis_vibe": 1.25
+        }
+      }
+    ]
+  },
+  "interpretation": "Target RC instructions intentionally differ across compiler implementations. Every target is stable within a compiler across cold/warm and rounds, and compiler-runtime bump/RC variants agree for each implementation. Generated closure tests and CLI-compiled ownership programs are executed separately. Heap pointer, linear capacity and peak RSS are distinct metrics; shared-machine noise and A/A controls limit wall-time conclusions."
+}

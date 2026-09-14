@@ -1,0 +1,152 @@
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/compiler/codegen/common_analysis {
+  borrow_fixpoint_link_parts, compute_borrow_disqualifiers, compute_borrow_param_user_fns
+}
+
+fn declaration(name: String, params: Array[String], body: Expr) -> Stmt {
+  let ps = Array::map(params, (p) -> (p, None))
+  SLet(false, false, name, None, EFn([], [], ps, None, None, body))
+}
+
+fn call(name: String, args: Array[String]) -> Expr {
+  ECall(EIdent(name, -1), Array::map(args, (a) -> EIdent(a, -1)), -1)
+}
+
+fn masks_for(stmts: Array[Stmt], wanted: Array[String]) -> Array[Int] {
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns(stmts, [], masks)
+  Array::map(wanted, (name) -> {
+    let mut found = 0
+    let mut i = 0
+    while i < Array::length(names) {
+      if Array::get(names, i) == name {
+        found = Array::get(masks, i)
+      }
+      i = i + 1
+    }
+    found
+  })
+}
+
+test "borrow inference follows long wrapper chains in either declaration order" {
+  let chain: Array[Stmt] = []
+  let wanted: Array[String] = []
+  let mut i = 0
+  while i < 8 {
+    let name = "reader_\{i}"
+    let next = if i == 7 {
+      "Array::length"
+    } else {
+      "reader_\{i + 1}"
+    }
+    Array::push(wanted, name)
+    Array::push(chain, declaration(name, ["xs"], call(next, ["xs"])))
+    i = i + 1
+  }
+  inspect(masks_for(chain, wanted), content = "[1, 1, 1, 1, 1, 1, 1, 1]")
+  let reversed: Array[Stmt] = []
+  i = Array::length(chain)
+  while i > 0 {
+    i = i - 1; Array::push(reversed, Array::get(chain, i))
+  }
+  inspect(masks_for(reversed, wanted), content = "[1, 1, 1, 1, 1, 1, 1, 1]")
+}
+
+test "recursive readers propagate their borrowed ABI back to wrappers" {
+  let walk = declaration("walk", ["xs"], EIf(EBool(true), call("Array::length", [
+    "xs"
+  ]), call("walk", ["xs"])))
+  let wrapper = declaration("wrapper", ["xs"], call("walk", ["xs"]))
+  inspect(masks_for([wrapper, walk], ["wrapper", "walk"]), content = "[1, 1]")
+}
+
+test "mutually recursive readers reach a borrowed fixed point" {
+  let left = declaration("left", ["xs"], EIf(EBool(true), call("Array::length", [
+    "xs"
+  ]), call("right", ["xs"])))
+  let right = declaration("right", ["xs"], call("left", ["xs"]))
+  inspect(masks_for([left, right], ["left", "right"]), content = "[1, 1]")
+}
+
+test "an owned return propagates through mutually recursive permutations" {
+  let left = declaration("left", ["a", "b", "c"], call("right", ["b", "c", "a"]))
+  let right = declaration("right", ["a", "b", "c"], EIf(EBool(true), EIdent("a", -1), call("left", [
+    "a",
+    "b",
+    "c"
+  ])))
+  inspect(masks_for([left, right], ["left", "right"]), content = "[0, 0]")
+}
+
+test "temporary arguments propagate ownership through a recursive component" {
+  let left = declaration("left", ["a", "b"], call("right", ["b", "a"]))
+  let right = declaration("right", ["a", "b"], call("left", ["a", "b"]))
+  let caller = SExpr(ECall(EIdent("right", -1), [EArray([]), EIdent("xs", -1)], -1))
+  inspect(masks_for([left, right, caller], ["left", "right"]), content = "[0, 0]")
+}
+
+test "function parameters shadow transitive callees including labeled spellings" {
+  let reader = declaration("reader", ["xs"], call("Array::length", ["xs"]))
+  let wrappers = ["reader", "reader~", "reader?"]
+  let got: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(wrappers) {
+    let wrapper = declaration("wrapper", ["xs", Array::get(wrappers, i)], call("reader", [
+      "xs"
+    ]))
+    Array::push(got, Array::get(masks_for([reader, wrapper], ["wrapper"]), 0)&1)
+    i = i + 1
+  }
+  inspect(got, content = "[0, 0, 0]")
+}
+
+test "a source-owned builtin cannot seed borrowing into a wrapper" {
+  let owned = declaration("Map::iter_get", ["xs"], EIdent("xs", -1))
+  let wrapper = declaration("wrapper", ["xs"], call("Map::iter_get", ["xs"]))
+  inspect(masks_for([owned, wrapper], ["Map::iter_get", "wrapper"]), content = "[0, 0]")
+}
+
+test "module linking follows transitive edges and global exclusions" {
+  let leaf = declaration("leaf", ["xs"], call("Array::length", ["xs"]))
+  let mid = declaration("mid", ["xs"], call("leaf", ["xs"]))
+  let root = declaration("root", ["xs"], call("mid", ["xs"]))
+  let parts = [[root], [mid], [leaf]]
+  let valued: Array[String] = []
+  let nonident: Array[String] = []
+  let positions: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(parts) {
+    compute_borrow_disqualifiers(Array::get(parts, i), valued, nonident, positions)
+    i = i + 1
+  }
+  let masks: Array[Int] = []
+  let names = borrow_fixpoint_link_parts(parts, valued, nonident, positions, [], masks)
+  inspect(names, content = "[leaf, mid, root]")
+  inspect(masks, content = "[1, 1, 1]")
+  let excluded_masks: Array[Int] = []
+  let excluded_names = borrow_fixpoint_link_parts(parts, valued, nonident, positions, [
+    "leaf"
+  ], excluded_masks)
+  inspect(excluded_names, content = "[]")
+  let valued_masks: Array[Int] = []
+  let valued_names = borrow_fixpoint_link_parts(parts, ["leaf"], nonident, positions, [
+  ], valued_masks)
+  inspect(valued_names, content = "[]")
+}
+
+test "duplicate definitions do not publish a speculative borrowed ABI" {
+  let leaf = declaration("leaf", ["xs"], call("Array::length", ["xs"]))
+  let owned = declaration("leaf", ["xs"], EIdent("xs", -1))
+  let wrapper = declaration("wrapper", ["xs"], call("leaf", ["xs"]))
+  inspect(masks_for([leaf, owned, wrapper], ["leaf", "wrapper"]), content = "[0, 0]")
+  inspect(masks_for([owned, leaf, wrapper], ["leaf", "wrapper"]), content = "[0, 0]")
+}
+
+test "capturing a parameter keeps its recursive callers owned" {
+  let closure = EFn([], [], [], None, None, call("Array::length", ["xs"]))
+  let left = declaration("left", ["xs"], ESeq(closure, call("right", ["xs"])))
+  let right = declaration("right", ["xs"], call("left", ["xs"]))
+  inspect(masks_for([left, right], ["left", "right"]), content = "[0, 0]")
+}
