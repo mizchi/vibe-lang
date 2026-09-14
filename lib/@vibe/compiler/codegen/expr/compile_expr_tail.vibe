@@ -1221,7 +1221,29 @@ fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: CompileCtx) 
   let binders = array_empty()
   let leaf = mib_spine_leaf(value, binders)
   match leaf {
-    ECall(EIdent(cn, _), _, _) => !array_contains_str(binders, cn) && call_returns_borrow(leaf, local_names, ctx),
+    // The spine's own binder must not be retained TWICE. When the wrapper binds
+    // the borrow's SOURCE -- `x = { let ys = [..]; Array::get(ys, 0) }` -- the
+    // inner `ELet` lowering already promotes the escaping element before
+    // dropping `ys`, keyed on `scope_tail_proj_root(body) == n`. Retaining it
+    // again here gives the slot two references and its drop spends one, so
+    // every assignment leaks the element permanently.
+    //
+    // Measured on `6507c60` at N=20000: 164 B unpatched against 1,600,084 B
+    // with this clause classifying from the leaf callee alone -- 80 B per
+    // iteration, so it SCALES. Bounded by
+    // fixtures/rc_wrapper_assign_double_retain_test.vibe (gate row 40e2).
+    //
+    // The test asks `scope_tail_proj_root` -- the SAME predicate the inner
+    // lowering keys on -- rather than a second reading of the spine, so the two
+    // cannot answer differently. It names the borrow's root, which is a spine
+    // binder exactly when that lowering already retained: `ys` here, and `xs`
+    // (a parameter) in the issue's own repro, which therefore still retains.
+    ECall(EIdent(cn, _), _, _) => if array_contains_str(binders, cn) || !call_returns_borrow(leaf, local_names, ctx) {
+      false
+    } else {
+      let tail_root = scope_tail_proj_root(value)
+      String::length(tail_root) == 0 || !array_contains_str(binders, tail_root)
+    },
     // A BARE projection is retained by `classify_let_value_heap`'s own
     // `is_edot(value)` arm, and by the assignment path's own top-node clause.
     // Only a WRAPPED one arrives here unretained; firing on the bare one too
