@@ -18,7 +18,7 @@
 Three pillars. When they conflict, the order is **never be silently wrong** >
 honesty of representation > pleasantness of the surface syntax. Anything the
 policy cannot settle becomes an issue with the three-axis labels
-([docs/issue-triage.md](docs/issue-triage.md)).
+([docs/internal/project/issue-triage.md](docs/internal/project/issue-triage.md)).
 
 **1. Modern syntax; a statically typed functional language that makes effects
 explicit** (lineage: Rust / MoonBit / Koka / Verse). Effects are carried by an
@@ -329,7 +329,7 @@ it is not a place to move things you were too cautious to delete.
 
 vibe 言語の構文・機能を把握するには、最初に [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。
 
-**モジュールを追加・修復するときは [docs/adding-modules.md](docs/adding-modules.md) に従う**
+**モジュールを追加・修復するときは [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md) に従う**
 (置き場所の規約、テスト + allowlist ラチェット、検証手順、既知の罠)。
 
 ### 文法で詰まったときの方針
@@ -391,7 +391,7 @@ selfhost-only (#594) 以降、ソースはすべて vibe (`.vibe`)。旧 MoonBit
 - `index.vibe` - パッケージのエントリ (`lib/@vibe/<pkg>/index.vibe`)
 - `index.vpkg` - パッケージの契約 (ヘッダ + bodyless 宣言、境界かつ公開 API。
   ADR-0070/#1269)。**`index.vibei` は legacy で境界ではなく、リポジトリにも
-  もう存在しない** — 詳細は [docs/adding-modules.md](docs/adding-modules.md)
+  もう存在しない** — 詳細は [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md)
 - `Taskfile.pkl` - pkfire タスク定義
 
 ### 変更の入れ先
@@ -821,7 +821,7 @@ classification artifacts. Read that file if you want to count them (#1861).
 ## Task Management
 
 タスクは GitHub Issues (`gh issue`) で管理する。ロードマップは
-[docs/release-roadmap.md](docs/release-roadmap.md) 参照。
+[docs/internal/project/release-roadmap.md](docs/internal/project/release-roadmap.md) 参照。
 
 ```bash
 # タスク一覧
@@ -841,7 +841,7 @@ gh issue list --state open --label P0
 gh issue list --state open --label blocker
 ```
 
-**分類と優先順位の規則は [docs/issue-triage.md](docs/issue-triage.md)。**
+**分類と優先順位の規則は [docs/internal/project/issue-triage.md](docs/internal/project/issue-triage.md)。**
 3 軸 (種類 / 優先度 P0-P2 / `blocker`) を独立に付け、着手順はそこから機械的に決まる。
 優先度は**壊れ方の悪質さだけ**で決める (P0 = 黙って誤る、P1 = 落ちる・書けない、
 P2 = 機能追加)。「重要そう」は優先度に入れない。新規起票時は 3 軸を付けるところまでが

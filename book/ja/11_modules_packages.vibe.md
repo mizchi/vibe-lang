@@ -104,7 +104,7 @@ fn add(x: Int, y: Int) -> Int
 定義のない `type Counter` は、利用者に名前だけを与えて表現は与えない、
 という意味です。後から変えられます。宣言の上のヘッダは vibe の構文では
 なくパッケージのメタデータで、
-[docs/adding-modules.md](../../docs/adding-modules.md) が参照先です。
+[docs/internal/project/adding-modules.md](../../docs/internal/project/adding-modules.md) が参照先です。
 
 契約は**利用者に向けた**境界です。他のパッケージから何に手が届くかを
 決めるものであって、パッケージの内側では邪魔をしません。最も近い

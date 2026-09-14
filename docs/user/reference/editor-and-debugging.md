@@ -476,7 +476,7 @@ normally; only the *static*, no-execution-needed lookup has this gap).
 Genuine **instruction-offset breakpoints** (pausing mid-statement, at an
 arbitrary sub-expression) remain future work: it needs every `Expr` node to
 carry its own source span, not just statements, which the linemap alone
-doesn't provide (docs/release-roadmap.md テーマ3, 3-P0's "残").
+doesn't provide (docs/internal/project/release-roadmap.md テーマ3, 3-P0's "残").
 
 ---
 

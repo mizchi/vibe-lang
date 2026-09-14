@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression test for located diagnostics (docs/release-roadmap.md source-span):
+# Regression test for located diagnostics (docs/internal/project/release-roadmap.md source-span):
 # `vibe check` reports `line N:col M:` for parse errors and the common type
 # errors (unknown name / arity), via the freshly built compiler. Guards the
 # located-diagnostic + the `+`-string-concat NUL fix.

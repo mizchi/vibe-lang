@@ -168,7 +168,7 @@ pass; a shorter file is not proof that its boundary is sound.
 
 ## `tutorial-breakage`
 
-A runnable block in [The Vibe Book](../book/README.md) that stops working on
+A runnable block in [The Vibe Book](../../../book/README.md) that stops working on
 the current compiler is **P1 (cannot write it / it crashes)**: a reader
 following the canonical tour cannot run it. If it type-checks and returns a
 wrong value instead, it is **P0 (silent-wrong)** like anything else.

@@ -13,7 +13,7 @@
   動詞。
 - [docs/user/reference/editor-and-debugging.md](../../docs/user/reference/editor-and-debugging.md) —
   LSP、DAP、`type-at` / `binding-at` / `symbols`。
-- [docs/adding-modules.md](../../docs/adding-modules.md) — 新しい
+- [docs/internal/project/adding-modules.md](../../docs/internal/project/adding-modules.md) — 新しい
   パッケージの置き場所 (`@vibe` / `@vibex` / ユーザースコープ)。
 - [docs/user/reference/feature-levels.md](../../docs/user/reference/feature-levels.md) —
   生成モジュールが使ってよい wasm proposal。

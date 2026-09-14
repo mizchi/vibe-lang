@@ -3,7 +3,7 @@
 vibe is distributed as a small **wasmtime runner** (`viberun`) plus a
 **portable compiler wasm** (`vibe-cli.wasm`). At install time the compiler wasm
 is AOT-compiled to a host-specific `vibe-cli.cwasm` so the compiler is not
-re-JITed on every command. See `docs/release-roadmap.md` (テーマ1) for the
+re-JITed on every command. See `docs/internal/project/release-roadmap.md` (テーマ1) for the
 rationale behind this split.
 
 ## Quick install (release)
@@ -380,7 +380,7 @@ Diagnostics carry an exact line:col for parse errors and common type errors
 their inferred type via the per-node type table (typed hover). Rename /
 references are AST-accurate (scope-aware binding occurrences). Remaining
 precision work (call-site / expression-node spans) is tracked as span-arc in
-[docs/release-roadmap.md](../../release-roadmap.md) テーマ4.
+[docs/internal/project/release-roadmap.md](../../internal/project/release-roadmap.md) テーマ4.
 
 ## Updating
 

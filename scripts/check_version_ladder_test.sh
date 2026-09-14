@@ -22,13 +22,13 @@ fails=0
 # $4 = stable-surface version. Equal values -> a consistent tree.
 build() {
   local ver="$1" notes_ver="$2" ladder_ver="$3" surface_ver="$4"
-  rm -rf "$WORK/t"; mkdir -p "$WORK/t/docs/user/getting-started" "$WORK/t/docs/user/reference"
+  rm -rf "$WORK/t"; mkdir -p "$WORK/t/docs/user/getting-started" "$WORK/t/docs/user/reference" "$WORK/t/docs/internal/project"
   printf '#!/usr/bin/env bash\nVIBE_VERSION="%s"\n' "$ver" > "$WORK/t/vibe"
   if [ -n "$notes_ver" ]; then
     printf '# vibe %s release notes\n\nbody\n' "$notes_ver" > "$WORK/t/docs/user/getting-started/release-notes-$notes_ver.md"
   fi
   printf '# roadmap\n\n## Version ladder\n\n| version | meaning |\n| --- | --- |\n| `%s` | target |\n\n## Next\n' \
-    "$ladder_ver" > "$WORK/t/docs/release-roadmap.md"
+    "$ladder_ver" > "$WORK/t/docs/internal/project/release-roadmap.md"
   printf '# stable surface\n\nThe freeze takes effect at the `%s` tag.\n' \
     "$surface_ver" > "$WORK/t/docs/user/reference/stable-surface.md"
 }
@@ -84,7 +84,7 @@ expect 1 "a version missing from the ladder fails" "no row for"
 
 # 8. The roadmap has no ladder section at all.
 build 0.4.0 0.4.0 0.4.0 0.4.0
-printf '# roadmap\n\nno ladder here\n' > "$WORK/t/docs/release-roadmap.md"
+printf '# roadmap\n\nno ladder here\n' > "$WORK/t/docs/internal/project/release-roadmap.md"
 expect 1 "a roadmap with no ladder section fails" "Version ladder"
 
 # 9. The freeze takes effect at a different version -- the exact drift that

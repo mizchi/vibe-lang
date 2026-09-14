@@ -248,7 +248,7 @@ Per scenario the snapshot records, for **both** the linear and the wasm-gc
 backend: fuel, wasm size, and (linear) bump-heap `allocated` + `committed`
 bytes — plus two correctness checks whose failure is rendered louder than
 any perf delta (silent-wrong is the worst failure class,
-`docs/issue-triage.md`): the linear stdout must equal the committed golden
+`docs/internal/project/issue-triage.md`): the linear stdout must equal the committed golden
 (`bench/exec/expected/`), and the gc stdout must equal the linear stdout.
 A scenario the gc backend cannot compile/run is recorded per scenario with
 the compiler's own diagnostic (e.g. `higher_order`: `GC codegen: unknown

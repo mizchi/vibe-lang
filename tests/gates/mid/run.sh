@@ -1619,7 +1619,7 @@ echo "[compiler-gate] wasm-gc test-block runtime regression suite ok"
 # the linear callsite chain, absent from the gc one. They are now served by
 # both, so the property to hold is not "gc can do map" but "the two lanes
 # agree": a gc-only run goes green on a lowering that quietly computes
-# something else, and silently-wrong outranks a crash (docs/issue-triage.md).
+# something else, and silently-wrong outranks a crash (docs/internal/project/issue-triage.md).
 # So the same file runs on the LINEAR lane too, as the oracle.
 #
 # check_builtin_parity.sh already fails if either lane loses an arm. It reads

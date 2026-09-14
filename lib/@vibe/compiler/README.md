@@ -39,7 +39,7 @@ compiles and runs.
   pins the scale that used to fall over (#2134).
 
 Current gates and remaining work: GitHub Issues and
-[docs/release-roadmap.md](../../../docs/release-roadmap.md).
+[docs/internal/project/release-roadmap.md](../../../docs/internal/project/release-roadmap.md).
 
 ## Verification
 

@@ -105,7 +105,7 @@ fn add(x: Int, y: Int) -> Int
 `type Counter` with no definition means consumers get the name but not
 the representation, so you can change it later. The header above the
 declarations is not vibe syntax — it is package metadata, and
-[docs/adding-modules.md](../../docs/adding-modules.md) is the reference
+[docs/internal/project/adding-modules.md](../../docs/internal/project/adding-modules.md) is the reference
 for it.
 
 The contract is the **consumer-facing** boundary: it says what other

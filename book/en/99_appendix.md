@@ -14,7 +14,7 @@ order they are usually useful.
   verb.
 - [docs/user/reference/editor-and-debugging.md](../../docs/user/reference/editor-and-debugging.md) —
   LSP, DAP, `type-at` / `binding-at` / `symbols`.
-- [docs/adding-modules.md](../../docs/adding-modules.md) — where a new
+- [docs/internal/project/adding-modules.md](../../docs/internal/project/adding-modules.md) — where a new
   package goes (`@vibe` vs `@vibex` vs a user scope).
 - [docs/user/reference/feature-levels.md](../../docs/user/reference/feature-levels.md) —
   which wasm proposals generated modules may use.
