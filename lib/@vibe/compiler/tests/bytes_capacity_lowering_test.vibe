@@ -1,0 +1,84 @@
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc
+}
+
+import @vibex/wasm_parser {
+  find_section
+}
+
+// Move the generated module's initial heap pointer to wasm32's end without
+// allocating gigabytes. Preserve the initializer's encoded width so offsets
+// and all other sections are untouched.
+fn capacity_near_memory_end(wasm: Bytes) -> Unit {
+  let (start, _) = find_section(wasm, 6)
+  assert(start > 0)
+  let mut pos = start
+  while Bytes::get(wasm, pos) >= 128 {
+    pos = pos + 1
+  }
+  pos = pos + 1
+  assert(Bytes::get(wasm, pos) == 127)
+  assert(Bytes::get(wasm, pos + 1) == 1)
+  assert(Bytes::get(wasm, pos + 2) == 65)
+  pos = pos + 3
+  let mut end = pos
+  while Bytes::get(wasm, end) >= 128 {
+    end = end + 1
+  }
+  Bytes::set(wasm, pos, if pos == end {
+    64
+  } else {
+    192
+  })
+  pos = pos + 1
+  while pos <= end {
+    Bytes::set(wasm, pos, if pos == end {
+      127
+    } else {
+      255
+    })
+    pos = pos + 1
+  }
+}
+
+fn run_capacity_probe(source: String, name: String, expected: String, wrap: Bool, rejects: Bool) -> Unit with Exception + Fs + Process {
+  let modules = [compile_wasi(source, "main"), compile_wasi_rc(source, "main")]
+  let mut i = 0
+  for wasm in modules {
+    let path = "/tmp/_bytes_capacity_" + name + "_" + Int::to_string(i) + ".wasm"
+    if wrap {
+      capacity_near_memory_end(wasm)
+    } else {
+      ()
+    }
+    Fs::write_bytes(path, wasm)
+    let command = "wasmtime run -W exceptions=y --invoke main " + path + " 0"
+    if rejects {
+      let output = sh_lines(command + " 2>&1 || true")
+      let message = String::join(output, "\n")
+      assert(String::contains(message, expected))
+      assert(String::contains(message, "unreachable"))
+    } else {
+      let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+      assert(String::join(output, "") == expected)
+    }
+    i = i + 1
+  }
+  ()
+}
+
+test "capacity rejects negative and wide arguments before narrowing" {
+  for arg in ["-1", "1073741817", "1 << 40", "0 - (1 << 40)"] {
+    run_capacity_probe("export fn main() -> Int { Bytes::length(Bytes::with_capacity(" + arg + ")) }", "bounds", "Bytes::with_capacity: use a capacity between 0 and 1073741816", false, true)
+  }
+}
+
+test "capacity prevents the heap pointer from wrapping" {
+  let source = "export fn main() -> Int { Bytes::length(Bytes::with_capacity(128)) }"
+  run_capacity_probe(source, "wrap", "Bytes::with_capacity: use a capacity between 0 and 1073741816", true, true)
+}
+
+test "reserved capacity requires no growth while filling its requested length" {
+  let body = "export fn main() -> Int allows Profiler { let before = Profiler::heap_bytes(); let b = Bytes::with_capacity(4096); let allocated = Profiler::heap_bytes() - before; let start = Profiler::heap_bytes(); Bytes::fill(b, 7, 4096); let grown = Profiler::heap_bytes() - start; (if allocated >= 4108 && allocated <= 4120 { 10000 } else { 0 }) + Bytes::length(b) + grown * 1000000 }"
+  run_capacity_probe(body, "allocation", "14096", false, false)
+}

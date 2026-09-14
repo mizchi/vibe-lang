@@ -804,3 +804,83 @@ The former removes per-byte runtime calls while preserving capacity growth;
 the latter removes repeated AST walks along long call chains. Keep the bump
 self-build default and existing CI observations. No memory-lifetime policy,
 GC representation, required CI job or per-PR timing threshold changes.
+
+
+### Pruned body caches and reserved byte buffers, 2026-09-15
+
+Unused struct/enum declarations no longer disable the persisted codegen body
+cache (#2721). Declaration pruning keeps the layout guards; constant-parameter
+body rewriting still refuses reuse. Cached source positions now use the original
+merged program, before prelude insertion and DCE compaction. VBC5 rejects older
+position records so prefix filtering cannot treat an edited body as unchanged.
+The edit-class tests include unused declarations, and a mutation that restores
+post-prelude positions fails the origin regression.
+
+On a four-file application (three imported modules, 480 chained functions, unused
+structs/enums and a live array comparator), warm reuse changes from **0 to 482
+bodies**, and recompilation from **1,025 to 543**. Across three alternating pairs,
+warm allocation falls from **31,255,208 to 30,456,832 bytes**; cold allocation
+rises from **37,649,312 to 37,893,040 bytes** for the origin map and cache records.
+Warm wall medians are 0.377 → 0.327 s, cold 0.466 → 0.432 s. This comparison also
+includes the new builtin API; both outputs execute to `65287`, while the added
+builtin slot costs seven output bytes. Reuse still requires the existing pin
+region and layout/ownership guards. These numbers do not imply that every
+compiler-sized closure can reuse bodies.
+
+`Bytes::with_capacity(n)` returns an empty buffer with one contiguous reservation
+on linear/RC and wasm-gc (#2554). It reserves at least 64 bytes, rounds capacity
+to eight bytes, and checks negative, wide and heap-wrapping requests before
+narrowing. Bytes retain their existing bump-backed representation. The
+`seed/bytes-capacity-2026-09-15` release supplies the API before compiler sources
+use it; its digest matches the committed pin.
+
+The late-DCE Wasm re-emitter now retains its existing section-size calculations,
+sums them once, and reserves the complete output before writing. Each section's
+written length is still checked. A 64 KiB custom-section regression allows only
+one output-sized allocation plus bounded metadata; it fails before the change
+and passes on both bump and RC. Array capacity and buffer truncation remain open
+parts of #2554.
+
+[Raw samples, compiler identities, controls and harnesses](../compiler-cache-capacity.json)
+record the capacity-only comparison starting after the API/cache changes. Node
+24.21.0 on Apple M5 executes bump and RC compiler artifacts; both produce linear
+RC targets from the same current sources. Each cold sample has an empty private
+cache, followed by a warm sample in a new process. Compiler/cache/output paths
+have equal lengths within each pair. Body/checker/AST caches are disabled; the
+ordinary persistent module caches remain enabled. All variants, temperatures
+and rounds produce byte-identical targets (4,195,448-byte closure and
+39,843,460-byte CLI).
+
+| Compiler runtime | Input / cache | Wall median, before → after | Paired wall change | Heap-pointer change | Linear-capacity change |
+|---|---|---:|---:|---:|---:|
+| bump | closure / cold | 2.794 → 3.815 s | +2.1% | -12.584 MB | +0.000 MB |
+| bump | closure / warm | 2.240 → 2.291 s | -2.2% | -12.582 MB | +0.000 MB |
+| bump | cli / cold | 5.739 → 6.396 s | +1.1% | -43.421 MB | -36.372 MB |
+| bump | cli / warm | 4.381 → 5.006 s | +10.0% | -43.420 MB | +0.000 MB |
+| rc | closure / cold | 6.507 → 6.338 s | -2.6% | -12.584 MB | +0.000 MB |
+| rc | closure / warm | 4.099 → 3.985 s | -6.1% | -12.583 MB | +0.000 MB |
+| rc | cli / cold | 14.442 → 15.168 s | +3.4% | -43.422 MB | +0.000 MB |
+| rc | cli / warm | 9.068 → 9.033 s | -3.7% | -43.421 MB | +0.000 MB |
+
+MB is decimal. Heap differences repeat exactly in every pair. The table uses
+three alternating pairs per condition, except bump CLI, which has six. Paired
+changes are medians of individual ratios; they need not equal ratios of the two
+wall medians. Heap pointer and reserved linear capacity are distinct from live
+memory. The raw RSS observations are process-end readings, not peak RSS.
+
+**The established result is lower allocation, not a wall-time speedup.** The
+first three bump CLI warm pairs were 17.1–43.2% slower. Three additional pairs
+were +2.9%, +1.9% and −1.2%; the table retains both batches, including the +10.0%
+pooled paired median. An identical-artifact A/A control has exactly equal heap,
+capacity and output, yet wall differences range from −48.5% to +1.7%. This shared
+machine cannot establish a stable speedup or rule out a small slowdown. Keep the
+raw samples and use CI's deterministic allocation series for continued tracking.
+
+Validation includes stage2 == stage3, byte-identical target output, cache edit
+classes and original-position mutation, capacity semantics on bump/RC/RC shadow/
+wasm-gc, negative/wide/heap-wrap probes, no growth within a 4 KiB reservation,
+pruner section remapping, GC region fixtures, builtin parity, signature checks,
+formatting, AST review lint and the output size ratchet. Full regression runs in
+CI. The seed bump also exposed a gate self-test that assumed the seed lacked
+telemetry; its mutation now disables the environment key in a copy of the current
+compiler and requires both the missing-positive and accepted-refusal failures.

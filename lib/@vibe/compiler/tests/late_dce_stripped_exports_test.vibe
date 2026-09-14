@@ -191,3 +191,23 @@ test "`cli_main` and the per-block exports are kept without being the entry" {
   inspect(late_dce_prune_refusal(), content = "-1")
   inspect(section_count(pruned, 3), content = "2")
 }
+
+// The output is dominated by an opaque custom section, so scanning/remapping
+// metadata is bounded and the budget detects a second output-sized block.
+test "#2554: the pruner reserves its full output before writing" {
+  let wasm = two_exports()
+  Bytes::push(wasm, 0)
+  // Content length 65538: a one-byte name length, 'x', and 65536 bytes.
+  Bytes::push(wasm, 130)
+  Bytes::push(wasm, 128)
+  Bytes::push(wasm, 4)
+  Bytes::push(wasm, 1)
+  Bytes::push(wasm, 120)
+  Bytes::fill(wasm, 42, 65536)
+  let before = Profiler::heap_bytes()
+  let pruned = late_dce_prune_module_for(wasm, "main", true)
+  let allocated = Profiler::heap_bytes() - before
+  inspect(section_count(pruned, 3), content = "1")
+  inspect(Bytes::get(pruned, Bytes::length(pruned) - 1), content = "42")
+  assert(allocated < Bytes::length(pruned) + 8192)
+}

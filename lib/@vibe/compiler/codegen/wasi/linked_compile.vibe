@@ -89,6 +89,7 @@ import @vibe/compiler/perceus {
 }
 
 import @vibe/compiler/codegen/builtin_bodies {
+  bytes_capacity_error_message,
   gen_arr_concat_body,
   gen_arr_get_body,
   gen_arr_len_body,
@@ -115,6 +116,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_bytes_set_body,
   gen_bytes_slice_body,
   gen_bytes_to_array_body,
+  gen_bytes_with_capacity_body,
   gen_compact_fingerprint_hash_body,
   gen_eq_body,
   gen_generic_add_body,
@@ -6963,7 +6965,7 @@ fn lc_dbg_build_file_index(keys: Array[String], files: Array[Int]) -> MutMap[Str
 /// First-wins would attribute one file's function to another, which under the
 /// widened body cache is exactly the mistake that replays an edited file's
 /// stale body.
-fn lc_build_name_file_index(names: Array[String], files: Array[Int]) -> MutMap[String, Int] {
+fn lc_build_name_origin_index(names: Array[String], files: Array[Int]) -> MutMap[String, Int] {
   let out: MutMap[String, Int] = MutMap::new_string()
   let n = if Array::length(names) < Array::length(files) {
     Array::length(names)
@@ -6987,8 +6989,8 @@ fn lc_build_name_file_index(names: Array[String], files: Array[Int]) -> MutMap[S
   out
 }
 
-/// The file `name` was declared in, or -1 when the index cannot say.
-fn lc_fn_file_lookup(index: MutMap[String, Int], name: String) -> Int {
+/// The source file or statement position for `name`, or -1 if ambiguous.
+fn lc_fn_origin_lookup(index: MutMap[String, Int], name: String) -> Int {
   match MutMap::get(index, name) {
     Some(f) => f,
     None => 0 - 1
@@ -8118,92 +8120,86 @@ fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: A
 /// Final step: write the module back out, substituting the rebuilt function
 /// and code sections and remapping every function index the other sections
 /// carry (exports, element segments, the name section). Every section goes
-/// straight into `out`: its content length is computed first by the sizing
-/// mode of the same helper that then writes it.
+/// straight into one reserved output: the sizing mode of each helper supplies
+/// both its section length and the total capacity before writing begins.
 fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], newidx: Array[Int], ftypes: Array[Int], keep: Array[Int], body_start: Array[Int], body_end: Array[Int], site: Array[Int], site_from: Array[Int]) -> Bytes {
-  let out = bytebuf_new()
-  Bytes::blit(out, mod_bytes, 0, 8)
+  // The sizing helpers never write in this mode. Keep their results so the
+  // existing sizing walk also determines the one output allocation.
+  let sizing = bytebuf_new()
+  let lengths = lc_fresh_int_array()
+  let name_sections: Array[Bool] = []
   let nkeep = Array::length(keep)
+  let mut total = 8
   let mut si = 0
   while si < Array::length(sec_id) && !Array::get(failed, 0) {
     let sid = Array::get(sec_id, si)
     let sstart = Array::get(sec_start, si)
     let send = sstart + Array::get(sec_len, si)
+    let mut size = send - sstart
+    let mut is_name = false
     if sid == 3 {
-      let mut flen = lc_pf_leb_len(nkeep)
+      size = lc_pf_leb_len(nkeep)
       let mut fi = 0
       while fi < nkeep {
-        flen = flen + lc_pf_leb_len(Array::get(ftypes, Array::get(keep, fi)))
+        size = size + lc_pf_leb_len(Array::get(ftypes, Array::get(keep, fi)))
         fi = fi + 1
       }
-      bytebuf_push(out, 3)
-      leb128_encode_u32(out, flen)
-      let cstart = bytebuf_length(out)
-      bytebuf_push_vec_header(out, nkeep)
-      let mut fw = 0
-      while fw < nkeep {
-        leb128_encode_u32(out, Array::get(ftypes, Array::get(keep, fw)))
-        fw = fw + 1
-      }
-      lc_pf_check_written(out, cstart, flen, failed)
     } else if sid == 10 {
-      let clen = lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, false)
-      if !Array::get(failed, 0) {
-        bytebuf_push(out, 10)
-        leb128_encode_u32(out, clen)
-        let cstart = bytebuf_length(out)
-        lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, true)
-        lc_pf_check_written(out, cstart, clen, failed)
-      } else {
-        ()
-      }
+      size = lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, sizing, false)
     } else if sid == 7 {
-      let elen = lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, false)
-      if !Array::get(failed, 0) {
-        bytebuf_push(out, 7)
-        leb128_encode_u32(out, elen)
-        let cstart = bytebuf_length(out)
-        lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, true)
-        lc_pf_check_written(out, cstart, elen, failed)
-      } else {
-        ()
-      }
+      size = lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, sizing, false)
     } else if sid == 9 {
-      let slen = lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, false)
-      if !Array::get(failed, 0) {
-        bytebuf_push(out, 9)
-        leb128_encode_u32(out, slen)
-        let cstart = bytebuf_length(out)
-        lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, true)
-        lc_pf_check_written(out, cstart, slen, failed)
-      } else {
-        ()
-      }
+      size = lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, sizing, false)
     } else if sid == 0 {
       let nlen = lc_pf_leb(mod_bytes, sstart, cell)
       let nstart = Array::get(cell, 0)
-      let is_name = nlen == 4 && Bytes::get(mod_bytes, nstart) == 110 && Bytes::get(mod_bytes, nstart + 1) == 97 && Bytes::get(mod_bytes, nstart + 2) == 109 && Bytes::get(mod_bytes, nstart + 3) == 101
+      is_name = nlen == 4 && Bytes::get(mod_bytes, nstart) == 110 && Bytes::get(mod_bytes, nstart + 1) == 97 && Bytes::get(mod_bytes, nstart + 2) == 109 && Bytes::get(mod_bytes, nstart + 3) == 101
       if is_name {
-        let mlen = lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, false)
-        if !Array::get(failed, 0) {
-          bytebuf_push(out, 0)
-          leb128_encode_u32(out, mlen)
-          let cstart = bytebuf_length(out)
-          lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, true)
-          lc_pf_check_written(out, cstart, mlen, failed)
-        } else {
-          ()
-        }
+        size = lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, sizing, false)
       } else {
-        bytebuf_push(out, 0)
-        leb128_encode_u32(out, send - sstart)
-        Bytes::blit(out, mod_bytes, sstart, send)
+        ()
       }
     } else {
-      bytebuf_push(out, sid)
-      leb128_encode_u32(out, send - sstart)
+      ()
+    }
+    Array::push(lengths, size)
+    Array::push(name_sections, is_name)
+    total = total + 1 + lc_pf_leb_len(size) + size
+    si = si + 1
+  }
+  if Array::get(failed, 0) {
+    return mod_bytes
+  }
+  let out = Bytes::with_capacity(total)
+  Bytes::blit(out, mod_bytes, 0, 8)
+  si = 0
+  while si < Array::length(sec_id) && !Array::get(failed, 0) {
+    let sid = Array::get(sec_id, si)
+    let sstart = Array::get(sec_start, si)
+    let send = sstart + Array::get(sec_len, si)
+    let size = Array::get(lengths, si)
+    bytebuf_push(out, sid)
+    leb128_encode_u32(out, size)
+    let cstart = bytebuf_length(out)
+    if sid == 3 {
+      bytebuf_push_vec_header(out, nkeep)
+      let mut fi = 0
+      while fi < nkeep {
+        leb128_encode_u32(out, Array::get(ftypes, Array::get(keep, fi)))
+        fi = fi + 1
+      }
+    } else if sid == 10 {
+      lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, true)
+    } else if sid == 7 {
+      lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+    } else if sid == 9 {
+      lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+    } else if Array::get(name_sections, si) {
+      lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+    } else {
       Bytes::blit(out, mod_bytes, sstart, send)
     }
+    lc_pf_check_written(out, cstart, size, failed)
     si = si + 1
   }
   if Array::get(failed, 0) {
@@ -8285,6 +8281,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // while the positions `prov.stmt_file_id` is indexed by are still the
   // program's. See lc_dbg_file_of_fn -- after the prelude they are not.
   let pre_prelude_let_files = lc_fresh_int_array()
+  let pre_prelude_let_stmts = lc_fresh_int_array()
   // The same, keyed by OWNER: what a lambda hoisted out of each statement
   // would name itself after (`hoisted_lambda_owner_of_stmt`, the hoist's own
   // arms rather than a mirror of them here). Built for the BREAK LANE only --
@@ -8327,6 +8324,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       SLet(_, _, __sbn_name, _, _) => {
         Array::push(pre_prelude_let_names, __sbn_name)
         Array::push(pre_prelude_let_files, __sbn_file)
+        Array::push(pre_prelude_let_stmts, __sbn_i)
       },
       // The test/bench lowering below rewrites these in place to
       // `SLet(__test_<name>, ...)` / `SLet(__bench_<name>, ...)` before the
@@ -8334,10 +8332,12 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       STest(__sbn_tname, _) => {
         Array::push(pre_prelude_let_names, String::concat("__test_", __sbn_tname))
         Array::push(pre_prelude_let_files, __sbn_file)
+        Array::push(pre_prelude_let_stmts, __sbn_i)
       },
       SBench(__sbn_bname, _) => {
         Array::push(pre_prelude_let_names, String::concat("__bench_", __sbn_bname))
         Array::push(pre_prelude_let_files, __sbn_file)
+        Array::push(pre_prelude_let_stmts, __sbn_i)
       },
       _ => ()
     }
@@ -8358,10 +8358,13 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // always fills it; the in-process lanes do not, and there the map is empty
   // and the widened filter keeps nothing.
   let lc_fn_file_of = if dbg_prov_len >= synth_boundary_stmt {
-    lc_build_name_file_index(pre_prelude_let_names, pre_prelude_let_files)
+    lc_build_name_origin_index(pre_prelude_let_names, pre_prelude_let_files)
   } else {
     MutMap::new_string()
   }
+  // Prefix limits use the original merged coordinates, before insertion or
+  // DCE compaction. A duplicate name cannot identify one source statement.
+  let lc_fn_stmt_of = lc_build_name_origin_index(pre_prelude_let_names, pre_prelude_let_stmts)
   let prelude_errs = effect_lowering_prelude_split(stmts, entry_name, linked_imports, iw_names, iw_wats, checker_eq_offsets, checker_eq_type_keys, split, render)
   if Array::length(prelude_errs) > 0 {
     throw(Array::get(prelude_errs, 0))
@@ -8397,13 +8400,10 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   //     The gate pins exactly this (ADR-0069 entry hardening), and it is what
   //     caught the first version of this guard, which special-cased only the
   //     sentinel.
-  // #2388 step 3: when late DCE actually removes statements, the statement
-  // index space compacts, and the body cache's file-prefix limit -- summed
-  // in PRE-prelude merged coordinates -- no longer bounds it from below (an
-  // edited entry function can compact DOWN under the limit). A pruned
-  // compile therefore neither records cross-compile guards nor consumes a
-  // persisted cache. The `vibe test` lane (`__no_entry__`) never prunes and
-  // keeps full reuse.
+  // #2721: removing unreachable declarations preserves the surviving bodies.
+  // Their original statement positions are retained in `lc_fn_stmt_of`, so
+  // DCE cannot move an edited body into the unchanged source-file prefix.
+  // The normal layout guards still decide whether those bodies can replay.
   //
   // #2497 unit 2: before pruning, fold the Bool parameters every call in the
   // program fixes to one literal (`fold_const_bool_params`, core). The lane
@@ -8424,14 +8424,13 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // already replaced the `%wasm` marker bodies with a neutral literal, so a
   // `(call $f ..)` in one of them is invisible to the pass's own scan.
   //
-  // A folded body no longer matches its source text, so a fold counts as a
-  // prune for the body-cache guards below (`late_dce_pruned`): a replayed
+  // A folded body no longer matches its source text, so a fold still refuses
+  // the body-cache guards below (`late_dce_rewrote_bodies`): a replayed
   // body from a compile whose other call sites passed a different literal
   // would be silently wrong, and refusing the cache for that compile is the
   // honest answer.
-  let mut late_dce_pruned = false
+  let mut late_dce_rewrote_bodies = false
   if enable_late_dce && late_dce_has_entry {
-    let late_dce_pre_len = Array::length(stmts)
     let folded_param_reads = if library_mode || coverage || debug_trace || debug_break || rc_shadow {
       0
     } else {
@@ -8447,7 +8446,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       Array::push(stmts, Array::get(dce_pruned, dce_i))
       dce_i = dce_i + 1
     }
-    late_dce_pruned = Array::length(stmts) != late_dce_pre_len || folded_param_reads > 0
+    late_dce_rewrote_bodies = folded_param_reads > 0
   } else {
     ()
   }
@@ -9088,6 +9087,17 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // fragments so the generated builtin bodies can reference them even when
   // the source never spells them: one prefix per operation, plus the shared
   // middle and the trailing newline (__rt_oob_abort assembles the line).
+  // #799 perf: ONE program walk collecting the canonical free-name set,
+  // then every need_<builtin> flag below is a map lookup. Previously each
+  // flag re-walked the whole AST (~40 walks) with a linear fn_names scan per
+  // ident inside.
+  let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
+  let need_bytes_capacity = Map::has_key(used_builtin_names, "Bytes::with_capacity")
+  if need_bytes_capacity {
+    Array::push(str_strs, bytes_capacity_error_message())
+  } else {
+    ()
+  }
   if !array_contains_str(str_strs, "Array::get: index ") {
     Array::push(str_strs, "Array::get: index ")
   }
@@ -9287,11 +9297,6 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     cur_fn: [0],
     owners: ArrayBuilder::freeze(ArrayBuilder::new())
   }
-  // #799 perf: ONE program walk collecting the canonical free-name set,
-  // then every need_<builtin> flag below is a map lookup. Previously each
-  // flag re-walked the whole AST (~40 walks) with a linear fn_names scan per
-  // ident inside.
-  let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
   // ADR-0090 (#1262): the region arena segment. `region r { body }` parses to
   // `__region_run(lam)`, so its presence in the canonical free-name set is
   // exactly "this module has a region".
@@ -10160,11 +10165,12 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   let bytes_last_index_of_idx = bytes_count_byte_idx + 1
   let bytes_compare_idx = bytes_last_index_of_idx + 1
   let bytes_blit_idx = bytes_compare_idx + 1
+  let bytes_capacity_idx = bytes_blit_idx + 1
   // #1987: shadow-only UAF abort reuses gen_oob_abort_body with a different
   // middle fragment. Off when rc_shadow is false so a normal RC build stays
   // byte-identical (ADR-0062).
   let shadow_uaf_abort_idx = if rc_shadow {
-    bytes_blit_idx + 1
+    bytes_capacity_idx + 1
   } else {
     0 - 1
   }
@@ -10183,7 +10189,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     (if rc_shadow {
       str_operand_abort_idx
     } else {
-      bytes_blit_idx
+      bytes_capacity_idx
     }) + 1
   } else {
     -1
@@ -10542,9 +10548,9 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     // not shadow_uaf_abort_idx, is the last builtin on the shadow lane.
     str_operand_abort_idx
   } else {
-    // The byte-range helper is the last unconditional builtin. This must
+    // Capacity allocation is the last unconditional builtin. This must
     // agree with the push order or all user-function indices shift.
-    bytes_blit_idx
+    bytes_capacity_idx
   }
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -10590,7 +10596,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   } else {
     lc_fresh_string_array()
   }
-  if pin_region_capacity >= 0 && !late_dce_pruned {
+  if pin_region_capacity >= 0 && !late_dce_rewrote_bodies {
     Array::push(body_cache_out.guard_meta, pin_region_src_n)
     Array::push(body_cache_out.guard_meta, pin_region_capacity)
     Array::push(body_cache_out.guard_meta, lambda_slot_base)
@@ -10656,7 +10662,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     // guard-less cache before it can cross compiles). Accept unchanged.
     true
   } else {
-    !late_dce_pruned && Array::length(body_cache_in.guard_meta) == 5 && Array::get(body_cache_in.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in.guard_meta, 4) == num_generated && Array::length(body_cache_in.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in.guard_unmangled_names, guard_unmangled_now)
+    !late_dce_rewrote_bodies && Array::length(body_cache_in.guard_meta) == 5 && Array::get(body_cache_in.guard_meta, 0) == pin_region_src_n && Array::get(body_cache_in.guard_meta, 1) == pin_region_capacity && Array::get(body_cache_in.guard_meta, 2) == lambda_slot_base && Array::get(body_cache_in.guard_meta, 3) == num_imported_funcs && Array::get(body_cache_in.guard_meta, 4) == num_generated && Array::length(body_cache_in.guard_synth_names) == num_user_funcs - pin_region_capacity && bcc_guard_synth_matches(body_cache_in, fn_names_list, fn_stmt_indices, pin_region_capacity, num_user_funcs) && bcc_string_lists_equal(body_cache_in.guard_import_names, guard_import_names_now) && bcc_string_lists_equal(body_cache_in.guard_borrow_names, lc_borrow_param_user_srt) && bcc_int_lists_equal(body_cache_in.guard_borrow_masks, lc_borrow_param_mask) && bcc_string_lists_equal(body_cache_in.guard_unmangled_names, guard_unmangled_now)
   }
   let fn_indices_list = lc_fresh_int_array()
   let fn_returns_list = lc_fresh_int_array()
@@ -10839,6 +10845,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         "Array::slice" => arr_slice_idx,
         "Array::concat" => arr_concat_idx,
         "Bytes::new" => bytes_new_idx,
+        "Bytes::with_capacity" => bytes_capacity_idx,
         "Bytes::from_array" => bytes_from_array_idx,
         "Bytes::to_array" => bytes_to_array_idx,
         "Bytes::length" => bytes_len_idx,
@@ -11188,6 +11195,11 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   } else {
     8
   }, 0, -1)
+  push_builtin(gen_bytes_with_capacity_body(enable_rc, print_str_idx, if need_bytes_capacity {
+    oob_fat_of(bytes_capacity_error_message())
+  } else {
+    0
+  }), 2, 0, 3)
   if rc_shadow {
     push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of("; freed at site "), oob_nl_fat), 0, 0, 7)
     // #2427: same body, ", len=" as the middle fragment -- see
@@ -11449,7 +11461,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   } else {
     ()
   }
-  if pin_region_capacity >= 0 && !late_dce_pruned {
+  if pin_region_capacity >= 0 && !late_dce_rewrote_bodies {
     let mut __glc2 = 0
     while __glc2 < Array::length(guard_layout_now) {
       Array::push(body_cache_out.guard_layout, Array::get(guard_layout_now, __glc2))
@@ -12554,7 +12566,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         } else {
           ()
         }
-        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_file_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), Array::get(fn_stmt_indices, bi), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners))
+        codegen_body_cache_record(body_cache_out, bi, Array::get(fn_names_list, bi), lc_fn_origin_lookup(lc_fn_file_of, Array::get(fn_names_list, bi)), lc_fn_origin_lookup(lc_fn_stmt_of, Array::get(fn_names_list, bi)), bodies, meta_i32, meta_i64, meta_v128, lt_w, Array::get(lambda_bases, bi), lambda_planned_end, table_slots_used, __slot_lo, Array::length(table_slots_used), blind_owners, blind_offsets, blind_kinds, blind_syms, __blind_lo, Array::length(blind_owners))
       }
     }
     bi = bi + 1
@@ -14197,6 +14209,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   Array::set(gen_sec_names, bytes_last_index_of_idx - num_imported_funcs, "__rt_bytes_last_index_of_byte")
   Array::set(gen_sec_names, bytes_compare_idx - num_imported_funcs, "__rt_bytes_compare")
   Array::set(gen_sec_names, bytes_blit_idx - num_imported_funcs, "__rt_bytes_blit")
+  Array::set(gen_sec_names, bytes_capacity_idx - num_imported_funcs, "__rt_bytes_with_capacity")
   Array::set(gen_sec_names, str_char_code_at_idx - num_imported_funcs, "__rt_str_char_code_at")
   Array::set(gen_sec_names, str_from_char_code_idx - num_imported_funcs, "__rt_str_from_char_code")
   Array::set(gen_sec_names, str_substring_idx - num_imported_funcs, "__rt_str_substring")

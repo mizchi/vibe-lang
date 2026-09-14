@@ -172,6 +172,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 import @vibe/compiler/codegen/builtin_bodies {
+  bytes_capacity_error_message,
   gen_arr_push_body,
   gen_array_value_copy_body,
   gen_bytes_append_body,
@@ -190,6 +191,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_bytes_set_body,
   gen_bytes_slice_body,
   gen_bytes_to_array_body,
+  gen_bytes_with_capacity_body,
   gen_eq_body,
   gen_int_clz_body,
   gen_int_ctz_body,
@@ -1725,6 +1727,9 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   if !array_contains_str(str_strs, "\n") {
     Array::push(str_strs, "\n")
   }
+  // Bytes use linear storage on this backend as well.
+  let capacity_error_slot = Array::length(str_strs)
+  Array::push(str_strs, bytes_capacity_error_message())
   let num_strings = Array::length(str_strs)
   let data_base = 64
   let str_offsets = array_empty()
@@ -1805,7 +1810,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // not fail at codegen: the module fails wasm VALIDATION on a function index
   // past the end. Written as base + arena so appending is one edit, not two.
   // #2344 raised the base 48 -> 51 for Int::popcount / ctz / clz.
-  let gc_unconditional_body_count = 56
+  let gc_unconditional_body_count = 57
   // #2405 follow-up: the shared integer renderer, pushed only when the module
   // has a statically-int `__to_string` argument. Conditional for the same
   // reason the arena pair below is: a module that never needs it should not
@@ -1852,7 +1857,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // for call", which is the same symptom the hbo comment above describes.
   // Derived from num_generated rather than written as literals so appending
   // another body cannot silently point these at someone else's code.
-  // Pushed AFTER the 56 unconditional bodies and BEFORE the arena pair, so its
+  // Pushed AFTER the 57 unconditional bodies and BEFORE the arena pair, so its
   // ordinal is fixed by the unconditional count alone and the arena indices
   // below stay derived from `num_generated` (which now includes it).
   let to_string_int_idx = if need_to_string_int {
@@ -1930,6 +1935,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
         "String::split" => 36,
         "String::trim" => 37,
         "Bytes::new" => 18,
+        "Bytes::with_capacity" => 57,
         "Bytes::length" => 7,
         "Bytes::get" => 19,
         "Bytes::set" => 20,
@@ -2345,7 +2351,8 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   push_gc_builtin(gen_bytes_count_byte_body(false), 1, 4, 4)
   push_gc_builtin(gen_bytes_last_index_of_byte_body(false), 1, 3, 4)
   push_gc_builtin(gen_bytes_compare_body(false), 2, 4, 4)
-  // #2405 follow-up: ordinal 57, immediately after the unconditional 56 and
+  push_gc_builtin(gen_bytes_with_capacity_body(false, hbo + 2, (Array::get(str_offsets, capacity_error_slot)<<32)|Array::get(str_lengths, capacity_error_slot)), 2, 0, 3)
+  // #2405 follow-up: immediately after the unconditional bodies and
   // before the arena pair -- `to_string_int_idx` above encodes exactly that.
   // Same shape as the runtime-dispatching `__to_string` body (one i64 param,
   // five i64 locals, type index 3), minus the string heuristic.

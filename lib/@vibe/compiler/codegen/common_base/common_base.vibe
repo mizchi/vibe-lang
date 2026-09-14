@@ -222,16 +222,10 @@ export struct CodegenBodyCache {
   /// into the compile's file list, or -1 when the compile could not say.
   ///
   /// This is what the widened filter keys on, and it exists because a
-  /// statement POSITION cannot answer the question. `fn_src_stmts` indexes the
-  /// merged array AFTER the prelude, which INSERTS (a trait dispatcher lands
-  /// after the last impl, effect lowering adds statements mid-program), so a
-  /// source function's recorded position is its pre-prelude one plus however
-  /// many statements were inserted ahead of it. Against a file table built
-  /// before the prelude, that shift can carry an entry out of its own file's
-  /// range and into the NEXT one's -- and if the next file is the unchanged
-  /// one, a body from the EDITED file gets replayed. Measured while building
-  /// this: a three-file fixture with one `effect` declaration offered zero
-  /// entries, because every index had moved.
+  /// statement POSITION after lowering cannot answer the question: prelude
+  /// insertion and DCE compaction move it across source-file boundaries.
+  /// `fn_src_stmts` now preserves the original position too, for the prefix
+  /// fallback, but a file id directly answers the wider unchanged-file query.
   ///
   /// The file id comes from the pre-prelude name -> file snapshot
   /// (`pre_prelude_let_names` / `pre_prelude_let_files`), the identity that
@@ -278,9 +272,8 @@ export struct CodegenBodyCache {
   blind_offsets: Array[Int];
   blind_kinds: Array[Int];
   blind_syms: Array[Int];
-  /// #2388 step 3: the merged-statement index each cached function was
-  /// compiled from, parallel to fn_indices (-1 when the recording site has
-  /// no statement, e.g. tests that record synthetic entries). Replay ignores
+  /// #2721: the ORIGINAL merged-statement index, before the prelude or DCE,
+  /// parallel to fn_indices (-1 for an unknown or ambiguous origin). Replay ignores
   /// it; the cross-compile persistence layer uses it to keep only the
   /// entries whose source-group prefix is unchanged.
   fn_src_stmts: Array[Int];
@@ -1312,7 +1305,9 @@ export fn codegen_body_cache_to_bytes(cache: CodegenBodyCache) -> Bytes with Exc
   // of defence, not the first.) '3' -> '4' when step 2b added the layout
   // guard, the typed-lowering guard and the per-entry source file that let
   // replay reach past the leading prefix.
-  bytebuf_push(buf, '4')
+  // '4' -> '5': fn_src_stmts now uses pre-prelude coordinates. Reading an
+  // old compacted position against a source-prefix boundary is unsound.
+  bytebuf_push(buf, '5')
   bcc_push_int_array(buf, cache.fn_indices)
   bcc_push_string_array(buf, cache.fn_names)
   bcc_push_int_array(buf, cache.fn_files)
@@ -1531,7 +1526,7 @@ fn bcc_read_string_arrays(b: Bytes, pos: Int, out: Array[Array[String]]) -> Int 
 }
 
 export fn codegen_body_cache_from_bytes(b: Bytes) -> Option[CodegenBodyCache] {
-  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '4' {
+  if Bytes::length(b) < 4 || Bytes::get(b, 0) != 'V' || Bytes::get(b, 1) != 'B' || Bytes::get(b, 2) != 'C' || Bytes::get(b, 3) != '5' {
     None
   } else {
     let out = codegen_body_cache_new()
