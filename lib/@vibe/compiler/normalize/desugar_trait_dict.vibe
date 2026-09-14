@@ -3581,10 +3581,7 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
     },
     ECall(ecallee, cargs, _) => {
       let slot = match ecallee {
-        EIdent(cn, _) => match lookup_var_type(var_types, dtd_interp_lamret_key(cn)) {
-          Some(t) => t,
-          None => ""
-        },
+        EIdent(cn, _) => dtd_interp_lamret_slot_of(cn, var_types, fn_returns),
         // Round 19: an inline lambda answers from itself here as well.
         EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps, params, ret, fbody),
         _ => ""
@@ -4348,6 +4345,42 @@ fn dtd_interp_lamret_any() -> String {
   "*"
 }
 
+/// The `fn_returns` key under which a TOP-LEVEL generic's return marker is
+/// recorded -- the same marker `dtd_interp_lamret_of` computes for a local
+/// lambda, in the table top-level functions live in.
+///
+/// Round 25 (Codex, P1 on #2761): `fn_returns` stores only the return's HEAD,
+/// so a top-level `fn pack[U](u: U) -> Array[U]` said "Array" and the element's
+/// relationship to argument 0 was gone -- `Array::get(pack(a), 0)` printed a
+/// 3-digit pointer decimal, while the LOCAL spelling round 17 fixed was
+/// refused. That is the sixth time in this PR that one of a pair was closed and
+/// the other left open, and the fix is the one that keeps working: record the
+/// same fact in the same shape, so the reader needs no second rule.
+///
+/// `$` is not an identifier character, so this cannot collide with a function's
+/// own name in the same table.
+fn dtd_interp_fn_lamret_key(n: String) -> String {
+  String::concat("__Vfnlamret$", n)
+}
+
+/// The return marker recorded for a callee `cn`: the local binding's when there
+/// is one, else the top-level function's. Asked in one place so the two tables
+/// cannot answer differently.
+fn dtd_interp_lamret_slot_of(cn: String, var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let local = match lookup_var_type(var_types, dtd_interp_lamret_key(cn)) {
+    Some(t) => t,
+    None => ""
+  }
+  if String::length(local) > 0 {
+    local
+  } else {
+    match fn_return_type(fn_returns, dtd_interp_fn_lamret_key(cn)) {
+      Some(t) => t,
+      None => ""
+    }
+  }
+}
+
 /// The marker for "returns an ARRAY whose element is `src`", as opposed to
 /// "returns `src`". `a` is not a digit, so the two cannot be confused, and
 /// `dtd_interp_lamret_elem_src` is the only reader that takes it apart.
@@ -4567,10 +4600,36 @@ fn dtd_interp_lamret_of_value(value: Expr, var_types: Array[(String, String)]) -
       found
     },
     ESeq(_, last) => dtd_interp_lamret_of_value(last, var_types),
-    ELet(_, _, b, _) => dtd_interp_lamret_of_value(b, var_types),
-    ELetMut(_, _, b, _) => dtd_interp_lamret_of_value(b, var_types),
+    // Round 25 (Codex, P2 on #2761): a wrapper that SHADOWS a function whose
+    // record lives outside it. With an outer `f: (T) -> T`,
+    // `let g = { let f = (x: Int) -> Int { x }; f }` read the body in the outer
+    // environment, so `g` was recorded as returning `T` and `"\{g(7)}"` -- a
+    // wholly concrete interpolation -- was REFUSED.
+    //
+    // This is round 3's lesson in a third place: an unknown, or a different
+    // known, must SHADOW rather than be inherited. The binder is bound to its
+    // own value's record before the body is read, and "" when it has none,
+    // because `lookup_var_type` scans backward and appending is what shadows.
+    ELet(n, v, b, _) => dtd_interp_lamret_of_value(b, dtd_interp_lamret_scope(var_types, n, v)),
+    ELetMut(n, v, b, _) => dtd_interp_lamret_of_value(b, dtd_interp_lamret_scope(var_types, n, v)),
+    // A `let rec` binder is in scope for its own value, so the body reads the
+    // same binding the value does.
+    ELetRec(n, v, b) => dtd_interp_lamret_of_value(b, dtd_interp_lamret_scope(var_types, n, v)),
     _ => ""
   }
+}
+
+/// `var_types` with `n` bound to its own value's return record -- "" when the
+/// value has none, which MASKS an outer binding of the same spelling.
+fn dtd_interp_lamret_scope(var_types: Array[(String, String)], n: String, v: Expr) -> Array[(String, String)] {
+  let out = array_empty()
+  let mut i = 0
+  while i < Array::length(var_types) {
+    Array::push(out, Array::get(var_types, i))
+    i = i + 1
+  }
+  Array::push(out, (dtd_interp_lamret_key(n), dtd_interp_lamret_of_value(v, var_types)))
+  out
 }
 
 /// The parameter index a lambda's return formal is spelled at, "" when the
@@ -4974,10 +5033,7 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
         // Round 21: and a TUPLE return, recorded as an ordinary tuple so `p.0`
         // and a destructuring pattern both answer through the machinery that
         // already exists rather than through a second reader.
-        let tslot = match lookup_var_type(var_types, dtd_interp_lamret_key(cn)) {
-          Some(t) => t,
-          None => ""
-        }
+        let tslot = dtd_interp_lamret_slot_of(cn, var_types, fn_returns)
         let (tarity, tpairs) = dtd_interp_lamret_tuple_parts(tslot)
         if tarity > 0 {
           Array::push(out, (dtd_interp_shape_key(name), dtd_interp_tuple_shape()))
@@ -5107,7 +5163,49 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
     // pairing rejects a length it cannot confirm, and half a copy would defeat
     // that.
     EIdent(src, _) => dtd_interp_copy_records(out, var_types, name, src),
+    // Round 25 (Codex, P1 on #2761): an aggregate selected by a value-preserving
+    // WRAPPER. `let p = if c { (a, 0) } else { (a, 1) }; p.0` recorded no shape
+    // at all -- measured on `d69127c`, a 3-digit pointer decimal -- although
+    // both branches have the same checked type, so either one answers.
+    //
+    // The FIRST branch that records a shape wins, and the rest are not
+    // consulted. Recording them all would let a branch this pass happens not to
+    // classify blank a slot an earlier branch filled, and a blank slot here is
+    // a pointer printed rather than a program refused -- the expensive
+    // direction. One informative branch is enough precisely because they share
+    // a type.
+    EIf(_, conseq, alt) => {
+      dtd_interp_record_shape_into(out, name, conseq, struct_sets, var_types, fn_returns)
+      if dtd_interp_has_shape(out, name) {
+        ()
+      } else {
+        dtd_interp_record_shape_into(out, name, alt, struct_sets, var_types, fn_returns)
+      }
+    },
+    EMatch(_, arms) => {
+      let mut ai = 0
+      while ai < Array::length(arms) {
+        let (_, abody) = Array::get(arms, ai)
+        if dtd_interp_has_shape(out, name) {
+          ()
+        } else {
+          dtd_interp_record_shape_into(out, name, abody, struct_sets, var_types, fn_returns)
+        }
+        ai = ai + 1
+      }
+    },
+    ESeq(_, last) => dtd_interp_record_shape_into(out, name, last, struct_sets, var_types, fn_returns),
     _ => ()
+  }
+}
+
+/// Has a non-blank shape been recorded for `name`? Read through
+/// `lookup_var_type`, so a mask that retired an outer binding's shape answers
+/// false rather than handing back the retired one.
+fn dtd_interp_has_shape(out: Array[(String, String)], name: String) -> Bool {
+  match lookup_var_type(out, dtd_interp_shape_key(name)) {
+    Some(t) => String::length(t) > 0,
+    None => false
   }
 }
 
@@ -8804,13 +8902,30 @@ fn collect_fn_impl_return_key(out: Array[(String, String)], fname: String, tpara
   }
 }
 
+/// Record a top-level generic's return MARKER under a reserved `fn_returns`
+/// key, when its return says something this pass can use.
+///
+/// `fn_returns` keeps only the return's head, which is enough for a bare `-> U`
+/// (the head IS the formal, re-spelled above) and says nothing at all for
+/// `-> Array[U]` or `-> (U, Int)`. The marker is exactly what a LOCAL lambda
+/// records at its binding, so the readers need no arm of their own -- see
+/// `dtd_interp_lamret_slot_of` (#2745 round 25).
+fn collect_fn_return_marker(out: Array[(String, String)], fname: String, tparams: Array[String], fparams: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr], fbody: Expr) -> Unit {
+  let marker = dtd_interp_lamret_of(tparams, fparams, ret, fbody)
+  if String::length(marker) > 0 {
+    Array::push(out, (dtd_interp_fn_lamret_key(fname), marker))
+  } else {
+    ()
+  }
+}
+
 fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
   let out = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, fname, _, body) => match body {
-        EFn(tparams, _, _, ret, _, fbody) => {
+        EFn(tparams, _, fparams, ret, _, fbody) => {
           // #2141: a return head naming the fn's OWN formal is an erased
           // value at every call site -- record it re-spelled so a same-spelled
           // (merged-in) declared type can never claim the call's result for
@@ -8822,6 +8937,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
             head
           }
           Array::push(out, (fname, head2))
+          collect_fn_return_marker(out, fname, tparams, fparams, ret, fbody)
           collect_fn_impl_return_key(out, fname, tparams, ret)
           collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
         },
@@ -8833,7 +8949,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
       // missing from the `for`/async-vs-sync desugar and other fn_returns
       // consumers below.
       SFnDecl(_, fname, body, _, _) => match body {
-        EFn(tparams, _, _, ret, _, fbody) => {
+        EFn(tparams, _, fparams, ret, _, fbody) => {
           // #2141: same re-spelling as the SLet arm above.
           let head = fn_return_head_of(ret, fbody)
           let head2 = if str_array_contains(tparams, head) {
@@ -8842,6 +8958,7 @@ fn collect_fn_returns(stmts: Array[Stmt]) -> Array[(String, String)] {
             head
           }
           Array::push(out, (fname, head2))
+          collect_fn_return_marker(out, fname, tparams, fparams, ret, fbody)
           collect_fn_impl_return_key(out, fname, tparams, ret)
           collect_fn_eq_return_shape(out, fname, tparams, ret, fbody)
         },
