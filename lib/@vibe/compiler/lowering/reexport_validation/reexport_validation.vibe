@@ -1,0 +1,246 @@
+// @vibe/compiler/lowering/reexport_validation -- refuse a re-export whose
+// alias would become a local name once the merged source is serialized (the
+// #2501 split of normalize/desugar_trait_dict.vibe; the normalize contract
+// re-exports the entry for the merge).
+
+import @vibe/compiler/core {
+  Expr, ImportItem, Pat, Stmt, TypeExpr, expr_children, merged_source_range_end
+}
+import @vibe/parser {
+  resolve_interp_expr
+}
+
+import @vibe/compiler/lowering/expr_census {
+  census_pat_binds, strip_label_tilde
+}
+
+fn plain_reexport_binds(items: Array[ImportItem], wanted: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let item = Array::get(items, i)
+    if item.name == wanted && item.alias == None {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn params_bind_name(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    if strip_label_tilde(pn) == name {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+fn import_items_bind_name(items: Array[ImportItem], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    let item = Array::get(items, i)
+    let local = match item.alias {
+      Some(alias) => alias,
+      None => item.name
+    }
+    found = local == name
+    i = i + 1
+  }
+  found
+}
+
+/// A declaration that gives `name` real source-local meaning. Top-level value
+/// declarations are preclaimed by the checker, so their order within the
+/// source unit does not change this answer. An aliased re-export is omitted on
+/// purpose: its alias is publication-only and is exactly what this validation
+/// protects from becoming a local after serialization.
+fn stmt_top_level_binds_name(stmt: Stmt, name: String) -> Bool {
+  match stmt {
+    SLet(_, _, local, _, _) => local == name,
+    SLetMut(local, _, _) => local == name,
+    SLetPat(pat, _) => census_pat_binds(pat, name),
+    SFnDecl(_, local, _, _, _) => local == name,
+    SExternLet(local, _) => local == name,
+    SImport(_, items) => import_items_bind_name(items, name),
+    SReExport(_, items) => plain_reexport_binds(items, name),
+    _ => false
+  }
+}
+
+fn range_top_level_binds_name(stmts: Array[Stmt], start: Int, end: Int, name: String) -> Bool {
+  let mut i = start
+  let mut found = false
+  while i < end && !found {
+    found = stmt_top_level_binds_name(Array::get(stmts, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn expr_list_has_free_name(items: Array[Expr], name: String) -> Bool with Exception {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(items) && !found {
+    found = expr_has_free_name(Array::get(items, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn arm_list_has_free_name(arms: Array[(Pat, Expr)], name: String) -> Bool with Exception {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(arms) && !found {
+    let (pat, body) = Array::get(arms, i)
+    if !census_pat_binds(pat, name) {
+      found = expr_has_free_name(body, name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Whether `name` occurs free in this expression. Binding forms stop only the
+/// body region they govern; a same-spelled parameter in one nested function
+/// must not hide an unrelated reference elsewhere in the source unit.
+fn expr_has_free_name(expr: Expr, name: String) -> Bool with Exception {
+  match expr {
+    EIdent(local, _) => local == name,
+    EStringInterp(_) => expr_has_free_name(resolve_interp_expr(expr), name),
+    ELet(local, value, body, _) => expr_has_free_name(value, name) || if local == name {
+      false
+    } else {
+      expr_has_free_name(body, name)
+    },
+    ELetRec(local, value, body) => if local == name {
+      false
+    } else {
+      expr_has_free_name(value, name) || expr_has_free_name(body, name)
+    },
+    ELetMut(local, value, body, _) => expr_has_free_name(value, name) || if local == name {
+      false
+    } else {
+      expr_has_free_name(body, name)
+    },
+    EAssign(local, value, body) => local == name || expr_has_free_name(value, name) || expr_has_free_name(body, name),
+    EAssignOp(local, _, value, body) => local == name || expr_has_free_name(value, name) || expr_has_free_name(body, name),
+    EForIn(value_name, key_name, iter, body) => expr_has_free_name(iter, name) || if value_name == name || match key_name {
+      Some(key) => key == name,
+      None => false
+    } {
+      false
+    } else {
+      expr_has_free_name(body, name)
+    },
+    EFn(_, _, params, _, _, body) => if params_bind_name(params, name) {
+      false
+    } else {
+      expr_has_free_name(body, name)
+    },
+    ELoop(params, body) => {
+      let mut i = 0
+      let mut found = false
+      let mut shadowed = false
+      while i < Array::length(params) {
+        let (local, initial) = Array::get(params, i)
+        if !found {
+          found = expr_has_free_name(initial, name)
+        } else {
+          ()
+        }
+        if local == name {
+          shadowed = true
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found || if shadowed {
+        false
+      } else {
+        expr_has_free_name(body, name)
+      }
+    },
+    EMatch(scrutinee, arms) => expr_has_free_name(scrutinee, name) || arm_list_has_free_name(arms, name),
+    EHandle(body, arms) => expr_has_free_name(body, name) || arm_list_has_free_name(arms, name),
+    _ => expr_list_has_free_name(expr_children(expr), name)
+  }
+}
+
+fn stmt_has_free_name(stmt: Stmt, name: String) -> Bool with Exception {
+  match stmt {
+    SLet(_, _, _, _, expr) => expr_has_free_name(expr, name),
+    SLetMut(_, _, expr) => expr_has_free_name(expr, name),
+    SLetPat(_, expr) => expr_has_free_name(expr, name),
+    STest(_, expr) => expr_has_free_name(expr, name),
+    SBench(_, expr) => expr_has_free_name(expr, name),
+    SExample(_, expr) => expr_has_free_name(expr, name),
+    SExpr(expr) => expr_has_free_name(expr, name),
+    SFnDecl(_, _, expr, requires, ensures) => expr_has_free_name(expr, name) || expr_list_has_free_name(requires, name) || expr_list_has_free_name(ensures, name),
+    SModule(_, _, body) => range_has_free_name(body, 0, Array::length(body), name),
+    _ => false
+  }
+}
+
+fn range_has_free_name(stmts: Array[Stmt], start: Int, end: Int, name: String) -> Bool with Exception {
+  if range_top_level_binds_name(stmts, start, end, name) {
+    false
+  } else {
+    let mut i = start
+    let mut found = false
+    while i < end && !found {
+      found = stmt_has_free_name(Array::get(stmts, i), name)
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// Reject every free reference to a publication-only re-export alias before
+/// source-boundary metadata is removed. Without this check, reparsing the
+/// printed program can silently reinterpret names such as `println`,
+/// `assert_eq`, or `inspect` as compiler builtins. A real top-level binding or
+/// a lexical binding that governs the particular reference remains valid.
+export fn validate_serializable_reexport_references(stmts: Array[Stmt]) -> Unit with Exception {
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SReExportSourceBoundary(_, surface_only_names) => {
+        let start = i + 1
+        let end = merged_source_range_end(stmts, start)
+        let mut n = 0
+        let mut invalid = ""
+        while n < Array::length(surface_only_names) && String::length(invalid) == 0 {
+          let name = Array::get(surface_only_names, n)
+          if range_has_free_name(stmts, start, end, name) {
+            invalid = name
+          } else {
+            ()
+          }
+          n = n + 1
+        }
+        if String::length(invalid) > 0 {
+          throw(String::concat("unknown name: ", invalid))
+        } else {
+          ()
+        }
+        i = end
+      },
+      _ => {
+        i = i + 1
+      }
+    }
+  }
+}

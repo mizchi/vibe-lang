@@ -1,0 +1,47 @@
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/compiler/lowering/reexport_validation {
+  validate_serializable_reexport_references
+}
+
+fn verdict(stmts: Array[Stmt]) -> String {
+  handle {
+    validate_serializable_reexport_references(stmts)
+    "ok"
+  } with { Exception::Throw(msg) => "refused: \{msg}" }
+}
+
+test "a free reference to a surface-only re-export alias is refused by name" {
+  let stmts = [
+    SReExportSourceBoundary([], ["println"]),
+    SExpr(ECall(EIdent("println", 0), [EString("x")], 0))
+  ]
+  inspect(verdict(stmts), content = "refused: unknown name: println")
+}
+
+test "a top-level binding in the range gives the name real local meaning" {
+  let stmts = [
+    SReExportSourceBoundary([], ["println"]),
+    SLet(false, false, "println", None, EFn([], [], [("s", None)], None, None, EUnit)),
+    SExpr(ECall(EIdent("println", 0), [EString("x")], 0))
+  ]
+  inspect(verdict(stmts), content = "ok")
+}
+
+test "a lexical binding that governs the reference is not a free reference" {
+  let stmts = [
+    SReExportSourceBoundary([], ["println"]),
+    SExpr(ELet("println", EInt(1), EIdent("println", 0), 0))
+  ]
+  inspect(verdict(stmts), content = "ok")
+}
+
+test "only the range after the boundary is scanned" {
+  let stmts = [
+    SExpr(ECall(EIdent("println", 0), [EString("before the boundary")], 0)),
+    SReExportSourceBoundary([], ["println"]),
+    SExpr(EInt(1))
+  ]
+  inspect(verdict(stmts), content = "ok")
+}

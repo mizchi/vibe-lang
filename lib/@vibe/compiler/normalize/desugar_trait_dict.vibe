@@ -50,6 +50,12 @@ export ../lowering/inspect_calls {
 // binder-authority entries, the unresolved-call report and the whole-program
 // wrapper census stay on this contract for their consumers (the editor lane,
 // codegen/wasi/linked_compile.vibe).
+// #2501: the serializable re-export validation lives in
+// lowering/reexport_validation; the merge imports it from this contract.
+export ../lowering/reexport_validation {
+  validate_serializable_reexport_references
+}
+
 export ../lowering/labeled_args {
   LabeledArgBinderAuthorityNormalization,
   NormalizedProgramBinderAuthority,
@@ -81,6 +87,7 @@ import @vibe/compiler/core {
   is_exception_effect_name,
   is_exception_throw_operation,
   merged_source_boundary_local_names,
+  merged_source_range_end,
   namespace_rename_original,
   namespace_rename_originals_reset,
   sort_perm_by_names,
@@ -106,10 +113,6 @@ import @vibe/ast {
 
 import @vibe/core {
   array_empty
-}
-
-import @vibe/parser {
-  resolve_interp_expr
 }
 
 //# Functions
@@ -336,7 +339,7 @@ fn lookup_trait_type_params(entries: Array[(String, Array[String])], trait_name:
 /// impls from its OWN env. Injecting into the former and not the latter buys
 /// the dictionary threading with none of the enforcement.
 ///
-/// The witness is total by construction -- `build_concrete_dict` falls back to
+/// The witness is total by construction -- `build_concrete_dict_for_target` falls back to
 /// the ADR-0058 `__to_string` heuristic for a type with no `C::to_string` --
 /// so nothing that compiles today stops compiling, and a value whose type this
 /// pass cannot resolve renders exactly as it does now.
@@ -420,10 +423,6 @@ fn collect_method_traits_with_show(stmts: Array[Stmt]) -> Array[(String, Array[(
 // method's declared param types. After injection `build_gens` sees `x: X`,
 // registers `C::m` as a Show-bounded generic, and the existing dict-passing
 // machinery threads/synthesizes the `Show` witness at qualified call sites.
-
-fn empty_method_gens() -> Array[(String, Array[String], Array[(String, Array[String])])] {
-  array_empty()
-}
 
 fn inject_trait_method_generics_with_reporting_change(stmts: Array[Stmt], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])]) -> Bool {
   namespace_inject_trait_method_generics_with_reporting_change(stmts, traits, dtd_own_end(stmts))
@@ -5576,15 +5575,9 @@ fn specialize_trait_constructors(trait_name: String, substs: Array[(String, Stri
   }
 }
 
-fn specialize_trait_constructor(trait_name: String, formal: String, actual: String) -> String {
-  let substs = array_empty()
-  Array::push(substs, (formal, actual))
-  specialize_trait_constructors(trait_name, substs)
-}
-
 /// #1445: `(__w) -> String { __to_string(__w) }` -- the total fallback member
 /// of a synthetic `Show` witness (see synthetic_show_sigs). Same closure shape
-/// build_concrete_dict already synthesizes for a bounded generic-impl method.
+/// build_concrete_dict_for_target already synthesizes for a bounded generic-impl method.
 fn show_fallback_closure() -> Expr {
   EFn(empty_str_array(), array_empty(), Array::slice([("__w", None)], 0, 1), None, None, ECall(EIdent("__to_string", -1), [
     EIdent("__w", -1)
@@ -5805,14 +5798,6 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
     },
     None => None
   }
-}
-
-fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Expr) -> Option[Expr] {
-  let target = match infer_impl_target_expr(arg_expr, struct_sets, var_types, fn_returns) {
-    Some(inferred) => inferred,
-    None => TyName(cname)
-  }
-  build_concrete_dict_for_target(target, trait_name, traits, gens, struct_sets, var_types, fn_returns, Some(arg_expr))
 }
 
 /// Synthesize the witness dictionaries for a call to a transformed generic, or
@@ -11368,21 +11353,6 @@ fn arms_bind_assert_eq(arms: Array[(Pat, Expr)]) -> Bool {
   found
 }
 
-fn plain_reexport_binds(items: Array[ImportItem], wanted: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(items) && !found {
-    let item = Array::get(items, i)
-    if item.name == wanted && item.alias == None {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
 fn stmt_binds_assert_eq(stmt: Stmt) -> Bool {
   match stmt {
     SLet(_, _, name, _, value) => name == "assert_eq" || expr_binds_assert_eq(value),
@@ -11421,14 +11391,6 @@ fn reexport_blockers_bind_assert_eq(names: Array[String]) -> Bool {
     i = i + 1
   }
   found
-}
-
-fn merged_source_range_end(stmts: Array[Stmt], start: Int) -> Int {
-  let mut end = start
-  while end < Array::length(stmts) && merged_source_boundary_local_names(Array::get(stmts, end)) == None {
-    end = end + 1
-  }
-  end
 }
 
 fn user_assert_eq_set_merged_source(stmts: Array[Stmt], start: Int, names: Array[String]) -> Unit {
@@ -17642,387 +17604,10 @@ export fn desugar_hoist_local_lambdas(stmts: Array[Stmt]) -> Unit {
   }
 }
 
-/// A lambda's parameter labels, in declared order, or None for anything else.
-fn efn_param_labels(v: Expr) -> Option[Array[String]] {
-  match v {
-    EFn(_, _, params, _, _, _) => {
-      let labels = empty_str_array()
-      let mut i = 0
-      while i < Array::length(params) {
-        let (pn, _) = Array::get(params, i)
-        Array::push(labels, strip_label_tilde(pn))
-        i = i + 1
-      }
-      Some(labels)
-    },
-    _ => None
-  }
-}
-
-fn str_arrays_equal(a: Array[String], b: Array[String]) -> Bool {
-  if Array::length(a) != Array::length(b) {
-    false
-  } else {
-    let mut i = 0
-    let mut same = true
-    while i < Array::length(a) {
-      if Array::get(a, i) != Array::get(b, i) {
-        same = false
-      } else {
-        ()
-      }
-      i = i + 1
-    }
-    same
-  }
-}
-
-fn params_bind_name(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
-  let mut i = 0
-  let mut hit = false
-  while i < Array::length(params) {
-    let (pn, _) = Array::get(params, i)
-    if strip_label_tilde(pn) == name {
-      hit = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  hit
-}
-
 fn pat_binds_name(p: Pat, name: String) -> Bool {
   let binders = empty_str_array()
   collect_pat_binders(p, binders)
   str_array_contains(binders, name)
-}
-
-/// The arms whose pattern does NOT take `name` over -- the only ones whose body
-/// can still assign to the binding being scanned.
-fn arms_not_binding(arms: Array[(Pat, Expr)], name: String, labels: Array[String]) -> Bool {
-  let mut i = 0
-  let mut broken = false
-  while i < Array::length(arms) {
-    let (p, body) = Array::get(arms, i)
-    if !broken && !pat_binds_name(p, name) && mut_binding_labels_broken(body, name, labels) {
-      broken = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  broken
-}
-
-fn loop_binds_broken(binds: Array[(String, Expr)], name: String, labels: Array[String]) -> Bool {
-  let mut i = 0
-  let mut broken = false
-  while i < Array::length(binds) {
-    let (_, init) = Array::get(binds, i)
-    if !broken && mut_binding_labels_broken(init, name, labels) {
-      broken = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  broken
-}
-
-fn loop_binds_name(binds: Array[(String, Expr)], name: String) -> Bool {
-  let mut i = 0
-  let mut hit = false
-  while i < Array::length(binds) {
-    let (bn, _) = Array::get(binds, i)
-    if bn == name {
-      hit = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  hit
-}
-
-/// #1994: can every value `name` holds inside `body` be described by `labels`?
-///
-/// A `let mut` binding is the one local shape whose value is not its
-/// initializer, so the reason #1899/#1952 could register an immutable `let`
-/// from its initializer alone does not carry over: reassigning a lambda with
-/// DIFFERENT parameter names would leave a table that reorders a later call by
-/// stale names. Tracking that per call site needs flow analysis, since an
-/// assignment inside a branch or a loop reaches only its own continuation while
-/// a later call sits in a sibling subtree.
-///
-/// This asks the flow-INSENSITIVE question instead, which needs no analysis and
-/// is sound under every control flow: does the whole scope agree on the labels?
-/// It does when every assignment to `name` binds a lambda declaring the same
-/// parameter names in the same order -- reassignment is then invisible to
-/// argument reordering, and the initializer's labels describe every value the
-/// binding can hold. A non-lambda assigned, different names, or a compound
-/// assignment answers false, and the caller leaves the binding unregistered
-/// exactly as before.
-///
-/// An inner binding that takes the name over is NOT a break: an assignment
-/// inside its scope names the inner binding, not this one. The walk skips those
-/// subtrees rather than giving up on the whole scope, which is the difference
-/// between resolving and rejecting `let mut g = ..; g(x = 1, y = 2); let g = 5`.
-fn mut_binding_labels_stable(body: Expr, name: String, labels: Array[String]) -> Bool {
-  !mut_binding_labels_broken(body, name, labels)
-}
-
-fn mut_binding_labels_broken(e: Expr, name: String, labels: Array[String]) -> Bool {
-  match e {
-    // A binder's initializer is evaluated in the OUTER scope, so it is still
-    // scanned; only the subtree the new binding covers is skipped.
-    ELet(n, val, body, _) => mut_binding_labels_broken(val, name, labels) || (n != name && mut_binding_labels_broken(body, name, labels)),
-    ELetMut(n, val, body, _) => mut_binding_labels_broken(val, name, labels) || (n != name && mut_binding_labels_broken(body, name, labels)),
-    // `let rec` is in scope inside its own value, so both children are covered.
-    ELetRec(n, val, body) => n != name && (mut_binding_labels_broken(val, name, labels) || mut_binding_labels_broken(body, name, labels)),
-    EFn(_, _, params, _, _, body) => !params_bind_name(params, name) && mut_binding_labels_broken(body, name, labels),
-    EForIn(n, idx, iter, body) => {
-      let shadowed = n == name || match idx {
-        Some(ix) => ix == name,
-        None => false
-      }
-      mut_binding_labels_broken(iter, name, labels) || (!shadowed && mut_binding_labels_broken(body, name, labels))
-    },
-    ELoop(binds, body) => loop_binds_broken(binds, name, labels) || (!loop_binds_name(binds, name) && mut_binding_labels_broken(body, name, labels)),
-    EMatch(scrut, arms) => mut_binding_labels_broken(scrut, name, labels) || arms_not_binding(arms, name, labels),
-    EHandle(body, arms) => mut_binding_labels_broken(body, name, labels) || arms_not_binding(arms, name, labels),
-    EAssign(n, v, cont) => {
-      let here = if n == name {
-        match efn_param_labels(v) {
-          Some(assigned) => !str_arrays_equal(assigned, labels),
-          None => true
-        }
-      } else {
-        false
-      }
-      here || mut_binding_labels_broken(v, name, labels) || mut_binding_labels_broken(cont, name, labels)
-    },
-    EAssignOp(n, _, v, cont) => n == name || mut_binding_labels_broken(v, name, labels) || mut_binding_labels_broken(cont, name, labels),
-    _ => {
-      let kids = expr_children(e)
-      let mut i = 0
-      let mut broken = false
-      while i < Array::length(kids) {
-        if broken {
-          i = Array::length(kids)
-        } else {
-          if mut_binding_labels_broken(Array::get(kids, i), name, labels) {
-            broken = true
-          } else {
-            ()
-          }
-          i = i + 1
-        }
-      }
-      broken
-    }
-  }
-}
-
-fn import_items_bind_name(items: Array[ImportItem], name: String) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(items) && !found {
-    let item = Array::get(items, i)
-    let local = match item.alias {
-      Some(alias) => alias,
-      None => item.name
-    }
-    found = local == name
-    i = i + 1
-  }
-  found
-}
-
-/// A declaration that gives `name` real source-local meaning. Top-level value
-/// declarations are preclaimed by the checker, so their order within the
-/// source unit does not change this answer. An aliased re-export is omitted on
-/// purpose: its alias is publication-only and is exactly what this validation
-/// protects from becoming a local after serialization.
-fn stmt_top_level_binds_name(stmt: Stmt, name: String) -> Bool {
-  match stmt {
-    SLet(_, _, local, _, _) => local == name,
-    SLetMut(local, _, _) => local == name,
-    SLetPat(pat, _) => pat_binds_name(pat, name),
-    SFnDecl(_, local, _, _, _) => local == name,
-    SExternLet(local, _) => local == name,
-    SImport(_, items) => import_items_bind_name(items, name),
-    SReExport(_, items) => plain_reexport_binds(items, name),
-    _ => false
-  }
-}
-
-fn range_top_level_binds_name(stmts: Array[Stmt], start: Int, end: Int, name: String) -> Bool {
-  let mut i = start
-  let mut found = false
-  while i < end && !found {
-    found = stmt_top_level_binds_name(Array::get(stmts, i), name)
-    i = i + 1
-  }
-  found
-}
-
-fn expr_list_has_free_name(items: Array[Expr], name: String) -> Bool with Exception {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(items) && !found {
-    found = expr_has_free_name(Array::get(items, i), name)
-    i = i + 1
-  }
-  found
-}
-
-fn arm_list_has_free_name(arms: Array[(Pat, Expr)], name: String) -> Bool with Exception {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(arms) && !found {
-    let (pat, body) = Array::get(arms, i)
-    if !pat_binds_name(pat, name) {
-      found = expr_has_free_name(body, name)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-/// Whether `name` occurs free in this expression. Binding forms stop only the
-/// body region they govern; a same-spelled parameter in one nested function
-/// must not hide an unrelated reference elsewhere in the source unit.
-fn expr_has_free_name(expr: Expr, name: String) -> Bool with Exception {
-  match expr {
-    EIdent(local, _) => local == name,
-    EStringInterp(_) => expr_has_free_name(resolve_interp_expr(expr), name),
-    ELet(local, value, body, _) => expr_has_free_name(value, name) || if local == name {
-      false
-    } else {
-      expr_has_free_name(body, name)
-    },
-    ELetRec(local, value, body) => if local == name {
-      false
-    } else {
-      expr_has_free_name(value, name) || expr_has_free_name(body, name)
-    },
-    ELetMut(local, value, body, _) => expr_has_free_name(value, name) || if local == name {
-      false
-    } else {
-      expr_has_free_name(body, name)
-    },
-    EAssign(local, value, body) => local == name || expr_has_free_name(value, name) || expr_has_free_name(body, name),
-    EAssignOp(local, _, value, body) => local == name || expr_has_free_name(value, name) || expr_has_free_name(body, name),
-    EForIn(value_name, key_name, iter, body) => expr_has_free_name(iter, name) || if value_name == name || match key_name {
-      Some(key) => key == name,
-      None => false
-    } {
-      false
-    } else {
-      expr_has_free_name(body, name)
-    },
-    EFn(_, _, params, _, _, body) => if params_bind_name(params, name) {
-      false
-    } else {
-      expr_has_free_name(body, name)
-    },
-    ELoop(params, body) => {
-      let mut i = 0
-      let mut found = false
-      let mut shadowed = false
-      while i < Array::length(params) {
-        let (local, initial) = Array::get(params, i)
-        if !found {
-          found = expr_has_free_name(initial, name)
-        } else {
-          ()
-        }
-        if local == name {
-          shadowed = true
-        } else {
-          ()
-        }
-        i = i + 1
-      }
-      found || if shadowed {
-        false
-      } else {
-        expr_has_free_name(body, name)
-      }
-    },
-    EMatch(scrutinee, arms) => expr_has_free_name(scrutinee, name) || arm_list_has_free_name(arms, name),
-    EHandle(body, arms) => expr_has_free_name(body, name) || arm_list_has_free_name(arms, name),
-    _ => expr_list_has_free_name(expr_children(expr), name)
-  }
-}
-
-fn stmt_has_free_name(stmt: Stmt, name: String) -> Bool with Exception {
-  match stmt {
-    SLet(_, _, _, _, expr) => expr_has_free_name(expr, name),
-    SLetMut(_, _, expr) => expr_has_free_name(expr, name),
-    SLetPat(_, expr) => expr_has_free_name(expr, name),
-    STest(_, expr) => expr_has_free_name(expr, name),
-    SBench(_, expr) => expr_has_free_name(expr, name),
-    SExample(_, expr) => expr_has_free_name(expr, name),
-    SExpr(expr) => expr_has_free_name(expr, name),
-    SFnDecl(_, _, expr, requires, ensures) => expr_has_free_name(expr, name) || expr_list_has_free_name(requires, name) || expr_list_has_free_name(ensures, name),
-    SModule(_, _, body) => range_has_free_name(body, 0, Array::length(body), name),
-    _ => false
-  }
-}
-
-fn range_has_free_name(stmts: Array[Stmt], start: Int, end: Int, name: String) -> Bool with Exception {
-  if range_top_level_binds_name(stmts, start, end, name) {
-    false
-  } else {
-    let mut i = start
-    let mut found = false
-    while i < end && !found {
-      found = stmt_has_free_name(Array::get(stmts, i), name)
-      i = i + 1
-    }
-    found
-  }
-}
-
-/// Reject every free reference to a publication-only re-export alias before
-/// source-boundary metadata is removed. Without this check, reparsing the
-/// printed program can silently reinterpret names such as `println`,
-/// `assert_eq`, or `inspect` as compiler builtins. A real top-level binding or
-/// a lexical binding that governs the particular reference remains valid.
-export fn validate_serializable_reexport_references(stmts: Array[Stmt]) -> Unit with Exception {
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SReExportSourceBoundary(_, surface_only_names) => {
-        let start = i + 1
-        let end = merged_source_range_end(stmts, start)
-        let mut n = 0
-        let mut invalid = ""
-        while n < Array::length(surface_only_names) && String::length(invalid) == 0 {
-          let name = Array::get(surface_only_names, n)
-          if range_has_free_name(stmts, start, end, name) {
-            invalid = name
-          } else {
-            ()
-          }
-          n = n + 1
-        }
-        if String::length(invalid) > 0 {
-          throw(String::concat("unknown name: ", invalid))
-        } else {
-          ()
-        }
-        i = end
-      },
-      _ => {
-        i = i + 1
-      }
-    }
-  }
 }
 
 /// Labeled-argument reordering and optional-parameter filling over the
