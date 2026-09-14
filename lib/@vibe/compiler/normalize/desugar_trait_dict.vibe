@@ -4028,7 +4028,48 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
       dtd_interp_absorb_into(out, it, struct_sets, fn_returns)
       dtd_interp_absorb_forin(out, vn, idx, it, b, struct_sets, fn_returns)
     },
+    // #2745 round 23, self-probed rather than reported: `let xs = []` records
+    // no element -- there is none to read -- so `Array::push(xs, a)` was the
+    // only thing that could say what the array holds, and nothing read it.
+    // Measured on `51b84d7`: `{ let xs = []; Array::push(xs, a);
+    // Array::get(xs, 0) }` compiled and printed a 3-digit pointer decimal.
+    //
+    // This is the shape the untyped-empty scan already uses for structural `==`
+    // (#2157): an empty literal's element comes from the `Array::push(xs, v)`
+    // calls in the binding's own scope. Recording it under `array_elem_key`
+    // means every existing element reader answers, so there is no new read path
+    // and a rebinding masks it with the rest of what the name owns.
+    //
+    // It only ADDS. A push can turn "no answer" into "erased" and never the
+    // reverse, so no ordering between two pushes can turn a refusal off, and an
+    // element a literal already recorded is left alone.
     ECall(callee, args, _) => {
+      match callee {
+        EIdent(cn, _) => if cn == "Array::push" && Array::length(args) == 2 {
+          match Array::get(args, 0) {
+            EIdent(an, _) => {
+              let known = match lookup_var_type(out, array_elem_key(an)) {
+                Some(t) => t,
+                None => ""
+              }
+              if String::length(known) == 0 {
+                let pef = dtd_erased_interp_formal(Array::get(args, 1), struct_sets, out, fn_returns)
+                if String::length(pef) > 0 {
+                  Array::push(out, (array_elem_key(an), pef))
+                } else {
+                  ()
+                }
+              } else {
+                ()
+              }
+            },
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        _ => ()
+      }
       dtd_interp_absorb_into(out, callee, struct_sets, fn_returns)
       dtd_interp_absorb_exprs(out, args, struct_sets, fn_returns)
     },
