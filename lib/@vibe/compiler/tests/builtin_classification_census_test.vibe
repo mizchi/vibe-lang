@@ -1,0 +1,355 @@
+//# #2584: adding a builtin means editing several hand-maintained
+//# classification lists, and nothing pointed at the ones that were missed.
+//# #2344 (`Bytes::index_of_bytes` absent from the non-allocating list, so a
+//# correct `#zero_alloc` fn was rejected) and #2372 (the same name absent from
+//# the pure list, so a suspend-class body calling it was refused) were both
+//# found by review; a mirror gate would have caught neither, because in the
+//# second the name was on NO list and every list agreed.
+//#
+//# This is the census the issue asks for: a registry name on none of the
+//# classification lists is not necessarily wrong, but it is always UNREVIEWED,
+//# and this test makes that state visible at the point it is introduced. It
+//# asks the compiler -- the registry rows and the four predicates' own tables,
+//# imported from the modules that own them -- rather than scanning source. It
+//# catches the omission, not a wrong answer on a single axis: a name that is
+//# on one list and should be on two passes here. The axis-by-axis answer is
+//# the registry column the issue lists as the thorough option.
+//#
+//# Two tables, with different rules:
+//#
+//#   - `unreviewed_registry_names` is the DEBT: the names on no list when the
+//#     census was introduced. It only shrinks. A row becomes stale the moment
+//#     its name reaches any list (or leaves the registry), and a stale row
+//#     fails the census so the debt cannot quietly hold a name that was in
+//#     fact reviewed.
+//#   - `reviewed_unclassified_registry_names` is the DECISION log: names that
+//#     were checked on every axis and belong on none, each with the reason. A
+//#     new builtin that belongs on no list is recorded here -- so the diff
+//#     that adds the registry row also carries the sentence saying why each
+//#     list was not the right place.
+//#
+//# The lists, where each lives, and what a miss on each does (the message on
+//# failure repeats this so the author is pointed at all of them at once):
+//#
+//#   pure             idp_pure_builtin_names          lowering/effects/direct/direct.vibe
+//#                    a miss refuses a suspend-class handle body naming the call
+//#   non-allocating   builtin_is_non_allocating       core/builtin_registry.vibe
+//#                    a miss makes builtin_allocates default to allocating and
+//#                    rejects a correct #zero_alloc fn
+//#   borrow-returning borrow_ret_builtin_name_table   core/builtin_registry.vibe
+//#                    a miss classifies a wrapper as owned-returning and RC
+//#                    callers drop an interior view (#1932, a silent double-free)
+//#   safe-mut         scps_safe_mut_builtin_name_table lowering/effects/suspend/suspend.vibe
+//#                    a miss makes a mutation builtin unusable in a suspend-class body
+//#
+//# `expr_is_intish` / `gc_expr_is_intish` are deliberately not axes: they
+//# classify by SHAPE (literals, operators), a call result is never intish, so
+//# there is nothing on them for a new builtin to be missing from.
+
+import @vibe/compiler/core {
+  builtin_allocates, builtin_registry_typed, is_borrow_ret_builtin
+}
+
+import @vibe/compiler/lowering/effects/direct {
+  idp_pure_builtin_names
+}
+
+import @vibe/compiler/lowering/effects/suspend {
+  scps_safe_mut_builtin_names
+}
+
+fn contains(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn registry_names() -> Array[String] {
+  let rows = builtin_registry_typed()
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(rows) {
+    let (name, _ty, _in_linear, _in_gc, _visible) = Array::get(rows, i)
+    Array::push(out, name)
+    i = i + 1
+  }
+  out
+}
+
+/// The classification lists `name` is on, by axis label. Empty = on none.
+fn axes_of(name: String, pure: Array[String], safe_mut: Array[String]) -> Array[String] {
+  let out: Array[String] = []
+  if contains(pure, name) {
+    Array::push(out, "pure")
+  } else {
+    ()
+  }
+  if !builtin_allocates(name) {
+    Array::push(out, "non-allocating")
+  } else {
+    ()
+  }
+  if is_borrow_ret_builtin(name) {
+    Array::push(out, "borrow-returning")
+  } else {
+    ()
+  }
+  if contains(safe_mut, name) {
+    Array::push(out, "safe-mut")
+  } else {
+    ()
+  }
+  out
+}
+
+/// DEBT -- deletions only. Registry builtins on none of the four lists when the
+/// census was introduced (measured 2026-09-14: 174 registry rows, 83 on no
+/// list, 73 of them checker-visible). Delete a row when its name reaches a
+/// list; never add one -- a new builtin that belongs on no list goes in
+/// `reviewed_unclassified_registry_names` with its reason.
+fn unreviewed_registry_names() -> Array[String] {
+  [
+    "Env::get",
+    "Env::args_len",
+    "Env::args_get",
+    "Fs::read_file",
+    "Fs::exists",
+    "Fs::stat_token",
+    "vibe_fs_stat_token_raw",
+    "Fs::write_file",
+    "Fs::publish_immutable_text",
+    "Fs::write_bytes",
+    "Fs::read_bytes",
+    "vibe_fs_read_dir_raw",
+    "sh",
+    "vibe_sh_lines_raw",
+    "vibe_sh_capture_raw",
+    "vibe_sh_capture_exit_code_raw",
+    "vibe_sh_capture_stdout_raw",
+    "vibe_sh_capture_stderr_raw",
+    "vibe_sh_capture_close_raw",
+    "vibe_process_exit_raw",
+    "Stdin::read_stream",
+    "Stdout::write_stream",
+    "Stdout::write_char",
+    "Stderr::write_stream",
+    "Stderr::write_char",
+    "Console::read_stream",
+    "Console::read_char",
+    "Console::write_stream",
+    "Console::write_char",
+    "Console::write_err_stream",
+    "Console::write_err_char",
+    "resolve_path",
+    "Fs::remove",
+    "Fs::remove_file",
+    "Fs::mkdir_p",
+    "Fs::mkdir",
+    "Fs::chdir",
+    "Fs::copy",
+    "Fs::append",
+    "Fs::rename",
+    "Fs::is_dir",
+    "Fs::is_file",
+    "Fs::getcwd",
+    "vibe_tcp_connect_raw",
+    "vibe_tcp_read_raw",
+    "vibe_tcp_write_raw",
+    "vibe_tcp_close_raw",
+    "vibe_http_request_raw",
+    "vibe_http_response_status_raw",
+    "vibe_http_response_header_raw",
+    "vibe_http_response_body_raw",
+    "vibe_http_close_raw",
+    "Profiler::NowUs",
+    "Profiler::HeapBytes",
+    "StdinStream::read_chunk",
+    "Stdin::read_char",
+    "__compact_fingerprint_hash",
+    "array_new",
+    "Array::push_all",
+    "compiler_sources",
+    "FrozenArray::from_array",
+    "FrozenArray::to_array",
+    "Bytes::new",
+    "Bytes::with_capacity",
+    "Bytes::from_array",
+    "Bytes::to_array",
+    "Bytes::push",
+    "Bytes::append",
+    "Bytes::concat",
+    "Bytes::slice",
+    "vibe_rc_alloc",
+    "Bytes::blit",
+    "Bytes::fill",
+    "Double::from_i64_bits",
+    "Double::to_float",
+    "Float::to_double",
+    "FixedArray::make",
+    "Int64Array::make",
+    "Map::keys",
+    "MapBuilder::new",
+    "MapBuilder::set",
+    "MapBuilder::freeze",
+    "MapBuilder::get"
+  ]
+}
+
+/// DECISIONS -- additions carry a reason. A registry builtin that was checked
+/// on all four axes and belongs on none: say which axis was closest and why it
+/// is not the right place ("host import: performs Fs and returns a fresh
+/// String, so neither pure nor non-allocating; not a view; mutates nothing").
+fn reviewed_unclassified_registry_names() -> Array[(String, String)] {
+  let rows: Array[(String, String)] = []
+  rows
+}
+
+fn reviewed_index(reviewed: Array[(String, String)], name: String) -> Int {
+  let mut i = 0
+  let mut at = -1
+  while i < Array::length(reviewed) {
+    let (n, _reason) = Array::get(reviewed, i)
+    if n == name {
+      at = i
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  at
+}
+
+fn lists_hint() -> String {
+  "Classify it on each list where it belongs -- pure: idp_pure_builtin_names (lowering/effects/direct/direct.vibe; a miss refuses a suspend-class body naming the call), non-allocating: builtin_is_non_allocating (core/builtin_registry.vibe; a miss rejects a correct #zero_alloc fn), borrow-returning: borrow_ret_builtin_name_table (core/builtin_registry.vibe; a miss lets RC callers drop an interior view), safe-mut: scps_safe_mut_builtin_name_table (lowering/effects/suspend/suspend.vibe; a miss makes a mutation unusable in a suspend-class body) -- or, if it belongs on none, record it with the reason in reviewed_unclassified_registry_names (tests/builtin_classification_census_test.vibe)"
+}
+
+/// Every violation as one line. Empty = the census holds. Takes its inputs
+/// as parameters so the tests below can hand it a mutated table and watch it
+/// fail -- a census that cannot go red proves nothing.
+fn census_violations(registry: Array[String], pure: Array[String], safe_mut: Array[String], unreviewed: Array[String], reviewed: Array[(String, String)]) -> Array[String] {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Array::length(registry) {
+    let name = Array::get(registry, i)
+    if Array::length(axes_of(name, pure, safe_mut)) == 0 && !contains(unreviewed, name) && reviewed_index(reviewed, name) < 0 {
+      Array::push(out, "'\{name}' is a registry builtin on none of the classification lists and is recorded nowhere. \{lists_hint()}")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(unreviewed) {
+    let name = Array::get(unreviewed, i)
+    let axes = axes_of(name, pure, safe_mut)
+    if !contains(registry, name) {
+      Array::push(out, "'\{name}' is in unreviewed_registry_names but is not a registry builtin -- delete its row (the table only shrinks)")
+    } else if Array::length(axes) > 0 {
+      Array::push(out, "'\{name}' is in unreviewed_registry_names but is now on: \{String::join(axes, ", ")} -- delete its row (the table only shrinks)")
+    } else if reviewed_index(reviewed, name) >= 0 {
+      Array::push(out, "'\{name}' is in both unreviewed_registry_names and reviewed_unclassified_registry_names -- keep the reviewed row, delete the debt row")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < Array::length(reviewed) {
+    let (name, reason) = Array::get(reviewed, i)
+    let axes = axes_of(name, pure, safe_mut)
+    if !contains(registry, name) {
+      Array::push(out, "'\{name}' is in reviewed_unclassified_registry_names but is not a registry builtin -- delete its row")
+    } else if Array::length(axes) > 0 {
+      Array::push(out, "'\{name}' is in reviewed_unclassified_registry_names but is now on: \{String::join(axes, ", ")} -- delete its row, the list is the record now")
+    } else if String::length(reason) == 0 {
+      Array::push(out, "'\{name}' in reviewed_unclassified_registry_names has an empty reason -- say why it belongs on none of the four lists")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn current_violations() -> Array[String] {
+  census_violations(registry_names(), idp_pure_builtin_names(), scps_safe_mut_builtin_names(), unreviewed_registry_names(), reviewed_unclassified_registry_names())
+}
+
+test "every registry builtin is on a classification list or recorded in the census" {
+  let v = current_violations()
+  if Array::length(v) > 0 {
+    throw("builtin classification census (#2584): \{Array::length(v)} violation(s)\n\{String::join(v, "\n")}")
+  } else {
+    ()
+  }
+}
+
+test "the four lists are non-empty and disagree, so the axes are not one predicate" {
+  let pure = idp_pure_builtin_names()
+  let safe_mut = scps_safe_mut_builtin_names()
+  inspect(Array::length(pure) > 0, content = "true")
+  inspect(Array::length(safe_mut) > 0, content = "true")
+  // Array::get: pure, non-allocating and a borrow (an element read in place).
+  inspect(String::join(axes_of("Array::get", pure, safe_mut), ","), content = "pure,non-allocating,borrow-returning")
+  // Array::push: mutates, allocates, owned -- admitted only by the suspend lowering.
+  inspect(String::join(axes_of("Array::push", pure, safe_mut), ","), content = "safe-mut")
+  // A host import is on none.
+  inspect(String::join(axes_of("Fs::read_file", pure, safe_mut), ","), content = "")
+}
+
+//# The census must be able to fail. Each case below mutates one table the way
+//# a real edit would, and asserts the one violation it must produce -- so a
+//# `census_violations` that answered an empty array unconditionally is caught
+//# here rather than certifying every future omission.
+
+test "red: a registry builtin recorded nowhere is reported" {
+  let debt = unreviewed_registry_names()
+  let dropped = Array::get(debt, 0)
+  let v = census_violations(registry_names(), idp_pure_builtin_names(), scps_safe_mut_builtin_names(), Array::slice(debt, 1, Array::length(debt)), reviewed_unclassified_registry_names())
+  inspect(Array::length(v), content = "1")
+  inspect(String::contains(Array::get(v, 0), dropped), content = "true")
+  inspect(String::contains(Array::get(v, 0), "recorded nowhere"), content = "true")
+  inspect(String::contains(Array::get(v, 0), "idp_pure_builtin_names"), content = "true")
+  inspect(String::contains(Array::get(v, 0), "borrow_ret_builtin_name_table"), content = "true")
+}
+
+test "red: a debt row whose name reached a list is stale" {
+  let debt = unreviewed_registry_names()
+  Array::push(debt, "Array::get")
+  let v = census_violations(registry_names(), idp_pure_builtin_names(), scps_safe_mut_builtin_names(), debt, reviewed_unclassified_registry_names())
+  inspect(Array::length(v), content = "1")
+  inspect(String::contains(Array::get(v, 0), "'Array::get' is in unreviewed_registry_names but is now on: pure, non-allocating, borrow-returning"), content = "true")
+}
+
+test "red: a debt row naming no registry builtin is stale" {
+  let debt = unreviewed_registry_names()
+  Array::push(debt, "No::such_builtin")
+  let v = census_violations(registry_names(), idp_pure_builtin_names(), scps_safe_mut_builtin_names(), debt, reviewed_unclassified_registry_names())
+  inspect(Array::length(v), content = "1")
+  inspect(String::contains(Array::get(v, 0), "'No::such_builtin' is in unreviewed_registry_names but is not a registry builtin"), content = "true")
+}
+
+test "red: a reviewed row needs a reason, and a reviewed name leaves the debt table" {
+  let debt = unreviewed_registry_names()
+  let moved = Array::get(debt, 0)
+  let reviewed: Array[(String, String)] = [(moved, "")]
+  // Still in the debt table too: both-tables violation plus the empty reason.
+  let v = census_violations(registry_names(), idp_pure_builtin_names(), scps_safe_mut_builtin_names(), debt, reviewed)
+  inspect(Array::length(v), content = "2")
+  inspect(String::contains(Array::get(v, 0), "is in both"), content = "true")
+  inspect(String::contains(Array::get(v, 1), "has an empty reason"), content = "true")
+  // Moved properly, with a reason: clean.
+  let reviewed_ok: Array[(String, String)] = [
+    (moved, "host import: performs an effect and returns a fresh value")
+  ]
+  let v2 = census_violations(registry_names(), idp_pure_builtin_names(), scps_safe_mut_builtin_names(), Array::slice(debt, 1, Array::length(debt)), reviewed_ok)
+  inspect(Array::length(v2), content = "0")
+}

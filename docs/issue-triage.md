@@ -139,8 +139,11 @@ enough),
 **#2670** (`vibe symbols lib` spends 84% of its time rescanning each file from
 offset 0 per declaration; one line-start table per file fixes it), **#2584**
 (adding a builtin means editing several hand-maintained classification lists —
-#2708 touched seven of them for three names, and nothing points at a missed
-one).
+#2708 touched seven of them for three names, and nothing pointed at a missed
+one; the census the issue's option 2 describes is in
+`lib/@vibe/compiler/tests/builtin_classification_census_test.vibe`, with the 83
+registry names on no list as a deletions-only debt table, so what is left is
+option 1, the per-axis registry column).
 
 **#2592 is the successor of the gate-wiring pair.** #2580 (the reachability
 gate) landed in #2591 and #2581 (the AST version of
