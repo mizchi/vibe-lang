@@ -1,0 +1,73 @@
+// #2786: an owning mutable slot assigned a WRAPPER, where the slot's own
+// mention sits at a BORROWED position and the spine's leaf reads out of
+// something else.
+//
+// The assignment's retain decision asked `is_self` -- `assign_value_mentions`,
+// "the value has the slot's name as a free variable ANYWHERE" -- and on that
+// path answered only `call_returns_borrow(value, ..)`, which reads the value's
+// TOP node. A wrapper's top node is an `ESeq`, so nothing was retained while
+// the slot stayed owning, and its drop released a reference `xss` still owns.
+//
+// `Array::length(x)` is what makes this shape distinct from the ones #2760
+// measured: it creates no OWNING use, so there is no `PaDup` for the #791
+// budget re-application to spend and nothing compensates for the missing
+// retain. Pair the same function with an owning self-use (`let t0 = total(x)`)
+// and it passes -- `total(x)` consumes, so the count balances by accident.
+//
+// TWO TESTS ARE LOAD-BEARING, and dropping either hides the bug. The damage is
+// a corrupted free list, not a wrong answer: `assign_self_borrow_unused` ALONE
+// in its own file PASSES on a broken compiler, because the corruption only
+// surfaces on a later allocation and there is none. `assign_self_borrow_use`
+// above it supplies one. Measured before the fix:
+//
+//   trap: RuntimeError: memory access out of bounds
+//     at __rt_rc_alloc
+//     at assign_self_borrow_unused
+//
+// Do not reorder these, and do not append a case here expecting it to test
+// something of its own -- a function added after `assign_self_borrow_unused`
+// inherits whatever heap it left behind. That is exactly how #2798 first
+// mis-read a trap as its own Red; see
+// `rc_wrapper_assign_proj_binder_test.vibe`.
+enum Node {
+  Leaf(Int);
+  Pair(Node, Node)
+}
+
+fn total(n: Node) -> Int {
+  match n {
+    Pair(a, b) => total(a) + total(b),
+    Leaf(v) => v
+  }
+}
+
+fn assign_self_borrow_use(xss: Array[Array[Node]]) -> Int {
+  let mut x = [Leaf(1)]
+  x = {
+    Array::length(x)
+    Array::get(xss, 0)
+  }
+  let r = total(Array::get(x, 0))
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+}
+
+fn assign_self_borrow_unused(xss: Array[Array[Node]]) -> Int {
+  let mut x = [Leaf(1)]
+  x = {
+    Array::length(x)
+    Array::get(xss, 0)
+  }
+  let filler = Pair(Leaf(7), Leaf(8))
+  total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+}
+
+test "2786 a borrow-only self-use, with a later read of the slot" {
+  let xss = [[Pair(Leaf(3), Leaf(4))]]
+  inspect(assign_self_borrow_use(xss), content = "770")
+}
+
+test "2786 the same wrapper with no later read: the allocation that surfaces it" {
+  let xss = [[Pair(Leaf(3), Leaf(4))]]
+  inspect(assign_self_borrow_unused(xss), content = "70")
+}

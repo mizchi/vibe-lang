@@ -24,6 +24,7 @@ import @vibe/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
+  borrow_tail_root,
   collect_free_vars,
   collect_free_vars_indexed,
   collect_free_vars_indexed_self,
@@ -1355,6 +1356,42 @@ fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: CompileCtx) 
   }
 }
 
+/// Does the wrapper's result spine end in a read out of `slot` ITSELF?
+///
+/// The assignment's retain must not fire for such a leaf: the reference would
+/// be taken out of the value the slot is about to stop holding, and the store
+/// this retain follows is what releases it. `is_self`
+/// (`assign_value_mentions`) answers a coarser question -- "the value mentions
+/// the name ANYWHERE as a free variable" -- and #2786 is the gap between them:
+/// `x = { Array::length(x); Array::get(xss, 0) }` mentions `x` at a BORROWED
+/// position while its leaf reads out of `xss`, so nothing was retained and the
+/// slot's drop released a reference `xss` still owns. That is a corrupted free
+/// list (`memory access out of bounds` inside `__rt_rc_alloc`), not a leak.
+///
+/// `borrow_tail_root` rather than `scope_tail_proj_root`, and the difference is
+/// load-bearing rather than stylistic. `scope_tail_proj_root` resolves a call
+/// only when the callee is a borrow-returning BUILTIN, and every builtin in
+/// that table returns an ELEMENT of its root -- so a leaf rooted at the slot
+/// cannot type-check through one (`Array[T]`'s element is `T`, never
+/// `Array[T]`). A USER borrow-returning function CAN match the slot's type:
+///
+///     fn pick(a: Array[Node]) -> Array[Node] { a }
+///     x = { Array::length(x); pick(x) }
+///
+/// `scope_tail_proj_root` answers "" there, so keying on it would retain a
+/// reference derived from the slot itself. Measured: that shape passes today,
+/// so this guard is what keeps the fix from turning a correct decline into a
+/// use-after-free.
+fn spine_leaf_roots_at(value: Expr, slot: String, local_names: Array[String], ctx: CompileCtx) -> Bool {
+  let binders = array_empty()
+  let leaf = mib_spine_leaf(value, binders)
+  match leaf {
+    ECall(_, args, _) => Array::length(args) >= 1 && call_returns_borrow(leaf, local_names, ctx) && borrow_tail_root(Array::get(args, 0)) == slot,
+    EDot(_, _, _, _) => proj_root_ident(leaf) == slot,
+    _ => false
+  }
+}
+
 /// The leaf of a STRAIGHT-LINE spine, collecting the names it binds. Mirrors
 /// `pmvc_spine_leaf` in perceus.vibe; branching stops the walk because the
 /// plan it pairs with records one answer per binding.
@@ -2539,30 +2576,37 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // clause rather than a replacement so the top-node answers, including
         // the shapes it declines, are untouched.
         //
-        // A self-referential right-hand side keeps MAIN'S ANSWER exactly.
-        // `is_self` is `assign_value_mentions`, i.e. "the value has `name` as a
-        // free variable" -- ANY mention, not just a spine leaf derived from the
-        // slot. An earlier draft of this comment said it excludes "a spine
-        // ending in a projection of the slot itself", which is a different
-        // property than the one `is_self` tests; the arm is written from the
-        // property, so only the comment was wrong.
+        // A self-referential right-hand side gets the spine walk too, but only
+        // where the leaf is NOT the slot's own (#2786).
         //
-        // The arm is deliberately a no-op against main on this path. Before
-        // this change the condition read
-        // `(!is_self && is_edot(value)) || call_returns_borrow(value, ..)`,
-        // whose first clause is false whenever `is_self` holds -- so main
-        // already answered `call_returns_borrow(value, ..)` here and that is
-        // what this branch still answers. Measured on `6507c60`, three
-        // self-mentioning wrapper spellings -- a discarded `total(x)` in an
-        // `ESeq`, a `let`-bound one, and one whose result feeds the index --
-        // answer 770 on the RC lane on the patched AND the unpatched compiler,
-        // agreeing with bump. So there is no corruption here to widen for, and
-        // widening `is_self` would be a separate change needing its own repro
-        // before its own measurement.
+        // `is_self` is `assign_value_mentions`: "the value has `name` as a free
+        // variable", ANY mention. That is not the property the retain decision
+        // needs. `x = { Array::length(x); Array::get(xss, 0) }` mentions `x` at
+        // a BORROWED position while its leaf reads out of `xss`, so the slot
+        // needed the retain and `is_self` withheld it -- the slot's drop then
+        // released a reference `xss` still owns. Corrupted free list, not a
+        // leak: `memory access out of bounds` inside `__rt_rc_alloc`, and only
+        // once a later allocation reuses the block, which is why the repro
+        // takes two tests.
+        //
+        // `spine_leaf_roots_at` is the property `is_self` was standing in for,
+        // and it stays narrow deliberately: a leaf that DOES read out of the
+        // slot keeps main's answer, because retaining there would take a
+        // reference out of the value this very store is releasing. That case is
+        // reachable and correct today (a user borrow-returning function is the
+        // only way its type matches the slot's -- see `spine_leaf_roots_at`),
+        // so the guard is load-bearing rather than defensive.
+        //
+        // What is unchanged: main answered `call_returns_borrow(value, ..)`
+        // here and that clause still answers first, so every shape it accepted
+        // is accepted on the same grounds. The three self-mentioning wrapper
+        // spellings measured on `6507c60` for #2760 -- a discarded `total(x)`
+        // in an `ESeq`, a `let`-bound one, and one whose result feeds the index
+        // -- answer 770 on both lanes before and after.
         let replacement_unowned = if !is_heap_mut {
           false
         } else if is_self {
-          call_returns_borrow(value, local_names, ctx)
+          call_returns_borrow(value, local_names, ctx) || (spine_leaf_unowned(value, local_names, ctx) && !spine_leaf_roots_at(value, name, local_names, ctx))
         } else {
           is_edot(value) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx)
         }
