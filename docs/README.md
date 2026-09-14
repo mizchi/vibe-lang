@@ -108,7 +108,9 @@ the repo; not the user manual.
 | [naming-convention-migration.md](naming-convention-migration.md) | `internal/design/` | ADR-0083, proposed, Phase 0 not started |
 | [perceus-reuse.md](perceus-reuse.md) | `internal/design/` | ADR-0092, proposed |
 | [qualified-constructor-migration.md](qualified-constructor-migration.md) | `internal/design/` | ADR-0096 |
-| [region-mutable-state.md](region-mutable-state.md) | `internal/design/` | ADR-0090, proposed |
+| [region-mutable-state.md](region-mutable-state.md) | `internal/design/` | ADR-0090, current region storage and RC integration requirements |
+| [internal/compiler-memory-experiments.md](internal/compiler-memory-experiments.md) | `internal/design/` | Measured memory experiments and adoption criteria |
+| [internal/compiler-memory-baseline.json](internal/compiler-memory-baseline.json) | `internal/design/` | Raw compiler comparison and region/GC observations |
 | [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
 | [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
 | [simd-data-structures.md](simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |

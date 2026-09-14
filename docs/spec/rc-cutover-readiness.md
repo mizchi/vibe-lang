@@ -1,67 +1,59 @@
-# The RC cutover (ADR-0055, #493)
+# The linear RC default (ADR-0055, #493)
 
-```
+```text
 linear-default: RC
 ```
 
-That line is the fact this document exists to record, and
-`scripts/check_rc_default.sh` (`pkf run check-rc-default`) reads it. The gate
-compiles the same program three ways — `VIBE_RC` unset, `VIBE_RC=1`,
-`VIBE_RC=0` — and fails if the line above disagrees with which artifact the
-unset build is byte-identical to. Measured 2026-08-20: unset == `VIBE_RC=1`.
+[`check_rc_default.sh`](../../scripts/check_rc_default.sh) reads that line
+and compares one program compiled with `VIBE_RC` unset, `1` and `0`.
+The unset and RC artifacts must agree; the bump artifact must differ.
+This contract concerns the **generated program**, not the allocator of the
+compiler executing the command.
 
-The cutover named in the title happened. This file was a readiness assessment
-asking whether it *should*; that question is answered, so the assessment is
-gone rather than preserved under a banner (`git log` and the #493 thread hold
-the path). What is kept below is what is still load-bearing.
+## Two independent selections
 
-## Two lanes, two defaults — do not conflate them
+| Artifact | Default | Source of the selection |
+| --- | --- | --- |
+| User program compiled by the ordinary CLI | Linear RC | `fs_lane_request` / `ss_lane_request` in the compiler adapter |
+| Compiler built by `scripts/generations.sh` | Linear bump | `VIBE_RC` defaults to `0` in that script; an explicit override is accepted |
 
-| what is being compiled | default | pinned where |
-|---|---|---|
-| a **user program**, via the CLI | **RC** | the compiler's own `VIBE_RC` fallback |
-| the **compiler itself**, self-build | **bump** (`VIBE_RC=0`) | `scripts/generations.sh:3` |
+See the [memory contract](memory-contract.md) for representations, GC selection,
+and region storage. The compiler self-build default is a performance choice.
+Current artifact identities, direct RC self-reproduction evidence and timing
+comparisons live in the [experiment record](../internal/compiler-memory-experiments.md);
+historical ratios are not a performance contract for the current compiler.
 
-The bootstrap pin is a **performance** choice, not a correctness one: an RC
-self-build is ~1.7× wall and ~2.9× output size (#705). RC self-hosting is
-correct end to end — a bump stage2 compiling the flat source under `VIBE_RC=1`
-yields a `stage2_rc` whose own recompile is byte-identical, and the
-`VIBE_RC=shadow` instrumented build completes the same self-compile trap-free
-(#705/#715/#720). `scripts/test_rc_bootstrap.sh`, run from
-`tests/gates/bootstrap/run.sh`, holds that.
+## What bootstrap checks establish
 
-`seed → stage1` must still run bump for a separate reason: the pinned seed
-predates RC and fails `not EFn` under `VIBE_RC=1`.
+An RC self-hosting check must start from an artifact known to be RC-built,
+have it recompile the same flat source with explicit RC output, and compare
+the resulting artifact byte-for-byte. A cross-check can have it regenerate
+the known bump artifact with `VIBE_RC=0`.
 
-## The mixed-feature probe — now a regression guard
+`scripts/test_rc_bootstrap.sh` currently checks the generation manifest's
+fixpoint flag or stage hashes. It neither forces an RC build nor checks RC
+mode when reusing a manifest. Its default generation is therefore bump, and
+success alone does not establish RC self-hosting. The direct checks recorded
+in the experiment record provide that evidence for the identified artifacts;
+the missing mode assertion in this gate remains separate work.
 
-`scripts/rc_cutover_readiness.sh` compiles a corpus of allocation-heavy
-programs that **mix** RC features (the reclaim suite and the heap-e2e gate
-exercise them in isolation) both ways, and per program asserts: RC compiles and
-runs, default == RC result parity, and RC heap bounded (`heap(N1) == heap(N2)`
-rather than scaling with N).
+## Reclamation and residual limitations
 
-It pins its own baseline with `: "${VIBE_RC:=0}"`, which is what keeps it
-usable now that the default moved — it compares bump against RC whatever the
-compiler's default is, so it still answers "did RC regress against bump"
-rather than comparing RC with itself.
+Perceus emits retain/release operations and reuse opportunities on the
+linear RC backend. Reclamation depends on the object's ownership path and
+runtime representation, so a successful bounded-heap fixture does not prove
+every compiler workload has bounded live storage.
 
-```bash
-bash scripts/rc_cutover_readiness.sh              # N1=1000 N2=11000
-bash scripts/rc_cutover_readiness.sh 1000 101000  # tighter per-iter signal
-```
+- Plain RC does not collect reference cycles.
+- Conservative ownership handling can retain values longer than necessary.
+  Perceus correctness tests and the mixed-feature reclamation probe describe
+  the exercised cases; a performance claim needs a measured workload.
+- Dedicated `region` arena allocation is disabled on the RC backend. Current
+  region syntax uses ordinary collection allocation there, without bulk
+  release. See [RC arena requirements](../region-mutable-state.md#requirements-for-an-rc-arena-experiment).
 
-Its `READY` / `NOT READY` wording predates the cutover and now reads as
-"no regression" / "regression".
-
-## Known residuals
-
-- **A matched heap field bound but unused leaks** — dup on extraction with no
-  consuming drop. A safe over-keep, not a use-after-free; write `_` for a field
-  you do not use. Bounded-heap regression is pinned by the leak-guard gate
-  (`compiler_gate.sh` step 40d) over tuple + cell + closure + recursive enum.
-- **Replay-based handlers spill past ~16K performs per `handle`** — a hard
-  bound of the replay-memo design, not a sizing bug. See
-  [uniform-value-repr.md](uniform-value-repr.md).
-- The *safe* leaks catalogued in [uniform-value-repr.md](uniform-value-repr.md)
-  (escaping lambdas, deep-projection opaque args, container-outlives-scope).
+[`rc_cutover_readiness.sh`](../../scripts/rc_cutover_readiness.sh) compares
+allocation-heavy programs under bump and RC, checks result parity and tests
+heap-pointer boundedness at two iteration counts. Its `READY` wording means
+that probe passed; it does not choose the production default or prove the
+self-build performance target.
