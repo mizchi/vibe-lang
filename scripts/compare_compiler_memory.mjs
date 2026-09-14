@@ -48,7 +48,7 @@ function checkoutIdentity(root) {
     lib_sources_sha256: files.status === 0 ? h.digest("hex") : null };
 }
 
-export function collect({ root = ROOT, baseline, candidate, out, rounds = 4, suite = "closure", run = spawnSync } = {}) {
+export function collect({ root = ROOT, baseline, candidate, out, rounds = 4, suite = "closure", allowCodegenDiff = false, run = spawnSync } = {}) {
   if (!Number.isSafeInteger(rounds) || rounds < 1 || rounds > 100) throw new Error("rounds must be between 1 and 100");
   if (!["closure", "full"].includes(suite)) throw new Error("suite must be closure or full");
   if (!["darwin", "linux"].includes(process.platform)) throw new Error("peak RSS measurement requires macOS or Linux");
@@ -79,6 +79,7 @@ export function collect({ root = ROOT, baseline, candidate, out, rounds = 4, sui
     checkout: checkoutIdentity(root), baseline: artifacts[0], candidate: artifacts[1],
     node: process.version, platform: process.platform, arch: process.arch,
     cpu: cpus()[0]?.model, host_memory_bytes: totalmem(), rounds, suite,
+    output_equivalence: allowCodegenDiff ? "within-compiler; semantic parity requires separate execution tests" : "across-compilers",
     target: "linear-rc", selectors: Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("VIBE_"))),
     cache: "new process per sample; empty cache for cold, same populated cache for warm; OS cache uncontrolled",
     compiler_memory_mode: "determined by supplied binaries, not inferred from names or VIBE_RC",
@@ -114,8 +115,9 @@ export function collect({ root = ROOT, baseline, candidate, out, rounds = 4, sui
             const bytes = readFileSync(output);
             if (!WebAssembly.validate(bytes)) throw new Error(`${name}: invalid Wasm output`);
             const wasm_sha256 = hash(bytes);
-            if (hashes.has(corpus.name) && hashes.get(corpus.name) !== wasm_sha256) throw new Error(`${name}: output differs across compilers, rounds or temperatures`);
-            hashes.set(corpus.name, wasm_sha256);
+            const hashKey = allowCodegenDiff ? `${corpus.name}-${lane}` : corpus.name;
+            if (hashes.has(hashKey) && hashes.get(hashKey) !== wasm_sha256) throw new Error(`${name}: output differs ${allowCodegenDiff ? "within one compiler across rounds or temperatures" : "across compilers, rounds or temperatures"}`);
+            hashes.set(hashKey, wasm_sha256);
             const row = { round, corpus: corpus.name, lane, temperature, wall_ms,
               ...parseMemory(result.stderr), peak_rss_bytes: parsePeakRss(readFileSync(rssFile, "utf8"), process.platform),
               wasm_bytes: bytes.length, wasm_sha256 };
@@ -148,9 +150,9 @@ export function collect({ root = ROOT, baseline, candidate, out, rounds = 4, sui
 
 if (process.argv[1] && resolve(process.argv[1]) === SCRIPT) {
   try {
-    const [baseline, candidate, out, rounds = "4", suite = "closure"] = process.argv.slice(2);
-    if (!baseline || !candidate || !out || process.argv.length > 7) throw new Error("usage: compare_compiler_memory.mjs <baseline.wasm> <candidate.wasm> <new-output-directory> [rounds=4] [closure|full]");
-    const result = collect({ baseline, candidate, out, rounds: Number(rounds), suite });
+    const [baseline, candidate, out, rounds = "4", suite = "closure", flag] = process.argv.slice(2);
+    if (!baseline || !candidate || !out || process.argv.length > 8 || (flag !== undefined && flag !== "--allow-codegen-diff")) throw new Error("usage: compare_compiler_memory.mjs <baseline.wasm> <candidate.wasm> <new-output-directory> [rounds=4] [closure|full] [--allow-codegen-diff]");
+    const result = collect({ baseline, candidate, out, rounds: Number(rounds), suite, allowCodegenDiff: flag === "--allow-codegen-diff" });
     console.log(JSON.stringify(result.comparisons, null, 2));
   } catch (error) {
     console.error(`[compare-compiler-memory] ${error.message}`);

@@ -79,6 +79,23 @@ test("full mode adds the CLI workload with its real entry", t => {
   assert.equal(calls[4].entry, "cli_main");
 });
 
+test("an explicit codegen comparison allows differences only between compilers", t => {
+  const { options } = fixture(t, c => {
+    if (c.compiler.endsWith("b.wasm")) writeFileSync(c.output, Buffer.concat([wasm, Buffer.from([0, 2, 1, 120])]));
+  });
+  const result = collect({ ...options, allowCodegenDiff: true });
+  assert.equal(result.output_equivalence, "within-compiler; semantic parity requires separate execution tests");
+  assert.equal(new Set(result.samples.map(s => s.wasm_sha256)).size, 2);
+});
+
+test("allowing codegen changes still rejects cold/warm output drift", t => {
+  const { options } = fixture(t, c => {
+    if (c.warm) writeFileSync(c.output, Buffer.concat([wasm, Buffer.from([0, 2, 1, 120])]));
+  });
+  assert.throws(() => collect({ ...options, allowCodegenDiff: true }), /output differs/);
+  assert.equal(existsSync(join(options.out, "summary.json")), false);
+});
+
 for (const [name, change, expected] of [
   ["different output", (c) => { if (c.compiler.endsWith("b.wasm")) writeFileSync(c.output, Buffer.concat([wasm, Buffer.from([0, 2, 1, 120])])); }, /output differs/],
   ["warm drift", (c) => { if (c.warm) writeFileSync(c.output, Buffer.concat([wasm, Buffer.from([0, 2, 1, 120])])); }, /output differs/],

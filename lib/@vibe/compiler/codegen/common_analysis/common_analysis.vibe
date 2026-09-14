@@ -2010,7 +2010,7 @@ fn md_collect_shadow_names(e: Expr, out: Array[String]) -> Int {
       let mut i = 0
       while i < Array::length(params) {
         let pr = Array::get(params, i)
-        Array::push(out, pr.0)
+        Array::push(out, bp_param_base_name(pr.0))
         i = i + 1
       }
       md_collect_shadow_names(body, out)
@@ -2034,6 +2034,11 @@ fn md_collect_shadow_names(e: Expr, out: Array[String]) -> Int {
   }
 }
 
+// The binder walk calls no user code and cannot re-enter this query. Reuse
+// its work array; clear the names before returning so no AST strings survive
+// between queries. Returned masks must remain independent of this scratch.
+let md_shadow_names_scratch: Array[String] = []
+
 /// The shadow-honoring half of md_consume_count_b, split out so callers
 /// that count MANY names against the SAME body (compile_match's per-field
 /// bind loops, compile_lambda's capture loop) can run the binder prepass
@@ -2053,7 +2058,7 @@ export fn md_shadow_zeroed_bmasks(e: Expr, bfns: Array[String], bmasks: Array[In
   if Array::length(bfns) == 0 {
     bmasks
   } else {
-    let sh: Array[String] = []
+    let sh = md_shadow_names_scratch
     md_collect_shadow_names(e, sh)
     let mut any_hit = false
     let mut si = 0
@@ -2065,7 +2070,7 @@ export fn md_shadow_zeroed_bmasks(e: Expr, bfns: Array[String], bmasks: Array[In
       }
       si = si + 1
     }
-    if !any_hit {
+    let result = if !any_hit {
       bmasks
     } else {
       let bmasks2: Array[Int] = []
@@ -2086,6 +2091,8 @@ export fn md_shadow_zeroed_bmasks(e: Expr, bfns: Array[String], bmasks: Array[In
       }
       bmasks2
     }
+    Array::truncate(sh, 0)
+    result
   }
 }
 
@@ -3915,18 +3922,141 @@ fn bp_round1_scan(stmts: Array[Stmt], round0_names: Array[String], round0_masks:
   }
 }
 
+/// Close direct recursion after the two non-recursive rounds. Other callees
+/// keep the complete round-1 snapshot; only the current function's slot is
+/// temporarily changed. Start with all eligible parameters borrowed and remove
+/// consumed positions until stable. At most one iteration per parameter can
+/// remove a bit. In particular, an owned position must propagate through a
+/// recursive permutation of arguments before any mask is published.
+///
+/// This runs AFTER linking disqualifiers: applying `local & ~owned_bits` to a
+/// recursive result would miss that propagation when a temporary call argument
+/// in another module disqualifies one position. Both compilation lanes share
+/// this pass over their original parts. Duplicate declarations stay conservative.
+fn bp_recursive_parts(parts: Array[Array[Stmt]], nonident: MutMap[String, Int], valued_set: MutSet[String], excluded_set: MutSet[String], names: Array[String], masks: MutMap[String, Int]) -> Unit {
+  let declared: MutMap[String, Int] = MutMap::new_string()
+  let all_names: Array[String] = []
+  let mut pi = 0
+  while pi < Array::length(parts) {
+    let part = Array::get(parts, pi)
+    let mut si = 0
+    while si < Array::length(part) {
+      // Aliases and declarations also shadow builtin borrow masks. Give
+      // them authoritative zero entries even though only EFn bodies below
+      // can acquire new borrowed positions.
+      let fname = match Array::get(part, si) {
+        SLet(_, _, name, _, _) => name,
+        SFnDecl(_, name, _, _, _) => name,
+        _ => ""
+      }
+      if fname != "" {
+        match MutMap::get(declared, fname) {
+          Some(n) => MutMap::set(declared, fname, n + 1),
+          None => {
+            MutMap::set(declared, fname, 1)
+            Array::push(all_names, fname)
+          }
+        }
+      }
+      si = si + 1
+    }
+    pi = pi + 1
+  }
+  let snapshot_masks: Array[Int] = []
+  let snapshot_names = bp_sorted_with_masks(all_names, masks, snapshot_masks)
+  let self_names: Array[String] = [""]
+  let param_names: Array[String] = []
+  let hits: Array[Int] = []
+  pi = 0
+  while pi < Array::length(parts) {
+    let part = Array::get(parts, pi)
+    let mut si = 0
+    while si < Array::length(part) {
+      match Array::get(part, si) {
+        SLet(_, _, fname, _, EFn(attrs, tps, fps, ret, eff, body)) => {
+          Array::set(self_names, 0, fname)
+          if MutMap::get(declared, fname) == Some(1) && !MutSet::has(valued_set, fname) && !MutSet::has(excluded_set, fname) && bp_calls_round0_borrow(body, self_names) {
+            let self_idx = bsearch_leftmost(snapshot_names, fname)
+            let prev_mask = Array::get(snapshot_masks, self_idx)
+            let owned_bits = match MutMap::get(nonident, fname) {
+              Some(m) => m,
+              None => 0
+            }
+            let lim = if Array::length(fps) < bmask_max_param() {
+              Array::length(fps)
+            } else {
+              bmask_max_param()
+            }
+            Array::truncate(param_names, 0)
+            Array::truncate(hits, 0)
+            let mut assumed = 0
+            let mut p = 0
+            while p < lim {
+              let (raw, _) = Array::get(fps, p)
+              let pn = bp_param_base_name(raw)
+              Array::push(param_names, pn)
+              let eligible = pn != "" && !bmask_has(owned_bits, p)
+              Array::push(hits, if eligible {
+                0
+              } else {
+                1
+              })
+              if eligible {
+                assumed = assumed|(1<<p)
+              }
+              p = p + 1
+            }
+            if assumed != prev_mask {
+              Array::set(snapshot_masks, self_idx, assumed)
+              // Include the outer parameters, which can also shadow callees.
+              let body_masks = md_shadow_zeroed_bmasks(EFn(attrs, tps, fps, ret, eff, body), snapshot_names, snapshot_masks)
+              let self_unshadowed = Array::get(body_masks, self_idx) == assumed
+              let mut changed = self_unshadowed
+              let mut check_captures = true
+              while changed && assumed != 0 {
+                Array::set(body_masks, self_idx, assumed)
+                md_consumed_any(body, param_names, snapshot_names, body_masks, hits)
+                let mut narrowed = 0
+                p = 0
+                while p < lim {
+                  if check_captures && Array::get(hits, p) == 0 && !bmask_has(prev_mask, p) && is_mut_captured_in(body, Array::get(param_names, p)) {
+                    Array::set(hits, p, 1)
+                  }
+                  if Array::get(hits, p) == 0 {
+                    narrowed = narrowed|(1<<p)
+                  }
+                  p = p + 1
+                }
+                check_captures = false
+                changed = narrowed != assumed
+                assumed = narrowed
+              }
+              Array::set(snapshot_masks, self_idx, prev_mask)
+              if self_unshadowed && (assumed|prev_mask) != prev_mask {
+                if prev_mask == 0 {
+                  Array::push(names, fname)
+                }
+                MutMap::set(masks, fname, assumed|prev_mask)
+              }
+            }
+          }
+        },
+        _ => ()
+      }
+      si = si + 1
+    }
+    pi = pi + 1
+  }
+}
+
 /// ADR-0092 borrow-inference: for every top-level fn, which of its
 /// parameters are only ever READ. Each such position's ABI flips to
 /// borrowed, program-wide and in lockstep: the caller's plan counts an
 /// ident argument there as a free borrow (no transfer dup) and the callee's
 /// plan-site drop for that param is skipped (linked_compile).
 ///
-/// Slice 1 (#1282) inferred position 0 only. This is the per-position
-/// generalization: a fn that consumes param0 but only reads param1 now gets
-/// param1 borrowed, and a fn all of whose params are read-only gets all of
-/// them. **Bit 0 of the result is exactly slice 1's set** -- same
-/// eligibility test, same disqualifiers -- which is what makes
-/// `mask & 1` a byte-identity differential against the previous compiler.
+/// Each mask bit describes one parameter. A function that consumes param0
+/// but only reads param1 can borrow param1 without changing param0's ABI.
 ///
 /// Eligibility is decided per position, all conservative:
 ///   - the fn is a top-level `SLet` + `EFn`, and the position is < arity
@@ -3954,8 +4084,9 @@ fn bp_round1_scan(stmts: Array[Stmt], round0_names: Array[String], round0_masks:
 /// consumes masks being decided in the same round. Only bodies that actually
 /// call a round-0 borrowed function are revisited. A local callee shadow zeros
 /// that function's mask before counting, preserving the owned-call fallback.
-/// This deliberately stops after one extra layer: deeper closure is a possible
-/// future worklist extension, while every intermediate result stays sound.
+/// Direct recursion then closes against the complete round-1 snapshot via
+/// bp_recursive_parts. Other callees keep their snapshot masks; mutually
+/// recursive functions do not infer one another's new borrowed positions.
 ///
 /// Returns the SORTED name array and fills `out_masks` aligned to it, so a
 /// single `bsearch_leftmost` on the names indexes straight into the masks.
@@ -3989,6 +4120,7 @@ export fn compute_borrow_param_user_fns(stmts: Array[Stmt], exclude: Array[Strin
   let round0_masks: Array[Int] = []
   let round0_names = bp_sorted_with_masks(names, masks, round0_masks)
   bp_round1_scan(stmts, round0_names, round0_masks, nonident, valued_set, excluded_set, names, masks)
+  bp_recursive_parts([stmts], nonident, valued_set, excluded_set, names, masks)
   // A zero-mask entry is an ownership override, not a borrowed ABI. Callers
   // distinguish it by looking up the aligned mask instead of testing name
   // membership alone.
@@ -4032,8 +4164,8 @@ export fn compute_borrow_disqualifiers(stmts: Array[Stmt], out_valued: Array[Str
 
 /// #2638: round 0 alone, over the whole program -- the reference the
 /// per-module link is measured against. `compute_borrow_param_user_fns` is
-/// this plus one bounded transitive round, and that round is the half that
-/// still needs callee edges to cross a module boundary.
+/// this plus one bounded transitive round and direct-recursion closure. Those
+/// stages need linked callee masks and program-wide disqualifiers.
 export fn compute_borrow_param_user_fns_round0(stmts: Array[Stmt], exclude: Array[String], out_masks: Array[Int]) -> Array[String] {
   let valued = array_empty()
   let nonident_fns = array_empty()
@@ -4163,8 +4295,8 @@ fn bp_round1_local_prepared(stmts: Array[Stmt], round0_names: Array[String], rou
   }
 }
 
-/// #2638: PHASE B, whole. The program's round 0 AND round 1, from the linked
-/// round-0 table plus each module's own bodies -- an OVERLAY, not a fixpoint.
+/// #2638: PHASE B, whole. Link round 1 over the immutable round-0 table,
+/// then close direct recursion using the same pass as whole-program inference.
 ///
 /// Every module in `parts` answers round 1 for the functions IT declares,
 /// reading only its own statements and the shared tables. Round 1 raises only
@@ -4216,6 +4348,7 @@ export fn borrow_round1_link_parts(parts: Array[Array[Stmt]], round0_names: Arra
     MutMap::set(masks, nm, Array::get(delta_masks, j))
     j = j + 1
   }
+  bp_recursive_parts(parts, nonident, valued_set, excluded_set, names, masks)
   // The same tail `compute_borrow_param_user_fns` appends, from the OR of what
   // the modules published. A zero-mask entry is an ownership override, not a
   // borrowed ABI.
