@@ -3461,6 +3461,36 @@ fn dtd_interp_index_of_field(field: String) -> Int {
 /// means the call's own value is not an erased scalar (its element is), so ""
 /// is the answer here rather than the leaf, which would ask about the call's
 /// type and has none.
+/// What a marker SOURCE carries: the erased formal it names, or "".
+///
+/// A source is either an ARGUMENT INDEX -- the shape a local lambda's own type
+/// parameter takes, since the call site supplies the value -- or a DECLARED TYPE
+/// NAME (`t<Name>`), the shape a function-valued parameter takes, since its
+/// annotation says the answer outright and there is no argument to map to.
+/// Round 23 made the two spellings share every marker, so this is the one place
+/// they are told apart.
+///
+/// A name goes through the same guard the leaf applies, because a name is a
+/// name and `Int` must not be read as a type parameter -- round 17 learned that
+/// by making the compiler reject its own sources.
+fn dtd_interp_lamret_src_formal(src: String, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let named = dtd_interp_lamret_type_name(src)
+  if String::length(named) > 0 {
+    if formal_in_scope(named) && dtd_formal_innermost_is_nested(named) {
+      named
+    } else {
+      ""
+    }
+  } else {
+    let ix = dtd_interp_index_of_field(src)
+    if ix >= 0 && ix < Array::length(cargs) {
+      dtd_erased_interp_formal(Array::get(cargs, ix), struct_sets, var_types, fn_returns)
+    } else {
+      ""
+    }
+  }
+}
+
 fn dtd_interp_lamret_apply(slot: String, arg: Expr, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   let named = dtd_interp_lamret_type_name(slot)
   if String::length(slot) == 0 {
@@ -3475,7 +3505,7 @@ fn dtd_interp_lamret_apply(slot: String, arg: Expr, cargs: Array[Expr], struct_s
     } else {
       ""
     }
-  } else if dtd_interp_lamret_elem_arg(slot) >= 0 {
+  } else if String::length(dtd_interp_lamret_elem_src(slot)) > 0 {
     ""
   } else if dtd_interp_lamret_tuple_parts(slot).0 >= 0 {
     // A TUPLE result is not an erased scalar either; its elements are, and the
@@ -3540,9 +3570,9 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
         EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps, params, ret, fbody),
         _ => ""
       }
-      let k = dtd_interp_lamret_elem_arg(slot)
-      if k >= 0 && k < Array::length(cargs) {
-        dtd_erased_interp_formal(Array::get(cargs, k), struct_sets, var_types, fn_returns)
+      let esrc = dtd_interp_lamret_elem_src(slot)
+      if String::length(esrc) > 0 {
+        dtd_interp_lamret_src_formal(esrc, cargs, struct_sets, var_types, fn_returns)
       } else {
         ""
       }
@@ -3554,6 +3584,54 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
 /// The first argument that classifies as an erased nested formal; "" when none
 /// does. ANY argument decides, for the reason the branch arms take: this pass
 /// cannot see which parameter the callee's return names.
+/// What an aggregate BOUND TO A NAME carries, read from the slots its binding
+/// recorded: a tuple element, a record field, or an array element.
+///
+/// Each key's CURRENT value is looked up rather than read in place, because a
+/// mask pushes "" for every key a rebinding shadows and `lookup_var_type` scans
+/// backward -- reading the entry where it sits would hand back a record the
+/// rebinding already retired.
+///
+/// The guard is applied to every family, not only to `__arrelem$`: the slot
+/// families hold classifications, which are already either "" or an erased
+/// formal, so it costs nothing there, while `array_elem_key` stores a real type
+/// name (`Int` for an `Array[Int]`) and needs it (round 17).
+fn dtd_interp_recorded_slot_formal(name: String, var_types: Array[(String, String)]) -> String {
+  let one = empty_str_array()
+  Array::push(one, name)
+  let fams = dtd_interp_slot_key_families()
+  let keys = empty_str_array()
+  let mut i = 0
+  while i < Array::length(var_types) {
+    let (k, _) = Array::get(var_types, i)
+    if dtd_interp_key_owned_in(fams, false, one, k) {
+      Array::push(keys, k)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  Array::push(keys, array_elem_key(name))
+  let mut ki = 0
+  let mut found = ""
+  while ki < Array::length(keys) {
+    if String::length(found) == 0 {
+      match lookup_var_type(var_types, Array::get(keys, ki)) {
+        Some(t) => if String::length(t) > 0 && formal_in_scope(t) && dtd_formal_innermost_is_nested(t) {
+          found = t
+        } else {
+          ()
+        },
+        None => ()
+      }
+    } else {
+      ()
+    }
+    ki = ki + 1
+  }
+  found
+}
+
 /// An argument's classification, looking INSIDE an aggregate written at the
 /// site.
 ///
@@ -3571,6 +3649,12 @@ fn dtd_erased_interp_arg_deep(e: Expr, struct_sets: Array[(String, Array[String]
     direct
   } else {
     match e {
+      // Round 23 (Codex, P1): the aggregate reached through a NAME. Round 22
+      // looked inside one written AT THE SITE, and `let p = (a, 0); fst(p)`
+      // classifies `p` as "" -- a tuple is not itself a formal -- so the
+      // elements the binding already recorded were never consulted. Written
+      // and named are one question; this reads the answer the recorder wrote.
+      EIdent(n, _) => dtd_interp_recorded_slot_formal(n, var_types),
       ETuple(es) => dtd_erased_interp_any_deep(es, struct_sets, var_types, fn_returns),
       EArray(es) => dtd_erased_interp_any_deep(es, struct_sets, var_types, fn_returns),
       ECall(ecallee, cargs, _) => match ecallee {
@@ -4204,40 +4288,76 @@ fn dtd_interp_lamret_any() -> String {
   "*"
 }
 
-/// The marker for "returns an ARRAY whose element is argument k", as opposed to
-/// "returns argument k". `a` is not a digit, so the two cannot be confused, and
-/// `dtd_interp_lamret_elem_arg` is the only reader that takes it apart.
-fn dtd_interp_lamret_elem(k: Int) -> String {
-  String::concat("a", idx_str(k))
+/// The marker for "returns an ARRAY whose element is `src`", as opposed to
+/// "returns `src`". `a` is not a digit, so the two cannot be confused, and
+/// `dtd_interp_lamret_elem_src` is the only reader that takes it apart.
+///
+/// Round 23 widened `src` from an argument index to a SOURCE, which is either
+/// an argument index or a declared type name -- a function-valued PARAMETER
+/// returning `Array[T]` knows its element by name and has no argument to map
+/// to. One spelling for both, resolved in one place
+/// (`dtd_interp_lamret_src_formal`).
+fn dtd_interp_lamret_elem(src: String) -> String {
+  String::concat("a", src)
 }
 
-/// The marker for "returns a TUPLE of `arity` whose positions `positions`
-/// (comma-separated) hold argument `k`".
+/// The marker for "returns a TUPLE of `arity` whose position `p` holds `src`",
+/// written `u<arity>:<p>=<src>[,<p>=<src>...]`.
 ///
 /// #2745 (Codex, P1 round 21 on #2761): round 17 handled `-> Array[U]` and
 /// said a deeper shape "would need a type language here, and this pass has
-/// none". A tuple needs only which POSITIONS carry the formal, which is three
-/// numbers -- so `-> (U, Int)` is recorded, and `{ let p = pack(a); p.0 }`
-/// resolves through the ordinary tuple machinery instead of a rule of its own.
-/// Positions the formal does not occupy stay blank, so `p.1` still renders.
-fn dtd_interp_lamret_tuple(k: Int, arity: Int, positions: String) -> String {
-  let head = String::concat("u", String::concat(idx_str(k), ":"))
-  String::concat(head, String::concat(idx_str(arity), String::concat(":", positions)))
+/// none". A tuple needs only which POSITIONS carry a formal -- so `-> (U, Int)`
+/// is recorded, and `{ let p = pack(a); p.0 }` resolves through the ordinary
+/// tuple machinery instead of a rule of its own. Positions no source names stay
+/// blank, so `p.1` still renders.
+///
+/// Round 23 (Codex, P1): each position carries its OWN source. The first cut
+/// stored one argument index for the whole tuple and kept only the positions
+/// that agreed with it, so `[U, V](u: U, v: V) -> (U, V)` recorded position 0
+/// and SILENTLY DROPPED position 1 -- `p.1` was unknown and a struct `V`
+/// printed its tagged pointer. One index per tuple was never the fact; it was
+/// the fact the case that prompted the arm happened to have.
+fn dtd_interp_lamret_tuple(arity: Int, pairs: String) -> String {
+  String::concat("u", String::concat(idx_str(arity), String::concat(":", pairs)))
 }
 
-/// The three fields behind a `dtd_interp_lamret_tuple` marker: argument index,
-/// arity, and the comma-separated positions. `(-1, 0, "")` when it is not one.
-fn dtd_interp_lamret_tuple_parts(slot: String) -> (Int, Int, String) {
+/// One `<p>=<src>` entry of a `dtd_interp_lamret_tuple` marker.
+fn dtd_interp_lamret_pair(pos: Int, src: String) -> String {
+  String::concat(idx_str(pos), String::concat("=", src))
+}
+
+/// The two fields behind a `dtd_interp_lamret_tuple` marker: arity, and the
+/// comma-separated `<p>=<src>` entries. `(-1, "")` when it is not one.
+fn dtd_interp_lamret_tuple_parts(slot: String) -> (Int, String) {
   if String::length(slot) < 2 || String::char_code_at(slot, 0) != 'u' {
-    (0 - 1, 0, "")
+    (0 - 1, "")
   } else {
     let parts = String::split(String::substring(slot, 1, String::length(slot)), ":")
-    if Array::length(parts) != 3 {
-      (0 - 1, 0, "")
+    if Array::length(parts) != 2 {
+      (0 - 1, "")
     } else {
-      (dtd_interp_index_of_field(Array::get(parts, 0)), dtd_interp_index_of_field(Array::get(parts, 1)), Array::get(parts, 2))
+      (dtd_interp_index_of_field(Array::get(parts, 0)), Array::get(parts, 1))
     }
   }
+}
+
+/// The source recorded for position `pos`, or "" when that position carries
+/// none.
+fn dtd_interp_lamret_tuple_src_at(pairs: String, pos: Int) -> String {
+  let want = idx_str(pos)
+  let entries = String::split(pairs, ",")
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(entries) {
+    let kv = String::split(Array::get(entries, i), "=")
+    if Array::length(kv) == 2 && Array::get(kv, 0) == want {
+      found = Array::get(kv, 1)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 /// The marker for "returns a value of the type spelled `name`", as opposed to
@@ -4259,12 +4379,12 @@ fn dtd_interp_lamret_type_name(slot: String) -> String {
   }
 }
 
-/// The argument index behind a `dtd_interp_lamret_elem` marker, or -1.
-fn dtd_interp_lamret_elem_arg(slot: String) -> Int {
+/// The source behind a `dtd_interp_lamret_elem` marker, or "".
+fn dtd_interp_lamret_elem_src(slot: String) -> String {
   if String::length(slot) < 2 || String::char_code_at(slot, 0) != 'a' {
-    0 - 1
+    ""
   } else {
-    dtd_interp_index_of_field(String::substring(slot, 1, String::length(slot)))
+    String::substring(slot, 1, String::length(slot))
   }
 }
 
@@ -4394,7 +4514,7 @@ fn dtd_interp_lamret_of(tps: Array[String], params: Array[(String, Option[TypeEx
           if at == dtd_interp_lamret_any() {
             ""
           } else {
-            dtd_interp_lamret_elem(dtd_interp_index_of_field(at))
+            dtd_interp_lamret_elem(at)
           }
         } else {
           ""
@@ -4406,20 +4526,23 @@ fn dtd_interp_lamret_of(tps: Array[String], params: Array[(String, Option[TypeEx
     },
     // Round 21: a TUPLE return. Which positions carry the formal is all this
     // needs, and that is three numbers rather than a type language.
+    // Round 23: each position keeps its OWN argument index. The first cut kept
+    // one for the whole tuple and dropped every position that disagreed, so
+    // `[U, V](u: U, v: V) -> (U, V)` recorded `U` and lost `V` -- a formal the
+    // caller can read back out of `p.1`.
     Some(TyTuple(rts)) => {
       let mut ti = 0
-      let mut at = ""
-      let mut pos = ""
+      let mut pairs = ""
       while ti < Array::length(rts) {
         match Array::get(rts, ti) {
           TyName(eh) => if str_array_contains(tps, eh) {
             let here = dtd_interp_param_at_type(params, eh)
-            if here != dtd_interp_lamret_any() && (String::length(at) == 0 || at == here) {
-              at = here
-              pos = if String::length(pos) == 0 {
-                idx_str(ti)
+            if here != dtd_interp_lamret_any() {
+              let entry = dtd_interp_lamret_pair(ti, here)
+              pairs = if String::length(pairs) == 0 {
+                entry
               } else {
-                String::concat(pos, String::concat(",", idx_str(ti)))
+                String::concat(pairs, String::concat(",", entry))
               }
             } else {
               ()
@@ -4431,8 +4554,8 @@ fn dtd_interp_lamret_of(tps: Array[String], params: Array[(String, Option[TypeEx
         }
         ti = ti + 1
       }
-      if String::length(pos) > 0 {
-        dtd_interp_lamret_tuple(dtd_interp_index_of_field(at), Array::length(rts), pos)
+      if String::length(pairs) > 0 {
+        dtd_interp_lamret_tuple(Array::length(rts), pairs)
       } else {
         ""
       }
@@ -4774,15 +4897,16 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
           Some(t) => t,
           None => ""
         }
-        let (tk, tarity, tpos) = dtd_interp_lamret_tuple_parts(tslot)
-        if tk >= 0 && tk < Array::length(cargs) && tarity > 0 {
-          let tf = dtd_erased_interp_formal(Array::get(cargs, tk), struct_sets, var_types, fn_returns)
+        let (tarity, tpairs) = dtd_interp_lamret_tuple_parts(tslot)
+        if tarity > 0 {
           Array::push(out, (dtd_interp_shape_key(name), dtd_interp_tuple_shape()))
-          let poss = String::split(tpos, ",")
           let mut pi = 0
           while pi < tarity {
-            let here = if str_array_contains(poss, idx_str(pi)) {
-              tf
+            // Round 23: each position resolves its own source, so a tuple
+            // returning two DIFFERENT formals records both.
+            let psrc = dtd_interp_lamret_tuple_src_at(tpairs, pi)
+            let here = if String::length(psrc) > 0 {
+              dtd_interp_lamret_src_formal(psrc, cargs, struct_sets, var_types, fn_returns)
             } else {
               ""
             }
@@ -8256,9 +8380,50 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
     // decimal. The parameter's declared type says what the call returns, so
     // recording it here puts the answer in the same place a local lambda's
     // goes -- no new reader, and a rebinding masks it like the rest.
+    // Round 23 (Codex, P1): the arm above read `TyName` only, so an AGGREGATE
+    // return -- `f: (T) -> Array[T]` -- recorded nothing and
+    // `Array::get(f(a), 0)` lost `T`. A parameter's annotation names its
+    // element or its positions just as plainly as its scalar return, and since
+    // round 23 every marker carries a declared type name as a source, so the
+    // two shapes go in the same slots a local lambda's do and need no reader of
+    // their own.
     match ann {
       Some(TyFn(_, fret, _)) => match fret {
         TyName(rh) => Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_type(rh))),
+        TyApp(rc, rargs) => if rc == "Array" && Array::length(rargs) == 1 {
+          match Array::get(rargs, 0) {
+            TyName(eh) => Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_elem(dtd_interp_lamret_type(eh)))),
+            _ => ()
+          }
+        } else {
+          ()
+        },
+        TyTuple(rts) => {
+          let mut ri = 0
+          let mut pairs = ""
+          while ri < Array::length(rts) {
+            match Array::get(rts, ri) {
+              // Every position is recorded, concrete ones included: what makes
+              // a name erased is the guard in `dtd_interp_lamret_src_formal`,
+              // and answering that here would be a second copy of it.
+              TyName(eh) => {
+                let entry = dtd_interp_lamret_pair(ri, dtd_interp_lamret_type(eh))
+                pairs = if String::length(pairs) == 0 {
+                  entry
+                } else {
+                  String::concat(pairs, String::concat(",", entry))
+                }
+              },
+              _ => ()
+            }
+            ri = ri + 1
+          }
+          if String::length(pairs) > 0 {
+            Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_tuple(Array::length(rts), pairs)))
+          } else {
+            ()
+          }
+        },
         _ => ()
       },
       _ => ()
