@@ -1,0 +1,47 @@
+// Parsing and construction stay outside the measured region. Each run owns
+// a detached AST because evidence lowering mutates its statement array.
+import @vibe/compiler/core {
+  Expr, Pat, Stmt, TypeExpr
+}
+import @vibe/compiler/lowering/effects/evidence {
+  evidence_dict_pass
+}
+import @vibe/parser {
+  detach_stmts
+}
+
+fn call(name: String, args: Array[Expr]) -> Expr {
+  ECall(EIdent(name, 0), args, 0)
+}
+
+fn program() -> Array[Stmt] {
+  let out: Array[Stmt] = [
+    SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))])
+  ]
+  let mut i = 0
+  while i < 1024 {
+    let name = String::concat("side_", __to_string(i))
+    Array::push(out, SLet(false, false, name, None, EFn([], [], [
+      ("n", Some(TyName("Int")))
+    ], Some(TyName("Int")), Some("Stdout"), EIdent("n", 0))))
+    let pure_name = String::concat("pure_", __to_string(i))
+    Array::push(out, SLet(false, false, pure_name, None, EFn([], [], [], Some(TyName("Int")), None, EInt(i))))
+    i = i + 1
+  }
+  Array::push(out, SLet(false, false, "ask", None, EFn([], [], [], Some(TyName("Int")), Some("Ask"), call("perform", [
+    call("Ask::Get", [])
+  ]))))
+  let body = EHandle(call("side_1023", [call("ask", [])]), [
+    (PCtor("Ask::Get", []), call("resume", [EInt(42)]))
+  ])
+  Array::push(out, SLet(false, false, "main", None, EFn([], [], [], Some(TyName("Int")), Some("Stdout"), body)))
+  out
+}
+
+let template = program()
+
+bench "evidence_inert_names_2048" {
+  let stmts = detach_stmts(template)
+  let errors = evidence_dict_pass(stmts, "main")
+  assert(Array::length(errors) == 0)
+}

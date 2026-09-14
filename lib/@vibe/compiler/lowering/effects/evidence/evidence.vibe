@@ -10,7 +10,8 @@ import @vibe/compiler/core {
   expr_children_push,
   expr_children_top,
   is_exception_effect_name,
-  is_exception_throw_operation
+  is_exception_throw_operation,
+  sort_perm_by_names
 }
 
 import @vibe/core {
@@ -3270,6 +3271,8 @@ fn edp_row_labels_have_var(labels: Array[String]) -> Bool {
 }
 
 fn edp_append_effect_irrelevant_row_fns(fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, pure_fns: Array[String], row_labels: Array[Array[String]]) -> Unit {
+  let base_len = Array::length(pure_fns)
+  let mut names: Array[String] = []
   let mut i = 0
   while i < Array::length(fn_defs) {
     let (_, _, _, name, _, _) = Array::get(fn_defs, i)
@@ -3283,12 +3286,38 @@ fn edp_append_effect_irrelevant_row_fns(fn_defs: Array[(Int, Bool, Bool, String,
       ()
     } else if edp_row_labels_have_var(labels) {
       ()
-    } else if edp_str_array_contains(pure_fns, name) {
-      ()
     } else {
-      Array::push(pure_fns, name)
+      // Copy the existing prefix only when a row can contribute a name.
+      if Array::length(names) == 0 {
+        names = Array::slice(pure_fns, 0, base_len)
+      }
+      Array::push(names, name)
     }
     i = i + 1
+  }
+  if Array::length(names) > base_len {
+    // A stable sort puts any existing entry before candidates of the same
+    // name, and the first candidate before its duplicates. Mark only those
+    // first occurrences, then append in original order. The result keeps
+    // the existing prefix exactly, without a growing linear membership scan.
+    let order = sort_perm_by_names(names)
+    let append_flags = Bytes::new()
+    Bytes::fill(append_flags, 0, Array::length(names) - base_len)
+    i = 0
+    while i < Array::length(order) {
+      let slot = Array::get(order, i)
+      if slot >= base_len && (i == 0 || Array::get(names, slot) != Array::get(names, Array::get(order, i - 1))) {
+        Bytes::set(append_flags, slot - base_len, 1)
+      }
+      i = i + 1
+    }
+    i = base_len
+    while i < Array::length(names) {
+      if Bytes::get(append_flags, i - base_len) == 1 {
+        Array::push(pure_fns, Array::get(names, i))
+      }
+      i = i + 1
+    }
   }
 }
 

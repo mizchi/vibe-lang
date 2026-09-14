@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Stmt
+  Expr, Pat, Stmt, TypeExpr
 }
 import @vibe/compiler/lowering/effects/evidence {
   edp_bind_census, evidence_dict_pass
@@ -9,4 +9,53 @@ test "the evidence census distinguishes a binding from a reference" {
   let stmts = [SExpr(ELet("bound", EInt(1), EIdent("used", 8), 0))]
   inspect(edp_bind_census(stmts, ["bound", "used", "bound"]), content = "[true, false, true]")
   inspect(evidence_dict_pass(stmts, ""), content = "[]")
+}
+
+fn inert_row_program(side_row: String) -> Array[Stmt] {
+  let ask = ECall(EIdent("ask", 0), [], 0)
+  let side_body = if side_row == "Ask" {
+    ask
+  } else {
+    EIdent("n", 0)
+  }
+  [
+    SEffectDef(false, "Ask", [], [("Get", [], TyName("Int"))]),
+    SLet(false, false, "ask", None, EFn([], [], [], Some(TyName("Int")), Some("Ask"), ECall(EIdent("perform", 0), [
+      ECall(EIdent("Ask::Get", 0), [], 0)
+    ], 0))),
+    SLet(false, false, "side", None, EFn([], [], [("n", Some(TyName("Int")))], Some(TyName("Int")), Some(side_row), side_body)),
+    SLet(false, false, "main", None, EFn([], [], [], Some(TyName("Int")), Some("Stdout"), EHandle(ECall(EIdent("side", 0), [
+      ask
+    ], 0), [(PCtor("Ask::Get", []), ECall(EIdent("resume", 0), [EInt(42)], 0))])))
+  ]
+}
+
+fn lowered_side_arity(side_row: String) -> Int {
+  let stmts = inert_row_program(side_row)
+  let errors = evidence_dict_pass(stmts, "main")
+  assert(Array::length(errors) == 0)
+  let mut arity = -1
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, "side", _, EFn(_, _, params, _, _, _)) => arity = Array::length(params),
+      _ => ()
+    }
+    i = i + 1
+  }
+  arity
+}
+
+test "inert row membership does not suppress a later program's required dictionary" {
+  inspect([
+    lowered_side_arity("Stdout"),
+    lowered_side_arity("Ask"),
+    lowered_side_arity("Stdout")
+  ], "[1, 2, 1]")
+}
+
+test "a row variable remains opaque to the handled effect" {
+  let stmts = inert_row_program("e")
+  let errors = evidence_dict_pass(stmts, "main")
+  inspect(Array::length(errors) > 0, "true")
 }
