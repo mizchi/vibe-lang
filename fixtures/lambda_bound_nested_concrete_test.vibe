@@ -333,6 +333,56 @@ fn wide_tuple_other_slot(q: Qt) -> String {
   inner(q)
 }
 
+// #2745 round 17 on the green side: a wrapped unannotated body, a container
+// return read inline and through a name, and -- the one that would catch the
+// body walk going too far -- a body that SHADOWS the parameter it would
+// otherwise be read as.
+fn wrapped_body_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) {
+      if true {
+        u
+      } else {
+        u
+      }
+    }
+    "\{idf(4)}"
+  }
+  inner(q)
+}
+
+fn wrapped_body_shadowed(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let shd = [U](u: U) -> Int {
+      let u = 3
+      u
+    }
+    "\{shd(a)}"
+  }
+  inner(q)
+}
+
+fn tyapp_ret_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let pack = [U](u: U) -> Array[U] {
+      [u]
+    }
+    "\{Array::get(pack(6), 0)}"
+  }
+  inner(q)
+}
+
+fn tyapp_ret_bound_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let pack = [U](u: U) -> Array[U] {
+      [u]
+    }
+    "\{ { let xs = pack(7)
+    Array::get(xs, 0) } }"
+  }
+  inner(q)
+}
+
 fn nested_all_concrete(q: Qt) -> String {
   let inner = [T](a: T) -> String {
     "\{ { let p = ((3, 1), 2)
@@ -505,4 +555,20 @@ test "#2745: an array with an empty leading element still renders" {
 
 test "#2745: a ten-element tuple's non-formal slot still renders" {
   inspect(wide_tuple_other_slot(Qt::{ w: 5 }), content = "9")
+}
+
+test "#2745: a wrapped unannotated lambda body at a concrete argument renders" {
+  inspect(wrapped_body_concrete(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: a body that SHADOWS its parameter is not read as the parameter" {
+  inspect(wrapped_body_shadowed(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: a concrete container return renders inline" {
+  inspect(tyapp_ret_concrete(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: and through a name" {
+  inspect(tyapp_ret_bound_concrete(Qt::{ w: 5 }), content = "7")
 }

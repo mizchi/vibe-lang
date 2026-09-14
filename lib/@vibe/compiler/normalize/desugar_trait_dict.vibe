@@ -3312,40 +3312,54 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
     // from inside a nested generic lambda; every other call is untouched,
     // `wrap_it(5)` included, because no argument classifies.
     ECall(callee, cargs, _) => match callee {
-      EIdent(fname, _) => match fn_return_type(fn_returns, fname) {
-        Some(rt) => if is_marked_formal_name(rt) {
-          dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
-        } else {
-          dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
-        },
-        // #2745 round 15: `fn_returns` holds TOP-LEVEL functions. A LOCAL
-        // generic lambda's return formal is recorded at its binding instead,
-        // with the index of the parameter it is spelled at, so the call
-        // answers with THAT argument's classification rather than falling to
-        // the leaf and reading a binder that is not in scope here.
-        None => {
-          // The recorded value is READ OUT FIRST, rather than branched on
-          // inside the `Some`. An absent record and a MASKED one ("" -- what a
-          // rebinding to a non-lambda pushes) must answer the same way, and
-          // matching on `Some` alone conflates them: `""` would reach the index
-          // branch, index as -1, and fall through to "any argument", which is a
-          // FALSE REFUSAL on a call whose callee this walk cannot place.
-          // (`architecture-debt` lint ARCH011 flagged the shape; the defect was
-          // real.)
-          let slot = match lookup_var_type(var_types, dtd_interp_lamret_key(fname)) {
-            Some(t) => t,
-            None => ""
-          }
-          if String::length(slot) == 0 {
-            dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
-          } else if slot == dtd_interp_lamret_any() {
+      // #2745 round 17: `Array::get(<expr>, i)` asks what `<expr>`'s ELEMENT
+      // is, and `infer_arg_type_name` can only answer that for a NAME. An
+      // inline call to a local lambda returning `Array[U]` is the case that
+      // needs it; everything else falls straight through to the rules below,
+      // and a NAME still answers at the leaf from `array_elem_key` as before.
+      EIdent(fname, _) => if (fname == "Array::get" || fname == "__index") && Array::length(cargs) == 2 && String::length(dtd_interp_elem_formal_of(Array::get(cargs, 0), struct_sets, var_types, fn_returns)) > 0 {
+        dtd_interp_elem_formal_of(Array::get(cargs, 0), struct_sets, var_types, fn_returns)
+      } else {
+        match fn_return_type(fn_returns, fname) {
+          Some(rt) => if is_marked_formal_name(rt) {
             dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
           } else {
-            let ix = dtd_interp_index_of_field(slot)
-            if ix >= 0 && ix < Array::length(cargs) {
-              dtd_erased_interp_formal(Array::get(cargs, ix), struct_sets, var_types, fn_returns)
-            } else {
+            dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+          },
+          // #2745 round 15: `fn_returns` holds TOP-LEVEL functions. A LOCAL
+          // generic lambda's return formal is recorded at its binding instead,
+          // with the index of the parameter it is spelled at, so the call
+          // answers with THAT argument's classification rather than falling to
+          // the leaf and reading a binder that is not in scope here.
+          None => {
+            // The recorded value is READ OUT FIRST, rather than branched on
+            // inside the `Some`. An absent record and a MASKED one ("" -- what a
+            // rebinding to a non-lambda pushes) must answer the same way, and
+            // matching on `Some` alone conflates them: `""` would reach the index
+            // branch, index as -1, and fall through to "any argument", which is a
+            // FALSE REFUSAL on a call whose callee this walk cannot place.
+            // (`architecture-debt` lint ARCH011 flagged the shape; the defect was
+            // real.)
+            let slot = match lookup_var_type(var_types, dtd_interp_lamret_key(fname)) {
+              Some(t) => t,
+              None => ""
+            }
+            if String::length(slot) == 0 {
+              dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+            } else if dtd_interp_lamret_elem_arg(slot) >= 0 {
+              // Returns an ARRAY of the argument, so the call's own value is not
+              // an erased scalar -- the element is. "" rather than the leaf,
+              // which would ask about the call's type and has no answer here.
+              ""
+            } else if slot == dtd_interp_lamret_any() {
               dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
+            } else {
+              let ix = dtd_interp_index_of_field(slot)
+              if ix >= 0 && ix < Array::length(cargs) {
+                dtd_erased_interp_formal(Array::get(cargs, ix), struct_sets, var_types, fn_returns)
+              } else {
+                dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
+              }
             }
           }
         }
@@ -3437,6 +3451,62 @@ fn dtd_interp_index_of_field(field: String) -> Int {
     } else {
       0 - 1
     }
+  }
+}
+
+/// What an expression's ELEMENT classifies as, for the array-read arm.
+///
+/// A NAME answers from `array_elem_key`, which is what `infer_arg_type_name`
+/// already reads; a literal answers from its own elements; and a call to a
+/// local lambda whose return was recorded as `Array` of argument k answers
+/// from that argument. One helper rather than a case inside each reader,
+/// because three readers asking this question separately is how the spellings
+/// drift apart (#2745 round 17).
+fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  match e {
+    // `array_elem_key` stores a real TYPE NAME -- `Int` for an `Array[Int]` --
+    // not only an erased formal, so the same guard the leaf applies has to be
+    // applied here. Without it this returned `Int` as a formal and the compiler
+    // REJECTED ITS OWN SOURCES, which is how the first cut of this was caught
+    // (as in round 1, and for the same reason: a name is a name).
+    EIdent(n, _) => match lookup_var_type(var_types, array_elem_key(n)) {
+      Some(t) => if formal_in_scope(t) && dtd_formal_innermost_is_nested(t) {
+        t
+      } else {
+        ""
+      },
+      None => ""
+    },
+    EArray(es) => {
+      let mut i = 0
+      let mut found = ""
+      while i < Array::length(es) {
+        let f = dtd_erased_interp_formal(Array::get(es, i), struct_sets, var_types, fn_returns)
+        if String::length(f) > 0 && String::length(found) == 0 {
+          found = f
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    ECall(ecallee, cargs, _) => match ecallee {
+      EIdent(cn, _) => {
+        let slot = match lookup_var_type(var_types, dtd_interp_lamret_key(cn)) {
+          Some(t) => t,
+          None => ""
+        }
+        let k = dtd_interp_lamret_elem_arg(slot)
+        if k >= 0 && k < Array::length(cargs) {
+          dtd_erased_interp_formal(Array::get(cargs, k), struct_sets, var_types, fn_returns)
+        } else {
+          ""
+        }
+      },
+      _ => ""
+    },
+    _ => ""
   }
 }
 
@@ -3990,6 +4060,59 @@ fn dtd_interp_lamret_any() -> String {
   "*"
 }
 
+/// The marker for "returns an ARRAY whose element is argument k", as opposed to
+/// "returns argument k". `a` is not a digit, so the two cannot be confused, and
+/// `dtd_interp_lamret_elem_arg` is the only reader that takes it apart.
+fn dtd_interp_lamret_elem(k: Int) -> String {
+  String::concat("a", idx_str(k))
+}
+
+/// The argument index behind a `dtd_interp_lamret_elem` marker, or -1.
+fn dtd_interp_lamret_elem_arg(slot: String) -> Int {
+  if String::length(slot) < 2 || String::char_code_at(slot, 0) != 'a' {
+    0 - 1
+  } else {
+    dtd_interp_index_of_field(String::substring(slot, 1, String::length(slot)))
+  }
+}
+
+/// Is `n` one of the lambda's parameter names? Used to stop the body walk at a
+/// binding that SHADOWS a parameter, where the name no longer means the
+/// parameter.
+fn dtd_interp_param_named(params: Array[(String, Option[TypeExpr])], n: String) -> Bool {
+  let mut i = 0
+  let mut hit = false
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    if pn == n {
+      hit = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  hit
+}
+
+/// The index of the parameter declared at type `rh`, or `dtd_interp_lamret_any`.
+fn dtd_interp_param_at_type(params: Array[(String, Option[TypeExpr])], rh: String) -> String {
+  let mut i = 0
+  let mut found = dtd_interp_lamret_any()
+  while i < Array::length(params) {
+    let (_, pt) = Array::get(params, i)
+    match pt {
+      Some(TyName(ph)) => if ph == rh && found == dtd_interp_lamret_any() {
+        found = idx_str(i)
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// Record a LOCAL lambda's return formal on the binding's environment, so a
 /// call to it later in the SAME BODY can relate the return to its argument.
 ///
@@ -4030,21 +4153,30 @@ fn dtd_interp_bind_lamret(var_types: Array[(String, String)], name: String, valu
 fn dtd_interp_lamret_of(tps: Array[String], params: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr], body: Expr) -> String {
   let from_ret = match ret {
     Some(TyName(rh)) => if str_array_contains(tps, rh) {
-      let mut i = 0
-      let mut found = dtd_interp_lamret_any()
-      while i < Array::length(params) {
-        let (_, pt) = Array::get(params, i)
-        match pt {
-          Some(TyName(ph)) => if ph == rh && found == dtd_interp_lamret_any() {
-            found = idx_str(i)
+      dtd_interp_param_at_type(params, rh)
+    } else {
+      ""
+    },
+    // #2745 (Codex, P1 round 17 on #2761): a formal nested in the return TYPE.
+    // `[U](u: U) -> Array[U]` records nothing under the rule above, because the
+    // return is a `TyApp`, so `Array::get(pack(a), 0)` lost `T`. The result is
+    // not itself erased -- it is an Array -- so this records a different fact:
+    // the ELEMENT is argument k. Kept to `Array` of a bare formal deliberately:
+    // a deeper shape would need a type language here, and this pass has none.
+    Some(TyApp(rc, rargs)) => if rc == "Array" && Array::length(rargs) == 1 {
+      match Array::get(rargs, 0) {
+        TyName(eh) => if str_array_contains(tps, eh) {
+          let at = dtd_interp_param_at_type(params, eh)
+          if at == dtd_interp_lamret_any() {
+            ""
           } else {
-            ()
-          },
-          _ => ()
-        }
-        i = i + 1
+            dtd_interp_lamret_elem(dtd_interp_index_of_field(at))
+          }
+        } else {
+          ""
+        },
+        _ => ""
       }
-      found
     } else {
       ""
     },
@@ -4067,8 +4199,19 @@ fn dtd_interp_lamret_of(tps: Array[String], params: Array[(String, Option[TypeEx
   }
 }
 
-/// The index of the parameter a lambda's body IS, or "" when the body is not a
-/// bare parameter reference.
+/// The index of the parameter a lambda's body EVALUATES TO, or "" when it does
+/// not evaluate to one.
+///
+/// #2745 (Codex, P1 round 17 on #2761): this matched a bare `EIdent` only, so
+/// `[U](u: U) { if true { u } else { u } }` -- which the checker types `U`
+/// exactly as the bare form -- recorded nothing and printed a pointer. The
+/// walk descends the same VALUE positions the rest of this file does, because
+/// "the value of an `if` is the value of a branch" is the same statement here
+/// as it is in `dtd_erased_interp_formal`.
+///
+/// A binding that SHADOWS a parameter stops the walk: past it the name no
+/// longer means the parameter, and answering from the parameter would be the
+/// round-3 stale-binding mistake in a new place.
 fn dtd_interp_lamret_body_param(params: Array[(String, Option[TypeExpr])], body: Expr) -> String {
   match body {
     EIdent(bn, _) => {
@@ -4078,6 +4221,51 @@ fn dtd_interp_lamret_body_param(params: Array[(String, Option[TypeExpr])], body:
         let (pn, _) = Array::get(params, i)
         if pn == bn && String::length(found) == 0 {
           found = idx_str(i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    EIf(_, conseq, alt) => {
+      let ft = dtd_interp_lamret_body_param(params, conseq)
+      if String::length(ft) > 0 {
+        ft
+      } else {
+        dtd_interp_lamret_body_param(params, alt)
+      }
+    },
+    ESeq(_, last) => dtd_interp_lamret_body_param(params, last),
+    ELet(n, _, b, _) => if dtd_interp_param_named(params, n) {
+      ""
+    } else {
+      dtd_interp_lamret_body_param(params, b)
+    },
+    ELetMut(n, _, b, _) => if dtd_interp_param_named(params, n) {
+      ""
+    } else {
+      dtd_interp_lamret_body_param(params, b)
+    },
+    EMatch(_, arms) => {
+      let mut i = 0
+      let mut found = ""
+      while i < Array::length(arms) {
+        let (ap, ab) = Array::get(arms, i)
+        let names = empty_str_array()
+        collect_pat_binders(ap, names)
+        let mut shadows = false
+        let mut ni = 0
+        while ni < Array::length(names) {
+          if dtd_interp_param_named(params, Array::get(names, ni)) {
+            shadows = true
+          } else {
+            ()
+          }
+          ni = ni + 1
+        }
+        if !shadows && String::length(found) == 0 {
+          found = dtd_interp_lamret_body_param(params, ab)
         } else {
           ()
         }
@@ -4311,7 +4499,17 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
         Array::push(out, (dtd_interp_shape_key(name), cn))
         dtd_interp_record_elems(out, name, cargs, struct_sets, var_types, fn_returns)
       } else {
-        ()
+        // #2745 round 17: a call to a LOCAL lambda returning `Array[U]`. The
+        // call's own value is not erased, so nothing above records anything --
+        // but the ELEMENT is, and binding it to a name is how the later
+        // `Array::get(xs, 0)` finds it. Asked through the same helper the
+        // inline spelling uses, so the two cannot drift.
+        let ef = dtd_interp_elem_formal_of(val, struct_sets, var_types, fn_returns)
+        if String::length(ef) > 0 {
+          Array::push(out, (array_elem_key(name), ef))
+        } else {
+          ()
+        }
       },
       _ => ()
     },
