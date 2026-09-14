@@ -3344,26 +3344,26 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
               Some(t) => t,
               None => ""
             }
-            if String::length(slot) == 0 {
-              dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
-            } else if dtd_interp_lamret_elem_arg(slot) >= 0 {
-              // Returns an ARRAY of the argument, so the call's own value is not
-              // an erased scalar -- the element is. "" rather than the leaf,
-              // which would ask about the call's type and has no answer here.
-              ""
-            } else if slot == dtd_interp_lamret_any() {
-              dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
-            } else {
-              let ix = dtd_interp_index_of_field(slot)
-              if ix >= 0 && ix < Array::length(cargs) {
-                dtd_erased_interp_formal(Array::get(cargs, ix), struct_sets, var_types, fn_returns)
-              } else {
-                dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
-              }
-            }
+            dtd_interp_lamret_apply(slot, arg, cargs, struct_sets, var_types, fn_returns)
           }
         }
       },
+      // #2745 (Codex, P1 round 19 on #2761): an IMMEDIATELY INVOKED lambda.
+      // The callee is an `EFn`, so the named-callee arm above does not apply
+      // and the leaf cannot answer -- `infer_arg_type_name` only infers calls
+      // whose callee is an `EIdent`. Nothing needs recording: the lambda is
+      // right there, so its return is read straight off it and applied through
+      // the same rule a recorded one goes through.
+      //
+      // Codex's own example (`((u: T) -> T { u })(a)`) was ALREADY refused, by
+      // the guard that fires on a parameter annotated with the erased formal --
+      // and its concrete twin renders, so that refusal discriminates. The
+      // finding is real anyway, and the INLINE GENERIC spelling
+      // (`([U](u: U) -> U { u })(a)`) is the one that reaches it: nothing in
+      // that lambda mentions `T`, so no other guard catches it. Measured on
+      // c0e164c, it printed a 3-digit pointer decimal. Found by probing the
+      // neighbours of a report that did not reproduce.
+      EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_apply(dtd_interp_lamret_of(tps, params, ret, fbody), arg, cargs, struct_sets, var_types, fn_returns),
       _ => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
     },
     // #2745 (self-probed after round 7, fixed in the same commit): an element
@@ -3454,6 +3454,30 @@ fn dtd_interp_index_of_field(field: String) -> Int {
   }
 }
 
+/// Apply a recorded lambda-return slot to a call's arguments.
+///
+/// One statement of the rule, read by the NAMED-callee arm and by the inline
+/// one. `""` means nothing was recorded, so the leaf answers; an ARRAY marker
+/// means the call's own value is not an erased scalar (its element is), so ""
+/// is the answer here rather than the leaf, which would ask about the call's
+/// type and has none.
+fn dtd_interp_lamret_apply(slot: String, arg: Expr, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  if String::length(slot) == 0 {
+    dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+  } else if dtd_interp_lamret_elem_arg(slot) >= 0 {
+    ""
+  } else if slot == dtd_interp_lamret_any() {
+    dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
+  } else {
+    let ix = dtd_interp_index_of_field(slot)
+    if ix >= 0 && ix < Array::length(cargs) {
+      dtd_erased_interp_formal(Array::get(cargs, ix), struct_sets, var_types, fn_returns)
+    } else {
+      dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
+    }
+  }
+}
+
 /// What an expression's ELEMENT classifies as, for the array-read arm.
 ///
 /// A NAME answers from `array_elem_key`, which is what `infer_arg_type_name`
@@ -3491,20 +3515,22 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
       }
       found
     },
-    ECall(ecallee, cargs, _) => match ecallee {
-      EIdent(cn, _) => {
-        let slot = match lookup_var_type(var_types, dtd_interp_lamret_key(cn)) {
+    ECall(ecallee, cargs, _) => {
+      let slot = match ecallee {
+        EIdent(cn, _) => match lookup_var_type(var_types, dtd_interp_lamret_key(cn)) {
           Some(t) => t,
           None => ""
-        }
-        let k = dtd_interp_lamret_elem_arg(slot)
-        if k >= 0 && k < Array::length(cargs) {
-          dtd_erased_interp_formal(Array::get(cargs, k), struct_sets, var_types, fn_returns)
-        } else {
-          ""
-        }
-      },
-      _ => ""
+        },
+        // Round 19: an inline lambda answers from itself here as well.
+        EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps, params, ret, fbody),
+        _ => ""
+      }
+      let k = dtd_interp_lamret_elem_arg(slot)
+      if k >= 0 && k < Array::length(cargs) {
+        dtd_erased_interp_formal(Array::get(cargs, k), struct_sets, var_types, fn_returns)
+      } else {
+        ""
+      }
     },
     _ => ""
   }
