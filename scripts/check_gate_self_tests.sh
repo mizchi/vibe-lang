@@ -74,6 +74,15 @@ test_wasi_cli_stdin_provider_guest_component_gate.sh
 test_wasi_cli_stdin_provider_source_component_gate.sh
 test_wasi_http_p3_full_gate.sh test_wasi_p3_guarantee_gate.sh
 test_wit_async_import_component_gate.sh"
+
+# SECOND CORPUS WIDENING (#2771). Discovery covered `.sh` only, so the
+# `*_oracle.mjs` release gates -- run from tests/gates/bootstrap/run.sh exactly
+# like the shell ones -- were never asked for a companion. Two of the five had
+# written one anyway; these two had not, and they are pinned exactly as they
+# stood the day the scope widened. The list still only SHRINKS, and a NEW
+# `*_oracle.mjs` is rejected like any other gate arriving without one.
+baseline_no_test="$baseline_no_test
+experimental_typing_env_reuse_oracle.mjs ingestion_stamp_oracle.mjs"
 # Pinned EMPTY (#2252): all five original entries were repaired, so any name
 # appearing in the failing list from here on is rejected outright. There is no
 # longer a supported way to exempt a failing self-test.
@@ -107,13 +116,18 @@ missing=""
 # (#2248 review). The existing `*_gate.sh` scripts enter the allowlist as a
 # CORPUS WIDENING, not as exemptions anyone granted; see the second baseline
 # block below.
-for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh; do
+for f in scripts/check_*.sh scripts/lint_*.sh scripts/*_gate.sh scripts/*_oracle.mjs; do
   # An unmatched glob arrives as its own literal text; skip it rather than
   # reporting `scripts/lint_*.sh` as a gate with no self-test.
   [ -e "$f" ] || continue
   case "$f" in *_test.sh) continue ;; esac
   base="${f%.sh}"
+  case "$f" in *.mjs) base="${f%.mjs}" ;; esac
   [ -f "${base}_test.sh" ] && continue
+  # `.test.mjs` is the other companion spelling already in this tree
+  # (incremental_invalidation_oracle, artifact_input_trace_oracle), so it
+  # counts. What does NOT count is having neither.
+  [ -f "${base}.test.mjs" ] && continue
   name="${f#scripts/}"
   if ! printf '%s\n' "$allowed" | grep -qxF "$name"; then
     missing="$missing $name"
@@ -125,9 +139,11 @@ done
 stale=""
 while IFS= read -r name; do
   [ -n "$name" ] || continue
+  base="${name%.sh}"
+  case "$name" in *.mjs) base="${name%.mjs}" ;; esac
   if [ ! -f "scripts/$name" ]; then
     stale="$stale $name(script-gone)"
-  elif [ -f "scripts/${name%.sh}_test.sh" ]; then
+  elif [ -f "scripts/${base}_test.sh" ] || [ -f "scripts/${base}.test.mjs" ]; then
     stale="$stale $name(test-exists)"
   fi
 done <<EOF
@@ -156,13 +172,35 @@ EOF
 #
 # Whoever tries this again needs more than a faster loop: the companions would
 # each need their own tree, and then they would no longer be testing this one.
+# One companion, run the way its spelling requires. `node --test` is how
+# Taskfile.pkl already runs the `.test.mjs` ones.
+run_companion() {
+  case "$1" in
+    *.test.mjs) node --test "$1" ;;
+    *) bash "$1" ;;
+  esac
+}
+
 failed_tests=""
 repaired=""
 if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
-  for t in scripts/check_*_test.sh scripts/lint_*_test.sh scripts/*_gate_test.sh; do
+  # `.test.mjs` companions are in this list too, and they have to be: accepting
+  # that spelling above while globbing only `*_test.sh` here would mark an
+  # oracle covered and never run its companion -- the gate crediting a FILE,
+  # which is the one thing the comment above says it will not do. It was
+  # exactly that for one commit (#2771), and it had already been that for
+  # artifact_input_trace_oracle and incremental_invalidation_oracle, whose
+  # companions this loop never reached.
+  for t in scripts/check_*_test.sh scripts/lint_*_test.sh scripts/*_gate_test.sh \
+           scripts/*_oracle_test.sh scripts/*_oracle.test.mjs; do
     [ -e "$t" ] || continue
     # Only companions OF a gate in this tree; an orphan is reported below.
-    [ -f "${t%_test.sh}.sh" ] || continue
+    # A `.mjs` gate counts -- discovery above asks those for a companion, so
+    # refusing to RUN theirs would credit the file for existing.
+    case "$t" in
+      *.test.mjs) [ -f "${t%.test.mjs}.mjs" ] || [ -f "${t%.test.mjs}.sh" ] || continue ;;
+      *) [ -f "${t%_test.sh}.sh" ] || [ -f "${t%_test.sh}.mjs" ] || continue ;;
+    esac
     base="${t#scripts/}"
     if printf '%s\n' "$failing_allowed" | grep -qxF "$base"; then
       # A known-failing exemption is still RUN, because the interesting case is
@@ -171,13 +209,13 @@ if [ "${VIBE_GATE_SELF_TESTS_RUN:-1}" = "1" ]; then
       # any later regression in it is invisible until someone edits the list by
       # hand (#2248 review). The ratchet has to notice its own entries going
       # stale, exactly as the no-test allowlist does.
-      if bash "$t" >"$WORK_LOG" 2>&1 \
+      if run_companion "$t" >"$WORK_LOG" 2>&1 \
          && printf '%s\n' "$failing_broken" | grep -qxF "$base"; then
         repaired="$repaired $base"
       fi
       continue
     fi
-    if ! bash "$t" >"$WORK_LOG" 2>&1; then
+    if ! run_companion "$t" >"$WORK_LOG" 2>&1; then
       failed_tests="$failed_tests $t"
       echo "[gate-self-tests] --- $t ---" >&2
       tail -20 "$WORK_LOG" >&2

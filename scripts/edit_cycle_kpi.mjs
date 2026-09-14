@@ -177,11 +177,17 @@ export function parseIncrementalTelemetry(text, source = "incremental telemetry"
   if (telemetry === null || typeof telemetry !== "object" || Array.isArray(telemetry)) {
     throw new Error(`${source}: expected a JSON object`);
   }
-  if (telemetry.schema !== 2 && telemetry.schema !== 3) {
+  // 4/5 is 2/3 plus the two lane-parse counters (#2766/#2767): 5 carries the
+  // checked-module-artifact reuse class, 4 does not, exactly as 3 and 2 did.
+  if (telemetry.schema !== 4 && telemetry.schema !== 5) {
     throw new Error(`${source}: unsupported schema ${JSON.stringify(telemetry.schema)}`);
   }
-  const countKeys = telemetry.schema === 3
-    ? [...telemetryKeys, "modules_reused_checked_module_artifact"] : telemetryKeys;
+  const countKeys = [
+    ...(telemetry.schema === 5
+      ? [...telemetryKeys, "modules_reused_checked_module_artifact"] : telemetryKeys),
+    "non_walk_parse_operations",
+    "ast_cache_prefetches",
+  ];
   const exactKeys = ["schema", ...countKeys];
   if (Object.keys(telemetry).length !== exactKeys.length || exactKeys.some((key) => !Object.hasOwn(telemetry, key))) {
     throw new Error(`${source}: expected exactly the incremental telemetry v${telemetry.schema} fields`);
@@ -204,7 +210,7 @@ export function parseIncrementalTelemetry(text, source = "incremental telemetry"
   if (
     telemetry.modules_reused_conservative_fingerprint
       + telemetry.modules_reused_dependency_transport_env
-      + (telemetry.schema === 3 ? telemetry.modules_reused_checked_module_artifact : 0)
+      + (telemetry.schema === 5 ? telemetry.modules_reused_checked_module_artifact : 0)
       !== telemetry.modules_reused
   ) {
     throw new Error(`${source}: reuse-class counters must sum to modules_reused`);
@@ -443,7 +449,7 @@ function main() {
       `edit-cycle-kpi: ${caseName} ingestion pipeline telemetry`,
     );
     if (ingestionPipeline.final_semantic_source_parse_executions !== telemetry.current_source_parse_executions) {
-      throw new Error(`edit-cycle-kpi: ${caseName} ingestion pipeline final semantic parses disagree with schema 2`);
+      throw new Error(`edit-cycle-kpi: ${caseName} ingestion pipeline final semantic parses disagree with the incremental sidecar`);
     }
     if (!existsSync(hostFsScopePath)) {
       throw new Error(`edit-cycle-kpi: ${caseName} omitted host filesystem telemetry sidecar`);

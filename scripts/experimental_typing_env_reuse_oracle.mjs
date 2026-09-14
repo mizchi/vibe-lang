@@ -13,11 +13,12 @@ const fail = (message) => { throw new Error(`experimental-typing-env-reuse-oracl
 
 function telemetry(path) {
   const value = JSON.parse(readFileSync(path, "utf8"));
-  if (value.schema !== 2) fail(`unexpected telemetry schema in ${path}`);
+  if (value.schema !== 4) fail(`unexpected telemetry schema in ${path}`);
   const keys = [
     "modules_planned", "modules_rechecked", "modules_reused", "parse_operations",
     "modules_failed_or_blocked", "current_source_parse_executions", "checker_executions",
     "modules_reused_conservative_fingerprint", "modules_reused_dependency_transport_env",
+    "non_walk_parse_operations", "ast_cache_prefetches",
   ];
   if (Object.keys(value).length !== keys.length + 1 || keys.some((key) => !Object.hasOwn(value, key))) {
     fail(`unexpected telemetry fields in ${path}`);

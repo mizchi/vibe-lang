@@ -137,11 +137,25 @@ parity and compiler-sized cost measurements. The #2510 work still owns caching
 the prelude's derived tables and limiting its execution to edited modules; this
 artifact already supplies its AST and checker-owned lowering inputs.
 
-When this cache is enabled, `VIBE_INCREMENTAL_TELEMETRY_OUT` uses schema 3 and
+When this cache is enabled, `VIBE_INCREMENTAL_TELEMETRY_OUT` uses schema 5 and
 reports `modules_reused_checked_module_artifact` separately from conservative
 fingerprint and TDRE9 hits. The three reuse reasons sum to `modules_reused`.
-With the cache off, the existing schema 2 remains available. The edit-cycle KPI
-reader accepts both schemas and validates their exact fields and sums.
+With the cache off, schema 4 is emitted instead — the same counters without
+that field. (They were 3 and 2 before #2766 added the two lane-parse counters
+to both.) The edit-cycle KPI reader accepts both schemas and validates their
+exact fields and sums.
+
+**Do not enable this cache together with `VIBE_EXPERIMENTAL_AST_CACHE=1`.**
+They are two AST caches for the same lane and the per-file one is redundant
+here: `parse_program_with_path` serves the merge from the checked-module
+artifact before the shared parse memo is consulted, so the per-file prefetch's
+trees are consumed by nothing. Measured on the full CLI closure, warm, with
+this cache on: `non_walk_parse_operations` is 0 either way, and turning the
+per-file cache on costs **+360.7 MiB (+11.3%)**. The per-file cache therefore
+stands down entirely -- prefetch, load and store -- while this one is `on`.
+`verify` is different and keeps it active: verification re-checks every
+module rather than reusing an artifact, so those parses are real and a
+stored AST can serve them.
 The existing check-only KPI benchmark pins this cache off to preserve its
 documented TDRE9 measurement; the parity gate measures checked-module reuse.
 

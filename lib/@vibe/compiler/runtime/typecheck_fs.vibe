@@ -139,11 +139,15 @@ import @vibe/compiler/contract {
 }
 
 import @vibe/compiler/loader {
+  ast_cache_prefetch_count,
+  ast_cache_prefetch_count_reset,
+  ast_cache_prefetch_fs,
   ingest_source_text_fs,
   ingestion_pipeline_telemetry_add,
   load_or_parse_module_header_fs,
   parse_program_located_shared,
   parse_program_located_shared_mark_semantic,
+  parse_program_located_shared_ran_parser,
   parse_program_located_shared_semantic_pending,
   vpkg_types_module_path_prefix
 }
@@ -2584,10 +2588,32 @@ fn collect_module_diagnostics() -> Bool {
 ///   7 modules reused by conservative fingerprint authority
 ///   8 modules reused by validated TDRE9 dependency transport authority
 ///   9 modules reused by the complete checked-module artifact
+///  10 non-walk parse operations (the build's merge lane and friends)
+///
+/// `ast_cache_prefetches` is NOT one of these. It is kept by the loader, in
+/// `ast_cache_prefetch_fs` itself, and read here at emission: that function
+/// has two call sites with different timing, and a count written at one of
+/// them reads 0 for work the other did (Codex on #2771, P2).
 ///
 /// `parse_operations` is parser work, not a unique-module count: a cold
 /// module can need one header parse during planning and one full parse for its
 /// typecheck. This is the same parse-count unit the TypeDb already exposes.
+///
+/// It counts PLANNING AND THE WALK, and nothing else -- which is the whole
+/// story for a check and was never the whole story for a build (#2766). The
+/// merge/flatten lane parses through `parse_program_with_path`, outside this
+/// walk, so a warm build read `parse_operations: 0` while parsing every
+/// source in its closure. That work is counter 10; the two are disjoint and
+/// neither subsumes the other.
+///
+/// They also count different EVENTS, which is deliberate and easy to misread
+/// from the names. `parse_operations` counts a header computed from source
+/// whether or not the shared memo answered (`load_or_parse_module_header_fs_impl`
+/// says so in as many words, since #2386), so it is a measure of the work the
+/// pipeline ASKED FOR. Counter 10 counts a parser run, asked of the memo
+/// afterwards, so a memo or AST-cache hand-out does not inflate it: that is
+/// the number the per-file AST cache is supposed to move, and a counter that
+/// still ticked on a cache hit could not show it moving.
 let incremental_typecheck_telemetry_enabled_cell = array_empty()
 
 let incremental_typecheck_telemetry_counters = array_empty()
@@ -2643,8 +2669,9 @@ export fn set_incremental_typecheck_telemetry_enabled(enabled: Bool) -> Unit {
   Array::push(incremental_typecheck_telemetry_enabled_cell, enabled)
   Array::truncate(incremental_typecheck_telemetry_counters, 0)
   Array::truncate(incremental_typecheck_telemetry_decisions, 0)
+  ast_cache_prefetch_count_reset()
   let mut i = 0
-  while i < 10 {
+  while i < 11 {
     Array::push(incremental_typecheck_telemetry_counters, 0)
     i = i + 1
   }
@@ -2754,9 +2781,9 @@ export fn incremental_typecheck_telemetry_json() -> String {
   let artifact_mode = checked_module_cache_mode() != "off"
   let out = StringBuilder::new()
   StringBuilder::push(out, if artifact_mode {
-    "{\"schema\":3,\"modules_planned\":"
+    "{\"schema\":5,\"modules_planned\":"
   } else {
-    "{\"schema\":2,\"modules_planned\":"
+    "{\"schema\":4,\"modules_planned\":"
   })
   StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(0)))
   StringBuilder::push(out, ",\"modules_rechecked\":")
@@ -2779,6 +2806,10 @@ export fn incremental_typecheck_telemetry_json() -> String {
     StringBuilder::push(out, ",\"modules_reused_checked_module_artifact\":")
     StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(9)))
   }
+  StringBuilder::push(out, ",\"non_walk_parse_operations\":")
+  StringBuilder::push(out, __to_string(incremental_typecheck_telemetry_counter(10)))
+  StringBuilder::push(out, ",\"ast_cache_prefetches\":")
+  StringBuilder::push(out, __to_string(ast_cache_prefetch_count()))
   StringBuilder::push(out, "}")
   StringBuilder::freeze(out)
 }
@@ -4485,10 +4516,33 @@ fn parse_program_with_path_impl(path: String, source: String, observe_current_so
   stmts
 }
 
+/// The NON-WALK parse entry: the build's merge/flatten lane, plus the handful
+/// of import-env and interface-observation sites. The TypeDb walk calls
+/// `parse_program_with_path_impl` directly instead, with the current-source
+/// observable on.
+///
+/// #2766: a parser run reached through here is counted separately
+/// (`non_walk_parse_operations`). `parse_operations` spans planning and the
+/// walk and nothing else, which is truthful for a CHECK and was read as a
+/// statement about a BUILD -- a warm build reported 0 parses while the merge
+/// lane parsed every source in the closure. The counter that was 0 is still
+/// 0 and still means what it says; the work it never covered now has its own.
 export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] with Exception {
   match checked_module_artifact_stmts(path, source) {
     Some(stmts) => stmts,
-    None => parse_program_with_path_impl(path, source, false)
+    None => {
+      let stmts = parse_program_with_path_impl(path, source, false)
+      // Asked AFTER the call and of the memo, not of this function: the point
+      // is whether the PARSER ran, so a memo or AST-cache hand-out must not
+      // count. A throwing parse does not reach here, the same way the walk's
+      // own counter treats one.
+      if parse_program_located_shared_ran_parser() {
+        incremental_typecheck_telemetry_add(10, 1)
+      } else {
+        ()
+      }
+      stmts
+    }
   }
 }
 
@@ -6186,6 +6240,44 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
     match ripple_get_source(rdb, path) {
       None => (),
       Some(source) => {
+        // #2767: hand this module its stored AST, if there is one, BEFORE any
+        // of the branches below decide it needs no parsing.
+        //
+        // This is the only point every planned module passes through exactly
+        // once. Hung on any of the branches instead, the prefetch misses the
+        // others, and there are four ways planning settles a module without
+        // parsing: a valid persistent leaf fingerprint (just below), an
+        // in-process `reusable` decision, `ripple_get_deps`, and the
+        // persistent dep list. It was originally hung on the FIFTH -- the
+        // module-header text cache, one level further in -- which a warm
+        // build reaches only when the dep list missed, so it fired zero times
+        // per warm build and the merge lane re-parsed the whole closure.
+        // Measured on the full CLI closure (420 modules, one cache directory
+        // per run): a warm build's bump-heap high-water was byte-identical
+        // with VIBE_EXPERIMENTAL_AST_CACHE=1 and with it off, while every
+        // cold build wrote 42 MB of artifacts nobody read.
+        //
+        // Then measured again at the dep-list branch alone, which is how this
+        // ended up here: 2 of 3 modules prefetched and the third still parsed
+        // in the merge, because a LEAF never resolves dependencies at all.
+        //
+        // This does NOT make the warm build cheaper -- measured N=3 on that
+        // closure, it makes it worse. With the prefetch reaching all 420
+        // modules a warm build decodes 420 stored ASTs instead of parsing 420
+        // sources, and that is +38.7 MiB of heap (+2.1%) and +1.07 s of wall
+        // (+12%) against the same build with the cache off: the decode
+        // allocates the AST the parse would have allocated and reads 42 MB to
+        // do it. The flag stays opt-in and off. What changed is that the
+        // question became decidable -- `ast_cache_prefetches` reporting 420
+        // means a slower warm build is the cache losing on its merits, not
+        // the cache failing to run.
+        // Unguarded and uncounted HERE on purpose: `ast_cache_prefetch_fs`
+        // owns both. It has a second call site -- the module-header pass,
+        // reached from `module_plan_data_fs`'s source-collection walk, which
+        // runs before this one -- and a policy or a count written at one call
+        // site is simply absent at the other. Both were, until Codex found
+        // them on #2771.
+        let _ = ast_cache_prefetch_fs(path, source)
         let reusable = if checked_module_cache_mode() == "off" && dep_source_cache_is_current(dep_source_cache, path, source) {
           match ripple_get_fingerprint(rdb, path) {
             // #2391: reuse needs BOTH cache halves -- the TypeEnv and the

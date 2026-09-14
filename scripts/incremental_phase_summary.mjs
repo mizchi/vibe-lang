@@ -145,7 +145,7 @@ export function parseEditCycleRecord(value, source = "edit-cycle record") {
     `${source}: ingestion_pipeline`,
   );
   if (pipeline.final_semantic_source_parse_executions !== incremental.current_source_parse_executions) {
-    throw new Error(`${source}: ingestion pipeline final semantic parses disagree with schema 2`);
+    throw new Error(`${source}: ingestion pipeline final semantic parses disagree with the incremental sidecar`);
   }
   const hostFs = parseHostFsScopeTelemetry(
     JSON.stringify(value.host_fs_scope),

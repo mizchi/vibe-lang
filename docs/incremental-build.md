@@ -1324,9 +1324,55 @@ that flag every frame is `wasm-function[N]` and the profile says nothing:
 **The back end dominates**: codegen + normalize + perceus is 45.4%. The parser
 is 6.9%, which is the CEILING on what a perfect AST cache can remove from a
 warm build — and the loader, where such a cache has to live because it is the
-only lane with an `Fs` row, is 0.1%. That is the direct measurement behind the
-observation in #2668 that turning the AST cache on left the warm heap
-byte-identical: the code that consults it barely runs.
+only lane with an `Fs` row, is 0.1%.
+
+That last row does not explain #2668's observation that turning the AST cache
+on left the warm heap byte-identical, though it was read that way: 0.1% is what
+the consulting code costs, not evidence about whether it runs.
+
+**The prefetch runs at the head of the FS planner's walk, and it has to.** That
+is the one point every planned module passes through exactly once, before any
+branch decides it needs no parsing. Planning settles a module without parsing
+in five different ways — a valid persistent leaf fingerprint, an in-process
+reuse decision, `ripple_get_deps`, the persistent dep list, and the
+module-header text cache — so a prefetch attached to any one of them serves
+only the modules that happen to take that branch, and a warm build takes a
+different one for every module in the closure. A leaf, for instance, never
+resolves dependencies at all.
+
+`ast_cache_prefetch_fs` owns the decision and the count for the same reason:
+it has two call sites with different timing (the header pass runs before the
+planner), and a policy or a counter written at one of them is simply absent at
+the other. `ast_cache_prefetches` in the incremental telemetry is what says the
+cache is being read at all.
+
+### And with the cache working, it does not pay
+
+On the full CLI closure, warm, `ast_cache_prefetches` reports **420 of 420**
+and `non_walk_parse_operations` drops from 420 to 0: the merge lane's parses
+are entirely replaced by decodes. That costs more than it saves. N=3, fresh
+cache directory per repetition, cold-vs-cold and warm-vs-warm (#2393):
+
+| | cache off | cache on | delta |
+|---|---:|---:|---:|
+| cold heap | 2,496,792,016 B | 2,707,974,464 B | **+201.4 MiB (+8.5%)** |
+| warm heap | 1,901,348,896 B | 1,941,911,080 B | **+38.7 MiB (+2.1%)** |
+| cold wall (median) | 11.94 s | 13.09 s | +1.15 s (+9.7%) |
+| warm wall (median) | 8.94 s | 10.02 s | +1.07 s (+12.0%) |
+
+Heap is byte-identical across repetitions in every configuration; the emitted
+wasm is identical across all twelve runs. The decode allocates the same AST
+the parse would have allocated and reads 42 MB of artifacts to do it, against
+a parser that is only ~6.9% of the warm build to begin with — the ceiling
+above. So the flag stays opt-in and off.
+
+The value of the wiring is not a speedup; it is that **the question became
+decidable**. Before it, the cache could not be evaluated at all: it was paying
+its full write cost on every cold build and being read on none, and the only
+signal available — a byte-identical warm heap — was indistinguishable from
+"the cache does not help". Now `ast_cache_prefetches` says the cache is being
+read, so a warm build that is slower with it on is the per-file AST cache
+losing on its merits. That is the answer to #2510 criterion 4 on this corpus.
 
 (CPU share, not allocation; the KPI is allocation and the two are correlated
 rather than identical. N=1, which is enough for a structural read — a 0.1%
@@ -1726,7 +1772,8 @@ are also rejected. Version 2 additionally records a separate compiler-owned
 and source-group cache probes/hits/misses, list-to-group reconstruction,
 cold collection, module-header probes and parse scans, entry/final/linked/warning
 parses. Probe partitions and the reconstruction partition are exact; final
-semantic parses must equal schema-2 current-source parse executions. These
+semantic parses must equal the incremental sidecar's current-source parse
+executions. These
 counters remain separate from `work_summary.parsed_files`, whose TypeDb scope is
 unchanged. Phase summaries expose ingestion-pipeline before/after/deltas beside,
 not inside, the five established work-summary metrics.
@@ -2238,23 +2285,39 @@ either observation into a production key or reuse decision.
 
 The token-stream, interface, checked-environment, and transport reconstructions
 are not charged to the existing TypeDb `parse_operations` counter. Standalone
-incremental telemetry schema 2, used with `VIBE_CHECKED_MODULE_CACHE=off`, retains that historical counter and its
+incremental telemetry schema 4, used with `VIBE_CHECKED_MODULE_CACHE=off`, retains that historical counter and its
 `modules_rechecked` / `modules_reused` decisions, while independently reporting
 actual `ModuleJob.source` parse-memo misses, checker calls, conservative
 fingerprint reuse, and validated TDRE9 dependency-transport reuse. The two reuse
-classes must sum exactly to `modules_reused`. These counters cover only the
-filesystem TypeDb walk: loader/source-group parsing and later linked validation
-remain outside this boundary. Invalidation trace schema 6 deliberately embeds
-the legacy schema-1 aggregate; exposing schema-2 counters there requires a
-future explicit trace schema bump.
+classes must sum exactly to `modules_reused`. Invalidation trace schema 6
+deliberately embeds the legacy schema-1 aggregate; exposing the newer counters
+there requires a future explicit trace schema bump.
+
+`parse_operations` covers only the filesystem TypeDb walk — planning and the
+walk proper — and that is the whole story for a `vibe check` and was never the
+whole story for a `vibe build`. The merge/flatten lane parses through
+`parse_program_with_path`, outside the walk, so a warm build used to report
+`parse_operations: 0` while parsing every source in its closure (#2766). That
+work is `non_walk_parse_operations`, counted only when the parser actually
+ran, so a shared-memo or AST-cache hand-out does not inflate it; the two
+counters are disjoint and neither subsumes the other. `ast_cache_prefetches`
+counts the modules whose stored binary AST was loaded into the shared parse
+memo, and is zero unless `VIBE_EXPERIMENTAL_AST_CACHE=1`.
 
 With `VIBE_CHECKED_MODULE_CACHE=on` or `verify`, standalone telemetry uses schema
-3 and adds `modules_reused_checked_module_artifact`. This reason is separate:
+5 and adds `modules_reused_checked_module_artifact`. This reason is separate:
 an exact checked-module input can still match after a private dependency body
 edit changes the conservative fingerprint. All three reasons must sum to
 `modules_reused`. Verification checks afresh, so it records zero artifact hits.
 The [checked-module parity gate](checked-body-transport.md) validates these
 counts through the real compile CLI; the edit-cycle reader accepts both schemas.
+`scripts/ast_cache_prefetch_oracle.mjs` pins the lane signature on a real
+build, stated relative to the cold build rather than against zero: a warm
+build with the cache reports the same `non_walk_parse_operations` as the cold
+one (planning fills the shared memo cold, the prefetch fills it warm), while
+the same warm cache with the flag off reports strictly more. The control is
+asserted first — if the cache-off run stopped parsing, the claim would be two
+runs that both parse nothing.
 
 The `rechecked`/`reused` report describes the completed module walk. Sidecar
 encoding, decoding and I/O costs need separate measurement. None of these fields is read by a production
@@ -2511,10 +2574,13 @@ without changing the lane you were measuring.
 VIBE_INCREMENTAL_TELEMETRY_OUT=<sidecar.json>
 ```
 
-On the FS compile lane this publishes the same `schema: 2` counter document the
-check lane publishes. The counters are CAPTURED at the typing walk's boundary
-and PUBLISHED at the compile's, so they describe the walk and nothing after it,
-and a sidecar exists only for a compile that finished: a throw anywhere above
+On the FS compile lane this publishes the same counter document the check lane
+publishes — `schema: 4`, or `schema: 5` with the checked-module cache on. Most
+of those counters are CAPTURED at the typing walk's boundary and PUBLISHED at
+the compile's, so they describe the walk and nothing after it; the two added by
+#2766, `non_walk_parse_operations` and `ast_cache_prefetches`, are the
+exception and exist precisely because a build does parser work the walk never
+sees. A sidecar exists only for a compile that finished: a throw anywhere above
 removes it. Measured on the compiler's own closure, a cold build reports
 `modules_planned: 219`, which is `vibe deps` (218) plus the entry.
 

@@ -20,7 +20,7 @@ const sha = (digit) => digit.repeat(64);
 
 function makeRecord(caseName, overrides = {}) {
   const incremental = {
-    schema: 2,
+    schema: 4,
     modules_planned: 2,
     modules_rechecked: 1,
     modules_reused: 1,
@@ -30,6 +30,8 @@ function makeRecord(caseName, overrides = {}) {
     checker_executions: 1,
     modules_reused_conservative_fingerprint: 0,
     modules_reused_dependency_transport_env: 1,
+    non_walk_parse_operations: 0,
+    ast_cache_prefetches: 0,
   };
   const ingestion = {
     schema: "ingestion_fingerprint",
@@ -157,7 +159,7 @@ test("phase summary parser rejects malformed and unsafe records", () => {
   assert.throws(() => parseEditCycleRecord(inconsistent), /does not match scoped telemetry/);
   const parseMismatch = makeRecord("cold");
   parseMismatch.ingestion_pipeline.final_semantic_source_parse_executions += 1;
-  assert.throws(() => parseEditCycleRecord(parseMismatch), /disagree with schema 2/);
+  assert.throws(() => parseEditCycleRecord(parseMismatch), /disagree with the incremental sidecar/);
   const codegen = makeRecord("cold");
   codegen.work_summary.codegen_modules = 1;
   assert.throws(() => parseEditCycleRecord(codegen), /codegen_modules to be 0/);

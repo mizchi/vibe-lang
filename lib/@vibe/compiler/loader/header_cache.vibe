@@ -35,6 +35,10 @@ import @vibe/compiler/core {
   resolve_import_path_probe
 }
 
+import @vibe/compiler/runtime/checked_module_cache {
+  checked_module_cache_mode
+}
+
 import @vibe/compiler/runtime/eval_loader {
   collect_exports
 }
@@ -594,6 +598,28 @@ let located_parse_memo_size: Array[Int] = [0]
 
 let located_parse_memo_ran_parser: Array[Bool] = [false]
 
+/// How many stored ASTs `ast_cache_prefetch_fs` has put into the memo.
+///
+/// Counted HERE, in the function that performs the prefetch, and not at its
+/// call sites -- which is the whole point (Codex on #2771, P2). It has two
+/// call sites with different timing: the module-header pass, reached from
+/// `module_plan_data_fs`'s source-collection walk, runs BEFORE the FS
+/// planner's own call. Counted at the planner, an incremental build read
+/// `ast_cache_prefetches: 0` while a stored AST demonstrably served the
+/// merge -- measured: with the artifacts present the merge lane parsed 0,
+/// with the same artifacts deleted it parsed 1, and the counter said 0 both
+/// times. A count that lives where the work happens cannot be forgotten by
+/// a call site.
+let ast_cache_prefetch_hits: Array[Int] = [0]
+
+export fn ast_cache_prefetch_count() -> Int {
+  Array::get(ast_cache_prefetch_hits, 0)
+}
+
+export fn ast_cache_prefetch_count_reset() -> Unit {
+  Array::set(ast_cache_prefetch_hits, 0, 0)
+}
+
 /// Per version: whether a module check has consumed this parse yet. The
 /// typecheck walk's `current_source_parse_executions` counts the first
 /// semantic use of a (path, text) in the process -- the observable it had
@@ -767,20 +793,66 @@ fn ast_cache_slot_fs(path: String, source_fingerprint: String) -> Array[Array[St
 /// Load-or-nothing, deliberately. A miss must NOT fall through to a parse:
 /// this runs on the warm path, where the caller has already decided no parse
 /// is needed, and parsing here would add cold work to a warm build.
-fn ast_cache_prefetch_fs(path: String, source: String) -> Unit with Exception + Fs {
-  if !ast_cache_enabled() {
-    ()
+///
+/// Returns whether a stored AST was put into the memo, so a caller with
+/// telemetry can count it. Hanging that count off the loader instead would
+/// have been the wrong shape: the ingestion-pipeline sidecar is check-only,
+/// and this exists for a BUILD.
+///
+/// #2767: the header pass is not the only lane that reaches the warm state
+/// this serves, and it is the LAST of five. Planning short-circuits on a
+/// valid persistent leaf fingerprint, an in-process reuse decision,
+/// `ripple_get_deps`, and the persistent dep list before it ever asks for a
+/// header -- on a warm build one of those answers for every module in the
+/// closure, so hung here alone this ran zero times per warm build. The FS
+/// planner therefore calls it once per module at the head of its walk, which
+/// is the one point all five branches pass through; this call site stays for
+/// the header pass's other callers and is a no-op when the memo is filled.
+/// Whether the per-file AST cache should do anything at all.
+///
+/// `ast_cache_enabled()` is the flag; this is the flag AND nobody else
+/// already serving this lane.
+///
+/// `"on"` is that somebody: it reuses a stored `CheckedModuleArtifact` for the
+/// walk AND serves the merge from `checked_module_artifact_stmts`, which
+/// `parse_program_with_path` consults BEFORE the shared memo -- so the
+/// per-file cache decodes trees nothing reads and stores trees nothing will
+/// load. Measured on the full CLI closure, warm: +360.7 MiB (+11.3%) for 420
+/// prefetches consumed by nothing, `non_walk_parse_operations` 0 either way.
+///
+/// `"verify"` is NOT (Codex on #2771, P2). It deliberately re-checks every
+/// module -- `finish_checked_module_artifact_fs` loads an artifact only for
+/// `"on"` and otherwise calls `check_module_impl`, which parses through the
+/// shared memo -- so a warm verify run has real parses for a prefetch to
+/// serve. Measured on a three-module project, warm, with the per-file cache
+/// on: `off` gives parse_operations 0 / prefetches 3, `on` gives 0 / 0, and
+/// `verify` gave 3 / 0 while this read `== "off"`: three parses the cache was
+/// holding the answer to.
+///
+/// ONE predicate for every decision this cache makes -- the prefetch, the
+/// load, and the store. Written at one of them and not the others, the cache
+/// half-runs: the first version of this guard sat at the planner's prefetch
+/// call, and the header pass went on prefetching anyway.
+fn ast_cache_active() -> Bool {
+  ast_cache_enabled() && checked_module_cache_mode() != "on"
+}
+
+export fn ast_cache_prefetch_fs(path: String, source: String) -> Bool with Exception + Fs {
+  if !ast_cache_active() {
+    false
   } else {
     let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
     let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
     if located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv()) >= 0 {
-      ()
+      false
     } else {
       let slot = ast_cache_slot_fs(path, compact_source_fingerprint_memo(path, source))
       if Array::length(slot) == 1 {
         located_parse_record(path, source, Array::get(slot, 0))
+        Array::set(ast_cache_prefetch_hits, 0, Array::get(ast_cache_prefetch_hits, 0) + 1)
+        true
       } else {
-        ()
+        false
       }
     }
   }
@@ -808,7 +880,7 @@ export fn parse_program_located_shared_fs(path: String, source: String) -> Array
   let seen_sources = located_parse_versions(Array::get(located_parse_memo_sources, 0), path)
   let seen_cfgs = located_parse_versions(Array::get(located_parse_memo_cfgs, 0), path)
   let memo_hit = located_parse_version_index(seen_sources, seen_cfgs, source, cfg_ambient_flags_csv()) >= 0
-  if memo_hit || !ast_cache_enabled() {
+  if memo_hit || !ast_cache_active() {
     parse_program_located_shared(path, source)
   } else {
     let fingerprint = compact_source_fingerprint_memo(path, source)
@@ -864,7 +936,7 @@ export fn load_or_parse_module_header_fs_impl(path: String, source: String, pars
     ingestion_pipeline_telemetry_add(11, 1)
     // The header is warm, so nothing below parses -- which is exactly when
     // the merge's pure parse has nothing to reuse. Hand it the stored AST.
-    ast_cache_prefetch_fs(path, source)
+    let _ = ast_cache_prefetch_fs(path, source)
     (warm_deps, warm_exports, parse_count)
   } else {
     ingestion_pipeline_telemetry_add(12, 1)

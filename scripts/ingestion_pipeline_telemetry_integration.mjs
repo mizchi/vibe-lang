@@ -70,7 +70,7 @@ function run(label, { checkOnly = true, expectSuccess = true, stale = false, out
   assert.equal(
     pipeline.final_semantic_source_parse_executions,
     incremental.current_source_parse_executions,
-    `${label}: schema-2 final-parse cross-check`,
+    `${label}: final-parse cross-check against the incremental sidecar`,
   );
   for (const prefix of ["source_list_cache", "source_group_cache", "module_header_cache"]) {
     assert.equal(pipeline[`${prefix}_probes`], pipeline[`${prefix}_hits`] + pipeline[`${prefix}_misses`], `${label}: ${prefix} partition`);
