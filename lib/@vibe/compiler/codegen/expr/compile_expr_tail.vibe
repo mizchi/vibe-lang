@@ -1194,15 +1194,23 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
 /// `local_names` is indexed BY wasm local index -- `compile_expr` resolves an
 /// identifier to its slot by position -- so a lowering that CLAIMS a slot has
 /// to give it an entry in the same breath. Every other claim in codegen does:
-/// `compile_call` pushes `__map_arr` .. `__map_uniq`, one name per scratch
-/// local it takes. The scope-end promotion below was the one that did not, and
-/// #2792 is what that cost: it used `nl2` and returned `nl2 + 1` while pushing
-/// nothing, leaving the array one short of the next binding's index, so the
-/// next `let` in the ENCLOSING scope ran `Array::set(local_names, local_idx,
-/// "")` one past the end and the compiler ABORTED -- `Array::set: index 12 out
-/// of bounds for length 12`, no diagnostic, no source position, nothing naming
-/// an edit. The bump lane has no promotion and compiled the same program, so
-/// the two lanes disagreed on whether the program exists.
+/// `compile_call` pushes `__map_arr` .. `__map_uniq` and `__argdup` /
+/// `__argtmp`, one name per scratch local it takes. The scope-end promotion did
+/// not, and #2792 is what that cost: it used `nl2` and returned `nl2 + 1` while
+/// pushing nothing, leaving the array one short of the next binding's index, so
+/// the next `let` in the ENCLOSING scope ran `Array::set(local_names,
+/// local_idx, "")` one past the end and the compiler ABORTED --
+/// `Array::set: index 12 out of bounds for length 12`, no diagnostic, no source
+/// position, nothing naming an edit. The bump lane has no promotion and
+/// compiled the same program, so the two lanes disagreed on whether the program
+/// exists.
+///
+/// The promotion is written out TWICE -- once in the `ELet` lowering, once in
+/// `ELetMut`'s -- and only the first was found at first. `let mut ys = [..]`
+/// inside the wrapper aborted identically until review on #2797 named the
+/// second. That is the argument for a helper over a fourth hand-rolled copy:
+/// the sites that claim a slot are enumerable (`emit_local_set(buf, nl2)` finds
+/// exactly these two), and one call is what makes each of them checkable.
 ///
 /// The entry is the empty no-name marker, never a spelling: the slot is
 /// addressed by index and never looked up by name, and `compile_expr` resolves
@@ -2411,6 +2419,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
           emit_local_get(buf, local_idx)
           emit_call(buf, ctx.rc_drop_func_idx)
           emit_local_get(buf, nl2)
+          cet_record_local_slot(local_names, nl2)
           nl2 + 1
         } else {
           emit_local_get(buf, local_idx)
