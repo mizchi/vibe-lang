@@ -4021,6 +4021,22 @@ fn dtd_interp_field_name(name: String, field: String) -> String {
   String::concat(name, String::concat("$", field))
 }
 
+/// The synthetic NAME of an array element's records FOR ONE CONSTRUCTOR.
+///
+/// #2745 (Codex, P1 round 18 on #2761): round 16 merged every element of an
+/// array into one slot, and argued that elements sharing a checked type cannot
+/// mix incompatible shapes. True of the TYPE and false of the CONSTRUCTOR:
+/// `[A(a), B(0)]` left the slot classified `B`, so `match v { A(b) => .. }`
+/// found no match, blanked `b`, and rendered a pointer.
+///
+/// One slot cannot hold two constructors' payloads, so each constructor gets
+/// its own. `#` is not an identifier character, and everything under `<slot>$`
+/// is still masked, scoped and copied with the slot, so no other reader needs
+/// to know these exist.
+fn dtd_interp_ctor_slot_name(slot: String, ctor: String) -> String {
+  String::concat(slot, String::concat("$#", ctor))
+}
+
 /// The synthetic NAME of an array's ELEMENT. An array's elements are uniform,
 /// so there is one slot rather than one per index, and it borrows index 0's
 /// spelling: a name bound to an array has no tuple records, so the two cannot
@@ -4130,6 +4146,16 @@ fn dtd_interp_bind_lamret(var_types: Array[(String, String)], name: String, valu
   let key = dtd_interp_lamret_key(name)
   let lr = match value {
     EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps, params, ret, fbody),
+    // #2745 (Codex, P1 round 18 on #2761): `let g = idf` fell to the mask, so
+    // `g(a)` could not relate its result to `a`. I had claimed on the round-15
+    // thread that an alias inherits this record "with no arm of its own" --
+    // true only of an alias written INSIDE an interpolation, which the shape
+    // recorder handles; a `let` at statement level comes through here, and
+    // here there was no arm. The claim was wrong as stated and this is the arm.
+    EIdent(src, _) => match lookup_var_type(var_types, dtd_interp_lamret_key(src)) {
+      Some(t) => t,
+      None => ""
+    },
     _ => ""
   }
   if String::length(lr) > 0 {
@@ -4587,7 +4613,21 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
       dtd_interp_mask_records(out, var_types, aslot)
       let mut si = 0
       while si < Array::length(es) {
-        dtd_interp_record_shape_into(out, aslot, Array::get(es, si), struct_sets, var_types, fn_returns)
+        let ael = Array::get(es, si)
+        dtd_interp_record_shape_into(out, aslot, ael, struct_sets, var_types, fn_returns)
+        // #2745 round 18: and again under THIS element's constructor, because
+        // the shared slot can only hold the last one's payloads.
+        match ael {
+          ECall(acallee, _, _) => match acallee {
+            EIdent(acn, _) => if dtd_name_is_constructor_shaped(acn) {
+              dtd_interp_record_shape_into(out, dtd_interp_ctor_slot_name(aslot, acn), ael, struct_sets, var_types, fn_returns)
+            } else {
+              ()
+            },
+            _ => ()
+          },
+          _ => ()
+        }
         si = si + 1
       }
     },
@@ -4689,18 +4729,33 @@ fn dtd_interp_bind_pat_into(out: Array[(String, String)], pat: Pat, scrut: Expr,
       // were recorded at that binding, and the recorded CONSTRUCTOR must equal
       // this pattern's -- an inline call carries its constructor in the
       // expression, a name does not.
-      EIdent(sname, _) => if dtd_interp_shape_is(var_types, sname, cname) && dtd_interp_tuple_elems_known(var_types, sname, Array::length(ps)) {
-        let mut i = 0
-        while i < Array::length(ps) {
-          let ef = match lookup_var_type(var_types, dtd_interp_tuple_elem_key(sname, i)) {
-            Some(t) => t,
-            None => ""
-          }
-          dtd_interp_bind_pat_into(out, Array::get(ps, i), EIdent(dtd_interp_elem_name(sname, i), -1), ef, struct_sets, var_types, fn_returns)
-          i = i + 1
+      // #2745 round 18: the name's own records answer for a single value; a
+      // name bound to an ARRAY ELEMENT may carry several constructors, each
+      // under its own sub-slot, so the pattern's constructor picks which. Tried
+      // in that order because the direct records are the specific answer and
+      // the sub-slot the general one.
+      EIdent(sname0, _) => {
+        let csub = dtd_interp_ctor_slot_name(sname0, cname)
+        let sname = if dtd_interp_shape_is(var_types, sname0, cname) {
+          sname0
+        } else if dtd_interp_shape_is(var_types, csub, cname) {
+          csub
+        } else {
+          sname0
         }
-      } else {
-        dtd_interp_blank_binders(out, pat)
+        if dtd_interp_shape_is(var_types, sname, cname) && dtd_interp_tuple_elems_known(var_types, sname, Array::length(ps)) {
+          let mut i = 0
+          while i < Array::length(ps) {
+            let ef = match lookup_var_type(var_types, dtd_interp_tuple_elem_key(sname, i)) {
+              Some(t) => t,
+              None => ""
+            }
+            dtd_interp_bind_pat_into(out, Array::get(ps, i), EIdent(dtd_interp_elem_name(sname, i), -1), ef, struct_sets, var_types, fn_returns)
+            i = i + 1
+          }
+        } else {
+          dtd_interp_blank_binders(out, pat)
+        }
       },
       _ => dtd_interp_blank_binders(out, pat)
     },
@@ -11380,11 +11435,17 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => {
-      let rec_vars = if Array::get(dtd_constructor_tracking, 0) {
+      let rec_vars0 = if Array::get(dtd_constructor_tracking, 0) {
         extend_local_fn_return(extend_constructor_var_types(var_types, name, None), name, val)
       } else {
         var_types
       }
+      // #2745 (Codex, P1 round 18 on #2761): `let rec` is a binding like the
+      // other two and was the one this record was not wired into, so
+      // `let rec idf = [U](u: U) -> U { u }` printed a pointer where `let idf`
+      // was refused. Seeded on the RECURSIVE environment, which is the one both
+      // the value and the body are rewritten in.
+      let rec_vars = dtd_interp_bind_lamret(rec_vars0, name, val)
       ELetRec(name, rewrite_expr(val, gens, traits, struct_sets, dict_binds, rec_vars, fn_returns), rewrite_expr(body, gens, traits, struct_sets, dict_binds, rec_vars, fn_returns))
     },
     ELetMut(name, val, body, soff) => {

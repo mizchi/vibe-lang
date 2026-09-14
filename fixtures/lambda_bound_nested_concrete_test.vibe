@@ -29,6 +29,11 @@ struct Hold {
   cold: Int
 }
 
+enum Wrap[V] {
+  A(V);
+  B(Int)
+}
+
 struct Box3[U] {
   pair: (U, Int)
 }
@@ -383,6 +388,42 @@ fn tyapp_ret_bound_concrete(q: Qt) -> String {
   inner(q)
 }
 
+// #2745 round 18 on the green side. The third row is the one that guards the
+// per-constructor sub-slots from going too far: reading the OTHER constructor,
+// whose payload is concrete, must still render.
+fn letrec_lam_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let rec idf = [U](u: U) -> U {
+      u
+    }
+    "\{idf(2)}"
+  }
+  inner(q)
+}
+
+fn alias_lam_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) -> U {
+      u
+    }
+    let g = idf
+    "\{g(3)}"
+  }
+  inner(q)
+}
+
+fn enum_merge_other_ctor(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let xs = [A(a), B(6)]
+    let v = Array::get(xs, 1)
+    match v {
+      A(_) => 0,
+      B(k) => k
+    } } }"
+  }
+  inner(q)
+}
+
 fn nested_all_concrete(q: Qt) -> String {
   let inner = [T](a: T) -> String {
     "\{ { let p = ((3, 1), 2)
@@ -571,4 +612,16 @@ test "#2745: a concrete container return renders inline" {
 
 test "#2745: and through a name" {
   inspect(tyapp_ret_bound_concrete(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a let rec lambda at a concrete argument renders" {
+  inspect(letrec_lam_concrete(Qt::{ w: 5 }), content = "2")
+}
+
+test "#2745: an aliased lambda at a concrete argument renders" {
+  inspect(alias_lam_concrete(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: the OTHER constructor's concrete payload still renders" {
+  inspect(enum_merge_other_ctor(Qt::{ w: 5 }), content = "6")
 }
