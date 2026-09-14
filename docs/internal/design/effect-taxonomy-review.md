@@ -540,7 +540,7 @@ gate で回帰を固定し、`stage2 == stage3` fixpoint を都度確認する)�
 
 > **carved out**: #1143 本来の要求(compiler の host runtime execution
 > contract を WIT で明文化する)は ADR-0086 として決着済み。詳細は
-> [host-runtime-contract.md](host-runtime-contract.md) +
+> [compiler-host-boundary.md](compiler-host-boundary.md) +
 > [wit/vibe-compiler-host.wit](../compiler/wit/vibe-compiler-host.wit)。以下は
 > resource-kind retrofit がこの実装債務をどう構造的に解消するか、という
 > 別の角度からの議論として記録のまま残す。

@@ -54,7 +54,7 @@ Install, learn, write, build, test, package, debug, deploy.
 | [user/reference/host-abi.md](user/reference/host-abi.md) | Host ABI of generated wasm |
 | [user/reference/http_server_contract.md](user/reference/http_server_contract.md) | Public `Http::*` contract |
 | [user/reference/feature-levels.md](user/reference/feature-levels.md) | Generated-wasm feature levels |
-| [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) | Host execution contract (not [internal/design/host-runtime-contract.md](internal/design/host-runtime-contract.md)) |
+| [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) | The `vibe.*` core imports a generated program needs from its runner. The compiler's own host boundary is [internal/design/compiler-host-boundary.md](internal/design/compiler-host-boundary.md) |
 | [user/getting-started/release-notes-0.1.0.md](user/getting-started/release-notes-0.1.0.md) | |
 
 ## 2. Maintainer / internal
@@ -100,7 +100,7 @@ the repo; not the user manual.
 | [internal/design/effectset.md](internal/design/effectset.md) | ADR-0071, proposed |
 | [internal/design/error-effect-policy.md](internal/design/error-effect-policy.md) | ADR-0073 |
 | [internal/design/exception-effect.md](internal/design/exception-effect.md) | ADR-0085. User surface is the cheatsheet |
-| [internal/design/host-runtime-contract.md](internal/design/host-runtime-contract.md) | ADR-0086 compiler-host contract |
+| [internal/design/compiler-host-boundary.md](internal/design/compiler-host-boundary.md) | ADR-0086: what a runner must provide for the compiler's own `cli_main`. Not the generated-program contract, which is [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
 | [internal/design/module-system-oracle.md](internal/design/module-system-oracle.md) | Executable ADR-0070 oracle |
 | [internal/design/module-system-v2.md](internal/design/module-system-v2.md) | |
 | [internal/design/naming-convention-migration.md](internal/design/naming-convention-migration.md) | ADR-0083, proposed, Phase 0 not started |
