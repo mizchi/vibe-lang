@@ -422,3 +422,29 @@ export fn census_fresh_name(base: String, value: Expr, content: Expr) -> String 
   }
   candidate
 }
+
+/// Labeled-argument reordering. Named args are order-independent — `f(y=2, x=1)`
+/// binds x=1, y=2 (cheatsheet "Labeled arguments"). Codegen strips ELabeledArg
+/// labels and binds positionally, so a call given out of declared order used to
+/// bind by position (silently wrong; `add`-style commutative calls masked it).
+/// This pass reorders a FULLY-labeled call's args into the callee's declared
+/// parameter order. It fires when the callee is a top-level let-bound function
+/// (#986: ANY such function — a plain `fn add(x: Int, y: Int)` too, not just
+/// `~`-labeled declarations; `fn` decls lower to `SLet` + `EFn` before this
+/// pass, and a fully-labeled call names the parameters either way) and every
+/// arg is an ELabeledArg naming one of its params; any other shape (positional,
+/// partial, unknown callee) is left untouched, so positional binding is
+/// unchanged.
+export fn strip_label_tilde(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 {
+    let last = n[ln - 1: ln]
+    if last == "~" || last == "?" {
+      n[0: ln - 1]
+    } else {
+      n
+    }
+  } else {
+    n
+  }
+}

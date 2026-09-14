@@ -1,0 +1,48 @@
+import @vibe/compiler/core {
+  Stmt
+}
+import @vibe/compiler/lowering/labeled_args {
+  collect_trivial_wrapper_names, inline_trivial_wrappers, relabel_labeled_args, unresolved_mut_labeled_calls
+}
+import @vibe/parser {
+  lex, parse_program, print_stmt
+}
+
+fn program(src: String) -> Array[Stmt] with Exception {
+  parse_program(lex(src))
+}
+
+test "a fully labeled call is reordered into the declared parameter order" {
+  let stmts = program("fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(y = 2, x = 10)\n}\n")
+  relabel_labeled_args(stmts, 0 - 1, 0)
+  let out = print_stmt(Array::get(stmts, 1))
+  inspect(String::contains(out, "sub(10, 2)"), content = "true")
+  inspect(Array::length(unresolved_mut_labeled_calls()), content = "0")
+}
+
+test "own_limit bounds the rewrite: a call in the dependency block keeps its written order" {
+  let stmts = program("fn sub(x: Int, y: Int) -> Int {\n  x - y\n}\n\nfn main() -> Int {\n  sub(y = 2, x = 10)\n}\n")
+  // Own region is the first statement only; `main` sits in the context block.
+  relabel_labeled_args(stmts, 1, 1)
+  let out = print_stmt(Array::get(stmts, 1))
+  inspect(String::contains(out, "sub(y=2, x=10)"), content = "true")
+}
+
+test "an omitted optional argument is filled at the call site" {
+  let stmts = program("fn d(x: Int, z?: Int) -> Int {\n  x\n}\n\nfn main() -> Int {\n  d(1)\n}\n")
+  relabel_labeled_args(stmts, 0 - 1, 0)
+  let out = print_stmt(Array::get(stmts, 1))
+  inspect(String::contains(out, "d(1, None)"), content = "true")
+}
+
+test "a trivial pass-through wrapper is inlined at its call sites, whole-program wrappers included" {
+  let src = "let apply = (f) -> {\n  f()\n}\n\nfn main() -> Int {\n  apply(inner)\n}\n"
+  let stmts = program(src)
+  inspect(String::join(collect_trivial_wrapper_names(stmts), ","), content = "apply")
+  inline_trivial_wrappers(stmts, Array::length(stmts), [])
+  inspect(String::contains(print_stmt(Array::get(stmts, 1)), "inner()"), content = "true")
+  // A wrapper the module cannot see (an imported one) arrives as a whole-program fact.
+  let dep = program("fn main() -> Int {\n  pick(inner)\n}\n")
+  inline_trivial_wrappers(dep, 1, ["pick"])
+  inspect(String::contains(print_stmt(Array::get(dep, 0)), "inner()"), content = "true")
+}
