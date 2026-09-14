@@ -92,7 +92,7 @@
   **wasip3 ではない**。
 - **component path**（`lib/@vibe/compiler/component_codegen.vibe`）: canonical ABI（`cabi_realloc`）＋
   preview1 adapter で WASI component 化。標準 I/O を `wasi:io`（preview2）→ p3 async に寄せるのが
-  到達目標（[wasi-p3-async.md](../../spec/wasi-p3-async.md), [decisions.md](../../spec/decisions.md)）。
+  到達目標（[wasi-p3-async.md](../../internal/design/wasi-p3-async.md), [decisions.md](../../internal/design/decisions.md)）。
 - よって「IO を wasip3 前提にする」のは **component path の方針**であり、
   core path のエフェクトを wasip3 に載せ替えるには `vibe::fs_*` →
   `wasi:filesystem`/`wasi:cli` へのマッピング adapter が別途必要。

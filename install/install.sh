@@ -612,7 +612,7 @@ write_default_toolchain "$TOOLCHAIN" "$SET_DEFAULT"
 if [ "$DO_STDLIB" = "1" ]; then
   # @vibe/wit_runtime is in this list because it is USER-FACING: #1324 removed
   # `Result` from the language, and a WIT-facing fallible export has to import
-  # it (docs/effect-wit-mapping.md tells users to). @vibe/builtin is the same
+  # it (docs/internal/design/effect-wit-mapping.md tells users to). @vibe/builtin is the same
   # class (#1949) -- the book imports `Int::abs` and friends from it.
   # @vibe/console joins them in #2102: it is now where the tty surface lives
   # (`read_line`, `eprintln`, `tap`, the `tui_*` helpers), so it is documented

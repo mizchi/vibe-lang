@@ -3,7 +3,7 @@
 # for the --jobs N frontend pre-warm path (scripts/parallel_frontend_warm.mjs)
 # + the real compile that always follows it.
 #
-# docs/compiler-parallelism.md's "Completion gates" list this explicitly as
+# docs/internal/design/compiler-parallelism.md's "Completion gates" list this explicitly as
 # outstanding before raising the default worker count above 1: "cold and
 # warm compile time, peak guest heap, and host RSS are reported". Phase 0's
 # scripts/selfcompile_kpi.sh already reports wall time + peak guest heap for

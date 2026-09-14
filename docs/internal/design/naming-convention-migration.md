@@ -5,8 +5,8 @@ Status: proposed(骨子段階、規模調査のみ完了、Phase 0 未着手)
 Date: 2026-07-29
 
 Related: ADR-0081(`Type::method` canonical on-disk form)、#1189(Type::method
-naming ratchet lint)、[docs/user/reference/stable-surface.md](user/reference/stable-surface.md)(型命名
-CamelCase の凍結)、[docs/effect-taxonomy-review.md](effect-taxonomy-review.md)
+naming ratchet lint)、[docs/user/reference/stable-surface.md](../../user/reference/stable-surface.md)(型命名
+CamelCase の凍結)、[docs/internal/design/effect-taxonomy-review.md](effect-taxonomy-review.md)
 (本 ADR の発端になった議論)
 
 ## Context
@@ -20,7 +20,7 @@ CI で強制)。一方 `docs/user/reference/stable-surface.md` は型命名だ�
 1.0 の SemVer 保証対象として凍結している(「ユーザー型は CamelCase」)。
 関数/メソッドの snake_case 自体はこの凍結リストに明記されていない。
 
-`docs/effect-taxonomy-review.md` の議論で `perform Fs::read_file(...)`
+`docs/internal/design/effect-taxonomy-review.md` の議論で `perform Fs::read_file(...)`
 のような effect operation の呼び出し例を書いていたところ、関数名を
 lowerCamelCase に統一したいという要望が出た。検討の結果、対象範囲は
 effect operation に限らず **vibe 全体の関数/メソッド命名規約**に及ぶ。
@@ -95,7 +95,7 @@ renaming は他の意味論変更と異なり、**コンパイルが通ること
   bootstrap bump は不要。ただし通常の compiler-source 変更と同様、
   `stage2 == stage3` fixpoint の確認は必須。
 - **Phase 2**: `docs/user/reference/cheatsheet.md`、`book/en/*.vibe.md`、
-  `docs/adr.md` 内のコード片、generated bundle の再生成。
+  `docs/internal/design/adr.md` 内のコード片、generated bundle の再生成。
 - **Phase 3**: `scripts/lint_method_style_naming.sh` /
   `scripts/method_style_naming_allowlist.txt` の再検証。この lint は
   casing 非依存の構造チェック(free fn と `Type::method` のペアリング
@@ -127,7 +127,7 @@ renaming は他の意味論変更と異なり、**コンパイルが通ること
 - `CLAUDE.md` — 現行の snake_case 命名規約の記述。
 - `scripts/lint_method_style_naming.sh`,
   `scripts/method_style_naming_allowlist.txt` — #1189 の ratchet lint。
-- `docs/user/reference/stable-surface.md`, `docs/spec/decisions.md` — 型命名の凍結
+- `docs/user/reference/stable-surface.md`, `docs/internal/design/decisions.md` — 型命名の凍結
   ポリシー。
 - `lib/@vibe/compiler/checker/builtins_fs.vibe`,
   `builtins_system.vibe`, `builtins_net.vibe` — 短縮テーブル叩き台の

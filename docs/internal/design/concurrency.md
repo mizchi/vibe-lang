@@ -10,7 +10,7 @@ Related: ADR-0012, ADR-0050, ADR-0060, ADR-0068, ADR-0071, ADR-0075, ADR-0076,
 ## 位置づけ
 
 本書を v0.2.0 の並行処理に関する公開意味論の source of truth とする。
-`docs/spec/wasi-p3-async.md` は WASI 0.3 への lowering、#488 は
+`docs/internal/design/wasi-p3-async.md` は WASI 0.3 への lowering、#488 は
 shared-everything-threads の実験を扱う。両者が本書と衝突する場合、公開 API と
 観測可能な挙動は本書を優先する。
 

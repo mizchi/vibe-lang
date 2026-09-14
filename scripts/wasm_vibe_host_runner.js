@@ -1596,7 +1596,7 @@ function createPreview2CliStreamsHost() {
   // M2c-3 (0.2 input-stream bridge): when VIBE_STDIN_BYTES is set, feed its
   // UTF-8 bytes to input-stream.blocking-read so a handler can consume a
   // host-provided byte stream incrementally (the testable stand-in for the WASI
-  // 0.3 stream<u8> HTTP body; docs/spec/wasi-p3-async.md §3.3). Unset =>
+  // 0.3 stream<u8> HTTP body; docs/internal/design/wasi-p3-async.md §3.3). Unset =>
   // legacy EOF behaviour, so existing tests are unaffected.
   const stdinFeed =
     process.env.VIBE_STDIN_BYTES !== undefined

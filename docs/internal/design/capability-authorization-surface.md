@@ -199,7 +199,7 @@ that reads the keyword.
   than admitted by prefix, so the contract cannot list authority that does
   not exist.
 - `test {}` / `bench {}` keep ambient full authority; a declared row widens
-  it ([spec/test-example-capabilities.md](spec/test-example-capabilities.md)).
+  it ([spec/test-example-capabilities.md](test-example-capabilities.md)).
 
 ## Non-goals
 

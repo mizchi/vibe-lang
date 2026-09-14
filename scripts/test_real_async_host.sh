@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Real async execution on wasmtime 45 with a HOST producer
-# (docs/spec/wasi-p3-async.md §2.3). Builds the async host
+# (docs/internal/design/wasi-p3-async.md §2.3). Builds the async host
 # (tools/async_host, bin vibe-real-async-host) and runs it on the guest
 # examples/wasm/async_host_probe.wat: `run()` awaits the host async import
 # `host.get_async`, which returns Pending once — genuinely SUSPENDING the guest

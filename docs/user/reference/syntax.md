@@ -411,7 +411,7 @@ Rules:
 Which module refs a given file is *allowed* to import — package boundaries,
 owner visibility, implicit build roots, and the dependency pin/update
 workflow — is not syntax and is specified once, in
-[docs/module-system-oracle.md の「現行モデル」節](../../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
+[docs/internal/design/module-system-oracle.md の「現行モデル」節](../../internal/design/module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
 (#1269).
 
 ## Expressions
@@ -842,7 +842,7 @@ outside the doctest list.
 A `test`, `bench` or `example` is an entry point, so the row written after its
 name is a GRANT and the keyword is `allows` (ADR-0088), exactly as on
 `fn main allows ..`. The declared row widens the ambient default row that test
-execution supplies (`docs/spec/test-example-capabilities.md`); an anonymous
+execution supplies (`docs/internal/design/test-example-capabilities.md`); an anonymous
 `test { .. }` / `bench { .. }` cannot carry one, because the row is keyed on the
 name. `test "n" with ..` is a parse error naming the `allows` edit.
 

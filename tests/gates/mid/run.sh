@@ -24,7 +24,7 @@ export VIBE_UNSTABLE=1
 #     were removed after measurement: the same algorithm through them cost 22x a
 #     hand-written inline-wasm kernel and heap-boxed 2 unreclaimable bytes per
 #     byte scanned (bench/bench_simd_bytes_find.vibe,
-#     docs/simd-data-structures.md 3.1). A retired surface that quietly comes
+#     docs/internal/design/simd-data-structures.md 3.1). A retired surface that quietly comes
 #     back is worse than one that never left -- especially this one, which
 #     type-checked and looked like the supported way to write SIMD -- so assert
 #     the name does NOT resolve, and fails the way the CLI promises.
@@ -1673,7 +1673,7 @@ echo "[compiler-gate] wasm-gc import contract ok (direct mode diagnoses; public 
 
 # 40i. effect->WIT golden (#537): `vibe compile --wit` (adapter VIBE_EMIT_WIT=1)
 #      must render fixtures/wit_gen_http.vibe byte-exactly as the committed
-#      golden. Pins the WIT mapping contract (docs/effect-wit-mapping.md):
+#      golden. Pins the WIT mapping contract (docs/internal/design/effect-wit-mapping.md):
 #      declared effect -> inline interface import, host-capability effect ->
 #      comment marker, exported fns -> world exports, type mapping.
 echo "[compiler-gate] 40i/40 effect->WIT golden (#537)"
@@ -1688,7 +1688,7 @@ if [ ! -s "$witdir/out.wit" ]; then
   exit 1
 fi
 if ! diff -u "fixtures/wit_gen_http.golden.wit" "$witdir/out.wit" >&2; then
-  echo "[compiler-gate] FAIL: WIT output differs from fixtures/wit_gen_http.golden.wit. If the mapping contract changed intentionally, update the golden AND docs/effect-wit-mapping.md together." >&2
+  echo "[compiler-gate] FAIL: WIT output differs from fixtures/wit_gen_http.golden.wit. If the mapping contract changed intentionally, update the golden AND docs/internal/design/effect-wit-mapping.md together." >&2
   exit 1
 fi
 rm -rf "$witdir"
@@ -1825,7 +1825,7 @@ fi
 rm -rf "$m2dir"
 echo "[compiler-gate] handle-replay side-effect corruption regression guard ok (3013, ADR-0076 Phase 2 fix verified)"
 
-# 40m. ADR-0071 step 1 (#755, docs/effectset.md): a `with` row item
+# 40m. ADR-0071 step 1 (#755, docs/internal/design/effectset.md): a `with` row item
 #      may now name a single qualified operation (`Effect::op`), not just a
 #      whole effect name -- collect_effect_names in
 #      lib/@vibe/parser/parser_base.vibe. Parser-only slice: the row stays
@@ -1858,7 +1858,7 @@ fi
 rm -rf "$a71dir"
 echo "[compiler-gate] effect row operation-item grammar ok"
 
-# 40n. ADR-0071 step 3 (#755, docs/effectset.md): a VALID `effectset` (no
+# 40n. ADR-0071 step 3 (#755, docs/internal/design/effectset.md): a VALID `effectset` (no
 #      cycle, no operation-name collision) is now ACCEPTED and its members
 #      are expanded into any `with EffectsetName` row item that
 #      references it (checker_stmt.vibe's es_expand_stmts_effect_rows),
@@ -1893,7 +1893,7 @@ fi
 rm -rf "$a71bdir"
 echo "[compiler-gate] effectset row expansion ok"
 
-# 40o. ADR-0071 resolver core (#755, docs/effectset.md): the ADR's Decision
+# 40o. ADR-0071 resolver core (#755, docs/internal/design/effectset.md): the ADR's Decision
 #      section calls out two specific invalid-definition cases by name -- a
 #      cycle through effectset member references, and a qualified name
 #      colliding with an operation of the same effect (shared effect-row
@@ -1939,7 +1939,7 @@ fi
 rm -rf "$a71cdir"
 echo "[compiler-gate] effectset cycle + operation-collision detection ok"
 
-# 40p. ADR-0071 step 3, parameter-type expansion (#755, docs/effectset.md):
+# 40p. ADR-0071 step 3, parameter-type expansion (#755, docs/internal/design/effectset.md):
 #      effectset row expansion also covers a function PARAMETER's own
 #      function-typed row (the #885 callback-overlay case), not just a
 #      function's own top-level declared row -- es_expand_top_value in
@@ -1973,7 +1973,7 @@ fi
 rm -rf "$a71ddir"
 echo "[compiler-gate] effectset parameter-type row expansion ok"
 
-# 40q. ADR-0071 step 4 (#755, docs/effectset.md): `handle body with Effect
+# 40q. ADR-0071 step 4 (#755, docs/internal/design/effectset.md): `handle body with Effect
 #      {...}` is exhaustive over every operation of Effect (ADR-0050), so
 #      discharging the bare effect name is semantically equivalent to
 #      discharging every one of its qualified operation names --
@@ -2008,7 +2008,7 @@ fi
 rm -rf "$a71edir"
 echo "[compiler-gate] handler operation-level discharge ok"
 
-# 40r. ADR-0071 step 5, contract passthrough (#755, docs/effectset.md): an
+# 40r. ADR-0071 step 5, contract passthrough (#755, docs/internal/design/effectset.md): an
 #      `effectset` is a transparent, compile-time-only alias like `effect`
 #      -- classify_contract_stmts (contract.vibe) now passes an SEffectSet
 #      through into the facade verbatim, exported, the same way it already
@@ -2040,7 +2040,7 @@ rm -rf "$a71fdir"
 echo "[compiler-gate] effectset contract passthrough ok"
 
 # 40s. ADR-0071 step 5, signature-matching effectset awareness (#755,
-#      docs/effectset.md): check_contract (contract.vibe) previously
+#      docs/internal/design/effectset.md): check_contract (contract.vibe) previously
 #      compared a contract's and an implementation's effect row as raw,
 #      unexpanded strings -- a contract signature spelled with an
 #      effectset alias (`fn f() -> T with AskAll`) reported a false
@@ -2071,7 +2071,7 @@ rm -rf "$a71gdir"
 echo "[compiler-gate] effectset contract signature-matching ok"
 
 # 40t. ADR-0071 step 5, WIT generation effectset/qualified resolution (#755,
-#      docs/effectset.md): wit_gen.vibe previously resolved each raw
+#      docs/internal/design/effectset.md): wit_gen.vibe previously resolved each raw
 #      effect-row label verbatim against the effect definitions it collected,
 #      so an `effectset` alias (`with AskAll`) or a bare qualified
 #      operation item with no accompanying plain effect-name item
@@ -2137,7 +2137,7 @@ echo "[compiler-gate] evidence-dict threading through a helper-function call ok"
 # 40v. ADR-0076 Phase 3 (#817): a needing-function call nested inside an
 #      `if`/`else` branch of a handle body used to compile to genuinely
 #      INVALID wasm ("not enough arguments on the stack for call"). Root-
-#      caused (docs/effect-evidence-passing.md "追記 6"): the handle-site
+#      caused (docs/internal/design/effect-evidence-passing.md "追記 6"): the handle-site
 #      rewrite used to collect handle sites then re-locate each one
 #      afterward via a hand-rolled structural-equality check covering only
 #      a handful of Expr constructors -- any OTHER shape (EIf being the
@@ -2916,7 +2916,7 @@ done
 rm -rf "$cbvsdir"
 echo "[compiler-gate] stored-by-value closure ABI ok (#1070 final sub-case, RC both modes)"
 
-# 40ar. #1070 (general case, second slice -- docs/effect-evidence-passing.md
+# 40ar. #1070 (general case, second slice -- docs/internal/design/effect-evidence-passing.md
 #       追記25): a SELF-DISCHARGING owner -- a function with NO `with Ask`
 #       row that establishes its own `handle .. with Ask` and calls its
 #       closure-typed parameter inside that handle's body. Never "needing"

@@ -9,7 +9,7 @@
 #
 # The case that matters is a module WITH an import. Before this, the
 # selfhost bridge could only check leaf snapshots, which is why
-# docs/compiler-parallelism.md lists an in-memory ModuleJob -> ModuleArtifact
+# docs/internal/design/compiler-parallelism.md lists an in-memory ModuleJob -> ModuleArtifact
 # API as the blocker for a parallel frontend.
 #
 # Usage:

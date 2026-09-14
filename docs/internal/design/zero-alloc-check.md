@@ -7,7 +7,7 @@ Date: 2026-07-31
 Related: ADR-0055(RC)、ADR-0090(region)、ADR-0092(reuse — 実装順は
 本 ADR より先)、#510(NaN-boxing)、
 [mutability-control-review.md](mutability-control-review.md)、
-`docs/spec/profiling.md`(確保サイト計装の要求)。参考: OxCaml
+`docs/internal/design/profiling.md`(確保サイト計装の要求)。参考: OxCaml
 `[@zero_alloc]` / `[@zero_alloc assume]` / `local_`、Swift
 `@_noAllocation`、Clang `nonallocating`。
 

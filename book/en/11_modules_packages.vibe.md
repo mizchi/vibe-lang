@@ -170,6 +170,6 @@ vibe pkg update @you/pkg          # move to the newest, showing the contract dif
 
 Publish and yank append to a transparency log, and install verifies its
 proof — so a version cannot be swapped underneath you after the fact.
-[docs/registry-design.md](../../docs/registry-design.md) has the design.
+[docs/internal/design/registry-design.md](../../docs/internal/design/registry-design.md) has the design.
 
 Next: [Writing tests](12_tests.vibe.md).

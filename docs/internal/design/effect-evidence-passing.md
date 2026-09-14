@@ -242,7 +242,7 @@ effect」への昇格を同じ設計で行う。
 
 ### 並行モデル (ADR-0068) との整合
 
-`docs/concurrency.md` (ADR-0068) は本 ADR に先んじて evidence の語彙と
+`docs/internal/design/concurrency.md` (ADR-0068) は本 ADR に先んじて evidence の語彙と
 制約の一部を既に規定しており、本 ADR はそれと矛盾しないよう設計する。
 
 - ADR-0068 の実装順は「1. 本仕様と fixture を固定 → **2. #817:
@@ -250,7 +250,7 @@ effect」への昇格を同じ設計で行う。
   `Suspend` IR と finalizer unwind を作る** → 3. mutable global を
   `TaskContext` へ集約 → …」であり、**本 ADR (#817) は並行 runtime が
   「準拠」を名乗るための前提条件**として先に位置づけられている
-  (`docs/concurrency.md` の「cancel と non-local exit は stack を
+  (`docs/internal/design/concurrency.md` の「cancel と non-local exit は stack を
   unwind し…replay handler を generalized evidence passing + 明示
   suspend IR へ置き換える #817…は、並行 runtime を compliant と呼ぶ
   前提である」)。本 ADR の `EPerform`/`EHandle`/suspend 点 IR は、
@@ -261,7 +261,7 @@ effect」への昇格を同じ設計で行う。
   channel message / spawn capture / global state に保存できない」と
   いう制約をそのまま満たす — 本 ADR は `Cont[R]` を通常のクロージャ
   として実装するので `Send` 判定は ADR-0068 の allowlist
-  (`docs/concurrency.md` の `Send`/`Spawnable[r]` checker) が自動的に
+  (`docs/internal/design/concurrency.md` の `Send`/`Spawnable[r]` checker) が自動的に
   除外する。本 ADR 側で追加の cross-task 制約を実装する必要はない。
 - evidence dict も同じ理由で既定では `Send`/fork-safe ではない。
   ADR-0068 は「v0.4.0 では `Async`/`Spawn` runtime evidence と
@@ -298,7 +298,7 @@ drop、あるいはユーザー定義の `handle ... with Error` によるクリ
 に委ねられる。これは本 ADR のスコープでは**据え置きとする**: Effekt の
 dynamic-wind 相当の明示的な finalizer スタック機構 (`docs/pl-survey-2026-07.md`
 参照) を独自に導入するかどうかは、ADR-0068 の Phase 3 以降
-(`TaskContext` の finalizer stack 実装、`docs/concurrency.md` の
+(`TaskContext` の finalizer stack 実装、`docs/internal/design/concurrency.md` の
 `TaskContext` 構成要素に「finalizer stack」が既に列挙されている) で
 決める。本 ADR は「`Cont[R]` を破棄すれば通常の RC drop で capture 済み
 資源が解放される」という Perceus ベースの最小保証だけを約束し、
@@ -473,7 +473,7 @@ Phase 3 でも再利用できる。
    handled effect」になるだけで、本 ADR 側の変更を要求しない。ADR-0060
    実装の先後を待つ理由はない。
 4. **WASI 0.3 async / JSPI lowering は独立した後続 ADR に切り出す**。
-   `docs/concurrency.md` (ADR-0068) 自身の実装順が「1. 本仕様の fixture
+   `docs/internal/design/concurrency.md` (ADR-0068) 自身の実装順が「1. 本仕様の fixture
    固定 → 2. #817 (本 ADR) → 3. `TaskContext` 集約 → … → 7. JSPI/Worker
    と WASI Component Model lowering」と定めており、JSPI 統合は本 ADR
    より後の、複数ステップを経た段階の仕事として既に順序付けられている。
@@ -552,7 +552,7 @@ Phase 3 でも再利用できる。
    に統合して行う** — 消費者が存在しない状態でキー割り当てだけを
    先行実装すると、Phase 2 の当初計画 (`EPerform`/`EResume` IR ノード)
    と同様に「実装したが実際の経路では使われない scaffolding」になる
-   リスクがあるため。ADR-0071 (docs/effectset.md) の step 6 の記述は
+   リスクがあるため。ADR-0071 (docs/internal/design/effectset.md) の step 6 の記述は
    この結論に合わせて更新する。
 
 **追記 2 (2026-07-22, replay 機構の実装精査から得た簡略化仮説 — 未検証、
@@ -616,7 +616,7 @@ Ask::Get } with Ask { Get => resume(1) } } with Ask { Get => resume(2) }`、
 lexical scope でネストした generic 呼び出しを自然にシャドーする
 のと全く同じ理屈で、呼び出しチェーンに沿って外側の evidence を
 シャドーするだけでよい (新しい解決ロジックは不要)。このリスクも
-解消したと見てよい。(c) ADR-0068 (`docs/concurrency.md`) の
+解消したと見てよい。(c) ADR-0068 (`docs/internal/design/concurrency.md`) の
 async/`Spawn` 文脈で `Cont[R]` を経由した継続の保存が必要になる場面
 (本 ADR の「cancel と non-local exit」節で「据え置き」とされている
 finalizer 保証の話) と、この直接呼び出しモデルとの整合性 — 3 点のうち
@@ -646,7 +646,7 @@ perform する形。このケースは実際に M2 と同型の replay 破損を
 初回 import」で bootstrap の flatten 工程がその関数を黙って merge 結果から
 落とす、という新種の bootstrap gotcha を実際に踏んだため、既存の
 cross-file-registered ファイルへ追記する形に変更した。詳細は
-docs/effectset.md の「Bootstrap gotcha」注記、および本ノート末尾の
+docs/internal/design/effectset.md の「Bootstrap gotcha」注記、および本ノート末尾の
 デバッグ記録参照): 宣言 row が「ちょうど 1 effect」の関数を
 `desugar_trait_dict.vibe` の `TrDict[T]` と同型の struct
 (`__EvDict_<Effect>`、field はその effect の operation 名) を暗黙の
@@ -1337,9 +1337,9 @@ Phase 3 の文言を書き直すこと)。
 
 **「追記 2」(c) / ADR-0068 Cont/finalizer 整合の未検証状態について
 (2026-07-23、同日、精査)**: 本 ADR 側で繰り返し「唯一の未検証項目」
-として据え置いてきたこの項目を、`docs/concurrency.md` 側の記述を直接
+として据え置いてきたこの項目を、`docs/internal/design/concurrency.md` 側の記述を直接
 確認することで、その未検証の性質をより正確に特定した。同ドキュメント
-の Lean lifecycle oracle 節 (`docs/concurrency.md:234-237`) は、
+の Lean lifecycle oracle 節 (`docs/internal/design/concurrency.md:234-237`) は、
 「この oracle は heap、thread、host waitable、channel queue、message
 linearization、fairness、無限 trace、**finalizer stack をまだ
 モデル化しない**。特に terminal state の一回性は証明済みだが、**具体的な
@@ -2018,7 +2018,7 @@ gate 50 更新。
 safe-mut builtin list
 
 `@vibe/concurrent` に suspendable task API (adopt/settle/park/wake/
-pump — docs/concurrency.md 実装ノート「3c」参照) を実装し、2 task の
+pump — docs/internal/design/concurrency.md 実装ノート「3c」参照) を実装し、2 task の
 mid-body 相互 interleave の conformance lock (`suspend_test.vibe`) が
 Phase 3a/3b の lowering 上で green。パターンの要点:
 
@@ -2249,7 +2249,7 @@ primitive の safe-mut 追加
 
 `@vibe/concurrent` の `Sender::send_wait` / `Receiver::recv_wait`
 (`with Async`、deposit → suspend → 自己再帰リトライ) を closure-CPS
-機構の上に実装した (docs/concurrency.md 実装ノート参照)。compiler 側の
+機構の上に実装した (docs/internal/design/concurrency.md 実装ノート参照)。compiler 側の
 変更は 1 点だけ: `scps_is_safe_mut_builtin` に parser desugar の内部
 primitive **`__set_field`** (`o.f = v` の脱糖先) と **`__index`**
 (`a[i]`) を追加した。suspend-class clone body が struct field を変異する
@@ -3270,11 +3270,11 @@ closure literal。最初は clone だけに入れており、`handle { for x in 
 - `docs/archive/adr/0021-mut-effect-handler.md` — tail-resumptive
   ゼロコスト化の元祖の提案 (旧 MoonBit host 限定で実装され、#594 で
   当該実装は退役。本 ADR が selfhost 上での再実装にあたる)。
-- `docs/effectset.md` (ADR-0071) — operation-level 正規化 row。本 ADR の
+- `docs/internal/design/effectset.md` (ADR-0071) — operation-level 正規化 row。本 ADR の
   `OperationId` はこの ADR の正規化形を第一の入力とし、Phase 3 (yield
   bubbling による replay 全廃) はこの ADR の row variable 構造化が
   着地していることを前提とする。
-- `docs/concurrency.md` (ADR-0068) — 並行モデルの source of truth。
+- `docs/internal/design/concurrency.md` (ADR-0068) — 並行モデルの source of truth。
   本 ADR (#817) をその実装順の 2 番目に置き、evidence/continuation の
   task-affine 制約と `Suspend` IR という呼称を既に規定している。本 ADR
   はその制約下で設計している (「並行モデル (ADR-0068) との整合」節参照)。

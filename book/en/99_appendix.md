@@ -18,9 +18,9 @@ order they are usually useful.
   package goes (`@vibe` vs `@vibex` vs a user scope).
 - [docs/user/reference/feature-levels.md](../../docs/user/reference/feature-levels.md) —
   which wasm proposals generated modules may use.
-- [docs/concurrency.md](../../docs/concurrency.md) — `Send`, regions,
+- [docs/internal/design/concurrency.md](../../docs/internal/design/concurrency.md) — `Send`, regions,
   `TaskGroup`.
-- [docs/adr.md](../../docs/adr.md) — the decisions this book cites
+- [docs/internal/design/adr.md](../../docs/internal/design/adr.md) — the decisions this book cites
   by number.
 
 ## Commands the book assumes

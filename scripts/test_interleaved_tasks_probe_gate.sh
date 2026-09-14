@@ -9,7 +9,7 @@
 # Unlike the spawned-future and concurrent-awaits gates, this one drives the
 # hand-authored probe WAT directly rather than a compiler-emitted component:
 # the finding is about what the ABI permits, and the emitter for this shape
-# is deliberately left to the follow-up (see docs/spec/wasi-p3-async.md
+# is deliberately left to the follow-up (see docs/internal/design/wasi-p3-async.md
 # §3.11). What it therefore protects is (a) the ABI behavior itself against
 # a wasmtime bump, and (b) viberun's `get-after` host import, which nothing
 # else exercises.

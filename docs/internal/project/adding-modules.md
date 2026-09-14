@@ -3,8 +3,8 @@
 > Status: written up 2026-07-04 from the practice established by #741/#742/#745
 > (boundary spelling updated to `index.vpkg` 2026-08-01, #1269).
 > The rules for boundaries, visibility and pins are normative in
-> [module-system-oracle.md's "current model" section](../../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述).
-> The design history is [module-system-v2.md](../../module-system-v2.md) (ADR-0063/0064).
+> [module-system-oracle.md's "current model" section](../design/module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述).
+> The design history is [module-system-v2.md](../design/module-system-v2.md) (ADR-0063/0064).
 > Assumes selfhost-only ([archive/moonbit-retirement.md](../../archive/moonbit-retirement.md)).
 
 In this repository, a library is alive only while a `*_test.vibe` of its own is
@@ -148,7 +148,7 @@ cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
   `unknown name: Err`. The only place a two-track return value is really needed
   is the **WIT boundary**, and there `import @vibe/wit_runtime { Result }` is the
   one spelling that projects to WIT's `result<T,E>`
-  ([effect-wit-mapping.md](../../effect-wit-mapping.md)). Declaring your own
+  ([effect-wit-mapping.md](../design/effect-wit-mapping.md)). Declaring your own
   `enum Result[T, E] { Ok(T); Err(E) }` for anything else is allowed, but it is
   an ordinary user enum with no special treatment whatsoever.
 - **Qualified constructor patterns** such as `Result::Ok(v) =>` have worked since

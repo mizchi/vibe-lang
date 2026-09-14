@@ -7,8 +7,8 @@ arena allocation under Perceus RC and region variables in public effect rows
 are not implemented.
 
 This document describes the current contract. See
-[memory management](spec/memory-contract.md) for backend selection and
-[compiler memory experiments](internal/compiler-memory-experiments.md) for
+[memory management](memory-contract.md) for backend selection and
+[compiler memory experiments](compiler-memory-experiments.md) for
 measurement and adoption criteria. ADR-0090 supersedes ADR-0060's proposed
 retrofit of `Write[r]` onto ordinary `let mut`.
 
@@ -50,11 +50,11 @@ closures carrying region-dependent captures. Capture provenance is retained
 in checked function types (#1938); enforcement is no longer only a check of
 the terminal lambda's syntax. The negative `fixtures/err_region_escape_*`
 cases and positive region-local closures in
-[`tests/gates/late/run.sh`](../tests/gates/late/run.sh) pin these paths.
+[`tests/gates/late/run.sh`](../../../tests/gates/late/run.sh) pin these paths.
 
 Key implementations are the `__region_run` / collection branches and the
 region-sensitive call/write/capture checks in
-[`checker.vibe`](../lib/@vibe/compiler/checker/checker.vibe).
+[`checker.vibe`](../../../lib/@vibe/compiler/checker/checker.vibe).
 The parser-generated literal lambda receives the bind-before-check handling;
 the internal non-literal `__region_run(f)` fallback is not a public lifetime
 API and does not provide the same generalization guarantee.
@@ -75,7 +75,7 @@ semantics.
 | Wasm-GC | Dedicated linear-memory arena; these buffers are not native GC objects |
 
 The layout is shared through helpers in
-[`common_base.vibe`](../lib/@vibe/compiler/codegen/common_base/common_base.vibe):
+[`common_base.vibe`](../../../lib/@vibe/compiler/codegen/common_base/common_base.vibe):
 
 ```text
 bump pointer | nesting depth | 64 saved pointers | aligned 256 KiB data segment
@@ -105,8 +105,8 @@ Likewise, reclaiming buffer storage does not reclaim an arbitrary cyclic graph
 of ordinary heap objects stored in the buffer.
 
 The backend setup is in
-[`linked_compile.vibe`](../lib/@vibe/compiler/codegen/wasi/linked_compile.vibe)
-and [`backend_body.vibe`](../lib/@vibe/compiler/codegen/gc/backend_body.vibe).
+[`linked_compile.vibe`](../../../lib/@vibe/compiler/codegen/wasi/linked_compile.vibe)
+and [`backend_body.vibe`](../../../lib/@vibe/compiler/codegen/gc/backend_body.vibe).
 The GC backend's `MutList` / `MutBytes` paths use the same linear arena
 despite native GC allocation being available for other values.
 
@@ -145,13 +145,13 @@ boundary and handling for values that survive that boundary.
 - `fixtures/region_ok_freeze_copies_out.vibe`: independence of copied results.
 - `fixtures/region_throw_unwind_test.vibe`: repeated Exception cleanup.
 
-[`region_arena_heap_delta.mjs`](../scripts/region_arena_heap_delta.mjs) reads
+[`region_arena_heap_delta.mjs`](../../../scripts/region_arena_heap_delta.mjs) reads
 the main heap pointer around `_start`. Value snapshots alone cannot detect
 an arena that stopped reclaiming, so the late gate checks linear bump
 reclamation and the mid gate checks GC reclamation independently. These are
 linear-heap observations, not native GC liveness measurements. Current
 measurements and their exact compiler identities are recorded in the
-[experiment record](internal/compiler-memory-experiments.md).
+[experiment record](compiler-memory-experiments.md).
 
 The first useful compiler workloads to investigate are scratch buffers whose
 contents are consumed inside the region and only a small result escapes.

@@ -54,7 +54,7 @@ vibe compile --wasm-gc <file.vibe>                    # WASM GC proposal
 vibe compile --component <file.vibe>                  # WASM Component Model
 vibe compile --component-string-lift <file.vibe>      # Component with string lifting
 vibe compile --wit <file.vibe>                        # Generate the WIT world for the file's
-                                                      #   effect surface (docs/effect-wit-mapping.md)
+                                                      #   effect surface (docs/internal/design/effect-wit-mapping.md)
 vibe compile --wit-component <file.vibe>              # WIT + Component combined
 vibe compile --wac <file.vibe>                        # WAC composition
 vibe compile --compose-p3 --adapter a.wasm <file>     # P3 component composition
@@ -86,7 +86,7 @@ vibe serve <handler.vibe> --no-run              # emit component + WIT only
 vibe serve <handler.vibe> --adapter my.component.wasm
 ```
 
-The handler contract (see [effect-wit-mapping.md](../../effect-wit-mapping.md)):
+The handler contract (see [effect-wit-mapping.md](../../internal/design/effect-wit-mapping.md)):
 
 ```vibe
 export let handler = (method: String, url: String, headers: String, body: String) -> String

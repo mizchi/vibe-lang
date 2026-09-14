@@ -3,13 +3,13 @@
 This directory contains small Lean 4 models of Vibe's effect system and Error
 policy, executable capability/resource contracts, parallel execution/compiler
 scheduling, and module system. Their sources of truth are
-[ADR-0071](../docs/effectset.md) and
-[ADR-0073](../docs/error-effect-policy.md),
-[ADR-0068](../docs/concurrency.md),
-[ADR-0075](../docs/vibex-runtime-contract.md),
-[ADR-0084](../docs/effect-taxonomy-entry-policy.md),
-[ADR-0085](../docs/exception-effect.md), plus
-[ADR-0070](../docs/module-system-oracle.md). The current string-based effect
+[ADR-0071](../docs/internal/design/effectset.md) and
+[ADR-0073](../docs/internal/design/error-effect-policy.md),
+[ADR-0068](../docs/internal/design/concurrency.md),
+[ADR-0075](../docs/internal/design/vibex-runtime-contract.md),
+[ADR-0084](../docs/internal/design/effect-taxonomy-entry-policy.md),
+[ADR-0085](../docs/internal/design/exception-effect.md), plus
+[ADR-0070](../docs/internal/design/module-system-oracle.md). The current string-based effect
 checker and synchronous eager `Task` implementation are not sources of truth.
 The module model is additionally locked to selfhost loader refinement tests.
 

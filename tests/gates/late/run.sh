@@ -883,7 +883,7 @@ fi
 rm -rf "$lspgatedir"
 echo "[compiler-gate] self-hosted vibe lsp round trip ok (incl. completion/signatureHelp/workspace-symbol)"
 
-# 48/48. ADR-0068 `Send` marker (docs/concurrency.md "`Send` と capture
+# 48/48. ADR-0068 `Send` marker (docs/internal/design/concurrency.md "`Send` と capture
 #        safety"): compiler-judged structural marker for task/channel
 #        message safety. Positive: primitives, tuples, Option/Result, and
 #        immutable structs/enums (incl. generic instantiation + recursive
@@ -1092,7 +1092,7 @@ fi
 rm -rf "$rc1085dir"
 echo "[compiler-gate] RC branch+loop mixed-consume over-drop (#1085) ok"
 
-# 50/50. ADR-0076 Phase 3a (#817, docs/effect-evidence-passing.md 追記27):
+# 50/50. ADR-0076 Phase 3a (#817, docs/internal/design/effect-evidence-passing.md 追記27):
 #        first-class `resume` (suspend handler class) via the depth-0
 #        suspend CPS lowering (suspend_cps_pass in codegen/common_base/
 #        inline_direct_perform.vibe + the checker's arm-scope `resume`
@@ -1987,7 +1987,7 @@ echo "[compiler-gate] deps missing-for-imports scan (#1145 follow-up 2) ok"
 # 61/61. #1081 step 3 Phase B: `Spawnable[r]` capture check for
 # `TaskGroup::spawn`/`TaskGroup::spawn_suspend`. Like `TaskGroup::run`
 # above, hardcoded by literal qualified name (same alias/rename bypass
-# caveat, see checker.vibe/docs/concurrency.md). A captured free variable
+# caveat, see checker.vibe/docs/internal/design/concurrency.md). A captured free variable
 # must be structurally `Send`, or a `TaskGroup`/`TaskHandle`/`Sender`/
 # `Receiver` endpoint tagged with THIS spawn call's own region. Positive: a
 # same-region `Sender` capture through `Channel::bounded` keeps compiling
@@ -2118,7 +2118,7 @@ echo "[compiler-gate] ADR-0068 Spawnable[r] capture check ok"
 
 # #1081 step 4 (surface polish): `taskgroup { g => body }` is pure parser
 # sugar for `TaskGroup::run((g) -> { body })` -- no dedicated AST node, no
-# desugar pass, no checker special-casing (docs/concurrency.md's naming
+# desugar pass, no checker special-casing (docs/internal/design/concurrency.md's naming
 # note: the actually-implemented library type is `TaskGroup`, not the
 # earlier illustrative `Nursery`/`Task`/`Spawn[r]` capability-effect
 # design). Positive: the sugar compiles + runs identically to a
@@ -2163,7 +2163,7 @@ rm -rf "$taskgroupdir"
 echo "[compiler-gate] taskgroup { g => body } syntax sugar ok"
 
 # #906 (compiler self-parallelization prerequisite,
-# docs/compiler-parallelism.md "FrozenArray"): FrozenArray[T] is a
+# docs/internal/design/compiler-parallelism.md "FrozenArray"): FrozenArray[T] is a
 # checker-only phantom-type distinction over Array[T]'s exact same runtime
 # layout (mirrors ArrayBuilder's new/push/freeze technique, checker.vibe
 # #938 -- from_array/to_array are pure identity casts, get/length alias
@@ -2321,7 +2321,7 @@ echo "[compiler-gate] zero-arg perform effect-row check ok"
 #        name, when the enclosing function already declares a SIBLING
 #        operation of the same effect at operation granularity -- otherwise
 #        the generated fix-it would grant the whole effect and over-widen
-#        the caller's capability surface (docs/effectset.md's operation-
+#        the caller's capability surface (docs/internal/design/effectset.md's operation-
 #        level diagnostic contract).
 echo "[compiler-gate] 66/67 operation-level fix-it precision for partial rows (#1161)"
 eff1161dir="_build/_gate_eff1161"
@@ -2511,7 +2511,7 @@ rm -rf "$c1203bdir"
 echo "[compiler-gate] closure write-only capture shadowing a same-named top-level fn ok"
 
 # 70/70. inspect() snapshot auto-update tool regression lock (#1061 follow-up,
-#        docs/adr.md #0087): scripts/vibe_inspect_update.sh reads a failing
+#        docs/internal/design/adr.md #0087): scripts/vibe_inspect_update.sh reads a failing
 #        `inspect(value, content)` run's "actual/expected" diagnostic and
 #        rewrites the stale `content` literal in place. Lock both the
 #        multi-call convergence loop (two wrong snapshots in one file, fixed
@@ -4552,7 +4552,7 @@ if [ ! -s "$witresdir/out.wit" ]; then
   exit 1
 fi
 if ! diff -u "fixtures/wit_gen_result.golden.wit" "$witresdir/out.wit" >&2; then
-  echo "[compiler-gate] FAIL: WIT output differs from fixtures/wit_gen_result.golden.wit. If the boundary contract changed intentionally, update the golden AND docs/effect-wit-mapping.md together." >&2
+  echo "[compiler-gate] FAIL: WIT output differs from fixtures/wit_gen_result.golden.wit. If the boundary contract changed intentionally, update the golden AND docs/internal/design/effect-wit-mapping.md together." >&2
   exit 1
 fi
 rm -rf "$witresdir"

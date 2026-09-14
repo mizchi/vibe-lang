@@ -29,7 +29,7 @@ on `lexer_keyword_bench.vibe`:
 
 The difference is below run-to-run noise. Typical identifiers are too short to
 repay SIMD setup, matching the earlier whitespace-run result in
-`docs/spec/simd-api-design.md`. The experiment also exposed a tooling gap:
+`docs/internal/design/simd-api-design.md`. The experiment also exposed a tooling gap:
 `#zero_alloc` does not yet recognize `simd_scan_alnum_str` as allocation-free,
 although its fused runtime body allocates nothing.
 

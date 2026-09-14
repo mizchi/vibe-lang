@@ -9,7 +9,7 @@ passed through whole rather than projected/matched) — all *safe* leaks (no
 use-after-free), and the gate that blocks RC cutover to the linear
 default. Prerequisite
 for *recursive field drop* in the Perceus RC port
-(`docs/spec/rc-port.md`). The canonical implementation target is
+(`docs/internal/design/rc-port.md`). The canonical implementation target is
 the compiler under `lib/@vibe/compiler/`; the MoonBit `src/` backend was
 removed in #594 and is referenced here only as historical context for the
 design rationale. This documents the design the

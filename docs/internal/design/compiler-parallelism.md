@@ -1067,7 +1067,7 @@ What would have to change, by layer:
   hold concurrently." Nothing in the checker today distinguishes these, and
   there is no lock/mutex/atomic type in the language to make a value
   legitimately meet the stricter bar. The `TaskGroup::run` region-escape
-  check (this doc's sibling, `docs/concurrency.md`) only proves a value
+  check (this doc's sibling, `docs/internal/design/concurrency.md`) only proves a value
   doesn't outlive its nursery scope — it says nothing about two concurrently
   running tasks touching the same value without synchronization, which is a
   different defect class (data races) that needs a different analysis.

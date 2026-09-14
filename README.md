@@ -122,7 +122,7 @@ capabilities, and emitted binaries declare which wasm feature level they need.
 | Native CLI | Compiled execution via the host runtime (`run` / `test` / `shell`) |
 | WASM (linear) | **Production default**: `compile --wasm`, `build --release`, `test`, `bench` (tagged-i64, bump allocator) |
 | WASM + js-string | WASM with JS string builtins for embedding |
-| WASM GC | Long-term primary target; backend exists (`lib/@vibe/compiler/codegen/gc/`) but is not yet wired into the CLI compile path — see [docs/spec/memory-contract.md](docs/spec/memory-contract.md) |
+| WASM GC | Long-term primary target; backend exists (`lib/@vibe/compiler/codegen/gc/`) but is not yet wired into the CLI compile path — see [docs/internal/design/memory-contract.md](docs/internal/design/memory-contract.md) |
 | Component Model | WASI/component packaging for composition |
 
 ### Editor & debugging
@@ -138,7 +138,7 @@ help), plus a function-granularity interactive debugger
 Dependencies are distributed over git (Deno/Go style — no central registry)
 and pinned by content hash in the project's root `index.vpkg`. Package
 boundaries, visibility, and pinning are specified in
-[docs/module-system-oracle.md](docs/module-system-oracle.md); installing the
+[docs/internal/design/module-system-oracle.md](docs/internal/design/module-system-oracle.md); installing the
 toolchain and adding dependencies are covered in
 [docs/user/getting-started/install.md](docs/user/getting-started/install.md).
 
@@ -153,13 +153,13 @@ Start here:
 
 Reference index:
 - [docs/user/reference/cli-commands.md](docs/user/reference/cli-commands.md) — full `vibe` CLI command reference
-- [docs/module-system-oracle.md](docs/module-system-oracle.md) — package boundaries, visibility, pinning (canonical)
+- [docs/internal/design/module-system-oracle.md](docs/internal/design/module-system-oracle.md) — package boundaries, visibility, pinning (canonical)
 - [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md) — how to add/repair a `lib/@vibe/*` module
 - [docs/user/reference/editor-and-debugging.md](docs/user/reference/editor-and-debugging.md) — LSP, debugger, DAP
-- [docs/effect-wit-mapping.md](docs/effect-wit-mapping.md) — effect system ↔ WASI WIT mapping
-- [docs/registry-design.md](docs/registry-design.md) — package registry design
+- [docs/internal/design/effect-wit-mapping.md](docs/internal/design/effect-wit-mapping.md) — effect system ↔ WASI WIT mapping
+- [docs/internal/design/registry-design.md](docs/internal/design/registry-design.md) — package registry design
 - [docs/internal/project/release-roadmap.md](docs/internal/project/release-roadmap.md) — roadmap and release themes
-- [docs/adr.md](docs/adr.md) — architecture decision records
+- [docs/internal/design/adr.md](docs/internal/design/adr.md) — architecture decision records
 
 ## Contributing
 

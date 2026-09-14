@@ -4,7 +4,7 @@
 linear-default: RC
 ```
 
-[`check_rc_default.sh`](../../scripts/check_rc_default.sh) reads that line
+[`check_rc_default.sh`](../../../scripts/check_rc_default.sh) reads that line
 and compares one program compiled with `VIBE_RC` unset, `1` and `0`.
 The unset and RC artifacts must agree; the bump artifact must differ.
 This contract concerns the **generated program**, not the allocator of the
@@ -20,7 +20,7 @@ compiler executing the command.
 See the [memory contract](memory-contract.md) for representations, GC selection,
 and region storage. The compiler self-build default is a performance choice.
 Current artifact identities, direct RC self-reproduction evidence and timing
-comparisons live in the [experiment record](../internal/compiler-memory-experiments.md);
+comparisons live in the [experiment record](compiler-memory-experiments.md);
 historical ratios are not a performance contract for the current compiler.
 
 ## What bootstrap checks establish
@@ -50,9 +50,9 @@ every compiler workload has bounded live storage.
   the exercised cases; a performance claim needs a measured workload.
 - Dedicated `region` arena allocation is disabled on the RC backend. Current
   region syntax uses ordinary collection allocation there, without bulk
-  release. See [RC arena requirements](../region-mutable-state.md#requirements-for-an-rc-arena-experiment).
+  release. See [RC arena requirements](region-mutable-state.md#requirements-for-an-rc-arena-experiment).
 
-[`rc_cutover_readiness.sh`](../../scripts/rc_cutover_readiness.sh) compares
+[`rc_cutover_readiness.sh`](../../../scripts/rc_cutover_readiness.sh) compares
 allocation-heavy programs under bump and RC, checks result parity and tests
 heap-pointer boundedness at two iteration counts. Its `READY` wording means
 that probe passed; it does not choose the production default or prove the
