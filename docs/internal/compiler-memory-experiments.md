@@ -518,6 +518,78 @@ regression remains in CI with no new required benchmark job.
 in both compiler runtimes. Keep the bump default; no consistent wall-time
 speedup or reduction in allocated linear-memory capacity is established.
 
+### Callee binding lookup, 2026-09-14
+
+Direct-call free-variable analysis used to search the same local and global
+name tables in both the inline-builtin filter and `collect_free_var_name`.
+The name helper now resolves bindings once and applies the builtin skip only
+when the caller requests it. The common argument walk also replaces two
+identical loops. No public API or scratch-storage contract changes.
+
+Local binders still precede enclosing locals, which precede globals and
+builtin skipping. The skip applies only to capture callees: ordinary reads,
+assignment targets and used-builtin queries preserve their prior behavior.
+The `perform`/throw special case and recursive self-collision fallback keep
+using the same lexical analysis. Regression tests cover builtin names shadowed
+at all three levels, captured argument ordering, repeated names and the
+used-builtin query's different treatment of inline calls.
+
+A deterministic RC probe makes 100 queries over 256 direct global calls with
+16 local names. Wasmtime fuel falls from 330,042,001 to 269,824,701 (−18.25%),
+including setup. The baseline fails the 300-million-fuel budget and the
+candidate passes. Both probe binaries were built by the same baseline
+compiler around the source edit and print the same result. This is executed
+Wasm instruction cost, not a wall-time prediction. The source, runner hash,
+compiler hash and probe hashes are retained in the
+[raw measurements](compiler-free-var-binding-lookup.json).
+
+The build comparison uses the annotated-lambda compiler as its baseline.
+Both compilers read the same final target source snapshot. Bump and RC compiler
+runtimes both generate linear RC targets with names stripped. Each sample uses
+a new process; cold starts with an empty isolated persistent cache and warm
+reuses that cache. Compiler, cache and output paths have equal lengths across
+lanes, and execution order alternates. These are filesystem builds of the
+compiler closure and full CLI, not complete seed-to-stage3 pipeline timings.
+
+Four alternating pairs per workload and temperature, Node 24.21.0 on Apple M5.
+Wall columns are medians in seconds; paired changes are medians of individual
+candidate/baseline ratios. Heap changes are bytes.
+
+| Workload | Bump wall, before → after | RC wall, before → after | Paired wall change, bump / RC | Heap change, bump / RC |
+|---|---:|---:|---:|---:|
+| Closure, cold | 2.758 → 2.908 | 6.169 → 6.222 | +4.6% / +1.1% | −4,552 / −4,864 B |
+| Closure, warm | 2.002 → 1.920 | 4.165 → 4.234 | −7.0% / +1.0% | −2,168 / −2,344 B |
+| CLI, cold | 7.019 → 6.456 | 13.927 → 13.912 | −4.4% / −0.8% | −10,976 / −11,512 B |
+| CLI, warm | 4.956 → 4.978 | 10.457 → 10.418 | −0.2% / −0.4% | −5,656 / −5,960 B |
+
+Individual A/A wall pairs span −11.1% to +20.3% on bump and
+−20.9% to +36.1% on RC. Candidate pairs span
+−19.2% to +31.5% on bump and −10.8% to +12.4% on RC.
+All samples remain in the report. A/A heap pointers and linear capacities
+agree exactly; all 128 samples preserve target-byte equality within each
+comparison workload across compilers and temperatures.
+
+The heap reductions repeat in every pair but are only 2–12 KB (less than
+0.001%); linear-memory capacity is unchanged in every condition. Peak RSS
+median changes range from −0.08% to +0.28%, without a meaningful memory win.
+
+Separate RC profiles put the complete indexed free-variable query at
+210.5 → 176.3 ms cold (−16.2%) and 190.3 → 177.5 ms warm (−6.7%), including
+callees. The helper itself now contains the builtin checks, so moving time
+between it and its caller is not an optimization signal; these figures cover
+the entire query. Each profile is a single diagnostic run, not an additional
+uninstrumented timing replicate.
+
+Validation: 84 related tests in 16 files pass; four files also pass 24 tests
+each under bump and RC-shadow. Stage2 equals stage3, and the RC compiler
+reproduces both compiler artifacts. Formatter and documentation checks pass.
+Full regression remains in CI without a new benchmark job.
+
+**Decision:** keep the smaller shared binding path for its deterministic
+instruction-cost reduction and lower local query time. Whole-build wall time
+remains inconclusive, including the slower closure readings; the small heap
+changes do not establish a meaningful memory reduction. Keep the bump default.
+
 ### Region and native GC observations, 2026-09-14
 
 The same bump compiler built the following fixtures in all three target

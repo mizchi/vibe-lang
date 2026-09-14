@@ -78,3 +78,24 @@ test "throw skips magic names while other performs keep their callees" {
     "perform"
   ], []), content = "[]")
 }
+
+test "inline callee names obey local then enclosing then global precedence" {
+  let call = ECall(EIdent("not", -1), [EIdent("argument", -1)], -1)
+  let globals = ["not"]
+  inspect(collect_free_vars_indexed_self(call, [], globals, "", ["not"]), content = "[not, argument]")
+  inspect(collect_free_vars_indexed_self(call, ["not"], globals, "", ["not"]), content = "[argument]")
+  inspect(collect_free_vars_indexed(call, [], globals), content = "[argument]")
+  inspect(collect_free_vars_used_builtins(call, [], globals), content = "[argument]")
+}
+
+test "skipped callees still scan arguments and preserve prior value references" {
+  let body = ETuple([
+    EIdent("not", -1),
+    ECall(EIdent("not", -1), [EIdent("first", -1)], -1),
+    ECall(EIdent("global", -1), [EIdent("second", -1)], -1),
+    ECall(EIdent("Path::resolve", -1), [EIdent("third", -1)], -1),
+    ECall(EIdent("global", -1), [EIdent("first", -1)], -1)
+  ])
+  inspect(collect_free_vars_indexed(body, [], ["global"]), content = "[not, first, second, third]")
+  inspect(collect_free_vars_used_builtins(body, [], ["global"]), content = "[not, first, second, Path::resolve, third]")
+}
