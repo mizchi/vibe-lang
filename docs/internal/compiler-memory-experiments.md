@@ -31,6 +31,10 @@ pkf run compare-compiler-memory -- \
 # Independent cold/warm pairs for both the compiler closure and full CLI.
 pkf run compare-compiler-memory -- \
   /path/to/bump.wasm /path/to/rc.wasm _build/memory-bump-rc 4 full
+
+# An intentional RC codegen change; execute semantic tests separately.
+pkf run compare-compiler-memory -- \
+  /path/to/before.wasm /path/to/after.wasm _build/memory-codegen 4 full --allow-codegen-diff
 ```
 
 Use a new output directory for each invocation. The collector refuses to
@@ -60,6 +64,11 @@ The protocol is fixed within one comparison:
 - Both compilers, both temperatures and every round must emit byte-identical,
   valid Wasm for the same input. Mismatches stop the comparison. This is an
   output-equivalence check, not a replacement for executing targeted tests.
+  This collector compares runtime implementations that preserve generated code.
+  An optimization to RC lowering intentionally changes that code: measure it
+  with `--allow-codegen-diff`, which records the exception and still rejects
+  output drift within a compiler across temperatures or rounds. Verify execution
+  in bump, RC and RC-shadow separately. The default remains strict equality.
 - Wall time includes process startup. Profiles run **separately** using
   `scripts/profile_compile.sh` with explicit isolated caches. Do not run other
   compiles or benchmarks alongside the measurement.
@@ -222,6 +231,86 @@ ratios 0.987 cold and 1.011 warm (paired ratios 0.996 and 1.035).
 retains first; use scratch-storage experiments as the next independent
 memory-reduction track. RC's smaller CLI linear-memory capacity alone does
 not justify its wall-time and peak-RSS costs on these workloads.
+
+### Direct recursion and binder scratch, 2026-09-14
+
+The first two experiments now have implementations and
+[raw measurements](compiler-retain-scratch.json). Direct recursive functions
+infer borrowed parameters by starting with eligible positions and removing
+consumed ones until stable. Other callees keep the complete round-1 snapshot.
+The pass runs after program-wide disqualifiers are linked: a temporary argument
+in another module must also propagate through recursive argument permutations.
+Indirect calls, captures, shadowing and duplicate declarations stay conservative.
+Whole-program and per-module inference share the same pass.
+Global aliases and bodyless declarations have authoritative ownership entries;
+labeled and optional parameter names are canonicalized before shadow checks.
+
+The second change reuses the binder-name work array in
+`md_shadow_zeroed_bmasks`. The walk cannot re-enter the query, clears its string
+references before returning, and keeps returned mask arrays independent. A
+warmed query with no matching callee shadow allocates 0 bytes, down from 28;
+tests also preserve results across subsequent queries with different shadows.
+
+The RC compiler contains **89,317 → 86,208 retain call sites** (−3,109,
+3.5%). A separate cold profile of the staged scratch candidate samples `rc_dup` at 3,177 → 2,832 ms, with
+39 ms inside the added analysis. These profiles are single runs; they explain
+the change rather than supply additional wall-time replicates.
+
+Four alternating pairs per input/temperature, Node 24.21.0 on Apple M5:
+
+| Workload | Retain-only RC wall, paired median | Retain-only RC heap pointer | Additional scratch heap reduction |
+|---|---:|---:|---:|
+| Closure, cold | −1.6% | −2.7% | 1.7 MB |
+| Closure, warm | −3.0% | −2.1% | 1.7 MB |
+| CLI, cold | −3.6% | −1.9% | 2.7 MB |
+| CLI, warm | −1.7% | −1.2% | 2.7 MB |
+
+Scratch-only paired wall changes range from −0.5% to +1.4%; no wall-time
+gain is established for that small change. Its generated outputs match the
+retain-only compiler byte for byte across both workloads and temperatures.
+The retain-only and scratch-only runs compile different source snapshots;
+compare alternatives within each run, not absolute times between runs.
+
+The staged scratch candidate's initial bump comparison reported +1.3%/+7.3% wall on
+the closure (cold/warm) and +2.4%/+3.0% on the CLI. The same-artifact control
+has exactly equal heap pointers and linear-memory capacities, but wall ratios
+still vary. An extended **eight-pair closure comparison** reports −2.6% cold
+and +0.1% warm; the initial 7.3% increase did not reproduce. A separate warm
+bump profile spends 14 ms of about 1.4 s in the new analysis. CLI wall changes
+remain within the control's spread. Bump heap changes are small increases:
+less than 0.001% for the closure and about 0.02–0.03% for the CLI.
+The declaration index and mask snapshot add allocations to borrow inference;
+the reported bump delta is the net cost after scratch reuse and codegen changes.
+All initial, control and extended samples are retained in the data file.
+
+The final candidate includes the global-alias and labeled-parameter shadow
+guards. Its separate four-pair comparison against the original baseline is:
+
+| Workload | RC wall, paired median | RC heap pointer | Bump wall, paired median |
+|---|---:|---:|---:|
+| Closure, cold | -8.9% | -2.9% | +3.1% |
+| Closure, warm | -10.5% | -2.4% | +4.9% |
+| CLI, cold | +5.2% | -2.0% | +2.6% |
+| CLI, warm | -3.1% | -1.4% | +1.5% |
+
+The final RC heap reductions reproduce in every sample. Wall time does not
+establish a consistent improvement: CLI cold is slower in this run, and bump
+also shows small increases. These remain within the observed control spread;
+that is uncertainty, not proof that no regression exists. Keep watching the CI
+performance report rather than claiming all builds are faster. The final bump
+heap increases are below 0.005% on the closure and about 0.02–0.03% on the CLI.
+
+Validation: 81 relevant compiler tests and 13 collector tests pass. Both
+stage2 and stage3 agree byte for byte. The final RC compiler reproduces both
+the RC and bump compiler artifacts. Runtime ownership probes agree in bump,
+RC and RC-shadow. Full regression remains with CI; no benchmark task was
+added to a required CI dependency.
+
+**Decision:** keep both changes. The measured gain is fewer retains and lower
+RC heap pressure; scratch reuse adds a small deterministic allocation saving.
+Continue to measure wall time with paired controls before attributing small
+changes to implementation cost. These results do not meet the RC cutover
+criterion.
 
 ### Region and native GC observations, 2026-09-14
 
