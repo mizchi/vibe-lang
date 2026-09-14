@@ -16,7 +16,8 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 
 ## Goals
 
-- POSIX sh superset with a clear syntactic split.
+- A statically typed functional language with explicit effects; the design
+  pillars are stated in `AGENTS.md`.
 - Pure by default; semantic effects including `Exception` are explicit
   (`with ...`) and can be locally discharged with effect handlers.
 - Content-addressed functions (Git blob compatible) with Unison-style aliases.
@@ -24,20 +25,10 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 
 ## Syntax dispatch
 
-Parser dispatch is explicit:
-- parser-consuming CLI commands accept `--syntax vibe`.
-- default is `--syntax vibe`.
-- static/compile-oriented commands (`check`, `test`, `compile`, `hash`, `save`,
-  `fetch`, `update-lock`, `bench-file`, `wasm-shell-stdin`) remain vibe-only.
-- non-`vibe` syntax values are rejected by the public CLI.
-- Internal PosixMode preprocessing/desugar remains available for
-  shell-style command-head preview (`ls` -> `sh_lines("ls")`).
-- In internal `PosixMode`, each unresolved bare identifier command-head rewrite
-  emits a runtime note (`note: posix-mode command-head desugar: ...`) so
-  migration behavior is explicit in `run`/`shell-stdin` output.
+There is one syntax. The MoonBit host's `--syntax` selector and its PosixMode
+command-head desugar (`ls` -> `sh_lines("ls")`) went with the host (#594); no
+command accepts `--syntax`, and `sh_lines` is not a builtin.
 
-Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
-`test`, `handle`, `throw`) exists as helper logic only and does not switch parser modes.
 `fn` is the preferred top-level named-function declaration: it requires typed
 parameters and a return annotation, supports generics/effect rows, and lowers to
 the equivalent recursive `let` form before checking and code generation. See
@@ -59,7 +50,6 @@ Documented but excluded from standard tutorial:
 - raw identifiers (`r#name`)
 - boundary-style exceptions (`throw`)
 - local mutation (`let mut`), `Ref[T]` abandoned (→ ADR-0021)
-- PosixMode command-head desugar and unstable runtime flags
 
 ## Effects
 
@@ -78,7 +68,7 @@ unsuccessful process outcome. Remaining #944 tail: the builtin-call exception
 carve-out (sub-decision) and the temporary `VIBE_CHECK_ERROR_ROW=0` opt-out.
 
 ```
-let run: () -> Unit with Stdout = () -> {
+let run: () -> Unit with Process = () -> {
   sh("ls")
 }
 ```
@@ -97,27 +87,24 @@ Rules:
   including no escaping `Exception`. It does not guarantee termination or exclude
   panic, Wasm trap, or resource exhaustion.
 - `do` is not part of the current surface syntax.
-- Capability mapping is 1:1 with the runtime `CapabilitySet`.
-- Current builtin mapping:
-  - `sh(...)` requires `{Stdout}`
-  - `sh_lines(...)` requires `{Stdout}`
+- Current builtin mapping (the row tag each entry carries in
+  `lib/@vibe/compiler/core/builtin_registry.vibe`):
+  - `sh(...)` requires `{Process}`
   - `Stdout::write_char(...)` requires `{Stdout}`
   - `Stdout::write_stream(...)` requires `{Stdout}`
   - `Stdin::read_char()` requires `{Stdin}`
   - `Stdin::read_stream(...)` requires `{Stdin}`
   - `sleep(...)` requires `{Async}`
-- Runtime gate (current CLI behavior):
-  - `sleep(...)`, `yield` execution is disabled by default.
-  - enable with `--unstable-async` (`vibe run/test/shell/bench ...`).
-  - concurrency の stable runtime API はまだ存在しない。過去の
-    `--unstable-threads` / `Threads::*` probe は公開契約ではない。
+- The concurrency surface is `lib/@vibe/concurrent` (`TaskGroup`, ADR-0068);
+  importing it is authorized per compilation by `VIBE_UNSTABLE=1`. There is no
+  `--unstable-async` flag.
 
 Examples:
 
 <!-- doctest-skip: 意図的な type error 例 (ok/error 対比の提示) を含むため単体コンパイル不可 -->
 ```vibe skip
 // ok: declared effect allows direct builtin call
-let run: () -> Unit with Stdout = () -> { sh("ls") }
+let run: () -> Unit with Process = () -> { sh("ls") }
 
 // error: missing effect declaration for direct effectful builtin call
 let run: () -> Unit = () -> { sh("ls") }
@@ -364,9 +351,6 @@ String:
 - `String::equals(left, right)` -> `Bool`
 
 StdIO (wasi stream primitives for wasm/component-friendly interop):
-- `sh_lines(cmd)` -> `Array[String]` with `{Stdout}`.
-  Current host runtime executes a builtin command subset (`ls`, `cat`, `echo`)
-  and returns output lines while also recording `ShellExec(cmd)` effect.
 - `Stdout::write_char(code)` -> `Unit` with `{Stdout}`
 - `Stdout::write_stream(text)` -> `Unit` with `{Stdout}` (chunk write)
 - `Stdin::read_char()` -> `Int` with `{Stdin}` (`-1` = EOF)
@@ -820,26 +804,9 @@ Example:
 - `--nostd` disables all implicit prelude imports.
 - In `--nostd`, namespace members must be imported explicitly.
 
-## vibe shell command pipeline (PosixMode preview)
+## while / break / continue (current)
 
-<!-- doctest-skip: PosixMode preview 専用の command-head desugar (標準 compile では `ls` は未定義名) -->
-```vibe skip
-let run: () -> Array[String] with Stdout = () -> {
-  ls |> where((line) -> { String::contains(line, "vibe") })
-}
-```
-
-Rules:
-- In `PosixMode`, unresolved bare identifier expressions are desugared to
-  `sh_lines("<ident>")`.
-- Bound names (`let`, function params, pattern bindings, imported names) are
-  preserved and not desugared as commands.
-- `where(xs, pred)` is available in prelude for `Array[String]` stream-style
-  filtering.
-
-## while / break / continue / yield (current)
-
-<!-- doctest-skip: 構文列挙の断片 (bare break/continue は loop 外、`yield` は build path 未サポート、cond/step/value 未定義) -->
+<!-- doctest-skip: 構文列挙の断片 (bare break/continue は loop 外、cond/step 未定義) -->
 ```vibe skip
 while cond {
   step()
@@ -847,7 +814,6 @@ while cond {
 
 break
 continue
-yield value
 ```
 
 Rules:
@@ -861,14 +827,13 @@ Rules:
 - Using `break`/`continue` outside a loop is a type error.
 - Runtime loop control uses `break` to exit the nearest loop and `continue` to
   start the next iteration.
-- `yield expr` requires `{Async}` and returns `Unit`.
-- Runtime execution for `yield` is gated by `--unstable-async`
-  (disabled by default in CLI entrypoints).
+- `yield` is a reserved keyword and the parser refuses it (`'yield' is not
+  supported`); there is no generator form.
 - Errors travel as the `Exception` effect; `Result` was removed from the
   language in #1324.
 - Error boundary syntax is `handle { ... } with Exception { Throw(_) => ... }`.
 
-## Test blocks (MoonBit-style)
+## Test blocks
 
 ```
 test {
@@ -878,19 +843,20 @@ test {
 
 Notes:
 - `test { ... }` is parsed and type-checked but excluded from content hashing.
-- Tests are intended to be executed by a separate test runner; normal evaluation ignores them.
+- Tests run under `vibe test`; `vibe run` ignores them.
 - Optional name form: `test "name" { ... }` (label only).
-Runtime API:
-- `Runtime::run_script_tests(script)` parses, type-checks, and runs tests with isolated envs.
-- Internal PosixMode preprocessing/desugar remains available for preview
-  shell-style command-head rewriting in runtime tests.
+- A runtime expectation is an `inspect(value, content)` snapshot inside the
+  block; `vibe test --update` rewrites a stale expected literal to the actual
+  value (#1571). A compile rejection is classified by verdict and message in
+  `fixtures/typecheck/expected.tsv`. No fixture carries a `__DATA__` tail;
+  `scripts/check_fixture_snapshots.mjs` rejects one.
+
 CLI:
 - The canonical compiler / checker / CLI implementation lives under `lib/@vibe/compiler/`
   and `lib/@vibe/cli/` (selfhost-only; the MoonBit `src/cmd/*` host was retired in #594).
 - Commands below use the installed `vibe` binary; from a checkout the equivalent is
   `pkf run run -- <args>`.
 - `vibe run <file>` executes a script (ignores `test {}`).
-- Interactive evaluation lives under `vibe shell` / `vibe shell-stdin`.
 - `vibe test <file|dir...>` runs test blocks and prints a report. A directory expands to every `*_test.vibe` under it.
 - `vibe compile [--wasm | --wit] [-o out] <file>` emits wasm bytes (the default)
   or, with `--wit`, the WIT world of the file's effect surface.
@@ -900,53 +866,24 @@ CLI:
     other output modes of the retired MoonBit host (`--wasm-js-string`,
     `--component`, `--wit-component`, `--wac`, `--compose-p3`) are refused with
     a message naming the flag; see `cli-commands.md`.
-- Public CLI parser-consuming commands support `--syntax vibe` only.
-- `vibe shell` launches the TUI interactive shell (completion + layout, history).
-- `vibe shell-stdin [--no-prompt]` reads lines from stdin and evaluates them.
-- `vibe wasm-shell-stdin [--no-prompt] [-o dir]` compiles each entered line to a separate WASM file for pipeline testing.
+- `vibe shell [file.vibe]` is a compiled REPL (ADR-0034, no interpreter): the
+  session is a buffer of top-level declarations, and every line recompiles it
+  through the same path as `vibe run`.
 - `pkf run component-run -- script.vibe` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
 - `pkf run component-run-moonix -- script.vibe` builds the same component and runs it via moonix.
-- TUI completion sources: builtins + PATH commands + history.
 - `bash install/install.sh` installs the CLI (see `docs/user/getting-started/install.md` for the toolchain layout; `VIBE_HOME` / `VIBE_BIN_DIR` choose where).
 - Imports are loaded recursively (imports of imports) for hashing and import-rename resolution.
-- Import cycle reporting is implemented for path-based import graphs
-  (diagnostic stage: `import`, message prefix: `import cycle:`).
-
-Fixtures:
-- `fixtures/*.vibe` include a `__DATA__` JSON block and are exercised through the
-  gate (`pkf run full-gate`).
-- Fields:
-  - `last`: expected `Value::to_string()` (exact match).
-  - `effects`: expected `Effect::to_string()` list (exact match).
-  - `error_contains` / `compile_error`: substring match for failures.
-  - `TODO`: test must fail; passing means the TODO should be removed.
-  - `skip`: skip the fixture.
-  - `version_refs`: optional map `{ "<name>": "<hash-or-path>" }` to seed
-    `version@<name>` in fixture evaluation.
-  - `symbol_refs`: optional map `{ "<name>": "<hash-or-path>" }` to seed
-    `symbol@<name>` in fixture evaluation.
-    `"<hash-or-path>"` accepts a raw hash (`40` hex chars), `#<hash>`, or a
-    module path whose content hash is used.
 
 Bench:
-- 言語組み込み benchmark:
-  - `bench "name" { ... }` を `.vibe` に書き、`vibe bench <file|dir...>` で実行
-    (checkout からは `pkf run run -- bench <file|dir...>`)。
-  - backend の canonical surface は `--backend compiled`（`--backend wasm` は互換 alias）。
-  - ディレクトリ指定時は top-level の `*_bench.vibe` を探索。
-  - `--n` / `--warmup` は benchmark 実行回数に適用。
-  - compiled bench path はサイズ優先で `--no-dce -Oz` 相当のコンパイルを使い、出力に `wasm_bytes=<size>` を含める。
-- 互換の expression benchmark モード（legacy）:
-  - legacy expr mode (`--expr`, `--case`, `--cases`) は廃止
-  - `bench {}` を含む `.vibe` file を `vibe bench <file>` で実行する
-- コンパイラ内部のマイクロベンチは `bench {}` を持つファイルを `vibe bench` に
-  直接渡す (`lib/@vibe/compiler/checker_bench.vibe` / `codegen_bench.vibe` /
-  `fmt_bench.vibe`、stdlib 側は `bench/`)。pkf タスクとして残っているのは
-  `bench-compile-hotspots` / `bench-http` / `bench-module-job-pool` の 3 つ。
-- `vibe index ref push <scope> <index-file>` / `pull <scope> <out-file>` maps advanced graph snapshots to git/bit refs under
-  `refs/bit/index/<scope>/graph/head`.
-- `vibe index ref push-delta <scope> <delta-file>` / `pull-delta <scope> <out-file>` maps advanced graph deltas to
-  `refs/bit/index/<scope>/graph/wal_head`.
+- `bench "name" { ... }` in a `.vibe` file; `vibe bench <file.vibe> [--iters N] [--warmup N]`
+  runs the blocks and reports ns/op (min / p50 / p95 / mean), ops/sec and
+  bytes/op (from a checkout: `pkf run run -- bench <file.vibe>`).
+- The linear backend is the default; `VIBE_BENCH_BACKEND=gc` runs the same file
+  on wasm-gc (pure benches only, no host imports).
+- Compiler micro-benchmarks are ordinary `bench {}` files passed to `vibe bench`
+  (`lib/@vibe/compiler/checker_bench.vibe` / `codegen_bench.vibe` /
+  `fmt_bench.vibe`; the stdlib's live under `bench/`). The pkf bench tasks that
+  remain are `bench-compile-hotspots` and `bench-module-job-pool`.
 
 ## Pure result cache (Unison-style)
 
