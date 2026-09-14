@@ -1325,16 +1325,31 @@ fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: CompileCtx) 
     // would retain it a second time, which is the leak this arm exists to
     // remove. `is_edot(value)` is exactly "the spine walk moved".
     //
-    // A projection rooted at a name the spine itself bound is declined: that
-    // binder's own scope-end drop runs INSIDE the value, before the store this
-    // retain follows, so a reference taken here would be taken after the free.
-    // An unplaceable root (`f().a`) is declined for the same reason -- neither
-    // is today's answer made worse, since today emits nothing at all.
+    // A projection rooted at a binder the spine OWNS is declined, for the same
+    // reason as the `ECall` arm above: that binder's own `ELet` lowering
+    // promotes the escaping element -- retains it before dropping the binder --
+    // so retaining again here gives the slot two references while its drop
+    // spends one, and every assignment leaks.
+    //
+    // Being a spine binder is NOT on its own evidence of that promotion. This
+    // arm tested the name until #2796, which is the same mistake #2793 found one
+    // arm over, reached through a projection leaf instead of a call. A binder
+    // bound to a BORROW -- `x = { let h = Array::get(hs, 0); h.node }` -- stays
+    // at `rc_kind == 0`: no entry in `heap_binding_names`, no scope-end drop, so
+    // nothing promoted and nothing already retained. Declining there costs the
+    // slot a reference the container still owns, and its drop releases it.
+    // Measured on `main` at 702c134 and on the committed seed alike: 850 on the
+    // RC lane against the bump lane's 770, the second read of the element
+    // answering with the filler.
+    //
+    // An unplaceable root (`f().a`) is still declined, and that one IS only
+    // today's answer kept -- main emits nothing there either, and widening it
+    // needs its own measurement of what the retain would be following.
     EDot(_, _, _, _) => if is_edot(value) {
       false
     } else {
       let root = proj_root_ident(leaf)
-      String::length(root) > 0 && !array_contains_str(binders, root)
+      String::length(root) > 0 && !spine_binder_promoted(root, binders, ctx)
     },
     _ => false
   }

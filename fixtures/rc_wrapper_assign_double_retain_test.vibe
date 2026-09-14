@@ -36,13 +36,20 @@
 // that error shows up as a wrong answer and not as a leak.
 //
 // The two directions are opposite errors and each needs its own lane: this file
-// bounds the leak, `rc_wrapper_assign_borrow_test.vibe` asserts the values.
+// bounds the leak, `rc_wrapper_assign_borrow_test.vibe` asserts the values. Both
+// files carry BOTH leaf kinds since #2796 -- the call and the projection are
+// answered by different arms of `spine_leaf_unowned`, so a lane that holds only
+// one of them is a lane the other arm can walk past.
 //
 // `main` returns 0: every shape here adds 0, so the answer cannot drift with
 // the allocation behaviour being measured.
 enum Node {
   Leaf(Int);
   Pair(Node, Node)
+}
+
+struct Holder {
+  node: Node
 }
 
 fn once() -> Int {
@@ -54,11 +61,28 @@ fn once() -> Int {
   0
 }
 
+// The same shape with a PROJECTION leaf instead of a borrow-returning call.
+// `spine_leaf_unowned` answers these in two separate arms, so a suppression
+// correct in one is not thereby correct in the other -- #2796 was exactly that,
+// the arms disagreeing, and this row is the leak side of the arm it fixed.
+// Without a shape here, the projection arm had a value lane
+// (`rc_wrapper_assign_borrow_test.vibe`) and no leak lane, which is the
+// asymmetry that let #2760 ship its leak in the first place.
+fn once_proj() -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let h = Holder::{ node: Pair(Leaf(3), Leaf(4)) }
+    h.node
+  }
+  0
+}
+
 export fn main() -> Int {
   let mut i = 0
   while i < 20000 {
     let r = once()
-    i = i + r + 1
+    let rp = once_proj()
+    i = i + r + rp + 1
   }
   0
 }

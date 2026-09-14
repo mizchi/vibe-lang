@@ -156,6 +156,35 @@ fn assign_borrow_bound_binder(xss: Array[Array[Node]]) -> Int {
   r * 100 + total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
 }
 
+// The same correction one arm over, on the PROJECTION leaf. `h` is bound to a
+// borrow, so `classify_let_value_heap` leaves it at `rc_kind == 0`: no entry in
+// `heap_binding_names`, no scope-end drop, so nothing promoted and nothing
+// already retained. Declining on the NAME alone costs the slot a reference
+// `hs` still owns, and its drop releases it.
+//
+// Measured on a stage2 built from `main` at b4697f7, and identically on the
+// committed seed. ALONE in a file it answers `850` on the RC lane against the
+// bump lane's `770` -- the second read of the element giving the filler, 15,
+// instead of 7. HERE, with the tests above having allocated first, the freed
+// cell is reused before the read and the same use-after-free instead corrupts
+// the free list: `memory access out of bounds` inside `__rt_rc_alloc`. One bug,
+// two symptoms, and which one appears is a function of allocation history --
+// which is the argument for pinning it by an executed answer rather than by
+// reasoning about the drop.
+//
+// Filed as #2796. The arm had declined this shape since it was written, so it
+// is a gap that #2760 left rather than a regression it caused.
+fn assign_borrow_bound_binder_proj(hs: Array[Holder]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let h = Array::get(hs, 0)
+    h.node
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(hs, 0).node) * 10 + total(filler) * 0
+}
+
 test "2760 a wrapped borrow-returning call assigned into an owning slot" {
   let xs = [Pair(Leaf(3), Leaf(4))]
   inspect(assign_wrapped_call(xs), content = "770")
@@ -189,4 +218,9 @@ test "2760 a borrow-only self-use, with a later read of the slot" {
 test "2760 a wrapper binder that is itself a borrow retains nothing to reuse" {
   let xss = [[Pair(Leaf(3), Leaf(4))]]
   inspect(assign_borrow_bound_binder(xss), content = "770")
+}
+
+test "2796 a wrapped projection rooted at a borrow-bound binder retains" {
+  let hs = [Holder::{ node: Pair(Leaf(3), Leaf(4)) }]
+  inspect(assign_borrow_bound_binder_proj(hs), content = "770")
 }
