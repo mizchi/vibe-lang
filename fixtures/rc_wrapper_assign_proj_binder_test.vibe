@@ -1,0 +1,58 @@
+// #2796: an owning mutable slot assigned a wrapper whose leaf is a PROJECTION
+// rooted at a binder that is itself a BORROW.
+//
+// `spine_leaf_unowned` answers a wrapper's leaf in two arms, and #2793 corrected
+// only the `ECall` one. The `EDot` arm went on testing whether the projection's
+// root was a spine binder -- which is not evidence that the binder's own `ELet`
+// lowering already retained the escaping element, only that it could have. `h`
+// here is bound to `Array::get(hs, 0)`, a borrow, so `classify_let_value_heap`
+// leaves it at `rc_kind == 0`: no entry in `heap_binding_names`, no scope-end
+// drop, so nothing promoted and nothing to duplicate. Declining cost the slot a
+// reference `hs` still owns, and its drop released it.
+//
+// Measured on a stage2 built from `main` at b4697f7, and identically on the
+// committed seed: `850` on the RC lane against the bump lane's `770` -- the
+// second read of the element answering with the filler, 15, instead of 7.
+//
+// THIS SHAPE LIVES ALONE, deliberately, and the reason is worth the file.
+// It was first written into `rc_wrapper_assign_borrow_test.vibe` next to its
+// `ECall` sibling, where it FAILED IDENTICALLY on the fixed and the unfixed
+// compiler -- `memory access out of bounds` inside `__rt_rc_alloc`. That is not
+// this bug: `assign_self_borrow_use` in that file corrupts the free list (#2786,
+// still open), the damage surfaces on a later allocation, and a function
+// appended after it merely supplies one. A case that fails both ways
+// discriminates nothing, and that file's own header says so about the #2786
+// shape. Read from here: a new RC value case goes in its own file until it is
+// shown to answer differently on the two compilers, because a shared file can
+// hand it a heap that has already been damaged.
+enum Node {
+  Leaf(Int);
+  Pair(Node, Node)
+}
+
+struct Holder {
+  node: Node
+}
+
+fn total(n: Node) -> Int {
+  match n {
+    Pair(a, b) => total(a) + total(b),
+    Leaf(v) => v
+  }
+}
+
+fn assign_borrow_bound_binder_proj(hs: Array[Holder]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let h = Array::get(hs, 0)
+    h.node
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(hs, 0).node) * 10 + total(filler) * 0
+}
+
+test "2796 a wrapped projection rooted at a borrow-bound binder retains" {
+  let hs = [Holder::{ node: Pair(Leaf(3), Leaf(4)) }]
+  inspect(assign_borrow_bound_binder_proj(hs), content = "770")
+}
