@@ -1,0 +1,40 @@
+//# #2745: an assignment REBINDS its target, not only continues past it.
+//
+// Codex, P1 round 5 on #2761, written in source rather than reached through a
+// lowering. Round 4 made the walk continue past an assignment to its
+// CONTINUATION, which answers `{ let mut b = a; b = a; b }` because the
+// INITIALIZER was already erased. It does not answer this one: the initializer
+// is a call whose return type this pass cannot read, so `b` was recorded
+// unknown and only the assignment makes it hold the formal. Measured, it
+// printed `252` -- the tagged pointer.
+//
+// This fixture and `lambda_bound_erased_interp_loop_refused.vibe` are the same
+// rule seen from both ends, which is what keeps the fix from being a special
+// case for the lowered `__loop_result` name.
+//
+// The obvious spelling of that twin -- `{ let mut b = 0; b = a; b }` -- is NOT
+// a program: a slot cannot hold both `Int` and an erased `T`, and the checker
+// says so (`argument type mismatch for inner: expected Int, got Qt`). The gate
+// rejected that fixture, which is the gate working; a compiler-generated dummy
+// initializer like the loop's is exactly the case the checker never sees.
+
+struct Qt {
+  w: Int
+}
+
+fn wrap_it[U](x: U) -> U {
+  x
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut b = wrap_it(a)
+    b = a
+    b } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

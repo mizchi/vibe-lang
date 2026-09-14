@@ -2600,6 +2600,15 @@ condition is which binder declared the bound, not whether a spelling repeats. A
 **kinded** binder is the same: `[F[_]: Mappable[F]]` on a lambda is refused, while
 that bound on a top-level `fn` works and dispatches `F::map` through the witness.
 
+Interpolation is refused on a nested binder too (#2745), including an **unbounded**
+one — `let f = [U](a: U) -> String { "\{a}" }`. A dispatch needs a bound to
+promise the method; interpolation only needs the type to be known, and a nested
+binder's formal is erased, so `"\{a}"` printed the tagged pointer (`272`). At a
+top-level binder it still works: `fn show_any[T](a: T) { "\{a}" }` prints `7` at
+`Int`, and a renderless struct is refused by name (#1445). A nested binder applied
+only at a scalar is refused as well — it rendered correctly by accident of the
+instantiation, and one lowering serves every application.
+
 The refusal lands on `vibe build` / `vibe run` / `vibe test`, not on
 `vibe check`: the pass that knows a dictionary is missing is a normalize pass
 the check lane does not run (same lane as #2475's refusal).

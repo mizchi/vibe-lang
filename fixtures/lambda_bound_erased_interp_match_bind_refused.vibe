@@ -1,0 +1,29 @@
+//# #2745: a match arm is read in ITS OWN environment.
+//
+// Codex, P1 round 4 on #2761. The arm walk discarded both the scrutinee and the
+// pattern, so a binder introduced BY the pattern was unknown. Measured:
+// `"\{match a { b => b }}"` with `a: T` printed `260`, the tagged pointer.
+//
+// The reverse error is the one the refusal fixtures cannot catch, so it lives on
+// the green side: `"\{match 1 { a => a }}"` was REFUSED, because the outer `a: T`
+// survived a pattern that rebinds the spelling at `Int` -- a correct program
+// rejected. `fixtures/lambda_bound_toplevel_witness_test.vibe` holds it.
+//
+// A bare `PBind` names the whole scrutinee and takes its type; anything nested
+// names a payload this pass cannot type and takes "", which SHADOWS rather than
+// inherits -- the same rule the let-forms follow.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    "\{match a { b => b }}"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

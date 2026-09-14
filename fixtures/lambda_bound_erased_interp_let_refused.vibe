@@ -1,0 +1,40 @@
+//# #2745: a let-bound name inside the interpolation is read in ITS OWN scope.
+//
+// Codex, P1 round 3 on #2761, and both directions it named reproduced. The
+// compound walk recursed into a let-form's body with the OUTER `var_types`, which
+// was wrong twice over. Measured on `"\{ { .. } }"` -- the braced spelling, which
+// is how a let reaches here, since a bare `let` inside the braces does not parse:
+//
+//   { let b = a; b }   with `a: T`   printed `260` -- `b` was unknown, so the
+//                                    refusal declined on a value that IS erased
+//   { let a = 1; a }   shadowing     REFUSED -- the stale outer `a: T` survived,
+//                                    so a program rendering an Int was rejected
+//
+// The control is what makes the diagnosis exact rather than plausible:
+// `{ let n = 5; n }`, a fresh name, printed `5` both before and after. So the
+// cause was the binding, not the walk.
+//
+// An unknown value type must still SHADOW the outer one. `extend_var_types`
+// returns the environment unchanged for None, which is exactly what left the
+// stale entry in place; the binding is made to "" instead, which masks it and is
+// not a formal, so the body reports no answer and the refusal declines -- the
+// same fail-open the leaf takes for an operand it cannot type.
+//
+// Both green rows live in `fixtures/lambda_bound_toplevel_witness_test.vibe`: a
+// false REFUSAL rejects a correct program, and this fixture would keep refusing
+// either way, so only the green side can catch it.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let b = a; b } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

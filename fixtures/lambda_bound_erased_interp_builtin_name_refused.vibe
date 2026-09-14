@@ -1,0 +1,42 @@
+//# #2745: a nested binder SPELLED like a builtin does not get that builtin's
+//# rendering.
+//
+// Codex, P1 on #2761, and it reproduced exactly. Every rendering path in the
+// interpolation rewrite keys on the argument's type NAME, and a formal is a name
+// -- so a binder spelled like a type they recognise took that type's rendering on
+// an erased value. Measured on the first cut of the #2745 fix, which ran its
+// check after those paths:
+//
+//   let inner = [Bool](a: Bool) -> String { "\{a}" }   applied to a struct
+//     -> printed `true`, the struct's pointer read as a Bool by `interp_arg_is_bool`
+//   the same with [Option]
+//     -> reached the wrapper arm and trapped
+//
+// The BUILTIN spellings are what leak, and only they: a formal named after a
+// DECLARED type is refused upstream by #2141's shadowing guard (measured -- `[Qt]`
+// where `struct Qt` exists gives "type parameter `Qt` ... shadows the declared
+// type"), which never sees `Bool` / `Option` / `Result` because they are not
+// declarations.
+//
+// The fix is not an exemption list for those three names -- the enumeration IS the
+// bug, a condition applied through whichever spelling was in front of it. The
+// check asks about the BINDER, before any spelling is consulted.
+//
+// A genuine `Bool` still renders `true` / `false` (#1527): the formal is what
+// changes the answer, not the spelling, and no binder named `Bool` is in scope
+// there. That is pinned in `fixtures/lambda_bound_toplevel_witness_test.vibe`.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [Bool](a: Bool) -> String {
+    "\{a}"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

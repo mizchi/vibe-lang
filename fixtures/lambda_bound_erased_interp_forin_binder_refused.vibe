@@ -1,0 +1,48 @@
+//# #2745: a `for` binder assigned into a slot read after the loop.
+//
+// Codex, P1 round 14 on #2761. Measured on `934b86e`:
+// `{ let mut y = idf(a); for b in [a] { y = b }; y }` printed a 3-digit
+// pointer decimal.
+//
+// The absorb walk masked EVERY loop binder with "", so `b` carried nothing and
+// `y = b` -- the only evidence `y` is erased -- said nothing. This is the
+// mistake round 12 fixed for a match arm, in the other binder form: a binder
+// that CAN be typed from what it is bound to must be, and masking is the
+// fallback for one that cannot. The index binder is an `Int`, so "" is its
+// whole answer and it keeps the mask.
+//
+// The iterable is recorded under a synthetic name first, so a literal and a
+// name bound to one earlier go through the ONE recorder and answer alike,
+// rather than this arm growing a scan of its own.
+//
+// ROUND 15 NOTE -- this fixture is no longer isolated. `idf` was chosen as an
+// initializer this walk DECLINES, so the route named above was the only thing
+// that could refuse the program. Round 15 taught the walk to classify a call to
+// a local generic lambda, so the initializer alone now refuses it too (measured:
+// `{ let mut y = idf(a); y }` is refused on its own). The file still guards
+// against the program compiling; it no longer attributes the refusal to this
+// route. Re-isolating it needs a T-typed expression the pass cannot classify,
+// and the supply of those shrinks every round -- which is #2773's argument, and
+// the reason this note is here rather than a hunt for a more obscure spelling.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) -> U {
+      u
+    }
+    "\{ { let mut y = idf(a)
+    for b in [a] {
+      y = b
+    }
+    y } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

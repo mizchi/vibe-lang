@@ -119,8 +119,11 @@ grep -qF 'refused without the #2737 message' "$WORK/out" \
 # RED 3: the message is there but names no edit. Built by refusing with the
 # #2737 message truncated, which is what a future edit to the message text
 # would look like.
+# The scratch fixtures carry a FAMILY PREFIX because the gate refuses a name it
+# cannot classify (RED 7 below pins that). A name chosen for the temp directory
+# alone would fail these cases for the wrong reason.
 mkdir -p "$WORK/r3"
-cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r3/keep_refused.vibe"
+cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r3/lambda_bound_dispatch_keep_refused.vibe"
 # Targets the "names an edit" grep specifically: its pattern carries the
 # ` .* to a top-level` suffix that EDIT_NEEDLE does not, so the leads-check
 # below is left intact and a failure here can only come from this assertion.
@@ -149,7 +152,7 @@ grep -qF 'refusal does not name an edit' "$WORK/out" \
 # genuinely IN the message but not at its start. "Contains" would pass; "begins
 # with" must fail.
 mkdir -p "$WORK/r5"
-cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r5/keep_refused.vibe"
+cp fixtures/lambda_bound_dispatch_qualified_refused.vibe "$WORK/r5/lambda_bound_dispatch_keep_refused.vibe"
 sed 's/^EDIT_NEEDLE="move the lambda that binds"$/EDIT_NEEDLE="has no witness here"/' \
   scripts/check_lambda_bound_refusal.sh > "$WORK/r5/gate.sh"
 grep -q '^EDIT_NEEDLE="has no witness here"$' "$WORK/r5/gate.sh" \
@@ -159,7 +162,7 @@ grep -q '^EDIT_NEEDLE="has no witness here"$' "$WORK/r5/gate.sh" \
 # reason and show the same verdict.
 LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/r5/*.vibe" \
   bash scripts/check_lambda_bound_refusal.sh >/dev/null 2>&1 || true
-grep -qF 'has no witness here' "$ROOT_DIR/_build/_lambda_bound_refusal/keep_refused.wasm.diag" 2>/dev/null \
+grep -qF 'has no witness here' "$ROOT_DIR/_build/_lambda_bound_refusal/lambda_bound_dispatch_keep_refused.wasm.diag" 2>/dev/null \
   || fail "RED 5 needle is absent from the message; the case would fail for the wrong reason"
 if [ -n "$STAGE2_OVERRIDE" ]; then
   VIBE_LAMBDA_BOUND_REFUSAL_ROOT="$ROOT_DIR" LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" \
@@ -182,4 +185,30 @@ fi
 grep -qF 'no fixtures matched' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 4 failed for the wrong reason"; }
 
-echo "[lambda-bound-refusal-test] ok (5 red cases, each mutation verified to land)"
+# RED 6: the reason is selected PER FAMILY, not accepted from either. A dispatch
+# fixture placed under an erased-interp NAME is refused correctly by the compiler
+# -- it just carries the other family's reason -- so a gate that accepted either
+# would pass it. The name is the only thing changed.
+mkdir -p "$WORK/r6"
+cp fixtures/lambda_bound_dispatch_qualified_refused.vibe \
+   "$WORK/r6/lambda_bound_erased_interp_mislabelled_refused.vibe"
+grep -q 'T::equals(a, b)' "$WORK/r6/lambda_bound_erased_interp_mislabelled_refused.vibe" \
+  || fail "RED 6 setup did not land (the copied fixture is not the dispatch one)"
+if run_gate "$WORK/r6/*.vibe"; then
+  fail "RED 6: the gate accepted a fixture refused by the OTHER family's rule (the reason is not per-family)"
+fi
+grep -qF 'refused without the #2745 message' "$WORK/out" \
+  || { cat "$WORK/out" >&2; fail "RED 6 failed for the wrong reason"; }
+
+# RED 7: a name inside the glob but in no family. Silence is "unchecked", and a
+# fixture nobody classified is exactly that -- the same rule as the empty corpus.
+mkdir -p "$WORK/r7"
+cp fixtures/lambda_bound_dispatch_qualified_refused.vibe \
+   "$WORK/r7/lambda_bound_unclassified_refused.vibe"
+if run_gate "$WORK/r7/*.vibe"; then
+  fail "RED 7: the gate accepted a fixture belonging to no family"
+fi
+grep -qF 'matches the glob but no family' "$WORK/out" \
+  || { cat "$WORK/out" >&2; fail "RED 7 failed for the wrong reason"; }
+
+echo "[lambda-bound-refusal-test] ok (7 red cases, each mutation verified to land)"

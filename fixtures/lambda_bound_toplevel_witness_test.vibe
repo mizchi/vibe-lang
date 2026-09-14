@@ -1,9 +1,10 @@
 //# #2737 control: a TOP-LEVEL binder's bound is threaded and keeps working.
 //
 // Four rungs are refused when the bound sits on a lambda binder (the
-// `lambda_bound_dispatch_*_refused.vibe` fixtures). Each refusal is one condition
-// away from rejecting the shape the language actually supports, so this file pins
-// the supported shape on the same four rungs. Without it, a refusal that grew too
+// `lambda_bound_dispatch_*_refused.vibe` fixtures), and interpolation of a
+// nested binder's formal is refused too (`lambda_bound_erased_interp_*`). Each
+// refusal is one condition away from rejecting the shape the language actually
+// supports, so this file pins the supported shape for all of them. Without it, a refusal that grew too
 // wide would look like a pass: the refusal fixtures would still refuse.
 //
 // `outer_*` here is the same code as in each refusal fixture with the binder moved
@@ -45,6 +46,16 @@ fn via_interp[T: Show](a: T) -> String {
   "\{a}"
 }
 
+// #2745: interpolation at a TOP-LEVEL binder, the shape the erased-interp
+// refusal must not eat. A top-level generic is specialized per instantiation, so
+// the concrete type is what gets asked about -- which is why `Int` renders and a
+// renderless struct is refused by name (#1445) rather than printing a pointer.
+// Without these rows, a refusal that widened to cover top-level binders would
+// leave every `lambda_bound_erased_interp_*_refused.vibe` fixture still refusing.
+fn show_any_unbounded[T](a: T) -> String {
+  "\{a}"
+}
+
 // #2737 (Codex, P1): the witness taken as a VALUE. This is the shape one binder
 // away from `lambda_bound_dispatch_value_refused.vibe`, and the refusal for that
 // one lives on the same arm -- so without this row, a check that swallowed the
@@ -52,6 +63,10 @@ fn via_interp[T: Show](a: T) -> String {
 fn via_value[T: Eq](a: T, b: T) -> Bool {
   let cmp = T::equals
   cmp(a, b)
+}
+
+fn is_big(n: Int) -> Bool {
+  n > 3
 }
 
 fn equality_snapshot(value: Bool) -> String {
@@ -88,4 +103,323 @@ test "the witness taken as a value dispatches through a top-level binder" {
 
 test "the witness taken as a value still separates different values" {
   inspect(equality_snapshot(via_value(Pt::{ v: 1 }, Pt::{ v: 2 })), content = "false")
+}
+
+test "#2745: an unbounded top-level formal still interpolates at a scalar" {
+  inspect(show_any_unbounded(7), content = "7")
+}
+
+test "#2745: a top-level formal with a Show witness still dispatches" {
+  inspect(show_any_unbounded("s"), content = "s")
+}
+
+// #2745 (Codex, P1 on #2761): the erased-formal check runs ahead of every
+// rendering path, including #1527's Bool one. A GENUINE Bool must still render
+// `true` / `false` -- what changes the answer is the binder, not the spelling.
+test "#1527: a genuine Bool through a call still renders true" {
+  inspect("\{is_big(9)}", content = "true")
+}
+
+test "#1527: and false" {
+  inspect("\{is_big(1)}", content = "false")
+}
+
+// #2745 (Codex, P1 round 2 on #2761): the erased-formal check now walks THROUGH
+// the forms whose value comes from a sub-expression. A compound with no erased
+// formal must still render -- these are where an over-eager walk would show,
+// since `lambda_bound_erased_interp_compound_refused.vibe` would keep refusing
+// either way.
+test "#2745: an if inside interpolation, concrete branches" {
+  inspect("\{if 1 > 0 { "yes" } else { "no" }}", content = "yes")
+}
+
+test "#2745: a single-arm match inside interpolation, concrete" {
+  inspect("\{match 2 { _ => 7 }}", content = "7")
+}
+
+test "#2745: an if over Ints inside interpolation" {
+  inspect("\{if 1 > 0 { 11 } else { 22 }}", content = "11")
+}
+
+// #2745 (Codex, P1 round 3 on #2761): a let-form inside the interpolation binds
+// in ITS OWN scope. These two are the false-REFUSAL side -- a wrongly rejected
+// program -- which `lambda_bound_erased_interp_let_refused.vibe` cannot catch,
+// because it would keep refusing either way.
+fn shadowing_let[T](a: T) -> String {
+  "\{ { let a = 1; a } }"
+}
+
+fn fresh_let[T](a: T) -> String {
+  "\{ { let n = 5; n } }"
+}
+
+test "#2745: a let that shadows the formal with an Int renders the Int" {
+  inspect(shadowing_let(7), content = "1")
+}
+
+test "#2745: a let binding a fresh name renders it" {
+  inspect(fresh_let(7), content = "5")
+}
+
+// #2745 (Codex, P1 round 4 on #2761): a match PATTERN that rebinds the formal's
+// spelling at a concrete type. The false-refusal side again -- the refusal
+// fixtures would keep refusing either way, so only this side can catch it.
+fn shadowing_match[T](a: T) -> String {
+  "\{match 1 { a => a }}"
+}
+
+test "#2745: a match arm that shadows the formal renders the Int" {
+  inspect(shadowing_match(7), content = "1")
+}
+
+// #2745 (Codex, P1 round 5 on #2761): the walk now pairs a DESTRUCTURING
+// pattern's payloads against the scrutinee, and absorbs what an evaluated
+// sub-expression ASSIGNS. Both widenings are one condition away from rejecting a
+// correct program, and neither `lambda_bound_erased_interp_destructure_refused`
+// nor `..._loop_refused` can catch that -- they would keep refusing either way.
+fn destructure_concrete[T](a: T) -> String {
+  "\{match (3, 4) { (b, _) => b }}"
+}
+
+fn destructure_shadowing[T](a: T) -> String {
+  "\{match (1, 2) { (a, _) => a }}"
+}
+
+fn destructure_other_slot[T](a: T) -> String {
+  "\{match (a, 9) { (_, c) => c }}"
+}
+
+fn loop_concrete[T](a: T) -> String {
+  "\{loop (i = 0) { break 6 }}"
+}
+
+fn assign_concrete[T](a: T) -> String {
+  "\{ { let mut b = 0
+  b = 8
+  b } }"
+}
+
+test "#2745: a destructuring match over a concrete tuple renders the element" {
+  inspect(destructure_concrete(7), content = "3")
+}
+
+test "#2745: a destructuring pattern that shadows the formal renders the Int" {
+  inspect(destructure_shadowing(7), content = "1")
+}
+
+test "#2745: a destructured slot that is NOT the formal still renders" {
+  inspect(destructure_other_slot(7), content = "9")
+}
+
+test "#2745: a loop breaking a concrete value still renders it" {
+  inspect(loop_concrete(7), content = "6")
+}
+
+test "#2745: an assignment of a concrete value still renders it" {
+  inspect(assign_concrete(7), content = "8")
+}
+
+// #2745: a call that returns its own type parameter is refused only when an
+// ARGUMENT is erased. This is the cost boundary of that arm, and the refusal
+// fixture cannot see it -- `lambda_bound_erased_interp_generic_call_refused`
+// would keep refusing either way.
+fn keep_it[U](x: U) -> U {
+  x
+}
+
+fn generic_call_concrete[T](a: T) -> String {
+  "\{keep_it(5)}"
+}
+
+fn generic_call_string[T](a: T) -> String {
+  "\{keep_it("s")}"
+}
+
+test "#2745: a generic call with a concrete argument still renders" {
+  inspect(generic_call_concrete(7), content = "5")
+}
+
+test "#2745: and with a String argument" {
+  inspect(generic_call_string(7), content = "s")
+}
+
+// #2745 (Codex, P1 round 6 on #2761): the absorb walk had NO SCOPE, so an inner
+// `{ let mut x = a; x = a; .. }` pushed `x -> T` into the shared environment and
+// the CONCRETE outer `x` the tail reads was classified erased -- a correct
+// program REFUSED. This row is that program; the refusal fixtures cannot see it,
+// because they would keep refusing either way.
+fn shadowed_assign_scope[T](a: T) -> String {
+  let x = 7
+  "\{ { { let mut x = a
+    x = a
+    0 }
+    x } }"
+}
+
+// The other half of the round-6 pairing rule. A tuple bound to a NAME pairs by
+// its recorded elements, so the slot that is NOT the formal must still render,
+// and a pattern that rebinds the formal's spelling at a concrete element must
+// render the element.
+fn tuple_alias_other_slot[T](a: T) -> String {
+  "\{ { let pair = (a, 9)
+  match pair {
+    (_, c) => c
+  } } }"
+}
+
+fn tuple_alias_concrete[T](a: T) -> String {
+  "\{ { let pair = (3, 4)
+  match pair {
+    (b, _) => b
+  } } }"
+}
+
+test "#2745: an inner shadowed assignment does not escape its scope" {
+  inspect(shadowed_assign_scope(7), content = "7")
+}
+
+test "#2745: a named tuple's non-formal slot still renders" {
+  inspect(tuple_alias_other_slot(7), content = "9")
+}
+
+test "#2745: a named tuple of concrete elements still renders" {
+  inspect(tuple_alias_concrete(7), content = "3")
+}
+
+// #2745 (Codex, P1 round 7 on #2761): the alias relation is transitive, so the
+// green side has to show a chain still RENDERING when no element is erased, and
+// that the non-formal slot survives the hops.
+fn alias_chain_concrete[T](a: T) -> String {
+  "\{ { let p1 = (4, 5)
+  let p2 = p1
+  match p2 {
+    (b, _) => b
+  } } }"
+}
+
+fn alias_chain_other_slot[T](a: T) -> String {
+  "\{ { let p1 = (a, 6)
+  let p2 = p1
+  match p2 {
+    (_, c) => c
+  } } }"
+}
+
+test "#2745: a chained alias of a concrete tuple still renders" {
+  inspect(alias_chain_concrete(7), content = "4")
+}
+
+test "#2745: a chained alias's non-formal slot still renders" {
+  inspect(alias_chain_other_slot(7), content = "6")
+}
+
+// #2745 (self-probed after round 7): the projection and arm-alias routes to a
+// recorded tuple, on the side that must still render.
+fn tuple_proj_concrete[T](a: T) -> String {
+  "\{ { let pair = (2, 8)
+  let b = pair.1
+  b } }"
+}
+
+fn tuple_proj_other_slot[T](a: T) -> String {
+  "\{ { let pair = (a, 8)
+  let c = pair.1
+  c } }"
+}
+
+fn arm_alias_other_slot[T](a: T) -> String {
+  "\{match (a, 5) {
+    p => match p {
+      (_, c) => c
+    }
+  }}"
+}
+
+test "#2745: a projection of a concrete tuple element still renders" {
+  inspect(tuple_proj_concrete(7), content = "8")
+}
+
+test "#2745: a projection of the NON-formal slot still renders" {
+  inspect(tuple_proj_other_slot(7), content = "8")
+}
+
+test "#2745: an arm-aliased tuple's non-formal slot still renders" {
+  inspect(arm_alias_other_slot(7), content = "5")
+}
+
+// #2745 (Codex, P1 round 8 on #2761): the array and constructor-alias routes,
+// on the side that must still render. `ctor_alias_wrong_name` is the guard on
+// the constructor check itself -- a pattern whose constructor differs from the
+// recorded one must NOT pair, or it would take an unrelated aggregate apart.
+enum Wrap1[U] {
+  W(U)
+}
+
+enum Wrap2[U] {
+  V(U)
+}
+
+fn array_elem_concrete[T](a: T) -> String {
+  "\{ { let xs = [4, 5]
+  Array::get(xs, 1) } }"
+}
+
+fn ctor_alias_concrete[T](a: T) -> String {
+  "\{ { let w = W(6)
+  match w {
+    W(b) => b
+  } } }"
+}
+
+fn ctor_alias_shadow[T](a: T) -> String {
+  "\{ { let w = W(1)
+  match w {
+    W(a) => a
+  } } }"
+}
+
+test "#2745: an element of a concrete let-bound array still renders" {
+  inspect(array_elem_concrete(7), content = "5")
+}
+
+test "#2745: a concrete constructor payload through a name still renders" {
+  inspect(ctor_alias_concrete(7), content = "6")
+}
+
+test "#2745: a constructor pattern that rebinds the formal renders the payload" {
+  inspect(ctor_alias_shadow(7), content = "1")
+}
+
+// #2745 (Codex, P1 round 9 on #2761): the record-alias route, on the side that
+// must still render. `record_alias_wrong_struct` guards the struct-name check
+// itself -- a pattern naming a different struct must NOT pair.
+struct Hold1 {
+  item: Int
+}
+
+struct Hold2 {
+  item: Int
+}
+
+fn record_alias_concrete[T](a: T) -> String {
+  "\{ { let r = Hold1::{ item: 3 }
+  match r {
+    Hold1::{ item } => item
+  } } }"
+}
+
+fn record_alias_chained[T](a: T) -> String {
+  "\{ { let r1 = Hold2::{ item: 9 }
+  let r2 = r1
+  match r2 {
+    Hold2::{ item } => item
+  } } }"
+}
+
+test "#2745: a concrete record field through a name still renders" {
+  inspect(record_alias_concrete(7), content = "3")
+}
+
+test "#2745: a chained record alias still renders" {
+  inspect(record_alias_chained(7), content = "9")
 }

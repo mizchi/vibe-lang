@@ -1,0 +1,29 @@
+//# #2745: an element read OUT of a recorded tuple by PROJECTION.
+//
+// Self-probed after Codex's round 7, and fixed in the same commit rather than
+// waiting to be told. Measured: `{ let pair = (a, 1); let b = pair.0; b }` with
+// `a: T` printed `252`, the tagged pointer.
+//
+// The cause is that two tables answer the same question. `infer_arg_type_name`
+// has its own `EDot` arm, and it reads the CHECKER's tuple-shape record
+// (`tuple_shape_bind`, #2128) -- which this walk does not populate, so a
+// projection of a tuple THIS walk recorded came back unknown. The walk now reads
+// its own keys first and falls through to the leaf otherwise, which is what a
+// non-tuple projection (`h.node`, no index) keeps getting.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let pair = (a, 1)
+    let b = pair.0
+    b } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

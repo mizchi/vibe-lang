@@ -1,0 +1,36 @@
+//# #2745: a local lambda returning a CONTAINER of its formal.
+//
+// Codex, P1 round 17 on #2761. Measured on `9859e55`:
+// `let pack = [U](u: U) -> Array[U] { [u] }` then
+// `"\{Array::get(pack(a), 0)}"` printed a 3-digit pointer decimal.
+//
+// Round 15 matched `TyName` only, so a `TyApp` return recorded nothing. The
+// fact recorded here is a DIFFERENT one: the call's own value is not erased --
+// it is an Array -- the ELEMENT is argument k. Kept to `Array` of a bare
+// formal deliberately; a deeper shape would need a type language, and this
+// pass has none.
+//
+// Reading it needed one more thing, found by probing the neighbour: an INLINE
+// `Array::get(pack(a), 0)` has no name to hang `array_elem_key` on, and
+// `infer_arg_type_name` can only answer for a name. `dtd_interp_elem_formal_of`
+// is the single place that question is now asked, so the bound spelling
+// (`let xs = pack(a); Array::get(xs, 0)` -- also measured, also a pointer) and
+// the inline one answer alike.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    let pack = [U](u: U) -> Array[U] {
+      [u]
+    }
+    "\{Array::get(pack(a), 0)}"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

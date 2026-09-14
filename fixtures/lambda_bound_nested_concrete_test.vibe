@@ -1,0 +1,971 @@
+//# #2745 control: a NESTED binder whose interpolation is CONCRETE must compile.
+//
+// `lambda_bound_toplevel_witness_test.vibe` pins the edit the refusals name --
+// move the binder to the top level -- and that is what guards a refusal which
+// grew to cover top-level binders. It does NOT guard a refusal that grew too
+// wide AT A NESTED BINDER, and several of its rows were written as though it
+// did: `shadowed_assign_scope` and its neighbours reproduce a false refusal's
+// shape at a top-level binder, where the refusal cannot fire at all. Measured
+// on the round-10 compiler, the round-11 false refusal's shape compiles clean
+// at a top level binder and is REFUSED one binder in, so those rows answer the
+// same either way and prove nothing about the classification.
+//
+// This file is the missing half. Every row keeps the binder NESTED, where the
+// refusal is live, and interpolates a value this walk must classify CONCRETE.
+// A classification that widens by one slot, one hop or one level refuses a row
+// here, and the file stops compiling -- which is the only way a false refusal
+// announces itself, since the `_refused` fixtures keep refusing either way.
+
+struct Qt {
+  w: Int
+}
+
+enum Two {
+  Pair(Int, Int)
+}
+
+struct Hold {
+  hot: Int;
+  cold: Int
+}
+
+fn fst_pair[U](p: (U, Int)) -> U {
+  p.0
+}
+
+fn head_of_arr[U](xs: Array[U]) -> U {
+  Array::get(xs, 0)
+}
+
+fn pack_ints[U](u: U) -> Array[U] {
+  [u]
+}
+
+fn pack2_ints[U](u: U) -> (U, Int) {
+  (u, 6)
+}
+
+enum Wrap[V] {
+  A(V);
+  B(Int)
+}
+
+struct Box3[U] {
+  pair: (U, Int)
+}
+
+// #2745 round 11: the scoped absorb walk MASKS each binder while the body is
+// walked, not merely drops its recordings afterwards. Without the mask the
+// inner `let x = 1` read the OUTER `x: T`, recorded `y` erased, and this row
+// was refused. Measured: refused on the round-10 compiler, renders `1` here.
+fn absorb_scope_mask(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let x = a
+    let mut y = 0
+    "\{ { { let x = 1
+      y = x
+      0 }
+      y } }"
+  }
+  inner(q)
+}
+
+// #2745 round 6: the opposite half -- an inner `let mut x = a` must not leak
+// `x -> T` out to the concrete outer `x` the tail reads.
+fn shadowed_assign_scope(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let x = 7
+    "\{ { { let mut x = a
+      x = a
+      0 }
+      x } }"
+  }
+  inner(q)
+}
+
+// A named aggregate's slot that is NOT the formal still renders, for each of
+// the three aggregate kinds and for an alias hop and a projection.
+fn tuple_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let pair = (a, 9)
+    match pair {
+      (_, c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn alias_chain_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p1 = (a, 4)
+    let p2 = p1
+    match p2 {
+      (_, c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn tuple_proj_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = (a, 8)
+    p.1 } }"
+  }
+  inner(q)
+}
+
+fn ctor_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let v = Pair(1, 6)
+    match v {
+      Pair(_, c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn record_other_field(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let r = Hold::{ hot: 2, cold: 3 }
+    match r {
+      Hold::{ hot, cold } => cold
+    } } }"
+  }
+  inner(q)
+}
+
+fn array_elem_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let xs = [5]
+    Array::get(xs, 0) } }"
+  }
+  inner(q)
+}
+
+// #2745 round 11, the depth axis on the green side. Each of the three routes
+// that carry a nested shape must leave the NON-formal slot renderable, or the
+// fix that closed the depth axis has closed it too far.
+fn nested_tuple_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = ((a, 1), 2)
+    match p {
+      ((_, c), _) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn nested_alias_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = ((a, 1), 2)
+    let r = p
+    match r {
+      ((_, _), c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn nested_field_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let r = Box3::{ pair: (a, 1) }
+    match r {
+      Box3::{ pair } => match pair {
+        (_, c) => c
+      }
+    } } }"
+  }
+  inner(q)
+}
+
+// #2745 (self-probed while fixing round 11): the ABSORB walk records a
+// binder's shape too, so an assignment that takes a local aggregate apart is
+// classified the same way a read of it is. These two rows are the green side of
+// that: the inner `p` MASKS the outer one, and a slot that is not the formal
+// still renders. Without the mask, recording the shape would have made the
+// first row a false refusal -- the recording and the masking are one change.
+fn absorb_shape_mask(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut y = 0
+    { let p = (a, 1)
+      { let p = (7, 1)
+        y = match p {
+          (b, _) => b
+        } }
+      0 }
+    y } }"
+  }
+  inner(q)
+}
+
+fn absorb_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut y = 0
+    { let p = (a, 6)
+      y = match p {
+        (_, c) => c
+      }
+      0 }
+    y } }"
+  }
+  inner(q)
+}
+
+// #2745 round 13 on the green side. A named-field projection, an assignment
+// that rebinds an aggregate slot, and a nested array all render when nothing
+// erased is involved; each is one condition away from the refusal its
+// `_refused` twin pins.
+fn field_proj_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let r = Hold::{ hot: 2, cold: 3 }
+    r.cold } }"
+  }
+  inner(q)
+}
+
+fn assign_shape_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut p = (a, 6)
+    p = (a, 7)
+    match p {
+      (_, c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn nested_array_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let xs = [[5]]
+    let ys = Array::get(xs, 0)
+    Array::get(ys, 0) } }"
+  }
+  inner(q)
+}
+
+// #2745 round 14 on the green side: a projection out of a literal receiver and
+// a `for` binder, both with nothing erased in them.
+fn tuple_lit_proj_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{(a, 9).1}"
+  }
+  inner(q)
+}
+
+fn record_lit_proj_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{Hold::{ hot: 2, cold: 3 }.cold}"
+  }
+  inner(q)
+}
+
+fn forin_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut y = 0
+    for c in [4] {
+      y = c
+    }
+    y } }"
+  }
+  inner(q)
+}
+
+// #2745 (self-probed after round 14): a `loop` PARAMETER. Already correct --
+// the parameter is lowered to an ordinary mutable binding ahead of the loop, so
+// the let-form arm classifies it and the `ELoop` arm's mask never sees it. The
+// pair is pinned because the answer is right for a reason that lives in another
+// pass.
+fn loop_param_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut y = 0
+    loop (p = 4) {
+      y = p
+      break 0
+    }
+    y } }"
+  }
+  inner(q)
+}
+
+// #2745 round 15 on the green side: an opaque assignment must not lose what the
+// initializer established, a local generic lambda's call must render, and `[i]`
+// must behave as `Array::get` does.
+fn opaque_assign_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) -> U {
+      u
+    }
+    "\{ { let mut p = (a, 6)
+    p = idf((a, 6))
+    match p {
+      (_, c) => c
+    } } }"
+  }
+  inner(q)
+}
+
+fn local_generic_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) -> U {
+      u
+    }
+    "\{idf(5)}"
+  }
+  inner(q)
+}
+
+fn local_generic_unann_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let opq = [U](u: U) {
+      u
+    }
+    "\{opq(6)}"
+  }
+  inner(q)
+}
+
+fn index_sugar_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let xs = [[5]]
+    let ys = xs[0]
+    ys[0] } }"
+  }
+  inner(q)
+}
+
+// #2745 round 16 on the green side: an array whose first element is empty, and
+// a tuple past the old nine-element cap.
+fn array_merge_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let xs = [[], [8]]
+    let ys = Array::get(xs, 1)
+    Array::get(ys, 0) } }"
+  }
+  inner(q)
+}
+
+fn wide_tuple_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = (1, 2, 3, 4, 5, 6, 7, 8, 9, a)
+    match p {
+      (_, _, _, _, _, _, _, _, c, _) => c
+    } } }"
+  }
+  inner(q)
+}
+
+// #2745 round 17 on the green side: a wrapped unannotated body, a container
+// return read inline and through a name, and -- the one that would catch the
+// body walk going too far -- a body that SHADOWS the parameter it would
+// otherwise be read as.
+fn wrapped_body_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) {
+      if true {
+        u
+      } else {
+        u
+      }
+    }
+    "\{idf(4)}"
+  }
+  inner(q)
+}
+
+fn wrapped_body_shadowed(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let shd = [U](u: U) -> Int {
+      let u = 3
+      u
+    }
+    "\{shd(a)}"
+  }
+  inner(q)
+}
+
+fn tyapp_ret_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let pack = [U](u: U) -> Array[U] {
+      [u]
+    }
+    "\{Array::get(pack(6), 0)}"
+  }
+  inner(q)
+}
+
+fn tyapp_ret_bound_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let pack = [U](u: U) -> Array[U] {
+      [u]
+    }
+    "\{ { let xs = pack(7)
+    Array::get(xs, 0) } }"
+  }
+  inner(q)
+}
+
+// #2745 round 18 on the green side. The third row is the one that guards the
+// per-constructor sub-slots from going too far: reading the OTHER constructor,
+// whose payload is concrete, must still render.
+fn letrec_lam_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let rec idf = [U](u: U) -> U {
+      u
+    }
+    "\{idf(2)}"
+  }
+  inner(q)
+}
+
+fn alias_lam_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let idf = [U](u: U) -> U {
+      u
+    }
+    let g = idf
+    "\{g(3)}"
+  }
+  inner(q)
+}
+
+fn enum_merge_other_ctor(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let xs = [A(a), B(6)]
+    let v = Array::get(xs, 1)
+    match v {
+      A(_) => 0,
+      B(k) => k
+    } } }"
+  }
+  inner(q)
+}
+
+// #2745 round 19: an immediately invoked lambda at a concrete argument.
+fn iife_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{([U](u: U) -> U { u })(8)}"
+  }
+  inner(q)
+}
+
+// #2745 round 20: a function-valued parameter whose declared return is
+// CONCRETE must still render -- the marker is resolved through the same guard
+// the leaf applies, so `Int` is not read as a type parameter.
+fn fnparam_concrete(q: Qt) -> String {
+  let inner = [T](a: T, f: (Int) -> Int) -> String {
+    "\{f(4)}"
+  }
+  inner(q, (v: Int) -> Int {
+    v
+  })
+}
+
+// #2745 round 21: the position a tuple-returning generic does NOT fill with
+// the formal must still render. This is the row that fails if the tuple return
+// is recorded too coarsely.
+fn tuple_ret_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let pack = [U](u: U) -> (U, Int) {
+      (u, 6)
+    }
+    "\{ { let p = pack(a)
+    p.1 } }"
+  }
+  inner(q)
+}
+
+// #2745 round 22 on the green side: a wholly concrete aggregate argument must
+// not be read as carrying a formal, and a conditional alias of a concrete
+// function must still render.
+fn agg_arg_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{fst_pair((5, 0))}"
+  }
+  inner(q)
+}
+
+fn tuple_ret2_second_formal(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let pair2 = [U, V](u: U, v: V) -> (U, V) {
+      (u, v)
+    }
+    "\{ { let p = pair2(2, 9)
+    p.1 } }"
+  }
+  inner(q)
+}
+
+fn fnparam_arr_concrete(q: Qt) -> String {
+  let inner = [T](a: T, f: (Int) -> Array[Int]) -> String {
+    "\{Array::get(f(3), 0)}"
+  }
+  inner(q, (v: Int) -> Array[Int] {
+    [v]
+  })
+}
+
+fn fnparam_tup_other_slot(q: Qt) -> String {
+  let inner = [T](a: T, f: (Int) -> (Int, Int)) -> String {
+    "\{ { let p = f(1)
+    p.1 } }"
+  }
+  inner(q, (v: Int) -> (Int, Int) {
+    (v, 8)
+  })
+}
+
+fn named_agg_arg_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = (5, 0)
+    fst_pair(p) } }"
+  }
+  inner(q)
+}
+
+fn named_arr_arg_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let xs = [6, 7]
+    head_of_arr(xs) } }"
+  }
+  inner(q)
+}
+
+fn map_get_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{Map::get(Map::set(Map::new(), "k", 9), "k")}"
+  }
+  inner(q)
+}
+
+fn map_literal_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{Map::get(Map::from_pairs([("k", 6)]), "k")}"
+  }
+  inner(q)
+}
+
+fn map_index_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let m = Map::set(Map::new(), "k", 8)
+    m["k"] } }"
+  }
+  inner(q)
+}
+
+fn let_init_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = {
+      let r = (a, 2)
+      r
+    }
+    p.1 } }"
+  }
+  inner(q)
+}
+
+fn ctor_branch_other_ctor(q: Qt) -> String {
+  let inner = [T](a: T, c: Bool) -> String {
+    "\{ { let mut v = A(3)
+    if c {
+      v = B(0)
+    } else {
+      ()
+    }
+    match v {
+      A(b) => b,
+      B(n) => n
+    } } }"
+  }
+  inner(q, false)
+}
+
+fn rebind_ctor_sub(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let v = A(a)
+    { let v = A(1)
+    match v {
+      A(b) => b,
+      B(n) => n
+    } } } }"
+  }
+  inner(q)
+}
+
+fn if_agg_other_slot(q: Qt) -> String {
+  let inner = [T](a: T, c: Bool) -> String {
+    "\{ { let p = if c {
+      (a, 3)
+    } else {
+      (a, 4)
+    }
+    p.1 } }"
+  }
+  inner(q, true)
+}
+
+fn toplevel_arr_ret_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{Array::get(pack_ints(5), 0)}"
+  }
+  inner(q)
+}
+
+fn toplevel_tup_ret_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = pack2_ints(1)
+    p.1 } }"
+  }
+  inner(q)
+}
+
+fn shadow_fn_concrete(q: Qt) -> String {
+  let inner = [T](a: T, f: (T) -> T) -> String {
+    let g = {
+      let f = (x2: Int) -> Int {
+        x2
+      }
+      f
+    }
+    "\{g(7)}"
+  }
+  inner(q, (v: Qt) -> Qt {
+    v
+  })
+}
+
+fn match_alias_concrete(q: Qt) -> String {
+  let inner = [T](a: T, f: (Int) -> Int) -> String {
+    let g = match true {
+      true => f,
+      false => f
+    }
+    "\{g(2)}"
+  }
+  inner(q, (v: Int) -> Int {
+    v
+  })
+}
+
+fn spread_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{Array::get([...[7]], 0)}"
+  }
+  inner(q)
+}
+
+fn push_empty_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let xs = []
+    Array::push(xs, 4)
+    Array::get(xs, 0) } }"
+  }
+  inner(q)
+}
+
+fn cond_alias_concrete(q: Qt) -> String {
+  let inner = [T](a: T, f: (Int) -> Int) -> String {
+    let g = if true {
+      f
+    } else {
+      f
+    }
+    "\{g(7)}"
+  }
+  inner(q, (v: Int) -> Int {
+    v
+  })
+}
+
+fn nested_all_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let p = ((3, 1), 2)
+    match p {
+      ((b, _), _) => b
+    } } }"
+  }
+  inner(q)
+}
+
+// #2745 (Codex, P2 round 12 on #2761): a REBINDING masks every record the
+// outer binding owned, not only its shape. The element keys have readers that
+// never consult the shape -- `Array::get` reads `array_elem_key`, a projection
+// reads the index keys -- so blanking the shape alone left those live and
+// refused these two, both of which render.
+fn rebind_array_elem(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let ints = [U](u: U) -> Array[Int] {
+      [7]
+    }
+    "\{ { let xs = [a]
+    { let xs = ints(0)
+      Array::get(xs, 0) } } }"
+  }
+  inner(q)
+}
+
+fn rebind_tuple_proj(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    let pr = [U](u: U) -> (Int, Int) {
+      (4, 5)
+    }
+    "\{ { let p = (a, 1)
+    { let p = pr(0)
+      p.0 } } }"
+  }
+  inner(q)
+}
+
+// #2745 round 12, the green side of the arm pairing: an arm binder that is NOT
+// the formal, assigned into a slot and read later, must still render. Over-
+// recording here would refuse a program that prints `1`.
+fn arm_absorb_other_slot(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let mut y = 0
+    match (a, 1) {
+      (_, c) => { y = c
+        0 }
+    }
+    y } }"
+  }
+  inner(q)
+}
+
+test "#2745: a nested binder's masked inner let renders the concrete value" {
+  inspect(absorb_scope_mask(Qt::{ w: 5 }), content = "1")
+}
+
+test "#2745: an inner shadowed assignment does not escape its scope" {
+  inspect(shadowed_assign_scope(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a named tuple's non-formal slot still renders" {
+  inspect(tuple_other_slot(Qt::{ w: 5 }), content = "9")
+}
+
+test "#2745: a chained alias's non-formal slot still renders" {
+  inspect(alias_chain_other_slot(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: a projection of the non-formal slot still renders" {
+  inspect(tuple_proj_other_slot(Qt::{ w: 5 }), content = "8")
+}
+
+test "#2745: a constructor payload that is not the formal still renders" {
+  inspect(ctor_other_slot(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: a record field that is not the formal still renders" {
+  inspect(record_other_field(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: an element of a concrete array still renders" {
+  inspect(array_elem_concrete(Qt::{ w: 5 }), content = "5")
+}
+
+test "#2745: a NESTED tuple's non-formal slot still renders" {
+  inspect(nested_tuple_other_slot(Qt::{ w: 5 }), content = "1")
+}
+
+test "#2745: an aliased nested tuple's outer non-formal slot still renders" {
+  inspect(nested_alias_other_slot(Qt::{ w: 5 }), content = "2")
+}
+
+test "#2745: a nested tuple inside a record field still renders" {
+  inspect(nested_field_other_slot(Qt::{ w: 5 }), content = "1")
+}
+
+test "#2745: a wholly concrete nested tuple still renders" {
+  inspect(nested_all_concrete(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: an absorbed assignment reads the INNER shadowing aggregate" {
+  inspect(absorb_shape_mask(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: an absorbed assignment's non-formal slot still renders" {
+  inspect(absorb_other_slot(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: a rebound array name does not inherit the outer element type" {
+  inspect(rebind_array_elem(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a rebound tuple name does not inherit the outer element types" {
+  inspect(rebind_tuple_proj(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: an absorbed arm binder that is not the formal still renders" {
+  inspect(arm_absorb_other_slot(Qt::{ w: 5 }), content = "1")
+}
+
+test "#2745: a concrete named-field projection still renders" {
+  inspect(field_proj_concrete(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: a reassigned tuple's non-formal slot renders the NEW value" {
+  inspect(assign_shape_other_slot(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a concrete nested array still renders" {
+  inspect(nested_array_concrete(Qt::{ w: 5 }), content = "5")
+}
+
+test "#2745: a literal tuple's non-formal slot projects and renders" {
+  inspect(tuple_lit_proj_other_slot(Qt::{ w: 5 }), content = "9")
+}
+
+test "#2745: a literal record's field projects and renders" {
+  inspect(record_lit_proj_concrete(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: a for binder over a concrete array still renders" {
+  inspect(forin_concrete(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: a concrete loop parameter still renders" {
+  inspect(loop_param_concrete(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: an opaque assignment keeps the initializer's non-formal slot" {
+  inspect(opaque_assign_other_slot(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: a local generic lambda at a concrete argument renders" {
+  inspect(local_generic_concrete(Qt::{ w: 5 }), content = "5")
+}
+
+test "#2745: and with the return type left off" {
+  inspect(local_generic_unann_concrete(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: concrete index sugar renders like Array::get" {
+  inspect(index_sugar_concrete(Qt::{ w: 5 }), content = "5")
+}
+
+test "#2745: an array with an empty leading element still renders" {
+  inspect(array_merge_concrete(Qt::{ w: 5 }), content = "8")
+}
+
+test "#2745: a ten-element tuple's non-formal slot still renders" {
+  inspect(wide_tuple_other_slot(Qt::{ w: 5 }), content = "9")
+}
+
+test "#2745: a wrapped unannotated lambda body at a concrete argument renders" {
+  inspect(wrapped_body_concrete(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: a body that SHADOWS its parameter is not read as the parameter" {
+  inspect(wrapped_body_shadowed(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: a concrete container return renders inline" {
+  inspect(tyapp_ret_concrete(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: and through a name" {
+  inspect(tyapp_ret_bound_concrete(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a let rec lambda at a concrete argument renders" {
+  inspect(letrec_lam_concrete(Qt::{ w: 5 }), content = "2")
+}
+
+test "#2745: an aliased lambda at a concrete argument renders" {
+  inspect(alias_lam_concrete(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: the OTHER constructor's concrete payload still renders" {
+  inspect(enum_merge_other_ctor(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: an immediately invoked lambda at a concrete argument renders" {
+  inspect(iife_concrete(Qt::{ w: 5 }), content = "8")
+}
+
+test "#2745: a function-valued parameter with a concrete return renders" {
+  inspect(fnparam_concrete(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: a tuple return's non-formal position still renders" {
+  inspect(tuple_ret_other_slot(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: a concrete aggregate argument to a generic still renders" {
+  inspect(agg_arg_concrete(Qt::{ w: 5 }), content = "5")
+}
+
+test "#2745: a conditional alias of a concrete function still renders" {
+  inspect(cond_alias_concrete(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a tuple return's SECOND formal position at a concrete argument" {
+  inspect(tuple_ret2_second_formal(Qt::{ w: 5 }), content = "9")
+}
+
+test "#2745: a parameter returning a concrete Array still renders" {
+  inspect(fnparam_arr_concrete(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: a parameter's concrete tuple position still renders" {
+  inspect(fnparam_tup_other_slot(Qt::{ w: 5 }), content = "8")
+}
+
+test "#2745: a concrete tuple reached through a NAME still renders" {
+  inspect(named_agg_arg_concrete(Qt::{ w: 5 }), content = "5")
+}
+
+test "#2745: a concrete array reached through a name still renders" {
+  inspect(named_arr_arg_concrete(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: an array PUSHED a concrete value still renders" {
+  inspect(push_empty_concrete(Qt::{ w: 5 }), content = "4")
+}
+
+test "#2745: a match-selected concrete function still renders" {
+  inspect(match_alias_concrete(Qt::{ w: 5 }), content = "2")
+}
+
+test "#2745: a SPREAD of a concrete array still renders" {
+  inspect(spread_concrete(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a branch-selected tuple's non-formal position still renders" {
+  inspect(if_agg_other_slot(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: a top-level generic's concrete array element renders" {
+  inspect(toplevel_arr_ret_concrete(Qt::{ w: 5 }), content = "5")
+}
+
+test "#2745: a top-level generic's non-formal tuple position renders" {
+  inspect(toplevel_tup_ret_other_slot(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: a wrapper that SHADOWS an erased function renders concretely" {
+  inspect(shadow_fn_concrete(Qt::{ w: 5 }), content = "7")
+}
+
+test "#2745: a concrete map value read with Map::get renders" {
+  inspect(map_get_concrete(Qt::{ w: 5 }), content = "9")
+}
+
+test "#2745: and with the m[k] spelling" {
+  inspect(map_index_concrete(Qt::{ w: 5 }), content = "8")
+}
+
+test "#2745: a concrete map LITERAL's value renders" {
+  inspect(map_literal_concrete(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: a let-valued initializer's non-formal slot still renders" {
+  inspect(let_init_other_slot(Qt::{ w: 5 }), content = "2")
+}
+
+test "#2745: a branch-assigned enum's concrete payload still renders" {
+  inspect(ctor_branch_other_ctor(Qt::{ w: 5 }), content = "3")
+}
+
+test "#2745: a REBINDING shadows the constructor sub-slot too" {
+  inspect(rebind_ctor_sub(Qt::{ w: 5 }), content = "1")
+}

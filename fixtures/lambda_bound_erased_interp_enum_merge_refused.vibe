@@ -1,0 +1,44 @@
+//# #2745: an array holding TWO constructors of one generic enum.
+//
+// Codex, P1 round 18 on #2761. Measured on `c0147ca`: `[A(a), B(0)]`, read out
+// and matched on `A`, printed a 3-digit pointer decimal.
+//
+// Round 16 merged every element of an array into ONE slot and argued that
+// "elements share a type, so merging cannot mix incompatible shapes". True of
+// the TYPE and false of the CONSTRUCTOR -- the slot ended classified `B`, so
+// `A(b)` found no match and `b` blanked. A justification that is correct about
+// a different property than the one it is used for, which is the third time in
+// this PR that shape of error has produced a bug.
+//
+// One slot cannot hold two constructors' payloads, so each constructor now
+// gets its own sub-slot and the PATTERN's constructor picks which to read.
+//
+// The `B` arm THROWS rather than returning anything built from `a`: an arm
+// mentioning the formal would refuse this file on its own, and then the fixture
+// would pass whatever the `A` arm did. The first probe for this had exactly
+// that defect.
+
+struct Qt {
+  w: Int
+}
+
+enum Wrap[V] {
+  A(V);
+  B(Int)
+}
+
+fn outer[T](x: T) -> String with Exception {
+  let inner = [T](a: T) -> String with Exception {
+    "\{ { let xs = [A(a), B(0)]
+    let v = Array::get(xs, 0)
+    match v {
+      A(b) => b,
+      B(_) => throw("no")
+    } } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int allows Exception {
+  String::length(outer(7))
+}

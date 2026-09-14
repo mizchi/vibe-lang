@@ -1,0 +1,35 @@
+//# #2745: wrapping the operand does not make it a different program.
+//
+// Codex, P1 round 2 on #2761, and it reproduced. `infer_arg_type_name` answers
+// None for the forms whose value comes from a sub-expression, so the check --
+// which asked it directly -- never saw them. Measured on the previous cut:
+//
+//   "\{if true { a } else { a }}"   with `a: T`   printed `260`
+//   "\{match 1 { _ => a }}"         with `a: T`   printed `260`
+//
+// Both are the tagged pointer, exactly as the unwrapped spelling was.
+//
+// ANY branch decides, not agreement between them. A branch whose value is an
+// erased formal renders that branch's representation whatever the others hold, so
+// `if c { a } else { "s" }` is unsound precisely when the first arm is taken --
+// and a check that required both branches to agree would pass it.
+//
+// A compound with no erased formal still renders: measured on this compiler and
+// the previous one alike, `"\{if 1 > 0 { "yes" } else { "no" }}"` gives `yes`,
+// `"\{match 2 { _ => 7 }}"` gives `7`, and an Int-valued `if` gives `11`. Those
+// rows are in `fixtures/lambda_bound_toplevel_witness_test.vibe`.
+
+struct Qt {
+  w: Int
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    "\{if true { a } else { a }}"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}

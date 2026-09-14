@@ -1,0 +1,36 @@
+//# #2745: an aggregate nested inside a RECORD FIELD.
+//
+// The third named-aggregate route at depth. `{ let r = Box2::{ pair: (a, 1) };
+// match r { Box2::{ pair } => match pair { (b, _) => b } } }` printed `252`:
+// the field's classification was recorded but its SHAPE was not, so the binder
+// that names the whole field arrived at the inner match with nothing to pair
+// against.
+//
+// This rung goes through `PBind` rather than a nested destructuring pattern, so
+// it pins the other half of the fix -- a field's records are copied onto the
+// binder by the same alias copy that carries a `let q = p`, which only answers
+// if the field's own shape was recorded under the field's synthetic name.
+
+struct Qt {
+  w: Int
+}
+
+struct Box2[U] {
+  pair: (U, Int)
+}
+
+fn outer[T](x: T) -> String {
+  let inner = [T](a: T) -> String {
+    "\{ { let r = Box2::{ pair: (a, 1) }
+    match r {
+      Box2::{ pair } => match pair {
+        (b, _) => b
+      }
+    } } }"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+export fn _start() -> Int {
+  String::length(outer(7))
+}
