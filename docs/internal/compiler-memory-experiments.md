@@ -374,6 +374,73 @@ additional timing jobs or required benchmark dependencies.
 reduction in both compiler runtimes. Keep the bump default and make no claim
 of a consistent wall-time or linear-capacity improvement.
 
+### Direct callee name scans, 2026-09-14
+
+Free-variable analysis reconstructed an `EIdent` node to scan the name of a
+direct call. It then recursively visited that temporary node and discarded it.
+`collect_free_var_name` now accepts the existing name, and reads, callees and
+assignment targets share its binding judgment. This removes both temporary
+construction sites and the duplicated read/write logic without changing
+capture order or the public API.
+
+The helper preserves the precedence of local bindings, enclosing locals and
+global names. The inline-builtin skip stays at call sites; a bare identifier
+still counts as a reference. The used-builtin scan and the throw-payload
+special case keep their existing behavior. A non-throw `perform` still builds
+an `Option` while classifying its arguments: removing the temporary identifier
+does not imply that every possible callee scan allocates nothing.
+
+A regression compares a prebuilt direct call with a bare identifier using the
+same name and binding context. On bump, the additional allocation drops from
+24 bytes to 0 for both local-bound and global callees. RC's first query drops
+from 32 bytes of heap-pointer growth to 0; its next query already reuses the
+temporary's block on the baseline. The RC number measures heap growth, not
+allocation volume.
+
+The [raw measurements](compiler-free-var-callee.json) compare compilers built
+from the latest main plus the scope-scratch change above, before and after
+this direct-name change. That baseline isolates the new mechanism from the
+earlier scratch work and intervening ownership fixes. Both runtimes generate
+the same linear RC targets using the strict output-equivalence protocol.
+
+Four alternating pairs per workload/temperature, Node 24.21.0 on Apple M5.
+Wall columns show medians in seconds; the paired column is the median of the
+individual candidate/baseline ratios. Heap changes are candidate minus baseline.
+
+| Workload | Bump wall, before → after | RC wall, before → after | Paired wall change, bump / RC | Bump heap change | RC heap change |
+|---|---:|---:|---:|---:|---:|
+| Closure, cold | 2.003 → 2.070 | 6.192 → 6.190 | +0.3% / +0.1% | −3.33 MB | −2,456 B |
+| Closure, warm | 1.392 → 1.361 | 4.225 → 4.209 | +0.1% / −1.0% | −3.32 MB | −1,152 B |
+| CLI, cold | 5.221 → 5.184 | 13.867 → 13.838 | −1.7% / −0.1% | −5.69 MB | +7,624 B |
+| CLI, warm | 4.074 → 4.227 | 10.522 → 10.422 | +1.9% / +0.0% | −5.69 MB | +5,256 B |
+
+Bump heap reductions of 0.21–0.52% reproduce in every sample. RC heap
+changes are tiny, including the CLI increases; none of the comparisons changes
+linear-memory capacity. Peak RSS changes range from −0.31% to +0.14%, rather
+than establishing a large resident-memory saving. A/A heap pointers and
+linear capacities agree exactly. All 96 samples retain strict target-byte
+equality within each comparison workload, across compilers and temperatures.
+
+The generated RC visitor has two fewer allocator call sites (2 → 0).
+Retain call sites across the visitor and new name helper fall from 318 to
+302 (300 in the visitor, 2 in the helper). Separate RC profiles put the indexed query, including its
+callees, at 239 → 202 ms cold and 248 → 200 ms warm. Those single profiles
+support the reduction in local work, but do not establish a whole-build speedup.
+Wall readings remain noisy: A/A individual pairs span −8.5% to +3.9%, and
+the bump comparison has pairs as wide as −18.9% to +20.7%. These samples are
+retained rather than filtered from the reported medians.
+
+Validation: 79 related tests in 15 files pass, including Perceus plan checks,
+shadowing, capture ordering and builtin import coverage. Four of those files
+also pass 22 tests each under bump and RC-shadow. Stage2 equals stage3, and
+the RC compiler reproduces both compiler artifacts. Formatter checks pass;
+full regression remains in CI without new required benchmark jobs.
+
+**Decision:** keep the direct-name scan for its bump allocation reduction and
+simpler shared binding logic. The measured RC benefit is less work in the
+profiled query, with effectively unchanged heap pressure. Keep the bump
+default and do not claim a consistent wall-time improvement.
+
 ### Region and native GC observations, 2026-09-14
 
 The same bump compiler built the following fixtures in all three target
