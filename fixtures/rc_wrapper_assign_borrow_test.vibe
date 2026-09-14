@@ -105,16 +105,16 @@ fn assign_wrapped_alloc(xs: Array[Node]) -> Int {
 //
 // The two shapes below are the ones that stay here. This comment used to call
 // `total(x)` an OWNING self-use "so the budget re-application has a dup to
-// spend", and both halves are measured false: `total`'s parameter is
-// borrow-inferred (`vibe rc-classify` gives it a nonzero borrow mask, and
-// reading an element twice across an allocation answers 7 both times on both
-// lanes), and the plan carries no dup for `x` in the shape that has no later
-// read. What makes these two balanced is the plan, not the position of the
-// mention -- see `assign_slot_short_after_store` in
+// spend", and it is the other way round: `vibe rc-plan` on this file gives
+// `assign_self_owning_use x dup 1` with NO scope-end drop, and nothing spends
+// that dup -- the shape leaks 1,600,244 B at N=20000, which is #2803 and is
+// pre-existing. The answer is 770 either way, which is all this file can see.
+// What decides whether the assignment arm retains is the plan, not the position
+// of the mention -- see `assign_slot_short_after_store` in
 // codegen/expr/compile_expr_tail.vibe.
 
-// A self-use at a consuming-looking position that is in fact borrowed. The plan
-// budgets `x dup 1` here and the later `total(x)` spends it.
+// A budgeted dup with no drop: the arm declines because the plan spends nothing
+// on the slot after the store, not because the self-use consumed it.
 fn assign_self_owning_use(xs: Array[Node]) -> Int {
   let mut x = Pair(Leaf(1), Leaf(2))
   x = {

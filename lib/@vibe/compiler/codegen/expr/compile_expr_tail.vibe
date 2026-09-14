@@ -1284,30 +1284,38 @@ fn spine_binder_promoted(root: String, binders: Array[String], ctx: CompileCtx) 
 /// budget loop below iterates -- reading the same list keeps the two from
 /// disagreeing about the count.
 ///
-/// Measured on `b7cd8c1` with `vibe rc-plan`, which prints the same plan
-/// linked_compile threads into codegen. `Array::length(x)` and `total(x)` are
-/// the two self-uses #2786 contrasts:
+/// Measured with `vibe rc-plan`, which prints the same plan linked_compile
+/// threads into codegen, on the fixtures that carry each shape:
 ///
-///   | wrapper self-use  | later use of the slot | plan for the slot | short |
-///   |-------------------|-----------------------|-------------------|------:|
-///   | `Array::length(x)`| none                  | drop 1            |   yes |
-///   | `Array::length(x)`| a borrowed read       | drop 1            |   yes |
-///   | `Array::length(x)`| a consuming call      | dup 1, drop 1     |   yes |
-///   | `let t0 = total(x)`| a consuming call     | dup 1             |    no |
-///   | `let t0 = total(x)`| none                 | (nothing)         |    no |
-///   | `let k = sink(x)` | a borrowed read       | dup 1, drop 1     |    no |
+///   | fixture case                       | plan for the slot | short |
+///   |------------------------------------|-------------------|------:|
+///   | `assign_self_borrow_unused`        | drop 1            |   yes |
+///   | `assign_self_borrow_use`           | drop 1            |   yes |
+///   | `assign_self_borrow_then_consume`  | dup 1, drop 1     |   yes |
+///   | `once_owning_self`                 | drop 1            |   yes |
+///   | `assign_self_owning_use`           | dup 1             |    no |
+///   | a consuming self-use, later read   | dup 1, drop 1     |    no |
+///   | a leaf derived from the slot       | dup 1, drop 1     |    no |
 ///
-/// The first row is the issue's repro, which traps in `__rt_rc_alloc` on main.
-/// The fourth and fifth are `assign_self_owning_use` and the leak lane's
-/// `once_owning_self`: retaining either leaks 80 B per assignment, which is what
-/// gate row 40e2 bounds, so the last column is not a preference.
+/// The first is #2786's repro, which traps in `__rt_rc_alloc` on main. The third
+/// needs the `> dups` arithmetic and not the drop record alone: its consuming
+/// use puts the slot in the budget, and a clause keyed on `rc_drop_names` with
+/// `rc_dup_names` as a veto declines it and leaves that spelling broken.
+///
+/// The last two rows are the ones a bolder clause gets wrong. Retaining a
+/// consuming self-use's slot, or one whose stored value came OUT of the slot,
+/// adds a reference nothing releases -- 80 B per assignment on the shapes
+/// measured, the same rate as #2760's own leak.
 ///
 /// `md_consume_count_b` is asked about the CONTINUATION, never about the value.
-/// Asking it about the value was tried and is wrong: it reads `total(x)` as a
-/// borrowed use (`total`'s parameter is borrow-inferred, mask 1, measured), so a
-/// clause keyed on it retains the two rows above that must not be retained. What
-/// the continuation contributes is an owning use the drop record cannot see, and
-/// there the same under-count only leaves today's answer standing.
+/// Asking it about the value was tried (#2799) and is wrong: whether it reads a
+/// call as owning depends on the borrow masks that file's OTHER call sites
+/// produce -- `total` comes back borrow-inferred in one fixture here and not in
+/// another -- so the clause answers differently for the same spelling depending
+/// on its neighbours. The plan does not have that property: it is computed for
+/// the function being compiled. What the continuation contributes is an owning
+/// use the drop record cannot see, and there an under-count only leaves today's
+/// answer standing.
 fn assign_slot_short_after_store(name: String, body: Expr, ctx: CompileCtx) -> Bool {
   let mut dups = 0
   let mut i = 0
@@ -2618,10 +2626,11 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // `assign_slot_short_after_store` -- see its comment for the plans, and
         // for why the value's own consume count answers the wrong question here.
         // Whether the mention is at a borrowed or an owning position is NOT the
-        // test, which is the correction #2786's body and this file's own
-        // `assign_self_owning_use` comment both needed: `total(x)` reads as a
-        // BORROWED use by every predicate at this arm, and the shape is balanced
-        // anyway, because the plan budgeted a dup for it.
+        // test, which is the correction #2786's body needed: the two shapes it
+        // contrasts, `Array::length(x)` and `let t0 = total(x)`, are separated
+        // by what the PLAN records for the slot and not by the position, and the
+        // second of them is short a reference too in the spelling the leak lane
+        // carries.
         let replacement_unowned = if !is_heap_mut {
           false
         } else if is_self {
