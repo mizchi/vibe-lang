@@ -1,0 +1,82 @@
+import @vibe/cache {
+  compact_string_fingerprint
+}
+
+// Keep the persisted formula as an independent oracle. This ordinary source
+// function must not use the compiler-owned fingerprint bridge name.
+fn reference_fingerprint(source: String) -> String {
+  let mut h1 = 17
+  let mut h2 = 29
+  let mut i = 0
+  while i < String::length(source) {
+    let c = String::byte_at(source, i)
+    h1 = (h1 * 131 + c + 1) % 2147483647
+    h2 = (h2 * 65599 + c + i + 1) % 2147483629
+    i = i + 1
+  }
+  "\{String::length(source)}:\{h1}:\{h2}"
+}
+
+fn from_bytes(bytes: Array[Int]) -> String {
+  let sb = StringBuilder::new()
+  for byte in bytes {
+    StringBuilder::push(sb, String::from_byte(byte))
+  }
+  StringBuilder::freeze(sb)
+}
+
+test "compact fingerprints retain exact values across both modulus boundaries" {
+  // The final dividend is k*p-1, k*p, k*p+1 in each group. For h1,
+  // k=1 and 2; for h2, k=217 and 434. NUL and non-UTF-8 bytes count too.
+  let cases = [
+    ([3, 51, 8, 75, 97, 121], "6:2147483646:1359350629"),
+    ([3, 51, 8, 75, 97, 122], "6:0:1359350630"),
+    ([3, 51, 8, 75, 97, 123], "6:1:1359350631"),
+    ([3, 58, 46, 108, 24, 113], "6:2147483646:811048492"),
+    ([3, 58, 46, 108, 24, 114], "6:0:811048493"),
+    ([3, 58, 46, 108, 24, 115], "6:1:811048494"),
+    ([0, 138, 191, 42, 151, 113], "6:488178753:2147483628"),
+    ([0, 138, 191, 42, 151, 114], "6:488178754:0"),
+    ([0, 138, 191, 42, 151, 115], "6:488178755:1"),
+    ([0, 75, 184, 151, 208, 233], "6:1248178052:2147483628"),
+    ([0, 75, 184, 151, 208, 234], "6:1248178053:0"),
+    ([0, 75, 184, 151, 208, 235], "6:1248178054:1")
+  ]
+  for item in cases {
+    let (bytes, expected) = item
+    let source = from_bytes(bytes)
+    assert(reference_fingerprint(source) == expected)
+    assert(compact_string_fingerprint(source) == expected)
+  }
+}
+
+test "compact fingerprints agree with the persisted formula on arbitrary bytes and long inputs" {
+  assert(compact_string_fingerprint("") == reference_fingerprint(""))
+  let mut byte = 0
+  while byte < 256 {
+    let source = String::from_byte(byte)
+    assert(compact_string_fingerprint(source) == reference_fingerprint(source))
+    byte = byte + 1
+  }
+  let mut state = 2777
+  let mut case_index = 0
+  while case_index < 64 {
+    let sb = StringBuilder::new()
+    let mut i = 0
+    while i < case_index * 13 {
+      state = (state * 48271) % 2147483647
+      StringBuilder::push(sb, String::from_byte(state&255))
+      i = i + 1
+    }
+    let source = StringBuilder::freeze(sb)
+    assert(compact_string_fingerprint(source) == reference_fingerprint(source))
+    case_index = case_index + 1
+  }
+  let mut long_source = "café 東京 🍣"
+  let mut n = 0
+  while n < 12 {
+    long_source = String::concat(long_source, long_source)
+    n = n + 1
+  }
+  assert(compact_string_fingerprint(long_source) == reference_fingerprint(long_source))
+}

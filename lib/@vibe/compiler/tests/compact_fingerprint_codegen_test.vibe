@@ -1,0 +1,17 @@
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc
+}
+
+test "the emitted compact fingerprint handles an exact multiple of either modulus" {
+  // Exercise this checkout's emitter even when the outer test compiler is an
+  // older bootstrap. The two dividends require the final >= p correction.
+  let source = "fn __compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(_s: String) -> Int { 0 }\nfn main() -> Int {\nassert(__compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(String::concat(String::concat(String::concat(String::concat(String::concat(String::from_byte(3), String::from_byte(51)), String::from_byte(8)), String::from_byte(75)), String::from_byte(97)), String::from_byte(122))) == 1359350630)\nassert(__compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(String::concat(String::concat(String::concat(String::concat(String::concat(String::from_byte(0), String::from_byte(138)), String::from_byte(191)), String::from_byte(42)), String::from_byte(151)), String::from_byte(114))) == 1048355891516014592)\n42\n}"
+  let bump_path = "/tmp/vibe_compact_fingerprint_boundary_bump.wasm"
+  let rc_path = "/tmp/vibe_compact_fingerprint_boundary_rc.wasm"
+  Fs::write_bytes(bump_path, compile_wasi(source, "main"))
+  Fs::write_bytes(rc_path, compile_wasi_rc(source, "main"))
+  let bump = sh_lines("wasmtime run -W exceptions=y --invoke main " + bump_path + " 0")
+  let rc = sh_lines("wasmtime run -W exceptions=y --invoke main " + rc_path + " 0")
+  assert(Array::length(bump) == 1 && Array::get(bump, 0) == "42")
+  assert(Array::length(rc) == 1 && Array::get(rc, 0) == "42")
+}
