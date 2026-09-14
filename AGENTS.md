@@ -450,9 +450,8 @@ test expectations, and remain gitignored.
 ## Coding Convention
 
 - `///|` は MoonBit (`.mbt`) 時代の block separator 記法。新規コードでは
-  使わないこと — ただし移植時の残骸が `lib/@vibe/compiler/core/types.vibe`
-  ほか数ファイルにまだ残っている(2026-07-28 時点で4ファイル)。見つけたら
-  削除して構わないが、一括削除はこの PR ではやっていない。**vibe の doc
+  使わないこと。移植時の残骸は 2026-09-14 に最後の 3 箇所
+  (`lib/@vibe/parser/parser_base.vibe`) を消して `lib/` から無くなった。**vibe の doc
   comment は `///`** (Rust 風、宣言の直前に置くとその宣言の doc として
   hover/`vibe doc-at` から拾われる。実装は `lib/@vibe/parser/lexer.vibe`
   `collect_doc_comments`)。**`vibe symbols` も doc comment を返す** —
