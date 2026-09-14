@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docs/adding-modules.md, enforced: how one file in a package reaches a function
+# docs/internal/project/adding-modules.md, enforced: how one file in a package reaches a function
 # defined in a SIBLING file of the same package.
 #
 # The rule is easy to get wrong in the permissive direction, because "a
@@ -64,7 +64,7 @@ expect() { # expect <label> <export> <declare> <import> <COMPILES|needle>
     [ "$got" = "COMPILES" ] && note "$label -> compiles" || bad "$label should compile, got: $got"
   else
     case "$got" in
-      COMPILES) bad "$label should be REJECTED but compiled -- the sibling rule got more permissive; update docs/adding-modules.md" ;;
+      COMPILES) bad "$label should be REJECTED but compiled -- the sibling rule got more permissive; update docs/internal/project/adding-modules.md" ;;
       *"$want"*) note "$label -> rejected: $want" ;;
       *) bad "$label rejected for the wrong reason; want substring [$want], got: $got" ;;
     esac

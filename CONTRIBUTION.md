@@ -228,7 +228,7 @@ fixtures/                 # Test fixtures (compiler regression corpus)
 scripts/ pkspec/          # Build/test scripts + pkfire/pkspec definitions
 ```
 
-See also [docs/adding-modules.md](docs/adding-modules.md) for the module
+See also [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md) for the module
 placement conventions, and CLAUDE.md's "MoonBit host vs selfhost" section for
 where new compiler work should land.
 
@@ -282,5 +282,5 @@ pkf run bench-module-job-pool
 ## Task management
 
 タスクは GitHub Issues (`gh issue`) で管理する。ロードマップは
-[docs/release-roadmap.md](docs/release-roadmap.md) 参照。設計判断は
+[docs/internal/project/release-roadmap.md](docs/internal/project/release-roadmap.md) 参照。設計判断は
 [docs/adr.md](docs/adr.md) に記録する。

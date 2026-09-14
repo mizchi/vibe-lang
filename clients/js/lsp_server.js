@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Minimal stdio LSP server for vibe (docs/release-roadmap.md テーマ4, MVP 4-1).
+// Minimal stdio LSP server for vibe (docs/internal/project/release-roadmap.md テーマ4, MVP 4-1).
 //
 // Provides push diagnostics by driving the native selfhost compiler
 // (`vibe check`) — node here is only JSON-RPC plumbing, the compiler is the

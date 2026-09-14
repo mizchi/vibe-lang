@@ -552,7 +552,7 @@ them.
 ## 7. Issue tree
 
 Parent [#2340](https://github.com/mizchi/vibe-lang/issues/2340), three-axis
-labels per [docs/issue-triage.md](issue-triage.md). Priority is the symptom the
+labels per [docs/internal/project/issue-triage.md](internal/project/issue-triage.md). Priority is the symptom the
 issue states and nothing else, so most of this is P2 — almost none of it is
 something that works today being broken.
 

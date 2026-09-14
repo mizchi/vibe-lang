@@ -13,13 +13,12 @@ same change as the document.
 `docs/language-tour/` is not in the tree. Its content was folded into
 [user/reference/cheatsheet.md](user/reference/cheatsheet.md).
 
-`docs/user/` is real: the user rows below sit at the homes the `Later home`
-column names (#2565). For the other classes that column (`docs/internal/…`,
-`docs/generated/`) is still a **destination label, not a path that exists yet**;
-those moves are #2566 and #2567. One exception is already real: `docs/internal/`
-exists and holds the experiment records classified below, created ahead of the
-move. Do not add to it — a document goes where the tree puts things today, and
-moves happen in one pass so the link rewrites can be reviewed together.
+`docs/user/` (#2565) and `docs/internal/` (#2566, group by group) are real: a
+row whose `Current path` already starts with `user/` or `internal/` sits at the
+home its `Later home` column names. For the rows that do not yet, that column is
+still a **destination label, not a path that exists yet**; a document goes where
+the tree puts things today, and each group moves in one pass so the link
+rewrites can be reviewed together.
 
 `book/` stays at the top level and `docs/user/` links to it rather than
 containing it: it has its own gates (`scripts/check_book_links.sh`,
@@ -31,9 +30,9 @@ external links to The Vibe Book (decided in #2565).
 [user/reference/cheatsheet.md](user/reference/cheatsheet.md) · [user/reference/cli-commands.md](user/reference/cli-commands.md) ·
 [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md)
 
-**Maintainers:** [adding modules](adding-modules.md) · [bootstrap](bootstrap.md) ·
+**Maintainers:** [internal/project/adding-modules.md](internal/project/adding-modules.md) · [bootstrap](bootstrap.md) ·
 [operation gate](operation-gate.md) · [ADRs](adr.md) ·
-[triage](issue-triage.md)
+[internal/project/issue-triage.md](internal/project/issue-triage.md)
 
 This file is the audience router. It is not one of the four classes below.
 
@@ -74,9 +73,9 @@ the repo; not the user manual.
 
 | Current path | Later home | Notes |
 | --- | --- | --- |
-| [adding-modules.md](adding-modules.md) | `internal/project/` | How to add/fix a library module in this repo |
-| [issue-triage.md](issue-triage.md) | `internal/project/` | |
-| [release-roadmap.md](release-roadmap.md) | `internal/project/` | |
+| [internal/project/adding-modules.md](internal/project/adding-modules.md) | `internal/project/` | How to add/fix a library module in this repo |
+| [internal/project/issue-triage.md](internal/project/issue-triage.md) | `internal/project/` | |
+| [internal/project/release-roadmap.md](internal/project/release-roadmap.md) | `internal/project/` | |
 
 ### Operations / gates / bootstrap
 

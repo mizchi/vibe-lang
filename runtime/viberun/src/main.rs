@@ -2402,7 +2402,7 @@ fn wasi_fd_write(
 // the guest's exported `__heap_ptr` global. Ints/Bools are passed as raw i64.
 // This mirrors the JS host (`scripts/wasm_vibe_host_runner.js`) so the Rust
 // runner can run the same selfhost CLI artifacts as the production `vibe`
-// command (`docs/release-roadmap.md`, テーマ 1).
+// command (`docs/internal/project/release-roadmap.md`, テーマ 1).
 
 fn vibe_memory(caller: &mut Caller<'_, HostState>) -> Result<wasmtime::Memory> {
     caller

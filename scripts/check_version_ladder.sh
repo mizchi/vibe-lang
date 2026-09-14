@@ -60,7 +60,7 @@ if ! head -1 "$notes" | grep -qF "$release"; then
 fi
 
 # 4. The roadmap ladder has a row for it.
-roadmap="$DOCS/release-roadmap.md"
+roadmap="$DOCS/internal/project/release-roadmap.md"
 [ -f "$roadmap" ] || fail "no such roadmap: $roadmap"
 ladder="$(sed -n '/^## Version ladder/,/^## /p' "$roadmap")"
 [ -n "$ladder" ] || fail "$roadmap has no '## Version ladder' section"
