@@ -986,17 +986,12 @@ describes, and probed by a test that moves each of them for real.
 Three things had to be got right, and each was found by measurement rather than
 by reading:
 
-- **A statement POSITION cannot say which file an entry came from.**
-  `fn_src_stmts` indexes the merged array AFTER the prelude, which inserts (a
-  trait dispatcher lands after the last impl; effect lowering adds statements
-  mid-program), so a source function's recorded position is its pre-prelude one
-  plus however many statements were inserted ahead of it. Against a file table
-  built before the prelude that shift can carry an entry out of its own file's
-  range and into the next one's — and if the next file is the unchanged one, a
-  body from the EDITED file gets replayed. Measured: a three-file fixture with
-  one `effect` declaration offered **zero** entries, because every index had
-  moved. Entries now record a FILE (`fn_files`), taken from the pre-prelude
-  name → file snapshot that interior-line breakpoints already resolve through.
+- **File ownership and source positions survive lowering.** `fn_files` uses
+  the pre-prelude name-to-file snapshot for the unchanged-file filter.
+  `fn_src_stmts` uses the corresponding original merged-statement position
+  for the prefix fallback, before insertion or DCE compaction (#2721).
+  Ambiguous or synthesized names have no source position and cannot enter
+  that prefix. The VBC5 codec rejects the former post-prelude coordinates.
 - **The typed-lowering OFFSET arrays must not be pinned.** They are source
   positions in the merged text, so appending a comment to any file shifts every
   offset after it. Measured on the compiler's own closure, comment-edited: with
@@ -1109,13 +1104,14 @@ field-name slot flips `swap-struct-fields`, and the function-vector slot flips
 `swap-order`. The other slots stay green under this corpus: they are carried on
 the `CompileCtx` enumeration argument, not on a case that exercises them.
 
-One finding worth recording on its own, because it bounds the cache far more
-than anything in this step: **a declared struct or enum that nothing compares
-disables the body cache for the whole program.** Its synthesized comparator is
-unreachable, late DCE prunes it, `stmts` shrinks, `late_dce_pruned` is set, and
-the guards are not recorded at all. Measured: adding one uncompared struct OR
-one uncompared enum to a fixture that otherwise reuses takes its recorded
-guards from 5 to 0 and its reuse to nothing.
+Unused struct and enum comparators may be pruned without disabling body
+reuse (#2721). Deleting a declaration preserves the surviving bodies; the
+layout guards still decide whether their embedded indices remain valid.
+Constant Bool parameter folding continues to refuse cache publication and
+consumption because it rewrites a body's meaning based on other call sites.
+The edit-class corpus includes unused types, and the source-position regression
+checks that pruned comparator helpers cannot move a later function into the
+unchanged source prefix.
 
 #### Where a compile's allocation actually goes, by PHASE (2026-09-12)
 

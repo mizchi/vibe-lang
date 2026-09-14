@@ -1189,6 +1189,104 @@ export fn gen_bytes_new_body() -> Bytes {
   b
 }
 
+/// Shared by the two backends; capacities are validated before narrowing.
+export fn bytes_capacity_error_message() -> String {
+  "Bytes::with_capacity: use a capacity between 0 and 1073741816 that fits linear memory\n"
+}
+
+fn emit_bytes_capacity_abort(b: Bytes, print_str_idx: Int, error_fat: Int) -> Unit {
+  emit_i64_const(b, error_fat)
+  emit_call(b, print_str_idx)
+  bytebuf_push(b, 0)
+}
+
+/// One header and one contiguous reservation. Param 0: capacity, locals 1/2:
+/// pointer/capacity. Bytes remain bump-backed on both linear and GC lanes.
+export fn gen_bytes_with_capacity_body(enable_rc: Bool, print_str_idx: Int, error_fat: Int) -> Bytes {
+  let b = bytebuf_new()
+  emit_local_get(b, 0)
+  if enable_rc {
+    emit_i64_const(b, 1); emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_i64_const(b, 0)
+  emit_i64_lt_s(b)
+  emit_if_void(b)
+  emit_bytes_capacity_abort(b, print_str_idx, error_fat)
+  emit_end(b)
+  emit_local_get(b, 0)
+  if enable_rc {
+    emit_i64_const(b, 1); emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_i64_const(b, 1073741816)
+  emit_i64_gt_s(b)
+  emit_if_void(b)
+  emit_bytes_capacity_abort(b, print_str_idx, error_fat)
+  emit_end(b)
+  emit_local_get(b, 0)
+  if enable_rc {
+    emit_i64_const(b, 1); emit_i64_shr_s(b)
+  } else {
+    ()
+  }
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 2)
+  emit_i32_const(b, 64)
+  emit_local_get(b, 2)
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  emit_i32_const(b, 64)
+  emit_local_set(b, 2)
+  emit_end(b)
+  emit_local_get(b, 2)
+  emit_i32_const(b, 7)
+  emit_i32_add(b)
+  emit_i32_const(b, 0 - 8)
+  emit_i32_and(b)
+  emit_local_set(b, 2)
+  // Check the end in i64 before updating the wasm32 heap pointer. A wrapped
+  // pointer could otherwise overwrite live allocations at the start of memory.
+  emit_global_get(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, 2)
+  emit_i64_extend_i32_u(b)
+  emit_i64_add(b)
+  emit_i64_const(b, 12)
+  emit_i64_add(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_gt_s(b)
+  emit_if_void(b)
+  emit_bytes_capacity_abort(b, print_str_idx, error_fat)
+  emit_end(b)
+  emit_global_get(b, 0)
+  emit_local_tee(b, 1)
+  emit_local_get(b, 2)
+  emit_i32_add(b)
+  emit_i32_const(b, 12)
+  emit_i32_add(b)
+  emit_global_set(b, 0)
+  emit_heap_memory_grow_check(b)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 0)
+  emit_local_get(b, 2)
+  emit_i32_sub(b)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 4)
+  emit_local_get(b, 1)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 12)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 8)
+  emit_local_get(b, 1)
+  emit_i64_extend_i32_u(b)
+  b
+}
+
 export fn gen_bytes_set_body(enable_rc: Bool, oob_prefix_fat: Int, oob_abort_idx: Int) -> Bytes {
   let b = bytebuf_new()
   // #811: unsigned bounds check (idx as u32 >= len traps; negatives too).

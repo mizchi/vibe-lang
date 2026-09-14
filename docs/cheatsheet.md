@@ -1840,6 +1840,7 @@ via `memory.copy`, so `push` is amortised O(1)):
 |---|---|---|
 | `Bytes::new()` | empty buffer (initial capacity 64) | linear / gc |
 | `Bytes::new(n)` | **zero-filled** buffer of length `n` | linear / gc |
+| `Bytes::with_capacity(n)` | empty buffer reserving at least `n` bytes in one allocation; minimum 64, rounded to 8 bytes; rejects negative or over-1,073,741,816 capacities | linear / gc |
 | `Bytes::length(b)` / `get(b, i)` / `set(b, i, v)` | length, element access | linear / gc |
 | `Bytes::push(b, v)` | append one byte (amortised O(1)) | linear / gc |
 | `Bytes::append(dst, src)` | **bulk concatenation. One `memory.copy`** | linear / gc |
@@ -1850,7 +1851,7 @@ via `memory.copy`, so `push` is amortised O(1)):
 | `Bytes::count(hay, byte)` | how many times `byte` occurs | linear / gc |
 | `Bytes::compare(a, b)` | lexicographic order: `-1` / `0` / `1`, by **unsigned** byte value | linear / gc |
 | `Bytes::index_of_bytes(hay, needle)` | first index of the `needle` **subsequence**, or `-1`. An empty needle answers `0` | linear / gc |
-| `Bytes::blit(dst, src, dst_off, len)` | **range copy. One `memory.copy`** | linear / gc |
+| `Bytes::blit(dst, src, start, end)` | append source range `[start, end)`; bulk copy on the linear lane | linear / gc |
 | `Bytes::fill(b, value, count)` | **appends** `count` copies of `value` (a `push` loop) | linear / gc |
 | `Bytes::from_array(a)` / `to_array(b)` | conversion to/from `Array[Int]` (**copies**) | linear / gc |
 

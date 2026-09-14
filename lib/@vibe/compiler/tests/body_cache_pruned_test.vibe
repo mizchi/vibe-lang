@@ -1,0 +1,127 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  compile_file_fs_mode_rc, compile_file_fs_mode_rc_body_cached_counted
+}
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_artifact_cache_path
+}
+import @vibe/compiler/codegen {
+  compile_wasi_module_rc_body_cached
+}
+import @vibe/compiler/codegen/common_base {
+  codegen_body_cache_from_bytes, codegen_body_cache_new, codegen_body_cache_to_bytes
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn pruned_bytes(s: String) -> Bytes {
+  let out = Bytes::new()
+  let mut i = 0
+  while i < String::length(s) {
+    Bytes::push(out, String::char_code_at(s, i))
+    i = i + 1
+  }
+  out
+}
+
+fn pruned_equal(a: Bytes, b: Bytes) -> Bool {
+  let mut same = Bytes::length(a) == Bytes::length(b)
+  let mut i = 0
+  while same && i < Bytes::length(a) {
+    same = Bytes::get(a, i) == Bytes::get(b, i)
+    i = i + 1
+  }
+  same
+}
+
+fn pruned_guards(declaration: String) -> Int with Exception {
+  let source = String::concat(declaration, "\nlet live: () -> Bool = () -> { [1] == [1] }\nfn main() -> Int { if live() { 7 } else { 9 } }")
+  let cache = codegen_body_cache_new()
+  let _out = compile_wasi_module_rc_body_cached(parse_program(lex(source)), "main", codegen_body_cache_new(), cache)
+  Array::length(cache.guard_meta)
+}
+
+test "#2721: unused structs and enums preserve body-cache guards" {
+  inspect([
+    pruned_guards(""),
+    pruned_guards("struct Unused { value: Int }"),
+    pruned_guards("enum Unused { First; Second(Int) }")
+  ], content = "[5, 5, 5]")
+}
+
+test "#2721: constant-parameter rewriting still refuses cache publication" {
+  let source = "let same: () -> Bool = () -> { [1] == [1] }\nfn choose(flag: Bool) -> Int { if flag { 7 } else { 9 } }\nfn main() -> Int { choose(true) + (if same() { 1 } else { 0 }) }"
+  let cache = codegen_body_cache_new()
+  let _out = compile_wasi_module_rc_body_cached(parse_program(lex(source)), "main", codegen_body_cache_new(), cache)
+  inspect([Array::length(cache.guard_meta), Array::length(cache.guard_layout)], content = "[0, 0]")
+}
+
+test "#2721: harvested source positions precede DCE compaction" {
+  // These names take the comparator-pruning path; ordinary source functions
+  // are deliberately roots of the late DCE pass.
+  let source = "fn __arr_equals__dead0() -> Int { 0 }\nfn __arr_equals__dead1() -> Int { 1 }\nstruct Unused { value: Int }\nlet same: () -> Bool = () -> { [1] == [1] }\nfn main() -> Int { if same() { 7 } else { 9 } }"
+  let cache = codegen_body_cache_new()
+  let _out = compile_wasi_module_rc_body_cached(parse_program(lex(source)), "main", codegen_body_cache_new(), cache)
+  let mut main_position = -1
+  let mut i = 0
+  while i < Array::length(cache.fn_names) {
+    if Array::get(cache.fn_names, i) == "main" {
+      main_position = Array::get(cache.fn_src_stmts, i)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  inspect(main_position, content = "4")
+}
+
+test "#2721: the codec refuses the old post-prelude position format" {
+  let bytes = codegen_body_cache_to_bytes(codegen_body_cache_new())
+  inspect(Bytes::get(bytes, 3), content = "53")
+  Bytes::set(bytes, 3, '4')
+  match codegen_body_cache_from_bytes(bytes) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "#2721: DCE cannot move an edited entry into an unchanged file prefix" {
+  let dep = "/tmp/vibe_pruned_cache_dep.vibe"
+  let entry = "/tmp/vibe_pruned_cache_entry.vibe"
+  let artifact = persistent_artifact_cache_path("codegen-body-cache", "main", String::concat("self-describing-", compact_string_fingerprint(entry)))
+  if Fs::exists(artifact) {
+    Fs::remove(artifact)
+  } else {
+    ()
+  }
+  let text = StringBuilder::new()
+  let mut i = 0
+  while i < 32 {
+    StringBuilder::push(text, "fn __arr_equals__dead_\{i}() -> Int { \{i} }\n")
+    i = i + 1
+  }
+  StringBuilder::push(text, "export struct Unused { value: Int }\nexport let same: () -> Bool = () -> { [1] == [1] }\nexport fn stable() -> Int { if same() { 20 } else { 30 } }\n")
+  Fs::write_bytes(dep, pruned_bytes(StringBuilder::freeze(text)))
+  let before = "import ./vibe_pruned_cache_dep.vibe { stable }\nfn main() -> Int { stable() + 7 }"
+  Fs::write_bytes(entry, pruned_bytes(before))
+  let cold_counts: Array[Int] = []
+  let cold = compile_file_fs_mode_rc_body_cached_counted(entry, "main", "on", cold_counts)
+  assert(Array::get(cold_counts, 0) == 0)
+  assert(Array::get(cold_counts, 1) > 0)
+  let warm_counts: Array[Int] = []
+  let warm = compile_file_fs_mode_rc_body_cached_counted(entry, "main", "on", warm_counts)
+  inspect([
+    pruned_equal(warm, cold),
+    Array::get(warm_counts, 0) > 0,
+    Array::get(warm_counts, 1) < Array::get(cold_counts, 1)
+  ], content = "[true, true, true]")
+  // The extra dead declaration changes the file table, forcing the prefix
+  // fallback. DCE removes it, so the live function/layout guards stay equal.
+  Fs::write_bytes(entry, pruned_bytes("import ./vibe_pruned_cache_dep.vibe { stable }\nfn main() -> Int { stable() + 9 }\nfn __arr_equals__extra_dead() -> Int { 0 }"))
+  let edited_counts: Array[Int] = []
+  let edited = compile_file_fs_mode_rc_body_cached_counted(entry, "main", "on", edited_counts)
+  let fresh = compile_file_fs_mode_rc(entry, "main")
+  assert(!pruned_equal(fresh, cold))
+  inspect(pruned_equal(edited, fresh), content = "true")
+  // A changed layout may decline every offered body; equality is mandatory.
+}
