@@ -3594,28 +3594,26 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
     } else {
       ""
     },
-    ECall(EIdent("Map::from_pairs", _), margs, _) => if Array::length(margs) == 1 {
-      match Array::get(margs, 0) {
-        EArray(pairs) => {
-          let mut pi = 0
-          let mut found = ""
-          while pi < Array::length(pairs) {
-            match Array::get(pairs, pi) {
-              ETuple(pes) => if Array::length(pes) == 2 && String::length(found) == 0 {
-                found = dtd_erased_interp_formal(Array::get(pes, 1), struct_sets, var_types, fn_returns)
-              } else {
-                ()
-              },
-              _ => ()
-            }
-            pi = pi + 1
-          }
-          found
-        },
-        _ => ""
+    // A map LITERAL. `Map::new()` and `Map::from_pairs([..])` never survive as
+    // calls: `parser_expr_core.vibe` converts both into `EMap` while parsing
+    // (#960), so the call form this arm first matched was DEAD CODE with a
+    // comment claiming otherwise -- the same mistake as round 13's unreachable
+    // `Array::get` arm, and caught the same way, by a reviewer reading the arm
+    // rather than by any gate. Matching the node the parser actually produces
+    // is both the fix and the thing that makes the comment true.
+    EMap(mfields) => {
+      let mut pi = 0
+      let mut found = ""
+      while pi < Array::length(mfields) {
+        let (_, fv) = Array::get(mfields, pi)
+        if String::length(found) == 0 {
+          found = dtd_erased_interp_formal(fv, struct_sets, var_types, fn_returns)
+        } else {
+          ()
+        }
+        pi = pi + 1
       }
-    } else {
-      ""
+      found
     },
     ECall(ecallee, cargs, _) => {
       let slot = match ecallee {
