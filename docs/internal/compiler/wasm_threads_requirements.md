@@ -35,7 +35,7 @@ repo 内の active gate は `-W` 側 flag のみ使用しており影響なし�
   手順は historical reference として残し、新規開発では使わない。
 - **supported なスレッド面は core wasm の atomics + shared memory** に閉じる
   (`-W threads=y` + `-W shared-memory=y`)。これは廃止対象ではない。下記 §1。
-- 公開並行モデルは [ADR-0068](internal/design/concurrency.md) の shared-nothing structured
+- 公開並行モデルは [ADR-0068](../design/concurrency.md) の shared-nothing structured
   concurrency とする。**shared-everything-threads** はその opt-in 高速化 backend
   として、Wasmtime の不足実装が揃ってから再評価する。tracking: #488。
 - repo 内の active な gate (`scripts/test_cli_*preview2*.sh` 等) は
@@ -115,7 +115,7 @@ ADR-0068 の task/channel semantics を保つ lowering として probe を組み
 threading baseline は確認できる一方、上記 3 intrinsic は unsupported path に入り、
 proposal test と parser/runtime の名前にも差がある。通常 CI / release gate にはせず、
 feature detection 付きの opt-in probe に限定する。production 候補への昇格条件は
-[concurrency.md の #488 節](internal/design/concurrency.md)を参照。
+[concurrency.md の #488 節](../design/concurrency.md)を参照。
 
 ### wasmtime 47.0.2 実測 (2026-07-24)
 

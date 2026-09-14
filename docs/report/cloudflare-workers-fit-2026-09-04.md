@@ -66,7 +66,7 @@ Three facts about the tooling, learned while measuring:
 - The in-house optimizer (`lib/@vibe/optimizer`, `scripts/minify_wasm.sh`) was
   not run over the compiler in this session. `docs/internal/operations/wasm-opt-dogfood.md` records
   it at or below `wasm-opt -Oz` on small programs and behind on large ones, and
-  `docs/vibec-component.md` records 4.9 MB to 3.85 MB on the library build.
+  `docs/internal/compiler/vibec-component.md` records 4.9 MB to 3.85 MB on the library build.
   It is not the lever that closes the gap either.
 - The compile-only vibec face (3.08 MB after `-Oz`) is larger than the whole
   CLI. That is not because compile needs more code: the library build keeps
@@ -277,12 +277,12 @@ Seams that already exist and could carry a split:
 
 - `.vpkg` bodyless contracts are a stable module interface (ADR-0070).
 - `lib/@vibe/compiler/cache/ast_binary.vibe` is a versioned binary AST encoding
-  designed for crossing a process boundary (`docs/ast_binary_abi.md`).
+  designed for crossing a process boundary (`docs/internal/compiler/ast_binary_abi.md`).
 - The checked-body transport and `checker/artifacts` (#1958) are a typed-IR
   artifact format, shadow-only today.
 - `CodegenBodyCache` persistence (#2388 step 3) is a per-function body store
   with the index spaces already made edit-stable (#2394, #2400).
-- `vibec` (`docs/vibec-component.md`, `scripts/build_vibec.sh`) is a
+- `vibec` (`docs/internal/compiler/vibec-component.md`, `scripts/build_vibec.sh`) is a
   component with a `compile(source, request)` world and a `vibec-hosted` world
   whose imports are `read-file` / `exists` / `read-dir` / `stat-token`. That
   hosted world is the shape a Worker needs, with one caveat: its imports are

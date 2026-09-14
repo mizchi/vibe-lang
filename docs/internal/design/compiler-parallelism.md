@@ -1033,7 +1033,7 @@ shared-everything design (#488) would actually require, so today's choice
 isn't accidentally load-bearing in a way that closes that door. It is a
 forward-looking note, not a plan — none of this is scheduled work.
 
-**It isn't available to choose today.** `docs/wasm_threads_requirements.md`
+**It isn't available to choose today.** `docs/internal/compiler/wasm_threads_requirements.md`
 §4's 47.0.2 probe found the `shared-everything-threads` proposal's CLI flag
 accepted but not wired into Wasmtime's validator or WAT parser (`shared
 composite types require the shared-everything-threads proposal`, upstream

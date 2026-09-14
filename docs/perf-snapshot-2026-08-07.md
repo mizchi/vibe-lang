@@ -126,7 +126,7 @@ fields) の方である。
 
 > 「配列の最終長の分布」そのものは今のツールでは取れず、上の結論は
 > 3点の A/B から逆算した推測にとどまる。これは
-> [docs/tracing-design.md](tracing-design.md) が埋めようとしている穴の実例で、
+> [docs/internal/compiler/tracing-design.md](internal/compiler/tracing-design.md) が埋めようとしている穴の実例で、
 > span の属性としてカウンタを持てれば推測ではなく実測になる。
 
 ### 3.2 フロントエンドのアロケーション密度

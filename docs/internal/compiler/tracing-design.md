@@ -9,8 +9,8 @@ perform は素の関数呼び出しより 1.7 倍高いだけで、アロケー�
 何も perform しない関数が row に `Trace` を持つコストは測定限界以下だった。
 
 これは提案であり、まだ実装されていない。§3 の数値は
-[`bench/tracing/trace_effect_bench.vibe`](../bench/tracing/trace_effect_bench.vibe) と
-[`bench/tracing/trace_effect_shapes_test.vibe`](../bench/tracing/trace_effect_shapes_test.vibe)
+[`bench/tracing/trace_effect_bench.vibe`](../../../bench/tracing/trace_effect_bench.vibe) と
+[`bench/tracing/trace_effect_shapes_test.vibe`](../../../bench/tracing/trace_effect_shapes_test.vibe)
 を現行 stage2 で実際にコンパイル・実行して得たもので、どちらもコミットされている。
 
 ## 1. 現状の計測手段と、それぞれが答えられないこと
@@ -45,7 +45,7 @@ export fn compile_release_file_mode_uncached_profiled(input_path: String, entry_
 
 ### 1.2 実測で見えた、今の計測では詰められない例
 
-[docs/perf-snapshot-2026-08-07.md](perf-snapshot-2026-08-07.md) より:
+[docs/perf-snapshot-2026-08-07.md](../../perf-snapshot-2026-08-07.md) より:
 
 - **`array_empty` が CPU の 4.3%**。配列のデフォルト容量を 8→2 にして heap が
   13.9% 下がったが、「配列の最終長の分布」は今のツールで取れないので、
@@ -317,7 +317,7 @@ load / type / bundle / parse / codegen に span を張り、codegen の中に
 
 落としたのは handle 適格性検査 (`handle of effect 'Trace' cannot be
 compiled here`, `inline_direct_perform.vibe`)。受理される callee の形の
-実測表と現行の診断文は [cheatsheet](user/reference/cheatsheet.md) の
+実測表と現行の診断文は [cheatsheet](../../user/reference/cheatsheet.md) の
 "A `handle` that type-checks can still fail to compile" 節にある。
 
 **2つの配置を試して、両方拒否された:**

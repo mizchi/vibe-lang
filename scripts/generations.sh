@@ -415,7 +415,7 @@ prepare_flat_cli_source() {
   mkdir -p "$bundle_tmp" "$out_dir"
   echo "[selfhost-gen] prepare flat selfhost compiler source" >&2
   # Both step-0 traces put roughly half the wall clock outside every stage
-  # compile (docs/tracing-design.md §5.6 48%, §5.7 65%). This generator call is
+  # compile (docs/internal/compiler/tracing-design.md §5.6 48%, §5.7 65%). This generator call is
   # the main suspect, so it gets its own span instead of being guessed at.
   trace_begin "prepare flat source"
   local prep_tok="$TRACE_TOKEN"
@@ -492,7 +492,7 @@ run_selfbuild_compile() {
   [ -s "$out" ] || die_compile "$label" "$out" "did not produce output: $out"
 }
 
-# Each stage hop is one span (docs/tracing-design.md step 0). This is the
+# Each stage hop is one span (docs/internal/compiler/tracing-design.md step 0). This is the
 # smallest place that makes the bootstrap chain legible as a tree:
 # seed -> stage1 -> stage2 -> stage3 is four full compiles in four processes,
 # and until now the only way to see where the time went was to read timestamps

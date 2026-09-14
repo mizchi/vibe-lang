@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression lock for the step-0 tracing helpers (docs/tracing-design.md):
+# Regression lock for the step-0 tracing helpers (docs/internal/compiler/tracing-design.md):
 # scripts/trace_lib.sh, scripts/trace_span.sh, scripts/trace_report.mjs.
 set -uo pipefail
 

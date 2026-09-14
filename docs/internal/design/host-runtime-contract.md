@@ -26,7 +26,7 @@ host boundary という別の対象を扱う姉妹 ADR)、
 > (Codex review again) fixed those: dropped `Fs::remove` (its only call site
 > is an orphaned entry point, not reachable from `cli_main`) and corrected a
 > false claim about which ops `runtime/viberun` does/doesn't implement. No
-> pass changed any runner implementation. `docs/wit/vibe-compiler-host.wit`
+> pass changed any runner implementation. `docs/internal/compiler/wit/vibe-compiler-host.wit`
 > is the reference world.
 
 ## Why this exists
@@ -51,7 +51,7 @@ compiler's own entry point rather than arbitrary user programs.
 never crosses the host boundary (vibe-internal control flow — an escaping
 throw is a component trap, not a host capability), matching the rule
 `wit_gen.vibe` already applies to user programs. The other four map to
-`docs/wit/vibe-compiler-host.wit`'s four `import` interfaces.
+`docs/internal/compiler/wit/vibe-compiler-host.wit`'s four `import` interfaces.
 
 **Round 1 correction (Codex review, PR #1178):** the first version of this
 doc derived the `fs` interface from `effect Fs { ReadFile, WriteFile,

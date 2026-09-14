@@ -9,7 +9,7 @@
 // not overlap each other -- with parallel fan-out the children's walls sum to
 // more than the parent's, so summing them would report negative self time.
 //
-// docs/tracing-design.md step 0. This reads only what the host emits (one span
+// docs/internal/compiler/tracing-design.md step 0. This reads only what the host emits (one span
 // per process); guest-side phase spans are a later step.
 import { readFileSync } from "node:fs";
 

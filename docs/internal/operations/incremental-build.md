@@ -11,7 +11,7 @@ Related documents:
 - [Compiler parallelism](../design/compiler-parallelism.md)
 - [Bootstrap and generation builds](bootstrap.md)
 - [Editor and LSP behavior](../../user/reference/editor-and-debugging.md)
-- [Component Model target](../../vibec-component.md)
+- [Component Model target](../compiler/vibec-component.md)
 - [Lean formal model](../../../formal/README.md)
 
 ## Goals and non-goals
@@ -2285,7 +2285,7 @@ With `VIBE_CHECKED_MODULE_CACHE=on` or `verify`, standalone telemetry uses schem
 an exact checked-module input can still match after a private dependency body
 edit changes the conservative fingerprint. All three reasons must sum to
 `modules_reused`. Verification checks afresh, so it records zero artifact hits.
-The [checked-module parity gate](../../checked-body-transport.md) validates these
+The [checked-module parity gate](../compiler/checked-body-transport.md) validates these
 counts through the real compile CLI; the edit-cycle reader accepts both schemas.
 `scripts/ast_cache_prefetch_oracle.mjs` pins the lane signature on a real
 build, stated relative to the cold build rather than against zero: a warm
