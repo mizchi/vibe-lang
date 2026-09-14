@@ -8120,92 +8120,86 @@ fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: A
 /// Final step: write the module back out, substituting the rebuilt function
 /// and code sections and remapping every function index the other sections
 /// carry (exports, element segments, the name section). Every section goes
-/// straight into `out`: its content length is computed first by the sizing
-/// mode of the same helper that then writes it.
+/// straight into one reserved output: the sizing mode of each helper supplies
+/// both its section length and the total capacity before writing begins.
 fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], newidx: Array[Int], ftypes: Array[Int], keep: Array[Int], body_start: Array[Int], body_end: Array[Int], site: Array[Int], site_from: Array[Int]) -> Bytes {
-  let out = bytebuf_new()
-  Bytes::blit(out, mod_bytes, 0, 8)
+  // The sizing helpers never write in this mode. Keep their results so the
+  // existing sizing walk also determines the one output allocation.
+  let sizing = bytebuf_new()
+  let lengths = lc_fresh_int_array()
+  let name_sections: Array[Bool] = []
   let nkeep = Array::length(keep)
+  let mut total = 8
   let mut si = 0
   while si < Array::length(sec_id) && !Array::get(failed, 0) {
     let sid = Array::get(sec_id, si)
     let sstart = Array::get(sec_start, si)
     let send = sstart + Array::get(sec_len, si)
+    let mut size = send - sstart
+    let mut is_name = false
     if sid == 3 {
-      let mut flen = lc_pf_leb_len(nkeep)
+      size = lc_pf_leb_len(nkeep)
       let mut fi = 0
       while fi < nkeep {
-        flen = flen + lc_pf_leb_len(Array::get(ftypes, Array::get(keep, fi)))
+        size = size + lc_pf_leb_len(Array::get(ftypes, Array::get(keep, fi)))
         fi = fi + 1
       }
-      bytebuf_push(out, 3)
-      leb128_encode_u32(out, flen)
-      let cstart = bytebuf_length(out)
-      bytebuf_push_vec_header(out, nkeep)
-      let mut fw = 0
-      while fw < nkeep {
-        leb128_encode_u32(out, Array::get(ftypes, Array::get(keep, fw)))
-        fw = fw + 1
-      }
-      lc_pf_check_written(out, cstart, flen, failed)
     } else if sid == 10 {
-      let clen = lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, false)
-      if !Array::get(failed, 0) {
-        bytebuf_push(out, 10)
-        leb128_encode_u32(out, clen)
-        let cstart = bytebuf_length(out)
-        lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, true)
-        lc_pf_check_written(out, cstart, clen, failed)
-      } else {
-        ()
-      }
+      size = lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, sizing, false)
     } else if sid == 7 {
-      let elen = lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, false)
-      if !Array::get(failed, 0) {
-        bytebuf_push(out, 7)
-        leb128_encode_u32(out, elen)
-        let cstart = bytebuf_length(out)
-        lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, true)
-        lc_pf_check_written(out, cstart, elen, failed)
-      } else {
-        ()
-      }
+      size = lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, sizing, false)
     } else if sid == 9 {
-      let slen = lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, false)
-      if !Array::get(failed, 0) {
-        bytebuf_push(out, 9)
-        leb128_encode_u32(out, slen)
-        let cstart = bytebuf_length(out)
-        lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, true)
-        lc_pf_check_written(out, cstart, slen, failed)
-      } else {
-        ()
-      }
+      size = lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, sizing, false)
     } else if sid == 0 {
       let nlen = lc_pf_leb(mod_bytes, sstart, cell)
       let nstart = Array::get(cell, 0)
-      let is_name = nlen == 4 && Bytes::get(mod_bytes, nstart) == 110 && Bytes::get(mod_bytes, nstart + 1) == 97 && Bytes::get(mod_bytes, nstart + 2) == 109 && Bytes::get(mod_bytes, nstart + 3) == 101
+      is_name = nlen == 4 && Bytes::get(mod_bytes, nstart) == 110 && Bytes::get(mod_bytes, nstart + 1) == 97 && Bytes::get(mod_bytes, nstart + 2) == 109 && Bytes::get(mod_bytes, nstart + 3) == 101
       if is_name {
-        let mlen = lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, false)
-        if !Array::get(failed, 0) {
-          bytebuf_push(out, 0)
-          leb128_encode_u32(out, mlen)
-          let cstart = bytebuf_length(out)
-          lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, true)
-          lc_pf_check_written(out, cstart, mlen, failed)
-        } else {
-          ()
-        }
+        size = lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, sizing, false)
       } else {
-        bytebuf_push(out, 0)
-        leb128_encode_u32(out, send - sstart)
-        Bytes::blit(out, mod_bytes, sstart, send)
+        ()
       }
     } else {
-      bytebuf_push(out, sid)
-      leb128_encode_u32(out, send - sstart)
+      ()
+    }
+    Array::push(lengths, size)
+    Array::push(name_sections, is_name)
+    total = total + 1 + lc_pf_leb_len(size) + size
+    si = si + 1
+  }
+  if Array::get(failed, 0) {
+    return mod_bytes
+  }
+  let out = Bytes::with_capacity(total)
+  Bytes::blit(out, mod_bytes, 0, 8)
+  si = 0
+  while si < Array::length(sec_id) && !Array::get(failed, 0) {
+    let sid = Array::get(sec_id, si)
+    let sstart = Array::get(sec_start, si)
+    let send = sstart + Array::get(sec_len, si)
+    let size = Array::get(lengths, si)
+    bytebuf_push(out, sid)
+    leb128_encode_u32(out, size)
+    let cstart = bytebuf_length(out)
+    if sid == 3 {
+      bytebuf_push_vec_header(out, nkeep)
+      let mut fi = 0
+      while fi < nkeep {
+        leb128_encode_u32(out, Array::get(ftypes, Array::get(keep, fi)))
+        fi = fi + 1
+      }
+    } else if sid == 10 {
+      lc_pf_emit_code(mod_bytes, newidx, keep, body_start, body_end, site, site_from, failed, out, true)
+    } else if sid == 7 {
+      lc_pf_emit_exports(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+    } else if sid == 9 {
+      lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+    } else if Array::get(name_sections, si) {
+      lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+    } else {
       Bytes::blit(out, mod_bytes, sstart, send)
     }
+    lc_pf_check_written(out, cstart, size, failed)
     si = si + 1
   }
   if Array::get(failed, 0) {
