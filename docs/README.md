@@ -114,6 +114,7 @@ the repo; not the user manual.
 | [internal/compiler-retain-scratch.json](internal/compiler-retain-scratch.json) | `internal/design/` | Borrow inference and scratch measurements, controls and raw samples |
 | [internal/compiler-free-var-scratch.json](internal/compiler-free-var-scratch.json) | `internal/design/` | Free-variable scope scratch comparison, controls and raw samples |
 | [internal/compiler-free-var-callee.json](internal/compiler-free-var-callee.json) | `internal/design/` | Direct callee scan comparison, controls and raw samples |
+| [internal/compiler-annotated-lambda-inference.json](internal/compiler-annotated-lambda-inference.json) | `internal/design/` | Annotated local lambda inference comparison, controls and raw samples |
 | [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
 | [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
 | [simd-data-structures.md](simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |

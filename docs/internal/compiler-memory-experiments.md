@@ -441,6 +441,83 @@ simpler shared binding logic. The measured RC benefit is less work in the
 profiled query, with effectively unchanged heap pressure. Keep the bump
 default and do not claim a consistent wall-time improvement.
 
+### Annotated local lambda inference, 2026-09-14
+
+`fill_lambda_params` now returns immediately when every parameter already has
+an annotation, including a lambda with no parameters. Call-site heap inference
+only fills missing annotations, so walking the enclosing scope and building
+call classifications could not change these lambdas. The top-level inference
+entry already had the same guard. Local `ELet` and `ELetRec` now share it.
+
+Recursive elaboration still visits a lambda's body before considering its
+parameter annotations. An unannotated inner lambda therefore still receives
+heap inference inside an annotated outer lambda. Mixed parameter lists retain
+exact explicit annotations and continue to infer the missing ones.
+
+The allocation regression compares two prebuilt ASTs with 128 calls in the
+same continuation, with and without a lambda at the local binding. It allows
+512 bytes for fixed rewrite costs and RC free-list reuse, but rejects the
+unused call classification table. The baseline exceeds this budget in both
+bump and RC. RC heap-pointer growth is not total allocation volume.
+
+The [raw measurements](compiler-annotated-lambda-inference.json) compare the
+previous direct-callee compiler with this guard, using the same final target
+sources and the strict output-equivalence protocol. Both compiler runtimes
+emit linear RC targets. These are filesystem builds of the compiler closure
+and CLI, not timings for the complete seed-to-stage3 pipeline.
+
+Four alternating pairs per workload/temperature, Node 24.21.0 on Apple M5.
+Wall columns show medians in seconds. Paired changes are the median of the
+individual candidate/baseline ratios; heap changes are decimal MB.
+
+| Workload | Bump wall, before → after | RC wall, before → after | Paired wall change, bump / RC | Heap change, bump / RC |
+|---|---:|---:|---:|---:|
+| Closure, cold | 2.451 → 2.405 | 7.235 → 7.741 | +3.1% / −3.1% | −10.74 / −10.73 MB |
+| Closure, warm | 1.591 → 1.571 | 4.447 → 5.130 | −1.1% / +16.9% | −10.74 / −10.73 MB |
+| CLI, cold | 5.718 → 5.800 | 16.471 → 16.416 | +2.6% / +1.3% | −10.75 / −10.74 MB |
+| CLI, warm | 4.529 → 4.490 | 11.333 → 12.382 | +1.6% / +4.2% | −10.76 / −10.75 MB |
+
+Heap reductions reproduce in every pair: 0.40–1.70% on bump and
+0.40–1.60% on RC. Linear-memory capacity is unchanged except for RC CLI warm, where it
+grows by 1,900,544 bytes (+0.09%) despite the lower heap pointer. The geometric
+growth policy in `lib/@vibe/compiler/codegen/wasm_emit/extra.vibe` depends on
+the allocation sequence, so the heap pointer and final capacity are separate
+metrics. A/A heap pointers
+and capacities agree exactly. Peak RSS median changes range from
+−1.2% to −0.4%; the report keeps resident memory separate
+from the heap pointer. All 128 samples produce identical target bytes
+within each comparison workload, across compilers, temperatures and rounds.
+
+Wall time remains inconclusive. Individual A/A pairs span −5.8% to
++6.9%; bump pairs span −13.4% to +36.0%, and RC pairs
+span −17.0% to +46.3%. All samples, including slow candidate
+runs, remain in the report. Separate RC profiles put local lambda inference at
+8.7 → 1.3 ms cold and 10.0 → 1.3 ms warm,
+including callees. These single profiles are diagnostic, not extra wall-time
+replicates.
+
+The unexpectedly slow RC warm samples triggered another four RC closure pairs
+and a matching RC A/A control. Individual pairs in that additional A/A control
+span −12.8% to +74.7% even though both lanes use the same artifact. Both
+follow-up comparisons remain in the raw report alongside the initial table.
+
+| RC closure | Follow-up A/A paired change | Follow-up candidate paired change | Pooled eight-pair candidate change |
+|---|---:|---:|---:|
+| Cold | +0.5% | +7.4% | +3.0% |
+| Warm | +6.9% | +6.1% | +6.1% |
+
+These controls do not demonstrate a speedup or exclude a small regression.
+A quieter host or the existing CI metrics must resolve wall-time performance.
+
+Validation: 225 related tests in eight files pass; four files also pass
+13 tests each under bump and RC-shadow. Stage2 equals stage3, and the RC
+compiler reproduces both compiler artifacts. Formatter checks pass. Full
+regression remains in CI with no new required benchmark job.
+
+**Decision:** keep the small early return for the deterministic heap reduction
+in both compiler runtimes. Keep the bump default; no consistent wall-time
+speedup or reduction in allocated linear-memory capacity is established.
+
 ### Region and native GC observations, 2026-09-14
 
 The same bump compiler built the following fixtures in all three target
