@@ -135,6 +135,27 @@ fn assign_self_borrow_use(xss: Array[Array[Node]]) -> Int {
   r * 100 + total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
 }
 
+// The suppression that keeps the retain from being stacked on the inner
+// lowering's own promotion must establish that the binder ACQUIRED an owned
+// reference, not merely that the spine bound the name. Here the binder is
+// ITSELF a borrow, so `classify_let_value_heap` leaves it at `rc_kind == 0`:
+// no scope-end drop, so no promotion, so no earlier retain to duplicate.
+//
+// Measured on a stage2 built from the PR head, with the name-only test: `850`
+// on the RC lane against the bump lane's `770` -- the second read of the
+// element answers with the filler, 15, instead of 7, because the owning slot's
+// drop released a reference `xss` still owns. Found by review on #2790.
+fn assign_borrow_bound_binder(xss: Array[Array[Node]]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let ys = Array::get(xss, 0)
+    Array::get(ys, 0)
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+}
+
 test "2760 a wrapped borrow-returning call assigned into an owning slot" {
   let xs = [Pair(Leaf(3), Leaf(4))]
   inspect(assign_wrapped_call(xs), content = "770")
@@ -163,4 +184,9 @@ test "2760 a self-mentioning wrapper with an owning use keeps main's answer" {
 test "2760 a borrow-only self-use, with a later read of the slot" {
   let xss = [[Pair(Leaf(3), Leaf(4))]]
   inspect(assign_self_borrow_use(xss), content = "770")
+}
+
+test "2760 a wrapper binder that is itself a borrow retains nothing to reuse" {
+  let xss = [[Pair(Leaf(3), Leaf(4))]]
+  inspect(assign_borrow_bound_binder(xss), content = "770")
 }
