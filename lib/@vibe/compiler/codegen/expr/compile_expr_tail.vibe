@@ -2718,13 +2718,31 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // once a later allocation reuses the block, which is why the repro
         // takes two tests.
         //
-        // `spine_leaf_roots_at` is the property `is_self` was standing in for,
-        // and it stays narrow deliberately: a leaf that DOES read out of the
-        // slot keeps main's answer, because retaining there would take a
-        // reference out of the value this very store is releasing. That case is
-        // reachable and correct today (a user borrow-returning function is the
-        // only way its type matches the slot's -- see `spine_leaf_roots_at`),
-        // so the guard is load-bearing rather than defensive.
+        // `spine_leaf_roots_at` is the property `is_self` was standing in for:
+        // a leaf that DOES read out of the slot keeps main's answer, because
+        // retaining there would take a reference out of the value this very
+        // store is releasing. (Measured unreachable today -- see that
+        // function's own comment -- and kept as the property, not as a fix.)
+        //
+        // `rc_dup_names` is the other half, and it is what makes this clause
+        // correct rather than merely bolder. The #791 budget re-application
+        // below emits one dup per occurrence of this name, on BOTH paths -- so
+        // where the budget already has something to spend, the slot is already
+        // being given its reference and a retain here is a SECOND one.
+        //
+        // That is exactly the line #2786 draws. `Array::length(x)` is a
+        // BORROWED self-use: it creates no owning occurrence, the plan records
+        // no `PaDup`, the budget re-application emits nothing, and the retain is
+        // the only thing that can give the slot its reference. `let t0 =
+        // total(x)` is an OWNING self-use: it consumes, the budget has a dup to
+        // spend, and main is already correct without any retain here.
+        //
+        // Measured, `assign_self_owning_use`'s shape at N=20000: 244 B without
+        // this condition's guard against itself, 1,600,164 B with the retain
+        // emitted unconditionally -- 80 B per assignment, the same rate as
+        // #2760's leak, on a shape the value fixtures cannot see because the
+        // ANSWER stays correct. Found by review on #2799; the leak lane in
+        // `rc_wrapper_assign_double_retain_test.vibe` now carries it.
         //
         // What is unchanged: main answered `call_returns_borrow(value, ..)`
         // here and that clause still answers first, so every shape it accepted
@@ -2735,7 +2753,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         let replacement_unowned = if !is_heap_mut {
           false
         } else if is_self {
-          call_returns_borrow(value, local_names, ctx) || (spine_leaf_unowned(value, local_names, ctx) && !spine_leaf_roots_at(value, name, local_names, ctx))
+          call_returns_borrow(value, local_names, ctx) || (spine_leaf_unowned(value, local_names, ctx) && !spine_leaf_roots_at(value, name, local_names, ctx) && !array_contains_str(ctx.rc_dup_names, name))
         } else {
           is_edot(value) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx)
         }
