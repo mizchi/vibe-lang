@@ -1,0 +1,65 @@
+// Prepare the strings and their layout outside the measured region. Long
+// keys model the source text stored alongside literals in a compiler build.
+import @vibe/compiler/codegen/common_base {
+  str_table_new
+}
+import @vibe/core {
+  struct MutMap
+}
+
+fn make_strings(unique: Int) -> Array[String] {
+  let mut padding = "0123456789abcdef"
+  let mut p = 0
+  while p < 6 {
+    padding = String::concat(padding, padding)
+    p = p + 1
+  }
+  let out: Array[String] = []
+  let mut i = 0
+  while i < 1024 {
+    Array::push(out, String::concat(__to_string(i % unique), padding))
+    i = i + 1
+  }
+  out
+}
+
+fn offsets(xs: Array[String]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut pos = 64
+  let mut i = 0
+  while i < Array::length(xs) {
+    Array::push(out, pos)
+    pos = pos + String::length(Array::get(xs, i))
+    i = i + 1
+  }
+  out
+}
+
+fn lengths(xs: Array[String]) -> Array[Int] {
+  let out: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(xs) {
+    Array::push(out, String::length(Array::get(xs, i)))
+    i = i + 1
+  }
+  out
+}
+
+let unique_strings = make_strings(1024)
+let unique_offsets = offsets(unique_strings)
+let unique_lengths = lengths(unique_strings)
+let repeated_strings = make_strings(256)
+let repeated_offsets = offsets(repeated_strings)
+let repeated_lengths = lengths(repeated_strings)
+
+bench "str_table_build_unique_1024" {
+  let st = str_table_new(unique_strings, unique_offsets, unique_lengths)
+  assert(MutMap::size(st.index) == 1024)
+  assert(MutMap::get(st.index, Array::get(unique_strings, 1023)) == Some(1023))
+}
+
+bench "str_table_build_repeated_1024" {
+  let st = str_table_new(repeated_strings, repeated_offsets, repeated_lengths)
+  assert(MutMap::size(st.index) == 256)
+  assert(MutMap::get(st.index, Array::get(repeated_strings, 1023)) == Some(255))
+}

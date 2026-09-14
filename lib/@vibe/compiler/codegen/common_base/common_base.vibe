@@ -122,15 +122,13 @@ export struct StrTable {
 /// scan did. Build it ONCE per compile, after the last push to `strs`.
 export fn str_table_new(strs: Array[String], offsets: Array[Int], lengths: Array[Int]) -> StrTable {
   let index = MutMap::with_capacity_string(Array::length(strs) * 2 + 16)
-  let mut i = 0
-  while i < Array::length(strs) {
+  // Earlier slots overwrite later ones, preserving the first occurrence
+  // without hashing each new string once for membership and again to insert.
+  let mut i = Array::length(strs)
+  while i > 0 {
+    i = i - 1
     let s = Array::get(strs, i)
-    if MutMap::has(index, s) {
-      ()
-    } else {
-      MutMap::set(index, s, i)
-    }
-    i = i + 1
+    MutMap::set(index, s, i)
   }
   StrTable::{
     strs: strs,
@@ -885,12 +883,18 @@ fn bcc_fp_int(fp: Array[Int], v: Int) -> Unit {
 
 fn bcc_fp_string(fp: Array[Int], sv: String) -> Unit {
   let len = String::length(sv)
+  let mut h1 = Array::get(fp, 0)
+  let mut h2 = Array::get(fp, 1)
   let mut k = 0
   while k < len {
-    bcc_fp_byte(fp, String::char_code_at(sv, k))
+    let byte = String::char_code_at(sv, k)
+    h1 = (h1 * 131 + byte) % 2147483647
+    h2 = (h2 * 137 + byte) % 2147483629
     k = k + 1
   }
-  bcc_fp_byte(fp, 255)
+  // Keep the byte encoding, including the separator, identical to bcc_fp_byte.
+  Array::set(fp, 0, (h1 * 131 + 255) % 2147483647)
+  Array::set(fp, 1, (h2 * 137 + 255) % 2147483629)
 }
 
 fn bcc_fp_new() -> Array[Int] {

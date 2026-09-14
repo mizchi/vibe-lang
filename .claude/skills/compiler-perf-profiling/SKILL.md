@@ -54,6 +54,12 @@ Protocol for ANY before/after comparison on this lane:
   a second run in the same dir = warm run.
 - Compare **cold-vs-cold AND warm-vs-warm**, never across temperatures.
   Both lanes matter: cold is CI / first build, warm is the dev inner loop.
+- Keep compiler, cache, and output paths the **same length across lanes**
+  (e.g. `a` / `b`). Paths are guest input too: an A/A comparison using the
+  SAME compiler with `base` / `candidate` cache and output paths reported
+  +96,128 bytes cold and +58,640 bytes warm on the CLI corpus, solely from
+  the harness. Before attributing a tiny heap delta to an implementation,
+  run the same artifact on both sides and check that the harness agrees.
 - **N≥3 runs per configuration** — single-run wall deltas under ~5% are
   noise on a shared machine.
 - **Alternate the order inside each interleaved pair (ABBA).** Measured

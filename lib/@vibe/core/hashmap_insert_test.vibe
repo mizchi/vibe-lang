@@ -1,0 +1,84 @@
+import @vibe/core {
+  struct MutMap, struct MutSet
+}
+
+test "insert_if_absent preserves the original owned value and set still replaces it" {
+  let m: MutMap[String, Array[Int]] = MutMap::new_string()
+  let first = [7]
+  assert(MutMap::insert_if_absent(m, "key", first))
+  assert(!MutMap::insert_if_absent(m, String::concat("ke", "y"), [9]))
+  Array::set(first, 0, 8)
+  match MutMap::get(m, "key") {
+    Some(value) => assert(Array::get(value, 0) == 8),
+    None => assert(false)
+  }
+  MutMap::set(m, "key", [11])
+  match MutMap::get(m, "key") {
+    Some(value) => assert(Array::get(value, 0) == 11),
+    None => assert(false)
+  }
+  assert(MutMap::size(m) == 1)
+}
+
+test "insert_if_absent handles collisions across growth and skips tombstones before a hit" {
+  let m: MutMap[Int, Int] = MutMap::with_capacity((k: Int) -> Int {
+    0 - 1
+  }, (a: Int, b: Int) -> Bool {
+    a == b
+  }, 17)
+  let mut i = 0
+  while i < 200 {
+    assert(MutMap::insert_if_absent(m, i, i * 10))
+    i = i + 1
+  }
+  assert(MutMap::delete(m, 0))
+  assert(!MutMap::insert_if_absent(m, 199, 9999))
+  assert(m.tombs == 1)
+  assert(MutMap::insert_if_absent(m, 300, 3000))
+  assert(m.tombs == 0)
+  assert(MutMap::size(m) == 200)
+  let mut j = 1
+  while j < 200 {
+    assert(MutMap::get(m, j) == Some(j * 10))
+    j = j + 1
+  }
+  assert(MutMap::get(m, 300) == Some(3000))
+  assert(!MutMap::has(m, 0))
+}
+
+test "insertion hashes once without growth and a duplicate at the growth boundary keeps capacity" {
+  let calls = [0]
+  let m: MutMap[Int, Int] = MutMap::with_capacity((k: Int) -> Int {
+    Array::set(calls, 0, Array::get(calls, 0) + 1)
+    k
+  }, (a: Int, b: Int) -> Bool {
+    a == b
+  }, 8)
+  let mut i = 0
+  while i < 5 {
+    assert(MutMap::insert_if_absent(m, i, i))
+    i = i + 1
+  }
+  assert(Array::get(calls, 0) == 5)
+  Array::set(calls, 0, 0)
+  let inserted = MutMap::insert_if_absent(m, 4, 99)
+  assert(!inserted)
+  assert(Array::get(calls, 0) == 1)
+  assert(Bytes::length(m.ctrl) == 8)
+  assert(MutMap::get(m, 4) == Some(4))
+  assert(MutMap::insert_if_absent(m, 5, 5))
+  assert(Bytes::length(m.ctrl) > 8)
+  assert(MutMap::size(m) == 6)
+}
+
+test "set insertion reports only new contents and interoperates with add and delete" {
+  let s: MutSet[String] = MutSet::new_string()
+  assert(MutSet::insert(s, ""))
+  assert(!MutSet::insert(s, ""))
+  MutSet::add(s, "alpha")
+  assert(!MutSet::insert(s, String::concat("al", "pha")))
+  assert(MutSet::delete(s, ""))
+  assert(MutSet::insert(s, ""))
+  assert(MutSet::has(s, "alpha"))
+  assert(MutSet::size(s) == 2)
+}

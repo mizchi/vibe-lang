@@ -1,0 +1,58 @@
+// Corpus and AST construction stay outside the measured region.
+import @vibe/compiler/codegen/common_base {
+  bcc_layout_fp_strings
+}
+import @vibe/compiler/codegen/common_analysis {
+  collect_strings_stmts
+}
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+
+fn make_strings(unique: Int) -> Array[String] {
+  let mut padding = "0123456789abcdef"
+  let mut p = 0
+  while p < 6 {
+    padding = String::concat(padding, padding)
+    p = p + 1
+  }
+  let out: Array[String] = []
+  let mut i = 0
+  while i < 1024 {
+    Array::push(out, String::concat(__to_string(i % unique), padding))
+    i = i + 1
+  }
+  out
+}
+
+fn program(xs: Array[String]) -> Array[Stmt] {
+  let exprs: Array[Expr] = []
+  let mut i = 0
+  while i < Array::length(xs) {
+    Array::push(exprs, EString(Array::get(xs, i)))
+    i = i + 1
+  }
+  [SLet(false, false, "strings", None, EArray(exprs))]
+}
+
+let unique_strings = make_strings(1024)
+let unique_program = program(unique_strings)
+let repeated_program = program(make_strings(256))
+
+bench "layout_fingerprint_strings_1024" {
+  let out: Array[Int] = []
+  bcc_layout_fp_strings(out, unique_strings)
+  assert(Array::length(out) == 2)
+}
+
+bench "collect_strings_unique_1024" {
+  let out = collect_strings_stmts(unique_program)
+  assert(Array::length(out) == 1024)
+  assert(Array::get(out, 1023) == Array::get(unique_strings, 1023))
+}
+
+bench "collect_strings_repeated_1024" {
+  let out = collect_strings_stmts(repeated_program)
+  assert(Array::length(out) == 256)
+  assert(Array::get(out, 255) == Array::get(unique_strings, 255))
+}

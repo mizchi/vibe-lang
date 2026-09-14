@@ -188,8 +188,9 @@ fn find_index[K, V](m: MutMap[K, V], k: K) -> Int {
 /// cannot be performed at all.
 ///
 /// Insert without growth check. Reuses the first tombstone seen on the probe
-/// path when the key is not already present.
-fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
+/// path when the key is not already present. A duplicate retains its value
+/// without allocating when `overwrite` is false.
+fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V, overwrite: Bool) -> Unit {
   let cap = Bytes::length(m.ctrl)
   let h = (m.hash_fn)(k)
   let tag = ctrl_tag(h)
@@ -236,7 +237,9 @@ fn insert_raw[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
         }
       }
       if matched {
-        Array::set(m.vals, idx, Some(v))
+        if overwrite {
+          Array::set(m.vals, idx, Some(v))
+        }
         inserting = false
       } else {
         idx = idx + 1
@@ -271,7 +274,7 @@ fn rehash[K, V](m: MutMap[K, V], new_cap: Int) -> Unit {
       match Array::get(old_keys, i) {
         Some(k) =>
         match Array::get(old_vals, i) {
-          Some(v) => insert_raw(m, k, v),
+          Some(v) => insert_raw(m, k, v, true),
           None => ()
         },
         None => ()
@@ -337,7 +340,24 @@ export fn MutMap::set[K, V](m: MutMap[K, V], k: K, v: V) -> Unit {
   if (m.size + m.tombs + 1) * 10 > cap * 7 {
     rehash(m, cap * 2)
   }
-  insert_raw(m, k, v)
+  insert_raw(m, k, v, true)
+}
+
+/// Insert only a missing key; return true for a new entry, false for a hit.
+/// A hit retains the entry without allocating a replacement value or growing
+/// the table. The ordinary path probes once; the growth boundary first checks
+/// for a hit before rebuilding the table and inserting into its new layout.
+export fn MutMap::insert_if_absent[K, V](m: MutMap[K, V], k: K, v: V) -> Bool {
+  let cap = Bytes::length(m.ctrl)
+  if (m.size + m.tombs + 1) * 10 > cap * 7 {
+    if find_index(m, k) >= 0 {
+      return false
+    }
+    rehash(m, cap * 2)
+  }
+  let before = m.size
+  insert_raw(m, k, v, false)
+  m.size > before
 }
 
 export fn MutMap::get[K, V](m: MutMap[K, V], k: K) -> Option[V] {
