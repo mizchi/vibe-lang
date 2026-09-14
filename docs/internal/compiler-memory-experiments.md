@@ -740,7 +740,7 @@ order, diagnostics, regions, effect handlers and compiler registration.
 Stage2 equals stage3, and an RC compiler reproduces both runtime variants.
 The full suite remains on CI; no required performance job is added.
 
-[Raw measurements, artifact/source hashes, controls and validation](compiler-bytes-effects.json)
+[Raw measurements, artifact/source hashes, controls and validation](../compiler-bytes-effects.json)
 record Node 24.21.0 on Apple M5. The table isolates these changes on
 `ee88a0b0f` with four alternating pairs per input/cache/runtime: 64 final
 build samples. Each sample starts a new process; cold has an empty private
