@@ -1030,6 +1030,29 @@ condense_test_trap() {
       sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
     }
+    # An uncaught `throw`: the runner prints the decoded payload as
+    # `Error string (tag=<tag>): <message>` (or `Error string: <message>`),
+    # continuing on following lines. Keep the first line and every
+    # continuation line up to the next recognized thing (blank, trap reason,
+    # frame, crash-debug); `next` keeps continuation text out of the assert
+    # and marker rules (keep in lockstep with scripts/vibe_test.sh).
+    exn_cont && ($0 == "" || /RuntimeError:|wasm trap:/ || /^\[crash debug\]/ || /^[[:space:]]+at .*\(wasm:/ || /<unknown>!/) {
+      exn_cont = 0
+    }
+    exn_cont {
+      ndiag++
+      diags[ndiag] = "         " $0
+      next
+    }
+    $0 ~ /^Error string( \(tag=[^)]*\))?: / {
+      msg = $0
+      sub(/^Error string( \(tag=[^)]*\))?: /, "", msg)
+      ndiag++
+      diags[ndiag] = "       uncaught exception: " msg
+      exn_cont = 1
+      pending_abort = 0
+      next
+    }
     # Assert diagnostic lines (#2202): kept in the condensed report, but they
     # carry no weight in deciding whether the trap is the assert aborting --
     # only the closing marker below does (#2219; the consecutive

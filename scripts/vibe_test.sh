@@ -322,6 +322,34 @@ vt_fail_detail() {
       sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
     }
+    # An uncaught `throw` reaches stderr as the decoded payload the runner
+    # prints, `Error string (tag=<tag>): <message>` (or `Error string:
+    # <message>` when the entry tag decodes first), the message continuing on
+    # the following lines when it has several. It is the whole explanation of
+    # a test that fails by throwing -- the shape every in-vibe verify_* gate
+    # takes (#2583, #2584) -- so keep it: the first line, then every line
+    # that continues it up to the next thing this report recognizes (a blank
+    # line, the trap reason, a frame, the crash-debug dump). Continuation
+    # lines are message text, not diagnostics: `next` keeps them out of the
+    # assert rules and out of the marker rule, so a message that happens to
+    # print the marker still does not suppress a trap.
+    exn_cont && ($0 == "" || /RuntimeError:|wasm trap:/ || /^\[crash debug\]/ || /^[[:space:]]+at .*\(wasm:/ || /<unknown>!/) {
+      exn_cont = 0
+    }
+    exn_cont {
+      ndiag++
+      diags[ndiag] = "         " $0
+      next
+    }
+    $0 ~ /^Error string( \(tag=[^)]*\))?: / {
+      msg = $0
+      sub(/^Error string( \(tag=[^)]*\))?: /, "", msg)
+      ndiag++
+      diags[ndiag] = "       uncaught exception: " msg
+      exn_cont = 1
+      pending_abort = 0
+      next
+    }
     # Assert diagnostic lines (#2202): kept in the condensed report. They
     # carry NO weight in deciding whether the trap that follows is the
     # assert aborting -- a test can println these exact lines and then hit a

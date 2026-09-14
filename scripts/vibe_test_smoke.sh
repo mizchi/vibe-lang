@@ -549,6 +549,66 @@ EOF
 }
 assert_condense_marker_contract
 
+# An uncaught `throw` inside a test surfaces on stderr as the runner's
+# `Error string (tag=__exception_throw_tag): <message>` line, the message
+# continuing on the following lines when it has several. Neither condenser kept
+# it, so a test that failed by throwing -- the shape every `verify_*` in-vibe
+# gate uses (#2583, #2584) -- reported a bare `FAIL <file>` with the sentence
+# that explains it dropped. Both condensers now carry the message, first line
+# and continuation, into the report.
+assert_uncaught_exception_message_surfaces() {
+  local errf="$WORK/canned_uncaught.err" out
+  cat > "$errf" <<'EOF'
+Error string (tag=__exception_throw_tag): builtin classification census (#2584): 2 violation(s)
+'Fs::glob' is a registry builtin on none of the classification lists and is recorded nowhere.
+'Array::get' is in unreviewed_registry_names but is now on: pure -- delete its row
+EOF
+  for condenser in vt_fail_detail condense_test_trap; do
+    out="$("$condenser" "$errf" "" "canned.vibe")"
+    if ! printf '%s\n' "$out" | grep -qF "       uncaught exception: builtin classification census (#2584): 2 violation(s)"; then
+      echo "[vibe-test-smoke] FAIL: $condenser dropped the uncaught exception message" >&2
+      printf '%s\n' "$out" >&2
+      exit 1
+    fi
+    if ! printf '%s\n' "$out" | grep -qF "         'Fs::glob' is a registry builtin"; then
+      echo "[vibe-test-smoke] FAIL: $condenser dropped the exception message's continuation lines" >&2
+      printf '%s\n' "$out" >&2
+      exit 1
+    fi
+    if ! printf '%s\n' "$out" | grep -qF "         'Array::get' is in unreviewed_registry_names"; then
+      echo "[vibe-test-smoke] FAIL: $condenser dropped the exception message's last line" >&2
+      printf '%s\n' "$out" >&2
+      exit 1
+    fi
+  done
+  # The untagged spelling (`__error_tag` decoded first) is the same message.
+  cat > "$errf" <<'EOF'
+Error string: plain message
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | grep -qF "       uncaught exception: plain message"; then
+    echo "[vibe-test-smoke] FAIL: vt_fail_detail dropped an untagged Error string line" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  # An exception message that PRINTS the abort marker is still not the assert
+  # aborting: the message line breaks the adjacency like any other output, and
+  # a trap that follows is reported.
+  cat > "$errf" <<'EOF'
+assert failed: aborting
+Error string (tag=__exception_throw_tag): a throw after the marker
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: an exception line between the marker and the trap did not break adjacency" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_uncaught_exception_message_surfaces
+
 # #2199 (Codex on #2220): the OOB message capture is a full-line anchored
 # match on the generated shape (`<op>: index <n> out of bounds for length
 # <n>`) -- those lines are kept in the condensed report, but a user-printed
