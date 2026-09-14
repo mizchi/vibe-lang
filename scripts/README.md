@@ -59,7 +59,7 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - **Runtime / mem / perf:** `test_vibe_{alloc_site,mem,bench}.sh`,
   `test_gc_selfbuild.sh`, `test_name_section.sh`, `test_simd_emit_wasmtime.sh`
 - **Host ABI / library / install:** `test_host_abi.js`, `test_vibe_library.sh`,
-  `test_vibe_cli_install.sh`, `test_vibe_install_hello.sh` (#1949 first-program
+  `test_vibe_install_hello.sh` (#1949 first-program
   smoke, no repo `lib/`), `test_vibe_root.sh` (#2675 project root and
   `.vibe/build/` contract), `test_wasm_vibe_wasmtime.sh`
 - **Async / http / process:** `test_real_async_host.sh`, `test_wasi_http_p3_full_gate.sh`
@@ -104,12 +104,11 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 - `lint_architecture_debt.sh` (+ `architecture_debt_{rules.tsv,allowlist.txt}`),
   `lint_tracked_experiment_names.sh`
 - `verify_rc.sh`, `rc_corpus_parity.sh`, `rc_cutover_readiness.sh`
-- `monitor_wasm_bundle_size.sh`, `repro_715_rc_free_list_corruption.sh`
 
 ## Install / release
 - The public curl and checkout installer is owned by `install/install.sh`, outside this internal scripts directory.
 - `install_wasmtime_release.sh`
-- `build_release_assets.sh`, `build_wasi_http_p3_full_adapter.sh`, `precompile.sh`
+- `build_release_assets.sh`, `build_wasi_http_p3_full_adapter.sh`
 
 ## Generators / codegen data
 - `emit_async_lift_fixture.sh`
