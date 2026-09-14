@@ -3876,22 +3876,26 @@ export fn gen_map_hash_body() -> Bytes {
 /// Reduce the nonnegative dividend on the stack modulo 2^31-fold, using
 /// the now-dead accumulator local as scratch. Here fold is 1 or 19.
 ///
-/// x = low + 2^31*high is congruent to low + fold*high. The scanner has
-/// x < 2^48 even with the largest byte and a full u32 position, so the
-/// folded value is below 2*p: exactly one conditional subtraction suffices.
-fn compact_fp_reduce31(b: Bytes, acc_l: Int, fold: Int, modulus: Int) -> Unit {
-  emit_local_set(b, acc_l)
-  emit_local_get(b, acc_l)
-  emit_i64_const(b, 2147483647)
-  emit_i64_and(b)
-  emit_local_get(b, acc_l)
-  emit_i64_const(b, 31)
-  emit_i64_shr_u(b)
-  if fold != 1 {
-    emit_i64_const(b, fold)
-    emit_i64_mul(b)
+/// x = low + 2^31*high is congruent to low + fold*high. Single-byte updates
+/// need one fold. A batch needs one for h1 and two for h2 (bounds below).
+/// These leave less than 2*p, so one conditional subtraction suffices.
+fn compact_fp_reduce31(b: Bytes, acc_l: Int, fold: Int, modulus: Int, passes: Int) -> Unit {
+  let mut pass = 0
+  while pass < passes {
+    emit_local_set(b, acc_l)
+    emit_local_get(b, acc_l)
+    emit_i64_const(b, 2147483647)
+    emit_i64_and(b)
+    emit_local_get(b, acc_l)
+    emit_i64_const(b, 31)
+    emit_i64_shr_u(b)
+    if fold != 1 {
+      emit_i64_const(b, fold)
+      emit_i64_mul(b)
+    }
+    emit_i64_add(b)
+    pass = pass + 1
   }
-  emit_i64_add(b)
   emit_local_set(b, acc_l)
   emit_local_get(b, acc_l)
   emit_i64_const(b, modulus)
@@ -3902,6 +3906,55 @@ fn compact_fp_reduce31(b: Bytes, acc_l: Int, fold: Int, modulus: Int) -> Unit {
   emit_i64_sub(b)
   emit_local_set(b, acc_l)
   emit_end(b)
+}
+
+/// Expand four recurrences into a^4*h + sum(a^(3-j)*(byte[j]+1)).
+/// The second hash also adds cur*sum(weights) + sum(j*weight[j]); reduce
+/// those coefficients before multiplying by the full u32 position.
+/// With maximal residues, bytes and position, the dividends are bounded by
+/// 632433764675730270 and 7195933874556280348 respectively, both below 2^63.
+/// One h1 fold is at most 2441983567; two h2 folds are at most 2147484217.
+/// Each is below twice its modulus. No arithmetic or buffer read wraps.
+fn compact_fp_batch4(b: Bytes, base_l: Int, cur_l: Int, acc_l: Int, a: Int, modulus: Int, fold: Int, position: Bool) -> Unit {
+  // These powers are computed by the emitter, never by the generated loop.
+  let a2 = (a * a) % modulus
+  let a3 = (a2 * a) % modulus
+  let a4 = (a3 * a) % modulus
+  let weights = [a3, a2, a, 1]
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, a4)
+  emit_i64_mul(b)
+  let mut j = 0
+  while j < 4 {
+    emit_local_get(b, base_l)
+    emit_local_get(b, cur_l)
+    emit_i32_add(b)
+    emit_i32_load8_u(b, 0, j)
+    emit_i64_extend_i32_u(b)
+    emit_i64_const(b, 1)
+    emit_i64_add(b)
+    let weight = Array::get(weights, j)
+    if weight != 1 {
+      emit_i64_const(b, weight)
+      emit_i64_mul(b)
+    }
+    emit_i64_add(b)
+    j = j + 1
+  }
+  if position {
+    emit_local_get(b, cur_l)
+    emit_i64_extend_i32_u(b)
+    emit_i64_const(b, (a3 + a2 + a + 1) % modulus)
+    emit_i64_mul(b)
+    emit_i64_add(b)
+    emit_i64_const(b, (a2 + 2 * a + 3) % modulus)
+    emit_i64_add(b)
+  }
+  compact_fp_reduce31(b, acc_l, fold, modulus, if fold == 1 {
+    1
+  } else {
+    2
+  })
 }
 
 /// Direct byte scanner for @vibe/cache::compact_string_fingerprint. Both
@@ -3932,6 +3985,25 @@ export fn gen_compact_fingerprint_hash_body(enable_rc: Bool) -> Bytes {
   emit_local_set(b, h2_l)
   emit_block_void(b)
   emit_loop_void(b)
+  // Compare 4 > len-cur so the boundary cannot wrap at a u32 length.
+  emit_i32_const(b, 4)
+  emit_local_get(b, len_l)
+  emit_local_get(b, cur_l)
+  emit_i32_sub(b)
+  emit_i32_gt_u(b)
+  emit_br_if(b, 1)
+  compact_fp_batch4(b, base_l, cur_l, h1_l, 131, 2147483647, 1, false)
+  compact_fp_batch4(b, base_l, cur_l, h2_l, 65599, 2147483629, 19, true)
+  emit_local_get(b, cur_l)
+  emit_i32_const(b, 4)
+  emit_i32_add(b)
+  emit_local_set(b, cur_l)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
+  // The last zero to three bytes retain the single-byte recurrence.
+  emit_block_void(b)
+  emit_loop_void(b)
   emit_local_get(b, cur_l)
   emit_local_get(b, len_l)
   emit_i32_ge_u(b)
@@ -3947,7 +4019,7 @@ export fn gen_compact_fingerprint_hash_body(enable_rc: Bool) -> Bytes {
   emit_i64_add(b)
   emit_i64_const(b, 1)
   emit_i64_add(b)
-  compact_fp_reduce31(b, h1_l, 1, 2147483647)
+  compact_fp_reduce31(b, h1_l, 1, 2147483647, 1)
   emit_local_get(b, h2_l)
   emit_i64_const(b, 65599)
   emit_i64_mul(b)
@@ -3962,7 +4034,7 @@ export fn gen_compact_fingerprint_hash_body(enable_rc: Bool) -> Bytes {
   emit_i64_add(b)
   emit_i64_const(b, 1)
   emit_i64_add(b)
-  compact_fp_reduce31(b, h2_l, 19, 2147483629)
+  compact_fp_reduce31(b, h2_l, 19, 2147483629, 1)
   emit_local_get(b, cur_l)
   emit_i32_const(b, 1)
   emit_i32_add(b)

@@ -2,16 +2,26 @@ import ./codegen_test_support.vibe {
   compile_wasi, compile_wasi_rc
 }
 
-test "the emitted compact fingerprint handles an exact multiple of either modulus" {
-  // Exercise this checkout's emitter even when the outer test compiler is an
-  // older bootstrap. The two dividends require the final >= p correction.
-  let source = "fn __compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(_s: String) -> Int { 0 }\nfn main() -> Int {\nassert(__compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(String::concat(String::concat(String::concat(String::concat(String::concat(String::from_byte(3), String::from_byte(51)), String::from_byte(8)), String::from_byte(75)), String::from_byte(97)), String::from_byte(122))) == 1359350630)\nassert(__compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(String::concat(String::concat(String::concat(String::concat(String::concat(String::from_byte(0), String::from_byte(138)), String::from_byte(191)), String::from_byte(42)), String::from_byte(151)), String::from_byte(114))) == 1048355891516014592)\n42\n}"
-  let bump_path = "/tmp/vibe_compact_fingerprint_boundary_bump.wasm"
-  let rc_path = "/tmp/vibe_compact_fingerprint_boundary_rc.wasm"
+fn assert_fingerprint_program(source: String, label: String) -> Unit with Exception + Fs + Process {
+  let bump_path = "/tmp/vibe_compact_fingerprint_" + label + "_bump.wasm"
+  let rc_path = "/tmp/vibe_compact_fingerprint_" + label + "_rc.wasm"
   Fs::write_bytes(bump_path, compile_wasi(source, "main"))
   Fs::write_bytes(rc_path, compile_wasi_rc(source, "main"))
   let bump = sh_lines("wasmtime run -W exceptions=y --invoke main " + bump_path + " 0")
   let rc = sh_lines("wasmtime run -W exceptions=y --invoke main " + rc_path + " 0")
   assert(Array::length(bump) == 1 && Array::get(bump, 0) == "42")
   assert(Array::length(rc) == 1 && Array::get(rc, 0) == "42")
+}
+
+test "the emitted compact fingerprint handles an exact multiple of either modulus" {
+  // Exercise this checkout's emitter even when the outer test compiler is an
+  // older bootstrap. The two dividends require the final >= p correction.
+  let source = "fn __compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(_s: String) -> Int { 0 }\nfn main() -> Int {\nassert(__compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(String::concat(String::concat(String::concat(String::concat(String::concat(String::from_byte(3), String::from_byte(51)), String::from_byte(8)), String::from_byte(75)), String::from_byte(97)), String::from_byte(122))) == 1359350630)\nassert(__compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(String::concat(String::concat(String::concat(String::concat(String::concat(String::from_byte(0), String::from_byte(138)), String::from_byte(191)), String::from_byte(42)), String::from_byte(151)), String::from_byte(114))) == 1048355891516014592)\n42\n}"
+  assert_fingerprint_program(source, "boundary")
+}
+
+test "emitted fingerprint batches preserve every tail and unaligned slice" {
+  // The ordinary source recurrence is independent of the runtime emitter.
+  let source = "fn __compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(_s: String) -> Int { 0 }\nfn reference(s: String) -> Int {\n  let mut h1 = 17\n  let mut h2 = 29\n  let mut i = 0\n  while i < String::length(s) {\n    let b = String::byte_at(s, i)\n    h1 = (h1 * 131 + b + 1) % 2147483647\n    h2 = (h2 * 65599 + b + i + 1) % 2147483629\n    i = i + 1\n  }\n  (h1 << 31) | h2\n}\nfn verify(s: String) -> Unit {\n  assert(__compact_fingerprint_hash_dep_lib__vibe_cache_cache_vibe(s) == reference(s))\n}\nfn main() -> Int {\n  let mut s: String = \"\"\n  let mut i = 0\n  while i < 144 {\n    s = String::concat(s, String::from_byte((i * 197 + 131) % 256))\n    i = i + 1\n  }\n  let mut offset = 0\n  while offset < 16 {\n    let mut len = 0\n    while len < 129 {\n      let part = String::substring(s, offset, offset + len)\n      assert(String::length(part) == len)\n      verify(part)\n      len = len + 1\n    }\n    offset = offset + 1\n  }\n  i = 0\n  while i < 9 {\n    s = String::concat(s, s)\n    i = i + 1\n  }\n  i = 0\n  while i < 4 {\n    verify(String::substring(s, i, String::length(s)))\n    i = i + 1\n  }\n  42\n}"
+  assert_fingerprint_program(source, "batch")
 }
