@@ -1,0 +1,30 @@
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+fn run_value(wasm: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_borrow_recursive_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, wasm)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes(src: String, label: String, expected: String) -> Unit with Exception + Fs + Process + Stdout {
+  inspect(run_value(compile_wasi(src, "main"), String::concat(label, "_bump")), content = expected)
+  inspect(run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc")), content = expected)
+  inspect(run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow")), content = expected)
+}
+
+test "a recursive reader leaves its caller's array live" {
+  let src = "fn walk(xs: Array[Int], n: Int) -> Int {\n  if n == 0 { Array::length(xs) }\n  else { Array::get(xs, 0) + walk(xs, n - 1) }\n}\nfn main() -> Int {\n  let xs = [7, 2, 9]\n  let mut sum = 0\n  let mut i = 0\n  while i < 50 {\n    sum = sum + walk(xs, 20) + Array::get(xs, 2)\n    i = i + 1\n  }\n  sum\n}"
+  assert_lanes(src, "read", "7600")
+}
+
+test "a returned array remains owned through recursive argument permutations" {
+  let src = "fn rotate(a: Array[Int], b: Array[Int], c: Array[Int], n: Int) -> Array[Int] {\n  if n == 0 { a } else { rotate(b, c, a, n - 1) }\n}\nfn main() -> Int {\n  let a = [17]\n  let b = [5, 6]\n  let c = [2, 3, 4]\n  let got = rotate(a, b, c, 2)\n  let churn = [9, 10, 11]\n  Array::get(a, 0) - Array::get(got, 0) + Array::length(churn)\n}"
+  assert_lanes(src, "rotate", "18")
+}

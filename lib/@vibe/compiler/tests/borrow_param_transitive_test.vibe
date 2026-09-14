@@ -3,7 +3,12 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/codegen/common_analysis {
-  compute_borrow_param_user_fns, md_consume_count_pre
+  borrow_round0_link,
+  borrow_round1_link_parts,
+  compute_borrow_disqualifiers,
+  compute_borrow_param_local_masks,
+  compute_borrow_param_user_fns,
+  md_consume_count_pre
 }
 
 fn one_param_fn(name: String, param: String, body: Expr) -> Stmt {
@@ -35,6 +40,161 @@ test "one transitive wrapper layer inherits a borrowed parameter" {
   let names = compute_borrow_param_user_fns([leaf, wrapper], [], masks)
   assert_eq(mask_for(names, masks, "leaf"), 1)
   assert_eq(mask_for(names, masks, "wrapper"), 1)
+}
+
+test "direct recursion borrows a shared read-only argument" {
+  let xs = EIdent("xs", -1)
+  let walk = one_param_fn("walk", "xs", EIf(EBool(true), ECall(EIdent("Array::length", -1), [
+    xs
+  ], -1), ECall(EIdent("walk", -1), [xs], -1)))
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns([walk], [], masks)
+  inspect(mask_for(names, masks, "walk"), content = "1")
+}
+
+test "an owned argument propagates through recursive parameter permutations" {
+  let body = EIf(EBool(true), EIdent("a", -1), ECall(EIdent("rotate", -1), [
+    EIdent("b", -1),
+    EIdent("c", -1),
+    EIdent("a", -1)
+  ], -1))
+  let rotate = SLet(false, false, "rotate", None, EFn([], [], [
+    ("a", None),
+    ("b", None),
+    ("c", None)
+  ], None, None, body))
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns([rotate], [], masks)
+  inspect(mask_for(names, masks, "rotate"), content = "0")
+}
+
+test "a local binding named like the recursive function keeps its owned ABI" {
+  let local = EFn([], [], [("x", None)], None, None, EIdent("x", -1))
+  let walk = one_param_fn("walk", "xs", ELet("walk", local, ECall(EIdent("walk", -1), [
+    EIdent("xs", -1)
+  ], -1), -1))
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns([walk], [], masks)
+  inspect(mask_for(names, masks, "walk"), content = "0")
+}
+
+test "recursive borrowing keeps indirect calls and host entries owned" {
+  let walk = one_param_fn("walk", "xs", ECall(EIdent("walk", -1), [
+    EIdent("xs", -1)
+  ], -1))
+  let valued = SLet(false, false, "alias", None, EIdent("walk", -1))
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns([walk, valued], [], masks)
+  inspect(mask_for(names, masks, "walk"), content = "0")
+  let host_masks: Array[Int] = []
+  let host_names = compute_borrow_param_user_fns([walk], ["walk"], host_masks)
+  inspect(mask_for(host_names, host_masks, "walk"), content = "0")
+}
+
+fn linked_masks(parts: Array[Array[Stmt]], masks: Array[Int]) -> Array[String] {
+  let local_names: Array[String] = []
+  let local_masks: Array[Int] = []
+  let valued: Array[String] = []
+  let nonident_fns: Array[String] = []
+  let nonident_pos: Array[Int] = []
+  let mut shadow = 0
+  let mut i = 0
+  while i < Array::length(parts) {
+    let part = Array::get(parts, i)
+    let pm: Array[Int] = []
+    let ps: Array[Int] = []
+    let pn = compute_borrow_param_local_masks(part, pm, ps)
+    shadow = shadow|Array::get(ps, 0)
+    let mut j = 0
+    while j < Array::length(pn) {
+      Array::push(local_names, Array::get(pn, j))
+      Array::push(local_masks, Array::get(pm, j))
+      j = j + 1
+    }
+    compute_borrow_disqualifiers(part, valued, nonident_fns, nonident_pos)
+    i = i + 1
+  }
+  let r0m: Array[Int] = []
+  let r0n = borrow_round0_link(local_names, local_masks, valued, nonident_fns, nonident_pos, [
+  ], r0m)
+  borrow_round1_link_parts(parts, r0n, r0m, valued, nonident_fns, nonident_pos, [
+  ], shadow, masks)
+}
+
+test "recursive borrowing sees linked callees and global disqualifiers" {
+  let leaf = one_param_fn("leaf", "xs", ECall(EIdent("Array::length", -1), [
+    EIdent("xs", -1)
+  ], -1))
+  let walk = one_param_fn("walk", "xs", EIf(EBool(true), ECall(EIdent("leaf", -1), [
+    EIdent("xs", -1)
+  ], -1), ECall(EIdent("walk", -1), [EIdent("xs", -1)], -1)))
+  let whole_masks: Array[Int] = []
+  let whole_names = compute_borrow_param_user_fns([leaf, walk], [], whole_masks)
+  let part_masks: Array[Int] = []
+  let part_names = linked_masks([[walk], [leaf]], part_masks)
+  inspect(mask_for(whole_names, whole_masks, "walk"), content = "1")
+  inspect(mask_for(part_names, part_masks, "walk"), content = "1")
+  let swap = SLet(false, false, "swap", None, EFn([], [], [
+    ("a", None),
+    ("b", None)
+  ], None, None, EIf(EBool(true), EUnit, ECall(EIdent("swap", -1), [
+    EIdent("b", -1),
+    EIdent("a", -1)
+  ], -1))))
+  let caller = one_param_fn("caller", "xs", ECall(EIdent("swap", -1), [
+    EArray([]),
+    EIdent("xs", -1)
+  ], -1))
+  let wm: Array[Int] = []
+  let wn = compute_borrow_param_user_fns([swap, caller], [], wm)
+  let lm: Array[Int] = []
+  let ln = linked_masks([[swap], [caller]], lm)
+  inspect(mask_for(wn, wm, "swap"), content = "0")
+  inspect(mask_for(ln, lm, "swap"), content = "0")
+}
+
+test "recursive borrowing keeps captured parameters owned" {
+  let capture = EFn([], [], [], None, None, ECall(EIdent("Array::length", -1), [
+    EIdent("xs", -1)
+  ], -1))
+  let walk = one_param_fn("walk", "xs", ESeq(capture, ECall(EIdent("walk", -1), [
+    EIdent("xs", -1)
+  ], -1)))
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns([walk], [], masks)
+  inspect(mask_for(names, masks, "walk"), content = "0")
+}
+
+test "recursive inference respects a global alias shadowing a builtin accessor" {
+  let identity = one_param_fn("identity", "value", EIdent("value", -1))
+  let alias = SLet(false, false, "Map::iter_get", None, EIdent("identity", -1))
+  let xs = EIdent("xs", -1)
+  let walk = one_param_fn("walk", "xs", EIf(EBool(true), ECall(EIdent("Map::iter_get", -1), [
+    xs
+  ], -1), ECall(EIdent("walk", -1), [xs], -1)))
+  let masks: Array[Int] = []
+  let names = compute_borrow_param_user_fns([identity, alias, walk], [], masks)
+  inspect(mask_for(names, masks, "walk"), content = "0")
+  let lm: Array[Int] = []
+  let ln = linked_masks([[walk], [identity, alias]], lm)
+  inspect(mask_for(ln, lm, "walk"), content = "0")
+}
+
+test "a function parameter may shadow the recursive callee" {
+  let spellings = ["walk", "walk~", "walk?"]
+  let results: Array[Int] = []
+  let mut i = 0
+  while i < Array::length(spellings) {
+    let walk = SLet(false, false, "walk", None, EFn([], [], [
+      ("xs", None),
+      (Array::get(spellings, i), None)
+    ], None, None, ECall(EIdent("walk", -1), [EIdent("xs", -1)], -1)))
+    let masks: Array[Int] = []
+    let names = compute_borrow_param_user_fns([walk], [], masks)
+    Array::push(results, mask_for(names, masks, "walk")&1)
+    i = i + 1
+  }
+  inspect(results, content = "[0, 0, 0]")
 }
 
 test "a local callee shadow does not inherit the top-level borrow ABI" {

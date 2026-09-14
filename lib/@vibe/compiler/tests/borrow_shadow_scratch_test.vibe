@@ -1,0 +1,32 @@
+import @vibe/compiler/core {
+  Expr
+}
+import @vibe/compiler/codegen/common_analysis {
+  md_shadow_zeroed_bmasks
+}
+
+test "shadow-name scratch reuses capacity after warmup" {
+  let body = ELet("local", EInt(1), ELet("inner", EInt(2), EUnit, -1), -1)
+  let names = ["reader"]
+  let masks = [3]
+  let _ = md_shadow_zeroed_bmasks(body, names, masks)
+  let before = Profiler::heap_bytes()
+  let result = md_shadow_zeroed_bmasks(body, names, masks)
+  let allocated = Profiler::heap_bytes() - before
+  inspect(result, content = "[3]")
+  inspect(allocated, content = "0")
+}
+
+test "scratch reset preserves earlier mask results and forgets local bindings" {
+  let names = ["first", "second"]
+  let masks = [1, 3]
+  let a = ELet("first", EInt(0), EUnit, -1)
+  let b = ELet("second", EInt(0), EUnit, -1)
+  let first = md_shadow_zeroed_bmasks(a, names, masks)
+  let second = md_shadow_zeroed_bmasks(b, names, masks)
+  let clean = md_shadow_zeroed_bmasks(EUnit, names, masks)
+  inspect(first, content = "[0, 3]")
+  inspect(second, content = "[1, 0]")
+  inspect(clean, content = "[1, 3]")
+  inspect(masks, content = "[1, 3]")
+}
