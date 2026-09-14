@@ -10,7 +10,7 @@
 # change yields a NEW token (the `cg-` segment, #630) and the old file is left
 # behind as an orphan. Over a long editing session the cache grows
 # monotonically. This is the explicit reclaim path for THIS repository -- see
-# docs/build-cache.md for the cache layering and GC policy; a user project has
+# docs/internal/operations/build-cache.md for the cache layering and GC policy; a user project has
 # `vibe clean`.
 #
 # The committed seed compiler predates #2675 and still writes its rows to

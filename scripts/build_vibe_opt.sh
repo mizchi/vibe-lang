@@ -3,7 +3,7 @@
 #
 # The in-house optimizer (lib/@vibe/optimizer) is NOT linked into the compiler
 # (+~700KB, and the frozen bootstrap seed cannot self-compile the coupled
-# pair — the ADR-0070 constraint recorded in docs/wasm-opt-dogfood.md). It
+# pair — the ADR-0070 constraint recorded in docs/internal/operations/wasm-opt-dogfood.md). It
 # ships as this separate artifact instead, consumed by `vibe build --minify`
 # (runtime/vibe) and scripts/minify_gate.sh.
 #

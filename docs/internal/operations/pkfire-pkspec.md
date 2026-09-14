@@ -91,7 +91,7 @@ one generated task per moon package under `src/` (`test:parser`,
 `pkf run test-affected`, which walks the compiler's own resolved import graph
 (`vibe deps --direct`) and falls back to running everything whenever it cannot
 decide — see the "Local Test Execution" section of
-[AGENTS.md](../AGENTS.md).
+[AGENTS.md](../../../AGENTS.md).
 
 ## git hooks (`pkf hooks`)
 

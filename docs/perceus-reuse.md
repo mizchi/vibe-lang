@@ -2374,7 +2374,7 @@ bump 自己ビルドなので、§40h をどう強化しても捕まらない。
 
 ### 含意
 
-- **修正は bootstrap bump** (docs/bootstrap.md の手順)。コンパイラソース側に
+- **修正は bootstrap bump** (docs/internal/operations/bootstrap.md の手順)。コンパイラソース側に
   直すものはない。
 - **デフォルトレーンは無傷**。バグは RC 経路にしかなく、pin されている
   self-build は `VIBE_RC=0` (bump) なので RC コードを一切通らない。

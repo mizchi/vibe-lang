@@ -12,7 +12,7 @@
 #   6. require the minified module to be no larger than the baseline.
 #
 # Any mismatch fails the gate. This is the check that historically caught the
-# `throw`/`try_table` immediate-decoding bug (docs/wasm-opt-dogfood.md) —
+# `throw`/`try_table` immediate-decoding bug (docs/internal/operations/wasm-opt-dogfood.md) —
 # inline fixtures alone had no exception handling and missed it.
 #
 # Usage: bash scripts/minify_gate.sh [file.vibe ...]

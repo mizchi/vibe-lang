@@ -141,7 +141,7 @@ export function buildTextReport(report, reportPath) {
     // #1556: read this as "no test calls it in-process", not "untested". The
     // suite instruments the compiled TEST program, so a compiler pass exercised
     // while COMPILING a test contributes nothing here even though the feature
-    // is checked. docs/coverage.md carries the control measurement.
+    // is checked. docs/internal/operations/coverage.md carries the control measurement.
     lines.push("top_branch_union_gaps (unreached IN-PROCESS; a pass exercised at compile time still shows 0):");
     for (const gap of unionGaps) {
       lines.push(

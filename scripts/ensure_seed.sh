@@ -22,7 +22,7 @@ set -euo pipefail
 # stage1 -> stage2 the seed-release workflow performs). The result must
 # match the pinned sha256 byte for byte, so this never installs an unpinned
 # or stale artifact; it only removes the window in which every bump gate is
-# red for a missing release (docs/bootstrap.md "Bootstrap bump procedure").
+# red for a missing release (docs/internal/operations/bootstrap.md "Bootstrap bump procedure").
 # Only a missing tag is rebuilt (`git ls-remote` against the canonical
 # release repository, the same one fetch_compiler.sh downloads from, so a
 # fork whose `origin` lacks an upstream tag still fetches; override with

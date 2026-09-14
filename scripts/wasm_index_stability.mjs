@@ -9,7 +9,7 @@
 // the very stability being measured. Release builds are stripped (ADR-0077),
 // so a stripped input is REFUSED rather than reported as clean.
 //
-// docs/incremental-build.md records the constraint this exists to quantify: a
+// docs/internal/operations/incremental-build.md records the constraint this exists to quantify: a
 // cached function body carries call immediates, and those depend on GLOBAL
 // function index assignment, so a body cannot simply be replayed into a build
 // where indices moved. "Moved" is the part nobody had measured. This reports

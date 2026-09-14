@@ -285,7 +285,7 @@ suspend-CPS にせよ、codegen に届く前に消えている。
 - doctest の fan-out (#819)、`parallel_warm_pool.sh`
 
 今 CI バッテリの内訳を知るには shard ごとの `wall_ms` を bash で足し合わせる
-しかなく、`docs/ci-speed.md` は実際にその手作業で書かれている。
+しかなく、`docs/internal/operations/ci-speed.md` は実際にその手作業で書かれている。
 子プロセスに `VIBE_TRACEPARENT=00-<trace_id>-<parent_span_id>-01` を渡せば
 1回の run が1本のトレースになり、クリティカルパスがそのまま出る。
 

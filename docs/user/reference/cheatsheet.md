@@ -276,7 +276,7 @@ fn greeting() -> String {
 `compiler_gate.sh` 102/102 が pin) ので既存コードは動くが、新規コードは
 `build` を使うこと。**コンパイラ自身のソースの移行と `freeze` の
 `#deprecated` 化は bootstrap bump 待ち** —— seed が `build` を知るまで
-compiler source は `freeze` のままでなければならない (docs/bootstrap.md)。
+compiler source は `freeze` のままでなければならない (docs/internal/operations/bootstrap.md)。
 
 `Array`/`Bytes` themselves are NOT renamed under this convention — they
 predate it and a rename would be too disruptive. They remain low-level
@@ -2304,7 +2304,7 @@ fn caller(n: Int) -> Int {
 - Works on `fn` (including `fn Ns::method` forms), `let` / `let mut` / `let rec`, `enum`, `struct`, `type`, `effect`; a leading `export` is fine.
 - Markers are collected from the checked file AND its linked dependency files; uses are reported for the checked file only.
 - Detection is token-level (no name resolution): uses in any position warn — calls, type annotations, and the `import { ... }` list itself. An `import ... as` alias hides later uses (the aliasing import line still warns).
-- Like `#cfg`, not usable inside the compiler's own source until the seed compiler understands it (see docs/bootstrap.md).
+- Like `#cfg`, not usable inside the compiler's own source until the seed compiler understands it (see docs/internal/operations/bootstrap.md).
 
 ## Inline wasm (`= wasm "..."`, linear backend only)
 
@@ -2431,7 +2431,7 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
 - Memory instructions address the runtime's linear memory directly — the heap
   layout is NOT a stable interface; loads/stores are at-your-own-risk.
 - Not usable inside the compiler's own source until the seed compiler
-  understands the syntax (same bump discipline as `#cfg`, docs/bootstrap.md).
+  understands the syntax (same bump discipline as `#cfg`, docs/internal/operations/bootstrap.md).
 - Examples: `fixtures/inline_wasm_test.vibe`.
 
 ## RC Debug Mode (`VIBE_RC=shadow`)

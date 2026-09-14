@@ -49,7 +49,7 @@ done < <(find lib/@vibe/builtin -name '*_test.vibe' | sort)
 # opposite things: 1 is "no line matched" (legitimate -- the empty-selection
 # check below reports it), 2 is "this pattern is not valid ERE", which must
 # not be reported as an empty corpus (#2248 review). These accept POSIX ERE,
-# not ripgrep's dialect -- see docs/coverage.md.
+# not ripgrep's dialect -- see docs/internal/operations/coverage.md.
 select_tests() { # <label> <grep-args...>
   local label="$1"; shift
   local out status=0 line

@@ -402,10 +402,10 @@ adapter、bundle、component entry もここへ実装する。旧 MoonBit 実装
 #594 で完全に撤去済みなので、迷ったらここ以外に入れる場所はない。
 
 Rust-style seed compiler / stage0-stage2 / bootstrap bump の運用は
-[docs/bootstrap.md](docs/bootstrap.md) に従う。新しい syntax を
+[docs/internal/operations/bootstrap.md](docs/internal/operations/bootstrap.md) に従う。新しい syntax を
 compiler source 自体で使う場合は、先に seed compiler がその syntax を理解できる
 状態を tag し、bootstrap bump を通してから source を移行する。
-[docs/operation-gate.md](docs/operation-gate.md) の判断基準に従い、節目で
+[docs/internal/operations/operation-gate.md](docs/internal/operations/operation-gate.md) の判断基準に従い、節目で
 `pkf run full-gate` を通す。旧 `pkf run selfhost-trial-gate` 互換 alias は #850 Phase B で削除した。
 
 判断目安:
@@ -986,7 +986,7 @@ bash scripts/ensure_generated.sh --check  # 生成せずに鮮度だけ判定 (s
 したものだけが正しい) という状態だった。`resolve_generated_conflicts.sh` は
 その後始末専用のスクリプトで、tracking をやめたので一緒に削除した。
 
-詳細は [docs/bootstrap.md](docs/bootstrap.md).
+詳細は [docs/internal/operations/bootstrap.md](docs/internal/operations/bootstrap.md).
 
 ## pkfire
 
@@ -994,7 +994,7 @@ bash scripts/ensure_generated.sh --check  # 生成せずに鮮度だけ判定 (s
 Taskfile から参照されなくなったため削除済み。
 CI は `~/.cache/pkfire` を `actions/cache` でキャッシュしているため、
 変更がない subgraph は cache hit でスキップされる。
-詳細は [docs/pkfire-pkspec.md](docs/pkfire-pkspec.md)。
+詳細は [docs/internal/operations/pkfire-pkspec.md](docs/internal/operations/pkfire-pkspec.md)。
 ## レビュー・Bug Issue 起点の再発防止
 
 PR レビューや Bug Issue の修正で、同種の問題が今後も起こり得る構造的パターンを見つけたら、

@@ -274,7 +274,7 @@ for f in sorted(files):
     for ln, line in shell_lines(f):
         # A retired runner is a command that cannot run, which is the same
         # failure as a path that does not exist -- and it is how a whole retired
-        # section stayed in docs/coverage.md under a banner claiming it had been
+        # section stayed in docs/internal/operations/coverage.md under a banner claiming it had been
         # removed (#2138 review).
         m = re.match(r'(just|moon|cargo run --bin vibe)\b', line)
         if m:

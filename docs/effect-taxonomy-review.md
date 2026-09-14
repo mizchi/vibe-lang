@@ -650,7 +650,7 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
   0071/0075/0060/0068/0073 を明記する。
 - 各提案ごとに `fixtures/*.vibe` で最小再現を先に書き、seed compiler が
   新構文を理解できるようになってから bootstrap bump する
-  ([bootstrap.md](bootstrap.md) の運用ルールに従う)。
+  ([bootstrap.md](internal/operations/bootstrap.md) の運用ルールに従う)。
 - 破壊的変更(`Fs`/`Env` 等 builtin の resource-kind 化)は既存
   fixture/test への影響範囲を `bash scripts/compiler_gate.sh` と
   `bash scripts/unit_test_runner.sh` で確認しながら段階導入する。

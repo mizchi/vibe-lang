@@ -39,7 +39,7 @@ Coverage は selfhost テストスイート基準で測る:
 - 集計: `pkf run coverage`
 - branch coverage gate: `pkf run coverage-suite-branch-gate`
 - next-branch 提案: `pkf run coverage-suite-next-branches`
-- 詳細: [docs/coverage.md](docs/coverage.md)
+- 詳細: [docs/internal/operations/coverage.md](docs/internal/operations/coverage.md)
 
 ## Before committing a compiler change
 

@@ -5,7 +5,7 @@ set -euo pipefail
 # tag: the pinned seed compiler wasm, a prebuilt flat module source, and a
 # seed provenance manifest. This lets a consumer bootstrap the stage0 ->
 # stage1 -> stage2 build with no MoonBit toolchain. See
-# scripts/fetch_compiler.sh and docs/bootstrap.md.
+# scripts/fetch_compiler.sh and docs/internal/operations/bootstrap.md.
 #
 # Shared by scripts/build_release_assets.sh (product `v*` releases) and
 # scripts/build_seed_release_assets.sh (bootstrap-bump `seed/*` releases).

@@ -95,7 +95,7 @@
 
             # Pkl CLI — required by pkfire (Taskfile.pkl) and by
             # pkspec for evaluating local schemas.
-            # See docs/pkfire-pkspec.md for usage.
+            # See docs/internal/operations/pkfire-pkspec.md for usage.
             pkgs.pkl
 
             # pkfire (pkf) — canonical task runner, pinned to v0.14.2 via the
@@ -114,7 +114,7 @@
               echo "warn: pkf not on PATH — install pkfire to run tasks:"
               echo "  nix run github:mizchi/pkfire -- list"
               echo "  go install github.com/mizchi/pkfire/cmd/pkf@latest"
-              echo "see docs/pkfire-pkspec.md"
+              echo "see docs/internal/operations/pkfire-pkspec.md"
               echo ""
             fi
           '';

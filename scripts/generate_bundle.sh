@@ -944,7 +944,7 @@ write_runtime_entry_bundle() {
 # tree and print the merged program on its own (VIBE_EMIT_MERGED_SOURCE), so the
 # tool can be bootstrapped from source in two extra seed passes and the
 # committed copy drops out entirely -- see scripts/ensure_generated.sh and
-# docs/bootstrap.md. Verified when this landed: the tool built this way produces
+# docs/internal/operations/bootstrap.md. Verified when this landed: the tool built this way produces
 # a merged source BYTE-IDENTICAL to the one built from the committed artifact.
 #
 # The seed's own flatten is deliberately NOT used for the final output. It would
