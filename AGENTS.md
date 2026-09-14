@@ -234,7 +234,7 @@ extended to semantic-module granularity, #1379). **Capabilities fixed at build
 time drive progressive code generation for the target platform's wasm runtime**
 — `--allow-*` drops the code for capabilities that were not granted, via
 const-fold plus DCE, and the generated wasm declares the feature level it
-requires ([docs/wasm/feature-levels.md](docs/wasm/feature-levels.md)).
+requires ([docs/user/reference/feature-levels.md](docs/user/reference/feature-levels.md)).
 
 ## Language and documentation policy (English-first)
 
@@ -251,7 +251,7 @@ consumes on its own:
 - **A short document** — translate the whole file when you edit it for another
   reason. Half in each language is worse than either. A short document is read
   start to finish, so half-and-half is worse than either language.
-- **A large living document** (this file, `docs/adr.md`, `docs/cheatsheet.md`,
+- **A large living document** (this file, `docs/adr.md`, `docs/user/reference/cheatsheet.md`,
   `CONTRIBUTION.md`) — migrate a section at a time as sections are revised, and
   write **new** sections and new `docs/adr.md` rows in English from the start.
   Each is read on its own, so it does not inherit the surrounding language.
@@ -278,8 +278,8 @@ fails when a chapter has no translation, a translation has no chapter, or the
 two record different output.
 
 The language tour lives in `book/en/` (The Vibe Book). `docs/language-tour/` was **deleted** and folded
-into [docs/cheatsheet.md](docs/cheatsheet.md) — it was a fourth surface next to
-the cheatsheet, the tutorial and `docs/spec/syntax.md`, and it rotted the way
+into [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md) — it was a fourth surface next to
+the cheatsheet, the tutorial and `docs/user/reference/syntax.md`, and it rotted the way
 this section predicts: doctest compile-checks ` ```vibe ` blocks and is blind to
 prose, so it went on calling `String` a UTF-16 string (ADR-0098 made it a byte
 string) and `index.vibei` the package boundary (`index.vpkg` has been, since
@@ -327,7 +327,7 @@ it is not a place to move things you were too cautious to delete.
 
 ## vibe 言語リファレンス
 
-vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.md](docs/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。
+vibe 言語の構文・機能を把握するには、最初に [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。
 
 **モジュールを追加・修復するときは [docs/adding-modules.md](docs/adding-modules.md) に従う**
 (置き場所の規約、テスト + allowlist ラチェット、検証手順、既知の罠)。
@@ -338,7 +338,7 @@ vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.
 
 1. **実測してから cheatsheet の「落とし穴」節に足す。** 仕様書の記述ではなく、
    現行 stage2 に食わせた結果を書く。仕様と実装は実際に食い違うことがある
-   (例: `docs/spec/syntax.md` が `test <識別子>` を「受理される」と書いていたが
+   (例: `docs/user/reference/syntax.md` が `test <識別子>` を「受理される」と書いていたが
    実際は拒否される、#1506 で修正)。書いた例は doctest が検査するので、
    意図的に拒否される形を見せるブロックは理由付きで ```vibe skip にする
 2. **同じ文法で繰り返し失敗するなら、文法/実装側の修正を検討して issue にする。**
@@ -470,7 +470,7 @@ test expectations, and remain gitignored.
   (`Fs::read_file` / `Env::get` / `Console::write_stream`) は本当に関数なので
   `Effect::snake_case`。この二トラックは揺れではなく用途の違いで、
   `perform` が要るかどうかで見分けられる。分類の表と使い分けは
-  [docs/cheatsheet.md](docs/cheatsheet.md) の "Effect classes and how
+  [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md) の "Effect classes and how
   operations are spelled" と ADR-0084
   ([docs/effect-taxonomy-entry-policy.md](docs/effect-taxonomy-entry-policy.md))。
 - **言語ポリシー: コアロジック以外は、できるだけ「色のない関数」で書けるように
@@ -481,7 +481,7 @@ test expectations, and remain gitignored.
 
 > `moon ide` / `moon doc` は MoonBit host 退役 (#594) で使えなくなった。
 > 今は `vibe lsp` とその基盤になっている editor query primitives を使う
-> (#637, [docs/editor-and-debugging.md](docs/editor-and-debugging.md))。
+> (#637, [docs/user/reference/editor-and-debugging.md](docs/user/reference/editor-and-debugging.md))。
 
 **コード探索は `vibe symbols` / `vibe type-at` / `vibe binding-at` を使う**
 (hover・rename・go-to-def と同じ AST 解析を CLI から直接叩ける)。
@@ -531,7 +531,7 @@ test expectations, and remain gitignored.
 > 同じで、codepoint / UTF-16 の column を渡すと**エラーにならずに別の位置を
 > 答える**。唯一の例外は LSP 境界 (`--json` / `vibe lsp`) で、そこは 0-based
 > line + UTF-16 code unit へ `lib/@vibe/lsp` が変換する。契約と既知の逸脱は
-> [docs/source-range-contract.md](docs/source-range-contract.md)。
+> [docs/user/reference/source-range-contract.md](docs/user/reference/source-range-contract.md)。
 
 ```bash
 # 宣言アウトライン (NAME KIND START END / 行)。go-to-def / outline の基盤
@@ -560,7 +560,7 @@ vibe type-at file.vibe <line> <col>
 
 # カーソル位置の binding の全出現箇所 (START END byte offset / 行)。rename/refs の基盤。
 # 入出力とも byte 単位 — <col> は 1-based byte column、START/END は 0-based byte
-# offset の half-open 区間。契約は docs/source-range-contract.md
+# offset の half-open 区間。契約は docs/user/reference/source-range-contract.md
 vibe binding-at file.vibe <line> <col>
 
 # 全 diagnostics (parse error 全件 + 型エラー)。**空出力 = clean、診断ありは
@@ -644,7 +644,7 @@ vibe lsp        # stdin/stdout で LSP を話す。任意の LSP client を向�
 
 diagnostics / hover / document symbols / go-to-def / references / rename /
 completion / signature help を提供する。詳細は
-[docs/editor-and-debugging.md](docs/editor-and-debugging.md)。標準ライブラリ API
+[docs/user/reference/editor-and-debugging.md](docs/user/reference/editor-and-debugging.md)。標準ライブラリ API
 の発見も `vibe symbols` で該当モジュールの `index.vibe` を見るのが速い。
 
 ## `Int` constraints

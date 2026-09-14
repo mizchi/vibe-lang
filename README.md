@@ -12,7 +12,7 @@ vibe ships as a small wasmtime runner (`viberun`) plus a portable compiler
 wasm; the installer AOT-compiles the compiler for your machine at install time.
 Building the runner from source needs `git`, `bash`, and `cargo`; pass
 `--runner PATH` to use a prebuilt one instead. See
-[docs/install.md](docs/install.md) for the full prerequisite list.
+[docs/user/getting-started/install.md](docs/user/getting-started/install.md) for the full prerequisite list.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mizchi/vibe-lang/main/install/install.sh | bash
@@ -22,7 +22,7 @@ echo 'fn main allows Console { println("42") }' > hello.vibex
 vibe run hello.vibex        # -> 42
 ```
 
-See [docs/install.md](docs/install.md) for the install layout, options, and how
+See [docs/user/getting-started/install.md](docs/user/getting-started/install.md) for the install layout, options, and how
 to update the compiler independently of the runner.
 
 ## Sample code
@@ -62,8 +62,8 @@ New to the language? Start with **[The Vibe Book](book/README.md)**
 (`book/en/`) — a rust-book-shaped tour. Every chapter is a `*.vibe.md`
 executable doc (#1142): code blocks are compiled and run, and the printed
 output is embedded right in the markdown. `bash scripts/vibe_book.sh`
-renders `_build/book/index.html`. The old `docs/tutorial/` path redirects
-there.
+renders `_build/book/index.html`. The old `docs/tutorial/` chapter names are
+mapped to book chapters in `docs/user/tutorial/README.md`.
 
 ## Design policy
 
@@ -131,7 +131,7 @@ capabilities, and emitted binaries declare which wasm feature level they need.
 go-to-definition, scope-accurate references/rename, completion, signature
 help), plus a function-granularity interactive debugger
 (`vibe run --break <fn>` / `--trace`) and a VS Code DAP adapter. See
-[docs/editor-and-debugging.md](docs/editor-and-debugging.md).
+[docs/user/reference/editor-and-debugging.md](docs/user/reference/editor-and-debugging.md).
 
 ### Packages & dependencies
 
@@ -140,22 +140,22 @@ and pinned by content hash in the project's root `index.vpkg`. Package
 boundaries, visibility, and pinning are specified in
 [docs/module-system-oracle.md](docs/module-system-oracle.md); installing the
 toolchain and adding dependencies are covered in
-[docs/install.md](docs/install.md).
+[docs/user/getting-started/install.md](docs/user/getting-started/install.md).
 
 ## Docs
 
 Start here:
-- [docs/cheatsheet.md](docs/cheatsheet.md) — language cheatsheet, covers all
+- [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md) — language cheatsheet, covers all
   implemented syntax/features
 - [The Vibe Book](book/README.md) — rust-book-shaped tour (`book/en/*.vibe.md`)
-- [docs/vibe.md](docs/vibe.md) — language specification (normative for
+- [docs/user/reference/vibe.md](docs/user/reference/vibe.md) — language specification (normative for
   implemented behavior)
 
 Reference index:
-- [docs/cli-commands.md](docs/cli-commands.md) — full `vibe` CLI command reference
+- [docs/user/reference/cli-commands.md](docs/user/reference/cli-commands.md) — full `vibe` CLI command reference
 - [docs/module-system-oracle.md](docs/module-system-oracle.md) — package boundaries, visibility, pinning (canonical)
 - [docs/adding-modules.md](docs/adding-modules.md) — how to add/repair a `lib/@vibe/*` module
-- [docs/editor-and-debugging.md](docs/editor-and-debugging.md) — LSP, debugger, DAP
+- [docs/user/reference/editor-and-debugging.md](docs/user/reference/editor-and-debugging.md) — LSP, debugger, DAP
 - [docs/effect-wit-mapping.md](docs/effect-wit-mapping.md) — effect system ↔ WASI WIT mapping
 - [docs/registry-design.md](docs/registry-design.md) — package registry design
 - [docs/release-roadmap.md](docs/release-roadmap.md) — roadmap and release themes

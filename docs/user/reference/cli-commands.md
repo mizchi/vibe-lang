@@ -40,7 +40,7 @@ vibe build -o output.wasm <file.vibe>     # explicit output path
 
 - **`--release`** (default): Full compilation with `-Oz` optimization. Falls back to unoptimized if the optimizer does not support generated opcodes.
 - **`--debug`**: Uses a linked debug fast path that caches library WASM modules and only recompiles user code when sources change. Significantly faster for iterative development.
-- Output defaults to `.vibe/build/out/<basename>.wasm` under the project root (#2675, [install.md](install.md#project-layout)); `-o` chooses another path, relative to the directory you ran from.
+- Output defaults to `.vibe/build/out/<basename>.wasm` under the project root (#2675, [install.md](../getting-started/install.md#project-layout)); `-o` chooses another path, relative to the directory you ran from.
 
 ### compile
 
@@ -86,7 +86,7 @@ vibe serve <handler.vibe> --no-run              # emit component + WIT only
 vibe serve <handler.vibe> --adapter my.component.wasm
 ```
 
-The handler contract (see [effect-wit-mapping.md](effect-wit-mapping.md)):
+The handler contract (see [effect-wit-mapping.md](../../effect-wit-mapping.md)):
 
 ```vibe
 export let handler = (method: String, url: String, headers: String, body: String) -> String
@@ -212,7 +212,7 @@ stdin line-oriented whenever stdin is not a tty.
 ### add / fetch
 
 A dependency is a package pinned in the root `index.vpkg` and installed under
-`.vibe/store/` (#2676, [install.md](install.md#dependencies)). `vibe add`
+`.vibe/store/` (#2676, [install.md](../getting-started/install.md#dependencies)). `vibe add`
 fetches one from its git source, installs it, and writes the `deps` entry and
 the `require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>` pin;
 `vibe fetch` restores the store from those pins on a fresh clone, from the

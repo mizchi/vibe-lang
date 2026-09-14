@@ -317,7 +317,7 @@ load / type / bundle / parse / codegen に span を張り、codegen の中に
 
 落としたのは handle 適格性検査 (`handle of effect 'Trace' cannot be
 compiled here`, `inline_direct_perform.vibe`)。受理される callee の形の
-実測表と現行の診断文は [cheatsheet](cheatsheet.md) の
+実測表と現行の診断文は [cheatsheet](user/reference/cheatsheet.md) の
 "A `handle` that type-checks can still fail to compile" 節にある。
 
 **2つの配置を試して、両方拒否された:**
@@ -692,11 +692,11 @@ seed wasm・manifest・manifest が名指す全ソース・`generate_bundle.sh`�
 probe を書く過程で cheatsheet と実測が合わない点が3つ出た。いずれも未修正。
 
 1. **handle arm の区切りは `,` ではなく `;`。** cheatsheet の代数 effect の例
-   (`docs/cheatsheet.md:912`) は arm が1つしかないので、複数 arm の綴りが
+   (`docs/user/reference/cheatsheet.md:912`) は arm が1つしかないので、複数 arm の綴りが
    どこにも書かれていない。`,` で書くと
    `expected ';' or '}' in handle arm list` になる。
 2. **「handled body がローカルクロージャを呼ぶと NG」は現行では再現しない。**
-   cheatsheet の適格性表 (`docs/cheatsheet.md:1264` 付近) は
+   cheatsheet の適格性表 (`docs/user/reference/cheatsheet.md:1264` 付近) は
    `handle { bump(ask_once()) }` で `bump` がローカルクロージャなら **NG** と
    書いているが、`bench/tracing/trace_effect_shapes_test.vibe` の
    "handled body calls a local closure" はまさにその形で**コンパイルも実行も通った**。

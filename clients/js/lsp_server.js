@@ -532,7 +532,7 @@ function typeAt(uri, position) {
 }
 
 // The compiler answers in BYTE offsets and takes BYTE columns (ADR-0108,
-// docs/source-range-contract.md); LSP positions are 0-based lines and UTF-16
+// docs/user/reference/source-range-contract.md); LSP positions are 0-based lines and UTF-16
 // code units. The two agree only while a line is ascii, so this boundary
 // converts in BOTH directions, as lib/@vibe/lsp does at its own. Without it one
 // multibyte character earlier in the file shifts every range after it, and a

@@ -9,7 +9,7 @@ The previous and only published release is `v0.0.1` (2026-04-14). Between it and
 0.1.0 the language was rewritten in itself, so these notes describe a different
 compiler rather than a list of fixes. The work once prepared under the name
 "0.3.0 GA" is part of this release; the record of that intermediate state is
-[archive/release-notes-0.3.0.md](archive/release-notes-0.3.0.md).
+[archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md).
 
 ## The headline: vibe compiles itself
 
@@ -47,7 +47,7 @@ read, and every feature below is one the compiler itself depends on.
 - **`String` is a byte string** with byte-offset indexing (ADR-0098), which is
   what the memory actually holds. Source positions follow: every position the
   CLI reports or accepts is a byte position (ADR-0108,
-  [source-range-contract.md](source-range-contract.md)), with the LSP boundary
+  [source-range-contract.md](../reference/source-range-contract.md)), with the LSP boundary
   the single documented exception.
 - **`Int` arithmetic wraps identically on every backend** — 63-bit two's
   complement, literals up to 2^62-1 (#1877). Each backend previously wrapped at
@@ -128,7 +128,7 @@ the edit that fixes them rather than an internal pass name.
   an actionable diagnostic (#1976). Remaining builtin-level differences each have a row in
   `scripts/builtin_parity_classification.tsv`, enforced at the gate.
 - Generated wasm declares the feature level it requires
-  ([wasm/feature-levels.md](wasm/feature-levels.md)); `--allow-*` const-folds and
+  ([wasm/feature-levels.md](../reference/feature-levels.md)); `--allow-*` const-folds and
   DCEs away the code for capabilities that were not granted.
 - Async, structured concurrency, and the WASI 0.3 component surface work — the
   async serve lane streams a request body to its handler (#1540) — but remain on
@@ -143,9 +143,9 @@ the edit that fixes them rather than an internal pass name.
 - **The Vibe Book** (`book/en/`) has 20 doctest-checked chapters, and every ` ```vibe run `
   block in it is compiled and executed by doctest, with its output checked
   against the recorded ` ```output `. A chapter cannot go stale silently.
-- [docs/cheatsheet.md](cheatsheet.md) is the language reference and is
+- [docs/user/reference/cheatsheet.md](../reference/cheatsheet.md) is the language reference and is
   doctest-checked the same way.
-- [spec/stable-surface.md](spec/stable-surface.md) states what 0.1.0 promises
+- [spec/stable-surface.md](../reference/stable-surface.md) states what 0.1.0 promises
   SemVer stability for, and `pkf run check-freeze-surface` derives the symbol
   list from that document and probes each name against the compiler — a name it
   promises cannot quietly stop existing.
@@ -162,7 +162,7 @@ the edit that fixes them rather than an internal pass name.
   literal expressions have no offset slot to anchor to. `vibe check --json`
   being `--single-file`-only is a separate output-mode limitation. #2831 owns
   both remaining improvements; #1567 is complete for command consolidation.
-- Everything in §6 of [spec/stable-surface.md](spec/stable-surface.md) is
+- Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.
 

@@ -15,7 +15,7 @@ ships.
 | --- | --- | --- |
 | `v0.0.1` | The one historical release (MoonBit host era) | tagged 2026-04-14 |
 | `0.0.x` | Everything since: the selfhost cutover and all development, including the content once prepared as "0.3.0 GA" ([archive/release-notes-0.3.0.md](archive/release-notes-0.3.0.md)) | never released |
-| **`0.1.0`** | **The first release usable by anyone but the author** | target; see [release-notes-0.1.0.md](release-notes-0.1.0.md) |
+| **`0.1.0`** | **The first release usable by anyone but the author** | target; see [release-notes-0.1.0.md](user/getting-started/release-notes-0.1.0.md) |
 | `0.2.0` | Structured concurrency, a type system aimed at formalization, a dedicated agent harness | after 0.1.0 |
 | `1.0.0` | Maturity. Not a synonym for the first public release | unscheduled |
 
@@ -26,7 +26,7 @@ built, so a release cannot ship carrying `-dev`, and
 release notes from drifting apart.
 
 The stable surface that the `0.1.0` tag freezes is
-[spec/stable-surface.md](spec/stable-surface.md) (ADR-0057). While the toolchain
+[spec/stable-surface.md](user/reference/stable-surface.md) (ADR-0057). While the toolchain
 is on 0.x, SemVer shifts one step: a breaking change to that surface is a
 **Minor** bump, a compatible change is a **Patch**.
 
@@ -45,7 +45,7 @@ someone else's first hour, not about compiler internals:
    and the Japanese translation records the same output
    (`pkf run check-tutorial-translation-parity`).
 4. **The stable surface is real** — every name in
-   [spec/stable-surface.md](spec/stable-surface.md) §3 resolves in the shipped
+   [spec/stable-surface.md](user/reference/stable-surface.md) §3 resolves in the shipped
    compiler (`pkf run check-freeze-surface`).
 5. **Editor integration** — `vibe lsp` plus the query primitives
    (`vibe check` / `symbols` / `type-at` / `binding-at` / `deps` / `grep`).
@@ -121,6 +121,6 @@ It stays short because every other kind of detail has a better home:
 | why a design is the way it is | [adr.md](adr.md) |
 | what is being worked on now | GitHub Issues (`gh issue list --state open`) |
 | how a decision was reached | the issue thread, and `git log` |
-| what the language can do today | [cheatsheet.md](cheatsheet.md), [book/en](../book/en) |
-| what 0.1.0 promises not to break | [spec/stable-surface.md](spec/stable-surface.md) |
+| what the language can do today | [cheatsheet.md](user/reference/cheatsheet.md), [book/en](../book/en) |
+| what 0.1.0 promises not to break | [spec/stable-surface.md](user/reference/stable-surface.md) |
 | how to prioritise an issue | [issue-triage.md](issue-triage.md) |

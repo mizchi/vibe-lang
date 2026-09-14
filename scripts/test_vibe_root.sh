@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The launcher's project-root and build-directory contract (#2675,
-# docs/install.md "Project layout"), measured on scratch projects:
+# docs/user/getting-started/install.md "Project layout"), measured on scratch projects:
 #
 #   * `vibe new` writes main.vibex, a root index.vpkg and .gitignore, and the
 #     header it writes is the formatter's canonical shape;

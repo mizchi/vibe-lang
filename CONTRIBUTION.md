@@ -3,7 +3,7 @@
 This document covers the internal development workflow: building the
 selfhost compiler, running the verification gates, the task-runner command
 reference, and the project layout. For the language itself, start with
-[README.md](README.md) and [docs/cheatsheet.md](docs/cheatsheet.md).
+[README.md](README.md) and [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md).
 
 vibe is **selfhost-only**: the compiler, type checker, and codegen are all
 written in vibe itself (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) and built
@@ -128,7 +128,7 @@ bash scripts/vibe_run.sh  scripts/review_lint.vibex          # run a .vibex root
 compiler, an unset value answers for a compiler that does not contain it.
 
 For the user-facing command reference see
-[docs/cli-commands.md](docs/cli-commands.md).
+[docs/user/reference/cli-commands.md](docs/user/reference/cli-commands.md).
 
 ## WASM Execution
 

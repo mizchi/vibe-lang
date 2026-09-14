@@ -2347,7 +2347,7 @@ fi
 rm -rf "$eff1161dir"
 echo "[compiler-gate] operation-level fix-it precision ok"
 
-# 67/67. #820 sub-item 3: `vibe context-pack` bundles docs/cheatsheet.md +
+# 67/67. #820 sub-item 3: `vibe context-pack` bundles docs/user/reference/cheatsheet.md +
 #        the verified eval/lang-review/golden corpus for AI-harness context
 #        ingestion. Pure shell (scripts/gen_context_pack.sh), no wasm
 #        involved -- pin determinism, the expected section markers, and the
@@ -6210,7 +6210,7 @@ rm -rf "$fmtdir"
 echo "[compiler-gate] vibe fmt refuses a file that does not parse on the installed route ok (#2636)"
 
 # 108/108. The ADR-0068 concurrency surface is opt-in (#2248).
-#      docs/spec/stable-surface.md said the unstable surface "is reached only
+#      docs/user/reference/stable-surface.md said the unstable surface "is reached only
 #      through `@build.unstable`, an explicit flag, or an ADR still marked
 #      `proposed`" -- and `@build.unstable` appeared nowhere else in the tree,
 #      there was no such flag, and `TaskGroup::run` checked clean with no

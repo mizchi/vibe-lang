@@ -5,8 +5,8 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
 
 ## Status and authority
 
-- `docs/spec/syntax.md` is the canonical surface syntax reference.
-- `docs/vibe.md` is the broader language design/spec note for implemented
+- `docs/user/reference/syntax.md` is the canonical surface syntax reference.
+- `docs/user/reference/vibe.md` is the broader language design/spec note for implemented
   behavior outside pure syntax (effects, imports, hashing, runtime contracts).
 - Items explicitly marked as "future", "proposal", or "draft" are non-normative.
 - Package boundaries, visibility, and pinning are specified separately:
@@ -41,7 +41,7 @@ Reserved leading keyword detection (`let`, `fn`, `type`, `effect`, `import`,
 `fn` is the preferred top-level named-function declaration: it requires typed
 parameters and a return annotation, supports generics/effect rows, and lowers to
 the equivalent recursive `let` form before checking and code generation. See
-[Functions and Lambdas](spec/syntax.md#functions-and-lambdas).
+[Functions and Lambdas](syntax.md#functions-and-lambdas).
 - `map` is not a reserved keyword and can be used as a normal identifier.
 
 ## Standard tutorial scope (v1 core)
@@ -383,11 +383,11 @@ Concurrency (v0.4.0 proposed):
 - 現行 `Task[T]` は synchronous eager prototype で、並行実行の契約ではない。
 - 公開モデルは generative nursery、region-bound `Task` / typed channel、`Send`、
   task-local handler evidence とする。詳細は
-  [ADR-0068 detailed concurrency spec](concurrency.md)。
+  [ADR-0068 detailed concurrency spec](../../concurrency.md)。
 - JSPI / Worker、WASI Component Model、shared-everything-threads は公開 API ではなく
   同じ意味論の backend lowering とする。
 
-Builtin contracts: see `docs/cheatsheet.md`'s Signature reference, checked against
+Builtin contracts: see `docs/user/reference/cheatsheet.md`'s Signature reference, checked against
 the checker's own builtin table by `scripts/check_cheatsheet_signatures.sh`. Do not
 infer proposed concurrency APIs from any builtin table; ADR-0068 is authoritative.
 
@@ -904,7 +904,7 @@ CLI:
 - `pkf run component-run -- script.vibe` builds a stdio-capable component and runs it via wasmtime (`--invoke 'run()'`).
 - `pkf run component-run-moonix -- script.vibe` builds the same component and runs it via moonix.
 - TUI completion sources: builtins + PATH commands + history.
-- `bash install/install.sh` installs the CLI (see `docs/install.md` for the toolchain layout; `VIBE_HOME` / `VIBE_BIN_DIR` choose where).
+- `bash install/install.sh` installs the CLI (see `docs/user/getting-started/install.md` for the toolchain layout; `VIBE_HOME` / `VIBE_BIN_DIR` choose where).
 - Imports are loaded recursively (imports of imports) for hashing and import-rename resolution.
 - Import cycle reporting is implemented for path-based import graphs
   (diagnostic stage: `import`, message prefix: `import cycle:`).

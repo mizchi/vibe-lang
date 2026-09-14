@@ -2,7 +2,7 @@
 
 vibe ships first-class editor support (LSP) and a function-granularity
 interactive debugger, both driven by the same `vibe` launcher you installed
-(see [install.md](install.md)). This guide covers:
+(see [install.md](../getting-started/install.md)). This guide covers:
 
 - [Language Server (`vibe lsp`)](#language-server-vibe-lsp)
 - [Editor query primitives](#editor-query-primitives)
@@ -175,7 +175,7 @@ vibe check --single-file --json <file.vibe>  # same diagnostics as a JSON array 
 - `vibe diagnostics` is the **deprecated** spelling of `vibe check
   --single-file`. It is kept behaviourally frozen (raw lines with no `error: `
   prefix, always exit 0) for editors already wired to it — see
-  [spec/stable-surface.md](spec/stable-surface.md).
+  [spec/stable-surface.md](stable-surface.md).
 - Once a file type-checks and codegen-validates cleanly, the single-file mode
   also runs two soft, warning-only passes (#1129) that never affect the exit
   code or fail a compile: **unused imports** (a named `import ./f.vibe { a }`
@@ -485,7 +485,7 @@ doesn't provide (docs/release-roadmap.md テーマ3, 3-P0's "残").
 `integrations/vscode-vibe/` is a VS Code extension contributing both syntax
 highlighting and a debug adapter. The debug side bridges VS Code's Debug
 Adapter Protocol to the function-granularity debugger above via
-[`clients/js/dap_server.js`](../clients/js/dap_server.js) (a small, dependency-free
+[`clients/js/dap_server.js`](../../../clients/js/dap_server.js) (a small, dependency-free
 stdio DAP server).
 
 The adapter:
@@ -498,7 +498,7 @@ The adapter:
 - drives the runner's stdin from VS Code's continue / step over / step into /
   step out buttons.
 
-See [`integrations/vscode-vibe/README.md`](../integrations/vscode-vibe/README.md)
+See [`integrations/vscode-vibe/README.md`](../../../integrations/vscode-vibe/README.md)
 for installation. The launcher streams `--break` / `--trace` stderr live (via a
 FIFO) so interactive stepping in the editor is not buffered until the program
 exits.
@@ -518,4 +518,4 @@ vibe self update --cli-wasm <path-to-vibe-cli.wasm>
 This installs the given compiler wasm and AOT-compiles it to a host-specific
 `.cwasm` for fast startup. `vibe version` reports the active toolchain version,
 which is the basis for the SemVer guarantee described in
-[spec/stable-surface.md](spec/stable-surface.md).
+[spec/stable-surface.md](stable-surface.md).

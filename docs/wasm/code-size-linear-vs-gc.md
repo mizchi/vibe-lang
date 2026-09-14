@@ -15,7 +15,7 @@ node scripts/wasm_section_sizes.mjs \
   "$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
 ```
 
-Related: [gc-value-abi.md](./gc-value-abi.md) (#1331), [feature-levels.md](./feature-levels.md),
+Related: [gc-value-abi.md](./gc-value-abi.md) (#1331), [feature-levels.md](../user/reference/feature-levels.md),
 [../BENCHMARKS.md](../BENCHMARKS.md) (time-axis regression signal on the linear lane)
 
 ## Conclusion

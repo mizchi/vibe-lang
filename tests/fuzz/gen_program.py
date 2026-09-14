@@ -630,7 +630,7 @@ class Gen:
 
     def recursor_decls(self):
         # `fn` supports self-recursion with no `rec` keyword needed (see
-        # docs/cheatsheet.md); each frame either recurses with the carried
+        # docs/user/reference/cheatsheet.md); each frame either recurses with the carried
         # value untouched, or (base case) consumes it.
         out = []
         for rname, sname, base in self.recursors:

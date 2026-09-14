@@ -50,7 +50,7 @@ includes(
   "fs_publish_immutable_text(pathTagged, contentTagged)",
 );
 includes("runtime/viberun/src/main.rs", '"fs_publish_immutable_text"');
-includes("docs/spec/host-abi.md", "vibe::fs_publish_immutable_text");
+includes("docs/user/reference/host-abi.md", "vibe::fs_publish_immutable_text");
 
 function publishChild(target, text) {
   return new Promise((resolve, reject) => {

@@ -34,14 +34,14 @@ run_tree_case() { # run_tree_case <label> <expect-exit> <taskfile-body>
 run_case "compiler task without vibeSources is rejected" 1 'local t = new Task {
   name = "probe"
   cmd = "bash scripts/check_freeze_surface.sh"
-  inputs { "docs/cheatsheet.md" }
+  inputs { "docs/user/reference/cheatsheet.md" }
 }'
 
 # Selfhost sources alone omit the bootstrap compiler identity.
 run_case "compiler task with only vibeSources is rejected" 1 'local t = new Task {
   name = "probe"
   cmd = "bash scripts/check_freeze_surface.sh"
-  inputs { ...vibeSources; "docs/cheatsheet.md" }
+  inputs { ...vibeSources; "docs/user/reference/cheatsheet.md" }
 }'
 
 # Compiler-probing gates use the shared superset, which also keys on the seed.
@@ -52,7 +52,7 @@ run_case "compiler task with complete compilerProbeInputs passes" 0 'local compi
 local t = new Task {
   name = "probe"
   cmd = "bash scripts/check_freeze_surface.sh"
-  inputs { ...compilerProbeInputs; "docs/cheatsheet.md" }
+  inputs { ...compilerProbeInputs; "docs/user/reference/cheatsheet.md" }
 }'
 
 # Merely naming the helper is not enough: its seed half is part of the oracle.
@@ -62,7 +62,7 @@ run_case "compilerProbeInputs without seed is rejected" 1 'local compilerProbeIn
 local t = new Task {
   name = "probe"
   cmd = "bash scripts/check_freeze_surface.sh"
-  inputs { ...compilerProbeInputs; "docs/cheatsheet.md" }
+  inputs { ...compilerProbeInputs; "docs/user/reference/cheatsheet.md" }
 }'
 
 run_case "compilerProbeInputs with vibeSources string is rejected" 1 'local compilerProbeInputs = new {
@@ -103,7 +103,7 @@ local t = new Task {
   name = "probe"
   cmd = "bash scripts/check_freeze_surface.sh"
   inputs { // ...compilerProbeInputs
-    "docs/cheatsheet.md"
+    "docs/user/reference/cheatsheet.md"
   }
 }'
 
@@ -252,13 +252,13 @@ run_case "cache = false is accepted instead" 0 'local t = new Task {
   name = "probe"
   cmd = "bash scripts/check_freeze_surface.sh"
   cache = false
-  inputs { "docs/cheatsheet.md" }
+  inputs { "docs/user/reference/cheatsheet.md" }
 }'
 
 run_case "cache = false before same-line member is accepted" 0 'local t = new Task {
   name = "probe"
   cache = false; cmd = "bash scripts/check_freeze_surface.sh"
-  inputs { "docs/cheatsheet.md" }
+  inputs { "docs/user/reference/cheatsheet.md" }
 }'
 
 # A task that does not reach the compiler is none of this gate's business.
@@ -313,7 +313,7 @@ run_case "nested seed wrapper with only vibeSources is rejected" 1 'local t = ne
 run_case "aggregator wrapper is treated as compiler-running" 1 'local t = new Task {
   name = "probe"
   cmd = "bash scripts/compiler_gate.sh"
-  inputs { "docs/cheatsheet.md" }
+  inputs { "docs/user/reference/cheatsheet.md" }
 }'
 
 run_case "aggregator wrapper with only vibeSources is rejected" 1 'local t = new Task {

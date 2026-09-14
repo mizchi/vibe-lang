@@ -2,7 +2,7 @@
 # Build a fresh selfhost CLI compiler wasm from the current committed source
 # (seed -> stage1 -> stage2 via the Rust/node runner). The resulting
 # stage2 wasm is the portable `vibe-cli.wasm` the installer ships and the runner
-# AOT-compiles to a host-specific `.cwasm` (docs/install.md).
+# AOT-compiles to a host-specific `.cwasm` (docs/user/getting-started/install.md).
 #
 #   bash scripts/build_cli_wasm.sh [out.wasm]   # default: dist/cli/vibe-cli.wasm
 #

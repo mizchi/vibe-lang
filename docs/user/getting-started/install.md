@@ -62,7 +62,7 @@ vibe run hello.vibex        # -> 42
 ```
 
 The book's first program is this same builtin form; see
-[The Vibe Book](../book/README.md) (`book/en/`) (#1949).
+[The Vibe Book](../../../book/README.md) (`book/en/`) (#1949).
 
 ### Install layout (`$VIBE_HOME`, ADR-0111)
 
@@ -282,7 +282,7 @@ temp dir after a verb exits.
 `VIBE_CACHE` and `VIBE_TEST_CACHE` are not read: the vendoring lane whose
 fetch cache the first one named is gone, and the test result cache is always
 `$VIBE_HOME/cache/test/`. Compiler and test knobs (`VIBE_TEST_JOBS`, the
-`--unstable-*` flags) are in [cli-commands.md](cli-commands.md).
+`--unstable-*` flags) are in [cli-commands.md](../reference/cli-commands.md).
 
 ## Dependencies
 
@@ -291,7 +291,7 @@ public API boundary, ADR-0070). The root `index.vpkg` of your project is the
 manifest, and pinned dependencies live in the project-local `.vibe/store/`
 (#2676). The boundary,
 visibility and pinning rules live in one place:
-[docs/module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
+[docs/module-system-oracle.md の「現行モデル」節](../../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
 (#1269).
 
 Add a dependency straight from its git source. The name and version are the
@@ -351,7 +351,7 @@ Point your editor's LSP client at `vibe lsp` for the `vibe` language.
 
 > Full feature list, the underlying query primitives (`vibe type-at` /
 > `binding-at` / `diagnostics`), and the interactive debugger are documented in
-> [editor-and-debugging.md](editor-and-debugging.md).
+> [editor-and-debugging.md](../reference/editor-and-debugging.md).
 
 **VS Code**: install `integrations/vscode-vibe` (it launches `vibe lsp`).
 
@@ -380,7 +380,7 @@ Diagnostics carry an exact line:col for parse errors and common type errors
 their inferred type via the per-node type table (typed hover). Rename /
 references are AST-accurate (scope-aware binding occurrences). Remaining
 precision work (call-site / expression-node spans) is tracked as span-arc in
-[docs/release-roadmap.md](release-roadmap.md) テーマ4.
+[docs/release-roadmap.md](../../release-roadmap.md) テーマ4.
 
 ## Updating
 
