@@ -2436,10 +2436,26 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // clause rather than a replacement so the top-node answers, including
         // the shapes it declines, are untouched.
         //
-        // Left with the self-referential right-hand side's own answer: a
-        // spine ending in a projection of the slot itself is the shape the
-        // `!is_self` guard on the first clause already excludes, and widening
-        // it here would be a separate change with its own measurement.
+        // A self-referential right-hand side keeps MAIN'S ANSWER exactly.
+        // `is_self` is `assign_value_mentions`, i.e. "the value has `name` as a
+        // free variable" -- ANY mention, not just a spine leaf derived from the
+        // slot. An earlier draft of this comment said it excludes "a spine
+        // ending in a projection of the slot itself", which is a different
+        // property than the one `is_self` tests; the arm is written from the
+        // property, so only the comment was wrong.
+        //
+        // The arm is deliberately a no-op against main on this path. Before
+        // this change the condition read
+        // `(!is_self && is_edot(value)) || call_returns_borrow(value, ..)`,
+        // whose first clause is false whenever `is_self` holds -- so main
+        // already answered `call_returns_borrow(value, ..)` here and that is
+        // what this branch still answers. Measured on `6507c60`, three
+        // self-mentioning wrapper spellings -- a discarded `total(x)` in an
+        // `ESeq`, a `let`-bound one, and one whose result feeds the index --
+        // answer 770 on the RC lane on the patched AND the unpatched compiler,
+        // agreeing with bump. So there is no corruption here to widen for, and
+        // widening `is_self` would be a separate change needing its own repro
+        // before its own measurement.
         let replacement_unowned = if !is_heap_mut {
           false
         } else if is_self {
