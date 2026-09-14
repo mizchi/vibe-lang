@@ -3,7 +3,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/core {
-  array_empty, struct MutSet
+  array_empty, struct MutMap, struct MutSet
 }
 
 import @vibe/compiler/lowering/effects/direct {
@@ -57,11 +57,12 @@ export enum EdpReadQuery {
   // linear scan each, and a callee that is NOT a user function (a builtin, a
   // local, an indirect target) pays the whole array before answering.
   RQOpaqueCall(MutSet[String], MutSet[String]);
-  // #2386: MEMBERSHIP, like RQOpaqueCall. `edp_collect_performing_fns` folds
-  // this over every not-yet-member body on every round of its transitive
-  // closure, so the probe runs per call node of O(rounds x fns) walks against
-  // a set that is itself growing.
+  // Membership in a supplied set of named callees. Reachability uses the
+  // fused summary below; this query also supplies the independent test oracle.
   RQCallsAny(MutSet[String]);
+  // Return 1 for a direct perform or opaque call; otherwise collect known
+  // callees into the scratch output. The AST itself remains read-only.
+  RQPerformSummary(String, MutSet[String], MutSet[String], Array[String]);
   RQEdpBindsName(String);
   RQIdentUses(String);
   RQSafeClosureBindings(String, String, Array[String], Array[String], Array[String], Array[Array[String]]);
@@ -96,6 +97,7 @@ fn edp_rq_stops_array_on_hit(q: EdpReadQuery) -> Bool {
     RQPerformsUserEffect(_) => true,
     RQOpaqueCall(_, _) => true,
     RQCallsAny(_) => true,
+    RQPerformSummary(_, _, _, _) => true,
     RQEdpBindsName(_) => true,
     RQHandlesEffect(_) => true,
     RQNeedingValueArg(_) => true,
@@ -309,6 +311,22 @@ fn edp_rq_local(q: EdpReadQuery, e: Expr) -> Int {
         0
       },
       _ => 0
+    },
+    RQPerformSummary(effect, inert, fn_names, calls) => if edp_user_perform_effect_of(e) == effect {
+      1
+    } else {
+      match e {
+        ECall(EIdent(name, _), _, _) => if !edp_callee_is_resolvable(name, inert, fn_names) {
+          1
+        } else {
+          if MutSet::has(fn_names, name) {
+            Array::push(calls, name)
+          }
+          0
+        },
+        ECall(_, _, _) => 1,
+        _ => 0
+      }
     },
     RQEdpBindsName(_)|RQScpsBindsName(_) => match e {
       ELet(name, _, _, _) => edp_rq_plain_binder(q, name),
@@ -535,6 +553,61 @@ export fn edp_rq_fold(q: EdpReadQuery, e: Expr) -> Int {
 /// reach arbitrary code, performs included.
 export fn edp_callee_is_resolvable(nm: String, inert: MutSet[String], fn_names: MutSet[String]) -> Bool {
   nm == "perform" || nm == "resume" || edp_is_pure_builtin_call(nm) || edp_name_is_host_raw_shape(nm) || MutSet::has(inert, nm) || MutSet::has(fn_names, nm)
+}
+
+/// Function-level conservative effect reachability. Each body is visited once
+/// for this effect, then only incoming call edges are visited. Duplicate names
+/// union their definitions; an opaque call seeds any queried effect. The caller
+/// must rebuild this summary after rewriting the input AST.
+///
+/// Result order is deterministic queue order and is used only for membership.
+/// It does not define the order of generated functions or handler arms.
+export fn edp_performing_names(names: Array[String], bodies: Array[Option[Expr]], effect: String, inert: MutSet[String], fn_names: MutSet[String]) -> Array[String] {
+  let callers: MutMap[String, Array[String]] = MutMap::new_string()
+  let member: MutSet[String] = MutSet::new_string()
+  let out: Array[String] = []
+  // Neither the query nor its scratch call list escapes this analysis. The
+  // graph copies names into its own rows before the next body resets scratch.
+  let calls: Array[String] = []
+  let query = RQPerformSummary(effect, inert, fn_names, calls)
+  let mut i = 0
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if !MutSet::has(member, name) {
+      match Array::get(bodies, i) {
+        Some(body) => {
+          Array::truncate(calls, 0)
+          if edp_rq_fold(query, body) > 0 {
+            MutSet::add(member, name)
+            Array::push(out, name)
+          } else {
+            for callee in calls {
+              match MutMap::get(callers, callee) {
+                Some(entries) => Array::push(entries, name),
+                None => MutMap::set(callers, callee, [name])
+              }
+            }
+          }
+        },
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  let mut head = 0
+  while head < Array::length(out) {
+    match MutMap::get(callers, Array::get(out, head)) {
+      Some(entries) => for name in entries {
+        if !MutSet::has(member, name) {
+          MutSet::add(member, name)
+          Array::push(out, name)
+        }
+      },
+      None => ()
+    }
+    head = head + 1
+  }
+  out
 }
 
 /// Local copy of dlh_strip_tilde (desugar_trait_dict.vibe) -- see

@@ -1,0 +1,92 @@
+import @vibe/compiler/codegen/builtin_bodies {
+  gen_bytes_blit_linear_body
+}
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc
+}
+import @vibex/wasm_parser {
+  get_code_body_range, module_code, module_exports, module_imports
+}
+import @vibex/wasm_runtime {
+  disassemble
+}
+
+test "linear blit calls a range helper instead of emitting a byte loop" {
+  let wasm = compile_wasi("export fn copy() -> Unit { let dst = Bytes::new(); let src = Bytes::from_array([10, 20, 30]); Bytes::blit(dst, src, 1, 3) }", "copy")
+  let mut imports = 0
+  for imp in module_imports(wasm) {
+    let (_, _, kind, _) = imp
+    if kind == 0 {
+      imports = imports + 1
+    }
+  }
+  let mut index = -1
+  for exp in module_exports(wasm) {
+    let (name, kind, idx) = exp
+    if name == "copy" && kind == 0 {
+      index = idx
+    }
+  }
+  assert(index >= imports)
+  let (offset, size, _) = Array::get(module_code(wasm), index - imports)
+  let (start, end) = get_code_body_range(wasm, offset, size)
+  for instruction in disassemble(wasm, start, end) {
+    assert(!String::starts_with(instruction, "??"))
+    assert(!String::starts_with(instruction, "loop"))
+  }
+}
+
+fn assert_blit_bounds(source: String, label: String, expected: String) -> Unit with Exception + Fs + Process {
+  let modules = [compile_wasi(source, "main"), compile_wasi_rc(source, "main")]
+  let mut i = 0
+  for wasm in modules {
+    let path = "/tmp/_bytes_blit_bounds_" + label + "_" + Int::to_string(i) + ".wasm"
+    Fs::write_bytes(path, wasm)
+    let output = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0 2>&1 || true")
+    assert(String::contains(String::join(output, "\n"), expected))
+    i = i + 1
+  }
+  ()
+}
+
+test "linear blit keeps negative and past-end source diagnostics" {
+  assert_blit_bounds("export fn main() -> Int { let src = Bytes::from_array([1, 2]); Bytes::blit(Bytes::new(), src, -1, 1); 0 }", "negative", "Bytes::get: index -1 out of bounds for length 2")
+  assert_blit_bounds("export fn main() -> Int { let src = Bytes::from_array([1, 2]); Bytes::blit(Bytes::new(), src, 1, 3); 0 }", "end", "Bytes::get: index 2 out of bounds for length 2")
+  assert_blit_bounds("export fn main() -> Int { let src = Bytes::from_array([1, 2]); Bytes::blit(Bytes::new(), src, (1 << 40) - 1, (1 << 40) + 1); 0 }", "wide", "Bytes::get: index 1099511627775 out of bounds for length 2")
+}
+
+// Read the documented linear Bytes header to pin allocation policy, separately
+// from content tests. Repeated 500/500/1-byte copies must not force a capacity
+// beyond the old push loop's 1024 bytes (2 * requested length reserves 2008).
+test "bulk blit keeps the capacity of repeated push" {
+  let capacity = "(i64.extend_i32_u (i32.sub (i32.const 0) (i32.load (i32.wrap_i64 (local.get $b)))))"
+  let body = "export fn main() -> Int { let src = Bytes::new(500); let dst = Bytes::new(); Bytes::blit(dst, src, 0, 500); Bytes::blit(dst, src, 0, 500); Bytes::blit(dst, src, 0, 1); capacity(dst) }"
+  let plain = "fn capacity(b: Bytes) -> Int = wasm \"" + capacity + "\"\n" + body
+  let tagged = "fn capacity(b: Bytes) -> Int = wasm \"(i64.shl " + capacity + " (i64.const 1))\"\n" + body
+  let modules = [compile_wasi(plain, "main"), compile_wasi_rc(tagged, "main")]
+  let mut i = 0
+  for wasm in modules {
+    let path = "/tmp/_bytes_blit_capacity_" + Int::to_string(i) + ".wasm"
+    Fs::write_bytes(path, wasm)
+    let output = sh_lines("wasmtime run -W exceptions=y --invoke main " + path + " 0 2>/dev/null")
+    assert(String::join(output, "") == "1024")
+    i = i + 1
+  }
+}
+
+test "linear range helpers contain bulk memory copies on both allocation routes" {
+  for rc in [false, true] {
+    for arena in [-1, 65536] {
+      let body = gen_bytes_blit_linear_body(rc, 100, 101, arena, 66000, 131072)
+      let mut copies = 0
+      for instruction in disassemble(body, 0, Bytes::length(body)) {
+        assert(!String::starts_with(instruction, "??"))
+        if instruction == "memory.copy" {
+          copies = copies + 1
+        }
+      }
+      // One copy preserves the destination on growth; one copies the range.
+      inspect(copies, "2")
+    }
+  }
+}

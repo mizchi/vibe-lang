@@ -279,3 +279,94 @@ test "bytes_new_with_length" {
   assert(eq(Bytes::length(buf), 5))
   assert(eq(Bytes::get(buf, 4), 9))
 }
+
+test "blit preserves partial ranges, capacity boundaries, and source bytes" {
+  let src = Bytes::new()
+  let mut i1 = 0
+  while i1 < 200 {
+    Bytes::push(src, i1); i1 = i1 + 1
+  }
+  let dst = Bytes::new()
+  Bytes::fill(dst, 255, 60)
+  Bytes::blit(dst, src, 3, 7)
+  assert(Bytes::length(dst) == 64)
+  Bytes::blit(dst, src, 7, 200)
+  assert(Bytes::length(dst) == 257)
+  let mut i2 = 0
+  while i2 < 60 {
+    assert(Bytes::get(dst, i2) == 255); i2 = i2 + 1
+  }
+  let mut i3 = 60
+  while i3 < 257 {
+    assert(Bytes::get(dst, i3) == i3 - 57); i3 = i3 + 1
+  }
+  let mut i4 = 0
+  while i4 < 200 {
+    assert(Bytes::get(src, i4) == i4); i4 = i4 + 1
+  }
+}
+
+test "blit self-copy works before and after growth" {
+  let dst = Bytes::from_array([10, 20, 30, 40])
+  Bytes::blit(dst, dst, 1, 3)
+  assert(dst == Bytes::from_array([10, 20, 30, 40, 20, 30]))
+  Bytes::fill(dst, 50, 58)
+  Bytes::blit(dst, dst, 1, 64)
+  assert(Bytes::length(dst) == 127)
+  let mut i5 = 64
+  while i5 < 127 {
+    assert(Bytes::get(dst, i5) == Bytes::get(dst, i5 - 63)); i5 = i5 + 1
+  }
+}
+
+test "blit can read bytes appended earlier in a self-copy" {
+  let dst = Bytes::from_array([7, 9])
+  Bytes::blit(dst, dst, 0, 130)
+  assert(Bytes::length(dst) == 132)
+  let mut i6 = 0
+  while i6 < 132 {
+    assert(Bytes::get(dst, i6) == (if i6 % 2 == 0 {
+      7
+    } else {
+      9
+    })); i6 = i6 + 1
+  }
+}
+
+test "blit empty and reversed ranges do not access the source" {
+  let dst = Bytes::from_array([12])
+  let src = Bytes::new()
+  Bytes::blit(dst, src, 0, 0)
+  Bytes::blit(dst, src, 20, 10)
+  Bytes::blit(dst, src, -1, -1)
+  Bytes::blit(dst, src, 1<<40, 1<<39)
+  assert(dst == Bytes::from_array([12]))
+}
+
+fn blit_bytes_arg(log: Array[Int], id: Int, bytes: Bytes) -> Bytes {
+  Array::push(log, id)
+  bytes
+}
+fn blit_index_arg(log: Array[Int], id: Int, index: Int) -> Int {
+  Array::push(log, id)
+  index
+}
+
+test "blit evaluates each argument once in source order" {
+  let log: Array[Int] = []
+  let dst = Bytes::new()
+  let src = Bytes::from_array([10, 20, 30])
+  Bytes::blit(blit_bytes_arg(log, 1, dst), blit_bytes_arg(log, 2, src), blit_index_arg(log, 3, 1), blit_index_arg(log, 4, 3))
+  assert(log == [1, 2, 3, 4])
+  assert(dst == Bytes::from_array([20, 30]))
+  assert(src == Bytes::from_array([10, 20, 30]))
+}
+
+test "blit keeps the existing get semantics for wide indices" {
+  // Bytes::get currently narrows the index to i32. The range helper must
+  // keep the signed Int loop and delegate these indices to that accessor.
+  let src = Bytes::from_array([10, 20, 30])
+  let dst = Bytes::new()
+  Bytes::blit(dst, src, 1<<40, (1<<40) + 2)
+  assert(dst == Bytes::from_array([10, 20]))
+}

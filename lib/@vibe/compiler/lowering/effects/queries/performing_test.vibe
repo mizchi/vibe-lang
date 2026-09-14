@@ -1,0 +1,185 @@
+import @vibe/compiler/core {
+  Expr, Pat
+}
+import @vibe/core {
+  struct MutSet
+}
+import @vibe/compiler/lowering/effects/queries {
+  EdpReadQuery, edp_performing_names, edp_rq_fold
+}
+
+fn call(name: String) -> Expr {
+  ECall(EIdent(name, -1), [], -1)
+}
+fn perform_ask() -> Expr {
+  ECall(EIdent("perform", -1), [call("Ask::Get")], -1)
+}
+fn name_set(names: Array[String]) -> MutSet[String] {
+  let set: MutSet[String] = MutSet::new_string()
+  for name in names {
+    MutSet::add(set, name)
+  }
+  set
+}
+
+// Independent specification: repeat the existing read-only queries to a
+// fixed point. Production must reach the same set without re-walking bodies.
+fn oracle(names: Array[String], bodies: Array[Option[Expr]], effect: String, inert: MutSet[String]) -> MutSet[String] {
+  let known = name_set(names)
+  let out: MutSet[String] = MutSet::new_string()
+  let mut grew = true
+  while grew {
+    grew = false
+    let mut i = 0
+    while i < Array::length(names) {
+      let name = Array::get(names, i)
+      if !MutSet::has(out, name) {
+        match Array::get(bodies, i) {
+          Some(body) => if edp_rq_fold(RQPerformsUserEffect(effect), body) > 0 || edp_rq_fold(RQOpaqueCall(inert, known), body) > 0 || edp_rq_fold(RQCallsAny(out), body) > 0 {
+            MutSet::add(out, name)
+            grew = true
+          },
+          None => ()
+        }
+      }
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn check_graph(names: Array[String], bodies: Array[Option[Expr]], effect: String) -> Array[String] {
+  let inert = name_set(["Ask::Get", "Other::Get"])
+  let actual = edp_performing_names(names, bodies, effect, inert, name_set(names))
+  let set = name_set(actual)
+  let expected = oracle(names, bodies, effect, inert)
+  for name in names {
+    assert(MutSet::has(set, name) == MutSet::has(expected, name))
+  }
+  // The queue contains each name once, even with duplicate definitions/edges.
+  let seen: MutSet[String] = MutSet::new_string()
+  for name in actual {
+    assert(!MutSet::has(seen, name)); MutSet::add(seen, name)
+  }
+  actual
+}
+
+test "effect reachability closes reverse chains and cycles, with duplicate definitions" {
+  let names = [
+    "a",
+    "b",
+    "c",
+    "d",
+    "quiet",
+    "quiet2",
+    "duplicate",
+    "duplicate",
+    "caller",
+    "missing"
+  ]
+  let bodies: Array[Option[Expr]] = [
+    Some(call("b")),
+    Some(call("c")),
+    Some(call("d")),
+    Some(ESeq(call("a"), perform_ask())),
+    Some(call("quiet2")),
+    Some(call("quiet")),
+    Some(perform_ask()),
+    Some(EInt(0)),
+    Some(call("duplicate")),
+    None
+  ]
+  let out = name_set(check_graph(names, bodies, "Ask"))
+  assert(MutSet::has(out, "a"))
+  assert(MutSet::has(out, "caller"))
+  assert(!MutSet::has(out, "quiet"))
+  assert(!MutSet::has(out, "missing"))
+  assert(Array::length(check_graph(names, bodies, "Other")) == 0)
+}
+
+test "opaque callbacks and nested closures remain conservative" {
+  let names = ["callback", "indirect", "nested", "handled", "caller", "pure"]
+  let bodies: Array[Option[Expr]] = [
+    Some(call("f")),
+    Some(ECall(EIf(EBool(true), EIdent("f", -1), EIdent("g", -1)), [], -1)),
+    Some(EFn([], [], [], None, None, perform_ask())),
+    Some(EHandle(perform_ask(), [(PCtor("Ask::Get", []), EInt(0))])),
+    Some(call("callback")),
+    Some(call("String::length"))
+  ]
+  let ask = name_set(check_graph(names, bodies, "Ask"))
+  assert(MutSet::has(ask, "nested"))
+  assert(MutSet::has(ask, "handled"))
+  assert(!MutSet::has(ask, "pure"))
+  let other = name_set(check_graph(names, bodies, "Other"))
+  assert(MutSet::has(other, "callback"))
+  assert(MutSet::has(other, "indirect"))
+  assert(MutSet::has(other, "caller"))
+  assert(!MutSet::has(other, "nested"))
+}
+
+test "perform summaries agree with separate queries across expression containers" {
+  let hit = call("target")
+  let containers = [
+    ETuple([EInt(0), hit]),
+    EArray([hit]),
+    ERecord("R", [("x", hit)], []),
+    EMap([("x", hit)]),
+    EIf(EBool(false), EInt(0), hit),
+    ELet("x", EInt(0), hit, -1),
+    ELetMut("x", hit, EInt(0), -1),
+    ELetRec("x", hit, EInt(0)),
+    EAssign("x", EInt(0), hit),
+    EAssignOp("x", "+", hit, EInt(0)),
+    ESeq(EInt(0), hit),
+    EMatch(EInt(0), [(PWild, hit)]),
+    EHandle(EInt(0), [(PCtor("Ask::Get", []), hit)]),
+    EWhile(EBool(false), hit),
+    ELoop([("x", hit)], EInt(0)),
+    ELoop([], hit),
+    EForIn("x", None, EArray([]), hit),
+    ECall(EIdent("String::length", -1), [hit], -1),
+    EBinOp("+", hit, EInt(0), -1),
+    EUnaryOp("-", hit),
+    EFn([], [], [], None, None, hit),
+    EDot(hit, "x", -1, -1),
+    ELabeledArg("", "x", hit),
+    EReturn(hit),
+    EBreak(Some(hit)),
+    EContinue([hit]),
+    ESpread(hit)
+  ]
+  for body in containers {
+    let result = check_graph(["caller", "target"], [
+      Some(body),
+      Some(perform_ask())
+    ], "Ask")
+    assert(MutSet::has(name_set(result), "caller"))
+  }
+}
+
+fn chain_graph(size: Int) -> (Array[String], Array[Option[Expr]]) {
+  let names: Array[String] = []
+  let bodies: Array[Option[Expr]] = []
+  let mut i = 0
+  while i < size {
+    Array::push(names, "f" + Int::to_string(i))
+    let mut body = if i + 1 == size {
+      perform_ask()
+    } else {
+      call("f" + Int::to_string(i + 1))
+    }
+    let mut j = 0
+    while j < 16 {
+      body = ESeq(EInt(j), body); j = j + 1
+    }
+    Array::push(bodies, Some(body))
+    i = i + 1
+  }
+  (names, bodies)
+}
+
+test "effect reachability propagates through a long reverse-ordered chain" {
+  let (names, bodies) = chain_graph(64)
+  assert(Array::length(check_graph(names, bodies, "Ask")) == 64)
+}

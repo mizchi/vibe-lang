@@ -1831,62 +1831,101 @@ export fn gen_arr_push_all_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: B
 /// of the OLD buffer, which the bump allocator never reclaims.
 export fn gen_bytes_append_body(arena_ptr_addr: Int, arena_data_base: Int, arena_limit: Int) -> Bytes {
   let b = bytebuf_new()
+  emit_bytes_append_headers(b, 2)
+  emit_bytes_append_range(b, 2, arena_ptr_addr, arena_data_base, arena_limit, false)
+  b
+}
+
+// Locals from base: dst block, src block, dst length, dst data, copy length,
+// source data, new capacity, new data, and (only with regions) arena scratch.
+fn emit_bytes_append_headers(b: Bytes, base: Int) -> Unit {
   emit_local_get(b, 0)
   emit_i32_wrap_i64(b)
-  emit_local_set(b, 2)
+  emit_local_set(b, base + 0)
   emit_local_get(b, 1)
   emit_i32_wrap_i64(b)
-  emit_local_set(b, 3)
-  emit_local_get(b, 2)
+  emit_local_set(b, base + 1)
+  emit_local_get(b, base + 0)
   emit_i32_load(b, 2, 4)
-  emit_local_set(b, 4)
-  emit_local_get(b, 2)
+  emit_local_set(b, base + 2)
+  emit_local_get(b, base + 0)
   emit_i32_load(b, 2, 8)
-  emit_local_set(b, 5)
-  emit_local_get(b, 3)
+  emit_local_set(b, base + 3)
+  emit_local_get(b, base + 1)
   emit_i32_load(b, 2, 4)
-  emit_local_set(b, 6)
-  emit_local_get(b, 3)
+  emit_local_set(b, base + 4)
+  emit_local_get(b, base + 1)
   emit_i32_load(b, 2, 8)
-  emit_local_set(b, 7)
+  emit_local_set(b, base + 5)
+}
+
+// Shared by append and bounded blit. The source pointer is captured before
+// growth, including when both operands name the same Bytes header.
+fn emit_bytes_append_range(b: Bytes, base: Int, arena_ptr_addr: Int, arena_data_base: Int, arena_limit: Int, preserve_push_capacity: Bool) -> Unit {
   // (dst_len + src_len) > capacity, where capacity is stored NEGATED at
   // offset 0 (gen_bytes_new_body). `>` and not `>=`: the bytes written land
   // in [dst_len, dst_len + src_len), so filling the buffer exactly is fine.
-  emit_local_get(b, 4)
-  emit_local_get(b, 6)
+  emit_local_get(b, base + 2)
+  emit_local_get(b, base + 4)
   emit_i32_add(b)
   emit_i32_const(b, 0)
-  emit_local_get(b, 2)
+  emit_local_get(b, base + 0)
   emit_i32_load(b, 2, 0)
   emit_i32_sub(b)
   emit_i32_gt_u(b)
   emit_if_void(b)
-  emit_local_get(b, 4)
-  emit_local_get(b, 6)
-  emit_i32_add(b)
-  emit_i32_const(b, 2)
-  emit_i32_mul(b)
-  // Round the reservation up to a multiple of 8. The bump allocator has no
-  // alignment step of its own, so every allocator that bumps global 0 has to
-  // preserve whatever alignment the next one needs. gen_bytes_push_body only
-  // ever bumps by cap*2 starting from bytes_new's 64, so it can only ever
-  // hand out 4-aligned addresses; `2 * (dst_len + src_len)` is merely EVEN,
-  // and an odd total would leave global 0 at 2 mod 4 for every allocation
-  // that follows.
-  emit_i32_const(b, 7)
-  emit_i32_add(b)
-  emit_i32_const(b, 0 - 8)
-  emit_i32_and(b)
-  emit_local_set(b, 8)
+  if preserve_push_capacity {
+    // Reach the same capacity as repeated push, but allocate and copy only
+    // the final buffer. 2 * requested length can regrow earlier next time:
+    // blits of 500, 500, 1 would reserve 2008 bytes instead of 1024.
+    emit_i32_const(b, 0)
+    emit_local_get(b, base)
+    emit_i32_load(b, 2, 0)
+    emit_i32_sub(b)
+    emit_local_set(b, base + 6)
+    emit_block_void(b)
+    emit_loop_void(b)
+    emit_local_get(b, base + 6)
+    emit_local_get(b, base + 2)
+    emit_local_get(b, base + 4)
+    emit_i32_add(b)
+    emit_i32_ge_u(b)
+    emit_br_if(b, 1)
+    emit_local_get(b, base + 6)
+    emit_i32_const(b, 2)
+    emit_i32_mul(b)
+    emit_local_set(b, base + 6)
+    emit_br(b, 0)
+    emit_end(b)
+    emit_end(b)
+  } else {
+    emit_local_get(b, base + 2)
+    emit_local_get(b, base + 4)
+    emit_i32_add(b)
+    emit_i32_const(b, 2)
+    emit_i32_mul(b)
+    // Round the reservation up to a multiple of 8. The bump allocator has no
+    // alignment step of its own, so every allocator that bumps global 0 has to
+    // preserve whatever alignment the next one needs. gen_bytes_push_body only
+    // ever bumps by cap*2 starting from bytes_new's 64, so it can only ever
+    // hand out 4-aligned addresses; `2 * (dst_len + src_len)` is merely EVEN,
+    // and an odd total would leave global 0 at 2 mod 4 for every allocation
+    // that follows.
+    emit_i32_const(b, 7)
+    emit_i32_add(b)
+    emit_i32_const(b, 0 - 8)
+    emit_i32_and(b)
+    emit_local_set(b, base + 6)
+  }
   // ADR-0090 MutBytes: same buffer-identity routing as gen_bytes_push_body
   // above -- a dst block inside the arena segment regrows from the arena
   // (main-heap fallback on exhaustion), everything else keeps the main-heap
-  // bump. The reservation (local 8) is already rounded to 8, so the arena
+  // bump. The reservation is already aligned to 8, so the arena
   // bump preserves alignment.
   let emit_main_heap_bump: () -> Unit = () -> {
     emit_global_get(b, 0)
-    emit_local_tee(b, 9)
-    emit_local_get(b, 8)
+    emit_local_tee(b, base + 7)
+    emit_local_get(b, base + 6)
     emit_i32_add(b)
     emit_global_set(b, 0)
     emit_heap_memory_grow_check(b)
@@ -1895,36 +1934,36 @@ export fn gen_bytes_append_body(arena_ptr_addr: Int, arena_data_base: Int, arena
     let emit_arena_bump: () -> Unit = () -> {
       emit_i32_const(b, arena_ptr_addr)
       emit_i32_load(b, 2, 0)
-      emit_local_set(b, 10)
-      emit_local_get(b, 10)
+      emit_local_set(b, base + 8)
+      emit_local_get(b, base + 8)
       emit_i32_eqz(b)
       emit_if_void(b)
       emit_i32_const(b, arena_data_base)
-      emit_local_set(b, 10)
+      emit_local_set(b, base + 8)
       emit_end(b)
-      emit_local_get(b, 10)
-      emit_local_get(b, 8)
+      emit_local_get(b, base + 8)
+      emit_local_get(b, base + 6)
       emit_i32_add(b)
       emit_i32_const(b, arena_limit)
       emit_i32_gt_u(b)
       emit_if_void(b)
       emit_main_heap_bump()
       emit_else(b)
-      emit_local_get(b, 10)
-      emit_local_set(b, 9)
+      emit_local_get(b, base + 8)
+      emit_local_set(b, base + 7)
       emit_i32_const(b, arena_ptr_addr)
-      emit_local_get(b, 10)
-      emit_local_get(b, 8)
+      emit_local_get(b, base + 8)
+      emit_local_get(b, base + 6)
       emit_i32_add(b)
       emit_i32_store(b, 2, 0)
       emit_end(b)
     }
-    emit_local_get(b, 2)
+    emit_local_get(b, base + 0)
     emit_i32_const(b, arena_data_base)
     emit_i32_ge_u(b)
     emit_if_void(b)
     emit_i32_const(b, arena_limit)
-    emit_local_get(b, 2)
+    emit_local_get(b, base + 0)
     emit_i32_gt_u(b)
     emit_if_void(b)
     // Codex #1801 P1: same nested-region regrow guard as gen_bytes_push_body
@@ -1933,26 +1972,26 @@ export fn gen_bytes_append_body(arena_ptr_addr: Int, arena_data_base: Int, arena
     // the inner region's span (the inner exit would rewind over it).
     emit_i32_const(b, arena_ptr_addr + 4)
     emit_i32_load(b, 2, 0)
-    emit_local_tee(b, 10)
+    emit_local_tee(b, base + 8)
     emit_i32_const(b, 64)
     emit_i32_gt_u(b)
     emit_if_void(b)
     emit_main_heap_bump()
     emit_else(b)
-    emit_local_get(b, 10)
+    emit_local_get(b, base + 8)
     emit_i32_eqz(b)
     emit_if_void(b)
     emit_arena_bump()
     emit_else(b)
     emit_i32_const(b, arena_ptr_addr + 8)
-    emit_local_get(b, 10)
+    emit_local_get(b, base + 8)
     emit_i32_const(b, 1)
     emit_i32_sub(b)
     emit_i32_const(b, 4)
     emit_i32_mul(b)
     emit_i32_add(b)
     emit_i32_load(b, 2, 0)
-    emit_local_get(b, 2)
+    emit_local_get(b, base + 0)
     emit_i32_gt_u(b)
     emit_if_void(b)
     emit_main_heap_bump()
@@ -1970,32 +2009,109 @@ export fn gen_bytes_append_body(arena_ptr_addr: Int, arena_data_base: Int, arena
   } else {
     emit_main_heap_bump()
   }
-  emit_local_get(b, 9)
-  emit_local_get(b, 5)
-  emit_local_get(b, 4)
+  emit_local_get(b, base + 7)
+  emit_local_get(b, base + 3)
+  emit_local_get(b, base + 2)
   emit_memory_copy(b)
-  emit_local_get(b, 2)
+  emit_local_get(b, base + 0)
   emit_i32_const(b, 0)
-  emit_local_get(b, 8)
+  emit_local_get(b, base + 6)
   emit_i32_sub(b)
   emit_i32_store(b, 2, 0)
-  emit_local_get(b, 2)
-  emit_local_get(b, 9)
+  emit_local_get(b, base + 0)
+  emit_local_get(b, base + 7)
   emit_i32_store(b, 2, 8)
-  emit_local_get(b, 9)
-  emit_local_set(b, 5)
+  emit_local_get(b, base + 7)
+  emit_local_set(b, base + 3)
   emit_end(b)
-  emit_local_get(b, 5)
-  emit_local_get(b, 4)
+  emit_local_get(b, base + 3)
+  emit_local_get(b, base + 2)
   emit_i32_add(b)
-  emit_local_get(b, 7)
-  emit_local_get(b, 6)
+  emit_local_get(b, base + 5)
+  emit_local_get(b, base + 4)
   emit_memory_copy(b)
-  emit_local_get(b, 2)
-  emit_local_get(b, 4)
-  emit_local_get(b, 6)
+  emit_local_get(b, base + 0)
+  emit_local_get(b, base + 2)
+  emit_local_get(b, base + 4)
   emit_i32_add(b)
   emit_i32_store(b, 2, 4)
+}
+
+/// Bulk copy for a range inside the original source. The fallback preserves
+/// the linear lane's signed Int loop, including out-of-bounds diagnostics and
+/// self-copies that read bytes appended by earlier iterations.
+export fn gen_bytes_blit_linear_body(enable_rc: Bool, bytes_get_idx: Int, bytes_push_idx: Int, arena_ptr_addr: Int, arena_data_base: Int, arena_limit: Int) -> Bytes {
+  let b = bytebuf_new()
+  // Tagged signed Int order is unchanged by its one-bit tag.
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i64_ge_s(b)
+  emit_if_void(b)
+  emit_return(b)
+  emit_end(b)
+  emit_bytes_append_headers(b, 4)
+  let emit_index: (Int) -> Unit = (slot) -> {
+    emit_local_get(b, slot)
+    if enable_rc {
+      emit_i64_const(b, 1)
+      emit_i64_shr_s(b)
+    }
+  }
+  emit_index(2)
+  emit_i64_const(b, 0)
+  emit_i64_ge_s(b)
+  emit_index(3)
+  emit_local_get(b, 8)
+  emit_i64_extend_i32_u(b)
+  emit_i64_le_s(b)
+  emit_i32_and(b)
+  emit_if_void(b)
+  emit_index(3)
+  emit_index(2)
+  emit_i64_sub(b)
+  emit_i32_wrap_i64(b)
+  emit_local_set(b, 8)
+  // Bound the doubled, aligned capacity before narrowing arithmetic to i32.
+  // Larger ranges keep the existing push path and its allocation behaviour.
+  emit_local_get(b, 6)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, 8)
+  emit_i64_extend_i32_u(b)
+  emit_i64_add(b)
+  emit_i64_const(b, 1073741816)
+  emit_i64_le_s(b)
+  emit_if_void(b)
+  emit_local_get(b, 9)
+  emit_index(2)
+  emit_i32_wrap_i64(b)
+  emit_i32_add(b)
+  emit_local_set(b, 9)
+  emit_bytes_append_range(b, 4, arena_ptr_addr, arena_data_base, arena_limit, true)
+  emit_return(b)
+  emit_end(b)
+  emit_end(b)
+  emit_block_void(b)
+  emit_loop_void(b)
+  emit_local_get(b, 2)
+  emit_local_get(b, 3)
+  emit_i64_ge_s(b)
+  emit_br_if(b, 1)
+  emit_local_get(b, 0)
+  emit_local_get(b, 1)
+  emit_local_get(b, 2)
+  emit_call(b, bytes_get_idx)
+  emit_call(b, bytes_push_idx)
+  emit_local_get(b, 2)
+  emit_i64_const(b, if enable_rc {
+    2
+  } else {
+    1
+  })
+  emit_i64_add(b)
+  emit_local_set(b, 2)
+  emit_br(b, 0)
+  emit_end(b)
+  emit_end(b)
   b
 }
 

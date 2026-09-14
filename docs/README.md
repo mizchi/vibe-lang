@@ -16,7 +16,7 @@ same change as the document.
 The `Later home` column (`docs/user/…`, `docs/internal/…`, `docs/generated/`) is
 a **destination label, not a path that exists yet**; the moves are #2565, #2566
 and #2567. One exception is already real: `docs/internal/` exists and holds the
-two experiment records classified below, created ahead of the move. Do not add
+experiment records classified below, created ahead of the move. Do not add
 to it — a document goes where the tree puts things today, and moves happen in
 one pass so the link rewrites can be reviewed together.
 
@@ -117,6 +117,7 @@ the repo; not the user manual.
 | [internal/compiler-annotated-lambda-inference.json](internal/compiler-annotated-lambda-inference.json) | `internal/design/` | Annotated local lambda inference comparison, controls and raw samples |
 | [internal/compiler-free-var-binding-lookup.json](internal/compiler-free-var-binding-lookup.json) | `internal/design/` | Callee binding lookup comparison, controls, fuel probe and raw samples |
 | [internal/compiler-borrow-worklist.json](internal/compiler-borrow-worklist.json) | `internal/design/` | Fixed-point borrow inference comparisons, controls, retain counts and validation |
+| [compiler-bytes-effects.json](compiler-bytes-effects.json) | `internal/design/` | Byte-range copying and effect reachability measurements, controls and validation |
 | [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
 | [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
 | [simd-data-structures.md](simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |
