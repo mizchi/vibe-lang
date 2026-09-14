@@ -3462,8 +3462,19 @@ fn dtd_interp_index_of_field(field: String) -> Int {
 /// is the answer here rather than the leaf, which would ask about the call's
 /// type and has none.
 fn dtd_interp_lamret_apply(slot: String, arg: Expr, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let named = dtd_interp_lamret_type_name(slot)
   if String::length(slot) == 0 {
     dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+  } else if String::length(named) > 0 {
+    // The declared return names a type outright. It is erased exactly when the
+    // leaf would call it so -- the same guard, because a name is a name and
+    // `Int` must not be read as a type parameter (round 17 learned that by
+    // making the compiler reject its own sources).
+    if formal_in_scope(named) && dtd_formal_innermost_is_nested(named) {
+      named
+    } else {
+      ""
+    }
   } else if dtd_interp_lamret_elem_arg(slot) >= 0 {
     ""
   } else if slot == dtd_interp_lamret_any() {
@@ -4107,6 +4118,25 @@ fn dtd_interp_lamret_any() -> String {
 /// `dtd_interp_lamret_elem_arg` is the only reader that takes it apart.
 fn dtd_interp_lamret_elem(k: Int) -> String {
   String::concat("a", idx_str(k))
+}
+
+/// The marker for "returns a value of the type spelled `name`", as opposed to
+/// "returns argument k". Used for a function-valued PARAMETER, whose declared
+/// type names its return outright -- there is no argument to map to and none
+/// is needed (#2745, Codex P1 round 20).
+///
+/// `t` is not a digit and not `a`, so the three marker shapes stay distinct.
+fn dtd_interp_lamret_type(name: String) -> String {
+  String::concat("t", name)
+}
+
+/// The type name behind a `dtd_interp_lamret_type` marker, or "".
+fn dtd_interp_lamret_type_name(slot: String) -> String {
+  if String::length(slot) < 2 || String::char_code_at(slot, 0) != 't' {
+    ""
+  } else {
+    String::substring(slot, 1, String::length(slot))
+  }
 }
 
 /// The argument index behind a `dtd_interp_lamret_elem` marker, or -1.
@@ -8017,6 +8047,19 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ann) = Array::get(params, i)
+    // #2745 (Codex, P1 round 20 on #2761): a FUNCTION-VALUED parameter.
+    // `[T](a: T, f: (T) -> T) { "\{f(a)}" }` reached leaf inference, which
+    // cannot infer a call through a parameter, and printed a 3-digit pointer
+    // decimal. The parameter's declared type says what the call returns, so
+    // recording it here puts the answer in the same place a local lambda's
+    // goes -- no new reader, and a rebinding masks it like the rest.
+    match ann {
+      Some(TyFn(_, fret, _)) => match fret {
+        TyName(rh) => Array::push(out, (dtd_interp_lamret_key(pname), dtd_interp_lamret_type(rh))),
+        _ => ()
+      },
+      _ => ()
+    }
     match ann {
       // `__rc_heap` is the planner's heap marker (perceus.vibe
       // inferred_heap_type), put on a parameter elaborate_heap_params
