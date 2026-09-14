@@ -3873,6 +3873,37 @@ export fn gen_map_hash_body() -> Bytes {
   b
 }
 
+/// Reduce the nonnegative dividend on the stack modulo 2^31-fold, using
+/// the now-dead accumulator local as scratch. Here fold is 1 or 19.
+///
+/// x = low + 2^31*high is congruent to low + fold*high. The scanner has
+/// x < 2^48 even with the largest byte and a full u32 position, so the
+/// folded value is below 2*p: exactly one conditional subtraction suffices.
+fn compact_fp_reduce31(b: Bytes, acc_l: Int, fold: Int, modulus: Int) -> Unit {
+  emit_local_set(b, acc_l)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, 2147483647)
+  emit_i64_and(b)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, 31)
+  emit_i64_shr_u(b)
+  if fold != 1 {
+    emit_i64_const(b, fold)
+    emit_i64_mul(b)
+  }
+  emit_i64_add(b)
+  emit_local_set(b, acc_l)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, modulus)
+  emit_i64_ge_s(b)
+  emit_if_void(b)
+  emit_local_get(b, acc_l)
+  emit_i64_const(b, modulus)
+  emit_i64_sub(b)
+  emit_local_set(b, acc_l)
+  emit_end(b)
+}
+
 /// Direct byte scanner for @vibe/cache::compact_string_fingerprint. Both
 /// 31-bit hashes are packed into one Int so the source-level wrapper can keep
 /// the historical `len:h1:h2` cache-key format without scanning twice.
@@ -3916,9 +3947,7 @@ export fn gen_compact_fingerprint_hash_body(enable_rc: Bool) -> Bytes {
   emit_i64_add(b)
   emit_i64_const(b, 1)
   emit_i64_add(b)
-  emit_i64_const(b, 2147483647)
-  emit_i64_rem_s(b)
-  emit_local_set(b, h1_l)
+  compact_fp_reduce31(b, h1_l, 1, 2147483647)
   emit_local_get(b, h2_l)
   emit_i64_const(b, 65599)
   emit_i64_mul(b)
@@ -3933,9 +3962,7 @@ export fn gen_compact_fingerprint_hash_body(enable_rc: Bool) -> Bytes {
   emit_i64_add(b)
   emit_i64_const(b, 1)
   emit_i64_add(b)
-  emit_i64_const(b, 2147483629)
-  emit_i64_rem_s(b)
-  emit_local_set(b, h2_l)
+  compact_fp_reduce31(b, h2_l, 19, 2147483629)
   emit_local_get(b, cur_l)
   emit_i32_const(b, 1)
   emit_i32_add(b)
