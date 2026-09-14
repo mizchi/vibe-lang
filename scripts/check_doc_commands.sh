@@ -9,7 +9,7 @@
 #     bash scripts/install.sh
 #
 # when the installer is `install/install.sh` and neither of those paths exists.
-# Both had drifted from README.md and docs/install.md, which are correct. The
+# Both had drifted from README.md and docs/user/getting-started/install.md, which are correct. The
 # reader most likely to be stopped by this is the one with the least context.
 #
 # Checked per fenced bash/console block:
@@ -165,7 +165,7 @@ allow = set()
 # the CLI answers with `unknown command`.
 #
 # This is the largest class the gate found once it could see all the docs:
-# docs/cli-commands.md documents `ide`, `finalize`, `history`, `lsif`,
+# docs/user/reference/cli-commands.md documents `ide`, `finalize`, `history`, `lsif`,
 # `expand`, `save`, `apply`, `clean`, `init`, `precompile`, `update-lock` and
 # `explain-import`, and the CLI rejects every one (measured 2026-08-20 against
 # an installed toolchain).
@@ -199,7 +199,7 @@ checked = 0
 # for the rest of any file containing a ```vibe (or ```json, ```output) block:
 # that block's CLOSING ``` is a bare fence, so it was read as an opener, prose
 # after it was scanned as commands, and the real bash block after THAT was
-# skipped as if it were prose. docs/cli-commands.md -- the command reference --
+# skipped as if it were prose. docs/user/reference/cli-commands.md -- the command reference --
 # was scanned inside-out this way, and its `vibe update-lock` example went
 # unreported while sentences elsewhere were reported as commands.
 #

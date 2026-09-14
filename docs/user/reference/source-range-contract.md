@@ -1,6 +1,6 @@
 # Source ranges: one contract for the editor query surface
 
-Every command under [Code Navigation](../CLAUDE.md) reports positions, and until
+Every command under [Code Navigation](../../../CLAUDE.md) reports positions, and until
 this document they never said what a position *means*. The result was not a gap
 in the docs but a wrong statement in them: [editor-and-debugging.md](editor-and-debugging.md)
 called `vibe symbols` and `vibe binding-at` offsets "char offsets" while the

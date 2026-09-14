@@ -79,7 +79,7 @@ fi
 #                                 block so `import ./lib/@vibe/core` resolves,
 #                                 and tolerates a declaration-only block
 #
-# Handed `docs/cheatsheet.md`, this one used to answer "30 pass, 3 fail" for a
+# Handed `docs/user/reference/cheatsheet.md`, this one used to answer "30 pass, 3 fail" for a
 # document `pkf run doctest` calls clean -- two harnesses, one document, two
 # answers, and the failures were entirely the two differences above. A
 # contributor following CLAUDE.md's `scripts/vibe_md.sh check` had no way to

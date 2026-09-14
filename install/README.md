@@ -44,5 +44,5 @@ bash install/install.sh
 
 Run `bash install/install.sh --help` for the full option list. The existing
 `VIBE_HOME`, `VIBE_BIN_DIR`, `VIBE_INSTALL_REPO`, and `VIBE_INSTALL_REF`
-environment variables remain supported. See [the complete installation guide](../docs/install.md)
+environment variables remain supported. See [the complete installation guide](../docs/user/getting-started/install.md)
 for the layout, dependencies, and toolchain behavior.

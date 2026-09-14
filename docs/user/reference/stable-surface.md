@@ -2,7 +2,7 @@
 
 > Status: **accepted** — the record of what vibe promises SemVer stability for,
 > and what it deliberately does not. Fine-grained locked decisions live in
-> [spec/decisions.md](decisions.md); the full decision log is [adr.md](../adr.md).
+> [spec/decisions.md](../../spec/decisions.md); the full decision log is [adr.md](../../adr.md).
 >
 > **The freeze takes effect at the `0.1.0` tag** — the first release usable by
 > anyone but the author (ADR-0109). Until then this document describes the
@@ -30,7 +30,7 @@ applies literally from 1.0.0 on.
 | Compatible addition to the stable surface | **Minor** | New syntax sugar, new prelude symbol, new CLI flag |
 | Change with no observable behavior difference | **Patch** | Bug fix, better diagnostic message, internal optimization |
 
-Trait bound compatibility follows the lock in [decisions.md](decisions.md):
+Trait bound compatibility follows the lock in [decisions.md](../../spec/decisions.md):
 **tighter bounds = Major / looser bounds = Minor**.
 
 The **unstable surface (§6)** is outside this guarantee. Those parts can break
@@ -74,7 +74,7 @@ Everything below is demonstrated by the selfhost usability sign-off
 (`docs/archive/report/0-1-0-usability-signoff.md` — an internal quality
 milestone from 2026-06, not a release; see ADR-0109). The canonical definition
 of each item is [spec/syntax.md](syntax.md) and the
-[cheatsheet](../cheatsheet.md).
+[cheatsheet](cheatsheet.md).
 
 ### 2.1 Values and types
 - Primitives: `Int` (63-bit tagged, literals up to 2^62-1, arithmetic wraps as
@@ -181,7 +181,7 @@ of each item is [spec/syntax.md](syntax.md) and the
 ## 3. Frozen standard library / prelude surface
 
 The stable symbols listed under "Key Builtins" in the
-[cheatsheet](../cheatsheet.md) are frozen:
+[cheatsheet](cheatsheet.md) are frozen:
 
 > **What a frozen builtin promises (#2433).** The freeze covers the
 > **operation** -- its name, its arity and its signature at the call site. It
@@ -302,7 +302,7 @@ frozen:
 
 ## 5. Frozen formatting / canonicalization
 
-As locked in [decisions.md](decisions.md):
+As locked in [decisions.md](../../spec/decisions.md):
 - The enum variant separator canonicalizes to `;`.
 - Struct literals use the `Type::{ ... }` style.
 - The formatter (`vibe fmt`) is idempotent.
@@ -321,7 +321,7 @@ that.
   `Task[r,T]`, `Sender`/`Receiver`, `TaskGroup::run` / `spawn` /
   `spawn_suspend`, and the `Send` eligibility rule. Today's codegen is an eager
   prototype; the public semantics are defined in the
-  [structured concurrency spec](../concurrency.md). JSPI/Worker, the WASI
+  [structured concurrency spec](../../concurrency.md). JSPI/Worker, the WASI
   Component Model, and shared-everything threads are interchangeable lowerings
   — the stable surface is tied to none of them.
 

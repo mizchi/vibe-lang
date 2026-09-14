@@ -398,7 +398,7 @@ more ships more than one artifact. Three reads that look similar are
 deliberately **not** on this list, because they are per-compilation inputs
 or authority that arrive with the request and cannot be fixed for a whole
 deployment: `VIBE_CFG`, the `#cfg` set of the program being compiled
-(`docs/cheatsheet.md` documents callers choosing it); `VIBE_UNSTABLE`, the
+(`docs/user/reference/cheatsheet.md` documents callers choosing it); `VIBE_UNSTABLE`, the
 ADR-0068 authorization that lets one compilation import `@vibe/concurrent`
 while the next one is refused (`cli_adapter.vibe` reads it per compilation;
 fixing it at build time would either refuse every caller or grant every

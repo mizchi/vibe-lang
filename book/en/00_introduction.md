@@ -33,7 +33,7 @@ and a silent wrong answer are both possible, vibe takes the diagnostic,
 and the message leads with the edit that fixes your program.
 
 **It is small enough to hold in your head.** One concept, one spelling.
-The [cheatsheet](../../docs/cheatsheet.md) is a single page, and this
+The [cheatsheet](../../docs/user/reference/cheatsheet.md) is a single page, and this
 book is that page with the reasoning filled in.
 
 vibe compiles to wasm and is written in itself — the compiler is a vibe

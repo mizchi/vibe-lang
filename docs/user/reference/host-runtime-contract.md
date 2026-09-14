@@ -2,7 +2,7 @@
 
 This document fixes the first machine-checked slice of the host ABI requested by
 #1346. The source of truth for the covered names and their core signatures is
-[`host-runtime-contract.json`](host-runtime-contract.json); run
+[`host-runtime-contract.json`](../../wasm/host-runtime-contract.json); run
 `python3 scripts/check_host_runtime_contract.py` after changing an emitter or
 runner.
 

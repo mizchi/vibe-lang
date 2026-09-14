@@ -57,13 +57,13 @@ Status: accepted and moved from `TODO.md`.
   map to content hash/module refs.
 - Canonical reference schema is fixed in spec:
   conversion and normalization rules among `PathRef` / `HashRef` /
-  `VersionRef` / `SymbolRef` are documented in `docs/vibe.md`.
+  `VersionRef` / `SymbolRef` are documented in `docs/user/reference/vibe.md`.
 - Path object schema and lock key format are fixed in spec:
   `PathObj(raw/base/normalized)` and lock keys (`__hash__/...`,
   `__ref__/version/...`, `__ref__/symbol/...`) are documented in
-  `docs/vibe.md`.
+  `docs/user/reference/vibe.md`.
 - Spec authority is fixed:
-  `docs/vibe.md` is normative; proposal/draft content lives in dedicated design
+  `docs/user/reference/vibe.md` is normative; proposal/draft content lives in dedicated design
   docs.
 - Module syntax documentation is aligned with implementation:
   named import + explicit export forms are canonical; legacy bare import forms
@@ -98,10 +98,10 @@ Status: accepted and moved from `TODO.md`.
   module content hash is Git blob `sha1` over canonical S-expression output, and
   IR schema/examples are aligned to `module_to_sexp` serializer output.
 - Missing language chapters for implemented features are fixed in spec:
-  `docs/vibe.md` now documents trait/impl rules, struct/enum details,
+  `docs/user/reference/vibe.md` now documents trait/impl rules, struct/enum details,
   placeholder lambda shorthand, `while`/`yield`, and member/index/pipe call
   forms.
-- Builtin contracts are documented in `docs/cheatsheet.md`'s Signature reference,
+- Builtin contracts are documented in `docs/user/reference/cheatsheet.md`'s Signature reference,
   which `scripts/check_cheatsheet_signatures.sh` checks against the CHECKER's own
   builtin table. The historical `builtin_contract_table.generated.md` snapshot was
   deleted in #2564: its generator belonged to the retired MoonBit host and it

@@ -31,7 +31,7 @@
 直す編集から始まります。
 
 **頭に入る大きさ。** 1つの概念に1つの綴り。
-[cheatsheet](../../docs/cheatsheet.md) は1ページに収まっていて、この本は
+[cheatsheet](../../docs/user/reference/cheatsheet.md) は1ページに収まっていて、この本は
 そこに理由を書き足したものです。
 
 vibe は wasm にコンパイルされ、自分自身で書かれています — コンパイラは

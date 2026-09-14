@@ -2,7 +2,7 @@
 
 This note covers the **incremental build cache** the compiler writes
 under `.vibe/build/cache/vibe_*` at the project root
-([install.md](install.md#project-layout), #2675), how its fingerprints relate to the ADR-0004
+([install.md](user/getting-started/install.md#project-layout), #2675), how its fingerprints relate to the ADR-0004
 content-address *identity* layer, and how to reclaim disk. It is the resolution
 record for #631 (cache GC) and #633 (hash-layer clarification).
 

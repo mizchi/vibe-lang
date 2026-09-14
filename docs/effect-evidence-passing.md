@@ -33,7 +33,7 @@ wasm `loop` で包み、`perform` は effect ごとに確保した固定 128KB �
    累積カウントは期待値 11 に対し実測 23、最終戻り値は期待 17 に対し
    実測 29 と**値そのものが壊れる**。cheatsheet に「handle body は最後の
    perform まで pure に保つこと」という運用回避を明記して凌いでいるが
-   (`docs/cheatsheet.md:617-623`)、これは headline feature の欠陥であり
+   (`docs/user/reference/cheatsheet.md:617-623`)、これは headline feature の欠陥であり
    test で pin されてもいない (`fixtures/` に該当する回帰なし)。
 2. **`perform` 回数の実用上限**。128KB / 8 byte = 16382 エントリを超える
    perform は memo 領域を溢れる。過去に領域サイズを詰めすぎてヒープを
@@ -1614,13 +1614,13 @@ pipe spelling is snapshotted in
 
 1. `{ Log | e }` という pipe 記法そのものはパーサが理解できない
    (`expected ',' or '}' in effect list`)。しかしこのコードベースの
-   実際の記法は `docs/cheatsheet.md` の "Effect polymorphism" 節が示す
+   実際の記法は `docs/user/reference/cheatsheet.md` の "Effect polymorphism" 節が示す
    とおり pipe ではなく **カンマ区切り** (`{ Ask, e }`) であり、
    `fixtures/effect_handle_call_evidence_row_variable_tail.vibe` は
    まさにこの記法で「効果行変数を含む row」がすでに動くことを pin して
    いる。つまり pipe 記法自体は単なる誤記法で、真の未実装機能ではない。
 2. カンマ記法 `{ Log, e }` に書き直して直接検証したところ (probe、
-   commit 化はしていない)、`docs/cheatsheet.md` が示す **完全多相**
+   commit 化はしていない)、`docs/user/reference/cheatsheet.md` が示す **完全多相**
    (`{ e }` のみ、関数本体がその効果行に一切触れず素通しするだけ) は
    既に動くのに対し、`effect_row_open.vibe` が必要とする **混合行**
    (`{ Log, e }` -- 具体的な効果 `Log` はその場でローカルに `handle`

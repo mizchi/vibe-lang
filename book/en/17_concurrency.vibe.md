@@ -15,7 +15,7 @@ The package is `@vibe/concurrent`.
 ADR-0068, which is still `proposed`: `Nursery`, `Task`, `Sender`/`Receiver`,
 `TaskGroup::run` / `spawn` / `spawn_suspend`, and the compiler's `Send` rule.
 It is outside the SemVer promise and can change within a Minor release — see
-[the stable surface](../../docs/spec/stable-surface.md) §6. What it decides is
+[the stable surface](../../docs/user/reference/stable-surface.md) §6. What it decides is
 settled enough to build on; what is not settled is the `Send`/region checking
 and which backend runs it (today's scheduler is a cooperative
 run-to-completion prototype).

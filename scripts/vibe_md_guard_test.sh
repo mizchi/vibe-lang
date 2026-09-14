@@ -3,7 +3,7 @@
 # answers a ```vibe run block (#2167).
 #
 # There are two doctest harnesses and they answer differently on the same
-# document: handed `docs/cheatsheet.md`, vibe_md.sh reported "30 pass, 3 fail"
+# document: handed `docs/user/reference/cheatsheet.md`, vibe_md.sh reported "30 pass, 3 fail"
 # for a document `pkf run doctest` calls clean (all 3 were the `lib` symlink
 # and the declaration-only tolerance that doctest_extract_run.sh has and this
 # one does not). The guard makes the mismatch impossible to hit silently.
@@ -45,9 +45,9 @@ grep -qF "$TMP/prose.md" <<<"$out" || fail "the refusal does not name the file"
 echo "vibe-md-guard self-test: ok: a prose .md is refused, naming the other harness"
 
 # 2. The real document this repository hits it with.
-set +e; out="$(bash "$SH" check docs/cheatsheet.md 2>&1)"; rc=$?; set -e
-[ "$rc" = "2" ] || fail "docs/cheatsheet.md was not refused (exit $rc)"
-echo "vibe-md-guard self-test: ok: docs/cheatsheet.md is refused"
+set +e; out="$(bash "$SH" check docs/user/reference/cheatsheet.md 2>&1)"; rc=$?; set -e
+[ "$rc" = "2" ] || fail "docs/user/reference/cheatsheet.md was not refused (exit $rc)"
+echo "vibe-md-guard self-test: ok: docs/user/reference/cheatsheet.md is refused"
 
 # 3. A `.vibe.md` passes the guard. Proven by what the failure is NOT: an
 #    empty one gets past the guard and is answered by the tool, so the run

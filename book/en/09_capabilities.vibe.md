@@ -208,7 +208,7 @@ is **const-folded and removed** from the artifact — the code that needed
 it is not in the wasm, not merely unreachable. A program that never gets
 `Http` does not ship networking code, and does not demand a runtime that
 can do networking
-([feature levels](../../docs/wasm/feature-levels.md)).
+([feature levels](../../docs/user/reference/feature-levels.md)).
 
 At startup, a required capability the host did not grant aborts before
 `main` runs and names the flag that would have granted it.

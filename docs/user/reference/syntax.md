@@ -4,8 +4,8 @@ Status: implemented surface syntax reference.
 
 This document is the canonical index for vibe syntax. It describes accepted
 source forms, preferred style, and compatibility forms. Type-system and runtime
-semantics live in `docs/vibe.md`; tutorial material lives in
-`docs/cheatsheet.md`.
+semantics live in `docs/user/reference/vibe.md`; tutorial material lives in
+`docs/user/reference/cheatsheet.md`.
 
 Implementation sources:
 
@@ -411,7 +411,7 @@ Rules:
 Which module refs a given file is *allowed* to import — package boundaries,
 owner visibility, implicit build roots, and the dependency pin/update
 workflow — is not syntax and is specified once, in
-[docs/module-system-oracle.md の「現行モデル」節](../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
+[docs/module-system-oracle.md の「現行モデル」節](../../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
 (#1269).
 
 ## Expressions
@@ -730,7 +730,7 @@ Rules:
   new one while the tree was converted -- both parsed to the same row, so
   nothing after the parser could tell them apart -- and is now rejected by
   name. The parser had to take both for the length of the migration because
-  the bootstrap rule ([bootstrap.md](../bootstrap.md)) requires the seed to
+  the bootstrap rule ([bootstrap.md](../../bootstrap.md)) requires the seed to
   understand a spelling before the compiler's own source may use it. `vibe
   fmt` still rewrites it: the formatter normalizes rows at the TOKEN level, so
   it converts source the compiler no longer accepts, which makes it the

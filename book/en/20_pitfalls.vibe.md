@@ -6,7 +6,7 @@ Previous: [Targeting wasm](19_wasm.vibe.md)
 
 These are rules that cost people an afternoon. Each one was measured on
 the current compiler. The full list lives in
-[docs/cheatsheet.md](../../docs/cheatsheet.md). This chapter is the
+[docs/user/reference/cheatsheet.md](../../docs/user/reference/cheatsheet.md). This chapter is the
 ones that bite first.
 
 ## `handle` eligibility is not the type system
@@ -22,7 +22,7 @@ carries the row; being a local binding is not itself the problem. What
 fails is a **rowless closure declared outside** the handled body: nothing
 tells the handle what that call performs. Give it the row, or move its
 `let` inside the body — the diagnostic names both repairs. The full
-measured table is in [docs/cheatsheet.md](../../docs/cheatsheet.md).
+measured table is in [docs/user/reference/cheatsheet.md](../../docs/user/reference/cheatsheet.md).
 
 ```vibe skip
 // skip: eligibility rejection — the point is the diagnostic, not a run

@@ -113,7 +113,7 @@ once, as its last act.
 Reach for your own effect when the caller genuinely has to swap the
 implementation — a clock in tests, a different source for a value. For
 ordinary failure use `Exception`; for local state try `let mut` first.
-[Effects vs let mut](../../docs/guide/when-to-use-effects.md) has the
+[Effects vs let mut](../../docs/user/guide/when-to-use-effects.md) has the
 criteria.
 
 ## Rows can be variables

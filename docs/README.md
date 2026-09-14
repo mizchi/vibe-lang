@@ -11,19 +11,25 @@ and a row pointing at a file that is no longer there fails. Add the row in the
 same change as the document.
 
 `docs/language-tour/` is not in the tree. Its content was folded into
-[cheatsheet.md](cheatsheet.md).
+[user/reference/cheatsheet.md](user/reference/cheatsheet.md).
 
-The `Later home` column (`docs/user/…`, `docs/internal/…`, `docs/generated/`) is
-a **destination label, not a path that exists yet**; the moves are #2565, #2566
-and #2567. One exception is already real: `docs/internal/` exists and holds the
-experiment records classified below, created ahead of the move. Do not add
-to it — a document goes where the tree puts things today, and moves happen in
-one pass so the link rewrites can be reviewed together.
+`docs/user/` is real: the user rows below sit at the homes the `Later home`
+column names (#2565). For the other classes that column (`docs/internal/…`,
+`docs/generated/`) is still a **destination label, not a path that exists yet**;
+those moves are #2566 and #2567. One exception is already real: `docs/internal/`
+exists and holds the experiment records classified below, created ahead of the
+move. Do not add to it — a document goes where the tree puts things today, and
+moves happen in one pass so the link rewrites can be reviewed together.
 
-**Users:** [install](install.md) · [The Vibe Book](../book/README.md) ·
-[tutorial (pointer)](tutorial/README.md) ·
-[cheatsheet](cheatsheet.md) · [CLI](cli-commands.md) ·
-[editor](editor-and-debugging.md)
+`book/` stays at the top level and `docs/user/` links to it rather than
+containing it: it has its own gates (`scripts/check_book_links.sh`,
+`scripts/vibe_md.sh check`, `scripts/check_tutorial_translation_parity.sh`) and
+external links to The Vibe Book (decided in #2565).
+
+**Users:** [user/getting-started/install.md](user/getting-started/install.md) · [The Vibe Book](../book/README.md) ·
+[user/tutorial/README.md](user/tutorial/README.md) ·
+[user/reference/cheatsheet.md](user/reference/cheatsheet.md) · [user/reference/cli-commands.md](user/reference/cli-commands.md) ·
+[user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md)
 
 **Maintainers:** [adding modules](adding-modules.md) · [bootstrap](bootstrap.md) ·
 [operation gate](operation-gate.md) · [ADRs](adr.md) ·
@@ -42,22 +48,22 @@ Install, learn, write, build, test, package, debug, deploy.
 
 | Current path | Later home | Notes |
 | --- | --- | --- |
-| [install.md](install.md) | `user/getting-started/` | |
-| [../book/](../book/README.md) | `user/book/` | The Vibe Book. Canonical tour + language + systems. Children: [SUMMARY.md](../book/SUMMARY.md), [src/](../book/en/), [ja/](../book/ja/) |
-| [tutorial/](tutorial/) | `user/tutorial/` | Pointer only. Chapters moved to `book/en/` and `book/ja/`. |
-| [cheatsheet.md](cheatsheet.md) | `user/reference/` | Language reference. Absorbed `language-tour/`. |
-| [cli-commands.md](cli-commands.md) | `user/reference/` | |
-| [editor-and-debugging.md](editor-and-debugging.md) | `user/reference/` | LSP, DAP, editor query CLI |
-| [source-range-contract.md](source-range-contract.md) | `user/reference/` | What a reported position MEANS (byte, ADR-0108). Written because [editor-and-debugging.md](editor-and-debugging.md) called byte offsets "char offsets"; enforced by `scripts/check_source_range_contract.sh` |
-| [guide/when-to-use-effects.md](guide/when-to-use-effects.md) | `user/guide/` | `guide/` is mixed; sibling is internal |
-| [vibe.md](vibe.md) | `user/reference/` | Implemented language design outside pure syntax |
-| [spec/syntax.md](spec/syntax.md) | `user/reference/` | Canonical implemented surface syntax. `spec/` is mixed |
-| [spec/stable-surface.md](spec/stable-surface.md) | `user/reference/` | Stable surface / SemVer. Takes effect at the `0.1.0` tag (ADR-0109) |
-| [spec/host-abi.md](spec/host-abi.md) | `user/reference/` | Host ABI of generated wasm |
-| [http_server_contract.md](http_server_contract.md) | `user/reference/` | Public `Http::*` contract |
-| [wasm/feature-levels.md](wasm/feature-levels.md) | `user/reference/` | Generated-wasm feature levels. `wasm/` is mixed |
-| [wasm/host-runtime-contract.md](wasm/host-runtime-contract.md) | `user/reference/` | Host execution contract (not [host-runtime-contract.md](host-runtime-contract.md)) |
-| [release-notes-0.1.0.md](release-notes-0.1.0.md) | `user/getting-started/` | |
+| [user/getting-started/install.md](user/getting-started/install.md) | `user/getting-started/` | |
+| [../book/](../book/README.md) | stays at `../book/` | The Vibe Book. Canonical tour + language + systems. Children: [SUMMARY.md](../book/SUMMARY.md), [src/](../book/en/), [ja/](../book/ja/) |
+| [user/tutorial/](user/tutorial/) | `user/tutorial/` | Pointer only. Chapters moved to `book/en/` and `book/ja/`. |
+| [user/reference/cheatsheet.md](user/reference/cheatsheet.md) | `user/reference/` | Language reference. Absorbed `language-tour/`. |
+| [user/reference/cli-commands.md](user/reference/cli-commands.md) | `user/reference/` | |
+| [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md) | `user/reference/` | LSP, DAP, editor query CLI |
+| [user/reference/source-range-contract.md](user/reference/source-range-contract.md) | `user/reference/` | What a reported position MEANS (byte, ADR-0108). Written because [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md) called byte offsets "char offsets"; enforced by `scripts/check_source_range_contract.sh` |
+| [user/guide/when-to-use-effects.md](user/guide/when-to-use-effects.md) | `user/guide/` | Was `guide/`; the sibling `builtin-effect-migration.md` stays internal |
+| [user/reference/vibe.md](user/reference/vibe.md) | `user/reference/` | Implemented language design outside pure syntax |
+| [user/reference/syntax.md](user/reference/syntax.md) | `user/reference/` | Canonical implemented surface syntax. Was `spec/`; the rest of `spec/` is internal |
+| [user/reference/stable-surface.md](user/reference/stable-surface.md) | `user/reference/` | Stable surface / SemVer. Takes effect at the `0.1.0` tag (ADR-0109) |
+| [user/reference/host-abi.md](user/reference/host-abi.md) | `user/reference/` | Host ABI of generated wasm |
+| [user/reference/http_server_contract.md](user/reference/http_server_contract.md) | `user/reference/` | Public `Http::*` contract |
+| [user/reference/feature-levels.md](user/reference/feature-levels.md) | `user/reference/` | Generated-wasm feature levels. Was `wasm/` |
+| [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) | `user/reference/` | Host execution contract (not [host-runtime-contract.md](host-runtime-contract.md)) |
+| [user/getting-started/release-notes-0.1.0.md](user/getting-started/release-notes-0.1.0.md) | `user/getting-started/` | |
 
 ## 2. Maintainer / internal
 
@@ -175,7 +181,7 @@ Machine-produced. Do not edit by hand. Generator / freshness is noted where know
 | --- | --- | --- |
 | [wasm/feature-matrix.json](wasm/feature-matrix.json) | `generated/` | Fetched by `scripts/wasm_feature_matrix_fetch.sh` |
 | [wasm/feature-levels.expected.json](wasm/feature-levels.expected.json) | `generated/` | Oracle for feature-level checks |
-| [wasm/host-runtime-contract.json](wasm/host-runtime-contract.json) | `generated/` | Machine-checked companion of [wasm/host-runtime-contract.md](wasm/host-runtime-contract.md) |
+| [wasm/host-runtime-contract.json](wasm/host-runtime-contract.json) | `generated/` | Machine-checked companion of [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
 
 ## 4. Archive
 
@@ -189,7 +195,7 @@ only while it is still cited.
 | [archive/bench_advanced_graph_report.md](archive/bench_advanced_graph_report.md) | |
 | [archive/build-optimization-analysis.md](archive/build-optimization-analysis.md) | |
 | [archive/codegen/](archive/codegen/) | [vibe-output-analysis.md](archive/codegen/vibe-output-analysis.md), [wasm-gc-vs-selfhost-analysis.md](archive/codegen/wasm-gc-vs-selfhost-analysis.md) |
-| [archive/compiler_language_incidents.md](archive/compiler_language_incidents.md) | Cited from [vibe.md](vibe.md) |
+| [archive/compiler_language_incidents.md](archive/compiler_language_incidents.md) | Cited from [user/reference/vibe.md](user/reference/vibe.md) |
 | [archive/moonbit-retirement.md](archive/moonbit-retirement.md) | Cited recovery record (`moonbit-host-final-2026-06-23`) |
 | [archive/mut-effect-plan.md](archive/mut-effect-plan.md) | |
 | [archive/report/](archive/report/) | Dated evaluations |
@@ -207,8 +213,8 @@ were in no class table, one archived file was missing from the archive table,
 and `docs/internal/` had been created while the text above said it did not
 exist. The gate walks the tree instead, so this section cannot go stale.
 
-Mixed directories, children classified above:
+Directories that were mixed before #2565, children classified above:
 
-- `guide/` — user `when-to-use-effects.md`; internal `builtin-effect-migration.md`
-- `spec/` — user `syntax.md`, `stable-surface.md`, `host-abi.md`; remaining files internal
-- `wasm/` — user `feature-levels.md`, `host-runtime-contract.md`; generated `*.json`; internal `gc-value-abi.md`, `code-size-linear-vs-gc.md`
+- `guide/` — internal `builtin-effect-migration.md` (`when-to-use-effects.md` is under `user/guide/`)
+- `spec/` — internal only (`syntax.md`, `stable-surface.md`, `host-abi.md` are under `user/reference/`)
+- `wasm/` — generated `*.json`; internal `gc-value-abi.md`, `code-size-linear-vs-gc.md` (`feature-levels.md`, `host-runtime-contract.md` are under `user/reference/`)

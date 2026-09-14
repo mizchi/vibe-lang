@@ -10,7 +10,7 @@ Related documents:
 - [Build cache layering](build-cache.md)
 - [Compiler parallelism](compiler-parallelism.md)
 - [Bootstrap and generation builds](bootstrap.md)
-- [Editor and LSP behavior](editor-and-debugging.md)
+- [Editor and LSP behavior](user/reference/editor-and-debugging.md)
 - [Component Model target](vibec-component.md)
 - [Lean formal model](../formal/README.md)
 

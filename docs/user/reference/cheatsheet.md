@@ -48,7 +48,7 @@ clean を意味し、メッセージは内部用語ではなく「何を書き�
 **これは自己改善のループとして運用する** — 使っていて欲しい情報が取れない・
 出力が読めない・判定に使えないと分かったら、ワークアラウンドを覚えるのでは
 なく CLI 側を直すか issue を立てる。詳細と現在わかっている穴は
-[AGENTS.md の Code Navigation 節](../AGENTS.md#code-navigation-important)。
+[AGENTS.md の Code Navigation 節](../../../AGENTS.md#code-navigation-important)。
 
 ---
 
@@ -185,7 +185,7 @@ covers your scope:
 | Growable buffer (bytes / chars) | `Bytes` / `String` | immutable binding, mutable interior |
 | Growable array | `ArrayBuilder` → `Array::from_array_builder` | build-then-freeze; `Array::push` also works for growing an existing `Array` in place (#1285) |
 | Mutable cursor in a struct | `struct S { mut field: T }` + `r.field = v` | ADR-0052; same responsibility model as `Array[T]` field |
-| Cross-call / handler-mediated state | declare your own effect, then `handle ... with <YourEffect>` | ADR-0050/0021; there is no builtin `Mut` effect. A `perform` **directly inside the handler body** is inline-eliminated; a call through an intervening function still goes through evidence-dict dispatch, measured at ~2× a captured `let mut` ([side-effect-consolidation.md §2.5](side-effect-consolidation.md)) |
+| Cross-call / handler-mediated state | declare your own effect, then `handle ... with <YourEffect>` | ADR-0050/0021; there is no builtin `Mut` effect. A `perform` **directly inside the handler body** is inline-eliminated; a call through an intervening function still goes through evidence-dict dispatch, measured at ~2× a captured `let mut` ([side-effect-consolidation.md §2.5](../../side-effect-consolidation.md)) |
 
 `Array::push(arr, v)` appends **in place**, and every reference to `arr`
 (alias, parameter, struct field, closure capture) observes the growth — the
@@ -248,7 +248,7 @@ contract — this is a naming *rule*, not a per-type coincidence:
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
 persistent (functional-update) but are *not* `Send`-eligible under the
 current allowlist — the canonical one is
-[concurrency.md](concurrency.md#send-と-capture-safety), pinned by
+[concurrency.md](../../concurrency.md#send-と-capture-safety), pinned by
 `send_allowlist_test.vibe`. Reach for `FrozenArray`
 specifically when a value needs to cross a `spawn`/task boundary; reach for
 a bare-named persistent type for ordinary functional-update code.
@@ -688,7 +688,7 @@ dot form untouched rather than guessing — in particular, **a receiver whose
 type is declared in a different file (only imported here) is always left as
 dot form**, since `vibe normalize` is single-file and never sees that
 declaration; this is a known scope limit, not a bug. Rationale:
-[`eval/call-style/findings/2026-07-28-r1.md`](../eval/call-style/findings/2026-07-28-r1.md)
+[`eval/call-style/findings/2026-07-28-r1.md`](../../../eval/call-style/findings/2026-07-28-r1.md)
 found a reader given only a text excerpt (no compiler, no LSP) can recover
 the callee's type from the qualified spelling but not from bare
 `recv.method(...)` when annotations are sparse — so the qualified spelling
@@ -697,7 +697,7 @@ spelling stays legal to type. This does **not** help positional-argument-order
 ambiguity between same-typed parameters — that's a separate problem no call
 notation solves (`eval/call-style/scenarios/02_arg_order`). Implementation:
 `normalize_dot_calls` in
-[`lib/@vibe/compiler/normalize/normalize.vibe`](../lib/@vibe/compiler/normalize/normalize.vibe);
+[`lib/@vibe/compiler/normalize/normalize.vibe`](../../../lib/@vibe/compiler/normalize/normalize.vibe);
 tests in `lib/@vibe/compiler/tests/normalize_dot_calls_test.vibe`.
 
 ### Function combinators (point-free)
@@ -719,7 +719,7 @@ Iterator::map(xs, compose(parse, render))
 ```
 
 > Runnable reference for the pipe `_` slot, combinators, `let*`, and `tap`:
-> [`lib/@vibe/builtin/pipeline_ergonomics_test.vibe`](../lib/@vibe/builtin/pipeline_ergonomics_test.vibe)
+> [`lib/@vibe/builtin/pipeline_ergonomics_test.vibe`](../../../lib/@vibe/builtin/pipeline_ergonomics_test.vibe)
 > (`vibe test lib/@vibe/builtin/pipeline_ergonomics_test.vibe`). The
 > combinators are `@vibe/builtin` exports and `tap` / `tap_some` moved to
 > `@vibe/console` (#2102 — they carry `Stdout`), so a file must `import` them
@@ -1348,7 +1348,7 @@ handle { fetch_user(input) } with {
 >
 > `Ok`/`Err` が本当に要るのは **WIT 境界だけ** — WIT の `result<T,E>` は
 > `Exception[E]` row からは射影されないので、そこには
-> `import @vibe/wit_runtime { Result }` を使う ([effect-wit-mapping.md](effect-wit-mapping.md)、
+> `import @vibe/wit_runtime { Result }` を使う ([effect-wit-mapping.md](../../effect-wit-mapping.md)、
 > compiler-gate 89/89 が byte 単位で pin)。それ以外で自前に
 > `enum Result[T, E] { Ok(T); Err(E) }` を宣言するのは自由だが、特別扱いは
 > 一切なくただのユーザー enum になる。
@@ -1484,7 +1484,7 @@ let n = handle { read_cfg() } with { Exception[IoError]::Throw(_e) => 0 }
 - runtime は kind を区別しない — すべて単一の abortive Wasm tag。exact-kind
   の保証は checker 側の性質。
 
-詳細と v1 の限界: [exception-effect.md](exception-effect.md)。
+詳細と v1 の限界: [exception-effect.md](../../exception-effect.md)。
 
 ### Railway try (`?`) — `Option` (#635 / #1324)
 
@@ -1634,7 +1634,7 @@ operation の宣言 arity より 1 つ多い末尾パラメータを束縛する
 おらず、`resume(v)` も **arm の tail 位置限定** (`resume(10) + 1` は
 `resume(...) must be the last expression of the handler arm` で reject、
 #942/ADR-0050)。継続呼び出しは tail の `resume(v)` を使う。
-規約の詳細は [archive/mut-effect-plan.md](archive/mut-effect-plan.md) の
+規約の詳細は [archive/mut-effect-plan.md](../../archive/mut-effect-plan.md) の
 「継続呼び出し規約」(#627) を参照。
 
 ### Effect polymorphism
@@ -1786,7 +1786,7 @@ vibe test dir/            # run all tests in directory (examples run too)
 ## Key Builtins
 
 The list below is the **index**; the normative one — what 0.1.0 promises SemVer
-stability for — is [spec/stable-surface.md](spec/stable-surface.md) §3, and
+stability for — is [spec/stable-surface.md](stable-surface.md) §3, and
 `pkf run check-freeze-surface` probes every name in it against the compiler.
 The bullets here are checked the same way, so a name listed as a builtin here
 resolves as one.
@@ -2886,7 +2886,7 @@ arity/type check に進む。
 | `_*.vibe` / `*.draft.vibe` | Explicit-only source; excluded from discovery, but inherits nearest package shared imports and is hashed when reached by relative import |
 
 > 境界・可視性・pin/update の正本は
-> [docs/module-system-oracle.md の「現行モデル」節](module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述) (#1269)。
+> [docs/module-system-oracle.md の「現行モデル」節](../../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述) (#1269)。
 > 以下はその要約。
 
 `index.vpkg` と同じ directory の通常 `*.vibe` だけが暗黙 build root。
@@ -2945,8 +2945,8 @@ enforce しない (fixtures/contract_* の最小契約テストを壊さない�
 構文ではないので `.vibe` 用の CST formatter は通さず、専用の writer が
 書き出す (境界判定は `scan_package_header` の行分類をそのまま写したもの)。
 ヘッダが loader にとって不正な形の場合、フォーマッタはファイルに一切
-触らない — 詳細は [docs/cli-commands.md](cli-commands.md) の `fmt` 節。
+触らない — 詳細は [docs/user/reference/cli-commands.md](cli-commands.md) の `fmt` 節。
 
 ---
 
-*Full reference: [docs/spec/syntax.md](spec/syntax.md) — canonical surface syntax*
+*Full reference: [docs/user/reference/syntax.md](syntax.md) — canonical surface syntax*
