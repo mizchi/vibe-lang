@@ -74,7 +74,7 @@ is added.
 - This is the narrow, occurrence-local slice of what almide's
   `alias_safety.rs` does with a full function-local fixpoint dataflow (eliding
   redundant `MakeUnique`/COW rc-checks on provably-unaliased values) — see
-  `docs/pl-survey-2026-07.md` and `docs/BENCHMARKS.md`. vibe's RC has no
+  `docs/pl-survey-2026-07.md` and `docs/internal/operations/BENCHMARKS.md`. vibe's RC has no
   COW/`MakeUnique`-equivalent construct yet (arrays/maps are mutated in place
   unconditionally, never copy-on-write-guarded), so a literal port of the rest
   of almide's pass has no target to elide; this slice covers the one case
@@ -82,7 +82,7 @@ is added.
   safe without new infrastructure.
 - Measured impact on `bench/binary_size/`'s 5-program suite and on the
   compiler's own self-hosted source under RC: **none today** — neither
-  contains the target pattern (see `docs/BENCHMARKS.md`). Kept as a
+  contains the target pattern (see `docs/internal/operations/BENCHMARKS.md`). Kept as a
   zero-cost-when-unused safety net; broader rc-check elision (a real
   alias/escape fixpoint, or COW guards once arrays/maps grow them) remains
   future work.

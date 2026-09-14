@@ -415,7 +415,7 @@ generation manifest (stage0..stage3 の sha, stage3==stage2) を rebuild 無し�
 > dead になっていた script / task 本体も #1271 の cleanup で撤去済み
 > (`vibe.abi` の検証自体は `scripts/generations.sh` / `test_host_abi.js` /
 > host runner 側が現役でカバーする)。経緯は
-> [docs/archive/moonbit-retirement.md](archive/moonbit-retirement.md)。
+> [docs/archive/moonbit-retirement.md](../../archive/moonbit-retirement.md)。
 
 ### `vibe.abi` custom section contract
 
@@ -444,7 +444,7 @@ section id 0 (custom), name "vibe.abi", payload:
 `lib/@vibe/cli/`) だけからビルド・検証・実行される。MoonBit toolchain
 (`moon`) は不要。
 
-- 移行記録: [docs/archive/moonbit-retirement.md](archive/moonbit-retirement.md)
+- 移行記録: [docs/archive/moonbit-retirement.md](../../archive/moonbit-retirement.md)
 - recovery point (最後の MoonBit-host 状態): tag
   `moonbit-host-final-2026-06-23` (`59ef040`)
 

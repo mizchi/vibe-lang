@@ -623,7 +623,7 @@ echo "[compiler-gate] shadow build typed-lowering tables ok (#2469)"
 #      dup/drop under-provision -- `_start` traps the same way for both.
 #      This list is closed on purpose -- it is a bounded smoke, not a fixture
 #      inventory. Perceus / RC codegen still needs the full unit_test_runner
-#      before push (see docs/operation-gate.md).
+#      before push (see docs/internal/operations/operation-gate.md).
 echo "[compiler-gate] 40f2/40 RC shadow checked-artifact smoke (#1986)"
 cadir="_build/_gate_rc_shadow_checked"
 rm -rf "$cadir"; mkdir -p "$cadir"

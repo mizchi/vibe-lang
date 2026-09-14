@@ -16,7 +16,7 @@ node scripts/wasm_section_sizes.mjs \
 ```
 
 Related: [gc-value-abi.md](./gc-value-abi.md) (#1331), [feature-levels.md](../user/reference/feature-levels.md),
-[../BENCHMARKS.md](../BENCHMARKS.md) (time-axis regression signal on the linear lane)
+[../BENCHMARKS.md](../internal/operations/BENCHMARKS.md) (time-axis regression signal on the linear lane)
 
 ## Conclusion
 
@@ -62,7 +62,7 @@ no size-based reason to pick the gc lane.
 
 Byte sizes of `.wasm` compiled from the same source on both backends. The case set
 is `bench/binary_size/` (#1056) as-is, so it is comparable to the linear
-numbers in [../BENCHMARKS.md](../BENCHMARKS.md). The `result` column is the
+numbers in [../BENCHMARKS.md](../internal/operations/BENCHMARKS.md). The `result` column is the
 execution result on both lanes; a row where those disagree is invalid as a size
 comparison too (a broken wasm is naturally small, so always read size next to the result).
 

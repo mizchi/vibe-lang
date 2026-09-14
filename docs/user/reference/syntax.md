@@ -730,7 +730,7 @@ Rules:
   new one while the tree was converted -- both parsed to the same row, so
   nothing after the parser could tell them apart -- and is now rejected by
   name. The parser had to take both for the length of the migration because
-  the bootstrap rule ([bootstrap.md](../../bootstrap.md)) requires the seed to
+  the bootstrap rule ([bootstrap.md](../../internal/operations/bootstrap.md)) requires the seed to
   understand a spelling before the compiler's own source may use it. `vibe
   fmt` still rewrites it: the formatter normalizes rows at the TOKEN level, so
   it converts source the compiler no longer accepts, which makes it the

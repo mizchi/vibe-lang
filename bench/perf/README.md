@@ -9,7 +9,7 @@ Driver: `scripts/selfcompile_kpi.sh <stage2.wasm> [input.vibe]`.
 
 > The merge-base delta replacement and its isolated Docker validation lane are
 > documented in
-> [`docs/selfcompile-heap-policy.md`](../../docs/selfcompile-heap-policy.md).
+> [`docs/internal/operations/selfcompile-heap-policy.md`](../../docs/internal/operations/selfcompile-heap-policy.md).
 > The workflow-dispatch lane is temporary validation scaffolding, not required
 > CI. Until governance and final wiring land, the absolute gate below remains
 > authoritative; the new policy does not relax it.
@@ -23,7 +23,7 @@ uses CLI-only `content-v1` stat tokens to make identical clean tree
 reconstructions deterministic; this does not change the standalone/default
 metadata token behavior described here. See the remaining isolation-validation,
 governance, and metric-ABI boundaries in
-[`docs/selfcompile-heap-policy.md`](../../docs/selfcompile-heap-policy.md).
+[`docs/internal/operations/selfcompile-heap-policy.md`](../../docs/internal/operations/selfcompile-heap-policy.md).
 
 CI wiring (`.github/workflows/ci.yml`, step "Selfcompile KPI heap gate"):
 the compiler-gate job runs the script against its freshly-built stage2 and
@@ -49,7 +49,7 @@ why) in the PR.
 
 ## User edit-cycle baseline
 
-Design and KPI contract: [`docs/incremental-build.md`](../../docs/incremental-build.md).
+Design and KPI contract: [`docs/internal/operations/incremental-build.md`](../../docs/internal/operations/incremental-build.md).
 The first baseline measures the current one-shot `vibe check` path with an
 isolated cache and temporary copy of a two-file project:
 
@@ -312,7 +312,7 @@ benches one fixed, already-tracked series (`alloc_bench.vibe`'s
 noise a tiny bench like `pure_bench.vibe`'s `fib30` shows) compiled against
 the **committed seed** (`bootstrap/seed/compiler.wasm`) instead of the PR's
 own freshly built stage2. The seed only changes on a deliberate bootstrap
-bump (`docs/bootstrap.md`), so this reading is comparable across almost
+bump (`docs/internal/operations/bootstrap.md`), so this reading is comparable across almost
 every historical snapshot and isolates "how fast is this runner right now"
 from anything about the PR's own codegen. The result is stored as a
 `calibration: { label, ns_p50, seed_sha256, runner_sha256, bench_sha256 }`

@@ -32,7 +32,7 @@
 # import_private_ctor_collision_test.vibe (which exercises private-ctor
 # namespacing at COMPILE time) yields a program with 8 branches total and no
 # import_alias_rewrite function in it at all. So a 0% module here means "no
-# test calls it in-process", NOT "untested" -- see docs/coverage.md before
+# test calls it in-process", NOT "untested" -- see docs/internal/operations/coverage.md before
 # treating top_branch_union_gaps as a to-do list.
 #
 # Thresholds (percent, env-overridable; this file is the ONE place they are

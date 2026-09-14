@@ -8,11 +8,11 @@ that architecture.
 Related documents:
 
 - [Build cache layering](build-cache.md)
-- [Compiler parallelism](compiler-parallelism.md)
+- [Compiler parallelism](../../compiler-parallelism.md)
 - [Bootstrap and generation builds](bootstrap.md)
-- [Editor and LSP behavior](user/reference/editor-and-debugging.md)
-- [Component Model target](vibec-component.md)
-- [Lean formal model](../formal/README.md)
+- [Editor and LSP behavior](../../user/reference/editor-and-debugging.md)
+- [Component Model target](../../vibec-component.md)
+- [Lean formal model](../../../formal/README.md)
 
 ## Goals and non-goals
 
@@ -573,7 +573,7 @@ the measured compile. Reports and outputs remain under
 The continuous `perf-metrics` job now records a bounded cold/warm pair for
 both prelude lanes on every PR, and full CLI cold/warm builds on main. Each
 allocation reading is compared with the previous main snapshot. See
-[the sampling protocol and retained history](../bench/perf/README.md#paired-prelude-allocation-and-full-cli-builds).
+[the sampling protocol and retained history](../../../bench/perf/README.md#paired-prelude-allocation-and-full-cli-builds).
 This series fixes the probe to the bump allocator and records its own protocol
 identity; its absolute readings should not be mixed with the historical
 before/after experiment above.
@@ -2285,7 +2285,7 @@ With `VIBE_CHECKED_MODULE_CACHE=on` or `verify`, standalone telemetry uses schem
 an exact checked-module input can still match after a private dependency body
 edit changes the conservative fingerprint. All three reasons must sum to
 `modules_reused`. Verification checks afresh, so it records zero artifact hits.
-The [checked-module parity gate](checked-body-transport.md) validates these
+The [checked-module parity gate](../../checked-body-transport.md) validates these
 counts through the real compile CLI; the edit-cycle reader accepts both schemas.
 `scripts/ast_cache_prefetch_oracle.mjs` pins the lane signature on a real
 build, stated relative to the cold build rather than against zero: a warm

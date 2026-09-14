@@ -91,7 +91,7 @@ codegen 出力は変わらないはず)。ここが崩れたら変換器のバ�
 
 ### Phase 2 と bootstrap seed の関係
 
-**seed が qualified 形を理解できることを先に tag する**(docs/bootstrap.md の
+**seed が qualified 形を理解できることを先に tag する**(docs/internal/operations/bootstrap.md の
 運用どおり)。Phase 0 が既に成立しているので現行 seed は両方読めるはずだが、
 Phase 2 で bare を**拒否**するようにした compiler source を、bare を含む古い
 seed でビルドできるかは別問題。順序は Phase 1(変換・両方受理のまま)→ bootstrap

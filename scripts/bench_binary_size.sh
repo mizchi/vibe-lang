@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# #1056 (almide docs/BENCHMARKS.md comparison): wasm binary-size regression
+# #1056 (almide docs/internal/operations/BENCHMARKS.md comparison): wasm binary-size regression
 # bench. Compiles each bench/binary_size/*.vibe program with the linear
 # backend, RC off (VIBE_RC=0) and RC on (VIBE_RC=1), and reports the "as
 # shipped" byte size for each -- plus, best-effort, the size after

@@ -59,7 +59,7 @@ pin exists the hash is checked wherever the package was found. Under
    `*_test.vibe`** — that naming is the only condition for reaching
    `discover()`, and a file that misses it is run by no lane at all.
    `scripts/check_fixture_execution.sh` checks this at the top of the gate so it
-   cannot pass silently ([docs/operation-gate.md](../../operation-gate.md), "Do not
+   cannot pass silently ([docs/internal/operations/operation-gate.md](../operations/operation-gate.md), "Do not
    enumerate fixtures").
 4. **Only when the compiler consumes it**: add a row under the `vibe_core` group
    of `lib/@vibe/compiler/compiler_sources_manifest.tsv`, pointing at

@@ -7,7 +7,7 @@
 #   bash scripts/build_cli_wasm.sh [out.wasm]   # default: dist/cli/vibe-cli.wasm
 #
 # Content-fingerprint cache: stage0(seed)->stage1->stage2 is deterministic for
-# a fixed (seed, lib/@vibe/**) pair (docs/bootstrap.md), so a rebuild against
+# a fixed (seed, lib/@vibe/**) pair (docs/internal/operations/bootstrap.md), so a rebuild against
 # an unchanged tree just reproduces the same bytes. install.sh and every
 # scripts/test_vibe_*.sh debugger/profiler smoke test call this script fresh
 # per-invocation with no coordination between them -- in a single CI job that

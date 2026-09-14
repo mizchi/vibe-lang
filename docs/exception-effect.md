@@ -469,7 +469,7 @@ vibe: uncaught error: expected ',' or '}' in effect list
 ```
 
 `fn` 宣言・closure literal どちらの位置でも再現する (現在の stage2 では
-どちらも通る)。これは CLAUDE.md / docs/bootstrap.md が書いている
+どちらも通る)。これは CLAUDE.md / docs/internal/operations/bootstrap.md が書いている
 「新しい syntax を compiler source 自体で使う場合は先に bootstrap bump」
 そのもの。
 

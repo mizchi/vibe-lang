@@ -64,7 +64,7 @@ Three facts about the tooling, learned while measuring:
   achievable binaryen floor today is about 2.14 MB, a 22 % reduction, and
   binaryen removes about 2,500 of the 5,680 functions by inlining.
 - The in-house optimizer (`lib/@vibe/optimizer`, `scripts/minify_wasm.sh`) was
-  not run over the compiler in this session. `docs/wasm-opt-dogfood.md` records
+  not run over the compiler in this session. `docs/internal/operations/wasm-opt-dogfood.md` records
   it at or below `wasm-opt -Oz` on small programs and behind on large ones, and
   `docs/vibec-component.md` records 4.9 MB to 3.85 MB on the library build.
   It is not the lever that closes the gap either.
@@ -314,7 +314,7 @@ recompiling the whole compiler closure per test file (the largest CI cost,
 per #2388). The cost is that the flat self-build lane (one merged source,
 `selfbuild_compile_stage2`) and the stage2 == stage3 fixpoint check have to be
 restated per unit, and the seed becomes several artifacts. That is a bootstrap
-procedure change (`docs/bootstrap.md`), not a language change.
+procedure change (`docs/internal/operations/bootstrap.md`), not a language change.
 
 What a Workers deployment would actually look like, given the above: one
 Worker holding the frontend, checker, codegen and link units (target: the
@@ -343,7 +343,7 @@ per-module design needs on every host.
 The link unit is the exception to "one module at a time", and the per-module
 argument does not bound it. Monoify instantiation, comparator emission,
 capability DCE, index assignment and assembly are whole-program by definition
-(`docs/incremental-build.md` keeps them as barriers), so running link as its
+(`docs/internal/operations/incremental-build.md` keeps them as barriers), so running link as its
 own request resets the earlier phases' memory but leaves the linker's own
 working set at program size. Today that working set is the merged AST (the
 1.35 GB figure); nothing here measures what it becomes once link consumes
@@ -424,7 +424,7 @@ typing reuse is on by default) kept both arms of a decided question compiled
 and tested; it is deleted in #2496, and `VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1`
 stays as the emergency opt-out the on/off oracle depends on.
 `VIBE_EXPERIMENTAL_PERSISTENT_INGESTION_STAMP` (a metadata-only fingerprint
-hint, `docs/build-cache.md`) is **kept for now**, by decision: it belongs to
+hint, `docs/internal/operations/build-cache.md`) is **kept for now**, by decision: it belongs to
 the incremental-build line, which is to be completed rather than trimmed, and
 whether the trusted-stat shortcut has a place in that line is that line's
 call; the record is on #2496. `VIBE_DISABLE_PERSISTENT_ARTIFACT_CACHE` was

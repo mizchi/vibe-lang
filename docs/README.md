@@ -30,8 +30,8 @@ external links to The Vibe Book (decided in #2565).
 [user/reference/cheatsheet.md](user/reference/cheatsheet.md) · [user/reference/cli-commands.md](user/reference/cli-commands.md) ·
 [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md)
 
-**Maintainers:** [internal/project/adding-modules.md](internal/project/adding-modules.md) · [bootstrap](bootstrap.md) ·
-[operation gate](operation-gate.md) · [ADRs](adr.md) ·
+**Maintainers:** [internal/project/adding-modules.md](internal/project/adding-modules.md) · [internal/operations/bootstrap.md](internal/operations/bootstrap.md) ·
+[internal/operations/operation-gate.md](internal/operations/operation-gate.md) · [ADRs](adr.md) ·
 [internal/project/issue-triage.md](internal/project/issue-triage.md)
 
 This file is the audience router. It is not one of the four classes below.
@@ -81,16 +81,16 @@ the repo; not the user manual.
 
 | Current path | Later home | Notes |
 | --- | --- | --- |
-| [bootstrap.md](bootstrap.md) | `internal/operations/` | |
-| [operation-gate.md](operation-gate.md) | `internal/operations/` | |
-| [build-cache.md](build-cache.md) | `internal/operations/` | |
-| [incremental-build.md](incremental-build.md) | `internal/operations/` | Design + measurement; not a user how-to |
-| [ci-speed.md](ci-speed.md) | `internal/operations/` | |
-| [coverage.md](coverage.md) | `internal/operations/` | Compiler coverage strategy |
-| [selfcompile-heap-policy.md](selfcompile-heap-policy.md) | `internal/operations/` | |
-| [pkfire-pkspec.md](pkfire-pkspec.md) | `internal/operations/` | |
-| [BENCHMARKS.md](BENCHMARKS.md) | `internal/operations/` | Continuously-runnable regression signals |
-| [wasm-opt-dogfood.md](wasm-opt-dogfood.md) | `internal/operations/` | |
+| [internal/operations/bootstrap.md](internal/operations/bootstrap.md) | `internal/operations/` | |
+| [internal/operations/operation-gate.md](internal/operations/operation-gate.md) | `internal/operations/` | |
+| [internal/operations/build-cache.md](internal/operations/build-cache.md) | `internal/operations/` | |
+| [internal/operations/incremental-build.md](internal/operations/incremental-build.md) | `internal/operations/` | Design + measurement; not a user how-to |
+| [internal/operations/ci-speed.md](internal/operations/ci-speed.md) | `internal/operations/` | |
+| [internal/operations/coverage.md](internal/operations/coverage.md) | `internal/operations/` | Compiler coverage strategy |
+| [internal/operations/selfcompile-heap-policy.md](internal/operations/selfcompile-heap-policy.md) | `internal/operations/` | |
+| [internal/operations/pkfire-pkspec.md](internal/operations/pkfire-pkspec.md) | `internal/operations/` | |
+| [internal/operations/BENCHMARKS.md](internal/operations/BENCHMARKS.md) | `internal/operations/` | Continuously-runnable regression signals |
+| [internal/operations/wasm-opt-dogfood.md](internal/operations/wasm-opt-dogfood.md) | `internal/operations/` | |
 
 ### Design (ADR index + reviews + contracts)
 

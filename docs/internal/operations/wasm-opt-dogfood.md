@@ -1,6 +1,6 @@
 # wasm_opt dogfooding — vibe optimizer vs binaryen `wasm-opt`
 
-The size optimizer in [`lib/@vibe/optimizer`](../lib/@vibe/optimizer) is written in
+The size optimizer in [`lib/@vibe/optimizer`](../../../lib/@vibe/optimizer) is written in
 vibe and optimizes vibe-compiled wasm. This note records how we benchmark it
 against binaryen's `wasm-opt` and where we currently stand.
 
