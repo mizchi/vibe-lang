@@ -70,7 +70,7 @@
    evidence vector に落とし、tail-resumptive perform を直接呼び出しへ。
    非 tail は yield bubbling。suspend 点を IR で明示し WasmFX / WASI 0.3
    async へ前方互換 (ADR-0012/0068 と同一 IR)。詳細は
-   [effect-evidence-passing.md](internal/design/effect-evidence-passing.md)、実装は
+   [effect-evidence-passing.md](../design/effect-evidence-passing.md)、実装は
    5 段階のロールアウト計画に沿って別途着手する。
 2. **nursery = Spawn capability handler** — cost: medium → issue #818。
    0.4.0 の軽量プロセスを structured concurrency (スコープ終了時
@@ -119,7 +119,7 @@
 ## 参照
 
 - 発端: ロードマップ 0.3.0/0.4.0 (当時の版数。ADR-0109 で 0.1.0/0.2.0 に renumber、#805/#806)
-- 並行設計原則: [ADR-0068 詳細仕様](internal/design/concurrency.md)
+- 並行設計原則: [ADR-0068 詳細仕様](../design/concurrency.md)
 - lang-review round 1 の concurrency 所見 (#806 コメント) と整合
 - [WebAssembly proposal registry](https://github.com/WebAssembly/proposals)
 - [WebKit: JSPI in Safari 27 beta](https://webkit.org/blog/17967/news-from-wwdc26-webkit-in-safari-27-beta/)

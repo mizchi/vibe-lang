@@ -170,10 +170,12 @@ Not normative.
 
 | Current path | Later home | Notes |
 | --- | --- | --- |
-| [report/](report/) | `internal/reports/` | [blake3-vs-sha1-bench-2026-08-01.md](report/blake3-vs-sha1-bench-2026-08-01.md), [parser-simd-scan-2026-08-15.md](report/parser-simd-scan-2026-08-15.md) |
-| [perf-snapshot-2026-08-07.md](perf-snapshot-2026-08-07.md) | `internal/reports/` | |
-| [pl-survey-2026-07.md](pl-survey-2026-07.md) | `internal/reports/` | |
-| [wasm/code-size-linear-vs-gc.md](wasm/code-size-linear-vs-gc.md) | `internal/reports/` | Measured 2026-08-15/16 |
+| [internal/reports/blake3-vs-sha1-bench-2026-08-01.md](internal/reports/blake3-vs-sha1-bench-2026-08-01.md) | `internal/reports/` | Was `report/` |
+| [internal/reports/cloudflare-workers-fit-2026-09-04.md](internal/reports/cloudflare-workers-fit-2026-09-04.md) | `internal/reports/` | Was `report/` |
+| [internal/reports/parser-simd-scan-2026-08-15.md](internal/reports/parser-simd-scan-2026-08-15.md) | `internal/reports/` | Was `report/` |
+| [internal/reports/perf-snapshot-2026-08-07.md](internal/reports/perf-snapshot-2026-08-07.md) | `internal/reports/` | |
+| [internal/reports/pl-survey-2026-07.md](internal/reports/pl-survey-2026-07.md) | `internal/reports/` | |
+| [internal/reports/code-size-linear-vs-gc.md](internal/reports/code-size-linear-vs-gc.md) | `internal/reports/` | Measured 2026-08-15/16 |
 
 ## 3. Generated
 
@@ -181,9 +183,9 @@ Machine-produced. Do not edit by hand. Generator / freshness is noted where know
 
 | Current path | Later home | Notes |
 | --- | --- | --- |
-| [wasm/feature-matrix.json](wasm/feature-matrix.json) | `generated/` | Fetched by `scripts/wasm_feature_matrix_fetch.sh` |
-| [wasm/feature-levels.expected.json](wasm/feature-levels.expected.json) | `generated/` | Oracle for feature-level checks |
-| [wasm/host-runtime-contract.json](wasm/host-runtime-contract.json) | `generated/` | Machine-checked companion of [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
+| [generated/feature-matrix.json](generated/feature-matrix.json) | `generated/` | Fetched by `scripts/wasm_feature_matrix_fetch.sh` |
+| [generated/feature-levels.expected.json](generated/feature-levels.expected.json) | `generated/` | Oracle for feature-level checks |
+| [generated/host-runtime-contract.json](generated/host-runtime-contract.json) | `generated/` | Machine-checked companion of [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) |
 
 ## 4. Archive
 
@@ -215,7 +217,6 @@ were in no class table, one archived file was missing from the archive table,
 and `docs/internal/` had been created while the text above said it did not
 exist. The gate walks the tree instead, so this section cannot go stale.
 
-Directories that were mixed before #2565 / #2566, children classified above:
-
-- `guide/`, `spec/`, `wit/` — gone; every child is under `user/` or `internal/`
-- `wasm/` — generated `*.json`; internal `code-size-linear-vs-gc.md` (`feature-levels.md`, `host-runtime-contract.md` are under `user/reference/`, `gc-value-abi.md` under `internal/compiler/`)
+The directories that were mixed before #2565 / #2566 (`guide/`, `spec/`,
+`wasm/`, `wit/`, `report/`) are gone; every child is under `user/`, `internal/`
+or `generated/`, classified above.

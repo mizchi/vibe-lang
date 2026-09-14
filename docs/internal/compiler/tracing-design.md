@@ -45,7 +45,7 @@ export fn compile_release_file_mode_uncached_profiled(input_path: String, entry_
 
 ### 1.2 実測で見えた、今の計測では詰められない例
 
-[docs/perf-snapshot-2026-08-07.md](../../perf-snapshot-2026-08-07.md) より:
+[docs/internal/reports/perf-snapshot-2026-08-07.md](../reports/perf-snapshot-2026-08-07.md) より:
 
 - **`array_empty` が CPU の 4.3%**。配列のデフォルト容量を 8→2 にして heap が
   13.9% 下がったが、「配列の最終長の分布」は今のツールで取れないので、

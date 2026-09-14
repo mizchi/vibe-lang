@@ -1007,8 +1007,8 @@ echo "[compiler-gate] wasm-gc region ok (linear + gc snapshots; copy-out, nested
 #         measurement caught it.
 #
 #         gc is direct-source-compile only, so no VIBE_FS_COMPILE here (it
-#         would silently force the linear lane -- see docs/wasm/
-#         code-size-linear-vs-gc.md).
+#         would silently force the linear lane -- see
+#         docs/internal/reports/code-size-linear-vs-gc.md).
 echo "[compiler-gate] 40h-6b/40 wasm-gc region arena reclamation (#1262)"
 gcardir="_build/_gate_gc_arena"
 rm -rf "$gcardir"; mkdir -p "$gcardir"

@@ -7,7 +7,7 @@ monitors (`bench/bundle_size/`, `bench/compiler_size/`) were removed in
 
 Modeled on the benchmark set documented in
 [almide](https://github.com/almide/almide)'s `docs/internal/operations/BENCHMARKS.md`
-(see `docs/pl-survey-2026-07.md` and issue #1056): five small programs, each
+(see `docs/internal/reports/pl-survey-2026-07.md` and issue #1056): five small programs, each
 stressing a different codegen shape, measured "as shipped" (raw compiled
 output, no post-processing).
 

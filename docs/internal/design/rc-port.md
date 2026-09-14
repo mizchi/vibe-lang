@@ -74,7 +74,7 @@ is added.
 - This is the narrow, occurrence-local slice of what almide's
   `alias_safety.rs` does with a full function-local fixpoint dataflow (eliding
   redundant `MakeUnique`/COW rc-checks on provably-unaliased values) — see
-  `docs/pl-survey-2026-07.md` and `docs/internal/operations/BENCHMARKS.md`. vibe's RC has no
+  `docs/internal/reports/pl-survey-2026-07.md` and `docs/internal/operations/BENCHMARKS.md`. vibe's RC has no
   COW/`MakeUnique`-equivalent construct yet (arrays/maps are mutated in place
   unconditionally, never copy-on-write-guarded), so a literal port of the rest
   of almide's pass has no target to elide; this slice covers the one case

@@ -27,10 +27,10 @@ vibe には wasm proposal への依存が 2 系統ある:
 [`WebAssembly/website` リポジトリの `features.json`](https://github.com/WebAssembly/website/blob/main/features.json)
 で、エンジンごとの対応バージョン/flag要否がここに構造化されている。
 
-- 取得: `bash scripts/wasm_feature_matrix_fetch.sh` → `docs/wasm/feature-matrix.json` を上書き取得
+- 取得: `bash scripts/wasm_feature_matrix_fetch.sh` → `docs/generated/feature-matrix.json` を上書き取得
 - 分類/検証: `bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex`
 
-vendored snapshot (`docs/wasm/feature-matrix.json`) を repo にコミットして
+vendored snapshot (`docs/generated/feature-matrix.json`) を repo にコミットして
 おき、fetch は明示的に実行したときだけ更新する（gate をネットワーク依存に
 しない）。
 
@@ -82,7 +82,7 @@ bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex
 # 機械可読
 bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --json
 
-# docs/wasm/feature-levels.expected.json との diff をチェック (nonzero exit = drift)
+# docs/generated/feature-levels.expected.json との diff をチェック (nonzero exit = drift)
 bash scripts/vibe_run.sh scripts/wasm_feature_levels.vibex -- --check
 
 # マスターデータ更新後、意図した変更なら snapshot を更新
