@@ -66,8 +66,8 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
 
 ## Coverage
 - `coverage_{corpus,driver,drivers,features,fn,manifestcache,merge,multimodule,suite,testexec,unittests}.*`
-  — the selfhost-suite coverage lane. `coverage_wasm_{source,std}.mjs`,
-  `coverage_{eval,scratch}_sidecar.sh`, `coverage_gen_errcorpus.sh`
+  — the selfhost-suite coverage lane. `coverage_wasm_std.sh` (+ `_test`),
+  `coverage_gen_errcorpus.sh`
 - `coverage_acc_tool_run.sh` / `coverage_local_merge_run.sh` — cached-build
   wrappers for `lib/@vibe/cli/coverage_acc_tool.vibe` (global-branch-id
   `acc.json` merge + sum/len stat) and `lib/@vibe/cli/coverage_local_merge.vibe`
@@ -84,7 +84,10 @@ The selfhost `vibe` subcommands as scripts (used by `pkf run` + tests).
   `bench_vibe_lsp.js`
 
 ## Check / lint / gate / repro
-- `check_{bundle_sync,module_source_sync,portable_boundary}.sh`
+- `check_portable_boundary.sh`
+- `check_scripts_readme.sh` (+ `_test`) — every script THIS file names is in
+  the tree (#2001): literal names, one brace group, and `*` patterns are all
+  read; a name for a script that is gone fails
 - `check_vibe_fmt.sh` (+ `vibe_fmt_allowlist.txt`) — CI-enforced `vibe fmt`
   gate (`vibe-fmt-check` job, required): every `lib/**/*.vibe` file must be a
   `vibe_fmt.sh --check` fixpoint unless listed in the allowlist, which now
