@@ -94,23 +94,27 @@ fn assign_wrapped_alloc(xs: Array[Node]) -> Int {
 // lanes, agreeing -- which is why neither is a `_refused`-style guard: there is
 // no corruption in THESE two to bound.
 //
-// A third shape from the same review is NOT here, deliberately: a borrow-only
-// self-use with no later read of the slot corrupts the free list
-// (`memory access out of bounds` inside `__rt_rc_alloc`), and it does so
-// IDENTICALLY on the unpatched compiler, so it is main's bug and not this
-// change's -- filed as #2786 with its own repro. It is left out because a
-// fixture that traps is not a guard, and because widening this diff to chase a
-// pre-existing corruption is the thing #2760 itself was filed to avoid.
+// A third shape from the same review lives in
+// fixtures/rc_wrapper_assign_self_borrow_test.vibe: a borrow-only self-use with
+// no later read of the slot, which corrupted the free list identically on the
+// patched and unpatched compilers here, so it was #2786's bug rather than
+// #2760's and got its own repro. Its own file, because the damage surfaces on a
+// LATER allocation -- a case that shares a file with a shape that damaged the
+// heap fails the same way on fixed and broken compilers, which reads as a Red
+// and proves nothing.
 //
-// Two details of that shape are worth knowing before anyone writes it here:
-// alone in its own file it PASSES on both compilers (it damages the free list;
-// the damage surfaces on a later allocation, which a preceding test supplies),
-// and pairing it with an OWNING self-use also passes (`total(x)` consumes, so
-// the budget re-application has a dup to spend). Both details are recorded on
-// #2786.
+// The two shapes below are the ones that stay here. This comment used to call
+// `total(x)` an OWNING self-use "so the budget re-application has a dup to
+// spend", and both halves are measured false: `total`'s parameter is
+// borrow-inferred (`vibe rc-classify` gives it a nonzero borrow mask, and
+// reading an element twice across an allocation answers 7 both times on both
+// lanes), and the plan carries no dup for `x` in the shape that has no later
+// read. What makes these two balanced is the plan, not the position of the
+// mention -- see `assign_slot_short_after_store` in
+// codegen/expr/compile_expr_tail.vibe.
 
-// An OWNING self-use: `total(x)` consumes, so the budget re-application has a
-// dup to spend.
+// A self-use at a consuming-looking position that is in fact borrowed. The plan
+// budgets `x dup 1` here and the later `total(x)` spends it.
 fn assign_self_owning_use(xs: Array[Node]) -> Int {
   let mut x = Pair(Leaf(1), Leaf(2))
   x = {
@@ -122,8 +126,9 @@ fn assign_self_owning_use(xs: Array[Node]) -> Int {
   r * 100 + total(Array::get(xs, 0)) * 10 + total(filler) * 0
 }
 
-// A BORROW-ONLY self-use, which creates no owning use and so no dup for that
-// loop to spend -- the discriminating shape the second review named.
+// A BORROW-ONLY self-use of an array slot, with a later read. Same defect as
+// #2786's repro -- it corrupted the free list here too until that issue was
+// fixed -- kept because the answer is the contract this file asserts.
 fn assign_self_borrow_use(xss: Array[Array[Node]]) -> Int {
   let mut x = [Leaf(1)]
   x = {

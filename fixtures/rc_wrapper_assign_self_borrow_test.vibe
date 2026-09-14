@@ -1,0 +1,134 @@
+// #2786: a wrapper assigned into an owning slot that MENTIONS the slot.
+//
+// `replacement_unowned` answered `call_returns_borrow(value, ..)` alone on the
+// self-mentioning path, and that reads the value's TOP node. A wrapper's top
+// node is an `ESeq` / `ELet`, so `x = { Array::length(x); Array::get(xss, 0) }`
+// stored a borrow of `xss` into a slot that stays owning and acquired nothing.
+// The slot's planned scope-end drop then released a reference `xss` still owns.
+//
+// The same gap as #2760 one branch over, and the branch #2760 deliberately left
+// alone. What made this one look different is that the slot's own mention is at
+// a BORROWED position (`Array::length(x)` reads, it does not consume), so
+// nothing else compensated -- but the mention's position turned out not to be
+// the discriminating fact at all. See `assign_slot_short_after_store` in
+// codegen/expr/compile_expr_tail.vibe: the slot is short exactly when the plan
+// spends more references on it after the store than the #791 budget hands back.
+//
+// TWO FACES, and a fixture that sees only one of them is a fixture that can be
+// made green by half a fix. Measured on `b7cd8c1` (main) against `VIBE_RC=0`:
+//
+//   | shape                        | bump | RC lane, main | RC lane, fixed |
+//   |------------------------------|-----:|--------------:|---------------:|
+//   | `assign_self_borrow_use`     |  770 |  770, corrupt |            770 |
+//   | `assign_self_borrow_unused`  |   70 |          trap |             70 |
+//   | the same, x20000             |   70 |            10 |             70 |
+//   | `..._then_consume`, x2       | 2140 |          2080 |           2140 |
+//
+// The trap is `memory access out of bounds` inside `__rt_rc_alloc`. It is the
+// free list taking the same block twice, so it needs a LATER ALLOCATION to
+// surface: `assign_self_borrow_unused` alone in a file PASSES on the broken
+// compiler, and the preceding test is what supplies the allocation. That is why
+// these two live together and why the file is worthless with either removed.
+//
+// `assign_self_borrow_use` is the same defect with the answer intact: it
+// corrupts the free list and reads nothing back, so on its own it is green on
+// both compilers. It is here as the allocating partner, not as a guard.
+//
+// The third shape needs REPETITION rather than a partner. One round answers
+// 1070 on the broken compiler; two rounds answer 2080 against 2140, because the
+// block freed by the first round is what the second round reads back. It is not
+// a spelling variant: `sink(x)` after the store puts the slot in the dup budget,
+// so it is the shape that separates "the plan drops this slot" from "the plan
+// spends more than it hands back". A fix keyed on the first alone passes the two
+// tests above and fails this one.
+//
+// Its own file: the two shapes above damage the heap on a broken compiler, and a
+// case that shares a file with them fails identically on fixed and unfixed
+// compilers -- which reads as a Red that proves nothing (#2798 cost a round to
+// exactly that, and so did two probe files on this issue).
+enum Node {
+  Leaf(Int);
+  Pair(Node, Node)
+}
+
+fn total(n: Node) -> Int {
+  match n {
+    Pair(a, b) => total(a) + total(b),
+    Leaf(v) => v
+  }
+}
+
+// Owning: it stores its argument, so the call consumes a reference. `total`
+// above does NOT -- its parameter is borrow-inferred, which is measured rather
+// than assumed (`vibe rc-classify` gives it a nonzero borrow mask, and reading
+// an element twice across an allocation answers 7 both times on both lanes).
+fn sink(a: Array[Node]) -> Int {
+  let b = [a]
+  Array::length(b)
+}
+
+// The issue's repro, first half: the answer survives, the free list does not.
+fn assign_self_borrow_use(xss: Array[Array[Node]]) -> Int {
+  let mut x = [Leaf(1)]
+  x = {
+    Array::length(x)
+    Array::get(xss, 0)
+  }
+  let r = total(Array::get(x, 0))
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+}
+
+// The issue's repro, second half: no later read of the slot, so the damage the
+// first half did comes back as a trap in this one's allocation.
+fn assign_self_borrow_unused(xss: Array[Array[Node]]) -> Int {
+  let mut x = [Leaf(1)]
+  x = {
+    Array::length(x)
+    Array::get(xss, 0)
+  }
+  let filler = Pair(Leaf(7), Leaf(8))
+  total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+}
+
+// A CONSUMING use of the slot after the store. The plan budgets a dup for it,
+// so the slot is in `rc_dup_names` here and is not in the two shapes above --
+// the retain is still required, because the budget's one dup is spent by
+// `sink(x)` and the scope-end drop is left with nothing.
+fn assign_self_borrow_then_consume(xss: Array[Array[Node]]) -> Int {
+  let mut x = [Leaf(1)]
+  x = {
+    Array::length(x)
+    Array::get(xss, 0)
+  }
+  let r = sink(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 1000 + total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+}
+
+// Twice, because once is green on a broken compiler: the reference the first
+// round releases is `xss`'s, and the second round is what reads it back.
+fn then_consume_twice(xss: Array[Array[Node]]) -> Int {
+  let mut acc = 0
+  let mut i = 0
+  while i < 2 {
+    acc = acc + assign_self_borrow_then_consume(xss)
+    i = i + 1
+  }
+  acc
+}
+
+test "2786 a borrow-only self-use, with a later read of the slot" {
+  let xss = [[Pair(Leaf(3), Leaf(4))]]
+  inspect(assign_self_borrow_use(xss), content = "770")
+}
+
+test "2786 a borrow-only self-use, with no later read of the slot" {
+  let xss = [[Pair(Leaf(3), Leaf(4))]]
+  inspect(assign_self_borrow_unused(xss), content = "70")
+}
+
+test "2786 a borrow-only self-use followed by a consuming use, twice" {
+  let xss = [[Pair(Leaf(3), Leaf(4))]]
+  inspect(then_consume_twice(xss), content = "2140")
+}

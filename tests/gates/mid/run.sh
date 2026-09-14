@@ -475,6 +475,14 @@ echo "[compiler-gate] RC mutable-initializer projection leak guard ok (heap_used
 # holding only one of them is a bound the other arm walks past. Both halves are
 # proven able to fail: with the EDot arm's guard deleted the same fixture
 # measures 1,600,108 B against this row's 2000.
+#
+# #2786 added a THIRD direction, once_owning_self: a self-mentioning wrapper,
+# which #2799 read as another shape that must not be retained and which the plan
+# says is short a reference like any other. It bounds the RELEASE half of that
+# fix -- a slot that acquires its replacement has to let go of what it held --
+# and is proven able to fail the same way: a compiler carrying the acquire half
+# alone measures 1,600,164 B here against this row's 2000, on a fixture whose
+# ANSWER is 0 either way.
 echo "[compiler-gate] 40e2/40 RC wrapper-assign double-retain guard (#2760)"
 drdir="_build/_gate_rc_double_retain"
 rm -rf "$drdir"; mkdir -p "$drdir"
@@ -496,7 +504,7 @@ if [ "$dr_result" != "0" ]; then
   echo "[compiler-gate] FAIL: rc_wrapper_assign_double_retain wrong result $dr_result (want 0)" >&2; exit 1
 fi
 if [ "$dr_used" -ge 2000 ]; then
-  echo "[compiler-gate] FAIL: rc_wrapper_assign_double_retain heap_used=$dr_used >= 2000 (#2760 regressed; retaining a borrow whose source the spine itself binds measured 1600084 at N=20000)" >&2; exit 1
+  echo "[compiler-gate] FAIL: rc_wrapper_assign_double_retain heap_used=$dr_used >= 2000 (#2760/#2786 regressed; retaining a borrow whose source the spine itself binds measured 1600084 at N=20000, and acquiring a self-mentioning wrapper's replacement without releasing the old value measured 1600164)" >&2; exit 1
 fi
 rm -rf "$drdir"
 echo "[compiler-gate] RC wrapper-assign double-retain guard ok (heap_used=$dr_used B at N=20000)"

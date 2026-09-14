@@ -36,10 +36,11 @@
 // that error shows up as a wrong answer and not as a leak.
 //
 // The two directions are opposite errors and each needs its own lane: this file
-// bounds the leak, `rc_wrapper_assign_borrow_test.vibe` asserts the values. Both
-// files carry BOTH leaf kinds since #2796 -- the call and the projection are
-// answered by different arms of `spine_leaf_unowned`, so a lane that holds only
-// one of them is a lane the other arm can walk past.
+// bounds the leak, `rc_wrapper_assign_borrow_test.vibe` and
+// `rc_wrapper_assign_self_borrow_test.vibe` assert the values. Both files carry
+// BOTH leaf kinds since #2796 -- the call and the projection are answered by
+// different arms of `spine_leaf_unowned`, so a lane that holds only one of them
+// is a lane the other arm can walk past.
 //
 // `main` returns 0: every shape here adds 0, so the answer cannot drift with
 // the allocation behaviour being measured.
@@ -95,17 +96,30 @@ fn once_proj() -> Int {
   0
 }
 
-// #2786/#2799: an OWNING self-use in the wrapper, with the leaf reading out of
-// ANOTHER container. `let t0 = total(x)` consumes, so the plan records a
-// `PaDup` for `x` and the #791 budget re-application below the store emits it --
-// the slot already gets its reference, and a retain from the assignment arm is
-// a SECOND one.
+// #2786/#2799: a self-mentioning wrapper whose leaf reads out of ANOTHER
+// container. This shape bounds the RELEASE half of #2786's fix, and what it
+// guards is not what #2799 claimed when it added it.
 //
-// `assign_self_owning_use` in `rc_wrapper_assign_borrow_test.vibe` is the same
-// shape asserted by VALUE, and it cannot see this: the answer stays 770 either
-// way. Measured at N=20000 while #2799 was emitting the retain here: 244 B
-// correct against 1,600,164 B -- 80 B per assignment, the same rate as #2760's
-// leak. Caught by review, not by a gate, which is why the shape is here now.
+// #2799 read the 244 B here as "the slot already has its reference, so the
+// assignment arm must not retain". Measured on `b7cd8c1`, that is wrong twice
+// over: the plan carries NO dup for `x` in this shape (`vibe rc-plan` gives
+// `t0 dup 1`, `x drop 1`), and `let t0 = total(x)` does not consume -- `total`'s
+// parameter is borrow-inferred. The slot really is short a reference, and the
+// heap only looked flat because the unbalanced drop was handing `xs`'s own
+// blocks back to the allocator at the same rate the overwritten value leaked.
+// The answer stayed 0 because nothing here reads `xs` again.
+//
+// So the retain IS required, and what this row bounds is that it arrives with
+// its counterpart: the slot releases what it held. PROVEN ABLE TO FAIL (#2248),
+// on a compiler built with the acquire half and no release:
+//
+//   | compiler                            | heap_used   |
+//   |-------------------------------------|------------:|
+//   | this tree                           |       352 B |
+//   | acquire without release             | 1,600,164 B |
+//
+// 80 B per assignment, four orders of magnitude clear of the row's 2000 bound,
+// and the same rate as #2760's own leak.
 fn once_owning_self(xs: Array[Node]) -> Int {
   let mut x = Pair(Leaf(1), Leaf(2))
   x = {
