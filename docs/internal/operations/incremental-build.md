@@ -11,7 +11,7 @@ Related documents:
 - [Compiler parallelism](../design/compiler-parallelism.md)
 - [Bootstrap and generation builds](bootstrap.md)
 - [Editor and LSP behavior](../../user/reference/editor-and-debugging.md)
-- [Component Model target](../../vibec-component.md)
+- [Component Model target](../compiler/vibec-component.md)
 - [Lean formal model](../../../formal/README.md)
 
 ## Goals and non-goals
@@ -1873,7 +1873,7 @@ build/codegen/LSP integration remain later milestones.
 ### Checked-module reuse across an edit, on the BUILD lane (2026-09-15, #1959)
 
 The table above is the check-only lane. The complete checked-module artifact
-(`VIBE_CHECKED_MODULE_CACHE`, `docs/checked-body-transport.md`) is the same
+(`VIBE_CHECKED_MODULE_CACHE`, `docs/internal/compiler/checked-body-transport.md`) is the same
 question asked of `vibe build`, and it answers with a persisted artifact rather
 than a TypeEnv, so it has its own invalidation shape. Measured at
 `084e796` on a three-module chain (`entry` imports `mid`, `mid` imports
@@ -2671,7 +2671,7 @@ With `VIBE_CHECKED_MODULE_CACHE=on` or `verify`, standalone telemetry uses schem
 an exact checked-module input can still match after a private dependency body
 edit changes the conservative fingerprint. All three reasons must sum to
 `modules_reused`. Verification checks afresh, so it records zero artifact hits.
-The [checked-module parity gate](../../checked-body-transport.md) validates these
+The [checked-module parity gate](../compiler/checked-body-transport.md) validates these
 counts through the real compile CLI; the edit-cycle reader accepts both schemas.
 `scripts/ast_cache_prefetch_oracle.mjs` pins the lane signature on a real
 build, stated relative to the cold build rather than against zero: a warm

@@ -303,7 +303,7 @@ gc レーン外のファイルを触らないことで構造的に担保する�
 
 ## 5. wasm proposal 水準への影響
 
-[feature-levels.md](../user/reference/feature-levels.md) の基準では、生成 wasm は
+[feature-levels.md](../../user/reference/feature-levels.md) の基準では、生成 wasm は
 **flag 無しで動く proposal のみ**に依存してよい。
 
 - `gc` proposal は 2026-07-27 スナップショットで `v8` / `web-baseline` の

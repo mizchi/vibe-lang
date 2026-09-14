@@ -153,16 +153,16 @@ the repo; not the user manual.
 
 | Current path | Later home | Notes |
 | --- | --- | --- |
-| [ast_binary_abi.md](ast_binary_abi.md) | `internal/compiler/` | |
-| [checked-body-transport.md](checked-body-transport.md) | `internal/compiler/` | Checked-implementation-body artifact + normalized typed-IR codec. Its "shadow-only" framing is superseded: #2505 promotes this lane, and the #1958 it cites is closed |
-| [checked-direct-expression-return-observation.md](checked-direct-expression-return-observation.md) | `internal/compiler/` | Checker observation note |
-| [tracing-design.md](tracing-design.md) | `internal/compiler/` | Proposed internal spans |
+| [internal/compiler/ast_binary_abi.md](internal/compiler/ast_binary_abi.md) | `internal/compiler/` | |
+| [internal/compiler/checked-body-transport.md](internal/compiler/checked-body-transport.md) | `internal/compiler/` | Checked-implementation-body artifact + normalized typed-IR codec. Its "shadow-only" framing is superseded: #2505 promotes this lane, and the #1958 it cites is closed |
+| [internal/compiler/checked-direct-expression-return-observation.md](internal/compiler/checked-direct-expression-return-observation.md) | `internal/compiler/` | Checker observation note |
+| [internal/compiler/tracing-design.md](internal/compiler/tracing-design.md) | `internal/compiler/` | Proposed internal spans |
 | [internal/design/experimental-wasmfx-effect-backend.md](internal/design/experimental-wasmfx-effect-backend.md) | `internal/design/` | WasmFX feasibility probe. Tracked by #2221 |
 | [internal/design/experimental-wasmtime-guest-profiler.md](internal/design/experimental-wasmtime-guest-profiler.md) | `internal/design/` | Guest-profiler integration. Tracked by #2207 |
-| [vibec-component.md](vibec-component.md) | `internal/compiler/` | Compiler-core component split |
-| [wasm/gc-value-abi.md](wasm/gc-value-abi.md) | `internal/compiler/` | wasm-gc value ABI |
-| [wasm_threads_requirements.md](wasm_threads_requirements.md) | `internal/compiler/` | |
-| [wit/](wit/) | `internal/compiler/` | [vibe-compiler-host.wit](wit/vibe-compiler-host.wit) |
+| [internal/compiler/vibec-component.md](internal/compiler/vibec-component.md) | `internal/compiler/` | Compiler-core component split |
+| [internal/compiler/gc-value-abi.md](internal/compiler/gc-value-abi.md) | `internal/compiler/` | wasm-gc value ABI |
+| [internal/compiler/wasm_threads_requirements.md](internal/compiler/wasm_threads_requirements.md) | `internal/compiler/` | |
+| [internal/compiler/wit/](internal/compiler/wit/) | `internal/compiler/` | [vibe-compiler-host.wit](internal/compiler/wit/vibe-compiler-host.wit) |
 
 ### Reports / dated snapshots
 
@@ -215,8 +215,7 @@ were in no class table, one archived file was missing from the archive table,
 and `docs/internal/` had been created while the text above said it did not
 exist. The gate walks the tree instead, so this section cannot go stale.
 
-Directories that were mixed before #2565, children classified above:
+Directories that were mixed before #2565 / #2566, children classified above:
 
-- `guide/` — internal `builtin-effect-migration.md` (`when-to-use-effects.md` is under `user/guide/`)
-- `spec/` — internal only (`syntax.md`, `stable-surface.md`, `host-abi.md` are under `user/reference/`)
-- `wasm/` — generated `*.json`; internal `gc-value-abi.md`, `code-size-linear-vs-gc.md` (`feature-levels.md`, `host-runtime-contract.md` are under `user/reference/`)
+- `guide/`, `spec/`, `wit/` — gone; every child is under `user/` or `internal/`
+- `wasm/` — generated `*.json`; internal `code-size-linear-vs-gc.md` (`feature-levels.md`, `host-runtime-contract.md` are under `user/reference/`, `gc-value-abi.md` under `internal/compiler/`)

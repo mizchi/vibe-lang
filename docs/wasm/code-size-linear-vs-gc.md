@@ -15,7 +15,7 @@ node scripts/wasm_section_sizes.mjs \
   "$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
 ```
 
-Related: [gc-value-abi.md](./gc-value-abi.md) (#1331), [feature-levels.md](../user/reference/feature-levels.md),
+Related: [gc-value-abi.md](../internal/compiler/gc-value-abi.md) (#1331), [feature-levels.md](../user/reference/feature-levels.md),
 [../BENCHMARKS.md](../internal/operations/BENCHMARKS.md) (time-axis regression signal on the linear lane)
 
 ## Conclusion
@@ -213,7 +213,7 @@ reports COMPILE FAILED. The correct invocation is the same as
 ## How to use these numbers
 
 - **There is no size reason to pick the gc lane.** The reason to pick it is
-  the representation in [gc-value-abi.md](./gc-value-abi.md) (native
+  the representation in [gc-value-abi.md](../internal/compiler/gc-value-abi.md) (native
   references, collecting cyclic structure, dropping RC). Size is not even a
   side effect of that.
 - **What P5 (size reduction) should cut is bytes per function, not the fixed

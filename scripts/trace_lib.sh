@@ -1,4 +1,4 @@
-# Sourceable half of the step-0 tracing helpers (docs/tracing-design.md).
+# Sourceable half of the step-0 tracing helpers (docs/internal/compiler/tracing-design.md).
 #
 #   . scripts/trace_lib.sh
 #   trace_begin "stage1 -> stage2"; tok="$TRACE_TOKEN"   # sets VIBE_TRACEPARENT

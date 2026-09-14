@@ -53,7 +53,7 @@ esac
 [ -f "$ROOT_DIR/$src_rel" ] || { echo "vibe_fmt.sh: not found: $src_rel" >&2; exit 2; }
 # EXTENSION GUARD. This formatter is a vibe CST-token formatter; handed
 # anything else it happily rewrites the file as though it were vibe source.
-# Measured the hard way (#2647): `bash scripts/vibe_fmt.sh docs/ast_binary_abi.md`
+# Measured the hard way (#2647): `bash scripts/vibe_fmt.sh docs/internal/compiler/ast_binary_abi.md`
 # silently turned `### TypeExpr tags (5 variants)` into
 # `###TypeExpr tags(5variants)` and `| 0x01 |` into `|0x01|`, which broke the
 # gate that reads those tables and took CI red -- with a local gate run that

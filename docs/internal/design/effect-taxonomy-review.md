@@ -541,7 +541,7 @@ gate で回帰を固定し、`stage2 == stage3` fixpoint を都度確認する)�
 > **carved out**: #1143 本来の要求(compiler の host runtime execution
 > contract を WIT で明文化する)は ADR-0086 として決着済み。詳細は
 > [host-runtime-contract.md](host-runtime-contract.md) +
-> [wit/vibe-compiler-host.wit](../../wit/vibe-compiler-host.wit)。以下は
+> [wit/vibe-compiler-host.wit](../compiler/wit/vibe-compiler-host.wit)。以下は
 > resource-kind retrofit がこの実装債務をどう構造的に解消するか、という
 > 別の角度からの議論として記録のまま残す。
 
@@ -608,7 +608,7 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
 - [effectset.md](effectset.md)(ADR-0071 実体)、
   [vibex-runtime-contract.md](vibex-runtime-contract.md)(ADR-0075 実体)、
   [adr.md](adr.md)(ADR-0060/0068/0073 エントリ)。
-- `docs/wit/vibe-compiler-host.wit`、`docs/internal/design/effect-wit-mapping.md` —
+- `docs/internal/compiler/wit/vibe-compiler-host.wit`、`docs/internal/design/effect-wit-mapping.md` —
   #1143 の WIT ねじれの現状。
 
 ## 検証方針(実装フェーズに進む場合)

@@ -288,7 +288,7 @@ attribute_block_failure() {
 # regression, so retry it. Deterministic failures are NOT retried: a real
 # compile error writes a `.diag` sidecar, and a failing test assert traps at
 # runtime — both are stable, so the first observation is final.
-# One span per test file (docs/tracing-design.md step 0). Under `xargs -P`
+# One span per test file (docs/internal/compiler/tracing-design.md step 0). Under `xargs -P`
 # each worker is its own process, so they inherit VIBE_TRACEPARENT from the
 # battery and land as SIBLINGS of each other under it -- which is what makes
 # the parallel fan-out legible as a tree rather than a flat list. Their
