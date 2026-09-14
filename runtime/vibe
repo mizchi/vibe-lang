@@ -1030,19 +1030,16 @@ condense_test_trap() {
       sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
     }
-    # Assert-abort recognizer (#2202): suppression requires a COMPLETE
-    # consecutive failed/expected/actual block followed by the trap reason
-    # with only crash-debug / blank lines between (keep in lockstep with
-    # scripts/vibe_test.sh vt_fail_detail).
-    { __blk = 0 }
+    # Assert diagnostic lines (#2202): kept in the condensed report, but they
+    # carry no weight in deciding whether the trap is the assert aborting --
+    # only the closing marker below does (#2219; the consecutive
+    # failed/expected/actual recognizer is gone, the committed seed emits the
+    # marker). Keep in lockstep with scripts/vibe_test.sh vt_fail_detail.
     $0 == "assert_eq failed" {
-      __blk = 1
-      ablk = 1
       ndiag++
       diags[ndiag] = "       " $0
     }
     $0 ~ /^  at off=/ {
-      __blk = 1
       off = $0
       sub(/^  at off=/, "", off)
       ndiag++
@@ -1051,45 +1048,43 @@ condense_test_trap() {
       else ndiag--
     }
     $0 ~ /^  expected:/ {
-      __blk = 1
-      if (ablk == 1) ablk = 2
       ndiag++
       diags[ndiag] = "       " $0
     }
     $0 ~ /^  actual:/ {
-      __blk = 1
-      if (ablk == 2) ablk = 3
       ndiag++
       diags[ndiag] = "       " $0
     }
     # #2199: keep the message line of an OOB abort (operation plus index and
     # length) in the condensed report. The full-line anchored match keeps
-    # ordinary program output from masquerading as a runtime diagnostic
-    # (not __blk: it is not part of an assert diagnostic).
+    # ordinary program output from masquerading as a runtime diagnostic.
     # NOTE: this awk program lives inside a single-quoted shell string --
     # comments here must never contain an apostrophe.
     $0 ~ /^(Array::get|Array::set|Bytes::get|Bytes::set|String::byte_at): index -?[0-9]+ out of bounds for length [0-9]+$/ {
       ndiag++
       diags[ndiag] = "       " $0
     }
-    # The closing line of the generated assert_eq abort -- definitive,
+    # The closing line of the generated assert_eq abort -- the one signal,
     # multiline-proof (keep in lockstep with scripts/vibe_test.sh). Hidden
     # from the report.
     $0 == "assert failed: aborting" {
-      __blk = 1
       pending_abort = 1
     }
+    # pre_abort is the same marker seen by the caller on the guest STDOUT
+    # side, where this lane receives the diagnostics; it is decided there
+    # from the marker being the last stdout line, so stderr lines never
+    # reset it.
     !seen_reason && /RuntimeError:|wasm trap:/ {
-      __blk = 1
       seen_reason = 1
-      assert_abort = (ablk == 3 || pending_abort == 1 || pre_abort == 1)
+      assert_abort = (pending_abort == 1 || pre_abort == 1)
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
       sub(/^viberun: /, "", reason)
     }
-    !seen_reason && __blk == 0 && $0 != "" && $0 !~ /^\[crash debug\]/ {
-      ablk = 0
+    # Any other non-blank, non-crash-debug line between the marker and the
+    # trap breaks the adjacency: the trap is then not the assert abort.
+    !seen_reason && $0 != "assert failed: aborting" && $0 != "" && $0 !~ /^\[crash debug\]/ {
       pending_abort = 0
     }
     nframes < 6 {
@@ -1111,8 +1106,8 @@ condense_test_trap() {
       # An assert failure aborts via a deliberate `unreachable` trap; once the
       # assert block above already told the story, echoing that trap reads as
       # a second, unexplained failure (#2202). Any OTHER trap -- a different
-      # reason, or an unreachable that does not directly follow a complete
-      # assert block -- is still real and still printed.
+      # reason, or an unreachable that does not directly follow the abort
+      # marker -- is still real and still printed.
       if (reason != "" && !(assert_abort && reason ~ /unreachable/)) print "       trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
     }

@@ -131,8 +131,11 @@ The rest of the open set is P2 outside a subtree — `gh issue list --state open
 --label P2` is the list, and nothing in it blocks anything else. Small ones with
 a stated, bounded scope, if you want one to start on: **#2442** (bare-name
 builtin value forms, blocked only on teaching the lambda-site planner scope),
-**#2219** (its "after the next bootstrap bump" precondition has fired — the
-committed seed emits the assert marker, so the legacy block recognizer can go),
+**#2219** (the legacy consecutive-block recognizer is gone from both `vibe
+test` condensers — only the `assert failed: aborting` marker suppresses the
+abort trap now; what is left is the design half, whether abort provenance moves
+out-of-band, which is a one-line `wontfix` if the in-band marker is judged
+enough),
 **#2670** (`vibe symbols lib` spends 84% of its time rescanning each file from
 offset 0 per declaration; one line-start table per file fixes it), **#2584**
 (adding a builtin means editing several hand-maintained classification lists —

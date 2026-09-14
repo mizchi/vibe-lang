@@ -322,23 +322,19 @@ vt_fail_detail() {
       sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
     }
-    # Assert-abort recognizer (#2202). Suppressing the trailing trap must not
-    # trust arbitrary captured output that happens to contain these lines (a
-    # test can println them and then hit a REAL unrelated trap): it requires a
-    # COMPLETE consecutive failed/expected/actual block, followed by the trap
-    # reason with only the host crash-debug dump or blank lines in between --
-    # the exact shape the generated assert_eq abort produces.
-    { __blk = 0 }
+    # Assert diagnostic lines (#2202): kept in the condensed report. They
+    # carry NO weight in deciding whether the trap that follows is the
+    # assert aborting -- a test can println these exact lines and then hit a
+    # REAL unrelated trap. Only the closing marker below decides that (#2219;
+    # the consecutive failed/expected/actual recognizer that stood in for the
+    # marker on a seed predating it is gone -- the committed seed emits it).
     $0 == "assert_eq failed" {
-      __blk = 1
-      ablk = 1
       ndiag++
       diags[ndiag] = "       " $0
     }
     # #2202: compiler-baked byte offset of the assert_eq call. Convert to a
     # 1-based source line so two asserts in one test are distinguishable.
     $0 ~ /^  at off=/ {
-      __blk = 1
       off = $0
       sub(/^  at off=/, "", off)
       ndiag++
@@ -347,14 +343,10 @@ vt_fail_detail() {
       else ndiag--
     }
     $0 ~ /^  expected:/ {
-      __blk = 1
-      if (ablk == 1) ablk = 2
       ndiag++
       diags[ndiag] = "       " $0
     }
     $0 ~ /^  actual:/ {
-      __blk = 1
-      if (ablk == 2) ablk = 3
       ndiag++
       diags[ndiag] = "       " $0
     }
@@ -363,37 +355,33 @@ vt_fail_detail() {
     # whole explanation of the trap that follows. The full-line anchored
     # match (fixed operation names, decimal index, decimal length) keeps
     # ordinary program output from masquerading as a runtime diagnostic.
-    # Deliberately NOT marked __blk: it is not part of an assert diagnostic,
-    # so it must still break assert-abort adjacency like any other output.
     $0 ~ /^(Array::get|Array::set|Bytes::get|Bytes::set|String::byte_at): index -?[0-9]+ out of bounds for length [0-9]+$/ {
       ndiag++
       diags[ndiag] = "       " $0
     }
     # The closing line the generated assert_eq abort prints (lower_assert_eq
-    # in normalize/desugar_trait_dict.vibe): the definitive signal, immune to
-    # multiline rendered values and to output that imitates the block. Hidden
-    # from the report (the block above already told the story). The
-    # consecutive-block recognizer stays for tests compiled by a seed that
-    # predates the marker.
+    # in normalize/desugar_trait_dict.vibe): the one signal that the trap
+    # which follows is the assert aborting, immune to multiline rendered
+    # values and to output that imitates the block. Hidden from the report
+    # (the block above already told the story).
     $0 == "assert failed: aborting" {
-      __blk = 1
       pending_abort = 1
     }
     # First trap-reason line (backtrace frames never contain these markers;
     # strip anyhow chain numbering / runner prefixes).
     !seen_reason && /RuntimeError:|wasm trap:/ {
-      __blk = 1
       seen_reason = 1
-      assert_abort = (ablk == 3 || pending_abort == 1)
+      assert_abort = (pending_abort == 1)
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
       sub(/^viberun: /, "", reason)
     }
-    # Any other non-blank, non-crash-debug line between the block/marker and
-    # the trap breaks the adjacency: the trap is then not the assert abort.
-    !seen_reason && __blk == 0 && $0 != "" && $0 !~ /^\[crash debug\]/ {
-      ablk = 0
+    # Any other non-blank, non-crash-debug line between the marker and the
+    # trap breaks the adjacency: the trap is then not the assert abort. Only
+    # the host crash-debug dump and blank lines sit between the two in the
+    # generated shape.
+    !seen_reason && $0 != "assert failed: aborting" && $0 != "" && $0 !~ /^\[crash debug\]/ {
       pending_abort = 0
     }
     # Wasm backtrace frames (node: `at <fn> (wasm://...)`, wasmtime:
@@ -418,8 +406,8 @@ vt_fail_detail() {
       # An assert failure aborts via a deliberate `unreachable` trap; once the
       # assert block above already told the story, echoing that trap reads as
       # a second, unexplained failure (#2202). Any OTHER trap -- a different
-      # reason, or an unreachable that does not directly follow a complete
-      # assert block -- is still real and still printed.
+      # reason, or an unreachable that does not directly follow the abort
+      # marker -- is still real and still printed.
       if (reason != "" && !(assert_abort && reason ~ /unreachable/)) print "       trap: " reason
       for (i = 1; i <= nframes; i++) print frames[i]
     }

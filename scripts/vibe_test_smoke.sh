@@ -16,11 +16,39 @@ printf 'test "bad" {\n  assert_eq(1 + 1, 3)\n}\n' > "$WORK/fail_test.vibe"
 if ! bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/pass_test.vibe" >/dev/null 2>&1; then
   echo "[vibe-test-smoke] FAIL: passing test file did not succeed" >&2; exit 1
 fi
-if bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/fail_test.vibe" >/dev/null 2>&1; then
+fail_out="$WORK/fail_test.out"
+if VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/fail_test.vibe" >"$fail_out" 2>&1; then
   echo "[vibe-test-smoke] FAIL: failing test file did not fail" >&2; exit 1
 fi
+# #2219: the generated assert_eq abort closes with the `assert failed:
+# aborting` marker, and that marker alone decides that the trap which follows
+# is the assert aborting. Live, through the compiler that answers here: a
+# real assert_eq failure must not echo its own trap ...
+if grep -qF "trap:" "$fail_out"; then
+  echo "[vibe-test-smoke] FAIL: a real assert_eq failure echoed its own abort trap (#2219)" >&2
+  cat "$fail_out" >&2
+  exit 1
+fi
+# ... and user output that IMITATES the block, then hits a REAL trap, gets that
+# trap reported. The consecutive-block fallback used to suppress it (it
+# existed only for a seed that predated the marker; the committed seed emits
+# it). Only the marker may suppress, and the guest cannot print it by writing
+# the block.
+printf 'test "fake" {\n  println("assert_eq failed")\n  println("  expected: 2")\n  println("  actual:   1")\n  assert(false)\n}\n' \
+  > "$WORK/fake_block_test.vibe"
+fake_out="$WORK/fake_block_test.out"
+if VIBE_TEST_QUIET_COMPILER_NOTE=1 \
+    bash "$ROOT_DIR/scripts/vibe_test.sh" "$WORK/fake_block_test.vibe" >"$fake_out" 2>&1; then
+  echo "[vibe-test-smoke] FAIL: imitated-block test file did not fail" >&2; exit 1
+fi
+if ! grep -qE 'trap: .*unreachable' "$fake_out"; then
+  echo "[vibe-test-smoke] FAIL: a real trap after a user-printed assert_eq block was suppressed (#2219)" >&2
+  cat "$fake_out" >&2
+  exit 1
+fi
 
-echo "[vibe-test-smoke] ok (pass-file=0, fail-file!=0)"
+echo "[vibe-test-smoke] ok (pass-file=0, fail-file!=0; marker suppresses, imitated block does not)"
 
 # #2153: coverage success means this invocation wrote a report. Simulate a
 # compiler and runner that both return success without writing their outputs;
@@ -225,13 +253,15 @@ assert_condense_indent
 echo "[vibe-test-smoke] ok (launcher condenser indent matches vt_fail_detail, #2228)"
 
 # #1946 leftover: vt_fail_detail must surface the assert_eq diagnostic that
-# the guest writes to stderr (vibe test discards stdout).
+# the guest writes to stderr (vibe test discards stdout). The canned block
+# carries the closing marker, the shape the generated abort prints.
 assert_canned_assert_eq_diag() {
   local errf="$WORK/canned_assert_eq.err" out
   cat > "$errf" <<'EOF'
 assert_eq failed
   expected: 2
   actual:   1
+assert failed: aborting
 RuntimeError: unreachable
     at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
     at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
@@ -259,9 +289,43 @@ EOF
     printf '%s\n' "$out" >&2
     exit 1
   fi
+  if printf '%s\n' "$out" | grep -qF "assert failed: aborting"; then
+    echo "[vibe-test-smoke] FAIL: the assert abort marker leaked into the report (#2202)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
 }
 assert_canned_assert_eq_diag
 echo "[vibe-test-smoke] ok (assert_eq expected/actual surfaced on FAIL)"
+
+# #2219: the same block WITHOUT the marker proves nothing. The consecutive
+# failed/expected/actual recognizer existed only for tests compiled by a seed
+# that predated the marker; the committed seed emits it, so the fallback is
+# gone and a marker-less block followed by a trap reports that trap. (A guest
+# can println the block; it does not print the marker by doing so.)
+assert_marker_less_block_reports_trap() {
+  local errf="$WORK/canned_marker_less.err" out
+  cat > "$errf" <<'EOF'
+assert_eq failed
+  expected: 2
+  actual:   1
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | grep -qF "expected: 2"; then
+    echo "[vibe-test-smoke] FAIL: marker-less block lost its expected value (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: a marker-less assert_eq block suppressed the trap (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_marker_less_block_reports_trap
 
 # #2202 boundary: a trap with NO assert diagnostic (a real crash) must still
 # print its reason -- the suppression is only for the assert's own abort.
@@ -306,14 +370,16 @@ EOF
 assert_imitated_block_keeps_real_trap
 
 # #2202: the real abort shape has the host's crash-debug dump (and a blank
-# line) between the assert block and the trap reason -- those must not break
-# the adjacency, or the suppression never fires on a real failure.
+# line) between the marker and the trap reason -- those must not break the
+# adjacency, or the suppression never fires on a real failure.
 assert_real_shape_with_crash_debug_suppressed() {
   local errf="$WORK/canned_real_assert.err" out
   cat > "$errf" <<'EOF'
 assert_eq failed
+  at off=27
   expected: 5
   actual:   4
+assert failed: aborting
 
 [crash debug] heap_ptr=480 (0x1e0), memory_size=4194304 (64 pages) / unreachable
 [crash debug] mem[0..32]: 00 00 00 00
@@ -329,6 +395,31 @@ EOF
   fi
 }
 assert_real_shape_with_crash_debug_suppressed
+
+# #2219: the same dump minus the marker line. Blank and crash-debug lines are
+# tolerated only AFTER the marker; without it there is nothing to be adjacent
+# to, and the trap is real.
+assert_marker_less_shape_with_crash_debug_reported() {
+  local errf="$WORK/canned_marker_less_crash.err" out
+  cat > "$errf" <<'EOF'
+assert_eq failed
+  expected: 5
+  actual:   4
+
+[crash debug] heap_ptr=480 (0x1e0), memory_size=4194304 (64 pages) / unreachable
+[crash debug] mem[0..32]: 00 00 00 00
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+    at _start (wasm://wasm/00000000:wasm-function[1]:0x10)
+EOF
+  out="$(vt_fail_detail "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: a marker-less block with crash-debug between suppressed the trap (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_marker_less_shape_with_crash_debug_reported
 
 # #2202 (Codex round 2 on #2213): a rendered value may contain newlines, so
 # the block is not always consecutive -- the generated abort therefore prints
@@ -382,6 +473,82 @@ EOF
 }
 assert_stale_marker_keeps_real_trap
 
+# #2219: the launcher condenser (runtime/vibe condense_test_trap) answers the
+# same question from the stderr side plus a third input, pre_abort, which the
+# caller decides from the marker being the LAST guest-stdout line. The two
+# condensers are not one expression, so each term is pinned on its own here
+# rather than assumed to follow from vt_fail_detail.
+assert_condense_marker_contract() {
+  local errf="$WORK/canned_condense_marker.err" out
+  # A marker-less block on stderr, pre_abort unset: the trap is real.
+  cat > "$errf" <<'EOF'
+assert_eq failed
+  expected: 2
+  actual:   1
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+EOF
+  out="$(condense_test_trap "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap suppressed a trap after a marker-less block (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  # The marker on the stderr side, crash-debug between: suppressed, hidden.
+  cat > "$errf" <<'EOF'
+assert_eq failed
+  expected: 2
+  actual:   1
+assert failed: aborting
+[crash debug] heap_ptr=496 (0x1f0), memory_size=4194304 (64 pages) / unreachable
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+EOF
+  out="$(condense_test_trap "$errf" "" "canned.vibe")"
+  if printf '%s\n' "$out" | grep -qF "trap:"; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap echoed the trap after the marker (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$out" | grep -qF "assert failed: aborting"; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap leaked the marker into the report (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  # A stale stderr marker with output after it: the trap is real.
+  cat > "$errf" <<'EOF'
+assert failed: aborting
+some unrelated output afterwards
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+EOF
+  out="$(condense_test_trap "$errf" "" "canned.vibe")"
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap suppressed a trap after a stale marker (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  # A bare stderr trap: reported with pre_abort=0, suppressed with pre_abort=1
+  # (the caller saw the marker close the guest's stdout).
+  cat > "$errf" <<'EOF'
+RuntimeError: unreachable
+    at __test_bad (wasm://wasm/00000000:wasm-function[3]:0x42)
+EOF
+  out="$(condense_test_trap "$errf" "" "canned.vibe" 0)"
+  if ! printf '%s\n' "$out" | grep -qF "trap: RuntimeError: unreachable"; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap lost a bare trap with pre_abort=0 (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  out="$(condense_test_trap "$errf" "" "canned.vibe" 1)"
+  if printf '%s\n' "$out" | grep -qF "trap:"; then
+    echo "[vibe-test-smoke] FAIL: condense_test_trap echoed the assert abort despite pre_abort=1 (#2219)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
+assert_condense_marker_contract
+
 # #2199 (Codex on #2220): the OOB message capture is a full-line anchored
 # match on the generated shape (`<op>: index <n> out of bounds for length
 # <n>`) -- those lines are kept in the condensed report, but a user-printed
@@ -432,7 +599,7 @@ EOF
   fi
 }
 assert_oob_message_capture_is_exact
-echo "[vibe-test-smoke] ok (assert abort trap suppressed; bare/imitated traps still reported; OOB capture exact)"
+echo "[vibe-test-smoke] ok (marker suppresses the assert abort trap in both condensers; marker-less/bare/imitated traps reported; OOB capture exact)"
 
 # Directory input: scripts/vibe_test.sh already expands *_test.vibe; lock it.
 mkdir -p "$WORK/dir_in"
