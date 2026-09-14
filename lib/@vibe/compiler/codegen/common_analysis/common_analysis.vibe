@@ -1229,14 +1229,24 @@ export fn collect_free_vars_used_builtins(body: Expr, param_names: Array[String]
   collect_free_vars_indexed_sc(body, param_names, fn_name_index, common_analysis_fresh_string_array(), false)
 }
 
+// The scope walker only visits AST data and cannot re-enter an indexed query.
+// Keep its stack capacity between queries; returned captures never alias it.
+let free_var_bound_scratch: Array[String] = []
+
 /// #1114: same, plus the ENCLOSING compile scope's local names -- a bare
 /// inlined-builtin call callee that one of those shadows must be captured,
 /// not inline-lowered. See collect_free_vars_expr's doc comment.
 fn collect_free_vars_indexed_sc(body: Expr, param_names: Array[String], fn_name_index: Array[String], encl: Array[String], skip_inlined: Bool) -> Array[String] {
   let out = common_analysis_fresh_string_array()
-  // Make a mutable copy of param_names for stack-based push/truncate
-  let bound = Array::slice(param_names, 0, Array::length(param_names))
+  let bound = free_var_bound_scratch
+  let mut i = 0
+  while i < Array::length(param_names) {
+    Array::push(bound, Array::get(param_names, i))
+    i = i + 1
+  }
   collect_free_vars_expr_sc(body, bound, fn_name_index, encl, skip_inlined, out)
+  // Release names even when the next query never runs. Preserve only capacity.
+  Array::truncate(bound, 0)
   out
 }
 
