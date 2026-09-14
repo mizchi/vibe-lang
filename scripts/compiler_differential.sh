@@ -3,7 +3,7 @@
 #
 # #906 Phase 1 asks for exactly this ("differentially compare the new
 # --jobs 1 path with the old compiler"), and every later phase re-asks it:
-# the determinism contract in docs/compiler-parallelism.md is byte identity,
+# the determinism contract in docs/internal/design/compiler-parallelism.md is byte identity,
 # not behavioural equivalence. Restructuring the module walk is only safe if
 # the bytes do not move.
 #

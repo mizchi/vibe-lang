@@ -31,7 +31,7 @@ external links to The Vibe Book (decided in #2565).
 [user/reference/editor-and-debugging.md](user/reference/editor-and-debugging.md)
 
 **Maintainers:** [internal/project/adding-modules.md](internal/project/adding-modules.md) · [internal/operations/bootstrap.md](internal/operations/bootstrap.md) ·
-[internal/operations/operation-gate.md](internal/operations/operation-gate.md) · [ADRs](adr.md) ·
+[internal/operations/operation-gate.md](internal/operations/operation-gate.md) · [internal/design/adr.md](internal/design/adr.md) ·
 [internal/project/issue-triage.md](internal/project/issue-triage.md)
 
 This file is the audience router. It is not one of the four classes below.
@@ -61,7 +61,7 @@ Install, learn, write, build, test, package, debug, deploy.
 | [user/reference/host-abi.md](user/reference/host-abi.md) | `user/reference/` | Host ABI of generated wasm |
 | [user/reference/http_server_contract.md](user/reference/http_server_contract.md) | `user/reference/` | Public `Http::*` contract |
 | [user/reference/feature-levels.md](user/reference/feature-levels.md) | `user/reference/` | Generated-wasm feature levels. Was `wasm/` |
-| [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) | `user/reference/` | Host execution contract (not [host-runtime-contract.md](host-runtime-contract.md)) |
+| [user/reference/host-runtime-contract.md](user/reference/host-runtime-contract.md) | `user/reference/` | Host execution contract (not [internal/design/host-runtime-contract.md](internal/design/host-runtime-contract.md)) |
 | [user/getting-started/release-notes-0.1.0.md](user/getting-started/release-notes-0.1.0.md) | `user/getting-started/` | |
 
 ## 2. Maintainer / internal
@@ -96,58 +96,58 @@ the repo; not the user manual.
 
 | Current path | Later home | Notes |
 | --- | --- | --- |
-| [adr.md](adr.md) | `internal/design/` | Living ADR log |
-| [capability-authorization-surface.md](capability-authorization-surface.md) | `internal/design/` | ADR-0088, proposed |
-| [compiler-parallelism.md](compiler-parallelism.md) | `internal/design/` | ADR-0068 companion, proposed |
-| [concurrency.md](concurrency.md) | `internal/design/` | ADR-0068, proposed. Not the user concurrency guide |
-| [effect-evidence-passing.md](effect-evidence-passing.md) | `internal/design/` | ADR-0076, proposed |
-| [effect-taxonomy-entry-policy.md](effect-taxonomy-entry-policy.md) | `internal/design/` | ADR-0084, proposed |
-| [effect-taxonomy-review.md](effect-taxonomy-review.md) | `internal/design/` | Review, not the user effect tutorial |
-| [effect-wit-mapping.md](effect-wit-mapping.md) | `internal/design/` | Compiler `--wit` mapping |
-| [effectset.md](effectset.md) | `internal/design/` | ADR-0071, proposed |
-| [error-effect-policy.md](error-effect-policy.md) | `internal/design/` | ADR-0073 |
-| [exception-effect.md](exception-effect.md) | `internal/design/` | ADR-0085. User surface is the cheatsheet |
-| [host-runtime-contract.md](host-runtime-contract.md) | `internal/design/` | ADR-0086 compiler-host contract |
-| [module-system-oracle.md](module-system-oracle.md) | `internal/design/` | Executable ADR-0070 oracle |
-| [module-system-v2.md](module-system-v2.md) | `internal/design/` | |
-| [perceus-reuse.md](perceus-reuse.md) | `internal/design/` | ADR-0092, implemented reuse and remaining coverage |
-| [region-mutable-state.md](region-mutable-state.md) | `internal/design/` | ADR-0090, current region storage and RC integration requirements |
-| [internal/compiler-memory-experiments.md](internal/compiler-memory-experiments.md) | `internal/design/` | Measured memory experiments and adoption criteria |
-| [internal/compiler-memory-baseline.json](internal/compiler-memory-baseline.json) | `internal/design/` | Raw compiler comparison and region/GC observations |
-| [internal/compiler-retain-scratch.json](internal/compiler-retain-scratch.json) | `internal/design/` | Borrow inference and scratch measurements, controls and raw samples |
-| [internal/compiler-free-var-scratch.json](internal/compiler-free-var-scratch.json) | `internal/design/` | Free-variable scope scratch comparison, controls and raw samples |
-| [internal/compiler-free-var-callee.json](internal/compiler-free-var-callee.json) | `internal/design/` | Direct callee scan comparison, controls and raw samples |
-| [internal/compiler-annotated-lambda-inference.json](internal/compiler-annotated-lambda-inference.json) | `internal/design/` | Annotated local lambda inference comparison, controls and raw samples |
-| [internal/compiler-free-var-binding-lookup.json](internal/compiler-free-var-binding-lookup.json) | `internal/design/` | Callee binding lookup comparison, controls, fuel probe and raw samples |
-| [internal/compiler-borrow-worklist.json](internal/compiler-borrow-worklist.json) | `internal/design/` | Fixed-point borrow inference comparisons, controls, retain counts and validation |
-| [compiler-bytes-effects.json](compiler-bytes-effects.json) | `internal/design/` | Byte-range copying and effect reachability measurements, controls and validation |
-| [compiler-cache-capacity.json](compiler-cache-capacity.json) | `internal/design/` | Pruned body-cache reuse, reserved byte-buffer measurements, controls and validation |
-| [compiler-callback-return.json](compiler-callback-return.json) | `internal/design/` | Callback return ownership measurements, parser and cold/warm selfhost comparisons, controls and validation |
-| [compiler-module-cache.json](compiler-module-cache.json) | `internal/design/` | Unified typing/lowering cache: cold/warm selfhost timings, allocator high-water, and filesystem operation counts |
-| [compiler-dce-symbols.json](compiler-dce-symbols.json) | `internal/design/` | DCE spelling-ID experiment: cold/warm selfhost comparisons, allocation bounds, and CPU profiles |
-| [compiler-typeenv-symbols.json](compiler-typeenv-symbols.json) | `internal/design/` | Immutable TypeEnv name indexes: cold/warm selfhost comparisons, CPU profiles, and transport compatibility |
-| [compiler-single-rebind.json](compiler-single-rebind.json) | `internal/design/` | Reassignment lifetime and generated-name collision fixes, leak bounds, and cold/warm selfhost comparisons |
-| [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
-| [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
-| [simd-data-structures.md](simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |
-| [vibex-runtime-contract.md](vibex-runtime-contract.md) | `internal/design/` | ADR-0075, proposed |
-| [wasip3-effect-alignment.md](wasip3-effect-alignment.md) | `internal/design/` | ADR-0089, proposed |
-| [zero-alloc-check.md](zero-alloc-check.md) | `internal/design/` | ADR-0091, current conservative allocation verification |
-| [guide/builtin-effect-migration.md](guide/builtin-effect-migration.md) | `internal/design/` | Compiler/language migration plan |
-| [mutability-control-review.md](mutability-control-review.md) | `internal/design/` | Survey / fitness review |
-| [side-effect-consolidation.md](side-effect-consolidation.md) | `internal/design/` | |
-| [spec/decisions.md](spec/decisions.md) | `internal/design/` | Locked language decisions |
-| [spec/builtin-ssot-design.md](spec/builtin-ssot-design.md) | `internal/design/` | |
-| [spec/memory-contract.md](spec/memory-contract.md) | `internal/design/` | Linear / wasm-gc / RC |
-| [spec/profiling.md](spec/profiling.md) | `internal/design/` | |
-| [spec/rc-cutover-readiness.md](spec/rc-cutover-readiness.md) | `internal/design/` | ADR-0055 status |
-| [spec/rc-port.md](spec/rc-port.md) | `internal/design/` | ADR-0055 design record |
-| [spec/show-trait-design.md](spec/show-trait-design.md) | `internal/design/` | |
-| [spec/simd-api-design.md](spec/simd-api-design.md) | `internal/design/` | |
-| [spec/structured-shell-design.md](spec/structured-shell-design.md) | `internal/design/` | |
-| [spec/test-example-capabilities.md](spec/test-example-capabilities.md) | `internal/design/` | Proposal, partial |
-| [spec/uniform-value-repr.md](spec/uniform-value-repr.md) | `internal/design/` | ADR-0055 |
-| [spec/wasi-p3-async.md](spec/wasi-p3-async.md) | `internal/design/` | |
+| [internal/design/adr.md](internal/design/adr.md) | `internal/design/` | Living ADR log |
+| [internal/design/capability-authorization-surface.md](internal/design/capability-authorization-surface.md) | `internal/design/` | ADR-0088, proposed |
+| [internal/design/compiler-parallelism.md](internal/design/compiler-parallelism.md) | `internal/design/` | ADR-0068 companion, proposed |
+| [internal/design/concurrency.md](internal/design/concurrency.md) | `internal/design/` | ADR-0068, proposed. Not the user concurrency guide |
+| [internal/design/effect-evidence-passing.md](internal/design/effect-evidence-passing.md) | `internal/design/` | ADR-0076, proposed |
+| [internal/design/effect-taxonomy-entry-policy.md](internal/design/effect-taxonomy-entry-policy.md) | `internal/design/` | ADR-0084, proposed |
+| [internal/design/effect-taxonomy-review.md](internal/design/effect-taxonomy-review.md) | `internal/design/` | Review, not the user effect tutorial |
+| [internal/design/effect-wit-mapping.md](internal/design/effect-wit-mapping.md) | `internal/design/` | Compiler `--wit` mapping |
+| [internal/design/effectset.md](internal/design/effectset.md) | `internal/design/` | ADR-0071, proposed |
+| [internal/design/error-effect-policy.md](internal/design/error-effect-policy.md) | `internal/design/` | ADR-0073 |
+| [internal/design/exception-effect.md](internal/design/exception-effect.md) | `internal/design/` | ADR-0085. User surface is the cheatsheet |
+| [internal/design/host-runtime-contract.md](internal/design/host-runtime-contract.md) | `internal/design/` | ADR-0086 compiler-host contract |
+| [internal/design/module-system-oracle.md](internal/design/module-system-oracle.md) | `internal/design/` | Executable ADR-0070 oracle |
+| [internal/design/module-system-v2.md](internal/design/module-system-v2.md) | `internal/design/` | |
+| [internal/design/perceus-reuse.md](internal/design/perceus-reuse.md) | `internal/design/` | ADR-0092, proposed |
+| [internal/design/region-mutable-state.md](internal/design/region-mutable-state.md) | `internal/design/` | ADR-0090, current region storage and RC integration requirements |
+| [internal/design/compiler-memory-experiments.md](internal/design/compiler-memory-experiments.md) | `internal/design/` | Measured memory experiments and adoption criteria |
+| [internal/design/compiler-memory-baseline.json](internal/design/compiler-memory-baseline.json) | `internal/design/` | Raw compiler comparison and region/GC observations |
+| [internal/design/compiler-retain-scratch.json](internal/design/compiler-retain-scratch.json) | `internal/design/` | Borrow inference and scratch measurements, controls and raw samples |
+| [internal/design/compiler-free-var-scratch.json](internal/design/compiler-free-var-scratch.json) | `internal/design/` | Free-variable scope scratch comparison, controls and raw samples |
+| [internal/design/compiler-free-var-callee.json](internal/design/compiler-free-var-callee.json) | `internal/design/` | Direct callee scan comparison, controls and raw samples |
+| [internal/design/compiler-annotated-lambda-inference.json](internal/design/compiler-annotated-lambda-inference.json) | `internal/design/` | Annotated local lambda inference comparison, controls and raw samples |
+| [internal/design/compiler-free-var-binding-lookup.json](internal/design/compiler-free-var-binding-lookup.json) | `internal/design/` | Callee binding lookup comparison, controls, fuel probe and raw samples |
+| [internal/design/compiler-borrow-worklist.json](internal/design/compiler-borrow-worklist.json) | `internal/design/` | Fixed-point borrow inference comparisons, controls, retain counts and validation |
+| [internal/design/compiler-bytes-effects.json](internal/design/compiler-bytes-effects.json) | `internal/design/` | Byte-range copying and effect reachability measurements, controls and validation |
+| [internal/design/compiler-cache-capacity.json](internal/design/compiler-cache-capacity.json) | `internal/design/` | Pruned body-cache reuse, reserved byte-buffer measurements, controls and validation |
+| [internal/design/compiler-callback-return.json](internal/design/compiler-callback-return.json) | `internal/design/` | Callback return ownership measurements, parser and cold/warm selfhost comparisons, controls and validation |
+| [internal/design/compiler-module-cache.json](internal/design/compiler-module-cache.json) | `internal/design/` | Unified typing/lowering cache: cold/warm selfhost timings, allocator high-water, and filesystem operation counts |
+| [internal/design/compiler-dce-symbols.json](internal/design/compiler-dce-symbols.json) | `internal/design/` | DCE spelling-ID experiment: cold/warm selfhost comparisons, allocation bounds, and CPU profiles |
+| [internal/design/compiler-typeenv-symbols.json](internal/design/compiler-typeenv-symbols.json) | `internal/design/` | Immutable TypeEnv name indexes: cold/warm selfhost comparisons, CPU profiles, and transport compatibility |
+| [internal/design/compiler-single-rebind.json](internal/design/compiler-single-rebind.json) | `internal/design/` | Reassignment lifetime and generated-name collision fixes, leak bounds, and cold/warm selfhost comparisons |
+| [internal/design/registry-design.md](internal/design/registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
+| [internal/design/resource-kind-parameters.md](internal/design/resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
+| [internal/design/simd-data-structures.md](internal/design/simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |
+| [internal/design/vibex-runtime-contract.md](internal/design/vibex-runtime-contract.md) | `internal/design/` | ADR-0075, proposed |
+| [internal/design/wasip3-effect-alignment.md](internal/design/wasip3-effect-alignment.md) | `internal/design/` | ADR-0089, proposed |
+| [internal/design/zero-alloc-check.md](internal/design/zero-alloc-check.md) | `internal/design/` | ADR-0091, current conservative allocation verification |
+| [internal/design/builtin-effect-migration.md](internal/design/builtin-effect-migration.md) | `internal/design/` | Compiler/language migration plan |
+| [internal/design/mutability-control-review.md](internal/design/mutability-control-review.md) | `internal/design/` | Survey / fitness review |
+| [internal/design/side-effect-consolidation.md](internal/design/side-effect-consolidation.md) | `internal/design/` | |
+| [internal/design/decisions.md](internal/design/decisions.md) | `internal/design/` | Locked language decisions |
+| [internal/design/builtin-ssot-design.md](internal/design/builtin-ssot-design.md) | `internal/design/` | |
+| [internal/design/memory-contract.md](internal/design/memory-contract.md) | `internal/design/` | Linear / wasm-gc / RC |
+| [internal/design/profiling.md](internal/design/profiling.md) | `internal/design/` | |
+| [internal/design/rc-cutover-readiness.md](internal/design/rc-cutover-readiness.md) | `internal/design/` | ADR-0055 status |
+| [internal/design/rc-port.md](internal/design/rc-port.md) | `internal/design/` | ADR-0055 design record |
+| [internal/design/show-trait-design.md](internal/design/show-trait-design.md) | `internal/design/` | |
+| [internal/design/simd-api-design.md](internal/design/simd-api-design.md) | `internal/design/` | |
+| [internal/design/structured-shell-design.md](internal/design/structured-shell-design.md) | `internal/design/` | |
+| [internal/design/test-example-capabilities.md](internal/design/test-example-capabilities.md) | `internal/design/` | Proposal, partial |
+| [internal/design/uniform-value-repr.md](internal/design/uniform-value-repr.md) | `internal/design/` | ADR-0055 |
+| [internal/design/wasi-p3-async.md](internal/design/wasi-p3-async.md) | `internal/design/` | |
 
 ### Compiler
 
@@ -157,8 +157,8 @@ the repo; not the user manual.
 | [checked-body-transport.md](checked-body-transport.md) | `internal/compiler/` | Checked-implementation-body artifact + normalized typed-IR codec. Its "shadow-only" framing is superseded: #2505 promotes this lane, and the #1958 it cites is closed |
 | [checked-direct-expression-return-observation.md](checked-direct-expression-return-observation.md) | `internal/compiler/` | Checker observation note |
 | [tracing-design.md](tracing-design.md) | `internal/compiler/` | Proposed internal spans |
-| [internal/experimental-wasmfx-effect-backend.md](internal/experimental-wasmfx-effect-backend.md) | `internal/design/` | WasmFX feasibility probe. Tracked by #2221 |
-| [internal/experimental-wasmtime-guest-profiler.md](internal/experimental-wasmtime-guest-profiler.md) | `internal/design/` | Guest-profiler integration. Tracked by #2207 |
+| [internal/design/experimental-wasmfx-effect-backend.md](internal/design/experimental-wasmfx-effect-backend.md) | `internal/design/` | WasmFX feasibility probe. Tracked by #2221 |
+| [internal/design/experimental-wasmtime-guest-profiler.md](internal/design/experimental-wasmtime-guest-profiler.md) | `internal/design/` | Guest-profiler integration. Tracked by #2207 |
 | [vibec-component.md](vibec-component.md) | `internal/compiler/` | Compiler-core component split |
 | [wasm/gc-value-abi.md](wasm/gc-value-abi.md) | `internal/compiler/` | wasm-gc value ABI |
 | [wasm_threads_requirements.md](wasm_threads_requirements.md) | `internal/compiler/` | |
@@ -192,7 +192,7 @@ only while it is still cited.
 
 | Current path | Notes |
 | --- | --- |
-| [archive/adr/](archive/adr/) | Historical individual ADRs; living log is [adr.md](adr.md) |
+| [archive/adr/](archive/adr/) | Historical individual ADRs; living log is [internal/design/adr.md](internal/design/adr.md) |
 | [archive/advanced-graph.md](archive/advanced-graph.md) | |
 | [archive/bench_advanced_graph_report.md](archive/bench_advanced_graph_report.md) | |
 | [archive/build-optimization-analysis.md](archive/build-optimization-analysis.md) | |

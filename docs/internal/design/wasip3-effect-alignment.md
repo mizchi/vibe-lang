@@ -7,7 +7,7 @@ Date: 2026-07-31
 Related: #1218, #1227, ADR-0012(async/WASI 0.3), ADR-0068(構造化並行),
 ADR-0071(effectset), ADR-0076(evidence passing / suspend CPS),
 ADR-0085(`Exception[E]`), ADR-0088(capability authorization surface)。
-lowering の source of truth は [spec/wasi-p3-async.md](spec/wasi-p3-async.md)。
+lowering の source of truth は [spec/wasi-p3-async.md](wasi-p3-async.md)。
 
 ## Context
 
@@ -36,13 +36,13 @@ async 対応は存在しない**。`vibe serve` は Rust adapter が p3 の stre
 
 | 資料のパターン | 判定 | 根拠 / fixture |
 | --- | --- | --- |
-| Exception(`throw -> !`、継続破棄) | **動作** | built-in `Error`(ADR-0073)が同型: Error arm の `resume` は checker が拒否、arm 値が handle 結果、throw 以降は実行されない。[fixtures/effect_talk_exception_test.vibe](../fixtures/effect_talk_exception_test.vibe) |
-| State(可変セル + 末尾 resume、資料 p132 の primitive 形) | **動作** | mut セルを閉じ込めた tail-resumptive handler。needing fn 内の `while` + `let mut` も evidence-dict 経路で通ることを確認。[fixtures/effect_talk_state_appdb_test.vibe](../fixtures/effect_talk_state_appdb_test.vibe)(資料 p63 AppDB の再現) |
+| Exception(`throw -> !`、継続破棄) | **動作** | built-in `Error`(ADR-0073)が同型: Error arm の `resume` は checker が拒否、arm 値が handle 結果、throw 以降は実行されない。[fixtures/effect_talk_exception_test.vibe](../../../fixtures/effect_talk_exception_test.vibe) |
+| State(可変セル + 末尾 resume、資料 p132 の primitive 形) | **動作** | mut セルを閉じ込めた tail-resumptive handler。needing fn 内の `while` + `let mut` も evidence-dict 経路で通ることを確認。[fixtures/effect_talk_state_appdb_test.vibe](../../../fixtures/effect_talk_state_appdb_test.vibe)(資料 p63 AppDB の再現) |
 | State(古典的な状態渡し継続 `(s) => resume(s)(s)`) | **不可** | vibe の `handle` に return/value 節が無く、arm が lambda を返すと `handler arm value type mismatch with the handle body's type: expected Int, got (Int) -> Int`。primitive 形が資料自身の推奨でもあるため、これは追わない |
-| Coroutine(`Yielded(x, resume)` を返す) | **動作(制約付き)** | first-class `resume` を **ADT payload に格納して handle の外へ返し、driver ループで Done まで再入**する資料 p69-75 の形がそのまま通ることを新規に pin。[fixtures/effect_talk_coroutine_status_test.vibe](../fixtures/effect_talk_coroutine_status_test.vibe)。制約: one-shot(2回目は trap、gate 50)、suspend body は spine 形状のみ、linear backend のみ |
-| Handler switch(非スコープ再開、資料 p76) | **不可(診断あり)** | 格納された継続には元の driver が lexically 焼き付いており、新しい `handle ... with Yield { ... }` の下で呼んでも**新 handler は無視されて元の arm に配送され続ける**(実測: log=[101,102])。**#1347 (2026-08-02) で silent ではなくなった** — checker が「発火しえない handle」として reject する(下記)。[fixtures/err_handler_switch_dead_handle.vibe](../fixtures/err_handler_switch_dead_handle.vibe)、compiler_gate 83 |
-| 高階エフェクト: 純粋 block(`Span(String, () -> Int)`) | **動作** | operation の関数型パラメータ + arm からの block 呼び出しは通り、span の開始/終了 pairing を arm に閉じ込められる(資料 p86 の startSpan/endSpan 誤用問題は構造的に起きない)。[fixtures/effect_talk_tracing_span_test.vibe](../fixtures/effect_talk_tracing_span_test.vibe) |
-| 高階エフェクト: effectful block(資料 p87 の本丸) | **不可(仕様として非対応)** | `Span(String, () -> Int with Log)` + 外側 `handle .. with Log` は、arm 経由で呼ばれる closure が evidence migration から見えず reject(invalid module にはならない)。**#1347 (2026-08-02) で診断文を専用化** — 汎用文言は「handle の body を restructure せよ」と言っていたが、原因は operation の**シグネチャ**側にあり body の書き換えでは直せない。現在は原因の operation を名指しし、非対応であることを明示する: ``effect 'Log' cannot be compiled here: operation `Tracing::Span` takes a block whose own row carries 'Log' ... Higher-order effects (an operation parameterised by an EFFECTFUL block) are not supported``。[fixtures/err_higher_order_effectful_block.vibe](../fixtures/err_higher_order_effectful_block.vibe)、compiler_gate 84。Provider effect(資料 p89)も同じ壁 |
+| Coroutine(`Yielded(x, resume)` を返す) | **動作(制約付き)** | first-class `resume` を **ADT payload に格納して handle の外へ返し、driver ループで Done まで再入**する資料 p69-75 の形がそのまま通ることを新規に pin。[fixtures/effect_talk_coroutine_status_test.vibe](../../../fixtures/effect_talk_coroutine_status_test.vibe)。制約: one-shot(2回目は trap、gate 50)、suspend body は spine 形状のみ、linear backend のみ |
+| Handler switch(非スコープ再開、資料 p76) | **不可(診断あり)** | 格納された継続には元の driver が lexically 焼き付いており、新しい `handle ... with Yield { ... }` の下で呼んでも**新 handler は無視されて元の arm に配送され続ける**(実測: log=[101,102])。**#1347 (2026-08-02) で silent ではなくなった** — checker が「発火しえない handle」として reject する(下記)。[fixtures/err_handler_switch_dead_handle.vibe](../../../fixtures/err_handler_switch_dead_handle.vibe)、compiler_gate 83 |
+| 高階エフェクト: 純粋 block(`Span(String, () -> Int)`) | **動作** | operation の関数型パラメータ + arm からの block 呼び出しは通り、span の開始/終了 pairing を arm に閉じ込められる(資料 p86 の startSpan/endSpan 誤用問題は構造的に起きない)。[fixtures/effect_talk_tracing_span_test.vibe](../../../fixtures/effect_talk_tracing_span_test.vibe) |
+| 高階エフェクト: effectful block(資料 p87 の本丸) | **不可(仕様として非対応)** | `Span(String, () -> Int with Log)` + 外側 `handle .. with Log` は、arm 経由で呼ばれる closure が evidence migration から見えず reject(invalid module にはならない)。**#1347 (2026-08-02) で診断文を専用化** — 汎用文言は「handle の body を restructure せよ」と言っていたが、原因は operation の**シグネチャ**側にあり body の書き換えでは直せない。現在は原因の operation を名指しし、非対応であることを明示する: ``effect 'Log' cannot be compiled here: operation `Tracing::Span` takes a block whose own row carries 'Log' ... Higher-order effects (an operation parameterised by an EFFECTFUL block) are not supported``。[fixtures/err_higher_order_effectful_block.vibe](../../../fixtures/err_higher_order_effectful_block.vibe)、compiler_gate 84。Provider effect(資料 p89)も同じ壁 |
 | 分散 Tracing として | **部分的に可** | 純粋 block 形 + mut セル(State)+ handler での backend 切り替えまでは今日書ける。block が Fs/Http を伴う実用形は上記の高階ギャップに依存する |
 
 ### 横断ギャップ(実測で確定)
@@ -58,7 +58,7 @@ async 対応は存在しない**。`vibe serve` は Rust adapter が p3 の stre
    parse する(型引数1個のみ、containment は base 名比較の v1)。残るのは
    row 包含での `State[Int]`/`State[String]` の区別(ADR-0071 の
    `OperationRef = (OperationId, NormalizedEffectArguments)` 正規化の完全形)
-   のみ。詳細は docs/effectset.md の 2026-08-02 進捗を参照。
+   のみ。詳細は docs/internal/design/effectset.md の 2026-08-02 進捗を参照。
 2. **non-resume arm の意味論不整合**: `Error` arm と suspend-class arm は
    継続破棄(abort)だが、通常の tail-resumptive arm で `resume` を書かないと
    **暗黙の `resume(arm 値)`** になる(#1087、fixture で 99 になることを pin)。
@@ -286,7 +286,7 @@ trampoline を将来 `wasi:http/service` の
    `async func` (Async は import に出さない — async lift で実現される
    suspension effect)、`Future[T]` → `future<T'>`、nominal `ByteStream` →
    `stream<u8>`。一般 `Stream[T]`/guest 産 AsyncIter は Decision 4 の
-   boundary 規則どおり hard error のまま (docs/effect-wit-mapping.md)。
+   boundary 規則どおり hard error のまま (docs/internal/design/effect-wit-mapping.md)。
    **host import async の一般化 (c) も landed (spec §3.16)**: 匿名1本
    固定だった host future が `host_future_named("price")` で名前つき N 本に
    なる — 名前ごとに core import `vibe.host_future_get$price` →

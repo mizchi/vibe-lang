@@ -8,7 +8,7 @@ that architecture.
 Related documents:
 
 - [Build cache layering](build-cache.md)
-- [Compiler parallelism](../../compiler-parallelism.md)
+- [Compiler parallelism](../design/compiler-parallelism.md)
 - [Bootstrap and generation builds](bootstrap.md)
 - [Editor and LSP behavior](../../user/reference/editor-and-debugging.md)
 - [Component Model target](../../vibec-component.md)

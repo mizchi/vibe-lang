@@ -1,7 +1,7 @@
 # vibe release roadmap
 
 > The version ladder is ADR-0109; this file is the working detail behind it.
-> Design decisions go in [adr.md](../../adr.md), tasks in GitHub Issues.
+> Design decisions go in [adr.md](../design/adr.md), tasks in GitHub Issues.
 
 ## Version ladder
 
@@ -98,7 +98,7 @@ Existing async APIs remain unstable in 0.1.0.
 
 1. **Shared-nothing structured concurrency** — `Task` bound to a generative
    nursery, typed channels, `Send`, cooperative cancellation as the public
-   model ([ADR-0068 detail](../../concurrency.md)). JSPI + Worker, the WASI Component
+   model ([ADR-0068 detail](../design/concurrency.md)). JSPI + Worker, the WASI Component
    Model, and shared-everything threads are interchangeable lowerings of that
    semantics; none of them is a blocker. #488 stays an opt-in probe until its
    intrinsic/type gaps and the backend differential gate are resolved.
@@ -118,7 +118,7 @@ It stays short because every other kind of detail has a better home:
 
 | you want | read |
 | --- | --- |
-| why a design is the way it is | [adr.md](../../adr.md) |
+| why a design is the way it is | [adr.md](../design/adr.md) |
 | what is being worked on now | GitHub Issues (`gh issue list --state open`) |
 | how a decision was reached | the issue thread, and `git log` |
 | what the language can do today | [cheatsheet.md](../../user/reference/cheatsheet.md), [book/en](../../../book/en) |

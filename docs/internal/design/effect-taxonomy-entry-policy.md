@@ -119,8 +119,8 @@ this ADR does not decide its surface syntax.
 ## Formal contract
 
 A taxonomy-level contract ahead of the implementation is defined in
-[`Effect/Taxonomy.lean`](../formal/VibeFormal/Effect/Taxonomy.lean), with
-[`EffectTaxonomyCorrect.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyCorrect.lean)
+[`Effect/Taxonomy.lean`](../../../formal/VibeFormal/Effect/Taxonomy.lean), with
+[`EffectTaxonomyCorrect.lean`](../../../formal/VibeFormal/Proofs/EffectTaxonomyCorrect.lean)
 proving the executable checker agrees with the propositions. The model fixes:
 
 - capability / algebraic / typed Exception are disjoint requirements.
@@ -134,43 +134,43 @@ proving the executable checker agrees with the propositions. The model fixes:
   fork-safe host evidence, and algebraic handler evidence is not inherited by
   default.
 
-[`EffectTaxonomyExamples.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyExamples.lean)
+[`EffectTaxonomyExamples.lean`](../../../formal/VibeFormal/Proofs/EffectTaxonomyExamples.lean)
 holds accept/reject examples plus a counterexample: a broken preflight that
 projects only capabilities out of the row wrongly accepts an unhandled
 `Logger`.
 
 The boundary that builds the three-way classification from a resolved
 `OperationRef` and declaration metadata is defined in
-[`Effect/TaxonomyClassifier.lean`](../formal/VibeFormal/Effect/TaxonomyClassifier.lean).
+[`Effect/TaxonomyClassifier.lean`](../../../formal/VibeFormal/Effect/TaxonomyClassifier.lean).
 A catalog lookup succeeds only when exactly one metadata entry exists for the
 `EffectDefId`. A capability must carry exactly one logical resource id, an
 algebraic effect zero resource arguments, and a core Exception exactly one
 normalized type argument. Unknown ids, duplicate metadata, and malformed
 arguments reject the complete row — no element is silently dropped.
 
-[`TaxonomyClassifierCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyClassifierCorrect.lean)
+[`TaxonomyClassifierCorrect.lean`](../../../formal/VibeFormal/Proofs/TaxonomyClassifierCorrect.lean)
 proves the executable classifier agrees with the declarative `Classifies`
 relation, plus well-formedness and input/output length preservation on
 successful row classification.
-[`TaxonomyClassifierExamples.lean`](../formal/VibeFormal/Proofs/TaxonomyClassifierExamples.lean)
+[`TaxonomyClassifierExamples.lean`](../../../formal/VibeFormal/Proofs/TaxonomyClassifierExamples.lean)
 holds counterexamples for a broken classifier that guesses the class from
 argument shape alone, and a broken row conversion that discards failing
 elements via `filterMap`.
 
 The 15 positive/negative cases of this classification boundary are fixed as a
 machine-readable Oracle in
-[`effect-taxonomy.tsv`](../formal/oracle/effect-taxonomy.tsv). Catalog
+[`effect-taxonomy.tsv`](../../../formal/oracle/effect-taxonomy.tsv). Catalog
 metadata, resolved operation rows, accept/reject verdicts, and the normalized
 requirement rows are generated from the Lean model by
-[`TaxonomyOracleMain.lean`](../formal/TaxonomyOracleMain.lean), and
+[`TaxonomyOracleMain.lean`](../../../formal/TaxonomyOracleMain.lean), and
 `formal-check` rejects a stale snapshot. For now this is a contract-level
 Oracle; once the selfhost checker exposes declaration metadata, the same
 corpus connects as a differential fixture.
 
 The connection from the taxonomy check to the ADR-0075 contract is defined in
-[`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean),
+[`Capability/TaxonomyBridge.lean`](../../../formal/VibeFormal/Capability/TaxonomyBridge.lean),
 with
-[`TaxonomyBridgeCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeCorrect.lean)
+[`TaxonomyBridgeCorrect.lean`](../../../formal/VibeFormal/Proofs/TaxonomyBridgeCorrect.lean)
 proving a one-way refinement. An exact `CapabilityRef` projects onto a
 semantic `OperationRef` and `ResourceClaim`; a host provider projects onto an
 authority and `ResourceBinding`. If the complete row passes the entry/spawn
@@ -180,16 +180,16 @@ The converse implication does not hold. Skipping the taxonomy check before
 projection makes algebraic effects vanish from a capability-only contract,
 and skipping resource claims wrongly accepts a different resource kind with
 the same operation/resource identity.
-[`TaxonomyBridgeExamples.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeExamples.lean)
+[`TaxonomyBridgeExamples.lean`](../../../formal/VibeFormal/Proofs/TaxonomyBridgeExamples.lean)
 fixes both negative examples.
 
 Path scope for resource-qualified capabilities is defined as a separate layer
 in ADR-0075's
-[`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean).
+[`Capability/PathScope.lean`](../../../formal/VibeFormal/Capability/PathScope.lean).
 Globs that can intersect within the same logical/physical scope domain are
 allowed only under the same authority; a scope-aware preflight rejects
 overlaps across different authorities.
-[`PathScopeCorrect.lean`](../formal/VibeFormal/Proofs/PathScopeCorrect.lean)
+[`PathScopeCorrect.lean`](../../../formal/VibeFormal/Proofs/PathScopeCorrect.lean)
 proves the overlap judgement equivalent to the existence of a common path,
 and the uniqueness of the authority among grants matching the same path. The
 executable checker returns a canonical common-path witness, and `none` is

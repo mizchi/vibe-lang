@@ -69,9 +69,9 @@
 #       prints the contract hash change and a textual contract
 #       (index.vpkg) diff against the installed copy, then materializes
 #       the new version. (The canonical contract_surface_lines set diff is
-#       not yet reachable from shell — see docs/registry-design.md.)
+#       not yet reachable from shell — see docs/internal/design/registry-design.md.)
 #
-# Transparency log (#805, docs/registry-design.md Phase 1 minimal slice):
+# Transparency log (#805, docs/internal/design/registry-design.md Phase 1 minimal slice):
 # publish/yank append one TSV record to $VIBE_REGISTRY_LOG_DIR/records.tsv
 # (default $VIBE_HOME/log) and maintain a Merkle head in .../head. The log
 # dir is a plain directory of static files — rsync/HTTP-serve it as-is.
@@ -270,7 +270,7 @@ log_verify_consistency() {
   # append-only guarantee: the head may only ever EXTEND the head this client
   # last saw. With static-file serving the client has the full records file,
   # so consistency is checked by recomputing the old-size prefix root (see
-  # docs/registry-design.md — O(log n) consistency proofs come with the
+  # docs/internal/design/registry-design.md — O(log n) consistency proofs come with the
   # remote-proof protocol, not this full-fetch slice). Advances the seen head.
   local seen size root seen_size seen_root prefix_root
   seen="$(log_seen_file)"
@@ -880,7 +880,7 @@ update)
     # CONTRACT SURFACE DIFF, textual approximation: the contract file itself.
     # The canonical set-diff over contract_surface_lines (incl. effect-row
     # capability classification) needs a compiler adapter mode that is not
-    # exposed yet — see docs/registry-design.md "実装済みの範囲と既知の gap".
+    # exposed yet — see docs/internal/design/registry-design.md "実装済みの範囲と既知の gap".
     say "contract diff ($inst_dir/index.vpkg -> $name@$best):"
     diff -u "$inst_dir/index.vpkg" "$best_index" | sed 's/^/[vibe-pkg]   /' || true
   fi

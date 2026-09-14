@@ -16,7 +16,7 @@ artifact と切り分ける cutover ADR)、ADR-0084(capability/algebraic effect
 の分類と `.vibex` entry row の許可規則 — resource kind retrofit 後の
 builtin effect の WIT 生成は同 ADR の射程、本 ADR は compiler 自身の
 host boundary という別の対象を扱う姉妹 ADR)、
-[docs/effect-wit-mapping.md](effect-wit-mapping.md)
+[docs/internal/design/effect-wit-mapping.md](effect-wit-mapping.md)
 (`vibe compile --wit` によるユーザープログラム側の effect-surface WIT 化 —
 本 ADR が扱う compiler 自身の host boundary とは対象が異なる姉妹機構)
 
@@ -36,7 +36,7 @@ The compiler's own host boundary — what a wasm runner must provide for
 runner implementations: `runtime/viberun` (Rust/Wasmtime) and
 `scripts/wasm_vibe_host_runner.js` (Node, also Wasmtime-backed). Nothing
 described the contract itself, independent of either implementation. This is
-distinct from `vibe compile --wit` (`docs/effect-wit-mapping.md`), which
+distinct from `vibe compile --wit` (`docs/internal/design/effect-wit-mapping.md`), which
 renders a **compiled program's own** effect surface as WIT — that generator
 explicitly leaves host-capability effects (`Fs`, `Env`, `Stdin`, `Stdout`,
 ...) as a `// host capability effect '...' (provided by the vibe runtime; no
@@ -133,7 +133,7 @@ differently as long as it exposes the same four interfaces.
 
 `VIBE_MODULE_JOB_DIR`, `VIBE_LIST_DEPS`, `VIBE_PUBLISH_ENV_CACHE`
 (`cli_adapter.vibe`, added for the `--jobs N` parallel frontend work,
-`docs/compiler-parallelism.md`) are plain `Env::get(...) == "1"`-gated
+`docs/internal/design/compiler-parallelism.md`) are plain `Env::get(...) == "1"`-gated
 branches that only ever call `fs.read-file`/`fs.write-file` — treating
 `input_path`/`output_path` as a directory rather than a single file in
 job-dir/env-cache mode. No new host imports; same four interfaces, different

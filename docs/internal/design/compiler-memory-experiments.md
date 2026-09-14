@@ -1,8 +1,8 @@
 # Compiler memory experiments
 
 Use measurements to choose memory optimizations without changing the
-production defaults speculatively. The [memory contract](../spec/memory-contract.md)
-describes what is implemented; the [region contract](../region-mutable-state.md)
+production defaults speculatively. The [memory contract](memory-contract.md)
+describes what is implemented; the [region contract](region-mutable-state.md)
 defines the boundary an arena experiment must preserve.
 
 ## Comparison protocol
@@ -740,7 +740,7 @@ order, diagnostics, regions, effect handlers and compiler registration.
 Stage2 equals stage3, and an RC compiler reproduces both runtime variants.
 The full suite remains on CI; no required performance job is added.
 
-[Raw measurements, artifact/source hashes, controls and validation](../compiler-bytes-effects.json)
+[Raw measurements, artifact/source hashes, controls and validation](compiler-bytes-effects.json)
 record Node 24.21.0 on Apple M5. The table isolates these changes on
 `ee88a0b0f` with four alternating pairs per input/cache/runtime: 64 final
 build samples. Each sample starts a new process; cold has an empty private
@@ -841,7 +841,7 @@ one output-sized allocation plus bounded metadata; it fails before the change
 and passes on both bump and RC. Array capacity and buffer truncation remain open
 parts of #2554.
 
-[Raw samples, compiler identities, controls and harnesses](../compiler-cache-capacity.json)
+[Raw samples, compiler identities, controls and harnesses](compiler-cache-capacity.json)
 record the capacity-only comparison starting after the API/cache changes. Node
 24.21.0 on Apple M5 executes bump and RC compiler artifacts; both produce linear
 RC targets from the same current sources. Each cold sample has an empty private
@@ -903,7 +903,7 @@ helpers and early returns. Reclamation checks run **20,000 iterations** with a
 2,000-byte bound. The six related test files pass all 98 tests, and stage2
 equals stage3.
 
-[Raw measurements and harness](../compiler-callback-return.json) compare main
+[Raw measurements and harness](compiler-callback-return.json) compare main
 `529f786a3` with implementation `47c9e5f20`. The subsequent contract change only
 declares the query's new direct package dependency. On Node 24.21.0 / Apple M5,
 all **13 parser series have identical heap high-water** across three alternating

@@ -291,7 +291,7 @@ public API boundary, ADR-0070). The root `index.vpkg` of your project is the
 manifest, and pinned dependencies live in the project-local `.vibe/store/`
 (#2676). The boundary,
 visibility and pinning rules live in one place:
-[docs/module-system-oracle.md の「現行モデル」節](../../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
+[docs/internal/design/module-system-oracle.md の「現行モデル」節](../../internal/design/module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述)
 (#1269).
 
 Add a dependency straight from its git source. The name and version are the

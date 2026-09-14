@@ -1,4 +1,4 @@
-// Real async host (docs/spec/wasi-p3-async.md §2.3, host async imports).
+// Real async host (docs/internal/design/wasi-p3-async.md §2.3, host async imports).
 //
 // Proves that real blocking `await` works on wasmtime 45 when the async SOURCE
 // is the host: the guest imports `host.get_async() -> i64`, which the host

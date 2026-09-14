@@ -68,7 +68,7 @@ fine = 25
 
 型引数なしの `Exception` は消去された形で、どの `Exception[E]` も受け取り、
 payload は文字列として届きます。エラー型を保ちたいときは `Exception[E]` と
-書きます — [exception effect](../../docs/exception-effect.md) を参照。
+書きます — [exception effect](../../docs/internal/design/exception-effect.md) を参照。
 
 ## 自分のエフェクトを宣言する
 

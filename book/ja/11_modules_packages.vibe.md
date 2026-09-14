@@ -167,6 +167,6 @@ vibe pkg update @you/pkg          # 最新へ移動し、契約の差分を表�
 
 publish と yank は透明性ログに追記され、install はその証明を検証します —
 なので、後からバージョンを差し替えられることはありません。設計は
-[docs/registry-design.md](../../docs/registry-design.md) にあります。
+[docs/internal/design/registry-design.md](../../docs/internal/design/registry-design.md) にあります。
 
 次: [テストを書く](12_tests.vibe.md)。

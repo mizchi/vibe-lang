@@ -60,7 +60,7 @@ tc_a="$VIBE_HOME/toolchains/main"
 [ -f "$VIBE_HOME/toolchain" ] || { echo "FAIL: default toolchain file not written" >&2; exit 1; }
 [ -f "$tc_a/lib/@vibe/core/index.vpkg" ] || { echo "FAIL: stdlib @vibe/core not materialized in the toolchain" >&2; exit 1; }
 [ ! -e "$VIBE_HOME/lib/@vibe" ] || { echo "FAIL: the stdlib landed in the shared \$VIBE_HOME/lib (must be per toolchain, #2677)" >&2; exit 1; }
-# @vibe/wit_runtime is user-facing (#1324): docs/effect-wit-mapping.md tells
+# @vibe/wit_runtime is user-facing (#1324): docs/internal/design/effect-wit-mapping.md tells
 # users to import it for a WIT-facing fallible export, so an installed
 # toolchain that lacks it makes documented code fail to resolve.
 [ -f "$tc_a/lib/@vibe/wit_runtime/index.vpkg" ] || { echo "FAIL: stdlib @vibe/wit_runtime not materialized" >&2; exit 1; }

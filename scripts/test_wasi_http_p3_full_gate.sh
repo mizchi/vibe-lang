@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# WASI 0.3 async HTTP full-handler gate (docs/spec/wasi-p3-async.md §4.1),
+# WASI 0.3 async HTTP full-handler gate (docs/internal/design/wasi-p3-async.md §4.1),
 # selfhost edition (#537 — the legacy `vibe.exe compile --compose-p3` host
 # path was retired with the MoonBit host).
 #

@@ -10,7 +10,7 @@ typed, pure functional language with explicit effects, built for WASM/wasip3.
   behavior outside pure syntax (effects, imports, hashing, runtime contracts).
 - Items explicitly marked as "future", "proposal", or "draft" are non-normative.
 - Package boundaries, visibility, and pinning are specified separately:
-  - `docs/module-system-oracle.md` (canonical)
+  - `docs/internal/design/module-system-oracle.md` (canonical)
 - Incident log for compiler/language regressions:
   - `docs/archive/compiler_language_incidents.md`
 
@@ -383,7 +383,7 @@ Concurrency (v0.4.0 proposed):
 - 現行 `Task[T]` は synchronous eager prototype で、並行実行の契約ではない。
 - 公開モデルは generative nursery、region-bound `Task` / typed channel、`Send`、
   task-local handler evidence とする。詳細は
-  [ADR-0068 detailed concurrency spec](../../concurrency.md)。
+  [ADR-0068 detailed concurrency spec](../../internal/design/concurrency.md)。
 - JSPI / Worker、WASI Component Model、shared-everything-threads は公開 API ではなく
   同じ意味論の backend lowering とする。
 

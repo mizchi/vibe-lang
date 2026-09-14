@@ -214,7 +214,7 @@ effectset と一致する場合はその effectset の参照を優先する。ef
    (項目 2–3) が着地している必要がある — 静的解決のみの ADR-0076 Phase 1–2
    はこの依存を受けない
 
-   **(2026-07-22 追記、docs/effect-evidence-passing.md 側で詳細調査済み)**:
+   **(2026-07-22 追記、docs/internal/design/effect-evidence-passing.md 側で詳細調査済み)**:
    調査の結果、本項目は「Phase 3 着手前の独立した準備ステップ」として
    単独では実装しないことにした。理由: (a) `decl_authorizes_effect`
    の row-polymorphism hack はチェッカーの健全性としては現状のままで
@@ -237,7 +237,7 @@ effectset と一致する場合はその effectset の参照を優先する。ef
    — 消費者のいない状態でキー割り当てだけ先行実装すると、Phase 2 の
    当初計画 (`EPerform`/`EResume` IR ノード) と同じく未使用の
    scaffolding になるリスクがあるため。詳細は
-   docs/effect-evidence-passing.md の「追記 (2026-07-22, ADR-0071 step 6
+   docs/internal/design/effect-evidence-passing.md の「追記 (2026-07-22, ADR-0071 step 6
    着手時の調査で判明)」セクション参照。
 
 **進捗 (2026-07-22)**: 項目 1 (parser/printer) は着地済み。`with Env::get` の

@@ -251,14 +251,14 @@ consumes on its own:
 - **A short document** — translate the whole file when you edit it for another
   reason. Half in each language is worse than either. A short document is read
   start to finish, so half-and-half is worse than either language.
-- **A large living document** (this file, `docs/adr.md`, `docs/user/reference/cheatsheet.md`,
+- **A large living document** (this file, `docs/internal/design/adr.md`, `docs/user/reference/cheatsheet.md`,
   `CONTRIBUTION.md`) — migrate a section at a time as sections are revised, and
-  write **new** sections and new `docs/adr.md` rows in English from the start.
+  write **new** sections and new `docs/internal/design/adr.md` rows in English from the start.
   Each is read on its own, so it does not inherit the surrounding language.
   Size is not the test: a living document is **revised section by section and
-  read section by section**. `docs/adr.md` is 192 lines and living because each
+  read section by section**. `docs/internal/design/adr.md` is 192 lines and living because each
   ADR is entered alone; `CONTRIBUTION.md` is the same shape even though it is
-  longer than `docs/adr.md`.
+  longer than `docs/internal/design/adr.md`.
 
 ### Bilingual documents: `-ja` is the translation, not the original
 
@@ -308,7 +308,7 @@ admitting it already failed at its job. Fix it at the source instead:
 cited as history (e.g. [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md));
 it is not a place to move things you were too cautious to delete.
 
-### ADR log rules ([docs/adr.md](docs/adr.md))
+### ADR log rules ([docs/internal/design/adr.md](docs/internal/design/adr.md))
 
 - **An ADR number is permanent and unique.** Numbers are cited from source
   comments, fixtures, gate scripts, and other ADRs, so each must resolve to
@@ -472,7 +472,7 @@ test expectations, and remain gitignored.
   `perform` が要るかどうかで見分けられる。分類の表と使い分けは
   [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md) の "Effect classes and how
   operations are spelled" と ADR-0084
-  ([docs/effect-taxonomy-entry-policy.md](docs/effect-taxonomy-entry-policy.md))。
+  ([docs/internal/design/effect-taxonomy-entry-policy.md](docs/internal/design/effect-taxonomy-entry-policy.md))。
 - **言語ポリシー: コアロジック以外は、できるだけ「色のない関数」で書けるように
   する** — 権限は row が運び、呼び出し側の式は素の関数呼び出しのままにする
   (capability builtin がその形)。
@@ -851,7 +851,7 @@ P2 = 機能追加)。「重要そう」は優先度に入れない。新規起�
 経緯はコメントに残す。本文にチェックリストを積み上げると、着地した項目が増えるほど
 「次に何をやるか」が読めなくなる。
 
-設計判断は `docs/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
+設計判断は `docs/internal/design/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
 
 ## Local Test Execution
 

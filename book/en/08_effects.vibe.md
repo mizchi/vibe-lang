@@ -70,7 +70,7 @@ needs no parentheses. [Pitfalls](20_pitfalls.vibe.md) has the rule.
 Written without a type argument, `Exception` is erased: it accepts any
 `Exception[E]`, and its payload arrives as a string. When you want the
 error type preserved, write `Exception[E]` — see
-[the exception effect](../../docs/exception-effect.md).
+[the exception effect](../../docs/internal/design/exception-effect.md).
 
 ## Declaring your own effect
 

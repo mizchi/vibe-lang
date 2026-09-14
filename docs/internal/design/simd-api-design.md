@@ -79,4 +79,4 @@ SIMD kernel 248 ns, native scalar `String::index_of` 352 ns, a vibe-level loop
 25001 ns. 1.4x over the builtin, 101x over the loop. Quoting the second number
 as the value of SIMD would be quoting the cost of not having a builtin.
 
-Full write-up and the rest of the proposal: [../simd-data-structures.md](../simd-data-structures.md).
+Full write-up and the rest of the proposal: [../simd-data-structures.md](simd-data-structures.md).

@@ -185,7 +185,7 @@ covers your scope:
 | Growable buffer (bytes / chars) | `Bytes` / `String` | immutable binding, mutable interior |
 | Growable array | `ArrayBuilder` → `Array::from_array_builder` | build-then-freeze; `Array::push` also works for growing an existing `Array` in place (#1285) |
 | Mutable cursor in a struct | `struct S { mut field: T }` + `r.field = v` | ADR-0052; same responsibility model as `Array[T]` field |
-| Cross-call / handler-mediated state | declare your own effect, then `handle ... with <YourEffect>` | ADR-0050/0021; there is no builtin `Mut` effect. A `perform` **directly inside the handler body** is inline-eliminated; a call through an intervening function still goes through evidence-dict dispatch, measured at ~2× a captured `let mut` ([side-effect-consolidation.md §2.5](../../side-effect-consolidation.md)) |
+| Cross-call / handler-mediated state | declare your own effect, then `handle ... with <YourEffect>` | ADR-0050/0021; there is no builtin `Mut` effect. A `perform` **directly inside the handler body** is inline-eliminated; a call through an intervening function still goes through evidence-dict dispatch, measured at ~2× a captured `let mut` ([side-effect-consolidation.md §2.5](../../internal/design/side-effect-consolidation.md)) |
 
 `Array::push(arr, v)` appends **in place**, and every reference to `arr`
 (alias, parameter, struct field, closure capture) observes the growth — the
@@ -248,7 +248,7 @@ contract — this is a naming *rule*, not a per-type coincidence:
 **"Frozen" and "persistent" are not synonyms.** `Map`/`StringSet` are
 persistent (functional-update) but are *not* `Send`-eligible under the
 current allowlist — the canonical one is
-[concurrency.md](../../concurrency.md#send-と-capture-safety), pinned by
+[concurrency.md](../../internal/design/concurrency.md#send-と-capture-safety), pinned by
 `send_allowlist_test.vibe`. Reach for `FrozenArray`
 specifically when a value needs to cross a `spawn`/task boundary; reach for
 a bare-named persistent type for ordinary functional-update code.
@@ -937,7 +937,7 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 
 // `Send` (ADR-0068) is a COMPILER-JUDGED structural marker, not a user
 // trait; `impl Send for X` is an error. The allowlist is stated once, in
-// docs/concurrency.md "Send と capture safety".
+// docs/internal/design/concurrency.md "Send と capture safety".
 
 // `Default` (#1847) は builtin trait: prelude が marker + primitive impl
 // (Int/Float/Double/Bool/String) を登録するので `[T: Default]` bound は
@@ -1348,7 +1348,7 @@ handle { fetch_user(input) } with {
 >
 > `Ok`/`Err` が本当に要るのは **WIT 境界だけ** — WIT の `result<T,E>` は
 > `Exception[E]` row からは射影されないので、そこには
-> `import @vibe/wit_runtime { Result }` を使う ([effect-wit-mapping.md](../../effect-wit-mapping.md)、
+> `import @vibe/wit_runtime { Result }` を使う ([effect-wit-mapping.md](../../internal/design/effect-wit-mapping.md)、
 > compiler-gate 89/89 が byte 単位で pin)。それ以外で自前に
 > `enum Result[T, E] { Ok(T); Err(E) }` を宣言するのは自由だが、特別扱いは
 > 一切なくただのユーザー enum になる。
@@ -1484,7 +1484,7 @@ let n = handle { read_cfg() } with { Exception[IoError]::Throw(_e) => 0 }
 - runtime は kind を区別しない — すべて単一の abortive Wasm tag。exact-kind
   の保証は checker 側の性質。
 
-詳細と v1 の限界: [exception-effect.md](../../exception-effect.md)。
+詳細と v1 の限界: [exception-effect.md](../../internal/design/exception-effect.md)。
 
 ### Railway try (`?`) — `Option` (#635 / #1324)
 
@@ -2886,7 +2886,7 @@ arity/type check に進む。
 | `_*.vibe` / `*.draft.vibe` | Explicit-only source; excluded from discovery, but inherits nearest package shared imports and is hashed when reached by relative import |
 
 > 境界・可視性・pin/update の正本は
-> [docs/module-system-oracle.md の「現行モデル」節](../../module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述) (#1269)。
+> [docs/internal/design/module-system-oracle.md の「現行モデル」節](../../internal/design/module-system-oracle.md#現行モデル-canonical--ここが唯一の現行記述) (#1269)。
 > 以下はその要約。
 
 `index.vpkg` と同じ directory の通常 `*.vibe` だけが暗黙 build root。

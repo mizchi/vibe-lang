@@ -10,7 +10,7 @@
 > Related: #1262, ADR-0017, ADR-0021, ADR-0052, ADR-0055, ADR-0060(superseded),
 > ADR-0068, ADR-0071, ADR-0075, ADR-0082, ADR-0084, ADR-0088, ADR-0090,
 > ADR-0091, ADR-0092。
-> 計測スクリプト: [bench/bench_state_representation.vibe](../bench/bench_state_representation.vibe)
+> 計測スクリプト: [bench/bench_state_representation.vibe](../../../bench/bench_state_representation.vibe)
 
 ## 0. 結論(先出し)
 
@@ -102,7 +102,7 @@ cheatsheet の "Choosing a mutation style" は5つ挙げる。実装の実体で
 
 ### 2.1 方法
 
-[bench/bench_state_representation.vibe](../bench/bench_state_representation.vibe)。
+[bench/bench_state_representation.vibe](../../../bench/bench_state_representation.vibe)。
 `state/*` は同じ `sum(0..999)` を**反復状態の持ち方だけ**変えた9形、
 `fbip/*` は ADR-0092 Phase 1 reuse が**発火する形としない形**の A/B。
 
@@ -698,7 +698,7 @@ renames + 旧名の deprecated alias。`vibe` は selfhost なので、
 
 ADR-0100 (3) が最後に開けていた一点は「**`ImmutMap` は builtin `Map` へ統合
 できるか**(性能上併存が要ると判明したら実装接尾辞 `MapHamt` に落とす)」。
-判定条件が性能なので、[bench/bench_map_vs_immutmap.vibe](../bench/bench_map_vs_immutmap.vibe)
+判定条件が性能なので、[bench/bench_map_vs_immutmap.vibe](../../../bench/bench_map_vs_immutmap.vibe)
 で測った (n=1000、`VIBE_RC=0` の B/op が確保の真値、--iters 20):
 
 | | builtin `Map` (flat assoc list) | `MapHamt` (HAMT) | |
@@ -729,7 +729,7 @@ ADR-0100 (3) が最後に開けていた一点は「**`ImmutMap` は builtin `Ma
 `-Builder` も「可変」の一種なので、§5.2 の軸に載せる前に
 **性能上必要かどうかを実測で分けた**(規則:「性能例外は許すが、例外は
 明示的に説明する」— この節がその説明)。n=1000 の蓄積、
-[bench/bench_builder_vs_mut.vibe](../bench/bench_builder_vs_mut.vibe)、
+[bench/bench_builder_vs_mut.vibe](../../../bench/bench_builder_vs_mut.vibe)、
 B/op は VIBE_RC=0 (bump) の値:
 
 | 素材 | Builder | Mut- 相当 | persistent 相当 |

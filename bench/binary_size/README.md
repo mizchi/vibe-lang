@@ -40,7 +40,7 @@ an in-flight compiler change before it lands in a new seed.
 
 Reports, per program: byte size with `VIBE_RC=0` (bump, no reclamation —
 today's production default) and `VIBE_RC=1` (Perceus RC — see
-`docs/spec/rc-port.md`); plus, best-effort, the `VIBE_RC=0` size after
+`docs/internal/design/rc-port.md`); plus, best-effort, the `VIBE_RC=0` size after
 `wasm-opt -Oz` when `wasm-opt` is on `PATH` (optional, as in almide's own
 methodology — this repo does not vendor binaryen, so that column commonly
 reads `n/a`; `lib/@vibe/optimizer`'s own `minify_converge` is vibe's

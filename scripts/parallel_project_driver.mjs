@@ -5,7 +5,7 @@
 //
 // This is discovery-only. It is not wired into `vibe build`, there is no
 // `--jobs` flag, and no timing claim is made here -- see
-// docs/compiler-parallelism.md for what's still missing before either of
+// docs/internal/design/compiler-parallelism.md for what's still missing before either of
 // those is true.
 //
 // Discovery reuses the compiler's OWN import resolution (VIBE_LIST_DEPS,

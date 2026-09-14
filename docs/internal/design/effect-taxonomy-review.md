@@ -1,7 +1,7 @@
 # Effect 分類レビュー: capability effect と algebraic effect の整理
 
-> **位置づけ**: これは ADR ではない。`docs/adr.md` の凡例(accepted/proposed/
-> deferred/superseded)には従わず、`docs/adr.md` にまだ登録されていない
+> **位置づけ**: これは ADR ではない。`docs/internal/design/adr.md` の凡例(accepted/proposed/
+> deferred/superseded)には従わず、`docs/internal/design/adr.md` にまだ登録されていない
 > 設計上の論点を横断的に整理するレビュー文書。ここで方向性が固まった項目
 > から、既存の ADR-0071 / ADR-0075 / ADR-0060 / ADR-0068 / ADR-0073 の
 > `Related` として、個別の小さい ADR に順次切り出すことを想定している。
@@ -161,7 +161,7 @@ fail-closed にする。例えば `read src/**` と
 compile/plan では logical resource ごと、apply では resolved physical root
 ごとに再検査する。後者により、別々の logical resource が同じ物理 directory
 へ bind される alias も検出する。形式契約は
-[`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean)
+[`Capability/PathScope.lean`](../../../formal/VibeFormal/Capability/PathScope.lean)
 に置き、overlap 判定と共通 path の存在の同値、および同一 path に一致する
 grant の authority 一意性を証明する。重複時は両 pattern に一致する canonical
 path witness を診断へ含め、`none` は semantic intersection が空であることを
@@ -541,7 +541,7 @@ gate で回帰を固定し、`stage2 == stage3` fixpoint を都度確認する)�
 > **carved out**: #1143 本来の要求(compiler の host runtime execution
 > contract を WIT で明文化する)は ADR-0086 として決着済み。詳細は
 > [host-runtime-contract.md](host-runtime-contract.md) +
-> [wit/vibe-compiler-host.wit](wit/vibe-compiler-host.wit)。以下は
+> [wit/vibe-compiler-host.wit](../../wit/vibe-compiler-host.wit)。以下は
 > resource-kind retrofit がこの実装債務をどう構造的に解消するか、という
 > 別の角度からの議論として記録のまま残す。
 
@@ -608,49 +608,49 @@ singleton(`Fs[Process::Root]::...`)へ展開する sugar が必要になる
 - [effectset.md](effectset.md)(ADR-0071 実体)、
   [vibex-runtime-contract.md](vibex-runtime-contract.md)(ADR-0075 実体)、
   [adr.md](adr.md)(ADR-0060/0068/0073 エントリ)。
-- `docs/wit/vibe-compiler-host.wit`、`docs/effect-wit-mapping.md` —
+- `docs/wit/vibe-compiler-host.wit`、`docs/internal/design/effect-wit-mapping.md` —
   #1143 の WIT ねじれの現状。
 
 ## 検証方針(実装フェーズに進む場合)
 
 - ADR-0084 の taxonomy-level contract は
-  [`Effect/Taxonomy.lean`](../formal/VibeFormal/Effect/Taxonomy.lean)、
+  [`Effect/Taxonomy.lean`](../../../formal/VibeFormal/Effect/Taxonomy.lean)、
   executable checker との一致・保存則は
-  [`EffectTaxonomyCorrect.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyCorrect.lean)、
+  [`EffectTaxonomyCorrect.lean`](../../../formal/VibeFormal/Proofs/EffectTaxonomyCorrect.lean)、
   正負の witness は
-  [`EffectTaxonomyExamples.lean`](../formal/VibeFormal/Proofs/EffectTaxonomyExamples.lean)
+  [`EffectTaxonomyExamples.lean`](../../../formal/VibeFormal/Proofs/EffectTaxonomyExamples.lean)
   で machine-check する。これは現行 selfhost checker との correspondence
   proof ではない。
 - resolved operation と effect metadata の分類境界は
-  [`Effect/TaxonomyClassifier.lean`](../formal/VibeFormal/Effect/TaxonomyClassifier.lean)
+  [`Effect/TaxonomyClassifier.lean`](../../../formal/VibeFormal/Effect/TaxonomyClassifier.lean)
   で定義し、
-  [`TaxonomyClassifierCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyClassifierCorrect.lean)
+  [`TaxonomyClassifierCorrect.lean`](../../../formal/VibeFormal/Proofs/TaxonomyClassifierCorrect.lean)
   で executable/declarative semantics の一致と fail-closed row conversion を
   検証する。正負15ケースは
-  [`effect-taxonomy.tsv`](../formal/oracle/effect-taxonomy.tsv) に
+  [`effect-taxonomy.tsv`](../../../formal/oracle/effect-taxonomy.tsv) に
   machine-readable Oracle として固定し、Lean からの再生成結果との差分を
   `formal-check` で検査する。現行の文字列 checker に metadata を追加する
   際は、この corpus との differential fixture を correspondence guard に
   する。
 - taxonomy から ADR-0075 capability contract への一方向 refinement は
-  [`Capability/TaxonomyBridge.lean`](../formal/VibeFormal/Capability/TaxonomyBridge.lean)
+  [`Capability/TaxonomyBridge.lean`](../../../formal/VibeFormal/Capability/TaxonomyBridge.lean)
   と
-  [`TaxonomyBridgeCorrect.lean`](../formal/VibeFormal/Proofs/TaxonomyBridgeCorrect.lean)
+  [`TaxonomyBridgeCorrect.lean`](../../../formal/VibeFormal/Proofs/TaxonomyBridgeCorrect.lean)
   で検証する。投影だけでは algebraic effect を観測できないため、完全 row の
   taxonomy check を必ず WIT/host projection より先に行う。
 - path-scoped authority は
-  [`Capability/PathScope.lean`](../formal/VibeFormal/Capability/PathScope.lean)
+  [`Capability/PathScope.lean`](../../../formal/VibeFormal/Capability/PathScope.lean)
   と
-  [`PathScopeCorrect.lean`](../formal/VibeFormal/Proofs/PathScopeCorrect.lean)
+  [`PathScopeCorrect.lean`](../../../formal/VibeFormal/Proofs/PathScopeCorrect.lean)
   で検証する。restricted glob の overlap 判定が共通 path の存在と同値で
   あること、executable witness の健全性、異なる authority の重複を reject し、
   valid policy では同一 domain/path に一致する grant の authority が一意に
   なることを証明する。
-- 新規/改訂 ADR を `docs/adr.md` に追加し、Related ADR として
+- 新規/改訂 ADR を `docs/internal/design/adr.md` に追加し、Related ADR として
   0071/0075/0060/0068/0073 を明記する。
 - 各提案ごとに `fixtures/*.vibe` で最小再現を先に書き、seed compiler が
   新構文を理解できるようになってから bootstrap bump する
-  ([bootstrap.md](internal/operations/bootstrap.md) の運用ルールに従う)。
+  ([bootstrap.md](../operations/bootstrap.md) の運用ルールに従う)。
 - 破壊的変更(`Fs`/`Env` 等 builtin の resource-kind 化)は既存
   fixture/test への影響範囲を `bash scripts/compiler_gate.sh` と
   `bash scripts/unit_test_runner.sh` で確認しながら段階導入する。

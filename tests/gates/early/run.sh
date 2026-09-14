@@ -2916,7 +2916,7 @@ fi
 rm -rf "$gjdir"
 echo "[compiler-gate] generic trait impl (Increment B, dict-of-dict) ok"
 
-# 24. async-lifted component EXECUTION on wasmtime (docs/spec/wasi-p3-async.md
+# 24. async-lifted component EXECUTION on wasmtime (docs/internal/design/wasi-p3-async.md
 #     §3.1). The async-lift codegen (`comp_emit_component_wasm_async*` — task.return
 #     canon + async functype + async lift) is byte-tested on node, but the emitted
 #     component had no EXECUTION check (the only runner was the retired

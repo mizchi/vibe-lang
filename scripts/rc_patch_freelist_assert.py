@@ -6,7 +6,7 @@ Why a binary patch and not a source change: wasm code lives OUTSIDE linear
 memory, so rewriting a function body cannot move the guest's heap. Editing
 the compiler source instead changes what the compiler EMITS, which changes
 its own allocation totals -- that is what kept making this layout-sensitive
-crash disappear under instrumentation (see docs/perceus-reuse.md).
+crash disappear under instrumentation (see docs/internal/design/perceus-reuse.md).
 
 The prologue traps (`unreachable`, distinguishable from the natural
 "memory access out of bounds") on the FIRST allocation after a bad pointer

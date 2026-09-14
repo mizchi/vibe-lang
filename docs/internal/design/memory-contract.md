@@ -2,7 +2,7 @@
 
 This is the current contract of the selfhost compiler. Experimental changes
 and their acceptance evidence belong in
-[compiler memory experiments](../internal/compiler-memory-experiments.md).
+[compiler memory experiments](compiler-memory-experiments.md).
 
 ## Three mechanisms, two code-generation backends
 
@@ -32,7 +32,7 @@ or a deterministic collection time.
 
 The table describes normal compilation, without coverage/debug instrumentation.
 `fs_lane_request` and `ss_lane_request` in
-[`cli_adapter.vibe`](../../lib/@vibe/compiler/cli_adapter.vibe) choose the
+[`cli_adapter.vibe`](../../../lib/@vibe/compiler/cli_adapter.vibe) choose the
 backend. GC selection precedes RC selection: setting `VIBE_RC=1` alongside
 `VIBE_BACKEND=gc` does not add Perceus to the GC backend.
 
@@ -71,24 +71,24 @@ The memory mode of a **running compiler** is fixed in its Wasm artifact.
 generates**. They do not rewrite the running compiler's allocator.
 
 - Ordinary user-program compilation defaults to linear RC.
-  [`check_rc_default.sh`](../../scripts/check_rc_default.sh) checks that unset
+  [`check_rc_default.sh`](../../../scripts/check_rc_default.sh) checks that unset
   `VIBE_RC` and `VIBE_RC=1` produce identical output, distinct from bump.
-- [`generations.sh`](../../scripts/generations.sh) defaults the compiler
+- [`generations.sh`](../../../scripts/generations.sh) defaults the compiler
   self-build to `VIBE_RC=0`, while accepting an explicit override. Performance
   comparisons must therefore supply separately built compiler binaries.
 - `vibe compile --wasm` / `--wasm-linear` use the normal compilation route.
   The explicit `--wasm-gc` compile flag is still rejected by
-  [`dispatch.vibe`](../../lib/@vibe/cli/dispatch.vibe), although the compiler
+  [`dispatch.vibe`](../../../lib/@vibe/cli/dispatch.vibe), although the compiler
   adapter already accepts `VIBE_BACKEND=gc`.
 - `VIBE_TEST_BACKEND=gc` and `VIBE_BENCH_BACKEND=gc` select the public GC
   test/bench routes. These resolve the filesystem import graph before final
   code generation; they are not restricted to a flat single source. Runtime
   capability/builtin parity remains a separate limitation, tracked in
-  [`builtin_parity_classification.tsv`](../../scripts/builtin_parity_classification.tsv).
+  [`builtin_parity_classification.tsv`](../../../scripts/builtin_parity_classification.tsv).
 
 An RC compiler reproducing its own artifact is useful evidence, but a bump
 generation reaching a fixpoint does not establish that fact. In particular,
-[`test_rc_bootstrap.sh`](../../scripts/test_rc_bootstrap.sh) currently checks
+[`test_rc_bootstrap.sh`](../../../scripts/test_rc_bootstrap.sh) currently checks
 fixpoint metadata without proving RC mode. Its default build inherits the
 generation script's bump default. Record the actual compiler hashes and build
 selectors when reporting RC self-hosting.
@@ -107,16 +107,16 @@ restore the arena; this is logical reuse, not shrinking linear memory or
 returning pages to the OS. Copy-out results are allocated outside the arena.
 
 The linear backend's `need_region_arena` explicitly requires `!enable_rc` in
-[`linked_compile.vibe`](../../lib/@vibe/compiler/codegen/wasi/linked_compile.vibe).
+[`linked_compile.vibe`](../../../lib/@vibe/compiler/codegen/wasi/linked_compile.vibe).
 The GC backend enables it in
-[`backend_body.vibe`](../../lib/@vibe/compiler/codegen/gc/backend_body.vibe)
+[`backend_body.vibe`](../../../lib/@vibe/compiler/codegen/gc/backend_body.vibe)
 because these collection buffers are still linear-memory objects. See the
-[region contract](../region-mutable-state.md) for escape rules, exit coverage,
+[region contract](region-mutable-state.md) for escape rules, exit coverage,
 and prerequisites for an RC experiment.
 
 ## What the GC backend currently represents natively
 
-[`backend_expr.vibe`](../../lib/@vibe/compiler/codegen/gc/backend_expr.vibe)
+[`backend_expr.vibe`](../../../lib/@vibe/compiler/codegen/gc/backend_expr.vibe)
 emits `struct.new` and `array.new_default` for eligible typed bindings.
 Supported cases include concrete local structs, local integer arrays, and
 selected direct-call parameter/result/alias paths. Generic ABI crossings,
@@ -126,13 +126,13 @@ conditional on its uses, not merely its source-level type.
 
 Existing checks distinguish these cases:
 
-- [`gc_struct_opcode_snapshot_test.vibe`](../../lib/@vibe/compiler/tests/gc_struct_opcode_snapshot_test.vibe)
+- [`gc_struct_opcode_snapshot_test.vibe`](../../../lib/@vibe/compiler/tests/gc_struct_opcode_snapshot_test.vibe)
   decodes emitted instructions for native struct construction/access.
-- [`test_gc_heap_accounting.sh`](../../scripts/test_gc_heap_accounting.sh)
+- [`test_gc_heap_accounting.sh`](../../../scripts/test_gc_heap_accounting.sh)
   checks native array lowering and direct-call/fallback cases. Its heap-pointer
   check proves reduced **linear** allocation, not GC liveness.
 - Region value, reclamation and Exception-unwind checks run on the GC backend
-  in [`tests/gates/mid/run.sh`](../../tests/gates/mid/run.sh).
+  in [`tests/gates/mid/run.sh`](../../../tests/gates/mid/run.sh).
 
 ## Reading memory measurements
 

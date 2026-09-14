@@ -87,7 +87,7 @@ struct StringArrayReader {
 
 // Memory ResourceLimiter that delegates the size cap to an inner StoreLimits but
 // also records every accepted `memory.grow` as a growth-timeline event (tier 2
-// of docs/spec/profiling.md). Recording is gated (`record`) so non-profiling runs
+// of docs/internal/design/profiling.md). Recording is gated (`record`) so non-profiling runs
 // pay nothing. wasmtime routes BOTH guest `memory.grow` and host `Memory::grow`
 // (the bump-string allocator) through this, so the timeline is complete.
 struct MemLimiter {

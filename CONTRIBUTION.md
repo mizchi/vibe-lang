@@ -283,4 +283,4 @@ pkf run bench-module-job-pool
 
 タスクは GitHub Issues (`gh issue`) で管理する。ロードマップは
 [docs/internal/project/release-roadmap.md](docs/internal/project/release-roadmap.md) 参照。設計判断は
-[docs/adr.md](docs/adr.md) に記録する。
+[docs/internal/design/adr.md](docs/internal/design/adr.md) に記録する。

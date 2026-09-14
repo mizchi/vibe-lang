@@ -4,10 +4,10 @@ Status: proposed
 
 Date: 2026-07-31
 
-Related: ADR-0055(RC cutover、`docs/spec/rc-port.md`), ADR-0062(shadow
+Related: ADR-0055(RC cutover、`docs/internal/design/rc-port.md`), ADR-0062(shadow
 liveness), ADR-0090(region), ADR-0091(`#zero_alloc`),
 [mutability-control-review.md](mutability-control-review.md),
-[pl-survey-2026-07.md](pl-survey-2026-07.md) Medium #7(Koka FP²/TRMC)。
+[pl-survey-2026-07.md](../../pl-survey-2026-07.md) Medium #7(Koka FP²/TRMC)。
 
 ## Context
 
@@ -1124,7 +1124,7 @@ heap に 105MB の余裕がある状態で起きる = free list の壊れた nex
 `VIBE_RC=shadow` では checker の `expr_children` で落ちる(設定で場所が変わる =
 ヒープ破壊の典型)。size bins を無効化しても再現するので bin ロジックでもない。
 
-次の一手は [selfhost-miscompile-bisect](../.claude/skills/selfhost-miscompile-bisect)
+次の一手は [selfhost-miscompile-bisect](../../../.claude/skills/selfhost-miscompile-bisect)
 の probe entry + phase 二分。最小差分ペア (`emit_rc_dup_guarded` が
 どちらの分岐を取るかだけが違う stage1 が2つ) が手元にある。
 
@@ -2256,7 +2256,7 @@ offset 4107:  bump 0x40  ->  rc 0x20
 
 ### 原因: ADR-0055 Blocker-2 が gc backend にだけ残っていた
 
-`docs/spec/uniform-value-repr.md` は Blocker-2 を「✅ FIXED」と記録しているが、
+`docs/internal/design/uniform-value-repr.md` は Blocker-2 を「✅ FIXED」と記録しているが、
 直っていたのは linear backend だけだった。`codegen/gc/backend_expr.vibe:505` に
 仕様書が「壊れた形」として引用しているコードがそのまま残っていた:
 

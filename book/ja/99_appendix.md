@@ -17,9 +17,9 @@
   パッケージの置き場所 (`@vibe` / `@vibex` / ユーザースコープ)。
 - [docs/user/reference/feature-levels.md](../../docs/user/reference/feature-levels.md) —
   生成モジュールが使ってよい wasm proposal。
-- [docs/concurrency.md](../../docs/concurrency.md) — `Send`、リージョン、
+- [docs/internal/design/concurrency.md](../../docs/internal/design/concurrency.md) — `Send`、リージョン、
   `TaskGroup`。
-- [docs/adr.md](../../docs/adr.md) — この本が番号で引いている決定。
+- [docs/internal/design/adr.md](../../docs/internal/design/adr.md) — この本が番号で引いている決定。
 
 ## 本が前提にしているコマンド
 
