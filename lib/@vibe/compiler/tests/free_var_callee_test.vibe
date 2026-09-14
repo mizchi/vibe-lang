@@ -1,0 +1,80 @@
+import @vibe/compiler/core {
+  Expr
+}
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars_expr, collect_free_vars_indexed, collect_free_vars_indexed_self, collect_free_vars_used_builtins
+}
+
+fn call_scan_extra_bytes(name: String, bound: Array[String], globals: Array[String]) -> Int with Profiler {
+  let ident = EIdent(name, -1)
+  let call = ECall(ident, [], -1)
+  let out: Array[String] = []
+  let start = Profiler::heap_bytes()
+  let _ = collect_free_vars_expr(ident, bound, globals, out)
+  let ident_bytes = Profiler::heap_bytes() - start
+  let before = Profiler::heap_bytes()
+  let _ = collect_free_vars_expr(call, bound, globals, out)
+  let call_bytes = Profiler::heap_bytes() - before
+  call_bytes - ident_bytes
+}
+
+test "direct callees need no temporary identifier node" {
+  let bytes = [
+    call_scan_extra_bytes("local", ["local"], []),
+    call_scan_extra_bytes("global", [], ["global"])
+  ]
+  inspect(bytes, content = "[0, 0]")
+}
+
+test "reads, callees and writes keep first-occurrence order and deduplicate" {
+  let body = ETuple([
+    EIdent("first", -1),
+    ECall(EIdent("callee", -1), [EIdent("arg", -1)], -1),
+    EAssign("callee", EIdent("value", -1), EUnit),
+    EAssignOp("slot", "+", EIdent("delta", -1), EIdent("first", -1))
+  ])
+  inspect(collect_free_vars_indexed(body, [], []), content = "[first, callee, arg, value, slot, delta]")
+}
+
+test "local and enclosing bindings keep precedence for each name occurrence" {
+  let uses: Array[Expr] = [
+    EIdent("name", -1),
+    ECall(EIdent("name", -1), [], -1),
+    EAssign("name", EInt(1), EUnit),
+    EAssignOp("name", "+", EInt(1), EUnit)
+  ]
+  let globals = ["name"]
+  let mut i = 0
+  while i < Array::length(uses) {
+    let use = Array::get(uses, i)
+    inspect(collect_free_vars_indexed_self(use, [], globals, "", ["name"]), content = "[name]")
+    inspect(collect_free_vars_indexed_self(use, ["name"], globals, "", ["name"]), content = "[]")
+    inspect(collect_free_vars_indexed(use, [], globals), content = "[]")
+    i = i + 1
+  }
+}
+
+test "inline builtin skipping applies only to unshadowed capture callees" {
+  let ident = EIdent("not", -1)
+  let call = ECall(ident, [EBool(true)], -1)
+  inspect(collect_free_vars_indexed(ident, [], []), content = "[not]")
+  inspect(collect_free_vars_indexed(call, [], []), content = "[]")
+  inspect(collect_free_vars_used_builtins(call, [], []), content = "[not]")
+  inspect(collect_free_vars_indexed_self(call, [], [], "", ["not"]), content = "[not]")
+}
+
+test "throw skips magic names while other performs keep their callees" {
+  let payload = EIdent("payload", -1)
+  let throw_call = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Exception::Throw", -1), [payload], -1)
+  ], -1)
+  let other_call = ECall(EIdent("perform", -1), [
+    ECall(EIdent("Log::Emit", -1), [payload], -1)
+  ], -1)
+  inspect(collect_free_vars_indexed(throw_call, [], []), content = "[payload]")
+  inspect(collect_free_vars_used_builtins(throw_call, [], []), content = "[payload]")
+  inspect(collect_free_vars_indexed(other_call, [], []), content = "[perform, Log::Emit, payload]")
+  inspect(collect_free_vars_indexed(ECall(EIdent("perform", -1), [], -1), [
+    "perform"
+  ], []), content = "[]")
+}

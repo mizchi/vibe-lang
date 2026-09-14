@@ -112,6 +112,8 @@ the repo; not the user manual.
 | [internal/compiler-memory-experiments.md](internal/compiler-memory-experiments.md) | `internal/design/` | Measured memory experiments and adoption criteria |
 | [internal/compiler-memory-baseline.json](internal/compiler-memory-baseline.json) | `internal/design/` | Raw compiler comparison and region/GC observations |
 | [internal/compiler-retain-scratch.json](internal/compiler-retain-scratch.json) | `internal/design/` | Borrow inference and scratch measurements, controls and raw samples |
+| [internal/compiler-free-var-scratch.json](internal/compiler-free-var-scratch.json) | `internal/design/` | Free-variable scope scratch comparison, controls and raw samples |
+| [internal/compiler-free-var-callee.json](internal/compiler-free-var-callee.json) | `internal/design/` | Direct callee scan comparison, controls and raw samples |
 | [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
 | [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
 | [simd-data-structures.md](simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |

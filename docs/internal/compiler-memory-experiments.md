@@ -312,6 +312,135 @@ Continue to measure wall time with paired controls before attributing small
 changes to implementation cost. These results do not meet the RC cutover
 criterion.
 
+### Free-variable scope scratch, 2026-09-14
+
+The next bounded scratch change reuses the lexical-scope array in
+`collect_free_vars_indexed_sc`. The scope walk already pushes and truncates
+names inside a query, but previously copied the parameter array and regrew
+that new buffer on every query. Its private scratch now retains capacity
+between queries and clears all names before returning. The walker only reads
+AST data and cannot re-enter an indexed query; capture results keep their own
+arrays. Capture rules, result ordering and the public API are unchanged.
+Retained capacity is bounded by the largest scope visited in that compiler
+instance, rather than by the number of queries; names do not survive a reset.
+
+The allocation regression compares a warmed scoped query with a leaf query,
+excluding AST construction and keeping result allocation on both sides.
+Additional scope allocation falls from **32 bytes to 0**. Tests preserve input
+arrays and earlier capture results across later calls, nested scopes,
+labeled/optional parameters, enclosing shadows and the let-rec collision
+fallback's second query.
+
+The [raw measurements](compiler-free-var-scratch.json) record the compiler
+identities, all comparison samples and separate CPU profiles. The baseline
+includes the direct-recursion and binder-scratch changes above. Both compiler
+runtimes generate linear RC targets; the ordinary strict output-equivalence
+protocol applies. These are filesystem compiles of the compiler closure and
+full CLI, not the complete seed-to-stage3 pipeline.
+
+Four alternating pairs per workload/temperature on Node 24.21.0, Apple M5.
+Wall columns show medians in seconds; the paired column reports the median
+candidate/baseline ratio from individual pairs. Heap reductions are decimal MB.
+
+| Workload | Bump wall, before → after | RC wall, before → after | Paired wall change, bump / RC | Heap-pointer reduction, bump / RC |
+|---|---:|---:|---:|---:|
+| Closure, cold | 1.992 → 1.980 | 6.064 → 6.028 | −0.6% / −0.3% | 1.98 / 3.47 MB |
+| Closure, warm | 1.321 → 1.339 | 4.145 → 4.107 | +0.9% / −0.9% | 1.98 / 3.46 MB |
+| CLI, cold | 5.126 → 5.116 | 14.240 → 13.734 | −0.2% / −3.3% | 3.52 / 6.04 MB |
+| CLI, warm | 3.957 → 3.953 | 10.860 → 10.449 | −0.4% / −2.6% | 3.51 / 6.03 MB |
+
+Heap reductions reproduce in every sample: 0.13–0.31% on bump and
+0.23–0.52% on RC. **Linear-memory capacity is unchanged** in all comparisons.
+Peak RSS medians fall only 0.1–0.4%; the data records RSS independently from
+the heap pointer, rather than treating this as a large process-memory saving.
+The same-artifact A/A control has exactly equal heap pointers and linear
+capacities. All 96 comparison samples produce identical target Wasm within
+each comparison workload, across both compilers, temperatures and rounds.
+
+Wall improvements remain inconclusive. The A/A paired medians range from
+−0.5% to +2.2%, with individual pairs spanning −8.3% to +4.1%. RC CLI cold
+looks faster in aggregate, but its four pairs are +0.4%, +0.0%, −6.7% and
+−7.1%. Separate RC profiles put the indexed query at 264 → 259 ms cold and
+270 → 263 ms warm, including its callees; these single profiles do not
+establish a large CPU reduction.
+
+Validation: 62 related tests in 12 files pass, including ownership probes in
+bump, RC and RC-shadow. Stage2 equals stage3, and the RC compiler reproduces
+both compiler artifacts. Three closure fixtures also pass 17 tests per target
+when rechecked with RC and RC-shadow. The full suite remains in CI, with no
+additional timing jobs or required benchmark dependencies.
+
+**Decision:** keep the small scope-storage change for its deterministic heap
+reduction in both compiler runtimes. Keep the bump default and make no claim
+of a consistent wall-time or linear-capacity improvement.
+
+### Direct callee name scans, 2026-09-14
+
+Free-variable analysis reconstructed an `EIdent` node to scan the name of a
+direct call. It then recursively visited that temporary node and discarded it.
+`collect_free_var_name` now accepts the existing name, and reads, callees and
+assignment targets share its binding judgment. This removes both temporary
+construction sites and the duplicated read/write logic without changing
+capture order or the public API.
+
+The helper preserves the precedence of local bindings, enclosing locals and
+global names. The inline-builtin skip stays at call sites; a bare identifier
+still counts as a reference. The used-builtin scan and the throw-payload
+special case keep their existing behavior. A non-throw `perform` still builds
+an `Option` while classifying its arguments: removing the temporary identifier
+does not imply that every possible callee scan allocates nothing.
+
+A regression compares a prebuilt direct call with a bare identifier using the
+same name and binding context. On bump, the additional allocation drops from
+24 bytes to 0 for both local-bound and global callees. RC's first query drops
+from 32 bytes of heap-pointer growth to 0; its next query already reuses the
+temporary's block on the baseline. The RC number measures heap growth, not
+allocation volume.
+
+The [raw measurements](compiler-free-var-callee.json) compare compilers built
+from the latest main plus the scope-scratch change above, before and after
+this direct-name change. That baseline isolates the new mechanism from the
+earlier scratch work and intervening ownership fixes. Both runtimes generate
+the same linear RC targets using the strict output-equivalence protocol.
+
+Four alternating pairs per workload/temperature, Node 24.21.0 on Apple M5.
+Wall columns show medians in seconds; the paired column is the median of the
+individual candidate/baseline ratios. Heap changes are candidate minus baseline.
+
+| Workload | Bump wall, before → after | RC wall, before → after | Paired wall change, bump / RC | Bump heap change | RC heap change |
+|---|---:|---:|---:|---:|---:|
+| Closure, cold | 2.003 → 2.070 | 6.192 → 6.190 | +0.3% / +0.1% | −3.33 MB | −2,456 B |
+| Closure, warm | 1.392 → 1.361 | 4.225 → 4.209 | +0.1% / −1.0% | −3.32 MB | −1,152 B |
+| CLI, cold | 5.221 → 5.184 | 13.867 → 13.838 | −1.7% / −0.1% | −5.69 MB | +7,624 B |
+| CLI, warm | 4.074 → 4.227 | 10.522 → 10.422 | +1.9% / +0.0% | −5.69 MB | +5,256 B |
+
+Bump heap reductions of 0.21–0.52% reproduce in every sample. RC heap
+changes are tiny, including the CLI increases; none of the comparisons changes
+linear-memory capacity. Peak RSS changes range from −0.31% to +0.14%, rather
+than establishing a large resident-memory saving. A/A heap pointers and
+linear capacities agree exactly. All 96 samples retain strict target-byte
+equality within each comparison workload, across compilers and temperatures.
+
+The generated RC visitor has two fewer allocator call sites (2 → 0).
+Retain call sites across the visitor and new name helper fall from 318 to
+302 (300 in the visitor, 2 in the helper). Separate RC profiles put the indexed query, including its
+callees, at 239 → 202 ms cold and 248 → 200 ms warm. Those single profiles
+support the reduction in local work, but do not establish a whole-build speedup.
+Wall readings remain noisy: A/A individual pairs span −8.5% to +3.9%, and
+the bump comparison has pairs as wide as −18.9% to +20.7%. These samples are
+retained rather than filtered from the reported medians.
+
+Validation: 79 related tests in 15 files pass, including Perceus plan checks,
+shadowing, capture ordering and builtin import coverage. Four of those files
+also pass 22 tests each under bump and RC-shadow. Stage2 equals stage3, and
+the RC compiler reproduces both compiler artifacts. Formatter checks pass;
+full regression remains in CI without new required benchmark jobs.
+
+**Decision:** keep the direct-name scan for its bump allocation reduction and
+simpler shared binding logic. The measured RC benefit is less work in the
+profiled query, with effectively unchanged heap pressure. Keep the bump
+default and do not claim a consistent wall-time improvement.
+
 ### Region and native GC observations, 2026-09-14
 
 The same bump compiler built the following fixtures in all three target
