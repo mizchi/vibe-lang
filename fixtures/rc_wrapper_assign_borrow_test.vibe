@@ -1,0 +1,104 @@
+// #2760: an owning mutable slot assigned a WRAPPER whose result spine ends in
+// a borrow.
+//
+// The assignment lowering decided whether a replacement value borrows by
+// reading its TOP node -- a projection, or a direct call with a borrow
+// contract. A wrapper (a block, i.e. an `ELet` / `ESeq` chain) is neither, so
+// no retain was emitted while the slot stayed owning. Its drop then released
+// an element the container still owns, and the next read of that element
+// answered with whatever allocation reused the freed block.
+//
+// Measured before the fix: `770` on `VIBE_RC=0` and **`850`** on the default
+// RC lane, no trap. `850` reads the second `total(Array::get(xs, 0))` as 15 --
+// the filler -- instead of 7.
+//
+// The lanes must agree, which is what each case here asserts: every expected
+// value is the bump lane's answer.
+enum Node {
+  Leaf(Int);
+  Pair(Node, Node)
+}
+
+struct Holder {
+  node: Node
+}
+
+fn total(n: Node) -> Int {
+  match n {
+    Pair(a, b) => total(a) + total(b),
+    Leaf(v) => v
+  }
+}
+
+// The issue's shape: a block around a borrow-returning builtin.
+fn assign_wrapped_call(xs: Array[Node]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let k = 0
+    Array::get(xs, k)
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(xs, 0)) * 10 + total(filler) * 0
+}
+
+// The other unowned leaf kind, through the same wrapper: a PROJECTION. Both
+// are enumerated by one spine walk rather than one kind per review round.
+fn assign_wrapped_proj(h: Holder) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let k = 0
+    h.node
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(h.node) * 10 + total(filler) * 0
+}
+
+// An `ESeq` spine reaches the same leaf without binding anything, so the walk
+// must not depend on a binder being present.
+fn assign_seq_call(xs: Array[Node]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    0
+    Array::get(xs, 0)
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(xs, 0)) * 10 + total(filler) * 0
+}
+
+// The guard against the fix going too wide: a wrapper whose spine ends in an
+// allocation made at the site owns its value, so retaining it here would leak.
+// The answer is the same either way -- this case is carried by the leak bound
+// in fixtures/rc_reclaim_leak_test.vibe, and stands here so the value side of
+// the contract names it too.
+fn assign_wrapped_alloc(xs: Array[Node]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let k = 5
+    Pair(Leaf(k), Leaf(k + 1))
+  }
+  let r = total(x)
+  r * 100 + total(Array::get(xs, 0)) * 10
+}
+
+test "2760 a wrapped borrow-returning call assigned into an owning slot" {
+  let xs = [Pair(Leaf(3), Leaf(4))]
+  inspect(assign_wrapped_call(xs), content = "770")
+}
+
+test "2760 a wrapped projection assigned into an owning slot" {
+  let h = Holder::{ node: Pair(Leaf(3), Leaf(4)) }
+  inspect(assign_wrapped_proj(h), content = "770")
+}
+
+test "2760 an ESeq spine reaches the same leaf" {
+  let xs = [Pair(Leaf(3), Leaf(4))]
+  inspect(assign_seq_call(xs), content = "770")
+}
+
+test "2760 a wrapped allocation still owns its value" {
+  let xs = [Pair(Leaf(3), Leaf(4))]
+  inspect(assign_wrapped_alloc(xs), content = "1170")
+}
