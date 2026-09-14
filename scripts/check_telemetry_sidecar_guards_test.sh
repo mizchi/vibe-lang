@@ -17,6 +17,7 @@ cd "$ROOT_DIR"
 
 . "$(dirname "$0")/resolve_stage2.sh"
 STAGE2="$(resolve_stage2 telemetry-sidecar-guards-test "${TELEMETRY_GUARD_STAGE2:-${VIBE_STAGE2_WASM:-}}")" || exit 1
+mkdir -p "$ROOT_DIR/_build"
 WORK="$(mktemp -d "$ROOT_DIR/_build/telemetry_guard_selftest.XXXXXX")"
 LOG="$WORK/gate.log"
 MUTANT="$WORK/no-telemetry.wasm"

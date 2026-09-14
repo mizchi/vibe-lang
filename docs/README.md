@@ -118,6 +118,7 @@ the repo; not the user manual.
 | [internal/compiler-free-var-binding-lookup.json](internal/compiler-free-var-binding-lookup.json) | `internal/design/` | Callee binding lookup comparison, controls, fuel probe and raw samples |
 | [internal/compiler-borrow-worklist.json](internal/compiler-borrow-worklist.json) | `internal/design/` | Fixed-point borrow inference comparisons, controls, retain counts and validation |
 | [compiler-bytes-effects.json](compiler-bytes-effects.json) | `internal/design/` | Byte-range copying and effect reachability measurements, controls and validation |
+| [compiler-cache-capacity.json](compiler-cache-capacity.json) | `internal/design/` | Pruned body-cache reuse, reserved byte-buffer measurements, controls and validation |
 | [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
 | [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
 | [simd-data-structures.md](simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |
