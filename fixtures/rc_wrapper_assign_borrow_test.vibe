@@ -83,6 +83,58 @@ fn assign_wrapped_alloc(xs: Array[Node]) -> Int {
   r * 100 + total(Array::get(xs, 0)) * 10
 }
 
+// SELF-MENTIONING wrappers. `is_self` is `assign_value_mentions` -- the value
+// has `x` as a free variable, ANY mention -- and on that path the assignment
+// arm deliberately keeps main's answer (see its comment). Two reviews on #2783
+// read that branch as a hole, so the shapes they named are pinned here as the
+// answers they actually give rather than left as an argument: if anyone widens
+// `is_self` later, these rows say what moved.
+//
+// Measured on `6507c60` on the patched AND the unpatched compiler, RC and bump
+// lanes, agreeing -- which is why neither is a `_refused`-style guard: there is
+// no corruption in THESE two to bound.
+//
+// A third shape from the same review is NOT here, deliberately: a borrow-only
+// self-use with no later read of the slot corrupts the free list
+// (`memory access out of bounds` inside `__rt_rc_alloc`), and it does so
+// IDENTICALLY on the unpatched compiler, so it is main's bug and not this
+// change's -- filed as #2786 with its own repro. It is left out because a
+// fixture that traps is not a guard, and because widening this diff to chase a
+// pre-existing corruption is the thing #2760 itself was filed to avoid.
+//
+// Two details of that shape are worth knowing before anyone writes it here:
+// alone in its own file it PASSES on both compilers (it damages the free list;
+// the damage surfaces on a later allocation, which a preceding test supplies),
+// and pairing it with an OWNING self-use also passes (`total(x)` consumes, so
+// the budget re-application has a dup to spend). Both details are recorded on
+// #2786.
+
+// An OWNING self-use: `total(x)` consumes, so the budget re-application has a
+// dup to spend.
+fn assign_self_owning_use(xs: Array[Node]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let t0 = total(x)
+    Array::get(xs, t0 - 3)
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(xs, 0)) * 10 + total(filler) * 0
+}
+
+// A BORROW-ONLY self-use, which creates no owning use and so no dup for that
+// loop to spend -- the discriminating shape the second review named.
+fn assign_self_borrow_use(xss: Array[Array[Node]]) -> Int {
+  let mut x = [Leaf(1)]
+  x = {
+    Array::length(x)
+    Array::get(xss, 0)
+  }
+  let r = total(Array::get(x, 0))
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(Array::get(xss, 0), 0)) * 10 + total(filler) * 0
+}
+
 test "2760 a wrapped borrow-returning call assigned into an owning slot" {
   let xs = [Pair(Leaf(3), Leaf(4))]
   inspect(assign_wrapped_call(xs), content = "770")
@@ -101,4 +153,14 @@ test "2760 an ESeq spine reaches the same leaf" {
 test "2760 a wrapped allocation still owns its value" {
   let xs = [Pair(Leaf(3), Leaf(4))]
   inspect(assign_wrapped_alloc(xs), content = "1170")
+}
+
+test "2760 a self-mentioning wrapper with an owning use keeps main's answer" {
+  let xs = [Pair(Leaf(3), Leaf(4))]
+  inspect(assign_self_owning_use(xs), content = "770")
+}
+
+test "2760 a borrow-only self-use, with a later read of the slot" {
+  let xss = [[Pair(Leaf(3), Leaf(4))]]
+  inspect(assign_self_borrow_use(xss), content = "770")
 }
