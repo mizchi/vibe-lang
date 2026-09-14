@@ -3318,7 +3318,37 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
         } else {
           dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
         },
-        None => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+        // #2745 round 15: `fn_returns` holds TOP-LEVEL functions. A LOCAL
+        // generic lambda's return formal is recorded at its binding instead,
+        // with the index of the parameter it is spelled at, so the call
+        // answers with THAT argument's classification rather than falling to
+        // the leaf and reading a binder that is not in scope here.
+        None => {
+          // The recorded value is READ OUT FIRST, rather than branched on
+          // inside the `Some`. An absent record and a MASKED one ("" -- what a
+          // rebinding to a non-lambda pushes) must answer the same way, and
+          // matching on `Some` alone conflates them: `""` would reach the index
+          // branch, index as -1, and fall through to "any argument", which is a
+          // FALSE REFUSAL on a call whose callee this walk cannot place.
+          // (`architecture-debt` lint ARCH011 flagged the shape; the defect was
+          // real.)
+          let slot = match lookup_var_type(var_types, dtd_interp_lamret_key(fname)) {
+            Some(t) => t,
+            None => ""
+          }
+          if String::length(slot) == 0 {
+            dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
+          } else if slot == dtd_interp_lamret_any() {
+            dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
+          } else {
+            let ix = dtd_interp_index_of_field(slot)
+            if ix >= 0 && ix < Array::length(cargs) {
+              dtd_erased_interp_formal(Array::get(cargs, ix), struct_sets, var_types, fn_returns)
+            } else {
+              dtd_erased_interp_any_arg(cargs, struct_sets, var_types, fn_returns)
+            }
+          }
+        }
       },
       _ => dtd_erased_interp_leaf(arg, struct_sets, var_types, fn_returns)
     },
@@ -3645,14 +3675,19 @@ fn dtd_interp_absorb_into(out: Array[(String, String)], e: Expr, struct_sets: Ar
       // `{ let mut p = idf((a, 1)); p = (a, 1); match p { (b, _) => b } }`
       // pushed nothing and `p` kept the shape its unclassifiable initializer
       // gave it, which was none. It printed a 3-digit pointer decimal. An
-      // assignment rebinds the slot, so it masks and records exactly as a `let`
-      // does -- the same recorder, not a second one.
+      // assignment records through the same recorder a `let` uses.
       //
-      // This does not break the arm's MONOTONE property for well-typed input:
-      // every assignment to one slot has the slot's type, so they agree on
-      // whether that type mentions an erased formal. The property held for the
-      // classification for the same reason.
-      dtd_interp_record_shape(out, n, v, struct_sets, out, fn_returns)
+      // It does NOT mask (round 15): an assignment cannot change the checked
+      // type of the slot it writes, so everything already recorded for that
+      // slot stays true and an assignment may only ADD. Masking here erased
+      // evidence that was still valid whenever the assigned value was one this
+      // walk cannot classify.
+      //
+      // The arm stays MONOTONE for well-typed input: every assignment to one
+      // slot has the slot's type, so they agree on whether that type mentions
+      // an erased formal. The property held for the classification for the
+      // same reason.
+      dtd_interp_record_shape_into(out, n, v, struct_sets, out, fn_returns)
       dtd_interp_absorb_into(out, cont, struct_sets, fn_returns)
     },
     // A compound assignment's result is `n op v`, whose type is the TARGET's, so
@@ -3913,7 +3948,127 @@ fn dtd_interp_name_key_families() -> Array[String] {
   let out = empty_str_array()
   Array::push(out, "__Vshape$")
   Array::push(out, "__arrelem$")
+  Array::push(out, "__Vlamret$")
   out
+}
+
+/// What a LOCAL lambda bound to `name` returns, when that is one of its own
+/// type parameters: the index of the parameter declared at that same type, or
+/// `dtd_interp_lamret_any()` when no parameter is spelled exactly it.
+///
+/// #2745 (Codex, P1 round 15 on #2761): the call arm consulted `fn_returns`,
+/// which holds TOP-LEVEL functions, so `let idf = [U](u: U) -> U { u };
+/// "\{idf(a)}"` saw the return as `U` -- a binder that is not in scope at the
+/// call -- and fell to the leaf. It printed a 3-digit pointer decimal.
+///
+/// Recording it in the same family as everything else means a rebinding masks
+/// it and an alias inherits it, so `let g = idf; g(a)` answers too without an
+/// arm of its own.
+fn dtd_interp_lamret_key(name: String) -> String {
+  String::concat("__Vlamret$", name)
+}
+
+fn dtd_interp_lamret_any() -> String {
+  "*"
+}
+
+/// Record a LOCAL lambda's return formal on the binding's environment, so a
+/// call to it later in the SAME BODY can relate the return to its argument.
+///
+/// The recorder in `dtd_interp_record_shape` covers a lambda bound INSIDE the
+/// interpolated expression; this covers the ordinary case, a `let` earlier in
+/// the enclosing function, which that walk never visits. Measured: with only
+/// the recorder, `let idf = [U](u: U) -> U { u }` followed by `"\{idf(a)}"`
+/// still printed a 3-digit pointer decimal.
+///
+/// A rebinding MASKS, and only when there is something to mask -- the same rule
+/// `extend_var_types` learned in round 3. Without it an inner `idf` with a
+/// different signature would answer from the outer one, which is a false
+/// refusal rather than a missed one.
+fn dtd_interp_bind_lamret(var_types: Array[(String, String)], name: String, value: Expr) -> Array[(String, String)] {
+  let key = dtd_interp_lamret_key(name)
+  let lr = match value {
+    EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps, params, ret, fbody),
+    _ => ""
+  }
+  if String::length(lr) > 0 {
+    let out = clone_var_types(var_types)
+    Array::push(out, (key, lr))
+    out
+  } else {
+    match lookup_var_type(var_types, key) {
+      Some(_) => {
+        let out = clone_var_types(var_types)
+        Array::push(out, (key, ""))
+        out
+      },
+      None => var_types
+    }
+  }
+}
+
+/// The parameter index a lambda's return formal is spelled at, "" when the
+/// return is not one of the lambda's own type parameters.
+fn dtd_interp_lamret_of(tps: Array[String], params: Array[(String, Option[TypeExpr])], ret: Option[TypeExpr], body: Expr) -> String {
+  let from_ret = match ret {
+    Some(TyName(rh)) => if str_array_contains(tps, rh) {
+      let mut i = 0
+      let mut found = dtd_interp_lamret_any()
+      while i < Array::length(params) && i < 9 {
+        let (_, pt) = Array::get(params, i)
+        match pt {
+          Some(TyName(ph)) => if ph == rh && found == dtd_interp_lamret_any() {
+            found = digit_str(i)
+          } else {
+            ()
+          },
+          _ => ()
+        }
+        i = i + 1
+      }
+      found
+    } else {
+      ""
+    },
+    _ => ""
+  }
+  if String::length(from_ret) > 0 {
+    from_ret
+  } else {
+    // Self-probed while fixing round 15: the annotation is not what makes the
+    // answer available. `let opq = [U](u: U) { u }` -- the same lambda with the
+    // return type left off -- still printed a 3-digit pointer decimal, because
+    // the rule above reads `ret` and there is none.
+    //
+    // A body that IS a parameter returns that parameter's value, so the call's
+    // classification is that argument's, whatever the types are. This needs no
+    // tparam check: it is not an inference about the return TYPE, it is the
+    // observation that the value is the argument. That also makes it narrow --
+    // one syntactic shape, no environment consulted.
+    dtd_interp_lamret_body_param(params, body)
+  }
+}
+
+/// The index of the parameter a lambda's body IS, or "" when the body is not a
+/// bare parameter reference.
+fn dtd_interp_lamret_body_param(params: Array[(String, Option[TypeExpr])], body: Expr) -> String {
+  match body {
+    EIdent(bn, _) => {
+      let mut i = 0
+      let mut found = ""
+      while i < Array::length(params) && i < 9 {
+        let (pn, _) = Array::get(params, i)
+        if pn == bn && String::length(found) == 0 {
+          found = digit_str(i)
+        } else {
+          ()
+        }
+        i = i + 1
+      }
+      found
+    },
+    _ => ""
+  }
 }
 
 /// Families whose key is `<family>$<owner>$<slot>`: what follows the family is
@@ -4076,6 +4231,30 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
   // afterwards keeps one statement of the rule: `lookup_var_type` scans
   // backward, so the later push wins.
   dtd_interp_mask_records(out, var_types, name)
+  dtd_interp_record_shape_into(out, name, val, struct_sets, var_types, fn_returns)
+}
+
+/// `dtd_interp_record_shape` WITHOUT the mask: record what `val` says, and
+/// leave anything already recorded for `name` in place.
+///
+/// #2745 (Codex, P1 round 15 on #2761): round 13 gave an ASSIGNMENT the whole
+/// of `dtd_interp_record_shape`, mask included, and an assignment this walk
+/// cannot classify then erased evidence that was still true.
+/// `{ let mut p = (a, 1); p = idf((a, 1)); match p { (b, _) => b } }` printed a
+/// 3-digit pointer decimal, having known `p`'s shape one line earlier.
+///
+/// The distinction is the slot's TYPE. A `let` introduces a new binding whose
+/// type is its own, so it must shadow an outer one of the same spelling. An
+/// assignment cannot change the checked type of the slot it writes, so
+/// everything recorded for that slot stays true and an assignment may only ADD.
+/// Round 13's own note argued the two agree on erasure BECAUSE they share the
+/// type -- which is the premise, and the conclusion it implies is that the old
+/// records are still valid, not that they can be dropped.
+///
+/// The recursion inside each arm still masks: a SLOT of `name` is genuinely
+/// rebound when `name` is assigned a new aggregate, and that is the case this
+/// arm ran for.
+fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
   match val {
     ETuple(es) => {
       Array::push(out, (dtd_interp_shape_key(name), dtd_interp_tuple_shape()))
@@ -4102,7 +4281,10 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
       // `::`, so behind it this arm is unreachable. Measured -- the fixture
       // still printed the pointer with the arms the other way round, and the
       // refusal gate is what said so.
-      EIdent(cn, _) => if cn == "Array::get" && Array::length(cargs) == 2 {
+      // `xs[i]` parses to `__index`, so both spellings of ONE operation are
+      // named here -- the house idiom everywhere else in this file (#2745,
+      // Codex P1 round 15: `xs[0]` copied nothing and printed a pointer).
+      EIdent(cn, _) => if (cn == "Array::get" || cn == "__index") && Array::length(cargs) == 2 {
         match Array::get(cargs, 0) {
           EIdent(src, _) => dtd_interp_copy_records(out, var_types, name, dtd_interp_array_slot_name(src)),
           _ => ()
@@ -4140,6 +4322,16 @@ fn dtd_interp_record_shape(out: Array[(String, String)], name: String, val: Expr
         // name, so a nested pattern resolves through the named-aggregate routes.
         dtd_interp_record_shape(out, dtd_interp_field_name(name, fname), fe, struct_sets, var_types, fn_returns)
         i = i + 1
+      }
+    },
+    // #2745 round 15: a local generic lambda, so a call to it can relate the
+    // return formal to the argument standing at it.
+    EFn(tps, _, params, ret, _, fbody) => {
+      let lr = dtd_interp_lamret_of(tps, params, ret, fbody)
+      if String::length(lr) > 0 {
+        Array::push(out, (dtd_interp_lamret_key(name), lr))
+      } else {
+        ()
       }
     },
     EArray(es) => {
@@ -10954,7 +11146,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
       // #2157: an unannotated `let xs = []` reads its element type off the
       // pushes in its own body, so it compares like the annotated form.
       let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
-      let body_vars = extend_local_fn_return(body_vars3, name, val)
+      let body_vars = dtd_interp_bind_lamret(extend_local_fn_return(body_vars3, name, val), name, val)
       ELet(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     ELetRec(name, val, body) => {
@@ -10978,7 +11170,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         bind_let_env(var_types, name, val, inferred, struct_sets, fn_returns)
       }
       let body_vars3 = empty_array_shape_from_body(body_vars2, name, body, struct_sets, fn_returns)
-      let body_vars = extend_local_fn_return(body_vars3, name, val)
+      let body_vars = dtd_interp_bind_lamret(extend_local_fn_return(body_vars3, name, val), name, val)
       ELetMut(name, new_val, rewrite_expr(body, gens, traits, struct_sets, dict_binds, body_vars, fn_returns), soff)
     },
     EAssign(name, val, cont) => {
