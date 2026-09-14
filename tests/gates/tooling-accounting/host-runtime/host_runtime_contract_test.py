@@ -73,7 +73,7 @@ leb128_encode_u32(import_content, 3)'''
         self.assertEqual(module.node_imports(node), {"env-get", "fs_exists"})
 
     def test_manifest_is_valid_json(self):
-        manifest = ROOT / "docs/wasm/host-runtime-contract.json"
+        manifest = ROOT / "docs/generated/host-runtime-contract.json"
         self.assertEqual(json.loads(manifest.read_text())["schema"], 1)
 
 
@@ -89,7 +89,7 @@ class GcHostListTest(unittest.TestCase):
 
     def setUp(self):
         self.text = self.GC.read_text()
-        manifest = json.loads((ROOT / "docs/wasm/host-runtime-contract.json").read_text())
+        manifest = json.loads((ROOT / "docs/generated/host-runtime-contract.json").read_text())
         self.names = set()
         for band in ("portableCore", "nodeCoreOnly", "viberunDebugOnly", "componentAdapterOnly"):
             self.names |= set(manifest[band])
@@ -283,7 +283,7 @@ class GcHostListTest(unittest.TestCase):
         # The strict parser must accept the contract as it actually stands --
         # a rejection battery that also rejected the real entries would fail
         # closed on everything and prove nothing.
-        manifest = json.loads((ROOT / "docs/wasm/host-runtime-contract.json").read_text())
+        manifest = json.loads((ROOT / "docs/generated/host-runtime-contract.json").read_text())
         for type_id, signature in manifest["coreTypeSignatures"].items():
             with self.subTest(type_id=type_id):
                 module.core_signature_shape(signature)

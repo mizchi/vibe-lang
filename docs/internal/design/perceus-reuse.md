@@ -7,7 +7,7 @@ Date: 2026-07-31
 Related: ADR-0055(RC cutover、`docs/internal/design/rc-port.md`), ADR-0062(shadow
 liveness), ADR-0090(region), ADR-0091(`#zero_alloc`),
 [mutability-control-review.md](mutability-control-review.md),
-[pl-survey-2026-07.md](../../pl-survey-2026-07.md) Medium #7(Koka FP²/TRMC)。
+[pl-survey-2026-07.md](../reports/pl-survey-2026-07.md) Medium #7(Koka FP²/TRMC)。
 
 ## Context
 

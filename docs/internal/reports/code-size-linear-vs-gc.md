@@ -15,8 +15,8 @@ node scripts/wasm_section_sizes.mjs \
   "$(ls -t _build/selfhost/generations/*/stage2.wasm | head -1)"
 ```
 
-Related: [gc-value-abi.md](../internal/compiler/gc-value-abi.md) (#1331), [feature-levels.md](../user/reference/feature-levels.md),
-[../BENCHMARKS.md](../internal/operations/BENCHMARKS.md) (time-axis regression signal on the linear lane)
+Related: [gc-value-abi.md](../compiler/gc-value-abi.md) (#1331), [feature-levels.md](../../user/reference/feature-levels.md),
+[../BENCHMARKS.md](../operations/BENCHMARKS.md) (time-axis regression signal on the linear lane)
 
 ## Conclusion
 
@@ -62,7 +62,7 @@ no size-based reason to pick the gc lane.
 
 Byte sizes of `.wasm` compiled from the same source on both backends. The case set
 is `bench/binary_size/` (#1056) as-is, so it is comparable to the linear
-numbers in [../BENCHMARKS.md](../internal/operations/BENCHMARKS.md). The `result` column is the
+numbers in [../BENCHMARKS.md](../operations/BENCHMARKS.md). The `result` column is the
 execution result on both lanes; a row where those disagree is invalid as a size
 comparison too (a broken wasm is naturally small, so always read size next to the result).
 
@@ -213,7 +213,7 @@ reports COMPILE FAILED. The correct invocation is the same as
 ## How to use these numbers
 
 - **There is no size reason to pick the gc lane.** The reason to pick it is
-  the representation in [gc-value-abi.md](../internal/compiler/gc-value-abi.md) (native
+  the representation in [gc-value-abi.md](../compiler/gc-value-abi.md) (native
   references, collecting cyclic structure, dropping RC). Size is not even a
   side effect of that.
 - **What P5 (size reduction) should cut is bytes per function, not the fixed

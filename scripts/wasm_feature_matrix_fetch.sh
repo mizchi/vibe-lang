@@ -9,7 +9,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_URL="https://raw.githubusercontent.com/WebAssembly/website/main/features.json"
-OUT="$ROOT_DIR/docs/wasm/feature-matrix.json"
+OUT="$ROOT_DIR/docs/generated/feature-matrix.json"
 
 curl -fsSL "$SRC_URL" -o "$OUT.tmp"
 python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OUT.tmp"

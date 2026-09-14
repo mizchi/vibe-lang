@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # #820 sub-item 3: emit the vibe "context pack" -- the language cheatsheet
 # plus the verified golden-example corpus, bundled into one file for AI
-# harnesses to load as context (docs/pl-survey-2026-07.md's finding that
+# harnesses to load as context (docs/internal/reports/pl-survey-2026-07.md's finding that
 # machine-readable diagnostics + a verified positive-example corpus drive
 # generation quality for low-resource languages).
 #

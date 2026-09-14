@@ -204,7 +204,7 @@ closure)。`Done`/`Yield` の判別と `Yield` の再送出 (自分の残りの�
 処理しうる経路上にある場合にのみ**挿入する — 「pure-by-default + 静的
 effect row」があるため、変換対象になる関数の集合は型検査結果から
 コンパイル時に確定できる (wasm_of_ocaml の選択的 CPS と同じ発想。
-`docs/pl-survey-2026-07.md` 該当箇所参照)。空 row の関数、あるいは
+`docs/internal/reports/pl-survey-2026-07.md` 該当箇所参照)。空 row の関数、あるいは
 非 tail-resumptive 経路に乗らない関数は一切変換されず、既存の直接
 呼び出しコード生成のまま — オーバーヘッドは「実際に非 tail-resumptive
 な perform を経由しうる呼び出し経路」だけに局所化される。
@@ -296,7 +296,7 @@ drop、あるいはユーザー定義の `handle ... with Error` によるクリ
 アップ) が正しく実行されるかは、`Cont[R]` クロージャの RC drop 経路が
 「capture した値を最後まで正しく drop する」という既存の Perceus 保証
 に委ねられる。これは本 ADR のスコープでは**据え置きとする**: Effekt の
-dynamic-wind 相当の明示的な finalizer スタック機構 (`docs/pl-survey-2026-07.md`
+dynamic-wind 相当の明示的な finalizer スタック機構 (`docs/internal/reports/pl-survey-2026-07.md`
 参照) を独自に導入するかどうかは、ADR-0068 の Phase 3 以降
 (`TaskContext` の finalizer stack 実装、`docs/internal/design/concurrency.md` の
 `TaskContext` 構成要素に「finalizer stack」が既に列挙されている) で
@@ -3261,7 +3261,7 @@ closure literal。最初は clone だけに入れており、`handle { for x in 
   Typing](https://koka-lang.github.io/koka/doc/book.html#sec-effect-types)
   — evidence vector と row-based effect の実装例。
 - Effekt, one-shot 定数時間 resume (ICFP 2025 該当セッション、
-  `docs/pl-survey-2026-07.md` 参照) — 本 ADR の tail-resumptive 判定は
+  `docs/internal/reports/pl-survey-2026-07.md` 参照) — 本 ADR の tail-resumptive 判定は
   one-shot 前提の高速化と同じ動機を持つが、multi-shot を排除しない
   (yield bubbling 側で multi-shot をサポートし続ける) 点で異なる。
 - wasm_of_ocaml, 選択的 CPS — 「pure-by-default + 静的 effect row から
@@ -3278,7 +3278,7 @@ closure literal。最初は clone だけに入れており、`handle { for x in 
   本 ADR (#817) をその実装順の 2 番目に置き、evidence/continuation の
   task-affine 制約と `Suspend` IR という呼称を既に規定している。本 ADR
   はその制約下で設計している (「並行モデル (ADR-0068) との整合」節参照)。
-- `docs/pl-survey-2026-07.md` — 本 ADR の元になったサーベイ項目。
+- `docs/internal/reports/pl-survey-2026-07.md` — 本 ADR の元になったサーベイ項目。
 - `eval/lang-review/findings/2026-07-12-r2.md` M2 — replay の実測バグ。
 
 ### 追記59 (2026-08-14): row 変数 callee は「一階なら安全」(#1536)

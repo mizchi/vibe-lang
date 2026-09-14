@@ -3,13 +3,13 @@
 Continuously-runnable regression signals, as opposed to one-off measurement
 notes (e.g. `docs/archive/adr/0038-perceus-rc-binary-optimization.md`).
 Currently covers wasm binary size; other categories (compile throughput,
-runtime perf) live in `bench/` and `docs/pl-survey-2026-07.md`'s roadmap.
+runtime perf) live in `bench/` and `docs/internal/reports/pl-survey-2026-07.md`'s roadmap.
 
 ## WASM Binary Size
 
 Methodology and case set: [`bench/binary_size/README.md`](../../../bench/binary_size/README.md)
 (modeled on [almide](https://github.com/almide/almide)'s `docs/internal/operations/BENCHMARKS.md`
-— see `docs/pl-survey-2026-07.md`, issue #1056). Run with:
+— see `docs/internal/reports/pl-survey-2026-07.md`, issue #1056). Run with:
 
 ```bash
 bash scripts/bench_binary_size.sh [cli.wasm]
@@ -18,7 +18,7 @@ bash scripts/bench_binary_size.sh [cli.wasm]
 > The numbers in this section are the **linear** backend (the default lane)
 > tracked over time. For the same case set measured across *backends* — linear
 > vs `VIBE_BACKEND=gc`, and where the two cross over — see
-> [`wasm/code-size-linear-vs-gc.md`](../../wasm/code-size-linear-vs-gc.md)
+> [`docs/internal/reports/code-size-linear-vs-gc.md`](../reports/code-size-linear-vs-gc.md)
 > (`scripts/measure_backend_code_size.sh`). Short version: wasm-gc pays a fixed
 > ~4 KB runtime prelude to save ~6% per byte of user code, so it only comes out
 > smaller above ~35 KB of linear output.

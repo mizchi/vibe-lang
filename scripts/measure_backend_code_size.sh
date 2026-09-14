@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # measure_backend_code_size.sh — linear backend と wasm-gc backend の
-# 生成 wasm サイズを同一ソースで比較する (docs/wasm/code-size-linear-vs-gc.md)。
+# 生成 wasm サイズを同一ソースで比較する (docs/internal/reports/code-size-linear-vs-gc.md)。
 #
 # 出す答えは 2 つ:
 #
