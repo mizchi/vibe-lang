@@ -34,6 +34,7 @@ import @vibe/compiler/lowering/effects/queries {
   edp_name_is_host_raw_shape,
   edp_pat_binds,
   edp_pat_qname,
+  edp_performing_names,
   edp_resolve_effect_names_into,
   edp_row_is_exactly,
   edp_rq_exprs,
@@ -847,108 +848,19 @@ fn edp_may_perform_fields(fields: Array[(String, Expr)], ename: String, perf_fns
 /// program really does perform `ename` somewhere; when it doesn't, every
 /// site is vacuous by construction and no reachability question is asked.
 fn edp_collect_performing_fns(stmts: Array[Stmt], fn_defs: Array[(Int, Bool, Bool, String, Option[TypeExpr], String)], ename: String, inert: MutSet[String], fn_names: MutSet[String]) -> Array[String] {
-  let out = empty_str_array()
-  // #2386: the membership mirror of `out`, maintained at every push. `out`
-  // itself stays the result, because the caller reads it as a list. Grown
-  // rather than pre-sized: this holds the fns that perform ONE effect, which
-  // is normally a handful, and sizing it for `fn_defs` would allocate the
-  // whole program per effect.
-  let out_set: MutSet[String] = MutSet::new_string()
-  // #1875 R3: this fixpoint used to call edp_find_fn_body (an O(defs) scan
-  // allocating an Option) for every function on every round, and rebuild
-  // the read-query object per probe -- 17MB of allocation for one analyzed
-  // effect. Resolve each entry's body ONCE through its own stmt index, and
-  // track membership in a Bool array aligned with fn_defs instead of a
-  // linear name scan. Entry-order bodies are a conservative SUPERSET of the
-  // old last-wins-by-name lookup when duplicate top-level names exist (a
-  // non-last duplicate's body is now inspected instead of shadowed); a
-  // superset only keeps more handles for ordinary migration -- it can never
-  // erase a handle the old answer kept.
-  let bodies = array_empty()
-  let member = edp_empty_bool_array()
-  let mut bi = 0
-  while bi < Array::length(fn_defs) {
-    let (bidx, _, _, _, _, _) = Array::get(fn_defs, bi)
-    match Array::get(stmts, bidx) {
-      SLet(_, _, _, _, EFn(_, _, _, _, _, fnb)) => Array::push(bodies, Some(fnb)),
-      _ => Array::push(bodies, None)
-    }
-    Array::push(member, false)
-    bi = bi + 1
+  let names: Array[String] = []
+  let bodies: Array[Option[Expr]] = []
+  for def in fn_defs {
+    let (idx, _, _, name, _, _) = def
+    Array::push(names, name)
+    // Resolve through the definition's own statement index. Looking up by
+    // name would discard non-last duplicate definitions and be unsound.
+    Array::push(bodies, match Array::get(stmts, idx) {
+      SLet(_, _, _, _, EFn(_, _, _, _, _, body)) => Some(body),
+      _ => None
+    })
   }
-  let q_perform = RQPerformsUserEffect(ename)
-  // #2386: built ONCE per analyzed effect (this function is called per
-  // effect), against a fixpoint that then asks membership per call node of
-  // every body it walks. Two O(n) inserts against what were two O(n) scans
-  // per call node.
-  let q_opaque = RQOpaqueCall(inert, fn_names)
-  let mut i = 0
-  while i < Array::length(fn_defs) {
-    let (_, _, _, nm, _, _) = Array::get(fn_defs, i)
-    match Array::get(bodies, i) {
-      Some(body) => if (edp_rq_fold(q_perform, body) > 0 || edp_rq_fold(q_opaque, body) > 0) && !Array::get(member, i) {
-        Array::set(member, i, true)
-        if MutSet::has(out_set, nm) {
-          ()
-        } else {
-          Array::push(out, nm)
-          MutSet::add(out_set, nm)
-        }
-      } else {
-        ()
-      },
-      None => ()
-    }
-    i = i + 1
-  }
-  // Same-name entries share membership: sync flags so the fixpoint below
-  // never re-adds a name the seed already holds.
-  let mut si = 0
-  while si < Array::length(fn_defs) {
-    let (_, _, _, snm, _, _) = Array::get(fn_defs, si)
-    if !Array::get(member, si) && MutSet::has(out_set, snm) {
-      Array::set(member, si, true)
-    } else {
-      ()
-    }
-    si = si + 1
-  }
-  // The query aliases `out_set`, so a name added mid-round is visible to the
-  // very next containment probe without rebuilding the query object -- the
-  // property the array form had, kept because a `MutSet` is a mutable struct
-  // and the query holds the same one.
-  let q_calls = RQCallsAny(out_set)
-  let mut grew = true
-  let mut rounds = 0
-  while grew && rounds < Array::length(fn_defs) + 1 {
-    grew = false
-    rounds = rounds + 1
-    let mut j = 0
-    while j < Array::length(fn_defs) {
-      if Array::get(member, j) {
-        ()
-      } else {
-        match Array::get(bodies, j) {
-          Some(body2) => if edp_rq_fold(q_calls, body2) > 0 {
-            let (_, _, _, nm2, _, _) = Array::get(fn_defs, j)
-            Array::set(member, j, true)
-            if MutSet::has(out_set, nm2) {
-              ()
-            } else {
-              Array::push(out, nm2)
-              MutSet::add(out_set, nm2)
-            }
-            grew = true
-          } else {
-            ()
-          },
-          None => ()
-        }
-      }
-      j = j + 1
-    }
-  }
-  out
+  edp_performing_names(names, bodies, ename, inert, fn_names)
 }
 
 /// #2479: the dedup used to scan `out` per definition (O(fns²), 56 ms of a

@@ -707,3 +707,100 @@ reduces generated retains and deterministic heap consumption, and replaces the
 separate production scans with less code. Precise wall-time and peak-RSS gains
 remain uncertain. Keep the bump self-build default and existing CI performance
 observations; no required CI job or benchmark dependency is added.
+
+### Bulk byte ranges and effect reachability, 2026-09-15
+
+The linear backend lowers `Bytes::blit(dst, src, start, end)` to a range
+helper. Ranges inside the original source use `memory.copy`; header reads,
+allocation and nested-region routing share the implementation used by
+`Bytes::append`. Blit preserves the old push loop's capacity sequence while
+skipping intermediate reservations. Name-section stripping uses this range
+helper too. The fallback retains the previous signed loop for unusual ranges, including
+self-copies that read newly appended bytes. It delegates invalid indices to
+`Bytes::get`, including that accessor's existing i32 narrowing for wide
+indices. Empty/reversed ranges still do nothing, and every argument is
+evaluated once in source order. The GC blit implementation is unchanged.
+`Bytes::blit` and `Bytes::fill` are correctly classified as potentially
+allocating.
+
+For each analyzed effect, function reachability now fuses the direct-perform,
+opaque-call and named-call queries into one body walk. A reverse call graph
+then propagates membership without revisiting ASTs. The query object and
+callee scratch buffer are reused across bodies. Duplicate names union
+their definitions; opaque calls seed any queried effect; nested closures and
+handlers retain the previous conservative function-level classification.
+The per-handle discharge rule remains separate. Summaries are local to one
+analysis over the current statements and are rebuilt after rewriting.
+
+The opcode regression fails with the old inline loop and passes with the
+range helper. Effect tests compare the worklist with the original read-only
+queries on reverse chains, cycles, duplicates, callbacks and expression
+containers. Related local tests cover Bytes growth, self-aliasing, argument
+order, diagnostics, regions, effect handlers and compiler registration.
+Stage2 equals stage3, and an RC compiler reproduces both runtime variants.
+The full suite remains on CI; no required performance job is added.
+
+[Raw measurements, artifact/source hashes, controls and validation](compiler-bytes-effects.json)
+record Node 24.21.0 on Apple M5. The table isolates these changes on
+`ee88a0b0f` with four alternating pairs per input/cache/runtime: 64 final
+build samples. Each sample starts a new process; cold has an empty private
+cache and warm reuses that cache. The generated target is always linear RC.
+MB below means 1,000,000 bytes. Heap pointer, reserved linear memory and host
+peak RSS remain separate measurements.
+
+| Compiler runtime | Input / cache | Wall median, before → after | Paired wall change | Heap-pointer change | Linear-capacity change |
+|---|---|---:|---:|---:|---:|
+| Bump | Closure / cold | 2.230 → 2.335 s | -0.8% | -0.033 MB | +0.000 MB |
+| Bump | Closure / warm | 1.575 → 1.497 s | -2.4% | -0.032 MB | -3.736 MB |
+| Bump | CLI / cold | 5.681 → 5.523 s | -2.0% | -106.140 MB | +27.263 MB |
+| Bump | CLI / warm | 4.414 → 4.237 s | -7.6% | -106.141 MB | +0.000 MB |
+| RC | Closure / cold | 5.683 → 5.980 s | +2.3% | +0.256 MB | +0.000 MB |
+| RC | Closure / warm | 3.696 → 3.681 s | -0.4% | +0.258 MB | +0.000 MB |
+| RC | CLI / cold | 12.844 → 12.351 s | -3.8% | -106.610 MB | +0.000 MB |
+| RC | CLI / warm | 9.220 → 8.901 s | -3.4% | -106.610 MB | +0.000 MB |
+
+Paired changes are medians of within-round ratios, not ratios of the two
+wall medians. All per-round heap/capacity deltas are retained in the data.
+The independent RC A/A control has paired wall medians from −0.4% to +1.1%,
+with individual pairs spanning −6.3% to +19.9%; its heap and capacity are
+exactly equal. This limits precision for small wall changes. Peak-RSS
+samples are recorded but do not establish a general RSS reduction.
+
+The 4 MiB range-copy probe takes 6.663 → 0.346 ms in bump (19.2×).
+The 4 MiB range-copy probe takes 11.806 → 0.343 ms in RC (34.5×).
+These are buffer-copy results, not full-build speedups. Every process runs
+a byte-for-byte equality assertion before timing; unchanged append is the
+control. The separate 64-function reverse-chain probe compares the worklist
+with the previous query iteration and asserts identical results.
+
+That chain takes 0.596 → 0.100 ms in bump (6.0×).
+That chain takes 1.136 → 0.142 ms in RC (8.0×).
+
+Separate CPU profiles locate the saved work. On RC, function reachability
+(`edp_collect_performing_fns`, inclusive) falls from 212.6 → 102.6 ms cold and
+194.4 → 111.0 ms warm. Bump stays around 73–81 ms. Range re-emission falls
+from 140–159 ms to 11–13 ms, and name stripping from 89–109 ms to 2–4 ms,
+across the two runtimes and temperatures. These single profiles explain the
+mechanism; they are not additional wall-time replicates.
+
+The final CLI heap pointer falls by 106.1 MB in bump and 106.6 MB in RC at
+both cache temperatures. The closure is essentially unchanged: bump saves
+0.03 MB, while RC adds 0.26 MB (less than 0.03%). Keep that small increase
+visible rather than claiming every workload uses less memory. Reserved linear
+capacity also rises by 27.3 MB in bump CLI cold despite its lower heap pointer;
+less allocation does not guarantee a smaller memory reservation.
+
+The earlier isolated effect comparison emitted byte-identical targets across
+implementations and cache temperatures using bump compilers. Final combined targets
+intentionally differ because blit lowering changes instructions; each
+implementation remains byte-identical across compiler runtime modes, cache
+temperatures and rounds. All four measured CLI targets also compile and
+execute the byte suite and a higher-order effect-handler fixture successfully.
+The raw file retains the capacity/scratch precursor
+separately from the final table, including its A/A control.
+
+**Decision:** keep bulk range copying and the function-reachability worklist.
+The former removes per-byte runtime calls while preserving capacity growth;
+the latter removes repeated AST walks along long call chains. Keep the bump
+self-build default and existing CI observations. No memory-lifetime policy,
+GC representation, required CI job or per-PR timing threshold changes.
