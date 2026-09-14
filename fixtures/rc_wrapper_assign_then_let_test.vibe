@@ -36,6 +36,10 @@ enum Node {
   Pair(Node, Node)
 }
 
+struct Holder {
+  node: Node
+}
+
 fn total(n: Node) -> Int {
   match n {
     Pair(a, b) => total(a) + total(b),
@@ -86,6 +90,25 @@ fn promoted_then_let() -> Int {
   r
 }
 
+// The promotion fires on a PROJECTION tail too -- `scope_tail_proj_root`'s
+// `EDot` arm answers `proj_root_ident(obj)` -- so the abort was never about the
+// leaf being a call. Measured on `main` at 702c134: `Array::set: index 20 out
+// of bounds for length 20`, the same failure at a different local count.
+//
+// The payload is 5 + 6 rather than 3 + 4 so this case carries its OWN expected
+// literal: `vibe test --update` matches the expected value, and two identical
+// ones in a file cannot identify which call moved.
+fn assign_owning_binder_proj() -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let h = Holder::{ node: Pair(Leaf(5), Leaf(6)) }
+    h.node
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(x) * 10 + total(filler) * 0
+}
+
 test "2792 a promoted wrapper assignment survives a following let" {
   inspect(assign_owning_bound_binder(), content = "770")
 }
@@ -96,4 +119,8 @@ test "2792 the trigger through a trailing let mut" {
 
 test "2792 the minimal repro, no user types" {
   inspect(promoted_then_let(), content = "2")
+}
+
+test "2792 the same trigger with a projection leaf" {
+  inspect(assign_owning_binder_proj(), content = "1210")
 }
