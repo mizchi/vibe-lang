@@ -427,6 +427,42 @@ fi
 rm -rf "$lkdir"
 echo "[compiler-gate] RC reclamation leak guard ok (heap_used=$lk_used B at N=20000)"
 
+# 40e. #2760: a mutable slot whose initializer's spine ends in a PROJECTION.
+# Its own file rather than a shape inside 40d's fixture, because that file's
+# house idioms mask this leak -- see the fixture header for both details and
+# the numbers that show it.
+#
+# This bounds a HALF-APPLIED fix, not a state main was ever in. Attributed on
+# 6507c60 by building each variant: unpatched 268 B, #2760's assignment arm
+# WITHOUT the projection arm 1,600,348 B (3,200,348 B at N=40000, so it
+# SCALES), both arms 348 B (constant in N). The bound below separates the
+# middle row from the other two by three orders of magnitude.
+echo "[compiler-gate] 40e/40 RC mutable-initializer projection leak guard (#2760)"
+pjdir="_build/_gate_rc_proj_leak"
+rm -rf "$pjdir"; mkdir -p "$pjdir"
+VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "fixtures/rc_mut_init_proj_leak_test.vibe" "$pjdir/rc.wasm" main >/dev/null 2>&1 || true
+if [ ! -s "$pjdir/rc.wasm" ]; then
+  echo "[compiler-gate] FAIL: rc_mut_init_proj_leak fixture did not compile under VIBE_RC" >&2
+  cat "$pjdir/rc.wasm.diag" >&2 2>/dev/null || true
+  exit 1
+fi
+pj_json="$(node scripts/measure_heap.mjs "$pjdir/rc.wasm" main 2>/dev/null)"
+pj_used="$(printf '%s' "$pj_json" | sed -n 's/.*"heap_used":\([0-9]*\).*/\1/p')"
+pj_result="$(printf '%s' "$pj_json" | sed -n 's/.*"result":\([0-9]*\).*/\1/p')"
+if [ -z "$pj_used" ]; then
+  echo "[compiler-gate] FAIL: could not measure rc_mut_init_proj_leak heap ($pj_json)" >&2; exit 1
+fi
+if [ "$pj_result" != "0" ]; then
+  echo "[compiler-gate] FAIL: rc_mut_init_proj_leak wrong result $pj_result (want 0)" >&2; exit 1
+fi
+if [ "$pj_used" -ge 2000 ]; then
+  echo "[compiler-gate] FAIL: rc_mut_init_proj_leak heap_used=$pj_used >= 2000 (#2760 regressed; the assignment arm without the projection arm measured 1600348 at N=20000, and a retain emitted TWICE for a bare projection leaks at the same rate)" >&2; exit 1
+fi
+rm -rf "$pjdir"
+echo "[compiler-gate] RC mutable-initializer projection leak guard ok (heap_used=$pj_used B at N=20000)"
+
 # 40f. RC shadow-liveness regression guard (#715 recurrence prevention).
 #      Compiles the #715 shape corpus (every minimal shape that once produced
 #      a use-after-free / double-free in the Perceus RC backend) with

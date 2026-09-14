@@ -1189,16 +1189,56 @@ fn classify_let_value_heap(buf: Bytes, value: Expr, name: String, local_idx: Int
   (rc_kind, is_borrow_ret_ext)
 }
 
-/// Does a `let mut` initializer hand the slot a borrowed call result, reached
-/// through a straight-line wrapper if there is one? The twin of `pc_count`'s
-/// ELetMut `borrowed_call`: the retain this gates and the owning plan that
-/// arm records must cover the same values, or codegen and the planner
-/// disagree about what the slot holds.
-fn mut_init_borrowed_call(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
+/// Does a value's STRAIGHT-LINE spine hand a mutable slot a reference the
+/// scope does not own? The twin of `pc_count`'s ELetMut `borrowed_call`: the
+/// retain this gates and the owning plan that arm records must cover the same
+/// values, or codegen and the planner disagree about what the slot holds.
+///
+/// TWO leaf kinds are unowned, and they are enumerated here once rather than
+/// one per review round (#2760): a call returning a borrow, and a PROJECTION,
+/// which is a view into its parent exactly as that call result is.
+///
+/// The two arms are NOT separable, which was measured rather than assumed --
+/// attributed on `6507c60` by building each variant against
+/// fixtures/rc_mut_init_proj_leak_test.vibe:
+///
+///   unpatched                  268 B at N=20000,       268 B at N=40000
+///   assignment arm ONLY  1,600,348 B at N=20000, 3,200,348 B at N=40000
+///   both arms                  348 B at N=20000,       348 B at N=40000
+///
+/// The assignment arm below retains a wrapped borrow on the way IN; without
+/// the projection arm the initializer never recorded the slot owning, so
+/// nothing spends that retain and it leaks at a rate that scales with N. This
+/// is the shape of caution #1 on #2760 -- a one-sided change to what codegen
+/// records is what the planner then disagrees with -- so adding either arm
+/// alone is worse than adding neither.
+///
+/// Both callers compose this with the top-node tests they already ran, so a
+/// leaf this declines keeps today's answer -- it can only ADD a retain, never
+/// withdraw one. That is why the projection arm can be conservative about a
+/// root it cannot place without narrowing anything.
+fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool {
   let binders = array_empty()
   let leaf = mib_spine_leaf(value, binders)
   match leaf {
     ECall(EIdent(cn, _), _, _) => !array_contains_str(binders, cn) && call_returns_borrow(leaf, local_names, ctx),
+    // A BARE projection is retained by `classify_let_value_heap`'s own
+    // `is_edot(value)` arm, and by the assignment path's own top-node clause.
+    // Only a WRAPPED one arrives here unretained; firing on the bare one too
+    // would retain it a second time, which is the leak this arm exists to
+    // remove. `is_edot(value)` is exactly "the spine walk moved".
+    //
+    // A projection rooted at a name the spine itself bound is declined: that
+    // binder's own scope-end drop runs INSIDE the value, before the store this
+    // retain follows, so a reference taken here would be taken after the free.
+    // An unplaceable root (`f().a`) is declined for the same reason -- neither
+    // is today's answer made worse, since today emits nothing at all.
+    EDot(_, _, _, _) => if is_edot(value) {
+      false
+    } else {
+      let root = proj_root_ident(leaf)
+      String::length(root) > 0 && !array_contains_str(binders, root)
+    },
     _ => false
   }
 }
@@ -2247,7 +2287,7 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
       // straight-line spine leaf rather than `_mut_is_borrow_ret_ext`, whose
       // wrapper answer is broader (branches, projections, aliases) than the
       // plan's.
-      if ctx.enable_rc && mut_init_borrowed_call(value, local_names, ctx) {
+      if ctx.enable_rc && spine_leaf_unowned(value, local_names, ctx) {
         emit_rc_dup_guarded(buf, local_idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         Array::push(ctx.heap_binding_names, name)
       } else {
@@ -2384,7 +2424,46 @@ export fn compile_expr_tail(buf: Bytes, expr: Expr, local_names: Array[String], 
         // An owning mutable slot must acquire a borrowed replacement just
         // as it acquires a borrowed initializer. Otherwise its next drop
         // would release the container's reference instead of its own.
-        if is_heap_mut && ((!is_self && is_edot(value)) || call_returns_borrow(value, local_names, ctx)) {
+        //
+        // #2760: both clauses above read the value's TOP node, so a WRAPPER
+        // -- a block, i.e. an `ELet` / `ESeq` chain -- was neither, and
+        // `x = { let k = 0; Array::get(xs, k) }` stored a borrow into a slot
+        // that stays owning. Its drop then freed an element the container
+        // still owned, and the next read of that element answered with
+        // whatever allocation reused the block: `total(xs[0])` read 15
+        // instead of 7 on the production default lane, no trap. The spine
+        // walk answers for BOTH unowned leaf kinds at once; it is a third
+        // clause rather than a replacement so the top-node answers, including
+        // the shapes it declines, are untouched.
+        //
+        // A self-referential right-hand side keeps MAIN'S ANSWER exactly.
+        // `is_self` is `assign_value_mentions`, i.e. "the value has `name` as a
+        // free variable" -- ANY mention, not just a spine leaf derived from the
+        // slot. An earlier draft of this comment said it excludes "a spine
+        // ending in a projection of the slot itself", which is a different
+        // property than the one `is_self` tests; the arm is written from the
+        // property, so only the comment was wrong.
+        //
+        // The arm is deliberately a no-op against main on this path. Before
+        // this change the condition read
+        // `(!is_self && is_edot(value)) || call_returns_borrow(value, ..)`,
+        // whose first clause is false whenever `is_self` holds -- so main
+        // already answered `call_returns_borrow(value, ..)` here and that is
+        // what this branch still answers. Measured on `6507c60`, three
+        // self-mentioning wrapper spellings -- a discarded `total(x)` in an
+        // `ESeq`, a `let`-bound one, and one whose result feeds the index --
+        // answer 770 on the RC lane on the patched AND the unpatched compiler,
+        // agreeing with bump. So there is no corruption here to widen for, and
+        // widening `is_self` would be a separate change needing its own repro
+        // before its own measurement.
+        let replacement_unowned = if !is_heap_mut {
+          false
+        } else if is_self {
+          call_returns_borrow(value, local_names, ctx)
+        } else {
+          is_edot(value) || call_returns_borrow(value, local_names, ctx) || spine_leaf_unowned(value, local_names, ctx)
+        }
+        if replacement_unowned {
           emit_rc_dup_guarded(buf, idx, ctx.rc_shadow, ctx.rc_dup_func_idx)
         } else {
           ()

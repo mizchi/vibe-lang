@@ -1,0 +1,125 @@
+// #2760 RC leak guard: a mutable slot whose initializer's spine ends in a
+// PROJECTION.
+//
+// `classify_let_value_heap` calls such an initializer borrowed, so the slot is
+// not recorded owning -- and the retain that promotes a slot to owning admitted
+// a borrow-returning CALL leaf only. Neither fires, so the allocation assigned
+// into the slot next has no owner and is never released.
+//
+// WHAT THIS FILE GUARDS, stated from a measurement on THIS base rather than
+// carried forward. An earlier revision of this header attributed the leak to
+// main at `b59d272`; re-measured on `6507c60` that is NOT what main does, and
+// the number belongs to a DIFFERENT tree -- the one where #2760's assignment
+// fix is applied and this projection arm is not. Attributed by building each
+// variant:
+//
+//   | compiler                        | N=20000     | N=40000     |
+//   |---------------------------------|------------:|------------:|
+//   | unpatched                       |       268 B |       268 B |
+//   | #2760 assignment arm ONLY       | 1,600,348 B | 3,200,348 B |
+//   | both arms (this tree)           |       348 B |       348 B |
+//
+// So this is a red test for a HALF-APPLIED fix, which is the more useful thing
+// for it to be: the assignment arm retains a wrapped borrow on the way in, and
+// without the projection arm the initializer never made the slot owning, so
+// nothing spends that retain. The middle row SCALES with N and the other two do
+// not, which is what separates a leak from this lane's constant steady state.
+//
+// The complete fix costs 80 B against unpatched, constant in N -- one retain,
+// not a leak. That is the price of not silently corrupting the read that #2760
+// reports (`total(xs[0])` answering 15 instead of 7 on the production default
+// lane).
+//
+// It lives in its own file because two details of the shape are load-bearing,
+// and `rc_reclaim_leak_test.vibe`'s house idioms defeat both -- measured, the
+// shape written in that file's style reads IDENTICALLY on a fixed and an
+// unfixed compiler:
+//
+//   `h` is a PARAMETER built once outside the loop. Built inside the per-
+//   iteration function, its own scope-end drop reclaims the assigned
+//   allocation along with it and nothing leaks.
+//
+//   The per-iteration tail is a SCALAR. A tail CONSTRUCTOR is ADR-0092's
+//   in-place reuse candidate, so the dead block is recycled into the returned
+//   value instead of being leaked, and the caller then frees it. That one
+//   difference measured 1,600,104 B against 208 B on the SAME compiler.
+//
+// The gate compiles this under VIBE_RC=1 and bounds __heap_ptr growth
+// (tests/gates/mid/run.sh). `main` returns 0: every shape here adds 0, so the
+// answer cannot drift with the allocation behaviour being measured.
+enum Node {
+  Leaf(Int);
+  Pair(Node, Node)
+}
+
+struct Holder {
+  node: Node
+}
+
+fn total(n: Node) -> Int {
+  match n {
+    Pair(a, b) => total(a) + total(b),
+    Leaf(v) => v
+  }
+}
+
+fn mk_pair(i: Int) -> Node {
+  Pair(Leaf(i), Leaf(i + 1))
+}
+
+// The leak: a WRAPPED projection initializer, then an allocation assigned in.
+fn via_wrapped_proj(i: Int, h: Holder) -> Int {
+  let mut x = {
+    let k = 0
+    h.node
+  }
+  x = mk_pair(i)
+  total(x) * 0
+}
+
+// The control in the OTHER direction. `classify_let_value_heap` retains a BARE
+// projection itself, so the spine rule must DECLINE this one; a second retain
+// here leaks at the same rate, and this file's bound is what catches it.
+fn via_bare_proj(i: Int, h: Holder) -> Int {
+  let mut x = h.node
+  x = mk_pair(i)
+  total(x) * 0
+}
+
+// The other unowned leaf kind through the same wrapper: a borrow-returning
+// call. This one was already covered by #2750; it stands here so the pair is
+// measured together and a future edit cannot fix one by breaking the other.
+fn via_wrapped_call(i: Int, xs: Array[Node]) -> Int {
+  let mut x = {
+    let k = 0
+    Array::get(xs, k)
+  }
+  x = mk_pair(i)
+  total(x) * 0
+}
+
+// The guard against the retain going too wide: a wrapper ending in an
+// allocation made at the site already owns its value, so a retain here would
+// leak at the same rate as the missing one above.
+fn via_wrapped_alloc(i: Int) -> Int {
+  let mut x = mk_pair(0)
+  x = {
+    let k = i
+    mk_pair(k)
+  }
+  total(x) * 0
+}
+
+fn main() -> Int {
+  let h = Holder::{
+    node: Pair(Leaf(1), Leaf(2))
+  }
+  let xs = [Pair(Leaf(3), Leaf(4))]
+  let mut acc = 0
+  let mut i = 0
+  while i < 20000 {
+    acc = acc + via_wrapped_proj(i, h) + via_bare_proj(i, h) + via_wrapped_call(i, xs) + via_wrapped_alloc(i)
+    i = i + 1
+  }
+  acc
+}
