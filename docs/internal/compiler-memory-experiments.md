@@ -884,3 +884,47 @@ formatting, AST review lint and the output size ratchet. Full regression runs in
 CI. The seed bump also exposed a gate self-test that assumed the seed lacked
 telemetry; its mutation now disables the environment key in a copy of the current
 compiler and requires both the missing-positive and accepted-refusal failures.
+
+### Borrowed callback returns, 2026-09-15
+
+A callback that returns an interior view now retains it before transferring
+its result to the caller (#2754). This covers anonymous lambdas and named
+functions used as values. Compound initializers feeding a return are normalized
+before Perceus planning so an owned branch and a borrowed branch balance
+separately. Early returns and exception handlers use the same return handling;
+scalar representation queries see through the internal marker. `rc-classify`
+and `rc-plan` apply the same named-function contract as codegen.
+
+The issue's ordinary-RC result changes from **91515 to 90715**, matching bump.
+Shadow RC already answered correctly before the fix, so the regression tests
+explicitly execute ordinary RC. The 33 new tests cover values, representation,
+queries and reclamation; the allocation cases stay at **80–268 bytes after
+20,000 iterations**, below their 2,000-byte bound. The six related test files
+pass all 88 tests, and stage2 equals stage3.
+
+[Raw measurements and harness](../compiler-callback-return.json) compare main
+`529f786a3` with implementation `47c9e5f20`. The subsequent contract change only
+declares the query's new direct package dependency. On Node 24.21.0 / Apple M5,
+all **13 parser series have identical heap high-water** across three alternating
+pairs, each with 50 iterations after setup and three warmups. The previous
+blanket callback-drop suppression's 10.8–24% growth does not recur.
+
+For a filesystem build of the full CLI, both compiler runtimes produce RC
+output. Each pair uses a fresh cache and runs cold, then warm in a new process;
+checker, AST and body caches are disabled while production module caches remain
+active. No build or test runs alongside these measurements.
+
+| Compiler runtime / cache | Wall median, before → after | Heap high-water delta | Reserved linear memory delta |
+|---|---:|---:|---:|
+| bump / cold | 4.909 → 4.960 s | +15,202,344 B (+0.60%) | 0 B |
+| bump / warm | 3.794 → 3.791 s | +15,203,184 B (+0.79%) | 0 B |
+| RC / cold | 12.554 → 12.686 s | +10,833,248 B (+0.44%) | 0 B |
+| RC / warm | 8.959 → 8.993 s | +10,855,112 B (+0.60%) | 0 B |
+
+Wall medians differ by −0.1% to +1.1%; individual RC cold pairs range from
+−4.7% to +9.4%, so these measurements establish no wall-time improvement.
+The deterministic cost is the small additional compiler heap above; reserved
+capacity stays identical in every configuration. The full CLI output grows by
+1,386 bytes. For each revision, its outputs match across cold/warm and bump/RC
+compiler runtimes. Existing CI lanes discover the new tests; no performance job
+or extra CI matrix is added.
