@@ -914,21 +914,14 @@ export fn collect_free_vars_expr(expr: Expr, bound: Array[String], fn_names: Arr
   collect_free_vars_expr_sc(expr, bound, fn_names, common_analysis_fresh_string_array(), true, out)
 }
 
-// Reads, call callees and assignment targets share one binding judgment.
-// Taking the name directly avoids allocating an EIdent just to scan a callee.
-fn collect_free_var_name(name: String, bound: Array[String], fn_names: Array[String], encl: Array[String], out: Array[String]) -> Int {
-  // #1203: enclosing locals precede globals. Otherwise an unrelated global
-  // function can erase a real capture such as `g` in `(z) -> g(f(z))`.
+// Reads, callees and writes resolve bindings once, before the callee-only
+// builtin skip. Enclosing locals precede globals, including builtin shadows.
+fn collect_free_var_name(name: String, bound: Array[String], fn_names: Array[String], encl: Array[String], skip_inlined: Bool, out: Array[String]) -> Int {
   if array_contains_str(bound, name) {
     0
-  } else if array_contains_str(encl, name) {
-    if array_contains_str(out, name) {
-      0
-    } else {
-      Array::push(out, name)
-      0
-    }
-  } else if bsearch_leftmost(fn_names, name) >= 0 || array_contains_str(out, name) {
+  } else if !array_contains_str(encl, name) && (bsearch_leftmost(fn_names, name) >= 0 || (skip_inlined && (canonical_builtin_resolves_globally(name, fn_names) || is_inlined_async_builtin(name) || is_inlined_scalar_builtin(name)))) {
+    0
+  } else if array_contains_str(out, name) {
     0
   } else {
     Array::push(out, name)
@@ -938,7 +931,7 @@ fn collect_free_var_name(name: String, bound: Array[String], fn_names: Array[Str
 
 fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[String], encl: Array[String], skip_inlined: Bool, out: Array[String]) -> Int {
   match expr {
-    EIdent(name, _) => collect_free_var_name(name, bound, fn_names, encl, out),
+    EIdent(name, _) => collect_free_var_name(name, bound, fn_names, encl, false, out),
     EInt(_) => 0,
     EBool(_) => 0,
     EFloat(_) => 0,
@@ -979,7 +972,7 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
           0
         },
         None => {
-          collect_free_var_name(cname, bound, fn_names, encl, out)
+          collect_free_var_name(cname, bound, fn_names, encl, false, out)
           let mut i = 0
           while i < Array::length(args) {
             collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
@@ -988,15 +981,8 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
           0
         }
       }
-    } else if skip_inlined && !array_contains_str(bound, cname) && !(bsearch_leftmost(fn_names, cname) >= 0) && !array_contains_str(encl, cname) && (canonical_builtin_resolves_globally(cname, fn_names) || is_inlined_async_builtin(cname) || is_inlined_scalar_builtin(cname)) {
-      let mut i = 0
-      while i < Array::length(args) {
-        collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
-        i = i + 1
-      }
-      0
     } else {
-      collect_free_var_name(cname, bound, fn_names, encl, out)
+      collect_free_var_name(cname, bound, fn_names, encl, skip_inlined, out)
       let mut i = 0
       while i < Array::length(args) {
         collect_free_vars_expr_sc(Array::get(args, i), bound, fn_names, encl, skip_inlined, out)
@@ -1049,11 +1035,11 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
       // via `f = ...`/`f += ...` inside the closure must still be captured
       // even when the linked program also defines an unrelated top-level
       // `fn f`.
-      collect_free_var_name(name, bound, fn_names, encl, out)
+      collect_free_var_name(name, bound, fn_names, encl, false, out)
       collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
     },
     EAssignOp(name, _, value, body) => {
-      collect_free_var_name(name, bound, fn_names, encl, out)
+      collect_free_var_name(name, bound, fn_names, encl, false, out)
       collect_free_vars_expr_sc(value, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(body, bound, fn_names, encl, skip_inlined, out)
     },
     ESeq(first, second) => {
