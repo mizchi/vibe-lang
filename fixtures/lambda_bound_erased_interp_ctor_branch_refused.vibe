@@ -1,0 +1,50 @@
+//# #2745: a constructor RETIRED by an assignment that need not run.
+//
+// Codex, P1 round 26 on #2761. Measured on `d4778b8`, run through the host
+// runner: `{ let mut v = A(a); if c { v = B(0) }; match v { A(b) => b, .. } }`
+// compiled and printed a 3-digit pointer decimal.
+//
+// An assignment only ADDS (round 15 established that), so `A`'s payloads were
+// still recorded -- but the TOP shape now said `B`, and the `A` arm could not
+// confirm its constructor, so its binder blanked. An assignment under a
+// condition does not retire what was reachable before it: both constructors
+// are, on their own paths.
+//
+// A constructor now records under `<name>$#<Ctor>` as well as at the top, and
+// the reader already falls back there (round 18 gave array elements the same
+// treatment, for the same reason: one slot, several constructors). The sub-slot
+// is masked with the name, because the ownership test's prefix arm covers
+// `<name>$...` whatever follows -- so a REBINDING still shadows it, which is
+// what `rebind_ctor_sub` in the green control checks.
+//
+// The `B` arm THROWS: an arm mentioning the formal would refuse this file on
+// its own and the fixture would pass whatever the `A` arm did.
+
+struct Qt {
+  w: Int
+}
+
+enum Wrap[V] {
+  A(V);
+  B(Int)
+}
+
+fn outer[T](x: T) -> String with Exception {
+  let inner = [T](a: T, c: Bool) -> String with Exception {
+    "\{ { let mut v = A(a)
+    if c {
+      v = B(0)
+    } else {
+      ()
+    }
+    match v {
+      A(b) => b,
+      B(_) => throw("no")
+    } } }"
+  }
+  inner(Qt::{ w: 5 }, false)
+}
+
+export fn _start() -> Int allows Exception {
+  String::length(outer(7))
+}

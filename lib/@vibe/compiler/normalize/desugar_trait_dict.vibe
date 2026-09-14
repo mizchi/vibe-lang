@@ -3317,7 +3317,7 @@ fn dtd_erased_interp_formal(arg: Expr, struct_sets: Array[(String, Array[String]
       // inline call to a local lambda returning `Array[U]` is the case that
       // needs it; everything else falls straight through to the rules below,
       // and a NAME still answers at the leaf from `array_elem_key` as before.
-      EIdent(fname, _) => if (fname == "Array::get" || fname == "__index") && Array::length(cargs) == 2 && String::length(dtd_interp_elem_formal_of(Array::get(cargs, 0), struct_sets, var_types, fn_returns)) > 0 {
+      EIdent(fname, _) => if dtd_interp_reads_element(fname) && Array::length(cargs) == 2 && String::length(dtd_interp_elem_formal_of(Array::get(cargs, 0), struct_sets, var_types, fn_returns)) > 0 {
         dtd_interp_elem_formal_of(Array::get(cargs, 0), struct_sets, var_types, fn_returns)
       } else {
         match fn_return_type(fn_returns, fname) {
@@ -3578,6 +3578,44 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
         i = i + 1
       }
       found
+    },
+    // Round 26: a map WRITTEN at the site. `Map::set(m, k, v)` holds whatever
+    // `v` is, or whatever the receiver already held; `Map::from_pairs` holds
+    // the second component of a pair. Tested before the slot read below,
+    // because a map builtin is a constructor-shaped name and would otherwise
+    // never reach an arm of its own.
+    ECall(EIdent("Map::set", _), margs, _) => if Array::length(margs) == 3 {
+      let mv = dtd_erased_interp_formal(Array::get(margs, 2), struct_sets, var_types, fn_returns)
+      if String::length(mv) > 0 {
+        mv
+      } else {
+        dtd_interp_elem_formal_of(Array::get(margs, 0), struct_sets, var_types, fn_returns)
+      }
+    } else {
+      ""
+    },
+    ECall(EIdent("Map::from_pairs", _), margs, _) => if Array::length(margs) == 1 {
+      match Array::get(margs, 0) {
+        EArray(pairs) => {
+          let mut pi = 0
+          let mut found = ""
+          while pi < Array::length(pairs) {
+            match Array::get(pairs, pi) {
+              ETuple(pes) => if Array::length(pes) == 2 && String::length(found) == 0 {
+                found = dtd_erased_interp_formal(Array::get(pes, 1), struct_sets, var_types, fn_returns)
+              } else {
+                ()
+              },
+              _ => ()
+            }
+            pi = pi + 1
+          }
+          found
+        },
+        _ => ""
+      }
+    } else {
+      ""
     },
     ECall(ecallee, cargs, _) => {
       let slot = match ecallee {
@@ -4345,6 +4383,28 @@ fn dtd_interp_lamret_any() -> String {
   "*"
 }
 
+/// Does calling `cn` READ an element out of a container? `Array::get`, its
+/// `xs[i]` spelling `__index`, and `Map::get` are one operation to this walk:
+/// each hands back what the container holds.
+///
+/// Round 26 (Codex, P1 on #2761): only the first two were named, so
+/// `"\{Map::get(m, "k")}"` fell to leaf inference -- `Map::get` is a builtin and
+/// is not in `fn_returns` -- and printed a 3-digit pointer decimal. That is the
+/// SEVENTH time in this PR that one of a pair was closed and the other left
+/// open, and `m["k"]` printed one too, because `__index` read an ARRAY's
+/// element key on a map.
+fn dtd_interp_reads_element(cn: String) -> Bool {
+  cn == "Array::get" || cn == "__index" || cn == "Map::get"
+}
+
+/// Does calling `cn` BUILD a map? These are constructor-SHAPED names (they
+/// contain `::`), so every test for them has to run ahead of
+/// `dtd_name_is_constructor_shaped` -- behind it they are unreachable, which is
+/// how round 13's first cut shipped as dead code.
+fn dtd_interp_builds_map(cn: String) -> Bool {
+  cn == "Map::set" || cn == "Map::new" || cn == "Map::from_pairs"
+}
+
 /// The `fn_returns` key under which a TOP-LEVEL generic's return marker is
 /// recorded -- the same marker `dtd_interp_lamret_of` computes for a local
 /// lambda, in the table top-level functions live in.
@@ -5015,9 +5075,38 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
           EIdent(src, _) => dtd_interp_copy_records(out, var_types, name, dtd_interp_array_slot_name(src)),
           _ => ()
         }
+      } else if dtd_interp_builds_map(cn) {
+        // Round 26: a map's VALUE goes in the SAME slot an array's element
+        // does. "What does reading this container give?" is one question, so
+        // `Map::get` and `Array::get` read one key rather than two -- and this
+        // has to be tested ahead of the constructor shape below for the reason
+        // written there.
+        let mf = dtd_interp_elem_formal_of(val, struct_sets, var_types, fn_returns)
+        if String::length(mf) > 0 {
+          Array::push(out, (array_elem_key(name), mf))
+        } else {
+          ()
+        }
       } else if dtd_name_is_constructor_shaped(cn) {
         Array::push(out, (dtd_interp_shape_key(name), cn))
         dtd_interp_record_elems(out, name, cargs, struct_sets, var_types, fn_returns)
+        // Round 26 (Codex, P1 on #2761): and under THIS constructor's own
+        // sub-slot, so a later assignment of a DIFFERENT constructor cannot
+        // retire it. `let mut v = A(a); if c { v = B(0) }; match v { A(b) => b }`
+        // printed a 3-digit pointer decimal on `d4778b8`: an assignment only
+        // ADDS, so `A`'s payloads were still recorded, but the top shape now
+        // said `B` and the `A` arm could not confirm its constructor.
+        //
+        // An assignment under a condition does not RETIRE what was reachable
+        // before it -- both constructors are, on their own paths. The reader
+        // already falls back to `<name>$#<Ctor>` (round 18 gave array elements
+        // the same treatment for the same reason: one slot, several
+        // constructors), so this needs no new read path, and the sub-slot is
+        // masked with the name because the ownership test's prefix arm covers
+        // `<name>$...` whatever follows.
+        let ctor_sub = dtd_interp_ctor_slot_name(name, cn)
+        Array::push(out, (dtd_interp_shape_key(ctor_sub), cn))
+        dtd_interp_record_elems(out, ctor_sub, cargs, struct_sets, var_types, fn_returns)
       } else {
         // #2745 round 17: a call to a LOCAL lambda returning `Array[U]`. The
         // call's own value is not erased, so nothing above records anything --
@@ -5195,8 +5284,38 @@ fn dtd_interp_record_shape_into(out: Array[(String, String)], name: String, val:
       }
     },
     ESeq(_, last) => dtd_interp_record_shape_into(out, name, last, struct_sets, var_types, fn_returns),
+    // Round 26 (Codex, P1 on #2761): a let-valued INITIALIZER.
+    // `let p = { let q = (a, 0); q }` then `p.0` printed a 3-digit pointer
+    // decimal on `d4778b8`: round 25 gave this recorder the branch wrappers and
+    // `ESeq` and stopped there, so the body was read in an environment where
+    // the initializer's own binding does not exist and `q` answered nothing.
+    //
+    // The binding is recorded into a COPY of the environment -- it is scoped to
+    // the initializer and must not leak to the enclosing one -- and the body is
+    // then read in the scope it actually has. That is the same sentence as
+    // rounds 3, 12 and 25, in the fourth place it was missing.
+    ELet(ln, lv, lb, _) => dtd_interp_record_shape_scoped(out, name, ln, lv, lb, struct_sets, var_types, fn_returns),
+    ELetMut(ln, lv, lb, _) => dtd_interp_record_shape_scoped(out, name, ln, lv, lb, struct_sets, var_types, fn_returns),
+    ELetRec(ln, lv, lb) => dtd_interp_record_shape_scoped(out, name, ln, lv, lb, struct_sets, var_types, fn_returns),
     _ => ()
   }
+}
+
+/// Record `name`'s shape from `body`, read in an environment that carries the
+/// initializer's own binding `bn = bv`.
+///
+/// The scope is a COPY: what the initializer binds is visible to its body and
+/// to nothing else. `dtd_interp_record_shape` masks before it records, so a
+/// binding that shadows an outer one of the same spelling shadows here too.
+fn dtd_interp_record_shape_scoped(out: Array[(String, String)], name: String, bn: String, bv: Expr, body: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit {
+  let scoped = array_empty()
+  let mut i = 0
+  while i < Array::length(var_types) {
+    Array::push(scoped, Array::get(var_types, i))
+    i = i + 1
+  }
+  dtd_interp_record_shape(scoped, bn, bv, struct_sets, scoped, fn_returns)
+  dtd_interp_record_shape_into(out, name, body, struct_sets, scoped, fn_returns)
 }
 
 /// Has a non-blank shape been recorded for `name`? Read through
