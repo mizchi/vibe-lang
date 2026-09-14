@@ -29,6 +29,10 @@ struct Hold {
   cold: Int
 }
 
+fn fst_pair[U](p: (U, Int)) -> U {
+  p.0
+}
+
 enum Wrap[V] {
   A(V);
   B(Int)
@@ -458,6 +462,30 @@ fn tuple_ret_other_slot(q: Qt) -> String {
   inner(q)
 }
 
+// #2745 round 22 on the green side: a wholly concrete aggregate argument must
+// not be read as carrying a formal, and a conditional alias of a concrete
+// function must still render.
+fn agg_arg_concrete(q: Qt) -> String {
+  let inner = [T](a: T) -> String {
+    "\{fst_pair((5, 0))}"
+  }
+  inner(q)
+}
+
+fn cond_alias_concrete(q: Qt) -> String {
+  let inner = [T](a: T, f: (Int) -> Int) -> String {
+    let g = if true {
+      f
+    } else {
+      f
+    }
+    "\{g(7)}"
+  }
+  inner(q, (v: Int) -> Int {
+    v
+  })
+}
+
 fn nested_all_concrete(q: Qt) -> String {
   let inner = [T](a: T) -> String {
     "\{ { let p = ((3, 1), 2)
@@ -670,4 +698,12 @@ test "#2745: a function-valued parameter with a concrete return renders" {
 
 test "#2745: a tuple return's non-formal position still renders" {
   inspect(tuple_ret_other_slot(Qt::{ w: 5 }), content = "6")
+}
+
+test "#2745: a concrete aggregate argument to a generic still renders" {
+  inspect(agg_arg_concrete(Qt::{ w: 5 }), content = "5")
+}
+
+test "#2745: a conditional alias of a concrete function still renders" {
+  inspect(cond_alias_concrete(Qt::{ w: 5 }), content = "7")
 }

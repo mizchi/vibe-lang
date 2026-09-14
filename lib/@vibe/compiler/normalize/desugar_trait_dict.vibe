@@ -3554,11 +3554,69 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
 /// The first argument that classifies as an erased nested formal; "" when none
 /// does. ANY argument decides, for the reason the branch arms take: this pass
 /// cannot see which parameter the callee's return names.
+/// An argument's classification, looking INSIDE an aggregate written at the
+/// site.
+///
+/// #2745 (Codex, P1 round 22 on #2761): `fn fst[U](p: (U, Int)) -> U` called as
+/// `fst((a, 0))` classified the tuple as a whole -- which is "" -- and never
+/// looked at its elements, so the erased result rendered a pointer.
+///
+/// This keeps the approximation the caller already documents: the argument
+/// carrying the erasure need not be the one the return names, so a formal
+/// anywhere in the arguments makes the result erased. Reaching into an
+/// aggregate widens WHERE that formal may sit, not what is concluded from it.
+fn dtd_erased_interp_arg_deep(e: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let direct = dtd_erased_interp_formal(e, struct_sets, var_types, fn_returns)
+  if String::length(direct) > 0 {
+    direct
+  } else {
+    match e {
+      ETuple(es) => dtd_erased_interp_any_deep(es, struct_sets, var_types, fn_returns),
+      EArray(es) => dtd_erased_interp_any_deep(es, struct_sets, var_types, fn_returns),
+      ECall(ecallee, cargs, _) => match ecallee {
+        EIdent(cn, _) => if dtd_name_is_constructor_shaped(cn) {
+          dtd_erased_interp_any_deep(cargs, struct_sets, var_types, fn_returns)
+        } else {
+          ""
+        },
+        _ => ""
+      },
+      ERecord(_, fields, _) => {
+        let vals = array_empty()
+        let mut fi = 0
+        while fi < Array::length(fields) {
+          let (_, fe) = Array::get(fields, fi)
+          Array::push(vals, fe)
+          fi = fi + 1
+        }
+        dtd_erased_interp_any_deep(vals, struct_sets, var_types, fn_returns)
+      },
+      _ => ""
+    }
+  }
+}
+
+/// The first of `es` that carries an erased formal, looked at deeply.
+fn dtd_erased_interp_any_deep(es: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
+  let mut i = 0
+  let mut found = ""
+  while i < Array::length(es) {
+    let f = dtd_erased_interp_arg_deep(Array::get(es, i), struct_sets, var_types, fn_returns)
+    if String::length(f) > 0 && String::length(found) == 0 {
+      found = f
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn dtd_erased_interp_any_arg(args: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   let mut i = 0
   let mut found = ""
   while i < Array::length(args) {
-    let f = dtd_erased_interp_formal(Array::get(args, i), struct_sets, var_types, fn_returns)
+    let f = dtd_erased_interp_arg_deep(Array::get(args, i), struct_sets, var_types, fn_returns)
     if String::length(f) > 0 {
       found = f
       i = Array::length(args)
@@ -4262,20 +4320,7 @@ fn dtd_interp_param_at_type(params: Array[(String, Option[TypeExpr])], rh: Strin
 /// refusal rather than a missed one.
 fn dtd_interp_bind_lamret(var_types: Array[(String, String)], name: String, value: Expr) -> Array[(String, String)] {
   let key = dtd_interp_lamret_key(name)
-  let lr = match value {
-    EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps, params, ret, fbody),
-    // #2745 (Codex, P1 round 18 on #2761): `let g = idf` fell to the mask, so
-    // `g(a)` could not relate its result to `a`. I had claimed on the round-15
-    // thread that an alias inherits this record "with no arm of its own" --
-    // true only of an alias written INSIDE an interpolation, which the shape
-    // recorder handles; a `let` at statement level comes through here, and
-    // here there was no arm. The claim was wrong as stated and this is the arm.
-    EIdent(src, _) => match lookup_var_type(var_types, dtd_interp_lamret_key(src)) {
-      Some(t) => t,
-      None => ""
-    },
-    _ => ""
-  }
+  let lr = dtd_interp_lamret_of_value(value, var_types)
   if String::length(lr) > 0 {
     let out = clone_var_types(var_types)
     Array::push(out, (key, lr))
@@ -4289,6 +4334,41 @@ fn dtd_interp_bind_lamret(var_types: Array[(String, String)], name: String, valu
       },
       None => var_types
     }
+  }
+}
+
+/// The lambda-return record a VALUE carries, through the value-preserving forms.
+///
+/// #2745 (Codex, P1 round 22 on #2761): `let g = if true { f } else { f }` fell
+/// to the mask, so `g(a)` lost what `f` knew. The same descent
+/// `dtd_interp_lamret_body_param` makes for a lambda's body, for the same
+/// reason -- "the value of an `if` is the value of a branch" is one statement,
+/// and every place that needs it should read it rather than restate it.
+fn dtd_interp_lamret_of_value(value: Expr, var_types: Array[(String, String)]) -> String {
+  match value {
+    EFn(tps, _, params, ret, _, fbody) => dtd_interp_lamret_of(tps, params, ret, fbody),
+    // #2745 (Codex, P1 round 18 on #2761): `let g = idf` fell to the mask, so
+    // `g(a)` could not relate its result to `a`. I had claimed on the round-15
+    // thread that an alias inherits this record "with no arm of its own" --
+    // true only of an alias written INSIDE an interpolation, which the shape
+    // recorder handles; a `let` at statement level comes through here, and
+    // here there was no arm. The claim was wrong as stated and this is the arm.
+    EIdent(src, _) => match lookup_var_type(var_types, dtd_interp_lamret_key(src)) {
+      Some(t) => t,
+      None => ""
+    },
+    EIf(_, conseq, alt) => {
+      let ft = dtd_interp_lamret_of_value(conseq, var_types)
+      if String::length(ft) > 0 {
+        ft
+      } else {
+        dtd_interp_lamret_of_value(alt, var_types)
+      }
+    },
+    ESeq(_, last) => dtd_interp_lamret_of_value(last, var_types),
+    ELet(_, _, b, _) => dtd_interp_lamret_of_value(b, var_types),
+    ELetMut(_, _, b, _) => dtd_interp_lamret_of_value(b, var_types),
+    _ => ""
   }
 }
 
