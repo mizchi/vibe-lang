@@ -65,9 +65,20 @@ fn once() -> Int {
 // `spine_leaf_unowned` answers these in two separate arms, so a suppression
 // correct in one is not thereby correct in the other -- #2796 was exactly that,
 // the arms disagreeing, and this row is the leak side of the arm it fixed.
-// Without a shape here, the projection arm had a value lane
-// (`rc_wrapper_assign_borrow_test.vibe`) and no leak lane, which is the
-// asymmetry that let #2760 ship its leak in the first place.
+// Without a shape here, the projection arm had a value lane and no leak lane,
+// which is the asymmetry that let #2760 ship its leak in the first place.
+//
+// PROVEN ABLE TO FAIL (#2248), not merely observed to pass: built a stage2 with
+// the `EDot` arm's guard deleted, so it retains unconditionally and the owning
+// projection is retained twice. Measured on that compiler, N=20000:
+//
+//   | compiler                          | heap_used   |
+//   |-----------------------------------|------------:|
+//   | this tree                         |       188 B |
+//   | EDot guard deleted (always retain)| 1,600,108 B |
+//
+// 80 B per iteration, the same rate as the call shape above, and four orders of
+// magnitude clear of the row's 2000 B bound.
 fn once_proj() -> Int {
   let mut x = Pair(Leaf(1), Leaf(2))
   x = {

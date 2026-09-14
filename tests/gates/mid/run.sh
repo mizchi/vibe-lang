@@ -469,6 +469,12 @@ echo "[compiler-gate] RC mutable-initializer projection leak guard ok (heap_used
 # gate: the ANSWER stays correct, so only a heap bound sees it. Measured on
 # 6507c60 at N=20000: 164 B unpatched, 1,600,084 B classifying from the leaf
 # callee alone, 164 B with the source test. 80 B per iteration, so it scales.
+#
+# #2796 added the PROJECTION leaf (once_proj) to the same fixture, because
+# spine_leaf_unowned answers the two leaf kinds in separate arms and a bound
+# holding only one of them is a bound the other arm walks past. Both halves are
+# proven able to fail: with the EDot arm's guard deleted the same fixture
+# measures 1,600,108 B against this row's 2000.
 echo "[compiler-gate] 40e2/40 RC wrapper-assign double-retain guard (#2760)"
 drdir="_build/_gate_rc_double_retain"
 rm -rf "$drdir"; mkdir -p "$drdir"
