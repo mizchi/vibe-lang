@@ -47,31 +47,30 @@ vibe build -o output.wasm <file.vibe>     # explicit output path
 Full-featured compilation with explicit control over output format, optimization level, and advanced options. Use this when you need a specific output format or features not available through `build`.
 
 ```
-vibe compile <file.vibe>                              # default: core WASM
-vibe compile --wasm <file.vibe>                       # core WASM (explicit)
-vibe compile --wasm-js-string <file.vibe>             # WASM with JS string builtins
-vibe compile --wasm-gc <file.vibe>                    # WASM GC proposal
-vibe compile --component <file.vibe>                  # WASM Component Model
-vibe compile --component-string-lift <file.vibe>      # Component with string lifting
+vibe compile <file.vibe>                              # default: core WASM (linear backend)
+vibe compile --wasm <file.vibe>                       # the same, explicit (`--wasm-linear` is an alias)
 vibe compile --wit <file.vibe>                        # Generate the WIT world for the file's
                                                       #   effect surface (docs/internal/design/effect-wit-mapping.md)
-vibe compile --wit-component <file.vibe>              # WIT + Component combined
-vibe compile --wac <file.vibe>                        # WAC composition
-vibe compile --compose-p3 --adapter a.wasm <file>     # P3 component composition
-vibe compile -Os -o out.wasm <file.vibe>              # custom optimization level
+vibe compile -o out.wasm <file.vibe>                  # explicit output path
 vibe compile --no-dce <file.vibe>                     # disable dead code elimination
-vibe compile --coverage <file.vibe>                   # coverage instrumentation (test-only)
-vibe compile --debug-errors <file.vibe>               # keep error strings in WASM
-vibe compile --http-host-imports <file.vibe>          # wire HTTP builtins to host imports
-vibe compile --library <file.vibe>                    # library mode
 ```
 
-Output defaults to `dist/<basename>.<ext>`.
+Output defaults to `dist/<basename>.wasm` (`dist/<basename>.wit` with `--wit`).
+`-O<level>`, `--debug-errors` and `--http-host-imports` are accepted and have
+no effect on the output; the optimized `-Oz` artifact is `build --release`.
+
+These flags of the retired MoonBit host are **refused**, each with a message
+naming the flag: `--wasm-gc`, `--wasm-js-string`, `--component`,
+`--component-string-lift`, `--wit-component`, `--wac`, `--compose-p3`,
+`--adapter`, `--coverage`, `--library`. The wasm-gc backend is reached through
+`VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure tests and benches
+([cheatsheet](cheatsheet.md)); a component is produced by `vibe serve` (below)
+and by `pkf run component-run -- <file.vibe>` from a checkout.
 
 ### When to use `build` vs `compile`
 
 - **Use `build`** for the common case: you want a `.wasm` file and don't need fine-grained control over the output format.
-- **Use `compile`** when you need a specific output format (Component Model, WIT, WAC, WASM-GC), coverage instrumentation, or other advanced options.
+- **Use `compile`** when you need the WIT world, an unoptimized or DCE-free module, or the HTTP host-import wiring.
 
 ### serve (#537)
 

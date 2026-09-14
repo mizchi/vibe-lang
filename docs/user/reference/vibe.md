@@ -355,7 +355,7 @@ Array/Map:
 - `Array::get(array, index)` -> element
 - `Map::get(map, key)` -> element (key is `String`)
 
-String (aligned with wasm js-string builtins when using `--wasm-js-string`):
+String:
 - `String::length(string)` -> `Int`
 - `String::char_code_at(string, index)` -> `Int`
 - `String::from_char_code(code)` -> `String`
@@ -889,11 +889,14 @@ CLI:
 - `vibe run <file>` executes a script (ignores `test {}`).
 - Interactive evaluation lives under `vibe shell` / `vibe shell-stdin`.
 - `vibe test <file|dir...>` runs test blocks and prints a report. A directory expands to every `*_test.vibe` under it.
-- `vibe compile [--wasm | --wasm-js-string | --wasm-mvp | --component | --wit | --wit-component] [-o out] <file>`
-  emits IR (default) or wasm bytes.
+- `vibe compile [--wasm | --wit] [-o out] <file>` emits wasm bytes (the default)
+  or, with `--wit`, the WIT world of the file's effect surface.
   - `--wasm` = linear-memory backend (production default). `--wasm-gc` is not yet
     wired into the compile CLI (throws); the gc backend is reachable via
-    `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure test/bench.
+    `VIBE_TEST_BACKEND=gc` / `VIBE_BENCH_BACKEND=gc` for pure test/bench. The
+    other output modes of the retired MoonBit host (`--wasm-js-string`,
+    `--component`, `--wit-component`, `--wac`, `--compose-p3`) are refused with
+    a message naming the flag; see `cli-commands.md`.
 - Public CLI parser-consuming commands support `--syntax vibe` only.
 - `vibe shell` launches the TUI interactive shell (completion + layout, history).
 - `vibe shell-stdin [--no-prompt]` reads lines from stdin and evaluates them.
@@ -941,47 +944,6 @@ Bench:
   `refs/bit/index/<scope>/graph/head`.
 - `vibe index ref push-delta <scope> <delta-file>` / `pull-delta <scope> <out-file>` maps advanced graph deltas to
   `refs/bit/index/<scope>/graph/wal_head`.
-
-## WASM codegen (prototype)
-
-- `compile_module_wasm(db, path)` emits a minimal wasm-gc compatible module (MVP bytecode).
-- `compile_module_wasm_js_string(db, path)` emits a module that uses wasm js-string builtins.
-- Supported: `let`, expression statements, block expressions `{ ... }`, `if { ... } else { ... }`, `match ... { ... }`, `Int`/`String`/`Bool`, tuple/record literals, `path(...)` (import), `sh(...)` (import; requires matching effect signature), `+/-/==/<` on `Int` (`==` is syntax sugar lowering to `eq`), `not/and/or` on `Bool`, `record_set(record { ... }, "field", value)` (GC fixtures only).
-- Not supported: `import`, qualified calls, or external symbols. Tuple/record patterns are supported, but nested tuple/record patterns are not.
-- Exports: `run` (i32) and `memory`. Import: `vibe.sh` when `sh(...)` is used.
-- `--wasm-js-string` imports:
-  - `wasm:js-string.length/charCodeAt/substring/concat/equals` (as needed).
-  - `string_constants.<literal>` globals for string literals.
-- `--wasm-js-string` currently treats `String` values as externref, so only string builtins are supported; storing strings inside heap objects (tuple/record/array/map) and returning a top-level string value are not yet supported in this backend.
-- ABI note:
-  - Heap objects are stored as `[u32 type][u32 len][payload...]` at 4-byte aligned offsets.
-  - `type`: `1 = String`, `2 = Path`, `3 = Tuple`, `4 = Record`.
-  - `len`: for `String/Path` is byte length, for `Tuple` is arity, for `Record` is field count.
-  - `Tuple` payload: `len` tagged values (`u32` each).
-  - `Record` payload: `len` pairs of `(u32 name_ptr, u32 value)`; `name_ptr` is an **untagged** pointer to an interned string object. Fields are stored sorted by name.
-  - Tagged values use the low 2 bits: `00` = `Int` (fixnum), `01` = `Obj`, `11` = `Bool` (`10` unused).
-  - `Int` is encoded as `value << 2` (tag bits `00`).
-  - `Bool` is encoded as `(0|1) << 2` with tag bits `11`.
-  - `vibe.path` returns a **tagged pointer** (`ptr | 1`).
-  - String literals are emitted as **tagged pointers** (`ptr | 1`).
-  - Callers must clear tag bits (`ptr & ~3`) before reading object headers.
-
-### WASM GC fixture backend
-
-`compile_module_wasm_gc(db, path)` emits minimal wasm-gc opcodes for fixture checks. This backend is intentionally tiny and only supports:
-- `record { ... }` literals → `struct.new`
-- `match record { ... } { record { a: x, ... } => x, _ => ... }` → `struct.get`
-- `record_set(record { ... }, "field", value)` → `struct.set`
-
-### WASM backend gaps (for shell usage)
-
-- No persistent evaluator API (only a single `run` export; no shell-session eval API).
-- No `import` statements; no qualified names or qualified calls.
-- Builtins are limited to fixed-arity core ops (`+/-/==/<` on `Int`,
-  `not/and/or` on `Bool`, plus `path/sh`; internally lowered to
-  `add/sub/eq/lt/not/and/or/path/sh`).
-- `sh` / `path` depend on host imports (`vibe.sh`, `vibe.path`).
-- No user-defined functions, modules, or recursion in wasm backend yet.
 
 ## Pure result cache (Unison-style)
 

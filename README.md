@@ -121,7 +121,6 @@ capabilities, and emitted binaries declare which wasm feature level they need.
 |--------|-------------|
 | Native CLI | Compiled execution via the host runtime (`run` / `test` / `shell`) |
 | WASM (linear) | **Production default**: `compile --wasm`, `build --release`, `test`, `bench` (tagged-i64, bump allocator) |
-| WASM + js-string | WASM with JS string builtins for embedding |
 | WASM GC | Long-term primary target; backend exists (`lib/@vibe/compiler/codegen/gc/`) but is not yet wired into the CLI compile path — see [docs/internal/design/memory-contract.md](docs/internal/design/memory-contract.md) |
 | Component Model | WASI/component packaging for composition |
 
