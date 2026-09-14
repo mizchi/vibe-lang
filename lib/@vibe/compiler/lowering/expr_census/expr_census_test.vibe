@@ -1,0 +1,63 @@
+import @vibe/compiler/core {
+  Expr, Pat
+}
+import @vibe/compiler/lowering/expr_census {
+  census_inspect_bits, census_mentions, census_pat_binds, census_scan, census_set_call_names, collect_pat_binders, strip_param_tilde
+}
+
+test "mode 2: a name is mentioned as a reference or as a binder" {
+  let e = ELet("x", EInt(1), EIdent("y", 5), 0)
+  inspect(census_mentions(e, "x"), content = "true")
+  inspect(census_mentions(e, "y"), content = "true")
+  inspect(census_mentions(e, "z"), content = "false")
+}
+
+test "mode 4: a name used only as a direct callee is not a value use" {
+  let direct = ECall(EIdent("f", 1), [EInt(1)], 0)
+  inspect(census_scan(direct, 4, "f"), content = "false")
+  let as_value = ECall(EIdent("g", 1), [EIdent("f", 3)], 0)
+  inspect(census_scan(as_value, 4, "f"), content = "true")
+}
+
+test "mode 5: an assignment targets the name" {
+  let assigned = ESeq(EAssign("x", EInt(2), EUnit), EUnit)
+  inspect(census_scan(assigned, 5, "x"), content = "true")
+  inspect(census_scan(assigned, 5, "y"), content = "false")
+}
+
+test "mode 6 answers from the published callee names, and only those" {
+  let call = ECall(EIdent("with_opt", 1), [EInt(1)], 0)
+  census_set_call_names(["other", "with_opt"])
+  inspect(census_scan(call, 6, ""), content = "true")
+  // Replaced wholesale: a later program's table does not inherit this one's.
+  census_set_call_names(["other"])
+  inspect(census_scan(call, 6, ""), content = "false")
+  census_set_call_names([])
+}
+
+test "inspect bits: bit 1 uses, bit 2 binds, one walk answers both" {
+  let uses = ECall(EIdent("inspect", 1), [EInt(1), EString("1")], 0)
+  inspect(census_inspect_bits(uses), content = "1")
+  let binds = ELet("inspect", EInt(1), EUnit, 0)
+  inspect(census_inspect_bits(binds), content = "2")
+  inspect(census_inspect_bits(ESeq(binds, uses)), content = "3")
+  inspect(census_inspect_bits(EInt(1)), content = "0")
+  // A one-argument `inspect(..)` is not the two-argument snapshot call.
+  inspect(census_inspect_bits(ECall(EIdent("inspect", 1), [EInt(1)], 0)), content = "0")
+}
+
+test "pattern binders, in source order, through constructors and tuples" {
+  let p = PTuple([PBind("a"), PCtor("Some", [PBind("b")]), PWild])
+  let out: Array[String] = []
+  collect_pat_binders(p, out)
+  inspect(String::join(out, ","), content = "a,b")
+  inspect(census_pat_binds(p, "b"), content = "true")
+  inspect(census_pat_binds(p, "c"), content = "false")
+}
+
+test "strip_param_tilde removes only a trailing tilde" {
+  inspect(strip_param_tilde("x~"), content = "x")
+  inspect(strip_param_tilde("x?"), content = "x?")
+  inspect(strip_param_tilde("x"), content = "x")
+  inspect(strip_param_tilde(""), content = "")
+}

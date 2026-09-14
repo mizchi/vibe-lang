@@ -1,0 +1,410 @@
+// @vibe/compiler/lowering/expr_census -- read-only questions about an AST
+// fragment, answered in one allocation-free walk (#2501, split out of
+// normalize/desugar_trait_dict.vibe).
+//
+// Five passes of the trait-dict desugar (the inspect expansion, labeled
+// arguments, lambda hoisting, the exception boundary, the dict rewrite) asked
+// the same shape of question -- does this expression mention a name, bind it,
+// assign to it, contain an `inspect(..)` call, a labeled argument, a call to a
+// listed callee -- and all of them read one scanner. It lives here so a pass
+// peeled out of that file reaches it without publishing the desugar's own
+// helpers, and so the byte cost of the scanner is attributable to one unit.
+
+import @vibe/compiler/core {
+  Expr, Pat, TypeExpr
+}
+
+/// The binders a pattern introduces, appended to `out` in source order.
+export fn collect_pat_binders(p: Pat, out: Array[String]) -> Unit {
+  match p {
+    PBind(n) => Array::push(out, n),
+    PCtor(_, args) => {
+      let mut i = 0
+      while i < Array::length(args) {
+        collect_pat_binders(Array::get(args, i), out)
+        i = i + 1
+      }
+    },
+    PTuple(elems) => {
+      let mut i = 0
+      while i < Array::length(elems) {
+        collect_pat_binders(Array::get(elems, i), out)
+        i = i + 1
+      }
+    },
+    POr(a, b) => {
+      collect_pat_binders(a, out)
+      collect_pat_binders(b, out)
+    },
+    PStruct(_, fields) => {
+      let mut i = 0
+      while i < Array::length(fields) {
+        let (_, fp) = Array::get(fields, i)
+        collect_pat_binders(fp, out)
+        i = i + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// A parameter's base name: the trailing `~` of a labeled parameter removed.
+/// Only `~` -- an optional parameter's `?` is read by `census_params_optional`
+/// and by the labeled-argument pass, which strips both.
+export fn strip_param_tilde(n: String) -> String {
+  let ln = String::length(n)
+  if ln > 0 && n[ln - 1: ln] == "~" {
+    n[0: ln - 1]
+  } else {
+    n
+  }
+}
+
+/// The callee names mode 6 answers for -- the top-level functions declaring an
+/// optional parameter, published by the labeled-argument pass from the one
+/// table it reads (`optional_param_tbl_set`), so the scan and the rewrite see
+/// the same names. Replaced wholesale, never appended to: the list describes
+/// the program being lowered and nothing before it.
+let census_call_names: Array[String] = []
+
+export fn census_set_call_names(names: Array[String]) -> Unit {
+  Array::truncate(census_call_names, 0)
+  let mut i = 0
+  while i < Array::length(names) {
+    Array::push(census_call_names, Array::get(names, i))
+    i = i + 1
+  }
+}
+
+fn census_name_listed(name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(census_call_names) {
+    found = Array::get(census_call_names, i) == name
+    i = i + 1
+  }
+  found
+}
+
+/// Read-only scan for one of six questions, in ONE explicit-variant walk:
+///   mode 0 -- does this contain a two-argument `inspect(..)` call?
+///   mode 1 -- does this BIND the name `inspect` (a let / for / fn parameter)?
+///   mode 2 -- does this mention `name` at all, as a reference or a binder?
+///   mode 3 -- does this contain a labeled-argument wrapper?
+///   mode 4 -- is `name` used anywhere except as a direct call callee?
+///   mode 5 -- is `name` targeted by an assignment or assignment-op?
+///
+/// The variants are enumerated by hand rather than recursed through
+/// `expr_children`, and that is the whole point: `expr_children` ALLOCATES a
+/// fresh array per node, so using it for a "read-only" pre-check cost more
+/// allocation than the rebuild the pre-check exists to avoid. Measured on the
+/// perf gate's deterministic axis: the expr_children version put
+/// `selfcompile heap_ptr_bytes` +2.61% over main; this one is allocation-free.
+///
+/// Enumerated (no `_ =>` catch-all for the recursive shapes) so a new `Expr`
+/// variant is a compile error here instead of a silently unscanned subtree.
+///   mode 6 -- does this call, by name, one of the callees published with
+///             `census_set_call_names`?
+///   mode 7 -- modes 0 and 1 in one walk; read the bits with
+///             `census_inspect_bits`.
+/// True when any parameter is declared optional (`z?`). The marker survives on
+/// the parameter NAME at this stage -- see parse_one_param_with_binder_context.
+fn census_params_optional(params: Array[(String, Option[TypeExpr])]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    let pl = String::length(pn)
+    if pl > 0 && __slice(pn, pl - 1, pl) == "?" {
+      found = true
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// Mode 0's predicate: this node is an `inspect(value, content)` call.
+fn census_here_uses_inspect(expr: Expr) -> Bool {
+  match expr {
+    ECall(callee, args, _) => match callee {
+      EIdent(n, _) => n == "inspect" && Array::length(args) == 2,
+      _ => false
+    },
+    _ => false
+  }
+}
+
+/// Mode 1's predicate: this node binds the name `inspect`.
+fn census_here_binds_inspect(expr: Expr) -> Bool {
+  match expr {
+    ELet(n, _, _, _) => n == "inspect",
+    ELetRec(n, _, _) => n == "inspect",
+    ELetMut(n, _, _, _) => n == "inspect",
+    EForIn(v, _, _, _) => v == "inspect",
+    EFn(_, _, params, _, _, _) => census_params_bind(params, "inspect"),
+    EMatch(_, arms) => census_arms_bind(arms, "inspect"),
+    EHandle(_, arms) => census_arms_bind(arms, "inspect"),
+    _ => false
+  }
+}
+
+// #2386: mode 7 answers modes 0 and 1 in ONE walk. The bits are recorded
+// here as the walk finds them; the walk stops early only once both are
+// known. census_inspect_bits resets the cell and reads it.
+let census_cell = [0, 0]
+
+export fn census_scan(expr: Expr, mode: Int, name: String) -> Bool {
+  let here = if mode == 0 {
+    census_here_uses_inspect(expr)
+  } else if mode == 1 {
+    census_here_binds_inspect(expr)
+  } else if mode == 7 {
+    if census_here_uses_inspect(expr) {
+      Array::set(census_cell, 0, 1)
+    } else {
+      ()
+    }
+    if census_here_binds_inspect(expr) {
+      Array::set(census_cell, 1, 1)
+    } else {
+      ()
+    }
+    Array::get(census_cell, 0) != 0 && Array::get(census_cell, 1) != 0
+  } else if mode == 2 {
+    match expr {
+      EIdent(n, _) => n == name,
+      ELet(n, _, _, _) => n == name,
+      ELetRec(n, _, _) => n == name,
+      ELetMut(n, _, _, _) => n == name,
+      EAssign(n, _, _) => n == name,
+      EAssignOp(n, _, _, _) => n == name,
+      EForIn(v, _, _, _) => v == name,
+      EFn(_, _, params, _, _, _) => census_params_bind(params, name),
+      EMatch(_, arms) => census_arms_bind(arms, name),
+      EHandle(_, arms) => census_arms_bind(arms, name),
+      _ => false
+    }
+  } else if mode == 3 {
+    // "Does this statement need the relabel walk?" -- the only user is
+    // stmt_has_labeled_arg. A labeled argument is one reason; a lambda that
+    // declares an optional parameter is the other (#1952). Without the second,
+    // a statement whose only feature is a block-local `(a: Int, b?: Int)` was
+    // skipped outright, and the omitted argument reached the checker as an
+    // arity error. The top-level equivalent is mode 6 (a call to a top-level
+    // optional-parameter fn by name), consulted by desugar_labeled_args when
+    // collect_optional_param_fns found any.
+    match expr {
+      ELabeledArg(_, _, _) => true,
+      EFn(_, _, params, _, _, _) => census_params_optional(params),
+      _ => false
+    }
+  } else if mode == 4 {
+    match expr {
+      EIdent(n, _) => n == name,
+      EAssign(n, _, _) => n == name,
+      EAssignOp(n, _, _, _) => n == name,
+      _ => false
+    }
+  } else if mode == 6 {
+    // #2386: "does this statement call a TOP-LEVEL optional-parameter fn by
+    // name?" -- the third and last reason the relabel walk can change a
+    // statement (an omitted optional leaves no syntactic trace at the call,
+    // but the callee's NAME is one; relabel_expr's ECall arm fills only
+    // calls whose callee is an ident it can resolve). Reads the names the
+    // labeled-argument pass published with `census_set_call_names` -- the
+    // keys of the same table the walk reads, so the two cannot disagree.
+    // Used with mode 3, it replaces the `walk_all` that rebuilt EVERY
+    // statement of a program declaring any optional parameter.
+    match expr {
+      ECall(callee, _, _) => match callee {
+        EIdent(n, _) => census_name_listed(n),
+        _ => false
+      },
+      _ => false
+    }
+  } else {
+    match expr {
+      EAssign(n, _, _) => n == name,
+      EAssignOp(n, _, _, _) => n == name,
+      _ => false
+    }
+  }
+  if here {
+    true
+  } else {
+    match expr {
+      EInt(_) => false,
+      EFloat(_) => false,
+      EString(_) => false,
+      EBool(_) => false,
+      EUnit => false,
+      EIdent(_, _) => false,
+      EStringInterp(_) => false,
+      ETuple(items) => census_scan_list(items, mode, name),
+      EArray(items) => census_scan_list(items, mode, name),
+      ERecord(_, fields, _) => census_scan_fields(fields, mode, name),
+      EMap(fields) => census_scan_fields(fields, mode, name),
+      EIf(c, t, f) => census_scan(c, mode, name) || census_scan(t, mode, name) || census_scan(f, mode, name),
+      ELet(_, v, b, _) => census_scan(v, mode, name) || census_scan(b, mode, name),
+      ELetRec(_, v, b) => census_scan(v, mode, name) || census_scan(b, mode, name),
+      ELetMut(_, v, b, _) => census_scan(v, mode, name) || census_scan(b, mode, name),
+      EAssign(_, v, b) => census_scan(v, mode, name) || census_scan(b, mode, name),
+      EAssignOp(_, _, v, b) => census_scan(v, mode, name) || census_scan(b, mode, name),
+      ESeq(a, b) => census_scan(a, mode, name) || census_scan(b, mode, name),
+      EMatch(sc, arms) => census_scan(sc, mode, name) || census_scan_arms(arms, mode, name),
+      EHandle(sc, arms) => census_scan(sc, mode, name) || census_scan_arms(arms, mode, name),
+      EWhile(c, b) => census_scan(c, mode, name) || census_scan(b, mode, name),
+      ELoop(params, b) => census_scan_fields(params, mode, name) || census_scan(b, mode, name),
+      EForIn(_, _, it, b) => census_scan(it, mode, name) || census_scan(b, mode, name),
+      ECall(callee, args, _) => if mode == 4 {
+        match callee {
+          EIdent(n, _) => if n == name {
+            census_scan_list(args, mode, name)
+          } else {
+            census_scan(callee, mode, name) || census_scan_list(args, mode, name)
+          },
+          _ => census_scan(callee, mode, name) || census_scan_list(args, mode, name)
+        }
+      } else {
+        census_scan(callee, mode, name) || census_scan_list(args, mode, name)
+      },
+      EBinOp(_, l, r, _) => census_scan(l, mode, name) || census_scan(r, mode, name),
+      EUnaryOp(_, v) => census_scan(v, mode, name),
+      EFn(_, _, _, _, _, body) => census_scan(body, mode, name),
+      EDot(inner, _, _, _) => census_scan(inner, mode, name),
+      ELabeledArg(_, _, v) => census_scan(v, mode, name),
+      EReturn(v) => census_scan(v, mode, name),
+      EBreak(opt) => match opt {
+        Some(v) => census_scan(v, mode, name),
+        None => false
+      },
+      EContinue(args) => census_scan_list(args, mode, name),
+      ESpread(v) => census_scan(v, mode, name)
+    }
+  }
+}
+
+fn census_scan_list(items: Array[Expr], mode: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(items) {
+    found = census_scan(Array::get(items, i), mode, name)
+    i = i + 1
+  }
+  found
+}
+
+fn census_scan_fields(fields: Array[(String, Expr)], mode: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(fields) {
+    let (_, v) = Array::get(fields, i)
+    found = census_scan(v, mode, name)
+    i = i + 1
+  }
+  found
+}
+
+/// A binder named `name` in PATTERN position -- `let (inspect, x) = ..`, a
+/// match/handle arm's `Some(inspect)`, a struct-pattern field bound to it.
+///
+/// Codex review on #1622 (P1): without this the shadow guard only saw binders
+/// spelled in expression position, so a `inspect` introduced by destructuring
+/// left the range's binder check false and the rewrite went ahead and replaced the
+/// user's own call with snapshot-assertion behaviour -- silently, since the
+/// program still compiled.
+export fn census_pat_binds(pat: Pat, name: String) -> Bool {
+  match pat {
+    PWild => false,
+    PBind(n) => n == name,
+    PInt(_) => false,
+    PFloat(_) => false,
+    PString(_) => false,
+    PBool(_) => false,
+    PCtor(_, args) => census_pat_list_binds(args, name),
+    PTuple(items) => census_pat_list_binds(items, name),
+    POr(a, b) => census_pat_binds(a, name) || census_pat_binds(b, name),
+    PStruct(_, fields) => census_pat_fields_bind(fields, name)
+  }
+}
+
+fn census_pat_list_binds(pats: Array[Pat], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(pats) {
+    found = census_pat_binds(Array::get(pats, i), name)
+    i = i + 1
+  }
+  found
+}
+
+fn census_pat_fields_bind(fields: Array[(String, Pat)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(fields) {
+    let (_, p) = Array::get(fields, i)
+    found = census_pat_binds(p, name)
+    i = i + 1
+  }
+  found
+}
+
+fn census_arms_bind(arms: Array[(Pat, Expr)], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    let (p, _) = Array::get(arms, i)
+    found = census_pat_binds(p, name)
+    i = i + 1
+  }
+  found
+}
+
+fn census_scan_arms(arms: Array[(Pat, Expr)], mode: Int, name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(arms) {
+    let (_, v) = Array::get(arms, i)
+    found = census_scan(v, mode, name)
+    i = i + 1
+  }
+  found
+}
+
+/// Every name `expr` MENTIONS -- as a reference or as a binder. Used to mint
+/// temporaries that cannot capture anything in the expressions being moved.
+/// Over-approximates (a shadowed inner binder counts too), which only ever
+/// costs a suffix.
+export fn census_mentions(expr: Expr, name: String) -> Bool {
+  census_scan(expr, 2, name)
+}
+
+fn census_params_bind(params: Array[(String, Option[TypeExpr])], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(params) {
+    let (pn, _) = Array::get(params, i)
+    found = pn == name
+    i = i + 1
+  }
+  found
+}
+
+/// Bit 1: the expression contains an `inspect(..)` call (mode 0); bit 2: it
+/// binds the name `inspect` somewhere (mode 1). One walk answers both.
+export fn census_inspect_bits(expr: Expr) -> Int {
+  Array::set(census_cell, 0, 0)
+  Array::set(census_cell, 1, 0)
+  let _ = census_scan(expr, 7, "")
+  let uses = if Array::get(census_cell, 0) != 0 {
+    1
+  } else {
+    0
+  }
+  let binds = if Array::get(census_cell, 1) != 0 {
+    2
+  } else {
+    0
+  }
+  uses|binds
+}

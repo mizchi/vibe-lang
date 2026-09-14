@@ -1,0 +1,62 @@
+import @vibe/compiler/core {
+  Expr, Stmt
+}
+import @vibe/compiler/lowering/hoist_lambdas {
+  hoist_lambdas_set_module_tag, hoist_local_lambdas, hoisted_lambda_owner_key, hoisted_lambda_owner_of_stmt
+}
+import @vibe/parser {
+  lex, parse_program, print_stmt
+}
+
+fn program(src: String) -> Array[Stmt] with Exception {
+  parse_program(lex(src))
+}
+
+fn stmt_name(s: Stmt) -> String {
+  match s {
+    SLet(_, _, name, _, _) => name,
+    _ => "<not a let>"
+  }
+}
+
+test "owner keys: declarations verbatim, tests and benches tagged, positions for the nameless" {
+  inspect(hoisted_lambda_owner_of_stmt(SLet(false, false, "Wrapper::scaled", None, EUnit), 0), content = "Wrapper::scaled")
+  inspect(hoisted_lambda_owner_of_stmt(STest("t", EUnit), 3), content = ":t:t")
+  inspect(hoisted_lambda_owner_of_stmt(SBench("b", EUnit), 3), content = ":b:b")
+  inspect(hoisted_lambda_owner_of_stmt(SExpr(EUnit), 7), content = ":s:7")
+  // The per-module entry publishes a tag; the nameless key carries it, and
+  // clearing the tag returns to the whole-program spelling.
+  hoist_lambdas_set_module_tag("m")
+  inspect(hoisted_lambda_owner_of_stmt(SExpr(EUnit), 7), content = ":s:m:7")
+  hoist_lambdas_set_module_tag("")
+  inspect(hoisted_lambda_owner_of_stmt(SExpr(EUnit), 7), content = ":s:7")
+}
+
+test "a hoisted name decodes back to its owner; other names do not" {
+  inspect(hoisted_lambda_owner_key("__hoisted_lam_3_foo_0_bar"), content = "Some(foo)")
+  inspect(hoisted_lambda_owner_key("__hoisted_lam_15_Wrapper::scaled_1_f"), content = "Some(Wrapper::scaled)")
+  inspect(hoisted_lambda_owner_key("foo"), content = "None")
+  inspect(hoisted_lambda_owner_key("__hoisted_lam_"), content = "None")
+}
+
+test "a non-capturing performing lambda is hoisted next to its owner, and the count is returned" {
+  let stmts = program("effect Log {\n  Emit(String) -> Unit\n}\n\nfn run() -> Int with Log {\n  let f = () -> {\n    perform Log::Emit(\"x\")\n  }\n  f()\n  1\n}\n\nfn last() -> Int {\n  2\n}\n")
+  let before = Array::length(stmts)
+  let grew = hoist_local_lambdas(stmts, before)
+  inspect(grew, content = "1")
+  inspect(Array::length(stmts) - before, content = "1")
+  // Placed directly after `run`, before `last`, and named after `run`.
+  let hoisted = stmt_name(Array::get(stmts, 2))
+  inspect(String::starts_with(hoisted, "__hoisted_lam_"), content = "true")
+  inspect(hoisted_lambda_owner_key(hoisted), content = "Some(run)")
+  inspect(stmt_name(Array::get(stmts, 3)), content = "last")
+  // The call site now names the hoisted definition.
+  inspect(String::contains(print_stmt(Array::get(stmts, 1)), hoisted), content = "true")
+}
+
+test "own_end bounds the walk: a lambda in the dependency block is left alone" {
+  let stmts = program("fn run() -> Int with Log {\n  let f = () -> {\n    perform Log::Emit(\"x\")\n  }\n  f()\n  1\n}\n")
+  let grew = hoist_local_lambdas(stmts, 0)
+  inspect(grew, content = "0")
+  inspect(Array::length(stmts), content = "1")
+}

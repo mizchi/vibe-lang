@@ -1493,7 +1493,7 @@ shape this pass targets") -- が、ここでの「nested」は実際には
 原因: `let never_called = () -> Int { perform Ask::Get }` は明示的な
 `with ...` 注釈を持たない -- AST 上 `eff` フィールドは空のまま
 (チェッカーは内部で row を推論するが、node には書き戻さない)。
-`dlh_hoist_expr` (`desugar_trait_dict.vibe`、#786 の capture-free
+`dlh_hoist_expr` (`lowering/hoist_lambdas/hoist_lambdas.vibe`、#786 の capture-free
 lambda-lifting) はこのクロージャをトップレベルへ昇格する際、空の
 `eff` をそのまま保存していた。`evidence_dict_pass` はトップレベル関数の
 「needing」判定を row 文字列だけで行う (`edp_collect_fn_defs`) ため、
@@ -1663,7 +1663,7 @@ inline なラムダリテラル (`(() -> Int with Log { perform ...; 42 })()`
 不正な wasm (`invalid signature index`) を生成するか、実行時に
 `null function or function signature mismatch` で落ちていた。
 
-原因: `desugar_trait_dict.vibe` の `dlh_hoist_expr` にあるフック/
+原因: `lowering/hoist_lambdas/hoist_lambdas.vibe` の `dlh_hoist_expr` にあるフック/
 closure-conversion ロジック (#786 の capture-free hoist、#1069 の
 capturing closure 変換) は例外なく `ELet(name, EFn(...), body)` という
 「let で名前に束縛されたクロージャ」の形にしかパターンマッチしない。
