@@ -135,9 +135,7 @@ builtin value forms, blocked only on teaching the lambda-site planner scope),
 test` condensers — only the `assert failed: aborting` marker suppresses the
 abort trap now; what is left is the design half, whether abort provenance moves
 out-of-band, which is a one-line `wontfix` if the in-band marker is judged
-enough),
-**#2670** (`vibe symbols lib` spends 84% of its time rescanning each file from
-offset 0 per declaration; one line-start table per file fixes it), **#2584**
+enough), **#2584**
 (adding a builtin means editing several hand-maintained classification lists —
 #2708 touched seven of them for three names, and nothing pointed at a missed
 one; the census the issue's option 2 describes is in
@@ -207,7 +205,7 @@ serially. Running across lanes is free.**
 | **D. incremental / cache** | `runtime/typecheck_fs.vibe`, `cache/` | #1959 → #1960, #2388, #2510 | **same files as lane C**, so C and D serialize with each other |
 | **E. codegen / RC** | `codegen/**` | #2389, #1980, #1934 | |
 | **F. runtime / host** | `runtime/viberun`, abort provenance | #2199 (rides #1987), #2397 | |
-| **G. CLI / editor queries** | `lib/@vibe/cli/**`, `entry/cli_cache`, `runtime/symbol_spans.vibe` | #2670, #1943, #2499 | #2378 closed 2026-09-12 (#2708); #2381 closed 2026-09-09 |
+| **G. CLI / editor queries** | `lib/@vibe/cli/**`, `entry/cli_cache`, `runtime/symbol_spans.vibe` | #1943, #2499 | #2670 closed 2026-09-14; #2378 closed 2026-09-12 (#2708); #2381 closed 2026-09-09 |
 | **H. scripts / gates** | `scripts/**`, `tests/gates/**` | #2592, #2001 | #2580 landed in #2591 and #2581 is closed; #2592 widens the wiring gate to the 27 `*_gate.sh` scripts, which is what keeps the count at zero |
 | **I. docs** | `docs/**`, `book/**` | #2002 → #2565, #2566, #2567 (in that order; #2564 landed), #1346 | conflicts only on the cheatsheet. #2146 closed 2026-09-06 |
 
