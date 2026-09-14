@@ -5,6 +5,7 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  bsearch_leftmost,
   bytebuf_length,
   bytebuf_new,
   bytebuf_push,
@@ -12,7 +13,8 @@ import @vibe/compiler/core {
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
   leb128_encode_s64,
-  leb128_encode_u32
+  leb128_encode_u32,
+  sorted_names_of
 }
 
 import @vibe/core {
@@ -35,6 +37,7 @@ import @vibe/compiler/codegen/reloc {
 }
 
 import @vibe/compiler/codegen/common_analysis {
+  ca_walk_stmts_valued,
   collect_free_vars,
   collect_free_vars_indexed,
   collect_free_vars_indexed_self,
@@ -44,8 +47,7 @@ import @vibe/compiler/codegen/common_analysis {
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   md_consume_count_pre,
-  md_shadow_zeroed_bmasks,
-  scope_tail_proj_root
+  md_shadow_zeroed_bmasks
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -262,6 +264,108 @@ fn strip_param_label_marker(n: String) -> String {
   }
 }
 
+/// Share the owning return contract for named callbacks with direct callers
+/// and the rc-classify / rc-plan queries. Value-position detection is the same
+/// conservative scan used to disqualify borrowed callback parameters.
+export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
+  let valued = array_empty()
+  let _ = ca_walk_stmts_valued(stmts, valued)
+  let names = sorted_names_of(valued)
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, body)) => if bsearch_leftmost(names, n) >= 0 {
+        Array::set(stmts, i, SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+/// Compiler-internal return markers preserve the operand's representation.
+export fn cl_return_operand(e: Expr) -> Expr {
+  match e {
+    ECall(EIdent(n, off), args, _) => if n == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+      Array::get(args, 0)
+    } else {
+      e
+    },
+    _ => e
+  }
+}
+
+/// Normalize lambda return paths to the owning indirect-call ABI. Bindings
+/// feeding a return normalize their compound initializer too: an if producing
+/// either a fresh object or a borrow cannot be retained uniformly after merging.
+/// The Perceus plan sees this body, so the new owning bindings get their normal
+/// dup/drop budget. Capture discovery still reads the source body.
+export fn cl_own_return(e: Expr) -> Expr {
+  cl_own_return_into(e, array_empty())
+}
+
+fn cl_own_return_into(e: Expr, needed: Array[String]) -> Expr {
+  match e {
+    EIdent(n, _) => {
+      Array::push(needed, n)
+      ECall(EIdent("__lambda_return_owned", -1), [e], -1)
+    },
+    EDot(_, _, _, _) => ECall(EIdent("__lambda_return_owned", -1), [e], -1),
+    ECall(_, _, _) => ECall(EIdent("__lambda_return_owned", -1), [e], -1),
+    EIf(c, t, f) => EIf(c, cl_own_return_into(t, needed), cl_own_return_into(f, needed)),
+    EMatch(s, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        Array::push(out, (arm.0, cl_own_return_into(arm.1, needed)))
+      }
+      EMatch(s, out)
+    },
+    EHandle(body, arms) => {
+      let out = array_empty()
+      for arm in arms {
+        Array::push(out, (arm.0, cl_own_return_into(arm.1, needed)))
+      }
+      EHandle(cl_own_return_into(body, needed), out)
+    },
+    ELet(n, v, b, off) => {
+      let body = cl_own_return_into(b, needed)
+      let value = if array_contains_str(needed, n) {
+        cl_own_binding_value(v, needed)
+      } else {
+        v
+      }
+      ELet(n, value, body, off)
+    },
+    ELetMut(n, v, b, off) => ELetMut(n, v, cl_own_return_into(b, needed), off),
+    ELetRec(n, v, b) => ELetRec(n, v, cl_own_return_into(b, needed)),
+    ESeq(a, b) => ESeq(a, cl_own_return_into(b, needed)),
+    EAssign(n, v, b) => EAssign(n, v, cl_own_return_into(b, needed)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, cl_own_return_into(b, needed)),
+    _ => e
+  }
+}
+
+fn cl_own_binding_value(e: Expr, needed: Array[String]) -> Expr {
+  match e {
+    EIdent(n, _) => {
+      Array::push(needed, n); e
+    },
+    EIf(_, _, _) => cl_own_return_into(e, needed),
+    EMatch(_, _) => cl_own_return_into(e, needed),
+    EHandle(_, _) => cl_own_return_into(e, needed),
+    ELet(_, _, _, _) => cl_own_return_into(e, needed),
+    ELetMut(_, _, _, _) => cl_own_return_into(e, needed),
+    ELetRec(_, _, _) => cl_own_return_into(e, needed),
+    ESeq(_, _) => cl_own_return_into(e, needed),
+    EAssign(_, _, _) => cl_own_return_into(e, needed),
+    EAssignOp(_, _, _, _) => cl_own_return_into(e, needed),
+    _ => e
+  }
+}
+
 export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], fn_body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_fn: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   // #1899: the capture scan must be told the parameters under the SAME names
   // the body uses. A labeled parameter is parsed as `x~` and an optional one as
@@ -389,6 +493,11 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     Array::push(norm_params, (sn, pty))
     npi = npi + 1
   }
+  let result_body = if ctx.enable_rc {
+    cl_own_return(fn_body)
+  } else {
+    fn_body
+  }
   let lam_drops = array_empty()
   let lam_alias_dups = array_empty()
   let lam_dups = array_empty()
@@ -399,7 +508,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_mark_names = array_empty()
   let lam_mark_offs = array_empty()
   if ctx.enable_rc {
-    let lam_plan = build_perceus_plan_pinned(ctx.perceus_pin, norm_params, fn_body, ctx.borrow_ret_names, ctx.borrow_param_user, ctx.borrow_param_mask, ctx.borrow_view_ret)
+    let lam_plan = build_perceus_plan_pinned(ctx.perceus_pin, norm_params, result_body, ctx.borrow_ret_names, ctx.borrow_param_user, ctx.borrow_param_mask, ctx.borrow_view_ret)
     let mut ldi = 0
     while ldi < Array::length(lam_plan) {
       let lpa = Array::get(lam_plan, ldi)
@@ -496,6 +605,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     const_int_values: ctx.const_int_values,
     enable_rc: ctx.enable_rc,
     rc_entry_untag_return: false,
+    rc_owned_return: true,
     rc_shadow: ctx.rc_shadow,
     rc_drop_names: lam_drops,
     rc_alias_dup_names: lam_alias_dups,
@@ -606,29 +716,8 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   } else {
     ()
   }
-  let final_lam_nl = compile_fn(lam_buf, fn_body, lam_locals, lam_nl, lam_ctx, -1)
-  let mut tail_lam_nl = final_lam_nl
+  let final_lam_nl = compile_fn(lam_buf, result_body, lam_locals, lam_nl, lam_ctx, -1)
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
-    let tail_root = scope_tail_proj_root(fn_body)
-    let mut need_dup = false
-    let mut ti = 0
-    while ti < Array::length(norm_params) {
-      let (tpn, tpt) = Array::get(norm_params, ti)
-      if param_is_heap_in_body(tpn, tpt, fn_body) && array_contains_str(lam_drops, tpn) && tpn == tail_root {
-        need_dup = true
-      } else {
-        ()
-      }
-      ti = ti + 1
-    }
-    let rtemp = final_lam_nl
-    if need_dup {
-      emit_local_set(lam_buf, rtemp)
-      emit_rc_dup_guarded(lam_buf, rtemp, ctx.rc_shadow, ctx.rc_dup_func_idx)
-      tail_lam_nl = final_lam_nl + 1
-    } else {
-      ()
-    }
     let mut tj = 0
     while tj < Array::length(norm_params) {
       let (dpn2, dpt2) = Array::get(norm_params, tj)
@@ -640,13 +729,6 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       }
       tj = tj + 1
     }
-    if need_dup {
-      emit_local_get(lam_buf, rtemp)
-    } else {
-      ()
-    }
-  } else {
-    ()
   }
   // #1259 step 7. The function index this lambda gets -- and, a few lines
   // down, the `table_slot` immediate baked into the emitted body.
@@ -689,8 +771,8 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   Array::push(ctx.lambda_table.captures, captures)
   let mut extra_lam = 0
   let min_lam_nl = user_params + 1
-  if tail_lam_nl > min_lam_nl {
-    extra_lam = tail_lam_nl - min_lam_nl
+  if final_lam_nl > min_lam_nl {
+    extra_lam = final_lam_nl - min_lam_nl
   }
   Array::push(ctx.lambda_table.meta_i32, 0)
   Array::push(ctx.lambda_table.meta_i64, extra_lam)
