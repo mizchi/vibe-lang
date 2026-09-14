@@ -99,8 +99,10 @@ fi
 
 # Deleting a script while its scripts/README.md mention stays staged must fail
 # (#2001); the working tree still has the file, so only the staged snapshot
-# can see the defect.
-git -C "$TMP_ROOT" reset -q
+# can see the defect. Only the dangling citation is unstaged first: HEAD is
+# the violating-base commit, so a full `git reset` would put the ARCH999
+# violation back into the index and fail the hook one gate earlier.
+git -C "$TMP_ROOT" rm -q --cached docs/reference.md
 git -C "$TMP_ROOT" rm -q --cached scripts/probe.sh
 [ -f "$TMP_ROOT/scripts/probe.sh" ] || { echo "precommit self-test: probe.sh should still be in the working tree" >&2; exit 1; }
 
