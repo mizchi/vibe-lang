@@ -1379,9 +1379,23 @@ fn spine_leaf_unowned(value: Expr, local_names: Array[String], ctx: CompileCtx) 
 ///     x = { Array::length(x); pick(x) }
 ///
 /// `scope_tail_proj_root` answers "" there, so keying on it would retain a
-/// reference derived from the slot itself. Measured: that shape passes today,
-/// so this guard is what keeps the fix from turning a correct decline into a
-/// use-after-free.
+/// reference derived from the slot itself.
+///
+/// UNREACHABLE TODAY, and this comment says so rather than implying a measured
+/// save. A stage2 built with this function forced to `false` -- the guard gone
+/// entirely -- produces BYTE-IDENTICAL output for every shape that could be
+/// written for it, passes every RC fixture, and measures every leak bound the
+/// same. So the branch below never reaches a leaf that roots at its own slot:
+/// `spine_leaf_unowned`'s leaf must return the SLOT's own type, every
+/// borrow-returning BUILTIN returns an ELEMENT of its root (`Array[T]` reaches
+/// only `T`), and the one user signature that closes the gap, `fn f(a: T) -> T`,
+/// is not classified borrow-returning.
+///
+/// It is kept because it states the property the branch below actually needs,
+/// and because the classifier admitting `fn f(a: T) -> T` some day would
+/// otherwise turn that branch into a silent leak with nothing between. It is
+/// insurance, not a fix, and should be deleted rather than elaborated if that
+/// ever stops being true.
 /// The container a borrow-returning expression reads from. Generalizes
 /// `borrow_tail_root` (common_analysis) by asking `call_returns_borrow`, which
 /// consults the whole-program USER borrow-returning set as well as the builtin
