@@ -1,0 +1,77 @@
+import @vibe/compiler/core {
+  Expr, Pat
+}
+import @vibe/compiler/codegen/common_analysis {
+  collect_free_vars_indexed, collect_free_vars_indexed_self, collect_free_vars_used_builtins
+}
+
+test "warmed free-variable scope storage adds no allocation" {
+  let params = ["a", "b", "c", "d"]
+  let empty: Array[String] = []
+  let leaf_expr = EUnit
+  let body = ELet("local", EIdent("a", -1), ELet("inner", EIdent("b", -1), EIdent("local", -1), -1), -1)
+  let _ = collect_free_vars_indexed(body, params, empty)
+  let start = Profiler::heap_bytes()
+  let leaf = collect_free_vars_indexed(leaf_expr, empty, empty)
+  let leaf_bytes = Profiler::heap_bytes() - start
+  let before = Profiler::heap_bytes()
+  let scoped = collect_free_vars_indexed(body, params, empty)
+  let scope_bytes = Profiler::heap_bytes() - before
+  inspect(scoped, content = "[]")
+  inspect(leaf, content = "[]")
+  inspect(scope_bytes - leaf_bytes, content = "0")
+}
+
+test "scope reset preserves input names and independently owned results" {
+  let params = ["bound"]
+  let globals = ["global"]
+  let first = collect_free_vars_indexed(ETuple([
+    EIdent("bound", -1),
+    EIdent("free", -1),
+    EIdent("global", -1)
+  ]), params, globals)
+  let second = collect_free_vars_indexed(ETuple([
+    EIdent("bound", -1),
+    EIdent("free", -1)
+  ]), ["free"], globals)
+  let third = collect_free_vars_used_builtins(EIdent("free", -1), [], globals)
+  inspect(first, content = "[free]")
+  inspect(second, content = "[bound]")
+  inspect(third, content = "[free]")
+  inspect(params, content = "[bound]")
+  inspect(globals, content = "[global]")
+}
+
+test "nested scopes unwind before siblings and later queries" {
+  let arm: Array[(Pat, Expr)] = [(PBind("item"), EIdent("item", -1))]
+  let body = ETuple([
+    EForIn("item", Some("idx"), EIdent("source", -1), EIdent("idx", -1)),
+    EMatch(EInt(0), arm),
+    EFn([], [], [("item~", None)], None, None, EIdent("item", -1)),
+    EFn([], [], [("idx?", None)], None, None, EIdent("idx", -1)),
+    EIdent("item", -1),
+    EAssign("idx", EInt(1), EUnit)
+  ])
+  let result = collect_free_vars_indexed(body, [], [])
+  let next = collect_free_vars_indexed(EIdent("source", -1), [], [])
+  inspect(result, content = "[source, item, idx]")
+  inspect(next, content = "[source]")
+}
+
+test "self-collision fallback and enclosing shadows can share scope storage" {
+  let globals = ["global", "self"]
+  let body = ETuple([
+    EIdent("global", -1),
+    EIdent("self", -1),
+    EIdent("captured", -1)
+  ])
+  let forced = collect_free_vars_indexed_self(body, [], globals, "self", [])
+  let shadowed = collect_free_vars_indexed_self(body, ["self"], globals, "self", [
+  ])
+  let enclosing = collect_free_vars_indexed_self(EIdent("global", -1), [], globals, "", [
+    "global"
+  ])
+  inspect(forced, content = "[captured, self]")
+  inspect(shadowed, content = "[captured]")
+  inspect(enclosing, content = "[global]")
+}
