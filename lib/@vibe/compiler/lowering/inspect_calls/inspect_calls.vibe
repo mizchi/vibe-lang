@@ -1,0 +1,361 @@
+// @vibe/compiler/lowering/inspect_calls -- #1571: expand `inspect(value,
+// content)` to its `__to_string` / `println` / `assert_true` form BEFORE
+// checking, so the snapshot assertion needs no import and every pre-codegen
+// scan sees ordinary calls. #2501: split out of
+// normalize/desugar_trait_dict.vibe; the normalize contract re-exports the two
+// entries so the checker, the merge and the link keep their imports.
+
+import @vibe/compiler/core {
+  Expr, ImportItem, Pat, Stmt, merged_source_boundary_local_names
+}
+
+import @vibe/compiler/lowering/expr_census {
+  census_fresh_name, census_inspect_bits, census_pat_binds
+}
+
+/// #1571: the desugared form of `inspect(value, content)`.
+///
+/// WHY A BUILTIN AT ALL. `inspect` was deliberately a plain library function in
+/// `@vibe/core` -- it needs no codegen support, only `__to_string` + `println`
+/// + `assert_true`, so adding it there cost nothing (see assert.vibe's header).
+/// #1571 changed the constraint: migrating the `__DATA__` fixtures to inline
+/// snapshots means `inspect` must be callable from a fixture compiled in the
+/// SINGLE-FILE lane, which resolves no imports at all, so a library function
+/// cannot be reached from one. Registering it alongside `assert` /
+/// `assert_true` / `assert_eq` -- import-free for exactly this reason -- is
+/// what unblocks the rest of that migration.
+///
+/// WHY A REWRITE AND NOT A CODEGEN LOWERING. The first cut lowered `inspect` at
+/// the callsite in both backends, the way `assert_eq` is lowered. That builds
+/// an invalid module: everything a call needs is decided by passes that run
+/// BEFORE codegen and walk the AST, so an expression conjured during emission
+/// is invisible to them. Measured, in order: the message literals were absent
+/// from the string table (`string not in table: inspect mismatch:`), and once
+/// those were seeded by hand, the synthesized `println` still had no gated-in
+/// `Stdout::write_stream` import and produced `expected 1 elements on the stack
+/// for fallthru, found 3`. Expanding here instead -- before checking, before
+/// every scan -- means each of those passes sees ordinary calls and needs no
+/// knowledge of `inspect` at all. It also gives both backends the same
+/// expansion by construction rather than by two lowerings agreeing.
+///
+/// Both arguments are let-bound because each is referenced more than once.
+/// Re-evaluating them would make `inspect(next(), ..)` consume two values and
+/// report a different one than it compared.
+///
+/// The temporaries are minted FRESH against both arguments (dinsp_fresh_name).
+/// A fixed name captures: with `let __vibe_inspect_actual = "wrong"`,
+/// `inspect(1, __vibe_inspect_actual)` would move that reference under the new
+/// binding and compare the stringified value against ITSELF -- a failing
+/// assertion that silently passes, which is the worst way this could break
+/// (Codex review on #1621).
+fn inspect_lowering_expr(value: Expr, content: Expr) -> Expr {
+  let actual_name = census_fresh_name("__vibe_inspect_actual", value, content)
+  let expected_name = census_fresh_name("__vibe_inspect_expected", value, content)
+  let actual = EIdent(actual_name, 0 - 1)
+  let expected = EIdent(expected_name, 0 - 1)
+  // Nested String::concat rather than one variadic call: `concat` is binary.
+  let tail = ECall(EIdent("String::concat", 0 - 1), [
+    EString("\n  expected: "),
+    expected
+  ], 0 - 1)
+  let body_msg = ECall(EIdent("String::concat", 0 - 1), [actual, tail], 0 - 1)
+  let msg = ECall(EIdent("String::concat", 0 - 1), [
+    EString("inspect mismatch:\n  actual:   "),
+    body_msg
+  ], 0 - 1)
+  // The message must print BEFORE the trap: `vibe test --update` reads exactly
+  // this "actual/expected" text off stdout to rewrite the stale literal.
+  let on_mismatch = ESeq(ECall(EIdent("println", 0 - 1), [msg], 0 - 1), ECall(EIdent("assert_true", 0 - 1), [
+    EBool(false)
+  ], 0 - 1))
+  let check = EIf(EBinOp("==", actual, expected, -1), EUnit, on_mismatch)
+  ELet(actual_name, ECall(EIdent("__to_string", 0 - 1), [value], 0 - 1), ELet(expected_name, content, check, 0 - 1), 0 - 1)
+}
+
+/// Rewrite every two-argument `inspect(value, content)` call to its expansion.
+///
+/// Only reached when the file binds NOTHING named `inspect` (see
+/// desugar_inspect_calls). A file that declares, imports or takes a parameter
+/// named `inspect` keeps calling that one, exactly as it did before this pass
+/// existed -- rewriting there would silently swap a user function's body for
+/// snapshot-assertion behaviour (Codex review on #1621).
+fn dinsp_expr(expr: Expr) -> Expr {
+  match expr {
+    ECall(callee, args, off) => {
+      let rewritten = for a in args {
+        dinsp_expr(a)
+      }
+      match callee {
+        EIdent(name, _) => if name == "inspect" && Array::length(rewritten) == 2 {
+          inspect_lowering_expr(Array::get(rewritten, 0), Array::get(rewritten, 1))
+        } else {
+          ECall(dinsp_expr(callee), rewritten, off)
+        },
+        _ => ECall(dinsp_expr(callee), rewritten, off)
+      }
+    },
+    _ => dinsp_children(expr)
+  }
+}
+
+fn dinsp_exprs(items: Array[Expr]) -> Array[Expr] {
+  for item in items {
+    dinsp_expr(item)
+  }
+}
+
+fn dinsp_fields(fields: Array[(String, Expr)]) -> Array[(String, Expr)] {
+  for f in fields {
+    (f.0, dinsp_expr(f.1))
+  }
+}
+
+fn dinsp_arms(arms: Array[(Pat, Expr)]) -> Array[(Pat, Expr)] {
+  for arm in arms {
+    (arm.0, dinsp_expr(arm.1))
+  }
+}
+
+fn dinsp_opt(opt: Option[Expr]) -> Option[Expr] {
+  match opt {
+    Some(v) => Some(dinsp_expr(v)),
+    None => None
+  }
+}
+
+/// Structural recursion for every non-ECall node. Enumerated rather than
+/// `_ => expr` so a new `Expr` variant is a compile error here instead of a
+/// silently un-rewritten subtree.
+fn dinsp_children(expr: Expr) -> Expr {
+  match expr {
+    EInt(_) => expr,
+    EFloat(_) => expr,
+    EString(_) => expr,
+    EBool(_) => expr,
+    EUnit => expr,
+    EIdent(_, _) => expr,
+    EStringInterp(_) => expr,
+    ETuple(items) => ETuple(dinsp_exprs(items)),
+    EArray(items) => EArray(dinsp_exprs(items)),
+    ERecord(n, fields, tys) => ERecord(n, dinsp_fields(fields), tys),
+    EMap(fields) => EMap(dinsp_fields(fields)),
+    EIf(c, t, f) => EIf(dinsp_expr(c), dinsp_expr(t), dinsp_expr(f)),
+    ELet(n, v, b, off) => ELet(n, dinsp_expr(v), dinsp_expr(b), off),
+    ELetRec(n, v, b) => ELetRec(n, dinsp_expr(v), dinsp_expr(b)),
+    ELetMut(n, v, b, off) => ELetMut(n, dinsp_expr(v), dinsp_expr(b), off),
+    EAssign(n, v, b) => EAssign(n, dinsp_expr(v), dinsp_expr(b)),
+    EAssignOp(n, op, v, b) => EAssignOp(n, op, dinsp_expr(v), dinsp_expr(b)),
+    ESeq(a, b) => ESeq(dinsp_expr(a), dinsp_expr(b)),
+    EMatch(s, arms) => EMatch(dinsp_expr(s), dinsp_arms(arms)),
+    EHandle(s, arms) => EHandle(dinsp_expr(s), dinsp_arms(arms)),
+    EWhile(c, b) => EWhile(dinsp_expr(c), dinsp_expr(b)),
+    ELoop(params, b) => ELoop(dinsp_fields(params), dinsp_expr(b)),
+    EForIn(v, k, it, b) => EForIn(v, k, dinsp_expr(it), dinsp_expr(b)),
+    ECall(callee, args, off) => ECall(dinsp_expr(callee), dinsp_exprs(args), off),
+    EBinOp(op, l, r, boff) => EBinOp(op, dinsp_expr(l), dinsp_expr(r), boff),
+    EUnaryOp(op, v) => EUnaryOp(op, dinsp_expr(v)),
+    EFn(g, bs, ps, ret, row, body) => EFn(g, bs, ps, ret, row, dinsp_expr(body)),
+    EDot(inner, f, off, foff) => EDot(dinsp_expr(inner), f, off, foff),
+    ELabeledArg(l, sfx, v) => ELabeledArg(l, sfx, dinsp_expr(v)),
+    EReturn(v) => EReturn(dinsp_expr(v)),
+    EBreak(opt) => EBreak(dinsp_opt(opt)),
+    EContinue(args) => EContinue(dinsp_exprs(args)),
+    ESpread(v) => ESpread(dinsp_expr(v))
+  }
+}
+
+fn dinsp_stmt(stmt: Stmt) -> Stmt {
+  match stmt {
+    SLet(e, r, n, t, body) => SLet(e, r, n, t, dinsp_expr(body)),
+    SLetMut(n, t, body) => SLetMut(n, t, dinsp_expr(body)),
+    SLetPat(p, body) => SLetPat(p, dinsp_expr(body)),
+    STest(n, body) => STest(n, dinsp_expr(body)),
+    SBench(n, body) => SBench(n, dinsp_expr(body)),
+    SExample(n, body) => SExample(n, dinsp_expr(body)),
+    SExpr(body) => SExpr(dinsp_expr(body)),
+    SFnDecl(e, n, body, req, ens) => SFnDecl(e, n, dinsp_expr(body), req, ens),
+    SModule(e, n, body) => SModule(e, n, dinsp_stmts_copy(body)),
+    _ => stmt
+  }
+}
+
+fn dinsp_stmts_copy(stmts: Array[Stmt]) -> Array[Stmt] {
+  for s in stmts {
+    dinsp_stmt(s)
+  }
+}
+
+/// The same bits for a statement: exactly dinsp_stmt_uses (bit 1) and
+/// dinsp_stmt_binds (bit 2), computed together.
+fn dinsp_stmt_census(stmt: Stmt) -> Int {
+  match stmt {
+    SImport(_, items) => if dinsp_import_binds(items) {
+      2
+    } else {
+      0
+    },
+    SReExport(_, items) => if dinsp_import_binds(items) {
+      2
+    } else {
+      0
+    },
+    SLet(_, _, name, _, body) => census_inspect_bits(body)|dinsp_name_binds_bit(name),
+    SLetMut(name, _, body) => census_inspect_bits(body)|dinsp_name_binds_bit(name),
+    SLetPat(pat, body) => census_inspect_bits(body)|(if census_pat_binds(pat, "inspect") {
+      2
+    } else {
+      0
+    }),
+    SFnDecl(_, name, body, _, _) => census_inspect_bits(body)|dinsp_name_binds_bit(name),
+    STest(_, body) => census_inspect_bits(body),
+    SBench(_, body) => census_inspect_bits(body),
+    SExample(_, body) => census_inspect_bits(body),
+    SExpr(body) => census_inspect_bits(body),
+    SModule(_, _, body) => dinsp_stmts_census(body),
+    _ => 0
+  }
+}
+
+fn dinsp_name_binds_bit(name: String) -> Int {
+  if name == "inspect" {
+    2
+  } else {
+    0
+  }
+}
+
+fn dinsp_stmts_census(stmts: Array[Stmt]) -> Int {
+  let mut bits = 0
+  let mut i = 0
+  while bits != 3 && i < Array::length(stmts) {
+    bits = bits|dinsp_stmt_census(Array::get(stmts, i))
+    i = i + 1
+  }
+  bits
+}
+
+fn dinsp_blocker_names_inspect(names: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(names) {
+    found = Array::get(names, i) == "inspect"
+    i = i + 1
+  }
+  found
+}
+
+// #2386: the two questions the range asks of every statement -- "does it
+// bind `inspect`?" (which blocks the whole range) and "does it call
+// `inspect`?" (which selects the statements to rewrite) -- used to be two
+// walks per statement. One census walk answers both; the bits are kept in
+// a scratch row refilled per range so nothing is allocated.
+let dinsp_census_row = [0]
+
+fn dinsp_rewrite_range(stmts: Array[Stmt], start: Int, end: Int) -> Bool {
+  Array::truncate(dinsp_census_row, 0)
+  let mut binds = false
+  let mut i = start
+  while i < end {
+    let bits = dinsp_stmt_census(Array::get(stmts, i))
+    Array::push(dinsp_census_row, bits)
+    if (bits&2) != 0 {
+      binds = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let mut changed = false
+  if binds {
+    ()
+  } else {
+    i = start
+    while i < end {
+      if (Array::get(dinsp_census_row, i - start)&1) != 0 {
+        Array::set(stmts, i, dinsp_stmt(Array::get(stmts, i)))
+        changed = true
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+  }
+  changed
+}
+
+fn dinsp_has_reexport_source_boundaries(stmts: Array[Stmt]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(stmts) {
+    found = merged_source_boundary_local_names(Array::get(stmts, i)) != None
+    i = i + 1
+  }
+  found
+}
+
+fn dinsp_rewrite_merged_source_ranges(stmts: Array[Stmt]) -> Bool {
+  let mut changed = false
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match merged_source_boundary_local_names(Array::get(stmts, i)) {
+      Some(local_names) => {
+        let start = i + 1
+        let mut end = start
+        while end < Array::length(stmts) && merged_source_boundary_local_names(Array::get(stmts, end)) == None {
+          end = end + 1
+        }
+        if !dinsp_blocker_names_inspect(local_names) {
+          if dinsp_rewrite_range(stmts, start, end) {
+            changed = true
+          } else {
+            ()
+          }
+        } else {
+          ()
+        }
+        i = end
+      },
+      None => {
+        i = i + 1
+      }
+    }
+  }
+  changed
+}
+
+fn dinsp_import_binds(items: Array[ImportItem]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while !found && i < Array::length(items) {
+    let item = Array::get(items, i)
+    let original = item.name
+    let alias = item.alias
+    found = match alias {
+      Some(a) => a == "inspect",
+      None => original == "inspect"
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// In-place, like the other desugars in this file: `check_program` hands the
+/// SAME array to the checker and then on to codegen, so a fresh array would be
+/// dropped on the floor.
+///
+/// Only statements that actually contain an `inspect(..)` call are rebuilt --
+/// see dinsp_stmt_census for why that guard is load-bearing rather than cosmetic.
+export fn desugar_inspect_calls_reporting_change(stmts: Array[Stmt]) -> Bool {
+  let mut changed = false
+  if dinsp_has_reexport_source_boundaries(stmts) {
+    changed = dinsp_rewrite_merged_source_ranges(stmts)
+  } else {
+    changed = dinsp_rewrite_range(stmts, 0, Array::length(stmts))
+  }
+  changed
+}
+
+export fn desugar_inspect_calls(stmts: Array[Stmt]) -> Unit {
+  let _changed = desugar_inspect_calls_reporting_change(stmts)
+  ()
+}

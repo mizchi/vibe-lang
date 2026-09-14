@@ -1,0 +1,46 @@
+import @vibe/compiler/core {
+  Stmt
+}
+import @vibe/compiler/lowering/inspect_calls {
+  desugar_inspect_calls, desugar_inspect_calls_reporting_change
+}
+import @vibe/parser {
+  lex, parse_program, print_stmt
+}
+
+fn program(src: String) -> Array[Stmt] with Exception {
+  parse_program(lex(src))
+}
+
+test "a two-argument inspect call expands to the stringify / print / assert form" {
+  let stmts = program("test \"t\" {\n  inspect(1 + 1, \"2\")\n}\n")
+  inspect(desugar_inspect_calls_reporting_change(stmts), content = "true")
+  let out = print_stmt(Array::get(stmts, 0))
+  inspect(String::contains(out, "__vibe_inspect_actual"), content = "true")
+  inspect(String::contains(out, "__vibe_inspect_expected"), content = "true")
+  inspect(String::contains(out, "__to_string((1 + 1))"), content = "true")
+  inspect(String::contains(out, "assert_true(false)"), content = "true")
+  inspect(String::contains(out, "inspect("), content = "false")
+  // Idempotent: the expansion contains no `inspect(..)` call to expand again.
+  inspect(desugar_inspect_calls_reporting_change(stmts), content = "false")
+}
+
+test "the temporaries are minted fresh against both arguments" {
+  // A user binding spelled like the temporary must not be captured by it
+  // (Codex review on #1621): the expansion picks a suffixed name instead.
+  let stmts = program("test \"t\" {\n  let __vibe_inspect_actual = \"wrong\"\n  inspect(1, __vibe_inspect_actual)\n}\n")
+  desugar_inspect_calls(stmts)
+  let out = print_stmt(Array::get(stmts, 0))
+  inspect(String::contains(out, "__vibe_inspect_actual_1"), content = "true")
+}
+
+test "a program that binds the name inspect itself is left alone" {
+  let stmts = program("fn inspect(a: Int, b: String) -> Unit {\n  ()\n}\n\ntest \"t\" {\n  inspect(1, \"1\")\n}\n")
+  inspect(desugar_inspect_calls_reporting_change(stmts), content = "false")
+  inspect(String::contains(print_stmt(Array::get(stmts, 1)), "inspect(1, \"1\")"), content = "true")
+}
+
+test "a statement without an inspect call is not rebuilt" {
+  let stmts = program("fn f() -> Int {\n  1\n}\n\ntest \"one arg is not the snapshot call\" {\n  inspect(1)\n}\n")
+  inspect(desugar_inspect_calls_reporting_change(stmts), content = "false")
+}
