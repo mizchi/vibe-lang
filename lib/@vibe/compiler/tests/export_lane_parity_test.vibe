@@ -199,3 +199,21 @@ test "an export of a real qualified builtin member is accepted" {
 test "gc lane refuses an export naming the synthesized entry" {
   inspect(String::concat(flat_gc_outcome("gc-start", "export {\n  _start\n}\n\ntest \"probe\" {\n  inspect(1, \"1\")\n}\n"), String::concat(" || ", typecheck_outcome("fs-start", "export {\n  _start\n}\n\ntest \"probe\" {\n  inspect(1, \"1\")\n}\n"))), "gc-start: declare or import _start in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import || fs-start: declare or import _start in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
 }
+
+//# ROUND 5 (Codex). The `Option` / `Random` qualifiers were left accepting any
+//# member spelling in round 4, on the belief that no oracle knows Option's
+//# members so tightening would refuse a real one. That belief was wrong:
+//# `Option::map` and its siblings are ordinary `export fn Option::map`
+//# DECLARATIONS in `lib/@vibe/builtin/option.vibe`, so they resolve through the
+//# module's own binding and never reach the predicate at all. Every qualified
+//# name now needs an exact member lookup.
+test "an export of a nonexistent Option member is refused" {
+  inspect(typecheck_outcome("bogus-option-member", "export {\n  Option::NotARealBuiltin\n}\n\nexport fn mk() -> Int {\n  1\n}\n"), "bogus-option-member: declare or import Option::NotARealBuiltin in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+//# The qualified names that DO answer must keep answering -- host capabilities
+//# and container members among them, not just the `String::` / `Int::` families
+//# round 4 checked.
+test "an export of real qualified builtins across families is accepted" {
+  inspect(typecheck_outcome("real-qualified", "export {\n  Fs::read_file,\n  Env::get,\n  Array::get,\n  Map::get,\n  String::contains,\n  Int::to_string\n}\n\nexport fn mk() -> Int {\n  1\n}\n"), "real-qualified: accepted")
+}

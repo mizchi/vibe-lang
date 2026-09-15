@@ -256,37 +256,43 @@ export fn export_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option
 /// because `core/builtin_registry.vibe` imports types, so the edge would be a
 /// cycle.
 export fn is_explicit_builtin_declaration(name: String) -> Bool {
-  let qualifier_at = String::index_of(name, "::")
-  let qualifier = if qualifier_at > 0 {
-    String::substring(name, 0, qualifier_at)
-  } else {
-    ""
-  }
-  if name == "Option" || name == "Random" || qualifier == "Option" || qualifier == "Random" {
-    true
-  } else if qualifier != "" && resolve_builtin(qualifier) != None {
-    // #2762 round 4 (Codex): a QUALIFIED member needs the MEMBER to exist, not
-    // merely its qualifier. `resolve_builtin(qualifier)` alone accepted
-    // `String::NotARealBuiltin`, and because publication mints its marker from
-    // this same predicate a consumer then imported that nonexistent member
-    // successfully -- measured on pristine main too, so this half is a
-    // pre-existing hole rather than one #2762 introduced.
+  if String::index_of(name, "::") > 0 {
+    // A QUALIFIED name needs the MEMBER to exist -- the qualifier being a
+    // builtin type, or being `Option` / `Random`, is not enough (#2762 rounds
+    // 4 and 5, Codex). Before this, `resolve_builtin(qualifier)` and the
+    // `Option` / `Random` arms each returned true for ANY member spelling, and
+    // because publication mints its `CtUnknown` marker from this same
+    // predicate a consumer could then import a member nothing defines:
+    // measured on pristine main at f8d0b24, `export { String::NotARealBuiltin }`
+    // was accepted and `import ./dep.vibe { String::NotARealBuiltin }`
+    // SUCCEEDED. Pre-existing, inherited by the refusal rather than introduced
+    // by it.
     //
-    // `lookup_builtin` is the oracle that knows, measured over the members
-    // `lib/@vibe/builtin/{string,int}.vibe` actually aggregate-export
-    // (`lookup_builtin` / `lookup_registry_builtin` / `has_standard_effect_policy`):
+    // Which oracle knows is measured, not assumed (B / R / P are
+    // `lookup_builtin` / `lookup_registry_builtin` / `has_standard_effect_policy`):
     //
     // | name | B | R | P |
     // |---|---|---|---|
-    // | `String::contains` | yes | yes | no |
+    // | `Fs::read_file`, `Env::get`, `Console::write_stream` | yes | yes | yes |
+    // | `Array::get`, `Map::get`, `String::contains`, `Int::clz` | yes | yes | no |
     // | `Int::to_string`, `String::unicode_length` | yes | NO | no |
-    // | `Int::clz`, `Int::popcount` | yes | yes | no |
-    // | `String::NotARealBuiltin`, `Int::NotReal` | no | no | no |
+    // | `String::NotARealBuiltin`, `Option::NotReal`, `Array::NotReal` | no | no | no |
     //
-    // So the registry alone would have refused `Int::to_string`, which that
-    // package really does publish -- the first attempt at this clause did
-    // exactly that, and the table is why it does not now.
+    // So the registry alone would refuse `Int::to_string`, which
+    // `lib/@vibe/builtin/int.vibe` really does publish -- the first attempt at
+    // this clause did exactly that.
+    //
+    // `Option::map` and its siblings answer on NO oracle and are still fine:
+    // they are ordinary `export fn Option::map` DECLARATIONS in
+    // `lib/@vibe/builtin/option.vibe`, so they resolve through the module's own
+    // binding and never reach this predicate. Round 4 of the review kept the
+    // `Option` arm on the opposite belief -- that tightening it would refuse a
+    // real member -- which was simply wrong, and round 5 found the hole it left.
     lookup_builtin(name) != None || lookup_registry_builtin(name) != None || has_standard_effect_policy(name)
+  } else if name == "Option" || name == "Random" {
+    // The bare TYPES keep their special case: `lib/@vibe/builtin/option.vibe`
+    // opens with `export { Option }`, and neither name is in `resolve_builtin`.
+    true
   } else match resolve_builtin(name) {
     Some(_) => true,
     None => if has_standard_effect_policy(name) {
