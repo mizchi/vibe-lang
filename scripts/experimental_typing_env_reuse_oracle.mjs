@@ -311,7 +311,7 @@ function stableCachePath(cache, version, prefix, seed, suffix) {
 }
 
 function typeEnvPath(stage2, cache, target, major = "v23") {
-  return stableCachePath(cache, `${major}|cg-${stageCodegenFingerprint(stage2)}`, "selfhost_type_env_v8", target, ".tsv");
+  return stableCachePath(cache, `${major}|cg-${stageCodegenFingerprint(stage2)}`, "selfhost_type_env_v10", target, ".tsv");
 }
 
 // Derive the exact referenced TypeEnv filename from the target conservative
@@ -499,6 +499,26 @@ function run(stage2) {
     privateEdit(missingProject);
     const missingTargetFallback = check(stage2, missingProject, missingCache, true, "missing-target-fallback");
     expectCounts("missing referenced target fallback", missingTargetFallback.telemetry, 2, 0);
+
+    // #2546: replace ONLY the lowering section with a different, internally
+    // valid v8 table. Counts/digest still agree and the TypeEnv is unchanged;
+    // the exact whole-record witness binding must reject this substitution.
+    const loweringProject = join(work, "lowering-target-project");
+    const loweringCache = join(work, "lowering-target-cache");
+    makeProject(loweringProject);
+    check(stage2, loweringProject, loweringCache, true, "lowering-target-cold");
+    const loweringApp = appSidecar(loweringCache, readFileSync(join(loweringProject, "app.vibe"), "utf8"));
+    const loweringTarget = referencedAppTargetEnv(stage2, loweringCache, loweringApp.target);
+    const originalLoweringTarget = readFileSync(loweringTarget, "utf8");
+    const loweringStart = originalLoweringTarget.indexOf("module_typed_lowering_offsets\tv8\n");
+    if (loweringStart < 0) fail("combined target has no lowering section to mutate");
+    const substitutedRows = `module_typed_lowering_offsets\tv8\n8\nmodule_typed_lowering_offsets\tcount\t1\nmodule_typed_lowering_offsets\teqcount\t0\nmodule_typed_lowering_offsets\tdigest\t${compactFingerprint("8")}\nmodule_typed_lowering_offsets\tend\n`;
+    const substitutedTarget = originalLoweringTarget.slice(0, loweringStart) + substitutedRows;
+    if (substitutedTarget === originalLoweringTarget) fail("lowering-only mutation matched no change");
+    writeFileSync(loweringTarget, substitutedTarget);
+    privateEdit(loweringProject);
+    const loweringTargetFallback = check(stage2, loweringProject, loweringCache, true, "lowering-target-fallback");
+    expectCounts("lowering-only target mutation fallback", loweringTargetFallback.telemetry, 2, 0);
 
     const staleProject = join(work, "stale-target-project");
     const staleCache = join(work, "stale-target-cache");
@@ -741,6 +761,7 @@ function run(stage2) {
       missing_target_fallback: missingTargetFallback.telemetry,
       stale_target_fallback: staleTargetFallback.telemetry,
       malformed_sidecar_fallback: malformedSidecarFallback.telemetry,
+      lowering_only_target_mutation: loweringTargetFallback.telemetry,
       valid_wrong_target_fallback: validWrongFallback.telemetry,
       cross_splice_fallbacks: {
         sidecar: sidecarSpliceFallback.telemetry,

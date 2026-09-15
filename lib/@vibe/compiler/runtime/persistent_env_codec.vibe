@@ -18,6 +18,17 @@ import @vibe/compiler/core {
   BindingOrigin, EnvValueBinding, Type, TypeDef, TypeEnv, TypeExpr, env_cache, env_value_binding, env_value_binding_with_origin
 }
 
+import ./typed_lowering_codec.vibe {
+  module_typed_lowering_text, parse_module_typed_lowering_offsets_text
+}
+
+/// Disk storage combines the outputs of one check. None means no table was
+/// transported (e.g. a worker result), not a successfully checked empty table.
+export struct PersistentModuleCache {
+  env: TypeEnv;
+  lowering: Option[(Array[Int], Array[Int], Array[String])]
+}
+
 //# Functions
 
 fn parse_int_strict(raw: String) -> Int with Exception {
@@ -1096,18 +1107,70 @@ export fn parse_persistent_type_env(text: String) -> Option[TypeEnv] with Except
   }
 }
 
-/// Filesystem cache bytes are untrusted. A malformed or old envelope is a
-/// cache miss, never an exception that can turn a cold check into a failure or
-/// a partially decoded interface into authority.
+/// Filesystem entries require the complete v10 envelope. The TypeEnv-only
+/// v9 codec below remains the worker/dependency transport representation.
 export fn load_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with Exception + Fs {
+  match load_persistent_module_cache(fingerprint) {
+    Some(record) => Some(record.env),
+    None => None
+  }
+}
+
+export fn load_persistent_module_cache(fingerprint: String) -> Option[PersistentModuleCache] with Fs {
   let path = persistent_type_env_cache_path(fingerprint)
-  if !(Fs::exists(path)) {
+  if !Fs::exists(path) {
     None
   } else {
     handle {
-      parse_persistent_type_env(Fs::read_file(path))
-    } with { Exception::Throw(_) => None }
+      parse_persistent_module_cache(Fs::read_file(path))
+    }
+    with { Exception::Throw(_) => None }
   }
+}
+
+/// A length-delimited TypeEnv payload followed by exactly one lowering
+/// section. The v8 lowering codec retains its count/digest/end-marker checks.
+export fn persistent_module_cache_text(env: TypeEnv, lowering: Option[(Array[Int], Array[Int], Array[String])]) -> String {
+  let section = match lowering {
+    Some((offsets, eq_offs, eq_keys)) => module_typed_lowering_text(offsets, eq_offs, eq_keys),
+    None => "lowering\tmissing\n"
+  }
+  String::concat("version\t10\nenv\t", String::concat(serialize_segment(serialize_type_env(env)), String::concat("\n", section)))
+}
+
+/// Reject the whole entry when either section is malformed. In particular a
+/// truncated table cannot become an absent or partially accepted table.
+export fn parse_persistent_module_cache(text: String) -> Option[PersistentModuleCache] {
+  handle {
+    let normalized = normalize_persistent_cache_text(text)
+    let header = "version\t10\nenv\t"
+    if !String::starts_with(normalized, header) {
+      None
+    } else {
+      let (payload, end) = parse_segment(normalized, String::length(header))
+      if end >= String::length(normalized) || String::char_code_at(normalized, end) != '\n' {
+        None
+      } else {
+        let (env, consumed) = parse_persistent_type_env_payload(payload, 0)
+        if consumed != String::length(payload) {
+          None
+        } else {
+          let section = normalized[end + 1: String::length(normalized)]
+          if section == "lowering\tmissing\n" {
+            Some(PersistentModuleCache::{ env, lowering: None })
+          } else {
+            match parse_module_typed_lowering_offsets_text(section) {
+              Some(rows) => Some(PersistentModuleCache::{
+                env,
+                lowering: Some(rows)
+              }),
+              None => None
+            }
+          }
+        }
+      }
+    }
+  } with { Exception::Throw(_) => None }
 }
 
 export fn persistent_type_env_cache_text(env: TypeEnv) -> String {

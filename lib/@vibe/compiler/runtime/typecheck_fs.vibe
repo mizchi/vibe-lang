@@ -9,7 +9,6 @@ import @vibe/compiler/cache {
   normalize_persistent_cache_text,
   persistent_dep_list_cache_path,
   persistent_leaf_fingerprint_cache_path,
-  persistent_module_typed_lowering_offsets_cache_path,
   persistent_type_env_cache_path,
   persistent_typing_dependency_env_reuse_eligibility_path,
   persistent_typing_dependency_env_reuse_sidecar_path,
@@ -176,12 +175,16 @@ import @vibe/compiler/runtime/eval_loader {
 }
 
 export ./persistent_env_codec.vibe {
+  PersistentModuleCache,
   load_persistent_dep_list,
   load_persistent_leaf_fingerprint,
+  load_persistent_module_cache,
   load_persistent_type_env,
+  parse_persistent_module_cache,
   parse_persistent_type_env,
   persistent_dep_list_text,
   persistent_leaf_fingerprint_text,
+  persistent_module_cache_text,
   persistent_type_env_cache_text
 }
 
@@ -195,15 +198,24 @@ fn empty_dep_fps() -> Array[(String, String)] {
   array_empty()
 }
 
-/// Every acceptance of a persistent fingerprint must first decode its v5
-/// interface. Old/corrupt bytes are ordinary cold-cache misses.
-fn valid_persistent_type_env(fingerprint: String) -> Option[TypeEnv] with Exception + Fs {
-  load_persistent_type_env(fingerprint)
+/// Every persistent hit validates both v10 sections before hydrating the
+/// lowering memo. Missing tables and malformed entries force a real check.
+fn valid_persistent_type_env(path: String, fingerprint: String) -> Option[TypeEnv] with Exception + Fs {
+  match load_persistent_module_cache(fingerprint) {
+    Some(record) => match record.lowering {
+      Some((offsets, eq_offs, eq_keys)) => {
+        module_typed_lowering_memo_put(path, fingerprint, offsets, eq_offs, eq_keys)
+        Some(record.env)
+      },
+      None => None
+    },
+    None => None
+  }
 }
 
 fn valid_persistent_leaf_fingerprint(path: String, source: String) -> Option[String] with Exception + Fs {
   match load_persistent_leaf_fingerprint(path, source, typing_semantics_seed()) {
-    Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
+    Some(fingerprint) => match valid_persistent_type_env(path, fingerprint) {
       Some(_) => Some(fingerprint),
       None => None
     },
@@ -230,16 +242,12 @@ fn valid_persistent_leaf_fingerprint(path: String, source: String) -> Option[Str
 // can never be STALE (nothing from an earlier compile of a since-edited file
 // survives the reset), and nothing EVICTS a row the active compile still
 // needs (the memo is bounded by the closure's module count, so a daemon's
-// memory is bounded per compile without an eviction cap). The persistent
-// sidecar is keyed by the SAME module fingerprint as the TypeEnv cache
-// entry, because both are outputs of the same check. Every reuse arm that
-// skips a module check requires the sidecar too
-// (ensure_module_typed_lowering_offsets), so which halves of the cache happen to
-// exist can never change a compile's OUTPUT -- a missing sidecar re-checks
-// the module once and writes it (self-healing: no semantics-seed bump, old
-// caches migrate on first touch). The #906 worker transport does not publish
-// the sidecar yet, so a worker-checked module is re-checked by the next
-// in-driver compile rather than silently losing its offsets.
+// memory is bounded per compile without an eviction cap). The v10 disk record
+// holds the TypeEnv and lowering table under their shared module fingerprint.
+// Every accepting load validates both sections before populating this memo.
+// Missing/corrupt tables force one real check. The #906 worker transport still
+// carries only TypeEnv v9, so its disk record marks lowering unavailable and a
+// later in-driver compile re-checks instead of silently losing offsets.
 
 // #2386: scratch rows for the import projection. Each row belongs to ONE
 // non-recursive function (bi_ = bind_import_names_from_cache_collecting,
@@ -334,7 +342,7 @@ fn module_typed_lowering_memo_get_by_fp(fingerprint: String) -> Option[(Array[In
 }
 
 /// The consumer query: this module's Double call-result offsets, in its own
-/// offset space, as recorded by the most recent check (or sidecar load) of
+/// offset space, as recorded by the most recent check (or unified-record load) of
 /// `path` in this process. `None` means the module was never stepped here --
 /// the FS lanes treat that file as contributing no offsets, which degrades
 /// that file's calls to the pre-#2158 syntactic classifier rather than to a
@@ -373,206 +381,8 @@ export fn module_typed_eq_rows_for_path(path: String) -> Option[(Array[Int], Arr
   found
 }
 
-/// v8 (#2555). The envelope carries, in order: the version header, one
-/// DECIMAL offset per line, a decimal `count`, one `eqrow` per typed-`==`
-/// site, a decimal `eqcount`, a `digest` over the body, and an end marker.
-/// The strict decoder requires every one of them.
-///
-/// What each piece defends against:
-///
-///   end marker  -- a truncated file loses it and decodes as a miss.
-///   counts      -- a deleted or inserted row no longer matches the declared
-///                  size.
-///   digest      -- any character-level change inside an otherwise well-formed
-///                  file. `compact_string_fingerprint` over the body lines
-///                  joined in emission order, so a reordering is caught too.
-///   digit parse -- a row that is not all digits poisons the whole parse.
-///
-/// A torn write is NOT among them, because it cannot happen: both hosts
-/// implement `Fs::write_file` as a temp file plus `rename` (scripts/
-/// wasm_vibe_host_runner.js's `atomicWriteFileSync`, runtime/viberun/src/
-/// main.rs -- "rename() is atomic on POSIX"), so a reader sees the previous
-/// complete file or the new complete file, never a prefix. The digest is what
-/// covers the case the counts and the end marker cannot: a character-level
-/// change in a file that is otherwise intact, which for THIS file would change
-/// what a compile emits (#2425, #2449) rather than merely losing a cache hit.
-///
-/// One line of digest is both cheaper and stronger than the per-row
-/// duplication it replaces: cheaper because the rows are not doubled, which
-/// matters at the ~800 sidecars a cold compile writes (#2546), and stronger
-/// because duplication cannot see a change that hits both copies, nor a
-/// reordering.
-fn module_typed_lowering_body_digest(body: Array[String]) -> String {
-  compact_string_fingerprint(String::join(body, "\n"))
-}
-
-export fn module_typed_lowering_text(offsets: Array[Int], eq_offs: Array[Int], eq_keys: Array[String]) -> String {
-  let parts = array_empty()
-  // The lines the digest covers: the offset rows and the eq rows, in emission
-  // order. The header, the counts, the digest line itself and the end marker
-  // are not in it -- they are checked directly.
-  let body = array_empty()
-  Array::push(parts, "module_typed_lowering_offsets\tv8")
-  let n = Array::length(offsets)
-  let mut i = 0
-  while i < n {
-    let row_text = __to_string(Array::get(offsets, i))
-    Array::push(parts, row_text)
-    Array::push(body, row_text)
-    i = i + 1
-  }
-  Array::push(parts, String::concat("module_typed_lowering_offsets\tcount\t", __to_string(n)))
-  // #2441: the typed-`==` rows. Keys are impl_target_key strings, whose
-  // charset (digits, `_`, structure letters) can never contain a tab or a
-  // newline, so the cell split is unambiguous.
-  let eq_n = Array::length(eq_offs)
-  let mut ei = 0
-  while ei < eq_n {
-    let eq_row = String::concat("module_typed_lowering_offsets\teqrow\t", String::concat(__to_string(Array::get(eq_offs, ei)), String::concat("\t", Array::get(eq_keys, ei))))
-    Array::push(parts, eq_row)
-    Array::push(body, eq_row)
-    ei = ei + 1
-  }
-  Array::push(parts, String::concat("module_typed_lowering_offsets\teqcount\t", __to_string(eq_n)))
-  Array::push(parts, String::concat("module_typed_lowering_offsets\tdigest\t", module_typed_lowering_body_digest(body)))
-  Array::push(parts, "module_typed_lowering_offsets\tend")
-  String::concat(String::join(parts, "\n"), "\n")
-}
-
-/// Digit-only row decode; any other character poisons the whole parse.
-fn module_typed_lowering_parse_nat(line: String) -> Option[Int] {
-  let len = String::length(line)
-  if len == 0 {
-    None
-  } else {
-    let mut value = 0
-    let mut ok = true
-    let mut j = 0
-    while j < len && ok {
-      let c = String::char_code_at(line, j)
-      if c >= 48 && c <= 57 {
-        value = value * 10 + (c - 48)
-      } else {
-        ok = false
-      }
-      j = j + 1
-    }
-    if ok {
-      Some(value)
-    } else {
-      None
-    }
-  }
-}
-
-/// Strict v8 decode: the exact version header, digit-only offset rows, one
-/// decimal `count` matching the row set, the `eqrow` lines, one decimal
-/// `eqcount` matching them, one `digest` matching the body, and the closing end
-/// marker -- all of them, or the answer is `None`, an ordinary cold-cache miss
-/// that re-checks the module.
-///
-/// So: a truncated file loses the end marker; a corrupted row fails the digit
-/// parse or the digest; a deleted, inserted or reordered row fails the count or
-/// the digest; a v1..v7 or foreign header fails outright. None of them can
-/// change what a compile emits, which is the property the whole envelope
-/// exists for (#2425, #2449).
-///
-/// A v7 file on disk decodes as a miss, which is the correct and cheap
-/// outcome: the module is re-checked and rewritten in v8. The persistent
-/// cache's namespace already embeds a hash of the compiler SOURCES, so a v7
-/// sidecar and a v8 decoder do not in practice meet; the header check is the
-/// belt to that braces.
-export fn parse_module_typed_lowering_offsets_text(text: String) -> Option[(Array[Int], Array[Int], Array[String])] {
-  let lines = String::split(normalize_persistent_cache_text(text), "\n")
-  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_typed_lowering_offsets\tv8" {
-    None
-  } else {
-    let out: Array[Int] = []
-    let eq_offs: Array[Int] = []
-    let eq_keys: Array[String] = []
-    let body: Array[String] = []
-    let mut ok = true
-    let mut saw_end = false
-    let mut declared_count = 0 - 1
-    let mut declared_eq_count = 0 - 1
-    let mut declared_digest = ""
-    let mut saw_digest = false
-    let mut i = 1
-    while i < Array::length(lines) && ok {
-      let line = Array::get(lines, i)
-      if String::length(line) == 0 {
-        ()
-      } else if saw_end {
-        // Content after the end marker is not a prefix of any valid write.
-        ok = false
-      } else if line == "module_typed_lowering_offsets\tend" {
-        saw_end = true
-      } else if String::starts_with(line, "module_typed_lowering_offsets\teqrow\t") {
-        // `eqrow<TAB>off<TAB>key`. The key charset cannot contain a tab, so
-        // exactly four cells and a non-empty key is the whole shape check; the
-        // digest covers character-level damage inside either cell.
-        let cells = String::split(line, "\t")
-        if Array::length(cells) != 4 || String::length(Array::get(cells, 3)) == 0 {
-          ok = false
-        } else {
-          match module_typed_lowering_parse_nat(Array::get(cells, 2)) {
-            Some(value) => {
-              Array::push(eq_offs, value)
-              Array::push(eq_keys, Array::get(cells, 3))
-              Array::push(body, line)
-            },
-            None => ok = false
-          }
-        }
-      } else if String::starts_with(line, "module_typed_lowering_offsets\teqcount\t") {
-        if declared_eq_count >= 0 {
-          ok = false
-        } else {
-          match module_typed_lowering_parse_nat(String::substring(line, String::length("module_typed_lowering_offsets\teqcount\t"), String::length(line))) {
-            Some(value) => declared_eq_count = value,
-            None => ok = false
-          }
-        }
-      } else if String::starts_with(line, "module_typed_lowering_offsets\tcount\t") {
-        if declared_count >= 0 {
-          // A second count line is not a prefix of any valid write.
-          ok = false
-        } else {
-          match module_typed_lowering_parse_nat(String::substring(line, String::length("module_typed_lowering_offsets\tcount\t"), String::length(line))) {
-            Some(value) => declared_count = value,
-            None => ok = false
-          }
-        }
-      } else if String::starts_with(line, "module_typed_lowering_offsets\tdigest\t") {
-        if saw_digest {
-          ok = false
-        } else {
-          saw_digest = true
-          declared_digest = String::substring(line, String::length("module_typed_lowering_offsets\tdigest\t"), String::length(line))
-          if String::length(declared_digest) == 0 {
-            ok = false
-          } else {
-            ()
-          }
-        }
-      } else {
-        // A plain offset row: all digits, nothing else.
-        match module_typed_lowering_parse_nat(line) {
-          Some(value) => {
-            Array::push(out, value)
-            Array::push(body, line)
-          },
-          None => ok = false
-        }
-      }
-      i = i + 1
-    }
-    if ok && saw_end && saw_digest && declared_count == Array::length(out) && declared_eq_count == Array::length(eq_offs) && declared_digest == module_typed_lowering_body_digest(body) {
-      Some((out, eq_offs, eq_keys))
-    } else {
-      None
-    }
-  }
+export ./typed_lowering_codec.vibe {
+  module_typed_lowering_text, parse_module_typed_lowering_offsets_text
 }
 
 /// #2391: shift each file's per-module typed-lowering table (recorded by the
@@ -582,7 +392,7 @@ export fn parse_module_typed_lowering_offsets_text(text: String) -> Option[(Arra
 /// adds base * 8 and leaves the tag bits untouched. A file the modular check
 /// never stepped in this process contributes nothing, which degrades ITS
 /// sites to the syntactic classifiers -- deterministically, because the reuse
-/// arms in typecheck_fs.vibe re-check a module whose offsets sidecar is
+/// arms in typecheck_fs.vibe re-check a module whose checked lowering table is
 /// missing rather than reusing half a cache entry.
 ///
 /// #2449: this lives beside the memo it reads rather than in one merge's
@@ -762,7 +572,7 @@ export fn split_typed_lowering_offsets(enc: Array[Int]) -> (Array[Int], Array[In
 /// caller must fall through to a real check rather than proceed -- the same
 /// fail-closed rule `ensure_module_typed_lowering_offsets` gives the FS lane.
 /// This is the memo-only sibling of that function: the in-memory walk carries
-/// no `Fs` effect, so there is no sidecar to fall back on.
+/// no `Fs` effect, so there is no disk record to fall back on.
 ///
 /// Binding the hit to THIS path (not just proving the fingerprint) is the
 /// #2425 rule: `build_fingerprint` excludes the module's own path, so two
@@ -778,39 +588,10 @@ export fn rebind_module_typed_lowering_offsets(path: String, fingerprint: String
   }
 }
 
-/// True when `path`'s offsets for `fingerprint` are available (memo, else the
-/// persistent sidecar, loaded into the memo). Every reuse arm that would skip
-/// this module's check calls this alongside `valid_persistent_type_env`; a
-/// `false` makes the arm fall through to a real check, which recomputes AND
-/// republishes both cache halves.
-fn ensure_module_typed_lowering_offsets(path: String, fingerprint: String) -> Bool with Exception + Fs {
-  match module_typed_lowering_memo_get_by_fp(fingerprint) {
-    // Bind the hit to THIS path too (Codex P1 on #2425): build_fingerprint
-    // excludes the module's own path, so two byte-identical modules share a
-    // fingerprint, and the consumer lookup is by path -- a hit that only
-    // proved the fingerprint would leave the second module with no row (its
-    // Double calls degrading to the syntactic classifier). Same fingerprint
-    // means same source and dependency fingerprints, so the offsets are the
-    // same table.
-    Some((offsets, eq_offs, eq_keys)) => {
-      module_typed_lowering_memo_put(path, fingerprint, offsets, eq_offs, eq_keys)
-      true
-    },
-    None => {
-      let sidecar = persistent_module_typed_lowering_offsets_cache_path(fingerprint)
-      if !(Fs::exists(sidecar)) {
-        false
-      } else {
-        match parse_module_typed_lowering_offsets_text(Fs::read_file(sidecar)) {
-          Some((offsets, eq_offs, eq_keys)) => {
-            module_typed_lowering_memo_put(path, fingerprint, offsets, eq_offs, eq_keys)
-            true
-          },
-          None => false
-        }
-      }
-    }
-  }
+/// The unified cache loader has already validated and hydrated both outputs.
+/// Rebind by fingerprint so byte-identical modules at distinct paths agree.
+fn ensure_module_typed_lowering_offsets(path: String, fingerprint: String) -> Bool {
+  rebind_module_typed_lowering_offsets(path, fingerprint)
 }
 
 fn lookup_env_cache(cache: Array[(String, TypeEnv)], path: String) -> Option[TypeEnv] {
@@ -4547,15 +4328,14 @@ export fn parse_program_with_path(path: String, source: String) -> Array[Stmt] w
 }
 
 fn store_persistent_type_env(fingerprint: String, env: TypeEnv) -> String with Exception + Fs {
-  let text = persistent_type_env_cache_text(env)
+  let text = persistent_module_cache_text(env, module_typed_lowering_memo_get_by_fp(fingerprint))
   Fs::write_file(persistent_type_env_cache_path(fingerprint), text)
   text
 }
 
-// TDRE9 is deliberately independent from the TypeEnv v9 envelope and from
-// every production artifact/cache identity. Both v9 envelopes use strict
-// decimal length-delimited fields and bind the logical checker input, target
-// conservative fingerprint, and exact canonical TypeEnv-v9 transport text.
+// TDRE9 binds the logical checker input, conservative fingerprint, and
+// exact canonical v10 disk record, including lowering rows. Dependency inputs
+// and worker transport continue to use TypeEnv v9 independently of storage.
 // The target text is intentionally not replaced by a compact fingerprint:
 // cache corruption must not turn a fingerprint collision into checker reuse.
 let typing_dependency_env_reuse_alias_v9_tag = "TDRE9A"
@@ -4646,22 +4426,21 @@ fn typing_dependency_transport_input_key(path: String, source: String, semantics
   StringBuilder::freeze(out)
 }
 
-/// Decode untrusted target bytes strictly and require the decoder's canonical
-/// v5 re-encoding to equal both the raw file and the binding's exact text.
-/// parse_persistent_type_env accepts normalized line endings for ordinary cache
-/// compatibility; this additional equality makes the experimental lane strict.
-fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String, expected_target_text: String) -> Option[TypeEnv] with Fs {
+/// Decode both outputs strictly and require canonical re-encoding to equal
+/// the raw file and the exact witness/alias text. Ordinary cache loading may
+/// normalize a legacy host prefix; reuse bindings require byte equality.
+fn load_canonical_typing_dependency_env_reuse_target(target_fingerprint: String, expected_target_text: String) -> Option[PersistentModuleCache] with Fs {
   let target_path = persistent_type_env_cache_path(target_fingerprint)
   if !Fs::exists(target_path) {
     None
   } else {
     handle {
       let raw_target_text = Fs::read_file(target_path)
-      match parse_persistent_type_env(raw_target_text) {
-        Some(target_env) => {
-          let canonical_target_text = persistent_type_env_cache_text(target_env)
+      match parse_persistent_module_cache(raw_target_text) {
+        Some(record) => {
+          let canonical_target_text = persistent_module_cache_text(record.env, record.lowering)
           if raw_target_text == canonical_target_text && raw_target_text == expected_target_text {
-            Some(target_env)
+            Some(record)
           } else {
             None
           }
@@ -4699,7 +4478,7 @@ fn typing_dependency_env_reuse_eligibility_is_valid(fingerprint: String) -> Bool
   }
 }
 
-/// Eligibility is transitively witnessed by successful canonical TypeEnv-v9
+/// Eligibility is transitively witnessed by successful canonical v10 module
 /// commits. Missing, malformed, stale, torn, or cross-spliced witnesses fail
 /// closed before the alias lookup.
 fn typing_dependency_env_reuse_is_eligible(dep_fps: Array[(String, String)]) -> Bool with Fs {
@@ -4722,7 +4501,7 @@ fn publish_typing_dependency_env_reuse_eligibility(input_key: String, fingerprin
   Fs::write_file(persistent_typing_dependency_env_reuse_eligibility_path(fingerprint), witness_text)
 }
 
-fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String, String, TypeEnv)] with Fs {
+fn load_typing_dependency_env_reuse_target(path: String, input_key: String) -> Option[(String, String, TypeEnv)] with Fs {
   let sidecar_path = persistent_typing_dependency_env_reuse_sidecar_path(input_key)
   if !Fs::exists(sidecar_path) {
     None
@@ -4735,11 +4514,17 @@ fn load_typing_dependency_env_reuse_target(input_key: String) -> Option[(String,
         // Validate the raw target before consulting the separately published
         // witness. Only an exact three-way alias/witness/target binding reuses.
         match load_canonical_typing_dependency_env_reuse_target(target_fingerprint, target_text) {
-          Some(target_env) =>
+          Some(record) =>
           match typing_dependency_env_reuse_witness_binding(target_fingerprint) {
             Some((witness_input_key, witness_target_text)) =>
             if witness_input_key == input_key && witness_target_text == target_text {
-              Some((target_fingerprint, target_text, target_env))
+              match record.lowering {
+                Some((offsets, eq_offs, eq_keys)) => {
+                  module_typed_lowering_memo_put(path, target_fingerprint, offsets, eq_offs, eq_keys)
+                  Some((target_fingerprint, target_text, record.env))
+                },
+                None => None
+              }
             } else {
               None
             },
@@ -5688,19 +5473,10 @@ fn commit_module_outcome(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep
       throw(String::concat(job.path, ": type error"))
     },
     Checked(path, fingerprint, checked_env, interface_identity, checked_env_identity, persistent_type_env_transport_identity, _) => {
-      // Serialize the TypeEnv once. Production-default TDRE9 publication binds
-      // the exact same text as the conservative target; serializing it a second
-      // time materially inflates fresh selfcompile heap without adding evidence.
+      // Serialize both check outputs once and publish one atomic disk record.
+      // TDRE9 binds these exact bytes; worker outcomes without a lowering
+      // table explicitly encode its absence and cannot skip a later check.
       let target_text = store_persistent_type_env(fingerprint, checked_env)
-      // #2391: publish the second output of the same check next to the env.
-      // check_module recorded it in the process memo under this fingerprint;
-      // an outcome that arrived WITHOUT a memo entry (the #906 worker
-      // transport checks in another process) publishes no sidecar, and the
-      // reuse arms then re-check that module in-driver next time.
-      match module_typed_lowering_memo_get_by_fp(fingerprint) {
-        Some((offsets, eq_offs, eq_keys)) => Fs::write_file(persistent_module_typed_lowering_offsets_cache_path(fingerprint), module_typed_lowering_text(offsets, eq_offs, eq_keys)),
-        None => ()
-      }
       // Publish in commit order: canonical target first, bound witness second,
       // alias last. Diagnosed/thrown checks never enter this Checked arm. Keep
       // the extra canonical target text and input serialization wholly inside
@@ -5907,17 +5683,10 @@ fn parse_job_rows(job_text: String) -> (String, Array[String], Array[String]) wi
     }
   }
 }
-/// #906 Phase 2 (real-build wiring): the batch publish counterpart to
-/// run_module_job_dir. `manifest.txt` holds one `<fingerprint>\t<envfile>`
-/// row per module a host driver wants published; `<envfile>` is read
-/// relative to `dir` and written VERBATIM to the real persistent-cache path
-/// -- it is already `persistent_type_env_cache_text`-encoded, because it is
-/// literally a copy of some job dir's `env.out` (see run_module_job_dir
-/// above), so there is nothing to parse or re-encode here. Two publishers
-/// racing on the same fingerprint is a same-value collision, not a
-/// conflict: the path is content-addressed, and a checker producing two
-/// different envs for one fingerprint would already violate the
-/// jobs=1/2/4 byte-identity gate elsewhere.
+/// Batch worker publication. Each manifest row supplies a fingerprint and a
+/// relative env.out filename. Validate canonical TypeEnv-v9 transport before
+/// wrapping it in the v10 disk record with an explicitly unavailable table.
+/// A later serial check supplies lowering rows before that entry can be reused.
 fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exception {
   let lines = String::split(normalize_persistent_cache_text(text), "\n")
   let rows = array_empty()
@@ -5955,7 +5724,7 @@ fn parse_publish_manifest_rows(text: String) -> Array[(String, String)] with Exc
       Some(env) => {
         let canonical = persistent_type_env_cache_text(env)
         if env_text == canonical {
-          Fs::write_file(persistent_type_env_cache_path(fingerprint), env_text)
+          Fs::write_file(persistent_type_env_cache_path(fingerprint), persistent_module_cache_text(env, None))
         } else {
           throw(String::concat("publish manifest has non-canonical v4 environment: ", env_file))
         }
@@ -6033,9 +5802,9 @@ fn finish_checked_module_artifact_fs(rdb: RippleDb, env_cache: Array[(String, Ty
 /// cross-check) that identical fingerprint itself, the same way a worker
 /// would -- one canonical computation, not a value trusted from the caller.
 fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, deps: Array[String], dep_fps: Array[(String, String)], fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
-  // #2391: reuse requires the float-offsets sidecar alongside the TypeEnv
-  // entry, or the arm below runs the real check (which republishes both).
-  let reusable_cached_env = match valid_persistent_type_env(fingerprint) {
+  // #2391/#2546: reuse requires both outputs in the unified module entry.
+  // A missing output forces a real check, which republishes both.
+  let reusable_cached_env = match valid_persistent_type_env(path, fingerprint) {
     Some(cached_env) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
       Some(cached_env)
     } else {
@@ -6093,18 +5862,9 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
       }
       let reused_env = match reuse_input_key {
         Some(input_key) => {
-          match load_typing_dependency_env_reuse_target(input_key) {
-            // #2391: the transported env must bring the module's float
-            // offsets along, or the reuse would publish a conservative env
-            // entry with no sidecar and every later compile would decline
-            // the half-entry. The offsets live under the TARGET fingerprint
-            // -- the original check that published this eligibility also
-            // committed them there -- and the input key binds this module's
-            // VERBATIM source plus each dependency's exact env text, so a
-            // hit implies the offsets are identical for this compile; the
-            // acceptance arm below republishes them under the new
-            // conservative fingerprint. Missing offsets decline the reuse,
-            // and the one real check republishes both halves.
+          match load_typing_dependency_env_reuse_target(path, input_key) {
+            // The bound record hydrates this path's lowering memo from the
+            // target fingerprint. Absent tables already declined the reuse.
             Some((target_fingerprint, target_text, target_env)) => if ensure_module_typed_lowering_offsets(path, target_fingerprint) {
               Some((input_key, target_fingerprint, target_text, target_env))
             } else {
@@ -6121,14 +5881,11 @@ fn finish_typecheck_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], 
           // consumer. Commit this target first, then its exact bound witness, and
           // only then the alias, so torn publication always fails closed.
           Fs::write_file(persistent_type_env_cache_path(fingerprint), target_text)
-          // #2391: republish the target's float offsets under the new
-          // conservative fingerprint, so the entry the line above created
-          // has both halves and the plain reuse arms accept it. The gate
-          // above hydrated the memo from the target fingerprint.
+          // The copied record contains both outputs; bind the existing rows
+          // in memory to the new conservative fingerprint as well.
           match module_typed_lowering_memo_get_by_fp(target_fingerprint) {
             Some((reused_offsets, reused_eq_offs, reused_eq_keys)) => {
               module_typed_lowering_memo_put(path, fingerprint, reused_offsets, reused_eq_offs, reused_eq_keys)
-              Fs::write_file(persistent_module_typed_lowering_offsets_cache_path(fingerprint), module_typed_lowering_text(reused_offsets, reused_eq_offs, reused_eq_keys))
             },
             None => ()
           }
@@ -6281,8 +6038,8 @@ fn plan_import_graph_fs(rdb: RippleDb, dep_source_cache: Array[(String, String)]
         let reusable = if checked_module_cache_mode() == "off" && dep_source_cache_is_current(dep_source_cache, path, source) {
           match ripple_get_fingerprint(rdb, path) {
             // #2391: reuse needs BOTH cache halves -- the TypeEnv and the
-            // module's float-offsets sidecar -- or the walk must re-check.
-            Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
+            // module's checked lowering table -- or the walk must re-check.
+            Some(fingerprint) => match valid_persistent_type_env(path, fingerprint) {
               Some(_) => ensure_module_typed_lowering_offsets(path, fingerprint),
               None => false
             },
@@ -6376,8 +6133,8 @@ fn plan_deps_of(plan_edges: Array[(String, Array[String])], path: String) -> Opt
 fn commit_leaf_fingerprint_fs(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String, source: String, leaf_fingerprint: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
   // The plan read this cache earlier, but recheck at the accepting edge: a
   // stale/malformed leaf pointer must cold-check rather than become authority.
-  // #2391: the float-offsets sidecar is part of that acceptance too.
-  match valid_persistent_type_env(leaf_fingerprint) {
+  // #2391: the checked lowering table is part of that acceptance too.
+  match valid_persistent_type_env(path, leaf_fingerprint) {
     Some(cached_env) => if ensure_module_typed_lowering_offsets(path, leaf_fingerprint) {
       if incremental_interface_trace_enabled() {
         incremental_trace_observe_checked_env(path, source, cached_env)
@@ -6422,7 +6179,7 @@ fn commit_with_deps_fs(fps: Array[(String, String)], rdb: RippleDb, env_cache: A
   match ripple_get_fingerprint(rdb, path) {
     Some(cached_fp) =>
     if cached_fp == fingerprint {
-      match valid_persistent_type_env(fingerprint) {
+      match valid_persistent_type_env(path, fingerprint) {
         // #2391: both cache halves, or re-check (which republishes both).
         Some(_) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
           incremental_typecheck_telemetry_add(7, 1)
@@ -6478,7 +6235,7 @@ fn step_module_fs(plan_leaf_fps: Array[(String, String)], plan_edges: Array[(Str
       let reusable = if dep_source_cache_is_current(dep_source_cache, path, source) {
         match ripple_get_fingerprint(rdb_loaded, path) {
           // #2391: both cache halves, or no reuse (see ensure_module_typed_lowering_offsets).
-          Some(fingerprint) => match valid_persistent_type_env(fingerprint) {
+          Some(fingerprint) => match valid_persistent_type_env(path, fingerprint) {
             Some(_) => if ensure_module_typed_lowering_offsets(path, fingerprint) {
               Some(fingerprint)
             } else {
@@ -6856,7 +6613,7 @@ fn scheduler_trace_project(buf: StringBuilder, order: Array[String], ranks: Arra
 /// compiled output is byte-identical across seeds regardless.
 export fn ensure_fingerprint_fs_impl(rdb: RippleDb, env_cache: Array[(String, TypeEnv)], dep_source_cache: Array[(String, String)], parse_count: Int, path: String) -> (String, RippleDb, Array[(String, TypeEnv)], Array[(String, String)], Int) with Exception + Fs {
   // #2391: the float-offsets memo lives for exactly one walk -- every module
-  // this walk accepts re-binds its row (from the check, the sidecar, or the
+  // this walk accepts re-binds its row (from the check, the combined entry, or the
   // TDRE9 target), and the FS merge consumes the rows right after the walk
   // returns. Resetting here is what rules out a row surviving from an
   // earlier compile of a since-edited file, without any eviction policy that

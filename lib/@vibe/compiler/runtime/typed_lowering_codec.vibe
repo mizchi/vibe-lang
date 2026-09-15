@@ -1,0 +1,209 @@
+import @vibe/compiler/cache {
+  compact_string_fingerprint, normalize_persistent_cache_text
+}
+import @vibe/core {
+  array_empty
+}
+
+/// v8 (#2555). The envelope carries, in order: the version header, one
+/// DECIMAL offset per line, a decimal `count`, one `eqrow` per typed-`==`
+/// site, a decimal `eqcount`, a `digest` over the body, and an end marker.
+/// The strict decoder requires every one of them.
+///
+/// What each piece defends against:
+///
+///   end marker  -- a truncated file loses it and decodes as a miss.
+///   counts      -- a deleted or inserted row no longer matches the declared
+///                  size.
+///   digest      -- any character-level change inside an otherwise well-formed
+///                  file. `compact_string_fingerprint` over the body lines
+///                  joined in emission order, so a reordering is caught too.
+///   digit parse -- a row that is not all digits poisons the whole parse.
+///
+/// A torn write is NOT among them, because it cannot happen: both hosts
+/// implement `Fs::write_file` as a temp file plus `rename` (scripts/
+/// wasm_vibe_host_runner.js's `atomicWriteFileSync`, runtime/viberun/src/
+/// main.rs -- "rename() is atomic on POSIX"), so a reader sees the previous
+/// complete file or the new complete file, never a prefix. The digest is what
+/// covers the case the counts and the end marker cannot: a character-level
+/// change in a file that is otherwise intact, which for THIS file would change
+/// what a compile emits (#2425, #2449) rather than merely losing a cache hit.
+///
+/// One line of digest is both cheaper and stronger than the per-row
+/// duplication it replaces: cheaper because the rows are not doubled, which
+/// matters at the ~800 sidecars a cold compile writes (#2546), and stronger
+/// because duplication cannot see a change that hits both copies, nor a
+/// reordering.
+fn module_typed_lowering_body_digest(body: Array[String]) -> String {
+  compact_string_fingerprint(String::join(body, "\n"))
+}
+
+export fn module_typed_lowering_text(offsets: Array[Int], eq_offs: Array[Int], eq_keys: Array[String]) -> String {
+  let parts = array_empty()
+  // The lines the digest covers: the offset rows and the eq rows, in emission
+  // order. The header, the counts, the digest line itself and the end marker
+  // are not in it -- they are checked directly.
+  let body = array_empty()
+  Array::push(parts, "module_typed_lowering_offsets\tv8")
+  let n = Array::length(offsets)
+  let mut i = 0
+  while i < n {
+    let row_text = __to_string(Array::get(offsets, i))
+    Array::push(parts, row_text)
+    Array::push(body, row_text)
+    i = i + 1
+  }
+  Array::push(parts, String::concat("module_typed_lowering_offsets\tcount\t", __to_string(n)))
+  // #2441: the typed-`==` rows. Keys are impl_target_key strings, whose
+  // charset (digits, `_`, structure letters) can never contain a tab or a
+  // newline, so the cell split is unambiguous.
+  let eq_n = Array::length(eq_offs)
+  let mut ei = 0
+  while ei < eq_n {
+    let eq_row = String::concat("module_typed_lowering_offsets\teqrow\t", String::concat(__to_string(Array::get(eq_offs, ei)), String::concat("\t", Array::get(eq_keys, ei))))
+    Array::push(parts, eq_row)
+    Array::push(body, eq_row)
+    ei = ei + 1
+  }
+  Array::push(parts, String::concat("module_typed_lowering_offsets\teqcount\t", __to_string(eq_n)))
+  Array::push(parts, String::concat("module_typed_lowering_offsets\tdigest\t", module_typed_lowering_body_digest(body)))
+  Array::push(parts, "module_typed_lowering_offsets\tend")
+  String::concat(String::join(parts, "\n"), "\n")
+}
+
+/// Digit-only row decode; any other character poisons the whole parse.
+fn module_typed_lowering_parse_nat(line: String) -> Option[Int] {
+  let len = String::length(line)
+  if len == 0 {
+    None
+  } else {
+    let mut value = 0
+    let mut ok = true
+    let mut j = 0
+    while j < len && ok {
+      let c = String::char_code_at(line, j)
+      if c >= 48 && c <= 57 {
+        value = value * 10 + (c - 48)
+      } else {
+        ok = false
+      }
+      j = j + 1
+    }
+    if ok {
+      Some(value)
+    } else {
+      None
+    }
+  }
+}
+
+/// Strict v8 decode: the exact version header, digit-only offset rows, one
+/// decimal `count` matching the row set, the `eqrow` lines, one decimal
+/// `eqcount` matching them, one `digest` matching the body, and the closing end
+/// marker -- all of them, or the answer is `None`, an ordinary cold-cache miss
+/// that re-checks the module.
+///
+/// So: a truncated file loses the end marker; a corrupted row fails the digit
+/// parse or the digest; a deleted, inserted or reordered row fails the count or
+/// the digest; a v1..v7 or foreign header fails outright. None of them can
+/// change what a compile emits, which is the property the whole envelope
+/// exists for (#2425, #2449).
+///
+/// A v7 file on disk decodes as a miss, which is the correct and cheap
+/// outcome: the module is re-checked and rewritten in v8. The persistent
+/// cache's namespace already embeds a hash of the compiler SOURCES, so a v7
+/// sidecar and a v8 decoder do not in practice meet; the header check is the
+/// belt to that braces.
+export fn parse_module_typed_lowering_offsets_text(text: String) -> Option[(Array[Int], Array[Int], Array[String])] {
+  let lines = String::split(normalize_persistent_cache_text(text), "\n")
+  if Array::length(lines) == 0 || Array::get(lines, 0) != "module_typed_lowering_offsets\tv8" {
+    None
+  } else {
+    let out: Array[Int] = []
+    let eq_offs: Array[Int] = []
+    let eq_keys: Array[String] = []
+    let body: Array[String] = []
+    let mut ok = true
+    let mut saw_end = false
+    let mut declared_count = 0 - 1
+    let mut declared_eq_count = 0 - 1
+    let mut declared_digest = ""
+    let mut saw_digest = false
+    let mut i = 1
+    while i < Array::length(lines) && ok {
+      let line = Array::get(lines, i)
+      if String::length(line) == 0 {
+        ()
+      } else if saw_end {
+        // Content after the end marker is not a prefix of any valid write.
+        ok = false
+      } else if line == "module_typed_lowering_offsets\tend" {
+        saw_end = true
+      } else if String::starts_with(line, "module_typed_lowering_offsets\teqrow\t") {
+        // `eqrow<TAB>off<TAB>key`. The key charset cannot contain a tab, so
+        // exactly four cells and a non-empty key is the whole shape check; the
+        // digest covers character-level damage inside either cell.
+        let cells = String::split(line, "\t")
+        if Array::length(cells) != 4 || String::length(Array::get(cells, 3)) == 0 {
+          ok = false
+        } else {
+          match module_typed_lowering_parse_nat(Array::get(cells, 2)) {
+            Some(value) => {
+              Array::push(eq_offs, value)
+              Array::push(eq_keys, Array::get(cells, 3))
+              Array::push(body, line)
+            },
+            None => ok = false
+          }
+        }
+      } else if String::starts_with(line, "module_typed_lowering_offsets\teqcount\t") {
+        if declared_eq_count >= 0 {
+          ok = false
+        } else {
+          match module_typed_lowering_parse_nat(String::substring(line, String::length("module_typed_lowering_offsets\teqcount\t"), String::length(line))) {
+            Some(value) => declared_eq_count = value,
+            None => ok = false
+          }
+        }
+      } else if String::starts_with(line, "module_typed_lowering_offsets\tcount\t") {
+        if declared_count >= 0 {
+          // A second count line is not a prefix of any valid write.
+          ok = false
+        } else {
+          match module_typed_lowering_parse_nat(String::substring(line, String::length("module_typed_lowering_offsets\tcount\t"), String::length(line))) {
+            Some(value) => declared_count = value,
+            None => ok = false
+          }
+        }
+      } else if String::starts_with(line, "module_typed_lowering_offsets\tdigest\t") {
+        if saw_digest {
+          ok = false
+        } else {
+          saw_digest = true
+          declared_digest = String::substring(line, String::length("module_typed_lowering_offsets\tdigest\t"), String::length(line))
+          if String::length(declared_digest) == 0 {
+            ok = false
+          } else {
+            ()
+          }
+        }
+      } else {
+        // A plain offset row: all digits, nothing else.
+        match module_typed_lowering_parse_nat(line) {
+          Some(value) => {
+            Array::push(out, value)
+            Array::push(body, line)
+          },
+          None => ok = false
+        }
+      }
+      i = i + 1
+    }
+    if ok && saw_end && saw_digest && declared_count == Array::length(out) && declared_eq_count == Array::length(eq_offs) && declared_digest == module_typed_lowering_body_digest(body) {
+      Some((out, eq_offs, eq_keys))
+    } else {
+      None
+    }
+  }
+}
+
