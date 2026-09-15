@@ -2092,6 +2092,41 @@ while the heavier one carries the free one. At the current codec's measured
 ~22 MB/s that is 0.7 s to decode against ~8.2 s, so the codec's speed stops
 being the binding constraint once the granularity is right.
 
+**But the body cache does not fire on a real build at all (2026-09-15).**
+Everything published about it — the `offered=4431 recompiled=832` table above
+and its successors — was measured through `scripts/body_cache_reuse.sh`, which
+hardcoded the entry to `__no_entry__`. That is the LIBRARY shape. Same corpus,
+same leaf, same cache directory, only the entry changed:
+
+| entry | cold | warm (unchanged) |
+|---|---|---|
+| `__no_entry__` | offered 0 / recompiled 10478 | **offered 9752** / recompiled 726 |
+| `cli_main` | offered 0 / recompiled 10287 | **offered 0** / recompiled 10287 |
+
+With an entry point the cache offers **nothing**, on every row — unchanged,
+comment-edited and reverted alike — so a warm build recompiles exactly what a
+cold one does. The artifact is not missing: a `cli_main` build stores 6.9 MB
+under `codegen-body-cache` just as a `__no_entry__` build stores 7.3 MB. It is
+stored and then never accepted, which places the failure in
+`decode_body_cache_artifact_for`'s leading-prefix rule rather than in the
+store. `offered` is 0 and never partial, so the very first file in merge order
+mismatches on path, content fingerprint or merged-statement count.
+
+This is why turning the body cache on changes nothing on a real closure —
+measured, `VIBE_CODEGEN_BODY_CACHE=on` moved the CLI closure's warm wall from
+9.47 s to 9.53 s and its heap from 1957 MB to 2091 MB, both slightly worse,
+which is the artifact being written and read and discarded. It also explains
+the phase table above: with the cache "on" and 93 % of bodies notionally
+replayed, `compile_expr`, the prelude and the lowering passes are all
+unchanged to within noise, because nothing was replayed.
+
+`vibe build`, `vibe run` and `vibe test` all compile with an entry, so this
+cache has never accelerated one. `scripts/body_cache_reuse.sh` now takes the
+entry as its third argument, defaulting to `__no_entry__` so the historical
+rows still reproduce; the harness itself did not compile until 2026-09-15
+(`fn main` still used `with` where an entry now requires `allows`), which is
+how a measurement stopped being run without anyone noticing.
+
 **The constraint to design around** is not size but the capability lane.
 `--allow-*` drives const-fold plus DCE (ADR-0075/0084/0088), so a dependency's
 POST-DCE bodies depend on the consumer's grants and two consumers with
