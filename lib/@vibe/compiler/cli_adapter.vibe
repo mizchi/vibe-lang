@@ -4,6 +4,7 @@
 // these used to be two separate leaf imports (preprocess.vibe,
 // merge_sources.vibe), now merged into one.
 import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_component_wasm_command,
   comp_emit_component_wasm_stream_handler,
   comp_emit_component_wasm_string_handler,
   compile_generated_source_wasi_only,
@@ -1152,6 +1153,59 @@ fn adapter_serve_component(input_path: String, output_path: String) -> Int with 
     }
     0
   } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }
+}
+
+/// `vibe build --component` as the LAUNCHER drives it.
+///
+/// `runtime/vibe` talks to this adapter through positional arguments plus a
+/// `VIBE_*` selector, never a verb, so the `build --component` arm in
+/// lib/@vibe/cli/dispatch.vibe is unreachable from the public launcher. Left
+/// at that, `vibe build --component f.vibe` reported success and wrote an
+/// ordinary CORE module -- the flag silently discarded, which is the
+/// silently-wrong failure this project ranks worst (Codex review of #2861).
+///
+/// Shaped after `adapter_serve_component`, which componentizes for the same
+/// reason and carries the same ADR-0068 gates: a verb that PRODUCES an
+/// artifact must not accept what `vibe check` refuses, and the closure gate
+/// has to be re-asked after the loader has walked it.
+fn adapter_command_component(input_path: String, output_path: String) -> Int with Fs + Env {
+  handle {
+    let opt_in = Env::get("VIBE_UNSTABLE") == "1"
+    let entry_unstable = if opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_path(input_path)
+    }
+    if Array::length(entry_unstable) > 0 {
+      return emit_compile_diag(output_path, String::join(entry_unstable, "\n"))
+    } else {
+      ()
+    }
+    unstable_closure_reset()
+    // No command entry: the surface is the lifted export, so the core is a
+    // library build and `no-dce` keeps it reachable -- the entry-rooted `mvp`
+    // lane has no root and answers "no functions found to compile".
+    let core = compile_file_fs_mode(input_path, "__no_entry__", "no-dce")
+    let closure_unstable = if opt_in {
+      adapter_no_warnings()
+    } else {
+      check_unstable_surface_warnings_from_closure()
+    }
+    if Array::length(closure_unstable) > 0 {
+      return emit_compile_diag(output_path, String::join(closure_unstable, "\n"))
+    } else {
+      ()
+    }
+    Fs::write_bytes(output_path, comp_emit_component_wasm_command(core, "vibe_command", "run"))
+    0
+  } with { Exception::Throw(msg) => emit_compile_diag(output_path, adapter_command_component_edit(input_path, msg)) }
+}
+
+/// The wrap's message names what it found in the core; this adds the edit.
+/// Kept identical in substance to the user CLI's `command_component_edit` so
+/// the two lanes answer a missing entry the same way.
+fn adapter_command_component_edit(input_path: String, message: String) -> String {
+  "build --component \{input_path}: \{message}; a command module exports exactly `export fn vibe_command(args: String) -> String` and returns the `vibe-command-result-v1` frame (`command_ok` / `command_result` in @vibe/command)"
 }
 
 fn configure_typing_dependency_env_reuse_policy() -> Unit with Exception + Env {
@@ -2472,6 +2526,13 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // stays in the compiler, serving stays in the runner.
   if Env::get("VIBE_SERVE_COMPONENT") == "1" {
     return adapter_serve_component(input_path, output_path)
+  }
+  // `vibe build --component` (docs/internal/design/component-lazy-dispatch.md).
+  // Immediately after the serve wrap: both produce a component from a library
+  // build, and keeping them adjacent keeps the launcher's derived clear list
+  // for the two identical but for each other.
+  if Env::get("VIBE_BUILD_COMPONENT") == "1" {
+    return adapter_command_component(input_path, output_path)
   }
   let source = Fs::read_file(input_path)
   // ADR-0068 gate for the SINGLE-SOURCE lane. `VIBE_TEST_BACKEND=gc` and

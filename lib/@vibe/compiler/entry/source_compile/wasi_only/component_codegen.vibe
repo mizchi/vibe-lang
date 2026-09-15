@@ -6707,6 +6707,59 @@ fn comp_is_stdin_provider_import_name(name: String) -> Bool {
   name == "stdin_provider_acquire" || name == "stdin_provider_read" || name == "stdin_provider_close"
 }
 
+/// Wrap a compiled core into a COMMAND component -- the artifact
+/// `viberun --commands` dispatches (docs/internal/design/component-lazy-dispatch.md).
+///
+/// The face is chosen from the core's own import section, never from a flag,
+/// so the two callers that build a command component (`vibe build --component`
+/// through the launcher's `VIBE_BUILD_COMPONENT` lane, and the same verb on
+/// the user CLI) cannot disagree about what a given module gets: a core with
+/// no `vibe.*` import takes the strict wrap, which REFUSES one, and a core
+/// that has them takes the TRAPPING vfs wrap, whose four read operations
+/// become component imports and whose every other `vibe.*` import traps.
+///
+/// Trapping, not the permissive vfs wrap vibec uses: that one answers
+/// `env-get` / `fs_write_file` / `fs_write_bytes` / `profile-now-us` with a
+/// benign zero, which is right for a core whose only writer is a cache and
+/// silently wrong for a command, where the write is the point.
+export fn comp_emit_component_wasm_command(core_wasm: Bytes, target_func_name: String, export_name: String) -> Bytes with Exception {
+  let params = ["args"]
+  if comp_core_imports_vibe_host(core_wasm) {
+    comp_emit_component_wasm_string_handler_vfs_trapping(core_wasm, target_func_name, export_name, params)
+  } else {
+    comp_emit_component_wasm_string_handler(core_wasm, target_func_name, export_name, params)
+  }
+}
+
+/// Does a compiled core module reach the HOST at all -- i.e. does it import
+/// anything from the `vibe` module?
+///
+/// `vibe build --component` reads this to choose between the two command
+/// faces: a core with no host imports gets the pure wrap (which REJECTS a
+/// `vibe.*` import, so a command that grew one cannot slip through), and a
+/// core that has them gets the vfs wrap, whose four read operations become
+/// component imports and whose remaining `vibe.*` imports become traps.
+/// Choosing from the core's own import section rather than from a flag is
+/// what keeps the two answers from disagreeing.
+export fn comp_core_imports_vibe_host(core_wasm: Bytes) -> Bool {
+  let modules = array_empty()
+  let names = array_empty()
+  let indices = new_int_array()
+  let sigs = array_empty()
+  let count = parse_core_imports(core_wasm, modules, names, indices, sigs)
+  let mut found = false
+  let mut i = 0
+  while i < count {
+    if Array::get(modules, i) == "vibe" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// #1539 exact parsed-import routing key. A malformed exact provider import
 /// still returns true so the stdin composer, rather than an unrelated wrapper,
 /// produces the actionable signature diagnostic.
@@ -8105,6 +8158,14 @@ export fn comp_emit_component_wasm_string_handler_stubbed(core_wasm: Bytes, targ
 /// each requested `vibe.*` import (see comp_emit_component_wasm_string_handler_stubbed).
 /// With empty inputs it degenerates to the fd_write-only stub.
 fn comp_generate_host_stub_module(vibe_names: Array[String], vibe_sigs: Array[Array[Int]]) -> Bytes {
+  comp_generate_host_stub_module_with_policy(vibe_names, vibe_sigs, true)
+}
+
+/// `zero_stub_benign` picks which of the two answers the four benign-stubbable
+/// names get. See the comment on the branch below: dropping a write is right
+/// for a core whose only writer is a CACHE, and silently wrong for a command
+/// module, where a write is what the user asked for.
+fn comp_generate_host_stub_module_with_policy(vibe_names: Array[String], vibe_sigs: Array[Array[Int]], zero_stub_benign: Bool) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
   let n = Array::length(vibe_names)
@@ -8166,7 +8227,15 @@ fn comp_generate_host_stub_module(vibe_names: Array[String], vibe_sigs: Array[Ar
     // else traps (`unreachable`) — those imports are dynamically dead per
     // the lifted entry's effect row, and trapping (instead of fabricating a
     // value) surfaces any violation of that proof immediately.
-    if sn == "env-get" || sn == "fs_write_file" || sn == "fs_write_bytes" || sn == "profile-now-us" {
+    // `zero_stub_benign` is FALSE for a command component (#2861, Codex
+    // review). The rationale above is the vibec core's: its only writer is the
+    // persistent cache, so a dropped write is a cache miss. A command module's
+    // write is the user's intent, and dropping it made
+    // `Fs::write_file(p, s)` build, dispatch, print its success line and exit
+    // 0 having written nothing -- measured, and the exact silently-wrong
+    // failure this project ranks worst. Under `false` every one of the four
+    // traps like the rest.
+    if zero_stub_benign && (sn == "env-get" || sn == "fs_write_file" || sn == "fs_write_bytes" || sn == "profile-now-us") {
       // Match the import's declared result shape: nothing for void, a typed
       // zero otherwise (i64 for the raw ABI, i32 defensively).
       let sig = Array::get(vibe_sigs, bi)
@@ -9160,6 +9229,22 @@ fn comp_generate_vfs_adapter() -> Bytes {
 }
 
 export fn comp_emit_component_wasm_string_handler_vfs(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
+  comp_emit_string_handler_vfs_impl(core_wasm, target_func_name, export_name, param_names, true)
+}
+
+/// The vfs wrap with EVERY non-read `vibe.*` import trapping -- no benign
+/// zero-stub for `env-get` / the fs write pair / `profile-now-us`.
+///
+/// `vibe build --component` takes this one. The permissive wrap above exists
+/// for the vibec core, whose only writer is the persistent cache, so dropping
+/// a write there is a cache miss. A command module's write is what the caller
+/// asked for: dropped, `Fs::write_file(p, s)` built, dispatched, printed its
+/// own success line and exited 0 having written nothing (#2861, Codex review).
+export fn comp_emit_component_wasm_string_handler_vfs_trapping(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String]) -> Bytes with Exception {
+  comp_emit_string_handler_vfs_impl(core_wasm, target_func_name, export_name, param_names, false)
+}
+
+fn comp_emit_string_handler_vfs_impl(core_wasm: Bytes, target_func_name: String, export_name: String, param_names: Array[String], zero_stub_benign: Bool) -> Bytes with Exception {
   let string_param_count = Array::length(param_names)
   // Validate the target export exists with the packed-string core signature
   // (same contract as comp_emit_string_handler_impl).
@@ -9277,7 +9362,7 @@ export fn comp_emit_component_wasm_string_handler_vfs(core_wasm: Bytes, target_f
   // S3-S8: core modules 0..5.
   emit_core_module_section(buf, core_wasm)
   emit_core_module_section(buf, comp_generate_string_trampoline_packed(string_param_count))
-  emit_core_module_section(buf, comp_generate_host_stub_module(stub_names, stub_sigs))
+  emit_core_module_section(buf, comp_generate_host_stub_module_with_policy(stub_names, stub_sigs, zero_stub_benign))
   emit_core_module_section(buf, comp_generate_vfs_shim())
   emit_core_module_section(buf, comp_generate_vfs_realloc())
   emit_core_module_section(buf, comp_generate_vfs_adapter())
