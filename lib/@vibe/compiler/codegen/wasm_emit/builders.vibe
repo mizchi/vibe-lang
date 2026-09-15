@@ -315,7 +315,19 @@ export fn build_arithmetic_module() -> Bytes {
 
 export fn emit_data_section_multi(out: Bytes, offsets: Array[Int], datas: Array[Bytes]) -> Unit {
   let count = Array::length(offsets)
-  let content = bytebuf_new()
+  // A segment needs at most 13 framing bytes; the vector count needs five.
+  let mut capacity = 5 + count * 13
+  let mut di = 0
+  while di < count {
+    capacity = capacity + Bytes::length(Array::get(datas, di))
+    di = di + 1
+  }
+  let content = if capacity >= 1024 && capacity <= 1073741816 {
+    Bytes::with_capacity(capacity)
+  } else {
+    // Small sections favor the default allocator; oversized ones keep growing.
+    bytebuf_new()
+  }
   bytebuf_push_vec_header(content, count)
   let mut i = 0
   while i < count {
