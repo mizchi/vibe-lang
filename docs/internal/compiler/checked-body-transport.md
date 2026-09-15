@@ -144,7 +144,7 @@ Both measurements now exist, and they do not agree. Parity holds, including
 across edits (below). The cost does not: on the compiler's own closure the
 cache is **+87 % wall and +61 % heap warm**, measured by
 `scripts/checked_module_cache_cost.mjs` and recorded with its counter
-breakdown in [incremental-build.md](incremental-build.md). It removes every
+breakdown in [incremental-build.md](../operations/incremental-build.md). It removes every
 merge-lane parse — `non_walk_parse_operations` goes from 420 to 0 — and still
 loses, because profiled by self time those parses are worth **133 ms** while
 the transport that replaces them costs about sixty times that. The cost is the
@@ -176,7 +176,7 @@ warm, while lowering plus codegen — phase 3's whole territory — is 3.6 s of
 that compile. The transport exceeds the phase it would feed, so the build
 would be slower even if phase 3 were free. Full ladder, profile buckets and
 the two caveats (today's codec; peak-versus-total memory) in
-[incremental-build.md](incremental-build.md).
+[incremental-build.md](../operations/incremental-build.md).
 
 When this cache is enabled, `VIBE_INCREMENTAL_TELEMETRY_OUT` uses schema 5 and
 reports `modules_reused_checked_module_artifact` separately from conservative

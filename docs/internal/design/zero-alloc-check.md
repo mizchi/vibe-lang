@@ -3,7 +3,7 @@
 The linear compiler checks allocation annotations on top-level functions.
 This is implemented behavior, with a conservative source-level analysis; it
 is not a measurement of allocations remaining after machine-code optimization.
-The public syntax is documented in the [cheatsheet](cheatsheet.md).
+The public syntax is documented in the [cheatsheet](../../user/reference/cheatsheet.md).
 
 ## Contract
 

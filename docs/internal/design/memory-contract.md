@@ -59,10 +59,10 @@ helper calls to a fixed point; return normalization precedes recomputation of
 the caller's ownership tables. Pure borrowed accessors retain their existing
 contract unless they are used as callbacks.
 
-[`rc_mixed_return_test.vibe`](../../lib/@vibe/compiler/tests/rc_mixed_return_test.vibe)
+[`rc_mixed_return_test.vibe`](../../../lib/@vibe/compiler/tests/rc_mixed_return_test.vibe)
 checks recursive substitution, branches, aliases, helper calls, early returns
 and reclamation. The compiler-level reproducer is
-[`checker_exhaustive_ownership_test.vibe`](../../lib/@vibe/compiler/tests/checker_exhaustive_ownership_test.vibe).
+[`checker_exhaustive_ownership_test.vibe`](../../../lib/@vibe/compiler/tests/checker_exhaustive_ownership_test.vibe).
 
 ## Compiler execution versus generated program
 
