@@ -60,16 +60,41 @@ someone else's first hour, not about compiler internals:
    (`scripts/ensure_seed.sh`'s rebuild fallback is for the window inside a
    bump, not for a release).
 
-The seven open issues labelled `blocker` (2026-09-11) are compiler-internal:
-per-module synthesis and borrowed-ABI correctness on the incremental lane
-(#2638, #2631, #2633), effect-lowering consolidation (#2500), symbol
-interning (#2387), a memory KPI (#2509) and persisted incremental reuse
-(#1959). They block the 0.2.0 concurrency and formalization work, not the
-first-hour experience above; whether the incremental lane's two P1 bugs are
-in 0.1.0's promise is the owner's call, recorded here so it is made rather
-than assumed.
+### Release work and durable decisions
+
+The [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2) is the
+current release scope; [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
+owns the candidate's final acceptance evidence. Settle before the tag:
+
+- Comparison witness semantics and derived implementations (#2523), including
+  the existing fail-closed restrictions until dispatch is correct.
+- Synchronous capability grants and host/provider ABI (#2828, #1962, #1346).
+  #2828 tracks the newer instantiate-time proposal recorded by #2825; the
+  ADR amendment is in PR #2811, which was still open at the 2026-09-15 audit.
+  A branch decision is not a claim about current production lowering.
+- Package/contract identity formats (#2829), public naming and constructor
+  qualification (#2830), and the ownership surface (#2392).
+- Stable-surface correctness, actionable diagnostics (#2820, #2831, #2199),
+  and bounded quality improvements such as Array reservation (#2554), memo
+  limits (#2521), builtin classification (#2584), and gate reachability (#2592).
+
+The document organization work (#2002, #2565, #2566, #2567) has prepared branch
+changes; it is complete only when those changes are reviewed and merged. Keep
+the public contract and the book current as each release decision lands.
+
+Internal compiler optimization is tracked separately by
+[#2833](https://github.com/mizchi/vibe-lang/issues/2833). The 128 MiB per-unit
+compiler, per-module production prelude, complete TypeEnv nodes, and broader
+body relocation are measured backlog, not implicit prerequisites for 0.1.0.
+Preserve the existing cold/warm selfhost metrics and choose additional CI
+observation according to its cost; do not require a new expensive benchmark
+lane merely to complete this inventory.
 
 ### What 0.2.0 holds
+
+The [0.2.0 milestone](https://github.com/mizchi/vibe-lang/milestone/3) holds all
+remaining async work: #1537, #2064, #2065, #2066, #2221, #2500 and #2832.
+Existing async APIs remain unstable in 0.1.0.
 
 1. **Shared-nothing structured concurrency** — `Task` bound to a generative
    nursery, typed channels, `Send`, cooperative cancellation as the public
