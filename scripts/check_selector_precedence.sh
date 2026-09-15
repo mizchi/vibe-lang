@@ -120,9 +120,21 @@ for t in sorted(set(re.findall(r'selector_clears_before (VIBE_[A-Z_]+)', src))):
 # arm's clear list from it. That embedded order is the thing every arm now
 # trusts, so verify it against the adapter before trusting it here.
 m = re.search(r'VIBE_SELECTOR_ORDER="([^"]*)"', src)
+adapter_names = set(order)
+sets_adapter_selector = any(
+    name in adapter_names
+    for name in re.findall(r'(?<![-\w])(VIBE_[A-Z_]+)=1\b', src)
+)
 if not m:
-    print("[selector-precedence] FAIL: %s has no VIBE_SELECTOR_ORDER" % launcher, file=sys.stderr)
-    sys.exit(1)
+    # Argv dispatch: the launcher no longer selects adapter branches with
+    # VIBE_*=1, so there is no predecessor-clear list to embed. Guest-runner
+    # knobs (VIBE_TRACE_OUT, VIBE_MEM, VIBE_ALLOC_SITE) are not adapter
+    # selectors. Fail only when it still sets an adapter selector.
+    if sets_adapter_selector:
+        print("[selector-precedence] FAIL: %s sets a VIBE_* selector but has no VIBE_SELECTOR_ORDER" % launcher, file=sys.stderr)
+        sys.exit(1)
+    print("[selector-precedence] ok (launcher uses argv dispatch; %d adapter selectors, no env-selector arms)" % len(order))
+    sys.exit(0)
 embedded = m.group(1).split()
 if embedded != order:
     print("[selector-precedence] FAIL: VIBE_SELECTOR_ORDER is out of sync with %s" % adapter, file=sys.stderr)
