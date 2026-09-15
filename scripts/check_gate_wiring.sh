@@ -60,13 +60,12 @@ def listdir(d):
     except OSError:
         return []
 
-# SCOPE, stated so it is a boundary and not an oversight: `scripts/check_*.sh`
-# and `scripts/lint_*.sh`, which is what #2580 defines. The repo also has 27
-# `*_gate.sh` scripts (compiler_gate.sh, minify_gate.sh, the
-# test_*_component_gate.sh family) that this does NOT cover, so an unwired one
-# there is still invisible. Raised by Codex on #2591 and carried to its own
-# issue rather than widened here: several would need investigation or an
-# allowlist row each, which is a different change from installing the check.
+# SCOPE (#2580, widened by #2592): `scripts/check_*.sh`, `scripts/lint_*.sh`,
+# and `scripts/*_gate.sh`. The last family is compiler_gate.sh, minify_gate.sh,
+# and the test_*_component_gate.sh probes. An unwired one there is the same
+# defect as an unwired check_*.sh -- it runs nowhere, which is
+# indistinguishable from passing. Self-tests (`*_test.sh`) stay out of the
+# corpus; they are harnesses, not gates.
 
 # ---- the corpus: EVERY gate script, this one included.
 #
@@ -79,7 +78,8 @@ def listdir(d):
 # it enforces, and it could then go dark exactly like the three that did.
 # So: in the corpus, out of the edge sources (see SKIP_AS_SOURCE below).
 gates = [f for f in listdir("scripts")
-         if re.match(r"^(check|lint)_.*\.sh$", f) and not f.endswith("_test.sh")]
+         if (re.match(r"^(check|lint)_.*\.sh$", f) or f.endswith("_gate.sh"))
+         and not f.endswith("_test.sh")]
 corpus = list(gates)
 
 # EVERY gate self-test is excluded as an edge source, not just this one's
@@ -124,8 +124,11 @@ def strip_comments(text):
 # wrapper certified a wire that does not exist (Codex P1 on #2591). A runner
 # word, optional flags/env/quotes, an optional computed or literal directory,
 # then the basename.
+# `(?<![.\w])sh\b` so the `sh` in `.sh` is not a runner. Without the
+# lookbehind, a name-list line `compiler_gate.sh minify_gate.sh` in
+# check_gate_self_tests.sh certified minify_gate.sh as invoked (#2592).
 SH_INVOKE = re.compile(
-    r"""(?:\bbash\b|\bsh\b|\bsource\b|\bexec\b|(?:^|[;&|(])\s*\.)"""
+    r"""(?:\bbash\b|(?<![.\w])sh\b|\bsource\b|\bexec\b|(?:^|[;&|(])\s*\.)"""
     r"""[^\n;&|]*?([A-Za-z0-9_.-]+\.sh)\b""", re.M)
 
 # ...and a line whose command EMITS text is not running anything. This is what
