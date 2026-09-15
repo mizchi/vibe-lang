@@ -17673,7 +17673,13 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // `==` dispatch below always resolves; structural equality is the
         // sensible default for any struct, and a struct never relied on the old
         // pointer-identity `==` (which was silently always-false).
-        if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) {
+        //
+        // Skip a type the unsafe walk already excluded: a HostStream (or other
+        // unmeasured) field has no comparator, and emitting `T::equals` anyway
+        // calls `HostStream::equals`, which does not exist. Measured on main
+        // after #2592 wired named-hoststreams into wasi-p3-gate:
+        // `struct Holder { s: HostStream }` failed to compile.
+        if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) && !str_array_contains(dtd_eq_unsafe_types, name) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_eq_fn(name, fields, known_types))
         } else {
@@ -17723,8 +17729,10 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
           ()
         }
         // Generate `E::equals` for every enum (same rationale as structs), so
-        // the `==` dispatch resolves enum operands too.
-        if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) {
+        // the `==` dispatch resolves enum operands too. Same skip as structs:
+        // an unmeasured payload must not mint `E::equals` that names a missing
+        // `Payload::equals`.
+        if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) && !str_array_contains(dtd_eq_unsafe_types, ename) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
         } else {

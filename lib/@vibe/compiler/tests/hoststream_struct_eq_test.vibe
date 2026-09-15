@@ -1,0 +1,26 @@
+//# Imports
+
+import @vibe/compiler/entry/compiler {
+  compile_source_wasi
+}
+
+//# Misc
+
+// After #2592 wired named-hoststreams into wasi-p3-gate, CI compiled
+// `struct Holder { s: HostStream }` for the first time. `desugar_derives`
+// emits `T::equals` for every struct; `eq_for_typed` then treats HostStream
+// as an "invisible nominal" and calls `HostStream::equals`, which does not
+// exist. The unsafe-types walk already classifies Holder as not
+// content-comparable; generation has to honour that.
+
+test "a struct with a HostStream field compiles" {
+  let src = "struct Holder { s: HostStream }\nfn main() -> Int { 0 }"
+  let bytes = compile_source_wasi(src, "main")
+  assert(Bytes::length(bytes) > 0)
+}
+
+test "for-in over a HostStream struct field compiles" {
+  let src = "struct Holder { s: HostStream }\nlet run: () -> Int with Async = () -> {\n  let h = Holder::{ s: host_stream_named(\"body\") }\n  let mut sum = 0\n  for b in h.s {\n    sum = sum + b\n  }\n  sum\n}"
+  let bytes = compile_source_wasi(src, "run")
+  assert(Bytes::length(bytes) > 0)
+}
