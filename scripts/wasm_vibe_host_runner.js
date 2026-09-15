@@ -2731,12 +2731,44 @@ async function main() {
         }
       },
       // #2758: the recursive form, which is what `fs_remove` above used to be.
-      // `force: true` keeps a missing path a no-op, so the callers that moved
-      // here from the old `fs_remove` keep working unguarded.
+      // A missing path is a no-op; every other failure propagates.
+      //
+      // THE EXISTENCE TEST IS OURS, not `rmSync`'s `force`. Delegating to force
+      // looks equivalent and is not: WHICH errors it suppresses changed between
+      // Node majors. Measured, same program, one file and `rmSync(file +
+      // "/sub", { recursive: true, force: true })`:
+      //
+      //   node v22.22.2   throws ENOTDIR
+      //   node v24.21.0   succeeds
+      //
+      // CI pins node 24 and this container runs 22, so a gate asserting the two
+      // runners agree passed here and failed there -- the divergence #2758
+      // exists to remove, reappearing as "an accident of which node version ran
+      // it" instead of "which runner" (Codex on #2823).
+      //
+      // So the rule is stated here rather than inherited: lstat, treat ONLY
+      // ENOENT as the no-op, and let everything else through. That is the same
+      // rule `runtime/viberun/src/main.rs` applies via `ErrorKind::NotFound`,
+      // which is what makes the two agree BY CONSTRUCTION on any node.
+      //
+      // lstat, not stat: a symlink is removed as a link, never followed.
       fs_remove_tree(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
+        let st;
         try {
-          fs.rmSync(filePath, { recursive: true, force: true });
+          st = fs.lstatSync(filePath);
+        } catch (e) {
+          if (e.code === "ENOENT") {
+            return 0n;
+          }
+          throwVibeHostError(`fs_remove_tree failed for '${filePath}': ${e.message}`);
+        }
+        try {
+          if (st.isDirectory()) {
+            fs.rmSync(filePath, { recursive: true, force: true });
+          } else {
+            fs.unlinkSync(filePath);
+          }
           return 0n;
         } catch (e) {
           throwVibeHostError(`fs_remove_tree failed for '${filePath}': ${e.message}`);

@@ -131,6 +131,19 @@ emit_probe remove_tree '  Fs::remove_tree("'"$WORK"'/d2")
 #    ENOTDIR and not EACCES on purpose: the probe must not depend on who runs
 #    it. Measured -- as root, `chmod 000` produces no error at all, so an
 #    EACCES probe passes vacuously in any root container, this one included.
+#
+#    This probe then caught a SECOND divergence, from the other side, and it is
+#    the reason `fs_remove_tree` states its own suppression rule instead of
+#    delegating to `rmSync`'s `force`. Measured, same program:
+#
+#      node v22.22.2   rmSync(file + "/sub", {recursive:true, force:true}) throws
+#      node v24.21.0   the same call SUCCEEDS
+#
+#    CI pins node 24; this container runs 22. A gate whose expected value
+#    depends on the node major is the #2252 shape -- green where it was written,
+#    red where it runs -- so both hosts now decide explicitly (ENOENT/NotFound
+#    is the no-op, everything else propagates) and this row holds on either.
+#    Verified by running this gate under both majors.
 emit_probe remove_tree_enotdir '  Fs::remove_tree("'"$WORK"'/f2/sub")
   0'
 
