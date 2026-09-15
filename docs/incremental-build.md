@@ -1715,7 +1715,53 @@ rebuild whose output differs from the cold one fails the KPI outright rather
 than being reported — every ratio above assumes the two builds produced the
 same program, and the run checks it.
 
-This is a measurement, not a gate: it prints numbers and holds no budget.
+### What the run refuses to report (#2836 §2)
+
+Both names in "warm ÷ cold" have to be earned, and until #2836 neither was
+checked: the counters were printed and the timings divided whatever the
+counters said. A cache that stopped reusing would have produced a full table of
+ratios describing the machine — which is exactly the #2825 §3 failure, where
+the body cache replayed nothing for as long as it existed and every published
+number looked healthy.
+
+So the run now **fails** rather than reporting when
+
+- the cold run reused any module, from a cache directory the run created empty
+  (an asymmetrically warmed baseline — the #2393 trap, which turned a +3.5 %
+  regression into a "−31 %/−42 % win"), or
+- the warm rebuild reused nothing of what it planned (no incremental build
+  happened, so there is no KPI to state).
+
+The LEVELS are deliberately not asserted. How much gets skipped is the KPI; a
+KPI with a budget is a gate. `scripts/incremental_kpi_test.sh` makes each
+refusal fire against a mutated copy of the script, and `--corpora small` is
+what makes that affordable (#2248).
+
+### Body-cache publication, watched rather than bounded
+
+The telemetry has no counter for the codegen body cache, so the KPI reads the
+cache directory directly and reports how many artifacts of each kind each run
+left. Measured at `05099ce`:
+
+| corpus | checked-module artifacts | body-cache artifacts |
+|---|---:|---:|
+| small | 0 | 0 |
+| medium | 0 | **1** |
+| selfhost | 0 | 0 |
+
+`checked_module` is 0 by construction (that cache is off on this lane). The two
+body-cache zeroes are [#2825 §6](https://github.com/mizchi/vibe-lang/issues/2825)
+in view: publication needs a replayable harvest, which `linked_compile` writes
+only under `pin_region_capacity >= 0 && !late_dce_rewrote_bodies`, and #2811
+made the compiler decline to publish a harvest nobody could replay rather than
+store one. Which of those two conditions each corpus misses is not established
+by these counts — all three corpora have a real entry — so `medium` publishing
+is the fact to keep in sight, not a rule to derive from it. Reported and not
+asserted for that reason: a threshold here would encode the open bug, and when
+§6 lands these zeroes become nonzero on the run that lands it.
+
+This is a measurement, not a gate: it holds no budget on any number it prints.
+What it refuses is a run that cannot show it measured the thing.
 
 ## User-visible KPI contract
 
@@ -1914,6 +1960,32 @@ publishes. `scripts/checked_module_cache_parity.mjs` runs all of this through
 the real CLI on each gate, and `scripts/checked_module_cache_parity_test.sh`
 mutates the corpus four ways to prove each row can fail.
 
+Each row then plants a stale artifact and requires the run to reject and
+republish it. **The plant is paired BY MODULE** (#2836 §3): the artifact the
+edited tree consults is replaced with the one THAT SAME MODULE published before
+the edit, so the only thing that differs is the source the identity binds. The
+probe used to plant "any earlier artifact whose bytes differ", which in the
+`noop` row necessarily meant a different module's — and a different module's
+artifact is rejected for its embedded `normalize_path(path)`, which a decoder
+that wrongly accepted an earlier source for the RIGHT module would also pass.
+The row claimed the strong property and tested the weak one. The module is
+recovered by reading the identity out of the artifact (`scripts/cache_artifacts.mjs`;
+the cache filename is an opaque hash and cannot answer), and the per-row plant
+counts are exact like every other count in the table:
+
+| Edit to `leaf` | same-module artifacts planted |
+|---|---:|
+| none | 0 — nothing moved, and the probe declines rather than reaching sideways |
+| comment only | 1 (`leaf`) |
+| private body | 1 (`leaf`) |
+| added public export | 2 (`leaf`, `mid`) |
+| signature change breaking `mid` | 1 (`leaf`; `mid` was diagnosed and published nothing) |
+| that signature repaired again | 1 (`leaf`) |
+
+Rejecting a FOREIGN artifact is still covered, by the corpus probe, which
+plants another program's artifact along with a truncated one, a bit-flipped one
+and one written under a different cfg set.
+
 ### What that reuse costs, which is why it is still default-off (2026-09-15)
 
 #1959 makes default-on promotion conditional on "oracle parity and measured
@@ -1938,6 +2010,19 @@ The counters say where the work moved. Warm, unchanged sources, same closure:
 |---|---:|---:|---|---:|
 | `off` | 0 | 420 | conservative fingerprint | 420 |
 | `on` | 3 | 417 | checked-module artifact | 0 |
+
+Since #2836 §2 those counters are also what the measurement **accepts a sample
+on**, not only what it reports. Each run writes an incremental-telemetry
+sidecar, and a sample is refused when the run labelled cold reused anything, or
+when the run labelled warm reused nothing in its own lane's class — including
+`off`, whose reuse class is the conservative fingerprint plus TDRE9 and whose
+warm row is the baseline `on` has to beat. Without that, either mode quietly
+ceasing to publish or consume would leave the protocol comparing cold against
+cold and calling the difference reuse: the #2825 §3 failure reproduced inside
+the tool built to catch it. `scripts/checked_module_cache_cost_test.sh` makes
+each refusal fire — cache directory per temperature, a third run labelled cold,
+the `on` lane running with the cache off — and `--cases closure` is what keeps
+that affordable (#2248).
 
 So the artifact does exactly what it was built to do — it serves the merge
 lane's ASTs, and those 420 re-parses disappear — and the lane is still nearly
