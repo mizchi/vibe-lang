@@ -9,6 +9,7 @@ import readline from "node:readline";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { parseIncrementalTelemetry } from "./edit_cycle_kpi.mjs";
+import { pickStaleArtifact, readModuleArtifacts } from "./cache_artifacts.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const stage2 = process.argv[2] || process.env.VIBE_STAGE2_WASM;
@@ -122,15 +123,7 @@ function equal(expected, actual, label) {
   }
 }
 function moduleFiles(dir) {
-  return fs.readdirSync(dir).map(name => path.join(dir, name)).filter(file => {
-    if (!fs.statSync(file).isFile()) return false;
-    const fd = fs.openSync(file, "r");
-    const prefix = Buffer.alloc(14);
-    const n = fs.readSync(fd, prefix, 0, 14, 0);
-    fs.closeSync(fd);
-    return n === 14 && prefix.subarray(0, 5).toString() === "VART1" &&
-      prefix.subarray(9).equals(Buffer.from([118, 77, 79, 68, 1]));
-  });
+  return readModuleArtifacts(dir).map(entry => entry.file);
 }
 
 // ---------------------------------------------------------------------------
@@ -150,28 +143,36 @@ function moduleFiles(dir) {
 // automatically an improvement here -- it is the invalidation contract
 // changing -- so it should land as a deliberate edit to this table together
 // with the measurement that justifies it.
+//
+// `plants` is the same kind of count for the stale-artifact probe below: how
+// many modules this edit gives a SAME-PATH earlier artifact to plant. It is a
+// function of which modules the edit moved, so it is stated here rather than
+// discovered at run time -- a probe that silently plants nothing is the shape
+// #2836 is about.
 const editCases = [
-  // An untouched tree keeps every artifact.
-  { name: "noop", after: "leaf.vibe", rechecked: 0, reused: 3 },
+  // An untouched tree keeps every artifact -- and so has no earlier artifact
+  // for any module, which is why the probe below must decline rather than
+  // reach for a neighbour's bytes.
+  { name: "noop", after: "leaf.vibe", rechecked: 0, reused: 3, plants: 0 },
   // A comment is not in the leaf's public environment, so the two consumers
   // hold. The leaf itself misses: the input identity binds its verbatim
   // source, which is what keeps `///` docs and source offsets honest.
-  { name: "comment", after: "edits/comment.vibe", rechecked: 1, reused: 2 },
+  { name: "comment", after: "edits/comment.vibe", rechecked: 1, reused: 2, plants: 1 },
   // The same shape for a private body change, whose output legitimately
   // differs from the pre-edit build -- and still equals a cold build of it.
-  { name: "private_body", after: "edits/private_body.vibe", rechecked: 1, reused: 2 },
+  { name: "private_body", after: "edits/private_body.vibe", rechecked: 1, reused: 2, plants: 1 },
   // A new export changes the leaf's public environment, so its direct
   // consumer misses. `entry` imports only `mid_value`, whose own environment
   // did not change, so a public edit does not invalidate the whole closure.
-  { name: "public_additive", after: "edits/public_additive.vibe", rechecked: 2, reused: 1 },
+  { name: "public_additive", after: "edits/public_additive.vibe", rechecked: 2, reused: 1, plants: 2 },
   // The strongest row: the edit makes the consumer ILL-TYPED. A stale
   // consumer artifact would emit a wasm here where a clean build reports an
   // arity mismatch, so "invalidates every affected consumer" is observable as
   // success-versus-diagnostic rather than only as a counter.
-  { name: "public_breaking", after: "edits/public_breaking.vibe", diagnosed: true },
+  { name: "public_breaking", after: "edits/public_breaking.vibe", diagnosed: true, plants: 1 },
   // And the reverse: a cache warmed on a BROKEN tree may not keep the
   // diagnosis alive once the interface is repaired.
-  { name: "repair", before: "edits/public_breaking.vibe", after: "leaf.vibe", rechecked: 3, reused: 0 },
+  { name: "repair", before: "edits/public_breaking.vibe", after: "leaf.vibe", rechecked: 3, reused: 0, plants: 1 },
 ];
 
 function writeProject(dir, leafFile) {
@@ -183,7 +184,7 @@ function writeProject(dir, leafFile) {
 }
 
 async function runEditCases() {
-  let planted = 0;
+  const planted = [];
   for (const editCase of editCases) {
     const name = editCase.name;
     const dir = path.join(work, `edit-${name}`);
@@ -191,7 +192,7 @@ async function runEditCases() {
     writeProject(dir, editCase.before || "leaf.vibe");
     const warm = new Compiler("on", path.join(work, `edit-cache-${name}`));
     await warm.compile(entry, "main", `${name}-warmup`);
-    const stalePool = moduleFiles(warm.cache).map(file => fs.readFileSync(file));
+    const stalePool = readModuleArtifacts(warm.cache);
     writeProject(dir, editCase.after);
     const reused = await warm.compile(entry, "main", `${name}-warm`);
     const counters = warm.counters;
@@ -237,19 +238,29 @@ async function runEditCases() {
       }
       // A stale artifact is the realistic corruption after an edit: same
       // path, same envelope, an earlier source. The corpus probe plants
-      // another PROGRAM's artifact; this plants one this very tree published
-      // a moment ago, which is the shape a torn cache actually takes.
-      const stale = stalePool.find(bytes => !bytes.equals(canonical));
+      // another PROGRAM's artifact; this plants one THIS MODULE published a
+      // moment ago, which is the shape a torn cache actually takes.
+      //
+      // Pairing by module is the whole point (#2836 §3). The identity embeds
+      // `normalize_path(path)`, so a neighbour's artifact is refused for its
+      // PATH -- which a decoder that wrongly accepted an earlier source for
+      // the right module would also pass. Picking "any artifact whose bytes
+      // differ" therefore proved the weaker property while claiming this one.
+      const stale = pickStaleArtifact(canonical, stalePool);
       if (!stale) continue;
-      fs.writeFileSync(consulted, stale);
+      fs.writeFileSync(consulted, stale.bytes);
       warm.stop();
       equal(reused, await warm.compile(entry, "main", `${name}-stale`), `edit ${name} stale artifact`);
       if (!fs.readFileSync(consulted).equals(canonical)) throw new Error(`edit ${name}: stale artifact was not repaired`);
-      planted++;
+      planted.push({ case: name, module: stale.path });
     }
     warm.stop();
+    const plants = planted.filter(entry => entry.case === name).length;
+    if (plants !== editCase.plants) {
+      throw new Error(`edit ${name}: planted ${plants} same-module stale artifact(s), expected ${editCase.plants}`);
+    }
   }
-  if (!planted) throw new Error("no stale artifact was ever planted; the edit probe proved nothing");
+  if (!planted.length) throw new Error("no stale artifact was ever planted; the edit probe proved nothing");
   return { cases: editCases.length, planted };
 }
 
@@ -356,7 +367,11 @@ try {
   const corpusReport = onlyEdits ? {} : await runCorpusCases();
   const edits = await runEditCases();
   const report = { stage2: path.resolve(stage2), stage2_sha256: sha(fs.readFileSync(stage2)),
-    ...corpusReport, edit_cases: edits.cases, edit_stale_artifacts_planted: edits.planted };
+    ...corpusReport, edit_cases: edits.cases,
+    edit_stale_artifacts_planted: edits.planted.length,
+    // WHICH module each plant displaced: the evidence that the probe paired by
+    // module rather than settling for a neighbour's bytes.
+    edit_stale_artifact_modules: edits.planted.map(entry => `${entry.case}:${entry.module}`) };
   fs.writeFileSync(path.join(work, "report.json"), JSON.stringify(report, null, 2));
   console.log(`[checked-module-parity] ok ${JSON.stringify(report)}`);
   console.log(`[checked-module-parity] evidence: ${work}`);

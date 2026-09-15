@@ -932,6 +932,20 @@ not contain the change. A `new Task` whose script probes the compiler needs
 explicitly (`check_rc_default.sh`, `check_cheatsheet_signatures.sh` and
 `check_package_sibling_scope.sh` each take an env override for exactly this).
 
+**A MEASUREMENT has no honest fallback, so it must refuse instead** (#2836 §1).
+`scripts/resolve_stage2.sh` offers two resolvers and they are not
+interchangeable. `resolve_stage2` degrades — HEAD's generation, else the newest
+on disk, else the committed seed — announcing each step on stderr, which is
+right for a check, because a check is usually better run against something than
+not run. `resolve_stage2_strict` takes HEAD's generation or the artifact you
+named, and nothing else: a number is not read with its stderr attached, and
+"wall 0.44 ×" carries no NOTE into the issue thread it gets pasted in. So a
+promotion measurement or a KPI uses the strict one and its task carries
+`deps { selfhostGeneration }` — which is also what turns a missing dep from a
+silent wrong answer into a loud one. `pkf run kpi-incremental` and
+`pkf run measure-checked-module-cache-cost` are the two today, and
+`scripts/resolve_stage2_test.sh` is what proves the refusals fire.
+
 Four related rules, all learned the same way:
 
 - **A perf comparison must control the persistent cache (#2393).** The

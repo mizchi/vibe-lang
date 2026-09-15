@@ -53,4 +53,18 @@ bash "$ROOT_DIR/scripts/reloc_crossbuild_test.sh"
 # artifact across an edit -- reusing one whose dependency changed its public
 # interface is a silently wrong build, so the rows have to be able to fail.
 bash "$ROOT_DIR/scripts/checked_module_cache_parity_test.sh"
+# The two incremental MEASUREMENTS, named here for the same glob reason. They
+# are not checks and hold no budget, but each one now refuses a sample it
+# cannot show is what it is called -- a warm run that reused nothing, a cold
+# run that did not start cold -- and a refusal nobody has made fire is a
+# comment (#2836 §2). Both narrow their corpus so the mutations cost
+# seconds rather than minutes.
+bash "$ROOT_DIR/scripts/checked_module_cache_cost_test.sh"
+bash "$ROOT_DIR/scripts/incremental_kpi_test.sh"
+# And the resolver both of them ask which compiler to measure. Its strict half
+# exists to REFUSE -- a stale generation, an empty artifact, a missing override
+# -- and a resolver that answered anyway would hand every measurement above a
+# compiler that does not contain the change, with nothing in the report saying
+# so (#2836 §1). Cheap: no compiler, synthetic git trees.
+bash "$ROOT_DIR/scripts/resolve_stage2_test.sh"
 echo "[compiler-gate] gate self-tests ok (#2248)"
