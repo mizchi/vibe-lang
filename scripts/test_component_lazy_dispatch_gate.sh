@@ -191,6 +191,9 @@ VIBE
 
   # The flag-combination refusals, recorded the same way.
   : > "$WORK/cmd/refusals.txt"
+  # A `.vibex` can never carry an export, so `--component` on one is refused
+  # at argument parsing rather than deep in compilation.
+  printf 'fn main allows Console {\n  println("42")\n}\n' > "$WORK/cmd/root.vibex"
   for combo in "--component --wit" "--component --minify" "--component --entry x"; do
     # shellcheck disable=SC2086
     launcher build $combo "$WORK/cmd/hello.vibe" >>"$WORK/cmd/refusals.txt" 2>&1 \
@@ -198,6 +201,8 @@ VIBE
   done
   launcher build --definitely-not-a-flag "$WORK/cmd/hello.vibe" >>"$WORK/cmd/refusals.txt" 2>&1 \
     && fail "vibe build accepted an unknown option instead of naming it"
+  launcher build --component "$WORK/cmd/root.vibex" >>"$WORK/cmd/refusals.txt" 2>&1 \
+    && fail "vibe build --component accepted a .vibex"
   true
 
   # The two poison rows. Neither is ever read on a lazy dispatch.
@@ -360,6 +365,10 @@ grep -q -- '--entry is not allowed' "$WORK/cmd/refusals.txt" \
 # same way and every other assertion here still passes.
 grep -q -- 'unknown option: --definitely-not-a-flag' "$WORK/cmd/refusals.txt" \
   || { cat "$WORK/cmd/refusals.txt" >&2; fail "an unknown build option was swallowed instead of named"; }
+# ...and the .vibex refusal names the module kind to write instead, rather than
+# letting the loader complain about exports several layers down.
+grep -q -- '--component needs a .vibe module' "$WORK/cmd/refusals.txt" \
+  || { cat "$WORK/cmd/refusals.txt" >&2; fail "--component on a .vibex was not refused with its own reason"; }
 
 # 13. A module without the command entry is refused at BUILD time, with the
 #     signature to write. The refusal itself was recorded while the fixtures

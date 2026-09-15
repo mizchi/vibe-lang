@@ -753,6 +753,13 @@ export fn parse_build_args(args: Array[String]) -> (String, String, String, Stri
       throw("build: missing <file.vibe>")
     } else if component && mode == "debug" {
       throw("build: --component and --debug cannot be combined; a component wraps one release core module, and a debug build emits the entry plus its linked library files")
+    } else if component && is_vibex_path(input_path) {
+      // A `.vibex` is an executable root with NO export surface (ADR-0075,
+      // #2229: the loader rejects every export in one), so it can never carry
+      // the `export fn vibe_command` a command component is made of. Refused
+      // here rather than deep in compilation, where the message would be about
+      // exports and never mention `--component`.
+      throw("build: --component needs a .vibe module: a .vibex is an executable root with no export surface, and a command component is built from `export fn vibe_command(args: String) -> String`")
     } else {
       // A component has no command entry, so the entry-rooted DCE the `mvp`
       // lane performs has no root and answers "no functions found to
@@ -775,7 +782,8 @@ export fn parse_build_args(args: Array[String]) -> (String, String, String, Stri
       }
       // A component has no command entry: its surface is the lifted export,
       // and the core is compiled as a library so the export survives ADR-0077
-      // stripping. Same sentinel `serve` uses.
+      // stripping. Same sentinel `serve` uses. (`component` implies a `.vibe`
+      // by the refusal above, so the order of these arms carries no meaning.)
       let entry_name = if component {
         "__no_entry__"
       } else if is_vibex_path(input_path) {

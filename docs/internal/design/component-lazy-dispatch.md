@@ -166,6 +166,11 @@ access, or to declare `with Fs` and be handed the strict one.
   a component binary is not the same operation. Refused by name, as are
   `--component --wit` (two different artifacts from one file) and
   `--component --entry` (a component has no command entry).
+- **A `.vibex` input.** A `.vibex` is an executable root with no export surface
+  (ADR-0075, #2229 — the loader rejects every export in one), so it can never
+  carry the `export fn vibe_command` a command component is made of. Refused at
+  argument parsing rather than deep in compilation, where the message would be
+  about exports and never mention `--component`.
 
 Each is additive: a wider wrap, or a `print` import, extends the contract
 without changing the manifest or the frame.
@@ -213,7 +218,9 @@ export fn vibe_command(args: String) -> String {
   command_ok("hello from \{Array::get(argv, 0)}, \{Array::length(argv) - 1} arg(s)\n")
 }
 EOF
-vibe build --component hello.vibe                 # -> hello.component.wasm
+# Without `-o` the artifact goes under .vibe/build/out/ like every other
+# build output (ADR-0111); `-o` keeps this example to one directory.
+vibe build --component hello.vibe -o hello.component.wasm
 printf 'vibe-commands-v1\nhello\thello.component.wasm\n' > commands.tsv
 viberun --commands commands.tsv hello a b c       # -> hello from hello, 3 arg(s)
 

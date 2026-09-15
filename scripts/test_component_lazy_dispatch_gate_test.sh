@@ -20,7 +20,21 @@ unset VIBE_COMPONENT_LAZY_WORK VIBE_COMPONENT_LAZY_COMPILER VIBE_COMPONENT_LAZY_
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GATE="$ROOT/scripts/test_component_lazy_dispatch_gate.sh"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_component_lazy_selftest.XXXXXX")"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+
+# Case 11 edits a TRACKED compiler source in the real checkout, so its
+# restoration belongs in the trap, not on the happy path: an interrupt, a kill,
+# or an early exit anywhere in the expensive nested gate would otherwise leave
+# the developer's tree modified (Codex review of #2861). The trap runs on the
+# normal exit too, so the restore is unconditional rather than duplicated.
+MUTATED_SOURCE=""
+MUTATED_BACKUP=""
+cleanup() {
+  if [ -n "$MUTATED_SOURCE" ] && [ -f "$MUTATED_BACKUP" ]; then
+    cp "$MUTATED_BACKUP" "$MUTATED_SOURCE"
+  fi
+  rm -rf "$TMP_ROOT"
+}
+trap cleanup EXIT INT TERM
 
 MASTER="$TMP_ROOT/master"
 VIBE_COMPONENT_LAZY_WORK="$MASTER" bash "$GATE" --build-only >/dev/null \
@@ -160,7 +174,15 @@ expect_launcher_fail "launcher swallows an unknown flag again" \
   's/        -\*) die "\$cmd: unknown option: \$1" ;;//' \
   'unknown option: $1'
 
-# 11. The compiler-source half of the cache key (Codex P2): a change under
+# 11. The `.vibex` refusal is real: take it out of the launcher and the gate
+#     must notice, rather than letting every such build fail several layers
+#     down with a message about exports.
+expect_launcher_fail "launcher accepts a .vibex for --component" \
+  "was not refused with its own reason" \
+  's/        \*.vibex) die "--component needs a .vibe module.*$//' \
+  '--component needs a .vibe module'
+
+# 12. The compiler-source half of the cache key (Codex P2): a change under
 #     lib/@vibe/compiler must force a rebuild, or a changed emitter is reused
 #     from yesterday's artifacts and the gate is green about code it never ran.
 case_no=$((case_no + 1))
@@ -168,11 +190,13 @@ stamp_before="$(cat "$MASTER/.sources_sha")"
 touch_work="$TMP_ROOT/case$case_no"
 rm -rf "$touch_work"
 cp -R "$MASTER" "$touch_work"
-emitter="$ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe"
-cp "$emitter" "$TMP_ROOT/component_codegen.orig"
-printf '\n// self-test: proves the cache key covers the compiler sources.\n' >> "$emitter"
+MUTATED_SOURCE="$ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe"
+MUTATED_BACKUP="$TMP_ROOT/component_codegen.orig"
+cp "$MUTATED_SOURCE" "$MUTATED_BACKUP"
+printf '\n// self-test: proves the cache key covers the compiler sources.\n' >> "$MUTATED_SOURCE"
 stamp_after="$(VIBE_COMPONENT_LAZY_WORK="$touch_work" bash "$GATE" --build-only >/dev/null 2>&1; cat "$touch_work/.sources_sha")"
-cp "$TMP_ROOT/component_codegen.orig" "$emitter"
+cp "$MUTATED_BACKUP" "$MUTATED_SOURCE"
+MUTATED_SOURCE=""
 if [ "$stamp_before" = "$stamp_after" ]; then
   echo "component-lazy self-test [compiler source in the cache key]: a change under lib/@vibe/compiler left the key unchanged, so the fixtures would be reused" >&2
   exit 1

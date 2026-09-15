@@ -624,15 +624,16 @@ test "selfhost cli build --component honours an explicit -o" {
   assert(component)
 }
 
-test "selfhost cli build --component takes __no_entry__ for a vibex too" {
-  let (_, output_path, entry_name, _, component) = parse_build_args([
-    "build",
-    "--component",
-    "cmd/check.vibex"
-  ])
-  assert(output_path == "cmd/check.component.wasm")
-  assert(entry_name == "__no_entry__")
-  assert(component)
+test "selfhost cli build --component refuses a vibex" {
+  // A .vibex is an executable root with no export surface (ADR-0075 / #2229),
+  // so it can never carry the `export fn vibe_command` a command component is
+  // made of. The refusal names the module kind to write instead.
+  let result = handle {
+    let _ = parse_build_args(["build", "--component", "cmd/check.vibex"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::index_of(result, "--component needs a .vibe module") >= 0)
+  assert(String::index_of(result, "export fn vibe_command(args: String) -> String") >= 0)
 }
 
 test "selfhost cli build refuses --component with --debug" {

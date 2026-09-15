@@ -1432,12 +1432,15 @@ case "$cmd" in
       # vibe-opt optimizes CORE modules; running it over a component binary is
       # a different operation and is not wired.
       [ "$minify" = "0" ] || die "--component and --minify cannot be combined: the minifier takes a core module, not a component"
-      if [ -z "$out" ]; then
-        case "$src" in
-          *.vibex) out="$BUILD_DIR/out/$(basename "${src%.vibex}").component.wasm" ;;
-          *) out="$BUILD_DIR/out/$(basename "${src%.vibe}").component.wasm" ;;
-        esac
-      fi
+      # A `.vibex` is an executable root with NO export surface (ADR-0075,
+      # #2229: the loader rejects every export in one), so it can never carry
+      # the `export fn vibe_command` a command component is made of. Refused
+      # here rather than deep in compilation, where the message would be about
+      # exports and never mention `--component` (Codex review of #2861).
+      case "$src" in
+        *.vibex) die "--component needs a .vibe module: a .vibex is an executable root with no export surface, and a command component is built from \`export fn vibe_command(args: String) -> String\`" ;;
+      esac
+      [ -n "$out" ] || out="$BUILD_DIR/out/$(basename "${src%.vibe}").component.wasm"
       cli="$(pick_cli)"
       mkdir -p "$(dirname "$out")"
       rm -f "$out" "$out.diag"
