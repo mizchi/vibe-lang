@@ -1,0 +1,202 @@
+//# #2584 option 1: classification of a registry builtin is a property of
+//# its row. The four lists the rest of the compiler reads are derived from
+//# those flags. Names that are not registry rows stay in extras tables;
+//# an extra that later gains a row must leave the extras list.
+
+import @vibe/compiler/core {
+  builtin_allocates, builtin_registry_typed, is_borrow_ret_builtin, registry_pure_builtin_names, registry_safe_mut_builtin_names
+}
+
+import @vibe/compiler/lowering/effects/direct {
+  idp_is_pure_builtin_call, idp_pure_builtin_names
+}
+
+import @vibe/compiler/lowering/effects/suspend {
+  scps_safe_mut_builtin_names
+}
+
+fn contains(names: Array[String], name: String) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn registry_has(name: String) -> Bool {
+  let rows = builtin_registry_typed()
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(rows) {
+    let (n, _, _, _, _) = Array::get(rows, i)
+    if n == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+test "Array::get is pure, non-allocating, borrow-returning, not safe-mut" {
+  inspect(contains(registry_pure_builtin_names(), "Array::get"), content = "true")
+  inspect(builtin_allocates("Array::get"), content = "false")
+  inspect(is_borrow_ret_builtin("Array::get"), content = "true")
+  inspect(contains(registry_safe_mut_builtin_names(), "Array::get"), content = "false")
+}
+
+test "Array::push is safe-mut only" {
+  inspect(contains(registry_pure_builtin_names(), "Array::push"), content = "false")
+  inspect(builtin_allocates("Array::push"), content = "true")
+  inspect(is_borrow_ret_builtin("Array::push"), content = "false")
+  inspect(contains(registry_safe_mut_builtin_names(), "Array::push"), content = "true")
+}
+
+test "Array::with_capacity is safe-mut only" {
+  inspect(contains(registry_pure_builtin_names(), "Array::with_capacity"), content = "false")
+  inspect(builtin_allocates("Array::with_capacity"), content = "true")
+  inspect(is_borrow_ret_builtin("Array::with_capacity"), content = "false")
+  inspect(contains(registry_safe_mut_builtin_names(), "Array::with_capacity"), content = "true")
+  inspect(contains(scps_safe_mut_builtin_names(), "Array::with_capacity"), content = "true")
+}
+
+test "a host import is unclassified on the row" {
+  inspect(contains(registry_pure_builtin_names(), "Fs::read_file"), content = "false")
+  inspect(builtin_allocates("Fs::read_file"), content = "true")
+  inspect(is_borrow_ret_builtin("Fs::read_file"), content = "false")
+  inspect(contains(registry_safe_mut_builtin_names(), "Fs::read_file"), content = "false")
+}
+
+test "every registry pure name is on the suspend-class list, and extras are not rows" {
+  let from_row = registry_pure_builtin_names()
+  let full = idp_pure_builtin_names()
+  let mut i = 0
+  while i < Array::length(from_row) {
+    let n = Array::get(from_row, i)
+    if !contains(full, n) {
+      throw("registry pure name '\{n}' is missing from idp_pure_builtin_names")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  let extras = [
+    "String::unicode_length",
+    "String::utf16_length",
+    "String::utf8_length",
+    "String::to_lower",
+    "String::to_upper",
+    "string_char_at",
+    "Int::to_string",
+    "Int::parse",
+    "Double::to_string",
+    "Double::abs",
+    "Double::floor",
+    "Double::ceil",
+    "Double::max",
+    "Double::min",
+    "Double::parse",
+    "Float::to_int",
+    "Float::to_string",
+    "Map::size",
+    "__index",
+    "Future::pending",
+    "Future::ready",
+    "Future::resolve",
+    "host_future_get",
+    "host_future_named",
+    "host_stream_named",
+    "HostStream::next",
+    "HostStream::close"
+  ]
+  i = 0
+  while i < Array::length(extras) {
+    let n = Array::get(extras, i)
+    if registry_has(n) {
+      throw("pure extra '\{n}' is a registry row -- set the row's is_pure flag and drop it from extras")
+    } else if !contains(full, n) {
+      throw("pure extra '\{n}' is missing from idp_pure_builtin_names")
+    } else if !idp_is_pure_builtin_call(n) {
+      throw("pure extra '\{n}' is not accepted by idp_is_pure_builtin_call")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+test "safe-mut extras are not registry rows and stay on the suspend list" {
+  let extras = ["Map::set", "Map::delete", "__set_field", "__index"]
+  let full = scps_safe_mut_builtin_names()
+  let mut i = 0
+  while i < Array::length(extras) {
+    let n = Array::get(extras, i)
+    if registry_has(n) {
+      throw("safe-mut extra '\{n}' is a registry row -- set the row's is_safe_mut flag and drop it from extras")
+    } else if !contains(full, n) {
+      throw("safe-mut extra '\{n}' is missing from scps_safe_mut_builtin_names")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+test "non-allocating extras are not registry rows and do not allocate" {
+  let extras = [
+    "String::unicode_length",
+    "String::utf16_length",
+    "String::utf8_length",
+    "Map::iter_get",
+    "Map::__iter_get_unchecked"
+  ]
+  let mut i = 0
+  while i < Array::length(extras) {
+    let n = Array::get(extras, i)
+    if registry_has(n) {
+      throw("non-allocating extra '\{n}' is a registry row -- set the row's is_non_allocating flag and drop it from extras")
+    } else if builtin_allocates(n) {
+      throw("non-allocating extra '\{n}' is reported as allocating")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+test "borrow-returning extras are not registry rows" {
+  let extras = [
+    "MutList::get",
+    "Map::iter_get",
+    "Map::__iter_get_unchecked",
+    "__index",
+    "__rec_field"
+  ]
+  let mut i = 0
+  while i < Array::length(extras) {
+    let n = Array::get(extras, i)
+    if registry_has(n) {
+      throw("borrow-ret extra '\{n}' is a registry row -- set the row's is_borrow_ret flag and drop it from extras")
+    } else if !is_borrow_ret_builtin(n) {
+      throw("borrow-ret extra '\{n}' is not accepted by is_borrow_ret_builtin")
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+}
+
+test "a caller cannot mutate the derived pure list" {
+  let names = registry_pure_builtin_names()
+  Array::set(names, 0, "user_function")
+  inspect(contains(registry_pure_builtin_names(), "user_function"), content = "false")
+  inspect(idp_is_pure_builtin_call("user_function"), content = "false")
+  inspect(idp_is_pure_builtin_call("String::equals"), content = "true")
+}
