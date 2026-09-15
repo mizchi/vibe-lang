@@ -478,6 +478,23 @@ local checkHostRuntimeContract = new Task {
     "scripts/wasm_vibe_host_runner.js"
   }
 }
+// #2825 step 1 (docs/capability-host-contract.md). ADR-0088's amendment makes
+// `perform?` an instantiate-time branch, so a module declares the ungranted
+// arm's host import and a host has to be able to WITHHOLD a capability: link
+// something of the right type, and trap if it is called. Neither runner could
+// express that -- the node runner answered `0` for any `vibe.*` field it did
+// not implement, which is the silent-wrong end of the design policy.
+local testHostCapabilityWithhold =
+  scriptTask("test-host-capability-withhold", "scripts/host_capability_withhold_test.sh")
+// The probe reads what a host did with a withheld import off a real artifact.
+// Its own unit tests build modules by hand, so a failure is about the probe
+// and not about whatever the compiler emitted that day.
+local testHostCapabilityProbe = new Task {
+  name = "test-host-capability-probe"
+  description = "unit-test the host capability probe: refused vs a silent answer vs a trapping stub"
+  cmd = "node --test scripts/host_capability_probe.test.mjs"
+  cache = false
+}
 local checkVibeFmt = scriptTask("check-vibe-fmt", "scripts/check_vibe_fmt.sh")
 // The `validate Pkl configs` CI job runs `pkf format --check Taskfile.pkl`,
 // and that was the ONLY place it ran: `release-check` checks .vibe formatting
@@ -2366,6 +2383,8 @@ tasks {
   checkSelfhostPortableBoundary
   testSelfhostPortableBoundary
   checkHostRuntimeContract
+  testHostCapabilityWithhold
+  testHostCapabilityProbe
   checkVibeFmt
   checkTaskfileFmt
   checkFixtureExecution
