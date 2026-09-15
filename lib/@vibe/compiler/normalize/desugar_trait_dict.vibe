@@ -14416,18 +14416,20 @@ fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
 /// compiler's CLI closure: the whole-program lane admits none of these, and a
 /// per-module lane admits exactly the ones behind an `opaque` contract
 /// declaration (#2631).
+fn eq_name_is_invisible_nominal(n: String) -> Bool {
+  !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
+}
+
 /// #2851: is `n` a type the COMPILER owns, rather than one some module
 /// declares? That is the difference between a comparator reference the link
-/// can mint and one nothing can ever satisfy.
+/// can mint and one nothing can ever satisfy: `eq_name_is_invisible_nominal`
+/// admits both, and only the declared half has a module that can supply a
+/// body.
 fn eq_name_is_compiler_owned(n: String) -> Bool {
   match compiler_owned_type_arity(n) {
     Some(_) => true,
     None => false
   }
-}
-
-fn eq_name_is_invisible_nominal(n: String) -> Bool {
-  !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
 }
 
 /// #2634: the synthesis REQUESTS a run made -- the container comparators and
@@ -15900,7 +15902,7 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
     // not the other and the two sets looked disjoint. A measurement that
     // covers one arm of a dispatch reports the arm it does not cover as
     // absence.
-    if eq_name_is_invisible_nominal(n) && !str_array_contains(dtd_eq_invisible_nominals, String::concat(n, "[]")) {
+    if eq_name_is_invisible_nominal(n) && !eq_name_is_compiler_owned(n) && !str_array_contains(dtd_eq_invisible_nominals, String::concat(n, "[]")) {
       Array::push(dtd_eq_invisible_nominals, String::concat(n, "[]"))
     } else {
       ()
@@ -15935,7 +15937,21 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
     // formal has no declaration to be invisible TO, so it must not take this
     // arm; recording and emitting have to agree about that or the reference is
     // minted for something the link cannot build either.
-    if eq_name_is_invisible_nominal(n) && Array::length(args) > 0 {
+    if eq_name_is_invisible_nominal(n) && eq_name_is_compiler_owned(n) {
+      // #2851, the `TyApp` twin. The paragraph above records that a marked
+      // FORMAL head applied to arguments emitted `__Vfp_F::equals__N3_Int` --
+      // "a name nothing binds, which reached codegen as an internal compiler
+      // error" -- and that recording and emitting must agree about excluding
+      // it. A head the COMPILER owns is the same case for the same reason: no
+      // module declares `Future`, so no link can mint
+      // `Future::equals__N3_Int`. Measured on `8c966c3`, `struct Holder { s:
+      // Future[Int] }` alone failed to compile with exactly that name.
+      //
+      // `eq_trap()` rather than the raw `==` below, because falling through
+      // would compare the aggregate BY REFERENCE -- the silent answer this
+      // whole area exists to keep out, and worse than the trap.
+      eq_trap()
+    } else if eq_name_is_invisible_nominal(n) && Array::length(args) > 0 {
       let canonical_args = for arg in args {
         eq_expand_alias_ty(arg)
       }
