@@ -64,6 +64,7 @@ import @vibe/compiler/runtime/checked_module_cache {
 import @vibe/compiler/loader {
   collect_source_groups_fs,
   contract_package_hashes_fs,
+  contract_package_hashes_fs_algo,
   fill_require_pins_fs_mode,
   fill_require_pins_lenient,
   find_deps_missing,
@@ -1465,13 +1466,18 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   let output_path = own_host_string(read_arg_or_env(1, "VIBE_OUTPUT"))
   let entry_name = own_host_string(read_arg_or_env(2, "VIBE_ENTRY"))
   let mark_memory = Env::get("VIBE_PROFILE_MEMORY_MARKS") == "1"
-  // #730 (D-2): `vibe hash` — print a contract package's content-addressing
-  // hashes. Input is the package's index.vibei; the output file receives
-  // "package #pkg:sha1:<hex>" and "contract ct:sha1:<hex>" lines. The
-  // package line is copy-pasteable as a require pin.
+  // #730 (D-2) / #2829: `vibe hash` — print a contract package's
+  // content-addressing hashes. New writes are `pkg:b3:<64hex>` /
+  // `ct:b3:<64hex>`. VIBE_HASH_ALGO=sha1 is the legacy-read verifier for
+  // historical pins; it is not the default write path.
   if Env::get("VIBE_HASH") == "1" {
     return handle {
-      let (pkg_hash, ct_hash) = contract_package_hashes_fs(input_path)
+      let algo = Env::get("VIBE_HASH_ALGO")
+      let (pkg_hash, ct_hash) = if algo == "sha1" {
+        contract_package_hashes_fs_algo(input_path, "sha1")
+      } else {
+        contract_package_hashes_fs(input_path)
+      }
       Fs::write_file(output_path, "package #\{pkg_hash}\ncontract \{ct_hash}\n")
       0
     } with { Exception::Throw(msg) => emit_compile_diag(output_path, msg) }

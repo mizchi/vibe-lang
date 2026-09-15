@@ -19,14 +19,14 @@ vibe のパッケージ配布は「**require pin (content hash) が唯一の真�
 ```
 vibe add github:owner/repo[/sub/dir]@<ref>           # .vibe/store + require ... from <source>@<commit>
 vibe add git:<url>@<ref>[#<sub/dir>]
-vibe pkg add <source-spec> [#pkg:sha1:<40hex>]       # $VIBE_HOME/lib, manifest は触らない
+vibe pkg add <source-spec> [#pkg:b3:<64hex>]       # $VIBE_HOME/lib, manifest は触らない
 ```
 
 - **fetch**: `github:` は `https://github.com/owner/repo.git` への sugar。ref は
   git fetch で **commit に解決**され (`FETCH_HEAD`)、shallow を拒否するサーバには
   full fetch で 1 回だけ再試行する
 - **hash はローカル計算**: 取得したソースに対して package hash
-  (`pkg:sha1:` — package 相対 path の merkle) を手元の compiler で計算する。
+  (`pkg:b3:` — package 相対 path の merkle; 歴史的 pin は `pkg:sha1:`) を手元の compiler で計算する。
   transport (GitHub / ミラー / 手渡し) は構造的に信頼対象にならない
 - **expected pin**: 引数で pin を渡すと、**cache/install の副作用が起きる前に**
   照合し、不一致は拒否。pin を渡さない初回は **trust-on-first-use** — hash を
@@ -38,7 +38,7 @@ vibe pkg add <source-spec> [#pkg:sha1:<40hex>]       # $VIBE_HOME/lib, manifest 
   `name@version → hash → source spec → commit` を追記。package hash はソース
   merkle なので、第三者は spec@commit を checkout して hash を再計算するだけで
   再現検証できる (SLSA 系 build provenance の source-only 版)
-- 取得物は `$VIBE_HOME/cache/pkg/sha1/<hex>/` (受動 CAS) に置かれ、
+- 取得物は `$VIBE_HOME/cache/pkg/<algo>/<hex>/` (受動 CAS; 新規は `b3`) に置かれ、
   `$VIBE_HOME/lib/<name>/` (VIBE_LIB デフォルト root, #751) または
   `.vibe/store/<name>/` へ materialize される
 

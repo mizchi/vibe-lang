@@ -83,7 +83,7 @@ $VIBE_HOME/                           default ~/.vibe
                                       sha256 of runner and compiler wasm,
                                       wasmtime version
   lib/@scope/name/                    shared packages from `vibe pkg install`
-  cache/pkg/sha1/<hex>/               content-addressed package store (CAS)
+  cache/pkg/<algo>/<hex>/             content-addressed package store (CAS; algo is b3 on new writes, sha1 for historical entries)
   cache/pkg/{versions,provenance}.tsv
   cache/test/<sha256>.pass            pure-test result cache
   cache/downloads/<tag>/              release assets while `self update` runs
@@ -312,7 +312,7 @@ the source resolved to a commit:
 deps = {
   @acme/json : 1.4.0
 }
-require @acme/json 1.4.0 = #pkg:sha1:<40hex> from github:acme/json@<commit>
+require @acme/json 1.4.0 = #pkg:b3:<64hex> from github:acme/json@<commit>
 ```
 
 Import it by name (`import @acme/json { parse }`) and build as usual. The
