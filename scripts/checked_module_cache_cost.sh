@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Resolve the compiler this checkout actually built before measuring it: a
+# measurement that silently falls back to the committed seed reports numbers
+# for a compiler that does not contain the change (AGENTS.md, "Which compiler
+# answered?").
+set -euo pipefail
+cd "$(dirname "$0")/.."
+. scripts/resolve_stage2.sh
+stage2="$(resolve_stage2 checked-module-cost "${VIBE_STAGE2_WASM:-}")"
+case "$stage2" in
+  bootstrap/seed/*|*/bootstrap/seed/*)
+    echo 'checked-module-cost: build a current stage2 first; the seed cannot measure this change' >&2
+    exit 1 ;;
+esac
+exec node scripts/checked_module_cache_cost.mjs "$stage2" "$@"

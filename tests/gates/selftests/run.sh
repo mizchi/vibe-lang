@@ -47,4 +47,10 @@ bash "$ROOT_DIR/tests/gates/lib_test.sh"
 # The relocation measurement is not a check_* gate, so its synthetic-module
 # regression is explicit here. gate_resolve_stage2 supplies this lane's compiler.
 bash "$ROOT_DIR/scripts/reloc_crossbuild_test.sh"
+# Same reason for the checked-module parity oracle (#1959): `checked_module_*`
+# does not match the `check_*` glob discovery uses, so its companion is named
+# here rather than found. Its rows decide when a module may keep a checked
+# artifact across an edit -- reusing one whose dependency changed its public
+# interface is a silently wrong build, so the rows have to be able to fail.
+bash "$ROOT_DIR/scripts/checked_module_cache_parity_test.sh"
 echo "[compiler-gate] gate self-tests ok (#2248)"

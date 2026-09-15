@@ -137,6 +137,20 @@ parity and compiler-sized cost measurements. The #2510 work still owns caching
 the prelude's derived tables and limiting its execution to edited modules; this
 artifact already supplies its AST and checker-owned lowering inputs.
 
+Both measurements now exist, and they do not agree. Parity holds, including
+across edits (below). The cost does not: on the compiler's own closure the
+cache is **+87 % wall and +61 % heap warm**, measured by
+`scripts/checked_module_cache_cost.mjs` and recorded with its counter
+breakdown in [incremental-build.md](incremental-build.md). It removes every
+merge-lane parse — `non_walk_parse_operations` goes from 420 to 0 — and still
+loses. That is the design working as written rather than a defect to find:
+`commit_checked_module_artifact` retains each module's `parsed_stmts` so
+`parse_program_with_path` can serve the merge from them, so a whole closure's
+ASTs plus their `CheckedProgram`s are live at once, where the conservative
+lane holds a TypeEnv. The cache therefore stays default-off on evidence rather
+than on caution, and what it waits on is a transport consumed one unit at a
+time (#2507, #2510) — not more parity.
+
 When this cache is enabled, `VIBE_INCREMENTAL_TELEMETRY_OUT` uses schema 5 and
 reports `modules_reused_checked_module_artifact` separately from conservative
 fingerprint and TDRE9 hits. The three reuse reasons sum to `modules_reused`.
@@ -174,6 +188,8 @@ checker diagnostics and produce no successful transport.
 nonzero reuse after a meaning-changing private body edit, invalidation on a
 public type edit, diagnostic parity and exact input dimensions. Each execution
 uses a fresh directory so a previous test cannot supply its edited variants.
+It compiles in-process, so what it cannot see is the CLI lane: the env-var
+selector, the persistent cache as files on disk, and the telemetry sidecar.
 
 `pkf run test-checked-module-cache-parity` compares Wasm bytes and complete
 diagnostics for every `fixtures/typecheck/expected.tsv` row with both entry
@@ -182,6 +198,18 @@ canonical repair after deletion, truncation, same-length corruption, a foreign
 source artifact and a cross-typing-mode artifact, in both on and verify modes.
 It requires telemetry to prove that reuse skipped real checker calls, and an
 invalid mode must refuse while clearing stale success telemetry.
+It also compiles the three-module chain in
+`bench/incremental/checked_module_edit` across six edits (#1959) — none,
+comment, private body, added public export, a signature change that breaks the
+consumer, and that change repaired — asserting for each that the warm result
+equals a cold compile of the same tree and that the reuse decision has exactly
+the expected shape. Each edit case then plants an artifact this very tree
+published moments earlier into a slot the edited tree consults, which is the
+shape a torn cache actually takes, and requires rejection and canonical
+repair. `--only-edits` runs just those rows;
+`scripts/checked_module_cache_parity_test.sh` mutates the corpus four ways and
+requires each to be rejected by name, with the unmutated tree as its green
+control, because a row nobody has seen fail is not yet evidence (#2248).
 `--units` additionally checks
 every active file discovered by the unit runner. Pass `VIBE_STAGE2_WASM` to select
 the freshly built compiler; the gate records its SHA-256 and retains evidence.

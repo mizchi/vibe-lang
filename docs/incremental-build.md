@@ -1833,6 +1833,90 @@ checked-body or normalized typed-IR identity with deterministic differential
 coverage and clean-build parity. Multi-SCC persistence and production
 build/codegen/LSP integration remain later milestones.
 
+### Checked-module reuse across an edit, on the BUILD lane (2026-09-15, #1959)
+
+The table above is the check-only lane. The complete checked-module artifact
+(`VIBE_CHECKED_MODULE_CACHE`, `docs/checked-body-transport.md`) is the same
+question asked of `vibe build`, and it answers with a persisted artifact rather
+than a TypeEnv, so it has its own invalidation shape. Measured at
+`084e796` on a three-module chain (`entry` imports `mid`, `mid` imports
+`leaf`), each case editing `leaf` against a cache warmed on the tree before
+the edit:
+
+| Edit to `leaf` | rechecked | reused from artifact | warm output |
+|---|---:|---:|---|
+| none (byte-identical rewrite) | 0 | 3 | = cold |
+| comment only | 1 | 2 | = cold |
+| private body | 1 | 2 | = cold |
+| added public export | 2 | 1 | = cold |
+| signature change breaking `mid` | — | — | = cold, a diagnostic |
+| that signature repaired again | 3 | 0 | = cold |
+
+An owner whose bytes moved at all always misses, because the input identity
+binds its verbatim source — that is what keeps `///` docs and source offsets
+honest, and it is why a comment edit costs exactly what a body edit costs.
+What the two consumers do is the point: a private or non-semantic edit leaves
+the leaf's public environment alone, so both hold, while a new public export
+invalidates the direct consumer and stops there — `entry` imports only
+`mid_value`, whose own environment did not change. **A public edit does not
+invalidate the closure merely for being public.** The last row reuses nothing
+for a different reason: the compile it was warmed on was diagnosed, and a
+diagnosed module publishes no artifact, so there is nothing for `mid` or
+`entry` to have kept.
+
+The last two rows are the ones that can be silently wrong rather than slow. A
+consumer that kept a stale artifact would emit a wasm where a clean build
+reports an arity mismatch, and a cache warmed on a broken tree would keep
+diagnosing one that has been repaired. Both are asserted as
+success-versus-diagnostic, not as a counter.
+
+Every row also requires the warm result to equal a cold compile of the same
+tree at the same paths — bytes, diagnostic and exit status — and requires the
+artifacts the warm run kept to be byte-identical to the ones a clean build
+publishes. `scripts/checked_module_cache_parity.mjs` runs all of this through
+the real CLI on each gate, and `scripts/checked_module_cache_parity_test.sh`
+mutates the corpus four ways to prove each row can fail.
+
+### What that reuse costs, which is why it is still default-off (2026-09-15)
+
+#1959 makes default-on promotion conditional on "oracle parity and measured
+wall/heap benefit". Parity holds. The benefit does not exist yet — measured on
+the compiler's own sources by `scripts/checked_module_cache_cost.mjs`, three
+rounds, one isolated `VIBE_BUILD_CACHE_DIR` per (round, case, lane), medians:
+
+| Case | | wall off → on | heap off → on |
+|---|---|---|---|
+| `lib/@vibe/cli/entry.vibe` (420 modules) | cold | 12.78 s → 18.91 s (+48 %) | 2559 MB → 3364 MB (+31 %) |
+| | warm | 9.47 s → 17.66 s (**+87 %**) | 1957 MB → 3142 MB (**+61 %**) |
+| `codegen_lexer_test.vibe` | cold | 5.09 s → 5.85 s (+15 %) | 963 MB → 1131 MB (+18 %) |
+| | warm | 3.54 s → 4.82 s (+36 %) | 630 MB → 1020 MB (+62 %) |
+
+The warm row is the one that decides promotion, and it is the worse of the
+two: `off` warm is not an empty control but today's default reuse, and the
+artifact lane replaces that path rather than layering on it.
+
+The counters say where the work moved. Warm, unchanged sources, same closure:
+
+| | rechecked | reused | reuse class | non-walk parses |
+|---|---:|---:|---|---:|
+| `off` | 0 | 420 | conservative fingerprint | 420 |
+| `on` | 3 | 417 | checked-module artifact | 0 |
+
+So the artifact does exactly what it was built to do — it serves the merge
+lane's ASTs, and those 420 re-parses disappear — and the lane is still nearly
+twice as slow. Decoding and retaining complete artifacts (parsed AST plus
+`CheckedProgram` plus lowering offsets) costs more than the parse it removes:
+the warm heap difference spread over the 417 reused modules is about 2.8 MB
+each, which is the whole checked module held live rather than a summary of
+it. That is a statement about the artifact's size
+and lifetime, not about whether reuse is correct; the three modules `on`
+rechecks on an unchanged tree are a separate open question.
+
+Promotion therefore waits on a cheaper transport, not on more evidence:
+the per-module pipeline (#2507) and the prelude work (#2510) both want the
+artifact to be consumed by one unit at a time rather than held for the whole
+closure, which is the shape that would make the warm row cheap.
+
 ### Host filesystem ingestion telemetry
 
 The edit-cycle KPI also requests a separate runner-owned sidecar for actual
