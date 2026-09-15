@@ -1634,12 +1634,8 @@ fn run(args: Vec<String>) -> Result<i32> {
                 // other (#2252: a test must not inherit the environment that
                 // decides its answer). Narrow on purpose: every other guest
                 // trap keeps rendering exactly as before.
-                for cause in e.chain() {
-                    let text = cause.to_string();
-                    if text.starts_with(CAPABILITY_WITHHELD_PREFIX) {
-                        eprintln!("viberun: {text}");
-                        break;
-                    }
+                if let Some(refusal) = withheld_capability_refusal(&e) {
+                    eprintln!("viberun: {refusal}");
                 }
                 // #644: a debug-break build (non-empty `linemap`) that traps
                 // mid-run -- not via an explicit `--break` pause -- still
@@ -2017,7 +2013,12 @@ fn bench(args: Vec<String>) -> Result<i32> {
                             Some(ExitTrap(code)) => {
                                 bail!("bench `{block_label}`: exit({code}) during {phase}")
                             }
-                            None => bail!("bench `{block_label}`: trap during {phase}: {e}"),
+                            None => match withheld_capability_refusal(&e) {
+                                Some(refusal) => bail!(
+                                    "bench `{block_label}`: trap during {phase}: {e} ({refusal})"
+                                ),
+                                None => bail!("bench `{block_label}`: trap during {phase}: {e}"),
+                            },
                         },
                     }
                 },
@@ -2049,7 +2050,12 @@ fn bench(args: Vec<String>) -> Result<i32> {
                 Err(e) => match e.downcast_ref::<ExitTrap>() {
                     Some(ExitTrap(0)) => Ok(()),
                     Some(ExitTrap(code)) => bail!("bench `{label}`: exit({code}) during {phase}"),
-                    None => bail!("bench `{label}`: trap during {phase}: {e}"),
+                    None => match withheld_capability_refusal(&e) {
+                                Some(refusal) => bail!(
+                                    "bench `{label}`: trap during {phase}: {e} ({refusal})"
+                                ),
+                                None => bail!("bench `{label}`: trap during {phase}: {e}"),
+                            },
                 },
             }
         },
@@ -4131,9 +4137,26 @@ fn vibe_dbg_line(mut caller: Caller<'_, HostState>, file_id: i32, line: i32) -> 
 // 59 fields the emitter can produce. A name in `VIBE_HOST_WITHHOLD` that this
 // module does not import is a no-op: withholding a capability a program never
 // asked for is not an error.
-/// One spelling, shared by the stub that produces the refusal and the renderer
-/// below that has to find it again in the error chain.
+/// One spelling, shared by the stub that produces the refusal and the callers
+/// below that have to find it again in an error chain.
 const CAPABILITY_WITHHELD_PREFIX: &str = "vibe capability withheld: ";
+
+/// The withheld-capability refusal carried somewhere in this error's chain, if
+/// there is one.
+///
+/// Every caller needs it for the same reason: wasmtime wraps a host function's
+/// error as "error while executing at wasm backtrace: ...", and Display shows
+/// only that outermost message. So a path that renders with `{e}` -- or worse,
+/// `bail!`s a NEW error whose message embeds `{e}` and whose chain is
+/// therefore gone -- loses which capability was withheld, and the diagnostic
+/// stops naming the edit that fixes it (Codex on #2844, P2: the bench path did
+/// exactly that, twice).
+fn withheld_capability_refusal(error: &wasmtime::Error) -> Option<String> {
+    error
+        .chain()
+        .map(|cause| cause.to_string())
+        .find(|text| text.starts_with(CAPABILITY_WITHHELD_PREFIX))
+}
 
 fn withheld_capabilities() -> std::collections::BTreeSet<String> {
     std::env::var("VIBE_HOST_WITHHOLD")
