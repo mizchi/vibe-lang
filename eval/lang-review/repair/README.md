@@ -359,7 +359,7 @@ point still waits on the FS compile lane's snapshot transport, as before.
 
 The accept/reject-and-wording pairs are pinned by
 `lib/@vibe/compiler/tests/handle_eligibility_diagnostic_test.vibe`, and the
-measured table of accepted forms lives in `docs/cheatsheet.md`.
+measured table of accepted forms lives in `docs/user/reference/cheatsheet.md`.
 
 **Until the next bootstrap bump**, `08_handle_ineligible/diag.grep` uses only
 substrings common to the old wording (seed) and the new one (stage2) —

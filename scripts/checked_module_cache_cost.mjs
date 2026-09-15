@@ -68,7 +68,7 @@ const median = values => {
 
 const allCases = [
   // The compiler's own closure through its CLI entry: 219 planned modules,
-  // the workload every incremental claim in docs/incremental-build.md is
+  // the workload every incremental claim in docs/internal/operations/incremental-build.md is
   // ultimately about.
   { name: "cli", input: "lib/@vibe/cli/entry.vibe", entry: "cli_main" },
   // A mid-size single-package closure, so a difference can be attributed to
