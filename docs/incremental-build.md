@@ -1987,9 +1987,57 @@ not already persist in 9 MB. So this cache cannot pay for itself inside the
 checker: the work it saves there is 133 ms of parsing, and no arrangement of
 its contents makes the transport cheaper than that. Its value is precisely
 the payload that makes it expensive today — the checked statements the
-codegen unit would otherwise re-derive. **Promotion should therefore be
-decided together with #2507's phase 3, when something reads that payload, and
-not before.**
+codegen unit would otherwise re-derive. That was where this section stopped,
+with the recommendation to decide promotion together with #2507's phase 3,
+when something reads that payload. **Measured, that does not work either.**
+
+#### Verifying the phase-3 premise (2026-09-15)
+
+Phase 3 of #2507 is "lowering + linear codegen: in one checked module and its
+dependency interfaces, out relocatable bodies". Two measurements decide
+whether handing it the payload could pay, both on the compiler's own closure
+with the codegen body cache ON — which is the honest baseline, because that
+cache (#2388) already replays the bodies phase 3 would produce.
+
+First, how big phase 3 is. A warm compile, body cache on, checked-module cache
+off, profiled by self time (9476 ms total):
+
+| bucket | ms | share |
+|---|---:|---:|
+| lowering / normalize | 1887 | 19.9 % |
+| codegen | 1713 | 18.1 % |
+| `rt` intrinsics | 2168 | 22.9 % |
+| core / types | 1591 | 16.8 % |
+| parser / lexer | 701 | 7.4 % |
+| host / JS | 455 | 4.8 % |
+| **checker** | **0** | **0.0 %** |
+
+The checker row is the first answer: **on a warm compile the conservative lane
+already spends nothing there**, so the checked-module artifact has no front-end
+work left to save, whatever it carries. Phase 3's own territory is lowering
+plus codegen — 38 %, about **3.6 s**.
+
+Second, what a phase-3-usable artifact costs. That is the one that keeps
+`checked_stmts` (the payload phase 3 exists to consume) while dropping the
+redundant parsed AST and fingerprinting the identity — 74 MB, and it passes
+the edit rows:
+
+| configuration (cli closure, warm, body cache on) | wall | heap |
+|---|---:|---:|
+| checked-module off | 9.39 s | 2090 MB |
+| phase-3-usable artifact on | 14.33 s (**+53 %**) | 3074 MB (+47 %) |
+
+**The transport costs +4.94 s; the entire phase it would feed is 3.6 s.** Even
+if phase 3 became free — no lowering, no codegen at all — the build would be
+slower than it is today. So no phase-3 consumer rescues this artifact, and the
+recommendation this section used to end with is withdrawn.
+
+Two things that conclusion does not say. It is measured with **today's codec**,
+and `module_artifact_checksum` alone is 1416 ms of it; fixing that moves +4.94 s
+to roughly +3.5 s, which is at the boundary rather than past it. And it is
+about wall and total heap, not about **peak** memory per unit of work, which is
+what #2494 and #2507 are actually for — a per-unit pipeline can still be right
+for bounding the live set while being worse on both numbers here.
 
 One fix is worth taking on its own account either way:
 `module_artifact_checksum` is a byte-at-a-time loop with two i64 modulos per

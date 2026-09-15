@@ -161,12 +161,19 @@ transport is superlinear in the dependency graph — and 13 % what is read.
 
 Stripping all three lands at 24 MB and **+22 % wall / +31 % heap**, still a
 loss, and an artifact stripped that far carries nothing the conservative lane
-does not persist in 9 MB. That is the useful conclusion: this cache cannot pay
-for itself inside the checker, because the work it saves there is 133 ms of
-parsing. Its value is exactly the payload that makes it expensive — the
-checked statements a codegen unit would otherwise re-derive — so promotion
-belongs with #2507's phase 3, when something reads that payload. The full
-ladder is in [incremental-build.md](incremental-build.md).
+does not persist in 9 MB. So this cache cannot pay for itself inside the
+checker — warm, with the body cache on, the checker is **0.0 %** of the
+profile, because the conservative lane already spends nothing there.
+
+Nor does handing the payload to the per-module codegen unit rescue it, which
+was the obvious next hope and was measured rather than assumed. An artifact
+that keeps `checked_stmts` for #2507's phase 3 while dropping the redundant
+parsed AST and fingerprinting its identity is 74 MB and costs **+4.94 s**
+warm, while lowering plus codegen — phase 3's whole territory — is 3.6 s of
+that compile. The transport exceeds the phase it would feed, so the build
+would be slower even if phase 3 were free. Full ladder, profile buckets and
+the two caveats (today's codec; peak-versus-total memory) in
+[incremental-build.md](incremental-build.md).
 
 When this cache is enabled, `VIBE_INCREMENTAL_TELEMETRY_OUT` uses schema 5 and
 reports `modules_reused_checked_module_artifact` separately from conservative

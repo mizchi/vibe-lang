@@ -42,6 +42,12 @@ const flag = (name, fallback) => {
   return at === -1 ? fallback : argv[at + 1];
 };
 const rounds = Number(flag("--rounds", "3"));
+// The codegen body cache is the OTHER half of a warm build (#2388): it
+// replays bodies this lane never touches. Held at "off" by default so the
+// checked-module lane is measured alone, and varied to ask whether the two
+// caches add up or overlap (#2507 phase 3).
+const bodyCache = flag("--body-cache", "off");
+if (!["off", "on", "verify"].includes(bodyCache)) throw new Error("--body-cache must be off, on or verify");
 if (!Number.isSafeInteger(rounds) || rounds < 1) throw new Error("--rounds must be a positive integer");
 const outDir = resolve(root, flag("--out", join("_build", "checked-module-cost")));
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -70,7 +76,7 @@ Object.assign(env, {
   // Held fixed: the per-file AST cache stands down under this cache (see
   // docs/checked-body-transport.md), so leaving it on would measure that
   // interaction instead of this lane.
-  VIBE_EXPERIMENTAL_AST_CACHE: "0", VIBE_CODEGEN_BODY_CACHE: "off",
+  VIBE_EXPERIMENTAL_AST_CACHE: "0", VIBE_CODEGEN_BODY_CACHE: bodyCache,
   VIBE_WASM_NAMES: "0", VIBE_WASM_MEMORY_STATS: "1",
 });
 
@@ -145,7 +151,7 @@ for (const corpus of cases) {
 }
 
 const report = { schema: "checked_module_cache_cost", version: 1, created_at: new Date().toISOString(),
-  stage2: resolve(stage2), stage2_sha256: hash(readFileSync(stage2)), rounds,
+  stage2: resolve(stage2), stage2_sha256: hash(readFileSync(stage2)), rounds, body_cache: bodyCache,
   node: process.version, platform: process.platform, arch: process.arch,
   cpu: cpus()[0]?.model, host_memory_bytes: totalmem(),
   selectors: Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("VIBE_"))),
