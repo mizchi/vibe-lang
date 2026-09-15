@@ -16,10 +16,20 @@
 # both have to be distinguishable from the withheld stub, or the switch tests
 # nothing.
 #
-# Red case: the same program, run against a copy of the runner with the
-# withhold branch removed. It must SUCCEED and print the file's contents,
-# which is what proves the trap in the green case comes from that branch and
-# not from something else about the run.
+# Both runners are covered, because they failed the same question in opposite
+# directions: the node runner could not refuse, and viberun could not do
+# anything BUT refuse (an import it does not register makes the whole module
+# fail to instantiate, before user code runs).
+#
+# How each one is proven able to fail differs, and the difference is stated
+# rather than papered over:
+#
+#   node    -- the env-var control PLUS a source mutation: the same run against
+#              a copy of the runner with the withhold branch removed must
+#              succeed, which pins the trap to that branch.
+#   viberun -- the env-var control only. Rebuilding the Rust runner per case
+#              costs ~80s, so the counterfactual here is the same binary and
+#              the same wasm with only VIBE_HOST_WITHHOLD differing.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,6 +45,28 @@ unset VIBE_HOST_WITHHOLD VIBE_NODE_EXTRA_FLAGS VIBE_FORCE_RUN_INIT
 # not to the compiler, so the lenient resolver (down to the committed seed) is
 # the right one -- the program below compiles identically on any of them.
 stage2="$(resolve_stage2 host-capability-withhold "${VIBE_STAGE2_WASM:-}")"
+
+# This gate asks the question of BOTH host runners, so one runner cannot answer
+# it -- the same reasoning (and the same remedy lines) as
+# scripts/check_host_remove_parity.sh. `ensure_viberun.sh` is content-hashed,
+# so on a tree whose runner sources have not changed it is a no-op.
+if [ -z "${HOST_CAPABILITY_WITHHOLD_VIBERUN:-}" ]; then
+  if ! bash "$ROOT_DIR/scripts/ensure_viberun.sh" >&2; then
+    echo "host-capability-withhold: FAIL: could not build runtime/viberun." >&2
+    echo "host-capability-withhold: this gate asks BOTH host runners what they do with a withheld capability." >&2
+    echo "host-capability-withhold: build it with: cargo build --release --manifest-path runtime/viberun/Cargo.toml" >&2
+    echo "host-capability-withhold: or point HOST_CAPABILITY_WITHHOLD_VIBERUN at an existing binary." >&2
+    exit 1
+  fi
+fi
+viberun="${HOST_CAPABILITY_WITHHOLD_VIBERUN:-runtime/viberun/target/release/viberun}"
+if [ ! -x "$viberun" ]; then
+  echo "host-capability-withhold: FAIL: the Rust runner is missing at '$viberun'." >&2
+  echo "host-capability-withhold: this gate asks BOTH host runners what they do with a withheld capability." >&2
+  echo "host-capability-withhold: build it with: cargo build --release --manifest-path runtime/viberun/Cargo.toml" >&2
+  echo "host-capability-withhold: or point HOST_CAPABILITY_WITHHOLD_VIBERUN at an existing binary." >&2
+  exit 1
+fi
 
 work="_build/host_capability_withhold"
 mutated="scripts/wasm_vibe_host_runner.withhold.redtest.js"
@@ -140,4 +172,45 @@ grep -q '^read: apple$' "$work/run.out" || {
   exit 1
 }
 
-echo "host-capability-withhold: ok (granted reads; withheld traps by name; red case without the branch reads)"
+# 4. viberun, granted: the same wasm, the other runner, reads the file.
+if ! run_probe "$viberun" "$work/withhold.wasm"; then
+  echo "host-capability-withhold: FAIL viberun's granted run did not succeed" >&2
+  cat "$work/run.out" >&2
+  exit 1
+fi
+grep -q '^read: apple$' "$work/run.out" || {
+  echo "host-capability-withhold: FAIL viberun's granted run did not read the file" >&2
+  cat "$work/run.out" >&2
+  exit 1
+}
+
+# 5. viberun, withheld: instantiates, then traps by name. Same binary and same
+# wasm as case 4 -- only VIBE_HOST_WITHHOLD differs, which is this half's
+# control. viberun renders a host error as an anyhow chain, so the capability
+# is named under `Caused by:` rather than on the first line; assert the text,
+# not its position.
+if run_probe env VIBE_HOST_WITHHOLD=fs_read_file "$viberun" "$work/withhold.wasm"; then
+  echo "host-capability-withhold: FAIL viberun's withheld run succeeded" >&2
+  cat "$work/run.out" >&2
+  exit 1
+fi
+grep -q 'vibe capability withheld: fs_read_file' "$work/run.out" || {
+  echo "host-capability-withhold: FAIL viberun's withheld run did not trap by name" >&2
+  cat "$work/run.out" >&2
+  exit 1
+}
+# The refusal must come from the stub, not from a failure to LINK: an import
+# viberun does not register makes the module fail to instantiate, which is the
+# behaviour this contract replaces. A link failure never reaches a wasm frame.
+grep -q 'wasm backtrace' "$work/run.out" || {
+  echo "host-capability-withhold: FAIL viberun refused before running the program; the stub must link and then trap" >&2
+  cat "$work/run.out" >&2
+  exit 1
+}
+if grep -q '^read: ' "$work/run.out"; then
+  echo "host-capability-withhold: FAIL viberun's withheld capability still answered" >&2
+  cat "$work/run.out" >&2
+  exit 1
+fi
+
+echo "host-capability-withhold: ok (both runners: granted reads, withheld links then traps by name; node red case without the branch reads)"
