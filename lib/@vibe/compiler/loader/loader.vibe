@@ -64,6 +64,7 @@ import @vibe/compiler/contract {
   contract_facade_marker,
   contract_facade_source,
   contract_hash,
+  contract_hash_with,
   contract_surface_lines,
   contract_type_family_decl_positions,
   contract_type_family_defs,
@@ -76,6 +77,8 @@ import @vibe/compiler/contract {
   extract_package_version,
   extract_require_pins,
   package_hash_from_sources,
+  package_hash_from_sources_with,
+  package_id_matches,
   parse_contract_program,
   parse_contract_program_spans,
   replace_generated_hash_directive,
@@ -2478,7 +2481,7 @@ fn desugar_contract_source_fs(path: String, source: String) -> String with Excep
 /// each impl's raw import spelling), so the hash is location-independent —
 /// the same function serves `vibe hash` on a working directory and store
 /// verification of an installed copy.
-export fn contract_package_hashes_fs(path: String) -> (String, String) with Exception + Fs {
+fn collect_package_hash_inputs_fs(path: String) -> (Array[(String, String)], Array[(String, String)], Array[(String, Array[String])], Array[Stmt]) with Exception + Fs {
   validate_index_layout_fs(path)
   let raw = cache_read_source_fs(path)
   let (_, blanked) = extract_require_pins(raw)
@@ -2539,7 +2542,26 @@ export fn contract_package_hashes_fs(path: String) -> (String, String) with Exce
       ri = ri + 1
     }
   }
-  (package_hash_from_sources(sources), contract_hash(decls, opaques, type_defs))
+  (sources, decls, opaques, type_defs)
+}
+
+export fn contract_package_hashes_fs(path: String) -> (String, String) with Exception + Fs {
+  contract_package_hashes_fs_algo(path, "b3")
+}
+
+export fn contract_package_hashes_fs_algo(path: String, algo: String) -> (String, String) with Exception + Fs {
+  let (sources, decls, opaques, type_defs) = collect_package_hash_inputs_fs(path)
+  (package_hash_from_sources_with(algo, sources), contract_hash_with(algo, decls, opaques, type_defs))
+}
+
+fn verify_recorded_package_id_fs(importer: String, name: String, pin_hash: String, index_path: String, copy_kind: String) -> Unit with Exception + Fs {
+  let (sources, _, _, _) = collect_package_hash_inputs_fs(index_path)
+  if package_id_matches(pin_hash, sources) {
+    ()
+  } else {
+    let actual = package_hash_from_sources(sources)
+    throw("pin mismatch for \{name}: \{importer} requires #\{pin_hash} but the \{copy_kind} copy is #\{actual}")
+  }
 }
 
 /// #1145 follow-up 3: computes this package's content hash the same way
@@ -2840,12 +2862,7 @@ fn verify_store_package_fs(importer: String, pins: Array[(String, String, String
   } else {
     throw("package \{name} is not installed in the store (.vibe/store/\{name}/)")
   }
-  let (actual, _) = contract_package_hashes_fs(store_index_path)
-  if actual == pin_hash {
-    ()
-  } else {
-    throw("pin mismatch for \{name}: \{importer} requires #\{pin_hash} but the store copy is #\{actual}")
-  }
+  verify_recorded_package_id_fs(importer, name, pin_hash, store_index_path, "store")
 }
 
 /// #751 (ADR-0065): a `lib/`-resolved package is the dev-mode lane — no
@@ -2880,7 +2897,7 @@ fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)]
   }
   if pin_hash == "" {
     if vibe_env_flag("VIBE_REQUIRE_PINS") {
-      throw("pin required for \{name} (VIBE_REQUIRE_PINS=1): \{importer} resolves it via the dev-mode lib lane; add `require \{name} <version> = #pkg:sha1:<hash>` (ADR-0065)")
+      throw("pin required for \{name} (VIBE_REQUIRE_PINS=1): \{importer} resolves it via the dev-mode lib lane; add `require \{name} <version> = #pkg:b3:<hash>` (or a legacy #pkg:sha1:<hash>)")
     } else if !(Fs::exists(lib_index_path)) {
       // #831: an unpinned lib/VIBE_LIB package reference with no installed
       // copy used to fall through here silently and only fail later, deep
@@ -2891,12 +2908,7 @@ fn verify_lib_package_fs(importer: String, pins: Array[(String, String, String)]
       throw("cannot resolve import \{name}: not found via lib/ or VIBE_LIB (looked for \{lib_index_path})")
     } else ()
   } else {
-    let (actual, _) = contract_package_hashes_fs(lib_index_path)
-    if actual == pin_hash {
-      ()
-    } else {
-      throw("pin mismatch for \{name}: \{importer} requires #\{pin_hash} but the lib/ copy is #\{actual}")
-    }
+    verify_recorded_package_id_fs(importer, name, pin_hash, lib_index_path, "lib/")
   }
 }
 

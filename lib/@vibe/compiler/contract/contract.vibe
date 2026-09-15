@@ -24,7 +24,11 @@ import @vibe/compiler/syntax {
 // #741: consumed through the @vibe/core contract boundary (directory import
 // resolving via index.vibei), replacing the vendored cache/sha1.vibe twin.
 import @vibe/core {
-  array_empty, sha1
+  array_empty
+}
+
+import ./identity.vibe {
+  content_id_matches, emit_content_id, emit_content_id_with, is_package_pin
 }
 
 //# Functions
@@ -2119,8 +2123,8 @@ export fn contract_facade_source(decls: Array[(String, String)], opaque_names: A
 //   Since require/import lines are part of the hashed file contents, pinning
 //   a package hash transitively fixes its dependency choices.
 //
-// Format: `ct:sha1:<40hex>` / `pkg:sha1:<40hex>` (SHA1 per ADR-0004; the
-// scheme prefix leaves room for a stronger digest without ambiguity).
+// Format: `ct:b3:<64hex>` / `pkg:b3:<64hex>` on new writes (ADR-0093).
+// A `sha1` identity still verifies against SHA-1 of the same payload.
 
 /// Normalized lexical comparison behind typed String parameters. The helper
 /// boundary is required for Array::get-sourced operands (#1184).
@@ -2164,12 +2168,20 @@ fn sorted_strings(items: Array[String]) -> Array[String] {
   out
 }
 
-export fn contract_hash(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
+fn contract_hash_payload(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
   let canon = String::join(sorted_strings(contract_surface_lines(fn_decls, opaque_names, type_defs)), "\n")
-  "ct:sha1:\{sha1(String::concat("vibei:v1\n", canon))}"
+  String::concat("vibei:v1\n", canon)
 }
 
-export fn package_hash_from_sources(sources: Array[(String, String)]) -> String {
+export fn contract_hash(fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
+  emit_content_id("ct", contract_hash_payload(fn_decls, opaque_names, type_defs))
+}
+
+export fn contract_hash_with(algo: String, fn_decls: Array[(String, String)], opaque_names: Array[(String, Array[String])], type_defs: Array[Stmt]) -> String {
+  emit_content_id_with("ct", algo, contract_hash_payload(fn_decls, opaque_names, type_defs))
+}
+
+fn package_merkle_payload(sources: Array[(String, String)]) -> String {
   let keys = array_empty()
   let mut i = 0
   while i < Array::length(sources) {
@@ -2197,7 +2209,19 @@ export fn package_hash_from_sources(sources: Array[(String, String)]) -> String 
     }
     ki = ki + 1
   }
-  "pkg:sha1:\{sha1(StringBuilder::freeze(sb))}"
+  StringBuilder::freeze(sb)
+}
+
+export fn package_hash_from_sources(sources: Array[(String, String)]) -> String {
+  package_hash_from_sources_with("b3", sources)
+}
+
+export fn package_hash_from_sources_with(algo: String, sources: Array[(String, String)]) -> String {
+  emit_content_id_with("pkg", algo, package_merkle_payload(sources))
+}
+
+export fn package_id_matches(id: String, sources: Array[(String, String)]) -> Bool {
+  content_id_matches(id, package_merkle_payload(sources))
 }
 
 // ADR-0063 §6 (#730 D-2): `require` pin lines. A directive, not statement
@@ -2464,28 +2488,6 @@ export fn require_line_source_clause(line: String) -> String {
   }
 }
 
-export fn is_package_pin(h: String) -> Bool {
-  if !String::starts_with(h, "#pkg:sha1:") {
-    false
-  } else if String::length(h) != 50 {
-    false
-  } else {
-    let mut i = 10
-    let mut ok = true
-    while i < 50 {
-      let c = String::char_code_at(h, i)
-      let is_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
-      if is_hex {
-        i = i + 1
-      } else {
-        ok = false
-        i = 50
-      }
-    }
-    ok
-  }
-}
-
 fn split_fields(line: String) -> Array[String] {
   let raw = String::split(String::trim(line), " ")
   let out = array_empty()
@@ -2617,7 +2619,7 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       } else ()
       let gh = String::trim(String::substring(trimmed, 17, String::length(trimmed)))
       if (String::length(gh) > 0) && !is_package_pin(gh) {
-        throw("generated_hash must be empty or #pkg:sha1:<40hex>: \{trimmed}")
+        throw("generated_hash must be empty or #pkg:sha1:<40hex> or #pkg:b3:<64hex>: \{trimmed}")
       } else ()
       generated_hash = gh
       seen_hash = true
@@ -2665,10 +2667,10 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
       let has_from = require_fields_have_source(fields)
       let has_pin = nfields == 7 || (nfields == 5 && !has_from)
       if nfields != 3 && nfields != 5 && nfields != 7 {
-        throw("malformed require line (expected: require @scope/name x.y.z [= #pkg:sha1:<40hex>] [from <source-spec>]): \{trimmed}")
+        throw("malformed require line (expected: require @scope/name x.y.z [= #pkg:sha1:<40hex>|#pkg:b3:<64hex>] [from <source-spec>]): \{trimmed}")
       } else ()
       if nfields == 7 && !has_from {
-        throw("malformed require line (expected: require @scope/name x.y.z = #pkg:sha1:<40hex> from <source-spec>): \{trimmed}")
+        throw("malformed require line (expected: require @scope/name x.y.z = #pkg:sha1:<40hex>|#pkg:b3:<64hex> from <source-spec>): \{trimmed}")
       } else ()
       let rname = Array::get(fields, 1)
       let rver = Array::get(fields, 2)
@@ -2690,7 +2692,7 @@ fn scan_package_header(source: String) -> (Array[(String, String, String)], Stri
           throw("malformed require line (missing '='): \{trimmed}")
         }
         if !is_package_pin(pin) {
-          throw("require pin must be #pkg:sha1:<40hex> (compute with `vibe hash`): \{pin}")
+          throw("require pin must be #pkg:sha1:<40hex> or #pkg:b3:<64hex> (compute with `vibe hash`): \{pin}")
         } else ()
         String::substring(pin, 1, String::length(pin))
       } else {

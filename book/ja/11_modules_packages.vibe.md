@@ -128,7 +128,7 @@ pkg/_helper.vibe   export fn private_value() -> Int { 41 }
 宣言部より上のメタデータヘッダに書く `require` 行です:
 
 ```text
-require @vibe/core 0.2.0 = #pkg:sha1:<40hex>
+require @vibe/core 0.2.0 = #pkg:b3:<64hex>
 ```
 
 ビルドのたびにそのハッシュをオフラインで再検査するので、ビルドとビルドの
@@ -147,7 +147,7 @@ vibe add git:https://example.com/u/mono.git@^1.0#packages/@acme/json
 ```
 
 ```text
-require @acme/json 1.4.0 = #pkg:sha1:<40hex> from github:acme/json@<commit>
+require @acme/json 1.4.0 = #pkg:b3:<64hex> from github:acme/json@<commit>
 ```
 
 `index.vpkg` をコミットし、`.vibe/` は無視します。新しい clone では

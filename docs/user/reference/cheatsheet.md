@@ -2969,7 +2969,7 @@ deps = {
   @scope/dep : x.y.z
 }
 
-generated_hash =      // 任意。publish 時に自動挿入 (#pkg:sha1:<40hex>)
+generated_hash =      // 任意。publish 時に自動挿入 (#pkg:b3:<64hex>; 既存の #pkg:sha1:<40hex> は検証のみ)
 ```
 
 `name`/`version`/`description` は規約上必須だが、コンパイラはハード
