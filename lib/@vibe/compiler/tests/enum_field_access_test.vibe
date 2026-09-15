@@ -1,0 +1,97 @@
+// #2807 control lane. The fix refuses a field read whose receiver is an enum,
+// at both spellings an enum reaches the check under (`CtEnum` for a local
+// declaration, `CtNamed` + `TDEnum` for an instantiated generic). The risk of
+// that change is the other direction — refusing a read that is correct — so
+// this file pins the ANSWERS of every adjacent shape, not merely that they
+// compile. The refusals themselves live in
+// `fixtures/typecheck/err_type_{,generic_}enum_field_access*.vibe`, because a
+// program the compiler must reject cannot be a test block here.
+//
+// `.payload` is the spelling the refusal fixtures use, on purpose: it is the
+// field name codegen resolved by spelling, so if the refusal were keyed on the
+// NAME rather than on the receiver's type these would go red.
+
+struct Crate {
+  payload: Int;
+  weight: Int
+}
+
+struct Gbox[T] {
+  payload: T
+}
+
+type Alias = Crate
+
+enum Parcel {
+  Empty;
+  Full(Int)
+}
+
+enum Wrap[T] {
+  Nothing;
+  Just(T)
+}
+
+fn unwrap_parcel(p: Parcel) -> Int {
+  match p {
+    Empty => 0,
+    Full(n) => n
+  }
+}
+
+fn unwrap_wrap(w: Wrap[Int]) -> Int {
+  match w {
+    Nothing => 0,
+    Just(n) => n
+  }
+}
+
+test "2807: a struct field read still answers" {
+  let c = Crate::{ payload: 3, weight: 4 }
+  inspect(c.payload, content = "3")
+  inspect(c.weight, content = "4")
+}
+
+test "2807: an instantiated generic STRUCT field still answers" {
+  // Same checker arm the `TDEnum` refusal was added to (`CtNamed` +
+  // find_typedef). A refusal written one match arm too wide lands here.
+  let g: Gbox[Int] = Gbox::{ payload: 5 }
+  inspect(g.payload, content = "5")
+  let gs: Gbox[String] = Gbox::{ payload: "ok" }
+  inspect(String::length(gs.payload), content = "2")
+}
+
+test "2807: a field read through a type ALIAS still answers" {
+  // An alias is resolved before the field check ever sees it: a type
+  // annotation goes through `resolve_type_expr` at binding, so `Alias` arrives
+  // as `Crate`. That is why the fix needed no `TDAlias` arm, and why an alias
+  // to an ENUM is refused by the `CtEnum` arm naming the underlying enum.
+  // Measured: `type PAlias = Parcel` with `p.payload` reports `match on
+  // Parcel`, and an alias to a struct already refused a foreign field before
+  // this change.
+  let a: Alias = Crate::{ payload: 6, weight: 7 }
+  inspect(a.payload, content = "6")
+}
+
+test "2807: tuple projection still answers" {
+  // The refusal added for #2807 sits in the SAME match as this, on the arm
+  // `parse_tuple_index` reaches when the field is not a numeric index. A
+  // refusal written one arm too wide takes these with it. `.0.1` chains the
+  // in-range branch twice, and the out-of-range message is pinned separately
+  // by `fixtures/typecheck/err_type_tuple_index_out_of_bounds`.
+  let t = (8, 9)
+  inspect(t.0, content = "8")
+  inspect(t.1, content = "9")
+  let nested = ((12, 13), 14)
+  inspect(nested.0.0, content = "12")
+  inspect(nested.0.1, content = "13")
+  inspect(nested.1, content = "14")
+}
+
+test "2807: an enum payload read by MATCHING still answers" {
+  // This is the edit the refusal's message names, so it has to work.
+  inspect(unwrap_parcel(Full(10)), content = "10")
+  inspect(unwrap_parcel(Empty), content = "0")
+  inspect(unwrap_wrap(Just(11)), content = "11")
+  inspect(unwrap_wrap(Nothing), content = "0")
+}

@@ -6669,6 +6669,23 @@ fn check_resume_values(e: Expr, ret_ty: Type, env: TypeEnv, defs: Array[TypeDef]
   }
 }
 
+/// #2807: the edit for a NAMED field read on a tuple. A tuple's slots are
+/// reached positionally, so the message names an index rather than telling the
+/// reader to go find a struct.
+fn tuple_named_field_message(field: String, arity: Int) -> String {
+  String::concat("use a positional index such as `.0`; `.", String::concat(field, String::concat("` is not a tuple index, and a ", String::concat(__to_string(arity), "-tuple has no named fields"))))
+}
+
+/// #2807: the edit for a field read on an ENUM receiver. A variant's payload is
+/// reached by MATCHING, never by naming a field, so the message leads with that
+/// edit rather than with the generic "non-struct value" wording — the two
+/// receivers have different fixes. Shared by both spellings an enum reaches this
+/// check under: the bare `CtEnum(name)` a local declaration binds, and the
+/// `CtNamed(name, args)` an instantiated generic enum (`Wrap[Int]`) resolves to.
+fn enum_field_access_message(enum_name: String, field: String) -> String {
+  String::concat("match on ", String::concat(enum_name, String::concat(" to read a variant's payload; field access `.", String::concat(field, String::concat("` needs a struct, and ", String::concat(enum_name, " is an enum"))))))
+}
+
 fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool) -> (Type, Subst, Int) {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -9723,6 +9740,33 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                     }
                   }
                 },
+                // #2807, second spelling. An INSTANTIATED generic enum resolves
+                // to `CtNamed(name, args)`, not to `CtEnum(name)`, so it never
+                // reaches the non-struct arm below and was tolerated here. The
+                // typedef proves it is an enum, which is as solid a signal as
+                // the bare `CtEnum`. Measured on the pre-fix compiler at
+                // 4905ca8: `enum Wrap[T] { W(T); Empty }` with `struct Box {
+                // payload: Int }` in scope, `let e: Wrap[Int] = W(7)` and
+                // `e.payload` compiled clean and answered `7`.
+                //
+                // Only `TDEnum` is flagged, and an alias needs no arm of its
+                // own: a type annotation is elaborated through
+                // `resolve_type_expr` before it is ever bound, so `type PAlias
+                // = Parcel` with `let p: PAlias` arrives here already resolved
+                // to `CtEnum("Parcel")` and is refused by the arm below.
+                // Measured on the fixed compiler: it reports `match on Parcel`,
+                // naming the enum rather than the alias. The same elaboration
+                // is why an alias to a STRUCT already refused a foreign field
+                // (`unknown field 'foreign' on struct Holder`) before this
+                // change -- that half was never broken.
+                TDEnum(ename, _, _) => {
+                  Array::push(errors, String::concat(enum_field_access_message(ename, field), if field_off >= 0 {
+                    off_marker_len(field_off, String::length(field))
+                  } else {
+                    off_marker(dot_off)
+                  }))
+                  CtUnknown
+                },
                 _ => CtUnknown
               },
               None => CtUnknown
@@ -9741,14 +9785,53 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 }))
                 CtUnknown
               },
-              None => CtUnknown
+              // #2807: a field name that is not a numeric index at all was
+              // tolerated here, and codegen then resolved it by SPELLING
+              // against any struct declaring it. Measured on the pre-fix
+              // compiler at 4905ca8: `struct Crate { payload: Int }` in scope,
+              // `let t = (7, 8)` and `t.payload` compiled clean and answered
+              // `7` — slot 0 of the tuple, read through `Crate`'s offset.
+              //
+              // Only the VALUE position reaches this arm: a method call
+              // `t.f(x)` is `ECall(EDot(t, "f"), args)` and is typed by the
+              // ECall arm, so refusing here cannot take a call with it.
+              None => {
+                Array::push(errors, String::concat(tuple_named_field_message(field, Array::length(elems)), if field_off >= 0 {
+                  off_marker_len(field_off, String::length(field))
+                } else {
+                  off_marker(dot_off)
+                }))
+                CtUnknown
+              }
             },
             // Field access on a concrete NON-struct value (`o.x` where `o :
             // Option[P]`, or a scalar / function) is a type error — only structs
             // (and tuple `.N`) have fields. Type vars / unknown / named scrutinees
             // are tolerated; CtString/CtBytes/CtArray are NOT flagged because `.m`
             // on them parses as a method call elsewhere, not a value-position EDot.
+            //
+            // #2807: `CtEnum` was missing from this list, so an ENUM receiver fell
+            // through to "tolerated" and the read typed as `CtUnknown`. Codegen
+            // then resolved the field by SPELLING against any struct in the
+            // program that declares it, and emitted the load. Measured on main at
+            // 4905ca8, with `struct Box { payload: Int }` in scope,
+            // `let e = B(7); e.payload` compiled clean on both lanes and answered
+            // `7` — the enum's payload read through an unrelated struct's offset.
+            // It is the offset, not the value: a second field `Box { first,
+            // second }` and `e.second` answered `0`, and the declared TYPE is
+            // taken on faith too — `struct Named { label: String }` with
+            // `String::length(e.label)` answered `14`, reading a tagged integer
+            // as a `(ptr|len)` string.
+            //
+            // The same absence is why `vibe check` and the build disagreed even
+            // when no struct claimed the name: `e.no_such_field` was clean here
+            // and died in codegen with an unlocated `unknown struct field`. One
+            // arm closes both halves.
             other => {
+              let enum_receiver = match other {
+                CtEnum(_) => true,
+                _ => false
+              }
               let not_struct = match other {
                 CtInt => true,
                 CtDouble => true,
@@ -9757,10 +9840,19 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 CtUnit => true,
                 CtOption(_) => true,
                 CtFn(_, _, _) => true,
+                CtEnum(_) => true,
                 _ => false
               }
               if not_struct {
-                Array::push(errors, String::concat(String::concat("field access `.", String::concat(field, "` on a non-struct value")), if field_off >= 0 {
+                // The enum case gets its OWN message because its edit is a
+                // different one: a variant payload is reached by matching, not by
+                // naming a field. CLAUDE.md — the diagnostic leads with the edit.
+                let message = if enum_receiver {
+                  enum_field_access_message(type_to_string(other), field)
+                } else {
+                  String::concat("field access `.", String::concat(field, "` on a non-struct value"))
+                }
+                Array::push(errors, String::concat(message, if field_off >= 0 {
                   off_marker_len(field_off, String::length(field))
                 } else {
                   off_marker(dot_off)
