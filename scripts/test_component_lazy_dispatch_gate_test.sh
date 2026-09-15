@@ -15,7 +15,8 @@ set -euo pipefail
 # export project-wide values. Inheriting one would silently point a case at
 # the wrong tree or the wrong compiler, which is how five self-tests in #2252
 # came to be "broken": unset first, set explicitly per case.
-unset VIBE_COMPONENT_LAZY_WORK VIBE_COMPONENT_LAZY_COMPILER VIBE_COMPONENT_LAZY_LAUNCHER
+unset VIBE_COMPONENT_LAZY_WORK VIBE_COMPONENT_LAZY_COMPILER VIBE_COMPONENT_LAZY_LAUNCHER \
+      VIBE_COMPONENT_LAZY_RUNNER
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GATE="$ROOT/scripts/test_component_lazy_dispatch_gate.sh"
@@ -182,30 +183,49 @@ expect_launcher_fail "launcher accepts a .vibex for --component" \
   's/        \*.vibex) die "--component needs a .vibe module.*$//' \
   '--component needs a .vibe module'
 
-# 12. The precompiled-trust boundary is real. A manifest is data, so a
-#     `.cwasm` row must not select native-code loading on its own -- and the
-#     gate has to notice if the runner stops refusing it. The mutation makes
-#     the good component's row a precompiled image, which the gate's default
-#     dispatch must then refuse.
+# 12. The precompiled-trust boundary is real.
+#
+#     The mutation has to reach the runner's ARGUMENT POLICY, not a fixture.
+#     An earlier attempt renamed precompiled bytes onto a component row, which
+#     tripped the header assertion several steps before the trust one -- so it
+#     stayed red whether or not the refusal existed, certifying a boundary it
+#     never reached (Codex review of a5a4156). The runner is a compiled binary,
+#     so the mutation arrives as a shim that always vouches: every `--commands`
+#     invocation gets `--trust-precompiled` whether the gate asked for it or
+#     not. The gate's "no flag must be refused" assertion then has to fire, and
+#     every earlier assertion still runs unchanged.
 case_no=$((case_no + 1))
-aot_work="$TMP_ROOT/case$case_no"
-aot_log="$TMP_ROOT/case$case_no.log"
-rm -rf "$aot_work"
-cp -R "$MASTER" "$aot_work"
-"$ROOT/runtime/viberun/target/release/viberun" --precompile-component \
-  "$aot_work/cmd/hello.component.wasm" -o "$aot_work/cmd/hello.component.wasm.new" >/dev/null 2>&1 \
-  || { echo "component-lazy self-test [precompiled trust boundary]: could not precompile" >&2; exit 1; }
-mv "$aot_work/cmd/hello.component.wasm.new" "$aot_work/cmd/hello.component.wasm"
-# The mutation must have LANDED: a precompiled image is not a component binary,
-# so its header must no longer be the component one.
-if [ "$(od -A n -t x1 -N 8 "$aot_work/cmd/hello.component.wasm" | tr -d ' \n')" = "0061736d0d000100" ]; then
+trust_work="$TMP_ROOT/case$case_no"
+trust_log="$TMP_ROOT/case$case_no.log"
+trust_shim="$TMP_ROOT/viberun-always-trusts"
+rm -rf "$trust_work"
+cp -R "$MASTER" "$trust_work"
+cat > "$trust_shim" <<SHIM
+#!/usr/bin/env bash
+# Inject --trust-precompiled right after --commands; pass everything else
+# through untouched so only the policy under test changes.
+if [ "\${1:-}" = "--commands" ]; then
+  shift
+  exec "$ROOT/runtime/viberun/target/release/viberun" --commands --trust-precompiled "\$@"
+fi
+exec "$ROOT/runtime/viberun/target/release/viberun" "\$@"
+SHIM
+chmod +x "$trust_shim"
+# The mutation must have LANDED: the shim really does vouch where the gate did
+# not ask it to.
+if ! grep -q -- '--trust-precompiled' "$trust_shim"; then
   echo "component-lazy self-test [precompiled trust boundary]: the mutation did not apply" >&2
   exit 1
 fi
-if VIBE_COMPONENT_LAZY_WORK="$aot_work" bash "$GATE" >"$aot_log" 2>&1; then
-  echo "component-lazy self-test [precompiled trust boundary]: the gate PASSED with a precompiled image where a component belongs" >&2
+if VIBE_COMPONENT_LAZY_WORK="$trust_work" VIBE_COMPONENT_LAZY_RUNNER="$trust_shim" \
+   bash "$GATE" >"$trust_log" 2>&1; then
+  echo "component-lazy self-test [precompiled trust boundary]: the gate PASSED while every dispatch vouched for precompiled images" >&2
   exit 1
 fi
+# ...and red at the TRUST assertion, not at some earlier one it happened to
+# disturb. That distinction is the whole point of this case.
+grep -q 'selected a precompiled image with no --trust-precompiled' "$trust_log" \
+  || { cat "$trust_log" >&2; echo "component-lazy self-test [precompiled trust boundary]: red, but not at the trust assertion" >&2; exit 1; }
 echo "component-lazy self-test [precompiled trust boundary]: red as expected"
 
 # 13. The compiler-source half of the cache key (Codex P2): a change under

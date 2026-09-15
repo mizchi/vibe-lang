@@ -65,7 +65,11 @@ launcher() {
     bash "$LAUNCHER" "$@"
 }
 
-RUNNER="$ROOT_DIR/runtime/viberun/target/release/viberun"
+# VIBE_COMPONENT_LAZY_RUNNER, like the launcher override below, exists for the
+# self-test alone: the runner is a compiled binary, so the one mutation that
+# reaches its argument POLICY (an invocation that always vouches for
+# precompiled images) has to arrive as a shim in front of it.
+RUNNER="${VIBE_COMPONENT_LAZY_RUNNER:-$ROOT_DIR/runtime/viberun/target/release/viberun}"
 bash "$ROOT_DIR/scripts/ensure_viberun.sh" >/dev/null || fail "could not build runtime/viberun"
 [ -x "$RUNNER" ] || fail "no runner at $RUNNER"
 [ -f "$COMPILER" ] || fail "compiler wasm not found: $COMPILER"
@@ -97,6 +101,7 @@ sources_hash() {
     find lib -type f \( -name '*.vibe' -o -name '*.vibex' -o -name '*.vpkg' \) 2>/dev/null \
       | LC_ALL=C sort | while IFS= read -r f; do printf '%s ' "$f"; hash_stdin < "$f"; done
     printf '%s ' "launcher"; hash_stdin < "$LAUNCHER"
+    printf '%s ' "runner"; hash_stdin < "$RUNNER"
     printf '%s ' "gate"; hash_stdin < "$ROOT_DIR/scripts/test_component_lazy_dispatch_gate.sh"
   } | hash_stdin
 }
