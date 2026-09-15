@@ -1,0 +1,35 @@
+import @vibe/compiler/checker {
+  check_program
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn check_ok(source: String) -> Bool {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    true
+  } with { Exception::Throw(_) => false }
+}
+
+test "capacity requires exactly one Int argument" {
+  for call in [
+    "Array::with_capacity()",
+    "Array::with_capacity(1, 2)",
+    "Array::with_capacity(true)",
+    "Array::with_capacity(\"4\")"
+  ] {
+    assert(!check_ok("fn main() -> Unit { let xs: Array[Int] = " + call + "; () }"))
+  }
+  assert(check_ok("fn main() -> Unit { let xs: Array[Int] = Array::with_capacity(4); Array::push(xs, 1) }"))
+}
+
+test "each reserved array has one consistent element type" {
+  assert(check_ok("fn main() -> Unit { let xs = Array::with_capacity(4); Array::push(xs, 1); let ys = Array::with_capacity(4); Array::push(ys, \"a\") }"))
+  assert(!check_ok("fn main() -> Unit { let xs = Array::with_capacity(4); Array::push(xs, 1); Array::push(xs, \"a\") }"))
+  assert(!check_ok("fn main() -> Unit { let xs = Array::with_capacity(4); let a: Array[Int] = xs; let b: Array[String] = xs; () }"))
+}
+
+test "generic factories produce fresh arrays at each instantiation" {
+  assert(check_ok("fn reserve[T](n: Int) -> Array[T] { Array::with_capacity(n) } fn main() -> Unit { let xs: Array[Int] = reserve(4); let ys: Array[String] = reserve(4); () }"))
+}

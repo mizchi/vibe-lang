@@ -200,6 +200,33 @@ hold.
 Anti-patterns:
 - `Ref[T]` — historically abandoned (ADR-0017), use the table above
 
+### Reserving Array storage
+
+`Array::with_capacity(n)` creates an empty mutable `Array[T]` with room for at
+least `n` elements. It works on linear bump, RC, and GC. The current minimum is
+two slots; reservation does not initialize elements or change the length.
+The first `n` pushes require no buffer growth. Further pushes grow normally,
+and aliases observe every push and truncation.
+
+```vibe
+fn reserved_values() -> Array[Int] {
+  let xs = Array::with_capacity(128)
+  Array::push(xs, 42)
+  xs
+}
+```
+
+The capacity expression is evaluated once and must be an `Int`. Negative
+values and values above 536,870,908 trap before narrowing to wasm32; an
+allocation must also fit available linear memory. Each array has one element
+type, inferred from its uses or an annotation, just like `[]`.
+
+`Array::truncate(xs, n)` retains the allocated capacity for subsequent pushes.
+It currently does not release the removed elements' RC references: saved
+element views can still refer to them. Capacity reservation preserves that
+existing lifetime behavior; repeated truncation of owned elements is not yet
+a bounded-memory scratch-buffer contract.
+
 ### Collection naming convention (#1140, ADR-0082 → ADR-0100 (3))
 
 The bare name / prefix a collection type carries tells you its mutability

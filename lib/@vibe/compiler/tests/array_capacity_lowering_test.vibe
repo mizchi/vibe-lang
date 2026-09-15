@@ -1,0 +1,125 @@
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_gc, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+import @vibex/wasm_parser {
+  find_section
+}
+
+// Move the generated module's initial heap pointer to wasm32's end without
+// allocating gigabytes. Preserve the initializer's encoded width so offsets
+// and all other sections are untouched.
+fn capacity_near_memory_end(wasm: Bytes) -> Unit {
+  let (start, _) = find_section(wasm, 6)
+  assert(start > 0)
+  let mut pos = start
+  while Bytes::get(wasm, pos) >= 128 {
+    pos = pos + 1
+  }
+  pos = pos + 1
+  assert(Bytes::get(wasm, pos) == 127)
+  assert(Bytes::get(wasm, pos + 1) == 1)
+  assert(Bytes::get(wasm, pos + 2) == 65)
+  pos = pos + 3
+  let mut end = pos
+  while Bytes::get(wasm, end) >= 128 {
+    end = end + 1
+  }
+  Bytes::set(wasm, pos, if pos == end {
+    64
+  } else {
+    192
+  })
+  pos = pos + 1
+  while pos <= end {
+    Bytes::set(wasm, pos, if pos == end {
+      127
+    } else {
+      255
+    })
+    pos = pos + 1
+  }
+}
+
+fn run_capacity_probe(source: String, name: String, expected: String, wrap: Bool, rejects: Bool) -> Unit with Exception + Fs + Process {
+  let modules = [
+    compile_wasi(source, "main"),
+    compile_wasi_rc(source, "main"),
+    compile_wasi_rc_shadow(source, "main")
+  ]
+  // GC's frontier is measured from the host in the test below: this backend
+  // has neither Profiler::heap_bytes nor inline wasm.
+  if !String::contains(source, "Profiler::heap_bytes") {
+    Array::push(modules, compile_wasi_gc(source, "main"))
+  }
+  let mut i = 0
+  for wasm in modules {
+    let path = "/tmp/_array_capacity_" + name + "_" + Int::to_string(i) + ".wasm"
+    if wrap {
+      capacity_near_memory_end(wasm)
+    } else {
+      ()
+    }
+    Fs::write_bytes(path, wasm)
+    let command = "wasmtime run -W exceptions=y -W gc=y --invoke main " + path + " 0"
+    if rejects {
+      let output = sh_lines(command + " 2>&1 || true")
+      let message = String::join(output, "\n")
+      assert(String::contains(message, expected))
+      assert(String::contains(message, "unreachable"))
+    } else {
+      let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+      assert(String::join(output, "") == expected)
+    }
+    i = i + 1
+  }
+  ()
+}
+
+test "capacity rejects negative and wide arguments before narrowing" {
+  for arg in ["-1", "536870909", "1 << 40", "0 - (1 << 40)"] {
+    run_capacity_probe("export fn main() -> Int { Array::length(Array::with_capacity(" + arg + ")) }", "bounds", "Array::with_capacity: use a capacity between 0 and 536870908", false, true)
+  }
+}
+
+test "capacity prevents the heap pointer from wrapping" {
+  let source = "export fn main() -> Int { Array::length(Array::with_capacity(128)) }"
+  run_capacity_probe(source, "wrap", "unreachable", true, true)
+}
+
+test "reserved slots do not grow while filling or after truncation" {
+  let source = "export fn main() -> Int allows Profiler { let before = Profiler::heap_bytes(); let xs: Array[Int] = Array::with_capacity(4096); let allocated = Profiler::heap_bytes() - before; let start = Profiler::heap_bytes(); let mut i = 0; while i < 4096 { Array::push(xs, i); i = i + 1 }; Array::truncate(xs, 0); i = 0; while i < 4096 { Array::push(xs, i); i = i + 1 }; let grown = Profiler::heap_bytes() - start; (if allocated >= 32780 && allocated <= 32800 { 10000 } else { 0 }) + Array::length(xs) + grown * 1000000 }"
+  run_capacity_probe(source, "allocation", "14096", false, false)
+}
+
+test "RC releases and reuses the reserved block and its live children" {
+  let source = "fn fill() -> Int { let xs = Array::with_capacity(32); let mut i = 0; while i < 32 { Array::push(xs, [i, i + 1]); i = i + 1 }; Array::length(Array::get(xs, 0)) }\nexport fn main() -> Int allows Profiler { let warm = fill(); let before = Profiler::heap_bytes(); let mut total = 0; let mut i = 0; while i < 200 { total = total + fill(); i = i + 1 }; total + (Profiler::heap_bytes() - before) * 1000000 }"
+  let wasm = compile_wasi_rc_shadow(source, "main")
+  let path = "/tmp/_array_capacity_rc_reuse.wasm"
+  Fs::write_bytes(path, wasm)
+  let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+  inspect(String::join(output, ""), content = "400")
+}
+
+test "GC reservation avoids growth through fill truncate and refill" {
+  for n in [0, 4096, 4097] {
+    let source = "export fn main() -> Int { let n = " + Int::to_string(n) + "; let xs: Array[Int] = Array::with_capacity(4096); let mut i = 0; while i < n { Array::push(xs, i); i = i + 1 }; Array::truncate(xs, 0); i = 0; while i < n { Array::push(xs, i); i = i + 1 }; Array::length(xs) }"
+    let path = "/tmp/_array_capacity_gc_" + Int::to_string(n) + ".wasm"
+    Fs::write_bytes(path, compile_wasi_gc(source, "main"))
+  }
+  let output = sh_lines("node lib/@vibe/compiler/tests/array_capacity_gc_probe.mjs /tmp/_array_capacity_gc_")
+  inspect(String::join(output, ""), content = "ok")
+}
+
+test "a saved element survives truncation of its source array" {
+  let source = "export fn main() -> Int { let xs = Array::with_capacity(4); Array::push(xs, [11, 12]); let saved = Array::get(xs, 0); Array::truncate(xs, 0); Array::push(xs, [91, 92]); Array::get(saved, 1) }"
+  run_capacity_probe(source, "saved", "12", false, false)
+}
+
+test "truncate borrows its array without leaking an extra retain" {
+  let source = "fn fill() -> Int { let xs = Array::with_capacity(32); Array::push(xs, 1); Array::truncate(xs, 0); Array::push(xs, 2); Array::length(xs) }\nexport fn main() -> Int allows Profiler { let warm = fill(); let before = Profiler::heap_bytes(); let mut total = 0; let mut i = 0; while i < 200 { total = total + fill(); i = i + 1 }; total + (Profiler::heap_bytes() - before) * 1000000 }"
+  let path = "/tmp/_array_capacity_truncate_reuse.wasm"
+  Fs::write_bytes(path, compile_wasi_rc_shadow(source, "main"))
+  let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+  inspect(String::join(output, ""), content = "200")
+}
