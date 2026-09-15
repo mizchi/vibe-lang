@@ -33,6 +33,7 @@ import @vibe/compiler/core {
   builtin_iterator_namespace_from_marker,
   builtin_iterator_namespace_markers,
   builtin_iterator_serialized_boundary_markers,
+  compiler_owned_type_arity,
   expr_child_at,
   expr_children,
   expr_children_pop,
@@ -14416,7 +14417,15 @@ fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
 /// per-module lane admits exactly the ones behind an `opaque` contract
 /// declaration (#2631).
 fn eq_name_is_invisible_nominal(n: String) -> Bool {
-  !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
+  // Compiler-owned opaques (`HostStream`, `Task`, `MutBytes`, ...) are not
+  // declared structs in some other module. Treating them as invisible
+  // nominals minted `HostStream::equals`, which does not exist -- measured
+  // after #2592 wired named-hoststreams into wasi-p3-gate. They fall through
+  // to raw `==` (identity), the same as any other unmeasured head.
+  match compiler_owned_type_arity(n) {
+    Some(_) => false,
+    None => !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
+  }
 }
 
 /// #2634: the synthesis REQUESTS a run made -- the container comparators and
@@ -17673,13 +17682,7 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // `==` dispatch below always resolves; structural equality is the
         // sensible default for any struct, and a struct never relied on the old
         // pointer-identity `==` (which was silently always-false).
-        //
-        // Skip a type the unsafe walk already excluded: a HostStream (or other
-        // unmeasured) field has no comparator, and emitting `T::equals` anyway
-        // calls `HostStream::equals`, which does not exist. Measured on main
-        // after #2592 wired named-hoststreams into wasi-p3-gate:
-        // `struct Holder { s: HostStream }` failed to compile.
-        if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) && !str_array_contains(dtd_eq_unsafe_types, name) {
+        if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_eq_fn(name, fields, known_types))
         } else {
@@ -17729,10 +17732,8 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
           ()
         }
         // Generate `E::equals` for every enum (same rationale as structs), so
-        // the `==` dispatch resolves enum operands too. Same skip as structs:
-        // an unmeasured payload must not mint `E::equals` that names a missing
-        // `Payload::equals`.
-        if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) && !str_array_contains(dtd_eq_unsafe_types, ename) {
+        // the `==` dispatch resolves enum operands too.
+        if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) {
           dtd_fresh_reset_for_decl()
           Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
         } else {
