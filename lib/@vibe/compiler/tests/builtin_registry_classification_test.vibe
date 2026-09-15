@@ -4,7 +4,12 @@
 //# an extra that later gains a row must leave the extras list.
 
 import @vibe/compiler/core {
-  builtin_allocates, builtin_registry_typed, is_borrow_ret_builtin, registry_pure_builtin_names, registry_safe_mut_builtin_names
+  borrow_ret_builtin_names,
+  builtin_allocates,
+  builtin_registry_typed,
+  is_borrow_ret_builtin,
+  registry_pure_builtin_names,
+  registry_safe_mut_builtin_names
 }
 
 import @vibe/compiler/lowering/effects/direct {
@@ -49,6 +54,7 @@ test "Array::get is pure, non-allocating, borrow-returning, not safe-mut" {
   inspect(contains(registry_pure_builtin_names(), "Array::get"), content = "true")
   inspect(builtin_allocates("Array::get"), content = "false")
   inspect(is_borrow_ret_builtin("Array::get"), content = "true")
+  inspect(contains(borrow_ret_builtin_names(), "Array::get"), content = "true")
   inspect(contains(registry_safe_mut_builtin_names(), "Array::get"), content = "false")
 }
 
@@ -179,6 +185,7 @@ test "borrow-returning extras are not registry rows" {
     "__index",
     "__rec_field"
   ]
+  let names = borrow_ret_builtin_names()
   let mut i = 0
   while i < Array::length(extras) {
     let n = Array::get(extras, i)
@@ -186,6 +193,8 @@ test "borrow-returning extras are not registry rows" {
       throw("borrow-ret extra '\{n}' is a registry row -- set the row's is_borrow_ret flag and drop it from extras")
     } else if !is_borrow_ret_builtin(n) {
       throw("borrow-ret extra '\{n}' is not accepted by is_borrow_ret_builtin")
+    } else if !contains(names, n) {
+      throw("borrow-ret extra '\{n}' is missing from borrow_ret_builtin_names")
     } else {
       ()
     }
@@ -199,4 +208,13 @@ test "a caller cannot mutate the derived pure list" {
   inspect(contains(registry_pure_builtin_names(), "user_function"), content = "false")
   inspect(idp_is_pure_builtin_call("user_function"), content = "false")
   inspect(idp_is_pure_builtin_call("String::equals"), content = "true")
+}
+
+test "a caller cannot mutate the derived borrow-ret list" {
+  let names = borrow_ret_builtin_names()
+  Array::set(names, 0, "user_function")
+  inspect(contains(borrow_ret_builtin_names(), "user_function"), content = "false")
+  inspect(is_borrow_ret_builtin("user_function"), content = "false")
+  inspect(is_borrow_ret_builtin("Array::get"), content = "true")
+  inspect(is_borrow_ret_builtin("MutList::get"), content = "true")
 }

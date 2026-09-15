@@ -947,27 +947,29 @@ export fn builtin_allocates(name: String) -> Bool {
 
 /// Classification columns of the named registry row, or all-false when the
 /// name is not a row. (pure, non_allocating, borrow_ret, safe_mut).
-fn registry_class_of(name: String) -> (Bool, Bool, Bool, Bool) {
-  let mut i = 0
-  let mut found = false
-  let mut p = false
-  let mut a = false
-  let mut b = false
-  let mut s = false
-  while i < Array::length(registry_typed_rows) && !found {
-    let (n, _, _, _, _, rp, ra, rb, rs) = Array::get(registry_typed_rows, i)
-    if n == name {
-      found = true
-      p = rp
-      a = ra
-      b = rb
-      s = rs
-    } else {
-      ()
-    }
-    i = i + 1
+///
+/// Indexed the same way as `lookup_registry_builtin` (#2386). Walking
+/// every registry row per query would undo that index:
+/// `builtin_allocates` is asked per call site. Invisible rows still
+/// classify -- `vibe_rc_drop` is checker-invisible and non-allocating.
+fn registry_first_row(name: String) -> Int {
+  registry_typed_index()
+  let slot = bsearch_leftmost(registry_typed_sorted, name)
+  if slot >= 0 && slot < Array::length(registry_typed_sorted) && Array::get(registry_typed_sorted, slot) == name {
+    Array::get(registry_typed_sorted_pos, slot)
+  } else {
+    0 - 1
   }
-  (p, a, b, s)
+}
+
+fn registry_class_of(name: String) -> (Bool, Bool, Bool, Bool) {
+  let row = registry_first_row(name)
+  if row < 0 {
+    (false, false, false, false)
+  } else {
+    let (_, _, _, _, _, rp, ra, rb, rs) = Array::get(registry_typed_rows, row)
+    (rp, ra, rb, rs)
+  }
 }
 
 fn names_with_class_bit(bit: Int) -> Array[String] {
@@ -1015,9 +1017,18 @@ fn extra_non_allocating(name: String) -> Bool {
 }
 
 /// Names that are not registry rows but are still borrow-returning.
-fn extra_borrow_ret(name: String) -> Bool {
-  name == "MutList::get" || name == "Map::iter_get" || name == "Map::__iter_get_unchecked" || name == "__index" || name == "__rec_field"
-}
+/// ONE spelling (#1979, #2584): `borrow_ret_names_build` copies this into
+/// the membership table that both `is_borrow_ret_builtin` and
+/// `borrow_ret_builtin_names` read. Adding a name here and not there was
+/// the MutList::get drift -- wrappers classified as owned-returning and
+/// RC callers dropped an interior view (#1932).
+let borrow_ret_extra_names: Array[String] = [
+  "MutList::get",
+  "Map::iter_get",
+  "Map::__iter_get_unchecked",
+  "__index",
+  "__rec_field"
+]
 
 /// The borrow-RETURNING builtins: their result is an interior view sharing a
 /// call argument's refcount (an element read in place), never a fresh owned
@@ -1026,41 +1037,48 @@ fn extra_borrow_ret(name: String) -> Bool {
 /// borrow-returning (#707).
 ///
 /// SINGLE SOURCE OF TRUTH (#1979, #2584): registry rows carry the flag;
-/// extras below are the names that are not rows. Perceus removes a
+/// extras above are the names that are not rows. Perceus removes a
 /// source-owned shadowable name from this seed before classifying calls.
-let borrow_ret_builtin_name_table: Array[String] = []
-
-fn ensure_borrow_ret_table() -> Unit {
-  if Array::length(borrow_ret_builtin_name_table) == 0 {
-    let from_rows = names_with_class_bit(2)
-    let mut i = 0
-    while i < Array::length(from_rows) {
-      Array::push(borrow_ret_builtin_name_table, Array::get(from_rows, i))
-      i = i + 1
-    }
-    Array::push(borrow_ret_builtin_name_table, "MutList::get")
-    Array::push(borrow_ret_builtin_name_table, "Map::iter_get")
-    Array::push(borrow_ret_builtin_name_table, "Map::__iter_get_unchecked")
-    Array::push(borrow_ret_builtin_name_table, "__index")
-    Array::push(borrow_ret_builtin_name_table, "__rec_field")
-  } else {
-    ()
+/// The predicate SCANS this table -- it does not re-derive membership
+/// from the row flags plus a second extras spelling.
+fn borrow_ret_names_build() -> Array[String] {
+  let out = names_with_class_bit(2)
+  let mut i = 0
+  while i < Array::length(borrow_ret_extra_names) {
+    Array::push(out, Array::get(borrow_ret_extra_names, i))
+    i = i + 1
   }
+  out
 }
+
+let borrow_ret_builtin_name_table: Array[String] = borrow_ret_names_build()
 
 /// Returns a fresh array on each call because
 /// compute_borrow_returning_names' fixed-point worklist pushes discovered user
 /// functions into the one it is given.
 export fn borrow_ret_builtin_names() -> Array[String] {
-  ensure_borrow_ret_table()
   Array::slice(borrow_ret_builtin_name_table, 0, Array::length(borrow_ret_builtin_name_table))
 }
 
 /// Membership in `borrow_ret_builtin_names`, before source ownership is
 /// applied by the whole-program Perceus classifier.
+///
+/// Scans the shared module-level table directly: this predicate runs once
+/// per call site across the whole program, so it must not allocate a
+/// fresh copy per query and must not walk the whole registry.
 export fn is_borrow_ret_builtin(name: String) -> Bool {
-  let (_, _, br, _) = registry_class_of(name)
-  br || extra_borrow_ret(name)
+  let names = borrow_ret_builtin_name_table
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(names) {
+    if Array::get(names, i) == name {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
 }
 
 fn builtin_is_non_allocating(name: String) -> Bool {
