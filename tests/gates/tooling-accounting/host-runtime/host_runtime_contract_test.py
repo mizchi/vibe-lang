@@ -104,8 +104,11 @@ class GcHostListTest(unittest.TestCase):
             module.validate_gc_lists(self.names, mutated, self.import_types, self.core_sigs)
 
     def test_real_backend_satisfies_every_invariant(self):
+        # A PIN, deliberately a literal: it moves only when a host import is
+        # really added or removed, and then whoever moves it has to look at
+        # this file. 22 -> 23 when #2758 appended fs_remove_tree.
         self.assertEqual(
-            module.validate_gc_lists(self.names, self.text, self.import_types, self.core_sigs), 22
+            module.validate_gc_lists(self.names, self.text, self.import_types, self.core_sigs), 23
         )
 
     def test_use_host_losing_a_builtin_fails(self):
@@ -132,13 +135,32 @@ class GcHostListTest(unittest.TestCase):
         # So mutate hbo AND the header together, consistently. That is also the
         # realistic desync -- someone decrements hbo and "helpfully" adjusts the
         # header to match -- and only `hbo == len(host_defs)` can catch it.
-        desynced = re.sub(r"(let hbo = if use_host \{\s*\n\s*)22", r"\g<1>21", self.text, count=1)
-        desynced = desynced.replace("bytebuf_push_vec_header(imp_content, 23)", "bytebuf_push_vec_header(imp_content, 22)", 1)
+        # The literals are READ, not written: hard-coding them meant appending
+        # one host import (#2758) made both substitutions match nothing, and
+        # the case then failed on its own "mutation did not apply" guard --
+        # which is the guard working, but it is cheaper to not need it here.
+        desynced = re.sub(
+            r"(let hbo = if use_host \{\s*\n\s*)(\d+)",
+            lambda m: m.group(1) + str(int(m.group(2)) - 1),
+            self.text,
+            count=1,
+        )
+        desynced = re.sub(
+            r"(bytebuf_push_vec_header\(imp_content,\s*)(\d+)",
+            lambda m: m.group(1) + str(int(m.group(2)) - 1),
+            desynced,
+            count=1,
+        )
         self.assert_mutation_fails(desynced)
 
     def test_import_vector_header_off_by_one_fails(self):
         self.assert_mutation_fails(
-            self.text.replace("bytebuf_push_vec_header(imp_content, 23)", "bytebuf_push_vec_header(imp_content, 22)", 1)
+            re.sub(
+                r"(bytebuf_push_vec_header\(imp_content,\s*)(\d+)",
+                lambda m: m.group(1) + str(int(m.group(2)) - 1),
+                self.text,
+                count=1,
+            )
         )
 
     def test_host_import_name_absent_from_the_contract_fails(self):
@@ -183,15 +205,20 @@ class GcHostListTest(unittest.TestCase):
         # made the count assertion pass for the wrong reason -- found by
         # disabling each assertion in turn and seeing which test noticed. An
         # APPEND is the mutation only the count can catch: `zip` truncates, so
-        # all 22 pairs still line up. The appended name must be one the manifest
+        # all 23 pairs still line up. The appended name must be one the manifest
         # ALREADY knows -- an invented name is caught by the membership check
         # instead, which is how the first attempt at this test passed while
         # proving nothing about the count.
+        # Anchored on the END of the host_imports list rather than on whichever
+        # name is last -- it was `fs_remove_file` until #2758 appended
+        # `fs_remove_tree` after it, and the mutation then matched nothing.
         self.assert_mutation_fails(
-            self.text.replace(
-                '      ("fs_remove_file", 1)\n    ]',
-                '      ("fs_remove_file", 1),\n      ("fs_exists", 3)\n    ]',
-                1,
+            re.sub(
+                r"(let host_imports = \[.*?)(\n    \])",
+                r'\1,\n      ("fs_exists", 3)\2',
+                self.text,
+                count=1,
+                flags=re.S,
             )
         )
 
@@ -230,7 +257,7 @@ class GcHostListTest(unittest.TestCase):
         # fn_param_counts and fn_returns_list independently of the import's type
         # id, so either can drift while the import still declares the old
         # signature and the call is emitted against the wrong shape. Checked
-        # against the manifest's own coreTypeSignatures -- measured, all 22
+        # against the manifest's own coreTypeSignatures -- measured, all 23
         # already agree, so no table is introduced.
         self.assert_mutation_fails(self.text.replace('("Fs::exists", 1, 5, 1)', '("Fs::exists", 0, 5, 1)', 1))
 
