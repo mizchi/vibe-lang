@@ -55,13 +55,13 @@ MODULE_SOURCE="$STEM.module_source.vibe"
 # The adapter dispatches on VIBE_* selectors in source order, so an inherited
 # selector (`VIBE_CHECK_ONLY=1` exported by the caller) would hijack this
 # compile: cli_main would take that branch and write `ok` where the wasm goes.
-# Clear every selector the launcher knows before setting the ones this build
-# needs. The list is read from runtime/vibe, the copy that
-# scripts/check_selector_precedence.sh keeps in sync with cli_adapter.vibe.
+# Clear every adapter selector, derived from cli_adapter.vibe itself
+# (scripts/adapter_selector_order.sh). The launcher no longer embeds
+# VIBE_SELECTOR_ORDER.
 selector_clear_args() {
   local order s out=""
-  order="$(sed -n '/^VIBE_SELECTOR_ORDER="/,/"$/p' "$ROOT_DIR/runtime/vibe" | tr -d '"' | sed 's/^VIBE_SELECTOR_ORDER=//')"
-  [ -n "$order" ] || { echo "build_compile_only: runtime/vibe has no VIBE_SELECTOR_ORDER" >&2; return 1; }
+  order="$(bash "$ROOT_DIR/scripts/adapter_selector_order.sh")"
+  [ -n "$order" ] || { echo "build_compile_only: no adapter selectors found" >&2; return 1; }
   for s in $order; do out="$out -u $s"; done
   printf '%s' "$out"
 }

@@ -4,14 +4,15 @@ set -euo pipefail
 ROOT="${VIBE_GUEST_PROFILE_LINT_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 runner="$ROOT/runtime/viberun/src/main.rs"
 launcher="$ROOT/runtime/vibe"
+cli="$ROOT/lib/@vibe/cli/user_dispatch.vibe"
 profiling_doc="$ROOT/docs/internal/design/profiling.md"
 failed=0
 
-if [ ! -e "$runner" ] && [ ! -e "$launcher" ] && [ ! -e "$profiling_doc" ]; then
+if [ ! -e "$runner" ] && [ ! -e "$launcher" ] && [ ! -e "$cli" ] && [ ! -e "$profiling_doc" ]; then
   echo "guest-profile contract: skipped (profile surfaces are absent)"
   exit 0
 fi
-for required_file in "$runner" "$launcher" "$profiling_doc"; do
+for required_file in "$runner" "$launcher" "$cli" "$profiling_doc"; do
   if [ ! -f "$required_file" ]; then
     echo "guest-profile contract: required surface is missing: $required_file" >&2
     exit 1
@@ -48,10 +49,12 @@ forbid 'last_heap' "$runner" "heap sampler wall-clock rebasing was reintroduced"
 
 # CLI values must distinguish omission from an explicitly empty value, preserve
 # the argv separator, and reject destructive source/output aliasing.
-require 'after_separator=1' "$launcher" "run parser does not preserve arguments after --"
+# Compiler-driving parse lives in lib/@vibe/cli; the launcher keeps the
+# inode alias guard because -ef is host-only.
+require 'after_separator' "$cli" "run parser does not preserve arguments after --"
 require '\-ef.*profile_out' "$launcher" "profile source/output alias guard is missing"
-require 'guest_profile_requested=1' "$launcher" "bench cannot distinguish omitted and empty --guest-profile"
-require 'bench_keep_names' "$launcher" "profiled benchmarks do not request Wasm names"
+require 'guest_profile_requested' "$cli" "bench cannot distinguish omitted and empty --guest-profile"
+require 'bench_keep_names' "$cli" "profiled benchmarks do not request Wasm names"
 
 # Serialization and generated filenames must fail closed at their boundaries.
 forbid 'finish\(io::BufWriter::new' "$runner" "profile writer can hide final flush errors"

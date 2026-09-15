@@ -71,64 +71,11 @@ PY
 
 echo "[selector-precedence-test] each historical defect, as a case:"
 
-# #2239: an arm's hand-written clear list was copied from a neighbour and was
-# missing six selectors, so `VIBE_CHECK_ONLY=1 vibe fmt f.vibe` wrote `ok` over
-# the user's source.
-red "an arm drops its derived clears" \
-    "does not clear" \
-    'out = s.replace("env $(selector_clears_before VIBE_EMIT_WIT)", "env", 1)'
-
-# #2246: the embedded order is what every arm trusts; drift from the adapter
-# silently computes clears against the wrong predecessor set.
-red "a selector is dropped from the embedded order" \
-    "out of sync" \
-    'out = s.replace("VIBE_SELECTOR_ORDER=\"VIBE_LSP ", "VIBE_SELECTOR_ORDER=\"", 1)'
-
-# #2246: same names, different order -- the clear sets are still wrong.
-red "the embedded order is permuted" \
-    "out of sync" \
-    '''i = s.index("VIBE_SELECTOR_ORDER=\"")
-j = s.index("\"", s.index("\\n", i))
-body = s[i+21:j].split()
-body[0], body[1] = body[1], body[0]
-out = s[:i+21] + " ".join(body) + s[j:]'''
-
-# #2246: a clear target the derivation does not know falls off the end of
-# selector_clears_before's loop and clears EVERYTHING -- by accident, not by
-# derivation, and indistinguishable from working.
-red "a clear target the derivation does not know" \
-    "not a selector this derivation knows" \
-    'out = s.replace("selector_clears_before VIBE_BACKEND", "selector_clears_before VIBE_NOPE", 1)'
-
-# #2248 review, rounds 3 and 4: routing the clears through a VARIABLE was
-# broken twice more -- `; sel_clears=""` on the same line as the declaration,
-# and `false && ` in front of it. Both are now impossible rather than
-# detected: a variable carrying the clears is rejected outright, so the
-# scanner never has to understand shell assignment at all.
-red "the clears are routed through a variable" \
-    "unresolved expansion" \
-    'out = s.replace("    env $(selector_clears_before VIBE_FS_COMPILE) $fs_env", "    local sc=\"$(selector_clears_before VIBE_FS_COMPILE)\"\n    env $sc $fs_env", 1)'
-
-# ...and the gc lane must carry its own, since the two lanes are two calls.
-red "the gc lane drops its inline clears" \
-    "unresolved expansion" \
-    'out = s.replace("    env $(selector_clears_before VIBE_BACKEND)", "    env", 1)'
-
-# The helper's TEXT is not the helper RUNNING. Single quotes stop the shell
-# expanding `$( ... )`, so this passes a literal string to `env` and clears
-# nothing -- and the scan credited it, because it matched characters rather
-# than an executable command substitution (#2248 review). The scan now deletes
-# single-quoted spans before looking.
-red "the helper is spelled inside single quotes" \
-    "unresolved expansion" \
-    "out = s.replace('env \$(selector_clears_before VIBE_BACKEND)', chr(101)+chr(110)+chr(118)+chr(32)+chr(39)+'X=\$(selector_clears_before VIBE_BACKEND)'+chr(39), 1)"
-
-# Five cases used to live here, all mutating the variable that carried the
-# clears (an uncovered path, an underived narrowing, an assignment behind
-# `&&`, one after `;`, a deleted declaration). Routing them through a variable
-# is now rejected outright, so those constructs cannot occur -- and a case
-# whose mutation matches nothing proves nothing. This suite told me so by
-# failing when they went stale, which is the property it exists for. They are
-# replaced by the two above: no variable, and each lane carries its own call.
+# Argv dispatch: the launcher must not grow a VIBE_*=1 assignment without
+# embedding the adapter order the old env-selector arms used to derive
+# predecessor clears from.
+red "sets a selector without an order list" \
+    "has no VIBE_SELECTOR_ORDER" \
+    'out = s.replace("invoke_cli() {", "invoke_cli() {\nVIBE_FMT=1 true\n", 1)'
 
 echo "[selector-precedence-test] ok"

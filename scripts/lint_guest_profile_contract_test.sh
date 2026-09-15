@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vibe_guest_profile_lint.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
-mkdir -p "$TMP_ROOT/runtime/viberun/src" "$TMP_ROOT/docs/internal/design"
+mkdir -p "$TMP_ROOT/runtime/viberun/src" "$TMP_ROOT/docs/internal/design" "$TMP_ROOT/lib/@vibe/cli"
 cp "$ROOT/runtime/viberun/src/main.rs" "$TMP_ROOT/runtime/viberun/src/main.rs"
 cp "$ROOT/runtime/vibe" "$TMP_ROOT/runtime/vibe"
+cp "$ROOT/lib/@vibe/cli/user_dispatch.vibe" "$TMP_ROOT/lib/@vibe/cli/user_dispatch.vibe"
 cp "$ROOT/docs/internal/design/profiling.md" "$TMP_ROOT/docs/internal/design/profiling.md"
 
 VIBE_GUEST_PROFILE_LINT_ROOT="$TMP_ROOT" bash "$ROOT/scripts/lint_guest_profile_contract.sh" >/dev/null

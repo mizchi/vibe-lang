@@ -106,7 +106,11 @@ LEAK_SRC="$TMP/leak.vibe"
   printf '  acc\n}\n'
 } > "$LEAK_SRC"
 LEAK="$TMP/leak.wasm"
-env $(sed -n '/^VIBE_SELECTOR_ORDER="/,/"$/p' "$ROOT_DIR/runtime/vibe" | tr -d '"' | sed 's/^VIBE_SELECTOR_ORDER=//' | sed 's/\(VIBE_[A-Z_]*\)/-u \1/g') \
+_selector_order="$(bash "$ROOT_DIR/scripts/adapter_selector_order.sh")"
+[ -n "$_selector_order" ] || { echo "check_compile_only_lanes_test: FAIL: adapter_selector_order.sh printed nothing" >&2; exit 1; }
+echo "$_selector_order" | tr ' ' '\n' | grep -qx VIBE_FS_COMPILE \
+  || { echo "check_compile_only_lanes_test: FAIL: adapter_selector_order.sh omitted VIBE_FS_COMPILE" >&2; exit 1; }
+env $(printf '%s\n' $_selector_order | sed 's/^/-u /' | tr '\n' ' ') \
   -u VIBE_RC VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" "$LEAK_SRC" "$LEAK" main >"$TMP/leak.build.log" 2>&1 || true
 [ -s "$LEAK" ] || { echo "check_compile_only_lanes_test: FAIL (leak): probe did not compile" >&2; cat "$LEAK.diag" >&2 2>/dev/null; exit 1; }
