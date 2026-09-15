@@ -262,14 +262,21 @@ export type Ids = Array[Int]
 ### Enums
 
 ```vibe
-enum Option[T] {
-  Some(T);
-  None
+enum Tree[T] {
+  Leaf(T);
+  Node(Int)
 }
 
 enum Color { Red; Green; Blue } derive(Eq)
 export enum Shape { Circle(Int); Rect(Int, Int) }
 ```
+
+A declaration may not take a builtin type's spelling: `Int`, `Bool`, `i32`
+and the like at arity 0, and `Array[_]` / `Option[_]` at arity 1. An
+annotation resolves those to the builtin before it looks at declarations, so
+such a type could never be named in one, and the declaration is refused with
+a message naming the rename (#2475). This example used to declare
+`enum Option[T]`, which is why the rule is worth stating here.
 
 Constructors may be used in expressions and patterns.
 

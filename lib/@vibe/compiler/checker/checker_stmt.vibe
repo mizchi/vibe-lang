@@ -1523,18 +1523,55 @@ fn derive_name_is_known(name: String) -> Bool {
 /// type nobody can write down, and the diagnostic for trying reports the
 /// builtin's shape without ever saying the name was taken.
 ///
-/// Arity matters, and getting it wrong refuses correct programs. `Array` and
-/// `Option` are hard-coded ONLY at arity 1, so `struct Array[K, V]` resolves
-/// through `find_typedef` and IS nameable; neither is in `resolve_builtin`, so
-/// a bare `struct Option` is nameable too. Conversely `struct Int[T]` is
-/// nameable as `Int[T]` -- the applied door never consults `resolve_builtin`.
-/// Each of those is accepted, and `Int` / `Bool` / `i32` at arity 0 and
-/// `Option[T]` / `Array[T]` / `StringMap[V]` at arity 1 are refused.
+/// At arity 1 the chain hard-codes three heads, and only TWO of them collide.
+/// The difference is in the arm bodies, not the chain order:
+///
+///   Array      `CtArray(arg)`, unconditionally -- `find_typedef` is never
+///              reached, so a declaration loses the spelling. COLLIDES.
+///   Option     `CtOption(arg)`, unconditionally. COLLIDES.
+///   StringMap  consults `find_typedef` FIRST and lets a source declaration
+///              win. That is #2263 deciding it on purpose, and
+///              `string_map_local_shadow_ok` pins it. Does NOT collide.
+///
+/// `Array` is the one worth measuring rather than reading, because it looks
+/// nameable. With `struct Array[T] { pad: Int; v: T }` declared,
+/// `fn read(m: Array[Int]) -> Int { m.v }` is accepted and answers 22 -- the
+/// SECOND field, which is normally how you tell a resolved struct from a
+/// first-field offset landed on by luck. It proves nothing here: field access
+/// on an `Array` receiver is not checked AT ALL. The same program with no
+/// struct named `Array` anywhere, reading `.v` off a literal `[1, 2, 3]`, is
+/// accepted too, and so is `.v` on a `Map` and on a `Bytes`. Only `Option`
+/// among these is caught, because `CtOption` is in the non-struct allow-list
+/// and `CtArray` is not.
+///
+/// The probe that does discriminate is the `enum` spelling, where `match`
+/// checks the scrutinee. Measured on main at d321d4d:
+///
+///   enum Array[T]  { Yes(T); Nope }   "constructor pattern `Yes` (of Array)
+///                                      cannot match this scrutinee type"
+///   enum Option[T] { Yes(T); Nope }   "variant `Some` of Option is not
+///                                      handled"
+///   enum Opt9[T]   { Yes(T); Nope }   clean -- the control
+///
+/// Both builtin spellings take the annotation away from the declaration; the
+/// ordinary name does not.
+///
+/// Arity matters for the same reason. `struct Array[K, V]` at arity 2 reaches
+/// `find_typedef`, a bare `struct Option` is absent from `resolve_builtin`,
+/// and `struct Int[T]` is nameable as `Int[Bool]` because the applied door
+/// never consults `resolve_builtin`. All three are accepted, and each has a
+/// fixture that NAMES it in an annotation (`builtin_spelling_arity2_ok`,
+/// `builtin_spelling_bare_option_ok`, `builtin_spelling_applied_int_ok`) --
+/// inference alone would pass just as well with the type unnameable, which is
+/// exactly what this check refuses, so a control that only infers proves
+/// nothing. They are one declaration per file because a declared type owns the
+/// applied spelling for type ARGUMENTS too: with `struct Int[T]` in scope,
+/// `Array[Int, String]` is itself refused.
 fn builtin_spelling_decl_error(kind: String, name: String, arity: Int, errors: Array[String]) -> Unit {
   let collides = if arity == 0 {
     resolve_builtin(name) != None
   } else if arity == 1 {
-    name == "Array" || name == "Option" || name == "StringMap"
+    name == "Array" || name == "Option"
   } else {
     false
   }

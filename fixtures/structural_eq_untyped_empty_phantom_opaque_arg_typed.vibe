@@ -1,0 +1,40 @@
+//# Codex round 15 on #2456: a phantom generic enum's derived comparator never
+//# reads its formal, so the argument may be anything the allow-list rejects on
+//# its own -- an opaque `StringBuilder` here. Only the observed positions
+//# count. Measured on fd9cdcc: `Array[Phantom[StringBuilder]]` filled through
+//# a helper trapped while the same shape at `String` answered; both ANSWER
+//# now, and the `Int` payload is exact for `64 << 32` vs `65 << 32`.
+//#
+//# `phantom_enum_typed` is the same test at a non-opaque argument. What THIS
+//# one adds is the opaque argument, and that is all it adds now: it used to
+//# name the enum `Option`, so it doubled as "a SOURCE-OWNED `Option` of a
+//# shape the special arm does not match". #2475 refuses that declaration, and
+//# measurement while landing the refusal showed the fixture never had that
+//# property anyway -- with `enum Option[T] { Mark(Int); Empty }` declared,
+//# `match` through an `Option[Int]` annotation reports "variant `Some` of
+//# Option is not handled". The annotation was the BUILTIN throughout; only the
+//# inferred `Mark(v)` reached the declared enum. That mismatch is #2475's
+//# subject, not this fixture's, so the name moved out of its way.
+enum Phantom[T] {
+  Mark(Int);
+  Empty
+}
+
+fn fill(xs: Array[Phantom[StringBuilder]], v: Int) -> Unit {
+  Array::push(xs, Mark(v))
+}
+
+export fn _start() -> Int {
+  let left = []
+  fill(left, 64 << 32)
+  let right = []
+  fill(right, 64 << 32)
+  let other = []
+  fill(other, 65 << 32)
+  let empties = []
+  Array::push(empties, Empty)
+  assert(left == right)
+  assert(left != other)
+  assert(left != empties)
+  0
+}

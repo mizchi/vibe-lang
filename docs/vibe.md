@@ -654,9 +654,12 @@ Rules:
 ## Struct and enum details (current)
 
 ```vibe
-enum Option[T] {
-  None;
-  Some(T);
+// Not named `Option`: a declaration may not take a builtin type's spelling,
+// because an annotation resolves that to the builtin before it looks at
+// declarations (#2475).
+enum Maybe[T] {
+  Nothing;
+  Just(T);
 } derive(Eq)
 
 struct Pair[T] {
