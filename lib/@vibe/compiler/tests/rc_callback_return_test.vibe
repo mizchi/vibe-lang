@@ -1,0 +1,228 @@
+import @vibe/compiler/runtime {
+  rc_classify_source
+}
+
+// #2754: ordinary RC must agree with bump when a callback returns a borrow.
+// Shadow RC alone masked the corruption by keeping the freed block intact.
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_callback_return_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes(src: String, label: String, expected: String) -> Unit with Exception + Fs + Process + Stdout {
+  inspect(run_value(compile_wasi(src, "main"), String::concat(label, "_bump")), content = expected)
+  inspect(run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc")), content = expected)
+  inspect(run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow")), content = expected)
+}
+
+test "callback parameter returning an array element" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> Array::get(ys, 0), xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "parameter", "90715")
+}
+
+test "callback return: annotated" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys: Array[Node]) -> Array::get(ys, 0), xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "annotated", "90715")
+}
+
+test "callback return: named" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn first(ys: Array[Node]) -> Node { Array::get(ys, 0) }\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, first, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "named", "90715")
+}
+
+test "callback return: capture" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> Array::get(xs, 0), xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "capture", "90715")
+}
+
+test "callback return: local" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let mk = (ys) -> Array::get(ys, 0)\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> Array::get(ys, 0), xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "local", "90715")
+}
+
+test "callback return: wrapped" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> { let t = Array::get(ys, 0); t }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "wrapped", "90715")
+}
+
+test "callback return: branch" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> if c { Leaf(1) } else { Array::get(ys, 0) }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "branch", "90715")
+}
+
+test "callback return: kept_result" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> Array::get(ys, 0), xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(true) }\n", "kept_result", "70715")
+}
+
+test "callback return: projection" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nstruct Holder { node: Node }\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> { let h = Holder::{ node: Array::get(ys, 0) }; h.node }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "projection", "90715")
+}
+
+test "callback return: fresh_owner" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> { let zs = [Pair(Leaf(3), Leaf(4))]; Array::get(zs, 0) }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "fresh_owner", "90715")
+}
+
+test "callback return: owned_result" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> Pair(Leaf(1), Leaf(2)), xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "owned_result", "90715")
+}
+
+test "callback return: match" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> match c { true => Leaf(1), false => Array::get(ys, 0) }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "match", "90715")
+}
+
+test "callback return: early_return" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> { if !c { return Array::get(ys, 0) }; Leaf(1) }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "early_return", "90715")
+}
+
+test "callback return: mixed_alias" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> { let z = if c { Leaf(1) } else { Array::get(ys, 0) }; z }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "mixed_alias", "90715")
+}
+
+fn assert_reclaims(src: String, label: String) -> Unit with Exception + Fs + Process + Stdout {
+  let path = String::concat("/tmp/_callback_heap_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, compile_wasi_rc(src, "main"))
+  let check = " | node -e 'let s=\"\";process.stdin.on(\"data\",x=>s+=x);process.stdin.on(\"end\",()=>{const r=JSON.parse(s);console.log(r.result===0 && r.heap_used<2000)})'"
+  let out = sh_lines(String::concat("node --experimental-wasm-exnref scripts/measure_heap.mjs ", String::concat(path, check)))
+  let actual: String = if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+  inspect(actual, content = "true")
+}
+
+test "callback result reclamation: fresh_call_root" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nstruct Holder { node: Node }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn once(c: Bool) -> Int { let f = () -> { let ys = [Pair(Leaf(3), Leaf(4))]; Array::get(ys, 0) }; let r = f(); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "fresh_call_root")
+}
+
+test "callback result reclamation: fresh_projection_root" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nstruct Holder { node: Node }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn once(c: Bool) -> Int { let f = () -> { let h = Holder::{ node: Pair(Leaf(3), Leaf(4)) }; h.node }; let r = f(); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "fresh_projection_root")
+}
+
+test "callback result reclamation: borrowed_alias" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nstruct Holder { node: Node }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn once(c: Bool) -> Int { let f = () -> { let ys = [Pair(Leaf(3), Leaf(4))]; let t = Array::get(ys, 0); t }; let r = f(); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "borrowed_alias")
+}
+
+test "callback result reclamation: annotated_parameter" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nstruct Holder { node: Node }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn once(c: Bool) -> Int { let f = (ys: Array[Node]) -> Array::get(ys, 0); let r = f([Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "annotated_parameter")
+}
+
+test "callback result reclamation: owned_result" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nstruct Holder { node: Node }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn once(c: Bool) -> Int { let f = () -> Pair(Leaf(3), Leaf(4)); let r = f(); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "owned_result")
+}
+
+test "callback result reclamation: mixed_paths" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nstruct Holder { node: Node }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn once(c: Bool) -> Int { let f = () -> if c { Pair(Leaf(3), Leaf(4)) } else { let ys = [Pair(Leaf(3), Leaf(4))]; Array::get(ys, 0) }; let r = f(); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "mixed_paths")
+}
+
+test "callback result reclamation: owned_alias" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nstruct Holder { node: Node }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn once(c: Bool) -> Int { let f = () -> { let n = Pair(Leaf(3), Leaf(4)); n }; let r = f(); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "owned_alias")
+}
+
+test "callback result reclamation: mixed_alias" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nstruct Holder { node: Node }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn once(c: Bool) -> Int { let f = () -> { let ys = [Pair(Leaf(3), Leaf(4))]; let t = if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(ys, 0) }; t }; let r = f(); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "mixed_alias")
+}
+
+test "callback result reclamation: scalar_global_shadow" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nstruct Holder { node: Node }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn make() -> Int { 1 }\nfn once(c: Bool) -> Int { let make = () -> Pair(Leaf(3), Leaf(4)); let r = make(); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "scalar_global_shadow")
+}
+
+test "callback return: unannotated_named" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nlet first = (ys) -> Array::get(ys, 0)\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, first, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "unannotated_named", "90715")
+}
+
+test "callback return: named_borrow_wrapper" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn first(ys: Array[Node]) -> Node { Array::get(ys, 0) }\nfn alias(ys: Array[Node]) -> Node { first(ys) }\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, alias, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "named_borrow_wrapper", "90715")
+}
+
+test "callback return: float_alias_representation" {
+  assert_lanes("fn main() -> Int { let f = (c: Bool) -> Double { let a = 1.5; let b = 2.5; let x = if c { a } else { b }; let y = x * x; if y == 6.25 { x } else { 0.0 } }; if f(false) == 2.5 { 1 } else { 0 } }", "float_alias_representation", "1")
+}
+
+test "callback return: bool_alias_representation" {
+  assert_lanes("fn main() -> Int { let f = (c: Bool) -> Bool { let a = true; let b = false; let x = if c { a } else { b }; let s = __to_string(x); if s == \"false\" { x } else { true } }; if f(false) { 0 } else { 1 } }", "bool_alias_representation", "1")
+}
+
+test "callback return: string_alias_representation" {
+  assert_lanes("fn main() -> Int { let f = (c: Bool) -> String { let a = \"zz\"; let b = \"aa\"; let x = if c { a } else { b }; if x < \"bb\" { x } else { \"wrong\" } }; if f(false) == \"aa\" { 1 } else { 0 } }", "string_alias_representation", "1")
+}
+
+test "callback return: marker_name_shadow" {
+  assert_lanes("fn __lambda_return_owned(n: Int) -> Int { n + 3 }\nfn main() -> Int { let f = (n: Int) -> __lambda_return_owned(n); f(4) }", "marker_name_shadow", "7")
+}
+
+test "rc-classify uses the named callback return contract" {
+  let direct = "fn first(xs: Array[Int]) -> Int { Array::get(xs, 0) }\nfn main() -> Int { first([3]) }"
+  let valued = "fn first(xs: Array[Int]) -> Int { Array::get(xs, 0) }\nfn main() -> Int { let f = first; f([3]) }"
+  let direct_rows: String = rc_classify_source(direct)
+  let direct_borrows: Bool = String::contains(direct_rows, "first borrow_ret")
+  inspect(direct_borrows, content = "true")
+  let valued_rows: String = rc_classify_source(valued)
+  let valued_borrows: Bool = String::contains(valued_rows, "first borrow_ret")
+  inspect(valued_borrows, content = "false")
+}
+
+test "a local callback cannot inherit a scalar global return contract" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn make() -> Int { 0 }\nfn once() -> Int { let make = () -> Pair(Leaf(1), Leaf(2)); let unused = make(); 0 }\nfn main() -> Int { let mut i = make(); while i < 20000 { let r = once(); i = i + 1 }; 0 }", "unused_scalar_shadow")
+}
+
+test "callback return: handled_return" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> handle { Array::get(ys, 0) } with { Exception::Throw(_) => Leaf(0) }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "handled_return", "90715")
+}
+
+test "callback return: loop_return" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> loop { break Array::get(ys, 0) }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "loop_return", "90715")
+}
+
+// PR #2804: a mixed helper returns an owned value or an interior view.
+
+test "callback return: may_view_helper_discard" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node { let t = mk(xs); if c { t } else { Leaf(9) } }\nfn pick(c: Bool) -> Int { let xs = [Pair(Leaf(3), Leaf(4))]; let r = use2(c, (ys) -> choose(false, ys), xs); let filler = Pair(Leaf(7), Leaf(8)); total(r)*10000 + total(Array::get(xs,0))*100 + total(filler) }\nfn main() -> Int { pick(false) }", "may_view_helper_discard", "90715")
+}
+
+test "callback return: may_view_helper_keep" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node { let t = mk(xs); if c { t } else { Leaf(9) } }\nfn pick(c: Bool) -> Int { let xs = [Pair(Leaf(3), Leaf(4))]; let r = use2(c, (ys) -> choose(false, ys), xs); let filler = Pair(Leaf(7), Leaf(8)); total(r)*10000 + total(Array::get(xs,0))*100 + total(filler) }\nfn main() -> Int { pick(true) }", "may_view_helper_keep", "70715")
+}
+
+test "callback result reclamation: may_view_helper" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> choose(c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_helper")
+}
+
+test "callback return: may_view_helper_local_owner" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn main() -> Int { let f = () -> { let xs = [Pair(Leaf(3), Leaf(4))]; choose(false, xs) }; let r = f(); let filler = Pair(Leaf(7), Leaf(8)); total(r)*100 + total(filler) }", "may_view_helper_local_owner", "715")
+}
+
+test "callback result reclamation: may_view_helper_chain" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn relay3(c: Bool, xs: Array[Node]) -> Node { choose(c, xs) }\nfn relay2(c: Bool, xs: Array[Node]) -> Node { relay3(c, xs) }\nfn relay1(c: Bool, xs: Array[Node]) -> Node { relay2(c, xs) }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> relay1(c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); let direct = relay1(c, [Pair(Leaf(3), Leaf(4))]); total(r) + total(direct) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_helper_chain")
+}
+
+test "callback result reclamation: may_view_named_callback" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn forward(c: Bool, xs: Array[Node]) -> Node { choose(c, xs) }\nfn once(c: Bool) -> Int { let f = forward; let r = f(c, [Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_named_callback")
+}
+
+test "callback result reclamation: may_view_builtin_spelling" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn map(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> map(c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_builtin_spelling")
+}
+
+test "callback result reclamation: may_view_helper_cycle" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn even(n: Int, c: Bool, xs: Array[Node]) -> Node { if n == 0 { choose(c, xs) } else { odd(n - 1, c, xs) } }\nfn odd(n: Int, c: Bool, xs: Array[Node]) -> Node { if n == 0 { choose(c, xs) } else { even(n - 1, c, xs) } }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> even(3, c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_helper_cycle")
+}
+
+test "rc-classify normalizes mixed helpers reached from callbacks" {
+  let helper = "fn choose(c: Bool, xs: Array[Int]) -> Int { if c { 9 } else { Array::get(xs, 0) } }\n"
+  let direct = rc_classify_source(String::concat(helper, "fn main() -> Int { choose(false, [3]) }"))
+  let direct_helper = Array::get(String::split(direct, "\n"), 0)
+  inspect(String::starts_with(direct_helper, "choose "), content = "true")
+  inspect(String::contains(direct_helper, "view_ret"), content = "true")
+  let callback = rc_classify_source(String::concat(helper, "fn main() -> Int { let f = (xs: Array[Int]) -> choose(false, xs); f([3]) }"))
+  let callback_helper = Array::get(String::split(callback, "\n"), 0)
+  inspect(String::starts_with(callback_helper, "choose "), content = "true")
+  inspect(String::contains(callback_helper, "view_ret"), content = "false")
+}
+
+test "callback result reclamation: may_view_helper_early_return" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { return Array::get(xs, 0) }; Pair(Leaf(1), Leaf(2)) }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> choose(c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); let xs = [Pair(Leaf(3), Leaf(4))]; let direct = choose(c, xs); total(r) + total(direct) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_helper_early_return")
+}

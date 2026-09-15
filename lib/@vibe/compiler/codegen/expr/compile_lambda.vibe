@@ -5,22 +5,29 @@ import @vibe/compiler/core {
   Pat,
   Stmt,
   TypeExpr,
+  bsearch_leftmost,
   bytebuf_length,
   bytebuf_new,
   bytebuf_push,
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
   leb128_encode_s64,
-  leb128_encode_u32
+  leb128_encode_u32,
+  sorted_names_of
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap, struct MutSet
 }
 
 import @vibe/compiler/perceus {
   build_perceus_plan_pinned,
+  compute_borrow_returning_names,
   pa_is_alias_dup,
   pa_is_consume_mark,
   pa_is_drop,
@@ -35,17 +42,19 @@ import @vibe/compiler/codegen/reloc {
 }
 
 import @vibe/compiler/codegen/common_analysis {
+  ca_walk_stmts_valued,
   collect_free_vars,
   collect_free_vars_indexed,
   collect_free_vars_indexed_self,
+  collect_free_vars_used_builtins,
   collect_strings_stmts,
+  compute_may_return_view_fns,
   emit_closure_call_tail,
   emit_closure_resolve,
   emit_i64_extend_i32_u,
   is_mut_captured_in,
   md_consume_count_pre,
-  md_shadow_zeroed_bmasks,
-  scope_tail_proj_root
+  md_shadow_zeroed_bmasks
 }
 
 import @vibe/compiler/codegen/common_base {
@@ -262,6 +271,276 @@ fn strip_param_label_marker(n: String) -> String {
   }
 }
 
+/// Share the owning return contract for named callbacks with direct callers
+/// and the rc-classify / rc-plan queries. Value-position detection is the same
+/// conservative scan used to disqualify borrowed callback parameters.
+export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
+  let valued = array_empty()
+  let _ = ca_walk_stmts_valued(stmts, valued)
+  let valued_names = sorted_names_of(valued)
+  let borrowed = sorted_names_of(compute_borrow_returning_names(stmts))
+  let mixed = array_empty()
+  for name in compute_may_return_view_fns(stmts) {
+    if bsearch_leftmost(borrowed, name) < 0 {
+      Array::push(mixed, name)
+    }
+  }
+  let candidates = sorted_names_of(mixed)
+  let fns: MutMap[String, Int] = MutMap::new_string()
+  let seen: MutSet[String] = MutSet::new_string()
+  let work: Array[Int] = []
+  let owned: Array[String] = []
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SLet(_, _, n, _, EFn(_, _, _, _, _, _)) => {
+        MutMap::set(fns, n, i)
+        if bsearch_leftmost(valued_names, n) >= 0 {
+          cl_queue_owned_return(n, fns, seen, work, owned)
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, EFn(_, _, _, _, _, body)) => cl_queue_nested_callbacks(body, candidates, fns, seen, work, owned),
+      SLet(_, _, _, _, value) => cl_queue_nested_callbacks(value, candidates, fns, seen, work, owned),
+      SLetMut(_, _, value) => cl_queue_nested_callbacks(value, candidates, fns, seen, work, owned),
+      SLetPat(_, value) => cl_queue_nested_callbacks(value, candidates, fns, seen, work, owned),
+      SExpr(value) => cl_queue_nested_callbacks(value, candidates, fns, seen, work, owned),
+      _ => ()
+    }
+  }
+  // A may-view result cannot be retained uniformly: its fresh paths would
+  // leak. Normalize the helper's paths and publish the owning contract to
+  // every caller. Follow dependencies to a fixed point, including cycles.
+  let mut wi = 0
+  while wi < Array::length(work) {
+    let si = Array::get(work, wi)
+    match Array::get(stmts, si) {
+      SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, body)) => {
+        cl_queue_view_dependencies(EFn(tps, bounds, ps, ret, eff, body), candidates, fns, seen, work, owned)
+        Array::set(stmts, si, SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
+      },
+      _ => ()
+    }
+    wi = wi + 1
+  }
+  sorted_names_of(owned)
+}
+
+fn cl_queue_owned_return(name: String, fns: MutMap[String, Int], seen: MutSet[String], work: Array[Int], owned: Array[String]) -> Unit {
+  if !MutSet::has(seen, name) {
+    match MutMap::get(fns, name) {
+      Some(si) => {
+        MutSet::add(seen, name)
+        Array::push(work, si)
+        Array::push(owned, name)
+      },
+      None => ()
+    }
+  }
+}
+
+fn cl_queue_view_dependencies(value: Expr, candidates: Array[String], fns: MutMap[String, Int], seen: MutSet[String], work: Array[Int], owned: Array[String]) -> Unit {
+  // Reuse the lexical free-name walk without its builtin-capture skip: a
+  // source helper can shadow an inlined builtin. Selecting extra helpers for
+  // an enclosing-local spelling is conservative; call emission still resolves
+  // that local first. Never infer a local callback's contract from this set.
+  let refs = collect_free_vars_used_builtins(value, array_empty(), array_empty())
+  for name in refs {
+    if bsearch_leftmost(candidates, name) >= 0 {
+      cl_queue_owned_return(name, fns, seen, work, owned)
+    }
+  }
+  ()
+}
+
+fn cl_queue_nested_callbacks(e: Expr, candidates: Array[String], fns: MutMap[String, Int], seen: MutSet[String], work: Array[Int], owned: Array[String]) -> Unit {
+  match e {
+    EFn(_, _, _, _, _, _) => cl_queue_view_dependencies(e, candidates, fns, seen, work, owned),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        cl_queue_nested_callbacks(expr_child_at(i), candidates, fns, seen, work, owned)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
+}
+
+/// Compiler-internal return markers preserve the operand's representation.
+export fn cl_return_operand(e: Expr) -> Expr {
+  match e {
+    ECall(EIdent(n, off), args, _) => if n == "__lambda_return_owned" && off < 0 && Array::length(args) == 1 {
+      Array::get(args, 0)
+    } else {
+      e
+    },
+    _ => e
+  }
+}
+
+/// Normalize lambda return paths to the owning indirect-call ABI. Bindings
+/// feeding a return normalize their compound initializer too: an if producing
+/// either a fresh object or a borrow cannot be retained uniformly after merging.
+/// The Perceus plan sees this body, so the new owning bindings get their normal
+/// dup/drop budget. Capture discovery still reads the source body.
+export fn cl_own_return(e: Expr) -> Expr {
+  cl_own_return_into(e, array_empty(), true)
+}
+
+fn cl_contains_return(e: Expr) -> Bool {
+  match e {
+    EReturn(_) => true,
+    EFn(_, _, _, _, _, _) => false,
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      let mut found = false
+      while i < end && !found {
+        found = cl_contains_return(expr_child_at(i))
+        i = i + 1
+      }
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+fn cl_own_return_list(items: Array[Expr], needed: Array[String]) -> Array[Expr] {
+  let out = array_empty()
+  for item in items {
+    Array::push(out, cl_own_return_into(item, needed, false))
+  }
+  out
+}
+
+fn cl_own_return_fields(fields: Array[(String, Expr)], needed: Array[String]) -> Array[(String, Expr)] {
+  let out = array_empty()
+  for field in fields {
+    Array::push(out, (field.0, cl_own_return_into(field.1, needed, false)))
+  }
+  out
+}
+
+fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
+  // An early return is a result path even inside a non-tail initializer,
+  // condition or argument. Leave the common return-free subtrees shared.
+  if !tail && !cl_contains_return(e) {
+    e
+  } else {
+    match e {
+      EReturn(value) => EReturn(cl_own_return_into(value, needed, true)),
+      EIdent(n, _) => {
+        Array::push(needed, n)
+        ECall(EIdent("__lambda_return_owned", -1), [e], -1)
+      },
+      EDot(obj, field, off, field_off) => {
+        let value = EDot(cl_own_return_into(obj, needed, false), field, off, field_off)
+        if tail {
+          ECall(EIdent("__lambda_return_owned", -1), [value], -1)
+        } else {
+          value
+        }
+      },
+      ECall(callee, args, off) => {
+        let already_owned = match callee {
+          EIdent("__lambda_return_owned", marker_off) => marker_off < 0,
+          _ => false
+        }
+        if already_owned {
+          e
+        } else {
+          let value = if cl_contains_return(e) {
+            ECall(cl_own_return_into(callee, needed, false), cl_own_return_list(args, needed), off)
+          } else {
+            e
+          }
+          if tail {
+            ECall(EIdent("__lambda_return_owned", -1), [value], -1)
+          } else {
+            value
+          }
+        }
+      },
+      EIf(c, t, f) => EIf(cl_own_return_into(c, needed, false), cl_own_return_into(t, needed, tail), cl_own_return_into(f, needed, tail)),
+      EMatch(s, arms) => {
+        let out = array_empty()
+        for arm in arms {
+          Array::push(out, (arm.0, cl_own_return_into(arm.1, needed, tail)))
+        }
+        EMatch(cl_own_return_into(s, needed, false), out)
+      },
+      EHandle(body, arms) => {
+        let out = array_empty()
+        for arm in arms {
+          Array::push(out, (arm.0, cl_own_return_into(arm.1, needed, tail)))
+        }
+        EHandle(cl_own_return_into(body, needed, tail), out)
+      },
+      ELet(n, v, b, off) => {
+        let body = cl_own_return_into(b, needed, tail)
+        let value = if array_contains_str(needed, n) {
+          cl_own_binding_value(v, needed)
+        } else {
+          cl_own_return_into(v, needed, false)
+        }
+        ELet(n, value, body, off)
+      },
+      ELetMut(n, v, b, off) => {
+        let body = cl_own_return_into(b, needed, tail)
+        ELetMut(n, cl_own_return_into(v, needed, false), body, off)
+      },
+      ELetRec(n, v, b) => ELetRec(n, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail)),
+      ESeq(a, b) => {
+        let body = cl_own_return_into(b, needed, tail)
+        ESeq(cl_own_return_into(a, needed, false), body)
+      },
+      EAssign(n, v, b) => EAssign(n, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail)),
+      EAssignOp(n, op, v, b) => EAssignOp(n, op, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail)),
+      ETuple(items) => ETuple(cl_own_return_list(items, needed)),
+      EArray(items) => EArray(cl_own_return_list(items, needed)),
+      ERecord(n, fields, args) => ERecord(n, cl_own_return_fields(fields, needed), args),
+      EMap(fields) => EMap(cl_own_return_fields(fields, needed)),
+      EWhile(c, body) => EWhile(cl_own_return_into(c, needed, false), cl_own_return_into(body, needed, false)),
+      ELoop(inits, body) => ELoop(cl_own_return_fields(inits, needed), cl_own_return_into(body, needed, false)),
+      EForIn(n, label, iter, body) => EForIn(n, label, cl_own_return_into(iter, needed, false), cl_own_return_into(body, needed, false)),
+      EBinOp(op, a, b, off) => EBinOp(op, cl_own_return_into(a, needed, false), cl_own_return_into(b, needed, false), off),
+      EUnaryOp(op, value) => EUnaryOp(op, cl_own_return_into(value, needed, false)),
+      ELabeledArg(n, label, value) => ELabeledArg(n, label, cl_own_return_into(value, needed, tail)),
+      EBreak(Some(value)) => EBreak(Some(cl_own_return_into(value, needed, false))),
+      EContinue(args) => EContinue(cl_own_return_list(args, needed)),
+      ESpread(value) => ESpread(cl_own_return_into(value, needed, false)),
+      _ => e
+    }
+  }
+}
+
+fn cl_own_binding_value(e: Expr, needed: Array[String]) -> Expr {
+  match e {
+    EIdent(n, _) => {
+      Array::push(needed, n); e
+    },
+    EIf(_, _, _) => cl_own_return_into(e, needed, true),
+    EMatch(_, _) => cl_own_return_into(e, needed, true),
+    EHandle(_, _) => cl_own_return_into(e, needed, true),
+    ELet(_, _, _, _) => cl_own_return_into(e, needed, true),
+    ELetMut(_, _, _, _) => cl_own_return_into(e, needed, true),
+    ELetRec(_, _, _) => cl_own_return_into(e, needed, true),
+    ESeq(_, _) => cl_own_return_into(e, needed, true),
+    EAssign(_, _, _) => cl_own_return_into(e, needed, true),
+    EAssignOp(_, _, _, _) => cl_own_return_into(e, needed, true),
+    _ => cl_own_return_into(e, needed, false)
+  }
+}
+
 export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], fn_body: Expr, local_names: Array[String], next_local: Int, ctx: CompileCtx, ld: Int, compile_fn: (Bytes, Expr, Array[String], Int, CompileCtx, Int) -> Int with Exception) -> Int with Exception {
   // #1899: the capture scan must be told the parameters under the SAME names
   // the body uses. A labeled parameter is parsed as `x~` and an optional one as
@@ -389,6 +668,11 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     Array::push(norm_params, (sn, pty))
     npi = npi + 1
   }
+  let result_body = if ctx.enable_rc {
+    cl_own_return(fn_body)
+  } else {
+    fn_body
+  }
   let lam_drops = array_empty()
   let lam_alias_dups = array_empty()
   let lam_dups = array_empty()
@@ -399,7 +683,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   let lam_mark_names = array_empty()
   let lam_mark_offs = array_empty()
   if ctx.enable_rc {
-    let lam_plan = build_perceus_plan_pinned(ctx.perceus_pin, norm_params, fn_body, ctx.borrow_ret_names, ctx.borrow_param_user, ctx.borrow_param_mask, ctx.borrow_view_ret)
+    let lam_plan = build_perceus_plan_pinned(ctx.perceus_pin, norm_params, result_body, ctx.borrow_ret_names, ctx.borrow_param_user, ctx.borrow_param_mask, ctx.borrow_view_ret)
     let mut ldi = 0
     while ldi < Array::length(lam_plan) {
       let lpa = Array::get(lam_plan, ldi)
@@ -496,6 +780,7 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
     const_int_values: ctx.const_int_values,
     enable_rc: ctx.enable_rc,
     rc_entry_untag_return: false,
+    rc_owned_return: true,
     rc_shadow: ctx.rc_shadow,
     rc_drop_names: lam_drops,
     rc_alias_dup_names: lam_alias_dups,
@@ -606,29 +891,8 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   } else {
     ()
   }
-  let final_lam_nl = compile_fn(lam_buf, fn_body, lam_locals, lam_nl, lam_ctx, -1)
-  let mut tail_lam_nl = final_lam_nl
+  let final_lam_nl = compile_fn(lam_buf, result_body, lam_locals, lam_nl, lam_ctx, -1)
   if ctx.enable_rc && ctx.rc_drop_func_idx >= 0 {
-    let tail_root = scope_tail_proj_root(fn_body)
-    let mut need_dup = false
-    let mut ti = 0
-    while ti < Array::length(norm_params) {
-      let (tpn, tpt) = Array::get(norm_params, ti)
-      if param_is_heap_in_body(tpn, tpt, fn_body) && array_contains_str(lam_drops, tpn) && tpn == tail_root {
-        need_dup = true
-      } else {
-        ()
-      }
-      ti = ti + 1
-    }
-    let rtemp = final_lam_nl
-    if need_dup {
-      emit_local_set(lam_buf, rtemp)
-      emit_rc_dup_guarded(lam_buf, rtemp, ctx.rc_shadow, ctx.rc_dup_func_idx)
-      tail_lam_nl = final_lam_nl + 1
-    } else {
-      ()
-    }
     let mut tj = 0
     while tj < Array::length(norm_params) {
       let (dpn2, dpt2) = Array::get(norm_params, tj)
@@ -640,13 +904,6 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
       }
       tj = tj + 1
     }
-    if need_dup {
-      emit_local_get(lam_buf, rtemp)
-    } else {
-      ()
-    }
-  } else {
-    ()
   }
   // #1259 step 7. The function index this lambda gets -- and, a few lines
   // down, the `table_slot` immediate baked into the emitted body.
@@ -689,8 +946,8 @@ export fn compile_lambda(buf: Bytes, params: Array[(String, Option[TypeExpr])], 
   Array::push(ctx.lambda_table.captures, captures)
   let mut extra_lam = 0
   let min_lam_nl = user_params + 1
-  if tail_lam_nl > min_lam_nl {
-    extra_lam = tail_lam_nl - min_lam_nl
+  if final_lam_nl > min_lam_nl {
+    extra_lam = final_lam_nl - min_lam_nl
   }
   Array::push(ctx.lambda_table.meta_i32, 0)
   Array::push(ctx.lambda_table.meta_i64, extra_lam)

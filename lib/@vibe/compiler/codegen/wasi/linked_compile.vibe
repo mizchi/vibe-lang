@@ -355,7 +355,7 @@ import @vibe/compiler/codegen/common_extractors {
 }
 
 import @vibe/compiler/codegen/expr {
-  cc_host_future_named_raw_prefix, cc_host_stream_named_raw_prefix, compile_expr
+  cc_host_future_named_raw_prefix, cc_host_stream_named_raw_prefix, cl_own_return_stmts, compile_expr
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -8461,6 +8461,13 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // PR #2708 review: the String length-view runtime prelude (WHATWG
   // replacement decoding), appended under the same rules.
   append_string_views_runtime(stmts)
+  // Named and anonymous callbacks share the owning return ABI. Rewrite named
+  // bodies before the analyses so direct calls receive that same contract.
+  let lc_owned_return_names = if enable_rc {
+    cl_own_return_stmts(stmts)
+  } else {
+    lc_fresh_string_array()
+  }
   // #707: functions whose entire body is transitively a tail-call to a
   // borrow-returning builtin (Array::get/Map::get/__index) -- e.g. a thin
   // `peek(toks, pos) -> Array::get(toks, pos)` wrapper. Computed once over the
@@ -12004,6 +12011,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
           const_int_values: const_int_values_list,
           enable_rc: enable_rc,
           rc_entry_untag_return: enable_rc && fn_name_dbg == entry_name,
+          rc_owned_return: bsearch_leftmost(lc_owned_return_names, fn_name_dbg) >= 0,
           rc_shadow: rc_shadow,
           rc_drop_names: rc_drops,
           rc_alias_dup_names: rc_alias_dups,

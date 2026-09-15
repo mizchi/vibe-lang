@@ -1,3 +1,7 @@
+import ./compile_lambda.vibe {
+  cl_return_operand
+}
+
 //# Imports
 
 import @vibe/core {
@@ -148,6 +152,7 @@ import @vibe/compiler/codegen/common_extractors {
   get_eforin_iter,
   get_eforin_name,
   get_eident_name,
+  get_eident_off,
   get_eint_value,
   get_eletmut_body,
   get_eletmut_name,
@@ -546,6 +551,7 @@ fn cc_ladder_names() -> Array[String] {
       "__float_bits",
       "__index",
       "__len",
+      "__lambda_return_owned",
       "__loop_tail_retain",
       "__rec_field",
       "__set_field",
@@ -804,7 +810,8 @@ fn cc_offset_says_float(e: Expr, ctx: CompileCtx) -> Bool {
   off >= 0 && array_contains_int(ctx.float_call_offsets, off)
 }
 
-fn cc_expr_is_floatish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+fn cc_expr_is_floatish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let e = cl_return_operand(raw_e)
   cc_offset_says_float(e, ctx) || cc_expr_is_floatish_syntactic(e, local_names, ctx)
 }
 
@@ -1179,7 +1186,8 @@ fn cc_ident_slot_kind(e: Expr, local_names: Array[String], ctx: CompileCtx) -> I
 /// runtime string-pointer heuristic — which misreads the packed empty-string
 /// encoding 0 (e.g. `String::join([], sep)`, ptr 0 / len 0) as Int 0 and
 /// printed "0" for a perfectly legal empty string.
-export fn cc_expr_is_stringish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+export fn cc_expr_is_stringish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let e = cl_return_operand(raw_e)
   let tag = expr_tag(e)
   if tag == 3 {
     true
@@ -1265,7 +1273,8 @@ fn bool_offset_says_bool(e: Expr, ctx: CompileCtx) -> Bool {
   off >= 0 && array_contains_int(ctx.bool_render_offsets, off)
 }
 
-fn cc_expr_is_boolish(e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+fn cc_expr_is_boolish(raw_e: Expr, local_names: Array[String], ctx: CompileCtx) -> Bool with Exception {
+  let e = cl_return_operand(raw_e)
   let tag = expr_tag(e)
   // #2462/#2464: an extra `||`, never a replacement -- the table can only ADD
   // a classification the syntactic arms below missed, never remove one they
@@ -3800,6 +3809,30 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
     }
     else if !prefer_bound_call && fname == "path" {
       ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+    }
+    else if fname == "__lambda_return_owned" && get_eident_off(callee) < 0 {
+      // #2754: lambda return ABI. Resolve at the return site while the lexical
+      // scope is live; a global contract cannot describe a local callback.
+      let value = Array::get(args, 0)
+      let borrowed = match value {
+        EDot(_, _, _, _) => true,
+        ECall(EIdent(cn, _), _, _) => find_local_slot(local_names, cn) < 0 && (is_borrow_ret_builtin(cn) || bsearch_leftmost(ctx.borrow_ret_names, cn) >= 0),
+        EIdent(n, _) => array_contains_str(ctx.loop_borrowed_names, n) || array_contains_str(ctx.ref_cell_names, n),
+        _ => false
+      }
+      let nl = ce(buf, value, local_names, next_local, ctx, ld)
+      if borrowed {
+        // Expression compilation can reserve unnamed scratch slots.
+        while Array::length(local_names) <= nl {
+          Array::push(local_names, "")
+        }
+        emit_local_set(buf, nl)
+        emit_rc_dup_guarded(buf, nl, ctx.rc_shadow, ctx.rc_dup_func_idx)
+        emit_local_get(buf, nl)
+        nl + 1
+      } else {
+        nl
+      }
     }
     else if fname == "__loop_tail_retain" {
       // #768: codegen-internal marker (retain_wrap_branch_tails,

@@ -884,3 +884,77 @@ formatting, AST review lint and the output size ratchet. Full regression runs in
 CI. The seed bump also exposed a gate self-test that assumed the seed lacked
 telemetry; its mutation now disables the environment key in a copy of the current
 compiler and requires both the missing-positive and accepted-refusal failures.
+
+### Borrowed callback returns, 2026-09-15
+
+A callback that returns an interior view now retains it before transferring
+its result to the caller (#2754). This covers anonymous lambdas and named
+functions used as values. Compound initializers feeding a return are normalized
+before Perceus planning so an owned branch and a borrowed branch balance
+separately. Early returns and exception handlers use the same return handling;
+scalar representation queries see through the internal marker. `rc-classify`
+and `rc-plan` apply the same named-function contract as codegen.
+
+The issue's ordinary-RC result changes from **91515 to 90715**, matching bump.
+Shadow RC already answered correctly before the fix, so the regression tests
+explicitly execute ordinary RC. The 43 new tests cover values, representation,
+queries and reclamation, including mixed-return helper chains, recursive
+helpers and early returns. Reclamation checks run **20,000 iterations** with a
+2,000-byte bound. The six related test files pass all 98 tests, and stage2
+equals stage3.
+
+[Raw measurements and harness](../compiler-callback-return.json) compare main
+`529f786a3` with implementation `47c9e5f20`. The subsequent contract change only
+declares the query's new direct package dependency. On Node 24.21.0 / Apple M5,
+all **13 parser series have identical heap high-water** across three alternating
+pairs, each with 50 iterations after setup and three warmups. The previous
+blanket callback-drop suppression's 10.8–24% growth does not recur.
+
+For a filesystem build of the full CLI, both compiler runtimes produce RC
+output. Each pair uses a fresh cache and runs cold, then warm in a new process;
+checker, AST and body caches are disabled while production module caches remain
+active. No build or test runs alongside these measurements.
+
+| Compiler runtime / cache | Wall median, before → after | Heap high-water delta | Reserved linear memory delta |
+|---|---:|---:|---:|
+| bump / cold | 4.909 → 4.960 s | +15,202,344 B (+0.60%) | 0 B |
+| bump / warm | 3.794 → 3.791 s | +15,203,184 B (+0.79%) | 0 B |
+| RC / cold | 12.554 → 12.686 s | +10,833,248 B (+0.44%) | 0 B |
+| RC / warm | 8.959 → 8.993 s | +10,855,112 B (+0.60%) | 0 B |
+
+Wall medians differ by −0.1% to +1.1%; individual RC cold pairs range from
+−4.7% to +9.4%, so these measurements establish no wall-time improvement.
+The deterministic cost is the small additional compiler heap above; reserved
+capacity stays identical in every configuration. The full CLI output grows by
+1,386 bytes. For each revision, its outputs match across cold/warm and bump/RC
+compiler runtimes. Existing CI lanes discover the new tests; no performance job
+or extra CI matrix is added.
+
+The return contract also covers helpers used by callbacks. A worklist follows
+may-view helpers through named and anonymous callbacks, including recursive
+helper chains. Each selected helper normalizes its own result paths before
+borrow inference; direct callers and queries see that same owning contract.
+Pure borrow-returning helpers keep their existing contract unless used as
+values. Early returns are normalized before analysis, including those in a
+non-tail expression, and return-free non-tail subtrees stay shared. This avoids both a
+dangling callback result and retaining the fresh branch of a mixed helper.
+
+The `review_followup` observations in the raw report isolate this extension
+(`d60e5d863` → `c8abab2b2`) using the same protocol and the same input source on
+both sides. Parser heap remains identical in all 13 series. The mixed helper
+reclamation probe uses 268 bytes, and its early-return variant uses 348 bytes,
+after 20,000 iterations.
+
+| Compiler runtime / cache | Wall median, before → after | Heap high-water delta | Reserved linear memory delta |
+|---|---:|---:|---:|
+| bump / cold | 5.068 → 4.904 s | +19,261,072 B (+0.76%) | +16,252,928 B (+0.45%) |
+| bump / warm | 3.796 → 3.878 s | +19,264,704 B (+1.00%) | 0 B |
+| RC / cold | 11.703 → 11.784 s | −93,521,152 B (−3.77%) | −1,310,720 B (−0.05%) |
+| RC / warm | 8.393 → 8.577 s | −5,149,312 B (−0.28%) | 0 B |
+
+These are three alternating pairs, not evidence of a wall-time speedup. The
+additional analysis costs bump heap while RC reclaims more memory. Output grows
+by 14,541 bytes and stays byte-identical within each revision across compiler
+runtimes and cache temperatures. Absolute values differ from the earlier table
+because this comparison compiles the updated source; artifact identities and
+all observations are recorded separately.
