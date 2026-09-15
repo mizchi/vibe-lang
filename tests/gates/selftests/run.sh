@@ -67,4 +67,14 @@ bash "$ROOT_DIR/scripts/incremental_kpi_test.sh"
 # compiler that does not contain the change, with nothing in the report saying
 # so (#2836 §1). Cheap: no compiler, synthetic git trees.
 bash "$ROOT_DIR/scripts/resolve_stage2_test.sh"
+# The host half of the capability contract (#2825 step 1,
+# docs/internal/design/capability-host-contract.md). Same glob reason again -- and this one is
+# a case where the gate that already exists could not see the property:
+# `check_host_runtime_contract.py` proves both runners IMPLEMENT every portable
+# import, which is a different question from whether either can withhold one.
+# Measured, the node runner could not: any `vibe.*` field it did not implement
+# answered `0`, so removing a method did not withhold a capability, it made the
+# capability lie. The companion asserts the withheld run traps by name AFTER
+# instantiating, and that removing the branch lets the same run succeed.
+bash "$ROOT_DIR/scripts/host_capability_withhold_test.sh"
 echo "[compiler-gate] gate self-tests ok (#2248)"

@@ -1375,6 +1375,7 @@ fn run(args: Vec<String>) -> Result<i32> {
 
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
+    withhold_capability_imports(&mut linker, &module)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
@@ -1621,6 +1622,25 @@ fn run(args: Vec<String>) -> Result<i32> {
                 eprintln!("viberun: {e:?}");
             } else {
                 eprintln!("viberun: {e}");
+                // #2825: the not-granted stub's refusal has to REACH the user.
+                // wasmtime wraps a host-function error as "error while
+                // executing at wasm backtrace: ...", and the branch above is
+                // the only one that prints the chain -- so which capability
+                // was withheld was visible only to someone who already knew to
+                // set a debug variable. Measured: CI, with no RUST_BACKTRACE,
+                // showed the wasm backtrace alone, while a dev shell that had
+                // it set showed `Caused by: vibe capability withheld:
+                // fs_read_file` and the gate passed for that reason and no
+                // other (#2252: a test must not inherit the environment that
+                // decides its answer). Narrow on purpose: every other guest
+                // trap keeps rendering exactly as before.
+                for cause in e.chain() {
+                    let text = cause.to_string();
+                    if text.starts_with(CAPABILITY_WITHHELD_PREFIX) {
+                        eprintln!("viberun: {text}");
+                        break;
+                    }
+                }
                 // #644: a debug-break build (non-empty `linemap`) that traps
                 // mid-run -- not via an explicit `--break` pause -- still
                 // deserves a precise per-frame source line, not just the bare
@@ -1853,6 +1873,7 @@ fn bench(args: Vec<String>) -> Result<i32> {
     let module = load_module(&engine, wasm_path)?;
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
+    withhold_capability_imports(&mut linker, &module)?;
 
     // #747: one Store+Instance PER BENCH BLOCK. The linear backend never frees,
     // so on a shared instance an earlier block's bump-heap growth (e.g. an
@@ -2073,6 +2094,7 @@ fn daemon(args: Vec<String>) -> Result<i32> {
 
     let mut linker = Linker::new(&engine);
     register_imports(&mut linker)?;
+    withhold_capability_imports(&mut linker, &module)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
     let start: TypedFunc<(), ()> = instance.get_typed_func(&mut store, "_start")?;
@@ -4085,6 +4107,72 @@ fn vibe_dbg_line(mut caller: Caller<'_, HostState>, file_id: i32, line: i32) -> 
         let _ = h.flush();
     }
     dbg_apply_command(&mut caller, depth)
+}
+
+// #2825 step 1 -- the not-granted stub
+// (docs/internal/design/capability-host-contract.md).
+//
+// ADR-0088's 2026-09-15 amendment makes `perform?` an instantiate-time branch,
+// so an emitted module declares the ungranted arm's host import whether or not
+// the build granted it. A host then has to be able to WITHHOLD a capability:
+// link something of the right type so the module still instantiates, and trap
+// if the program ever calls it.
+//
+// This runner could not express that either, but for the opposite reason to
+// `scripts/wasm_vibe_host_runner.js`. There, an unimplemented `vibe.*` field
+// answers `0` and the capability lies. Here, an import `register_imports` does
+// not define makes the whole module fail to instantiate before user code runs
+// -- which is the right answer for a REQUIRED capability and the wrong one for
+// an optional capability whose `NotGranted` arm is exactly what the program
+// asked for.
+//
+// The stub's type comes from the module's own import section rather than from
+// a table here, so it matches by construction and no list can drift from the
+// 59 fields the emitter can produce. A name in `VIBE_HOST_WITHHOLD` that this
+// module does not import is a no-op: withholding a capability a program never
+// asked for is not an error.
+/// One spelling, shared by the stub that produces the refusal and the renderer
+/// below that has to find it again in the error chain.
+const CAPABILITY_WITHHELD_PREFIX: &str = "vibe capability withheld: ";
+
+fn withheld_capabilities() -> std::collections::BTreeSet<String> {
+    std::env::var("VIBE_HOST_WITHHOLD")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn withhold_capability_imports(linker: &mut Linker<HostState>, module: &Module) -> Result<usize> {
+    let withheld = withheld_capabilities();
+    if withheld.is_empty() {
+        return Ok(0);
+    }
+    let mut stubbed = 0;
+    // `register_imports` has already defined the real implementation, so the
+    // stub REPLACES one; shadowing is turned back off immediately so nothing
+    // else in this process gains the ability to redefine an import silently.
+    linker.allow_shadowing(true);
+    for import in module.imports() {
+        if import.module() != "vibe" || !withheld.contains(import.name()) {
+            continue;
+        }
+        let ExternType::Func(ty) = import.ty() else {
+            continue;
+        };
+        let name = import.name().to_string();
+        // The message is built here and MOVED into the closure; `name` stays
+        // put so it can still be borrowed for the import's own field name.
+        let refusal = format!("{CAPABILITY_WITHHELD_PREFIX}{name}");
+        linker.func_new("vibe", &name, ty, move |_caller, _args, _results| {
+            bail!("{refusal}")
+        })?;
+        stubbed += 1;
+    }
+    linker.allow_shadowing(false);
+    Ok(stubbed)
 }
 
 fn register_imports(linker: &mut Linker<HostState>) -> Result<()> {

@@ -1068,6 +1068,49 @@ const POLICY_TOKEN_LOW_MASK = POLICY_TOKEN_HIGH_BIT - 1n;
 let policyStatTokenConfig = null;
 let policyRawFsConfig = null;
 
+// #2825 step 1 -- the not-granted stub (docs/internal/design/capability-host-contract.md).
+//
+// ADR-0088's 2026-09-15 amendment makes `perform?` an instantiate-time branch,
+// so an emitted module declares the ungranted arm's host import whether or not
+// the build granted it. A host then has to be able to WITHHOLD a capability:
+// link something of the right type so the module instantiates, and trap if the
+// program ever calls it.
+//
+// This runner could not express that. Its `vibe` import module is a Proxy
+// whose `get` answers an unknown field with `() => 0n`, so deleting a method
+// does not withhold the capability -- it makes the capability answer zero,
+// which is the silent-wrong failure this repo's design policy ranks worst.
+// Measured on 945d755 with `node scripts/host_capability_probe.mjs`: a strict
+// host refuses all 18 of a stage2's `vibe.*` imports with a LinkError, this
+// runner instantiates every one of them and answers 0.
+//
+// `VIBE_HOST_WITHHOLD=fs_read_file,http_request` withholds those fields. It is
+// checked BEFORE the implemented-methods table on purpose: withholding a
+// capability the host CAN provide is the whole point, and a switch that only
+// worked for unimplemented names would test nothing. Names are the wasm import
+// field (`fs_read_file`), not the capability label (`Fs::read_file`), because
+// the field is what the module declares and what a host links against.
+function parseWithheldCapabilities(spec) {
+  const names = new Set();
+  for (const raw of String(spec ?? "").split(",")) {
+    const name = raw.trim();
+    if (name !== "") names.add(name);
+  }
+  return names;
+}
+
+const withheldCapabilities = parseWithheldCapabilities(process.env.VIBE_HOST_WITHHOLD);
+
+// The stub itself. It traps rather than answering, so a mistake anywhere else
+// in the contract -- a grant the host forgot to clear, a lowering that picked
+// the granted arm -- surfaces as a trap naming the capability instead of as a
+// zero flowing into user data.
+function capabilityWithheldStub(name) {
+  return () => {
+    throw new Error(`vibe capability withheld: ${name}`);
+  };
+}
+
 function importSectionContains(wasmBytes, needle) {
   let offset = 8;
   while (offset < wasmBytes.length) {
@@ -2923,6 +2966,9 @@ async function main() {
     {
       get(target, key) {
         const name = String(key);
+        if (withheldCapabilities.has(name)) {
+          return capabilityWithheldStub(name);
+        }
         if (key in target) {
           const fn = target[key];
           if (!policyRawFsConfig || typeof fn !== "function") return fn;
@@ -3733,8 +3779,10 @@ async function main() {
 
 module.exports = {
   buildFsMetadataHashParts,
+  capabilityWithheldStub,
   configurePolicyStatToken,
   configurePolicyRawFs,
+  parseWithheldCapabilities,
   authorizePolicyRawImport,
   authorizePolicyRawPath,
   contentStatDigest,
