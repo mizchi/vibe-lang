@@ -145,3 +145,31 @@ test "flat wasi-only lane refuses an export naming nothing" {
 test "flat wasi-only lane accepts an export naming a private fn" {
   inspect(flat_wasi_only_outcome("flat-wasi-only-ok", "export {\n  helper\n}\n\nfn helper() -> Int {\n  3\n}\n\nexport fn main() -> Int {\n  helper()\n}\n"), "flat-wasi-only-ok: accepted")
 }
+
+//# ROUND 3 (Codex P1 again, on b9605b6). Two shapes that were still a lane
+//# disagreement, each pinned where it went wrong.
+
+//# A. The gc lane lowers `test "probe"` into a private `SLet("__test_probe")`
+//# BEFORE its check -- deliberately, so a `handle` inside a test block stays
+//# eligible for the ADR-0076 direct-perform lowering. The checked env therefore
+//# bound a name the source never declared, and the export looked resolved:
+//# measured, gc ACCEPTED while the FS lane refused.
+test "gc lane refuses an export naming a synthesized test binding" {
+  inspect(String::concat(flat_gc_outcome("gc-synth", "export {\n  __test_probe\n}\n\ntest \"probe\" {\n  inspect(1, \"1\")\n}\n\nexport fn main() -> Int {\n  1\n}\n"), String::concat(" || ", typecheck_outcome("fs-synth", "export {\n  __test_probe\n}\n\ntest \"probe\" {\n  inspect(1, \"1\")\n}\n\nexport fn main() -> Int {\n  1\n}\n"))), "gc-synth: declare or import __test_probe in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import || fs-synth: declare or import __test_probe in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+//# A'. The same lowering must NOT make the exclusion refuse a name the author
+//# really declared at that spelling. `__test_` is not a reserved prefix, so the
+//# exclusion is the list the pass built, never a spelling rule.
+test "gc lane accepts an export naming a real declaration spelled like a test binding" {
+  inspect(flat_gc_outcome("gc-real", "export {\n  __test_probe\n}\n\nfn __test_probe() -> Int {\n  3\n}\n\nexport fn main() -> Int {\n  __test_probe()\n}\n"), "gc-real: accepted")
+}
+
+//# B. `compiler_owned_type_arity` is WIDER than what publication can expose.
+//# `export { StringMap }` was accepted while a consumer importing it still got
+//# `imported name 'StringMap' is not exported by './dep.vibe'` -- the no-op
+//# this issue exists to remove, preserved for the container builtins. The
+//# predicate now asks `is_explicit_builtin_declaration`, publication's own.
+test "an export naming a builtin publication cannot expose is refused" {
+  inspect(typecheck_outcome("container-builtin", "export {\n  StringMap\n}\n\nexport fn mk() -> Int {\n  1\n}\n"), "container-builtin: declare or import StringMap in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}

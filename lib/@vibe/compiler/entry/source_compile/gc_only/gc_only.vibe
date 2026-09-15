@@ -10,7 +10,7 @@ import @vibe/core {
 import @vibe/compiler/checker {
   check_program_double_call_result_observation,
   checked_int_and_bool_render_offsets,
-  validate_user_source_exports,
+  validate_user_source_exports_excluding,
   validate_user_source_stmts
 }
 
@@ -289,7 +289,13 @@ fn strip_generic_type_params(stmts: Array[Stmt]) -> Unit {
 /// it is a compiler-generated test artifact. This is
 /// what lets `VIBE_TEST_BACKEND=gc bash scripts/vibe_test.sh file` run a
 /// *_test.vibe on the wasm-gc backend under wasmtime.
-fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool) with Exception {
+/// #2762 (Codex P1 round 3 on #2806): the third component is the list of
+/// names this pass SYNTHESIZED, handed out so the export validation can
+/// discount them. It is the list the pass already built for the `_start`
+/// synthesis below, not a second derivation -- a `__test_` spelling rule would
+/// have to keep agreeing with the two `String::concat` calls here, and would
+/// refuse a user's own `let __test_probe`.
+fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool, Array[String]) with Exception {
   let empty_tp = array_empty()
   let empty_bounds = array_empty()
   let empty_params = array_empty()
@@ -316,7 +322,7 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool
     i = i + 1
   }
   if has_entry || Array::length(test_fn_names) == 0 {
-    (entry_name, false)
+    (entry_name, false, test_fn_names)
   } else {
     // Synthesize `_start` calling each test/bench fn in declaration order.
     let mut body = EInt(0)
@@ -326,7 +332,7 @@ fn lower_test_blocks_gc(stmts: Array[Stmt], entry_name: String) -> (String, Bool
       ti = ti - 1
     }
     Array::push(stmts, SLet(true, false, "_start", None, EFn(empty_tp, empty_bounds, empty_params, None, None, body)))
-    ("_start", true)
+    ("_start", true, test_fn_names)
   }
 }
 
@@ -357,7 +363,7 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
   // node this erases. #2107 closed the second half in the checker instead:
   // `lowered_test_ambient_effects` recognizes these two prefixes, so the
   // grant survives the lowering without changing what CODEGEN sees.
-  let (effective_entry, generated_test_artifact) = lower_test_blocks_gc(stmts, entry_name)
+  let (effective_entry, generated_test_artifact, lowered_test_names) = lower_test_blocks_gc(stmts, entry_name)
   // #2441: the same observation carries the typed-`==` rows. On this lane
   // they need no rename mapping (the check runs on the POST-merge,
   // post-rename statements, so the keys already name the merged
@@ -369,7 +375,12 @@ fn compile_stmts_gc_only_impl(stmts: Array[Stmt], entry_name: String, merged_off
     None => throw("internal compiler error: incomplete GC call-result type observation")
   }
   if validate_exports {
-    validate_user_source_exports(stmts, checked.final_env)
+    // #2762 round 3: `lowered_test_names` are the bindings the test-block
+    // lowering above introduced. Without discounting them the checked env made
+    // `export { __test_probe }` look resolved and this lane ACCEPTED it while
+    // the FS lane refused -- measured, and the lane disagreement this issue is
+    // about.
+    validate_user_source_exports_excluding(stmts, checked.final_env, lowered_test_names)
   } else {
     ()
   }

@@ -58,6 +58,7 @@ import @vibe/compiler/core {
   find_enum_typedef,
   find_typedef,
   generalize,
+  has_standard_effect_policy,
   is_singleton_resource_kind,
   lookup_registry_builtin,
   overlapping_impl_target_for,
@@ -241,6 +242,42 @@ export fn export_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option
   found
 }
 
+/// #2762: which compiler-provided names a module may republish with an
+/// aggregate `export { }`.
+///
+/// Moved here from typecheck_fs.vibe, where it was private (Codex P1 round 3
+/// on #2806). It is the predicate
+/// `checked_module_public_env_with_reexport_declarations` uses to mint
+/// publication authority for a name no module declares, so it is ALSO the
+/// exact set such an export may name: publish anything outside it and the
+/// published environment simply omits the name, leaving the export the silent
+/// no-op #2762 exists to remove. The checker is where both callers can reach
+/// it -- `runtime` depends on `checker`, and `core/types.vibe` cannot host it
+/// because `core/builtin_registry.vibe` imports types, so the edge would be a
+/// cycle.
+export fn is_explicit_builtin_declaration(name: String) -> Bool {
+  let qualifier_at = String::index_of(name, "::")
+  let qualifier = if qualifier_at > 0 {
+    String::substring(name, 0, qualifier_at)
+  } else {
+    ""
+  }
+  if name == "Option" || name == "Random" || qualifier == "Option" || qualifier == "Random" {
+    true
+  } else match resolve_builtin(qualifier) {
+    Some(_) => true,
+    None => match resolve_builtin(name) {
+      Some(_) => true,
+      None => if has_standard_effect_policy(name) {
+        true
+      } else match lookup_registry_builtin(name) {
+        Some(_) => true,
+        None => false
+      }
+    }
+  }
+}
+
 /// #2762: does this module resolve `name`, as something its export surface can
 /// publish?
 ///
@@ -271,19 +308,22 @@ export fn export_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option
 /// on every FS lane. The green fixture caught it before it shipped, which is
 /// what that fixture is for.
 ///
-/// Asking the compiler's own builtin oracles rather than re-deriving a list:
-/// `compiler_owned_type_arity` for the container types, `resolve_builtin` for
-/// the scalars and opaque tokens, `lookup_builtin` for builtin VALUES (the
-/// shape `lib/@vibe/parser/polyfill.vibe` opens with, `export { __to_string }`).
-/// On the published env the clause changes nothing, because the flat binding
-/// already answered.
+/// The clause asks `is_explicit_builtin_declaration` -- the SAME predicate
+/// publication uses to mint authority for a name no module declares -- and not
+/// a broader set of builtin oracles. Round 3 of Codex's review on #2806 caught
+/// the difference: the first attempt asked `compiler_owned_type_arity`,
+/// `resolve_builtin` and `lookup_builtin`, and the first of those is WIDER than
+/// publication. Measured, `export { StringMap }` was then ACCEPTED while a
+/// consumer writing `import ./dep.vibe { StringMap }` still got
+/// `imported name 'StringMap' is not exported by './dep.vibe'` -- the silent
+/// no-op #2762 exists to remove, preserved for exactly the container builtins.
+///
+/// One predicate, both callers, so the refusal and publication cannot disagree
+/// about what a module can publish. Measured over the tree: `Option` is the
+/// only compiler-provided name any module aggregate-exports
+/// (`lib/@vibe/builtin/option.vibe`), and it is named explicitly there.
 export fn export_name_resolves(stmts: Array[Stmt], bindings: Array[(String, Type)], name: String) -> Bool {
-  env_lookup_flat(bindings, name) != None || export_local_nonvalue_kind(stmts, name) != None || export_name_is_compiler_provided(name)
-}
-
-/// #2762: is `name` provided by the compiler rather than by any module?
-fn export_name_is_compiler_provided(name: String) -> Bool {
-  compiler_owned_type_arity(name) != None || resolve_builtin(name) != None || lookup_builtin(name) != None
+  env_lookup_flat(bindings, name) != None || export_local_nonvalue_kind(stmts, name) != None || is_explicit_builtin_declaration(name)
 }
 
 /// #2762: the first name an aggregate `export { .. }` publishes that this
@@ -314,13 +354,39 @@ fn export_name_is_compiler_provided(name: String) -> Bool {
 /// `contract_effective_decls` drops a legacy bodyless `let version: String`
 /// too. The row was deleted with this fix.
 export fn unresolved_aggregate_export_name(stmts: Array[Stmt], env: TypeEnv) -> Option[String] {
+  unresolved_aggregate_export_name_excluding(stmts, env, array_empty())
+}
+
+/// #2762 (Codex P1 round 3 on #2806): the same question, with `synthesized`
+/// naming bindings a LOWERING introduced rather than the author.
+///
+/// The gc lane runs `lower_test_blocks_gc` before its check -- deliberately,
+/// so a `handle` written inside a test block stays eligible for the ADR-0076
+/// direct-perform lowering -- and that pass REPLACES each `test "probe"` with
+/// a private `SLet("__test_probe", ..)`. The checked env therefore binds a
+/// name the source never declared, and `export { __test_probe }` looked
+/// resolved: measured, the gc lane ACCEPTED it while the FS lane refused it,
+/// which is the lane disagreement this issue is about.
+///
+/// The excluded set is the list `lower_test_blocks_gc` itself built while
+/// rewriting, threaded out and back in -- not a `__test_` prefix test. A
+/// spelling rule would be a second text that has to keep agreeing with that
+/// pass, and it would refuse a user's own `fn __test_probe`, which is a real
+/// declaration and which the test below pins as still accepted (the prefix is
+/// not reserved: only `__vibe_` is, per `collect_reserved_value_prefix_errors`).
+export fn unresolved_aggregate_export_name_excluding(stmts: Array[Stmt], env: TypeEnv, synthesized: Array[String]) -> Option[String] {
   let bindings = env_flat_bindings(env)
   let names = aggregate_export_names(stmts)
   let mut i = 0
   let mut found = None
   while i < Array::length(names) {
     let name = Array::get(names, i)
-    if found == None && !export_name_resolves(stmts, bindings, name) {
+    // A synthesized name is REPORTED, not skipped: the whole point is that the
+    // env binds it while the source does not declare it, so it must not be
+    // allowed to answer for the export. Written as a skip on the first
+    // attempt, which made the gc lane accept `export { __test_probe }` again --
+    // the test below caught it.
+    if found == None && (string_array_contains_exact(synthesized, name) || !export_name_resolves(stmts, bindings, name)) {
       found = Some(name)
     } else {
       ()
@@ -365,7 +431,14 @@ export fn unresolved_export_message(name: String) -> String {
 /// sits behind -- because a compiler-GENERATED statement graph is merged and
 /// renamed, and its export list is not the user's text.
 export fn validate_user_source_exports(stmts: Array[Stmt], env: TypeEnv) -> Unit with Exception {
-  match unresolved_aggregate_export_name(stmts, env) {
+  validate_user_source_exports_excluding(stmts, env, array_empty())
+}
+
+/// #2762: the gc lane's door, which must discount the bindings its own
+/// test-block lowering introduced -- see
+/// `unresolved_aggregate_export_name_excluding`.
+export fn validate_user_source_exports_excluding(stmts: Array[Stmt], env: TypeEnv, synthesized: Array[String]) -> Unit with Exception {
+  match unresolved_aggregate_export_name_excluding(stmts, env, synthesized) {
     Some(name) => throw(unresolved_export_message(name)),
     None => ()
   }
