@@ -4,6 +4,7 @@ import @vibe/compiler/checker {
   check_program_double_call_result_located_observation,
   checked_int_and_bool_render_offsets,
   effect_row_contains_label,
+  validate_user_source_exports,
   validate_user_source_stmts
 }
 
@@ -28,7 +29,7 @@ import ./preprocess_strip.vibe {
 }
 
 import @vibe/compiler/core {
-  Expr, Stmt, TypeExpr
+  Expr, Stmt, TypeEnv, TypeExpr
 }
 
 import @vibe/core {
@@ -220,13 +221,17 @@ fn maybe_wrap_async_component(bytes: Bytes, wrap_async: Bool) -> Bytes with Exce
 /// offset space, no merge and no renames -- the rows apply as-is, and an
 /// unlocated AST yields no rows by construction (the record site's
 /// `anchor_off >= 0` guard).
-fn source_offsets(stmts: Array[Stmt]) -> (Array[Int], Array[Int], Array[Int], Array[Int], Array[String]) with Exception {
+/// #2762: the checked env rides along as an `Option`, for
+/// `validate_source_exports_if_user` below. `None` is the observation refusing
+/// an unlocated AST -- `EnvEmpty` would have no bindings, so validating
+/// against it would refuse every legitimate aggregate export.
+fn source_offsets(stmts: Array[Stmt]) -> (Array[Int], Array[Int], Array[Int], Array[Int], Array[String], Option[TypeEnv]) with Exception {
   match check_program_double_call_result_located_observation(stmts) {
     Some((checked, offsets, eq_offs, eq_keys)) => {
       let (int_renders, bool_renders) = checked_int_and_bool_render_offsets(checked)
-      (offsets, int_renders, bool_renders, eq_offs, eq_keys)
+      (offsets, int_renders, bool_renders, eq_offs, eq_keys, Some(checked.final_env))
     },
-    None => ([], [], [], [], [])
+    None => ([], [], [], [], [], None)
   }
 }
 
@@ -235,6 +240,23 @@ fn validate_source_if_user(stmts: Array[Stmt], trusted_generated: Bool) -> Unit 
     validate_user_source_stmts(stmts)
   } else {
     ()
+  }
+}
+
+/// #2762 (Codex P1 round 2 on #2806): this lane publishes no export surface,
+/// so the refusal at publication never reaches it -- measured, it compiled
+/// `export { NotDeclaredAnywhere }` while every FS lane refused. USER source
+/// only, the same gate `validate_source_if_user` sits behind: a
+/// compiler-GENERATED statement graph is merged and renamed, so its export
+/// list is not the user's text.
+fn validate_source_exports_if_user(stmts: Array[Stmt], env: Option[TypeEnv], trusted_generated: Bool) -> Unit with Exception {
+  if trusted_generated {
+    ()
+  } else {
+    match env {
+      Some(checked_env) => validate_user_source_exports(stmts, checked_env),
+      None => ()
+    }
   }
 }
 
@@ -247,7 +269,8 @@ fn compile_source_wasi_only_impl(source: String, entry_name: String, trusted_gen
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
   // Check before stripping generic type params (see merge_sources.vibe).
-  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys) = source_offsets(stmts)
+  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
+  validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async)
@@ -283,7 +306,8 @@ fn compile_source_wasi_only_coverage_impl(source: String, entry_name: String, tr
   let stmts = parse_program_located(tokens, starts, source)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
-  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys) = source_offsets(stmts)
+  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
+  validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   strip_generic_type_params(stmts)
   // Coverage consumers require a standalone instrumented core. StdinStream's
   // raw provider ABI is satisfiable only inside the dedicated component, so
@@ -312,7 +336,8 @@ fn compile_source_wasi_only_rc_impl(source: String, entry_name: String, trusted_
   let stmts = parse_program_located(tokens, starts, source)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
-  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys) = source_offsets(stmts)
+  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
+  validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_rc_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async)
@@ -342,7 +367,8 @@ fn compile_source_wasi_only_rc_shadow_impl(source: String, entry_name: String, t
   let stmts = parse_program_located(tokens, starts, source)
   validate_source_if_user(stmts, trusted_generated)
   expand_interp_stmts(stmts)
-  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys) = source_offsets(stmts)
+  let (float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys, checked_env) = source_offsets(stmts)
+  validate_source_exports_if_user(stmts, checked_env, trusted_generated)
   let wrap_async = (entry_name == "run") && entry_declares_async_int(stmts, entry_name)
   strip_generic_type_params(stmts)
   maybe_wrap_async_component(compile_wasi_module_rc_shadow_impl_with_typed_offsets(stmts, entry_name, float_call_offsets, int_render_offsets, bool_render_offsets, eq_offsets, eq_keys), wrap_async)

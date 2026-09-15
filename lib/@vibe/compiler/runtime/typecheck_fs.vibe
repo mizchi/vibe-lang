@@ -33,6 +33,7 @@ import @vibe/ast {
 
 import @vibe/compiler/checker {
   CheckedProgram,
+  aggregate_export_names,
   check_program,
   check_program_type_table,
   check_program_with_env_result,
@@ -41,11 +42,15 @@ import @vibe/compiler/checker {
   detect_redundant_namespace_imports,
   detect_unbound_nonunit_returns,
   detect_unused_imports,
+  export_local_nonvalue_kind,
   import_item_kind_errors,
+  is_explicit_builtin_declaration,
   report_unknown_type_names_deferred_validation,
   typed_lowering_enc_offset,
   typed_lowering_enc_tag,
   typing_semantics_seed,
+  unresolved_aggregate_export_name,
+  unresolved_export_message,
   validate_derives
 }
 
@@ -659,29 +664,6 @@ fn type_returns_name(ty: Type, type_name: String) -> Bool {
 /// explicitly publishes it. This predicate is deliberately used solely while
 /// constructing that published surface; import validation below never falls
 /// back to builtin, registry, or effect-name recognition.
-fn is_explicit_builtin_declaration(name: String) -> Bool {
-  let qualifier_at = String::index_of(name, "::")
-  let qualifier = if qualifier_at > 0 {
-    String::substring(name, 0, qualifier_at)
-  } else {
-    ""
-  }
-  if name == "Option" || name == "Random" || qualifier == "Option" || qualifier == "Random" {
-    true
-  } else match resolve_builtin(qualifier) {
-    Some(_) => true,
-    None => match resolve_builtin(name) {
-      Some(_) => true,
-      None => if has_standard_effect_policy(name) {
-        true
-      } else match lookup_registry_builtin(name) {
-        Some(_) => true,
-        None => false
-      }
-    }
-  }
-}
-
 fn is_selected_type_companion(name: String, ty: Type, type_surface: Array[String]) -> Bool {
   let mut i = 0
   let mut selected = false
@@ -3318,7 +3300,31 @@ fn append_env_tail(head: TypeEnv, tail: TypeEnv) -> TypeEnv {
   }
 }
 
-export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv {
+/// #2762: publication is where the export surface becomes a value, so it is
+/// where an `export { }` naming nothing is refused.
+///
+/// The first attempt put the check in `check_module_impl`, which is only the
+/// FS worker lane. Codex (P1 on #2806) found the hole by reading: the
+/// IN-MEMORY walk in `runtime.vibe` (`ensure_fingerprint`, both arms) reaches
+/// this same publication without passing through that function, so
+/// `db_typecheck` and `compile_with_modules_cached` still accepted the module.
+/// Measured on the branch with the first fix in place, `db_set_source` +
+/// `db_typecheck` of a module whose only oddity is
+/// `export { NotDeclaredAnywhere }` answered ACCEPTED -- the very defect this
+/// issue is about (two lanes disagreeing about whether a module is a program),
+/// reproduced between a different pair.
+///
+/// So it goes through the one door, for the reason #2378's marker comment
+/// below already gives: every lane publishes here, and a check placed here
+/// cannot be missed by a lane added later. The cost is that publication now
+/// carries `with Exception` -- publication CAN fail, and the row says so.
+///
+/// The check reads the FINAL published env, which is what `check_module_impl`
+/// handed it before this move, so the behaviour is unchanged for that lane.
+/// Not the intermediate `publication_env`: `prepend_explicit_builtin_value_
+/// markers` is fed `value_surface`, which contains the export names
+/// themselves, so a marker could make an absent name look bound.
+export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv with Exception {
   // Local declarations stay ahead of the publication-only projection, which
   // preserves lexical shadowing when both select the same public spelling.
   let publication_env = append_env_tail(full_checked_env, reexport_declarations)
@@ -3339,10 +3345,15 @@ export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt
   // builtin_shadow_marker_prefix. Bound HERE, in the one publication every
   // lane goes through (the FS wave loop, the #906 worker, and the in-memory
   // walk in runtime.vibe), so no lane can publish an unmarked env.
-  bind_builtin_shadow_markers(prepend_explicit_builtin_value_markers(value_surface, with_builtin_types), collect_builtin_shadowing_names(stmts))
+  let published_env = bind_builtin_shadow_markers(prepend_explicit_builtin_value_markers(value_surface, with_builtin_types), collect_builtin_shadowing_names(stmts))
+  match unresolved_aggregate_export_name(stmts, published_env) {
+    Some(name) => throw(unresolved_export_message(name)),
+    None => ()
+  }
+  published_env
 }
 
-export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEnv) -> TypeEnv {
+export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEnv) -> TypeEnv with Exception {
   checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, EnvEmpty)
 }
 
@@ -3416,31 +3427,6 @@ fn interface_push_decl_line(lines: Array[String], exported: Bool, include_privat
 /// can shadow an imported name and re-resolve an impl target without appearing
 /// in any interface (Codex on #2742, P1). One serializer, two callers, so the
 /// two cannot drift apart.
-/// The names an aggregate `export { .. }` lists, in source order.
-///
-/// Unlike `interface_public_value_names` this is the RAW `SExport` list and
-/// nothing else -- no re-exports, no declaration-exported names, no sort. It
-/// answers one question: which declarations does this module publish WITHOUT
-/// carrying `export` on the declaration itself.
-fn interface_aggregate_export_names(stmts: Array[Stmt]) -> Array[String] {
-  let names = array_empty()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SExport(items) => {
-        let mut j = 0
-        while j < Array::length(items) {
-          Array::push(names, Array::get(items, j))
-          j = j + 1
-        }
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  names
-}
-
 /// Whether one declaration belongs in the serialized list.
 ///
 /// An aggregate `export { Name }` publishes a declaration that does not carry
@@ -3660,7 +3646,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool, aggregate: Ar
 }
 
 fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
-  interface_decl_lines(stmts, false, interface_aggregate_export_names(stmts))
+  interface_decl_lines(stmts, false, aggregate_export_names(stmts))
 }
 
 /// A trace-only canonical token-stream identity. It length-delimits each token's
@@ -3708,62 +3694,26 @@ fn interface_identity_version() -> String {
 
 /// What an aggregate `export { .. }` names when it does NOT name a value.
 ///
-/// `interface_public_value_names` pushes every name an `SExport` lists,
-/// whatever namespace it belongs to, and the identity below then demands a
-/// flat binding for each -- so a name with none threw on a program that checks
-/// clean without the trace (#2744).
+/// #2762: the interface identity ROW for one exported name, or `None` when the
+/// module resolves nothing under that name.
 ///
-/// Measured 2026-09-13, one probe module per kind against a stage1 built from
-/// the head, with the invalidation trace on. Almost every kind already carries
-/// a flat binding and so takes the `value:` row: a private struct, a private
-/// enum, a private type alias, a builtin declaration (`export { Option }`, the
-/// shape `lib/@vibe/builtin/option.vibe` opens with), an IMPORTED trait
-/// republished by name, and a re-export (`export ./dep.vibe { Trait }`) all
-/// observed clean. Exactly three kinds have none, all of them declared
-/// LOCALLY: a trait, an effect and an effectset. A name this module does not
-/// declare at all keeps throwing, which is the fail-closed answer.
-///
-/// So the classification is syntactic -- the module's own statements -- rather
-/// than a second environment query. The three throwing kinds are precisely the
-/// ones a local declaration identifies, and reading the statements cannot
-/// disagree with an environment it never consults.
-///
-/// The row records MEMBERSHIP in the export surface, not the declaration's
-/// content: an aggregate export is the one thing that moves the published
-/// surface without touching any declaration's own text (adding
-/// `export { Marker }` to a private `trait Marker` publishes its impls --
-/// measured: a consumer's `[T: Marker]` bound is satisfied only with it). The
-/// content is already carried, for a private declaration too, by the witness
-/// set's `include_private` row -- which ALSO moves for this exact edit, pinned
-/// as `aggregate-export=moved` in `trait_witness_set_fingerprint_test.vibe`.
-/// So the row is not what makes such an edit invalidate. It is what keeps this
-/// identity a faithful description of the export surface, and what tells this
-/// fix apart from a silent skip.
-fn interface_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option[String] {
-  let mut i = 0
-  let mut found = None
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STrait(_, decl_name, _, _, _, _) => if decl_name == name {
-        found = Some("trait")
-      } else {
-        ()
-      },
-      SEffectDef(_, decl_name, _, _) => if decl_name == name {
-        found = Some("effect")
-      } else {
-        ()
-      },
-      SEffectSet(_, decl_name, _) => if decl_name == name {
-        found = Some("effectset")
-      } else {
-        ()
-      },
-      _ => ()
+/// The classifier is `export_local_nonvalue_kind`, imported from the checker
+/// -- the SAME function the refusal consults (`unresolved_aggregate_export_name`
+/// there is defined in terms of it). That is what keeps the identity and the
+/// refusal from drifting: a kind added to the classifier starts producing a row
+/// here AND stops being refused there, in one edit. Before #2762 only the
+/// identity existed, so `export { NotDeclaredAnywhere }` checked CLEAN on the
+/// lane every build uses and threw `exported name missing from checked
+/// environment` on the lane the invalidation trace uses -- the two disagreed
+/// about whether the module was a program.
+fn interface_export_row(stmts: Array[Stmt], bindings: Array[(String, Type)], name: String) -> Option[String] {
+  match env_lookup_flat(bindings, name) {
+    Some(ty) => Some(String::concat("value:", String::concat(interface_segment(name), String::concat(":", interface_canonical_type(ty, array_empty(), array_empty()))))),
+    None => match export_local_nonvalue_kind(stmts, name) {
+      Some(kind) => Some(String::concat("export-", String::concat(kind, String::concat(":", interface_segment(name))))),
+      None => None
     }
-    i = i + 1
   }
-  found
 }
 
 fn incremental_interface_identity(source: String, env: TypeEnv) -> String with Exception {
@@ -3774,12 +3724,14 @@ fn incremental_interface_identity(source: String, env: TypeEnv) -> String with E
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i)
-    match env_lookup_flat(env_flat_bindings(env), name) {
-      Some(ty) => StringBuilder::push(out, String::concat("value:", String::concat(interface_segment(name), String::concat(":", interface_canonical_type(ty, array_empty(), array_empty()))))),
-      None => match interface_local_nonvalue_kind(stmts, name) {
-        Some(kind) => StringBuilder::push(out, String::concat("export-", String::concat(kind, String::concat(":", interface_segment(name))))),
-        None => throw(String::concat("incremental interface observation: exported name missing from checked environment: ", name))
-      }
+    match interface_export_row(stmts, env_flat_bindings(env), name) {
+      Some(row) => StringBuilder::push(out, row),
+      // #2762 made this unreachable from the checker's own lanes: a module
+      // whose `export { }` names nothing is refused before it can be
+      // observed. It stays fail-closed for the re-export and
+      // declaration-exported names this list also carries, which the checker
+      // refuses elsewhere (or not at all, if a route is ever found).
+      None => throw(String::concat("incremental interface observation: exported name missing from checked environment: ", name))
     }
     StringBuilder::push(out, "\n")
     i = i + 1
@@ -4801,12 +4753,22 @@ fn locate_type_error_heuristic(source: String, msg: String) -> String {
             if with_import != msg {
               with_import
             } else {
-              // #946(4): inline-wasm codegen errors ("inline wasm (fn
-              // <name>): ...") carry no [@off=] marker (the offset they DO
-              // carry is a WAT-text offset, not a source char offset) --
-              // locate by the enclosing fn's name instead, same
-              // first-occurrence heuristic as the other markers.
-              locate_by_marker(source, msg, "inline wasm (fn ")
+              let with_inline_wasm = locate_by_marker(source, msg, "inline wasm (fn ")
+              if with_inline_wasm != msg {
+                // #946(4): inline-wasm codegen errors ("inline wasm (fn
+                // <name>): ...") carry no [@off=] marker (the offset they DO
+                // carry is a WAT-text offset, not a source char offset) --
+                // locate by the enclosing fn's name instead, same
+                // first-occurrence heuristic as the other markers.
+                with_inline_wasm
+              } else {
+                // #2762: `declare or import <name> in this module, ...`. The
+                // first-occurrence heuristic is EXACT here rather than a
+                // guess: the message is emitted only when nothing in the
+                // module declares or imports the name, so its first
+                // occurrence in the source is its `export { }` entry.
+                locate_by_marker(source, msg, "declare or import ")
+              }
             }
           }
         }
@@ -5377,6 +5339,14 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
       // consumer of `Checked`'s env (env cache, persistent store, worker
       // transport, TDRE9, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
+      // #2762: this call REFUSES a module whose aggregate `export { }` names
+      // something it neither declares nor imports, by throwing -- so the
+      // handler below turns it into this module's `Diagnosed`, and the
+      // `program_transport` bytes and `CheckedModuleArtifact` pushed further
+      // down are never published for it. That matters: a refused module that
+      // still cached an artifact would be reused through
+      // `checked_module_artifact_outcome` on the next build, and the refusal
+      // would disappear.
       let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
       let interface_identity = if incremental_interface_trace_enabled() {
         incremental_interface_identity(job.source, checked_env)

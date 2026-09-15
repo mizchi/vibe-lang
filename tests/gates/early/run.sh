@@ -2052,6 +2052,16 @@ done
 echo "[compiler-gate] a witness dispatch on a lambda binder's bound is refused (#2737)"
 LAMBDA_BOUND_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_lambda_bound_refusal.sh
 
+# #2762: an aggregate `export { }` naming a name the module neither declares nor
+# imports is refused, with a message that LEADS with the edit. The checks, the
+# measurements behind them, and the red test that proves they can fail live in
+# the gate script and its self-test (scripts/check_export_refusal{,_test}.sh);
+# this lane hands it the compiler rather than letting it pick one. The GREEN
+# side -- the six shapes such an export MAY name -- rides the
+# fixtures/typecheck lane's `export_aggregate_*_ok` rows.
+echo "[compiler-gate] an aggregate export naming an undeclared name is refused (#2762)"
+EXPORT_REFUSAL_STAGE2="$stage2_wasm" bash scripts/check_export_refusal.sh
+
 # #2378: `vibe check` reports a qualified `fn` definition of a builtin name.
 #
 # The leak is narrow and so is the rule. Measured on the seed: a BARE `fn eq` in
