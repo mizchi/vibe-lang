@@ -73,6 +73,29 @@ printf 'check_ghost.sh nothing by this name exists\n' > "$TMP_ROOT/scripts/gate_
 run && { cat "$TMP_ROOT/out" >&2; fail "an allowlist row for a nonexistent gate was accepted"; }
 ok "an allowlist row naming no gate is rejected"
 
+# --- red 1g: a *_gate.sh that no workflow reaches is also a gate (#2592).
+# The corpus used to be check_*.sh + lint_*.sh only, so an unwired
+# compiler_gate.sh / test_*_component_gate.sh was invisible. The fixture
+# must land, then the check must name it.
+reset_tree
+printf '#!/usr/bin/env bash\necho dark-gate\n' > "$TMP_ROOT/scripts/foo_gate.sh"
+[ -f "$TMP_ROOT/scripts/foo_gate.sh" ] || fail "fixture 1g did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "an unwired *_gate.sh was accepted"; }
+grep -qF "foo_gate.sh" "$TMP_ROOT/out" || { cat "$TMP_ROOT/out" >&2; fail "the finding did not name the dark *_gate.sh"; }
+ok "an unwired *_gate.sh is rejected"
+
+# --- red 1h: `\bsh\b` must not match the `sh` in `.sh`. A name-list line
+# (`compiler_gate.sh minify_gate.sh`) in a reached file is not an invocation;
+# treating it as one is how check_gate_self_tests.sh's baseline string was
+# certifying a wire (#2592).
+reset_tree
+printf '#!/usr/bin/env bash\necho dark-gate\n' > "$TMP_ROOT/scripts/bar_gate.sh"
+printf 'compiler_gate.sh bar_gate.sh\n' >> "$TMP_ROOT/scripts/check_direct.sh"
+grep -qF 'bar_gate.sh' "$TMP_ROOT/scripts/check_direct.sh" || fail "fixture 1h did not land"
+run && { cat "$TMP_ROOT/out" >&2; fail "a .sh name-list line certified a wire"; }
+grep -qF "bar_gate.sh" "$TMP_ROOT/out" || { cat "$TMP_ROOT/out" >&2; fail "the finding did not name the still-dark *_gate.sh"; }
+ok "a .sh name-list line is not an invocation"
+
 # --- red 2: unwiring a real invocation. This is the regression the three dark
 # gates actually were: the script still exists, nothing runs it.
 reset_tree
@@ -209,7 +232,7 @@ grep -qF "no workflows found" "$TMP_ROOT/out" || fail "the empty-roots finding d
 ok "a tree with no workflows fails rather than passing vacuously"
 
 reset_tree
-rm -f "$TMP_ROOT"/scripts/check_*.sh "$TMP_ROOT"/scripts/lint_*.sh
+rm -f "$TMP_ROOT"/scripts/check_*.sh "$TMP_ROOT"/scripts/lint_*.sh "$TMP_ROOT"/scripts/*_gate.sh
 run && { cat "$TMP_ROOT/out" >&2; fail "an empty gate corpus was accepted"; }
 grep -qF "corpus went empty" "$TMP_ROOT/out" || fail "the empty-corpus finding did not name the reason"
 ok "an empty gate corpus fails rather than passing vacuously"
