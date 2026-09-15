@@ -1,0 +1,27 @@
+import @vibe/compiler/core {
+  Pat, Type, TypeDef, type_to_string
+}
+import @vibe/compiler/checker {
+  match_nonexhaustive_witness
+}
+
+test "enum exhaustiveness preserves type arguments shared by substituted payloads" {
+  let argument = CtTuple([CtInt, CtBool])
+  let scrutinee = CtNamed("E", [argument])
+  let defs = [
+    TDEnum("E", ["V"], [
+      ("End", []),
+      ("Node", [CtVar(0), CtNamed("E", [CtVar(0)]), CtNamed("E", [CtVar(0)])])
+    ])
+  ]
+  let pats = [PCtor("End", []), PCtor("Node", [PWild, PWild, PWild])]
+  let mut i = 0
+  while i < 10 {
+    // A missing constructor must produce a witness: None alone could mean
+    // the ground-type check abstained before reaching substitution.
+    assert(match_nonexhaustive_witness(scrutinee, [PCtor("End", [])], defs) is Some(_))
+    assert(match_nonexhaustive_witness(scrutinee, pats, defs) is None)
+    assert(type_to_string(argument) == "(Int, Bool)")
+    i = i + 1
+  }
+}

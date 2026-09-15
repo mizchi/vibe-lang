@@ -1,0 +1,58 @@
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+fn run_value(bytes: Bytes, label: String) -> String with Fs + Process {
+  let path = String::concat("/tmp/_mixed_return_", String::concat(label, ".wasm"))
+  Fs::write_bytes(path, bytes)
+  let out = sh_lines(String::concat("wasmtime run -W exceptions=y --invoke main ", String::concat(path, " 0 2>/dev/null")))
+  if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+}
+
+fn assert_lanes(src: String, label: String, expected: String) -> Unit with Exception + Fs + Process + Stdout {
+  inspect(run_value(compile_wasi(src, "main"), String::concat(label, "_bump")), content = expected)
+  inspect(run_value(compile_wasi_rc(src, "main"), String::concat(label, "_rc")), content = expected)
+  inspect(run_value(compile_wasi_rc_shadow(src, "main"), String::concat(label, "_shadow")), content = expected)
+}
+
+fn prelude() -> String {
+  "enum Node { Leaf(Int); Pair(Node, Node); Var(Int) }\nfn total(n: Node) -> Int { match n { Leaf(v) => v, Pair(a,b) => total(a) + total(b), Var(v) => v } }\n"
+}
+
+test "direct mixed return retains a shared replacement in a recursive tree" {
+  let src = String::concat(prelude(), "fn subst(t: Node, args: Array[Node]) -> Node { match t { Var(i) => Array::get(args, i), Pair(a,b) => Pair(subst(a,args), subst(b,args)), _ => t } }\nfn once() -> Int { let args = [Pair(Leaf(3), Leaf(4))]; let value = { let r = [subst(Pair(Var(0), Var(0)), args)]; total(Array::get(r,0)) }; let filler = Pair(Leaf(7), Leaf(8)); value * 10000 + total(Array::get(args,0)) * 100 + total(filler) }\nfn main() -> Int { once() }")
+  assert_lanes(src, "recursive", "140715")
+}
+
+test "direct mixed return owns both paths of a branch" {
+  let src = String::concat(prelude(), "fn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1),Leaf(2)) } else { Array::get(xs,0) } }\nfn once(c: Bool) -> Int { let xs = [Pair(Leaf(3),Leaf(4))]; let value = { let r = [choose(c,xs)]; total(Array::get(r,0)) }; let filler = Pair(Leaf(7),Leaf(8)); value * 10000 + total(Array::get(xs,0)) * 100 + total(filler) }\nfn main() -> Int { once(false) + once(true) }")
+  assert_lanes(src, "branch", "101430")
+}
+
+test "direct mixed return follows aliases and helper calls" {
+  let src = String::concat(prelude(), "fn choose(c: Bool, xs: Array[Node]) -> Node { let value = if c { Pair(Leaf(1),Leaf(2)) } else { Array::get(xs,0) }; value }\nfn relay(c: Bool, xs: Array[Node]) -> Node { choose(c,xs) }\nfn once(c: Bool) -> Int { let xs = [Pair(Leaf(3),Leaf(4))]; let value = { let r = [relay(c,xs)]; total(Array::get(r,0)) }; let filler = Pair(Leaf(7),Leaf(8)); value * 10000 + total(Array::get(xs,0)) * 100 + total(filler) }\nfn main() -> Int { once(false) + once(true) }")
+  assert_lanes(src, "alias", "101430")
+}
+
+test "direct mixed return retains an early borrowed result" {
+  let src = String::concat(prelude(), "fn choose(c: Bool, xs: Array[Node]) -> Node { if c { return Array::get(xs,0) }; Pair(Leaf(1),Leaf(2)) }\nfn once(c: Bool) -> Int { let xs = [Pair(Leaf(3),Leaf(4))]; let value = { let r = [choose(c,xs)]; total(Array::get(r,0)) }; let filler = Pair(Leaf(7),Leaf(8)); value * 10000 + total(Array::get(xs,0)) * 100 + total(filler) }\nfn main() -> Int { once(false) + once(true) }")
+  assert_lanes(src, "early", "101430")
+}
+
+test "direct mixed returns reclaim both fresh and borrowed paths" {
+  let src = String::concat(prelude(), "fn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1),Leaf(2)) } else { Array::get(xs,0) } }\nfn once(c: Bool) -> Int { let xs = [Pair(Leaf(3),Leaf(4))]; let r = choose(c,xs); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let value = once(i % 2 == 0); i = i + 1 }; 0 }")
+  let path = "/tmp/_mixed_return_reclaim.wasm"
+  Fs::write_bytes(path, compile_wasi_rc(src, "main"))
+  let check = " | node -e 'let s=\"\";process.stdin.on(\"data\",x=>s+=x);process.stdin.on(\"end\",()=>{const r=JSON.parse(s);console.log(r.result===0 && r.heap_used<2000)})'"
+  let out = sh_lines(String::concat("node --experimental-wasm-exnref scripts/measure_heap.mjs ", String::concat(path, check)))
+  let actual = if Array::length(out) > 0 {
+    Array::get(out, 0)
+  } else {
+    "<no output>"
+  }
+  inspect(actual, content = "true")
+}

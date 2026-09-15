@@ -211,12 +211,11 @@ test "callback result reclamation: may_view_helper_cycle" {
   assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn even(n: Int, c: Bool, xs: Array[Node]) -> Node { if n == 0 { choose(c, xs) } else { odd(n - 1, c, xs) } }\nfn odd(n: Int, c: Bool, xs: Array[Node]) -> Node { if n == 0 { choose(c, xs) } else { even(n - 1, c, xs) } }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> even(3, c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_helper_cycle")
 }
 
-test "rc-classify normalizes mixed helpers reached from callbacks" {
+test "rc-classify normalizes mixed helpers for direct and callback calls" {
   let helper = "fn choose(c: Bool, xs: Array[Int]) -> Int { if c { 9 } else { Array::get(xs, 0) } }\n"
   let direct = rc_classify_source(String::concat(helper, "fn main() -> Int { choose(false, [3]) }"))
-  let direct_helper = Array::get(String::split(direct, "\n"), 0)
-  inspect(String::starts_with(direct_helper, "choose "), content = "true")
-  inspect(String::contains(direct_helper, "view_ret"), content = "true")
+  // No special classifier membership remains on the direct-only program.
+  inspect(direct, content = "")
   let callback = rc_classify_source(String::concat(helper, "fn main() -> Int { let f = (xs: Array[Int]) -> choose(false, xs); f([3]) }"))
   let callback_helper = Array::get(String::split(callback, "\n"), 0)
   inspect(String::starts_with(callback_helper, "choose "), content = "true")
