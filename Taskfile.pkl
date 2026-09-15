@@ -834,6 +834,39 @@ local testCheckLambdaBoundRefusal = new Task {
   }
   deps { selfhostGeneration }
 }
+
+// #2762: an aggregate `export { }` naming a name the module neither declares
+// nor imports was a no-op the checker accepted and the interface observation
+// refused, so the two lanes disagreed about whether the module was a program.
+// Asked of the running compiler, message included, and asserted to LEAD with
+// the edit.
+local checkExportRefusal = new Task {
+  name = "check-export-refusal"
+  description =
+    "an `export { }` naming an undeclared, unimported name is refused, leading with the edit"
+  cmd = "bash scripts/check_export_refusal.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "fixtures/typecheck/export_aggregate_undeclared_refused.vibe"
+  }
+  deps { selfhostGeneration }
+}
+// Not `scriptTask`: every one of its four red cases needs a compiler that
+// actually refuses, so it probes the compiler and must declare the dependency
+// (CLAUDE.md, "Which compiler answered?"). It reads the lane's compiler from
+// VIBE_STAGE2_WASM, which is what makes the selftests lane share the
+// compiler-gate matrix.
+local testCheckExportRefusal = new Task {
+  name = "test-check-export-refusal"
+  cmd = "bash scripts/check_export_refusal_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "fixtures/typecheck/export_aggregate_undeclared_refused.vibe"
+  }
+  deps { selfhostGeneration }
+}
 // #2510/#2735: an opt-in observation must never destroy what it observes.
 // `VIBE_INCREMENTAL_TELEMETRY_OUT` names a file the CLI deletes before the
 // compile and writes after it, and the two sit ~600 lines apart in cli_main,
@@ -2152,6 +2185,8 @@ local releaseCheck = new Task {
     checkRcDefault
     checkLambdaBoundRefusal
     testCheckLambdaBoundRefusal
+    checkExportRefusal
+    testCheckExportRefusal
     checkTelemetrySidecarGuards
     testCheckTelemetrySidecarGuards
     testProfileCompile
@@ -2265,6 +2300,8 @@ tasks {
   checkRcDefault
   checkLambdaBoundRefusal
   testCheckLambdaBoundRefusal
+  checkExportRefusal
+  testCheckExportRefusal
   checkTelemetrySidecarGuards
   testCheckTelemetrySidecarGuards
   testProfileCompile

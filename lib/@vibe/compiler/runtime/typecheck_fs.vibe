@@ -3985,6 +3985,108 @@ fn interface_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option[Str
   found
 }
 
+/// #2762: does this module resolve `name`, as something its export surface can
+/// publish?
+///
+/// ONE predicate, two callers. `incremental_interface_identity` throws when it
+/// is false; `unresolved_aggregate_export_name` -- the checker's refusal -- is
+/// that same question asked of the `export { }` list alone. Before #2762 only
+/// the first existed, so `export { NotDeclaredAnywhere }` checked CLEAN on the
+/// lane every build uses and threw `exported name missing from checked
+/// environment` on the lane the invalidation trace uses: the two lanes
+/// disagreed about whether the module was a program. Sharing the predicate is
+/// what makes them agree by construction, rather than by two texts that happen
+/// to match today.
+///
+/// The two halves are the two places a publishable name can live, measured
+/// 2026-09-15 one probe module per kind against a stage2 built from the head,
+/// with the trace on -- all ten observed clean:
+///
+/// | `export { X }` where X is | resolves via |
+/// |---|---|
+/// | a private `struct` / `enum` / `type` alias | flat binding |
+/// | a private `let` / `fn` | flat binding |
+/// | a builtin (`export { Option }`, the shape `lib/@vibe/builtin/option.vibe` opens with) | flat binding |
+/// | an imported value, or an imported trait republished by name | flat binding |
+/// | a LOCAL `trait` / `effect` / `effectset` | `interface_local_nonvalue_kind` |
+///
+/// A name that is neither is nothing at all, which is the case #2762 refuses.
+///
+/// The identity ROW is the shared value rather than a Bool, so the two callers
+/// cannot drift: a kind added here starts producing a row AND stops being
+/// refused in the same edit. A Bool predicate beside the row-building `match`
+/// would be two texts that agree only as long as someone keeps them agreeing.
+fn interface_export_row(stmts: Array[Stmt], bindings: Array[(String, Type)], name: String) -> Option[String] {
+  match env_lookup_flat(bindings, name) {
+    Some(ty) => Some(String::concat("value:", String::concat(interface_segment(name), String::concat(":", interface_canonical_type(ty, array_empty(), array_empty()))))),
+    None => match interface_local_nonvalue_kind(stmts, name) {
+      Some(kind) => Some(String::concat("export-", String::concat(kind, String::concat(":", interface_segment(name))))),
+      None => None
+    }
+  }
+}
+
+/// #2762: the first name an aggregate `export { .. }` publishes that this
+/// module neither declares nor imports, or `None`.
+///
+/// The RAW `SExport` list and nothing else. A bogus RE-export
+/// (`export ./dep.vibe { NoSuchThing }`) is already refused, by the import
+/// resolution `bind_import_names_from_cache_collecting` performs -- measured,
+/// it reports `imported name 'NoSuchThing' is not exported by './dep.vibe'`
+/// against the re-exporting module, which is the right module and the right
+/// message. Widening this to `interface_public_value_names` would re-report
+/// that case under an `export { }` message it did not come from.
+///
+/// First name, not all of them: the caller throws, and the checker reports one
+/// type error at a time. Source order, so which one it is does not depend on
+/// the environment.
+///
+/// THE CORPUS, which #2762 left unmeasured because a regex scan could not
+/// answer it. Measured 2026-09-15 with the compiler's own name resolution, by
+/// running this refusal over the tree: 74 files carry an aggregate
+/// `export { }`, and exactly ONE of them named something the module does not
+/// have -- `lib/@vibe/compiler/compiler.vibe`, whose list still carried
+/// `version` from the era when that file declared
+/// `export let version: String = "0.0.1"`. It is a no-op, measured on main
+/// before the fix: deleting the row leaves `import @vibe/compiler { version }`
+/// resolving exactly as before, because the facade synthesizes that binding
+/// from the `.vpkg` header's `version` directive (#1054) rather than from the
+/// export list -- which is why `contract_effective_decls` drops a legacy
+/// bodyless `let version: String` too. The row was deleted with this fix.
+fn unresolved_aggregate_export_name(stmts: Array[Stmt], env: TypeEnv) -> Option[String] {
+  let bindings = env_flat_bindings(env)
+  let names = interface_aggregate_export_names(stmts)
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if found == None && interface_export_row(stmts, bindings, name) == None {
+      found = Some(name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2762: the refusal's text. The EDIT leads (CLAUDE.md), the reason follows
+/// the `;`, and `name` is bare rather than backquoted so
+/// `locate_type_error_heuristic` can carry a `line L:col C:` prefix.
+///
+/// That prefix is the same FIRST-OCCURRENCE heuristic every other marker in
+/// `locate_type_error_heuristic` uses, with the same exposure: a comment or a
+/// string literal mentioning the name earlier in the file claims the position
+/// (measured -- the refusal fixture's own header did exactly that until its
+/// prose was reworded). `SExport(Array[String])` carries no offset, so there
+/// is no exact span to prefer; this is not an approximation of one the AST
+/// could have given. What the condition DOES guarantee is that no
+/// *declaration* of the name can be sitting in front of the export, because
+/// the message is emitted only when the module has none.
+fn unresolved_export_message(name: String) -> String {
+  String::concat("declare or import ", String::concat(name, " in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import"))
+}
+
 fn incremental_interface_identity(source: String, env: TypeEnv) -> String with Exception {
   let stmts = parse_program_with_path("<incremental-interface-observation>", source)
   let out = StringBuilder::new()
@@ -3993,12 +4095,14 @@ fn incremental_interface_identity(source: String, env: TypeEnv) -> String with E
   let mut i = 0
   while i < Array::length(names) {
     let name = Array::get(names, i)
-    match env_lookup_flat(env_flat_bindings(env), name) {
-      Some(ty) => StringBuilder::push(out, String::concat("value:", String::concat(interface_segment(name), String::concat(":", interface_canonical_type(ty, array_empty(), array_empty()))))),
-      None => match interface_local_nonvalue_kind(stmts, name) {
-        Some(kind) => StringBuilder::push(out, String::concat("export-", String::concat(kind, String::concat(":", interface_segment(name))))),
-        None => throw(String::concat("incremental interface observation: exported name missing from checked environment: ", name))
-      }
+    match interface_export_row(stmts, env_flat_bindings(env), name) {
+      Some(row) => StringBuilder::push(out, row),
+      // #2762 made this unreachable from the checker's own lanes: a module
+      // whose `export { }` names nothing is refused before it can be
+      // observed. It stays fail-closed for the re-export and
+      // declaration-exported names this list also carries, which the checker
+      // refuses elsewhere (or not at all, if a route is ever found).
+      None => throw(String::concat("incremental interface observation: exported name missing from checked environment: ", name))
     }
     StringBuilder::push(out, "\n")
     i = i + 1
@@ -5016,12 +5120,22 @@ fn locate_type_error_heuristic(source: String, msg: String) -> String {
             if with_import != msg {
               with_import
             } else {
-              // #946(4): inline-wasm codegen errors ("inline wasm (fn
-              // <name>): ...") carry no [@off=] marker (the offset they DO
-              // carry is a WAT-text offset, not a source char offset) --
-              // locate by the enclosing fn's name instead, same
-              // first-occurrence heuristic as the other markers.
-              locate_by_marker(source, msg, "inline wasm (fn ")
+              let with_inline_wasm = locate_by_marker(source, msg, "inline wasm (fn ")
+              if with_inline_wasm != msg {
+                // #946(4): inline-wasm codegen errors ("inline wasm (fn
+                // <name>): ...") carry no [@off=] marker (the offset they DO
+                // carry is a WAT-text offset, not a source char offset) --
+                // locate by the enclosing fn's name instead, same
+                // first-occurrence heuristic as the other markers.
+                with_inline_wasm
+              } else {
+                // #2762: `declare or import <name> in this module, ...`. The
+                // first-occurrence heuristic is EXACT here rather than a
+                // guess: the message is emitted only when nothing in the
+                // module declares or imports the name, so its first
+                // occurrence in the source is its `export { }` entry.
+                locate_by_marker(source, msg, "declare or import ")
+              }
             }
           }
         }
@@ -5593,6 +5707,29 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
       // transport, TDRE9, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
       let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
+      // #2762: an aggregate `export { X }` may name something this module
+      // neither declares nor imports. The export silently became a no-op, and
+      // a consumer that imported `X` was told `imported name 'X' is not
+      // exported by './dep.vibe'` -- a diagnostic pointing at ITS OWN import
+      // rather than at the module that promised the name (measured, both
+      // halves). Meanwhile `incremental_interface_identity` threw on the same
+      // module, so the two lanes disagreed about whether it was a program.
+      //
+      // Refused here rather than described in the identity: the name is
+      // NOTHING, and giving it a row would bake "this module exports a name
+      // that does not exist" into the value whose whole job is to describe the
+      // export surface -- which #2510 criterion 5 is about to make a real
+      // cache input. Rejecting it removes the case instead.
+      //
+      // `throw` rather than a `Diagnosed` built here, so the module's
+      // `program_transport` bytes and its `CheckedModuleArtifact` are never
+      // published: a refused module that still cached an artifact would be
+      // reused through `checked_module_artifact_outcome` on the next build,
+      // where this check does not run, and the refusal would disappear.
+      match unresolved_aggregate_export_name(stmts, checked_env) {
+        Some(name) => throw(unresolved_export_message(name)),
+        None => ()
+      }
       let interface_identity = if incremental_interface_trace_enabled() {
         incremental_interface_identity(job.source, checked_env)
       } else {
