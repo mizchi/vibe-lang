@@ -6707,6 +6707,35 @@ fn comp_is_stdin_provider_import_name(name: String) -> Bool {
   name == "stdin_provider_acquire" || name == "stdin_provider_read" || name == "stdin_provider_close"
 }
 
+/// Does a compiled core module reach the HOST at all -- i.e. does it import
+/// anything from the `vibe` module?
+///
+/// `vibe build --component` reads this to choose between the two command
+/// faces: a core with no host imports gets the pure wrap (which REJECTS a
+/// `vibe.*` import, so a command that grew one cannot slip through), and a
+/// core that has them gets the vfs wrap, whose four read operations become
+/// component imports and whose remaining `vibe.*` imports become traps.
+/// Choosing from the core's own import section rather than from a flag is
+/// what keeps the two answers from disagreeing.
+export fn comp_core_imports_vibe_host(core_wasm: Bytes) -> Bool {
+  let modules = array_empty()
+  let names = array_empty()
+  let indices = new_int_array()
+  let sigs = array_empty()
+  let count = parse_core_imports(core_wasm, modules, names, indices, sigs)
+  let mut found = false
+  let mut i = 0
+  while i < count {
+    if Array::get(modules, i) == "vibe" {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 /// #1539 exact parsed-import routing key. A malformed exact provider import
 /// still returns true so the stdin composer, rather than an unrelated wrapper,
 /// produces the actionable signature diagnostic.
