@@ -1,4 +1,4 @@
-// Concurrency proof for real async (docs/spec/wasi-p3-async.md §2.3).
+// Concurrency proof for real async (docs/internal/design/wasi-p3-async.md §2.3).
 //
 // Runs the SAME vibe `sleep` program (examples/wasm/sleep_async.vibe, compiled
 // by the selfhost) in TWO guest instances CONCURRENTLY via `futures::join!`.

@@ -104,7 +104,7 @@ fn add(x: Int, y: Int) -> Int
 定義のない `type Counter` は、利用者に名前だけを与えて表現は与えない、
 という意味です。後から変えられます。宣言の上のヘッダは vibe の構文では
 なくパッケージのメタデータで、
-[docs/adding-modules.md](../../docs/adding-modules.md) が参照先です。
+[docs/internal/project/adding-modules.md](../../docs/internal/project/adding-modules.md) が参照先です。
 
 契約は**利用者に向けた**境界です。他のパッケージから何に手が届くかを
 決めるものであって、パッケージの内側では邪魔をしません。最も近い
@@ -167,6 +167,6 @@ vibe pkg update @you/pkg          # 最新へ移動し、契約の差分を表�
 
 publish と yank は透明性ログに追記され、install はその証明を検証します —
 なので、後からバージョンを差し替えられることはありません。設計は
-[docs/registry-design.md](../../docs/registry-design.md) にあります。
+[docs/internal/design/registry-design.md](../../docs/internal/design/registry-design.md) にあります。
 
 次: [テストを書く](12_tests.vibe.md)。

@@ -68,7 +68,7 @@ const median = values => {
 
 const allCases = [
   // The compiler's own closure through its CLI entry: 219 planned modules,
-  // the workload every incremental claim in docs/incremental-build.md is
+  // the workload every incremental claim in docs/internal/operations/incremental-build.md is
   // ultimately about.
   { name: "cli", input: "lib/@vibe/cli/entry.vibe", entry: "cli_main" },
   // A mid-size single-package closure, so a difference can be attributed to
@@ -108,7 +108,7 @@ Object.assign(env, {
   VIBE_PREOPEN_DIR: root, VIBE_LIB: join(root, "lib"), VIBE_IMPORT_ABI: "raw",
   VIBE_FS_COMPILE: "1", VIBE_BACKEND: "wasi", VIBE_RC: "1",
   // Held fixed: the per-file AST cache stands down under this cache (see
-  // docs/checked-body-transport.md), so leaving it on would measure that
+  // docs/internal/compiler/checked-body-transport.md), so leaving it on would measure that
   // interaction instead of this lane.
   VIBE_EXPERIMENTAL_AST_CACHE: "0", VIBE_CODEGEN_BODY_CACHE: bodyCache,
   VIBE_WASM_NAMES: "0", VIBE_WASM_MEMORY_STATS: "1",

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Emit one tracing span around a command, and propagate W3C trace context to
-# it. Step 0 of docs/tracing-design.md: the build is already a multi-process
+# it. Step 0 of docs/internal/compiler/tracing-design.md: the build is already a multi-process
 # tree (generations.sh runs seed -> stage1 -> stage2 -> stage3 as separate
 # compiles, unit_test_runner.sh fans out to hundreds of compile+run processes,
 # doctest fans out again) and nothing today can see that tree as one thing --
-# docs/ci-speed.md was assembled by summing per-shard wall_ms by hand.
+# docs/internal/operations/ci-speed.md was assembled by summing per-shard wall_ms by hand.
 #
 #   scripts/trace_span.sh <name> <command> [args...]
 #

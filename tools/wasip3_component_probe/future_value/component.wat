@@ -17,7 +17,7 @@
 ;;      task.return it
 ;;
 ;; This sidesteps the "self round-trip deadlocks" wall the M2c-3 stream
-;; spike hit (docs/spec/wasi-p3-async.md §3.3): that probe used a BLOCKING
+;; spike hit (docs/internal/design/wasi-p3-async.md §3.3): that probe used a BLOCKING
 ;; read with no producer. With the `async` canonopt on both copies, one
 ;; side parks as a waitable instead of parking the fiber, so a single task
 ;; can complete the rendezvous with itself.

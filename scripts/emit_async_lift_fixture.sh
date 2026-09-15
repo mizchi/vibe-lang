@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate fixtures/async_lift_run42.component.wasm — a self-contained async
 # component (its async-lifted `run()` returns 42) emitted by the selfhost async
-# codegen (comp_emit_component_wasm_async_trampolined_p1, docs/spec/wasi-p3-async.md
+# codegen (comp_emit_component_wasm_async_trampolined_p1, docs/internal/design/wasi-p3-async.md
 # §3.1). The selfhost-only gate (step 24) runs it on wasmtime with the async
 # flags to prove the async runtime path EXECUTES.
 #

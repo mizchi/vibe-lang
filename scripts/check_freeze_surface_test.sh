@@ -110,7 +110,7 @@ expect 1 "freezing and un-freezing the same name is a contradiction" "says two d
 
 # 6b. The index document is checked with the same probe: a name it presents as
 #     a builtin must be one. This is the exact shape #2124 measured --
-#     docs/cheatsheet.md listed `String::replace`, which needs an import.
+#     docs/user/reference/cheatsheet.md listed `String::replace`, which needs an import.
 doc '- **String**: `length`'
 sheet '- **String**: `length`, `replace`'
 expect 1 "a name the index calls a builtin but that needs an import fails" "String::replace"

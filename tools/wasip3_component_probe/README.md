@@ -1,7 +1,7 @@
 # WASI 0.3 async component probe (M1b-3c blueprint recovery)
 
 Companion probe for #1230 (real non-blocking `await` codegen). The byte-level
-canon built-in blueprint `docs/spec/wasi-p3-async.md` §3.2/§3.6/§3.7 describe
+canon built-in blueprint `docs/internal/design/wasi-p3-async.md` §3.2/§3.6/§3.7 describe
 was derived from hand-written `.wat` probes under `src/x/cm_async/` that were
 **never committed** and were lost when the MoonBit host tree (`src/`) was
 retired (#594). This directory re-derives the same information with a
@@ -41,7 +41,7 @@ captured via `wasm-tools print`):
 | async-lift export (primary) | `[async-lift]run` |
 | async-lift export (callback re-entry) | `[callback][async-lift]run` |
 
-These match `docs/spec/wasi-p3-async.md` §3.6's canon table (`future.new`,
+These match `docs/internal/design/wasi-p3-async.md` §3.6's canon table (`future.new`,
 `future.read`, `waitable-set.*`, `waitable.join`, `context.get/set`,
 `task.return`/`task.cancel`) modulo the `future.*` names, which don't appear
 here because this probe's import is a **bare async function** (`async func()
@@ -120,7 +120,7 @@ original (still-accurate) background on how the ABI names were recovered.
 on every wake event. This is the portable choice (works on any
 Component-Model-async-capable engine, no wasmtime-specific flag needed).
 
-`docs/spec/wasi-p3-async.md` §3.1 chose the **stackful** form instead
+`docs/internal/design/wasi-p3-async.md` §3.1 chose the **stackful** form instead
 (`-W component-model-async-stackful=y`): no `[callback]` export at all, no
 explicit state machine — wasmtime runs the async-lifted export on a real host
 fiber and blocking `await`/`future.read` calls just... block, exactly like
@@ -328,7 +328,7 @@ cd host && cargo build --release && cd ..
 The `stackful/` probe above only proves "await a host async import directly"
 (`run` calls `get_async().await` inline). #1230's next milestone
 (M1b-3c-1b) asked for the harder-sounding "self-contained future produced
-by a spawned writer subtask" case instead -- `docs/spec/wasi-p3-async.md`
+by a spawned writer subtask" case instead -- `docs/internal/design/wasi-p3-async.md`
 §3.7 describes this as heavier ("wit-bindgen が futures-rs executor 一式を
 取り込む") and the single largest remaining chunk of the whole async
 effort. This probe determines exactly what that costs at the
@@ -434,7 +434,7 @@ Net: **real interleaving spawn remains open** (M-conc-2 / the M1b-3c-2
 follow-up). Under the lowering this milestone ships, any parent/child
 handshake or observable work between spawn and join would reorder or
 deadlock — the same limitation the linear backend's eager `Task::spawn`
-already carries (`docs/spec/wasi-p3-async.md` §2.5).
+already carries (`docs/internal/design/wasi-p3-async.md` §2.5).
 
 ## Update: eager-completion bug this probe's host could not surface (#1230 M1b-3c-2)
 
@@ -448,7 +448,7 @@ the handle bits of the packed result are `0`. Dropping it traps with
 This probe's own host could never surface it: `get-async` always slept
 300ms, so only the blocked path ever ran. The trap appeared the moment the
 same component was driven through `runtime/viberun`'s new async-component
-path (M1b-3c-2, `docs/spec/wasi-p3-async.md` §3.9) with a zero-delay host
+path (M1b-3c-2, `docs/internal/design/wasi-p3-async.md` §3.9) with a zero-delay host
 import — and a host import resolving without suspending is entirely
 ordinary in production (a cached value, a zero timeout, a socket read whose
 data already arrived).

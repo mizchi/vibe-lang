@@ -27,10 +27,10 @@
 #                other way, and it is what a move without a link rewrite leaves
 #                behind.
 #
-# A row whose path is a DIRECTORY (`report/`, `wit/`, `archive/adr/`) covers
-# every file beneath it. The router marks `guide/`, `spec/` and `wasm/` as mixed
-# and classifies their children individually, so the scan descends rather than
-# matching a prefix and stopping.
+# A row whose path is a DIRECTORY (`internal/compiler/wit/`, `archive/adr/`)
+# covers every file beneath it. A directory with no row of its own (`user/`,
+# `internal/design/`) is classified child by child, so the scan descends rather
+# than matching a prefix and stopping.
 #
 # A row pointing outside docs/ (`../book/README.md`) is skipped: the corpus is
 # docs/, and book/ has its own gates (check_book_links.sh, vibe_md.sh,

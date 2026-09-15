@@ -6,8 +6,8 @@ monitors (`bench/bundle_size/`, `bench/compiler_size/`) were removed in
 #2150; this directory is the live size bench.
 
 Modeled on the benchmark set documented in
-[almide](https://github.com/almide/almide)'s `docs/BENCHMARKS.md`
-(see `docs/pl-survey-2026-07.md` and issue #1056): five small programs, each
+[almide](https://github.com/almide/almide)'s `docs/internal/operations/BENCHMARKS.md`
+(see `docs/internal/reports/pl-survey-2026-07.md` and issue #1056): five small programs, each
 stressing a different codegen shape, measured "as shipped" (raw compiled
 output, no post-processing).
 
@@ -40,16 +40,16 @@ an in-flight compiler change before it lands in a new seed.
 
 Reports, per program: byte size with `VIBE_RC=0` (bump, no reclamation —
 today's production default) and `VIBE_RC=1` (Perceus RC — see
-`docs/spec/rc-port.md`); plus, best-effort, the `VIBE_RC=0` size after
+`docs/internal/design/rc-port.md`); plus, best-effort, the `VIBE_RC=0` size after
 `wasm-opt -Oz` when `wasm-opt` is on `PATH` (optional, as in almide's own
 methodology — this repo does not vendor binaryen, so that column commonly
 reads `n/a`; `lib/@vibe/optimizer`'s own `minify_converge` is vibe's
-in-house analogue, see `docs/wasm-opt-dogfood.md`, but is not wired into
+in-house analogue, see `docs/internal/operations/wasm-opt-dogfood.md`, but is not wired into
 this script to keep it dependency-free).
 
 ## Golden Rule
 
 There is no automated budget/ratchet gate for this bench yet — it is a
-manual/CI-optional regression signal. `docs/BENCHMARKS.md` holds the last
+manual/CI-optional regression signal. `docs/internal/operations/BENCHMARKS.md` holds the last
 recorded snapshot with its measurement date; re-run and update both together
 when investigating a size change.

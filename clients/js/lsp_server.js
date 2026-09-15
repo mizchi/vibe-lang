@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Minimal stdio LSP server for vibe (docs/release-roadmap.md テーマ4, MVP 4-1).
+// Minimal stdio LSP server for vibe (docs/internal/project/release-roadmap.md テーマ4, MVP 4-1).
 //
 // Provides push diagnostics by driving the native selfhost compiler
 // (`vibe check`) — node here is only JSON-RPC plumbing, the compiler is the
@@ -532,7 +532,7 @@ function typeAt(uri, position) {
 }
 
 // The compiler answers in BYTE offsets and takes BYTE columns (ADR-0108,
-// docs/source-range-contract.md); LSP positions are 0-based lines and UTF-16
+// docs/user/reference/source-range-contract.md); LSP positions are 0-based lines and UTF-16
 // code units. The two agree only while a line is ascii, so this boundary
 // converts in BOTH directions, as lib/@vibe/lsp does at its own. Without it one
 // multibyte character earlier in the file shifts every range after it, and a

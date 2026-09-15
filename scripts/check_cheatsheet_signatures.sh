@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# #2121: docs/cheatsheet.md's "Signature reference" tables, checked against the
+# #2121: docs/user/reference/cheatsheet.md's "Signature reference" tables, checked against the
 # CHECKER's own builtin table instead of against a second hand-written copy.
 #
 # AGENTS.md sends every reader to the cheatsheet first, and doctest only
@@ -23,7 +23,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-DOC="docs/cheatsheet.md"
+DOC="docs/user/reference/cheatsheet.md"
 PROBE="scripts/cheatsheet_signature_probe.vibe"
 
 . "$(dirname "$0")/resolve_stage2.sh"

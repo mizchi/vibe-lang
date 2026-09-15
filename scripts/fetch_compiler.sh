@@ -6,7 +6,7 @@ set -euo pipefail
 # the stage0 -> stage1 -> stage2 build WITHOUT building the MoonBit host
 # compiler from the mooncakes registry, and is also how CI/local dev
 # refreshes the local `bootstrap/seed/compiler.wasm` cache now that it's
-# no longer git-tracked (see docs/bootstrap.md).
+# no longer git-tracked (see docs/internal/operations/bootstrap.md).
 #
 # Published by scripts/build_release_assets.sh (release.yml, `v*` product
 # tags) or scripts/build_seed_release_assets.sh (seed-release.yml,

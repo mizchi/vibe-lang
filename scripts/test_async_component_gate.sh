@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Async-component regression gate (#821 Step 0 restoration).
 #
-# Verifies the WASI p3 async vertical documented in docs/spec/wasi-p3-async.md:
+# Verifies the WASI p3 async vertical documented in docs/internal/design/wasi-p3-async.md:
 # a `.vibe` entry `run : () -> Int with Async` compiled by the selfhost
 # compiler (single-source path, entry name "run") is wrapped into a Component
 # Model async component and returns 42 under wasmtime with the p3 RC flags.
@@ -54,7 +54,7 @@ if [ -z "$COMPILER" ]; then
 fi
 echo "[async-component-gate] compiler: $COMPILER"
 
-# wasmtime 45 RC flag set (docs/spec/wasi-p3-async.md §3.5). On wasmtime 46+
+# wasmtime 45 RC flag set (docs/internal/design/wasi-p3-async.md §3.5). On wasmtime 46+
 # component-model-async is default; override via VIBE_ASYNC_GATE_WASMTIME_FLAGS.
 WT_FLAGS="${VIBE_ASYNC_GATE_WASMTIME_FLAGS:--W exceptions=y -W concurrency-support=y -W component-model-async=y -W component-model-async-stackful=y}"
 

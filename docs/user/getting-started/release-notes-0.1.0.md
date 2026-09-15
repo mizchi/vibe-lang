@@ -1,0 +1,187 @@
+# vibe 0.1.0 release notes
+
+> **Status: in preparation.** The tag has not been cut; `vibe version` reports
+> `0.1.0-dev` until it is. The version ladder is ADR-0109 — 0.1.0 is the first
+> release usable by anyone but the author, and everything before it was 0.0.x
+> development.
+
+The previous and only published release is `v0.0.1` (2026-04-14). Between it and
+0.1.0 the language was rewritten in itself, so these notes describe a different
+compiler rather than a list of fixes. The work once prepared under the name
+"0.3.0 GA" is part of this release; the record of that intermediate state is
+[archive/release-notes-0.3.0.md](../../archive/release-notes-0.3.0.md).
+
+## The headline: vibe compiles itself
+
+`v0.0.1` was compiled by a MoonBit host implementation. That host is gone
+(#594). The compiler is now written in vibe, lives in `lib/@vibe/compiler/` and
+`lib/@vibe/cli/`, and is built from a pinned, sha256-verified seed plus its own
+source, with no MoonBit toolchain involved. Building it requires only the
+Rust/node wasm runner.
+
+The practical consequence for a user is that the language and its compiler are
+now the same artifact: a diagnostic you find is a diagnostic in code you can
+read, and every feature below is one the compiler itself depends on.
+
+## Language
+
+- **Effects are rows, not return-value wrappers.** Functions are pure by
+  default and declare what they do with `with E`. `throw` / `handle ... with
+  Exception` / the `?` operator, user-defined algebraic effects
+  (`effect` / `perform` / `resume`), and effect polymorphism `with e` are all
+  part of the frozen surface (ADR-0016, ADR-0050).
+- **Capabilities are carried by the row, and authorized once.** A call site
+  stays a plain function call; authority is settled at build → apply →
+  instantiate and is then invariant for the run (ADR-0075/0084/0088). An
+  entry point **grants** its row and writes `allows` — `fn main allows
+  Console`, `test "n" allows Http` — while a called function **requires**
+  with `with`; `allows` on a called function is a compile error naming the
+  edit. The optional grade `?` (on a grant or on a requirement) and the
+  `Attempt[T, E]` that `perform?` returns are on the unstable surface and can
+  still change. Non-interactive compilation lowers an unresolved optional
+  operation to `NotGranted` on both backends; production grant/preflight
+  wiring and the proposed instantiate-time contract are tracked in #2828.
+  That proposal is not the behavior described by this release draft.
+- **`Result` was removed** (#1324). Errors are the `Exception` effect, and
+  `Error` is deprecated at the freeze in favour of it (ADR-0085).
+- **`String` is a byte string** with byte-offset indexing (ADR-0098), which is
+  what the memory actually holds. Source positions follow: every position the
+  CLI reports or accepts is a byte position (ADR-0108,
+  [source-range-contract.md](../reference/source-range-contract.md)), with the LSP boundary
+  the single documented exception.
+- **`Int` arithmetic wraps identically on every backend** — 63-bit two's
+  complement, literals up to 2^62-1 (#1877). Each backend previously wrapped at
+  its own 62/63/64-bit boundary and silently disagreed, which is the worst
+  failure shape this project recognizes.
+- **`fn main { ... }`** is the entry point (`fn main allows Console { ... }`
+  when it needs the terminal), top-level is declarations only, and a typo'd
+  entry name is a compile error rather than a silently empty module
+  (ADR-0069 Phase 1).
+- Syntax was narrowed where two spellings meant one thing: string interpolation
+  is `\{expr}`, type-declaration bodies separate with `;`, top-level named
+  functions are `fn` (ADR-0064), and struct literals are `Type::{ ... }`.
+- **Trait namespaces and finite iteration are generic** (ADR-0110). Importing
+  `trait Iterator` activates `Iterator::*` without exposing bare operation
+  names, and any type implementing `iter_length` plus `iter_get` gains the
+  eager combinators. Array calls devirtualize to `Array::*`; `AsyncIter`
+  remains a separate pull layer. Kinded parameters such as `F[_]` and applied
+  types `F[A]` remain available for user-defined constructor-indexed traits.
+- Other additions: generic struct type parameters, trait bounds in package
+  contracts, `derive(Eq)`, conditional impls, `is` expressions, `loop` /
+  `break(v)` / `continue(...)`, and inline wasm
+  (`fn f(a: Int) -> Int = wasm "(...)"`, linear backend, ADR-0072).
+
+## Packages and distribution
+
+- **`index.vpkg` is the package contract and the public API boundary**
+  (ADR-0070). Importing a file inside a package boundary is a compile error, and
+  the legacy `index.vibei` is gone.
+- `vibe new` / `add <source-spec>` / `fetch` / `pkg publish|install|yank`:
+  a dependency is pinned by content hash in the root `index.vpkg`
+  (`require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>`) and
+  installed under `.vibe/store/`; a semver constraint in the ref resolves to a
+  tag at add time (#2676). The registry slice is file-based with an
+  RFC6962-shaped transparency log.
+- Six packages ship with the toolchain: `@vibe/core`, `@vibe/ast`,
+  `@vibe/parser`, `@vibe/builtin`, `@vibe/console`, `@vibe/wit_runtime`. The
+  rest of the 26 `@vibe/*` and 18 `@vibex/*` packages in the tree are the
+  compiler's own dependencies, not part of the install.
+- `install/install.sh` is the curl entry point and is smoke-tested on multiple
+  operating systems by the `cli-install` workflow. A release installs with
+  bash, curl and tar only (`--version X.Y.Z`, and `vibe self update` from an
+  installed toolchain: prebuilt runners ship per target, every asset is
+  verified against the release manifest before it is moved into place,
+  #2678); only an install from a checkout needs git, cargo and Node.js.
+
+## Tooling
+
+The CLI is designed to be read by an LLM as much as by a person: one finding per
+line, fixed field order, **empty output means clean**, and messages that name
+the edit that fixes them rather than an internal pass name.
+
+- `vibe check [--single-file] [--json]` — the single verb for "does this
+  compile" (#1567). It resolves imports from the filesystem, so it answers on
+  its own.
+- `vibe symbols` / `type-at` / `binding-at` / `doc-at` — the same semantic
+  analysis an editor gets over LSP, available from the shell.
+- `vibe deps [--direct]` — the resolved import closure, taken from the loader
+  itself, so it cannot drift from what a build compiles.
+- `vibe grep --pattern ... [--where ...]` — AST pattern search that does not
+  stop at syntax: filters are written against the checker's answers (inferred
+  type, effect row, resolved name, ill-typedness).
+- `vibe escapes`, `vibe allocs`, `vibe rc-classify`, `vibe rc-plan` — what the
+  compiler decided about boxing, allocation, and reference counting.
+- `vibe lsp` — diagnostics, hover, document symbols, go-to-def, references,
+  rename, completion, signature help.
+- `vibe fmt` — a CST-token formatter over `.vibe` and `.vpkg`, enforced in CI.
+- `vibe shell` — a compiled REPL (declarations accumulate and recompile; there
+  is no interpreter), plus `vibe test`, `vibe bench`, `vibe serve`,
+  `vibe normalize`, `vibe context-pack`.
+
+## Backends and runtime
+
+- The **linear-memory backend is the stable surface**. The wasm-gc backend is
+  opt-in (`VIBE_BACKEND=gc`) and experimental. `VIBE_TEST_BACKEND=gc` and
+  `VIBE_BENCH_BACKEND=gc` resolve the same filesystem module graph as their
+  linear lanes before selecting GC codegen (#2376). Explicit direct-source GC
+  compilation still analyzes one file; using an imported name there fails with
+  an actionable diagnostic (#1976). Remaining builtin-level differences each have a row in
+  `scripts/builtin_parity_classification.tsv`, enforced at the gate.
+- Generated wasm declares the feature level it requires
+  ([wasm/feature-levels.md](../reference/feature-levels.md)); `--allow-*` const-folds and
+  DCEs away the code for capabilities that were not granted.
+- Async, structured concurrency, and the WASI 0.3 component surface work — the
+  async serve lane streams a request body to its handler (#1540) — but remain on
+  the **unstable** surface (ADR-0012/0068).
+- Region storage and guarded Perceus constructor reuse are implemented
+  (ADR-0090/0092). Their effects depend on the workload; release allocator
+  choices do not follow from a historical RC/bump ratio. `#zero_alloc`
+  summaries are checked across imports (ADR-0091).
+
+## Documentation
+
+- **The Vibe Book** (`book/en/`) has 20 doctest-checked chapters, and every ` ```vibe run `
+  block in it is compiled and executed by doctest, with its output checked
+  against the recorded ` ```output `. A chapter cannot go stale silently.
+- [docs/user/reference/cheatsheet.md](../reference/cheatsheet.md) is the language reference and is
+  doctest-checked the same way.
+- [spec/stable-surface.md](../reference/stable-surface.md) states what 0.1.0 promises
+  SemVer stability for, and `pkf run check-freeze-surface` derives the symbol
+  list from that document and probes each name against the compiler — a name it
+  promises cannot quietly stop existing.
+- The project is licensed under Apache License 2.0.
+
+## Known gaps
+
+- **The Japanese book is a translation of all 20 chapters**, checked for
+  identical program output by `pkf run check-tutorial-translation-parity`;
+  English (`book/en/`) is canonical.
+- **Some type errors still lack source positions.** `let a: Int = "not an int"` is
+  reported without a `line:col` on either lane, and `vibe check --single-file
+  --json` answers with a synthetic `0:0` range. The checker's anchoring works;
+  literal expressions have no offset slot to anchor to. `vibe check --json`
+  being `--single-file`-only is a separate output-mode limitation. #2831 owns
+  both remaining improvements; #1567 is complete for command consolidation.
+- Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
+  outside the SemVer promise, most notably async/structured concurrency and the
+  capability authorization surface.
+
+## Release checklist (owner)
+
+The [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2) is the
+release scope and [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
+holds the detailed candidate acceptance checklist. These notes remain a draft
+until that candidate is verified.
+
+- [ ] Complete or explicitly reschedule every open 0.1.0 milestone item,
+      including public contract decisions, and update these notes accordingly.
+- [ ] Verify clean-machine installation and package publication/fetch/install
+      against the release candidate, using only shipped artifacts.
+- [ ] Confirm the final candidate's pinned seed has published, verified assets.
+      The current `seed/bytes-capacity-2026-09-15` release already exists;
+      entry `allows` syntax and its compiler-source migration have landed.
+- [ ] Set `VIBE_VERSION` to `0.1.0` for the separately authorized release tag;
+      the release asset build requires the version and tag to agree.
+- [ ] Verify Apache-2.0 license, book parity, stable surface and
+      `pkf run release-check` in CI on the release candidate.
+- [ ] Publish the `0.1.0` tag/assets and verify installation from that release.

@@ -7,7 +7,7 @@
 # Seeds run with up to --jobs concurrent OS processes (default: nproc, capped
 # at 8) via a bash job-slot pool -- real parallelism (each seed is its own
 # subshell/process tree), not vibe's own cooperative TaskGroup, which never
-# runs two task bodies at once (see docs/compiler-parallelism.md's
+# runs two task bodies at once (see docs/internal/design/compiler-parallelism.md's
 # "Shared-everything migration note"). Safe because every seed already had
 # its own work dir ($WORK/s$seed) and finding dir ($FIND/seed_<n>_<class>);
 # the only genuinely shared file, failing_seeds.txt, is appended to via

@@ -1,4 +1,4 @@
-// Real async for an actual VIBE program (docs/spec/wasi-p3-async.md §2.3).
+// Real async for an actual VIBE program (docs/internal/design/wasi-p3-async.md §2.3).
 // A vibe `() -> Int with { Async }` program calling `sleep(ms)` compiles (via
 // the selfhost) to a core module importing `vibe.sleep (i64) -> ()`. This host
 // implements that import as ASYNC — Pending on first poll (the guest fiber

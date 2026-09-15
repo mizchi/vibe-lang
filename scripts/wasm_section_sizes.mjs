@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // wasm_section_sizes.mjs — wasm モジュールをセクション単位・関数単位に分解して
 // バイト数を出す。「どちらが大きいか」ではなく「どこが大きいか」に答えるための
-// もので、docs/wasm/code-size-linear-vs-gc.md の内訳表はこれで取っている。
+// もので、docs/internal/reports/code-size-linear-vs-gc.md の内訳表はこれで取っている。
 //
 //   node scripts/wasm_section_sizes.mjs [--json] <file.wasm> [more.wasm ...]
 //

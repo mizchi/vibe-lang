@@ -5,7 +5,7 @@
 # It now DERIVES that program from the documents instead of restating it. The
 # restating version passed while the documents were broken: it wrote the
 # program with `printf 'fn main ... "42\\n"'`, where printf turns `\\n` into a
-# real newline, while README.md and docs/install.md wrote the same line with
+# real newline, while README.md and docs/user/getting-started/install.md wrote the same line with
 # `echo '...'`, where `\\n` stays two literal characters. So the gate ran
 # `"42\n"` and the reader ran `"42\\n"` -- which prints `42\n` and no newline,
 # under a comment claiming `-> 42`. Same failure shape as the freeze list
@@ -16,11 +16,11 @@
 #   2. the program in it compiles with no repo lib/ on the search path
 #   3. its stdout equals the output the same line claims after `# ->`
 # and across documents:
-#   4. README.md and docs/install.md document the SAME program -- they are one
+#   4. README.md and docs/user/getting-started/install.md document the SAME program -- they are one
 #      quickstart printed twice, and they had already drifted once.
 #   5. Every document that teaches a first program names the SAME entry row.
 #      Measured 2026-08-19: three of four said `fn main with Console` and
-#      docs/cheatsheet.md said `fn main with Stdout` (the row is spelled
+#      docs/user/reference/cheatsheet.md said `fn main with Stdout` (the row is spelled
 #      `fn main allows ..` since ADR-0088) -- the legacy label, in the
 #      one document CLAUDE.md tells you to read first. Both compile, so nothing
 #      failed; a reader just learned a different program from the reference than
@@ -36,9 +36,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/vibe-install-hello.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
-DOCS="README.md docs/install.md"
+DOCS="README.md docs/user/getting-started/install.md"
 # Every document whose first program a newcomer might copy.
-ROW_DOCS="README.md docs/install.md docs/cheatsheet.md book/en/01_getting_started.vibe.md"
+ROW_DOCS="README.md docs/user/getting-started/install.md docs/user/reference/cheatsheet.md book/en/01_getting_started.vibe.md"
 
 # Extract `echo '<program>' > <file>.vibex` and the `# -> <expected>` on the
 # following `vibe run <file>` line. Inside shell single quotes the program is

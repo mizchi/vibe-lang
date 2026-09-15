@@ -15,7 +15,7 @@ vibe でスレッドを spawn することはありません。`TaskGroup` を�
 ADR-0068 で、状態はまだ `proposed` です — `Nursery`、`Task`、
 `Sender`/`Receiver`、`TaskGroup::run` / `spawn` / `spawn_suspend`、および
 コンパイラの `Send` 判定。SemVer の約束の外側にあり、Minor リリースの中で
-変わりえます ([stable surface](../../docs/spec/stable-surface.md) §6)。決めて
+変わりえます ([stable surface](../../docs/user/reference/stable-surface.md) §6)。決めて
 あることは組み立てるに足りますが、決まっていないのは `Send`/region の検査と、
 どの backend が動かすかです (現行のスケジューラは cooperative
 run-to-completion のプロトタイプ)。

@@ -13,7 +13,7 @@
 //   VIBE_BIN=<vibe> node scripts/bench_regression.mjs --update   # rewrite baseline
 //
 // Fixtures run concurrently (real OS-process parallelism via child_process,
-// not vibe's own cooperative TaskGroup -- see docs/compiler-parallelism.md's
+// not vibe's own cooperative TaskGroup -- see docs/internal/design/compiler-parallelism.md's
 // "Shared-everything migration note" for why the latter can't help here
 // today). Safe because each fixture is its own file with its own
 // content-addressed compile-cache key and its own mktemp'd output files --

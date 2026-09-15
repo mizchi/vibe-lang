@@ -22,7 +22,7 @@ r4 で追加した (r1–r3 には値が無い)。
 
 ### 2. writability (コードの書きやすさ)
 
-`tasks/` の仕様を docs/cheatsheet.md だけを頼りに書いたときの成功率と
+`tasks/` の仕様を docs/user/reference/cheatsheet.md だけを頼りに書いたときの成功率と
 friction 数で測る。1 タスクあたりのコンパイルエラー回数、docs に無くて
 推測が必要だった箇所、known-gotcha を踏んだ回数を記録する。
 
@@ -88,18 +88,18 @@ effect (Fs/Env/...) の transitive 強制、`Error`/`Async` の設計判断の
 > しない。compile+run の方法は eval/lang-review/README.md の検証コマンド。
 
 - **writability** — 担当: syntax_clarity, writability。
-  `eval/lang-review/tasks/*.md` を順に、docs/cheatsheet.md (+ docs/vibe.md)
+  `eval/lang-review/tasks/*.md` を順に、docs/user/reference/cheatsheet.md (+ docs/user/reference/vibe.md)
   だけを頼りに解く。golden/ は見ない。タスクごとにコンパイルエラー回数と
   friction を記録。全タスク終了後にスコア。解答ファイルは残す
   (golden 候補になる)。
 - **semantics** — 担当: semantics_consistency, diagnostics。
-  docs/cheatsheet.md・docs/spec/decisions.md を読み、意味論のコーナー
+  docs/user/reference/cheatsheet.md・docs/internal/design/decisions.md を読み、意味論のコーナー
   ケース (評価順序、mut、==、match、文字列、effect resume) を 10 個以上
   プローブし、「予想と違う」「docs と違う」を全部記録。診断の質も
   エラーを意図的に起こして評価。
 - **type-soundness** — 担当: type_soundness, effect_system。
   ill-typed プログラムを 15 個以上書き、reject されるか確認 (通ったら
-  major finding)。ADR の型健全性系列 (docs/adr.md の 0066 近辺の長大
+  major finding)。ADR の型健全性系列 (docs/internal/design/adr.md の 0066 近辺の長大
   エントリ) を参照して既知の残穴 (generic struct field 等) の現状も確認。
   effect の宣言漏れ・放電・transitive 強制もプローブする。
 - **repair** — 担当: repair_convergence。
@@ -109,7 +109,7 @@ effect (Fs/Env/...) の transitive 強制、`Error`/`Async` の設計判断の
   各ケースを L/A/C で採点し、`repair/README.md` の表を更新する。新しいケースを
   足すのは可 (既存の変更は不可)。ラチェットは `bash eval/lang-review/run_repair.sh`。
 - **concurrency** — 担当: concurrency_readiness。
-  docs/adr.md の ADR-0012 (Task/Stream)・ADR-0055 (RC/値表現)・
+  docs/internal/design/adr.md の ADR-0012 (Task/Stream)・ADR-0055 (RC/値表現)・
   ADR-0068 (並行設計原則)、TODO/#488 系を読み、Go channel / Elixir 軽量
   プロセスモデルに向けて「妨げになる既存設計」を列挙する。コードは
   読むだけでよい (プローブ任意)。

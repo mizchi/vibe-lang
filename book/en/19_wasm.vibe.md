@@ -35,7 +35,7 @@ Bench caches key on the backend, so switching linear → gc recompiles.
 ## Feature levels
 
 Generated modules declare the wasm feature level they need
-([docs/wasm/feature-levels.md](../../docs/wasm/feature-levels.md)).
+([docs/user/reference/feature-levels.md](../../docs/user/reference/feature-levels.md)).
 Denied capabilities are folded out, so a program that never reaches
 `Http` should not demand a networking-capable runtime.
 

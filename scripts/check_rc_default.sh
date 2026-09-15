@@ -4,7 +4,7 @@
 #
 # Three places recorded an answer and they disagreed: AGENTS.md called RC "the
 # production default", ADR-0055 recorded cutover readiness as READY, and
-# docs/spec/rc-cutover-readiness.md told the reader to hold the cutover. A
+# docs/internal/design/rc-cutover-readiness.md told the reader to hold the cutover. A
 # reader could take any of the three. Nothing checked which was true, so
 # nothing corrected the two that were not.
 #
@@ -79,7 +79,7 @@ fi
 # current-state header sat on top of sections that still described the default
 # as bump and concluded the cutover "must wait", and this gate called it
 # agreement. Absence of a phrase is not a claim; the line below is.
-DOC="docs/spec/rc-cutover-readiness.md"
+DOC="docs/internal/design/rc-cutover-readiness.md"
 documented="$(sed -n 's/^linear-default:[[:space:]]*\([A-Za-z]*\)[[:space:]]*$/\1/p' "$DOC")"
 case "$(printf '%s\n' "$documented" | wc -l | tr -d ' ')" in
   1) ;;

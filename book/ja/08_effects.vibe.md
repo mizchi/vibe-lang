@@ -68,7 +68,7 @@ fine = 25
 
 型引数なしの `Exception` は消去された形で、どの `Exception[E]` も受け取り、
 payload は文字列として届きます。エラー型を保ちたいときは `Exception[E]` と
-書きます — [exception effect](../../docs/exception-effect.md) を参照。
+書きます — [exception effect](../../docs/internal/design/exception-effect.md) を参照。
 
 ## 自分のエフェクトを宣言する
 
@@ -109,7 +109,7 @@ resume します。
 自分のエフェクトを持ち出すのは、呼び出し側が本当に実装を差し替える必要が
 あるときです — テストでの時計、値の別の供給元など。普通の失敗には
 `Exception` を、ローカルな状態にはまず `let mut` を試すこと。判断基準は
-[Effects vs let mut](../../docs/guide/when-to-use-effects.md) にあります。
+[Effects vs let mut](../../docs/user/guide/when-to-use-effects.md) にあります。
 
 ## row は変数にできる
 

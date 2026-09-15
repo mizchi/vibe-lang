@@ -1,0 +1,2404 @@
+# ADR-0092: Perceus drop-guided reuse (FBIP) — RC の次段を最優先の実装トラックに引き上げる
+
+Status: proposed
+
+Date: 2026-07-31
+
+Related: ADR-0055(RC cutover、`docs/internal/design/rc-port.md`), ADR-0062(shadow
+liveness), ADR-0090(region), ADR-0091(`#zero_alloc`),
+[mutability-control-review.md](mutability-control-review.md),
+[pl-survey-2026-07.md](../reports/pl-survey-2026-07.md) Medium #7(Koka FP²/TRMC)。
+
+## Context
+
+Perceus RC は production default(ADR-0055 #493 cutover)だが、実装は
+dup/drop/alias-dup の挿入と borrow 推論まで — **drop-guided reuse / FBIP /
+TRMC / COW はどれも未実装**である(`rc-port.md` の rc-check elision 節が明記)。結果:
+
+- RC の実行時コストは bump 比 wall **~1.6–2.1×**。主因は dup/drop と、
+  match で分解して作り直す関数型スタイルの「drop 直後に同レイアウトを
+  再確保」するパターンにある。
+- compiler self-build の gate は**性能理由で `VIBE_RC=0`(bump)に pin**
+  されたまま(`scripts/compiler_gate.sh`)。RC で self-build する経路は
+  存在するが遅くて常用できない。
+- pl-survey は「vibe が世界的に先行している資産(Perceus 等)に対し、
+  差分価値が最大なのは **FBIP 系の未取り込み後半**」「コンパイラ自身の
+  ビルドが最大の受益者(AST 再構築ホットパス)」と結論している。
+
+[mutability-control-review.md](mutability-control-review.md) は当初 FBIP を
+`#zero_alloc`(ADR-0091)の後続に置いたが、本 ADR で**実装優先度を region
+(ADR-0090)/ zero_alloc(ADR-0091)より前へ引き上げる**。理由: (a) 表面
+構文が無く bootstrap bump も seed 調整も不要で、純粋に Perceus プランナと
+codegen の作業として今日始められる。(b) RC が default である以上、利得が
+全ユーザーコードに即時に効く。(c) reuse が入ってから `#zero_alloc` を
+入れる方が検証通過域が最初から広い(逆順だと「後から通るようになる」
+annotation churn が起きる)。(d) region の利得(dup/drop 除去)とも独立に
+積算する。
+
+## Decision
+
+### 1. drop-guided reuse(中核)
+
+Perceus 本来の reuse analysis を実装する。match arm で unique な値を分解
+(最後の使用)した直後に**同レイアウト**(`alloc_size` が一致し、ヘッダ
+規約が同じ)の constructor を確保する場合、drop を **reuse token** に変え、
+確保を token の在庫からの in-place 再利用に変える。
+
+- `PerceusAction` の語彙(現行 `PaDup | PaDrop | PaAliasDup`)に
+  `PaReuseToken(binding, size_class)` / `PaReuseAlloc(token)` を追加する。
+  プランナはスコープ内で「drop される unique 候補」と「後続の同サイズ
+  確保」をペアリングする(最初は同一 match arm 内の直線コードに限定)。
+- **実行時 uniqueness test**: token 化された値は確保点で
+  `rc_count == 1` を検査し、unique なら header を書き換えて in-place 再利用、
+  shared なら従来どおり新規確保 + 子の dup(Perceus 論文の標準形)。
+  vibe のヘッダ(`[alloc_size@-8][rc+class@-4]`)はサイズ・クラスの照合に
+  そのまま使える。
+- **free list との関係**: reuse は exact-fit free list への往復
+  (drop → free list push → alloc 検索)を丸ごと消す上位互換。free list は
+  reuse が成立しない経路の受け皿として残る。
+
+### 2. drop specialization
+
+reuse の成立率を上げるため、静的に ctor が分かっている drop は再帰
+`__rc_drop` 呼び出しではなく、その場で子 drop + 自身の解放(または token
+化)へ inline 展開する。class-1(field vector)から始め、class-6/7 は
+効果測定後に判断する。
+
+### 3. TRMC(後続フェーズ)
+
+cons 再帰のループ化(tail recursion modulo cons)は reuse の効果測定後の
+Phase 3 とする。AST 再構築(コンパイラ最大のホットパス)は reuse だけで
+大半が in-place 化する見込みが立ってから着手する。
+
+### 4. `#zero_alloc` との合流規約
+
+**reuse による in-place 再利用は「確保」に数えない**(ADR-0091)。これは
+Koka FP² の `fip`(fully in-place)注釈と同じ意味論であり、reuse が広がる
+ほど `#zero_alloc` を満たす関数が増える。fip/fbip 相当の checked 注釈を
+独立に導入することはせず、`#zero_alloc` に一本化する。
+
+## 成功指標(gate に固定する)
+
+1. **selfcompile KPI**(`scripts/selfcompile_kpi.sh`)を `VIBE_RC=1` で
+   計測するレーンを追加し、wall / heap を bump 基準と並記する。
+   目標: wall の RC/bump 比を現行 ~1.6–2.1× から **≤1.2×** へ。
+2. 達成後、`compiler_gate.sh` の `VIBE_RC=0` pin を外し、self-build も RC
+   に統一する(bump は fixture/baseline 用の明示 opt-in に降格)。
+3. `bench/regression/` に reuse を直接踏む bench(match 分解→再構築
+   ループ)を追加し、`bytes_per_op` の激減(理想 0)を tracked series で
+   固定する。既存 `alloc_bench` の 10,400 B/op 基準は「reuse 対象外の
+   確保」の回帰検出として不変のまま残す。
+
+## 安全性・検証
+
+- **出力の byte 同一性**: reuse は意味論を変えない最適化なので、既存の
+  「RC on/off で出力バイト・診断が一致」系 gate をそのまま適用する。
+- **shadow lane 拡張**(ADR-0062): reuse された block の liveness を
+  shadow バイトで追跡し、token の二重消費・shared 値の in-place 破壊を
+  決定的に trap させるデバッグ lane を Phase 1 から用意する。
+- fixture: `rc_reuse_*` 系を新設(unique 成立 / shared フォールバック /
+  branch 越えの token 不成立 / closure capture との干渉)。#1085/#1097 の
+  既存 RC 修正 fixture(over-drop / borrowed capture)を回帰対象に含める。
+- 形式面: almide(pl-survey 参照)が RC discipline を Lean で検証している
+  前例に倣い、reuse token の「unique 時のみ書き換え」不変条件を
+  `formal/` の小さなモデル + oracle corpus として先に固定する(実装との
+  correspondence は differential fixture で接地)。
+
+## Non-goals
+
+- COW / `MakeUnique`(vibe の Array/Map は無条件 in-place であり、COW 化は
+  別議論。rc-port.md の rc-check elision 節の結論を維持)。
+- 循環回収(region = ADR-0090 が引き受ける)。
+- wasm-gc backend(RC 自体が linear 専用)。
+- fip/fbip の独立注釈(Decision 4 のとおり `#zero_alloc` に一本化)。
+
+## Implementation notes (2026-07-31, #1262)
+
+- **Phase 1 reuse 縦串** (PR #1265 + follow-up): let+match fusion、
+  fn-param 直 match fusion、arm-body let-spine 拡大まで landed
+  (`compile_match.vibe` の mr_* 系 + `compile_expr_tail.vibe` /
+  `linked_compile.vibe` の staging)。fn-param fusion は selfcompile KPI に
+  有意な改善なし(適格 arm が compiler 実コードにほぼ無い)— #1262 の
+  正直な再評価コメント参照。
+- **Drop specialization Phase 1 — 試行して revert (PR #1274)**: inline
+  shared-decrement fast path (rc ∈ [2, 0xFFFFFE] は call なし decrement) を
+  scope-end let drop + fn epilogue param drop に適用して計測した。結果:
+  selfcompile KPI は **flat (ratio 3.858、baseline と同値)** — RC lane の
+  支配コストは drop の call overhead ではなく **allocator だった**
+  (profiling で `vibe_rc_alloc` が全 CPU の 44.2%: unbounded exact-fit
+  free-list walk が O(list)/alloc)。一方でコードサイズは drop site あたり
+  ~5B → ~70B に増え、output-size ratchet (+2% 上限) を
+  closure_indirect +14% / variant_float +5.8% で fail した。**利得ゼロ +
+  サイズ回帰なので call site を plain runtime call に戻した**(経緯コメント
+  は compile_expr_tail.vibe の ELet drop 経路に残置)。
+- **Allocator 側の実測改善(こちらが本命、output サイズ中立)**:
+  1. `gen_rc_alloc_body` の free-list walk を 16 nodes に bound —
+     ratio **3.858 → 1.968** (rc wall 14970→7931ms)。コスト: 深い exact
+     fit の放棄で heap_ptr 347MB→710MB。
+  2. size-segregated bins (32 bins、sizes 16..264 step 8、bump base 直下の
+     256B 領域): `gen_rc_drop_body` の2 free site が small block を bin へ
+     push、`gen_rc_alloc_body` は bin pop 優先 → bounded walk → bump。
+  dup 側 (`emit_rc_dup_guarded`) は元から inline。
+- 未着手: プランナ語彙 PaReuseToken/PaReuseAlloc(分岐越え一般化)、
+  drop specialization の残り site 系統(match 内 drop 等)、KPI 再計測は
+  各段で #1262 に記録。
+
+## Implementation notes (#2389): plan-level pairing + wide fusion
+
+The planner vocabulary landed in PR #2411. `PerceusActionKind` gained
+`PaReuseToken`/`PaReuseAlloc` (pattern/constructor arity carried in the new
+`extra` field of the transparent `PerceusAction`), emitted as a post-pass of
+`build_perceus_plan_with_params_split` for every `match <ident>` whose
+scrutinee has a planned drop and whose arm (a) decomposes with an
+all-PBind/PWild `PCtor` pattern none of whose binds is alias-bound, (b)
+never mentions the scrutinee again, (c) contains no control transfer that
+could skip the arm's end (return/break/continue/perform; a lambda interior
+is exempt), and (d) contains, anywhere outside lambda interiors, a call of a
+constructor-like name (`reuse_ctor_like`: the last `::` segment is
+capitalized — the planner has no ctor table) with the SAME arity as the
+pattern. `vibe rc-plan` prints the pair as `reuse_token:<arity>` /
+`reuse_alloc:<arity>` rows (the arity is the codegen's authorization key
+next to the name, and it joins the collapse key, so same-scrutinee arms of
+different arities stay distinguishable), planned on the SAME normalized
+body the RC codegen plans (shadow uniquify + scrutinee lift, so `match f()
+{..}` reports on its lifted `__m_scrut_N`); the bump and wasm-gc lanes
+ignore the kinds entirely.
+
+The RC codegen consumes the candidates as the **wide fusion**
+(`mr_reuse_wide_eligible`/`mr_compile_reuse_arm_wide`,
+`compile_match.vibe`): where the Phase-1 narrow path declines — a let spine
+carrying planned RC actions (the compiler's own rebuild hot shape: tracked
+intermediates), a constructor that is not the spine tail, a bind that is
+not a pure single consume — the wide path stages the token with the SAME
+prelude as the narrow one (raw payload binds, shadow-lane probe, rc-word
+uniqueness test, flag set), then compiles the arm body through the
+ORDINARY expression machinery with the token armed on the ctx stacks
+(`reuse_tok_locals`/`_arities`/`_emitted`). `compile_call`'s constructor
+path allocates from the innermost armed token of its field count at the
+first same-size site that RUNS — the spine tail, a branch of an
+`if`/`match` tail, a site after a statement prefix, an interior
+intermediate. `token == 0` (shared path, or an earlier site consumed it)
+falls into the byte-identical fresh emission. A path on which no site ran
+reaches the arm end with the token still armed; `mr_emit_token_release`
+then zeroes the block's field count (its children were transferred to the
+binds at staging) and hands the tagged pointer to `rc_drop`, which frees
+the shell alone onto its size bin exactly like a normal last drop. When the
+spine tail is itself a same-size constructor it is the guaranteed consumer,
+no release code is emitted, and a zero site count stays a compile-time
+error (eligibility and emission disagreeing), never a silent leak. The
+narrow path keeps precedence, so previously fused arms stay byte-identical.
+
+The plan row is keyed `(scrutinee name, arity)`, which cannot tell sibling
+arms apart — so BOTH fusion tiers re-run the planner's exported
+`reuse_arm_has_blocker` on the very arm they are about to fuse (PR #2411
+review): an eligible arm's row must never authorize a same-shape sibling
+whose `return` inside a spine-let value could skip the arm end and leak the
+claimed block. The blocker predicate's scope is direct
+perform/throw/return/break/continue only; a spine call whose callee unwinds
+internally is not blocked — every call can throw on this lane, so
+transitive blocking would reject every arm, and an unwind between the claim
+and the arm end leaks without corrupting, the same window the narrow
+fusion's spine calls have always had and the "safe leak, never
+use-after-free" class ADR-0055 accepts on unwind paths.
+
+Per-bind accounting (`reuse_bind_mode`, shared by planner and both tiers):
+a **raw-transfer** bind (consumed exactly once, and that consume is its only
+occurrence) owns exactly the child on the unique path and one dup on the
+shared path, and its single consume releases it — this is what lets
+uniqueness cascade through a recursive rebuild. Every other bind is kept
+alive for the WHOLE arm: with `k` consumes it holds `k` references for them
+(the normal path's dup-per-consume, `bind_match_pat`'s model) plus one base
+reference released at arm end; on the unique path the raw child supplies
+the base and `k` dups the rest, on the shared path all `k + 1` are dups
+(the scrutinee's reference is dropped at staging, so a bind left as a
+borrowed view would depend on the OTHER reference surviving the arm, which
+arm code can release). `k = 0` is the **borrow-only** bind (every use
+borrows — e.g. all its callees are borrow-classified, where the compiler's
+own arms mostly live; PR #2416); `k ≥ 1` with further reads, or `k ≥ 2`,
+is a **held** bind. Held mode is what makes the mixed consume-plus-borrow
+class safe: PR #2416 measured it as a real deterministic use-after-free
+under a raw transfer (a borrow read after the consume saw the freed,
+in-place-reused block: 13 became 17), and declined it; now the base
+reference outlives every read, and the pinned case answers 13 with the
+arm fused. What still declines: an alias-bound name (aliasing can hide an
+owner the consume count does not see), a boxed-float SOURCE field (the raw
+payload binds bypass `bind_match_pat`'s `float_local_slots` registration),
+a nested sub-pattern, a control transfer, and an arm with no same-size
+constructor site. The fusion inside a borrow-classified FUNCTION stays
+impossible by construction — its parameter carries no plan drop, so the
+scrutinee gate never opens on a block the caller owns.
+
+A scalar payload needs no special case: `Leaf(v) => Leaf(v + 1)` reads a
+consume count of 1 for `v` and transfers raw (a tagged scalar moves exactly
+as a pointer does, the shared-path dup no-ops on the even tag), an unused
+scalar is borrow-only and its arm-end drop no-ops inside `rc_drop`.
+
+Measured on the flat self-compile source (`scripts/reuse_census.sh`, which
+classifies every constructor arm over a scrutinee with a planned drop by
+this checkout's own admission rule; 8,879 arms, 2026-09-11): the tail-only
+rule paired 1,326 arms. Now 1,830 pair — 1,405 with a constructor tail (the
+79 held-only arms among them, 73 consumed twice or more and 6 mixed, were
+declined before) and 425 with the consumer elsewhere (an `if` or `match`
+branch, behind a statement prefix, an interior site) — 250 of them through
+at least one held bind. What still declines: 6,654 arms hold no same-size
+constructor at all (a scalar or call result, an identity arm, a rebuild at
+another size), 201 use nested sub-patterns, 181 mention the scrutinee
+again, 13 carry a control transfer.
+
+One limit this slice inherited is now partly lifted; see
+[Per-path release](#per-path-release-2389) below. A value consumed in ONE
+branch only keeps the branch merge's minimum remaining count, so its
+scope-end drop is planned away and the paths that do not consume it release
+nothing. The fusion matches the normal path on that shape rather than
+improving it.
+
+Self-compile KPI for this slice, measured 2026-09-11 with the
+`selfcompile_kpi_rc_lane.sh` discipline (five interleaved rounds in ABBA
+order, cold isolated cache per run, the same input closure fed to all four
+compilers; branch base vs branch head, both RC-built and bump-built):
+
+| | branch base | branch head |
+|---|---:|---:|
+| rc/bump paired ratio, median of rounds | 3.220 (3.184–3.432) | 3.218 (3.090–3.510) |
+| RC-built stage2 wall, median | 16,704 ms | 16,680 ms |
+| bump-built stage2 wall, median | 5,187 ms | 5,184 ms |
+| RC-built stage2 heap_ptr high-water | 1,008,092,248 B | 1,009,526,520 B (+0.14%) |
+| bump-built stage2 heap_ptr high-water | 871,977,856 B | 873,094,544 B (+0.13%) |
+| RC-built stage2 size | 4,839,275 B | 4,882,987 B (+0.9%) |
+
+Flat within noise on wall (the pair ranges overlap; the per-round RC
+difference is −590..+113 ms, median +44 ms), a hair more allocation (the
+planner's site scans and the held-count arrays), and the staging code of
+the newly fused arms in the RC compiler's size. This is the third slice in
+a row to leave the ADR-0092 exit criterion where it was: after the
+allocator's bounded-walk and size-bin work, alloc/free churn is not what
+the RC lane's wall time is made of, and reuse buys allocation traffic, not
+wall. The lever for the ≤1.2× target is elsewhere (dup/drop traffic, the
+RC entry sequences), as the issue's last measurement already concluded.
+
+### Per-path release (#2389)
+
+A binding consumed on SOME branch of an `if` / `match` and not on the others
+keeps the merge's MINIMUM remaining count. That rule is #705's, and it is the
+one that keeps the consuming path from double-freeing; the cost it accepted is
+that the scope-end drop is planned away entirely, so the paths that did NOT
+consume release nothing. Reproduced on the normal lane, no reuse involved:
+
+```vibe
+let only_then = (c: Bool, i: Int) -> Tree {
+  let t = Node(Leaf(i), Leaf(i + 1))
+  if c { t } else { Leaf(0) }
+}
+```
+
+Called on the `else` path every iteration, that leaked 80 B per iteration (the
+`Node` and its two `Leaf` blocks) -- 1,600,024 B at N=20,000. It is now
+`only_then` in `fixtures/rc_reclaim_leak_test.vibe`, where the gate's 4,000 B
+bound is the Red test: compiled by a pre-change compiler the fixture measures
+1,603,488 B and fails; compiled by this one, 3,568 B, which is the steady state
+the fixture had before the shape was added.
+
+**How.** The planner records each occurrence that spends a binding's initial
+reference (`PaConsumeMark`, keyed by the occurrence's source offset -- what
+#2257 made plan actions carry) and, for a binding some merge left split, one
+`PaPathDrop`. The `let` lowering gives the drop back guarded by a flag local
+the marked occurrences set: flag set at the scope end means the reference moved
+out on this path, flag clear means this path still holds it. Same shape as the
+reuse fusion's `__reuse_flag`, one lowering over. `vibe rc-plan` prints both
+(`path_drop`, `consume_mark:<offset>`).
+
+That report had to be fixed first: it parsed with the offset-less
+`parse_program`, so every `EIdent` came out at -1 and it printed `dup` rows
+keyed by an offset the codegen could never have matched. It now parses the way
+the compile lane does.
+
+**What is admitted**, measured on the flat self-compile source (15,996 branch
+merges; 21,286 heap binding/merge pairs whose branches disagree; 10,861 of them
+merged to zero, which is where the drop is lost entirely -- 4,518 plain `let`s,
+4,150 pattern binds, 2,178 parameters, 15 for-in binds):
+
+- A plain `let` only. A `let mut` slot is reassignable, so the value it holds
+  at the scope end is not necessarily the one an occurrence moved out; a
+  pattern bind and a parameter have no `let` lowering to hang the flag on.
+  1,833 rows survive the planner's declines (1,806 when the merge census above
+  was taken; `main` has moved since).
+- Every leaf of the value's RESULT SPINE is a reference the scope owns
+  (`path_value_owned`, `compile_expr_tail.vibe`). The read follows block bodies
+  (`let` / `;` chains) and conditional branches, and each leaf answers on its
+  own; one leaf that declines declines the binding. An ALLOW-LIST at the leaf:
+  what nobody enumerated fails closed, because a denylist over an open set of
+  shapes cannot be finished -- this test began as `expr_tag(value) != 8` and
+  review holed it twice, since a call wrapped in a block or an `ESeq` is not
+  tag 8 and neither is an `if` whose branches are calls.
+
+  An OWNED leaf is an allocation made at the SITE -- a tuple, a record, an
+  array literal, a constructor call, owned by construction -- or a call to a
+  NAMED function whose DECLARED return type is heap (#791's signature scan)
+  and which neither returns a borrow (#707) nor may return an interior view
+  (#768). That is the callee's own contract, read off its signature. It is
+  NOT the "any `ECall` is heap" default `classify_let_value_heap` falls back
+  to, which is an over-approximation chosen because a dup or a drop no-ops on
+  what it gets wrong -- an even-tagged scalar, or a string/bytes fat pointer
+  that `__rt_rc_drop` returns early on. The drop this pass gives back is no
+  such no-op, so it reads a contract or declines.
+
+  Declined, each for its own reason: an INDIRECT call (no signature to read);
+  an alias or a projection (their reference is acquired by the alias-dup /
+  projection-dup machinery, whose own bookkeeping owns that question); a
+  literal or an arithmetic value (it holds no reference at all); a lambda; a
+  loop; a `handle`.
+
+  All three tables are keyed by GLOBAL name while the call dispatches to
+  whatever the name resolves to at the site, so a callee bound LOCALLY -- a
+  parameter, or a local closure shadowing a heap-returning global -- is
+  declined before any of them is read. The `agg_ret` lookup in the same
+  function excludes a local for the same reason (#724 round 2).
+
+  The heap-return requirement is the load-bearing half of the contract. The
+  borrow and view tests beside it are belt-and-braces: a function can be
+  declared heap-returning AND borrow-returning, so all three have to be read,
+  but in every shape built for them the binding is already declined by a guard
+  computed elsewhere (`is_borrow_ret_ext` for a direct call, `value_borrow_like`
+  for an if/match value), and removing them from the leaf changed no answer.
+  They stay so the predicate answers on its own rather than inheriting a
+  decision another pass made for another reason.
+
+  Borrow-ness is read from the value's RESULT SPINE rather than its top node,
+  both here and in the ordinary scope-end drop (#2733), so a block or a binder
+  chain wrapped around a borrow-returning call is declined the same way the
+  bare call is. Calls through parameters or local closures keep their existing
+  owning-call ABI; treating every callback result as borrowed would leak the
+  fresh tuples returned by recursive parser callbacks. A call with no resolved
+  signature remains over-approximated: it defaults to heap, and a drop on the
+  scalar or string most of those return is
+  a no-op. Widening that default is its own change with its own measurement.
+
+  An outer identifier is borrowed only when its binding is borrowed. An
+  owning identifier returned through a block transfers its last reference,
+  or a retained reference if the source is used again. Its destination must
+  keep the ordinary drop. Treating every outer identifier as borrowed leaks
+  the transferred reference; `move_through_wrapper` in
+  `fixtures/rc_reclaim_leak_test.vibe` checks reclamation over 20,000 calls,
+  while the wrapper e2e tests check that borrowed results remain valid.
+  A raw field read borrows, but a field binding retains its value; a consumed
+  match payload also acquires a reference. Returning either binding through
+  a block transfers that reference and must keep the destination's drop.
+
+  An unboxed mutable binding initialized by a borrow-returning call retains its own
+  reference. Its planner entry is owning, so assignment and scope exit use
+  the same accounting as a mutable binding initialized by an allocation.
+  Assigning another borrow-returning call also retains the replacement.
+  The initial call's borrowed classification cannot survive assignment: a
+  later wrapper may transfer an allocation stored into that slot. Tests
+  cover both assigned and unassigned bindings, later reads, and replacement
+  with another borrowed value.
+
+  An immutable inner alias of a direct borrow-returning call remains borrowed:
+  the planner's scalar exemption prevents a last-view-use retain in that
+  case. The reclamation guard checks both read and ignored wrapper results;
+  treating every inner alias as owned would prematurely free its container's
+  element.
+
+  The ordinary wrapper classifier uses the same borrow-returning call set as
+  the direct-call classifier. The broader may-return-view analysis remains
+  in the planner's straight-line rule. Applying that conservative set to all
+  branch leaves also declined fresh parser results and leaked their tuples.
+
+- Every occurrence that spends the initial reference must have a source offset.
+  A lambda capture has none (the planner walks captures with -1), so codegen
+  would have no site to set the flag at; the binding keeps today's behavior
+  rather than getting a drop nothing suppresses.
+
+There are **two** places an occurrence can spend that reference, and they are
+not one code path: `pe_use`, and the `ELet` alias arm (`let u = t`), which
+mirrors pe_use's dup condition and then decrements `remaining` directly.
+Recording it in `pe_use` alone left the alias transfer unmarked, so a split
+whose other arm WAS marked emitted the guarded drop and freed a value the alias
+had moved out — a silent wrong answer with no trap (36,000 became 26,000 in the
+pinned case). Both sites now call one `pe_note_initial_ref_spent`, so they
+cannot drift.
+
+That bug also showed the e2e lane could not see the feature at all:
+`codegen_test_support`'s helpers parsed with the offset-less `parse_program`,
+so every `EIdent` came out at -1, every candidate was disqualified, and the
+case compiled **byte-identically** whether or not the planner recorded the
+alias. They now parse the way the compile lane does, which is what makes the
+case a real red test (it answers 1,045,100 instead of 3,545,100 when the
+recording is removed).
+- Not a borrow-bound binding (#708/#768): it holds a reference it never
+  acquired.
+- Not an Int-valued binding: it holds no reference at all, so a guarded drop
+  over it is pure instruction cost. The planner cannot see this -- its
+  `is_scalar_expr` knows only literals and borrow-returning calls -- but the
+  codegen's `expr_is_intish` can. Measured before the exclusion,
+  `bench/exec/sort_ints.vibe`'s `let mid = (lo + hi) / 2` took a flag local,
+  two flag stores and a guarded `rc_drop` for a heap figure that did not move
+  (32,828 B either way), and the PR's perf report flagged +2.84% fuel on that
+  bench; with it, the bench compiles byte-identically to a pre-change
+  compiler.
+- `local_names` must still span every local allocated so far. It is indexed BY
+  wasm local index, and the value's own compile can take a scratch local
+  without naming it, so the flag allocation pads up to the flag's index first.
+  Padding cannot fix the other direction: an array already LONGER than that
+  index would record the flag's name at one position and address its slot at
+  another, and every later binding would then read a slot that is not its own
+  -- wrong values, no trap. No shape was found that reaches it; the check
+  costs one comparison and turns a silent aliasing bug into a declined
+  binding.
+
+`scripts/path_release_census.sh` is the measurement tool the numbers above
+come from: it runs the planner over a flat source, finds each `PaPathDrop`
+row's `let`, and classifies it by the codegen's own rule -- admitted, admitted
+only through the recursive spine read, or the leaf kind that disqualified it.
+On the compiler's own sources, of 1,833 rows: 129 admitted (125 at the value
+node, 4 only through the spine read), and of the rest 1,126 calls, 245
+arithmetic values, 181 aliases, 72 literals, 42 projections and 30 indirect
+calls. The declined calls read, by what the callee's contract says: 1,070
+unresolved -- the great majority builtins returning an `Int` or a `String`
+(`Array::length`, `String::index_of`, `String::concat`), for which a drop
+would be a no-op anyway -- 30 indirect, 23 bound locally, 20 may-return-view,
+13 borrow-returning.
+
+The probe answers with the shipped rule rather than an approximation of it: it
+carries the enclosing function's bound names so a locally bound callee is not
+read through the global tables, and it reports the callee of the leaf that
+DISQUALIFIED the binding rather than of the wrapper around it -- without
+either, a `{ let k = 0; f(k) }` row read as `-` and the wrapped-call
+population, which is what the spine read exists to look at, was missing from
+the summary.
+
+The codegen's bookkeeping is name-keyed, which is safe here without a check
+because every planned body has been through `uniquify_shadowed_bindings_fresh`
+-- two `let t`s in sibling branches come out as `t` and `__shadow_0_t`.
+`lib/@vibe/compiler/tests/perceus_path_release_plan_test.vibe` pins that
+invariant, since the invariant is the thing that could regress.
+
+**Cost, measured** (`codegen_lexer_test` full-closure compile, isolated cache
+per run, three ABBA rounds): the compiler's own heap high-water goes
+918,895,200 B -> 922,810,000 B, +0.43%, identical on every run -- the planner's
+per-binding flag table, the mark arrays, and the flag locals and guarded drops
+in the emitted compiler. Wall is flat (median 5,532 ms -> 5,564 ms, ranges
+overlap). The leak this removes is per call of a split binding, so what it buys
+depends on the program rather than on this corpus; the self-compile does not
+show it, exactly as the reuse slices did not.
+
+**Cost of widening the rule to the call contract and the spine read**, measured
+the same way (both compilers built from the same tree, so the corpus is
+identical; each figure reproduced on two runs with a fresh cache):
+
+| | before | after |
+|---|---:|---:|
+| compiler heap high-water, `codegen_lexer_test` | 956,207,312 B | 956,208,816 B (+0.00016%) |
+| RC-built stage2 size | 3,072,573 B | 3,073,251 B (+0.02%) |
+| `bench/exec` corpus | — | 9 of 10 byte-identical |
+
+The one exec program that changed is `expr_eval`, +18 B of code with identical
+allocation (1,766,816 B either way) and the same stdout as its golden: one
+admitted site whose leak that program never takes. The PR perf report's
+deterministic lane puts the instruction cost of that site at +0.50% fuel on
+that scenario, below the ±2% drift threshold, and reports no drift in any of
+the 77 other tracked series.
+
+The upper bound is worth recording next to it. A compiler built with the value
+test removed entirely -- every call admitted, contract unread -- moves the same
+high-water by +0.008% and removes nothing measurable, because what the compiler
+leaks here is not what its peak is made of. Meanwhile one 20,000-iteration loop
+over a split binding leaks 1,600,024 B and this makes it a constant. That is the
+shape of the whole feature: it is a correctness fix whose benefit is a property
+of the program, and the self-compile is the wrong instrument for it.
+
+### Where reuse pays, and why the self-compile does not see it (2026-09-11)
+
+`bench/exec/tree_rebuild.vibe` is the pattern: a unique tree rebuilt by
+`match` through the shapes the tiers distinguish. Measured under viberun
+fuel (deterministic instruction cost; `VIBE_FUEL=1`) per shape, one
+variant per shape run in isolation, 12 rounds over depth-11 trees, with
+three compilers -- reuse disabled entirely (both tiers return -1, a
+scratch build), the branch base (slices 1-2), and this slice:
+
+| shape (rebuilds per round) | reuse off | branch base | this slice | rebuild allocation |
+|---|---:|---:|---:|---|
+| `only_tail`: constructor tail (3) | 18.31M / rebuild | 3.59M | 3.59M | 0 B (114,664 = the build alone) |
+| `only_shared`: same rebuild, source kept alive (3) | 18.92M | 9.43M | 9.43M | one fresh tree per shared rebuild |
+| `only_mirror`: constructor in an `if` branch (3) | 18.85M | 19.34M | 4.40M | 229,328 → 114,672 B |
+| `only_clamp`: one branch at another size (2) | 9.55M | 9.82M | 3.69M | token released on that path |
+| `only_weigh`: held bind, right spine only (3) | 1.86M | 1.86M | 1.82M | dominated by the `checksum` reads |
+
+A fused rebuild costs ~5x fewer instructions than the normal path
+(bind-time dups, recursive drop, free-list push, alloc, header init) and
+allocates nothing; a staged arm whose test fails costs the normal path plus
+the test (`only_mirror` on the branch base, +2.6%). The container shape
+decides everything (8 depth-8 trees, 12 rounds, 3 rebuild passes):
+
+| container shape | reuse off | fused | note |
+|---|---:|---:|---|
+| `only_chain8`: unique chains, no container | 69.9M | 25.8M | the reference |
+| `only_forest`: `Array::map(arr, incr)` | 74.8M | 30.7M | the element reaches the callback without a retain, so it is unique |
+| `only_forest_loop`: `Array::push(out, incr(Array::get(arr, i)))` | 74.9M | 77.8M | `Array::get` is a borrowed view; the owned argument position retains it, every root is shared, nothing reuses, the staging is pure cost |
+
+The compiler itself is written in the third shape: its sources hold 30
+`Array::map` calls against 43,587 `Array::get`, 11,523 index `while`
+loops and 8,418 `Array::set` (statements rewritten in place, `match
+Array::get(stmts, i)` 7,684 times). A pass receives its tree as a
+pattern-bound field of a statement that the statement array still owns,
+so the root of every rebuild is shared, the shared path dups the children,
+and the whole cascade below it allocates fresh. Measured on the RC-built
+compiler compiling the full closure (viberun fuel, cold isolated cache):
+reuse on vs the reuse-disabled build is **+0.38%** instructions
+(175.26G vs 174.60G) and +0.25% allocation -- the staging runs, the
+uniqueness test fails, and the fallback costs a little. Counted with a
+scratch build whose staging code increments a memory counter (verified on
+the exec shapes: the unique chains and the `Array::map` forest hit 147,168
+of 147,168, the index loop 0 of 147,168): the full-closure self-compile
+stages **2,637,481** uniqueness tests and **1,078** pass (0.04%).
+
+The profile of the same compile (`scripts/profile_compile.sh`, names
+build) puts the RC lane's cost where reuse cannot reach: `__rt_rc_dup`
+33.2% of CPU, `__rt_rc_drop` 3.1%, `__rt_rc_alloc` 3.1%. Even a perfect
+allocation-free compiler would move the ADR-0092 ratio by a few percent;
+the lever is the retain traffic -- borrowed reads the inference cannot
+prove (every `Array::get` result passed on, every pattern field consumed
+through a container it does not own) -- and the code shape that produces
+unique inputs (a consuming `map` / a move out of a container) which the
+compiler's own style does not use.
+
+### The HOF lowerings own what they are handed (#2671)
+
+Measuring the forest shape exposed that the RC lowerings of the Array
+higher-order builtins (`map` / `filter` / `fold` / `iter_eager` / `any` /
+`all` / `find` / `reverse` / `concat`) did no ownership accounting at all.
+Each consumes its array argument (the planner counts the position as
+owning) and calls a callback that OWNS its parameter, so the lane owes the
+callback one reference per element handed over and owes the array one
+release. The lowerings did neither: `Array::map` over an array the caller
+still held handed each element to the rebuilding callback without a
+retain, the callback found the block unique, the reuse fusion fired, and
+the CALLER's array was rewritten in place -- silently wrong (bump 1280400,
+RC 1286800 on the same program); `filter` / `fold` / a capturing `map`
+freed elements the array still listed (the shadow lane's dup-of-freed);
+`find`'s `Some(t)` and `reverse` read freed payloads; and no shell was
+ever released (84 B per `map` call on a two-element array).
+
+Fixed in the lowerings (`compile_call.vibe`, `cc_hof_*`): one rc-word test
+per array decides the path. UNIQUE -- the elements are moved out with no
+retain (a rebuilding callback sees a unique block and fuses), a rejected
+element is released by the lowering, and the shell is freed with its
+length zeroed so the walk skips the moved elements. SHARED -- every element
+handed over is retained first and the array is dropped normally at the
+end. The predicates (`any` / `all` / `find`) never move an element: retain
+per call, walking drop at the end; `concat` retains what it copies and
+releases both inputs; the callback reference is released after the loop
+either way. Two staged-`None` leaks fell out of the same measurement:
+`find` and `MapBuilder::get` initialise their result slot with a 16-byte
+nullary block and overwrote it on a hit.
+
+One more rule, found by the book's collections chapter: the lowering owns
+an argument only where the PLANNER planned an owning position. `@vibe/builtin`
+declares `let Array::map = ..` as a borrow-only loop, so a program that
+imports the package (the book does, for `trait Iterator`) plans every
+`Array::map(xs, f)` call as a borrow -- no dup, the caller expects `xs`
+back -- while the ladder still intercepts the name and consumes. The first
+cut moved the array out from under the caller (`Array::push(xs, 4)` after
+a map answered length 1). `cc_hof_retain_arg` now also retains an argument
+whose position the planner classified as borrowed
+(`md_borrow_mask_of`), so the lowering holds a reference of its own and the
+caller keeps its; such a program never sees the unique path for that name,
+which is the honest price of shadowing an intrinsic with a source
+definition the planner reads.
+
+What the accounting costs the compiler itself (30 `Array::map` sites,
+the RC-built compiler compiling the flat compiler source, viberun fuel,
+same input): 1,178,199,286,771 → 1,177,029,188,108 instructions (−0.10%),
+1,837,225,668 → 1,835,120,428 B allocated (−0.11%), the RC-built stage2
+4,882,987 → 4,889,652 B (+0.14%). The bump lane's bytes are untouched; its
+`selfcompile_kpi` heap high-water moves 875,863,464 → 875,211,600 B (−0.07%,
+the #2680 inference).
+
+Pinned by `tests/hof_rc_ownership_test.vibe` (bump / RC / RC-shadow
+agreement on every builtin, shared and unique sources, a capturing closure
+used by three maps, a source-level `Array::map` shadowing the intrinsic),
+the HOF shapes of `fixtures/rc_reclaim_leak_test.vibe`
+(the shell release, under the 2,000-byte bound) and shape 10 of
+`fixtures/rc_shadow_regression_test.vibe`. Three neighbours found on the
+way were filed from that PR and are fixed in the next section: an
+unannotated lambda parameter consumed three times is released early
+(#2681, P0), an owned call result passed straight into a borrowed argument
+position is never released (#2682), and a `MapBuilder` is never reclaimed
+(#2683). A fourth, in the compiler rather than the lane, was fixed on the
+same branch: a bound `+` chain of 24 operands ran the compiler out of
+memory because the trait-dict operand inference walked each operand twice
+per node (#2680).
+
+### The three neighbours, fixed (#2681, #2682, #2683)
+
+**#2681 -- a top-level lambda's unannotated parameter.** Only the local
+`let f = (p) -> ..` lambdas went through the call-site inference
+(`fill_lambda_params`), so a top-level one kept no parameter type, the
+planner read the parameter as a scalar and planned neither dups nor drops
+for it, while every consuming call in the body released it. Two changes in
+`perceus.vibe`: the inference runs for top-level lambdas too
+(`fill_top_lambda_params`), and a parameter the body CONSUMES at an owning
+position is marked heap whatever the calls pass (`md_consume_count`, the
+builtin-only view -- the case the scalar classification cannot afford to
+miss; a scalar handed the heap treatment costs guarded no-ops).
+
+The first cut of the top-level inference was a lesson in its own right. It
+seeded every top-level binding into the environment the call analysis
+threads, and that environment is an immutable `Map`: `Map::set` copies its
+map, and `analyze_calls` sets it at every `let` and every lambda parameter
+it walks, so each walk copied the module's bindings again and again. The
+compiler gate's split-CLI step went red with `memory access out of bounds`
+inside `__rt_map_build_index`, called from `analyze_calls` -- the
+bump-built compiler had run out of memory. The fix keeps the top-level
+bindings OUT of the threaded environment: they are a side lookup
+(`HeapInferCtx.top_env`, built once through a `MapBuilder`) that
+`arg_class` consults when the local environment has no entry, and a
+lambda's calls are collected only from the top-level statements whose
+free-variable list mentions it. Measured on the split CLI (RC output
+lane): the 045db6c compiler 21.6 s, the first cut a trap after 27 s, the
+fix 17.6 s.
+
+The second lesson came from the gate's shadow fixture, which answered
+5,025,372,489 instead of 25,377,489 on the RC lane once top-level lambdas
+were classified: its `lookup(names, effs, name)` returned `Some` for a
+name it did not hold. The planner spelled a heap-classified parameter's
+annotation as the EMPTY TUPLE (`TyTuple([])`, a shape no source produces
+-- `()` parses to `TyUnit`), and `desugar_trait_dicts`, which runs AFTER
+`elaborate_heap_params`, seeded that as a composite eq shape for the
+parameter: `Array::get(names, i) == name` became
+`eq_for_typed(TyTuple([]))`, a trivially true tuple comparison. Annotate
+the parameters and the answer is right; local lambdas never reached
+`seed_var_types`, which is why the same marker had been harmless there.
+`linked_compile` read it too, as a tuple of arity 0 registered in
+`agg_local_slots`. The marker is a nominal now (`__rc_heap`): a name no
+type table knows is exactly what an unannotated parameter already is to
+those readers (`agg_info_of_type_name` answers 0), `type_expr_is_heap`
+recognises it, `seed_var_types` skips it by name so no witness or
+comparator is ever looked up under it, and `annotate_params_from_sig`
+lets the trait's declared type overwrite it -- an impl method's parameter
+classified heap before that pass kept the marker, the method-level
+binder's `X` never reached it and `X::show(x)` lost its witness
+(`fixtures/trait_method_generic_test.vibe` trapped in the unit battery).
+Pinned by
+`tests/lambda_param_consume_rc_test.vibe` (seven shapes through bump / RC /
+RC-shadow, the `lookup` shape among them) and by the shadow fixture.
+
+**#2682 -- an owned temporary in a borrowed position.**
+`Array::length(build_arr(3))` handed a fresh array to a position that
+takes no ownership, and no binding held it, so nobody dropped it: 84 B per
+call for the three-element array, and the map result and its elements in
+the `Array::length(Array::map(ta, f))` shape. `cc_compile_resolved_call`
+now parks such a temporary (`cc_is_owned_temp`: a call to a callee that
+returns no view, or an array / tuple / record literal) in a local and
+releases it after the call -- unless the callee may return a view of its
+argument (`is_borrow_ret_builtin`, the `borrow_ret_names` and
+`borrow_view_ret` sets), where the leak stays the safe side. Pinned by
+`tests/borrowed_temp_release_rc_test.vibe` and the `tlen` shape of
+`fixtures/rc_reclaim_leak_test.vibe`.
+
+**#2683 -- `Map` and `MapBuilder` are RC blocks.** Both were raw bump
+allocations in both lanes -- even values, invisible to the RC machinery
+-- so a builder leaked 144 B per `new`, every value stored in it with it,
+and the frozen `Map` on top; every `Map::set` / `Map::delete` / literal
+result was the same. On the RC lane they are rc blocks now:
+
+- a `Map` is class 6 (`[count][index][entries]`, the layout rc_drop's
+  arm already walked); `Map::set`, `Map::delete`, `MapBuilder::freeze`
+  and the `EMap` literal (`Map::new()` and `Map::from_pairs` parse to it)
+  allocate through `cc_map_alloc_rc` and hand the value out TAGGED. Every
+  reader already untagged with `& -2`. The side index that
+  `__rt_map_build_index` builds once a map holds 8 entries is a class-0
+  leaf allocated through rc_alloc, freed by the class-6 arm;
+- a `MapBuilder` is a class-9 handle over a class-0 storage leaf, and
+  `rc_drop` gained the arm: drop the stored keys and values, release the
+  storage, free the handle. `MapBuilder::set` releases the storage it
+  grows out of and the value it replaces, and `freeze` decides by the
+  handle's rc word: uniquely held, the entries MOVE (count zeroed, handle
+  and storage freed); shared, every copied key and value is retained;
+- a key or value copied from one map into another is retained in both
+  (`Map::set`, `Map::delete`, `Map::keys`, `Map::values`), a replaced key
+  the caller retained for storage is released, a literal's value that
+  is a borrowed view (a projection, a borrow-returning call, a
+  loop-borrowed name) is retained as the array / tuple / record literals
+  do, and a lowering that borrows its map releases an OWNED temporary
+  handed there (`Map::set(Map::new(), k, v)`, a nested `Map::set`, a
+  frozen builder) after its last read -- the #2682 rule, which the
+  resolved-call path applies to runtime-function builtins and these
+  inline arms apply themselves; `Map::get` / `MapBuilder::get` return a
+  view and keep the leak on the safe side.
+
+Two rules only the measurement showed. A `Map`'s index slot (vptr+4) must
+be zeroed at allocation, because rc_alloc hands back memory that still
+holds whatever the previous block wrote there. And every Map builtin that
+reads or copies its map without releasing it has to be in
+`md_is_borrow_arg0_call`: `Map::delete`, `Map::values`, `Map::size` and the
+`Map::has` alias were not, so the planner handed them an OWNED reference
+that no lowering dropped -- invisible while maps were bump blocks, 48 B per
+iteration once they were rc blocks (`Map::keys` / `Map::get` / `Map::set`
+already were; `MapBuilder::freeze` stays an owning position, its lowering
+releases what it is handed). The same measurement found the map literal
+missing from `cc_is_owned_temp`: `Map::set(Map::new(), k, v)` hands a
+16-byte block to a borrowed position that nobody released (#2682's rule,
+now covering `EMap`). Pinned by
+`tests/map_builder_rc_test.vibe` (eight shapes -- a replaced value, a
+builder frozen twice, a builder grown past 8 entries with the frozen map
+indexed, a map in a struct captured by a closure, literals over views, a
+builder held by an array and read through `MapBuilder::get`, a freeze
+through a projection -- bump / RC / RC-shadow agreement) and the
+`MapBuilder` / `Map` shape of `fixtures/rc_reclaim_leak_test.vibe`
+(`5i + 21` per iteration; the expected total moved to 7,401,070,000, and
+to 7,801,510,000 with the accumulator shapes below). The
+fixture's heap bound moves from 2,000 to 4,000 B: its steady state is a
+constant, one parked block per size bin at loop exit, measured 3,204 B
+with the indexed maps and the grown builder storage, while any leak
+scales with N (16 B per iteration is 320,000 B at N = 20000).
+
+**What the compiler's own RC-lane self-compile pays for the three fixes**
+(the `selfcompile_kpi` protocol: the seed entry compiled by an RC-built
+stage2 of the PR base bca14ae and of the final tree, viberun fuel and
+allocation, three runs each, identical to the digit):
+
+| | base (bca14ae) | this branch | delta |
+|---|---:|---:|---:|
+| fuel | 1,177,029,188,611 | 1,194,445,790,779 | +1.48% |
+| bytes allocated | 1,835,120,428 | 1,839,410,132 | +0.23% |
+| heap peak | 1,835,229,036 | 1,839,518,828 | +0.23% |
+| RC stage2 size | 4,889,148 | 4,895,557 | +0.13% |
+
+The fuel is the price of maps that are accounted at all: `Map::set`
+retains every entry it copies out of a source it borrows (a plain copy
+before), rc_drop walks a map's entries when it dies, and the index goes
+through rc_alloc. The peak does not fall because the compiler's own maps
+(type environments) live to the end of the compile, so reclaiming them
+buys nothing there and their headers cost 0.23%. The map counterpart of
+ADR-0092 reuse is the next section.
+
+### Map reuse: a uniquely held Map updates in place (ADR-0092 for maps)
+
+`Map::set` and `Map::delete` CONSUME their map now (they left
+`md_is_borrow_arg0_call`). On the RC lane the lowering reads the source's
+rc word: exactly one reference (`1 | 6 << 24` -- a saturated, immortal
+block fails the test) and the entry is replaced, appended or removed in
+place and the same block is the result; anything else takes the copy
+path, after which the consumed reference is released. In place, the
+capacity comes off the block's size word (rc_alloc hands back exactly the
+size asked for), a full block moves its entries into one of twice the
+capacity (no retains -- the old block's count is zeroed and it is released
+with its index), the side index is inserted into (`__rt_map_index_insert`,
+now on `CompileCtx`) while it stays at or under the half load
+`__rt_map_cap_for` sizes for and released and rebuilt otherwise, and a
+delete shifts the tail down and rebuilds the index or drops it under 8
+entries. The bump lane keeps the copy.
+
+Two things had to be true of the planner for that path to be reached. A
+container read after (or through a view around) a consuming use is
+already kept alive: `pctx_apply_borrow_retention` adds one owning use to
+any binding with a borrow occurrence, so the consuming use dups instead of
+moving and the scope end releases the initial reference (measured before
+the change: `let v = Array::get(xs, 1)` then `Array::concat(xs, ..)`,
+`Array::filter(xs, ..)` rejecting the viewed element, a user fn consuming
+`xs`, and `Array::length(xs)` after the consume all agree across bump /
+RC / shadow). So `let v = Map::get(m, k); let m2 = Map::set(m, k, x)`
+copies and `v` survives, while a source with no later reads moves.
+
+The accumulator did not reach it, and it leaked. `m = Map::set(m, k, v)`
+counts as an owning use of `m`, the planner retained it whenever `m` had
+any other use, the callee copied, and the assignment lowering -- which
+drops nothing for a self-referential right-hand side, on the assumption
+that the call consumed the old value -- left the old map with the
+reference the retain had kept: 864 B per iteration for nine sets on a
+map, 420 B for four `Array::concat` on an array, on the compiler before
+this change (the `let mut` accumulator pattern, any heap type, since
+#699). `x = f(.., x, ..)` with `x` at exactly one owning position and
+nowhere else in the right-hand side now MOVES that occurrence
+(`pe_self_reassign_moves` / `pe_use`): the old value is consumed and the
+binding takes the result, the binding's remaining count is topped back up
+by the one the move spent so its scope end still releases what it holds
+last, and the assignment lowering keeps its loop-carried dup off the same
+occurrence (`md_self_reassign_move_arg`). The move is withheld when the
+binding is a scalar, is itself a view, or when another binding still
+views it (`view_src`, recorded for borrow-returning calls and projections
+at their `let`; a view used only at borrowed positions keeps its initial
+count until its scope ends, which blocks the move for that whole scope --
+the safe side).
+
+Measured with viberun (RC lane, 20,000 iterations), before -> after:
+
+| shape | fuel | heap peak |
+|---|---:|---:|
+| a 21-step unique chain of `Map::set` through a consuming helper | 2,022,100,188 -> 499,280,141 (-75%) | 9,504 -> 2,480 B |
+| nine `m = Map::set(m, ..)` on a `let mut` inside the loop | 234,520,377 -> 149,420,287 (-36%) | 17,280,760 -> 840 B |
+| two `m = Map::set(m, ..)` on a `let mut` inside the loop | 19,420,266 -> 20,980,273 (+8%) | 960,496 -> 544 B |
+| four `xs = Array::concat(xs, [..])` on a `let mut` | 68,880,301 -> 62,480,229 (-9%) | 8,400,532 -> 700 B |
+
+The heap columns are the leak: every intermediate value, gone. The +8% on
+the two-set map is the unique test plus the in-place search on a map too
+small to have anything to save. Pinned by `tests/map_reuse_rc_test.vibe`
+(thirteen shapes through bump / RC / RC-shadow: unique and shared sources,
+growth past the index threshold, a replace through the index, deletes back
+under it, a view read before and one held across a consuming set, a source
+consumed twice, accumulators inside and outside loops, reads between
+reassignments, the array accumulator) and by the accumulator shapes of
+`fixtures/rc_reclaim_leak_test.vibe` (`2i + 23` per iteration; the
+expected total moves to 7,801,510,000), on which the compiler before the
+move keeps 28,723,336 B against the 4,000-byte bound.
+
+What the compiler's own self-compile gets out of it: nothing measurable.
+The `selfcompile_kpi` protocol (RC-built stage2 of the tree before the
+reuse, 3c7ba5b, against the reuse) moves fuel 1,194,445,790,779 ->
+1,194,859,964,204 (+0.03%), bytes allocated 1,839,410,132 ->
+1,841,373,196 (+0.11%) and the RC stage2 grows 4,895,557 -> 4,906,173 B
+(+0.22%, the in-place arms). The compiler's map traffic is not the shape
+the reuse serves: of its 117 `Map::set` sites, 17 are self-reassignments
+(the planner's `env = Map::set(env, n, ..)` threading, and the one that
+also reads `env` in the value argument is not a single occurrence), 7 are
+`let`-bound, and the rest pass `Map::set(scope, name, id)` straight into
+a recursive call while the caller keeps `scope` -- shared by
+construction, so they copy, and would need a persistent structure rather
+than an in-place update to get cheaper.
+
+### An FBIP-shaped rewrite of one pass, measured (2026-09-11)
+
+The question behind #2389 was whether the compiler's own code could be
+moved toward the shape reuse rewards. One pass was rewritten to find out:
+`lift_match_scrutinees` (`normalize/normalize.vibe`), whose arms are
+already same-shape constructor rebuilds and whose child arrays were rebuilt
+with `for` comprehensions -- a comprehension reads each element through a
+borrow, so everything below an array boundary was shared and allocated
+fresh. The comprehensions became consuming `Array::map` helpers
+(`lms_exprs` / `lms_arms` / `lms_named`, closures capturing the counter),
+which after the ownership fix above move the elements out of a unique
+array. Measured on the flat-source RC-lane self-compile through two
+counter-instrumented RC-built compilers (the same input, cold, viberun
+fuel):
+
+| | fuel | allocated | output | staged | unique |
+|---|---:|---:|---|---:|---:|
+| before | 1,177,116,818,175 | 1,836,094,292 B | 4,978,430 B | 3,970,084 | 826 |
+| after | 1,177,155,083,233 (+0.003%) | 1,836,094,276 B | byte-identical | 3,970,084 | 826 |
+
+Neutral, and the counters say why: not one more uniqueness test passed.
+The pass never receives a unique tree. Its root is `get_slet_expr(pb_stmt)`
+-- a field of a statement the statement array still owns -- run through
+`uniquify_shadowed_bindings`, which hands back every unchanged subtree
+as is (structure sharing, by design), so a moving map finds shared arrays
+all the way down and takes the retaining path, exactly as the comprehension
+did. Uniqueness has to be produced upstream, by a pipeline that transfers
+its statement array from pass to pass (`let stmts = pass(stmts)`) instead
+of mutating it in place through borrowed reads (`pass(stmts)`, every desugar
+today), and that is a change to the pipeline's ownership, not to any one
+pass. The rewrite is not landed: it buys nothing yet, costs one closure
+block per array-bearing node, and under the committed seed -- whose
+`Array::map` still hands the callback elements the shared tree owns -- the
+FS-lane test harness traps in `expr_contains_exceptions` reading a freed
+node (the flat self-compile happens to produce identical bytes, the freed
+nodes not being reused before they are read). It is attached to the PR
+for the record.
+
+Pinned by `tests/perceus_reuse_plan_test.vibe` (plan rows, blocker
+semantics, ineligible shapes, the anywhere-consumer and held-bind rows),
+`tests/perceus_reuse_e2e_test.vibe` (bump/RC output agreement on the unique
+chain, the shared source surviving intact, the tracked-spine arm where an
+interior same-arity constructor consumes the token before the tail, held
+binds including the 13-not-17 read-after-consume case and a double
+consume, a consumer in one branch with the other branch releasing the
+token, a rebuild behind a statement prefix, and the sibling arm whose
+conditional return must never be authorized by another arm's plan row —
+counting occurrences of the rc-word uniqueness-test constant in the RC
+wasm, with the bump wasm holding none), and the RC reclamation leak guard
+(`fixtures/rc_reclaim_leak_test.vibe`, `tests/gates/mid/run.sh` 40d),
+whose `widen0` runs the never-consuming branch 20,000 times — a missing
+release would leak one block per iteration against a 2,000-byte bound —
+and whose `hold` balances a held bind every iteration.
+
+## Implementation notes (2026-08-03, #1262 continued)
+
+### 計測手順の訂正 — `selfcompile_kpi_rc_lane.sh` は ratio を過小に出していた
+
+**旧 lane script は bump を N 回まとめて回してから rc を N 回回していた。**
+2つの self-build 直後の数分は machine がまだ落ち着いておらず、その warm-up が
+まるごと bump lane に課金される。**同じ tree・同じ artifact・同じ 3 runs で
+all-then-all が 1.193 (bump_med 8304)、interleaved が 1.820 (bump_med 5218)**。
+1.193 は「出口条件 (≤1.2) 達成」と読めてしまう数字であり、実際には達成して
+いない。
+
+このコンテナでの bump は 7 runs で 4346..7447ms(1.7x の幅)振れる —
+**測ろうとしている効果 (~1.8x) より drift の方が大きい**。lane script は
+(a) interleave (bump, rc, bump, rc, ...) し、(b) round ごとの rc/bump 比の
+中央値 `paired_ratio` も出すようにした(pair 内は数秒差なので slow drift が
+相殺される)。**過去の tracking series の数値はこの bias を含む**ので、
+比較するなら同一 invocation 内の interleaved 値どうしに限る。
+
+### RC の output size は 3.5x、しかも全関数に一様
+
+code section: bump **1,751,277 B / 3579 fns** → rc **6,153,809 B / 3581 fns**
+(**3.51x**)。top-8 の占有率が 16.3% → 16.0% とほぼ不変なので、**数個の
+runtime helper が太ったのではなく、per-site の inline RC guard が全関数に
+一様に積み上がっている**(rc alloc/drop helper の 2 fn 増加分を除く)。
+`emit_rc_dup_guarded` は inline (41 命令)、drop は call。
+
+### borrow 推論の per-position 一般化 — landed、ただし利得 −0.69%
+
+slice 1 (#1282) は **param 0 のみ**を推論していた。これを全 parameter
+position へ一般化した(`compute_borrow_param_user_fns` が name→bitmask を
+返し、call site / planner / callee 側 drop filter がすべて mask を引く)。
+param0 を consume するが param2 は読むだけ、という関数も param2 を borrow
+できる。
+
+**差分検証**: mask を `& 1` に制限した build の出力は、main の RC stage2 の
+出力と `bench/binary_size/*` 全 5 本で **byte 単位で一致** — 配線が
+position 0 において完全に inert であることを先に固定してから、全 mask を
+有効化した。
+
+**実測 (RC stage2 の size)**:
+
+| build | size | vs slice 1 |
+| --- | --- | --- |
+| position 0 のみ (= main) | 6,256,272 | — |
+| 全 position (健全) | 6,213,090 | **−0.69%** |
+| 天井: non-ident 失格を撤去 (**不健全**) | 5,895,092 | −5.77% |
+
+**利得が小さい理由は測定で特定済み**: `ca_collect_nonident_args` の失格
+条件が効きすぎている。ある position はプログラム中の **どこか 1 箇所** でも
+非 ident 引数(`f(ctx, i + 1)` のような計算式)を渡されると、その position
+全体が owned に落ちる。第 2 引数以降は計算式で渡されるのが普通なので、
+ほとんどの position がこれで消える。**天井との差 5.1 ポイントがこの失格
+条件のコスト**。
+
+次の slice はここ: 失格を position 単位ではなく **call site 単位**にし、
+borrow position に非 ident(= fresh temp)を渡す呼び出し側が call 後に
+自分で drop を出す。ident 呼び出し側の dup 除去を保ったまま、temp 側だけ
+drop を払う形になる。
+
+### 検証手順の罠2つ(どちらも今回踏んだ)
+
+1. **`generate_bundle.sh` 単体では `_cli_adapter_module_source.vibe` は更新
+   されない**。`build_adapter_module_source` は `VIBE_REGEN_MODULE_SOURCE=1`
+   でない限り committed 版を優先する。stage1/stage2 はそこから bootstrap
+   するので、compiler source を編集して `generations.sh build` しても
+   **変更が artifact に入らないまま「ビルドが通った」ように見える**。
+   `bash scripts/ensure_generated.sh --force` を使う(5生成物を
+   すべて regenerate。lib/ が未整形だと止まるので先に
+   `bash scripts/vibe_fmt.sh <file>`)。
+2. **`compiler_gate.sh` は arity/型エラーを取りこぼす**。gate は bundle
+   flatten 済みソース(DCE 込み)を通すので、flatten で落ちる関数の中の
+   エラーは見えない。今回 `build_perceus_plan`(test 専用なので DCE 対象)
+   に 3 引数のままの `pctx_new` 呼び出しが残っていたが、**gate は 85/85 で
+   通り fixpoint も一致**し、unit battery だけが 107 file の
+   `fail(compile)` として検出した。**package 境界をまたぐ signature を
+   変えたら battery を必ず回す** — #1262 の `bsearch_leftmost` /
+   `mr_spine_tail` 事件と同じクラス。
+
+**ただし size 問題の本命はこれではない**: 天井の −5.8% ですら 3.5x
+(=+250%) に対しては誤差である。**残る ~4MB は「本当に必要な」guard の
+inline 展開そのもの**なので、size の lever は guard の数をさらに減らすこと
+ではなく **dup guard の out-line 化**(41 命令の inline → runtime call)。
+drop specialization (PR #1274) が inline 化して size を +14% 悪化させた
+のと**逆向き**の操作であり、まだ試されていない。wall とのトレードオフを
+測ってから判断する。
+
+## Reconciliation ledger
+
+| 項目 | 根拠 / 観測 | 結論 |
+| --- | --- | --- |
+| 期待する契約 | RC default の wall ~1.6–2.1× は dup/drop と再確保が主因 | reuse で「分解→再構築」を in-place 化する |
+| 実装観測 | `perceus.vibe` の action 語彙は dup/drop/alias-dup のみ、reuse token 無し | プランナ拡張が本体。ヘッダ(size+class)は照合に流用可 |
+| 実装観測 | 唯一の elision(未参照 alias の dup/drop 除去)は実測インパクト 0 | occurrence-local では足りない。ペアリング解析が必要 |
+| 実装観測 | self-build gate が VIBE_RC=0 に pin(性能) | 成功指標 2 で pin 解除を出口条件にする |
+| 優先度 | 表面構文なし・bootstrap 不要・全コードに即効・zero_alloc の前提 | region/zero_alloc より先に実装する(本 ADR の主決定) |
+| 回帰ガード | 出力 byte 同一 gate、shadow lane、rc_reuse fixture、B/op tracked series | Phase 1 から固定 |
+
+## Implementation notes (2026-08-03, #1262) — dup guard の out-line 化 (未完)
+
+### 測定: RC の size overhead の 86% は inline dup guard 1 箇所
+
+RC stage2 のバイナリを直接読んで数えた (bump 側は同パターン 0 個なので
+判別子として完全):
+
+| | |
+| --- | --- |
+| inline dup guard | **52,479 sites** |
+| 1 site あたり | **きっかり 72 B** (2000 サンプルで min == max) |
+| 合計 | 3.78 MB |
+| RC の size overhead 実測 | 4.37 MB |
+| **dup guard がその** | **86%** |
+
+形状モデルは実測で裏取り済み (guard あたり `push_addr` 3.00 個、
+saturating check 1.00 個)。
+
+### 実装と実測 (out-line 版は動く)
+
+runtime helper `__rt_rc_dup` を追加し各 site を `local.get v; call` の
+~5 B にする。helper 本体は `emit_rc_dup_inline` をそのまま呼ぶので inline
+形と意味論がずれない。
+
+| | size | |
+| --- | --- | --- |
+| bump stage2 | 1,841,905 B | — |
+| rc stage2 (inline) | 6,213,090 B | 3.37x |
+| rc stage2 (**out-line**) | **2,644,637 B** | **1.44x** (−57.4%) |
+
+この out-line 版 RC コンパイラは実際に動く (tiny を compile+run して 42、
+compiler source 全体の RC コンパイルも通る)。
+
+### 未解決: all-RC bootstrap だけが落ちる
+
+`VIBE_RC=1 scripts/generations.sh build` が stage1 → stage2 で
+`memory access out of bounds`。**潰した仮説**: borrow 推論との相互作用
+(OFF でも同じ) / seed の source 誤コンパイル (出力を inline に戻すと通る)
+/ EIf MIN-merge の分岐非対称 #705 (対称化しても変わらず) / stage1 が壊れて
+いる (小入力なら正常) / メモリ上限。
+
+**最後のが一番情報量が大きい**。同じ入力を同じフラグで両 stage1 に
+食わせると:
+
+```
+probe_inline stage1 : 成功。peak 19,746 pages (1.29 GB) / heap_ptr 924MB / 出力 5,436,015 B
+dup_rc2 stage1      : OOB。 memory_size 13,164 pages (862 MB) / heap_ptr 757MB
+```
+
+**通る方は 19,746 pages まで伸びているので 13,164 pages は上限ではない** —
+落ちる方は伸ばさずに現在サイズの外へアクセスしている。両者は
+「1 dup site あたり 72 B 出すか 5 B 出すか」だけが違い、出力量が 5.4MB と
+~2.6MB で変わるので確保パターンが変わる。#1262 が4ラウンド繰り返した
+「set membership shuffles latent imbalances」と同型で、**既存の
+allocator/RC の潜在不整合を本変更が可視化しているだけの可能性がある**。
+
+trace は生成 helper 帯の低番号: `function[63] <- [22] <- [1937] <- [1996]
+<- [1997] <- [2582] <- [3316]`。
+
+### bisect 結果: 犯人は `compile_expr_tail.vibe` の 9 サイト
+
+まず **main を `VIBE_WASM_NAMES=1` 付きで all-RC ビルドすると通る**ことを確認した
+(names は出力サイズを大きく変える)。よって「出力サイズが変わると壊れる main 側の
+潜在バグ」ではなく、本変更由来であることが確定。
+
+そのうえで call 形を残すファイルを1つずつ変えて all-RC bootstrap を回した
+(それ以外の site は `-1` を渡して inline 形へ戻す):
+
+| ファイル | site 数 | all-RC bootstrap |
+| --- | --- | --- |
+| `codegen/wasi/linked_compile.vibe` | 4 | PASS |
+| `codegen/expr/compile_call.vibe` | 7 | PASS |
+| `codegen/expr/compile_match.vibe` | 6 | PASS |
+| `codegen/expr/compile_lambda.vibe` | 4 | PASS |
+| `codegen/expr/compile_expr_tail2.vibe` | 2 | PASS |
+| `codegen/expr/compile_expr_tail4.vibe` | 1 | PASS |
+| `codegen/expr/compile_expr_tail6.vibe` | 1 | PASS |
+| **`codegen/expr/compile_expr_tail.vibe`** | **9** | **FAIL** |
+
+**さらに 1 行単位で二分したところ、単一の犯人は存在しなかった**:
+
+| compile_expr_tail.vibe で call 形を残した site | all-RC bootstrap |
+| --- | --- |
+| 920 / 977 / 1267 / 1377 (前半4) | PASS |
+| 1591 / 1604 / 1645 / 1666 / 1714 (後半5) | PASS |
+| 1591 / 1604 のみ | PASS |
+| 1645 のみ | PASS |
+| 1666 のみ | PASS |
+| 1714 のみ | PASS |
+| **9 site 全部** | **FAIL** |
+
+**前半だけでも後半だけでも通り、両方揃ったときだけ落ちる。** 個々の site の
+意味論の問題ではなく、out-line された dup の総数がある閾値を越えて確保
+パターンが変わったときに初めて表面化する、**累積的**な事象である。
+
+**同じ helper (`__rt_rc_dup`) を同じ形で呼んでいるのに、この 1 ファイルの site
+だけが壊す。** つまり helper 本体でも call 形そのものでもなく、この 9 site の
+どれかが置かれている文脈(ELet の scope-end drop / borrow-ret / loop-borrow
+まわり)と call 形の組み合わせが問題。したがって **out-line 化そのものは健全**と考えるのが妥当:
+各 site は単独では正しく、helper は inline emitter の再利用で意味論が同一、
+小規模では compile+run が通り、compiler source 全体の RC コンパイルも通る。
+落ちるのは「十分な数の dup を out-line したときの確保パターン」でだけ。
+
+つまりこれは #1262 が4ラウンド繰り返した *set membership shuffles latent
+imbalances* と同型で、**既存の潜在的な RC/allocator 不整合を本変更が
+可視化している**という読みが最も整合的。次の作業は「out-line を直す」では
+なく「その潜在不整合を見つける」であり、#1262 とは独立に価値がある
+(見つかれば main のバグ)。ただし `main` を `VIBE_WASM_NAMES=1` で
+all-RC ビルドしても再現しないので、出力サイズ変化だけでは引き出せない —
+dup の配置そのものが効いている。
+
+なお crash は `__rt_rc_alloc` ← `__rt_arr_new` ← `lc_fresh_int_array` で、
+heap に 105MB の余裕がある状態で起きる = free list の壊れた next を辿っている。
+`VIBE_RC=shadow` では checker の `expr_children` で落ちる(設定で場所が変わる =
+ヒープ破壊の典型)。size bins を無効化しても再現するので bin ロジックでもない。
+
+次の一手は [selfhost-miscompile-bisect](../../../.claude/skills/selfhost-miscompile-bisect)
+の probe entry + phase 二分。最小差分ペア (`emit_rc_dup_guarded` が
+どちらの分岐を取るかだけが違う stage1 が2つ) が手元にある。
+
+## Implementation notes (2026-08-03 続き, #1262) — blocker 追跡の前提の訂正
+
+### bisect harness の sed 残骸が生成物として commit されていた
+
+`bisect_sites.sh` / `bisect_lines.sh` は sed で call site を `-1` に潰し、
+`scripts/ensure_generated.sh` で生成物を作り直してからビルドし、
+最後に `git checkout -- lib/@vibe/compiler` で戻す。この戻しが効かないまま
+commit した結果、**手書き source と生成物が食い違う commit が2つできていた**:
+
+| commit | 手書き source の call site | committed `_cli_adapter_module_source.vibe` |
+| --- | --- | --- |
+| `84b771ed` / `24cb1afa` / `97c7b559` | 30 | 30 (一致) |
+| `b1976ce3` | 30 | **9** (= onlyTail 構成 = FAIL 既知) |
+| `334f924a` | 30 | **5** (= bl_half2 構成 = PASS 既知) |
+
+生成物は committed source の決定的関数で、`generations.sh` は
+`VIBE_REGEN_MODULE_SOURCE=1` がなければ committed 版をそのまま使う。よって
+`334f924a` から `VIBE_RC=1 scripts/generations.sh build` を回すと full
+out-line ではなく **bl_half2 構成がビルドされ、通ってしまう**。blocker が
+消えたように見える。実際そう見えた (`_build/repro_head` = exit 0)。
+
+再生成して 30 site に戻した (`d9588da9`、bundles は `97c7b559` と byte 一致)
+うえで回すと **同じ crash が同じ heap_ptr=757000688 で再現**する。
+`84b771ed`〜`97c7b559` は生成物が一致していたので、**前節の bisect 表と
+「潰した仮説」は有効**。
+
+`pkf run test` の `scripts/ensure_generated.sh` はこの食い違いを
+検出する gate だが、この WIP 群は gate を通していなかった。**探索用に
+source を機械的に書き換える harness を使うときは、commit 前に必ず
+`pkf run test` か最低でも `ensure_generated.sh` を通すこと。**
+
+### `VIBE_RC=shadow` and the heap used to overlap (fixed, #2427)
+
+The #715 recurrence guard keeps a liveness table indexed by heap address. It
+used to sit at a FIXED `rc_shadow_base()` = 256 MiB, while `rc_shadow_reserve()`
+only raised the memory section's minimum page count and moved neither the
+heap's start nor its limit. The heap grows upward from just above the static
+data, so **the moment it passed 256 MiB the bump pointer was writing into the
+table** -- and the table's marks were writing into live heap data.
+
+A selfcompile heap reaches ~924 MB, so shadow mode always entered that state.
+The crash seen while debugging this was at `heap_ptr=268501644 (0x1001028c)`,
+66 KB past `rc_shadow_base()` = `0x10000000`, in `expr_children` -- an ordinary
+function, not a guard. It was not "the location moves with the configuration,
+the signature of heap corruption"; the shadow mechanism was itself corrupting
+the heap.
+
+Reduced to a program with no RC bug at all
+(`fixtures/rc_shadow_large_heap.vibe`: allocate ~400 MB of strings, then do
+ordinary concat traffic), the two lanes disagreed:
+
+| lane | result |
+|---|---|
+| `VIBE_RC=1` | `418804` |
+| `VIBE_RC=shadow` | `drop of freed value at site 1650538809; freed at site 1717920867` |
+
+Both "sites" are ASCII bytes of that program's own padding string.
+
+**Fixed in #2487.** The heap now starts ABOVE the table
+(`rc_shadow_heap_start()`), and the slot index is scaled: a vptr is 8-aligned,
+so `(vptr - heap_start) / 2` gives one naturally aligned 4-byte slot per
+granule, holding `seq + 1` when freed and 0 when live -- the flag costs no
+bits, so the whole 32-bit sequence survives. `rc_shadow_reserve()`
+is derived rather than chosen, so every vptr up to the top of the wasm32
+address space maps inside the table. Gate case 40f1a pins the fixture above;
+40f still pins the #715 shape corpus, so the marks are still marks.
+
+The consequence for debugging: shadow mode IS usable at selfcompile scale now,
+and a shadow abort on a compiler-sized workload is evidence again. The
+`alloc_size` bit-30 poison scheme used as a stand-in while this was broken was
+a temporary harness and is not in the tree.
+
+### 落とし穴: **source 側の runtime 計装は crash する binary に入らない**
+
+**落ちるのは stage1 で、stage1 の runtime helper は seed が出力したもの。**
+`lib/@vibe/compiler/codegen/builtin_bodies/` を書き換えても、それが効くのは
+「stage1 が stage2 へ**出力する** runtime」であって、**stage1 自身の
+`__rt_rc_alloc` / `__rt_rc_drop` は seed のまま**である。
+
+これを踏み外して3ラウンド無駄にした。`VIBE_RC=1 generations.sh build` を
+poison 版 / poison v2 版 / quarantine 版の tree で回して、いずれも
+「トラップせず元と同じ `__rt_rc_alloc` の範囲外アクセスで落ちた」ため
+「二重 free ではない」「再利用は無関係」と読んだが、**そもそも計装が
+入っていない binary が落ちていた**だけで、これらの結論は支持されない。
+撤回する。crash 位置が 757000688 → 757657136 → 757724408 と少しずつ
+動いたのは計装の効果ではなく、compiler source が変われば stage1 の挙動と
+出力量が変わるため。
+
+**計装を crash する binary に入れる唯一の方法は、seed 以外のコンパイラで
+stage1 を作ること。** それを試したのが下の切り分けで、結果は「現行
+コンパイラで作った RC stage1 は落ちない」だった。
+
+### 切り分け: seed 固有か、現行 codegen の生きたバグか
+
+| stage1 を作ったコンパイラ | stage1 の dup guard | サイズ | flat source をコンパイル |
+| --- | --- | --- | --- |
+| **seed** (`bootstrap/seed/compiler.wasm`) | inline (seed に `__rt_rc_dup` はない) | 6,332,395 | **OOB で落ちる** |
+| 現行 source からビルドした bump コンパイラ | out-line | 2,896,884 | **通る** |
+
+ここから2つ言える:
+
+1. **落ちる binary に out-line された dup は1つも入っていない。** seed は
+   `__rt_rc_dup` を持たないので、out-line 化がどれだけ source に入って
+   いても seed の出力は inline guard のままである (6.3MB という
+   サイズがその証拠)。out-line 化そのものが crash するコードに存在しない
+   以上、out-line の意味論は原因ではありえない。source 変更が stage1 に
+   与える影響は「seed がコンパイルする source の形」だけで、これは
+   bisect が「単一 site ではなく累積的」と出したことと整合する。
+
+2. 同じ source を現行 codegen で RC コンパイルすると**動く stage1 が
+   できる**。つまり疑うべきは pin されている seed の codegen/perceus で
+   あって、現行 source ではない。
+
+### 結論 (訂正済み): seed と source の**交互作用**。bootstrap bump は恒久的な修正ではない
+
+> **2026-08-03 訂正**: 当初この節は「blocker は seed 固有」と結論していた。
+> その比較は seed と source を**同時に**動かしており、支持されない。
+> 実際に bootstrap bump を試したら再発した。以下が訂正後の内容。
+
+「どのコンパイラが stage1 を出力したか」と「どの source をコンパイルしたか」
+の2軸で all-RC bootstrap を回した結果:
+
+| stage1 を出力したコンパイラ | source | all-RC |
+| --- | --- | --- |
+| pin 済み seed | `d9588da9` | **FAIL** |
+| `d9588da9` からビルド | `d9588da9` | **PASS** (fixpoint) |
+| `89a052b9` からビルド | `d9588da9` | **PASS** |
+| `89a052b9` からビルド | `89a052b9` | **FAIL** |
+
+- 行1 vs 行2/3: **source を固定して seed を替えると結果が変わる** → seed が効く
+- 行3 vs 行4: **seed を固定して source を替えると結果が変わる** → source も効く
+
+つまりどちらか一方に帰属させることはできない。**(コンパイラ, source 形状) の
+組み合わせで出たり出なかったりする潜在的な RC/allocator バグ**であり、#1262 が
+何度も踏んだ *set membership shuffles latent imbalances* と同型である。
+
+**bootstrap bump は修正ではない。** その時点の source に対してたまたま当たりを
+引く操作でしかなく、以降どんな source 変更でも再発しうる。実際、out-line 化を
+マージした main (`89a052b9`) から作った seed で all-RC を回すと、旧 seed と
+**同じ `__rt_rc_alloc` ← `__rt_arr_new` で落ちる** (`heap_ptr=730006172`)。
+
+したがって `bootstrap/seed.json` の bump は行わなかった。all-RC 経路を
+production で有効にする前に、この潜在バグ自体を見つける必要がある。
+
+#### 依然として有効な結論
+
+- **out-line 化そのものは無罪**: seed は `__rt_rc_dup` を持たないので、
+  旧 seed の出力に out-line された dup は1つも含まれない (6.3MB がその証拠)。
+  crash するコードに存在しない機能が原因ではありえない。
+- **out-line 化の効果**: RC/bump 比 **3.37x → 1.44x** (−57.4%)。
+  `pkf run release-check` 緑、default gate は `VIBE_RC=0` pin なので影響なし。
+
+| | bump stage2 | RC stage2 | 比 |
+| --- | --- | --- | --- |
+| inline guard (従来) | 1,841,905 | 6,213,090 | 3.37x |
+| **out-line** | 1,842,511 | **2,644,652** | **1.44x** |
+
+#### 次に潰すべきもの
+
+潜在バグの本体。制約が1つ判明している: **source 側の runtime 計装は seed が
+出力する stage1 には入らない** (前節) ので、計装するなら seed 以外で stage1 を
+作る必要がある。ただし「seed 以外で作った stage1」は source によって通ったり
+落ちたりするので、**落ちる (コンパイラ, source) の組で計装を入れる**のが要件に
+なる。`89a052b9` からビルドしたコンパイラ + `89a052b9` の source がその組で、
+これは手元で再現する。
+
+## Implementation notes (2026-08-04, #1262) — borrow 推論の残り伸びしろは out-line 化が食べていた
+
+### 試したこと
+
+borrow 推論の「非識別子引数による位置の失格」を per-call-site 化した。
+失格の理由は健全で、borrow 位置では caller が transfer dup を出さず callee も
+epilogue drop を省くため、**一時値を渡すと解放する持ち主が誰もいなくなる**。
+ただしこの判定は `(callee, position)` 単位で**全プログラム**に効くので、
+1箇所でも一時値を渡す call site があるとその位置の borrow が全部潰れていた。
+
+borrow かどうかは callee の ABI の性質 (本体は1つ、drop の判断も1つ) なので
+位置ごとに変えることはできない。よって修正は call site 側に置く:
+一時値を `local.tee` で local に留め、call の**後**に drop する
+(callee は本体の間ずっと借りているので drop は call 後でなければならない)。
+
+### 実測: 期待 5.1 ポイントに対して −0.48%
+
+同一入力 (`_build/seedbump/cli_adapter_module_source.vibe`) を2つの codegen で
+RC コンパイル:
+
+| codegen | size |
+| --- | --- |
+| baseline (失格判定あり) | 2,687,364 |
+| per-call-site 化 | **2,674,503** (−12,861 B = **−0.48%**) |
+
+固定 fixture (`bench/binary_size/`) では 5本中4本が byte 一致、
+**`variant_float` だけ +244 B (+4.9%)**。`scripts/bench_binary_size.sh` は
+`VIBE_RC=0` と `VIBE_RC=1` の両方を測るので、これは output-size ratchet
+(+2% 上限) に引っかかる。**よって landable ではない。変更は戻した。**
+
+### なぜ伸びしろが消えたか (算数が合う)
+
+5.1 ポイントという数字は **out-line 化の前**に測ったものだった:
+
+```
+天井測定 (inline 時代)   6,256,272 -> 5,895,092  = 361,180 B の inline guard が消えた
+out-line 後の同じ dup 群  361,180 x (5/72)       = 約 25,081 B
+                        = 現行 RC binary 2,674,503 B の 0.94%
+実測 (parking コスト差引後)                       = -0.48%
+```
+
+inline guard 1個は 72 B だったが、out-line 後は `local.get v; call` の約 5 B。
+**removed dup 1個の価値が 1/14 になった**一方、per-call-site の parking は
+`tee` (~2 B) + `get`+`call drop` (~5 B) で約 7 B かかる。差し引きが
+ほぼ拮抗するところまで来ている。
+
+**教訓: out-line 化と borrow 推論は加算されない。** 両方とも同じ 3.78 MB の
+inline dup guard を取り合っており、先に out-line 化が取った。docs や #1262 に
+残っていた「borrow の伸びしろ 5.1 ポイント」は out-line 化のマージ (#1405) を
+もって **stale** である。
+
+### RC size の次を探すなら
+
+dup guard は out-line 済みで、borrow 推論は上記のとおり頭打ち。
+残る size overhead (RC 2.67 MB / bump 1.87 MB = 1.43x、差 0.80 MB) の内訳は
+**未測定**。次にやるなら、まず out-line 後のバイナリで内訳を取り直すこと
+(以前の「86% は dup guard」はもう成立しない)。
+
+## Implementation notes (2026-08-04, #1262) — out-line 化は wall を悪化させていた
+
+### 現在地: 出口条件は wall ≤1.2、実測 2.07
+
+`scripts/selfcompile_kpi_rc_lane.sh 3` on `0f0ad63c`:
+
+```
+bump_runs = 11126 7012 7306   (median 7306)
+rc_runs   = 15753 14861 15103 (median 15103)
+ratio = 2.067   paired_ratio = 2.067
+```
+
+### out-line 化の wall コスト: 1.319x (同一ループ交互計測、5 round)
+
+同じ tree・同じワークロードで、dup guard の形だけを変えた2つの RC stage2:
+
+```
+inline_runs  = 11714 13054 11959 12159 11524   median 11959
+outline_runs = 15451 15157 17838 15504 16696   median 15504
+pair ratios  = 1.3190 1.1611 1.4916 1.2751 1.4488   median 1.319
+```
+
+| | RC stage2 size | wall |
+| --- | --- | --- |
+| inline guard | 6,273,031 | 基準 |
+| out-line (#1405) | 2,678,659 (**−57.3%**) | **+32%** |
+
+**ADR-0092 の出口条件は wall (≤1.2x) であって size ではない。** #1405 は測って
+いた指標 (size) を改善する代わりに、採点される指標 (wall) を 32% 悪化させて
+いた。out-line 無しなら ratio は 11959/7306 ≈ **1.64** で、これは out-line 化
+前の履歴値 (1.659 / 1.742) と整合する。
+
+### hybrid (前段フィルタを inline に残す) — 不採用
+
+「奇数判定だけ inline に残し、本当にヒープの時だけ call する」形を試した:
+
+```wat
+local.get $v; i64.const 1; i64.and; i32.wrap_i64
+if  local.get $v; call __rt_rc_dup  end
+```
+
+size は狙いどおり 3,155,484 (inline 比 −49.7% = out-line の削減量の 87%)。
+しかし **wall は改善しない** (暫定値で inline 12773 に対し hybrid 15627)。
+
+仮説「dup サイトの多くは Int/Bool を見るので奇数判定で素通りする」が**外れ**
+だった。perceus のプランナは「ヒープかもしれない値」にだけ guard を置くので、
+実行時に見る値はヒープポインタが多数派である。その場合 hybrid は
+「奇数判定 → call → helper 内で同じ奇数判定をもう一度 → 本体」となり、
+out-line より1回分多く働く。**32% の wall は無駄な scalar 素通りに対する
+call ではなく、実際に rc を触る仕事に対する call overhead そのもの**なので、
+前段フィルタでは救済できない。
+
+さらに hybrid tree は all-RC bootstrap で落ちる (後述の潜在バグ)。仮に wall が
+良くても、採用すれば main を「落ちる形状」に固定することになるので選べない。
+
+### 潜在バグが #1262 の作業そのものを止めている
+
+このセッション中、同じ潜在バグ (`__rt_rc_alloc` ← `__rt_arr_new` の OOB) が
+**source 形状ごとに出たり消えたり**した:
+
+| source 形状 | all-RC bootstrap |
+| --- | --- |
+| `d9588da9` | FAIL |
+| `89a052b9` | FAIL |
+| `0f0ad63c` (現行 main) | **PASS** |
+| out-line 無効化 (A/B 用) | **PASS** |
+| hybrid | **FAIL** |
+
+実務上の影響: RC codegen を触る A/B は、変更のたびに 1/2 程度の確率で
+ビルドか計測ができなくなる。今日だけで RC ビルド失敗 2回、計測汚染 2回、
+迂回路 (bump stage1 → RC stage2) 1回。
+
+**加えて `scripts/selfcompile_kpi.sh` はコンパイル失敗を「測定値なし」として
+静かに落とす** (`set -euo pipefail` で node の非ゼロ終了時に即 exit し、
+node の stderr はどこにも残らない)。実際にこれで誤った数字を2回提示しかけた。
+計測ループを書くときは、空の測定値を成功として扱わないこと。
+
+**結論: out-line を維持するか revert するかの意思決定は、潜在バグを特定する
+までできない。** wall のレバーを探すには RC バイナリを作って測る作業が必須で、
+その足場が壊れているため。
+
+### 初めて手に入った、計装可能な再現
+
+これまで落ちるのは**常に seed 製の stage1** で、source 側の runtime 計装が
+届かなかった (前節)。今回の hybrid で条件が変わった:
+
+- `_build/hy_bump/stage2.wasm` (私がソースからビルドできる bump コンパイラ)
+- が出力した `_build/ab_hybrid_stage2.wasm` (RC コンパイラ) が
+- **`lib/@vibe/compiler/tests/codegen_lexer_test.vibe` 1ファイルのコンパイルで落ちる**
+
+落ちる入力が 4.4MB の flat source ではなく単一テストファイルなので、
+入力側の絞り込みも現実的になる。**hybrid patch + poison 計装で bump を
+ビルドし直せば、落ちるバイナリの runtime に計装が入る** — これが
+poison / quarantine を実際に機能させる条件である。
+
+## Implementation notes (2026-08-04 続き, #1262) — 潜在バグ: bin は無罪、legacy free list が壊れている
+
+### ようやく「計装が落ちるバイナリに入った」状態で測れた
+
+前回は計装が seed 製 stage1 に届かず結論を撤回した。今回は届いた:
+
+```
+計装なし (ab_hybrid_stage2)  + main ソース  -> CRASH
+計装入り (inst_rc)           + main ソース  -> CRASH   <- 計装が効いている
+```
+
+**対照の取り方に注意**: `codegen_lexer_test.vibe` は**作業ツリーの `lib/` を
+そのままコンパイル対象に引き込む**。patch を当てたまま両方を走らせると
+「計装済みソースをコンパイル」同士の比較になり、変数が2つ動く。実際に
+一度これで「計装するとバグが隠れる」と誤読した。`lib/` を main に戻してから
+対照を取ること。
+
+### 確定した除外
+
+| 検証 | 結果 |
+| --- | --- |
+| poison 二重解放トラップ (free push 全経路の先頭) | **発火せず** |
+| bin 払い出しのサイズ検査 | **発火せず** |
+| ダンプから 32 本の bin チェーンを全検証 | **全て健全** (循環なし / heap 内 / size 一致) |
+
+さらに **`__rt_arr_new` は 84 バイトを要求する**。`84 & 7 = 4` なので
+`gen_rc_alloc_body` の bin 経路は**条件で弾かれ、legacy walk へ直行する**。
+
+**したがって: 二重解放ではなく、bin 破損でもなく、legacy free list
+(global 2) のリンクが壊れている。**
+
+### 再現条件 (これも確定)
+
+- **コールドキャッシュ必須**: `VIBE_BUILD_CACHE_DIR` を毎回まっさらにする。
+  温かい永続キャッシュだと同じバイナリ・同じ入力でも落ちない (仕事量が
+  激減するため)。
+- **重い入力必須**: `codegen_lexer_test.vibe` は落ちるが `fixtures/hello_test.vibe`
+  は落ちない。入力の最小化は「コンパイラ本体を引き込む重さ」が必要条件
+  なので、劇的には縮まらない。
+
+### メモリダンプの限界
+
+`VIBE_DEBUG708_MEMDUMP` で 830 MB のダンプは取れる (摂動ゼロ)。しかし
+**heap をヘッダで線形走査することはできない** — 文字列/バイト列は
+fat pointer `(offset<<32)|length` が指す**ヘッダなしの raw 領域**なので、
+heap は「ヘッダ付きブロックの連続」ではない。実際 heap_start から 1 ブロック
+進んだだけで `alloc_size=0` + `lib/@vibe/compiler/tests/cod...` という
+文字列データに当たる。オフラインでのブロック列挙は原理的に不可。
+
+### 次の一手: global 2 を export する
+
+> **追記 (#1416)**: この export は最終的に **codegen には入れなかった**。
+> 全 RC モジュールに 16 バイト恒久課金になり、`scripts/size_ratchet.sh` の
+> +2% ラチェットを小さいサンプル (`fib` 780 -> 801) で割ってしまう。
+> `scripts/rc_add_freelist_export.py` で**完成済みバイナリに後付けする**方が
+> 用途にも合っている (調査中のレイアウト依存の再現をそのまま保てる)。
+
+
+必要なのは**クラッシュ時の global 2 (legacy free list head) の値**。wasm の
+global は linear memory にないのでダンプに映らない。
+
+最小摂動の取り方は **free list の global を wasm の export に加える**こと
+(`__heap_ptr` が既にそうなっている)。**export エントリが 1 つ増えるだけで
+命令列は変わらない**ので、これまでの計装 (命令を挿入する) より摂動が
+小さく、発現条件を壊しにくい。runner は既に
+`instance.exports.__heap_ptr` を読んでいるので同じ経路で拾える。
+
+global 2 が取れれば、ダンプ上でリンクを辿って「どこで heap 外へ飛ぶか」
+「その値が何に見えるか (タグ付き整数 / 文字列長 / rc ワード)」まで
+一気に絞れる。**壊れ方の形から書き込み元を推定する**のが、計装で関数名が
+取れない以上の残された筋である。
+
+### 手元に残してある再現資材
+
+- `_build/ab_hybrid_stage2.wasm` — 落ちる RC コンパイラ (計装なし)
+- `_build/inst_rc.wasm` — 落ちる RC コンパイラ (poison 計装入り)
+- `_build/hy_bump/stage2.wasm`, `_build/inst_bump/stage2.wasm` — 上記を出力した bump コンパイラ
+- `git stash@{0}` "poison+hybrid instrumentation" — 計装 + hybrid patch
+
+## 実装メモ (#1262): 潜在バグの正体 — free list に「ブロックでないポインタ」が乗っている
+
+前節の「次の一手」(global 2 を export) を実行した結果、**壊れ方の形が取れた**。
+結論から言うと、二重解放でも bin 破損でもリンクの +1 ずれでもなく、
+**free list 上のメモリが生きているコードから書き込まれている**
+(= premature free / use-after-free) である。
+
+### 取り方: 完成済みバイナリへのバイナリパッチ
+
+source に export を足して再ビルドすると **発現しなくなった**
+(`_build/fl_rc.wasm` はクラッシュしない)。この再現はレイアウトに敏感なので、
+ソースを触る限りどんな小さな変更でも消える可能性がある。
+
+そこで **既にクラッシュすることが分かっているバイナリの export セクションだけを
+バイナリ書き換えする**ことにした
+(`scripts/rc_add_freelist_export.py`, 16 バイト増える export エントリ 1 個)。
+wasm の**コードは linear memory の外**にあるので、
+export セクションを足しても **guest の heap レイアウトも命令列も一切変わらない**。
+実際 `_build/inst_rc_fl.wasm` は `_build/inst_rc.wasm` と同じ場所で同じ
+`heap_ptr=830559036` を出して落ちる。
+
+> 一般化: **完成済み wasm のコードセクションを弄る計装は heap 中立**である。
+> これまで「計装するとクラッシュが逃げる」と言っていたのは、ソースを直すと
+> *コンパイラ自身が生成する出力* が変わり、コンパイラ自身の確保量が動く
+> ためだった。バイナリ後付けにはその経路がない。
+
+### 観測 (`VIBE_RC_FL_WINDOW=1`)
+
+```
+__rc_freelist head=830508928
+  fl[0] p=830508928 size=1073741960 next=830536808
+  fl[1] p=830536808 size=2          next=233700655
+  fl[2] p=233700655 size=544499052  next=543384946   <- low3=7 (奇数)
+  fl[3] p=543384946 size=103        next=1768685568
+  -> OUT OF HEAP at node 4: p=1768685568 (0x696c0000)
+```
+
+各ノードの周辺 96 バイトを見ると、**どれもブロックヘッダではなく生きた
+ペイロード**だった。
+
+- `fl[0]` の直前 24 バイトは **wasm バイトコード**:
+  `20 08 | 37 03 18 | 20 05 | 42 08 | 7c | 42 01 | 84 | 21 09 | 20 04 | a7 ...`
+  = `local.get 8; i64.store 3 24; local.get 5; i64.const 8; i64.add;
+  i64.const 1; i64.xor; local.set 9; local.get 4; i32.wrap_i64; ...`
+  → **codegen の出力バッファ (`Bytes`) の中身**。
+- `fl[1]` の周辺は `(offset<<32)|length` の **String fat pointer の配列**:
+  `(0x0dedfd2f<<32)|2`, `(0x050007f7<<32)|84`, `(0x457e<<32)|5` …
+  `fl[1]` の "next" 233700655 は、この要素の**上位ワード (= 文字列 offset)**
+  をリンクとして読んでしまったもの。
+- `fl[2]` は **vibe のソーステキスト**
+  (`, end: Int) -> Bool {\n  let rec go: (Int, Int, Bool) -> Bool = ...`)。
+- `fl[3]` は **パス文字列**
+  (`lib/@vibe/compiler/codegen/wasm_emit/index.vpkg`)。
+- 最後に飛ぶ先 `0x696c0000` はバイト列 `00 00 6c 69` = `"li"`
+  (`lib/...` の途中) で、**完全に文字列データの中**。
+
+### そこから言えること
+
+push は `store(p-4, head); head = p` なので、健全なら
+**どのノードの `next` も「以前の head」= 4 の倍数のヒープポインタ**になる。
+ところが `fl[1].next` は**奇数** (233700655)。push が書ける値ではない。
+つまり `fl[1]-4` は **push の後に別の何かが上書きした**。上書きした値は
+その場所にある String fat pointer の上位ワードそのものだった。
+
+同じく `fl[0]` の `size` (`p-8`) は `0x40000088` で、alloc_size として
+あり得ない。`p-8` は **生きたデータ**である。
+
+→ **free list に乗っているメモリが、生きているコードから通常の書き込みを
+受けている**。これは「二重解放」でも「dup がリンクを +1 する」でもなく、
+**まだ参照が残っているブロックを解放している** (premature free) の症状である。
+
+### なぜ今までの計装で捕まらなかったか
+
+- **size-word poison** は「解放済みブロックの dup / drop」を捕まえる計装
+  だった。premature free の後に起きるのは **ただの読み書き**なので、
+  poison は原理的に発火しない。
+- **bin チェーンが常に健全**だったのも整合する。壊れたポインタは
+  `size & 7 == 0 && (size-16) <u 249` をまず満たさないので legacy 側に落ちる。
+- **`__rt_arr_new` (fn 22) → `__rt_rc_alloc` (fn 63) で落ちる**理由も
+  これで説明がつく。arr_new は 84 バイト (`84 & 7 = 4`) を要求するので
+  bin 経路を必ずスキップし、**legacy list を最も頻繁に歩く呼び出し元**に
+  なる。壊れたリンクを踏むのが常に arr_new なのは偶然ではない。
+
+クラッシュ時のスタック (name section から復元):
+
+```
+[63]   __rt_rc_alloc          <- trap
+[22]   __rt_arr_new
+[1959] expr_uses_builtin ... codegen/wasi/linked_helpers.vibe
+[2030] compile_wasi_module_impl ... codegen/wasi/wasi.vibe
+[3371] compile_source_for_rc_flag
+```
+
+### free list へ push する 4 箇所
+
+| 箇所 | 何を push するか | bin 経路 |
+| --- | --- | --- |
+| `gen_rc_drop_body` → `emit_rc_free_push` (bodies_core_a1a2) | rc が 0 になったブロック / array の grown data buffer | あり |
+| `gen_arr_push_body` (bodies_core_a1b:306) | 旧 data buffer (`data_ptr != vptr+12` のとき) | **なし** (legacy 直行) |
+| `gen_arr_append_body` (bodies_core_a2:1305) | 同上 | **なし** |
+| `emit_rc_drop_local` (compile_expr_tail:849) | rc が 0 になったブロック (インライン drop) | **なし**、かつ**フィールドの再帰 drop もしない** |
+
+後ろ 3 つは bin ルーティングを通らないので、8 の倍数で 16..264 のサイズも
+legacy list に乗る (健全な走査でも size=136/264 が legacy に見えたのは
+これが理由で、それ自体はバグではない)。
+
+`compile_expr_tail:849` の `emit_rc_drop_local` はさらに、rc が 0 になった
+ブロックを**フィールドを再帰 drop せずに**そのまま push する。これは
+リークであって破壊ではないが、`gen_rc_drop_body` と挙動が食い違う経路が
+存在すること自体は次の調査の当たり所である。
+
+### Bytes と Array の非対称 (関連する既知の穴)
+
+- **Array** の data buffer は「`vptr+12` のインライン」か
+  「`vibe_rc_alloc` で確保したヘッダ付きブロック」のどちらか、という不変条件を
+  持つ (`gen_arr_push_body` / `gen_arr_append_body` / `gen_rc_drop_body` の
+  class 5 経路が全部この前提で `data_ptr != vptr+12` を見て解放する)。
+- **Bytes** はそうではない。`gen_bytes_new_body` は 76 バイトの **raw bump**
+  (ヘッダなし)、`gen_bytes_push_body` / `gen_bytes_append_body` の grow も
+  **raw bump のまま**で、旧バッファを解放しない (リークするが安全)。
+
+Bytes 値は偶数 (raw アドレス) なので rc_drop は触らない — 現状この非対称
+自体はクラッシュ源ではない。ただし `data_ptr` を持つ 3 ワードのレイアウト
+(`[cap@0][len@4][data_ptr@8]`) が Array と Bytes で共通なので、
+**型取り違えが 1 回起きれば即座に「ヘッダなしポインタの解放」になる**
+構造になっている点は記録しておく。
+
+### 次の一手
+
+「どこで premature free しているか」を出す必要がある。free list に乗った
+ブロックが**書き換わったこと**を検出できればよいので、
+**完成済みバイナリのコードセクションを後付けパッチ**する路線が使える
+(heap 中立が確認できたので、これまでのような「計装で逃げる」問題がない):
+
+1. `__rt_rc_alloc` の legacy 走査に「`cur` が heap 範囲外なら即 trap」を
+   挿入し、**壊れたリンクを踏んだ最初の瞬間**で止める。今は 4 ノード先まで
+   歩いてから飛んでいるので、head に近い側の履歴が失われている。
+2. push 側 (`emit_rc_free_push` 相当のコード列) に「push 時の
+   `p-8` を別領域に記録」を入れ、クラッシュ時にホストから読む。
+   書き込み先は heap ではなく `rc_bins_base` 手前の reserve 帯を使えば
+   bump ポインタを動かさずに済む。
+
+どちらも wasm バイナリ後付けなので、`_build/inst_rc.wasm` の
+発現条件をそのまま保てる。
+
+## 実装メモ (#1262): 再現を 830 MB → 1 KB に縮めた + 発生箇所の絞り込み
+
+前節の「次の一手」(バイナリ後付けで `__rt_rc_alloc` に free list head の
+健全性チェックを挿す) を実行した。結果、**発現が `fixtures/hello_test.vibe` で
+数秒・heap 1 KB 地点まで縮んだ**。
+
+### 使った計装 (すべてバイナリ後付け = heap 中立)
+
+`scripts/rc_patch_freelist_assert.py` の 3 モード。いずれも完成済み wasm の
+コードセクションを書き換えるだけなので、guest の heap レイアウトは不変。
+
+| モード | 挿す先 | 内容 |
+| --- | --- | --- |
+| head assert (既定) | 任意の関数 | 入口で `global 2` が「heap 内・size が 16..64MiB・`head-8+size <= global0`」を満たさなければ `unreachable` |
+| drop assert (`__rt_rc_drop`) | `__rt_rc_drop` | 入口で引数のブロックヘッダが健全かを検査 |
+| watchpoint (`VIBE_RC_WATCH_ADDR`) | 任意の関数 | 固定アドレスの i32 が期待値でなくなったら `unreachable` |
+
+`unreachable` は natural な "memory access out of bounds" と区別がつくうえ、
+**メモリを一切書かない**ので発現条件を壊さない。
+
+### 得られた事実
+
+1. **普遍的かつ早期**。`fixtures/hello_test.vibe` でも
+   `lib/@vibe/compiler/tests/codegen_lexer_test.vibe` でも、
+   **同じ場所** (`heap_ptr` ≈ 59.8–60 KB、heap 使用量 1 KB 程度) で発火する。
+   830 MB まで走らせる必要はもうない。
+2. **`__rt_rc_drop` 入口のヘッダ検査は一度も発火しない**。
+   → drop に渡ってくるブロックのヘッダは、その時点では健全。
+3. 上向きに二分すると、**`resolution_env_seed()`
+   (`lib/@vibe/compiler/core/module_graph_path.vibe:415`) から戻った直後**が
+   境界。`persistent_cache_version_tag()` / `resolution_env_seed()` の入口検査は
+   通り、`cache_persistent_source_group_cache_path` の入口検査で落ちる。
+4. `__rt_*` 86 関数 + `module_graph_path.vibe` の全関数に固定アドレス
+   watchpoint (59248) を仕掛けても、**どの入口も 0 か 84 しか見ない**。
+   最初に壊れた値を見るのは `cache_persistent_source_group_cache_path` の入口。
+   → 書き込みは **`__rt_rc_drop` の内部**、しかも**最後の再帰呼び出しより後**
+   (再帰の入口も watch 済みなので) に起きている。
+
+### 壊れているもの
+
+`resolution_env_seed` の emit 済み wasm を逆アセンブルすると末尾はこう:
+
+```
+20 01          local.get 1        ; roots
+10 3e          call 62            ; __rt_rc_drop
+0b             end
+```
+
+`roots` は `external_lib_roots()` が返す `Array[String]`。free list に乗る
+ブロックはこれで、中身は
+
+```
+vptr    = 59256   block = 59248
+cap@+0  = 8   len@+4 = 1   data_ptr@+8 = 59268 (= vptr+12, インライン)
+elem[0] = (59332 << 32) | 15    ; String fat pointer, 15 文字
+size@block+0 = 0x40000054        ; 84 の byte+3 が 0x40 ('@') に化けている
+next@block+4 = 0                 ; push が書いた値 (リストは空だった)
+```
+
+15 文字 = `/root/.vibe/lib` の長さと一致する。周辺には `"/root"` と
+15 文字の fingerprint `"0374c95819df7e6"` が並んでいる。
+
+`0x40000054` は **`84` の上位バイトだけが `0x40` に化けた形**でもあり、
+**`0x40000055` (class=0x40, rc=0x55) を 1 減らした形**でもある。どちらの
+読みが正しいかで犯人が変わる:
+
+- 前者なら「free list 上のブロックのサイズワードに 1 バイト書かれた」
+- 後者なら「**59252 を value pointer とみなした rc デクリメント**」
+  — つまりブロック境界が 4 バイトずれた別解釈が存在している
+
+### 次の一手
+
+watchpoint は「入口」にしか置けないので、**ストア命令の粒度**が要る。
+`__rt_rc_drop` の本体を逆アセンブルし、`i32.store` / `i32.store8` の
+直前に watchpoint 相当のチェックを挿入する (同じバイナリ後付けで可能)。
+これで 0x40000054 を書く命令そのものが特定できる。
+
+補助的に、`59248` が `84` になった瞬間 (= ブロック確保時) を
+`__rt_arr_new` 側の watchpoint で確認すれば、上の 2 択も決まる。
+
+### 現状の再現手順 (数秒)
+
+```bash
+python3 scripts/rc_add_freelist_export.py  _build/inst_rc.wasm    _build/inst_rc_fl.wasm
+python3 scripts/rc_patch_freelist_assert.py _build/inst_rc_fl.wasm _build/inst_rc_assert.wasm
+D=$(mktemp -d); mkdir -p $D/cache
+VIBE_RC_FL_WINDOW=1 VIBE_PREOPEN_DIR=$PWD VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  VIBE_BUILD_CACHE_DIR=$D/cache \
+  node scripts/wasm_vibe_host_runner.js --invoke cli_main \
+  _build/inst_rc_assert.wasm fixtures/hello_test.vibe $D/out.wasm __no_entry__
+```
+
+## 訂正 (#1262): 直前2節の「premature free」「1 KB 再現」は **poison マーカーの誤検出**
+
+`_build/inst_rc.wasm` は **size-word poison 計装ツリー**
+(`git stash` "poison+hybrid instrumentation") から作ったバイナリで、
+`rc_poison_bit() = 1073741824 = 0x40000000` を**解放時に size ワードへ OR
+する**。したがって:
+
+```
+0x40000054 = 84  | poison     <- 84 バイトブロックの正常な解放マーカー
+0x40000088 = 136 | poison     <- 136 バイトブロックの正常な解放マーカー
+```
+
+つまり `__rt_rc_alloc` に入れた「size が 16..64MiB か」というアサートは、
+**最初の正常な解放で必ず落ちる**。以下は撤回する:
+
+- ❌ 「`fl[0]` が codegen の出力バッファを指している」
+  → `fl[0]` は size 136 の**健全な**解放済みブロックだった。手前の wasm
+  バイトコードは隣接する別オブジェクトで、ヘッダ境界の読み違い。
+- ❌ 「free list 上のメモリが生きたコードから書かれている (premature free)」
+  → 主要な根拠が poison マーカーだったので、**未確認に戻す**。
+- ❌ 「`fixtures/hello_test.vibe` で heap 1 KB 地点に縮んだ」
+  → poison を masking すると `hello.vibe` は**素通りする**。1 KB 再現は消滅。
+- ❌ 「`resolution_env_seed` / `external_lib_roots` が犯人」
+  → 上と同じ理由で無効。あれは「最初に解放される任意のブロック」だった。
+
+`scripts/rc_patch_freelist_assert.py` に `VIBE_RC_POISON_MASK` を足して
+size を読む前に poison を落とすようにした (runner 側の表示も同様)。
+**poison ツリー由来のバイナリを計装するときは必ず指定すること。**
+
+### masking 後に残った本物の異常
+
+`VIBE_RC_POISON_MASK=1073741824` で走らせ直すと:
+
+- `fixtures/hello_test.vibe` — **通る** (発火しない)
+- `codegen_lexer_test.vibe` — 発火する。ただし場所は heap 805 MB 地点
+
+```
+heap_ptr=805386044   memory_size=815398912
+__rc_freelist head=805386036
+  fl[0] p=805386036 low3=4 size=0     next=805317976   <- 異常
+  fl[1] p=805317976 low3=0 size=4104  next=805289996   <- 健全
+  fl[2] p=805289996 low3=4 size=264   next=805300928   <- 健全
+  ...
+  8016 nodes walked -> clean (terminated at 0)
+```
+
+**8016 ノードのチェーンは完走し、0 で正しく終端する。壊れているのは head 1
+ノードだけで、その `alloc_size` が `0`。** 周辺 96 バイトはヘッダと next 以外
+すべてゼロ:
+
+```
+805386028: 00 00 00 40   <- size ワード = poison | 0
+805386032: 58 2d 00 30   <- next = 805317976 (正しい直前 head)
+805386036: 1c 02 00 00   <- p (payload 先頭) = 540
+```
+
+`p = heap_ptr - 8` なので、このブロックは `[805386028, 805386044)` の 16 バイト、
+**bump フロンティア直下**。poison が立っているので確かに解放されている。
+
+### そこから言えること (確定分)
+
+`__rt_rc_alloc` の **bump 経路は size ワードを書かない** — 書くのは呼び出し側
+(`gen_arr_new_body` の `store(block+0, 84)` など)。free-list hit 経路も
+書かない (既に入っている前提)。よって **`alloc_size == 0` のブロックが free
+list に乗っているということは、rc_alloc の呼び出し側のどこかが
+ヘッダを書いていない**。
+
+影響:
+
+- exact-fit 検索に永久にヒットしないので **そのブロックはリークする**
+- より悪いのは、ヘッダを書いていないなら **class バイト (`block+7`) も未初期化**
+  だということ。`gen_rc_drop_body` は `load8(vptr-1)` で class を読んで
+  再帰 drop の経路を決めるので、**ゴミの class を踏むとフィールドとして
+  無関係なワードを辿る**。元の OOB の候補経路として筋が通る。
+
+トラップ時のスタック (この size 0 ブロックを踏んだ alloc):
+
+```
+[63]   __rt_rc_alloc            <- assert
+[558]  struct_field_candidates ... codegen/common_base/common_base.vibe
+[1463] compile_expr_tail4
+[1464] compile_expr_tail3
+[1465] compile_expr_tail2
+[1488] compile_expr_tail
+```
+
+### 次の一手
+
+`vibe_rc_alloc` を呼んでいる箇所を全部洗い、直後に
+`store(block+0, size)` と class バイトを書いているか確認する。
+書いていない呼び出し側が見つかれば、それが size 0 ブロックの出所。
+
+`emit_rc_free_push` / `gen_rc_drop_body` 側に「size が 0 なら trap」の
+アサートを**バイナリ後付けで**入れれば、push した瞬間まで遡れる。
+
+### 教訓
+
+**計装ツリー由来のバイナリを別の計装で調べるときは、先に「そのバイナリが
+既に何を書き換えているか」を確認する。** 今回は同じ #1262 の中で自分が
+仕込んだ poison を、別の実験で「破損」として読んでしまった。
+`_build/*.wasm` の由来は `git stash list` と突き合わせること。
+
+## 根本原因 (#1262): ref cell 契約の片側だけが条件付きだった
+
+`docs` 上で長く「潜在 RC/allocator バグ」と呼んでいたものの正体。
+**RC 管理でない (ヘッダなしの) box を、クロージャ側が RC オブジェクトとして
+扱っていた。**
+
+### The contract that was broken
+
+The ELetMut ref-cell path in `compile_expr_tail.vibe`:
+
+```vibe
+if mut_needs_ref_cell(body, name) {
+  Array::push(ctx.ref_cell_names, name)        // <- unconditional
+  if ctx.enable_rc && rc_alloc_idx >= 0 && rc_drop_idx >= 0
+     && expr_is_intish(value, local_names, ctx) {   // <- conditional
+    // rc_alloc(16) + [alloc_size@0][rc@4|class8@7][payload@8]
+  } else {
+    // a raw bump of global0 by 8. No header.
+  }
+}
+```
+
+`compile_lambda.vibe` meanwhile looks at **`ref_cell_names` alone** to decide
+that a capture is RC-owned:
+
+```vibe
+if ctx.enable_rc && array_contains_str(ctx.ref_cell_names, cap_name) {
+  // store into the capture slot with the odd tag
+  emit_rc_word_inc_saturating(buf, () -> { ... cap - 4 ... })
+  // -> the closure's class-7 drop calls __rt_rc_drop
+}
+```
+
+**When `expr_is_intish` is false, those two disagree.**
+
+`expr_is_intish` answers true at tag 6 (EUnaryOp) only for `op == "!"` and
+`op == "~"` (#2344, `compile_expr_tail.vibe`). So **`let mut i = -1` is
+already enough to fall out of it** — `-1` is `EUnaryOp("-", EInt(1))`, and
+unary `-` cannot be added unconditionally the way `~` was, because it may be a
+float negation. An initial value of `""` / `None` / a function call falls out
+the same way.
+
+### 何が起きるか
+
+1. `emit_rc_word_inc_saturating(box - 4)` が、**box の手前にある無関係な
+   オブジェクトの 4 バイトをインクリメントする**
+2. クロージャが drop されると class-7 再帰が `__rt_rc_drop(box|1)` を呼ぶ。
+   `__rt_rc_drop` は存在しないヘッダを読む — `class = load8(box-1)` は
+   ゴミ、`alloc_size = load(box-8)` もゴミ
+3. rc が 0 とみなされると `emit_rc_free_push` が **ヘッダなしポインタを
+   free list に積む**
+4. 後続の `__rt_rc_alloc` の legacy 走査がそのワイルドなリンクを辿って
+   `memory access out of bounds` — これが長年の「all-RC bootstrap の OOB」
+
+### 決定的な観測
+
+`__rt_rc_drop` の入口に「`alloc_size == 0` なら trap」をバイナリ後付けで挿入
+(`scripts/rc_patch_freelist_assert.py`, `VIBE_RC_ASSERT_SIZE0_ONLY=1`):
+
+```
+RuntimeError: unreachable
+  at __rt_rc_drop                      <- 再帰呼び出し (capture)
+  at __rt_rc_drop                      <- クロージャ本体の drop
+  at emit_rc_word_inc_saturating ... codegen/common_base/common_base.vibe
+  at compile_lambda ... codegen/expr/compile_lambda.vibe
+```
+
+`compile_lambda` の `let mut __cap_resolve = -1` がまさにこの形。
+クラッシュ時の数値も一致する:
+
+```
+value = 805386036,  global0 = 805386044   -> 差は 8 = ヘッダなし box そのもの
+value+0 = 540 (= tagged Int 270)          -> let mut int のペイロード
+value-8 = 0                               -> ヘッダは存在しない
+```
+
+### 修正
+
+`expr_is_intish` の条件を落とし、**RC のときは捕捉された `let mut` を必ず
+ヘッダ付き RC セルにする**。class 8 はペイロードを drop しないので、
+ヒープのペイロードは「解放される」のではなく「リークする」— use-after-free
+にはならない。破壊よりリークを取る。
+
+### A/B (計装なし・poison なしの現行 main 由来ビルド、`codegen_lexer_test.vibe`)
+
+| | size-0 アサート | 結果 |
+| --- | --- | --- |
+| 修正前 | **発火** (`__rt_rc_drop` 再帰、`emit_rc_word_inc_saturating` 経由) | exit 1 |
+| 修正後 | 発火せず | **exit 0 / 完走** |
+
+- `pkf run test`: 87/87 ok
+- all-RC bootstrap: 完走し、**`fix_rc.wasm` と stage3 が sha256 一致 (fixpoint)**
+  `8efad2f3791a61557535cef693394a076a5cb532e228489e13f189cc8f5a5113`
+  (ただし修正前の main もこの経路自体は完走するので、これは判別材料ではない)
+
+### 影響範囲
+
+RC は**ユーザプログラムの既定**なので、これはセルフホストだけの話ではない。
+**クロージャに捕捉された `let mut` の初期値が intish でない**プログラム
+(`let mut i = -1`, `let mut acc = ""`, `let mut found = None` など) は
+どれも RC でヒープを壊していた。
+
+## #1262: 修正の検証と out-line 化の再計測
+
+### 元の OOB が消えた (計装なし・素の実行)
+
+`scripts/selfcompile_kpi.sh` と同じ呼び出し
+(`VIBE_FS_COMPILE=1 VIBE_WASM_MEMORY_STATS=1`, コールドキャッシュ,
+入力 `lib/@vibe/compiler/tests/codegen_lexer_test.vibe`):
+
+```
+修正前 RC コンパイラ: exit=1  heap_ptr=829998372  memory access out of bounds
+修正後 RC コンパイラ: exit=0  out=2317628 bytes
+```
+
+**バイナリパッチも poison も入れていない素の実行**で、長年の OOB が
+再現しなくなった。ref cell のヘッダ欠落が原因だったことの直接の裏付け。
+
+(この失敗のせいで KPI lane は修正前のビルドで何も出力しなかった。
+`selfcompile_kpi.sh` は `set -euo pipefail` で node の失敗時に黙って
+終了するので、「測定値が空」を「速い」と読み違えないこと。)
+
+### out-line 化の再計測 (修正後ツリー、7 ラウンド交互計測)
+
+inline 版は `emit_rc_dup_guarded` を強制的に `emit_rc_dup_inline` へ
+落として 1 世代ビルドしたもの (計測後にソースは戻した)。
+
+| 形 | wall median (ms) | rc/bump | RC コンパイラ size |
+| --- | --- | --- | --- |
+| bump | 4506 | 1.000 | — |
+| **inline** | 9883 | **2.193** | 6,528,872 |
+| **out-line** | 12567 | **2.789** | 2,934,258 |
+
+- **out-line / inline wall = 1.272** — out-line 化は **27% 遅い**
+- **inline / out-line size = 2.225** — out-line 化は **2.2 倍小さい**
+
+### #1405 (out-line 化) の維持/revert 判断
+
+**維持する。**
+
+- 出口条件は wall ≤ 1.2。inline に戻しても **2.789 → 2.193** にしかならず、
+  どちらも桁が違う。out-line 化は「1.2 に届かない原因」ではない。
+- 一方 size は `bench_binary_size.sh` の **+2% ラチェット**が掛かっている。
+  revert すると RC 出力が 2.2 倍になり、ラチェットは即座に落ちる。
+  再ベースラインを切る理由が wall 21% では釣り合わない。
+- したがって wall は**別のレバー**で取りに行く。
+
+### 次のレバー候補
+
+**site 選択式の out-line 化**。今は全 dup サイトを一律に out-line している
+が、ホットな関数だけ inline に戻せば size の大半を保ったまま wall の 27% を
+削れる。以前試して否定した「hybrid」(guard の形を変えて odd テストを 2 回
+やる) とは別物で、これは**同じ 2 形をサイトごとに選ぶポリシー**の話。
+
+判断材料は既にある: `__rt_rc_dup` の呼び出し回数は profile で取れるので、
+呼び出し回数上位の関数だけ inline にする閾値を 1 つ持てばよい。
+
+## #1262: site 選択式 out-line 化は「実装しない」— 実測してから判断した
+
+「分岐を増やすこと自体が今回のバグ (ref cell の片側条件) を生む形なので、
+**先に効果を実測してから有効化を判断する**」という方針で測った。結論は
+**現時点では実装しない**。
+
+### 測ったこと 1: dup コストの集中度
+
+out-line 版 (`fix_rc.wasm`) の CPU プロファイル:
+
+```
+4195.5ms  38.5%  __rt_rc_dup      <- 単独で全 CPU の 4 割弱
+ 429.7ms   3.9%  __rt_arr_get
+ 356.1ms   3.3%  __rt_str_char_code_at
+ 289.0ms   2.7%  __rt_rc_alloc
+```
+
+`__rt_rc_dup` の self 時間を**呼び出し元関数ごと**に集計 (201 関数):
+
+| 上位 K 呼び出し元 | dup 時間の割合 | 呼び出し元関数の割合 |
+| --- | --- | --- |
+| 1 (`mrv_fresh`) | 10.6% | 0.5% |
+| 5 | 34.5% | 2.5% |
+| 10 | 52.4% | 5.0% |
+| 20 | 71.5% | 10.0% |
+| 50 | 90.5% | 24.9% |
+
+### 測ったこと 2: 静的な dup サイトの分布
+
+`fix_rc.wasm` の code section を走査して `call __rt_rc_dup` を関数ごとに数えた
+(合計 **52,742** サイト / 2,507 関数):
+
+| 上位 K ホット関数 | 静的サイトの割合 |
+| --- | --- |
+| 5 | 7.2% |
+| 10 | 8.9% |
+| 20 | 16.0% |
+
+ホット関数は巨大な再帰ウォーカで、サイトも多い (`check_expr` 2258,
+`compile_call_core` 2144, `rewrite_expr` 698) が、それでも全体の 1/6 程度。
+
+### 実測端点からの外挿
+
+測定済みの端点: wall `12567 → 9883` (call overhead の総額 = **2684 ms**)、
+size `2,934,258 → 6,528,872` (差 3,594,614 B / 52,742 サイト = **68.2 B/サイト**、
+72 B の inline guard と ~5 B の call の差にぴたり一致)。
+
+| 形 | wall (ms) | rc/bump | size | out-line 比 |
+| --- | --- | --- | --- | --- |
+| out-line (現状) | 12567 | 2.789 | 2,934,258 | 1.00x |
+| 選択 top 5 | 11641 | 2.583 | 3,193,070 | 1.09x |
+| 選択 top 10 | 11161 | 2.477 | 3,254,179 | 1.11x |
+| 選択 top 20 | 10648 | 2.363 | 3,509,396 | 1.20x |
+| 全 inline | 9883 | 2.193 | 6,528,872 | 2.23x |
+
+top 20 で **wall −15% / size +20%**。カーブとしては悪くない。
+
+### それでも実装しない理由
+
+1. **出口条件に届かない**。2.789 → 2.363 で、目標の **1.2 には遠い**。
+   さらに `__rt_rc_dup` は wall の 37.0%
+   (4654 ms / 12567 ms) なので、**dup が完全にタダになっても
+   rc/bump は 1.756 が天井**。つまり **1.2 は dup を安くする方向では原理的に
+   届かない** — dup の *回数* を減らすしかない (Perceus の borrow / reuse 解析)。
+2. **+20% の size は `bench_binary_size.sh` の +2% ラチェットを大きく超える**。
+   再ベースラインを切る判断がいる。wall 15% ではその判断を正当化しづらい。
+3. **新しい分岐を増やす**。ref cell のバグは「同じ契約を 2 箇所が別の述語で
+   判定していた」ことが原因だった。
+
+### ただし危険度は ref cell とは違う (記録として)
+
+もし将来実装するなら、この分岐は ref cell より**構造的に安全**である:
+
+- 判定は **`emit_rc_dup_guarded` 1 箇所だけ**。第二の消費者が別の述語で
+  判定する余地がない (ref cell は `compile_expr_tail` が `expr_is_intish` で、
+  `compile_lambda` が `ref_cell_names` で、別々に判定していた)。
+- **2 つの arm は構成上まったく同じ意味**である。`gen_rc_dup_body` は
+  `emit_rc_dup_inline` を local 0 で呼んで out-line 版の本体を作っているので、
+  両者が意味的に食い違うことはあり得ない。
+- 守るべき不変条件は #705 の「両 arm が `buf` をちょうど 1 回使う」だけで、
+  これは既に 2 ヘルパへの分割で構造的に強制されている。
+
+### 次に測るべきもの
+
+`__rt_rc_dup` を安くするのではなく **呼ばれる回数を減らす**方向。
+52,742 サイトが本当に必要かを Perceus 側 (borrow 推論 / reuse) から見る。
+天井 1.756 を割るにはそれ以外に道がない。
+
+## #1416 の CI で踏んだこと: `size_ratchet.sh` は release-check に入っていない
+
+`pkf run release-check` はローカルで通ったのに CI の `compiler-gate` job が落ちた。
+落ちたのは gate 本体 (88/88 通過) ではなく、その後に CI だけが走らせている
+**`scripts/size_ratchet.sh`** (`bench/binary_size/*.vibe` の出力サイズを
+`bench/perf/size_baseline.txt` に対して +2% で締めるラチェット)。
+
+```
+FAIL: fib         801 B (baseline 780, max 795)
+FAIL: hello_world 837 B (baseline 816, max 832)
+```
+
+原因は `__rc_freelist` export で、**ちょうど 16 B/モジュール**だった
+(export を剥がすと fib は 785 B で通る。残る +5 B は既存の main の累積ドリフト
+で、この PR 由来ではない)。export は codegen から外し、
+`scripts/rc_add_freelist_export.py` によるバイナリ後付けに一本化した。
+
+**教訓**: codegen の出力サイズに触る変更は、`pkf run release-check` だけでは
+検証しきれない。生成物のサイズを変えうる変更のときは
+
+```bash
+bash scripts/size_ratchet.sh <stage2.wasm>
+```
+
+を手で回すこと (CI は `_build/selfhost/generations/*/stage2.wasm` の最新を使う)。
+
+## #1262: マージ後 main での KPI 再測定と天井の引き直し
+
+`#1416` (ref cell の修正) が main に入った直後、`scripts/selfcompile_kpi_rc_lane.sh`
+を回し直した。**RC 版 stage2 が self-compile を完走できるようになって初めて取れる
+数字**である (それ以前は RC ビルドが OOB で落ちていた)。
+
+### まず測定規律の再確認
+
+5 ラウンドでは `paired_ratio=1.928` が出たが、これは**過小評価**だった。
+
+```
+bump_runs = 5119 5066 3869 4908 3553    (レンジ 1.44x)
+rc_runs   = 9755 9743 9550 9463 9169    (レンジ 1.06x)
+```
+
+RC レーンは締まっているのに bump レーンだけばらつくのは「bump の遅い run に
+外乱が乗った」形で、中央値を取ると bump が大きめに出て比が小さくなる。ビルド
+済み成果物で 11 ラウンドに積み増すと:
+
+```
+n=11  bump: min=3636 med=4440   rc: min=9499 med=9795
+ratio_of_medians=2.206  paired_median=2.191  ratio_of_mins=2.612
+```
+
+**片方のレーンだけ分散が大きいときは中央値を信用しない**。この形は
+「速い方が外乱を受けている」ので、min 同士の比が真値に近い。
+
+### コールドで揃えたプロファイル (両レーン同一キャッシュ隔離)
+
+`scripts/profile_compile.sh` は**ビルドキャッシュを隔離しない**ので、素で 2 本
+取ると別々の仕事量を測ってしまう (bump 側が warm hit して wall 2401ms = KPI の
+4440ms より速く出た)。`VIBE_BUILD_CACHE_DIR` を明示して取り直したもの:
+
+| | bump | RC | 比 |
+| --- | --- | --- | --- |
+| CPU | 3.63s | 9.56s | 2.634 |
+| wall | 3868ms | 9943ms | 2.570 |
+| heap high-water | 1,047,854,976 | 898,354,856 | RC の回収率 **14.3%** |
+
+RC helper の取り分:
+
+```
+3025.3ms  31.7%  __rt_rc_dup
+ 357.8ms   3.7%  __rt_rc_alloc
+ 266.7ms   2.8%  __rt_rc_drop
+--------------------------------
+3649.8ms  38.2%   gap 5.93s の 61.5%
+```
+
+### 残り 38.5% は helper ではない — 表現の税
+
+同じ関数の self 時間を bump→RC で並べると、helper を一切含まない関数まで遅い:
+
+| 関数 | bump | RC | 倍率 |
+| --- | --- | --- | --- |
+| `__rt_arr_get` | 151.3 | 317.8 | 2.10x |
+| `str_lt` | 89.6 | 227.8 | 2.54x |
+| `__rt_str_char_code_at` | 84.4 | 216.5 | 2.57x |
+| `__rt_arr_slice` | 82.8 | 118.8 | 1.43x |
+| `__rt_arr_new` | 199.0 | 168.0 | **0.84x** |
+| `__rt_arr_push` | 183.6 | 143.0 | **0.78x** |
+
+遅くなっている 3 つはいずれも **ADR-0055 の tag/untag 算術が `if enable_rc` で
+追加されるリーフアクセサ**である (`gen_arr_get_body` は index の untag ×2 と
+ポインタの untag ×2)。bump ビルドはそもそも tagged 表現を使わないので、この
+税を払っていない。
+
+### 天井の引き直し
+
+```
+dup を完全にタダにしても      2.634 x (1 - 0.317) = 1.80
+dup+drop+alloc を全部タダでも 2.634 x (1 - 0.382) = 1.63
+```
+
+以前の記録 (1.756) から更新されたが、結論はむしろ強くなった:
+**≤1.2 は dup を安くしても、dup の回数を減らしても届かない。**
+RC helper を全部消しても 1.6 が下限で、残りは表現の税だからである。
+
+そして重要なのは、**この税は「RC かどうか」ではなく「tagged 表現かどうか」に
+由来する**という点。つまり ≤1.2 という出口条件は
+「RC + ADR-0055 tagged」対「bump + untagged」という**2 変数の比**を測っており、
+アロケータ単独の指標になっていない。bump を消すかどうかの判断を
+この数字にぶら下げるのは筋が悪い。
+
+## #1262: self-build を RC に倒すと gc backend が壊れる (correctness が先に立つ)
+
+`VIBE_RC=1 bash scripts/compiler_gate.sh` を通したところ、215 秒地点の
+**§40h (wasm-gc backend smoke) が 91527 (期待 101557) で落ちた**。
+
+### 2 変数を分離する
+
+`VIBE_RC` はゲート全体に export されるので、「self-build を RC にする」と
+「ゲート内の全 fixture も RC でコンパイルする」が同時に変わる。分離した:
+
+| stage2 | 出力の VIBE_RC | 結果 |
+| --- | --- | --- |
+| bump ビルド | 0 | 101557 ✓ |
+| bump ビルド | 1 | 101557 ✓ |
+| **RC ビルド** | 0 | **91527** ✗ |
+| **RC ビルド** | 1 | **91527** ✗ |
+
+差を決めているのは**コンパイラ自身が RC ビルドかどうかだけ**。出力を RC で
+コンパイルするかは無関係。
+
+### 1 バイトまで絞る
+
+差 10030 は `float_batch` の cmp5 (10000) と `Double::to_int(3.7)*10` (30) に
+一致した。最小再現 (`Double::to_int(2.0)`) の出力 wasm を bump 版と diff すると
+**4150 バイト中 1 バイトだけ**違う:
+
+```
+offset 4107:  bump 0x40  ->  rc 0x20
+```
+
+`0x20 = 0x40 >> 1`。2.0 のビット列 `0x4000000000000000` はリトルエンディアンで
+最終バイトだけが `0x40`、残り 7 バイトはゼロ (`0 >> 1 = 0` なので差が出ない)。
+つまり **f64 定数の 8 バイト全部に `>>1` が余計に一回かかっている**。
+
+### 原因: ADR-0055 Blocker-2 が gc backend にだけ残っていた
+
+`docs/internal/design/uniform-value-repr.md` は Blocker-2 を「✅ FIXED」と記録しているが、
+直っていたのは linear backend だけだった。`codegen/gc/backend_expr.vibe:505` に
+仕様書が「壊れた形」として引用しているコードがそのまま残っていた:
+
+```vibe
+let bits = Double::to_i64_bits(v)
+emit_f64_const_bits(buf, bits)
+```
+
+`Double::to_i64_bits(Double) -> Int` は**自分のシグネチャを満たせない**。
+`2.0` のビット列 = 2^62 は `Int::max_value` (2^61-1) を超える。RC では
+tagged 扱いされて `>>` で 1 回余計に untag され、半分になって返る。
+`emit_f64_const_bits` は `>>8/16/.../56` でバイトを切り出すので、8 バイトすべてが
+`true_byte >> 1` になる。bump ビルドは tagged 表現を使わないので露出しない —
+**デフォルト self-build が `VIBE_RC=0` だったから 1 年以上気づかれなかった。**
+
+修正は linear 側と同じ 32bit 半分割:
+
+```vibe
+emit_f64_const_lohi(buf, Double::to_i64_bits_lo(v), Double::to_i64_bits_hi(v))
+```
+
+### ユーザコードでも踏める
+
+`Double::to_i64_bits` 自体が production default (`VIBE_RC=1`) で壊れている:
+
+| | RC=1 の結果 | 正しい値 |
+| --- | --- | --- |
+| 2.0 | 2305843009213693952 | 4611686018427387904 |
+| 1.5 | 2304717109306851328 | 4609434218613702656 |
+| 0.001 | 2281127254458684670 | 4562254508917369340 |
+
+すべてちょうど半分。2305843009213693952 = 2^61 = **`Int::max_value` + 1** で、
+Int としてそもそも不正。`lib/@vibex/wasm_wat_encoder` も以前は同じ罠を踏んで
+いたが、#1737 で decimal を exact BigInt ratio のまま nearest-even に丸め、
+`(hi, lo)` を直接返す実装へ移した。
+
+### 回帰ロックが静的である理由
+
+このバグは**コンパイラ自身が RC ビルドのときだけ**現れる。デフォルトゲートは
+bump 自己ビルドなので、§40h をどう強化しても捕まらない。実行時ロックにすると
+毎回 RC stage2 をビルドする必要があり数分かかる。よって compiler-gate §89 は
+**ソースの静的検査** — codegen のどこからも `emit_f64_const_bits` /
+`Double::to_i64_bits` を呼ばない、という形にした。修正前ツリーで発火することを
+確認済み。
+
+## #1262: 「RC self-build にもう 1 つ潜在バグがある」は **誤り** だった — pinned seed が犯人
+
+呼び出し元が 0 になった `emit_f64_const_bits` を削除しようとしたところ
+(「壊れた形を表現不能にする」= #1416 の教訓)、**意味的に完全に空の変更**
+(import 一覧 30 行 + 定義 + `.vpkg` 宣言の削除) にもかかわらず RC self-build
+だけが stage1 → stage2 で OOB した。
+
+当初これを「#1416 と同じレイアウト依存クラスの 3 例目」と記録したが、
+**この判断は誤りだった**。現行コンパイラに 3 つ目のバグは存在しない。
+
+### 追い方
+
+39 秒の決定的再現に縮めてから、バイナリ後付け計装で追った
+(wasm コードは linear memory の外なので、後付けパッチは heap を動かさない)。
+
+**まず 3 つの計装が偽陽性だった。**「健全ビルドでも発火しないこと」を毎回
+対照実験で確かめたおかげで捨てられた:
+
+| 計装 | バグ版 | 健全版 | 判定 |
+| --- | --- | --- | --- |
+| `prologue_drop` (drop 対象のブロックヘッダ検証) | 発火 | **発火** | 偽陽性 |
+| `prologue` (関数入口で free-list head 検証) | 発火 | **発火** | 偽陽性 |
+| 上記 + `VIBE_RC_ASSERT_SIZE0_ONLY=1` | 発火 | **発火** | 偽陽性 |
+
+`SIZE0_ONLY` は gate §88 が使っている検証済みモードだが、**小さな fixture で
+妥当でもコンパイラ全体では妥当でない** (空配列など、`alloc_size == 0` が
+正当に起きる)。#1416 の poison マーカー誤読と同じ教訓の反復:
+**計装の発火は、健全ビルドで発火しないことを確かめて初めて証拠になる。**
+
+### 効いた観測
+
+`__rc_freelist` を後付け export して、両ビルドの free list を突き合わせた:
+
+```
+健全版: fl[0..10] size = 4104 264 2056 264 264 264 2056 264 136 1032 1032   (全て正常)
+バグ版: fl[0] size=136 next=723509632
+        fl[1] p=723509632 size=2 next=2261358      <- ここから壊れている
+        fl[2] p=2261358 size=544499052 ...          (0x20746E65 = "ent " — 文字列データ)
+```
+
+`fl[1]` の p-8/p-4 を i64 として読むと `(offset=2261358, length=2)` の
+**String fat pointer** で、offset 2261358 の実体はコンパイラソース中の識別子
+`"go"` だった。つまり free list が生きた文字列値の中を指していた。
+
+次に「いつ head が壊れたか」を見るため、`rc_patch_freelist_assert.py` に
+`VIBE_RC_WATCH_GLOBAL2` (global 2 が指定値になったらトラップ) を追加した。
+リンク語のウォッチではなく **head** を見るのが正しい: リンク語には直前の head
+しか入らないので、リンクが壊れている時点で head は既に壊れている。
+
+発火位置: **`compile_lambda` 実行中** — #1416 のバグとまったく同じ関数。
+
+なお固定アドレスのウォッチポイントは、その番地までメモリが grow する前に
+ロードすると計装自身が OOB する。`VIBE_WASM_PRE_GROW_PAGES` で先に伸ばす
+(heap_ptr と free list が完全一致することを確認済み = レイアウト不変)。
+
+### 確定
+
+| # | 観測 |
+| --- | --- |
+| 1 | 削除入りツリーは pinned seed 経由の RC self-build で OOB |
+| 2 | seed の `source_commit` 34a294d9 は #1416 修正 f9a06a67 の**祖先** (`git merge-base --is-ancestor` で確認) |
+| 3 | free-list head を壊すのは `compile_lambda` 実行中 (#1416 と同じ関数) |
+| 4 | 現行 codegen のコンパイラは**同一ソースを問題なくコンパイルする** |
+| 5 | **seed を現行ビルドに差し替えると、同じ削除入りツリーの RC self-build が成功する** |
+
+`bootstrap/seed.json` の seed は #1410 で `34a294d9` にバンプされたもので、
+**#1416 の ref cell 修正より前**である。したがって seed が吐く stage1 は
+今も #1416 のバグを抱えており、それが顕在化するかどうかは確保レイアウト次第
+だった。デッド関数を 1 つ消したことでレイアウトが動き、顕在化した。
+
+### 含意
+
+- **修正は bootstrap bump** (docs/internal/operations/bootstrap.md の手順)。コンパイラソース側に
+  直すものはない。
+- **デフォルトレーンは無傷**。バグは RC 経路にしかなく、pin されている
+  self-build は `VIBE_RC=0` (bump) なので RC コードを一切通らない。
+- **`VIBE_RC=1 compiler_gate.sh` は seed バンプまで信用できない**。stage1 が
+  旧 seed 由来である限り、そこで出る RC のクラッシュは現行ソースの評価に
+  ならない。all-RC self-build の健全性を測るには seed が #1416 以降である
+  必要がある。
+- `emit_f64_const_bits` の削除は **seed バンプ後に**行う。それまでは
+  compiler-gate §89 の静的ロックで代替する。
+
+### bump 撤去の順序への含意 (訂正版)
+
+以前「RC への切り替えの障害は correctness ではなく CI wall」と書いたが誤り
+だった。correctness が先に立つ。ただし上の確定を踏まえると、残っている
+correctness 課題は「未知のバグ」ではなく**既知の修正が seed に入っていない
+こと**なので、順序は具体的に書ける:
+
+1. **bootstrap bump** — seed を #1416 (`f9a06a67`) 以降へ上げる。これで
+   seed 由来の stage1 から ref cell バグが消える。
+2. `VIBE_RC=1 compiler_gate.sh` を**完走**させる。#1416 のバグと gc の float
+   リテラル (§40h、本 PR で解消) が両方消えた状態で初めて、ここで出る失敗が
+   「現行ソースの本当の RC 課題」になる。
+3. そこで初めて CI wall が判断材料になる。参考値は rc/bump ≈ 2.2〜2.6。
+4. 焼いてから bump を消す。
+
+なお 1 の前に `VIBE_RC=1` のゲートを回しても、落ちた原因が seed か現行かを
+毎回切り分ける羽目になる (この調査そのもの)。順序を守る価値はそこにある。

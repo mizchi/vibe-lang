@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ROOT / "docs/wasm/host-runtime-contract.json"
+MANIFEST = ROOT / "docs/generated/host-runtime-contract.json"
 EMITTER = ROOT / "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
 RUST = ROOT / "runtime/viberun/src/main.rs"
 NODE = ROOT / "scripts/wasm_vibe_host_runner.js"

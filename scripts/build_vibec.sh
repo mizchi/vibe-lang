@@ -14,7 +14,7 @@
 # hands the compiled wasm back in hex chunks — no filesystem imports, which is
 # exactly what makes the component runnable in a browser via jco
 # (scripts/vibec_browser_poc.sh). The vfs-callback face for FS-backed hosts is
-# designed in docs/vibec-component.md but not yet emitted here.
+# designed in docs/internal/compiler/vibec-component.md but not yet emitted here.
 #
 # Compiler used, in priority order:
 #   $VIBE_VIBEC_COMPILER > $VIBE_STAGE2_WASM > bootstrap/seed/compiler.wasm
@@ -85,7 +85,7 @@ $RUN "$TOOL" --vfs "$HOSTED_CORE" "$HOSTED_COMPONENT"
 [ -s "$HOSTED_COMPONENT" ] || { echo "build_vibec: hosted componentize failed" >&2; exit 1; }
 
 # 5. WIT sidecar — the world the component implements (compile face only;
-#    the vfs face is future work, see docs/vibec-component.md).
+#    the vfs face is future work, see docs/internal/compiler/vibec-component.md).
 cat > "$WIT" <<'EOF'
 package vibe:vibec@0.1.0;
 

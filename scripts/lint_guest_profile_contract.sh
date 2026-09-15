@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${VIBE_GUEST_PROFILE_LINT_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 runner="$ROOT/runtime/viberun/src/main.rs"
 launcher="$ROOT/runtime/vibe"
-profiling_doc="$ROOT/docs/spec/profiling.md"
+profiling_doc="$ROOT/docs/internal/design/profiling.md"
 failed=0
 
 if [ ! -e "$runner" ] && [ ! -e "$launcher" ] && [ ! -e "$profiling_doc" ]; then
@@ -66,7 +66,7 @@ require '\.take\(200\)' "$runner" "profile filename component bound is missing"
 # match Japanese and to stay clean on English, Korean and emoji.
 ja_bytes="$(printf '\xe3[\x81-\x83]|[\xe4-\xe9][\x80-\xbf][\x80-\xbf]')"
 if LC_ALL=C grep -qE "$ja_bytes" "$profiling_doc"; then
-  echo "guest-profile contract: docs/spec/profiling.md mixes Japanese into an English short document" >&2
+  echo "guest-profile contract: docs/internal/design/profiling.md mixes Japanese into an English short document" >&2
   failed=1
 fi
 

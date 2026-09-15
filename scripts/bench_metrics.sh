@@ -34,7 +34,7 @@
 # a same-machine re-run, also bench ONE fixed, already-tracked series
 # against the COMMITTED SEED (bootstrap/seed/compiler.wasm) instead of the
 # PR's freshly-built $STAGE2. The seed only changes on a deliberate bootstrap
-# bump (docs/bootstrap.md), so this number is comparable across almost every
+# bump (docs/internal/operations/bootstrap.md), so this number is comparable across almost every
 # historical run and isolates "how fast is THIS runner right now" from
 # anything about the PR's own codegen. bench_report.mjs uses the ratio of
 # this run's calibration reading to the baseline's as a per-report
@@ -227,7 +227,7 @@ fi
 # benches so it experiences the same warmup/measurement characteristics.
 #
 # MUST be a bench the seed can always compile: the seed only updates on a
-# deliberate bootstrap bump (docs/bootstrap.md) while files under
+# deliberate bootstrap bump (docs/internal/operations/bootstrap.md) while files under
 # lib/@vibe/compiler/ (e.g. parser_bench.vibe) keep evolving with the
 # compiler and routinely use syntax newer seeds don't understand yet --
 # confirmed by hand: the seed fails outright to compile

@@ -31,7 +31,7 @@ eval/lang-review/
 1. **レビュアーを並列に走らせる** — `rubric.md` の各レビュアープロンプトを
    subagent に与える。レビュアーは担当 dimension について:
    - *writability レビュアー*: `tasks/` の仕様だけを見て (解答を見ずに)
-     docs/cheatsheet.md を頼りに vibe コードを書き、下の検証コマンドで
+     docs/user/reference/cheatsheet.md を頼りに vibe コードを書き、下の検証コマンドで
      compile+run し、つまずき (friction) を全部記録する
     - *semantics / type-soundness レビュアー*: docs と実地プローブ
       (小プログラムを書いて動かす) で意味論の一貫性・型健全性の穴を探す

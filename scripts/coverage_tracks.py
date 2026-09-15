@@ -23,7 +23,7 @@ the thing each is good at:
 
 Reading one without the other is how "cli_adapter.vibe 0/250" gets mistaken for
 "untested" (it is exercised on every single compile; no test calls it
-in-process). See docs/coverage.md for the control measurement.
+in-process). See docs/internal/operations/coverage.md for the control measurement.
 
 Floors are per track and are raised as coverage improves; lowering one needs a
 rationale in the PR, same convention as the other ratchets in this repo.
@@ -51,7 +51,7 @@ MIN_IN_PROCESS_RATE = float(os.environ.get("VIBE_TRACK_MIN_IN_PROCESS_RATE", "57
 # ratchet until the corpus is pinned: the rate is a function of HOW MANY
 # programs the corpus feeds the compiler. Measured on the same checkout:
 #   VIBE_COV_MAX=12  ->  10,703/26,738 (40.03%)
-#   (docs/coverage.md records 4,695/6,694 = 70.1% from a 626-file run, on a
+#   (docs/internal/operations/coverage.md records 4,695/6,694 = 70.1% from a 626-file run, on a
 #    much older and smaller compiler -- note the denominator moved 6,694 ->
 #    26,738, so that number is not comparable to today's either)
 # Pin the corpus (a committed file list rather than "examples + fixtures,
