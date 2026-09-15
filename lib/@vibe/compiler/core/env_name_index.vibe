@@ -1,0 +1,96 @@
+import @vibe/core {
+  bsearch_leftmost, hash_string, str_lt
+}
+
+/// Immutable name-to-row-ID index owned by one cached environment. The owned
+/// name snapshot is also the canonical transport order, including duplicates.
+/// Neither the snapshot nor the probe slots are exposed for mutation.
+export struct EnvNameIndex {
+  names: Array[String];
+  slots: Array[Int];
+  sorted: Bool
+}
+
+export fn env_name_index_new(names: Array[String]) -> EnvNameIndex {
+  let owned = Array::slice(names, 0, Array::length(names))
+  let n = Array::length(owned)
+  let mut sorted = true
+  let mut i = 1
+  while i < n && sorted {
+    if str_lt(Array::get(owned, i), Array::get(owned, i - 1)) {
+      sorted = false
+    }
+    i = i + 1
+  }
+  let slots: Array[Int] = []
+  // Tiny indexes need no table. Malformed ordering remains available to
+  // artifact validators and keeps the legacy lookup behavior.
+  if n > 1 && sorted {
+    let mut cap = 16
+    while cap < n * 2 {
+      cap = cap * 2
+    }
+    let mut fill = 0
+    while fill < cap {
+      Array::push(slots, -1)
+      fill = fill + 1
+    }
+    let mut row = 0
+    while row < n {
+      let name = Array::get(owned, row)
+      let mut slot = hash_string(name)&(cap - 1)
+      let mut done = false
+      while !done {
+        let prev = Array::get(slots, slot)
+        if prev < 0 {
+          Array::set(slots, slot, row)
+          done = true
+        } else if String::equals(Array::get(owned, prev), name) {
+          // The first row wins, as with the stable sort and leftmost search.
+          done = true
+        } else {
+          slot = (slot + 1)&(cap - 1)
+        }
+      }
+      row = row + 1
+    }
+  }
+  EnvNameIndex::{ names: owned, slots: slots, sorted: sorted }
+}
+
+export fn env_name_index_length(index: EnvNameIndex) -> Int {
+  Array::length(index.names)
+}
+
+export fn env_name_index_at(index: EnvNameIndex, row: Int) -> String {
+  Array::get(index.names, row)
+}
+
+export fn env_name_index_is_sorted(index: EnvNameIndex) -> Bool {
+  index.sorted
+}
+
+/// Return the first row ID or -1. A raw integer avoids allocating an Option
+/// at every checker lookup. Probe slots are never themselves symbol IDs.
+export fn env_name_index_find(index: EnvNameIndex, name: String) -> Int {
+  let cap = Array::length(index.slots)
+  if cap == 0 {
+    bsearch_leftmost(index.names, name)
+  } else {
+    let mut slot = hash_string(name)&(cap - 1)
+    let mut result = -1
+    let mut done = false
+    while !done {
+      let row = Array::get(index.slots, slot)
+      if row < 0 {
+        done = true
+      } else if String::equals(Array::get(index.names, row), name) {
+        result = row
+        done = true
+      } else {
+        slot = (slot + 1)&(cap - 1)
+      }
+    }
+    result
+  }
+}

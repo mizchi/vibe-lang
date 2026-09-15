@@ -20,10 +20,12 @@ import @vibe/compiler/core {
   TypeDef,
   TypeEnv,
   TypeExpr,
+  env_cached,
   env_lookup,
   env_lookup_binding,
   env_mut_escape,
   env_selectable_type_defs,
+  env_value_binding,
   subst_apply,
   trait_defined,
   type_to_string
@@ -90,7 +92,7 @@ test "checked program transport preserves lookup order provenance and cached sub
     origin: BindingOriginModuleExport("dep.vibe", "public")
   }
   let hidden = EnvValueBinding::{ ty: CtInt, origin: BindingOriginUnavailable }
-  let env = EnvCached(["x", "x"], [exported, hidden], EnvMutCell("cell", true, EnvBind("x", exported, EnvFlat([
+  let env = env_cached(["x", "x"], [exported, hidden], EnvMutCell("cell", true, EnvBind("x", exported, EnvFlat([
     ("x", hidden)
   ]))))
   let subst = SubstCached(Map::from_pairs([
@@ -301,5 +303,89 @@ test "checked program transport generates the same wasm as a fresh check" {
     let fresh = compile_wasi_module_rc_impl(original.checked_stmts, "run")
     let transported = compile_wasi_module_rc_impl(decoded.checked_stmts, "run")
     inspect(fresh == transported, content = "true")
+  }
+}
+
+test "cached row IDs preserve checked-program v1 bytes and rebuild lookup on decode" {
+  // Captured from 397a0c4b2 before EnvCached gained an immutable name index.
+  // This transport preserves cached duplicate rows as well as the tail.
+  let bytes: Array[Int] = [
+    118,
+    67,
+    72,
+    75,
+    1,
+    168,
+    149,
+    174,
+    137,
+    7,
+    135,
+    230,
+    128,
+    217,
+    7,
+    118,
+    65,
+    83,
+    84,
+    1,
+    0,
+    9,
+    3,
+    2,
+    65,
+    97,
+    2,
+    65,
+    97,
+    2,
+    66,
+    66,
+    3,
+    3,
+    1,
+    4,
+    1,
+    1,
+    1,
+    2,
+    4,
+    116,
+    97,
+    105,
+    108,
+    5,
+    1,
+    1,
+    0,
+    1,
+    0
+  ]
+  let expected = Bytes::new()
+  for byte in bytes {
+    Bytes::push(expected, byte)
+  }
+  let env = env_cached(["Aa", "Aa", "BB"], [
+    env_value_binding(CtBool),
+    env_value_binding(CtString),
+    env_value_binding(CtInt)
+  ], EnvBind("tail", env_value_binding(CtChar), EnvEmpty))
+  let checked = CheckedProgram::{
+    checked_stmts: [],
+    final_env: env,
+    type_defs: [],
+    final_subst: SubstEmpty,
+    typed_occurrences: []
+  }
+  inspect(encode_checked_program(checked) == expected, "true")
+  match decode_checked_program(expected) {
+    Some(decoded) => {
+      inspect(env_lookup(decoded.final_env, "Aa") is Some(CtBool), "true")
+      inspect(env_lookup(decoded.final_env, "BB") is Some(CtInt), "true")
+      inspect(env_lookup(decoded.final_env, "tail") is Some(CtChar), "true")
+      inspect(encode_checked_program(decoded) == expected, "true")
+    },
+    None => assert(false)
   }
 }

@@ -18,11 +18,14 @@ import @vibe/compiler/core {
   env_bind_with_origin,
   env_cache,
   env_cache_binding,
+  env_cached,
   env_flat_bindings,
   env_lookup,
   env_lookup_binding,
   env_lookup_flat,
   env_mut_escape,
+  env_name_index_at,
+  env_name_index_length,
   env_value_binding,
   resolve_type_expr_core_shadowed,
   subst_apply_except,
@@ -376,14 +379,14 @@ test "re-export surface bindings block older locals and survive caches" {
     EnvCached(names, _, _) => {
       // Two flattened bindings plus the negative #active_region marker that
       // env_cache seeds into every index (perf: the no-active-region query
-      // answers from the bsearch instead of a full-chain miss walk). The
+      // answers from the name index instead of a full-chain miss walk). The
       // marker's name starts with '#', which no parsed identifier can spell,
       // so it is unreachable from ordinary source-level lookups.
-      inspect(Array::length(names), "3")
+      inspect(env_name_index_length(names), "3")
       let mut has_marker = "absent"
       let mut i = 0
-      while i < Array::length(names) {
-        if Array::get(names, i) == "#active_region" {
+      while i < env_name_index_length(names) {
+        if env_name_index_at(names, i) == "#active_region" {
           has_marker = "present"
         }
         i = i + 1
@@ -412,9 +415,9 @@ test "FS re-export blockers hide earlier sources but allow a newer local binding
 }
 
 test "cache-only indexes remain fail-closed for mutable facts" {
-  let cache_only = EnvCached(["x"], [env_value_binding(CtInt)], EnvEmpty)
+  let cache_only = env_cached(["x"], [env_value_binding(CtInt)], EnvEmpty)
   inspect(mut_escape_text(cache_only, "x"), "none")
-  let stale_index = EnvCached(["x"], [env_value_binding(CtInt)], env_bind(EnvEmpty, "other", CtBool))
+  let stale_index = env_cached(["x"], [env_value_binding(CtInt)], env_bind(EnvEmpty, "other", CtBool))
   inspect(mut_escape_text(stale_index, "x"), "none")
 }
 
@@ -537,4 +540,41 @@ test "subst_apply_except preserves a generic effect binder while its result stay
     0
   ])
   assert(types_equal(resolved, CtFn([CtVar(0)], CtVar(0), Some("e"))))
+}
+
+fn cached_lookup_text(env: TypeEnv, name: String) -> String {
+  match env_lookup(env, name) {
+    Some(ty) => type_to_string(ty),
+    None => "None"
+  }
+}
+
+test "cached row IDs keep colliding names and duplicate shadowing distinct" {
+  let cached = env_cached(["Aa", "Aa", "BB"], [
+    env_value_binding(CtBool),
+    env_value_binding(CtString),
+    env_value_binding(CtInt)
+  ], env_bind(EnvEmpty, "tail", CtChar))
+  inspect(cached_lookup_text(cached, "Aa"), "Bool")
+  inspect(cached_lookup_text(cached, "BB"), "Int")
+  inspect(cached_lookup_text(cached, "tail"), "Char")
+  inspect(cached_lookup_text(env_bind(cached, "Aa", CtDouble), "Aa"), "Double")
+  let other = env_cached(["BB", "Zz"], [
+    env_value_binding(CtString),
+    env_value_binding(CtUnit)
+  ], EnvEmpty)
+  inspect(cached_lookup_text(other, "BB"), "String")
+  inspect(cached_lookup_text(other, "Aa"), "None")
+  inspect(cached_lookup_text(cached, "BB"), "Int")
+}
+
+test "cached names are snapshots so mutating the caller array cannot redirect bindings" {
+  let names = ["Aa", "BB"]
+  let cached = env_cached(names, [
+    env_value_binding(CtInt),
+    env_value_binding(CtBool)
+  ], EnvEmpty)
+  Array::set(names, 0, "BB")
+  inspect(cached_lookup_text(cached, "Aa"), "Int")
+  inspect(cached_lookup_text(cached, "BB"), "Bool")
 }

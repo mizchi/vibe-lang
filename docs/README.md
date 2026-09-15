@@ -122,6 +122,7 @@ the repo; not the user manual.
 | [compiler-callback-return.json](compiler-callback-return.json) | `internal/design/` | Callback return ownership measurements, parser and cold/warm selfhost comparisons, controls and validation |
 | [compiler-module-cache.json](compiler-module-cache.json) | `internal/design/` | Unified typing/lowering cache: cold/warm selfhost timings, allocator high-water, and filesystem operation counts |
 | [compiler-dce-symbols.json](compiler-dce-symbols.json) | `internal/design/` | DCE spelling-ID experiment: cold/warm selfhost comparisons, allocation bounds, and CPU profiles |
+| [compiler-typeenv-symbols.json](compiler-typeenv-symbols.json) | `internal/design/` | Immutable TypeEnv name indexes: cold/warm selfhost comparisons, CPU profiles, and transport compatibility |
 | [compiler-single-rebind.json](compiler-single-rebind.json) | `internal/design/` | Reassignment lifetime and generated-name collision fixes, leak bounds, and cold/warm selfhost comparisons |
 | [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
 | [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |
