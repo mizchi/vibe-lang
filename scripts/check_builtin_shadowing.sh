@@ -176,7 +176,7 @@ if [ -s "$SYMS.diag" ]; then
 fi
 
 # Every name the registry owns. Rows look like
-#   ("String::length", CtFn(..), true, false, true),
+#   ("String::length", CtFn(..), true, true, true, true, true, false, false),
 # and a row's first field is the name. checker_visible is NOT filtered on: a
 # definition colliding with a codegen-internal name is still a collision, and
 # fail-closed is the direction this gate wants.

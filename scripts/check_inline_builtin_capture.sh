@@ -82,11 +82,14 @@ if [ ! -s "$tmp/registered.txt" ]; then
   exit 1
 fi
 
-# 3. Names present in the LINEAR func table (3rd field of the registry row
-#    `(name, sig, in_linear_table, in_gc_table, checker_visible)`). A
-#    func-table name is reached by the collector's own fn_names guard, so it
-#    can never be captured by mistake and needs no registration.
-grep -o '("[^"]*", *Ct[^,]*.*, *true, *\(true\|false\), *\(true\|false\))' "$REGISTRY_SRC" |
+# 3. Names present in the LINEAR func table (first of the seven trailing
+#    bools on a #2584 9-tuple: in_linear, in_gc, visible, is_pure,
+#    is_non_allocating, is_borrow_ret, is_safe_mut). A func-table name is
+#    reached by the collector's own fn_names guard, so it can never be
+#    captured by mistake and needs no registration. The old 5-tuple
+#    pattern anchored on `true, bool, bool)` and so read
+#    is_non_allocating as in_linear.
+grep -oE '\("[^"]+", *CtFn.*, *true, *(true|false), *(true|false), *(true|false), *(true|false), *(true|false), *(true|false)\)' "$REGISTRY_SRC" |
   sed 's/^("//; s/".*//' | sort -u > "$tmp/functable.txt"
 
 # 4. Documented exclusions.
