@@ -6688,6 +6688,17 @@ fn enum_field_access_message(enum_name: String, field: String) -> String {
   String::concat("match on ", String::concat(enum_name, String::concat(" to read a variant's payload; field access `.", String::concat(field, String::concat("` needs a struct, and ", String::concat(enum_name, " is an enum"))))))
 }
 
+/// #2820: the same shape for a BUILTIN receiver (`Array`, `Map`, `Bytes`,
+/// `String`, ...). A builtin container has no fields at all, so unlike the
+/// struct case there is no "you named the wrong one" reading -- the only edit
+/// that can give `.name` a meaning is a qualified call, which is also what the
+/// dot-call diagnostics on these receivers already recommend
+/// (``call it as `Array::length(...)` ``). Leading with that keeps one
+/// vocabulary across both.
+fn builtin_field_access_message(type_name: String, field: String) -> String {
+  String::concat("call `", String::concat(type_name, String::concat("::", String::concat(field, String::concat("(...)` if you meant a method; field access `.", String::concat(field, String::concat("` needs a struct, and ", String::concat(type_name, " is a builtin type"))))))))
+}
+
 fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool) -> (Type, Subst, Int) {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -9771,7 +9782,65 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 },
                 _ => CtUnknown
               },
-              None => CtUnknown
+              // #2820, the `Map` half. A `StringMap[V]` annotation does not
+              // resolve to a type of its own: `resolve_type_expr_core_shadowed`
+              // rewrites it to `CtNamed("Map", [CtString, V])` when no source
+              // declaration claims the spelling, so a map receiver arrives HERE
+              // with no typedef and was tolerated, never reaching the non-struct
+              // arm below. `Map[K, V]` written directly lands the same way.
+              //
+              // The test is the compiler's OWN type-constructor registry at the
+              // ARITY it was applied with -- not the spelling, which #2820 asks
+              // this not to widen by. Two keys have to agree: the name is one
+              // `compiler_owned_type_arity` owns, and no `find_typedef` claims
+              // it (a user's `struct Map[K, V]` is legal -- #2475 only refuses a
+              // declaration at `Array` / `Option` arity 1 and `resolve_builtin`
+              // arity 0 -- and takes the `TDStruct` arm above, where its fields
+              // resolve normally).
+              //
+              // Arity >= 1 is what keeps a shadowing type FORMAL out. A type
+              // parameter may be named for a builtin, and UNAPPLIED it reaches
+              // here as `CtNamed(name, [])` -- measured, `fn read[Map](m: Map)`
+              // compiles clean -- so the length comparison alone excludes it,
+              // whatever the registry says about the name. Applied, a formal
+              // does not arrive at all: measured on both compilers,
+              // `fn read[Map](m: Map[String, Int])` is already rejected upstream
+              // by the kinded-formal check ("a constructor parameter takes one
+              // argument"), and at arity 1 `fn read[Array](m: Array[Int])
+              // { m.v }` resolves through `CtApplied` and stays clean, before
+              // and after this change alike.
+              //
+              // The cost, named rather than closed by guessing: the four
+              // arity-0 builtins (`StringBuilder`, `ByteStream`, `HostStream`,
+              // `PromptText`) stay tolerated, because at arity 0 the builtin
+              // and an unapplied formal are the same `CtNamed(name, [])` and
+              // refusing one refuses the other.
+              //
+              // Everything else this arm reaches stays tolerated, and one of
+              // those is a live defect rather than a decision: a field read on
+              // a type FORMAL resolves by SPELLING in codegen against any
+              // struct declaring the name, so `fn read[T](m: T) { m.payload }`
+              // applied to `7` answers `0` -- slot 0 of a tagged integer read
+              // through that struct's offset (#2848, #2807's shape one rung
+              // over). It is not fixed here because the SAME tolerance carries
+              // an unresolved cross-module name on the incremental per-file
+              // lane, and this arm cannot tell the two apart.
+              None => {
+                let owned_arity = match compiler_owned_type_arity(gname) {
+                  Some(n) => n,
+                  None => 0 - 1
+                }
+                if owned_arity >= 1 && Array::length(gargs) == owned_arity {
+                  Array::push(errors, String::concat(builtin_field_access_message(gname, field), if field_off >= 0 {
+                    off_marker_len(field_off, String::length(field))
+                  } else {
+                    off_marker(dot_off)
+                  }))
+                } else {
+                  ()
+                }
+                CtUnknown
+              }
             },
             // `t.N` tuple projection: the index must be in range, else it reads an
             // out-of-bounds slot (`(1, 2).5` was accepted). When `field` is a
@@ -9809,8 +9878,34 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // Field access on a concrete NON-struct value (`o.x` where `o :
             // Option[P]`, or a scalar / function) is a type error — only structs
             // (and tuple `.N`) have fields. Type vars / unknown / named scrutinees
-            // are tolerated; CtString/CtBytes/CtArray are NOT flagged because `.m`
-            // on them parses as a method call elsewhere, not a value-position EDot.
+            // are tolerated.
+            //
+            // #2820: `CtString` / `CtBytes` / `CtArray` were excluded here, and
+            // the reason given was that "`.m` on them parses as a method call
+            // elsewhere, not a value-position EDot". That rationale is not
+            // merely stale -- the situation it guards against cannot occur. A
+            // dot-CALL is `ECall(EDot(recv, m), args)` and is typed by the
+            // callee-is-EDot arm of the ECall case above, which checks the
+            // RECEIVER alone and never recurses into the whole EDot node, so a
+            // call never reaches here to be refused. Measured on a stage2 built
+            // from 8c966c3, the two spellings are independent: with
+            // `fn Array::my_len(xs: Array[Int]) -> Int` declared, `xs.my_len()`
+            // compiles and answers 103 (the `String` twin, `s.shout()`, answers
+            // 204), while the same file's `xs.my_len` WITHOUT the parens was
+            // clean here and died in codegen with an unlocated `unknown struct
+            // field: my_len`. A method value is not a supported form on any
+            // receiver -- the struct twin `p.my_x` is already refused here,
+            // located, as `unknown field 'my_x' on struct Pt` -- so flagging
+            // the builtin receiver makes the two agree rather than taking a
+            // working program with it.
+            //
+            // What the exclusion did cost is the whole point of the CLI query
+            // surface: `.v` on an `Array` / `Map` / `Bytes` / `String` receiver
+            // was CLEAN in `vibe check` and rejected by the build with an
+            // unlocated `unknown struct field: v`, a message that also asserts
+            // the receiver is a struct whose field list lacks `v` when the truth
+            // is that the receiver has no fields at all. Empty output has to
+            // mean clean.
             //
             // #2807: `CtEnum` was missing from this list, so an ENUM receiver fell
             // through to "tolerated" and the read typed as `CtUnknown`. Codegen
@@ -9834,6 +9929,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 CtEnum(_) => true,
                 _ => false
               }
+              let builtin_receiver = match other {
+                CtString => true,
+                CtBytes => true,
+                CtArray(_) => true,
+                _ => false
+              }
               let not_struct = match other {
                 CtInt => true,
                 CtDouble => true,
@@ -9843,6 +9944,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 CtOption(_) => true,
                 CtFn(_, _, _) => true,
                 CtEnum(_) => true,
+                CtString => true,
+                CtBytes => true,
+                CtArray(_) => true,
                 _ => false
               }
               if not_struct {
@@ -9851,6 +9955,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 // naming a field. CLAUDE.md — the diagnostic leads with the edit.
                 let message = if enum_receiver {
                   enum_field_access_message(type_to_string(other), field)
+                } else if builtin_receiver {
+                  // `type_name_prefix` and not `type_to_string`: the message
+                  // names the QUALIFIED call to write instead, so it needs the
+                  // bare head (`Array`), not the instantiation (`Array[Int]`).
+                  builtin_field_access_message(type_name_prefix(other), field)
                 } else {
                   String::concat("field access `.", String::concat(field, "` on a non-struct value"))
                 }
