@@ -1965,6 +1965,62 @@ export fn ordinary_lane_closure_edges(entry_path: String) -> Int with Exception 
   }
 }
 
+/// The one flat index whose path ends with `suffix`, or `-1` when that is not
+/// exactly one. AMBIGUITY IS NOT RESOLVED: two matches answer `-1` like zero
+/// matches, so a caller that names a file loosely gets a failing lookup rather
+/// than whichever entry happened to come last.
+fn eic_index_of_suffix(flat: Array[(String, String)], suffix: String) -> Int {
+  let mut found = 0 - 1
+  let mut hits = 0
+  let mut i = 0
+  while i < Array::length(flat) {
+    let (p, _) = Array::get(flat, i)
+    if String::ends_with(p, suffix) {
+      found = i
+      hits = hits + 1
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  if hits == 1 {
+    found
+  } else {
+    0 - 1
+  }
+}
+
+/// #2658: is `member` in `owner`'s row of the closure the production split
+/// would build for `entry_path`? Both are matched by path SUFFIX, so a caller
+/// can name a file without spelling its directory.
+///
+/// `ordinary_lane_closure_edges` cannot answer this, and the difference is not
+/// cosmetic. Dropping a re-exported module from a row and admitting a
+/// privately-imported one are opposite errors OF THE SAME SIZE, so they cancel
+/// in the total: a closure that gets both wrong sums to exactly what an exact
+/// one sums to. The total was a proxy; membership is the property (Codex on
+/// #2814).
+///
+/// Answers `false` for a path that is not in the program or is not unique, so
+/// a caller must pin every name it asserts `false` for with a `true` assertion
+/// elsewhere -- otherwise a typo reads as "correctly excluded".
+export fn ordinary_lane_closure_admits(entry_path: String, owner: String, member: String) -> Bool with Exception + Fs {
+  let source_groups = collect_source_groups_fs(entry_path)
+  let (closure, unresolved) = exact_import_closure(source_groups)
+  if unresolved > 0 {
+    false
+  } else {
+    let flat = flatten_source_groups_local(source_groups)
+    let oi = eic_index_of_suffix(flat, owner)
+    let mi = eic_index_of_suffix(flat, member)
+    if oi < 0 || mi < 0 || oi >= Array::length(closure) {
+      false
+    } else {
+      eic_row_holds(Array::get(closure, oi), mi)
+    }
+  }
+}
+
 /// The shape of the split this lane WOULD build for `entry_path`: the module
 /// count and the number of statements mapped, or `(0, 0)` when the split is
 /// not usable and the lane falls back to the whole-program prelude.
