@@ -23,12 +23,37 @@ import { readFileSync } from "node:fs";
 /// rules, so they are listed but not probed.
 export const CAPABILITY_IMPORT_MODULE = "vibe";
 
+/// Imports this probe cannot satisfy, so it refuses to report on a module that
+/// has any (Codex on #2844, P2).
+///
+/// `WebAssembly.Module.imports` returns module, name and kind -- and no TYPE.
+/// So a memory, global or table import can only be fabricated by guessing:
+/// `new WebAssembly.Memory({ initial: 1 })` for a module whose memory wants
+/// more than one page, `0n` for a global that is mutable or not an i64, a
+/// table with limits that are not the declared ones. Every guess that misses
+/// makes instantiation fail, and the probe would then report `refused` for
+/// BOTH host columns -- attributing to the withheld capability a refusal that
+/// came from the harness. That is the same defect this whole contract is
+/// about: a measurement reporting a number when it did not measure the thing.
+///
+/// Refusing costs nothing today: every artifact the linear backend emits
+/// imports functions only (`linked_compile.vibe` emits `wasi_snapshot_preview1
+/// fd_write` and the `vibe.*` capabilities, all funcs). If that changes, this
+/// says so instead of quietly answering wrong.
+export function unsynthesizableImports(mod) {
+  return WebAssembly.Module.imports(mod).filter((entry) => entry.kind !== "function");
+}
+
 /// Build an import object that satisfies every import of `mod` EXCEPT the one
 /// named -- a host that provides everything the program needs but withholds
-/// this one capability.
+/// this one capability. Callers must have rejected `unsynthesizableImports`
+/// first; a non-function import here is a programming error, not a result.
 export function hostWithholding(mod, withheldField) {
   const object = {};
   for (const entry of WebAssembly.Module.imports(mod)) {
+    if (entry.kind !== "function") {
+      throw new Error(`host_capability_probe: cannot synthesize a ${entry.kind} import (${entry.module}.${entry.name})`);
+    }
     // The module object exists even when every field of it is withheld: a host
     // that withholds `Fs::read_file` still provides `vibe`. Creating it only
     // for the fields it keeps would make a one-capability module fail with
@@ -36,10 +61,7 @@ export function hostWithholding(mod, withheldField) {
     // harness rather than from the withholding.
     const provided = (object[entry.module] ??= {});
     if (entry.module === CAPABILITY_IMPORT_MODULE && entry.name === withheldField) continue;
-    if (entry.kind === "function") provided[entry.name] = () => 0n;
-    else if (entry.kind === "global") provided[entry.name] = 0n;
-    else if (entry.kind === "memory") provided[entry.name] = new WebAssembly.Memory({ initial: 1 });
-    else if (entry.kind === "table") provided[entry.name] = new WebAssembly.Table({ initial: 1, element: "anyfunc" });
+    provided[entry.name] = () => 0n;
   }
   return object;
 }
@@ -91,6 +113,14 @@ export function probeLink(mod, imports, field) {
 export function probeModule(bytes) {
   const mod = new WebAssembly.Module(bytes);
   const imports = WebAssembly.Module.imports(mod);
+  const unsynthesizable = unsynthesizableImports(mod);
+  if (unsynthesizable.length > 0) {
+    const named = unsynthesizable.map((e) => `${e.module}.${e.name} (${e.kind})`).join(", ");
+    throw new Error(
+      `this probe can only satisfy function imports, and this module also imports ${named}; ` +
+        "a fabricated one of those can fail to link for its own reasons and would be reported as the capability being refused",
+    );
+  }
   const capabilities = imports
     .filter((entry) => entry.module === CAPABILITY_IMPORT_MODULE && entry.kind === "function")
     .map((entry) => entry.name);

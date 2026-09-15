@@ -41,10 +41,17 @@ unset VIBE_HOST_WITHHOLD VIBE_NODE_EXTRA_FLAGS VIBE_FORCE_RUN_INIT
 
 # shellcheck source=scripts/resolve_stage2.sh
 . scripts/resolve_stage2.sh
-# A CHECK, not a measurement: the property under test belongs to the runner,
-# not to the compiler, so the lenient resolver (down to the committed seed) is
-# the right one -- the program below compiles identically on any of them.
-stage2="$(resolve_stage2 host-capability-withhold "${VIBE_STAGE2_WASM:-}")"
+# Strict, even though this is a check rather than a measurement (AGENTS.md
+# reserves the strict resolver for measurements, on the grounds that a check is
+# usually better run against something than not run). The reasoning does not
+# reach here: this case compiles a program and then asserts what it IMPORTS, so
+# a run against an unrelated generation certifies that the runner withholds an
+# import shape the current compiler may no longer emit (Codex on #2844, P1).
+# And the lenient fallback buys nothing, because every way this runs already
+# has a compiler: the pkfire task carries `deps { selfhostGeneration }`, and in
+# tests/gates/selftests/run.sh `gate_resolve_stage2` has exported
+# VIBE_STAGE2_WASM for the whole lane before this script runs.
+stage2="$(resolve_stage2_strict host-capability-withhold "${VIBE_STAGE2_WASM:-}")"
 
 # This gate asks the question of BOTH host runners, so one runner cannot answer
 # it -- the same reasoning (and the same remedy lines) as
