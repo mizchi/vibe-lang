@@ -1,0 +1,77 @@
+//# Imports
+
+import @vibe/core {
+  Attempt
+}
+
+import @vibe/compiler/entry/compiler {
+  compile_source_wasi
+}
+
+import @vibe/compiler/normalize {
+  eq_name_needs_unmintable_trap
+}
+
+//# Types
+
+/// #2851: a field whose type names an entry of the compiler's type-constructor
+/// registry that `lib/` ALSO declares (`lib/@vibe/core/attempt.vibe`). Its
+/// comparator is mintable, so the generated `W::equals` compares by content.
+struct W {
+  a: Attempt[Int, String]
+}
+
+//# Tests
+
+// The condition ITSELF, not a proxy for it. Two fixes for #2851 landed within
+// the hour -- one narrowing `eq_name_is_invisible_nominal` to exclude every
+// compiler-owned name, one adding `eq_name_is_unmintable_builtin`, which is
+// true only FOR a compiler-owned name. Their conjunction is what both
+// comparator-generating arms test, and with both merged it was `false`
+// everywhere: the arms went dead and the unmintable leaf answered by reference
+// instead of trapping. Nothing failed, because every test covering those arms
+// asked only whether the program compiles, and falling through compiles fine.
+
+test "the unmintable-trap condition holds for names nothing can declare" {
+  inspect(eq_name_needs_unmintable_trap("HostStream"), content = "true")
+  inspect(eq_name_needs_unmintable_trap("ByteStream"), content = "true")
+  inspect(eq_name_needs_unmintable_trap("StringBuilder"), content = "true")
+  inspect(eq_name_needs_unmintable_trap("Future"), content = "true")
+}
+
+test "and is false for a registry name lib/ declares, a scalar, and a user type" {
+  inspect(eq_name_needs_unmintable_trap("Attempt"), content = "false")
+  inspect(eq_name_needs_unmintable_trap("MutMap"), content = "false")
+  inspect(eq_name_needs_unmintable_trap("TaskGroup"), content = "false")
+  inspect(eq_name_needs_unmintable_trap("TaskHandle"), content = "false")
+  inspect(eq_name_needs_unmintable_trap("Sender"), content = "false")
+  inspect(eq_name_needs_unmintable_trap("Receiver"), content = "false")
+  inspect(eq_name_needs_unmintable_trap("Int"), content = "false")
+  inspect(eq_name_needs_unmintable_trap("W"), content = "false")
+}
+
+test "a registry name lib/ declares still compares by content" {
+  let g1: Attempt[Int, String] = Granted(7)
+  let g2: Attempt[Int, String] = Granted(7)
+  inspect(W::{ a: g1 } == W::{ a: g2 }, content = "true")
+}
+
+test "and answers false when the payload differs" {
+  let g1: Attempt[Int, String] = Granted(7)
+  let g2: Attempt[Int, String] = Granted(8)
+  inspect(W::{ a: g1 } == W::{ a: g2 }, content = "false")
+}
+
+// The other half of #2851: the declaration alone must still COMPILE. Before the
+// fix each of these failed with `unknown name: <T>::equals`, because the
+// comparator every struct gets walked the field into an arm that emits a
+// reference the link resolves against the module declaring the field's type --
+// and no module declares these.
+test "a struct field of an unmintable builtin still compiles" {
+  let bs = compile_source_wasi("struct H {\n  s: ByteStream\n}\n\nfn main() -> Int {\n  0\n}\n", "main")
+  assert(Bytes::length(bs) > 0)
+  let sb = compile_source_wasi("struct H {\n  s: StringBuilder\n}\n\nfn main() -> Int {\n  0\n}\n", "main")
+  assert(Bytes::length(sb) > 0)
+  let fu = compile_source_wasi("struct H {\n  s: Future[Int]\n}\n\nfn main() -> Int {\n  0\n}\n", "main")
+  assert(Bytes::length(fu) > 0)
+}
