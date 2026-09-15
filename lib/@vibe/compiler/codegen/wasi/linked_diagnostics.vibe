@@ -1,0 +1,78 @@
+import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message, bytes_capacity_error_message
+}
+import @vibe/compiler/codegen/common_extractors {
+  array_contains_str
+}
+
+// Keep string-pool setup out of the module emitter: its many locals and
+// branch states also cost memory when a Wasm runtime compiles the compiler.
+export fn seed_builtin_diagnostic_strings(strings: Array[String], array_capacity: Bool, bytes_capacity: Bool, rc_shadow: Bool) -> Unit {
+  if array_capacity {
+    Array::push(strings, array_capacity_error_message())
+  }
+  if bytes_capacity {
+    Array::push(strings, bytes_capacity_error_message())
+  } else {
+    ()
+  }
+  if !array_contains_str(strings, "Array::get: index ") {
+    Array::push(strings, "Array::get: index ")
+  }
+  if !array_contains_str(strings, "Array::set: index ") {
+    Array::push(strings, "Array::set: index ")
+  }
+  if !array_contains_str(strings, "Bytes::get: index ") {
+    Array::push(strings, "Bytes::get: index ")
+  }
+  if !array_contains_str(strings, "Bytes::set: index ") {
+    Array::push(strings, "Bytes::set: index ")
+  }
+  // `String::byte_at` is the canonical user-facing spelling (ADR-0098;
+  // char_code_at is its deprecated alias, canonicalized before codegen), so
+  // the abort message names byte_at.
+  if !array_contains_str(strings, "String::byte_at: index ") {
+    Array::push(strings, "String::byte_at: index ")
+  }
+  if !array_contains_str(strings, " out of bounds for length ") {
+    Array::push(strings, " out of bounds for length ")
+  }
+  if !array_contains_str(strings, "\n") {
+    Array::push(strings, "\n")
+  }
+  if rc_shadow {
+    if !array_contains_str(strings, "dup of freed value at site ") {
+      Array::push(strings, "dup of freed value at site ")
+    } else {
+      ()
+    }
+    if !array_contains_str(strings, "drop of freed value at site ") {
+      Array::push(strings, "drop of freed value at site ")
+    } else {
+      ()
+    }
+    if !array_contains_str(strings, "; freed at site ") {
+      Array::push(strings, "; freed at site ")
+    } else {
+      ()
+    }
+    // #2427: `__rt_str_concat` decodes `ptr = v >> 32` / `len = v & 0xFFFFFFFF`
+    // from whatever i64 it is handed, so a value that is not a string at all
+    // -- a tagged `Int`, a pointer, a stale word out of a re-issued block --
+    // decodes into a wild ptr/len and traps inside `memory.copy` with a bare
+    // "memory access out of bounds" naming nothing. These two fragments let
+    // the shadow lane print the operand instead.
+    if !array_contains_str(strings, "String::concat operand is not a live string: ptr=") {
+      Array::push(strings, "String::concat operand is not a live string: ptr=")
+    } else {
+      ()
+    }
+    if !array_contains_str(strings, ", len=") {
+      Array::push(strings, ", len=")
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}

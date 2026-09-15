@@ -89,6 +89,7 @@ import @vibe/compiler/perceus {
 }
 
 import @vibe/compiler/codegen/builtin_bodies {
+  array_capacity_error_message,
   bytes_capacity_error_message,
   gen_arr_concat_body,
   gen_arr_get_body,
@@ -99,6 +100,7 @@ import @vibe/compiler/codegen/builtin_bodies {
   gen_arr_set_body,
   gen_arr_slice_body,
   gen_arr_truncate_body,
+  gen_arr_with_capacity_body,
   gen_array_value_copy_body,
   gen_bytes_append_body,
   gen_bytes_blit_linear_body,
@@ -210,6 +212,7 @@ import @vibe/compiler/codegen/common_base {
   LambdaTable,
   LineMapState,
   ModuleSplit,
+  StrTable,
   agg_info_of_type_expr,
   append_double_runtime,
   append_hidden_attempt_constructors,
@@ -444,6 +447,10 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_type_section_multi,
   emit_vibe_abi_custom_section,
   string_to_data
+}
+
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
 }
 
 import ./linked_helpers.vibe {
@@ -8258,6 +8265,124 @@ export fn compile_wasi_module_linked_impl_with_typed_offsets(stmts: Array[Stmt],
   compile_wasi_module_linked_impl_with_split(stmts, entry_name, srcs, linked_imports, library_mode, enable_rc, coverage, debug_trace, debug_break, rc_shadow, enable_late_dce, prov, body_cache_in, body_cache_out, slice_lo, slice_hi, checker_float_call_offsets, checker_int_render_offsets, checker_bool_render_offsets, checker_eq_offsets, checker_eq_type_keys, module_split_none(), lc_render_unused)
 }
 
+// Build the complete pool outside the module emitter so loop temporaries and
+// the recursive map-key walk do not inflate that function's Wasm locals.
+fn lc_build_string_pool(stmts: Array[Stmt], srcs: Array[(String, String)], need_array_capacity: Bool, need_bytes_capacity: Bool, rc_shadow: Bool) -> (StrTable, Int, Int) {
+  let str_collected = collect_strings_stmts(stmts)
+  let str_strs = lc_fresh_string_array()
+  Array::push(str_strs, "")
+  let mut __sc = 0
+  while __sc < Array::length(str_collected) {
+    let __scs = Array::get(str_collected, __sc)
+    if String::length(__scs) > 0 {
+      Array::push(str_strs, __scs)
+    } else {
+      ()
+    }
+    __sc = __sc + 1
+  }
+  let rec add_map_keys_expr: (Expr) -> Unit = (e) -> {
+    match e {
+      EMap(fields) => {
+        let mut mi = 0
+        while mi < Array::length(fields) {
+          let (key, val) = Array::get(fields, mi)
+          if !array_contains_str(str_strs, key) {
+            Array::push(str_strs, key)
+          }
+          add_map_keys_expr(val)
+          mi = mi + 1
+        }
+      },
+      EStringInterp(parts) => {
+        let mut pi3 = 0
+        while pi3 < Array::length(parts) {
+          if pi3 % 2 == 0 {
+            let part = Array::get(parts, pi3)
+            if String::length(part) > 0 && !array_contains_str(str_strs, part) {
+              Array::push(str_strs, part)
+            }
+          }
+          pi3 = pi3 + 1
+        }
+      },
+      ELet(_, val, body, _) => {
+        add_map_keys_expr(val); add_map_keys_expr(body)
+      },
+      ELetMut(_, val, body, _) => {
+        add_map_keys_expr(val); add_map_keys_expr(body)
+      },
+      ELetRec(_, val, body) => {
+        add_map_keys_expr(val); add_map_keys_expr(body)
+      },
+      ESeq(a, b) => {
+        add_map_keys_expr(a); add_map_keys_expr(b)
+      },
+      EIf(c, t, e) => {
+        add_map_keys_expr(c); add_map_keys_expr(t); add_map_keys_expr(e)
+      },
+      EFn(_, _, _, _, _, body) => add_map_keys_expr(body),
+      EHandle(body, _) => add_map_keys_expr(body),
+      ECall(callee, args, _) => {
+        add_map_keys_expr(callee)
+        let mut ai = 0
+        while ai < Array::length(args) {
+          add_map_keys_expr(Array::get(args, ai))
+          ai = ai + 1
+        }
+      },
+      _ => ()
+    }
+  }
+  let mut __mk = 0
+  while __mk < Array::length(stmts) {
+    match Array::get(stmts, __mk) {
+      SLet(_, _, _, _, expr) => add_map_keys_expr(expr),
+      STest(_, expr) => add_map_keys_expr(expr),
+      SBench(_, expr) => add_map_keys_expr(expr),
+      _ => ()
+    }
+    __mk = __mk + 1
+  }
+  // ("" is seeded at pool slot 0 above -- see the #2402 note at the pool's
+  // construction.)
+  // #2199: every bounds-checked builtin's OOB abort prints
+  // `<operation>: index <idx> out of bounds for length <len>` before its
+  // `unreachable` (a bare trap reads as a compiler bug). Seed the message
+  // fragments so the generated builtin bodies can reference them even when
+  // the source never spells them: one prefix per operation, plus the shared
+  // middle and the trailing newline (__rt_oob_abort assembles the line).
+  seed_builtin_diagnostic_strings(str_strs, need_array_capacity, need_bytes_capacity, rc_shadow)
+  let src_str_base = Array::length(str_strs)
+  let num_src_pairs = Array::length(srcs)
+  let mut __src_i = 0
+  while __src_i < num_src_pairs {
+    let (__src_path, __src_content) = Array::get(srcs, __src_i)
+    Array::push(str_strs, __src_path)
+    Array::push(str_strs, __src_content)
+    __src_i = __src_i + 1
+  }
+  let num_strings = Array::length(str_strs)
+  let data_base = 64
+  let str_offsets = lc_fresh_int_array()
+  let str_lengths = lc_fresh_int_array()
+  let mut str_pos = data_base
+  let mut si = 0
+  while si < num_strings {
+    let s = Array::get(str_strs, si)
+    let slen = String::length(s)
+    Array::push(str_offsets, str_pos)
+    Array::push(str_lengths, slen)
+    str_pos = str_pos + slen
+    si = si + 1
+  }
+  let heap_start = ((str_pos + 7) / 8) * 8
+  // #2386: the string table and its index, built once here after the last
+  // push to str_strs and shared by every per-function CompileCtx below.
+  let str_table_shared = str_table_new(str_strs, str_offsets, str_lengths)
+  (str_table_shared, src_str_base, heap_start)
+}
+
 /// #2575 item 2 step 3b: the same compile, given a `ModuleSplit`. The prelude
 /// runs per module where the split describes the statements and whole-program
 /// otherwise, and every guard fails open -- see `effect_lowering_prelude_split`.
@@ -9010,187 +9135,15 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // seeded strings (the #2199 OOB fragments below) stay where they are:
   // only the generated builtin bodies reference them, and those are rebuilt
   // by every compile.
-  let str_collected = collect_strings_stmts(stmts)
-  let str_strs = lc_fresh_string_array()
-  Array::push(str_strs, "")
-  let mut __sc = 0
-  while __sc < Array::length(str_collected) {
-    let __scs = Array::get(str_collected, __sc)
-    if String::length(__scs) > 0 {
-      Array::push(str_strs, __scs)
-    } else {
-      ()
-    }
-    __sc = __sc + 1
-  }
-  let rec add_map_keys_expr: (Expr) -> Unit = (e) -> {
-    match e {
-      EMap(fields) => {
-        let mut mi = 0
-        while mi < Array::length(fields) {
-          let (key, val) = Array::get(fields, mi)
-          if !array_contains_str(str_strs, key) {
-            Array::push(str_strs, key)
-          }
-          add_map_keys_expr(val)
-          mi = mi + 1
-        }
-      },
-      EStringInterp(parts) => {
-        let mut pi3 = 0
-        while pi3 < Array::length(parts) {
-          if pi3 % 2 == 0 {
-            let part = Array::get(parts, pi3)
-            if String::length(part) > 0 && !array_contains_str(str_strs, part) {
-              Array::push(str_strs, part)
-            }
-          }
-          pi3 = pi3 + 1
-        }
-      },
-      ELet(_, val, body, _) => {
-        add_map_keys_expr(val); add_map_keys_expr(body)
-      },
-      ELetMut(_, val, body, _) => {
-        add_map_keys_expr(val); add_map_keys_expr(body)
-      },
-      ELetRec(_, val, body) => {
-        add_map_keys_expr(val); add_map_keys_expr(body)
-      },
-      ESeq(a, b) => {
-        add_map_keys_expr(a); add_map_keys_expr(b)
-      },
-      EIf(c, t, e) => {
-        add_map_keys_expr(c); add_map_keys_expr(t); add_map_keys_expr(e)
-      },
-      EFn(_, _, _, _, _, body) => add_map_keys_expr(body),
-      EHandle(body, _) => add_map_keys_expr(body),
-      ECall(callee, args, _) => {
-        add_map_keys_expr(callee)
-        let mut ai = 0
-        while ai < Array::length(args) {
-          add_map_keys_expr(Array::get(args, ai))
-          ai = ai + 1
-        }
-      },
-      _ => ()
-    }
-  }
-  let mut __mk = 0
-  while __mk < Array::length(stmts) {
-    match Array::get(stmts, __mk) {
-      SLet(_, _, _, _, expr) => add_map_keys_expr(expr),
-      STest(_, expr) => add_map_keys_expr(expr),
-      SBench(_, expr) => add_map_keys_expr(expr),
-      _ => ()
-    }
-    __mk = __mk + 1
-  }
-  // ("" is seeded at pool slot 0 above -- see the #2402 note at the pool's
-  // construction.)
-  // #2199: every bounds-checked builtin's OOB abort prints
-  // `<operation>: index <idx> out of bounds for length <len>` before its
-  // `unreachable` (a bare trap reads as a compiler bug). Seed the message
-  // fragments so the generated builtin bodies can reference them even when
-  // the source never spells them: one prefix per operation, plus the shared
-  // middle and the trailing newline (__rt_oob_abort assembles the line).
-  // #799 perf: ONE program walk collecting the canonical free-name set,
-  // then every need_<builtin> flag below is a map lookup. Previously each
-  // flag re-walked the whole AST (~40 walks) with a linear fn_names scan per
-  // ident inside.
   let used_builtin_names = collect_used_builtin_names(stmts, fn_names_list)
+  let need_array_capacity = Map::has_key(used_builtin_names, "Array::with_capacity")
   let need_bytes_capacity = Map::has_key(used_builtin_names, "Bytes::with_capacity")
-  if need_bytes_capacity {
-    Array::push(str_strs, bytes_capacity_error_message())
-  } else {
-    ()
-  }
-  if !array_contains_str(str_strs, "Array::get: index ") {
-    Array::push(str_strs, "Array::get: index ")
-  }
-  if !array_contains_str(str_strs, "Array::set: index ") {
-    Array::push(str_strs, "Array::set: index ")
-  }
-  if !array_contains_str(str_strs, "Bytes::get: index ") {
-    Array::push(str_strs, "Bytes::get: index ")
-  }
-  if !array_contains_str(str_strs, "Bytes::set: index ") {
-    Array::push(str_strs, "Bytes::set: index ")
-  }
-  // `String::byte_at` is the canonical user-facing spelling (ADR-0098;
-  // char_code_at is its deprecated alias, canonicalized before codegen), so
-  // the abort message names byte_at.
-  if !array_contains_str(str_strs, "String::byte_at: index ") {
-    Array::push(str_strs, "String::byte_at: index ")
-  }
-  if !array_contains_str(str_strs, " out of bounds for length ") {
-    Array::push(str_strs, " out of bounds for length ")
-  }
-  if !array_contains_str(str_strs, "\n") {
-    Array::push(str_strs, "\n")
-  }
-  if rc_shadow {
-    if !array_contains_str(str_strs, "dup of freed value at site ") {
-      Array::push(str_strs, "dup of freed value at site ")
-    } else {
-      ()
-    }
-    if !array_contains_str(str_strs, "drop of freed value at site ") {
-      Array::push(str_strs, "drop of freed value at site ")
-    } else {
-      ()
-    }
-    if !array_contains_str(str_strs, "; freed at site ") {
-      Array::push(str_strs, "; freed at site ")
-    } else {
-      ()
-    }
-    // #2427: `__rt_str_concat` decodes `ptr = v >> 32` / `len = v & 0xFFFFFFFF`
-    // from whatever i64 it is handed, so a value that is not a string at all
-    // -- a tagged `Int`, a pointer, a stale word out of a re-issued block --
-    // decodes into a wild ptr/len and traps inside `memory.copy` with a bare
-    // "memory access out of bounds" naming nothing. These two fragments let
-    // the shadow lane print the operand instead.
-    if !array_contains_str(str_strs, "String::concat operand is not a live string: ptr=") {
-      Array::push(str_strs, "String::concat operand is not a live string: ptr=")
-    } else {
-      ()
-    }
-    if !array_contains_str(str_strs, ", len=") {
-      Array::push(str_strs, ", len=")
-    } else {
-      ()
-    }
-  } else {
-    ()
-  }
-  let src_str_base = Array::length(str_strs)
-  let num_src_pairs = Array::length(srcs)
-  let mut __src_i = 0
-  while __src_i < num_src_pairs {
-    let (__src_path, __src_content) = Array::get(srcs, __src_i)
-    Array::push(str_strs, __src_path)
-    Array::push(str_strs, __src_content)
-    __src_i = __src_i + 1
-  }
+  let (str_table_shared, src_str_base, heap_start) = lc_build_string_pool(stmts, srcs, need_array_capacity, need_bytes_capacity, rc_shadow)
+  let str_strs = str_table_shared.strs
+  let str_offsets = str_table_shared.offsets
+  let str_lengths = str_table_shared.lengths
   let num_strings = Array::length(str_strs)
-  let data_base = 64
-  let str_offsets = lc_fresh_int_array()
-  let str_lengths = lc_fresh_int_array()
-  let mut str_pos = data_base
-  let mut si = 0
-  while si < num_strings {
-    let s = Array::get(str_strs, si)
-    let slen = String::length(s)
-    Array::push(str_offsets, str_pos)
-    Array::push(str_lengths, slen)
-    str_pos = str_pos + slen
-    si = si + 1
-  }
-  let heap_start = ((str_pos + 7) / 8) * 8
-  // #2386: the string table and its index, built once here after the last
-  // push to str_strs and shared by every per-function CompileCtx below.
-  let str_table_shared = str_table_new(str_strs, str_offsets, str_lengths)
+  let num_src_pairs = Array::length(srcs)
   let effect_names_list = lc_fresh_string_array()
   let effect_op_keys_list = lc_fresh_string_array()
   let effect_op_arities_list = array_empty()
@@ -10186,11 +10139,12 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   let bytes_compare_idx = bytes_last_index_of_idx + 1
   let bytes_blit_idx = bytes_compare_idx + 1
   let bytes_capacity_idx = bytes_blit_idx + 1
+  let array_capacity_idx = bytes_capacity_idx + 1
   // #1987: shadow-only UAF abort reuses gen_oob_abort_body with a different
   // middle fragment. Off when rc_shadow is false so a normal RC build stays
   // byte-identical (ADR-0062).
   let shadow_uaf_abort_idx = if rc_shadow {
-    bytes_capacity_idx + 1
+    array_capacity_idx + 1
   } else {
     0 - 1
   }
@@ -10209,7 +10163,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     (if rc_shadow {
       str_operand_abort_idx
     } else {
-      bytes_capacity_idx
+      array_capacity_idx
     }) + 1
   } else {
     -1
@@ -10576,7 +10530,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   } else {
     // Capacity allocation is the last unconditional builtin. This must
     // agree with the push order or all user-function indices shift.
-    bytes_capacity_idx
+    array_capacity_idx
   }
   let num_generated = (max_builtin_func_idx - num_imported_funcs) + 1
   let func_offset = num_imported_funcs + num_generated
@@ -10873,6 +10827,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         "Array::concat" => arr_concat_idx,
         "Bytes::new" => bytes_new_idx,
         "Bytes::with_capacity" => bytes_capacity_idx,
+        "Array::with_capacity" => array_capacity_idx,
         "Bytes::from_array" => bytes_from_array_idx,
         "Bytes::to_array" => bytes_to_array_idx,
         "Bytes::length" => bytes_len_idx,
@@ -11227,6 +11182,11 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   } else {
     0
   }), 2, 0, 3)
+  push_builtin(gen_arr_with_capacity_body(enable_rc, rc_alloc_idx, print_str_idx, if need_array_capacity {
+    oob_fat_of(array_capacity_error_message())
+  } else {
+    0
+  }), 3, 0, 3)
   if rc_shadow {
     push_builtin(gen_oob_abort_body(print_str_idx, print_i64_raw_idx, oob_fat_of("; freed at site "), oob_nl_fat), 0, 0, 7)
     // #2427: same body, ", len=" as the middle fragment -- see
@@ -14247,6 +14207,7 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   Array::set(gen_sec_names, bytes_last_index_of_idx - num_imported_funcs, "__rt_bytes_last_index_of_byte")
   Array::set(gen_sec_names, bytes_compare_idx - num_imported_funcs, "__rt_bytes_compare")
   Array::set(gen_sec_names, bytes_blit_idx - num_imported_funcs, "__rt_bytes_blit")
+  Array::set(gen_sec_names, array_capacity_idx - num_imported_funcs, "__rt_arr_with_capacity")
   Array::set(gen_sec_names, bytes_capacity_idx - num_imported_funcs, "__rt_bytes_with_capacity")
   Array::set(gen_sec_names, str_char_code_at_idx - num_imported_funcs, "__rt_str_char_code_at")
   Array::set(gen_sec_names, str_from_char_code_idx - num_imported_funcs, "__rt_str_from_char_code")

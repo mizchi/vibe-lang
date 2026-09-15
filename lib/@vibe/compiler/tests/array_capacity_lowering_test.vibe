@@ -1,0 +1,271 @@
+import ./codegen_test_support.vibe {
+  compile_wasi, compile_wasi_gc, compile_wasi_rc, compile_wasi_rc_shadow
+}
+
+import @vibex/wasm_parser {
+  find_section, module_code
+}
+
+test "GC emits the capacity allocator only when used" {
+  let plain = compile_wasi_gc("export fn main() -> Int { 0 }", "main")
+  let reserved = compile_wasi_gc("export fn main() -> Int { Array::length(Array::with_capacity(2)) }", "main")
+  assert(Array::length(module_code(reserved)) == Array::length(module_code(plain)) + 1)
+  // The emitted allocator and diagnostic should not burden unrelated code.
+  assert(Bytes::length(reserved) > Bytes::length(plain) + 200)
+}
+
+test "GC retains capacity calls through aliases and optional runtime bodies" {
+  let sources = [
+    "export fn main() -> Int { let reserve = Array::with_capacity; let xs: Array[Int] = reserve(4); Array::push(xs, 7); Array::get(xs, 0) }",
+    "fn Array::with_capacity(n: Int) -> Int { n + 3 } export fn main() -> Int { Array::with_capacity(4) }",
+    "export fn main() -> Int allows Stdout { let xs: Array[Int] = Array::with_capacity(2); let n = Array::length(xs) + 1234567; println(n); String::length(\"\\{n}\") }",
+    "export fn main() -> Int { region r { let ys = MutList::empty(r); MutList::push(ys, 6); let xs: Array[Int] = Array::with_capacity(2); Array::push(xs, 1); MutList::get(ys, 0) + Array::get(xs, 0) } }"
+  ]
+  let mut i = 0
+  for source in sources {
+    let path = "/tmp/_array_capacity_gc_optional_" + Int::to_string(i) + ".wasm"
+    Fs::write_bytes(path, compile_wasi_gc(source, "main"))
+    let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+    assert(Array::get(output, Array::length(output) - 1) == "7")
+    i = i + 1
+  }
+}
+
+test "array growth rejects slot and frontier overflow before mutation" {
+  let prefix = "/tmp/_array_capacity_growth_"
+  for op in ["push", "push_all"] {
+    let body = if op == "push" {
+      "Array::push(xs, 7)"
+    } else {
+      "Array::push_all(xs, ys)"
+    }
+    let source = "export fn main() -> Int allows Stdout { let ys: Array[Int] = [11]; let xs: Array[Int] = Array::with_capacity(2); Array::push(xs, 7); println(\"ready\"); " + body + "; Array::length(xs) }"
+    let modules = [
+      compile_wasi(source, "main"),
+      compile_wasi_rc(source, "main"),
+      compile_wasi_rc_shadow(source, "main"),
+      compile_wasi_gc(source, "main")
+    ]
+    let mut mode = 0
+    for wasm in modules {
+      Fs::write_bytes(prefix + op + "_" + Int::to_string(mode) + ".wasm", wasm)
+      mode = mode + 1
+    }
+  }
+  let output = sh_lines("node --experimental-wasm-exnref lib/@vibe/compiler/tests/array_capacity_growth_test.mjs " + prefix)
+  assert(String::join(output, "") == "ok")
+}
+
+test "reserved arrays dispatch a generic Array trait witness" {
+  let source = "trait Measured { measure(Self) -> Int } impl [T] Measured for Array[T] { measure(self: Array[T]) -> Int { Array::length(self) + 10 } } fn measure[T: Measured](value: T) -> Int { T::measure(value) } export fn main() -> Int { let xs = Array::with_capacity(4); Array::push(xs, 7); measure(xs) }"
+  run_capacity_linear(source, "trait", "11")
+}
+
+test "unresolved capacity aliases require a result annotation for trait calls" {
+  let prefix = "trait Measured { measure(Self) -> Int } impl [T] Measured for Array[T] { measure(self: Array[T]) -> Int { Array::length(self) + 10 } } fn measure[T: Measured](value: T) -> Int { T::measure(value) } export fn main() -> Int { "
+  for bindings in [
+    "let reserve = Array::with_capacity;",
+    "let first = Array::with_capacity; let reserve = first;"
+  ] {
+    let source = prefix + bindings + " let xs = reserve(4); Array::push(xs, 7); measure(xs) }"
+    let message = handle {
+      let _ = compile_wasi(source, "main")
+      ""
+    } with { Exception::Throw(msg) => msg }
+    assert(String::starts_with(message, "add an explicit type annotation"))
+    assert(String::contains(message, "Measured"))
+    run_capacity_linear(prefix + bindings + " let xs: Array[Int] = reserve(4); Array::push(xs, 7); measure(xs) }", "alias_trait", "11")
+  }
+}
+
+test "a shadowed capacity constructor retains its own trait witness" {
+  let source = "trait Measured { measure(Self) -> Int } impl Measured for Int { measure(self: Int) -> Int { self + 20 } } fn measure[T: Measured](value: T) -> Int { T::measure(value) } fn Array::with_capacity(n: Int) -> Int { n + 1 } export fn main() -> Int { let value = Array::with_capacity(4); measure(value) }"
+  run_capacity_linear(source, "shadow_trait", "25")
+}
+
+fn bounded_capacity_source(body: String) -> String {
+  "trait Element { score(Self) -> Int } impl Element for Int { score(self: Int) -> Int { self + 10 } } impl Element for String { score(self: String) -> Int { String::length(self) + 20 } } trait Measured { measure(Self) -> Int } impl [E: Element] Measured for Array[E] { measure(self: Array[E]) -> Int { E::score(Array::get(self, 0)) } } fn measure[T: Measured](value: T) -> Int { T::measure(value) } export fn main() -> Int { " + body + " }"
+}
+
+test "annotated reserved arrays supply their nested element witnesses" {
+  let source = bounded_capacity_source("let xs: Array[Int] = Array::with_capacity(4); Array::push(xs, 7); let ys: Array[String] = Array::with_capacity(4); Array::push(ys, \"abc\"); measure(xs) + measure(ys)")
+  run_capacity_linear(source, "nested_trait", "40")
+}
+
+test "unresolved element witnesses require an annotation before emitting wasm" {
+  for body in [
+    "let xs = Array::with_capacity(4); Array::push(xs, 7); measure(xs)",
+    "let xs = Array::with_capacity(4); Array::push(xs, 7); let ys = xs; measure(ys)",
+    "measure(Array::with_capacity(4))"
+  ] {
+    let source = bounded_capacity_source(body)
+    let message = handle {
+      let _ = compile_wasi(source, "main")
+      ""
+    } with { Exception::Throw(msg) => msg }
+    assert(String::starts_with(message, "add an explicit"))
+    assert(String::contains(message, "Array[Element]"))
+  }
+}
+
+test "capacity allocation is safe in a suspend-class handler body" {
+  let source = "effect Ask { Get(Int) -> Int } export fn main() -> Int { handle { let xs = Array::with_capacity(4); Array::push(xs, 7); perform Ask::Get(Array::length(xs)) } with { Ask::Get(n) => { let k = resume; k(n + 10) } } }"
+  // Capturing resume as a value exercises the linear suspend lowering.
+  // The GC backend does not support this handler shape.
+  run_capacity_linear(source, "suspend", "11")
+}
+
+test "capacity allocation is safe in a step-split effect-row closure" {
+  let source = "effect Ask { Get(Int) -> Int } fn take(f: () -> Int with Ask) -> Int with Ask { f() } export fn main() -> Int { handle { take(() -> Int with Ask { let xs = Array::with_capacity(4); Array::push(xs, 7); perform Ask::Get(Array::length(xs)) }) } with { Ask::Get(n) => { let k = resume; k(n + 10) } } }"
+  run_capacity_linear(source, "suspend_closure", "11")
+}
+
+test "capacity support does not admit opaque local effectful closures" {
+  let source = "effect Ask { Get(Int) -> Int } fn maker() -> (Int) -> Int with Ask { (n: Int) -> Int with Ask { perform Ask::Get(n) } } export fn main() -> Int { handle { let xs = Array::with_capacity(4); let reserve = maker(); Array::push(xs, reserve(4)); Array::length(xs) } with { Ask::Get(n) => { let k = resume; k(n + 10) } } }"
+  let message = handle {
+    let _ = compile_wasi(source, "main")
+    ""
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(message, "cannot see through"))
+  assert(String::contains(message, "call to 'reserve'"))
+}
+
+fn run_capacity_linear(source: String, name: String, expected: String) -> Unit with Exception + Fs + Process {
+  run_capacity_modules([
+    compile_wasi(source, "main"),
+    compile_wasi_rc(source, "main"),
+    compile_wasi_rc_shadow(source, "main")
+  ], name, expected, false, false)
+}
+
+// Move the generated module's initial heap pointer to wasm32's end without
+// allocating gigabytes. Preserve the initializer's encoded width so offsets
+// and all other sections are untouched.
+fn capacity_near_memory_end(wasm: Bytes) -> Unit {
+  let (start, _) = find_section(wasm, 6)
+  assert(start > 0)
+  let mut pos = start
+  while Bytes::get(wasm, pos) >= 128 {
+    pos = pos + 1
+  }
+  pos = pos + 1
+  assert(Bytes::get(wasm, pos) == 127)
+  assert(Bytes::get(wasm, pos + 1) == 1)
+  assert(Bytes::get(wasm, pos + 2) == 65)
+  pos = pos + 3
+  let mut end = pos
+  while Bytes::get(wasm, end) >= 128 {
+    end = end + 1
+  }
+  Bytes::set(wasm, pos, if pos == end {
+    64
+  } else {
+    192
+  })
+  pos = pos + 1
+  while pos <= end {
+    Bytes::set(wasm, pos, if pos == end {
+      127
+    } else {
+      255
+    })
+    pos = pos + 1
+  }
+}
+
+fn run_capacity_probe(source: String, name: String, expected: String, wrap: Bool, rejects: Bool) -> Unit with Exception + Fs + Process {
+  let modules = [
+    compile_wasi(source, "main"),
+    compile_wasi_rc(source, "main"),
+    compile_wasi_rc_shadow(source, "main")
+  ]
+  // GC's frontier is measured from the host in the test below: this backend
+  // has neither Profiler::heap_bytes nor inline wasm.
+  if !String::contains(source, "Profiler::heap_bytes") {
+    Array::push(modules, compile_wasi_gc(source, "main"))
+  }
+  run_capacity_modules(modules, name, expected, wrap, rejects)
+}
+
+fn run_capacity_modules(modules: Array[Bytes], name: String, expected: String, wrap: Bool, rejects: Bool) -> Unit with Exception + Fs + Process {
+  let mut i = 0
+  for wasm in modules {
+    let path = "/tmp/_array_capacity_" + name + "_" + Int::to_string(i) + ".wasm"
+    if wrap {
+      capacity_near_memory_end(wasm)
+    } else {
+      ()
+    }
+    Fs::write_bytes(path, wasm)
+    let command = "wasmtime run -W exceptions=y -W gc=y --invoke main " + path + " 0"
+    if rejects {
+      let output = sh_lines(command + " 2>&1 || true")
+      let message = String::join(output, "\n")
+      assert(String::contains(message, expected))
+      assert(String::contains(message, "unreachable"))
+    } else {
+      let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+      assert(String::join(output, "") == expected)
+    }
+    i = i + 1
+  }
+  ()
+}
+
+test "capacity rejects negative and wide arguments before narrowing" {
+  for arg in ["-1", "536870909", "1 << 40", "0 - (1 << 40)"] {
+    run_capacity_probe("export fn main() -> Int { Array::length(Array::with_capacity(" + arg + ")) }", "bounds", "Array::with_capacity: use a capacity between 0 and 536870908", false, true)
+  }
+}
+
+test "capacity leaves room for the memory-growth guard page" {
+  let source = "export fn main() -> Int { Array::length(Array::with_capacity(128)) }"
+  Fs::write_bytes("/tmp/_array_capacity_guard_0.wasm", compile_wasi(source, "main"))
+  Fs::write_bytes("/tmp/_array_capacity_guard_1.wasm", compile_wasi_rc(source, "main"))
+  Fs::write_bytes("/tmp/_array_capacity_guard_2.wasm", compile_wasi_rc_shadow(source, "main"))
+  Fs::write_bytes("/tmp/_array_capacity_guard_3.wasm", compile_wasi_gc(source, "main"))
+  let output = sh_lines("node --experimental-wasm-exnref lib/@vibe/compiler/tests/array_capacity_growth_test.mjs --guard /tmp/_array_capacity_guard_")
+  assert(String::join(output, "") == "ok")
+}
+
+test "capacity prevents the heap pointer from wrapping" {
+  let source = "export fn main() -> Int { Array::length(Array::with_capacity(128)) }"
+  run_capacity_probe(source, "wrap", "unreachable", true, true)
+}
+
+test "reserved slots do not grow while filling or after truncation" {
+  let source = "export fn main() -> Int allows Profiler { let before = Profiler::heap_bytes(); let xs: Array[Int] = Array::with_capacity(4096); let allocated = Profiler::heap_bytes() - before; let start = Profiler::heap_bytes(); let mut i = 0; while i < 4096 { Array::push(xs, i); i = i + 1 }; Array::truncate(xs, 0); i = 0; while i < 4096 { Array::push(xs, i); i = i + 1 }; let grown = Profiler::heap_bytes() - start; (if allocated >= 32780 && allocated <= 32800 { 10000 } else { 0 }) + Array::length(xs) + grown * 1000000 }"
+  run_capacity_probe(source, "allocation", "14096", false, false)
+}
+
+test "RC releases and reuses the reserved block and its live children" {
+  let source = "fn fill() -> Int { let xs = Array::with_capacity(32); let mut i = 0; while i < 32 { Array::push(xs, [i, i + 1]); i = i + 1 }; Array::length(Array::get(xs, 0)) }\nexport fn main() -> Int allows Profiler { let warm = fill(); let before = Profiler::heap_bytes(); let mut total = 0; let mut i = 0; while i < 200 { total = total + fill(); i = i + 1 }; total + (Profiler::heap_bytes() - before) * 1000000 }"
+  let wasm = compile_wasi_rc_shadow(source, "main")
+  let path = "/tmp/_array_capacity_rc_reuse.wasm"
+  Fs::write_bytes(path, wasm)
+  let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+  inspect(String::join(output, ""), content = "400")
+}
+
+test "GC reservation avoids growth through fill truncate and refill" {
+  for n in [0, 4096, 4097] {
+    let source = "export fn main() -> Int { let n = " + Int::to_string(n) + "; let xs: Array[Int] = Array::with_capacity(4096); let mut i = 0; while i < n { Array::push(xs, i); i = i + 1 }; Array::truncate(xs, 0); i = 0; while i < n { Array::push(xs, i); i = i + 1 }; Array::length(xs) }"
+    let path = "/tmp/_array_capacity_gc_" + Int::to_string(n) + ".wasm"
+    Fs::write_bytes(path, compile_wasi_gc(source, "main"))
+  }
+  let output = sh_lines("node lib/@vibe/compiler/tests/array_capacity_gc_probe.mjs /tmp/_array_capacity_gc_")
+  inspect(String::join(output, ""), content = "ok")
+}
+
+test "a saved element survives truncation of its source array" {
+  let source = "export fn main() -> Int { let xs = Array::with_capacity(4); Array::push(xs, [11, 12]); let saved = Array::get(xs, 0); Array::truncate(xs, 0); Array::push(xs, [91, 92]); Array::get(saved, 1) }"
+  run_capacity_probe(source, "saved", "12", false, false)
+}
+
+test "truncate borrows its array without leaking an extra retain" {
+  let source = "fn fill() -> Int { let xs = Array::with_capacity(32); Array::push(xs, 1); Array::truncate(xs, 0); Array::push(xs, 2); Array::length(xs) }\nexport fn main() -> Int allows Profiler { let warm = fill(); let before = Profiler::heap_bytes(); let mut total = 0; let mut i = 0; while i < 200 { total = total + fill(); i = i + 1 }; total + (Profiler::heap_bytes() - before) * 1000000 }"
+  let path = "/tmp/_array_capacity_truncate_reuse.wasm"
+  Fs::write_bytes(path, compile_wasi_rc_shadow(source, "main"))
+  let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+  inspect(String::join(output, ""), content = "200")
+}

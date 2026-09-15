@@ -200,6 +200,47 @@ hold.
 Anti-patterns:
 - `Ref[T]` — historically abandoned (ADR-0017), use the table above
 
+### Reserving Array storage
+
+`Array::with_capacity(n)` creates an empty mutable `Array[T]` with room for at
+least `n` elements. It works on linear bump, RC, and GC. The current minimum is
+two slots; reservation does not initialize elements or change the length.
+The first `n` pushes require no buffer growth. Further pushes grow normally,
+and aliases observe every push and truncation.
+
+```vibe
+fn reserved_values() -> Array[Int] {
+  let xs = Array::with_capacity(128)
+  Array::push(xs, 42)
+  xs
+}
+```
+
+The capacity expression is evaluated once and must be an `Int`. Negative
+values and values above 536,870,908 trap before narrowing to wasm32; an
+allocation must also fit available linear memory. Growth that would overflow
+the buffer size or heap address traps before changing the array. New linear
+allocations also leave room for the memory-growth guard page; RC can still
+reuse an existing free block when the frontier cannot grow. Each array has
+one element type, inferred from its uses or an annotation, just like `[]`.
+
+If a trait implementation requires another trait on the elements
+(`impl [E: Element] Measured for Array[E]`), annotate the reservation explicitly,
+for example `let xs: Array[Int] = Array::with_capacity(128)`. Trait lowering
+does not recover the element type from later pushes. When it cannot construct
+the required element witness, the compiler rejects the call with an annotation
+diagnostic. A first-class alias such as `let reserve = Array::with_capacity`
+also needs an annotated result (`let xs: Array[Int] = reserve(128)`) before a
+trait call, even for an unbounded `impl [E] Trait for Array[E]`: the alias's
+result head is not recovered by trait lowering. Unresolved receiver types
+produce an annotation diagnostic before code generation.
+
+`Array::truncate(xs, n)` retains the allocated capacity for subsequent pushes.
+It currently does not release the removed elements' RC references: saved
+element views can still refer to them. Capacity reservation preserves that
+existing lifetime behavior; repeated truncation of owned elements is not yet
+a bounded-memory scratch-buffer contract.
+
 ### Collection naming convention (#1140, ADR-0082 → ADR-0100 (3))
 
 The bare name / prefix a collection type carries tells you its mutability

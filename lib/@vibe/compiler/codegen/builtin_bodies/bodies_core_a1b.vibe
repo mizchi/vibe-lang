@@ -1,5 +1,9 @@
 //# Imports
 
+import ./array_capacity.vibe {
+  emit_array_double_capacity, emit_array_heap_growth_check
+}
+
 import @vibe/compiler/core {
   Expr,
   Pat,
@@ -237,10 +241,7 @@ export fn gen_arr_push_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool,
   emit_i32_ge_u(b)
   emit_if_void(b)
   // newcap = cap * 2 (local 7)
-  emit_local_get(b, 3)
-  emit_i32_const(b, 2)
-  emit_i32_mul(b)
-  emit_local_set(b, 7)
+  emit_array_double_capacity(b, 3, 7)
   if enable_rc {
     // ADR-0055 Stage 4: allocate the grown buffer as a HEADERED, reusable block
     // ([alloc_size@block+0], data_ptr = block+8) via vibe_rc_alloc, so it can be
@@ -331,6 +332,7 @@ export fn gen_arr_push_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool,
     // segment instead, so the whole growth history is released with the
     // region rather than leaked for the rest of the program.
     let emit_main_heap_bump: () -> Unit = () -> {
+      emit_array_heap_growth_check(b, 7)
       emit_global_get(b, 0)
       emit_local_tee(b, 6)
       emit_local_get(b, 7)
@@ -362,12 +364,14 @@ export fn gen_arr_push_body(enable_rc: Bool, rc_alloc_idx: Int, rc_shadow: Bool,
         emit_local_set(b, 8)
         emit_end(b)
         emit_local_get(b, 8)
+        emit_i64_extend_i32_u(b)
         emit_local_get(b, 7)
-        emit_i32_const(b, 8)
-        emit_i32_mul(b)
-        emit_i32_add(b)
-        emit_i32_const(b, arena_limit)
-        emit_i32_gt_u(b)
+        emit_i64_extend_i32_u(b)
+        emit_i64_const(b, 8)
+        emit_i64_mul(b)
+        emit_i64_add(b)
+        emit_i64_const(b, arena_limit)
+        emit_i64_gt_s(b)
         emit_if_void(b)
         emit_main_heap_bump()
         emit_else(b)

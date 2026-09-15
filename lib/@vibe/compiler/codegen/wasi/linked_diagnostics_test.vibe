@@ -1,0 +1,37 @@
+import ./linked_diagnostics.vibe {
+  seed_builtin_diagnostic_strings
+}
+
+test "capacity diagnostics follow allocator use and preserve existing pool entries" {
+  for array_capacity in [false, true] {
+    for bytes_capacity in [false, true] {
+      let strings: Array[String] = ["existing", "Array::get: index "]
+      seed_builtin_diagnostic_strings(strings, array_capacity, bytes_capacity, false)
+      assert(Array::get(strings, 0) == "existing")
+      let text = String::join(strings, "|")
+      assert(String::contains(text, "Array::with_capacity:") == array_capacity)
+      assert(String::contains(text, "Bytes::with_capacity:") == bytes_capacity)
+      assert(String::contains(text, "String::byte_at: index "))
+      assert(Array::length(strings) == 8 + (if array_capacity {
+        1
+      } else {
+        0
+      }) + (if bytes_capacity {
+        1
+      } else {
+        0
+      }))
+    }
+  }
+}
+
+test "shadow and bounds diagnostics are not duplicated by repeated setup" {
+  let strings: Array[String] = []
+  seed_builtin_diagnostic_strings(strings, false, false, true)
+  seed_builtin_diagnostic_strings(strings, false, false, true)
+  assert(Array::length(strings) == 12)
+  let text = String::join(strings, "|")
+  assert(String::contains(text, "dup of freed value at site "))
+  assert(String::contains(text, "drop of freed value at site "))
+  assert(String::contains(text, "String::concat operand is not a live string: ptr="))
+}

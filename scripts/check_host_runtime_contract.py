@@ -134,7 +134,7 @@ def gc_lists(text: str) -> tuple[list[str], list[tuple[str, int]], list[str], in
     chain = re.search(r"let use_host = (.+)", text)
     if not chain:
         die("could not find the gc backend's use_host chain")
-    use_host = re.findall(r'stmts_use_builtin\(stmts, fn_names_list, "([^"]+)"\)', chain.group(1))
+    use_host = re.findall(r'Map::has_key\(used_builtins, "([^"]+)"\)', chain.group(1))
     if not use_host:
         die("gc use_host chain matched no builtin names")
 

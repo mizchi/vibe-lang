@@ -113,7 +113,7 @@ class GcHostListTest(unittest.TestCase):
 
     def test_use_host_losing_a_builtin_fails(self):
         self.assert_mutation_fails(
-            self.text.replace(' || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir")', "", 1)
+            self.text.replace(' || Map::has_key(used_builtins, "Fs::is_dir")', "", 1)
         )
 
     def test_host_defs_index_out_of_order_fails(self):
@@ -233,8 +233,8 @@ class GcHostListTest(unittest.TestCase):
         # only thing left that can see it is band membership. Found by the
         # disable-each-assertion sweep, which reported this assertion as
         # uncovered once the type check started failing closed.
-        mutated = self.text.replace('stmts_use_builtin(stmts, fn_names_list, "Fs::exists")',
-                                    'stmts_use_builtin(stmts, fn_names_list, "Fs::invented")', 1)
+        mutated = self.text.replace('Map::has_key(used_builtins, "Fs::exists")',
+                                    'Map::has_key(used_builtins, "Fs::invented")', 1)
         mutated = mutated.replace('("Fs::exists", 1, 5, 1)', '("Fs::invented", 1, 5, 1)', 1)
         mutated = mutated.replace('("fs_exists", 3)', '("fs_invented", 3)', 1)
         typed = dict(self.import_types)

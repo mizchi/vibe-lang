@@ -1,0 +1,182 @@
+import @vibe/compiler/core {
+  bytebuf_new, bytebuf_push
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  emit_i64_extend_i32_u
+}
+
+import @vibe/compiler/codegen/common_base {
+  emit_i32_gt_u, emit_i32_mul
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_call,
+  emit_end,
+  emit_global_get,
+  emit_global_set,
+  emit_heap_memory_grow_check,
+  emit_i32_add,
+  emit_i32_const,
+  emit_i32_store,
+  emit_i32_store8,
+  emit_i32_wrap_i64,
+  emit_i64_add,
+  emit_i64_const,
+  emit_i64_gt_s,
+  emit_i64_lt_s,
+  emit_i64_mul,
+  emit_i64_or,
+  emit_i64_shr_s,
+  emit_if_void,
+  emit_local_get,
+  emit_local_set,
+  emit_local_tee
+}
+
+/// Reject an unrepresentable doubled buffer before changing array or heap state.
+/// The shared limit includes space for the RC header and allocator alignment.
+export fn emit_array_double_capacity(b: Bytes, count_local: Int, capacity_local: Int) -> Unit {
+  emit_local_get(b, count_local)
+  emit_i32_const(b, 268435454)
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, count_local)
+  emit_i32_const(b, 2)
+  emit_i32_mul(b)
+  emit_local_set(b, capacity_local)
+}
+
+/// A headerless array buffer must leave space for the memory-growth guard page.
+/// RC allocations use the checked reusable allocator instead of this bump check.
+export fn emit_array_heap_growth_check(b: Bytes, capacity_local: Int) -> Unit {
+  emit_global_get(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, capacity_local)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 8)
+  emit_i64_mul(b)
+  emit_i64_add(b)
+  emit_i64_const(b, 4294901759)
+  emit_i64_gt_s(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+}
+
+/// The shared wasm32 limit leaves room for the RC header and alignment.
+export fn array_capacity_error_message() -> String {
+  "Array::with_capacity: use a capacity between 0 and 536870908 that fits linear memory\n"
+}
+
+fn capacity_abort(b: Bytes, print_str_idx: Int, error_fat: Int) -> Unit {
+  emit_i64_const(b, error_fat)
+  emit_call(b, print_str_idx)
+  bytebuf_push(b, 0)
+}
+
+/// Param 0: capacity (i64); locals 1/2/3: block, capacity, size (i32).
+/// Spare slots are uninitialized: only the length's live prefix owns values.
+export fn gen_arr_with_capacity_body(enable_rc: Bool, rc_alloc_idx: Int, print_str_idx: Int, error_fat: Int) -> Bytes {
+  let b = bytebuf_new()
+  if enable_rc {
+    emit_local_get(b, 0)
+    emit_i64_const(b, 1)
+    emit_i64_shr_s(b)
+    emit_local_set(b, 0)
+  }
+  // Validate in i64: narrowing first would accept a negative or wide Int.
+  emit_local_get(b, 0)
+  emit_i64_const(b, 0)
+  emit_i64_lt_s(b)
+  emit_if_void(b)
+  capacity_abort(b, print_str_idx, error_fat)
+  emit_end(b)
+  emit_local_get(b, 0)
+  emit_i64_const(b, 536870908)
+  emit_i64_gt_s(b)
+  emit_if_void(b)
+  capacity_abort(b, print_str_idx, error_fat)
+  emit_end(b)
+  // A positive minimum preserves the existing push body's doubling rule.
+  emit_local_get(b, 0)
+  emit_i64_const(b, 2)
+  emit_i64_lt_s(b)
+  emit_if_void(b)
+  emit_i64_const(b, 2)
+  emit_local_set(b, 0)
+  emit_end(b)
+  emit_local_get(b, 0)
+  emit_i32_wrap_i64(b)
+  emit_local_tee(b, 2)
+  emit_i32_const(b, 8)
+  emit_i32_mul(b)
+  emit_i32_const(b, if enable_rc {
+    20
+  } else {
+    12
+  })
+  emit_i32_add(b)
+  emit_local_set(b, 3)
+  if enable_rc {
+    // The shared allocator checks alignment/frontier overflow on a miss.
+    // Do not reject a full frontier here: a freed block may satisfy the call.
+    emit_local_get(b, 3)
+    emit_i64_extend_i32_u(b)
+    emit_call(b, rc_alloc_idx)
+    emit_i32_wrap_i64(b)
+    emit_local_set(b, 1)
+    emit_local_get(b, 1)
+    emit_local_get(b, 3)
+    emit_i32_store(b, 2, 0)
+    emit_local_get(b, 1)
+    emit_i32_const(b, 1)
+    emit_i32_store(b, 2, 4)
+    emit_local_get(b, 1)
+    emit_i32_const(b, 5)
+    emit_i32_store8(b, 0, 7)
+    emit_local_get(b, 1)
+    emit_i32_const(b, 8)
+    emit_i32_add(b)
+    emit_local_set(b, 1)
+  } else {
+    // The grow helper adds 65536 before computing its page count in i32.
+    // Reject the final page before advancing the frontier.
+    emit_global_get(b, 0)
+    emit_i64_extend_i32_u(b)
+    emit_local_get(b, 3)
+    emit_i64_extend_i32_u(b)
+    emit_i64_add(b)
+    emit_i64_const(b, 4294901759)
+    emit_i64_gt_s(b)
+    emit_if_void(b)
+    capacity_abort(b, print_str_idx, error_fat)
+    emit_end(b)
+    emit_global_get(b, 0)
+    emit_local_tee(b, 1)
+    emit_local_get(b, 3)
+    emit_i32_add(b)
+    emit_global_set(b, 0)
+    emit_heap_memory_grow_check(b)
+  }
+  emit_local_get(b, 1)
+  emit_local_get(b, 2)
+  emit_i32_store(b, 2, 0)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 0)
+  emit_i32_store(b, 2, 4)
+  emit_local_get(b, 1)
+  emit_local_get(b, 1)
+  emit_i32_const(b, 12)
+  emit_i32_add(b)
+  emit_i32_store(b, 2, 8)
+  emit_local_get(b, 1)
+  emit_i64_extend_i32_u(b)
+  if enable_rc {
+    emit_i64_const(b, 1)
+    emit_i64_or(b)
+  }
+  b
+}
