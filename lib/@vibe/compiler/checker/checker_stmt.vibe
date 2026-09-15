@@ -1489,6 +1489,82 @@ fn derive_name_is_known(name: String) -> Bool {
   name == "Eq" || name == "Ord" || name == "Show" || name == "Hash" || name == "Default"
 }
 
+/// #2475: a declared type may not take a spelling an annotation resolves to a
+/// builtin, because such a declaration can never be NAMED.
+///
+/// `resolve_type_expr_core_shadowed` has two doors and they consult different
+/// registries, so the rule is arity-aware rather than a name list:
+///
+///   TyName(n)      -> `resolve_builtin(n)` FIRST, then `find_typedef`
+///   TyApp(n, args) -> `Array` / `Option` / `StringMap` at ARITY 1 first,
+///                     then `find_typedef`
+///
+/// Measured on main at d321d4d, with `struct Int { value: String }` declared:
+/// `fn bump(x: Int) -> Int` takes the BUILTIN, `fn label(s: Int) { s.value }`
+/// is refused as a field access on a non-struct, and only inference
+/// (`Int::{ value: "ab" }`) reaches the struct. The declaration introduces a
+/// type nobody can write down, and the diagnostic for trying reports the
+/// builtin's shape without ever saying the name was taken.
+///
+/// At arity 1 the chain hard-codes three heads, and only TWO of them collide.
+/// The difference is in the arm bodies, not the chain order:
+///
+///   Array      `CtArray(arg)`, unconditionally -- `find_typedef` is never
+///              reached, so a declaration loses the spelling. COLLIDES.
+///   Option     `CtOption(arg)`, unconditionally. COLLIDES.
+///   StringMap  consults `find_typedef` FIRST and lets a source declaration
+///              win. That is #2263 deciding it on purpose, and
+///              `string_map_local_shadow_ok` pins it. Does NOT collide.
+///
+/// `Array` is the one worth measuring rather than reading, because it looks
+/// nameable. With `struct Array[T] { pad: Int; v: T }` declared,
+/// `fn read(m: Array[Int]) -> Int { m.v }` is accepted and answers 22 -- the
+/// SECOND field, which is normally how you tell a resolved struct from a
+/// first-field offset landed on by luck. It proves nothing here: field access
+/// on an `Array` receiver is not checked AT ALL. The same program with no
+/// struct named `Array` anywhere, reading `.v` off a literal `[1, 2, 3]`, is
+/// accepted too, and so is `.v` on a `Map` and on a `Bytes`. Only `Option`
+/// among these is caught, because `CtOption` is in the non-struct allow-list
+/// and `CtArray` is not.
+///
+/// The probe that does discriminate is the `enum` spelling, where `match`
+/// checks the scrutinee. Measured on main at d321d4d:
+///
+///   enum Array[T]  { Yes(T); Nope }   "constructor pattern `Yes` (of Array)
+///                                      cannot match this scrutinee type"
+///   enum Option[T] { Yes(T); Nope }   "variant `Some` of Option is not
+///                                      handled"
+///   enum Opt9[T]   { Yes(T); Nope }   clean -- the control
+///
+/// Both builtin spellings take the annotation away from the declaration; the
+/// ordinary name does not.
+///
+/// Arity matters for the same reason. `struct Array[K, V]` at arity 2 reaches
+/// `find_typedef`, a bare `struct Option` is absent from `resolve_builtin`,
+/// and `struct Int[T]` is nameable as `Int[Bool]` because the applied door
+/// never consults `resolve_builtin`. All three are accepted, and each has a
+/// fixture that NAMES it in an annotation (`builtin_spelling_arity2_ok`,
+/// `builtin_spelling_bare_option_ok`, `builtin_spelling_applied_int_ok`) --
+/// inference alone would pass just as well with the type unnameable, which is
+/// exactly what this check refuses, so a control that only infers proves
+/// nothing. They are one declaration per file because a declared type owns the
+/// applied spelling for type ARGUMENTS too: with `struct Int[T]` in scope,
+/// `Array[Int, String]` is itself refused.
+fn builtin_spelling_decl_error(kind: String, name: String, arity: Int, errors: Array[String]) -> Unit {
+  let collides = if arity == 0 {
+    resolve_builtin(name) != None
+  } else if arity == 1 {
+    name == "Array" || name == "Option"
+  } else {
+    false
+  }
+  if collides {
+    Array::push(errors, String::concat("rename this ", String::concat(kind, String::concat(": `", String::concat(name, String::concat("` is a builtin type's name, and a type annotation always resolves it to the builtin -- so this ", String::concat(kind, " could never be named in one")))))))
+  } else {
+    ()
+  }
+}
+
 /// #1464: reject a constructor name declared twice by the SAME enum /
 /// suberror. #1078's `find_other_enum_declaring_variant` deliberately skips
 /// the declaration being registered (`other_name != enum_name`), so the
@@ -3040,6 +3116,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       },
       SEnum(exported, name, params, variants, enum_derives) => {
         validate_derives(enum_derives, errors)
+        builtin_spelling_decl_error("enum", name, Array::length(params), errors)
         duplicate_ctor_errors("enum", name, variants, errors)
         let param_len = Array::length(params)
         let param_var_ids = array_empty()
@@ -3221,6 +3298,11 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         // a TDEnum def (so `match` + type resolution work) and bind each
         // constructor name as `CtFn(payload, CtEnum(name))`. `throw` accepts the
         // resulting value (its param is CtUnknown, see builtins_misc).
+        // #2475 (Codex on #2819): a suberror registers a TDEnum and binds its
+        // constructors exactly as an enum does, so `suberror Int(String)`
+        // recreates the same unnameable nominal type. It carries no type
+        // parameters, hence arity 0.
+        builtin_spelling_decl_error("suberror", name, 0, errors)
         duplicate_ctor_errors("suberror", name, variants, errors)
         let ctor_result_type = CtEnum(name)
         let resolved_variants = array_empty()
@@ -3272,6 +3354,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       },
       SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
         validate_derives(derives, errors)
+        builtin_spelling_decl_error("struct", name, Array::length(tparams), errors)
         let resolved_fields = array_empty()
         let field_tes = array_empty()
         // #2125: this struct's slot is already claimed before its own field
@@ -3372,6 +3455,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }, bind_fn_return(env5, name, CtStruct(name))), s, c)
       },
       STypeAlias(exported, name, params, te) => {
+        builtin_spelling_decl_error("type alias", name, Array::length(params), errors)
         // #2290: map-key and builtin-arity validation is deferred to
         // check_completed_decl_map_keys. At this point a later alias is not
         // in `defs`, so judging ownership here made valid programs depend on

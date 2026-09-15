@@ -1,0 +1,35 @@
+//# #2475 (Codex on #2819): `Array` collides at arity 1 for the same reason
+//# `Option` does -- the APPLIED door of `resolve_type_expr_core_shadowed`
+//# answers `CtArray(..)` before it ever consults `find_typedef`, so the
+//# annotation is the builtin and the declaration below can never be named.
+//#
+//# The `struct` spelling is used here because it is the one that LOOKS fine,
+//# and reading a probe wrongly is how this nearly shipped accepted. Measured on
+//# main at d321d4d, with `struct Array[T] { pad: Int; v: T }` declared:
+//#
+//#   fn read(m: Array[Int]) -> Int { m.v }     accepted, and answers 22
+//#
+//# That is not evidence the struct was resolved. Field access on an `Array`
+//# receiver is NOT checked at all -- the same program with no struct named
+//# `Array` anywhere, `fn read(m: Array[Int]) -> Int { m.v }` over a literal
+//# `[1, 2, 3]`, is also accepted. The same holds for a `Map` and a `Bytes`
+//# receiver. `Option` is the one head whose misuse is caught, because
+//# `CtOption` is in the non-struct allow-list and `CtArray` is not.
+//#
+//# The decisive probe is the `enum` spelling, where `match` does check:
+//# `enum Array[T] { Yes(T); Nope }` gives "constructor pattern `Yes` (of
+//# Array) cannot match this scrutinee type", exactly as `enum Option[T]` gives
+//# "variant `Some` of Option is not handled". Both declarations lose the
+//# annotation to the builtin.
+//#
+//# `StringMap` is the one head in that same `else if` chain that does NOT
+//# collide: its arm consults `find_typedef` FIRST and a source declaration
+//# wins, which #2263 decided on purpose and string_map_local_shadow_ok pins.
+struct Array[T] {
+  pad: Int;
+  v: T
+}
+
+export fn main() -> Int {
+  0
+}

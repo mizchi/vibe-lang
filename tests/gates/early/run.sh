@@ -2010,9 +2010,20 @@ rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
 # generic ENUM compared directly. Since #2467 a concrete instantiation answers
 # through a specialized comparator; what still fails closed here is a
 # non-regular recursion whose specializations never close.
-# `structural_eq_owned_scalar_*_trap.vibe` joins too (Codex round 4 on #2471):
-# a program that declares `struct Int` makes a literal-derived shape's `Int`
-# ambiguous with the struct, so the literal-shape rungs fail closed.
+# `structural_eq_untyped_empty_owned_int_typed.vibe` is gone with them, and
+# for the same reason -- its whole subject was "a source-owned scalar spelling
+# takes its declared comparator" (#2456 round 17), which a program can no
+# longer set up. What it ALSO exercised is still covered:
+# `..._named_value_typed` pins a pushed identifier answering by content and
+# `..._observed_struct_arg_typed` pins a pushed STRUCT doing so, neither
+# needing a builtin spelling. Checked before deleting rather than assumed.
+#
+# The `structural_eq_owned_scalar_*` fixtures are GONE (#2475, decided): a
+# program can no longer declare `struct Int` at all, so the ambiguity they
+# fail closed on is unreachable. One `err_type_builtin_spelling_*` fixture
+# refuses the declaration instead, and the `struct Foo` control
+# (`structural_eq_owned_scalar_control_test.vibe`) keeps asserting that the
+# same five shapes ANSWER once the spelling is not a builtin's.
 # #2475: the refusals that are decided about a comparison the program WRITES
 # are compile errors now, not runtime traps. They used to emit a bare
 # `assert_true(false)`, so the program compiled clean and died with
@@ -2023,7 +2034,7 @@ rm -rf "$eqtrapdir"; mkdir -p "$eqtrapdir"
 #
 # The MESSAGE is asserted, not just the refusal: "did not compile" is what the
 # old loop checked for, and it is satisfied by any unrelated breakage.
-for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe fixtures/structural_eq_owned_scalar_*_refused.vibe; do
+for eqrefuse_src in fixtures/structural_eq_untyped_empty_*_refused.vibe; do
   eqrefuse_name="$(basename "${eqrefuse_src%.vibe}")"
   eqrefuse_wasm="$eqtrapdir/$eqrefuse_name.wasm"
   VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
