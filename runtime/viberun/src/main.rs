@@ -1622,6 +1622,25 @@ fn run(args: Vec<String>) -> Result<i32> {
                 eprintln!("viberun: {e:?}");
             } else {
                 eprintln!("viberun: {e}");
+                // #2825: the not-granted stub's refusal has to REACH the user.
+                // wasmtime wraps a host-function error as "error while
+                // executing at wasm backtrace: ...", and the branch above is
+                // the only one that prints the chain -- so which capability
+                // was withheld was visible only to someone who already knew to
+                // set a debug variable. Measured: CI, with no RUST_BACKTRACE,
+                // showed the wasm backtrace alone, while a dev shell that had
+                // it set showed `Caused by: vibe capability withheld:
+                // fs_read_file` and the gate passed for that reason and no
+                // other (#2252: a test must not inherit the environment that
+                // decides its answer). Narrow on purpose: every other guest
+                // trap keeps rendering exactly as before.
+                for cause in e.chain() {
+                    let text = cause.to_string();
+                    if text.starts_with(CAPABILITY_WITHHELD_PREFIX) {
+                        eprintln!("viberun: {text}");
+                        break;
+                    }
+                }
                 // #644: a debug-break build (non-empty `linemap`) that traps
                 // mid-run -- not via an explicit `--break` pause -- still
                 // deserves a precise per-frame source line, not just the bare
@@ -4112,6 +4131,10 @@ fn vibe_dbg_line(mut caller: Caller<'_, HostState>, file_id: i32, line: i32) -> 
 // 59 fields the emitter can produce. A name in `VIBE_HOST_WITHHOLD` that this
 // module does not import is a no-op: withholding a capability a program never
 // asked for is not an error.
+/// One spelling, shared by the stub that produces the refusal and the renderer
+/// below that has to find it again in the error chain.
+const CAPABILITY_WITHHELD_PREFIX: &str = "vibe capability withheld: ";
+
 fn withheld_capabilities() -> std::collections::BTreeSet<String> {
     std::env::var("VIBE_HOST_WITHHOLD")
         .unwrap_or_default()
@@ -4142,7 +4165,7 @@ fn withhold_capability_imports(linker: &mut Linker<HostState>, module: &Module) 
         let name = import.name().to_string();
         // The message is built here and MOVED into the closure; `name` stays
         // put so it can still be borrowed for the import's own field name.
-        let refusal = format!("vibe capability withheld: {name}");
+        let refusal = format!("{CAPABILITY_WITHHELD_PREFIX}{name}");
         linker.func_new("vibe", &name, ty, move |_caller, _args, _results| {
             bail!("{refusal}")
         })?;

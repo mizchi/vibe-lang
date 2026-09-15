@@ -37,7 +37,18 @@ cd "$ROOT_DIR"
 
 # #2252: a self-test must not inherit the variable it is testing, nor the
 # runner flags a caller may have set for something else.
+#
+# RUST_BACKTRACE / VIBE_RUNNER_BACKTRACE are here because inheriting them once
+# already made this gate pass for the wrong reason. viberun renders a guest
+# error Display-only unless one of them is set, and wasmtime wraps a host
+# function's error as "error while executing at wasm backtrace: ..." -- so the
+# capability's name lived in the cause chain, which only the debug rendering
+# printed. This dev container exports RUST_BACKTRACE=1; CI does not. The gate
+# was green locally and red in CI on the same commit, and the difference was
+# the environment rather than the code. Unset, this asserts what a plain user
+# actually sees.
 unset VIBE_HOST_WITHHOLD VIBE_NODE_EXTRA_FLAGS VIBE_FORCE_RUN_INIT
+unset RUST_BACKTRACE VIBE_RUNNER_BACKTRACE
 
 # shellcheck source=scripts/resolve_stage2.sh
 . scripts/resolve_stage2.sh
