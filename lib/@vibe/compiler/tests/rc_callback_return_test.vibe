@@ -176,3 +176,53 @@ test "callback return: handled_return" {
 test "callback return: loop_return" {
   assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\n\nfn total(n: Node) -> Int {\n  match n {\n    Pair(a, b) => total(a) + total(b),\n    Leaf(v) => v\n  }\n}\n\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node {\n  let t = mk(xs)\n  if c { t } else { Leaf(9) }\n}\n\nfn pick(c: Bool) -> Int {\n  let xs = [Pair(Leaf(3), Leaf(4))]\n  let r = use2(c, (ys) -> loop { break Array::get(ys, 0) }, xs)\n  let filler = Pair(Leaf(7), Leaf(8))\n  total(r) * 10000 + total(Array::get(xs, 0)) * 100 + total(filler)\n}\n\nfn main() -> Int { pick(false) }\n", "loop_return", "90715")
 }
+
+// PR #2804: a mixed helper returns an owned value or an interior view.
+
+test "callback return: may_view_helper_discard" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node { let t = mk(xs); if c { t } else { Leaf(9) } }\nfn pick(c: Bool) -> Int { let xs = [Pair(Leaf(3), Leaf(4))]; let r = use2(c, (ys) -> choose(false, ys), xs); let filler = Pair(Leaf(7), Leaf(8)); total(r)*10000 + total(Array::get(xs,0))*100 + total(filler) }\nfn main() -> Int { pick(false) }", "may_view_helper_discard", "90715")
+}
+
+test "callback return: may_view_helper_keep" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn use2(c: Bool, mk: (Array[Node]) -> Node, xs: Array[Node]) -> Node { let t = mk(xs); if c { t } else { Leaf(9) } }\nfn pick(c: Bool) -> Int { let xs = [Pair(Leaf(3), Leaf(4))]; let r = use2(c, (ys) -> choose(false, ys), xs); let filler = Pair(Leaf(7), Leaf(8)); total(r)*10000 + total(Array::get(xs,0))*100 + total(filler) }\nfn main() -> Int { pick(true) }", "may_view_helper_keep", "70715")
+}
+
+test "callback result reclamation: may_view_helper" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> choose(c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_helper")
+}
+
+test "callback return: may_view_helper_local_owner" {
+  assert_lanes("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn main() -> Int { let f = () -> { let xs = [Pair(Leaf(3), Leaf(4))]; choose(false, xs) }; let r = f(); let filler = Pair(Leaf(7), Leaf(8)); total(r)*100 + total(filler) }", "may_view_helper_local_owner", "715")
+}
+
+test "callback result reclamation: may_view_helper_chain" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn relay3(c: Bool, xs: Array[Node]) -> Node { choose(c, xs) }\nfn relay2(c: Bool, xs: Array[Node]) -> Node { relay3(c, xs) }\nfn relay1(c: Bool, xs: Array[Node]) -> Node { relay2(c, xs) }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> relay1(c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); let direct = relay1(c, [Pair(Leaf(3), Leaf(4))]); total(r) + total(direct) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_helper_chain")
+}
+
+test "callback result reclamation: may_view_named_callback" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn forward(c: Bool, xs: Array[Node]) -> Node { choose(c, xs) }\nfn once(c: Bool) -> Int { let f = forward; let r = f(c, [Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_named_callback")
+}
+
+test "callback result reclamation: may_view_builtin_spelling" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn map(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> map(c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_builtin_spelling")
+}
+
+test "callback result reclamation: may_view_helper_cycle" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { Pair(Leaf(1), Leaf(2)) } else { Array::get(xs, 0) } }\nfn even(n: Int, c: Bool, xs: Array[Node]) -> Node { if n == 0 { choose(c, xs) } else { odd(n - 1, c, xs) } }\nfn odd(n: Int, c: Bool, xs: Array[Node]) -> Node { if n == 0 { choose(c, xs) } else { even(n - 1, c, xs) } }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> even(3, c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); total(r) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_helper_cycle")
+}
+
+test "rc-classify normalizes mixed helpers reached from callbacks" {
+  let helper = "fn choose(c: Bool, xs: Array[Int]) -> Int { if c { 9 } else { Array::get(xs, 0) } }\n"
+  let direct = rc_classify_source(String::concat(helper, "fn main() -> Int { choose(false, [3]) }"))
+  let direct_helper = Array::get(String::split(direct, "\n"), 0)
+  inspect(String::starts_with(direct_helper, "choose "), content = "true")
+  inspect(String::contains(direct_helper, "view_ret"), content = "true")
+  let callback = rc_classify_source(String::concat(helper, "fn main() -> Int { let f = (xs: Array[Int]) -> choose(false, xs); f([3]) }"))
+  let callback_helper = Array::get(String::split(callback, "\n"), 0)
+  inspect(String::starts_with(callback_helper, "choose "), content = "true")
+  inspect(String::contains(callback_helper, "view_ret"), content = "false")
+}
+
+test "callback result reclamation: may_view_helper_early_return" {
+  assert_reclaims("enum Node { Leaf(Int); Pair(Node, Node) }\nfn total(n: Node) -> Int { match n { Pair(a,b) => total(a) + total(b), Leaf(v) => v } }\nfn choose(c: Bool, xs: Array[Node]) -> Node { if c { return Array::get(xs, 0) }; Pair(Leaf(1), Leaf(2)) }\nfn once(c: Bool) -> Int { let f = (xs: Array[Node]) -> choose(c, xs); let r = f([Pair(Leaf(3), Leaf(4))]); let xs = [Pair(Leaf(3), Leaf(4))]; let direct = choose(c, xs); total(r) + total(direct) }\nfn main() -> Int { let mut i = 0; while i < 20000 { let r = once(i % 2 == 0); i = i + 1 }; 0 }", "may_view_helper_early_return")
+}

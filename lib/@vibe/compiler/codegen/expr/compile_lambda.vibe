@@ -12,17 +12,22 @@ import @vibe/compiler/core {
   bytebuf_push_section,
   bytebuf_push_vec_header,
   bytebuf_to_bytes,
+  expr_child_at,
+  expr_children_pop,
+  expr_children_push,
+  expr_children_top,
   leb128_encode_s64,
   leb128_encode_u32,
   sorted_names_of
 }
 
 import @vibe/core {
-  array_empty
+  array_empty, struct MutMap, struct MutSet
 }
 
 import @vibe/compiler/perceus {
   build_perceus_plan_pinned,
+  compute_borrow_returning_names,
   pa_is_alias_dup,
   pa_is_consume_mark,
   pa_is_drop,
@@ -41,7 +46,9 @@ import @vibe/compiler/codegen/common_analysis {
   collect_free_vars,
   collect_free_vars_indexed,
   collect_free_vars_indexed_self,
+  collect_free_vars_used_builtins,
   collect_strings_stmts,
+  compute_may_return_view_fns,
   emit_closure_call_tail,
   emit_closure_resolve,
   emit_i64_extend_i32_u,
@@ -270,20 +277,101 @@ fn strip_param_label_marker(n: String) -> String {
 export fn cl_own_return_stmts(stmts: Array[Stmt]) -> Array[String] {
   let valued = array_empty()
   let _ = ca_walk_stmts_valued(stmts, valued)
-  let names = sorted_names_of(valued)
+  let valued_names = sorted_names_of(valued)
+  let borrowed = sorted_names_of(compute_borrow_returning_names(stmts))
+  let mixed = array_empty()
+  for name in compute_may_return_view_fns(stmts) {
+    if bsearch_leftmost(borrowed, name) < 0 {
+      Array::push(mixed, name)
+    }
+  }
+  let candidates = sorted_names_of(mixed)
+  let fns: MutMap[String, Int] = MutMap::new_string()
+  let seen: MutSet[String] = MutSet::new_string()
+  let work: Array[Int] = []
+  let owned: Array[String] = []
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
-      SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, body)) => if bsearch_leftmost(names, n) >= 0 {
-        Array::set(stmts, i, SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
-      } else {
-        ()
+      SLet(_, _, n, _, EFn(_, _, _, _, _, _)) => {
+        MutMap::set(fns, n, i)
+        if bsearch_leftmost(valued_names, n) >= 0 {
+          cl_queue_owned_return(n, fns, seen, work, owned)
+        }
       },
       _ => ()
     }
     i = i + 1
   }
-  names
+  for stmt in stmts {
+    match stmt {
+      SLet(_, _, _, _, EFn(_, _, _, _, _, body)) => cl_queue_nested_callbacks(body, candidates, fns, seen, work, owned),
+      SLet(_, _, _, _, value) => cl_queue_nested_callbacks(value, candidates, fns, seen, work, owned),
+      SLetMut(_, _, value) => cl_queue_nested_callbacks(value, candidates, fns, seen, work, owned),
+      SLetPat(_, value) => cl_queue_nested_callbacks(value, candidates, fns, seen, work, owned),
+      SExpr(value) => cl_queue_nested_callbacks(value, candidates, fns, seen, work, owned),
+      _ => ()
+    }
+  }
+  // A may-view result cannot be retained uniformly: its fresh paths would
+  // leak. Normalize the helper's paths and publish the owning contract to
+  // every caller. Follow dependencies to a fixed point, including cycles.
+  let mut wi = 0
+  while wi < Array::length(work) {
+    let si = Array::get(work, wi)
+    match Array::get(stmts, si) {
+      SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, body)) => {
+        cl_queue_view_dependencies(EFn(tps, bounds, ps, ret, eff, body), candidates, fns, seen, work, owned)
+        Array::set(stmts, si, SLet(ex, is_rec, n, ty, EFn(tps, bounds, ps, ret, eff, cl_own_return(body))))
+      },
+      _ => ()
+    }
+    wi = wi + 1
+  }
+  sorted_names_of(owned)
+}
+
+fn cl_queue_owned_return(name: String, fns: MutMap[String, Int], seen: MutSet[String], work: Array[Int], owned: Array[String]) -> Unit {
+  if !MutSet::has(seen, name) {
+    match MutMap::get(fns, name) {
+      Some(si) => {
+        MutSet::add(seen, name)
+        Array::push(work, si)
+        Array::push(owned, name)
+      },
+      None => ()
+    }
+  }
+}
+
+fn cl_queue_view_dependencies(value: Expr, candidates: Array[String], fns: MutMap[String, Int], seen: MutSet[String], work: Array[Int], owned: Array[String]) -> Unit {
+  // Reuse the lexical free-name walk without its builtin-capture skip: a
+  // source helper can shadow an inlined builtin. Selecting extra helpers for
+  // an enclosing-local spelling is conservative; call emission still resolves
+  // that local first. Never infer a local callback's contract from this set.
+  let refs = collect_free_vars_used_builtins(value, array_empty(), array_empty())
+  for name in refs {
+    if bsearch_leftmost(candidates, name) >= 0 {
+      cl_queue_owned_return(name, fns, seen, work, owned)
+    }
+  }
+  ()
+}
+
+fn cl_queue_nested_callbacks(e: Expr, candidates: Array[String], fns: MutMap[String, Int], seen: MutSet[String], work: Array[Int], owned: Array[String]) -> Unit {
+  match e {
+    EFn(_, _, _, _, _, _) => cl_queue_view_dependencies(e, candidates, fns, seen, work, owned),
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      while i < end {
+        cl_queue_nested_callbacks(expr_child_at(i), candidates, fns, seen, work, owned)
+        i = i + 1
+      }
+      expr_children_pop(mark)
+    }
+  }
 }
 
 /// Compiler-internal return markers preserve the operand's representation.
@@ -304,47 +392,134 @@ export fn cl_return_operand(e: Expr) -> Expr {
 /// The Perceus plan sees this body, so the new owning bindings get their normal
 /// dup/drop budget. Capture discovery still reads the source body.
 export fn cl_own_return(e: Expr) -> Expr {
-  cl_own_return_into(e, array_empty())
+  cl_own_return_into(e, array_empty(), true)
 }
 
-fn cl_own_return_into(e: Expr, needed: Array[String]) -> Expr {
+fn cl_contains_return(e: Expr) -> Bool {
   match e {
-    EIdent(n, _) => {
-      Array::push(needed, n)
-      ECall(EIdent("__lambda_return_owned", -1), [e], -1)
-    },
-    EDot(_, _, _, _) => ECall(EIdent("__lambda_return_owned", -1), [e], -1),
-    ECall(_, _, _) => ECall(EIdent("__lambda_return_owned", -1), [e], -1),
-    EIf(c, t, f) => EIf(c, cl_own_return_into(t, needed), cl_own_return_into(f, needed)),
-    EMatch(s, arms) => {
-      let out = array_empty()
-      for arm in arms {
-        Array::push(out, (arm.0, cl_own_return_into(arm.1, needed)))
+    EReturn(_) => true,
+    EFn(_, _, _, _, _, _) => false,
+    _ => {
+      let mark = expr_children_push(e)
+      let end = expr_children_top()
+      let mut i = mark
+      let mut found = false
+      while i < end && !found {
+        found = cl_contains_return(expr_child_at(i))
+        i = i + 1
       }
-      EMatch(s, out)
-    },
-    EHandle(body, arms) => {
-      let out = array_empty()
-      for arm in arms {
-        Array::push(out, (arm.0, cl_own_return_into(arm.1, needed)))
-      }
-      EHandle(cl_own_return_into(body, needed), out)
-    },
-    ELet(n, v, b, off) => {
-      let body = cl_own_return_into(b, needed)
-      let value = if array_contains_str(needed, n) {
-        cl_own_binding_value(v, needed)
-      } else {
-        v
-      }
-      ELet(n, value, body, off)
-    },
-    ELetMut(n, v, b, off) => ELetMut(n, v, cl_own_return_into(b, needed), off),
-    ELetRec(n, v, b) => ELetRec(n, v, cl_own_return_into(b, needed)),
-    ESeq(a, b) => ESeq(a, cl_own_return_into(b, needed)),
-    EAssign(n, v, b) => EAssign(n, v, cl_own_return_into(b, needed)),
-    EAssignOp(n, op, v, b) => EAssignOp(n, op, v, cl_own_return_into(b, needed)),
-    _ => e
+      expr_children_pop(mark)
+      found
+    }
+  }
+}
+
+fn cl_own_return_list(items: Array[Expr], needed: Array[String]) -> Array[Expr] {
+  let out = array_empty()
+  for item in items {
+    Array::push(out, cl_own_return_into(item, needed, false))
+  }
+  out
+}
+
+fn cl_own_return_fields(fields: Array[(String, Expr)], needed: Array[String]) -> Array[(String, Expr)] {
+  let out = array_empty()
+  for field in fields {
+    Array::push(out, (field.0, cl_own_return_into(field.1, needed, false)))
+  }
+  out
+}
+
+fn cl_own_return_into(e: Expr, needed: Array[String], tail: Bool) -> Expr {
+  // An early return is a result path even inside a non-tail initializer,
+  // condition or argument. Leave the common return-free subtrees shared.
+  if !tail && !cl_contains_return(e) {
+    e
+  } else {
+    match e {
+      EReturn(value) => EReturn(cl_own_return_into(value, needed, true)),
+      EIdent(n, _) => {
+        Array::push(needed, n)
+        ECall(EIdent("__lambda_return_owned", -1), [e], -1)
+      },
+      EDot(obj, field, off, field_off) => {
+        let value = EDot(cl_own_return_into(obj, needed, false), field, off, field_off)
+        if tail {
+          ECall(EIdent("__lambda_return_owned", -1), [value], -1)
+        } else {
+          value
+        }
+      },
+      ECall(callee, args, off) => {
+        let already_owned = match callee {
+          EIdent("__lambda_return_owned", marker_off) => marker_off < 0,
+          _ => false
+        }
+        if already_owned {
+          e
+        } else {
+          let value = if cl_contains_return(e) {
+            ECall(cl_own_return_into(callee, needed, false), cl_own_return_list(args, needed), off)
+          } else {
+            e
+          }
+          if tail {
+            ECall(EIdent("__lambda_return_owned", -1), [value], -1)
+          } else {
+            value
+          }
+        }
+      },
+      EIf(c, t, f) => EIf(cl_own_return_into(c, needed, false), cl_own_return_into(t, needed, tail), cl_own_return_into(f, needed, tail)),
+      EMatch(s, arms) => {
+        let out = array_empty()
+        for arm in arms {
+          Array::push(out, (arm.0, cl_own_return_into(arm.1, needed, tail)))
+        }
+        EMatch(cl_own_return_into(s, needed, false), out)
+      },
+      EHandle(body, arms) => {
+        let out = array_empty()
+        for arm in arms {
+          Array::push(out, (arm.0, cl_own_return_into(arm.1, needed, tail)))
+        }
+        EHandle(cl_own_return_into(body, needed, tail), out)
+      },
+      ELet(n, v, b, off) => {
+        let body = cl_own_return_into(b, needed, tail)
+        let value = if array_contains_str(needed, n) {
+          cl_own_binding_value(v, needed)
+        } else {
+          cl_own_return_into(v, needed, false)
+        }
+        ELet(n, value, body, off)
+      },
+      ELetMut(n, v, b, off) => {
+        let body = cl_own_return_into(b, needed, tail)
+        ELetMut(n, cl_own_return_into(v, needed, false), body, off)
+      },
+      ELetRec(n, v, b) => ELetRec(n, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail)),
+      ESeq(a, b) => {
+        let body = cl_own_return_into(b, needed, tail)
+        ESeq(cl_own_return_into(a, needed, false), body)
+      },
+      EAssign(n, v, b) => EAssign(n, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail)),
+      EAssignOp(n, op, v, b) => EAssignOp(n, op, cl_own_return_into(v, needed, false), cl_own_return_into(b, needed, tail)),
+      ETuple(items) => ETuple(cl_own_return_list(items, needed)),
+      EArray(items) => EArray(cl_own_return_list(items, needed)),
+      ERecord(n, fields, args) => ERecord(n, cl_own_return_fields(fields, needed), args),
+      EMap(fields) => EMap(cl_own_return_fields(fields, needed)),
+      EWhile(c, body) => EWhile(cl_own_return_into(c, needed, false), cl_own_return_into(body, needed, false)),
+      ELoop(inits, body) => ELoop(cl_own_return_fields(inits, needed), cl_own_return_into(body, needed, false)),
+      EForIn(n, label, iter, body) => EForIn(n, label, cl_own_return_into(iter, needed, false), cl_own_return_into(body, needed, false)),
+      EBinOp(op, a, b, off) => EBinOp(op, cl_own_return_into(a, needed, false), cl_own_return_into(b, needed, false), off),
+      EUnaryOp(op, value) => EUnaryOp(op, cl_own_return_into(value, needed, false)),
+      ELabeledArg(n, label, value) => ELabeledArg(n, label, cl_own_return_into(value, needed, tail)),
+      EBreak(Some(value)) => EBreak(Some(cl_own_return_into(value, needed, false))),
+      EContinue(args) => EContinue(cl_own_return_list(args, needed)),
+      ESpread(value) => ESpread(cl_own_return_into(value, needed, false)),
+      _ => e
+    }
   }
 }
 
@@ -353,16 +528,16 @@ fn cl_own_binding_value(e: Expr, needed: Array[String]) -> Expr {
     EIdent(n, _) => {
       Array::push(needed, n); e
     },
-    EIf(_, _, _) => cl_own_return_into(e, needed),
-    EMatch(_, _) => cl_own_return_into(e, needed),
-    EHandle(_, _) => cl_own_return_into(e, needed),
-    ELet(_, _, _, _) => cl_own_return_into(e, needed),
-    ELetMut(_, _, _, _) => cl_own_return_into(e, needed),
-    ELetRec(_, _, _) => cl_own_return_into(e, needed),
-    ESeq(_, _) => cl_own_return_into(e, needed),
-    EAssign(_, _, _) => cl_own_return_into(e, needed),
-    EAssignOp(_, _, _, _) => cl_own_return_into(e, needed),
-    _ => e
+    EIf(_, _, _) => cl_own_return_into(e, needed, true),
+    EMatch(_, _) => cl_own_return_into(e, needed, true),
+    EHandle(_, _) => cl_own_return_into(e, needed, true),
+    ELet(_, _, _, _) => cl_own_return_into(e, needed, true),
+    ELetMut(_, _, _, _) => cl_own_return_into(e, needed, true),
+    ELetRec(_, _, _) => cl_own_return_into(e, needed, true),
+    ESeq(_, _) => cl_own_return_into(e, needed, true),
+    EAssign(_, _, _) => cl_own_return_into(e, needed, true),
+    EAssignOp(_, _, _, _) => cl_own_return_into(e, needed, true),
+    _ => cl_own_return_into(e, needed, false)
   }
 }
 
