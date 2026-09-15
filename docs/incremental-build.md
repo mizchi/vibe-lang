@@ -1942,10 +1942,59 @@ separate open question.
 That changes what promotion waits on. Consuming the artifact one unit at a
 time (#2507, #2510) bounds the live set, but a per-unit consumer still writes,
 checksums and decodes the same 179 MB, so it does not by itself recover a cost
-that is paid per byte. The measurement points somewhere more specific: the AST
-the artifact carries buys 133 ms of parsing, and an artifact holding only the
-checker's own result would be smaller at every stage. Whether that recovers
-the bulk is the next experiment, not a conclusion.
+that is paid per byte. Which bytes those are was then measured directly, by
+building three stage2 compilers that each drop one part of the artifact and
+running the same cost protocol on each. Every variant was first put through
+the edit rows above, so none of them is a variant that stopped invalidating
+correctly.
+
+| variant | artifact | cli warm wall | cli warm heap |
+|---|---:|---:|---:|
+| `off` (control) | 9 MB | 9.4 s | 1957 MB |
+| production `on` | 179 MB | 17.66 s (+87 %) | 3142 MB (+61 %) |
+| drop `parsed_stmts` | 138 MB | 16.78 s (+77 %) | 3116 MB (+59 %) |
+| … and the unread `CheckedProgram` fields | 95 MB | 13.54 s (+41 %) | 2731 MB (+40 %) |
+| … and the verbatim input identity | **24 MB** | **11.42 s (+22 %)** | 2563 MB (+31 %) |
+
+By bytes, the artifact is 23 % parsed AST, 24 % `CheckedProgram` fields that
+the reuse path never reads, 40 % a verbatim copy of its own input identity,
+and 13 % what is actually read back.
+
+Three separate findings, in the order the ladder produces them:
+
+- **The AST is not the problem.** Removing it recovers 0.9 s of the 8.2 s and
+  essentially no warm heap, which retires the hypothesis this paragraph used
+  to end with.
+- **Half the transport is written for a consumer that does not exist yet.**
+  `checked_module_artifact_outcome` reads exactly `final_env`,
+  `lowering_offsets`, `eq_offsets` and `eq_keys`; `checked_stmts`,
+  `type_defs`, `final_subst` and `typed_occurrences` are encoded, stored,
+  read back and dropped. They are there for the codegen unit of #2507, and
+  they are 24 % of the bytes.
+- **The artifact embeds its whole input identity**, which by
+  `checked_module_cache_input_identity` is this module's entire source plus
+  **every direct dependency's full TypeEnv text**. That makes the transport
+  superlinear in the dependency graph, and it is the single largest share at
+  40 %. Binding to a fingerprint of the identity instead keeps the edit rows
+  green, including the stale-artifact plants — though the current fingerprint
+  is the same weak two-modulo checksum, so a real version of this needs a
+  strong hash, which is the trade the verbatim copy was avoiding.
+
+The conclusion is about where the payoff can come from, not about a missing
+optimization. **Even at 24 MB the lane is still +22 % wall and +31 % heap**,
+and an artifact stripped that far carries nothing the conservative lane does
+not already persist in 9 MB. So this cache cannot pay for itself inside the
+checker: the work it saves there is 133 ms of parsing, and no arrangement of
+its contents makes the transport cheaper than that. Its value is precisely
+the payload that makes it expensive today — the checked statements the
+codegen unit would otherwise re-derive. **Promotion should therefore be
+decided together with #2507's phase 3, when something reads that payload, and
+not before.**
+
+One fix is worth taking on its own account either way:
+`module_artifact_checksum` is a byte-at-a-time loop with two i64 modulos per
+byte, and it is 1416 ms of the warm `on` profile — the largest single row —
+independent of what the artifact ends up carrying.
 
 ### Host filesystem ingestion telemetry
 

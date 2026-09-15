@@ -151,12 +151,22 @@ modulos per byte over 179 MB of artifacts, and the heap splits +805 MB on the
 encode side (cold, which loads nothing) against +1185 MB on the decode side
 (warm). The same closure's persistent cache is 8.9 MB off and 179 MB on.
 
-So the cache stays default-off on evidence rather than on caution. Note what
-that evidence does **not** say: consuming the artifact one unit at a time
-(#2507, #2510) bounds the live set but still writes, checksums and decodes the
-same bytes, so it does not by itself recover a cost paid per byte. What the
-numbers point at is the artifact's contents — the AST it carries is what buys
-those 133 ms.
+So the cache stays default-off on evidence rather than on caution, and three
+stage2 variants that each drop one part of the artifact say where its bytes
+go: 23 % parsed AST, 24 % `CheckedProgram` fields the reuse path never reads
+back (`checked_module_artifact_outcome` takes `final_env` and the offsets and
+nothing else), 40 % a verbatim copy of the input identity — which holds this
+module's whole source plus every direct dependency's full TypeEnv text, so the
+transport is superlinear in the dependency graph — and 13 % what is read.
+
+Stripping all three lands at 24 MB and **+22 % wall / +31 % heap**, still a
+loss, and an artifact stripped that far carries nothing the conservative lane
+does not persist in 9 MB. That is the useful conclusion: this cache cannot pay
+for itself inside the checker, because the work it saves there is 133 ms of
+parsing. Its value is exactly the payload that makes it expensive — the
+checked statements a codegen unit would otherwise re-derive — so promotion
+belongs with #2507's phase 3, when something reads that payload. The full
+ladder is in [incremental-build.md](incremental-build.md).
 
 When this cache is enabled, `VIBE_INCREMENTAL_TELEMETRY_OUT` uses schema 5 and
 reports `modules_reused_checked_module_artifact` separately from conservative
