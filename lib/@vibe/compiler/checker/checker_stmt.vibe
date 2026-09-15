@@ -1506,6 +1506,35 @@ fn derive_name_is_known(name: String) -> Bool {
 /// `variants` is scanned rather than the registered `defs` entry because
 /// both callers push their TDEnum before binding, which would make every
 /// variant its own duplicate.
+/// #2475: a declared type may not take a builtin's spelling.
+///
+/// The checker resolves a type NAME builtin-first
+/// (`resolve_type_expr_core_shadowed` tries `resolve_builtin` before
+/// `find_typedef`), so in a program declaring `struct Int { value: String }`
+/// the annotation `Int` is unconditionally the BUILTIN. Measured on main:
+///
+///   fn bump(x: Int) -> Int { x + 1 }            accepted -- the builtin
+///   fn label(s: Int) -> String { s.value }      refused, "field access
+///                                               `.value` on a non-struct value"
+///   let s = Int::{ value: "ab" }; s.value       accepted -- the struct,
+///                                               reachable by inference only
+///
+/// So the declaration introduces a type nobody can write down, and the
+/// diagnostic for trying says something else entirely -- it reports the
+/// BUILTIN's shape without ever saying the name was taken. Refusing the
+/// declaration is what makes the two registries agree: `dtd_eq_type_owners`
+/// treats the spelling as the struct's while the checker treats it as the
+/// builtin's, and #2475 is the equality channel failing between them.
+///
+/// The message names the edit rather than the mechanism, and says why the
+/// type is unusable, because "rename it" alone reads as a style rule.
+fn builtin_spelling_decl_error(kind: String, name: String, errors: Array[String]) -> Unit {
+  match resolve_builtin(name) {
+    Some(_) => Array::push(errors, String::concat("rename this ", String::concat(kind, String::concat(": `", String::concat(name, String::concat("` is a builtin type's name, and a type annotation always resolves it to the builtin -- so this ", String::concat(kind, " could never be named in one"))))))),
+    None => ()
+  }
+}
+
 fn duplicate_ctor_errors(kind: String, name: String, variants: Array[(String, Array[TypeExpr])], errors: Array[String]) -> Unit {
   let seen = array_empty()
   let mut i = 0
@@ -3040,6 +3069,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       },
       SEnum(exported, name, params, variants, enum_derives) => {
         validate_derives(enum_derives, errors)
+        builtin_spelling_decl_error("enum", name, errors)
         duplicate_ctor_errors("enum", name, variants, errors)
         let param_len = Array::length(params)
         let param_var_ids = array_empty()
@@ -3272,6 +3302,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
       },
       SStruct(exported, name, field_defs, derives, mut_fields, tparams) => {
         validate_derives(derives, errors)
+        builtin_spelling_decl_error("struct", name, errors)
         let resolved_fields = array_empty()
         let field_tes = array_empty()
         // #2125: this struct's slot is already claimed before its own field
@@ -3372,6 +3403,7 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
         }, bind_fn_return(env5, name, CtStruct(name))), s, c)
       },
       STypeAlias(exported, name, params, te) => {
+        builtin_spelling_decl_error("type alias", name, errors)
         // #2290: map-key and builtin-arity validation is deferred to
         // check_completed_decl_map_keys. At this point a later alias is not
         // in `defs`, so judging ownership here made valid programs depend on
