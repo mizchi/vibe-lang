@@ -24,6 +24,13 @@
 // - Medians over rounds, and every sample is kept in the report.
 // - Both lanes must emit the same wasm. A cheaper lane that emits different
 //   bytes has not been measured, it has been disqualified.
+// - Every sample must be seen to be what it is called. "warm" that reused
+//   nothing is a second cold build, and the ratio then describes the machine
+//   rather than the cache; "cold" that reused something was never cold. Both
+//   are read from the compiler's own telemetry rather than inferred from the
+//   timings, because a timing cannot tell the two apart -- which is #2825 §3
+//   (a cache that replayed nothing while every published number looked healthy)
+//   reproduced inside the tool built to catch it (#2836 §2).
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -32,6 +39,8 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
 import { parseMemory, parsePeakRss } from "./compare_compiler_memory.mjs";
+import { parseIncrementalTelemetry } from "./edit_cycle_kpi.mjs";
+import { readModuleArtifacts } from "./cache_artifacts.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
@@ -57,7 +66,7 @@ const median = values => {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
-const cases = [
+const allCases = [
   // The compiler's own closure through its CLI entry: 219 planned modules,
   // the workload every incremental claim in docs/incremental-build.md is
   // ultimately about.
@@ -66,7 +75,32 @@ const cases = [
   // scale rather than to one outlier program.
   { name: "closure", input: "lib/@vibe/compiler/tests/codegen_lexer_test.vibe", entry: "__no_entry__" },
 ];
+// `--cases closure` narrows the corpus. The reason it exists is the companion
+// self-test: the assertions below have to be shown to FAIL, once per mutation,
+// and the `cli` closure costs ~20s a compile (#2248 -- a gate is worth nothing
+// until it has been made to fail, and a red test nobody can afford to run is
+// not one). Nothing else passes it; a full run is still every case.
+const selected = flag("--cases", "");
+const cases = selected ? selected.split(",").map(name => {
+  const corpus = allCases.find(entry => entry.name === name);
+  if (!corpus) throw new Error(`--cases: no such case ${JSON.stringify(name)} (have ${allCases.map(c => c.name).join(", ")})`);
+  return corpus;
+}) : allCases;
 const lanes = ["off", "on"];
+
+// What each lane must be SEEN to do before a sample from it is accepted.
+//
+// `off` is not an empty control: it is the conservative fingerprint plus
+// TDRE9, today's default reuse and exactly what promoting this cache has to
+// beat. So a warm `off` run that reused nothing disqualifies its sample just
+// as a warm `on` run that replayed no artifact does -- in both cases the pair
+// being compared is cold against cold.
+const laneContract = {
+  off: { schema: 4, class: "conservative fingerprint + dependency transport env",
+    reused: t => t.modules_reused_conservative_fingerprint + t.modules_reused_dependency_transport_env },
+  on: { schema: 5, class: "checked-module artifact",
+    reused: t => t.modules_reused_checked_module_artifact },
+};
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("VIBE_") && !k.startsWith("NODE_")));
 Object.assign(env, {
@@ -106,12 +140,15 @@ for (let round = 0; round < rounds; round++) {
         rmSync(output, { force: true });
         rmSync(`${output}.diag`, { force: true });
         const rssFile = join(scratch, `${name}.time`);
+        const telemetryFile = join(scratch, `${name}.telemetry.json`);
+        rmSync(telemetryFile, { force: true });
         const timeArgs = process.platform === "darwin" ? ["-l", "-o", rssFile] : ["-f", "peak_rss_kib=%M", "-o", rssFile];
         const command = ["bash", runner, "--invoke", "cli_main", resolve(stage2), corpus.input, output, corpus.entry];
         const start = performance.now();
         const result = spawnSync(timeBinary ?? command[0],
           timeBinary ? [...timeArgs, ...command] : command.slice(1), {
-          cwd: root, env: { ...env, VIBE_CHECKED_MODULE_CACHE: lane, VIBE_BUILD_CACHE_DIR: cache },
+          cwd: root, env: { ...env, VIBE_CHECKED_MODULE_CACHE: lane, VIBE_BUILD_CACHE_DIR: cache,
+            VIBE_INCREMENTAL_TELEMETRY_OUT: telemetryFile },
           encoding: "utf8", timeout: 900_000, maxBuffer: 64 * 1024 * 1024,
         });
         const wall_ms = performance.now() - start;
@@ -124,10 +161,30 @@ for (let round = 0; round < rounds; round++) {
         if (previous === undefined) outputs.set(corpus.name, digest);
         else if (previous !== digest) throw new Error(`${corpus.name}: ${lane}/${temperature} emitted different wasm than an earlier sample`);
         const memory = parseMemory(result.stderr ?? "");
+        const contract = laneContract[lane];
+        if (!existsSync(telemetryFile)) throw new Error(`${name}: the compile emitted no incremental telemetry`);
+        const telemetry = parseIncrementalTelemetry(readFileSync(telemetryFile, "utf8"), telemetryFile);
+        if (telemetry.schema !== contract.schema) {
+          throw new Error(`${name}: telemetry schema ${telemetry.schema}, expected ${contract.schema} on the ${lane} lane`);
+        }
+        const reused = contract.reused(telemetry);
+        const shape = JSON.stringify(telemetry);
+        if (temperature === "cold") {
+          // The directory was created empty a few lines up, so anything reused
+          // here came from somewhere this protocol does not control.
+          if (reused !== 0) throw new Error(`${name}: the cold run reused ${reused} module(s) (${contract.class}) from a cache directory this run created empty; it is not a cold sample: ${shape}`);
+          if (lane === "on" && readModuleArtifacts(cache).length === 0) {
+            throw new Error(`${name}: the cold run published no checked-module artifact, so nothing warm can consume one: ${shape}`);
+          }
+        } else if (reused === 0) {
+          throw new Error(`${name}: the warm run reused nothing (${contract.class}), so this pair is cold against cold and its ratio is not about the cache: ${shape}`);
+        }
         samples.push({ round, case: corpus.name, lane, temperature, wall_ms,
           heap_ptr_bytes: memory.heap_ptr_bytes, linear_memory_bytes: memory.linear_memory_bytes,
-          peak_rss_bytes: timeBinary ? parsePeakRss(readFileSync(rssFile, "utf8"), process.platform) : null });
-        console.log(`[checked-module-cost] ${name} wall=${(wall_ms / 1000).toFixed(2)}s heap=${(memory.heap_ptr_bytes / 1e6).toFixed(0)}MB`);
+          peak_rss_bytes: timeBinary ? parsePeakRss(readFileSync(rssFile, "utf8"), process.platform) : null,
+          modules_planned: telemetry.modules_planned, modules_rechecked: telemetry.modules_rechecked,
+          modules_reused_in_lane_class: reused });
+        console.log(`[checked-module-cost] ${name} wall=${(wall_ms / 1000).toFixed(2)}s heap=${(memory.heap_ptr_bytes / 1e6).toFixed(0)}MB reused=${reused}/${telemetry.modules_planned}`);
       }
     }
   }
@@ -156,6 +213,9 @@ const report = { schema: "checked_module_cache_cost", version: 1, created_at: ne
   cpu: cpus()[0]?.model, host_memory_bytes: totalmem(),
   selectors: Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("VIBE_"))),
   cache: "one isolated VIBE_BUILD_CACHE_DIR per (round, case, lane); cold then warm inside it; OS cache uncontrolled",
+  reuse_evidence: Object.fromEntries(lanes.map(lane => [lane,
+    `cold must reuse 0; warm must reuse >0 of class "${laneContract[lane].class}"` +
+    (lane === "on" ? "; cold must also publish a checked-module artifact" : "")])),
   peak_rss: timeBinary ? `measured with ${timeBinary}` : "NOT MEASURED: no time(1) on this host; heap_ptr only",
   output_equivalence: Object.fromEntries(outputs), summary, samples };
 writeFileSync(join(scratch, "report.json"), JSON.stringify(report, null, 2) + "\n");
