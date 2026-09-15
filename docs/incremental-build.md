@@ -2179,7 +2179,9 @@ fold withheld the guards persists nothing — measured on the CLI closure, the
 cache directory goes from 16 MB to 9 MB with zero artifact files, exactly the
 `off` lane's size, and the emitted wasm is byte-identical. What that fix does
 NOT do is make a folded build replayable; for that, the fold's own result has
-to become part of the cache identity, which is the remaining half of #2818 and
+to become part of the cache identity — or, per the ADR-0088 amendment that
+supersedes that approach, for the fold to stop happening at compile time at
+all (#2825). That is the remaining half, and it is
 the same shape the capability discussion below arrives at independently. A
 guardless artifact written before the fix is still read and refused until
 something replaces it.
