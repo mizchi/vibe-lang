@@ -14428,6 +14428,41 @@ fn eq_name_is_invisible_nominal(n: String) -> Bool {
   }
 }
 
+/// #2851: is a comparator reference for `n` one NOTHING can ever mint?
+///
+/// `eq_name_is_invisible_nominal` admits two different things, and the
+/// difference decides whether emitting `<n>::equals` is sound. A declared
+/// nominal this statement list cannot see is fine -- some module declares it,
+/// so the link mints the body from the concatenated program (#2631/#2634). A
+/// type with NO source declaration anywhere is not: nothing will ever supply
+/// `HostStream::equals`, and the reference dies unresolved.
+///
+/// `compiler_owned_type_arity` alone is the WRONG key, and Codex on #2855
+/// caught it: that registry records type-constructor ARITIES, not which names
+/// a module declares, and six of its entries are declared in source --
+/// `Attempt` (`lib/@vibe/core/attempt.vibe`), `MutMap`
+/// (`lib/@vibe/core/hashmap.vibe`), and `TaskGroup` / `TaskHandle` / `Sender`
+/// / `Receiver` (`lib/@vibe/concurrent/concurrent.vibe`). Their comparators
+/// ARE mintable, so trapping them would turn a working structural comparison
+/// into a trap -- a regression, where the bug being fixed is a hard error.
+///
+/// So the set is the registry MINUS those, measured by scanning `lib/` for
+/// `struct` / `enum` / `type` declarations of each registry name (generated
+/// bundles excluded, since they restate declarations rather than make them).
+/// `dtd_eq_type_owners` is consulted as well, so a declaration this run CAN
+/// see -- a shadowing test fixture, or a source declaration added later --
+/// keeps its deferral without this list having to be updated first.
+fn eq_name_is_unmintable_builtin(n: String) -> Bool {
+  if str_array_contains(dtd_eq_type_owners, n) {
+    false
+  } else {
+    match compiler_owned_type_arity(n) {
+      Some(_) => n == "HostStream" || n == "ByteStream" || n == "StringBuilder" || n == "PromptText" || n == "Future" || n == "Task" || n == "MutList" || n == "Array" || n == "Option" || n == "StringMap" || n == "ArrayBuilder" || n == "FixedArray" || n == "FrozenArray" || n == "MutBytes" || n == "MapBuilder",
+      None => false
+    }
+  }
+}
+
 /// #2634: the synthesis REQUESTS a run made -- the container comparators and
 /// generic-struct specializations some `==` site asked for, by name.
 ///
@@ -15300,6 +15335,30 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       // `Unit` need no marker: their words are 0/1-sized, and a bit-different
       // pair can only be `false` vs `true`, which the fallback keeps unequal.
       EBinOp("==", EBinOp("+", lhs, EInt(0), -1), EBinOp("+", rhs, EInt(0), -1), -1)
+    } else if eq_name_is_invisible_nominal(n) && eq_name_is_unmintable_builtin(n) {
+      // #2851: the arm below emits `<n>::equals` as a reference the LINK
+      // resolves against the module that DECLARES `n`. That is sound for a
+      // declared struct or enum this statement list cannot see -- some module
+      // declares it, so some module mints the body. It is not sound for a name
+      // the COMPILER owns: no module declares `HostStream`, so nothing can
+      // ever mint `HostStream::equals` and the reference dies unresolved.
+      //
+      // Measured on `8c966c3`, `struct Holder { s: HostStream }` ALONE --
+      // never instantiated, never compared, no `==` in the program -- failed
+      // to compile with `unknown name: HostStream::equals`, because the
+      // comparator every struct gets walked the field into the arm below.
+      // `ByteStream`, `StringBuilder` and `Future[Int]` failed the same way;
+      // `Array[Int]` is the control that has a real arm and compiles. That is
+      // what makes `wasi-p3-gate`'s `stream_for_proj` probe red on main.
+      //
+      // The comparator is still SYNTHESIZED, and that matters: #2631/#2634
+      // require the body a module emits not to depend on how much of the
+      // field's type it can see, so that two modules cannot mint one name for
+      // two bodies (`desugar_trait_dicts_module_test` pins it). Only the
+      // unmintable leaf changes, and it fails closed -- a `HostStream` has no
+      // content to compare, so a comparison that reaches it traps rather than
+      // answering by reference.
+      eq_trap()
     } else if eq_name_is_invisible_nominal(n) {
       if str_array_contains(dtd_eq_invisible_nominals, n) {
         ()
@@ -15874,7 +15933,7 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
     // not the other and the two sets looked disjoint. A measurement that
     // covers one arm of a dispatch reports the arm it does not cover as
     // absence.
-    if eq_name_is_invisible_nominal(n) && !str_array_contains(dtd_eq_invisible_nominals, String::concat(n, "[]")) {
+    if eq_name_is_invisible_nominal(n) && !eq_name_is_unmintable_builtin(n) && !str_array_contains(dtd_eq_invisible_nominals, String::concat(n, "[]")) {
       Array::push(dtd_eq_invisible_nominals, String::concat(n, "[]"))
     } else {
       ()
@@ -15909,7 +15968,21 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
     // formal has no declaration to be invisible TO, so it must not take this
     // arm; recording and emitting have to agree about that or the reference is
     // minted for something the link cannot build either.
-    if eq_name_is_invisible_nominal(n) && Array::length(args) > 0 {
+    if eq_name_is_invisible_nominal(n) && eq_name_is_unmintable_builtin(n) {
+      // #2851, the `TyApp` twin. The paragraph above records that a marked
+      // FORMAL head applied to arguments emitted `__Vfp_F::equals__N3_Int` --
+      // "a name nothing binds, which reached codegen as an internal compiler
+      // error" -- and that recording and emitting must agree about excluding
+      // it. A head the COMPILER owns is the same case for the same reason: no
+      // module declares `Future`, so no link can mint
+      // `Future::equals__N3_Int`. Measured on `8c966c3`, `struct Holder { s:
+      // Future[Int] }` alone failed to compile with exactly that name.
+      //
+      // `eq_trap()` rather than the raw `==` below, because falling through
+      // would compare the aggregate BY REFERENCE -- the silent answer this
+      // whole area exists to keep out, and worse than the trap.
+      eq_trap()
+    } else if eq_name_is_invisible_nominal(n) && Array::length(args) > 0 {
       let canonical_args = for arg in args {
         eq_expand_alias_ty(arg)
       }
