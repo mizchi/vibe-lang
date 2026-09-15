@@ -3189,12 +3189,26 @@ fn dtd_show_witness_method() -> String {
 /// #2745: the interpolated value's type is a formal bound by a NESTED binder, so
 /// its values are erased and nothing here can render them.
 ///
-/// A TOP-LEVEL generic does not reach this: it is specialized per instantiation
-/// before this pass, so `infer_arg_type_name` answers with the concrete type and
-/// either a renderer is found or #1445 refuses by name. Measured on main at
-/// b4ccb37, `fn show_any[T](a: T) -> String { "\{a}" }` applied to a `Qt` is
-/// refused with "cannot interpolate a value of type `Qt`", and applied to `7`
-/// prints `7`.
+/// A TOP-LEVEL generic does not reach this -- but NOT because it is specialized.
+/// This paragraph said "it is specialized per instantiation before this pass"
+/// until #2840, and that is false: there is no monomorphization pass
+/// (`codegen/expr/compile_call.vibe` states it outright, and `monoify.vibe` is
+/// dead code, imported by nothing but its own test).
+///
+/// What actually happens is narrower. The body in the measurement below is
+/// exactly `__to_string(a)`, which makes it a show SHIM, so #2468 rewrites the
+/// CALL SITE to the direct spelling -- and there the concrete argument is still
+/// visible, so `infer_arg_type_name` answers with the concrete type and either a
+/// renderer is found or #1445 refuses by name. Measured on main at b4ccb37,
+/// `fn show_any[T](a: T) -> String { "\{a}" }` applied to a `Qt` is refused with
+/// "cannot interpolate a value of type `Qt`", and applied to `7` prints `7`.
+///
+/// One statement more and the body is not a shim, nothing rewrites the call site,
+/// and the SAME top-level generic prints the representation. Measured on
+/// `26e9d8b`, `{ let pre = "v="; String::concat(pre, "\{a}") }` applied to a `Pt`
+/// that HAS an impl prints `v=232`, the tagged pointer. So the top-level case is
+/// NOT covered; it is #2840, and the distinction matters here because the false
+/// version of this sentence is why nobody looked.
 ///
 /// A nested lambda is not specialized, so the same interpolation prints the
 /// representation: `272`, the tagged pointer, for a struct. That is the pointer
