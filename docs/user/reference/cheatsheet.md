@@ -219,7 +219,8 @@ fn reserved_values() -> Array[Int] {
 The capacity expression is evaluated once and must be an `Int`. Negative
 values and values above 536,870,908 trap before narrowing to wasm32; an
 allocation must also fit available linear memory. Growth that would overflow
-the buffer size or heap address traps before changing the array. Each array has
+the buffer size or heap address traps before changing the array. Bump and GC
+allocations also leave room for the memory-growth guard page. Each array has
 one element type, inferred from its uses or an annotation, just like `[]`.
 
 If a trait implementation requires another trait on the elements
@@ -227,7 +228,11 @@ If a trait implementation requires another trait on the elements
 for example `let xs: Array[Int] = Array::with_capacity(128)`. Trait lowering
 does not recover the element type from later pushes. When it cannot construct
 the required element witness, the compiler rejects the call with an annotation
-diagnostic.
+diagnostic. A first-class alias such as `let reserve = Array::with_capacity`
+also needs an annotated result (`let xs: Array[Int] = reserve(128)`) before a
+trait call, even for an unbounded `impl [E] Trait for Array[E]`: the alias's
+result head is not recovered by trait lowering. Unresolved receiver types
+produce an annotation diagnostic before code generation.
 
 `Array::truncate(xs, n)` retains the allocated capacity for subsequent pushes.
 It currently does not release the removed elements' RC references: saved

@@ -49,7 +49,7 @@ export fn emit_array_double_capacity(b: Bytes, count_local: Int, capacity_local:
   emit_local_set(b, capacity_local)
 }
 
-/// A headerless array buffer must fit above the current wasm32 heap frontier.
+/// A headerless array buffer must leave space for the memory-growth guard page.
 /// RC allocations use the checked reusable allocator instead of this bump check.
 export fn emit_array_heap_growth_check(b: Bytes, capacity_local: Int) -> Unit {
   emit_global_get(b, 0)
@@ -59,7 +59,7 @@ export fn emit_array_heap_growth_check(b: Bytes, capacity_local: Int) -> Unit {
   emit_i64_const(b, 8)
   emit_i64_mul(b)
   emit_i64_add(b)
-  emit_i64_const(b, 4294967295)
+  emit_i64_const(b, 4294901759)
   emit_i64_gt_s(b)
   emit_if_void(b)
   bytebuf_push(b, 0)
@@ -142,12 +142,14 @@ export fn gen_arr_with_capacity_body(enable_rc: Bool, rc_alloc_idx: Int, print_s
     emit_i32_add(b)
     emit_local_set(b, 1)
   } else {
+    // The grow helper adds 65536 before computing its page count in i32.
+    // Reject the final page before advancing the frontier.
     emit_global_get(b, 0)
     emit_i64_extend_i32_u(b)
     emit_local_get(b, 3)
     emit_i64_extend_i32_u(b)
     emit_i64_add(b)
-    emit_i64_const(b, 4294967295)
+    emit_i64_const(b, 4294901759)
     emit_i64_gt_s(b)
     emit_if_void(b)
     capacity_abort(b, print_str_idx, error_fat)

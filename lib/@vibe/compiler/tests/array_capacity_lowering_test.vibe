@@ -61,6 +61,23 @@ test "reserved arrays dispatch a generic Array trait witness" {
   run_capacity_linear(source, "trait", "11")
 }
 
+test "unresolved capacity aliases require a result annotation for trait calls" {
+  let prefix = "trait Measured { measure(Self) -> Int } impl [T] Measured for Array[T] { measure(self: Array[T]) -> Int { Array::length(self) + 10 } } fn measure[T: Measured](value: T) -> Int { T::measure(value) } export fn main() -> Int { "
+  for bindings in [
+    "let reserve = Array::with_capacity;",
+    "let first = Array::with_capacity; let reserve = first;"
+  ] {
+    let source = prefix + bindings + " let xs = reserve(4); Array::push(xs, 7); measure(xs) }"
+    let message = handle {
+      let _ = compile_wasi(source, "main")
+      ""
+    } with { Exception::Throw(msg) => msg }
+    assert(String::starts_with(message, "add an explicit type annotation"))
+    assert(String::contains(message, "Measured"))
+    run_capacity_linear(prefix + bindings + " let xs: Array[Int] = reserve(4); Array::push(xs, 7); measure(xs) }", "alias_trait", "11")
+  }
+}
+
 test "a shadowed capacity constructor retains its own trait witness" {
   let source = "trait Measured { measure(Self) -> Int } impl Measured for Int { measure(self: Int) -> Int { self + 20 } } fn measure[T: Measured](value: T) -> Int { T::measure(value) } fn Array::with_capacity(n: Int) -> Int { n + 1 } export fn main() -> Int { let value = Array::with_capacity(4); measure(value) }"
   run_capacity_linear(source, "shadow_trait", "25")
@@ -199,6 +216,14 @@ test "capacity rejects negative and wide arguments before narrowing" {
   for arg in ["-1", "536870909", "1 << 40", "0 - (1 << 40)"] {
     run_capacity_probe("export fn main() -> Int { Array::length(Array::with_capacity(" + arg + ")) }", "bounds", "Array::with_capacity: use a capacity between 0 and 536870908", false, true)
   }
+}
+
+test "capacity leaves room for the memory-growth guard page" {
+  let source = "export fn main() -> Int { Array::length(Array::with_capacity(128)) }"
+  Fs::write_bytes("/tmp/_array_capacity_guard_0.wasm", compile_wasi(source, "main"))
+  Fs::write_bytes("/tmp/_array_capacity_guard_3.wasm", compile_wasi_gc(source, "main"))
+  let output = sh_lines("node --experimental-wasm-exnref lib/@vibe/compiler/tests/array_capacity_growth_test.mjs --guard /tmp/_array_capacity_guard_")
+  assert(String::join(output, "") == "ok")
 }
 
 test "capacity prevents the heap pointer from wrapping" {
