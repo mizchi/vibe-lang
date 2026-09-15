@@ -12561,7 +12561,7 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                         // (merged) program declares under that name -- the
                         // struct dispatch would call `T::equals` on erased
                         // operands and read garbage.
-                        None => if struct_set_has(struct_sets, t) && !formal_in_scope(t) && str_array_contains(dtd_eq_no_comparator, t) {
+                        None => if struct_set_has(struct_sets, t) && !formal_in_scope(t) && str_array_contains(dtd_eq_unsafe_types, t) {
                           // #2851: this ladder names the comparator directly
                           // rather than going through `eq_for_typed`, so it
                           // needs the same agreement with the generator.
@@ -13652,14 +13652,6 @@ fn ty_mentions_owned_scalar(t: TypeExpr) -> Bool {
 ///
 /// Truncated at the same entry point as `dtd_eq_type_owners`, so a refusal can
 /// never outlive the one program it describes.
-/// #2851: declarations `desugar_derives` generated NO comparator for, because
-/// `eq_unsafe_types_fill` excluded them. Written by the generator, read by the
-/// `==` dispatch sites -- one writer and one reader, so the two cannot
-/// disagree about whether `<T>::equals` exists. Asking the question twice is
-/// what produced the bug: the exclusion was computed correctly and then
-/// ignored, and the call reached codegen unresolved.
-let dtd_eq_no_comparator: Array[String] = empty_str_array()
-
 let dtd_eq_refusals: Array[String] = empty_str_array()
 
 /// The fail-closed expression itself, for the rungs that stay a RUNTIME trap.
@@ -14518,7 +14510,6 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_type_aliases, 0)
   Array::truncate(dtd_eq_type_owners, 0)
   Array::truncate(dtd_eq_refusals, 0)
-  Array::truncate(dtd_eq_no_comparator, 0)
   Array::truncate(dtd_eq_nonstandard_builtin_enums, 0)
   Array::truncate(dtd_eq_nonenum_builtin_heads, 0)
   Array::truncate(dtd_eq_specializations, 0)
@@ -14619,9 +14610,21 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
 /// `8c966c3` that wrapper answers 42, and it must keep answering.
 ///
 /// A declaration with a source comparator is comparable, so it never enters
-/// the set and nothing containing it inherits the mark. The generator skips it
-/// for the OTHER reason (`dtd_source_op_defined`), which is why it also never
-/// reaches `dtd_eq_no_comparator`.
+/// the set and nothing containing it inherits the mark. That is also what lets
+/// membership in this ONE set mean "no comparator exists for this name", which
+/// is what both `==` dispatch sites read: the generator skips exactly these,
+/// and it skips a source-supplied comparator for the other reason
+/// (`dtd_source_op_defined`) without the name entering here.
+///
+/// Reading this set rather than one the generator records is what makes the
+/// PER-MODULE lane work (Codex on #2855, confirmed by CI). `desugar_derives`
+/// iterates only to `own_end`, so anything it records covers own declarations
+/// only; a dependency type supplied through `ctx` got no comparator in its own
+/// run and would not be in such a record, and the dispatch would emit
+/// `Dep::equals` for it. Measured on the production split build:
+/// `internal compiler error: `PerceusAction::equals` (local, @call) reached
+/// code generation unresolved`. This fixpoint sees `ctx` declarations, so the
+/// dispatch refuses there instead.
 /// One pass can only see the names
 /// already marked, so `struct Deep { o: Outer }` needs a second one; the loop
 /// runs until a pass adds nothing, bounded by the number of declarations
@@ -15297,7 +15300,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
   match fty {
     TyName(n) => if n == "__EqAliasCycle" {
       eq_trap()
-    } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) && str_array_contains(dtd_eq_no_comparator, n) {
+    } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) && str_array_contains(dtd_eq_unsafe_types, n) {
       // #2851: the dispatch and the generator must agree about whether a
       // comparator EXISTS, or this emits a call to a name nothing defines.
       // `desugar_derives` skips a declaration in `dtd_eq_unsafe_types`, so
@@ -17779,17 +17782,9 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // (which ends in `eq_unsafe_types_fill`) is called immediately above
         // `desugar_derives`, so the second-order case (`struct Deep { o:
         // Holder }`) is marked by the time this reads the set.
-        if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) {
-          if str_array_contains(dtd_eq_unsafe_types, name) {
-            if str_array_contains(dtd_eq_no_comparator, name) {
-              ()
-            } else {
-              Array::push(dtd_eq_no_comparator, name)
-            }
-          } else {
-            dtd_fresh_reset_for_decl()
-            Array::push(gen, gen_eq_fn(name, fields, known_types))
-          }
+        if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) && !str_array_contains(dtd_eq_unsafe_types, name) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_eq_fn(name, fields, known_types))
         } else {
           ()
         }
@@ -17840,17 +17835,9 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // the `==` dispatch resolves enum operands too -- and the same #2851
         // exception: `eq_unsafe_types_fill` walks variant payloads too, so an
         // enum carrying a builtin nominal is excluded exactly like a struct.
-        if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) {
-          if str_array_contains(dtd_eq_unsafe_types, ename) {
-            if str_array_contains(dtd_eq_no_comparator, ename) {
-              ()
-            } else {
-              Array::push(dtd_eq_no_comparator, ename)
-            }
-          } else {
-            dtd_fresh_reset_for_decl()
-            Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
-          }
+        if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) && !str_array_contains(dtd_eq_unsafe_types, ename) {
+          dtd_fresh_reset_for_decl()
+          Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
         } else {
           ()
         }
