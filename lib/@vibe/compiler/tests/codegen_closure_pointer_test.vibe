@@ -1,5 +1,9 @@
 import ../bytebuf.vibe {
-  bytebuf_new, bytebuf_push_section, bytebuf_push_vec_header
+  bytebuf_new, bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, leb128_encode_u32
+}
+
+import @vibe/compiler/codegen/builtin_bodies {
+  gen_rc_alloc_body
 }
 
 import @vibe/compiler/codegen/common_analysis {
@@ -23,7 +27,7 @@ import @vibe/compiler/codegen/wasm_emit {
 }
 
 // A heap reference carries one tag bit. An even address need not be divisible
-// by four: RC allocation can preserve the frontier left by a byte allocation.
+// by four. Decoding must preserve all address bits beyond that tag.
 fn closure_pointer_probe(address: Int, tagged: Int) -> Bytes {
   let out = bytebuf_new()
   emit_header(out)
@@ -68,4 +72,63 @@ test "closure resolution preserves every even heap address" {
 test "bare function values still resolve without a closure environment" {
   check_closure_pointer(1024, 2, "0")
   check_closure_pointer(1024, 70, "170000")
+}
+
+fn rc_allocator_probe(frontier: Int) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let types = bytebuf_new()
+  bytebuf_push_vec_header(types, 1)
+  emit_func_type_raw(types, [126], [126])
+  bytebuf_push_section(out, 1, types)
+  emit_function_section(out, [0])
+  emit_memory_section(out, 1)
+  let globals = bytebuf_new()
+  bytebuf_push_vec_header(globals, 3)
+  for initial in [frontier, 0, 0] {
+    bytebuf_push(globals, 127)
+    bytebuf_push(globals, 1)
+    emit_i32_const(globals, initial)
+    bytebuf_push(globals, 11)
+  }
+  bytebuf_push_section(out, 6, globals)
+  emit_export_section(out, "allocate", 0)
+  let body = bytebuf_new()
+  bytebuf_push_vec_header(body, 1)
+  leb128_encode_u32(body, 5)
+  bytebuf_push(body, 127)
+  bytebuf_push_buf(body, gen_rc_alloc_body(false, 1024))
+  bytebuf_push(body, 11)
+  let code = bytebuf_new()
+  bytebuf_push_vec_header(code, 1)
+  leb128_encode_u32(code, Bytes::length(body))
+  bytebuf_push_buf(code, body)
+  bytebuf_push_section(out, 10, code)
+  out
+}
+
+test "RC allocation aligns a frontier left at any byte offset" {
+  let mut offset = 0
+  while offset < 8 {
+    let path = "/tmp/_rc_allocator_alignment_\{offset}.wasm"
+    Fs::write_bytes(path, rc_allocator_probe(4096 + offset))
+    let output = sh_lines("wasmtime run --invoke allocate \{path} 24 2>/dev/null")
+    assert(Array::length(output) == 1)
+    assert(String::equals(Array::get(output, 0), if offset == 0 {
+      "4096"
+    } else {
+      "4104"
+    }))
+    offset = offset + 1
+  }
+}
+
+test "RC allocation refuses alignment and end-address overflow" {
+  for frontier in [-1, -8] {
+    let path = "/tmp/_rc_allocator_overflow_\{frontier}.wasm"
+    Fs::write_bytes(path, rc_allocator_probe(frontier))
+    let output = sh_lines("wasm-tools validate \{path} && (wasmtime run --invoke allocate \{path} 24 >/dev/null 2>&1 && echo unexpected || echo trapped)")
+    assert(Array::length(output) == 1)
+    assert(String::equals(Array::get(output, 0), "trapped"))
+  }
 }
