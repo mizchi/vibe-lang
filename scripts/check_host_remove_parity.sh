@@ -30,10 +30,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-STAGE2="${HOST_REMOVE_PARITY_STAGE2:-}"
-if [ -z "$STAGE2" ]; then
-  STAGE2="$(bash scripts/resolve_stage2.sh 2>/dev/null || true)"
-fi
+# resolve_stage2.sh defines a FUNCTION; it is sourced, not executed. Running it
+# as a script defines the function in a subshell and exits 0 with no output,
+# which reads as "resolved to the empty string" -- measured, that is exactly how
+# this gate first failed under the self-test ratchet.
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
+STAGE2="$(resolve_stage2 host-remove-parity "${HOST_REMOVE_PARITY_STAGE2:-}")"
 if [ ! -f "$STAGE2" ]; then
   echo "host-remove-parity: FAIL: no stage2. Pass HOST_REMOVE_PARITY_STAGE2=<stage2.wasm>." >&2
   exit 1
@@ -91,7 +93,11 @@ for probe in remove_file remove_dir remove_tree; do
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
     "$WORK/$probe.vibe" "$WORK/$probe.wasm" main >/dev/null 2>&1 || true
   if [ ! -s "$WORK/$probe.wasm" ]; then
-    echo "host-remove-parity: FAIL: '$probe' did not compile." >&2
+    echo "host-remove-parity: FAIL: '$probe' did not compile with $STAGE2." >&2
+    if [ "$probe" = "remove_tree" ]; then
+      echo "host-remove-parity: if the diagnostic names Fs::remove_tree, that compiler predates #2758 --" >&2
+      echo "host-remove-parity: build one from this checkout, or pass HOST_REMOVE_PARITY_STAGE2." >&2
+    fi
     cat "$WORK/$probe.wasm.diag" >&2 2>/dev/null || true
     exit 1
   fi

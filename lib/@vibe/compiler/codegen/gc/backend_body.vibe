@@ -1834,14 +1834,21 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // 1..19,
   // shifting every generated-body index by that count (hbo).
   //
-  // `hbo` IS that count. FOUR places encode this list -- use_host, host_defs,
-  // host_imports, and hbo -- and moving one without the others is silently
+  // `hbo` IS that count. FIVE places encode this list -- use_host, host_defs,
+  // host_imports, the `bytebuf_push_vec_header(imp_content, N)` literal that
+  // counts them (N is hbo + 1, for fd_write), and hbo itself. This comment said
+  // FOUR until #2758 added an import, updated the three it names plus the
+  // vector header, and left hbo behind: every generated body shifted by one and
+  // EVERY `Fs::remove*` call on the gc lane died with "not enough arguments on
+  // the stack for call (need 1, got 0)" -- including the two this change never
+  // touched, which is what says the cause is the shared offset and not the new
+  // builtin. Moving one without the others is silently
   // wrong: the first build that appended imports but left hbo behind produced
   // modules that validated nowhere ("not enough arguments on the stack for
   // call"), because every generated-body index still pointed low.
   let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove_tree") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream") || stmts_use_builtin(stmts, fn_names_list, "Fs::readdir") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream") || stmts_use_builtin(stmts, fn_names_list, "vibe_process_exit_raw") || stmts_use_builtin(stmts, fn_names_list, "Stderr::write_stream")
   let hbo = if use_host {
-    22
+    23
   } else {
     0
   }
