@@ -2044,6 +2044,63 @@ One fix is worth taking on its own account either way:
 byte, and it is 1416 ms of the warm `on` profile — the largest single row —
 independent of what the artifact ends up carrying.
 
+#### Which layer a distributed cache should carry (2026-09-15)
+
+The measurements above all ask about a LOCAL warm build. A remote or
+dependency-level cache asks a different question — can the work be skipped by
+fetching something instead of doing it — and the answer depends entirely on
+which layer the something is. Two numbers decide it.
+
+**Where a warm compile's time actually is.** Self time cannot say: the leaf
+utilities (`core/*`, `__rt_*`) are ~30 % and spread across every phase. By
+INCLUSIVE time down the call tree, the same warm compile (9476 ms total,
+8039 ms inside `compile_file_fs_mode_rc_body_cached`):
+
+| region | inclusive | share of the compile |
+|---|---:|---:|
+| `compile_wasi_module_linked_impl_with_split` (everything post-merge) | 6260 ms | 78 % |
+| ├ `effect_lowering_prelude` | 2563 ms | 32 % |
+| ├ `desugar_trait_dicts_with_typed_eq` | 688 ms | 9 % |
+| ├ `compile_expr` (body codegen) | 626 ms | 8 % |
+| ├ borrow fixpoint + perceus plan | ~945 ms | 12 % |
+| └ const-fold, DCE, index assignment, assembly | ~1180 ms | 15 % |
+| `build_grouped_merged_stmts_counted` (merge) | 832 ms | 10 % |
+| source load + parse | ~970 ms | 12 % |
+| **checker** | **0 ms** | **0 %** |
+
+The largest single phase is the effect-lowering prelude at 32 %, and it is
+already proven reproducible per module — see "The per-module prelude
+reproduces the whole-program prelude exactly" above, where the CLI closure's
+369 modules link to `linked == stmts` with `missing`, `extra`, `content` and
+`renames` all zero. Body codegen is likewise already replayable (#2388). What
+is left that no per-package artifact can skip — merge, trait-dict
+instantiation, const-fold, DCE, index assignment, assembly — is roughly
+**25 %**. So the ceiling for a cache that carries lowered and code-generated
+output is high; the ceiling for one that carries TYPING is zero, because
+typing is already free warm.
+
+**What each layer weighs.** Same closure, same compile:
+
+| transport | bytes |
+|---|---:|
+| checked-module artifacts (420 modules) | 179 MB |
+| persisted codegen body cache, whole closure | **16 MB** |
+| the emitted wasm itself | 39 MB |
+
+An order of magnitude apart, and the lighter one carries the expensive phases
+while the heavier one carries the free one. At the current codec's measured
+~22 MB/s that is 0.7 s to decode against ~8.2 s, so the codec's speed stops
+being the binding constraint once the granularity is right.
+
+**The constraint to design around** is not size but the capability lane.
+`--allow-*` drives const-fold plus DCE (ADR-0075/0084/0088), so a dependency's
+POST-DCE bodies depend on the consumer's grants and two consumers with
+different permissions cannot share them. Caching PRE-DCE relocatable bodies
+and leaving capability const-fold, DCE and index assignment to the link step
+keeps the cache capability-independent — which is the same split #2507's link
+unit already proposes, and the edit-stable index work (#2394, #2400) is the
+part of it that exists.
+
 ### Host filesystem ingestion telemetry
 
 The edit-cycle KPI also requests a separate runner-owned sidecar for actual
