@@ -42,8 +42,10 @@
 // different arms of `spine_leaf_unowned`, so a lane that holds only one of them
 // is a lane the other arm can walk past.
 //
-// `main` returns 0: every shape here adds 0, so the answer cannot drift with
-// the allocation behaviour being measured.
+// `main` returns 0 after checking each shape's result. The #2803 cases keep
+// their answers with a leak too, so they also need the heap bound. At N=20000,
+// this full fixture uses 8,000,328 B on 17874c5d8 and 408 B with the fix; at
+// N=40000 those are 16,000,328 B and 408 B.
 enum Node {
   Leaf(Int);
   Pair(Node, Node)
@@ -128,6 +130,45 @@ fn once_owning_self(xs: Array[Node]) -> Int {
   0
 }
 
+// #2803: the old value must not keep a duplicate planned for a use of the
+// replacement. `total` consumes its argument in this fixture: rc-classify
+// reports view_ret, NOT borrow_param, and its emitted epilogue drops `n`.
+fn once_read_after_store(xs: Array[Node]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let t0 = total(x)
+    Array::get(xs, t0 - 3)
+  }
+  let r = total(x)
+  let filler = Pair(Leaf(7), Leaf(8))
+  r * 100 + total(Array::get(xs, 0)) * 10 + total(filler) * 0
+}
+
+// The replacement is promoted by the wrapper's own local owner. Its new slot
+// must keep that reference's owning lifetime rather than classifying it as a
+// view merely because the last expression is a borrow.
+fn once_read_local_source() -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let before = total(x)
+    let ys = [Pair(Leaf(before), Leaf(4))]
+    Array::get(ys, 0)
+  }
+  let filler = Pair(Leaf(7), Leaf(8))
+  total(x) * 10 + total(filler)
+}
+
+fn once_read_local_projection() -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let before = total(x)
+    let h = Holder::{ node: Pair(Leaf(before), Leaf(4)) }
+    h.node
+  }
+  let filler = Pair(Leaf(7), Leaf(8))
+  total(x) * 10 + total(filler)
+}
+
 export fn main() -> Int {
   let xs = [Pair(Leaf(3), Leaf(4))]
   let mut i = 0
@@ -135,6 +176,16 @@ export fn main() -> Int {
     let r = once()
     let rp = once_proj()
     let ro = once_owning_self(xs)
+    if once_read_after_store(xs) != 770 {
+      return 1
+    } else {
+      ()
+    }
+    if once_read_local_source() != 85 || once_read_local_projection() != 85 {
+      return 2
+    } else {
+      ()
+    }
     i = i + r + rp + ro + 1
   }
   0

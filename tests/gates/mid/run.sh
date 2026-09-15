@@ -483,7 +483,11 @@ echo "[compiler-gate] RC mutable-initializer projection leak guard ok (heap_used
 # and is proven able to fail the same way: a compiler carrying the acquire half
 # alone measures 1,600,164 B here against this row's 2000, on a fixture whose
 # ANSWER is 0 either way.
-echo "[compiler-gate] 40e2/40 RC wrapper-assign double-retain guard (#2760)"
+# #2803 adds consuming reads after the store, including replacements promoted
+# by a wrapper's local owner. On 17874c5d8 the extended fixture returns the
+# correct value but uses 8,000,328 B at N=20000; the fixed compiler uses 408 B
+# at both N=20000 and N=40000.
+echo "[compiler-gate] 40e2/40 RC wrapper-assign double-retain guard (#2760/#2786/#2803)"
 drdir="_build/_gate_rc_double_retain"
 rm -rf "$drdir"; mkdir -p "$drdir"
 VIBE_RC=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -504,7 +508,7 @@ if [ "$dr_result" != "0" ]; then
   echo "[compiler-gate] FAIL: rc_wrapper_assign_double_retain wrong result $dr_result (want 0)" >&2; exit 1
 fi
 if [ "$dr_used" -ge 2000 ]; then
-  echo "[compiler-gate] FAIL: rc_wrapper_assign_double_retain heap_used=$dr_used >= 2000 (#2760/#2786 regressed; retaining a borrow whose source the spine itself binds measured 1600084 at N=20000, and acquiring a self-mentioning wrapper's replacement without releasing the old value measured 1600164)" >&2; exit 1
+  echo "[compiler-gate] FAIL: rc_wrapper_assign_double_retain heap_used=$dr_used >= 2000 (#2760/#2786/#2803 regressed; an unspent reference leaks at least 80 B per iteration at N=20000)" >&2; exit 1
 fi
 rm -rf "$drdir"
 echo "[compiler-gate] RC wrapper-assign double-retain guard ok (heap_used=$dr_used B at N=20000)"

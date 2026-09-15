@@ -31,7 +31,7 @@ import @vibe/compiler/syntax {
 }
 
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, TypeExpr, dce_stmts, make_import_alias_rewriter
+  Expr, Pat, Stmt, TypeExpr, dce_stmts, expr_child_at, expr_children_pop, expr_children_push, expr_children_top, make_import_alias_rewriter
 }
 
 //# Module flattening
@@ -682,6 +682,62 @@ fn uq_marks_now() -> Int {
   Array::get(uq_marks, 0)
 }
 
+/// Classify a region for splitting one immediate store: 0 = no use of the
+/// slot, 1 = used without further writes/captures, 2 = ineligible.
+/// Decline every lambda here: a
+/// closure created by the RHS can escape and observe the slot AFTER the store.
+/// Shadowed writes also decline conservatively; the input is not renamed yet.
+fn uq_rebind_region(expr: Expr, name: String) -> Int {
+  let own = match expr {
+    EIdent(n, _) => if n == name {
+      1
+    } else {
+      0
+    },
+    EFn(_, _, _, _, _, _) => 2,
+    EAssign(n, _, _) => if n == name {
+      2
+    } else {
+      0
+    },
+    EAssignOp(n, _, _, _) => if n == name {
+      2
+    } else {
+      0
+    },
+    _ => 0
+  }
+  if own == 2 {
+    2
+  } else {
+    let mark = expr_children_push(expr)
+    let end = expr_children_top()
+    let mut i = mark
+    let mut result = own
+    while result < 2 && i < end {
+      let child = uq_rebind_region(expr_child_at(i), name)
+      if child > result {
+        result = child
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    expr_children_pop(mark)
+    result
+  }
+}
+
+fn uq_single_rebind(name: String, body: Expr) -> Bool {
+  match body {
+    // Only split when uses actually span the store. Besides avoiding needless
+    // rewrites, this preserves the old slot's eager release on an overwrite
+    // that never reads it.
+    EAssign(n, value, rest) => n == name && uq_rebind_region(value, name) == 1 && uq_rebind_region(rest, name) == 1,
+    _ => false
+  }
+}
+
 /// Renamed reference for `name` under `env`, or `name` unchanged if it is not a
 /// tracked (shadowed-or-not) binding -- i.e. a free variable / global / builtin.
 fn uq_lookup(env: UqEnv, name: String) -> String {
@@ -1118,16 +1174,34 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
       }
     },
     ELetMut(n, v, b, soff) => {
-      let before = uq_marks_now()
-      let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
-      let mark = Array::length(env.names)
-      let n2 = uq_bind_name(n, env, counter, seen)
-      let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
-      uq_env_restore(env, mark)
-      if uq_marks_now() == before {
-        expr
+      // #2803: `let mut x = initial; x = replacement; rest` has two value
+      // lifetimes. Naming them separately lets Perceus budget each one rather
+      // than retaining `initial` for uses that actually consume `replacement`.
+      // Reuse the ordinary let/shadow walk so the RHS still reads the old x,
+      // the continuation reads the new x, and every parent sees the change.
+      // Keep ELetMut's owning-initializer contract for BOTH slots. A plain let
+      // may be a view; a wrapper that promotes its own local source has already
+      // handed us an owned reference, which that view classification can lose.
+      if uq_single_rebind(n, b) {
+        match b {
+          EAssign(_, replacement, rest) => {
+            uq_mark()
+            uniquify_shadowed_bindings(ELetMut(n, v, ELetMut(n, replacement, rest, -1), soff), env, counter, seen)
+          },
+          _ => expr
+        }
       } else {
-        ELetMut(n2, v2, b2, soff)
+        let before = uq_marks_now()
+        let v2 = uniquify_shadowed_bindings(v, env, counter, seen)
+        let mark = Array::length(env.names)
+        let n2 = uq_bind_name(n, env, counter, seen)
+        let b2 = uniquify_shadowed_bindings(b, env, counter, seen)
+        uq_env_restore(env, mark)
+        if uq_marks_now() == before {
+          expr
+        } else {
+          ELetMut(n2, v2, b2, soff)
+        }
       }
     },
     EAssign(n, v, b) => {
