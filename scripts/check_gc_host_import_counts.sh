@@ -2,7 +2,7 @@
 # #2758: the gc backend's host-import list is encoded in FIVE places, and they
 # must agree. Nothing checked that they do.
 #
-#   use_host      the || chain of stmts_use_builtin names that gates the block
+#   use_host      the || chain of used-builtin lookups that gates the block
 #   host_defs     (name, params, ABSOLUTE import index, ret) per builtin
 #   host_imports  (import name, type index) in the emitted order
 #   the vector header literal  bytebuf_push_vec_header(imp_content, N)
