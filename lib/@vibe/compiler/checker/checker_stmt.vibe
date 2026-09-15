@@ -20,6 +20,10 @@ import ./checker_pattern.vibe {
   check_qualified_pattern_refs
 }
 
+import ./builtins.vibe {
+  lookup_builtin
+}
+
 import @vibe/compiler/core {
   Expr,
   ImportItem,
@@ -152,6 +156,219 @@ import @vibe/parser {
 /// can interpret compiler-only source-boundary metadata as trusted provenance.
 export fn validate_user_source_stmts(stmts: Array[Stmt]) -> Unit with Exception {
   reject_user_iterator_serialized_boundaries(stmts)
+}
+
+/// The names an aggregate `export { .. }` lists, in source order.
+///
+/// Unlike the interface identity's value-name list this is the RAW `SExport` list and
+/// nothing else -- no re-exports, no declaration-exported names, no sort. It
+/// answers one question: which declarations does this module publish WITHOUT
+/// carrying `export` on the declaration itself.
+export fn aggregate_export_names(stmts: Array[Stmt]) -> Array[String] {
+  let names = array_empty()
+  let mut i = 0
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      SExport(items) => {
+        let mut j = 0
+        while j < Array::length(items) {
+          Array::push(names, Array::get(items, j))
+          j = j + 1
+        }
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+/// The interface identity pushes every name an `SExport` lists,
+/// whatever namespace it belongs to, and the identity then demands a
+/// flat binding for each -- so a name with none threw on a program that checks
+/// clean without the trace (#2744).
+///
+/// Measured 2026-09-13, one probe module per kind against a stage1 built from
+/// the head, with the invalidation trace on. Almost every kind already carries
+/// a flat binding and so takes the `value:` row: a private struct, a private
+/// enum, a private type alias, a builtin declaration (`export { Option }`, the
+/// shape `lib/@vibe/builtin/option.vibe` opens with), an IMPORTED trait
+/// republished by name, and a re-export (`export ./dep.vibe { Trait }`) all
+/// observed clean. Exactly three kinds have none, all of them declared
+/// LOCALLY: a trait, an effect and an effectset. A name this module does not
+/// declare at all keeps throwing, which is the fail-closed answer.
+///
+/// So the classification is syntactic -- the module's own statements -- rather
+/// than a second environment query. The three throwing kinds are precisely the
+/// ones a local declaration identifies, and reading the statements cannot
+/// disagree with an environment it never consults.
+///
+/// The row records MEMBERSHIP in the export surface, not the declaration's
+/// content: an aggregate export is the one thing that moves the published
+/// surface without touching any declaration's own text (adding
+/// `export { Marker }` to a private `trait Marker` publishes its impls --
+/// measured: a consumer's `[T: Marker]` bound is satisfied only with it). The
+/// content is already carried, for a private declaration too, by the witness
+/// set's `include_private` row -- which ALSO moves for this exact edit, pinned
+/// as `aggregate-export=moved` in `trait_witness_set_fingerprint_test.vibe`.
+/// So the row is not what makes such an edit invalidate. It is what keeps this
+/// identity a faithful description of the export surface, and what tells this
+/// fix apart from a silent skip.
+export fn export_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option[String] {
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(stmts) {
+    match Array::get(stmts, i) {
+      STrait(_, decl_name, _, _, _, _) => if decl_name == name {
+        found = Some("trait")
+      } else {
+        ()
+      },
+      SEffectDef(_, decl_name, _, _) => if decl_name == name {
+        found = Some("effect")
+      } else {
+        ()
+      },
+      SEffectSet(_, decl_name, _) => if decl_name == name {
+        found = Some("effectset")
+      } else {
+        ()
+      },
+      _ => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2762: does this module resolve `name`, as something its export surface can
+/// publish?
+///
+/// The two halves are the two places a publishable name can live, measured
+/// 2026-09-15 one probe module per kind against a stage2 built from the head,
+/// with the invalidation trace on -- all ten observed clean:
+///
+/// | `export { X }` where X is | resolves via |
+/// |---|---|
+/// | a private `struct` / `enum` / `type` alias | flat binding |
+/// | a private `let` / `fn` | flat binding |
+/// | a builtin (`export { Option }`, the shape `lib/@vibe/builtin/option.vibe` opens with) | flat binding |
+/// | an imported value, or an imported trait republished by name | flat binding |
+/// | a LOCAL `trait` / `effect` / `effectset` | `export_local_nonvalue_kind` |
+///
+/// A name that is none of the three is nothing at all, which is the case #2762
+/// refuses.
+///
+/// THE THIRD CLAUSE is about WHICH env the caller has, not about a third kind
+/// of declaration. The table above was measured against the PUBLISHED env,
+/// where a compiler-provided name does carry a flat binding -- that is what
+/// `prepend_explicit_builtin_value_markers` and the `EnvTypeDefs` transport
+/// node exist for. The FLAT single-source lanes have no publication, so they
+/// pass the RAW checked env, where `Option` has no binding at all: measured on
+/// the first attempt at the flat-lane fix, `fixtures/typecheck/
+/// export_aggregate_builtin_ok.vibe` -- the shape
+/// `lib/@vibe/builtin/option.vibe` opens with -- was REFUSED, while it compiled
+/// on every FS lane. The green fixture caught it before it shipped, which is
+/// what that fixture is for.
+///
+/// Asking the compiler's own builtin oracles rather than re-deriving a list:
+/// `compiler_owned_type_arity` for the container types, `resolve_builtin` for
+/// the scalars and opaque tokens, `lookup_builtin` for builtin VALUES (the
+/// shape `lib/@vibe/parser/polyfill.vibe` opens with, `export { __to_string }`).
+/// On the published env the clause changes nothing, because the flat binding
+/// already answered.
+export fn export_name_resolves(stmts: Array[Stmt], bindings: Array[(String, Type)], name: String) -> Bool {
+  env_lookup_flat(bindings, name) != None || export_local_nonvalue_kind(stmts, name) != None || export_name_is_compiler_provided(name)
+}
+
+/// #2762: is `name` provided by the compiler rather than by any module?
+fn export_name_is_compiler_provided(name: String) -> Bool {
+  compiler_owned_type_arity(name) != None || resolve_builtin(name) != None || lookup_builtin(name) != None
+}
+
+/// #2762: the first name an aggregate `export { .. }` publishes that this
+/// module neither declares nor imports, or `None`.
+///
+/// The RAW `SExport` list and nothing else. A bogus RE-export
+/// (`export ./dep.vibe { NoSuchThing }`) is already refused, by the import
+/// resolution the FS loader performs -- measured, it reports
+/// `imported name 'NoSuchThing' is not exported by './dep.vibe'` against the
+/// re-exporting module, which is the right module and the right message.
+/// Widening this to every published value name would re-report that case under
+/// an `export { }` message it did not come from.
+///
+/// First name, not all of them: the caller throws, and the checker reports one
+/// type error at a time. Source order, so which one it is does not depend on
+/// the environment.
+///
+/// THE CORPUS, which #2762 left unmeasured because a regex scan could not
+/// answer it. Measured 2026-09-15 with the compiler's own name resolution, by
+/// running this refusal over the tree: 74 files carry an aggregate
+/// `export { }`, and exactly ONE named something the module does not have --
+/// `lib/@vibe/compiler/compiler.vibe`, whose list still carried `version` from
+/// the era when that file declared `export let version: String = "0.0.1"`. It
+/// is a no-op, measured on main before the fix: deleting the row leaves
+/// `import @vibe/compiler { version }` resolving exactly as before, because the
+/// facade synthesizes that binding from the `.vpkg` header's `version`
+/// directive (#1054) rather than from the export list -- which is why
+/// `contract_effective_decls` drops a legacy bodyless `let version: String`
+/// too. The row was deleted with this fix.
+export fn unresolved_aggregate_export_name(stmts: Array[Stmt], env: TypeEnv) -> Option[String] {
+  let bindings = env_flat_bindings(env)
+  let names = aggregate_export_names(stmts)
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if found == None && !export_name_resolves(stmts, bindings, name) {
+      found = Some(name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2762: the refusal's text. The EDIT leads (CLAUDE.md), the reason follows
+/// the `;`, and `name` is bare rather than backquoted so
+/// `locate_type_error_heuristic` can carry a `line L:col C:` prefix.
+///
+/// That prefix is the same FIRST-OCCURRENCE heuristic every other marker in
+/// that ladder uses, with the same exposure: a comment or a string literal
+/// mentioning the name earlier in the file claims the position (measured -- the
+/// refusal fixture's own header did exactly that until its prose was
+/// reworded). `SExport(Array[String])` carries no offset, so there is no exact
+/// span to prefer; this is not an approximation of one the AST could have
+/// given. What the condition DOES guarantee is that no *declaration* of the
+/// name can be sitting in front of the export, because the message is emitted
+/// only when the module has none.
+export fn unresolved_export_message(name: String) -> String {
+  String::concat("declare or import ", String::concat(name, " in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import"))
+}
+
+/// #2762 (Codex P1 round 2 on #2806): the FLAT single-source lane's door.
+///
+/// The refusal first lived in the FS worker lane, then moved to publication --
+/// which covered the FS lanes and the in-memory TypeDb walk, but not the flat
+/// single-source compile (`compile_source_wasi*`, `compile_source_gc_only`,
+/// `compile_source_wasi_only`). Those never publish an export surface, because
+/// they have no consumer to publish to: measured on the branch with the
+/// publication fix in place, `export { NotDeclaredAnywhere }` still COMPILED
+/// there while `vibe check`, `vibe test` (linear and gc) and `vibe run` all
+/// refused it. `cli_adapter.vibe` states the rule this breaks in its own words:
+/// "a build that accepts what the check rejects is the same 'two verbs, two
+/// answers' defect #1567 fixed ... and it is worse here because the accepting
+/// verb is the one that ships" (ADR-0068).
+///
+/// Called only for USER source -- the same gate `validate_user_source_stmts`
+/// sits behind -- because a compiler-GENERATED statement graph is merged and
+/// renamed, and its export list is not the user's text.
+export fn validate_user_source_exports(stmts: Array[Stmt], env: TypeEnv) -> Unit with Exception {
+  match unresolved_aggregate_export_name(stmts, env) {
+    Some(name) => throw(unresolved_export_message(name)),
+    None => ()
+  }
 }
 
 /// Declared arity of a type constructor used by an impl target. Keep builtin

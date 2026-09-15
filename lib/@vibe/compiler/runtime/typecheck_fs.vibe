@@ -34,6 +34,7 @@ import @vibe/ast {
 
 import @vibe/compiler/checker {
   CheckedProgram,
+  aggregate_export_names,
   check_program,
   check_program_type_table,
   check_program_with_env_result,
@@ -42,11 +43,14 @@ import @vibe/compiler/checker {
   detect_redundant_namespace_imports,
   detect_unbound_nonunit_returns,
   detect_unused_imports,
+  export_local_nonvalue_kind,
   import_item_kind_errors,
   report_unknown_type_names_deferred_validation,
   typed_lowering_enc_offset,
   typed_lowering_enc_tag,
   typing_semantics_seed,
+  unresolved_aggregate_export_name,
+  unresolved_export_message,
   validate_derives
 }
 
@@ -3664,31 +3668,6 @@ fn interface_push_decl_line(lines: Array[String], exported: Bool, include_privat
 /// can shadow an imported name and re-resolve an impl target without appearing
 /// in any interface (Codex on #2742, P1). One serializer, two callers, so the
 /// two cannot drift apart.
-/// The names an aggregate `export { .. }` lists, in source order.
-///
-/// Unlike `interface_public_value_names` this is the RAW `SExport` list and
-/// nothing else -- no re-exports, no declaration-exported names, no sort. It
-/// answers one question: which declarations does this module publish WITHOUT
-/// carrying `export` on the declaration itself.
-fn interface_aggregate_export_names(stmts: Array[Stmt]) -> Array[String] {
-  let names = array_empty()
-  let mut i = 0
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SExport(items) => {
-        let mut j = 0
-        while j < Array::length(items) {
-          Array::push(names, Array::get(items, j))
-          j = j + 1
-        }
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  names
-}
-
 /// Whether one declaration belongs in the serialized list.
 ///
 /// An aggregate `export { Name }` publishes a declaration that does not carry
@@ -3908,7 +3887,7 @@ fn interface_decl_lines(stmts: Array[Stmt], include_private: Bool, aggregate: Ar
 }
 
 fn interface_public_decl_lines(stmts: Array[Stmt]) -> Array[String] {
-  interface_decl_lines(stmts, false, interface_aggregate_export_names(stmts))
+  interface_decl_lines(stmts, false, aggregate_export_names(stmts))
 }
 
 /// A trace-only canonical token-stream identity. It length-delimits each token's
@@ -3956,164 +3935,26 @@ fn interface_identity_version() -> String {
 
 /// What an aggregate `export { .. }` names when it does NOT name a value.
 ///
-/// `interface_public_value_names` pushes every name an `SExport` lists,
-/// whatever namespace it belongs to, and the identity below then demands a
-/// flat binding for each -- so a name with none threw on a program that checks
-/// clean without the trace (#2744).
+/// #2762: the interface identity ROW for one exported name, or `None` when the
+/// module resolves nothing under that name.
 ///
-/// Measured 2026-09-13, one probe module per kind against a stage1 built from
-/// the head, with the invalidation trace on. Almost every kind already carries
-/// a flat binding and so takes the `value:` row: a private struct, a private
-/// enum, a private type alias, a builtin declaration (`export { Option }`, the
-/// shape `lib/@vibe/builtin/option.vibe` opens with), an IMPORTED trait
-/// republished by name, and a re-export (`export ./dep.vibe { Trait }`) all
-/// observed clean. Exactly three kinds have none, all of them declared
-/// LOCALLY: a trait, an effect and an effectset. A name this module does not
-/// declare at all keeps throwing, which is the fail-closed answer.
-///
-/// So the classification is syntactic -- the module's own statements -- rather
-/// than a second environment query. The three throwing kinds are precisely the
-/// ones a local declaration identifies, and reading the statements cannot
-/// disagree with an environment it never consults.
-///
-/// The row records MEMBERSHIP in the export surface, not the declaration's
-/// content: an aggregate export is the one thing that moves the published
-/// surface without touching any declaration's own text (adding
-/// `export { Marker }` to a private `trait Marker` publishes its impls --
-/// measured: a consumer's `[T: Marker]` bound is satisfied only with it). The
-/// content is already carried, for a private declaration too, by the witness
-/// set's `include_private` row -- which ALSO moves for this exact edit, pinned
-/// as `aggregate-export=moved` in `trait_witness_set_fingerprint_test.vibe`.
-/// So the row is not what makes such an edit invalidate. It is what keeps this
-/// identity a faithful description of the export surface, and what tells this
-/// fix apart from a silent skip.
-fn interface_local_nonvalue_kind(stmts: Array[Stmt], name: String) -> Option[String] {
-  let mut i = 0
-  let mut found = None
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      STrait(_, decl_name, _, _, _, _) => if decl_name == name {
-        found = Some("trait")
-      } else {
-        ()
-      },
-      SEffectDef(_, decl_name, _, _) => if decl_name == name {
-        found = Some("effect")
-      } else {
-        ()
-      },
-      SEffectSet(_, decl_name, _) => if decl_name == name {
-        found = Some("effectset")
-      } else {
-        ()
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-/// #2762: does this module resolve `name`, as something its export surface can
-/// publish?
-///
-/// ONE predicate, two callers. `incremental_interface_identity` throws when it
-/// is false; `unresolved_aggregate_export_name` -- the checker's refusal -- is
-/// that same question asked of the `export { }` list alone. Before #2762 only
-/// the first existed, so `export { NotDeclaredAnywhere }` checked CLEAN on the
+/// The classifier is `export_local_nonvalue_kind`, imported from the checker
+/// -- the SAME function the refusal consults (`unresolved_aggregate_export_name`
+/// there is defined in terms of it). That is what keeps the identity and the
+/// refusal from drifting: a kind added to the classifier starts producing a row
+/// here AND stops being refused there, in one edit. Before #2762 only the
+/// identity existed, so `export { NotDeclaredAnywhere }` checked CLEAN on the
 /// lane every build uses and threw `exported name missing from checked
-/// environment` on the lane the invalidation trace uses: the two lanes
-/// disagreed about whether the module was a program. Sharing the predicate is
-/// what makes them agree by construction, rather than by two texts that happen
-/// to match today.
-///
-/// The two halves are the two places a publishable name can live, measured
-/// 2026-09-15 one probe module per kind against a stage2 built from the head,
-/// with the trace on -- all ten observed clean:
-///
-/// | `export { X }` where X is | resolves via |
-/// |---|---|
-/// | a private `struct` / `enum` / `type` alias | flat binding |
-/// | a private `let` / `fn` | flat binding |
-/// | a builtin (`export { Option }`, the shape `lib/@vibe/builtin/option.vibe` opens with) | flat binding |
-/// | an imported value, or an imported trait republished by name | flat binding |
-/// | a LOCAL `trait` / `effect` / `effectset` | `interface_local_nonvalue_kind` |
-///
-/// A name that is neither is nothing at all, which is the case #2762 refuses.
-///
-/// The identity ROW is the shared value rather than a Bool, so the two callers
-/// cannot drift: a kind added here starts producing a row AND stops being
-/// refused in the same edit. A Bool predicate beside the row-building `match`
-/// would be two texts that agree only as long as someone keeps them agreeing.
+/// environment` on the lane the invalidation trace uses -- the two disagreed
+/// about whether the module was a program.
 fn interface_export_row(stmts: Array[Stmt], bindings: Array[(String, Type)], name: String) -> Option[String] {
   match env_lookup_flat(bindings, name) {
     Some(ty) => Some(String::concat("value:", String::concat(interface_segment(name), String::concat(":", interface_canonical_type(ty, array_empty(), array_empty()))))),
-    None => match interface_local_nonvalue_kind(stmts, name) {
+    None => match export_local_nonvalue_kind(stmts, name) {
       Some(kind) => Some(String::concat("export-", String::concat(kind, String::concat(":", interface_segment(name))))),
       None => None
     }
   }
-}
-
-/// #2762: the first name an aggregate `export { .. }` publishes that this
-/// module neither declares nor imports, or `None`.
-///
-/// The RAW `SExport` list and nothing else. A bogus RE-export
-/// (`export ./dep.vibe { NoSuchThing }`) is already refused, by the import
-/// resolution `bind_import_names_from_cache_collecting` performs -- measured,
-/// it reports `imported name 'NoSuchThing' is not exported by './dep.vibe'`
-/// against the re-exporting module, which is the right module and the right
-/// message. Widening this to `interface_public_value_names` would re-report
-/// that case under an `export { }` message it did not come from.
-///
-/// First name, not all of them: the caller throws, and the checker reports one
-/// type error at a time. Source order, so which one it is does not depend on
-/// the environment.
-///
-/// THE CORPUS, which #2762 left unmeasured because a regex scan could not
-/// answer it. Measured 2026-09-15 with the compiler's own name resolution, by
-/// running this refusal over the tree: 74 files carry an aggregate
-/// `export { }`, and exactly ONE of them named something the module does not
-/// have -- `lib/@vibe/compiler/compiler.vibe`, whose list still carried
-/// `version` from the era when that file declared
-/// `export let version: String = "0.0.1"`. It is a no-op, measured on main
-/// before the fix: deleting the row leaves `import @vibe/compiler { version }`
-/// resolving exactly as before, because the facade synthesizes that binding
-/// from the `.vpkg` header's `version` directive (#1054) rather than from the
-/// export list -- which is why `contract_effective_decls` drops a legacy
-/// bodyless `let version: String` too. The row was deleted with this fix.
-fn unresolved_aggregate_export_name(stmts: Array[Stmt], env: TypeEnv) -> Option[String] {
-  let bindings = env_flat_bindings(env)
-  let names = interface_aggregate_export_names(stmts)
-  let mut i = 0
-  let mut found = None
-  while i < Array::length(names) {
-    let name = Array::get(names, i)
-    if found == None && interface_export_row(stmts, bindings, name) == None {
-      found = Some(name)
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-/// #2762: the refusal's text. The EDIT leads (CLAUDE.md), the reason follows
-/// the `;`, and `name` is bare rather than backquoted so
-/// `locate_type_error_heuristic` can carry a `line L:col C:` prefix.
-///
-/// That prefix is the same FIRST-OCCURRENCE heuristic every other marker in
-/// `locate_type_error_heuristic` uses, with the same exposure: a comment or a
-/// string literal mentioning the name earlier in the file claims the position
-/// (measured -- the refusal fixture's own header did exactly that until its
-/// prose was reworded). `SExport(Array[String])` carries no offset, so there
-/// is no exact span to prefer; this is not an approximation of one the AST
-/// could have given. What the condition DOES guarantee is that no
-/// *declaration* of the name can be sitting in front of the export, because
-/// the message is emitted only when the module has none.
-fn unresolved_export_message(name: String) -> String {
-  String::concat("declare or import ", String::concat(name, " in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import"))
 }
 
 fn incremental_interface_identity(source: String, env: TypeEnv) -> String with Exception {

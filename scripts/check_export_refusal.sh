@@ -33,6 +33,20 @@
 # private trait's impls from an export surface. Every condition here is one step
 # from that, so the two corpora are checked in different lanes on purpose.
 #
+# THIS GATE IS THE FS LANE ONLY, deliberately. Codex (P1 round 2 on #2806)
+# correctly noted that forcing VIBE_FS_COMPILE=1 means it cannot see the flat
+# single-source lanes (`compile_source_wasi*`, `compile_source_gc_only`), which
+# publish no export surface and so did accept the module until that round.
+# Those lanes are pinned by `lib/@vibe/compiler/tests/export_lane_parity_test.
+# vibe`, which calls them directly and asserts the message.
+#
+# Not by a second pass here, and the reason is #2248's own rule: with the fix in
+# place no input is refused on one lane and accepted on the other, so a red case
+# isolating a second pass cannot be written from inputs -- and an assertion that
+# cannot be shown failing is exactly what that rule forbids. The unit lane can
+# assert it because it calls the lane under test directly, in a lane whose
+# ability to fail is already established.
+#
 # The corpus is a GLOB: a route found later joins by adding a fixture, not by
 # editing this script. It currently holds two, and the second is not a
 # duplicate: `export_aggregate_importer_refused.vibe` is CLEAN and imports the

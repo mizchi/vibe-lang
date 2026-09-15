@@ -17,14 +17,48 @@
 //# the `export_aggregate_*` rows in fixtures/typecheck/expected.tsv, and a
 //# test that re-asked the lane which already worked would prove nothing.
 //#
+//# ROUND 2 (Codex P1 again, on b26b3e8) added the FLAT single-source lanes
+//# below. Publication covered the FS lanes and the in-memory walk, but
+//# `compile_source_wasi*` / `compile_source_gc_only` never publish an export
+//# surface -- they have no consumer to publish to -- so they still compiled the
+//# module. Measured on the branch with only the publication fix:
+//# `vibe check`, `vibe test` (linear AND gc) and `vibe run` all refused it
+//# while the flat compile accepted it. `cli_adapter.vibe` states the rule that
+//# breaks in its own words: "a build that accepts what the check rejects ...
+//# is worse here because the accepting verb is the one that ships" (ADR-0068).
+//#
+//# These lanes live in a package `@vibe/compiler/runtime` DEPENDS ON, so the
+//# rule itself had to move to `@vibe/compiler/checker`, which both can reach.
+//#
+//# They are pinned here rather than in `scripts/check_export_refusal.sh` --
+//# which Codex correctly noted forces `VIBE_FS_COMPILE=1` -- because that gate
+//# asserts a refusal by compiling a FILE, and a second lane there would need a
+//# red case proving the second assertion can fail. With the fix in place no
+//# input is refused on one lane and accepted on the other, so such a red case
+//# cannot be written from inputs, and an assertion that cannot be shown failing
+//# is exactly what #2248 forbids. Here the lane is called directly and the
+//# message is asserted, in a lane whose ability to fail is already established.
+//#
 //# The message is asserted, not merely the throw: "it failed" is satisfied by
-//# any unrelated breakage. The two accepting cases are the other half -- one
-//# name resolved by a flat binding and one (a local `trait`) resolved only by
-//# the module's own statements -- so a refusal grown wide enough to reject
-//# either fails here rather than only in the FS lane.
+//# any unrelated breakage. The accepting cases are the other half -- a name
+//# resolved by a flat binding and one (a local `trait`) resolved only by the
+//# module's own statements -- so a refusal grown wide enough to reject either
+//# fails here rather than only in the FS lane.
 
 import @vibe/compiler/runtime {
   db_new, db_set_source, db_typecheck
+}
+
+import @vibe/compiler/entry/source_compile {
+  compile_source_wasi
+}
+
+import @vibe/compiler/entry/source_compile/gc_only {
+  compile_source_gc_only
+}
+
+import @vibe/compiler/entry/source_compile/wasi_only {
+  compile_source_wasi_only
 }
 
 /// `label` prefixes the answer so no two expectations in this file can be the
@@ -50,4 +84,64 @@ test "in-memory lane accepts an export naming a private fn" {
 
 test "in-memory lane accepts an export naming a local trait" {
   inspect(typecheck_outcome("local-trait", "export {\n  Marker\n}\n\ntrait Marker\n\nexport fn mk() -> Int {\n  1\n}\n"), "local-trait: accepted")
+}
+
+//# The FLAT single-source lanes (Codex P1 round 2). No module graph and no
+//# export surface, so publication never runs; the refusal reaches them through
+//# `validate_user_source_exports`, the door `validate_user_source_stmts`
+//# already marks as "this is user source".
+
+fn flat_wasi_outcome(label: String, source: String) -> String {
+  String::concat(label, String::concat(": ", handle {
+    let _ = compile_source_wasi(source, "main")
+    "accepted"
+  } with { Exception::Throw(message) => message }))
+}
+
+fn flat_gc_outcome(label: String, source: String) -> String {
+  String::concat(label, String::concat(": ", handle {
+    let _ = compile_source_gc_only(source, "main")
+    "accepted"
+  } with { Exception::Throw(message) => message }))
+}
+
+fn flat_wasi_only_outcome(label: String, source: String) -> String {
+  String::concat(label, String::concat(": ", handle {
+    let _ = compile_source_wasi_only(source, "main")
+    "accepted"
+  } with { Exception::Throw(message) => message }))
+}
+
+test "flat wasi lane refuses an export naming nothing" {
+  inspect(flat_wasi_outcome("flat-wasi", "export {\n  NotDeclaredAnywhere\n}\n\nexport fn main() -> Int {\n  1\n}\n"), "flat-wasi: declare or import NotDeclaredAnywhere in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+test "flat wasi lane accepts an export naming a private fn" {
+  inspect(flat_wasi_outcome("flat-wasi-ok", "export {\n  helper\n}\n\nfn helper() -> Int {\n  3\n}\n\nexport fn main() -> Int {\n  helper()\n}\n"), "flat-wasi-ok: accepted")
+}
+
+//# The case that actually broke. The first flat-lane attempt refused
+//# `export { Option }` -- the shape `lib/@vibe/builtin/option.vibe` opens with
+//# -- because the RAW checked env this lane passes has no binding for a
+//# compiler-provided name, where the PUBLISHED env the FS lanes pass does.
+//# `fixtures/typecheck/export_aggregate_builtin_ok.vibe` caught it on the FS
+//# lane's own corpus sweep; this pins the lane where it went wrong.
+test "flat wasi lane accepts an export naming a builtin" {
+  inspect(flat_wasi_outcome("flat-wasi-builtin", "export {\n  Option\n}\n\nexport fn main() -> Int {\n  1\n}\n"), "flat-wasi-builtin: accepted")
+}
+
+test "flat gc lane refuses an export naming nothing" {
+  inspect(flat_gc_outcome("flat-gc", "export {\n  NotDeclaredAnywhere\n}\n\nexport fn main() -> Int {\n  1\n}\n"), "flat-gc: declare or import NotDeclaredAnywhere in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+test "flat gc lane accepts an export naming a local trait" {
+  inspect(flat_gc_outcome("flat-gc-ok", "export {\n  Marker\n}\n\ntrait Marker\n\nexport fn main() -> Int {\n  1\n}\n"), "flat-gc-ok: accepted")
+}
+
+test "flat wasi-only lane refuses an export naming nothing" {
+  inspect(flat_wasi_only_outcome("flat-wasi-only", "export {\n  NotDeclaredAnywhere\n}\n\nexport fn main() -> Int {\n  1\n}\n"), "flat-wasi-only: declare or import NotDeclaredAnywhere in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+test "flat wasi-only lane accepts an export naming a private fn" {
+  inspect(flat_wasi_only_outcome("flat-wasi-only-ok", "export {\n  helper\n}\n\nfn helper() -> Int {\n  3\n}\n\nexport fn main() -> Int {\n  helper()\n}\n"), "flat-wasi-only-ok: accepted")
 }
