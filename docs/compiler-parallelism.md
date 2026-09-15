@@ -733,6 +733,14 @@ existing serial `compile_to()`, as a pure cache pre-warm:
    above closed for cache keys, here applied to cache paths).
 4. `compile_to()` then runs exactly as it always has, unconditionally.
 
+The publisher wraps worker TypeEnv-v9 transport in the v10 disk record
+(#2546). Workers currently return no typed-lowering table, so publication marks
+it explicitly unavailable. The serial compile re-checks that module and
+replaces the record with both outputs; an unavailable table is never accepted
+as a checked empty table. Transporting the worker's lowering output is separate
+from combining the persistent files.
+
+
 The correctness argument this rests on: a `Diagnosed` module is simply
 absent from the publish manifest, so the serial walk re-checks it from
 scratch and reports the identical diagnostic (pinned by

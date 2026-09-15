@@ -300,6 +300,37 @@ else
   note "dep row with empty path column rejected (exit $JOB_EXIT)"
 fi
 
+# #2546: worker transport stays v9; disk publication explicitly records that
+# this worker did not transport a lowering table. Test the actual adapter.
+publish="$work/publish"
+mkdir -p "$publish/cache"
+cp "$leaf/env.out" "$publish/leaf.env"
+printf '%s\tleaf.env\n' "$LEAF_FP" > "$publish/manifest.txt"
+if ! VIBE_PREOPEN_DIR="$publish" VIBE_BUILD_CACHE_DIR="$publish/cache" \
+  VIBE_PUBLISH_ENV_CACHE=1 VIBE_IMPORT_ABI=raw \
+  bash "$ROOT_DIR/scripts/run_wasm_vibe_host_runner.sh" --invoke cli_main \
+  "$STAGE2_ABS" "$publish" "$publish/publish.out" "__no_entry__" >/dev/null 2>&1; then
+  die "worker environment publication failed"
+fi
+if ! node - "$publish" <<'NODE'
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const dir = process.argv[2];
+const wire = fs.readFileSync(path.join(dir, "leaf.env"), "utf8");
+assert.ok(wire.startsWith("version\t9\nenv\t"));
+const records = fs.readdirSync(path.join(dir, "cache"));
+assert.equal(records.length, 1, "one worker outcome must publish one cache file");
+assert.ok(records[0].includes("selfhost_type_env_v10"));
+const disk = fs.readFileSync(path.join(dir, "cache", records[0]), "utf8");
+assert.equal(disk, "version\t10\n" + wire.slice("version\t9\n".length) + "lowering\tmissing\n");
+NODE
+then
+  die "worker TypeEnv transport was not wrapped as an unavailable-table record"
+else
+  note "worker v9 transport publishes one v10 record with lowering unavailable"
+fi
+
 if [ "$fail" -ne 0 ]; then
   exit 1
 fi

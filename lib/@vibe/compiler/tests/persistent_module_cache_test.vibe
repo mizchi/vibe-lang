@@ -1,0 +1,45 @@
+import @vibe/compiler/cache {
+  compact_string_fingerprint, persistent_type_env_cache_path, typing_module_fingerprint
+}
+import @vibe/compiler/runtime {
+  db_new, db_parse_count, db_set_source, db_typecheck_fs, parse_persistent_module_cache, persistent_module_cache_text
+}
+import @vibe/compiler/checker {
+  typing_semantics_seed
+}
+
+test "a module check publishes its environment and lowering table together" {
+  let path = "/tmp/vibe_unified_module_cache_2546.vibe"
+  let source = "export fn answer() -> Int { 42 }"
+  Fs::write_file(path, source)
+  let fingerprint = typing_module_fingerprint(compact_string_fingerprint(source), [
+  ], typing_semantics_seed())
+  let cache_path = persistent_type_env_cache_path(fingerprint)
+  if Fs::exists(cache_path) {
+    Fs::remove(cache_path)
+  } else {
+    ()
+  }
+  let cold = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  assert(db_parse_count(cold) > 0)
+  let text = Fs::read_file(cache_path)
+  inspect(String::substring(text, 0, 10), content = "version\t10")
+  inspect(String::contains(text, "\nmodule_typed_lowering_offsets\tv8\n"), content = "true")
+  let warm = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  inspect(db_parse_count(warm), content = "0")
+  // Keep the valid environment and remove only the lowering section.
+  let split = String::index_of(text, "module_typed_lowering_offsets\tv8")
+  assert(split > 0)
+  Fs::write_file(cache_path, text[0: split])
+  let repaired = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  assert(db_parse_count(repaired) > 0)
+  assert(Fs::read_file(cache_path) == text)
+  // A worker without a table must not borrow this process's previous memo.
+  match parse_persistent_module_cache(text) {
+    Some(record) => Fs::write_file(cache_path, persistent_module_cache_text(record.env, None)),
+    None => assert(false)
+  }
+  let worker_repaired = db_typecheck_fs(db_set_source(db_new(), path, source), path)
+  assert(db_parse_count(worker_repaired) > 0)
+  assert(Fs::read_file(cache_path) == text)
+}

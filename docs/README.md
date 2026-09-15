@@ -120,6 +120,7 @@ the repo; not the user manual.
 | [compiler-bytes-effects.json](compiler-bytes-effects.json) | `internal/design/` | Byte-range copying and effect reachability measurements, controls and validation |
 | [compiler-cache-capacity.json](compiler-cache-capacity.json) | `internal/design/` | Pruned body-cache reuse, reserved byte-buffer measurements, controls and validation |
 | [compiler-callback-return.json](compiler-callback-return.json) | `internal/design/` | Callback return ownership measurements, parser and cold/warm selfhost comparisons, controls and validation |
+| [compiler-module-cache.json](compiler-module-cache.json) | `internal/design/` | Unified typing/lowering cache: cold/warm selfhost timings, allocator high-water, and filesystem operation counts |
 | [compiler-single-rebind.json](compiler-single-rebind.json) | `internal/design/` | Reassignment lifetime and generated-name collision fixes, leak bounds, and cold/warm selfhost comparisons |
 | [registry-design.md](registry-design.md) | `internal/design/` | ADR-0065 Phase 5 |
 | [resource-kind-parameters.md](resource-kind-parameters.md) | `internal/design/` | ADR-0094, proposed |

@@ -1,0 +1,106 @@
+import @vibe/compiler/core {
+  Type, TypeEnv, env_bind, env_lookup
+}
+import @vibe/compiler/runtime {
+  parse_persistent_module_cache, parse_persistent_type_env, persistent_module_cache_text, persistent_type_env_cache_text
+}
+
+fn sample() -> String {
+  persistent_module_cache_text(env_bind(EnvEmpty, "answer", CtInt), Some(([
+    8,
+    24
+  ], [40], ["I"])))
+}
+
+fn rejected(text: String) -> Bool {
+  match parse_persistent_module_cache(text) {
+    None => true,
+    Some(_) => false
+  }
+}
+
+fn replace_once(text: String, before: String, after: String) -> String {
+  let at = String::index_of(text, before)
+  assert(at >= 0)
+  String::concat(text[0: at], String::concat(after, text[at + String::length(before): String::length(text)]))
+}
+
+test "the combined record round-trips both outputs canonically" {
+  let text = sample()
+  match parse_persistent_module_cache(text) {
+    Some(record) => {
+      assert(persistent_module_cache_text(record.env, record.lowering) == text)
+      match env_lookup(record.env, "answer") {
+        Some(CtInt) => (),
+        _ => assert(false)
+      }
+      match record.lowering {
+        Some((offs, eq_offs, eq_keys)) => {
+          assert(Array::length(offs) == 2 && Array::get(offs, 0) == 8 && Array::get(offs, 1) == 24)
+          assert(Array::length(eq_offs) == 1 && Array::get(eq_offs, 0) == 40)
+          assert(Array::length(eq_keys) == 1 && Array::get(eq_keys, 0) == "I")
+        },
+        None => assert(false)
+      }
+    },
+    None => assert(false)
+  }
+}
+
+test "a checked empty table remains distinct from an unavailable worker table" {
+  let empty = persistent_module_cache_text(EnvEmpty, Some(([], [], [])))
+  let missing = persistent_module_cache_text(EnvEmpty, None)
+  assert(empty != missing)
+  match parse_persistent_module_cache(empty) {
+    Some(record) => match record.lowering {
+      Some((offs, eq_offs, eq_keys)) => assert(Array::length(offs) + Array::length(eq_offs) + Array::length(eq_keys) == 0),
+      None => assert(false)
+    },
+    None => assert(false)
+  }
+  match parse_persistent_module_cache(missing) {
+    Some(record) => match record.lowering {
+      None => (),
+      Some(_) => assert(false)
+    },
+    None => assert(false)
+  }
+}
+
+test "worker and dependency TypeEnv transport stays v9 and cannot stand in for a disk record" {
+  let env = env_bind(EnvEmpty, "answer", CtInt)
+  let wire = persistent_type_env_cache_text(env)
+  assert(String::starts_with(wire, "version\t9\nenv\t"))
+  assert(rejected(wire))
+  match parse_persistent_type_env(wire) {
+    Some(_) => (),
+    None => assert(false)
+  }
+  match parse_persistent_type_env(sample()) {
+    None => (),
+    Some(_) => assert(false)
+  }
+}
+
+test "missing lowering bytes and trailing content invalidate the whole entry" {
+  let text = sample()
+  let start = String::index_of(text, "module_typed_lowering_offsets\tv8")
+  assert(start > 0)
+  assert(rejected(text[0: start]))
+  assert(rejected(replace_once(text, "module_typed_lowering_offsets\tend\n", "")))
+  assert(rejected(String::concat(text, "trailing")))
+  assert(rejected(String::concat(persistent_module_cache_text(EnvEmpty, None), "trailing")))
+}
+
+test "row deletion digit mutation and equality-key mutation retain their rejection contract" {
+  assert(rejected(replace_once(sample(), "\n24\n", "\n")))
+  assert(rejected(replace_once(sample(), "\n24\n", "\n25\n")))
+  assert(rejected(replace_once(sample(), "eqrow\t40\tI", "eqrow\t40\tS")))
+}
+
+test "foreign versions and malformed environment payloads fail closed" {
+  assert(rejected(replace_once(sample(), "version\t10", "version\t9")))
+  assert(rejected("version\t10\nenv\t999999999999999999999999999999:0\nlowering\tmissing\n"))
+  assert(rejected("version\t10\nenv\t1:Z\nlowering\tmissing\n"))
+  assert(rejected("version\t10\nenv\t1:0lowering\tmissing\n"))
+}

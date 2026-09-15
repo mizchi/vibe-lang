@@ -1947,7 +1947,24 @@ reinterpreted. A
 sidecar is still only an alias to a conservative
 TypeEnv commit, not a `CheckedProgram` or lossless typed-IR transport.
 
-A witness is published only after that module's canonical TypeEnv-v9 target and
+Persistent storage uses a **v10 module record** (#2546), containing the
+length-delimited TypeEnv payload and its typed-lowering v8 section in one file.
+One atomic `Fs::write_file` publishes both outputs, and a cache read validates
+both before installing the lowering rows for that module path and fingerprint.
+The lowering codec's counts, digest, and end marker still reject damaged rows.
+A missing or corrupt section invalidates the whole entry; it never silently
+becomes an empty table. An explicit `lowering\tmissing` section represents a
+worker result without transported rows: its environment can be read, but it
+cannot skip the next module check. A checked empty table remains reusable.
+
+The separate offsets cache path is removed. TypeEnv v9 remains the standalone
+worker/dependency transport and the input to transport-identity observations;
+adding lowering data to disk does not change those identities. The TDRE9 target
+binding covers the **entire canonical v10 record**, including lowering rows.
+A hit copied to a new conservative fingerprint preserves that exact record.
+Old v9 disk entries fail closed in the v10 namespace.
+
+A witness is published only after that module's canonical v10 module target and
 when every direct dependency already has a validated witness for its conservative
 fingerprint. Alias and witness both bind the logical input, target conservative
 fingerprint, and exact canonical target text. Reuse reads the raw target,

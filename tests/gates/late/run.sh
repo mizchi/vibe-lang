@@ -9191,10 +9191,10 @@ echo "[compiler-gate] unknown contract field/payload types are refused by both l
 #      default), and persistent-cache state must not change the emitted bytes.
 #
 #      Cold compile (empty cache: every module is checked in-process, offsets
-#      come from the memo) vs warm compile (typing cache + offsets sidecars
-#      hit: offsets come from the persistent sidecars) must emit byte-identical
-#      wasm -- the reuse arms in runtime/typecheck_fs.vibe require BOTH cache
-#      halves, so a half-populated cache re-checks instead of silently
+#      come from the memo) vs warm compile (unified module cache
+#      hit: both outputs come from the same persistent record) must emit byte-identical
+#      wasm -- the reuse arms in runtime/typecheck_fs.vibe validate BOTH record
+#      sections, so a half-populated cache re-checks instead of silently
 #      degrading. Running the warm artifact proves the rendered Doubles (the
 #      test file's inspect snapshots, including a call to an IMPORTED Double
 #      function -- the shape only this lane has).
@@ -9212,6 +9212,15 @@ for pass in cold warm; do
     exit 1
   fi
 done
+# #2546: each module publishes one v10 record, never a separate offsets file.
+if find "$ffsdir/cache" -type f -name '*selfhost_module_typed_lowering_offsets_v1*' | grep -q .; then
+  echo "[compiler-gate] FAIL: separate lowering cache files are still published (#2546)" >&2
+  exit 1
+fi
+if ! grep -rl '^version' "$ffsdir/cache" | xargs grep -l '^version[[:space:]]10$' >/dev/null; then
+  echo "[compiler-gate] FAIL: no unified module cache record was published (#2546)" >&2
+  exit 1
+fi
 if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/warm.wasm"; then
   echo "[compiler-gate] FAIL: FS-lane output depends on persistent-cache state (#2391)" >&2
   exit 1
@@ -9222,20 +9231,20 @@ if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
   cat "$ffsdir/run.log" >&2 || true
   exit 1
 fi
-# Torn/corrupted sidecars must decode as MISSES, not as partial answers
-# (#2425 review round 3): truncate every offsets sidecar in the warm cache to
-# its header line plus at most one row, then compile again. The envelope's
+# Torn/corrupted records must decode as MISSES, not as partial answers
+# (#2425 review round 3): truncate every offsets record in the warm cache to
+# its version and environment lines, removing the lowering section, then compile again. The envelope's
 # required end marker rejects the truncation, the affected modules re-check,
 # and the output stays byte-identical; a decoder that accepted the torn file
 # would drop classifications and change the bytes. (Digit-level corruption is
 # rejected by the v8 digest -- see the next mutation.)
-found_sidecar=0
+found_record=0
 while IFS= read -r sc_file; do
-  found_sidecar=1
+  found_record=1
   head -2 "$sc_file" > "$sc_file.torn" && mv "$sc_file.torn" "$sc_file"
 done < <(grep -rl "^module_typed_lowering_offsets" "$ffsdir/cache" 2>/dev/null)
-if [ "$found_sidecar" != "1" ]; then
-  echo "[compiler-gate] FAIL: no float-offsets sidecars found to corrupt (#2391) -- the probe went stale" >&2
+if [ "$found_record" != "1" ]; then
+  echo "[compiler-gate] FAIL: no float-offsets records found to corrupt (#2391) -- the probe went stale" >&2
   exit 1
 fi
 VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -9243,17 +9252,17 @@ VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_D
   lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/torn.wasm" __no_entry__ \
   >/dev/null 2>&1 || true
 if [ ! -s "$ffsdir/torn.wasm" ]; then
-  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over torn sidecars (#2391)" >&2
+  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over torn records (#2391)" >&2
   cat "$ffsdir/torn.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
 if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/torn.wasm"; then
-  echo "[compiler-gate] FAIL: a torn float-offsets sidecar changed the emitted bytes (#2391)" >&2
+  echo "[compiler-gate] FAIL: a torn float-offsets record changed the emitted bytes (#2391)" >&2
   exit 1
 fi
-# Digit-level corruption inside an INTACT sidecar must also decode as a miss
+# Digit-level corruption inside an INTACT record must also decode as a miss
 # (#2425 review round 5): the torn compile above re-warmed the cache, so flip
-# one digit of the first offset row in every sidecar (same length, so the
+# one digit of the first offset row in every record (same length, so the
 # count, the end marker and every other line survive) and compile again. Only
 # the v8 digest can see this one -- the counts still match and the envelope is
 # still well formed -- so it is the case that proves the digest is
@@ -9281,9 +9290,9 @@ while IFS= read -r sc_file; do
 done < <(grep -rl "^module_typed_lowering_offsets" "$ffsdir/cache" 2>/dev/null)
 # The mutation must actually HIT (gate discipline: a red test that matched
 # nothing proves nothing) -- the lane test's own modules carry offset rows, so
-# at least one sidecar's first row must now read differently than it did.
+# at least one record's first row must now read differently than it did.
 if [ "$flipped_rows" = "0" ]; then
-  echo "[compiler-gate] FAIL: digit-flip mutation matched no sidecar row (#2391) -- the probe went stale" >&2
+  echo "[compiler-gate] FAIL: digit-flip mutation matched no record row (#2391) -- the probe went stale" >&2
   exit 1
 fi
 VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -9291,17 +9300,17 @@ VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_D
   lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/flipped.wasm" __no_entry__ \
   >/dev/null 2>&1 || true
 if [ ! -s "$ffsdir/flipped.wasm" ]; then
-  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over digit-flipped sidecars (#2391)" >&2
+  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over digit-flipped records (#2391)" >&2
   cat "$ffsdir/flipped.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
 if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/flipped.wasm"; then
-  echo "[compiler-gate] FAIL: a digit-corrupted float-offsets sidecar changed the emitted bytes (#2391)" >&2
+  echo "[compiler-gate] FAIL: a digit-corrupted float-offsets record changed the emitted bytes (#2391)" >&2
   exit 1
 fi
-# Whole-row deletion inside an intact sidecar must also decode as a miss
+# Whole-row deletion inside an intact record must also decode as a miss
 # (#2425 review round 6): the flipped compile re-warmed the cache, so delete
-# the first offset row from every sidecar (header, remaining rows, count line,
+# the first offset row from every record (header, remaining rows, count line,
 # and end marker all survive) and compile again. The declared count no longer
 # matches the row set, the module re-checks, and the bytes stay identical.
 deleted_rows=0
@@ -9315,7 +9324,7 @@ while IFS= read -r sc_file; do
   fi
 done < <(grep -rl "^module_typed_lowering_offsets" "$ffsdir/cache" 2>/dev/null)
 if [ "$deleted_rows" = "0" ]; then
-  echo "[compiler-gate] FAIL: row-deletion mutation matched no sidecar row (#2391) -- the probe went stale" >&2
+  echo "[compiler-gate] FAIL: row-deletion mutation matched no record row (#2391) -- the probe went stale" >&2
   exit 1
 fi
 VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
@@ -9323,12 +9332,12 @@ VIBE_BUILD_CACHE_DIR="$ffsdir/cache" VIBE_FS_COMPILE=1 VIBE_PREOPEN_DIR="$ROOT_D
   lib/@vibe/compiler/tests/float_call_offset_fs_lane_test.vibe "$ffsdir/rowdel.wasm" __no_entry__ \
   >/dev/null 2>&1 || true
 if [ ! -s "$ffsdir/rowdel.wasm" ]; then
-  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over row-deleted sidecars (#2391)" >&2
+  echo "[compiler-gate] FAIL: FS-lane float call-offset test did not compile over row-deleted records (#2391)" >&2
   cat "$ffsdir/rowdel.wasm.diag" >&2 2>/dev/null || true
   exit 1
 fi
 if ! cmp -s "$ffsdir/cold.wasm" "$ffsdir/rowdel.wasm"; then
-  echo "[compiler-gate] FAIL: a row-deleted float-offsets sidecar changed the emitted bytes (#2391)" >&2
+  echo "[compiler-gate] FAIL: a row-deleted float-offsets record changed the emitted bytes (#2391)" >&2
   exit 1
 fi
 rm -rf "$ffsdir"
@@ -9338,7 +9347,7 @@ echo "[compiler-gate] FS-lane Double call-result offsets + cache-state byte iden
 #      modular check. The desugar tracker rewrites `a < b` / `a + b` to
 #      str_lex_diff / String::concat only for operands it can classify
 #      syntactically; the checker records every String binop's anchor in the
-#      typed-lowering sidecar (tags 1/2 of the enc encoding) and the FS merge
+#      typed-lowering record (tags 1/2 of the enc encoding) and the FS merge
 #      rewrites exactly those binops. Red-proven against the pre-channel
 #      stage2: the lane test's inferred-lambda `<` answered `true` (address
 #      order) where content says `false`, and the lambda `+` printed an empty
@@ -9362,7 +9371,7 @@ if ! cmp -s "$sbdir/cold.wasm" "$sbdir/warm.wasm"; then
   echo "[compiler-gate] FAIL: FS-lane String binop output depends on persistent-cache state (#2391)" >&2
   exit 1
 fi
-# The warm cache's sidecars must actually carry String rows (enc tag 1 or 2),
+# The warm cache's records must actually carry String rows (enc tag 1 or 2),
 # or the channel went inert and the run below proves nothing about it (gate
 # discipline: assert the probe hit, not just that the answer looked right).
 string_rows=0
@@ -9371,7 +9380,7 @@ while IFS= read -r sc_file; do
   string_rows=$((string_rows + file_rows))
 done < <(grep -rl "^module_typed_lowering_offsets" "$sbdir/cache" 2>/dev/null)
 if [ "$string_rows" = "0" ]; then
-  echo "[compiler-gate] FAIL: no String binop rows in any typed-lowering sidecar (#2391) -- the channel went inert" >&2
+  echo "[compiler-gate] FAIL: no String binop rows in any typed-lowering record (#2391) -- the channel went inert" >&2
   exit 1
 fi
 if ! VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh \
