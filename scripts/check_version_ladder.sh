@@ -12,7 +12,7 @@
 # does every place that names the toolchain version name the SAME one?
 #
 #   1. runtime/vibe's VIBE_VERSION parses as SemVer.
-#   2. docs/release-notes-<release>.md exists for it (pre-release stripped, so
+#   2. docs/user/getting-started/release-notes-<release>.md exists for it (pre-release stripped, so
 #      0.1.0-dev is checked against the 0.1.0 notes).
 #   3. Those notes are about that version -- their H1 says so.
 #   4. The roadmap's "Version ladder" table has a row for it.
@@ -47,7 +47,7 @@ fi
 release="${version%%-*}"; release="${release%%+*}"
 
 # 2. The release has notes.
-notes="$DOCS/release-notes-$release.md"
+notes="$DOCS/user/getting-started/release-notes-$release.md"
 if [ ! -f "$notes" ]; then
   echo "check-version-ladder: $LAUNCHER reports $version, but $notes does not exist." >&2
   echo "  A version nobody wrote notes for is a version nobody can ship. Write them, or correct VIBE_VERSION." >&2
@@ -60,7 +60,7 @@ if ! head -1 "$notes" | grep -qF "$release"; then
 fi
 
 # 4. The roadmap ladder has a row for it.
-roadmap="$DOCS/release-roadmap.md"
+roadmap="$DOCS/internal/project/release-roadmap.md"
 [ -f "$roadmap" ] || fail "no such roadmap: $roadmap"
 ladder="$(sed -n '/^## Version ladder/,/^## /p' "$roadmap")"
 [ -n "$ladder" ] || fail "$roadmap has no '## Version ladder' section"
@@ -71,7 +71,7 @@ if ! printf '%s' "$ladder" | grep -qF "\`$release\`"; then
 fi
 
 # 5. The stable surface takes effect at the same version.
-surface="$DOCS/spec/stable-surface.md"
+surface="$DOCS/user/reference/stable-surface.md"
 [ -f "$surface" ] || fail "no such document: $surface"
 if ! grep -qF "takes effect at the \`$release\` tag" "$surface"; then
   echo "check-version-ladder: $surface does not say the freeze takes effect at the \`$release\` tag." >&2

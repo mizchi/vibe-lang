@@ -56,7 +56,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
-# Step-0 tracing (docs/tracing-design.md): no-op unless VIBE_TRACE_OUT is set.
+# Step-0 tracing (docs/internal/compiler/tracing-design.md): no-op unless VIBE_TRACE_OUT is set.
 # One span per markdown file (so extraction cost shows up as the file span's
 # self time) and one per block (so "which doc example is slow" is answerable
 # without instrumenting the compiler). Every block is its own compiler process

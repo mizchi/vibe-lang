@@ -2,7 +2,7 @@
 ;; literal `stream.*` canonical built-ins -- the companion to
 ;; ../future_value/component.wat, applying the same discovery to streams:
 ;; the M2c-3 spike's "self round-trip deadlocks" wall
-;; (docs/spec/wasi-p3-async.md §3.3) only applies to BLOCKING copies. With
+;; (docs/internal/design/wasi-p3-async.md §3.3) only applies to BLOCKING copies. With
 ;; the `async` canonopt on both sides, the first copy parks as a waitable
 ;; instead of parking the fiber, so a single task can rendezvous with
 ;; itself -- no host producer needed.

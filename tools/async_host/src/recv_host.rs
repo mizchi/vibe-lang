@@ -1,4 +1,4 @@
-// Real async DATA read for a vibe program (docs/spec/wasi-p3-async.md §2.3).
+// Real async DATA read for a vibe program (docs/internal/design/wasi-p3-async.md §2.3).
 // A vibe `Stdin::read_char()` compiles (via the selfhost) to a value-returning
 // `vibe.stdin_read_char () -> i64` host import. This host implements it as an
 // ASYNC function that SUSPENDS the guest once per char (as a real async source

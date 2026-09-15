@@ -4,22 +4,22 @@
 
 ## このリポジトリの中
 
-- [docs/cheatsheet.md](../../docs/cheatsheet.md) — 1ページの言語
+- [docs/user/reference/cheatsheet.md](../../docs/user/reference/cheatsheet.md) — 1ページの言語
   リファレンス。本と cheatsheet が食い違ったら、`.vibe.md` の
   ブロックを実行してコンパイラを信じること。
-- [docs/install.md](../../docs/install.md) — インストーラ、`VIBE_HOME`、
+- [docs/user/getting-started/install.md](../../docs/user/getting-started/install.md) — インストーラ、`VIBE_HOME`、
   ディスパッチャ。
-- [docs/cli-commands.md](../../docs/cli-commands.md) — すべての `vibe`
+- [docs/user/reference/cli-commands.md](../../docs/user/reference/cli-commands.md) — すべての `vibe`
   動詞。
-- [docs/editor-and-debugging.md](../../docs/editor-and-debugging.md) —
+- [docs/user/reference/editor-and-debugging.md](../../docs/user/reference/editor-and-debugging.md) —
   LSP、DAP、`type-at` / `binding-at` / `symbols`。
-- [docs/adding-modules.md](../../docs/adding-modules.md) — 新しい
+- [docs/internal/project/adding-modules.md](../../docs/internal/project/adding-modules.md) — 新しい
   パッケージの置き場所 (`@vibe` / `@vibex` / ユーザースコープ)。
-- [docs/wasm/feature-levels.md](../../docs/wasm/feature-levels.md) —
+- [docs/user/reference/feature-levels.md](../../docs/user/reference/feature-levels.md) —
   生成モジュールが使ってよい wasm proposal。
-- [docs/concurrency.md](../../docs/concurrency.md) — `Send`、リージョン、
+- [docs/internal/design/concurrency.md](../../docs/internal/design/concurrency.md) — `Send`、リージョン、
   `TaskGroup`。
-- [docs/adr.md](../../docs/adr.md) — この本が番号で引いている決定。
+- [docs/internal/design/adr.md](../../docs/internal/design/adr.md) — この本が番号で引いている決定。
 
 ## 本が前提にしているコマンド
 
@@ -41,7 +41,7 @@ pkf run vibe-md-tutorial
 
 ## この本がやらないこと
 
-仕様書 ([docs/spec/syntax.md](../../docs/spec/syntax.md)) ではなく、
+仕様書 ([docs/user/reference/syntax.md](../../docs/user/reference/syntax.md)) ではなく、
 effect taxonomy でもなく、コンパイラを読むことの代わりでもありません。
 Rust や TypeScript を書いてきた人に、vibe の実際の規則を、コンパイラが
 実行してくれる例と一緒に手渡すための文書です。

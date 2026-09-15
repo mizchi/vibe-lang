@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docs/source-range-contract.md, enforced.
+# docs/user/reference/source-range-contract.md, enforced.
 #
 # Six editor-query surfaces report positions and they have to agree on the
 # unit: byte offsets, 0-based half-open; byte columns, 1-based; with the LSP
@@ -242,7 +242,7 @@ else
 fi
 
 if [ "$fails" -ne 0 ]; then
-  echo "source-range-contract: see docs/source-range-contract.md -- a surface changed its position unit" >&2
+  echo "source-range-contract: see docs/user/reference/source-range-contract.md -- a surface changed its position unit" >&2
   exit 1
 fi
 echo "source-range-contract: ok (11 checks; byte col $BYTE_COL, codepoint col $CP_COL, UTF-16 col $want_u16 all distinct)"

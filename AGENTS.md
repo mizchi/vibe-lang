@@ -18,7 +18,7 @@
 Three pillars. When they conflict, the order is **never be silently wrong** >
 honesty of representation > pleasantness of the surface syntax. Anything the
 policy cannot settle becomes an issue with the three-axis labels
-([docs/issue-triage.md](docs/issue-triage.md)).
+([docs/internal/project/issue-triage.md](docs/internal/project/issue-triage.md)).
 
 **1. Modern syntax; a statically typed functional language that makes effects
 explicit** (lineage: Rust / MoonBit / Koka / Verse). Effects are carried by an
@@ -234,7 +234,7 @@ extended to semantic-module granularity, #1379). **Capabilities fixed at build
 time drive progressive code generation for the target platform's wasm runtime**
 — `--allow-*` drops the code for capabilities that were not granted, via
 const-fold plus DCE, and the generated wasm declares the feature level it
-requires ([docs/wasm/feature-levels.md](docs/wasm/feature-levels.md)).
+requires ([docs/user/reference/feature-levels.md](docs/user/reference/feature-levels.md)).
 
 ## Language and documentation policy (English-first)
 
@@ -251,14 +251,14 @@ consumes on its own:
 - **A short document** — translate the whole file when you edit it for another
   reason. Half in each language is worse than either. A short document is read
   start to finish, so half-and-half is worse than either language.
-- **A large living document** (this file, `docs/adr.md`, `docs/cheatsheet.md`,
+- **A large living document** (this file, `docs/internal/design/adr.md`, `docs/user/reference/cheatsheet.md`,
   `CONTRIBUTION.md`) — migrate a section at a time as sections are revised, and
-  write **new** sections and new `docs/adr.md` rows in English from the start.
+  write **new** sections and new `docs/internal/design/adr.md` rows in English from the start.
   Each is read on its own, so it does not inherit the surrounding language.
   Size is not the test: a living document is **revised section by section and
-  read section by section**. `docs/adr.md` is 192 lines and living because each
+  read section by section**. `docs/internal/design/adr.md` is 192 lines and living because each
   ADR is entered alone; `CONTRIBUTION.md` is the same shape even though it is
-  longer than `docs/adr.md`.
+  longer than `docs/internal/design/adr.md`.
 
 ### Bilingual documents: `-ja` is the translation, not the original
 
@@ -278,8 +278,8 @@ fails when a chapter has no translation, a translation has no chapter, or the
 two record different output.
 
 The language tour lives in `book/en/` (The Vibe Book). `docs/language-tour/` was **deleted** and folded
-into [docs/cheatsheet.md](docs/cheatsheet.md) — it was a fourth surface next to
-the cheatsheet, the tutorial and `docs/spec/syntax.md`, and it rotted the way
+into [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md) — it was a fourth surface next to
+the cheatsheet, the tutorial and `docs/user/reference/syntax.md`, and it rotted the way
 this section predicts: doctest compile-checks ` ```vibe ` blocks and is blind to
 prose, so it went on calling `String` a UTF-16 string (ADR-0098 made it a byte
 string) and `index.vibei` the package boundary (`index.vpkg` has been, since
@@ -308,7 +308,7 @@ admitting it already failed at its job. Fix it at the source instead:
 cited as history (e.g. [docs/archive/moonbit-retirement.md](docs/archive/moonbit-retirement.md));
 it is not a place to move things you were too cautious to delete.
 
-### ADR log rules ([docs/adr.md](docs/adr.md))
+### ADR log rules ([docs/internal/design/adr.md](docs/internal/design/adr.md))
 
 - **An ADR number is permanent and unique.** Numbers are cited from source
   comments, fixtures, gate scripts, and other ADRs, so each must resolve to
@@ -327,9 +327,9 @@ it is not a place to move things you were too cautious to delete.
 
 ## vibe 言語リファレンス
 
-vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.md](docs/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。
+vibe 言語の構文・機能を把握するには、最初に [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md) を読むこと。型、関数、パターンマッチ、エフェクト、モジュールなど全機能を網羅している。
 
-**モジュールを追加・修復するときは [docs/adding-modules.md](docs/adding-modules.md) に従う**
+**モジュールを追加・修復するときは [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md) に従う**
 (置き場所の規約、テスト + allowlist ラチェット、検証手順、既知の罠)。
 
 ### 文法で詰まったときの方針
@@ -338,7 +338,7 @@ vibe 言語の構文・機能を把握するには、最初に [docs/cheatsheet.
 
 1. **実測してから cheatsheet の「落とし穴」節に足す。** 仕様書の記述ではなく、
    現行 stage2 に食わせた結果を書く。仕様と実装は実際に食い違うことがある
-   (例: `docs/spec/syntax.md` が `test <識別子>` を「受理される」と書いていたが
+   (例: `docs/user/reference/syntax.md` が `test <識別子>` を「受理される」と書いていたが
    実際は拒否される、#1506 で修正)。書いた例は doctest が検査するので、
    意図的に拒否される形を見せるブロックは理由付きで ```vibe skip にする
 2. **同じ文法で繰り返し失敗するなら、文法/実装側の修正を検討して issue にする。**
@@ -391,7 +391,7 @@ selfhost-only (#594) 以降、ソースはすべて vibe (`.vibe`)。旧 MoonBit
 - `index.vibe` - パッケージのエントリ (`lib/@vibe/<pkg>/index.vibe`)
 - `index.vpkg` - パッケージの契約 (ヘッダ + bodyless 宣言、境界かつ公開 API。
   ADR-0070/#1269)。**`index.vibei` は legacy で境界ではなく、リポジトリにも
-  もう存在しない** — 詳細は [docs/adding-modules.md](docs/adding-modules.md)
+  もう存在しない** — 詳細は [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md)
 - `Taskfile.pkl` - pkfire タスク定義
 
 ### 変更の入れ先
@@ -402,10 +402,10 @@ adapter、bundle、component entry もここへ実装する。旧 MoonBit 実装
 #594 で完全に撤去済みなので、迷ったらここ以外に入れる場所はない。
 
 Rust-style seed compiler / stage0-stage2 / bootstrap bump の運用は
-[docs/bootstrap.md](docs/bootstrap.md) に従う。新しい syntax を
+[docs/internal/operations/bootstrap.md](docs/internal/operations/bootstrap.md) に従う。新しい syntax を
 compiler source 自体で使う場合は、先に seed compiler がその syntax を理解できる
 状態を tag し、bootstrap bump を通してから source を移行する。
-[docs/operation-gate.md](docs/operation-gate.md) の判断基準に従い、節目で
+[docs/internal/operations/operation-gate.md](docs/internal/operations/operation-gate.md) の判断基準に従い、節目で
 `pkf run full-gate` を通す。旧 `pkf run selfhost-trial-gate` 互換 alias は #850 Phase B で削除した。
 
 判断目安:
@@ -470,9 +470,9 @@ test expectations, and remain gitignored.
   (`Fs::read_file` / `Env::get` / `Console::write_stream`) は本当に関数なので
   `Effect::snake_case`。この二トラックは揺れではなく用途の違いで、
   `perform` が要るかどうかで見分けられる。分類の表と使い分けは
-  [docs/cheatsheet.md](docs/cheatsheet.md) の "Effect classes and how
+  [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md) の "Effect classes and how
   operations are spelled" と ADR-0084
-  ([docs/effect-taxonomy-entry-policy.md](docs/effect-taxonomy-entry-policy.md))。
+  ([docs/internal/design/effect-taxonomy-entry-policy.md](docs/internal/design/effect-taxonomy-entry-policy.md))。
 - **言語ポリシー: コアロジック以外は、できるだけ「色のない関数」で書けるように
   する** — 権限は row が運び、呼び出し側の式は素の関数呼び出しのままにする
   (capability builtin がその形)。
@@ -481,7 +481,7 @@ test expectations, and remain gitignored.
 
 > `moon ide` / `moon doc` は MoonBit host 退役 (#594) で使えなくなった。
 > 今は `vibe lsp` とその基盤になっている editor query primitives を使う
-> (#637, [docs/editor-and-debugging.md](docs/editor-and-debugging.md))。
+> (#637, [docs/user/reference/editor-and-debugging.md](docs/user/reference/editor-and-debugging.md))。
 
 **コード探索は `vibe symbols` / `vibe type-at` / `vibe binding-at` を使う**
 (hover・rename・go-to-def と同じ AST 解析を CLI から直接叩ける)。
@@ -531,7 +531,7 @@ test expectations, and remain gitignored.
 > 同じで、codepoint / UTF-16 の column を渡すと**エラーにならずに別の位置を
 > 答える**。唯一の例外は LSP 境界 (`--json` / `vibe lsp`) で、そこは 0-based
 > line + UTF-16 code unit へ `lib/@vibe/lsp` が変換する。契約と既知の逸脱は
-> [docs/source-range-contract.md](docs/source-range-contract.md)。
+> [docs/user/reference/source-range-contract.md](docs/user/reference/source-range-contract.md)。
 
 ```bash
 # 宣言アウトライン (NAME KIND START END / 行)。go-to-def / outline の基盤
@@ -560,7 +560,7 @@ vibe type-at file.vibe <line> <col>
 
 # カーソル位置の binding の全出現箇所 (START END byte offset / 行)。rename/refs の基盤。
 # 入出力とも byte 単位 — <col> は 1-based byte column、START/END は 0-based byte
-# offset の half-open 区間。契約は docs/source-range-contract.md
+# offset の half-open 区間。契約は docs/user/reference/source-range-contract.md
 vibe binding-at file.vibe <line> <col>
 
 # 全 diagnostics (parse error 全件 + 型エラー)。**空出力 = clean、診断ありは
@@ -644,7 +644,7 @@ vibe lsp        # stdin/stdout で LSP を話す。任意の LSP client を向�
 
 diagnostics / hover / document symbols / go-to-def / references / rename /
 completion / signature help を提供する。詳細は
-[docs/editor-and-debugging.md](docs/editor-and-debugging.md)。標準ライブラリ API
+[docs/user/reference/editor-and-debugging.md](docs/user/reference/editor-and-debugging.md)。標準ライブラリ API
 の発見も `vibe symbols` で該当モジュールの `index.vibe` を見るのが速い。
 
 ## `Int` constraints
@@ -821,7 +821,7 @@ classification artifacts. Read that file if you want to count them (#1861).
 ## Task Management
 
 タスクは GitHub Issues (`gh issue`) で管理する。ロードマップは
-[docs/release-roadmap.md](docs/release-roadmap.md) 参照。
+[docs/internal/project/release-roadmap.md](docs/internal/project/release-roadmap.md) 参照。
 
 ```bash
 # タスク一覧
@@ -841,7 +841,7 @@ gh issue list --state open --label P0
 gh issue list --state open --label blocker
 ```
 
-**分類と優先順位の規則は [docs/issue-triage.md](docs/issue-triage.md)。**
+**分類と優先順位の規則は [docs/internal/project/issue-triage.md](docs/internal/project/issue-triage.md)。**
 3 軸 (種類 / 優先度 P0-P2 / `blocker`) を独立に付け、着手順はそこから機械的に決まる。
 優先度は**壊れ方の悪質さだけ**で決める (P0 = 黙って誤る、P1 = 落ちる・書けない、
 P2 = 機能追加)。「重要そう」は優先度に入れない。新規起票時は 3 軸を付けるところまでが
@@ -851,7 +851,7 @@ P2 = 機能追加)。「重要そう」は優先度に入れない。新規起�
 経緯はコメントに残す。本文にチェックリストを積み上げると、着地した項目が増えるほど
 「次に何をやるか」が読めなくなる。
 
-設計判断は `docs/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
+設計判断は `docs/internal/design/adr.md` に記録する。旧個別ファイルは `docs/archive/adr/`。
 
 ## Local Test Execution
 
@@ -1000,7 +1000,7 @@ bash scripts/ensure_generated.sh --check  # 生成せずに鮮度だけ判定 (s
 したものだけが正しい) という状態だった。`resolve_generated_conflicts.sh` は
 その後始末専用のスクリプトで、tracking をやめたので一緒に削除した。
 
-詳細は [docs/bootstrap.md](docs/bootstrap.md).
+詳細は [docs/internal/operations/bootstrap.md](docs/internal/operations/bootstrap.md).
 
 ## pkfire
 
@@ -1008,7 +1008,7 @@ bash scripts/ensure_generated.sh --check  # 生成せずに鮮度だけ判定 (s
 Taskfile から参照されなくなったため削除済み。
 CI は `~/.cache/pkfire` を `actions/cache` でキャッシュしているため、
 変更がない subgraph は cache hit でスキップされる。
-詳細は [docs/pkfire-pkspec.md](docs/pkfire-pkspec.md)。
+詳細は [docs/internal/operations/pkfire-pkspec.md](docs/internal/operations/pkfire-pkspec.md)。
 ## レビュー・Bug Issue 起点の再発防止
 
 PR レビューや Bug Issue の修正で、同種の問題が今後も起こり得る構造的パターンを見つけたら、

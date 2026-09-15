@@ -25,7 +25,7 @@ questions with **deterministic, rule-based measurements**:
    summary. The linear output is compared against the committed golden file in
    `expected/`, and the gc output against the linear output (backend parity).
    A mismatch is a **silent-wrong candidate** (the worst failure class,
-   `docs/issue-triage.md` P0) and is flagged loudly in the perf report.
+   `docs/internal/project/issue-triage.md` P0) and is flagged loudly in the perf report.
 
 ## Scenario set
 

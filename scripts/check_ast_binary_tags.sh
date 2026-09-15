@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The AST binary ABI's tag tables must describe THIS compiler's AST (#2510).
 #
-# They did not. docs/ast_binary_abi.md shipped tag tables for the retired
+# They did not. docs/internal/compiler/ast_binary_abi.md shipped tag tables for the retired
 # MoonBit host's AST -- `Int` / `Float` / `Record` / `Map` / `Set` /
 # `ArrayBuilder`, plus whole enums (`ModuleRef`, `ParamLabel`, `EffectAtom`)
 # this compiler has never had. `src/` was removed in #594; the tables outlived
@@ -31,7 +31,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${VIBE_AST_BINARY_TAGS_ROOT:-$(dirname "$SCRIPT_DIR")}"
 
 VPKG="$ROOT/lib/@vibe/ast/index.vpkg"
-DOC="$ROOT/docs/ast_binary_abi.md"
+DOC="$ROOT/docs/internal/compiler/ast_binary_abi.md"
 
 for f in "$VPKG" "$DOC"; do
   if [ ! -f "$f" ]; then
@@ -71,7 +71,7 @@ for enum in TypeExpr Pat ImportKind Expr Stmt; do
 
   section="$(grep -n "^### $enum tags" "$DOC" || true)"
   if [ -z "$section" ]; then
-    echo "[ast-binary-tags] FAIL: docs/ast_binary_abi.md has no '### $enum tags' section" >&2
+    echo "[ast-binary-tags] FAIL: docs/internal/compiler/ast_binary_abi.md has no '### $enum tags' section" >&2
     status=1
     continue
   fi

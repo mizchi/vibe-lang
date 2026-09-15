@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify docs/spec/stable-surface.md against the compiler.
+# Verify docs/user/reference/stable-surface.md against the compiler.
 #
 # That document is the only page in the tree that makes a SemVer promise, so a
 # name listed there that does not resolve is the worst shape a documentation
@@ -48,14 +48,14 @@
 # produces `unknown name`, never silence.
 #
 # Usage: bash scripts/check_freeze_surface.sh
-#   FREEZE_DOC        override the document (default docs/spec/stable-surface.md)
-#   FREEZE_CHEATSHEET override the index document (default docs/cheatsheet.md)
+#   FREEZE_DOC        override the document (default docs/user/reference/stable-surface.md)
+#   FREEZE_CHEATSHEET override the index document (default docs/user/reference/cheatsheet.md)
 #   FREEZE_STAGE2     compiler wasm (default: VIBE_STAGE2_WASM, then newest generation, then seed)
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
-DOC="${FREEZE_DOC:-docs/spec/stable-surface.md}"
+DOC="${FREEZE_DOC:-docs/user/reference/stable-surface.md}"
 [ -f "$DOC" ] || { echo "check-freeze-surface: no such document: $DOC" >&2; exit 1; }
 
 # The cheatsheet's "Key Builtins" is the INDEX to the same surface, and #2124
@@ -69,7 +69,7 @@ DOC="${FREEZE_DOC:-docs/spec/stable-surface.md}"
 # `Map::perform`) because it also holds prose, tables and code blocks, and a
 # receiver sticks across them. The bullets alone give 31 names and no noise --
 # which is why the symbol list was restructured into bullets.
-CHEATSHEET="${FREEZE_CHEATSHEET:-docs/cheatsheet.md}"
+CHEATSHEET="${FREEZE_CHEATSHEET:-docs/user/reference/cheatsheet.md}"
 [ -f "$CHEATSHEET" ] || { echo "check-freeze-surface: no such document: $CHEATSHEET" >&2; exit 1; }
 
 # An EXPLICIT compiler that does not exist is an error, never a fallback. The

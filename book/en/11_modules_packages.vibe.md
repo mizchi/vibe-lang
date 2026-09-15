@@ -105,7 +105,7 @@ fn add(x: Int, y: Int) -> Int
 `type Counter` with no definition means consumers get the name but not
 the representation, so you can change it later. The header above the
 declarations is not vibe syntax — it is package metadata, and
-[docs/adding-modules.md](../../docs/adding-modules.md) is the reference
+[docs/internal/project/adding-modules.md](../../docs/internal/project/adding-modules.md) is the reference
 for it.
 
 The contract is the **consumer-facing** boundary: it says what other
@@ -170,6 +170,6 @@ vibe pkg update @you/pkg          # move to the newest, showing the contract dif
 
 Publish and yank append to a transparency log, and install verifies its
 proof — so a version cannot be swapped underneath you after the fact.
-[docs/registry-design.md](../../docs/registry-design.md) has the design.
+[docs/internal/design/registry-design.md](../../docs/internal/design/registry-design.md) has the design.
 
 Next: [Writing tests](12_tests.vibe.md).

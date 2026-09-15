@@ -35,7 +35,7 @@ bench キャッシュはバックエンドを鍵に含むので、linear → gc 
 ## Feature level
 
 生成されるモジュールは必要とする wasm feature level を宣言する
-([docs/wasm/feature-levels.md](../../docs/wasm/feature-levels.md))。
+([docs/user/reference/feature-levels.md](../../docs/user/reference/feature-levels.md))。
 不許可の capability は畳み落とされるので、`Http` に到達しないプログラムが
 ネットワーク対応ランタイムを要求することはない。
 

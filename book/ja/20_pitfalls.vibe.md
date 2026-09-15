@@ -5,7 +5,7 @@
 English version: [20_pitfalls.vibe.md](../en/20_pitfalls.vibe.md) (canonical)
 
 ここに挙げるのは、人の午後を 1 つ潰す規則である。どれも現行のコンパイラで
-実測した。全一覧は [docs/cheatsheet.md](../../docs/cheatsheet.md) にある。
+実測した。全一覧は [docs/user/reference/cheatsheet.md](../../docs/user/reference/cheatsheet.md) にある。
 この章は最初に噛みつくものだけ。
 
 ## `handle` の適格性は型システムではない
@@ -21,7 +21,7 @@ handled body の**内側**で宣言されたクロージャ。
 **handled body の外で宣言された row を持たないクロージャ**で、その
 呼び出しが何を perform するかを handle に伝えるものが無い。row を付けるか、
 `let` を body の内側へ移す — 診断はその両方を挙げる。実測した全一覧は
-[docs/cheatsheet.md](../../docs/cheatsheet.md) にある。
+[docs/user/reference/cheatsheet.md](../../docs/user/reference/cheatsheet.md) にある。
 
 ```vibe skip
 // skip: 適格性による拒否 — 見せたいのは診断であって実行ではない

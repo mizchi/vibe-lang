@@ -944,7 +944,7 @@ write_runtime_entry_bundle() {
 # tree and print the merged program on its own (VIBE_EMIT_MERGED_SOURCE), so the
 # tool can be bootstrapped from source in two extra seed passes and the
 # committed copy drops out entirely -- see scripts/ensure_generated.sh and
-# docs/bootstrap.md. Verified when this landed: the tool built this way produces
+# docs/internal/operations/bootstrap.md. Verified when this landed: the tool built this way produces
 # a merged source BYTE-IDENTICAL to the one built from the committed artifact.
 #
 # The seed's own flatten is deliberately NOT used for the final output. It would
@@ -953,7 +953,7 @@ write_runtime_entry_bundle() {
 # the next seed bump -- silently, since the output would still be valid. Paying
 # two extra seed passes keeps "edit the merge, regenerate, see it" true.
 # Rebuilding this tool costs three compiler invocations (~29s, 26% of the whole
-# build -- docs/tracing-design.md §5.9/§5.10) and it is a pure function of the
+# build -- docs/internal/compiler/tracing-design.md §5.9/§5.10) and it is a pure function of the
 # seed wasm plus the compiler sources. Both are already hashed by
 # ensure_generated.sh's fingerprint, which covers the seed, the manifest, every
 # manifest-named source, generate_bundle.sh and itself -- exactly this tool's
@@ -1117,7 +1117,7 @@ validate_module_source_compiles() {
   local ok=0
   # This is a FULL seed compile of the candidate module source -- structurally
   # the same work as a stage hop, not bundle bookkeeping. It gets its own span
-  # because "prepare flat source is 77s" (docs/tracing-design.md §5.8) reads as
+  # because "prepare flat source is 77s" (docs/internal/compiler/tracing-design.md §5.8) reads as
   # a slow shell script until you see how much of it is this.
   trace_begin "validate module source (seed compile)"
   local vtok="$TRACE_TOKEN"
@@ -1141,7 +1141,7 @@ validate_module_source_compiles() {
   [ "$ok" = "1" ]
 }
 
-# Inner spans for the 48.5s of bash docs/tracing-design.md §5.8 isolated.
+# Inner spans for the 48.5s of bash docs/internal/compiler/tracing-design.md §5.8 isolated.
 # Coarse units first: the point is to find WHICH of these five does the work
 # before reading any of their loops.
 trace_begin "adapter bundle (pass 1)"; _t="$TRACE_TOKEN"

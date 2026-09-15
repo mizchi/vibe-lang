@@ -4,7 +4,7 @@
 // that the bare-async-func probes elide (their wait folds into
 // [async-lower]; see ../../README.md). The captured wire names are what
 // component_codegen.vibe must emit when vibe's Future[T] materializes
-// (docs/wasip3-effect-alignment.md Part B item 2).
+// (docs/internal/design/wasip3-effect-alignment.md Part B item 2).
 wit_bindgen::generate!({
     path: "../wit",
     world: "future-value-probe",

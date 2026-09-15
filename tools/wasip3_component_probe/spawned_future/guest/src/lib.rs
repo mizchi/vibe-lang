@@ -9,7 +9,7 @@
 // `wit_bindgen::spawn_local`) that awaits the async host import and forwards
 // the result through a oneshot channel; `run` itself only awaits that
 // channel. This is the "self-contained future produced by a spawned writer
-// subtask" shape docs/spec/wasi-p3-async.md §3.7 describes.
+// subtask" shape docs/internal/design/wasi-p3-async.md §3.7 describes.
 wit_bindgen::generate!({
     path: "../wit",
     world: "spawn-probe",

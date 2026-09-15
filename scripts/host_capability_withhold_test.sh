@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A host must be able to withhold a capability: link something of the right
 # type so the module instantiates, and TRAP if the program calls it
-# (docs/capability-host-contract.md, #2825 step 1).
+# (docs/internal/design/capability-host-contract.md, #2825 step 1).
 #
 # Before this, `scripts/wasm_vibe_host_runner.js` could not express that. Its
 # `vibe` import module is a Proxy whose `get` answers an unknown field with

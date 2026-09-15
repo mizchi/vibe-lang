@@ -1068,7 +1068,7 @@ const POLICY_TOKEN_LOW_MASK = POLICY_TOKEN_HIGH_BIT - 1n;
 let policyStatTokenConfig = null;
 let policyRawFsConfig = null;
 
-// #2825 step 1 -- the not-granted stub (docs/capability-host-contract.md).
+// #2825 step 1 -- the not-granted stub (docs/internal/design/capability-host-contract.md).
 //
 // ADR-0088's 2026-09-15 amendment makes `perform?` an instantiate-time branch,
 // so an emitted module declares the ungranted arm's host import whether or not
@@ -1639,7 +1639,7 @@ function createPreview2CliStreamsHost() {
   // M2c-3 (0.2 input-stream bridge): when VIBE_STDIN_BYTES is set, feed its
   // UTF-8 bytes to input-stream.blocking-read so a handler can consume a
   // host-provided byte stream incrementally (the testable stand-in for the WASI
-  // 0.3 stream<u8> HTTP body; docs/spec/wasi-p3-async.md §3.3). Unset =>
+  // 0.3 stream<u8> HTTP body; docs/internal/design/wasi-p3-async.md §3.3). Unset =>
   // legacy EOF behaviour, so existing tests are unaffected.
   const stdinFeed =
     process.env.VIBE_STDIN_BYTES !== undefined

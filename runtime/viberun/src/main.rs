@@ -87,7 +87,7 @@ struct StringArrayReader {
 
 // Memory ResourceLimiter that delegates the size cap to an inner StoreLimits but
 // also records every accepted `memory.grow` as a growth-timeline event (tier 2
-// of docs/spec/profiling.md). Recording is gated (`record`) so non-profiling runs
+// of docs/internal/design/profiling.md). Recording is gated (`record`) so non-profiling runs
 // pay nothing. wasmtime routes BOTH guest `memory.grow` and host `Memory::grow`
 // (the bump-string allocator) through this, so the timeline is complete.
 struct MemLimiter {
@@ -2402,7 +2402,7 @@ fn wasi_fd_write(
 // the guest's exported `__heap_ptr` global. Ints/Bools are passed as raw i64.
 // This mirrors the JS host (`scripts/wasm_vibe_host_runner.js`) so the Rust
 // runner can run the same selfhost CLI artifacts as the production `vibe`
-// command (`docs/release-roadmap.md`, テーマ 1).
+// command (`docs/internal/project/release-roadmap.md`, テーマ 1).
 
 fn vibe_memory(caller: &mut Caller<'_, HostState>) -> Result<wasmtime::Memory> {
     caller

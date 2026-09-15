@@ -21,11 +21,11 @@ tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/vibe_ast_binary_tags_test.XXXXXX")"
 trap 'rm -rf "$tmp_root"' EXIT
 
 VPKG_REL="lib/@vibe/ast/index.vpkg"
-DOC_REL="docs/ast_binary_abi.md"
+DOC_REL="docs/internal/compiler/ast_binary_abi.md"
 
 reset_tree() {
   rm -rf "$tmp_root/lib" "$tmp_root/docs"
-  mkdir -p "$tmp_root/lib/@vibe/ast" "$tmp_root/docs"
+  mkdir -p "$tmp_root/lib/@vibe/ast" "$tmp_root/$(dirname "$DOC_REL")"
   cp "$REAL_ROOT/$VPKG_REL" "$tmp_root/$VPKG_REL"
   cp "$REAL_ROOT/$DOC_REL" "$tmp_root/$DOC_REL"
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Host ABI contract snapshot test (docs/spec/host-abi.md).
+// Host ABI contract snapshot test (docs/user/reference/host-abi.md).
 //
 // Compiles a pure program and an Fs-effect program with the real `vibe` launcher
 // and asserts the import/export surface matches the documented host contract, so

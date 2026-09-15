@@ -6,7 +6,7 @@
 // `vibe` on PATH).
 //
 // Debug: registers a `vibe` debug type whose adapter is the stdio DAP server in
-// clients/js/dap_server.js (docs/release-roadmap.md テーマ3 3-D). The adapter
+// clients/js/dap_server.js (docs/internal/project/release-roadmap.md テーマ3 3-D). The adapter
 // bridges DAP to `vibe run --break <fn> <file>`: setBreakpoints maps lines to
 // enclosing function names, and the runner's pause output is translated to DAP
 // stopped/stackTrace/variables; continue/next/stepIn/stepOut drive the runner's

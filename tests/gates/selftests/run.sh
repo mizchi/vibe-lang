@@ -68,7 +68,7 @@ bash "$ROOT_DIR/scripts/incremental_kpi_test.sh"
 # so (#2836 §1). Cheap: no compiler, synthetic git trees.
 bash "$ROOT_DIR/scripts/resolve_stage2_test.sh"
 # The host half of the capability contract (#2825 step 1,
-# docs/capability-host-contract.md). Same glob reason again -- and this one is
+# docs/internal/design/capability-host-contract.md). Same glob reason again -- and this one is
 # a case where the gate that already exists could not see the property:
 # `check_host_runtime_contract.py` proves both runners IMPLEMENT every portable
 # import, which is a different question from whether either can withhold one.

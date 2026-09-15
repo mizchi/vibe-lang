@@ -70,7 +70,7 @@ needs no parentheses. [Pitfalls](20_pitfalls.vibe.md) has the rule.
 Written without a type argument, `Exception` is erased: it accepts any
 `Exception[E]`, and its payload arrives as a string. When you want the
 error type preserved, write `Exception[E]` — see
-[the exception effect](../../docs/exception-effect.md).
+[the exception effect](../../docs/internal/design/exception-effect.md).
 
 ## Declaring your own effect
 
@@ -113,7 +113,7 @@ once, as its last act.
 Reach for your own effect when the caller genuinely has to swap the
 implementation — a clock in tests, a different source for a value. For
 ordinary failure use `Exception`; for local state try `let mut` first.
-[Effects vs let mut](../../docs/guide/when-to-use-effects.md) has the
+[Effects vs let mut](../../docs/user/guide/when-to-use-effects.md) has the
 criteria.
 
 ## Rows can be variables

@@ -50,7 +50,7 @@ fn array_empty_kind_scope() -> Array[(String, Int)] {
 }
 
 /// ============================================================
-/// ADR-0076 Phase 3a+3b (#817, docs/effect-evidence-passing.md 追記27-29):
+/// ADR-0076 Phase 3a+3b (#817, docs/internal/design/effect-evidence-passing.md 追記27-29):
 /// suspend CPS -- lowering for the third handler class ("suspend": a
 /// handler arm STORES `resume` as a first-class value and calls it later,
 /// at most once, from a different dynamic extent -- exactly ADR-0068's
@@ -3837,7 +3837,7 @@ fn scps_transform_handle(body: Expr, arms: Array[(Pat, Expr)], ctx: (Array[Stmt]
 // automatically safe to call from a CPS clone: #761 charges a closure
 // literal's performs to the ENCLOSING function's row, so "declared row is
 // empty => cannot perform" does not hold for values arriving through a
-// parameter (docs/spec/wasi-p3-async.md §2.2). What IS sound is an
+// parameter (docs/internal/design/wasi-p3-async.md §2.2). What IS sound is an
 // argument-flow proof: the clone `__scps_cps_E_f` is only ever invoked
 // from BY-NAME call sites of `f` (a call through a binding that aliases
 // `f` runs the untouched original), so if every by-name site of `f`
@@ -5177,29 +5177,44 @@ fn scps_rewrite(e: Expr, ctx: (Array[Stmt], Array[(String, Array[(String, Array[
 /// function-typed parameter, so the call can neither perform the handled
 /// effect itself nor invoke a user closure that might. Each name below
 /// was checked against the checker's builtin tables on those two axes.
+///
+/// The one spelling of the set (#2584). Module-level so the predicate --
+/// which runs per named callee of every suspend-lowered body -- does not
+/// rebuild it per query, and so the classification census
+/// (tests/builtin_classification_census_test.vibe) reads the same table the
+/// predicate scans rather than a copy that can fall behind it.
+let scps_safe_mut_builtin_name_table: Array[String] = [
+  "Array::push",
+  "Array::set",
+  "Array::slice",
+  "ArrayBuilder::new",
+  "ArrayBuilder::push",
+  "ArrayBuilder::freeze",
+  "Map::set",
+  "Map::delete",
+  "Bytes::set",
+  "StringBuilder::new",
+  "StringBuilder::push",
+  "StringBuilder::freeze",
+  // parser-desugar internals: `o.f = v` → __set_field(o, "f", v) and
+  // `a[i]` → __index(a, i) (channel blocking slice — a suspend-class
+  // clone body mutating a struct field, e.g. Channel.pend_seq, arrives
+  // as a __set_field call). Both are checker-verified effect-free and
+  // take no function-typed argument.
+  "__set_field",
+  "__index",
+  "assert"
+]
+
+/// A fresh copy of the table for a reader that only needs the names (the
+/// classification census). Never hand out the table itself: a caller that
+/// pushed into it would widen what a suspend-lowered body may call.
+export fn scps_safe_mut_builtin_names() -> Array[String] {
+  Array::slice(scps_safe_mut_builtin_name_table, 0, Array::length(scps_safe_mut_builtin_name_table))
+}
+
 fn scps_is_safe_mut_builtin(nm: String) -> Bool {
-  let names = [
-    "Array::push",
-    "Array::set",
-    "Array::slice",
-    "ArrayBuilder::new",
-    "ArrayBuilder::push",
-    "ArrayBuilder::freeze",
-    "Map::set",
-    "Map::delete",
-    "Bytes::set",
-    "StringBuilder::new",
-    "StringBuilder::push",
-    "StringBuilder::freeze",
-    // parser-desugar internals: `o.f = v` → __set_field(o, "f", v) and
-    // `a[i]` → __index(a, i) (channel blocking slice — a suspend-class
-    // clone body mutating a struct field, e.g. Channel.pend_seq, arrives
-    // as a __set_field call). Both are checker-verified effect-free and
-    // take no function-typed argument.
-    "__set_field",
-    "__index",
-    "assert"
-  ]
+  let names = scps_safe_mut_builtin_name_table
   let mut i = 0
   let mut found = false
   while i < Array::length(names) {

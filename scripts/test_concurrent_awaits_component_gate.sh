@@ -30,7 +30,7 @@
 # NOTE this gate is about concurrent HOST operations awaited by ONE guest
 # computation -- not M1b-3c-1c's interleaving spawn (two concurrent GUEST
 # computations), which needs machinery this shape does not have and remains
-# open. See docs/spec/wasi-p3-async.md §3.10.
+# open. See docs/internal/design/wasi-p3-async.md §3.10.
 #
 # Env:
 #   VIBE_CONCURRENT_AWAITS_GATE_COMPILER  compiler wasm override (default:

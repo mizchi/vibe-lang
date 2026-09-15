@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # vibe — user-facing launcher for the selfhost vibe toolchain.
 #
-# Architecture (docs/release-roadmap.md テーマ1):
+# Architecture (docs/internal/project/release-roadmap.md テーマ1):
 #   * a self-built wasmtime runner (`viberun`) executes wasm,
 #   * the vibe compiler ships as a portable wasm artifact (`vibe-cli.wasm`),
 #   * at install time the compiler wasm is AOT-compiled to a host-specific
@@ -10,7 +10,7 @@
 #     update` can refresh the compiler wasm (+ .cwasm) without touching the
 #     runner.
 #
-# Project root and build directory (docs/install.md "Project layout", #2675):
+# Project root and build directory (docs/user/getting-started/install.md "Project layout", #2675):
 #   * the PROJECT ROOT is the outermost directory with an `index.vpkg` walking
 #     up from the invoking directory, not crossing a directory that contains
 #     `.git`; with no `index.vpkg` in sight it is the invoking directory.
@@ -49,7 +49,7 @@
 #   vibe compile <file.vibe> [-o <out>]   compile to a .wasm (default:
 #                                         .vibe/build/out/<name>.wasm)
 #   vibe compile --wit <file.vibe>        emit the WIT world for the file's
-#                                         effect surface (docs/effect-wit-mapping.md)
+#                                         effect surface (docs/internal/design/effect-wit-mapping.md)
 #   vibe build   <file.vibe> [-o <out>]   alias of compile
 #   vibe compile|build --minify ...       post-optimize the output with the
 #                                         standalone vibe-opt.wasm artifact
@@ -58,7 +58,7 @@
 #                                         type-env cache before the (unchanged)
 #                                         serial compile (#906 Phase 2, dev
 #                                         checkout only -- see
-#                                         docs/compiler-parallelism.md)
+#                                         docs/internal/design/compiler-parallelism.md)
 #   vibe serve   <handler.vibe> [--port N] compile + compose with the wasi-http
 #                                         P3 adapter + `wasmtime serve` (#537)
 #   vibe check [--single-file] [--json] <file.vibe>
@@ -176,10 +176,10 @@ set -euo pipefail
 
 # Toolchain version. `0.1.0-dev` until the 0.1.0 tag is cut (ADR-0109) --
 # `build_release_assets.sh` requires this to equal the tag being built, so a
-# release cannot ship carrying `-dev`. See docs/release-notes-0.1.0.md.
+# release cannot ship carrying `-dev`. See docs/user/getting-started/release-notes-0.1.0.md.
 VIBE_VERSION="0.1.0-dev"
 
-# Resolve install root (docs/install.md "Install layout", #2677). An
+# Resolve install root (docs/user/getting-started/install.md "Install layout", #2677). An
 # installed launcher lives at $VIBE_HOME/toolchains/<name>/bin/vibe and
 # carries everything it needs inside that toolchain directory:
 #
@@ -217,7 +217,7 @@ else
   INSTALLED_TOOLCHAIN=0
   TOOLCHAIN_NAME=""
   if [ "$(basename "$SELF")" = "bin" ] && [ -f "$TOOLCHAIN_DIR/lib/vibe-cli.wasm" ]; then
-    echo "vibe: $TOOLCHAIN_DIR is a flat pre-#755 install (bin/vibe next to lib/vibe-cli.wasm), which this toolchain no longer runs from; remove it and reinstall with install/install.sh (docs/install.md)" >&2
+    echo "vibe: $TOOLCHAIN_DIR is a flat pre-#755 install (bin/vibe next to lib/vibe-cli.wasm), which this toolchain no longer runs from; remove it and reinstall with install/install.sh (docs/user/getting-started/install.md)" >&2
     exit 1
   fi
   VIBE_HOME="${VIBE_HOME:-$TOOLCHAIN_DIR}"
@@ -305,7 +305,7 @@ valid_toolchain_name() {
   case "$1" in ""|.|..|*[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac
 }
 
-# --- release install (docs/install.md "Updating", #2678) --------------------
+# --- release install (docs/user/getting-started/install.md "Updating", #2678) --------------------
 # `vibe self update <version>` fetches a release's assets from
 # $VIBE_RELEASE_URL (default: this repository's GitHub releases; tests point
 # it at a file:// directory), verifies every byte against
@@ -1124,7 +1124,7 @@ condense_test_trap() {
   fi
 }
 
-# --- Project root and build directory (docs/install.md "Project layout", #2675)
+# --- Project root and build directory (docs/user/getting-started/install.md "Project layout", #2675)
 #
 # The compiler resolves `.vibe/store/`, the workspace `lib/` and its own
 # persistent cache relative to ITS cwd, so the launcher makes that cwd the
@@ -1302,7 +1302,7 @@ case "$cmd" in
     extra_args=("$@")
     [ -f "$src" ] || die "not found: $src"
     # The compiled program and its `.funcmap` sidecar live under the build
-    # directory and are overwritten on every run (docs/install.md "Project
+    # directory and are overwritten on every run (docs/user/getting-started/install.md "Project
     # layout").
     out="$BUILD_DIR/run/$(basename "${src%.vibex}").wasm"
     mkdir -p "$BUILD_DIR/run"
@@ -1422,7 +1422,7 @@ case "$cmd" in
       esac
       # #537: emit the WIT world for the file's effect surface (exported
       # functions -> world exports, their `with { E }` rows -> world imports).
-      # Contract: docs/effect-wit-mapping.md.
+      # Contract: docs/internal/design/effect-wit-mapping.md.
       if [ -z "$out" ]; then
         out="$BUILD_DIR/out/$(basename "${src%.vibe}").wit"
       fi
@@ -1445,7 +1445,7 @@ case "$cmd" in
     fi
     if [ -z "$out" ]; then
       # No `-o`: the artifact goes under the build directory, never next to
-      # the source (docs/install.md "Project layout", #2675).
+      # the source (docs/user/getting-started/install.md "Project layout", #2675).
       case "$src" in
         *.vibex) out="$BUILD_DIR/out/$(basename "${src%.vibex}").wasm" ;;
         *) out="$BUILD_DIR/out/$(basename "${src%.vibe}").wasm" ;;
@@ -1591,7 +1591,7 @@ case "$cmd" in
     composed="${out%.component.wasm}.serve.wasm"
     wac plug --plug "$out" "$adapter" -o "$composed" || die "serve: wac plug failed"
     echo "composed -> $composed"
-    # 4. serve (wasmtime 45 P3 flags; docs/spec/wasi-p3-async.md §4.1)
+    # 4. serve (wasmtime 45 P3 flags; docs/internal/design/wasi-p3-async.md §4.1)
     command -v wasmtime >/dev/null 2>&1 || die "serve: 'wasmtime' not found (https://wasmtime.dev)"
     echo "serving http://$addr/ (Ctrl-C to stop)"
     exec wasmtime serve -Sp3 -Shttp -W exceptions=y -W concurrency-support=y \
@@ -2008,7 +2008,7 @@ case "$cmd" in
     # binding's own name). Those are exactly the ones codegen lowers to a heap
     # ref cell instead of a plain wasm local -- 3.8-4.9x the local form, and
     # the only ones whose writes are observable from outside the declaring
-    # scope (#1262, docs/side-effect-consolidation.md). Empty output means
+    # scope (#1262, docs/internal/design/side-effect-consolidation.md). Empty output means
     # every `let mut` in the file stays a local. A report, never an error.
     #
     # --strict switches to the ENFORCEMENT predicate (the checker's, which
@@ -2652,7 +2652,7 @@ case "$cmd" in
     set -- "${_test_files[@]}"
     # The pass cache is $VIBE_HOME/cache/test, keyed by the compiled wasm's
     # sha256 (which already folds in the compiler); no separate override
-    # (docs/install.md "Environment variables", #2677) -- point VIBE_HOME at a
+    # (docs/user/getting-started/install.md "Environment variables", #2677) -- point VIBE_HOME at a
     # scratch home to isolate a run.
     tcache="$VIBE_HOME/cache/test"
     # #2228: per-file result records for the [vibe-test] summary line. A
@@ -3107,7 +3107,7 @@ PY
     #   * an expression line is wrapped in a synthetic entry (the ADR-0069
     #     wrap-in-main story), compiled against the buffer, and the produced
     #     wasm is executed. Because each evaluation is a fresh program run,
-    #     earlier side effects re-run on every line (see docs/cli-commands.md).
+    #     earlier side effects re-run on every line (see docs/user/reference/cli-commands.md).
     # stdin not a tty => no prompt is printed (bash `read -p` only prompts on a
     # terminal), so `printf '...' | vibe shell` is deterministic for scripting.
     repl_file=""
@@ -3325,10 +3325,10 @@ REPL_HELP
     # none. This line is the FIRST vibe source a new user sees AND it is
     # compiled by the toolchain this launcher installs, so it can never lag
     # the surface syntax; scripts/test_vibe_install_hello.sh now pins it to
-    # the program README.md and docs/install.md teach.
+    # the program README.md and docs/user/getting-started/install.md teach.
     printf 'fn main allows Console {\n  println("42")\n}\n' > "$ndir/main.vibex"
     # The root `index.vpkg` is the project marker (`vibe root` finds it) and
-    # the manifest its dependencies are pinned in (docs/install.md "Project
+    # the manifest its dependencies are pinned in (docs/user/getting-started/install.md "Project
     # layout", #2675). Its header is written in the formatter's canonical shape so
     # `vibe fmt --check` on a fresh project is clean. The `@local` scope is
     # the one `vibe pkg publish` refuses: a scaffold is not a published name;
@@ -3344,7 +3344,7 @@ REPL_HELP
   add)
     # vibe add <source-spec>
     # Fetch a package straight from git into the project's `.vibe/store/`
-    # and pin it in the root `index.vpkg` (docs/install.md "Dependencies",
+    # and pin it in the root `index.vpkg` (docs/user/getting-started/install.md "Dependencies",
     # #2676): the manifest gains a `deps` entry `<name> : <version>` and a
     # `require <name> <version> = #pkg:sha1:<hex> from <pinned-spec>` line
     # whose spec names the resolved COMMIT, so `vibe fetch` on a fresh clone
@@ -3360,7 +3360,7 @@ REPL_HELP
     [ "$#" -eq 1 ] || die "$add_usage"
     aspec="$1"
     case "$aspec" in -*) die "$add_usage" ;; esac
-    [ -f index.vpkg ] || die "vibe add: no index.vpkg at the project root ($PROJECT_ROOT); \`vibe new\` writes one (docs/install.md, Project layout)"
+    [ -f index.vpkg ] || die "vibe add: no index.vpkg at the project root ($PROJECT_ROOT); \`vibe new\` writes one (docs/user/getting-started/install.md, Project layout)"
     # Split the spec into remote + ref (+ subdir) so a constraint ref can be
     # resolved; the same split vibe_pkg.sh performs.
     aremote=""; aref=""; ahead=""; atail=""
@@ -3463,7 +3463,7 @@ EOF
     # Default: start the stdio LSP server (diagnostics). Editors configure
     # `vibe lsp`. The node server is JSON-RPC plumbing; it drives this same
     # launcher's `vibe check`/`type-at`/etc. for the actual compile.
-    # (docs/release-roadmap.md テーマ4 MVP.)
+    # (docs/internal/project/release-roadmap.md テーマ4 MVP.)
     server="$TOOLCHAIN_DIR/lib/lsp_server.js"
     [ -f "$server" ] || server="$SELF/../../clients/js/lsp_server.js"
     [ -f "$server" ] || die "lsp server not found (looked in $TOOLCHAIN_DIR/lib and repo clients/js)"
@@ -3565,7 +3565,7 @@ EOF
     ;;
   toolchain)
     # vibe toolchain list | default <name> | remove <name>
-    # (docs/install.md "Install layout", #2677). Selection order is the
+    # (docs/user/getting-started/install.md "Install layout", #2677). Selection order is the
     # dispatcher's: $VIBE_TOOLCHAIN, then $VIBE_HOME/toolchain, then the
     # single installed toolchain; `default` rewrites the file.
     tsub="${1:-list}"; shift || true
@@ -3630,7 +3630,7 @@ EOF
     case "$sub" in
       update)
         # vibe self update [<version>|latest] [--no-default] [--force]
-        #   install a release toolchain (docs/install.md "Updating",
+        #   install a release toolchain (docs/user/getting-started/install.md "Updating",
         #   #2678) and make it the default
         # vibe self update --cli-wasm <path>
         #   swap the compiler wasm of THIS toolchain and rebuild its .cwasm
@@ -3664,7 +3664,7 @@ EOF
         fi
         ;;
       uninstall)
-        # vibe self uninstall [--purge]  (docs/install.md "Uninstalling",
+        # vibe self uninstall [--purge]  (docs/user/getting-started/install.md "Uninstalling",
         # #2677): removes what the installer put under $VIBE_HOME --
         # toolchains/, bin/ (the dispatcher), env, toolchain -- and the one rc
         # line a default-prefix install added. The shared, content-keyed state

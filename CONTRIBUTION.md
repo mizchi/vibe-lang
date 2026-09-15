@@ -3,7 +3,7 @@
 This document covers the internal development workflow: building the
 selfhost compiler, running the verification gates, the task-runner command
 reference, and the project layout. For the language itself, start with
-[README.md](README.md) and [docs/cheatsheet.md](docs/cheatsheet.md).
+[README.md](README.md) and [docs/user/reference/cheatsheet.md](docs/user/reference/cheatsheet.md).
 
 vibe is **selfhost-only**: the compiler, type checker, and codegen are all
 written in vibe itself (`lib/@vibe/compiler/`, `lib/@vibe/cli/`) and built
@@ -39,7 +39,7 @@ Coverage は selfhost テストスイート基準で測る:
 - 集計: `pkf run coverage`
 - branch coverage gate: `pkf run coverage-suite-branch-gate`
 - next-branch 提案: `pkf run coverage-suite-next-branches`
-- 詳細: [docs/coverage.md](docs/coverage.md)
+- 詳細: [docs/internal/operations/coverage.md](docs/internal/operations/coverage.md)
 
 ## Before committing a compiler change
 
@@ -128,7 +128,7 @@ bash scripts/vibe_run.sh  scripts/review_lint.vibex          # run a .vibex root
 compiler, an unset value answers for a compiler that does not contain it.
 
 For the user-facing command reference see
-[docs/cli-commands.md](docs/cli-commands.md).
+[docs/user/reference/cli-commands.md](docs/user/reference/cli-commands.md).
 
 ## WASM Execution
 
@@ -228,7 +228,7 @@ fixtures/                 # Test fixtures (compiler regression corpus)
 scripts/ pkspec/          # Build/test scripts + pkfire/pkspec definitions
 ```
 
-See also [docs/adding-modules.md](docs/adding-modules.md) for the module
+See also [docs/internal/project/adding-modules.md](docs/internal/project/adding-modules.md) for the module
 placement conventions, and CLAUDE.md's "MoonBit host vs selfhost" section for
 where new compiler work should land.
 
@@ -282,5 +282,5 @@ pkf run bench-module-job-pool
 ## Task management
 
 タスクは GitHub Issues (`gh issue`) で管理する。ロードマップは
-[docs/release-roadmap.md](docs/release-roadmap.md) 参照。設計判断は
-[docs/adr.md](docs/adr.md) に記録する。
+[docs/internal/project/release-roadmap.md](docs/internal/project/release-roadmap.md) 参照。設計判断は
+[docs/internal/design/adr.md](docs/internal/design/adr.md) に記録する。

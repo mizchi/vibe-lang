@@ -4,7 +4,7 @@
 > renumbered by ADR-0109: the first release usable by anyone but the author is
 > `0.1.0`, and everything described below was 0.0.x development. The document is
 > kept as the record of what landed between 2026-06 and 2026-07-17; the release
-> that ships is [release-notes-0.1.0.md](../release-notes-0.1.0.md).
+> that ships is [release-notes-0.1.0.md](../user/getting-started/release-notes-0.1.0.md).
 >
 > 2026-07-17 確定。実装はすべて main にマージ済み (PR #927/#933/#935 ほか)。
 

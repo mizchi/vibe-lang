@@ -211,7 +211,7 @@ no cache
 **const-fold と DCE で成果物から消えます** — それを必要としたコードは、
 到達不能になるのではなく wasm に入りません。`Http` を一度も得ないプログラム
 はネットワークのコードを配布せず、ネットワーク可能なランタイムも要求しません
-([feature levels](../../docs/wasm/feature-levels.md))。
+([feature levels](../../docs/user/reference/feature-levels.md))。
 
 起動時、ホストが許可しなかった必須ケーパビリティがあれば `main` の前に
 中断し、許可するはずだったフラグの名前を告げます。

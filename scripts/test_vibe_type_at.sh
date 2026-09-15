@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression test for `vibe type-at` (LSP typed-hover MVP, docs/release-roadmap.md
+# Regression test for `vibe type-at` (LSP typed-hover MVP, docs/internal/project/release-roadmap.md
 # テーマ4). type_at_source locates the identifier at a 1-based (line, col) via the
 # real EIdent / binding-name source offsets, typechecks the program, and prints
 # the inferred type of that env-visible name. Hovering whitespace / a keyword (no

@@ -6,7 +6,7 @@ set -euo pipefail
 # published under a `seed/<name>` tag distinct from product `v*` releases.
 # No semver/launcher-version gate — bootstrap bumps aren't tied to a
 # product version. Triggered by .github/workflows/seed-release.yml on
-# `seed/*` tag push. See docs/bootstrap.md.
+# `seed/*` tag push. See docs/internal/operations/bootstrap.md.
 #
 # Usage: build_seed_release_assets.sh <tag>
 #   <tag> is the full tag name including the `seed/` prefix, e.g.
