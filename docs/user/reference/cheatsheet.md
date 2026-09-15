@@ -219,8 +219,9 @@ fn reserved_values() -> Array[Int] {
 The capacity expression is evaluated once and must be an `Int`. Negative
 values and values above 536,870,908 trap before narrowing to wasm32; an
 allocation must also fit available linear memory. Growth that would overflow
-the buffer size or heap address traps before changing the array. Bump and GC
-allocations also leave room for the memory-growth guard page. Each array has
+the buffer size or heap address traps before changing the array. New linear
+allocations also leave room for the memory-growth guard page; RC can still
+reuse an existing free block when the frontier cannot grow. Each array has
 one element type, inferred from its uses or an annotation, just like `[]`.
 
 If a trait implementation requires another trait on the elements
