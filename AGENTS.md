@@ -154,10 +154,8 @@ qualified spelling, the UFCS spelling (#931's rung), the method taken as a VALUE
 call site — it answered `true` for `equals(7, 8)` until a review round found it),
 and interpolation — the last one too, because a formal-typed value is erased, so
 the builtin renderer prints the representation and not the value (`Pt!` through
-the wrong witness, `284` — a tagged pointer — with the witness withheld). A scalar is unaffected:
-`interp_shape` answers before the dictionary is consulted, which is also why a
-top-level `[T: Show]` at `Int` prints `7` rather than going through
-`Int::to_string`. `==` is NOT refused — it falls back to the ladder, which is
+the wrong witness, `284` — a tagged pointer — with the witness withheld). Concrete scalar operands use `interp_shape`. A formal remains erased even
+when a caller supplies `Int`, so it needs a renderer witness (#2840). `==` is NOT refused — it falls back to the ladder, which is
 #2523's subject, not this one. The condition reads the INNERMOST binder's own
 bound (`dtd_scope_formal_bounds`) and whether that binder is a lambda's
 (`dtd_scope_formal_nested`), so it is about the binder — not about a spelling
@@ -174,38 +172,23 @@ invisible to `formal_in_scope`, `dtd_formal_is_shadowed` and
 top-level binder, which is what would catch a refusal that grew too wide).
 Threading a lambda binder's own bound is the remaining half of #2737.
 
-**Interpolating a nested binder's formal is refused too** (#2745), and for a
-different reason than the four dispatch rungs: a dispatch asks for a witness, so
-it is refused only when the binder's bound promised one, whereas every type is
-renderable in principle and what fails is that this pass does not know WHICH type
-it has. A formal a nested binder bound is erased, so `"\{a}"` printed the
-representation — measured `272`, the tagged pointer, for a struct. That is the
-pointer decimal the #1445 refusal exists to prevent; its guard requires a
-DECLARED struct and deliberately excludes a formal (#2141, so an erased formal
-does not produce a false "missing Show"), and the two guards' gap is where this
-sat. A TOP-LEVEL generic never reaches it, and this paragraph used to say that
-was because "specialization gives the interpolation a concrete type". **There is
-no specialization** — `codegen/expr/compile_call.vibe` states there is no
-monomorphization pass, and `monoify.vibe` is dead code. What reaches the concrete
-type is #2468's call-site rewrite of a show SHIM: `fn show_any[T](a: T) { "\{a}" }`
-has a body that is exactly `__to_string(a)`, so the CALL SITE is rewritten to the
-direct spelling, and it prints `7` at `Int` and is refused by name at a renderless
-struct, both unchanged. **One statement more and the body is not a shim**, nothing
-rewrites the call site, and the same top-level generic prints the tagged pointer —
-measured on `26e9d8b`, `v=232` for a `Pt` that HAS an impl. That is **#2840**, a
-live P0, and `lib/@vibe/core/set.vibe`'s `set_value_to_string[T]` is an instance of
-it in shipped library code: `StringSet::add_by` keys a struct by its pointer, so
-`contains_by` answers `true` for the same object and `false` for an equal one. **The cost, accepted: a
-nested binder applied only at a scalar rendered correctly and is now refused**
-— it was right by accident of the instantiation, since one lowering serves
-`inner(42)` and `inner(Qt::{ .. })`, and telling them apart needs the lambda
-specialized (the same work #2737 left open). Pinned by
-`fixtures/lambda_bound_erased_interp_*_refused.vibe`, the scalar cost among them.
-Landing it also fixed the marker it reads: `rewrite_stmt` now pushes a top-level
-declaration's binder frame itself instead of letting `rewrite_expr`'s EFn arm do
-it, because that arm cannot tell a declaration from a lambda — measured, an
-unbounded top-level generic was marked nested, and the refusal rejected the
-compiler's own sources.
+**Interpolating an erased formal requires a renderer** (#2745, #2840).
+Top-level generic bodies are not specialized, so moving an unbounded lambda to
+a top-level declaration does not supply one. The checker rejects a formal
+without a method-bearing renderer bound; a marker `Show` does not suffice.
+The diagnostic asks for an explicit `(T) -> String` renderer or interpolation
+at a concrete type. A top-level method-bearing `to_string(Self) -> String`
+bound uses its witness; nested bound dispatch remains subject to #2737.
+
+A direct one-parameter rendering shim is expanded at each call site, where
+its argument type is still available. Adding a prefix or a local binding
+makes the body cease to be a shim. Passing a generic shim as a value is
+refused by lowering; use a lambda with a concrete parameter type instead.
+`StringSet`'s `*_by` helpers now take an explicit key function, and the imported
+`@vibe/core` `inspect` takes an explicit renderer. The ordinary unimported
+`inspect(value, expected)` remains a call-site expansion. Regression coverage:
+`interp_unbounded_formal_test.vibe`, `generic_renderer_witness_test.vibe`,
+`string_set_key_renderer_test.vibe`, and the existing lambda refusal fixtures.
 
 **The bound itself is required** (#2474): `==` / `!=`
 on an operand whose type mentions a formal with no `Eq` bound (bare `T`,

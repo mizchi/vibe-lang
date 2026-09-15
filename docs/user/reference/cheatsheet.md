@@ -967,7 +967,8 @@ let b2 = Box[Int]::{ v: 2 }               // explicit type args PIN the instanti
 // #1392: `"\{v}"` は解決できた型の `T::to_string` を呼ぶ。prelude の
 // `to_string(v)` も同じ (body が `__to_string(x)` そのものの 1 引数 pass-through
 // は call site で inline され、補間と同じ書き換えを受ける) — ただし
-// `f[T: Show](x) { to_string(x) }` の内側は型が変数なので従来どおり
+// A generic body needs a method-bearing renderer witness or an explicit
+// `(T) -> String` callback. The builtin marker Show supplies no witness (#2840).
 
 trait Eq
 trait Ord: Eq                              // supertrait
@@ -990,6 +991,22 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 // `vibe check` が「cannot be dispatched here」で拒否する (#1858) —
 // T 型の引数 (または Array[T] 引数) を witness carrier にすること。
 ```
+
+Generic interpolation requires a renderer when the operand still has a type
+parameter. For example, write `render(value)` using a `(T) -> String` callback
+inside `fn format[T]`; adding the builtin marker `Show` alone does not provide
+a callable renderer. A top-level bound on a trait declaring
+`to_string(Self) -> String` can dispatch through its witness. Direct rendering
+shims still expand at their call sites; pass a concrete lambda when a renderer
+is needed as a function value.
+
+`StringSet` key helpers take that callback explicitly:
+`StringSet::add_by(set, key, value)`, `remove_by(set, key, value)`,
+`contains_by(set, key, value)`, and the bare `from_array_by(values, key)`.
+Use the same key function for insertion, lookup, and removal. The imported
+`@vibe/core` snapshot helper is `inspect(value, expected, render)`;
+the usual unimported `inspect(value, expected)` syntax remains unchanged.
+
 
 ### Marker-trait impls do not satisfy bounds for containers (#1503)
 

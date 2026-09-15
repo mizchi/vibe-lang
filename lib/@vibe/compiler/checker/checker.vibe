@@ -91,6 +91,7 @@ import @vibe/compiler/core {
   subst_lookup,
   trait_decl_params,
   trait_method_sig_binders_deep,
+  trait_method_sig_deep,
   trait_supers,
   type_constructor_name,
   type_implements_trait,
@@ -3111,6 +3112,92 @@ fn eq_formals_has_vid(items: Array[(Int, String)], vid: Int) -> Bool {
     }
   }
   found
+}
+
+// A marker bound carries no callable renderer. Read the method's actual
+// signature, including inherited methods, rather than the trait's spelling.
+fn interp_bounds_have_renderer(env: TypeEnv, bounds: Array[String]) -> Bool {
+  let mut i = 0
+  let mut found = false
+  while i < Array::length(bounds) && !found {
+    match trait_method_sig_deep(env, trait_ref_name(Array::get(bounds, i)), "to_string") {
+      Some((params, ret)) => if Array::length(params) == 1 {
+        found = match (Array::get(params, 0), ret) {
+          (TyName("Self"), TyName("String")) => true,
+          _ => false
+        }
+      },
+      None => ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+// Reuse the checker's binder identities: aliases and inferred expression types
+// retain a formal's identity even when its source spelling is shadowed.
+fn interp_erased_formal(ty: Type, s: Subst, env: TypeEnv) -> String {
+  match subst_apply(s, ty) {
+    CtVar(id) => {
+      let mut i = Array::length(eq_formal_vars) - 1
+      let mut found = ""
+      while i >= 0 && found == "" {
+        let (vid, name) = Array::get(eq_formal_vars, i)
+        if eq_group_is_open(Array::get(eq_formal_group, i)) {
+          match subst_apply(s, CtVar(vid)) {
+            CtVar(rep) => if rep == id && !interp_bounds_have_renderer(env, subst_bounds_for(s, vid)) && !interp_bounds_have_renderer(env, subst_bounds_for(s, id)) {
+              found = name
+            },
+            _ => ()
+          }
+        }
+        i = i - 1
+      }
+      found
+    },
+    CtNamed(n, _) => if String::starts_with(n, "#hktformal.") {
+      String::substring(n, 11, String::length(n))
+    } else {
+      ""
+    },
+    CtApplied(head, _) => interp_erased_formal(head, s, env),
+    _ => ""
+  }
+}
+
+// The entire body must be a direct pass-through. Such calls are expanded at
+// their use sites by trait lowering; adding a prefix or binding ends this case.
+fn interp_is_shim_body(params: Array[(String, Option[TypeExpr])], body: Expr) -> Bool {
+  if Array::length(params) != 1 {
+    false
+  } else {
+    let (pname, _) = Array::get(params, 0)
+    match body {
+      ECall(EIdent("__to_string", _), args, _) => if Array::length(args) == 1 {
+        match Array::get(args, 0) {
+          EIdent(name, _) => name == pname,
+          _ => false
+        }
+      } else {
+        false
+      },
+      _ => false
+    }
+  }
+}
+
+fn check_interp_formal(ty: Type, s: Subst, env: TypeEnv, errors: Array[String], off: Int) -> Unit {
+  let shim = match env_lookup(env, "#interp.shim.body") {
+    Some(CtBool) => true,
+    _ => false
+  }
+  if !shim {
+    let name = interp_erased_formal(ty, s, env)
+    if name != "" {
+      let edit = String::concat("pass an explicit renderer `(", String::concat(name, ") -> String`, or interpolate at a concrete type: type parameter `"))
+      Array::push(errors, String::concat(edit, String::concat(name, String::concat("` is erased here and has no renderer witness; a marker `Show` bound does not provide one", off_marker(off)))))
+    }
+  }
 }
 
 fn eq_formals_has_name(items: Array[(Int, String)], name: String) -> Bool {
@@ -8224,6 +8311,9 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               let mut c2 = c
               while ai < alen {
                 let (at, ns, nc) = check_expr_capture(Array::get(args, ai), env, defs, s2, c2, errors, tytab, capture, lane)
+                if name == "__to_string" && ai == 0 {
+                  check_interp_formal(at, ns, env, errors, call_off)
+                }
                 // First-argument head check for container/string builtins: the
                 // receiver's top-level constructor must match (`Array::length(5)`
                 // passes an Int where an Array is required). A non-concrete head
@@ -10257,7 +10347,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         None => env_bind(fn_env, "__return__", CtUnknown)
       }
       let (return_provenance, return_c) = fresh_var(c1)
-      let body_env = env_bind(annotated_body_env, "__return_provenance__", return_provenance)
+      let return_env = env_bind(annotated_body_env, "__return_provenance__", return_provenance)
+      let body_env = env_bind(return_env, "#interp.shim.body", if interp_is_shim_body(params, body) {
+        CtBool
+      } else {
+        CtUnit
+      })
       let (bt, s2, c2) = check_expr_capture(body, body_env, defs, s1, return_c, errors, tytab, capture, lane)
       if eq_gid >= 0 {
         eq_group_end()
