@@ -888,6 +888,64 @@ local testCheckTelemetrySidecarGuards =
     "test-check-telemetry-sidecar-guards",
     "scripts/check_telemetry_sidecar_guards_test.sh",
   )
+// #2758: one declared builtin, two host implementations that disagreed.
+// `Fs::remove` was `rmSync(.., { recursive: true, force: true })` in the JS
+// runner and `fs::remove_file` in the Rust one, so clearing a path that
+// happened to name a directory destroyed a tree under `vibe test` and trapped
+// under `vibe run`. `fixtures/gc_host_builtins.vibe` pins linear-vs-gc
+// agreement for this class of bug; nothing pinned JS-vs-Rust. Asked of both
+// RUNNING runners rather than read off either source.
+local checkHostRemoveParity = new Task {
+  name = "check-host-remove-parity"
+  description =
+    "the JS and Rust runners agree: Fs::remove is non-recursive on both, Fs::remove_tree is recursive on both"
+  cmd = "bash scripts/check_host_remove_parity.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "runtime/viberun/src/main.rs"
+  }
+  deps { selfhostGeneration }
+}
+// NOT scriptTask: that factory supplies inputs but no `deps`, and this
+// companion's GREEN phase compiles a program calling `Fs::remove_tree`. Run
+// directly, or concurrently as a release-check dependency on a clean or reused
+// workspace, it would find no generation and fall back to the committed seed --
+// which predates the builtin -- or pick up an unrelated generation and certify
+// the wrong compiler (Codex on #2823). Same dependency and same artifact
+// channel as the gate it tests.
+local testCheckHostRemoveParity = new Task {
+  name = "test-check-host-remove-parity"
+  description = "red test: the parity gate FAILS when the JS runner's fs_remove is recursive again"
+  cmd = "bash scripts/check_host_remove_parity_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "runtime/viberun/src/main.rs"
+  }
+  deps { selfhostGeneration }
+}
+// #2758: the gc backend's host-import list is encoded in FIVE places (use_host,
+// host_defs, host_imports, the import vector-header literal, and hbo). They must
+// agree, and nothing checked that they did -- adding ONE import produced two
+// different non-instantiable modules in sequence, and the file's own comment
+// had already recorded a third occurrence while naming only four of the five.
+// Reads the source, so it needs no generation and costs nothing.
+local checkGcHostImportCounts = new Task {
+  name = "check-gc-host-import-counts"
+  description =
+    "the gc backend's five encodings of the host-import list agree (hbo, host_imports, host_defs, vector header)"
+  cmd = "bash scripts/check_gc_host_import_counts.sh"
+  inputs {
+    "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
+    ...scriptSources
+  }
+}
+local testCheckGcHostImportCounts =
+  scriptTask(
+    "test-check-gc-host-import-counts",
+    "scripts/check_gc_host_import_counts_test.sh",
+  )
 // scripts/profile_compile.sh refuses a name-stripped compiler artifact. Every
 // stage2 is stripped unless built with VIBE_WASM_NAMES=1, so without the guard
 // the profiler's whole output is `wasm-function[N]` rows -- it spent minutes
@@ -2213,6 +2271,10 @@ local releaseCheck = new Task {
     testCheckExportRefusal
     checkTelemetrySidecarGuards
     testCheckTelemetrySidecarGuards
+    checkHostRemoveParity
+    testCheckHostRemoveParity
+    checkGcHostImportCounts
+    testCheckGcHostImportCounts
     testProfileCompile
     checkCompileOnlyLanes
     testCheckCompileOnlyLanes
@@ -2328,6 +2390,10 @@ tasks {
   testCheckExportRefusal
   checkTelemetrySidecarGuards
   testCheckTelemetrySidecarGuards
+  checkHostRemoveParity
+  testCheckHostRemoveParity
+  checkGcHostImportCounts
+  testCheckGcHostImportCounts
   testProfileCompile
   checkCompileOnlyLanes
   testCheckCompileOnlyLanes

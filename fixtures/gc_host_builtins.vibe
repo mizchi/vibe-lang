@@ -114,9 +114,16 @@ fn rename_check() -> Int with Fs {
 }
 
 // #2738: `Fs::remove_file` is the NON-recursive remove, and the SECOND pair is
-// the reason it exists. `Fs::remove` lowers to `rmSync(.., { recursive: true })`,
-// so a "clear the stale sidecar" call whose path happens to name a directory
-// deletes that whole tree.
+// the reason it exists. `Fs::remove` USED TO lower to
+// `rmSync(.., { recursive: true })` on the JS host, so a "clear the stale
+// sidecar" call whose path happened to name a directory deleted that whole
+// tree -- and did not on the Rust host, which is #2758.
+//
+// #2758 moved the recursion to `Fs::remove_tree`, so `Fs::remove` is
+// non-recursive on both hosts now and this pair no longer separates
+// `remove_file` from it on the RECURSION axis. It still separates them on the
+// error axis (`remove_file` swallows, `remove` raises) and it still catches a
+// `remove_file` wired to the wrong host import, so it stays.
 //
 // Both pairs read 10 when correct. The directory pair reports 0 when the
 // directory SURVIVED, so a remove_file that fell through to a tree remove --
@@ -150,8 +157,30 @@ fn remove_file_checks() -> Int with Fs {
   (before * 10 + after) * 100 + (dir_before * 10 + dir_gone)
 }
 
+// #2758: `Fs::remove_tree` is the recursive one, and this is the pair that says
+// so. It reads 11 when the directory existed AND is gone afterwards -- note the
+// second digit is the opposite polarity to the pair above, because there the
+// desired outcome is that the directory SURVIVES and here it is that the
+// directory goes. A remove_tree wired to the non-recursive import leaves the
+// tree standing and reads 10; one that runs on a directory which was never
+// created reads 01, which is why the first digit is asserted too.
+fn remove_tree_checks() -> Int with Fs {
+  let dir_before = if Fs::is_dir(probe_root() + "/rtdir") {
+    1
+  } else {
+    0
+  }
+  Fs::remove_tree(probe_root() + "/rtdir")
+  let dir_gone = if Fs::is_dir(probe_root() + "/rtdir") {
+    0
+  } else {
+    1
+  }
+  dir_before * 10 + dir_gone
+}
+
 export let main = () -> Int with Fs + Stdout {
   Stdout::write_stream("gc-host-builtins:")
   // 10 10 10 10 -> 10101010 when every pair reads (affirmative=1, negative=0).
-  ((dir_checks() * 1000000 + file_checks() * 10000 + remove_check() * 100 + rename_check()) * 1000 + readdir_checks()) * 10000 + remove_file_checks()
+  (((dir_checks() * 1000000 + file_checks() * 10000 + remove_check() * 100 + rename_check()) * 1000 + readdir_checks()) * 10000 + remove_file_checks()) * 100 + remove_tree_checks()
 }

@@ -817,11 +817,43 @@ jobs:
         run: |
           VIBE_PREBUILT_MODULE_SOURCE=lib/@vibe/compiler/_cli_adapter_module_source.vibe \
             bash scripts/generations.sh build --out-dir _build/_ci_shard_gen
+      # #2758: viberun, for the same reason the comment at the top of this job
+      # gives for the compiler -- check_host_remove_parity.sh compares the TWO
+      # host runners, and its companion runs in the selftests lane. Without the
+      # Rust one the gate cannot answer its question at all, and a self-test
+      # that cannot run is the "env-dependent exemption" shape #2248 closed.
+      # Putting it in the shared matrix makes the environment identical by
+      # construction rather than by a list someone has to keep right.
+      - name: Toolchain identity for the viberun cache key
+        id: rustc
+        run: echo "id=$(rustc --version | tr -c '[:alnum:].' '-')" >> "$GITHUB_OUTPUT"
+      - name: Cache viberun build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            runtime/viberun/target
+          key: viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-${{ hashFiles('runtime/viberun/src/**') }}
+          restore-keys: |
+            viberun-v3-${{ steps.rustc.outputs.id }}-${{ hashFiles('runtime/viberun/Cargo.lock', 'runtime/viberun/Cargo.toml') }}-
+      - name: Ensure viberun matches the current sources
+        # Content-hashed, not mtime-based -- see scripts/ensure_viberun.sh for
+        # why cargo's own fingerprint rebuilds on every CI run regardless.
+        run: bash scripts/ensure_viberun.sh
       - name: Compiler-gate lane ${{ matrix.lane }}
         env:
           COMPILER_GATE_LANE: ${{ matrix.lane }}
           VIBE_STAGE2_WASM: ${{ github.workspace }}/_build/_ci_shard_gen/stage2.wasm
         run: bash scripts/compiler_gate.sh
+      # #2758: the JS-vs-Rust `Fs::remove` parity gate. One lane only -- it is
+      # not lane-specific work, and running it four times would just pay the
+      # same probes on four runners.
+      - name: Host remove parity (JS vs Rust runners)
+        if: matrix.lane == 'mid'
+        env:
+          HOST_REMOVE_PARITY_STAGE2: ${{ github.workspace }}/_build/_ci_shard_gen/stage2.wasm
+        run: bash scripts/check_host_remove_parity.sh
 
   # vibe-fmt lint (scripts/check_vibe_fmt.sh): every lib/**/*.vibe and
   # lib/**/*.vpkg file must be a fixpoint of the selfhost formatter unless
@@ -1001,6 +1033,11 @@ jobs:
         run: bash scripts/check_gate_wiring_test.sh
       - name: gate-wiring gate
         run: bash scripts/check_gate_wiring.sh
+      # #2758: the gc backend's host-import list is encoded in five places and
+      # they must agree. Source-only, so it belongs here rather than in a lane
+      # that has to build a compiler first.
+      - name: gc-host-import-counts gate
+        run: bash scripts/check_gc_host_import_counts.sh
       - name: tracked-experiment-names lint self-test
         run: bash scripts/lint_tracked_experiment_names_test.sh
       - name: tracked-experiment-names lint

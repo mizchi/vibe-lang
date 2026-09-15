@@ -1195,7 +1195,7 @@ function authorizePolicyRawImport(name, args, instanceRef, config = policyRawFsC
     throw new Error(`policy raw import denied: ${name}`);
   }
   const readOne = new Set(["fs_read_file", "fs_read_bytes", "fs_read_dir", "fs_readdir", "fs_exists", "fs_stat_token", "fs_is_dir", "fs_is_file"]);
-  const writeOne = new Set(["fs_write_file", "fs_publish_immutable_text", "fs_write_bytes", "fs_mkdir", "fs_mkdir_p", "fs_remove", "fs_remove_file", "fs_append", "fs_open_write"]);
+  const writeOne = new Set(["fs_write_file", "fs_publish_immutable_text", "fs_write_bytes", "fs_mkdir", "fs_mkdir_p", "fs_remove", "fs_remove_file", "fs_remove_tree", "fs_append", "fs_open_write"]);
   if (readOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), false, config);
   if (writeOne.has(name)) authorizePolicyRawPath(decodeStringArg(instanceRef, args[0]), true, config);
   if (name === "fs_rename" || name === "fs_copy") {
@@ -2701,13 +2701,77 @@ async function main() {
           return 0n;
         }
       },
+      // #2758: NON-recursive, and it PROPAGATES. Both halves are a change from
+      // the `rmSync(.., { recursive: true, force: true })` this used to be, and
+      // both exist to make one builtin mean one thing on both hosts: the Rust
+      // runner's `fs_remove` has always been `fs::remove_file`, which removes a
+      // file or a symlink and returns Err on a directory or a missing path. A
+      // program that cleared a path which happened to name a directory
+      // destroyed a tree here and trapped there.
+      //
+      // The three-way split the swallow/propagate axis now carries:
+      //
+      //   Fs::remove       a file, loudly   -- this
+      //   Fs::remove_file  a file, quietly  -- #2738, swallows on both hosts
+      //   Fs::remove_tree  a tree, quietly  -- below, recursive + force
+      //
+      // Loud is safe here because it was audited, not assumed: of 37 call sites
+      // in the tree, 32 are `if Fs::exists(p)` guarded, and the 5 that are not
+      // are each fine -- `gc_host_builtins` writes the file immediately before,
+      // `@vibex/shell`'s `rm` SHOULD fail like POSIX `rm` does, and the three in
+      // `loader_persistent_cache_test` are tree removals that moved to
+      // `Fs::remove_tree`.
       fs_remove(pathTagged) {
         const filePath = decodeStringArg(instanceRef, pathTagged);
         try {
-          fs.rmSync(filePath, { recursive: true, force: true });
+          fs.unlinkSync(filePath);
           return 0n;
         } catch (e) {
+          throwVibeHostError(`fs_remove failed for '${filePath}': ${e.message}`);
+        }
+      },
+      // #2758: the recursive form, which is what `fs_remove` above used to be.
+      // A missing path is a no-op; every other failure propagates.
+      //
+      // THE EXISTENCE TEST IS OURS, not `rmSync`'s `force`. Delegating to force
+      // looks equivalent and is not: WHICH errors it suppresses changed between
+      // Node majors. Measured, same program, one file and `rmSync(file +
+      // "/sub", { recursive: true, force: true })`:
+      //
+      //   node v22.22.2   throws ENOTDIR
+      //   node v24.21.0   succeeds
+      //
+      // CI pins node 24 and this container runs 22, so a gate asserting the two
+      // runners agree passed here and failed there -- the divergence #2758
+      // exists to remove, reappearing as "an accident of which node version ran
+      // it" instead of "which runner" (Codex on #2823).
+      //
+      // So the rule is stated here rather than inherited: lstat, treat ONLY
+      // ENOENT as the no-op, and let everything else through. That is the same
+      // rule `runtime/viberun/src/main.rs` applies via `ErrorKind::NotFound`,
+      // which is what makes the two agree BY CONSTRUCTION on any node.
+      //
+      // lstat, not stat: a symlink is removed as a link, never followed.
+      fs_remove_tree(pathTagged) {
+        const filePath = decodeStringArg(instanceRef, pathTagged);
+        let st;
+        try {
+          st = fs.lstatSync(filePath);
+        } catch (e) {
+          if (e.code === "ENOENT") {
+            return 0n;
+          }
+          throwVibeHostError(`fs_remove_tree failed for '${filePath}': ${e.message}`);
+        }
+        try {
+          if (st.isDirectory()) {
+            fs.rmSync(filePath, { recursive: true, force: true });
+          } else {
+            fs.unlinkSync(filePath);
+          }
           return 0n;
+        } catch (e) {
+          throwVibeHostError(`fs_remove_tree failed for '${filePath}': ${e.message}`);
         }
       },
       // #2738: the non-recursive sibling. `fs_remove` is a TREE remover, so a
@@ -2972,6 +3036,9 @@ async function main() {
     },
     RemoveFile(pathTagged) {
       return vibeModule.fs_remove_file(pathTagged);
+    },
+    RemoveTree(pathTagged) {
+      return vibeModule.fs_remove_tree(pathTagged);
     },
     Rename(srcTagged, dstTagged) {
       return vibeModule.fs_rename(srcTagged, dstTagged);
