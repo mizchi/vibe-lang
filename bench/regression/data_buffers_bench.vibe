@@ -1,0 +1,130 @@
+// Opt-in: setup stays outside measurement; batches amortize host invocations.
+import @vibe/compiler/codegen/wasm_emit {
+  emit_data_section_multi, emit_end, emit_i32_const, string_to_data
+}
+import @vibe/compiler/core {
+  bytebuf_push, bytebuf_push_buf, bytebuf_push_section, bytebuf_push_vec_header, leb128_encode_u32
+}
+
+// The growing reference and the production writer live in the same module.
+// Comparing their exports keeps runtime code, setup and initial heap identical.
+fn growing_data_section(out: Bytes, offsets: Array[Int], datas: Array[Bytes]) -> Unit {
+  let count = Array::length(offsets)
+  let content = Bytes::new()
+  bytebuf_push_vec_header(content, count)
+  let mut i = 0
+  while i < count {
+    bytebuf_push(content, 0)
+    emit_i32_const(content, Array::get(offsets, i))
+    emit_end(content)
+    let data = Array::get(datas, i)
+    leb128_encode_u32(content, Bytes::length(data))
+    bytebuf_push_buf(content, data)
+    i = i + 1
+  }
+  bytebuf_push_section(out, 11, content)
+}
+
+fn large_text() -> String {
+  let mut text = "0123456789abcdef0123456789abcdef"
+  let mut i = 0
+  while i < 10 {
+    text = String::concat(text, text)
+    i = i + 1
+  }
+  text
+}
+
+let small_source = "0123456789abcdef0123456789abcdef"
+let large_source = large_text()
+let small_data = string_to_data(small_source)
+let large_data = string_to_data(large_source)
+let medium_data = string_to_data(String::substring(large_source, 0, 256))
+let page_data = string_to_data(String::substring(large_source, 0, 2048))
+let offsets = [0, 32768, 65536, 98304]
+let small_segments = [small_data, small_data, small_data, small_data]
+let large_segments = [large_data, large_data, large_data, large_data]
+let medium_segments = [medium_data, medium_data, medium_data, medium_data]
+let page_segments = [page_data, page_data, page_data, page_data]
+
+fn convert_batch(source: String, count: Int) -> Unit {
+  let mut total = 0
+  let mut i = 0
+  while i < count {
+    let data = string_to_data(source)
+    total = total + Bytes::length(data)
+    i = i + 1
+  }
+  assert(total == String::length(source) * count)
+}
+
+fn section_batch(segments: Array[Bytes], count: Int, reserve: Bool) -> Unit {
+  let mut total = 0
+  let mut i = 0
+  while i < count {
+    let out = Bytes::new()
+    if reserve {
+      emit_data_section_multi(out, offsets, segments)
+    } else {
+      growing_data_section(out, offsets, segments)
+    }
+    total = total + Bytes::length(out)
+    i = i + 1
+  }
+  assert(total > Bytes::length(Array::get(segments, 0)) * 4 * count)
+}
+
+bench "string_32_bytes_batch_1000" {
+  convert_batch(small_source, 1000)
+}
+
+bench "string_32_kib_batch_8" {
+  convert_batch(large_source, 8)
+}
+
+bench "data_4x32_bytes_batch_1000" {
+  section_batch(small_segments, 1000, true)
+}
+
+bench "data_4x32_kib_batch_8" {
+  section_batch(large_segments, 8, true)
+}
+
+bench "growing_data_4x32_bytes_batch_1000" {
+  section_batch(small_segments, 1000, false)
+}
+
+bench "growing_data_4x32_kib_batch_8" {
+  section_batch(large_segments, 8, false)
+}
+
+bench "data_4x256_bytes_batch_64" {
+  section_batch(medium_segments, 64, true)
+}
+
+bench "growing_data_4x256_bytes_batch_64" {
+  section_batch(medium_segments, 64, false)
+}
+
+bench "data_4x2_kib_batch_32" {
+  section_batch(page_segments, 32, true)
+}
+
+bench "growing_data_4x2_kib_batch_32" {
+  section_batch(page_segments, 32, false)
+}
+
+bench "data_section_reference_parity" {
+  for segments in [
+    small_segments,
+    medium_segments,
+    page_segments,
+    large_segments
+  ] {
+    let growing = Bytes::new()
+    let reserved = Bytes::new()
+    growing_data_section(growing, offsets, segments)
+    emit_data_section_multi(reserved, offsets, segments)
+    assert(Bytes::compare(growing, reserved) == 0)
+  }
+}
