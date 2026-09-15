@@ -930,3 +930,69 @@ test "#2669: a narrowed build keeps its replayed prefix in the artifact" {
 //# 2 removes the cost by removing the dependence -- key the lookup on function
 //# IDENTITY and relocate the references -- at which point the precondition is
 //# no longer needed and the filter can keep every unchanged file.
+
+//# #2818: a harvest whose guards were withheld
+
+/// `fold_const_bool_params` rewrites a body whose Bool parameter is a literal
+/// at every call site. A folded body no longer matches its source text, so
+/// linked_compile deliberately withholds `guard_meta` -- replaying such a body
+/// into a compile whose call sites passed a different literal would be
+/// silently wrong, and refusing is the honest answer.
+///
+/// What was NOT deliberate is that the compile still PERSISTED that harvest.
+/// The fold runs only when there is an entry point, so every `vibe build` /
+/// `run` / `test` wrote megabytes of bodies that the next build loads,
+/// decodes, and drops in full -- measured on the CLI closure, 6.9 MB written
+/// and read per build for `offered=0`. Every published measurement of this
+/// cache used `__no_entry__`, where the fold cannot fire, so the shape that
+/// every real build takes had never been measured.
+/// #2818: `fold_const_bool_params` rewrites a body whose Bool parameter is a
+/// literal at every call site, and a folded body no longer matches its source
+/// text -- so linked_compile deliberately withholds `guard_meta`. Replaying
+/// such a body into a compile whose call sites passed a different literal
+/// would be silently wrong, and refusing is the honest answer.
+///
+/// What was NOT deliberate is that the compile still PERSISTED that harvest.
+/// The fold runs only when there is an entry point, so every `vibe build` /
+/// `run` / `test` wrote its whole body set for a cache that can never accept
+/// it -- measured on the CLI closure, 6.9 MB written and read per build for
+/// `offered=0`. Every published measurement of this cache used `__no_entry__`,
+/// where the fold cannot fire, so the shape every real build takes had never
+/// been measured.
+///
+/// Both programs below synthesize a derived comparator, which is what makes
+/// the compile run the #2388 pin reorder and record guards at all. They differ
+/// only in whether a Bool parameter is foldable.
+fn body_cache_reuse_counts(path: String, source: String) -> (Int, Int) with Exception + Fs {
+  Fs::write_bytes(path, string_to_bytes(source))
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(path)))
+  remove_file_if_exists(artifact_path)
+  let cold: Array[Int] = []
+  let _ = compile_file_fs_mode_rc_body_cached_counted(path, "run", "on", cold)
+  let warm: Array[Int] = []
+  let _ = compile_file_fs_mode_rc_body_cached_counted(path, "run", "on", warm)
+  (Array::get(warm, 0), Array::length(cold))
+}
+
+let unfolded_body_source: String = "let cmp: () -> Bool = () -> { [1, 2] == [1, 2] }\nlet run: () -> Int = () -> { if cmp() { 40 + 2 } else { 0 } }"
+
+let folded_body_source: String = "let cmp: () -> Bool = () -> { [1, 2] == [1, 2] }\nfn gate(on: Bool) -> Int {\n  if on {\n    1\n  } else {\n    0\n  }\n}\nlet run: () -> Int = () -> { if cmp() { gate(true) + gate(true) } else { 0 } }"
+
+test "#2818: a warm entry build replays its bodies when nothing was folded" {
+  let (offered, _) = body_cache_reuse_counts("/tmp/vibe_bc_2818_unfolded.vibe", unfolded_body_source)
+  inspect(offered > 0, content = "true")
+}
+
+test "#2818: a folded entry build cannot replay, so it persists nothing" {
+  let path = "/tmp/vibe_bc_2818_folded.vibe"
+  let (offered, _) = body_cache_reuse_counts(path, folded_body_source)
+  // The fold withholds the guards, so the harvest is unusable however warm
+  // the cache is. This row is the limitation, not the fix.
+  inspect(offered, content = "0")
+  // The fix: an unreplayable harvest is not written. Before #2818 this stored
+  // the whole body set and every later build paid to read and drop it.
+  let artifact_path = persistent_artifact_cache_path("codegen-body-cache", "run", String::concat("self-describing-", compact_string_fingerprint(path)))
+  inspect(Fs::exists(artifact_path), content = "false")
+  // And the compile itself is unchanged by any of this.
+  assert(bytes_eq(compile_file_fs_mode_rc_body_cached(path, "run", "on"), compile_file_fs_mode_rc(path, "run")))
+}

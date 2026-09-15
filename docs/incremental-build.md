@@ -2106,11 +2106,27 @@ same leaf, same cache directory, only the entry changed:
 With an entry point the cache offers **nothing**, on every row — unchanged,
 comment-edited and reverted alike — so a warm build recompiles exactly what a
 cold one does. The artifact is not missing: a `cli_main` build stores 6.9 MB
-under `codegen-body-cache` just as a `__no_entry__` build stores 7.3 MB. It is
-stored and then never accepted, which places the failure in
-`decode_body_cache_artifact_for`'s leading-prefix rule rather than in the
-store. `offered` is 0 and never partial, so the very first file in merge order
-mismatches on path, content fingerprint or merged-statement count.
+under `codegen-body-cache` just as a `__no_entry__` build stores 7.3 MB.
+
+**The cause is the capability const-fold.** `fold_const_bool_params` rewrites a
+body whose Bool parameter is a literal at every call site, and
+`linked_compile.vibe` then withholds `guard_meta` from the harvest —
+deliberately, and correctly: a folded body no longer matches its source text,
+so replaying it into a compile whose call sites passed a different literal
+would be silently wrong. That fold runs only when `late_dce_has_entry`, which
+is why `__no_entry__` never hits it.
+
+What was not deliberate is that the compile still **persisted** the guardless
+harvest. `bcc_src_region_n` reads `guard_meta[0]` and answers 0 for anything
+that is not exactly five values, so
+`codegen_body_cache_filter_src_keep` drops every entry however generous the
+keep mask is — measured, a stored harvest of 10288 bodies decoding to 0. The
+file table matches perfectly (`layout_same=1`, `limit=10633`, no file
+mismatched); the refusal is entirely downstream of it.
+
+An earlier revision of this paragraph blamed the leading-prefix rule in
+`decode_body_cache_artifact_for`. That was inferred from `offered=0` and is
+wrong: the prefix rule accepts every file.
 
 This is why turning the body cache on changes nothing on a real closure —
 measured, `VIBE_CODEGEN_BODY_CACHE=on` moved the CLI closure's warm wall from
@@ -2119,6 +2135,17 @@ which is the artifact being written and read and discarded. It also explains
 the phase table above: with the cache "on" and 93 % of bodies notionally
 replayed, `compile_expr`, the prelude and the lowering passes are all
 unchanged to within noise, because nothing was replayed.
+
+**Fixed in part (#2818): the guardless harvest is no longer written.**
+`body_cache_harvest_is_replayable` gates both store sites, so a compile whose
+fold withheld the guards persists nothing — measured on the CLI closure, the
+cache directory goes from 16 MB to 9 MB with zero artifact files, exactly the
+`off` lane's size, and the emitted wasm is byte-identical. What that fix does
+NOT do is make a folded build replayable; for that, the fold's own result has
+to become part of the cache identity, which is the remaining half of #2818 and
+the same shape the capability discussion below arrives at independently. A
+guardless artifact written before the fix is still read and refused until
+something replaces it.
 
 `vibe build`, `vibe run` and `vibe test` all compile with an entry, so this
 cache has never accelerated one. `scripts/body_cache_reuse.sh` now takes the
