@@ -1,5 +1,5 @@
 import @vibe/compiler/entry/compiler/file_compile {
-  ordinary_lane_closure_edges, ordinary_lane_split_shape
+  ordinary_lane_closure_admits, ordinary_lane_closure_edges, ordinary_lane_split_shape
 }
 
 // #2658. The regression the issue asks for: all three shapes in ONE program.
@@ -26,17 +26,27 @@ import @vibe/compiler/entry/compiler/file_compile {
 // its own; asserting bytes here would pin an unrelated defect to this file.
 //
 // Both errors fail OPEN to the same working program, so bytes cannot tell
-// them apart. The observable that can is the closure's SHAPE, and the edge
-// total is chosen here so that all three candidate rules give different
-// numbers:
+// them apart. The observable that can is the closure's SHAPE -- and it has to
+// be MEMBERSHIP, not the edge total.
 //
-//   rule                    main        mid   facade   total
-//   exact (re-export only)  mid,facade,leaf = 3    1      1       5
-//   direct edges only       mid,facade      = 2    1      1       4
-//   every edge, transitive  mid,priv,facade,leaf=4 1      1       6
+// The total does not decide this, which is the whole reason the assertions
+// below name modules. Dropping `leaf` from `main`'s row and admitting `priv`
+// to it are opposite errors of the same size, so they cancel:
 //
-// So `5` is not merely "the number it prints today" -- 4 and 6 are the two
-// ways to get it wrong, and each is one assertion away.
+//   rule                          main's row              total
+//   exact (re-export only)        mid, facade, leaf         5
+//   direct edges only             mid, facade               4
+//   every edge, transitive        mid, priv, facade, leaf   6
+//   BOTH errors at once           mid, facade, priv         5   <- indistinguishable
+//
+// The last row is a closure that violates both of this issue's requirements
+// and sums to exactly what the correct one sums to (Codex on #2814). So the
+// total is kept only as a coarse cross-check, and the contract is the four
+// membership assertions.
+//
+// Every name asserted `false` is also asserted `true` somewhere, on purpose:
+// `ordinary_lane_closure_admits` answers `false` for a path it cannot resolve
+// uniquely, so a typo would otherwise read as "correctly excluded".
 
 fn rx_paths(tag: String) -> (String, String, String, String, String) {
   let priv_p = String::concat("/tmp/vibe_rxx_priv_", String::concat(tag, ".vibe"))
@@ -77,8 +87,15 @@ test "2658: the closure admits a re-exported module and excludes a private one" 
   let (modules, mapped) = ordinary_lane_split_shape(entry)
   inspect(modules, content = "5")
   inspect(mapped > 0, content = "true")
-  // 5 = 3 (main: mid, facade, and leaf THROUGH the re-export) + 1 (mid: priv)
-  //   + 1 (facade: leaf). 4 would mean the re-export edge was dropped, 6 would
-  //   mean `priv` leaked into main across a private import.
+  // The contract, stated as membership so the two errors cannot cancel.
+  // ADMITTED: `leaf` reaches `main` only across `facade`'s re-export edge.
+  inspect(ordinary_lane_closure_admits(entry, "main_edges.vibe", "leaf_edges.vibe"), content = "true")
+  // EXCLUDED: `priv` reaches `mid` by a PRIVATE import, so it must not reach
+  // `main`. The row below pins that both names resolve, so this `false` is a
+  // real exclusion and not an unresolved lookup.
+  inspect(ordinary_lane_closure_admits(entry, "main_edges.vibe", "priv_edges.vibe"), content = "false")
+  inspect(ordinary_lane_closure_admits(entry, "mid_edges.vibe", "priv_edges.vibe"), content = "true")
+  inspect(ordinary_lane_closure_admits(entry, "main_edges.vibe", "facade_edges.vibe"), content = "true")
+  // Coarse cross-check only -- see the header for why this cannot stand alone.
   inspect(ordinary_lane_closure_edges(entry), content = "5")
 }
