@@ -267,11 +267,6 @@ else
   echo "[bench-metrics] calibration skipped (runner/bench/seed unavailable)"
 fi
 
-# --- assemble JSON ------------------------------------------------------------
-BM_HEAP="$heap" BM_WALL_MEDIAN="$wall_median" BM_WALL_RUNS="${walls[*]}" \
-BM_STAGE2="$stage2_bytes" BM_ADAPTER="$adapter_bundle_bytes" \
-BM_SOURCES="$sources_bundle_bytes" BM_MODSRC="$module_source_bytes" \
-BM_MICRO_STATUS="$micro_status" \
 # The incremental-build KPI (#1959 line): how much of a rebuild an UNCHANGED
 # rebuild skips, at three project sizes. Advisory like the rest of this report,
 # and non-fatal -- a KPI that can fail the run is a gate, and this is a
@@ -284,6 +279,11 @@ else
   rm -f "$incremental_kpi"
 fi
 
+# --- assemble JSON ------------------------------------------------------------
+BM_HEAP="$heap" BM_WALL_MEDIAN="$wall_median" BM_WALL_RUNS="${walls[*]}" \
+BM_STAGE2="$stage2_bytes" BM_ADAPTER="$adapter_bundle_bytes" \
+BM_SOURCES="$sources_bundle_bytes" BM_MODSRC="$module_source_bytes" \
+BM_MICRO_STATUS="$micro_status" \
 BM_INCREMENTAL="$incremental_kpi" \
 BM_EXEC_STATUS="$exec_status" BM_WASMTIME="$wasmtime_version" \
 BM_CALIB_NS="$calib_ns" BM_CALIB_SEED_SHA="$calib_seed_sha" \
