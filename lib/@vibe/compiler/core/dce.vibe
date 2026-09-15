@@ -45,51 +45,67 @@ fn dce_array_contains_str(arr: Array[String], s: String) -> Bool {
   found
 }
 
-// #2386: `out` is deduped through ONE process-wide map stamped with a
-// generation per collection (`dce_refs_begin`), so a definition's refs cost
-// no allocation of their own -- the per-def set that #1259 rejected on the
-// selfcompile heap KPI -- and each identifier is one hash probe instead of a
-// scan of every name the definition referenced so far (the compiler's larger
-// bodies reference hundreds). `bound` stays a linear scan: it is the binders
-// in scope, a handful, and since #2386 it is one stack pushed and truncated
-// around each scope rather than a fresh copy per binder (the copy was the
-// allocation, per `let` / arm / lambda of every definition). The quadratic
-// scans #1259 removed were the per-queue-item def/reachable lookups below,
-// which are indexed via `def_idx` / `reachable_seen`.
-let dce_refs_seen: Array[MutMap[String, Int]] = [MutMap::new_string()]
-
-let dce_refs_gen: Array[Int] = [0]
-
-/// Start a new reference collection: names seen under an earlier generation
-/// are pushed again. Bounded for a resident compiler: the map holds every
-/// distinct name ever referenced, so past 65536 it is dropped.
-fn dce_refs_begin() -> Unit {
-  if MutMap::size(Array::get(dce_refs_seen, 0)) > 65536 {
-    Array::set(dce_refs_seen, 0, MutMap::new_string())
-  } else {
-    ()
-  }
-  Array::set(dce_refs_gen, 0, Array::get(dce_refs_gen, 0) + 1)
+// Each graph owns dense spelling IDs. Lexical binders still use the existing
+// scope stack: a symbol ID identifies a spelling, not a lexical binding.
+// Only graph construction hashes names; edges, definition chains, per-body
+// deduplication, and the reachability queue carry IDs thereafter. IDs never
+// escape the pass or participate in serialized cache identities.
+struct DceGraph {
+  symbols: MutMap[String, Int];
+  heads: Array[Int];
+  marks: Array[Int];
+  live: Array[Bool];
+  generation: Array[Int];
+  def_next: Array[Int];
+  def_refs: Array[Array[Int]];
+  stmt_ids: Array[Int]
 }
 
-fn dce_refs_push_once(out: Array[String], name: String) -> Unit {
-  let seen = Array::get(dce_refs_seen, 0)
-  let gen = Array::get(dce_refs_gen, 0)
-  let already = match MutMap::get(seen, name) {
-    Some(stamp) => stamp == gen,
-    None => false
-  }
-  if already {
-    ()
-  } else {
-    MutMap::set(seen, name, gen)
-    Array::push(out, name)
+fn dce_graph_new(capacity: Int) -> DceGraph {
+  DceGraph::{
+    symbols: MutMap::with_capacity_string(capacity * 2 + 16),
+    heads: array_empty(),
+    marks: array_empty(),
+    live: array_empty(),
+    generation: [0],
+    def_next: array_empty(),
+    def_refs: array_empty(),
+    stmt_ids: array_empty()
   }
 }
 
-fn add_ref(out: Array[String], bound: Array[String], name: String) -> Int {
+fn dce_symbol_id(graph: DceGraph, name: String) -> Int {
+  match MutMap::get(graph.symbols, name) {
+    Some(id) => id,
+    None => {
+      let id = Array::length(graph.heads)
+      MutMap::set(graph.symbols, name, id)
+      Array::push(graph.heads, -1)
+      Array::push(graph.marks, 0)
+      Array::push(graph.live, false)
+      id
+    }
+  }
+}
+
+fn dce_refs_begin(graph: DceGraph) -> Unit {
+  Array::set(graph.generation, 0, Array::get(graph.generation, 0) + 1)
+}
+
+fn dce_refs_push_once(graph: DceGraph, out: Array[Int], name: String) -> Unit {
+  let id = dce_symbol_id(graph, name)
+  let gen = Array::get(graph.generation, 0)
+  if Array::get(graph.marks, id) != gen {
+    Array::set(graph.marks, id, gen)
+    Array::push(out, id)
+  } else {
+    ()
+  }
+}
+
+fn add_ref(graph: DceGraph, out: Array[Int], bound: Array[String], name: String) -> Int {
   if not(dce_array_contains_str(bound, name)) {
-    dce_refs_push_once(out, name)
+    dce_refs_push_once(graph, out, name)
   }
   0
 }
@@ -132,7 +148,7 @@ fn collect_pat_bindings(pat: Pat, bound: Array[String]) -> Int {
 
 /// #2348: add the `call $name` callees of an inline-wasm marker call
 /// (`%wasm("<WAT>")`) to `out`. A no-op for every other call.
-fn collect_wat_callee_refs(callee: Expr, args: Array[Expr], bound: Array[String], out: Array[String]) -> Int {
+fn collect_wat_callee_refs(graph: DceGraph, callee: Expr, args: Array[Expr], bound: Array[String], out: Array[Int]) -> Int {
   match callee {
     EIdent(cname, _) => if cname == inline_wasm_marker_name() && Array::length(args) == 1 {
       match Array::get(args, 0) {
@@ -146,7 +162,7 @@ fn collect_wat_callee_refs(callee: Expr, args: Array[Expr], bound: Array[String]
             // $helper))"` calls the fn and reads the param, and the assembler
             // already keeps those apart -- filtering by `bound` here dropped
             // the call edge and DCE then pruned the live helper.
-            dce_refs_push_once(out, Array::get(names, i))
+            dce_refs_push_once(graph, out, Array::get(names, i))
             i = i + 1
           }
           0
@@ -160,9 +176,9 @@ fn collect_wat_callee_refs(callee: Expr, args: Array[Expr], bound: Array[String]
   }
 }
 
-fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> Int {
+fn collect_refs_into(graph: DceGraph, expr: Expr, bound: Array[String], out: Array[Int]) -> Int {
   match expr {
-    EIdent(name, _) => add_ref(out, bound, name),
+    EIdent(name, _) => add_ref(graph, out, bound, name),
     EInt(_) => 0,
     EFloat(_) => 0,
     EString(_) => 0,
@@ -170,12 +186,12 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
     EUnit => 0,
     EBreak(_) => 0,
     EContinue(_) => 0,
-    EReturn(e) => collect_refs_into(e, bound, out),
-    EUnaryOp(_, e) => collect_refs_into(e, bound, out),
+    EReturn(e) => collect_refs_into(graph, e, bound, out),
+    EUnaryOp(_, e) => collect_refs_into(graph, e, bound, out),
     ETuple(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_refs_into(Array::get(items, i), bound, out)
+        collect_refs_into(graph, Array::get(items, i), bound, out)
         i = i + 1
       }
       0
@@ -183,7 +199,7 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
     EArray(items) => {
       let mut i = 0
       while i < Array::length(items) {
-        collect_refs_into(Array::get(items, i), bound, out)
+        collect_refs_into(graph, Array::get(items, i), bound, out)
         i = i + 1
       }
       0
@@ -192,106 +208,106 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
       let mut i = 0
       while i < Array::length(fields) {
         let (_, val) = Array::get(fields, i)
-        collect_refs_into(val, bound, out)
+        collect_refs_into(graph, val, bound, out)
         i = i + 1
       }
       0
     },
     EBinOp(_, l, r, _) => {
-      collect_refs_into(l, bound, out)
-      collect_refs_into(r, bound, out)
+      collect_refs_into(graph, l, bound, out)
+      collect_refs_into(graph, r, bound, out)
       0
     },
     ECall(callee, args, _) => {
-      collect_refs_into(callee, bound, out)
+      collect_refs_into(graph, callee, bound, out)
       // #2348: an inline-wasm body reaches here as `%wasm("<WAT text>")`, and
       // the text is an EString, which contributes nothing below. A
       // `(call $helper ...)` inside it is a real reference, so without this
       // arm DCE prunes a helper that only a kernel calls and codegen then
       // reports it missing -- while `vibe check`, which runs on the unpruned
       // statements, reports clean.
-      collect_wat_callee_refs(callee, args, bound, out)
+      collect_wat_callee_refs(graph, callee, args, bound, out)
       let mut i = 0
       while i < Array::length(args) {
-        collect_refs_into(Array::get(args, i), bound, out)
+        collect_refs_into(graph, Array::get(args, i), bound, out)
         i = i + 1
       }
       0
     },
     EIf(cond, then_e, else_e) => {
-      collect_refs_into(cond, bound, out)
-      collect_refs_into(then_e, bound, out)
-      collect_refs_into(else_e, bound, out)
+      collect_refs_into(graph, cond, bound, out)
+      collect_refs_into(graph, then_e, bound, out)
+      collect_refs_into(graph, else_e, bound, out)
       0
     },
     ELet(name, val, body, _) => {
-      collect_refs_into(val, bound, out)
+      collect_refs_into(graph, val, bound, out)
       let mark = Array::length(bound)
       Array::push(bound, name)
-      collect_refs_into(body, bound, out)
+      collect_refs_into(graph, body, bound, out)
       Array::truncate(bound, mark)
       0
     },
     ELetRec(name, val, body) => {
       let mark = Array::length(bound)
       Array::push(bound, name)
-      collect_refs_into(val, bound, out)
-      collect_refs_into(body, bound, out)
+      collect_refs_into(graph, val, bound, out)
+      collect_refs_into(graph, body, bound, out)
       Array::truncate(bound, mark)
       0
     },
     ELetMut(name, val, body, _) => {
-      collect_refs_into(val, bound, out)
+      collect_refs_into(graph, val, bound, out)
       let mark = Array::length(bound)
       Array::push(bound, name)
-      collect_refs_into(body, bound, out)
+      collect_refs_into(graph, body, bound, out)
       Array::truncate(bound, mark)
       0
     },
     EAssign(_, val, body) => {
-      collect_refs_into(val, bound, out)
-      collect_refs_into(body, bound, out)
+      collect_refs_into(graph, val, bound, out)
+      collect_refs_into(graph, body, bound, out)
       0
     },
     EAssignOp(_, _, val, body) => {
-      collect_refs_into(val, bound, out)
-      collect_refs_into(body, bound, out)
+      collect_refs_into(graph, val, bound, out)
+      collect_refs_into(graph, body, bound, out)
       0
     },
     ESeq(l, r) => {
-      collect_refs_into(l, bound, out)
-      collect_refs_into(r, bound, out)
+      collect_refs_into(graph, l, bound, out)
+      collect_refs_into(graph, r, bound, out)
       0
     },
     EMatch(scr, arms) => {
-      collect_refs_into(scr, bound, out)
+      collect_refs_into(graph, scr, bound, out)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, body) = Array::get(arms, i)
         let mark = Array::length(bound)
         collect_pat_bindings(pat, bound)
-        collect_refs_into(body, bound, out)
+        collect_refs_into(graph, body, bound, out)
         Array::truncate(bound, mark)
         i = i + 1
       }
       0
     },
     EHandle(body_expr, arms) => {
-      collect_refs_into(body_expr, bound, out)
+      collect_refs_into(graph, body_expr, bound, out)
       let mut i = 0
       while i < Array::length(arms) {
         let (pat, arm_body) = Array::get(arms, i)
         let mark = Array::length(bound)
         collect_pat_bindings(pat, bound)
-        collect_refs_into(arm_body, bound, out)
+        collect_refs_into(graph, arm_body, bound, out)
         Array::truncate(bound, mark)
         i = i + 1
       }
       0
     },
     EWhile(cond, body) => {
-      collect_refs_into(cond, bound, out)
-      collect_refs_into(body, bound, out)
+      collect_refs_into(graph, cond, bound, out)
+      collect_refs_into(graph, body, bound, out)
       0
     },
     ELoop(params, body) => {
@@ -299,23 +315,23 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
       let mut i = 0
       while i < Array::length(params) {
         let (name, init) = Array::get(params, i)
-        collect_refs_into(init, bound, out)
+        collect_refs_into(graph, init, bound, out)
         Array::push(bound, name)
         i = i + 1
       }
-      collect_refs_into(body, bound, out)
+      collect_refs_into(graph, body, bound, out)
       Array::truncate(bound, mark)
       0
     },
     EForIn(name, index_name, iter, body) => {
-      collect_refs_into(iter, bound, out)
+      collect_refs_into(graph, iter, bound, out)
       let mark = Array::length(bound)
       Array::push(bound, name)
       match index_name {
         Some(index_name) => Array::push(bound, index_name),
         None => ()
       }
-      collect_refs_into(body, bound, out)
+      collect_refs_into(graph, body, bound, out)
       Array::truncate(bound, mark)
       0
     },
@@ -327,60 +343,61 @@ fn collect_refs_into(expr: Expr, bound: Array[String], out: Array[String]) -> In
         Array::push(bound, pname)
         i = i + 1
       }
-      collect_refs_into(body, bound, out)
+      collect_refs_into(graph, body, bound, out)
       Array::truncate(bound, mark)
       0
     },
     EDot(obj, _, _, _) => {
-      collect_refs_into(obj, bound, out)
+      collect_refs_into(graph, obj, bound, out)
       0
     },
     ELabeledArg(_, _, e) => {
-      collect_refs_into(e, bound, out)
+      collect_refs_into(graph, e, bound, out)
       0
     },
     EMap(fields) => {
       let mut i = 0
       while i < Array::length(fields) {
         let (_, val) = Array::get(fields, i)
-        collect_refs_into(val, bound, out)
+        collect_refs_into(graph, val, bound, out)
         i = i + 1
       }
       0
     },
     ESpread(e) => {
-      collect_refs_into(e, bound, out)
+      collect_refs_into(graph, e, bound, out)
       0
     },
     EStringInterp(_) => 0
   }
 }
 
-fn collect_refs(expr: Expr, bound: Array[String]) -> Array[String] {
-  dce_refs_begin()
+fn collect_refs(graph: DceGraph, expr: Expr, bound: Array[String]) -> Array[Int] {
+  dce_refs_begin(graph)
   let out = array_empty()
-  collect_refs_into(expr, bound, out)
+  collect_refs_into(graph, expr, bound, out)
   out
 }
 
-fn enqueue_reachable(reachable: Array[String], reachable_seen: MutSet[String], queue: Array[String], name: String) -> Unit {
-  if not(MutSet::has(reachable_seen, name)) {
-    MutSet::add(reachable_seen, name)
-    Array::push(reachable, name)
-    Array::push(queue, name)
+fn enqueue_reachable(graph: DceGraph, queue: Array[Int], id: Int) -> Unit {
+  if !Array::get(graph.live, id) {
+    Array::set(graph.live, id, true)
+    Array::push(queue, id)
+  } else {
+    ()
   }
 }
 
-fn collect_structural_refs_into_queue(stmt: Stmt, bound: Array[String], reachable: Array[String], reachable_seen: MutSet[String], queue: Array[String]) -> Unit {
+fn collect_structural_refs_into_queue(graph: DceGraph, stmt: Stmt, bound: Array[String], queue: Array[Int]) -> Unit {
   let refs = match stmt {
-    STest(_, expr) => collect_refs(expr, bound),
-    SBench(_, expr) => collect_refs(expr, bound),
-    SExpr(expr) => collect_refs(expr, bound),
+    STest(_, expr) => collect_refs(graph, expr, bound),
+    SBench(_, expr) => collect_refs(graph, expr, bound),
+    SExpr(expr) => collect_refs(graph, expr, bound),
     _ => array_empty()
   }
   let mut i = 0
   while i < Array::length(refs) {
-    enqueue_reachable(reachable, reachable_seen, queue, Array::get(refs, i))
+    enqueue_reachable(graph, queue, Array::get(refs, i))
     i = i + 1
   }
 }
@@ -411,223 +428,113 @@ fn is_type_or_structural(stmt: Stmt) -> Bool {
   }
 }
 
-export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt] {
-  // Early-return on empty input: downstream code uses
-  //   `array_empty()`
-  // to construct a typed empty `Array[Stmt]`, which traps out-of-bounds
-  // when stmts itself is empty. (See `dce_test.vibe: "empty stmts
-  // returns empty"`, tracked in #266.)
-  if Array::length(stmts) == 0 {
-    Array::slice(stmts, 0, 0)
-  } else {
-    let empty_bound = array_empty()
-    let def_names = array_empty()
-    let def_refs = array_empty()
-    let def_idx: MutMap[String, Array[Int]] = MutMap::new_string()
-    let mut i = 0
-    while i < Array::length(stmts) {
-      let stmt = Array::get(stmts, i)
-      match stmt_name(stmt) {
-        Some(name) => {
-          let di = Array::length(def_names)
-          Array::push(def_names, name)
-          match MutMap::get(def_idx, name) {
-            Some(idxs) => Array::push(idxs, di),
-            None => MutMap::set(def_idx, name, Array::slice([di], 0, 1))
-          }
-          let refs = match stmt {
-            SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
-            // Preserved fn decl (ADR-0064 #727): body refs plus contract-
-            // condition refs (requires/ensures execute inside the function
-            // after lowering, so helpers they call must stay live).
-            SFnDecl(_, _, fn_value, reqs, enss) => {
-              dce_refs_begin()
-              let out = array_empty()
-              let _ = collect_refs_into(fn_value, empty_bound, out)
-              let mut cri = 0
-              while cri < Array::length(reqs) {
-                let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
-                cri = cri + 1
-              }
-              let mut cei = 0
-              while cei < Array::length(enss) {
-                let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
-                cei = cei + 1
-              }
-              out
-            },
-            SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
-            _ => array_empty()
-          }
-          Array::push(def_refs, refs)
-          0
-        },
-        None => 0
+fn dce_definition_refs(graph: DceGraph, stmt: Stmt, bound: Array[String]) -> Array[Int] {
+  match stmt {
+    SLet(_, _, _, _, expr) => collect_refs(graph, expr, bound),
+    SLetMut(_, _, expr) => collect_refs(graph, expr, bound),
+    // Contract conditions execute after lowering; their callees stay live.
+    SFnDecl(_, _, fn_value, reqs, enss) => {
+      dce_refs_begin(graph)
+      let out = array_empty()
+      let _ = collect_refs_into(graph, fn_value, bound, out)
+      let mut i = 0
+      while i < Array::length(reqs) {
+        let _ = collect_refs_into(graph, Array::get(reqs, i), bound, out)
+        i = i + 1
       }
-      i = i + 1
-    }
-    let reachable = array_empty()
-    let reachable_seen = MutSet::new_string()
-    let queue = array_empty()
-    let mut j = 0
-    while j < Array::length(entry_names) {
-      let name = Array::get(entry_names, j)
-      enqueue_reachable(reachable, reachable_seen, queue, name)
-      j = j + 1
-    }
-    let mut sj = 0
-    while sj < Array::length(stmts) {
-      collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, reachable_seen, queue)
-      sj = sj + 1
-    }
-    let mut qi = 0
-    while qi < Array::length(queue) {
-      let current = Array::get(queue, qi)
-      qi = qi + 1
-      match MutMap::get(def_idx, current) {
-        Some(idxs) => {
-          let mut ki = 0
-          while ki < Array::length(idxs) {
-            let refs = Array::get(def_refs, Array::get(idxs, ki))
-            let mut r = 0
-            while r < Array::length(refs) {
-              let dep = Array::get(refs, r)
-              if not(MutSet::has(reachable_seen, dep)) {
-                MutSet::add(reachable_seen, dep)
-                Array::push(reachable, dep)
-                Array::push(queue, dep)
-              }
-              r = r + 1
-            }
-            ki = ki + 1
-          }
-        },
-        None => ()
+      let mut j = 0
+      while j < Array::length(enss) {
+        let _ = collect_refs_into(graph, Array::get(enss, j), bound, out)
+        j = j + 1
       }
-    }
-    let result = array_empty()
-    let mut m = 0
-    while m < Array::length(stmts) {
-      let stmt = Array::get(stmts, m)
-      if is_type_or_structural(stmt) {
-        Array::push(result, stmt)
-      } else {
-        match stmt_name(stmt) {
-          Some(name) => if MutSet::has(reachable_seen, name) {
-            Array::push(result, stmt)
-          },
-          None => Array::push(result, stmt)
-        }
-      }
-      m = m + 1
-    }
-    result
+      out
+    },
+    _ => array_empty()
   }
 }
 
-/// Compute the set of reachable top-level names from `entry_names`, following
-/// value-definition refs and structural (type/test/expr) refs to a fixpoint.
-/// Mirrors the reachability computation inside `dce_stmts`; kept as a separate
-/// (currently unwired) function so module-source emission can reuse it without
-/// changing `dce_stmts` (a bootstrap-reachable hot path).
-fn dce_reachable_names(stmts: Array[Stmt], entry_names: Array[String]) -> Array[String] {
-  let empty_bound = array_empty()
-  let def_names = array_empty()
-  let def_refs = array_empty()
-  let def_idx: MutMap[String, Array[Int]] = MutMap::new_string()
+fn dce_reachable_graph(stmts: Array[Stmt], entry_names: Array[String]) -> DceGraph {
+  let graph = dce_graph_new(Array::length(stmts))
+  let bound = array_empty()
   let mut i = 0
   while i < Array::length(stmts) {
     let stmt = Array::get(stmts, i)
     match stmt_name(stmt) {
       Some(name) => {
-        let di = Array::length(def_names)
-        Array::push(def_names, name)
-        match MutMap::get(def_idx, name) {
-          Some(idxs) => Array::push(idxs, di),
-          None => MutMap::set(def_idx, name, Array::slice([di], 0, 1))
-        }
-        let refs = match stmt {
-          SLet(_, _, _, _, expr) => collect_refs(expr, empty_bound),
-          // Preserved fn decl (ADR-0064 #727): body refs plus contract-
-          // condition refs (requires/ensures execute inside the function
-          // after lowering, so helpers they call must stay live).
-          SFnDecl(_, _, fn_value, reqs, enss) => {
-            dce_refs_begin()
-            let out = array_empty()
-            let _ = collect_refs_into(fn_value, empty_bound, out)
-            let mut cri = 0
-            while cri < Array::length(reqs) {
-              let _ = collect_refs_into(Array::get(reqs, cri), empty_bound, out)
-              cri = cri + 1
-            }
-            let mut cei = 0
-            while cei < Array::length(enss) {
-              let _ = collect_refs_into(Array::get(enss, cei), empty_bound, out)
-              cei = cei + 1
-            }
-            out
-          },
-          SLetMut(_, _, expr) => collect_refs(expr, empty_bound),
-          _ => array_empty()
-        }
-        Array::push(def_refs, refs)
-        0
+        let id = dce_symbol_id(graph, name)
+        Array::push(graph.stmt_ids, id)
+        let di = Array::length(graph.def_refs)
+        // Several definitions may share a spelling. Follow every definition,
+        // even if that spelling was first interned by a forward reference.
+        Array::push(graph.def_next, Array::get(graph.heads, id))
+        Array::set(graph.heads, id, di)
+        Array::push(graph.def_refs, dce_definition_refs(graph, stmt, bound))
       },
-      None => 0
+      None => Array::push(graph.stmt_ids, -1)
     }
     i = i + 1
   }
-  let reachable = array_empty()
-  let reachable_seen = MutSet::new_string()
-  let queue = array_empty()
+  let queue: Array[Int] = []
   let mut j = 0
   while j < Array::length(entry_names) {
-    let name = Array::get(entry_names, j)
-    enqueue_reachable(reachable, reachable_seen, queue, name)
+    enqueue_reachable(graph, queue, dce_symbol_id(graph, Array::get(entry_names, j)))
     j = j + 1
   }
   let mut sj = 0
   while sj < Array::length(stmts) {
-    collect_structural_refs_into_queue(Array::get(stmts, sj), empty_bound, reachable, reachable_seen, queue)
+    collect_structural_refs_into_queue(graph, Array::get(stmts, sj), bound, queue)
     sj = sj + 1
   }
   let mut qi = 0
   while qi < Array::length(queue) {
-    let current = Array::get(queue, qi)
+    let id = Array::get(queue, qi)
     qi = qi + 1
-    match MutMap::get(def_idx, current) {
-      Some(idxs) => {
-        let mut ki = 0
-        while ki < Array::length(idxs) {
-          let refs = Array::get(def_refs, Array::get(idxs, ki))
-          let mut r = 0
-          while r < Array::length(refs) {
-            let dep = Array::get(refs, r)
-            if not(MutSet::has(reachable_seen, dep)) {
-              MutSet::add(reachable_seen, dep)
-              Array::push(reachable, dep)
-              Array::push(queue, dep)
-            }
-            r = r + 1
-          }
-          ki = ki + 1
-        }
-      },
-      None => ()
+    let mut di = Array::get(graph.heads, id)
+    while di >= 0 {
+      let refs = Array::get(graph.def_refs, di)
+      let mut r = 0
+      while r < Array::length(refs) {
+        enqueue_reachable(graph, queue, Array::get(refs, r))
+        r = r + 1
+      }
+      di = Array::get(graph.def_next, di)
     }
   }
-  reachable
+  graph
 }
 
-/// Whether DCE keeps `stmt` given the reachable name set: type/structural
-/// statements are always kept; named value defs are kept iff reachable; unnamed
-/// statements are kept. (Same per-statement rule `dce_stmts` applies.)
-fn dce_keep_stmt(stmt: Stmt, reachable_seen: MutSet[String]) -> Bool {
+export fn dce_stmts(stmts: Array[Stmt], entry_names: Array[String]) -> Array[Stmt] {
+  if Array::length(stmts) == 0 {
+    Array::slice(stmts, 0, 0)
+  } else {
+    let graph = dce_reachable_graph(stmts, entry_names)
+    let result = array_empty()
+    let mut i = 0
+    while i < Array::length(stmts) {
+      let stmt = Array::get(stmts, i)
+      let id = Array::get(graph.stmt_ids, i)
+      // Output remains in source order, independent of ID assignment and
+      // traversal order through duplicate definitions.
+      if is_type_or_structural(stmt) || id < 0 || Array::get(graph.live, id) {
+        Array::push(result, stmt)
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    result
+  }
+}
+
+fn dce_keep_stmt(stmt: Stmt, graph: DceGraph) -> Bool {
   if is_type_or_structural(stmt) {
     true
   } else {
     match stmt_name(stmt) {
-      Some(name) => MutSet::has(reachable_seen, name),
+      Some(name) => match MutMap::get(graph.symbols, name) {
+        Some(id) => Array::get(graph.live, id),
+        None => false
+      },
       None => true
     }
   }
@@ -683,16 +590,10 @@ export fn dce_keep_flags_via(stmts: Array[Stmt], reach_stmts: Array[Stmt], entry
       }
       rn = rn + 1
     }
-    let reachable = dce_reachable_names(reach_stmts, roots)
-    let reachable_seen = MutSet::new_string()
-    let mut rsi = 0
-    while rsi < Array::length(reachable) {
-      MutSet::add(reachable_seen, Array::get(reachable, rsi))
-      rsi = rsi + 1
-    }
+    let graph = dce_reachable_graph(reach_stmts, roots)
     let mut m = 0
     while m < Array::length(stmts) {
-      Array::push(flags, dce_keep_stmt(Array::get(stmts, m), reachable_seen))
+      Array::push(flags, dce_keep_stmt(Array::get(stmts, m), graph))
       m = m + 1
     }
     flags

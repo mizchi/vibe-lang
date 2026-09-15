@@ -1,0 +1,144 @@
+import @vibe/compiler/core {
+  Expr, Stmt, dce_keep_flags, dce_keep_flags_via, dce_stmts
+}
+
+fn graph_name(i: Int) -> String {
+  "shared_long_module_path_compiler_codegen_function_\{i}"
+}
+
+fn dense_graph(n: Int) -> Array[Stmt] {
+  let stmts: Array[Stmt] = []
+  let mut i = 0
+  while i < n {
+    let refs: Array[Expr] = []
+    let mut j = if i > 16 {
+      i - 16
+    } else {
+      0
+    }
+    while j < i {
+      Array::push(refs, EIdent(graph_name(j), -1))
+      j = j + 1
+    }
+    Array::push(stmts, SLet(false, false, graph_name(i), None, EArray(refs)))
+    i = i + 1
+  }
+  stmts
+}
+
+test "dense reference graphs stay within the allocation budget" {
+  let stmts = dense_graph(512)
+  let roots = [graph_name(511)]
+  // Warm process-local scratch state before measuring repeated DCE work.
+  let warm = dce_stmts(stmts, roots)
+  inspect(Array::length(warm), "512")
+  let before = Profiler::heap_bytes()
+  let kept = dce_stmts(stmts, roots)
+  let allocated = Profiler::heap_bytes() - before
+  inspect(Array::length(kept), "512")
+  // Main allocates 563,224 bytes after warming the name-deduplication map.
+  // Leave room for representation changes while rejecting that graph cost.
+  assert_true(allocated < 500000)
+}
+
+test "duplicate definitions retain the union of their dependencies in source order" {
+  let stmts = [
+    SLet(false, false, "left", None, EInt(1)),
+    SLet(false, false, "same", None, EIdent("left", -1)),
+    SLet(false, false, "dead", None, EInt(0)),
+    SLet(false, false, "same", None, EIdent("right", -1)),
+    SLet(false, false, "right", None, EInt(2))
+  ]
+  let flags = dce_keep_flags(stmts, ["same", "same"])
+  inspect(Array::get(flags, 0), "true")
+  inspect(Array::get(flags, 1), "true")
+  inspect(Array::get(flags, 2), "false")
+  inspect(Array::get(flags, 3), "true")
+  inspect(Array::get(flags, 4), "true")
+  let kept = dce_stmts(stmts, ["same"])
+  inspect(Array::length(kept), "4")
+  match Array::get(kept, 3) {
+    SLet(_, _, name, _, _) => inspect(name, "right"),
+    _ => assert_true(false)
+  }
+}
+
+test "reference-only symbols remain visible when source spans have different definitions" {
+  let spans = [
+    SLet(false, false, "external", None, EInt(1)),
+    SLet(false, false, "dead", None, EInt(0)),
+    SLet(false, false, "main", None, EInt(0))
+  ]
+  let reach = [SLet(false, false, "main", None, EIdent("external", -1))]
+  let flags = dce_keep_flags_via(spans, reach, ["main"])
+  inspect(Array::get(flags, 0), "true")
+  inspect(Array::get(flags, 1), "false")
+  inspect(Array::get(flags, 2), "true")
+}
+
+test "symbol IDs and reachability do not survive into another program" {
+  let first = [
+    SLet(false, false, "same", None, EIdent("helper", -1)),
+    SLet(false, false, "helper", None, EInt(1))
+  ]
+  let second = [
+    SLet(false, false, "helper", None, EInt(2)),
+    SLet(false, false, "same", None, EInt(0))
+  ]
+  inspect(Array::length(dce_stmts(first, ["same"])), "2")
+  inspect(Array::length(dce_stmts(second, ["same"])), "1")
+  inspect(Array::length(dce_stmts(first, ["same"])), "2")
+}
+
+test "hash collisions and table growth preserve distinct names and forward references" {
+  // Aa and BB collide under the String map's base-31 hash. A small statement
+  // list with many reference-only names also grows that map during collection.
+  let refs: Array[Expr] = [EIdent("Aa", -1)]
+  let mut i = 0
+  while i < 512 {
+    Array::push(refs, EIdent(graph_name(i), -1))
+    i = i + 1
+  }
+  let stmts = [
+    SLet(false, false, "main", None, EArray(refs)),
+    SLet(false, false, "BB", None, EInt(2)),
+    SLet(false, false, "Aa", None, EInt(1))
+  ]
+  let flags = dce_keep_flags(stmts, ["main"])
+  inspect(Array::get(flags, 0), "true")
+  inspect(Array::get(flags, 1), "false")
+  inspect(Array::get(flags, 2), "true")
+  inspect(Array::length(dce_stmts(stmts, ["main"])), "2")
+}
+
+test "structural roots reach cycles without retaining disconnected cycles" {
+  let stmts = [
+    SLet(false, false, "a", None, EIdent("b", -1)),
+    SLet(false, false, "b", None, EIdent("a", -1)),
+    SLet(false, false, "dead", None, EIdent("dead", -1)),
+    SExpr(EIdent("b", -1))
+  ]
+  inspect(Array::length(dce_stmts(stmts, [])), "3")
+  let flags = dce_keep_flags(stmts, [])
+  inspect(Array::get(flags, 0), "true")
+  inspect(Array::get(flags, 1), "true")
+  inspect(Array::get(flags, 2), "false")
+  inspect(Array::get(flags, 3), "true")
+}
+
+test "requires and ensures contribute references to the same definition" {
+  let stmts = [
+    SLet(false, false, "pre", None, EBool(true)),
+    SFnDecl(false, "main", EFn([], [], [], None, None, EInt(1)), [
+      EIdent("pre", -1)
+    ], [EIdent("post", -1)]),
+    SLet(false, false, "post", None, EBool(true)),
+    SLet(false, false, "unused", None, EBool(false))
+  ]
+  inspect(Array::length(dce_stmts(stmts, ["main"])), "3")
+  let flags = dce_keep_flags(stmts, ["main"])
+  inspect(Array::get(flags, 0), "true")
+  inspect(Array::get(flags, 1), "true")
+  inspect(Array::get(flags, 2), "true")
+  inspect(Array::get(flags, 3), "false")
+}
