@@ -6,6 +6,46 @@ import @vibex/wasm_parser {
   find_section
 }
 
+test "reserved arrays dispatch a generic Array trait witness" {
+  let source = "trait Measured { measure(Self) -> Int } impl [T] Measured for Array[T] { measure(self: Array[T]) -> Int { Array::length(self) + 10 } } fn measure[T: Measured](value: T) -> Int { T::measure(value) } export fn main() -> Int { let xs = Array::with_capacity(4); Array::push(xs, 7); measure(xs) }"
+  run_capacity_linear(source, "trait", "11")
+}
+
+test "a shadowed capacity constructor retains its own trait witness" {
+  let source = "trait Measured { measure(Self) -> Int } impl Measured for Int { measure(self: Int) -> Int { self + 20 } } fn measure[T: Measured](value: T) -> Int { T::measure(value) } fn Array::with_capacity(n: Int) -> Int { n + 1 } export fn main() -> Int { let value = Array::with_capacity(4); measure(value) }"
+  run_capacity_linear(source, "shadow_trait", "25")
+}
+
+test "capacity allocation is safe in a suspend-class handler body" {
+  let source = "effect Ask { Get(Int) -> Int } export fn main() -> Int { handle { let xs = Array::with_capacity(4); Array::push(xs, 7); perform Ask::Get(Array::length(xs)) } with { Ask::Get(n) => { let k = resume; k(n + 10) } } }"
+  // Capturing resume as a value exercises the linear suspend lowering.
+  // The GC backend does not support this handler shape.
+  run_capacity_linear(source, "suspend", "11")
+}
+
+test "capacity allocation is safe in a step-split effect-row closure" {
+  let source = "effect Ask { Get(Int) -> Int } fn take(f: () -> Int with Ask) -> Int with Ask { f() } export fn main() -> Int { handle { take(() -> Int with Ask { let xs = Array::with_capacity(4); Array::push(xs, 7); perform Ask::Get(Array::length(xs)) }) } with { Ask::Get(n) => { let k = resume; k(n + 10) } } }"
+  run_capacity_linear(source, "suspend_closure", "11")
+}
+
+test "capacity support does not admit opaque local effectful closures" {
+  let source = "effect Ask { Get(Int) -> Int } fn maker() -> (Int) -> Int with Ask { (n: Int) -> Int with Ask { perform Ask::Get(n) } } export fn main() -> Int { handle { let xs = Array::with_capacity(4); let reserve = maker(); Array::push(xs, reserve(4)); Array::length(xs) } with { Ask::Get(n) => { let k = resume; k(n + 10) } } }"
+  let message = handle {
+    let _ = compile_wasi(source, "main")
+    ""
+  } with { Exception::Throw(msg) => msg }
+  assert(String::contains(message, "cannot see through"))
+  assert(String::contains(message, "call to 'reserve'"))
+}
+
+fn run_capacity_linear(source: String, name: String, expected: String) -> Unit with Exception + Fs + Process {
+  run_capacity_modules([
+    compile_wasi(source, "main"),
+    compile_wasi_rc(source, "main"),
+    compile_wasi_rc_shadow(source, "main")
+  ], name, expected, false, false)
+}
+
 // Move the generated module's initial heap pointer to wasm32's end without
 // allocating gigabytes. Preserve the initializer's encoded width so offsets
 // and all other sections are untouched.
@@ -52,6 +92,10 @@ fn run_capacity_probe(source: String, name: String, expected: String, wrap: Bool
   if !String::contains(source, "Profiler::heap_bytes") {
     Array::push(modules, compile_wasi_gc(source, "main"))
   }
+  run_capacity_modules(modules, name, expected, wrap, rejects)
+}
+
+fn run_capacity_modules(modules: Array[Bytes], name: String, expected: String, wrap: Bool, rejects: Bool) -> Unit with Exception + Fs + Process {
   let mut i = 0
   for wasm in modules {
     let path = "/tmp/_array_capacity_" + name + "_" + Int::to_string(i) + ".wasm"
