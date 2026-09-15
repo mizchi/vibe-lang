@@ -401,6 +401,37 @@ if (execCur?.scenarios && Object.keys(execCur.scenarios).length) {
   }
 }
 
+// Incremental-build KPI (#1959 line). Rendered for every run, at three
+// project sizes, because the numbers this repository has published were all
+// measured on the 420-module selfhost closure -- which turns out not to
+// represent the sizes users actually build. The skipped-modules column is
+// deterministic; the wall column is not, and is labelled so.
+const incr = cur.incremental;
+if (incr && Array.isArray(incr.corpora) && incr.corpora.length) {
+  const pct = v => (v == null ? "—" : `${(v * 100).toFixed(0)}%`);
+  const baseRow = name => (base?.incremental?.corpora || []).find(r => r.name === name);
+  lines.push("#### incremental build (unchanged rebuild vs cold)");
+  lines.push("");
+  lines.push("| corpus | modules | modules skipped | heap | wall |");
+  lines.push("|---|---:|---:|---:|---:|");
+  for (const row of incr.corpora) {
+    const was = baseRow(row.name);
+    const delta = was && was.modules_skipped_ratio != null && row.modules_skipped_ratio != null
+      && Math.abs(was.modules_skipped_ratio - row.modules_skipped_ratio) > 0.005
+      ? ` (was ${pct(was.modules_skipped_ratio)})` : "";
+    lines.push(`| ${row.name} | ${row.modules} | ${pct(row.modules_skipped_ratio)}${delta} `
+      + `| ${pct(row.heap_ratio)} | ${pct(row.wall_ratio)} |`);
+  }
+  lines.push("");
+  lines.push("<sub>skipped = share of the module walk an unchanged rebuild did not recheck (1 − rechecked/planned); "
+    + "heap and wall are warm ÷ cold. Counters and heap are deterministic; **wall is advisory** on a shared runner. "
+    + "A warm rebuild that changed the output fails the KPI rather than being reported.</sub>");
+  lines.push("");
+} else {
+  lines.push("> incremental KPI: not measured this run");
+  lines.push("");
+}
+
 if (cur.micro_status && cur.micro_status !== "ok") {
   lines.push(`> micro benches: ${cur.micro_status}`);
   lines.push("");

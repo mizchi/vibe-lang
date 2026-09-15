@@ -1680,6 +1680,43 @@ reproduce entry-rooted DCE independently in each module, so it prints
 `unmeasured` when that condition holds. A `dce_entry=0` comparison describes the
 unpruned closure, not every `vibe build` of that closure.
 
+## The incremental KPI, at three sizes (#1959 line)
+
+`pkf run kpi-incremental` (`scripts/incremental_kpi.mjs`) measures what an
+UNCHANGED rebuild skips, and CI runs it inside `bench_metrics.sh` so the table
+lands in every run's step summary, in the PR comment, and in the `bench-data`
+snapshot that carries the trend.
+
+Three sizes, because every incremental number this document used to carry was
+measured on the compiler's own 420-module closure, and that closure turns out
+not to represent the sizes people actually build. Each corpus is a committed
+root with a REAL entry — a `__no_entry__` root skips the capability const-fold
+and the late DCE, which is most of what a build does after the checker (#2818).
+
+Measured at `3869051`:
+
+| corpus | modules | modules skipped | heap | wall |
+|---|---:|---:|---:|---:|
+| small (`bench/incremental/edit_cycle`) | 2 | 100 % | 93 % | 95 % |
+| medium (`scripts/review_lint.vibex`) | 12 | 100 % | 86 % | 89 % |
+| selfhost (`lib/@vibe/cli/entry.vibe`) | 420 | 100 % | **76 %** | **44 %** |
+
+Read the first column against the others. **The module walk is fully skipped
+at every size** — nothing is rechecked — and a small project still pays 95 % of
+a cold build's wall and 93 % of its heap. The incremental win is almost
+entirely a selfhost-scale phenomenon, and it is the whole-program back end
+(`§Which layer a distributed cache should carry`) that decides the rest.
+
+`skipped` is `1 − modules_rechecked / modules_planned`; `heap` and `wall` are
+warm ÷ cold. The counters and `heap_ptr` are deterministic for a given input
+and cache state, so N=1 is enough for them and a move is a real move; **wall on
+a shared runner is advisory** and is labelled that way in the report. A warm
+rebuild whose output differs from the cold one fails the KPI outright rather
+than being reported — every ratio above assumes the two builds produced the
+same program, and the run checks it.
+
+This is a measurement, not a gate: it prints numbers and holds no budget.
+
 ## User-visible KPI contract
 
 Measure these endpoints separately:
