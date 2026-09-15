@@ -82,6 +82,28 @@ decision, never a freshness heuristic in the runner: picking up a sibling
 which on a CI runner they routinely do (`scripts/ensure_viberun.sh` has the
 measurement).
 
+**A `.cwasm` row needs `--trust-precompiled`.** `Component::deserialize_file`
+is `unsafe`, and wasmtime's contract says why in its own words: the blob
+"should not be exposed to arbitrary user input" because "arbitrary input could
+trivially be used to execute arbitrary code". Its version header only makes
+blobs wasmtime ITSELF produced safe to reject — it is not a provenance check on
+a crafted file. A manifest is data, so letting a row select native-code loading
+by file extension would make a `commands.tsv` in a cloned repository an
+attacker-controlled path to code outside the sandbox: one level of indirection
+beyond `viberun x.cwasm`, where the person invoking it named the path.
+
+So the decision belongs to the invoker:
+
+```
+viberun --commands --trust-precompiled <manifest> <verb> [args...]
+```
+
+Options are read BEFORE the manifest, because everything from the verb onwards
+belongs to the command — otherwise whatever supplies a command's arguments
+could smuggle the flag past the invoker. Without it a `.cwasm` row is refused
+by name, before the file is opened, and the message names both the flag and the
+`.component.wasm` alternative.
+
 ## The component — `run: func(args: string) -> string`
 
 A command module exports exactly one function:
@@ -226,7 +248,9 @@ viberun --commands commands.tsv hello a b c       # -> hello from hello, 3 arg(s
 
 viberun --precompile-component hello.component.wasm -o hello.cwasm
 printf 'vibe-commands-v1\nhello\thello.cwasm\n' > commands.tsv
-viberun --commands commands.tsv hello a b c       # same answer, no Cranelift
+# --trust-precompiled because loading an image runs native code; without it the
+# row is refused by name.
+viberun --commands --trust-precompiled commands.tsv hello a b c
 ```
 
 ## Where this is going

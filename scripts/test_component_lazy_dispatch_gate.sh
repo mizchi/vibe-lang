@@ -308,8 +308,10 @@ fi
 grep -q 'unknown command `nosuchverb`' "$WORK/err" || { cat "$WORK/err" >&2; fail "unknown verb: wrong message"; }
 grep -q 'absent, cat, hello, poison' "$WORK/err" || { cat "$WORK/err" >&2; fail "unknown verb: the known verbs are not listed"; }
 
-# 8. AOT. A manifest row may name a precompiled image instead, and dispatch
-#    must be indistinguishable.
+# 8. AOT, and the trust boundary around it. Loading a precompiled image runs
+#    native code no wasm sandbox contains, so a MANIFEST -- which is data --
+#    must not be able to select one on its own. The invoker vouches, or the
+#    row is refused.
 "$RUNNER" --precompile-component "$WORK/cmd/hello.component.wasm" -o "$WORK/cmd/hello.cwasm" >/dev/null 2>&1 \
   || fail "--precompile-component failed"
 [ -s "$WORK/cmd/hello.cwasm" ] || fail "--precompile-component wrote nothing"
@@ -317,10 +319,30 @@ cat > "$WORK/aot.tsv" <<TSV
 vibe-commands-v1
 hello	cmd/hello.cwasm
 TSV
-"$RUNNER" --commands "$WORK/aot.tsv" hello a b c >"$WORK/out" 2>"$WORK/err" \
-  || { cat "$WORK/err" >&2; fail "dispatch from a precompiled component failed"; }
+if "$RUNNER" --commands "$WORK/aot.tsv" hello a b c >"$WORK/out" 2>"$WORK/err"; then
+  fail "a manifest selected a precompiled image with no --trust-precompiled"
+fi
+grep -q -- '--trust-precompiled' "$WORK/err" \
+  || { cat "$WORK/err" >&2; fail "the precompiled refusal does not name the flag that allows it"; }
+
+"$RUNNER" --commands --trust-precompiled "$WORK/aot.tsv" hello a b c >"$WORK/out" 2>"$WORK/err" \
+  || { cat "$WORK/err" >&2; fail "dispatch from a precompiled component failed with --trust-precompiled"; }
 grep -qx 'hello from hello, 3 arg(s)' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "the precompiled component answered differently"; }
+
+# An option after the verb belongs to the COMMAND, so it must not be read as
+# the runner's own -- otherwise the trust flag could be smuggled past the
+# invoker by whatever supplies the command's arguments.
+if "$RUNNER" --commands "$WORK/aot.tsv" hello --trust-precompiled >"$WORK/out" 2>"$WORK/err"; then
+  fail "--trust-precompiled after the verb was honoured by the runner"
+fi
+
+# An unrecognized runner option is refused rather than taken for the manifest.
+if "$RUNNER" --commands --definitely-not-a-flag "$WORK/aot.tsv" hello >"$WORK/out" 2>"$WORK/err"; then
+  fail "an unknown --commands option was accepted"
+fi
+grep -q -- 'unknown option' "$WORK/err" \
+  || { cat "$WORK/err" >&2; fail "an unknown --commands option was not named"; }
 
 # 9. A manifest that lists a verb twice is refused: dispatch must not depend
 #    on which row a scan happens to reach first.

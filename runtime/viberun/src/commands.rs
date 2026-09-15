@@ -46,6 +46,28 @@ pub const COMMAND_EXPORT: &str = "run";
 /// needs no escaping.
 pub const ARGV_SEPARATOR: char = '\0';
 
+/// Whether a manifest row may name a PRECOMPILED image.
+///
+/// `Component::deserialize_file` is `unsafe`, and wasmtime's own contract is
+/// blunt about why: the blob "should not be exposed to arbitrary user input"
+/// because "arbitrary input could trivially be used to execute arbitrary
+/// code". Its version header only makes blobs wasmtime ITSELF produced safe to
+/// reject; it is not a provenance check on a crafted file.
+///
+/// A manifest is data. Left to decide this by file extension, a `commands.tsv`
+/// in a cloned repository would be attacker-controlled input selecting
+/// native-code loading — one level of indirection beyond `viberun x.cwasm`,
+/// where the person invoking it named the path. So the decision belongs to the
+/// INVOKER: `--trust-precompiled` says "I vouch for what this manifest names",
+/// the same way typing the path does, and without it a `.cwasm` row is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrecompiledPolicy {
+    /// A `.cwasm` row is refused, naming the flag that would allow it.
+    Refuse,
+    /// The invoker vouches for the images this manifest names.
+    Trust,
+}
+
 /// One manifest row. `path` is kept exactly as written so a diagnostic can
 /// quote the manifest rather than an absolutized rewrite of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,14 +261,20 @@ fn require_component_header(path: &Path, bytes: &[u8]) -> Result<()> {
 pub struct CommandRegistry {
     engine: Engine,
     manifest: CommandManifest,
+    precompiled: PrecompiledPolicy,
     loaded: HashMap<String, Component>,
 }
 
 impl CommandRegistry {
-    pub fn new(engine: Engine, manifest: CommandManifest) -> Self {
+    pub fn new(
+        engine: Engine,
+        manifest: CommandManifest,
+        precompiled: PrecompiledPolicy,
+    ) -> Self {
         Self {
             engine,
             manifest,
+            precompiled,
             loaded: HashMap::new(),
         }
     }
@@ -273,7 +301,7 @@ impl CommandRegistry {
                     }
                 );
             };
-            let component = compile_component(&self.engine, &path)?;
+            let component = compile_component(&self.engine, &path, self.precompiled)?;
             self.loaded.insert(verb.to_string(), component);
         }
         Ok(self
@@ -290,12 +318,28 @@ impl CommandRegistry {
 /// freshness heuristic here: a runner that picked a sibling `.cwasm` when it
 /// looked newer would answer from a stale image the moment mtimes lied (which
 /// on a CI runner they routinely do — see scripts/ensure_viberun.sh).
-fn compile_component(engine: &Engine, path: &Path) -> Result<Component> {
+fn compile_component(
+    engine: &Engine,
+    path: &Path,
+    precompiled: PrecompiledPolicy,
+) -> Result<Component> {
     if path.extension().and_then(|e| e.to_str()) == Some("cwasm") {
-        // Safety: same contract as `load_module`'s `.cwasm` branch — the image
-        // must have been produced by `--precompile-component` from an engine
-        // with this configuration. wasmtime checks its own compatibility
-        // header and refuses a mismatch.
+        if precompiled == PrecompiledPolicy::Refuse {
+            bail!(
+                "{} is a precompiled image, and loading one runs native code that no \
+                 wasm sandbox contains. A manifest is data, so it cannot make that \
+                 decision on its own: pass `--trust-precompiled` before the manifest \
+                 if you vouch for the images it names, or point the row at a \
+                 `.component.wasm`.",
+                path.display()
+            );
+        }
+        // Safety: the invoker passed `--trust-precompiled`, which is the same
+        // vouching that naming a `.cwasm` path directly already is. The image
+        // must be the unmodified output of `--precompile-component` from an
+        // engine with this configuration; wasmtime's compatibility header
+        // rejects a MISMATCH but is not a provenance check, which is exactly
+        // why the policy above exists.
         return unsafe { Component::deserialize_file(engine, path) }
             .map_err(|e| format_err!("deserialize {}: {e}", path.display()));
     }
@@ -535,10 +579,28 @@ mod tests {
     }
 
     #[test]
+    fn a_precompiled_row_is_refused_unless_the_invoker_vouches() {
+        let engine = Engine::default();
+        let m = manifest("vibe-commands-v1\ncheck\tc.cwasm\n").unwrap();
+        let mut registry = CommandRegistry::new(engine, m, PrecompiledPolicy::Refuse);
+        let err = match registry.load("check") {
+            Ok(_) => panic!("a .cwasm row loaded without --trust-precompiled"),
+            Err(e) => e.to_string(),
+        };
+        // The refusal names the flag AND the alternative, so neither reader
+        // has to guess which one they wanted.
+        assert!(err.contains("--trust-precompiled"), "{err}");
+        assert!(err.contains(".component.wasm"), "{err}");
+        // Refused BEFORE the file is touched: the path does not exist here, so
+        // a refusal that read it first would report the read error instead.
+        assert!(!err.contains("No such file"), "{err}");
+    }
+
+    #[test]
     fn an_unknown_verb_names_the_ones_the_manifest_has() {
         let engine = Engine::default();
         let m = manifest("vibe-commands-v1\ncheck\ta.wasm\nbuild\tb.wasm\n").unwrap();
-        let mut registry = CommandRegistry::new(engine, m);
+        let mut registry = CommandRegistry::new(engine, m, PrecompiledPolicy::Refuse);
         // `unwrap_err` needs `T: Debug`, and `Component` has no Debug impl.
         let err = match registry.load("fmt") {
             Ok(_) => panic!("an unknown verb resolved to a component"),

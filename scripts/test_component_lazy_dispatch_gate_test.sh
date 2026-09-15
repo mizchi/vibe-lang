@@ -182,7 +182,33 @@ expect_launcher_fail "launcher accepts a .vibex for --component" \
   's/        \*.vibex) die "--component needs a .vibe module.*$//' \
   '--component needs a .vibe module'
 
-# 12. The compiler-source half of the cache key (Codex P2): a change under
+# 12. The precompiled-trust boundary is real. A manifest is data, so a
+#     `.cwasm` row must not select native-code loading on its own -- and the
+#     gate has to notice if the runner stops refusing it. The mutation makes
+#     the good component's row a precompiled image, which the gate's default
+#     dispatch must then refuse.
+case_no=$((case_no + 1))
+aot_work="$TMP_ROOT/case$case_no"
+aot_log="$TMP_ROOT/case$case_no.log"
+rm -rf "$aot_work"
+cp -R "$MASTER" "$aot_work"
+"$ROOT/runtime/viberun/target/release/viberun" --precompile-component \
+  "$aot_work/cmd/hello.component.wasm" -o "$aot_work/cmd/hello.component.wasm.new" >/dev/null 2>&1 \
+  || { echo "component-lazy self-test [precompiled trust boundary]: could not precompile" >&2; exit 1; }
+mv "$aot_work/cmd/hello.component.wasm.new" "$aot_work/cmd/hello.component.wasm"
+# The mutation must have LANDED: a precompiled image is not a component binary,
+# so its header must no longer be the component one.
+if [ "$(od -A n -t x1 -N 8 "$aot_work/cmd/hello.component.wasm" | tr -d ' \n')" = "0061736d0d000100" ]; then
+  echo "component-lazy self-test [precompiled trust boundary]: the mutation did not apply" >&2
+  exit 1
+fi
+if VIBE_COMPONENT_LAZY_WORK="$aot_work" bash "$GATE" >"$aot_log" 2>&1; then
+  echo "component-lazy self-test [precompiled trust boundary]: the gate PASSED with a precompiled image where a component belongs" >&2
+  exit 1
+fi
+echo "component-lazy self-test [precompiled trust boundary]: red as expected"
+
+# 13. The compiler-source half of the cache key (Codex P2): a change under
 #     lib/@vibe/compiler must force a rebuild, or a changed emitter is reused
 #     from yesterday's artifacts and the gate is green about code it never ran.
 case_no=$((case_no + 1))

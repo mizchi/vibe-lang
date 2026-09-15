@@ -439,7 +439,7 @@ fn print_help() {
            viberun --dump-imports <input.wasm>\n\
            viberun --dump-linemap <input.wasm>\n\
            viberun --daemon <wasm|cwasm>\n\
-           viberun --commands <manifest> <verb> [args...]\n\
+           viberun --commands [--trust-precompiled] <manifest> <verb> [args...]\n\
            viberun --precompile-component <input.component.wasm> [-o <out.cwasm>]\n\
            viberun --help\n\
          \n\
@@ -452,9 +452,13 @@ fn print_help() {
          its own component, and only the invoked verb's artifact is read,\n\
          compiled and instantiated. Each artifact exports\n\
          `run: func(args: string) -> string`, takes argv joined by NUL, and\n\
-         returns `vibe-command-result-v1\\t<exit>` then its output. Point a\n\
-         manifest row at a `.cwasm` from --precompile-component to skip\n\
-         Cranelift at dispatch time.\n\
+         returns `vibe-command-result-v1\\t<exit>` then its output.\n\
+         \n\
+         A manifest row may name a `.cwasm` from --precompile-component to skip\n\
+         Cranelift, but only with --trust-precompiled: loading a precompiled\n\
+         image runs native code that no wasm sandbox contains, and a manifest\n\
+         is data. The flag is the invoker vouching for what it names, the same\n\
+         way naming a .cwasm path directly already is.\n\
          \n\
          ENV:\n\
            MOONRUN_WT_MEMORY_MB      soft cap on linear memory (default 8192)\n\
@@ -1141,18 +1145,36 @@ fn command_engine_config() -> Config {
 // framed (`vibe-command-result-v1`), so a component that returns nonsense
 // fails loudly here instead of exiting 0 with partial output.
 fn run_commands(args: Vec<String>) -> Result<i32> {
-    let mut iter = args.into_iter();
+    let mut iter = args.into_iter().peekable();
+    // Options are read BEFORE the manifest, because everything from the verb
+    // onwards belongs to the command. An unrecognized one is refused rather
+    // than taken for the manifest path -- the same discipline `runtime/vibe`'s
+    // `build` arm now applies, and for the same reason: a flag quietly read as
+    // a path is a wrong answer reported as success.
+    let mut precompiled = commands::PrecompiledPolicy::Refuse;
+    while let Some(arg) = iter.peek() {
+        match arg.as_str() {
+            "--trust-precompiled" => {
+                precompiled = commands::PrecompiledPolicy::Trust;
+                iter.next();
+            }
+            other if other.starts_with("--") => {
+                bail!("--commands: unknown option `{other}` (options come before <manifest>)")
+            }
+            _ => break,
+        }
+    }
     let Some(manifest_path) = iter.next() else {
         bail!("--commands: missing <manifest>");
     };
     let Some(verb) = iter.next() else {
-        bail!("--commands: missing <verb> (usage: viberun --commands <manifest> <verb> [args...])");
+        bail!("--commands: missing <verb> (usage: viberun --commands [--trust-precompiled] <manifest> <verb> [args...])");
     };
     let argv: Vec<String> = std::iter::once(verb.clone()).chain(iter).collect();
 
     let manifest = commands::CommandManifest::read(std::path::Path::new(&manifest_path))?;
     let engine = Engine::new(&command_engine_config())?;
-    let mut registry = commands::CommandRegistry::new(engine.clone(), manifest);
+    let mut registry = commands::CommandRegistry::new(engine.clone(), manifest, precompiled);
     let component = registry.load(&verb)?.clone();
     let result = commands::invoke_command(
         &engine,
