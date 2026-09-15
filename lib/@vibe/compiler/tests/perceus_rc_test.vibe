@@ -15,7 +15,35 @@ import @vibe/compiler/core {
   Expr, Pat, Stmt, TypeExpr
 }
 
+import @vibe/compiler/normalize {
+  uniquify_shadowed_bindings_fresh
+}
+
 //# Misc
+
+test "2803 the cross-store duplicate belongs to the old RHS use" {
+  let rhs = ELet("n", ECall(EIdent("consume", 10), [EIdent("x", 20)], 10), ECall(EIdent("Array::get", 30), [
+    EIdent("xs", 31),
+    EInt(0)
+  ], 30), 9)
+  let after = ECall(EIdent("consume", 40), [EIdent("x", 50)], 40)
+  let expr = ELetMut("x", ETuple([EInt(1), EInt(2)]), EAssign("x", rhs, after), 0)
+  let before = build_perceus_plan(expr)
+  inspect(dup_use_offsets(before, "x"), content = "[20]")
+  inspect(count_drops(before, "x"), content = "0")
+  let split = uniquify_shadowed_bindings_fresh(expr, [0], [])
+  let plan = build_perceus_plan(split)
+  inspect(count_dups(plan, "x"), content = "0")
+  inspect(count_drops(plan, "x"), content = "0")
+  match split {
+    ELetMut(_, _, ELetMut(replacement, _, _, _), _) => {
+      assert(replacement != "x")
+      inspect(count_dups(plan, replacement), content = "0")
+      inspect(count_drops(plan, replacement), content = "0")
+    },
+    _ => assert(false)
+  }
+}
 
 fn count_drops(plan: Array[PerceusAction], name: String) -> Int {
   let mut n = 0

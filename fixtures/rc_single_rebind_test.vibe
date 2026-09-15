@@ -1,0 +1,76 @@
+// #2803: separating a one-time store must preserve aliases and slot captures.
+enum Node {
+  Leaf(Int);
+  Pair(Node, Node)
+}
+
+fn total(n: Node) -> Int {
+  match n {
+    Leaf(v) => v,
+    Pair(a, b) => total(a) + total(b)
+  }
+}
+
+fn replaced(xs: Array[Node]) -> Int {
+  let mut x = Pair(Leaf(1), Leaf(2))
+  x = {
+    let before = total(x)
+    Array::get(xs, before - 3)
+  }
+  total(x) + total(x) + total(Array::get(xs, 0))
+}
+
+test "multiple consuming uses belong to the replacement" {
+  let xs = [Pair(Leaf(3), Leaf(4))]
+  inspect(replaced(xs), content = "21")
+  inspect(replaced(xs), content = "21")
+}
+
+test "a replacement may alias a child of the original value" {
+  let mut xs = [[1, 2]]
+  xs = {
+    let child = Array::get(xs, 0)
+    [child]
+  }
+  let filler = [[3, 4]]
+  inspect(Array::get(Array::get(xs, 0), 0), content = "1")
+  inspect(Array::get(Array::get(filler, 0), 0), content = "3")
+}
+
+test "a closure created in the RHS observes the stored value" {
+  let callbacks: Array[() -> Int] = []
+  let mut x = 1
+  x = {
+    Array::push(callbacks, () -> Int {
+      x
+    })
+    2
+  }
+  let callback = Array::get(callbacks, 0)
+  inspect(callback(), content = "2")
+  inspect(x, content = "2")
+}
+
+test "a later write in a branch still updates the original slot" {
+  let mut xs = [1]
+  xs = {
+    let n = Array::length(xs)
+    [n + 1]
+  }
+  if Array::length(xs) == 1 {
+    xs = [3]
+  } else {
+    ()
+  }
+  inspect(Array::get(xs, 0), content = "3")
+}
+
+test "an assignment in a loop remains a loop-carried slot" {
+  let mut xs = [0]
+  let mut i = 0
+  while i < 10 {
+    xs = [Array::get(xs, 0) + 1]
+    i = i + 1
+  }
+  inspect(Array::get(xs, 0), content = "10")
+}

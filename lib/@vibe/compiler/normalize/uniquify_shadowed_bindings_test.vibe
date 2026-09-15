@@ -10,6 +10,151 @@ fn fresh_counter() -> Array[Int] {
   [0]
 }
 
+fn rebind_with_body(body: Expr) -> Expr {
+  ELetMut("x", EInt(1), EAssign("x", EIdent("x", 0), body), 0)
+}
+
+test "rebind names avoid an already live user local" {
+  let body = ETuple([EIdent("x", 0), EIdent("__shadow_0_x", 0)])
+  let expr = ELet("__shadow_0_x", EInt(99), rebind_with_body(body), 0)
+  // review-lint: allow-fixed-synthetic-name -- adversarial user binding for collision regression
+  match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+    ELet(user, _, ELetMut(_, _, ELetMut(replacement, _, _, _), _), _) => {
+      assert_eq(user, "__shadow_0_x")
+      assert(replacement != user)
+    },
+    _ => assert(false)
+  }
+}
+
+test "rebind names avoid later declarations and free references" {
+  let tails = [
+    ELet("__shadow_0_x", EInt(99), EIdent("x", 0), 0),
+    // review-lint: allow-fixed-synthetic-name -- future user binding must be reserved
+    ESeq(EIdent("__shadow_0_x", 0), EIdent("x", 0)),
+    ELet("__shadow_0_x", EInt(99), ELet("__shadow_1_x", EInt(98), EIdent("x", 0), 0), 0)
+    // review-lint: allow-fixed-synthetic-name -- both occupied candidates must be skipped
+  ]
+  for tail in tails {
+    match uniquify_shadowed_bindings_fresh(rebind_with_body(tail), fresh_counter(), [
+    ]) {
+      ELetMut(_, _, ELetMut(replacement, _, _, _), _) => {
+        assert(replacement != "__shadow_0_x")
+        match tail {
+          ELet(_, _, ELet(_, _, _, _), _) => assert(replacement != "__shadow_1_x"),
+          _ => ()
+        }
+      },
+      _ => assert(false)
+    }
+  }
+}
+
+test "ordinary shadows avoid future parameter pattern and loop names" {
+  let future = ETuple([
+    EFn([], [], [("__shadow_0_x~", None)], None, None, EUnit),
+    EMatch(EInt(1), [(PBind("__shadow_1_x"), EUnit)]),
+    // review-lint: allow-fixed-synthetic-name -- unused user pattern binder must be reserved
+    ELoop([("__shadow_2_x", EInt(0))], EUnit),
+    EForIn("__shadow_3_x", Some("__shadow_4_x"), EArray([]), EUnit)
+  ])
+  let expr = ELet("x", EInt(1), ELet("x", EInt(2), future, 0), 0)
+  match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+    ELet(_, _, ELet(fresh, _, _, _), _) => assert_eq(fresh, "__shadow_5_x"),
+    _ => assert(false)
+  }
+}
+
+test "fresh names also avoid names supplied by the caller" {
+  let expr = ELet("x", EInt(1), EIdent("x", 0), 0)
+  match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), [
+    "x",
+    "__shadow_0_x"
+  ]) {
+    ELet(fresh, _, _, _) => assert_eq(fresh, "__shadow_1_x"),
+    _ => assert(false)
+  }
+}
+
+test "a single immediate reassignment separates old and replacement lifetimes" {
+  let rhs = ECall(EIdent("replace", 1), [EIdent("x", 2)], 3)
+  let expr = ELetMut("x", EInt(1), EAssign("x", rhs, EIdent("x", 4)), 5)
+  match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+    ELetMut(old, _, ELetMut(replacement, value, EIdent(use_name, 4), _), 5) => {
+      assert(old != replacement)
+      assert_eq(use_name, replacement)
+      match value {
+        ECall(_, args, 3) => match Array::get(args, 0) {
+          EIdent(rhs_name, 2) => assert_eq(rhs_name, old),
+          _ => assert(false)
+        },
+        _ => assert(false)
+      }
+    },
+    _ => assert(false)
+  }
+}
+
+test "reassignment keeps a mutable slot when another write can observe it" {
+  let writes = [
+    EAssign("x", EInt(3), EIdent("x", 0)),
+    EAssignOp("x", "+", EInt(3), EIdent("x", 0)),
+    EIf(EBool(true), EAssign("x", EInt(3), EIdent("x", 0)), EIdent("x", 0))
+  ]
+  for write in writes {
+    let rhs = ECall(EIdent("replace", 0), [EIdent("x", 0)], 0)
+    let expr = ELetMut("x", EInt(1), EAssign("x", rhs, write), 0)
+    match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+      ELetMut(_, _, EAssign(_, _, _), _) => assert(true),
+      _ => assert(false)
+    }
+    let rhs_write = ELetMut("x", EInt(1), EAssign("x", write, EIdent("x", 0)), 0)
+    match uniquify_shadowed_bindings_fresh(rhs_write, fresh_counter(), []) {
+      ELetMut(_, _, EAssign(_, _, _), _) => assert(true),
+      _ => assert(false)
+    }
+  }
+}
+
+test "a closure made before the store must keep observing the mutable slot" {
+  let closure = EFn([], [], [], None, None, EIdent("x", 0))
+  let rhs = ELet("saved", closure, EInt(2), 0)
+  let expr = ELetMut("x", EInt(1), EAssign("x", rhs, EIdent("x", 0)), 0)
+  match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+    ELetMut(_, _, EAssign(_, _, _), _) => assert(true),
+    _ => assert(false)
+  }
+}
+
+test "an overwrite without uses on both sides keeps its original lifetime" {
+  let bodies = [
+    EAssign("x", EInt(2), EIdent("x", 0)),
+    EAssign("x", EIdent("x", 0), EUnit)
+  ]
+  for body in bodies {
+    let expr = ELetMut("x", EInt(1), body, 0)
+    match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+      ELetMut(_, _, EAssign(_, _, _), _) => assert(true),
+      _ => assert(false)
+    }
+  }
+}
+
+test "conditional and repeated assignments keep their mutable slot" {
+  let assignment = EAssign("x", EInt(2), EUnit)
+  let bodies = [
+    EIf(EBool(true), assignment, EUnit),
+    EWhile(EBool(false), assignment)
+  ]
+  for body in bodies {
+    let expr = ELetMut("x", EInt(1), body, 0)
+    match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
+      ELetMut(_, _, _, _) => assert(true),
+      _ => assert(false)
+    }
+  }
+}
+
 test "nested binding shadows through the lexical stack" {
   let expr = ELet("x", EInt(1), ELet("x", EInt(2), EIdent("x", 0), 0), 0)
   match uniquify_shadowed_bindings_fresh(expr, fresh_counter(), []) {
