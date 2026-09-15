@@ -5834,10 +5834,9 @@ fn bind_impl_target_key_into(out: Array[(String, String)], name: String, value: 
 ///   { method: (__w) -> C::method(<element Bound dict>, __w) }
 /// The element dict is built recursively from the array literal's first element
 /// (`arg_expr`) — a dictionary-of-dictionaries (#5 Increment B). If the element
-/// type / dict cannot be determined the whole witness fails to build (returns
-/// None), so the call is left unrewritten (a loud arity error, never a silent
-/// miscompile).
-fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] {
+/// type is missing from an Array target, require an annotation before emitting
+/// a call without its nested dictionary. Other unresolved witnesses return None.
+fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Option[Expr]) -> Option[Expr] with Exception {
   let cname = impl_target_head(actual_target)
   match lookup_trait_sigs(traits, trait_ref_name(trait_name)) {
     Some(sigs) => {
@@ -5899,6 +5898,10 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
                     }
                   },
                   None => {
+                    match actual_target {
+                      TyName("Array") => throw(String::concat("add an explicit `Array[Element]` annotation to the array binding or parameter before this trait call: the element type needed for `", String::concat(btrait, "` is not available here"))),
+                      _ => ()
+                    }
                     subok = false
                   }
                 }
@@ -5934,7 +5937,7 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
   }
 }
 
-fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Expr) -> Option[Expr] {
+fn build_concrete_dict(cname: String, trait_name: String, traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], gens: Array[DictGen], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)], arg_expr: Expr) -> Option[Expr] with Exception {
   let target = match infer_impl_target_expr(arg_expr, struct_sets, var_types, fn_returns) {
     Some(inferred) => inferred,
     None => TyName(cname)
@@ -6676,7 +6679,7 @@ fn infer_constructor_match_arm_type_name(scrut: Expr, arms: Array[(Pat, Expr)], 
 /// receiver type is syntactically known) or by forwarding the caller's own dict
 /// parameter (the receiver is a type parameter bound by the same trait in the
 /// enclosing generic — the generic->generic case).
-fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] {
+fn synth_dicts(callee_type_params: Array[String], threaded: Array[(String, String, Int)], constructor_recvs: Array[(String, Int)], orig_args: Array[Expr], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], dict_binds: Array[(String, String, String, Array[String])], fn_returns: Array[(String, String)], gens: Array[DictGen]) -> Option[Array[Expr]] with Exception {
   let dicts = empty_expr_array()
   let mut ok = true
   let mut bi = 0

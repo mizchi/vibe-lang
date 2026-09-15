@@ -16,6 +16,31 @@ test "a shadowed capacity constructor retains its own trait witness" {
   run_capacity_linear(source, "shadow_trait", "25")
 }
 
+fn bounded_capacity_source(body: String) -> String {
+  "trait Element { score(Self) -> Int } impl Element for Int { score(self: Int) -> Int { self + 10 } } impl Element for String { score(self: String) -> Int { String::length(self) + 20 } } trait Measured { measure(Self) -> Int } impl [E: Element] Measured for Array[E] { measure(self: Array[E]) -> Int { E::score(Array::get(self, 0)) } } fn measure[T: Measured](value: T) -> Int { T::measure(value) } export fn main() -> Int { " + body + " }"
+}
+
+test "annotated reserved arrays supply their nested element witnesses" {
+  let source = bounded_capacity_source("let xs: Array[Int] = Array::with_capacity(4); Array::push(xs, 7); let ys: Array[String] = Array::with_capacity(4); Array::push(ys, \"abc\"); measure(xs) + measure(ys)")
+  run_capacity_linear(source, "nested_trait", "40")
+}
+
+test "unresolved element witnesses require an annotation before emitting wasm" {
+  for body in [
+    "let xs = Array::with_capacity(4); Array::push(xs, 7); measure(xs)",
+    "let xs = Array::with_capacity(4); Array::push(xs, 7); let ys = xs; measure(ys)",
+    "measure(Array::with_capacity(4))"
+  ] {
+    let source = bounded_capacity_source(body)
+    let message = handle {
+      let _ = compile_wasi(source, "main")
+      ""
+    } with { Exception::Throw(msg) => msg }
+    assert(String::starts_with(message, "add an explicit"))
+    assert(String::contains(message, "Array[Element]"))
+  }
+}
+
 test "capacity allocation is safe in a suspend-class handler body" {
   let source = "effect Ask { Get(Int) -> Int } export fn main() -> Int { handle { let xs = Array::with_capacity(4); Array::push(xs, 7); perform Ask::Get(Array::length(xs)) } with { Ask::Get(n) => { let k = resume; k(n + 10) } } }"
   // Capturing resume as a value exercises the linear suspend lowering.
