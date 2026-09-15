@@ -172,6 +172,28 @@ names joined by `\n`, `stat-token` is `vibe_stat_token`'s digest). Every OTHER
 `vibe.*` import outright — so a command that grows a capability it cannot have
 is caught at build time rather than at dispatch.
 
+**"Trap" is the whole point, and it took a second wrap to get.** The vfs
+componentization `vibec` uses answers four of those imports with a benign zero
+instead — `env-get` with the empty string, `fs_write_file` / `fs_write_bytes`
+by dropping the write, `profile-now-us` with 0. That is right for the vibec
+core, whose only writer is the persistent cache, where a dropped write is a
+cache miss. It is silently wrong for a command, where the write is what the
+caller asked for. Measured on the permissive wrap:
+
+```
+$ viberun --commands cmds.tsv write out.txt
+wrote out.txt
+$ echo $?
+0
+$ ls out.txt
+ls: cannot access 'out.txt': No such file or directory
+```
+
+`vibe build --component` therefore takes
+`comp_emit_component_wasm_string_handler_vfs_trapping`, under which the same
+command traps: exit 1, no output, no fabricated success. The permissive wrap
+keeps its behaviour for the caller it was written for.
+
 Reading the core rather than a flag is what keeps the two answers from
 disagreeing: there is no way to ask for the pure wrap and get filesystem
 access, or to declare `with Fs` and be handed the strict one.

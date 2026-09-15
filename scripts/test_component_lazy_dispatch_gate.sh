@@ -156,6 +156,21 @@ export fn vibe_command(args: String) -> String {
 }
 VIBE
 
+  # Writes to the filesystem, which a command component CANNOT do: the vfs
+  # wrap gives it the four read operations and traps everything else. The
+  # permissive wrap vibec uses answers a write with a benign zero instead, and
+  # under it this command printed its own success line and exited 0 having
+  # written nothing (#2861, Codex review).
+  cat > "$WORK/cmd/writer.vibe" <<'VIBE'
+import @vibe/command { command_args, command_ok }
+
+export fn vibe_command(args: String) -> String with Fs {
+  let argv = command_args(args)
+  Fs::write_file(Array::get(argv, 1), "written by a command component\n")
+  command_ok("wrote \{Array::get(argv, 1)}\n")
+}
+VIBE
+
   # Not a command module at all: `vibe build --component` must say so, and say
   # what to write instead.
   cat > "$WORK/cmd/noentry.vibe" <<'VIBE'
@@ -177,7 +192,7 @@ VIBE
   fi
   rm -f "$CLI_WASM.diag" "$CLI_WASM.funcmap" "$CLI_WASM.testmeta"
 
-  for name in hello cat unframed alwaysthree; do
+  for name in hello cat unframed alwaysthree writer; do
     rm -f "$WORK/cmd/$name.component.wasm"
     launcher build --component "$WORK/cmd/$name.vibe" \
         -o "$WORK/cmd/$name.component.wasm" >/dev/null 2>"$WORK/cmd/$name.err" \
@@ -231,7 +246,7 @@ fi
 
 # 1. `vibe build --component` really emitted Component Model binaries, not
 #    core modules wearing a `.component.wasm` name.
-for name in hello cat unframed; do
+for name in hello cat unframed writer; do
   head_bytes="$(od -A n -t x1 -N 8 "$WORK/cmd/$name.component.wasm" | tr -d ' \n')"
   [ "$head_bytes" = "0061736d0d000100" ] \
     || fail "$name.component.wasm is not a component (header $head_bytes)"
@@ -372,14 +387,29 @@ fi
 grep -q 'vibe build --component' "$WORK/err" \
   || { cat "$WORK/err" >&2; fail "a core module's refusal does not name the build that fixes it"; }
 
-# 11. A flag the COMMAND owns reaches the command. `--help` is the one that
+# 11. A command that WRITES must not report success. The wrap has no write
+#     capability, so the call traps -- loudly, rather than being answered with
+#     a benign zero that leaves the caller believing the file exists.
+cat > "$WORK/writer.tsv" <<TSV
+vibe-commands-v1
+write	cmd/writer.component.wasm
+TSV
+rm -f "$WORK/written.txt"
+if "$RUNNER" --commands "$WORK/writer.tsv" write "$WORK/written.txt" >"$WORK/out" 2>"$WORK/err"; then
+  fail "a command that writes reported success; the write was answered instead of trapping"
+fi
+[ -s "$WORK/out" ] && { cat "$WORK/out" >&2; fail "a trapped command still printed its success line"; }
+[ -e "$WORK/written.txt" ] && fail "the write actually happened, so this assertion is testing the wrong thing"
+true
+
+# 12. A flag the COMMAND owns reaches the command. `--help` is the one that
 #     matters: this runner has its own, scanned across the whole argv, and a
 #     verb's `--help` must not be answered by the host.
 run_cmd hello --help || { cat "$WORK/err" >&2; fail "\`hello --help\` did not reach the command"; }
 grep -qx 'hello from hello, 1 arg(s)' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "\`--help\` was swallowed by the runner instead of reaching the command"; }
 
-# 12. The flag-combination refusals reached the user, each naming its own
+# 13. The flag-combination refusals reached the user, each naming its own
 #     reason. Recorded while the fixtures were built.
 grep -q -- '--component and --wit' "$WORK/cmd/refusals.txt" \
   || { cat "$WORK/cmd/refusals.txt" >&2; fail "--component --wit was not refused with its own reason"; }
@@ -397,7 +427,7 @@ grep -q -- 'unknown option: --definitely-not-a-flag' "$WORK/cmd/refusals.txt" \
 grep -q -- '--component needs a .vibe module' "$WORK/cmd/refusals.txt" \
   || { cat "$WORK/cmd/refusals.txt" >&2; fail "--component on a .vibex was not refused with its own reason"; }
 
-# 13. A module without the command entry is refused at BUILD time, with the
+# 14. A module without the command entry is refused at BUILD time, with the
 #     signature to write. The refusal itself was recorded while the fixtures
 #     were built.
 grep -q 'export fn vibe_command(args: String) -> String' "$WORK/cmd/noentry.err" \
