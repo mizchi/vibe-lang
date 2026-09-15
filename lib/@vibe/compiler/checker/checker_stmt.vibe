@@ -264,16 +264,36 @@ export fn is_explicit_builtin_declaration(name: String) -> Bool {
   }
   if name == "Option" || name == "Random" || qualifier == "Option" || qualifier == "Random" {
     true
-  } else match resolve_builtin(qualifier) {
+  } else if qualifier != "" && resolve_builtin(qualifier) != None {
+    // #2762 round 4 (Codex): a QUALIFIED member needs the MEMBER to exist, not
+    // merely its qualifier. `resolve_builtin(qualifier)` alone accepted
+    // `String::NotARealBuiltin`, and because publication mints its marker from
+    // this same predicate a consumer then imported that nonexistent member
+    // successfully -- measured on pristine main too, so this half is a
+    // pre-existing hole rather than one #2762 introduced.
+    //
+    // `lookup_builtin` is the oracle that knows, measured over the members
+    // `lib/@vibe/builtin/{string,int}.vibe` actually aggregate-export
+    // (`lookup_builtin` / `lookup_registry_builtin` / `has_standard_effect_policy`):
+    //
+    // | name | B | R | P |
+    // |---|---|---|---|
+    // | `String::contains` | yes | yes | no |
+    // | `Int::to_string`, `String::unicode_length` | yes | NO | no |
+    // | `Int::clz`, `Int::popcount` | yes | yes | no |
+    // | `String::NotARealBuiltin`, `Int::NotReal` | no | no | no |
+    //
+    // So the registry alone would have refused `Int::to_string`, which that
+    // package really does publish -- the first attempt at this clause did
+    // exactly that, and the table is why it does not now.
+    lookup_builtin(name) != None || lookup_registry_builtin(name) != None || has_standard_effect_policy(name)
+  } else match resolve_builtin(name) {
     Some(_) => true,
-    None => match resolve_builtin(name) {
+    None => if has_standard_effect_policy(name) {
+      true
+    } else match lookup_registry_builtin(name) {
       Some(_) => true,
-      None => if has_standard_effect_policy(name) {
-        true
-      } else match lookup_registry_builtin(name) {
-        Some(_) => true,
-        None => false
-      }
+      None => false
     }
   }
 }

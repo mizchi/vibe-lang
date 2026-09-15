@@ -173,3 +173,29 @@ test "gc lane accepts an export naming a real declaration spelled like a test bi
 test "an export naming a builtin publication cannot expose is refused" {
   inspect(typecheck_outcome("container-builtin", "export {\n  StringMap\n}\n\nexport fn mk() -> Int {\n  1\n}\n"), "container-builtin: declare or import StringMap in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
 }
+
+//# ROUND 4 (Codex). Two more, each pinned where it went wrong.
+
+//# C. A QUALIFIED builtin member whose qualifier is a builtin type but whose
+//# member does not exist. `resolve_builtin(qualifier)` alone accepted it, and
+//# publication mints its marker from the same predicate, so a consumer could
+//# import the nonexistent member -- measured on pristine main too, so this is a
+//# pre-existing hole the refusal inherited rather than one #2762 introduced.
+test "an export of a nonexistent qualified builtin member is refused" {
+  inspect(typecheck_outcome("bogus-member", "export {\n  String::NotARealBuiltin\n}\n\nexport fn mk() -> Int {\n  1\n}\n"), "bogus-member: declare or import String::NotARealBuiltin in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+//# C'. The real members `lib/@vibe/builtin/{string,int}.vibe` publish must keep
+//# answering. `Int::to_string` is the sharp one: it is NOT in
+//# `lookup_registry_builtin`, so a registry-only check refuses it -- the first
+//# attempt at C did exactly that.
+test "an export of a real qualified builtin member is accepted" {
+  inspect(typecheck_outcome("real-member", "export {\n  String::contains,\n  String::unicode_length,\n  Int::to_string,\n  Int::clz\n}\n\nexport fn mk() -> Int {\n  1\n}\n"), "real-member: accepted")
+}
+
+//# D. The gc lane synthesizes `_start` as well as the `__test_*` bindings, and
+//# round 3 reported only the latter. Measured: gc accepted `export { _start }`
+//# in a file with a test and no `main` while the FS lane refused it.
+test "gc lane refuses an export naming the synthesized entry" {
+  inspect(String::concat(flat_gc_outcome("gc-start", "export {\n  _start\n}\n\ntest \"probe\" {\n  inspect(1, \"1\")\n}\n"), String::concat(" || ", typecheck_outcome("fs-start", "export {\n  _start\n}\n\ntest \"probe\" {\n  inspect(1, \"1\")\n}\n"))), "gc-start: declare or import _start in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import || fs-start: declare or import _start in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
