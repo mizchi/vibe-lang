@@ -1,0 +1,71 @@
+import ../bytebuf.vibe {
+  bytebuf_new, bytebuf_push_section, bytebuf_push_vec_header
+}
+
+import @vibe/compiler/codegen/common_analysis {
+  emit_closure_resolve
+}
+
+import @vibe/compiler/codegen/wasm_emit {
+  emit_code_section_with_locals,
+  emit_export_section,
+  emit_func_type_raw,
+  emit_function_section,
+  emit_header,
+  emit_i32_const,
+  emit_i32_store,
+  emit_i64_add,
+  emit_i64_const,
+  emit_i64_mul,
+  emit_local_get,
+  emit_local_set,
+  emit_memory_section
+}
+
+// A heap reference carries one tag bit. An even address need not be divisible
+// by four: RC allocation can preserve the frontier left by a byte allocation.
+fn closure_pointer_probe(address: Int, tagged: Int) -> Bytes {
+  let out = bytebuf_new()
+  emit_header(out)
+  let types = bytebuf_new()
+  bytebuf_push_vec_header(types, 1)
+  emit_func_type_raw(types, [], [126])
+  bytebuf_push_section(out, 1, types)
+  emit_function_section(out, [0])
+  emit_memory_section(out, 1)
+  emit_export_section(out, "probe", 0)
+  let body = bytebuf_new()
+  emit_i32_const(body, address)
+  emit_i32_const(body, 17)
+  emit_i32_store(body, 0, 0)
+  emit_i64_const(body, tagged)
+  emit_local_set(body, 0)
+  emit_closure_resolve(body, 0, 1, 2)
+  emit_local_get(body, 1)
+  emit_i64_const(body, 10000)
+  emit_i64_mul(body)
+  emit_local_get(body, 2)
+  emit_i64_add(body)
+  emit_code_section_with_locals(out, [body], [3])
+  out
+}
+
+fn check_closure_pointer(address: Int, tagged: Int, expected: String) -> Unit with Fs + Process {
+  let path = "/tmp/_closure_pointer_\{tagged}.wasm"
+  Fs::write_bytes(path, closure_pointer_probe(address, tagged))
+  let output = sh_lines("wasmtime run --invoke probe \{path} 2>/dev/null")
+  assert(Array::length(output) == 1)
+  assert(String::equals(Array::get(output, 0), expected))
+}
+
+test "closure resolution preserves every even heap address" {
+  check_closure_pointer(1024, 1025, "171024")
+  check_closure_pointer(1026, 1027, "171026")
+  check_closure_pointer(1028, 1029, "171028")
+  check_closure_pointer(1030, 1031, "171030")
+}
+
+test "bare function values still resolve without a closure environment" {
+  check_closure_pointer(1024, 2, "0")
+  check_closure_pointer(1024, 70, "170000")
+}
