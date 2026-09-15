@@ -36,6 +36,34 @@ The table describes normal compilation, without coverage/debug instrumentation.
 backend. GC selection precedes RC selection: setting `VIBE_RC=1` alongside
 `VIBE_BACKEND=gc` does not add Perceus to the GC backend.
 
+Fresh RC blocks start at an eight-byte boundary, even when a preceding byte
+allocation left an unaligned frontier. Alignment and end-address overflow trap
+before the allocator changes the frontier. Heap closures carry the same
+single low-bit reference tag as other RC objects; decoding preserves the
+remaining address bits. Bare function values retain their separate two-bit tag.
+
+## Ownership of returned values
+
+A direct accessor whose results are all borrowed can keep a borrowed return
+contract. The caller retains that result when storing it in an owning object.
+Callbacks and functions that may return either a fresh object or a borrowed
+value instead return an owned reference on every path. Codegen normalizes the
+individual return paths before Perceus planning: borrowed results gain a
+reference, and fresh results transfer their existing reference. Retaining after
+the branches merge would leak the fresh path.
+
+This rule also applies to direct-only mixed functions. A result stored directly
+in a constructor or array must remain valid when that container and the
+original owner are released independently. The may-view analysis follows
+helper calls to a fixed point; return normalization precedes recomputation of
+the caller's ownership tables. Pure borrowed accessors retain their existing
+contract unless they are used as callbacks.
+
+[`rc_mixed_return_test.vibe`](../../lib/@vibe/compiler/tests/rc_mixed_return_test.vibe)
+checks recursive substitution, branches, aliases, helper calls, early returns
+and reclamation. The compiler-level reproducer is
+[`checker_exhaustive_ownership_test.vibe`](../../lib/@vibe/compiler/tests/checker_exhaustive_ownership_test.vibe).
+
 ## Compiler execution versus generated program
 
 The memory mode of a **running compiler** is fixed in its Wasm artifact.
