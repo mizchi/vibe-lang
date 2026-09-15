@@ -3537,7 +3537,31 @@ fn append_env_tail(head: TypeEnv, tail: TypeEnv) -> TypeEnv {
   }
 }
 
-export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv {
+/// #2762: publication is where the export surface becomes a value, so it is
+/// where an `export { }` naming nothing is refused.
+///
+/// The first attempt put the check in `check_module_impl`, which is only the
+/// FS worker lane. Codex (P1 on #2806) found the hole by reading: the
+/// IN-MEMORY walk in `runtime.vibe` (`ensure_fingerprint`, both arms) reaches
+/// this same publication without passing through that function, so
+/// `db_typecheck` and `compile_with_modules_cached` still accepted the module.
+/// Measured on the branch with the first fix in place, `db_set_source` +
+/// `db_typecheck` of a module whose only oddity is
+/// `export { NotDeclaredAnywhere }` answered ACCEPTED -- the very defect this
+/// issue is about (two lanes disagreeing about whether a module is a program),
+/// reproduced between a different pair.
+///
+/// So it goes through the one door, for the reason #2378's marker comment
+/// below already gives: every lane publishes here, and a check placed here
+/// cannot be missed by a lane added later. The cost is that publication now
+/// carries `with Exception` -- publication CAN fail, and the row says so.
+///
+/// The check reads the FINAL published env, which is what `check_module_impl`
+/// handed it before this move, so the behaviour is unchanged for that lane.
+/// Not the intermediate `publication_env`: `prepend_explicit_builtin_value_
+/// markers` is fed `value_surface`, which contains the export names
+/// themselves, so a marker could make an absent name look bound.
+export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt], full_checked_env: TypeEnv, reexport_declarations: TypeEnv) -> TypeEnv with Exception {
   // Local declarations stay ahead of the publication-only projection, which
   // preserves lexical shadowing when both select the same public spelling.
   let publication_env = append_env_tail(full_checked_env, reexport_declarations)
@@ -3558,10 +3582,15 @@ export fn checked_module_public_env_with_reexport_declarations(stmts: Array[Stmt
   // builtin_shadow_marker_prefix. Bound HERE, in the one publication every
   // lane goes through (the FS wave loop, the #906 worker, and the in-memory
   // walk in runtime.vibe), so no lane can publish an unmarked env.
-  bind_builtin_shadow_markers(prepend_explicit_builtin_value_markers(value_surface, with_builtin_types), collect_builtin_shadowing_names(stmts))
+  let published_env = bind_builtin_shadow_markers(prepend_explicit_builtin_value_markers(value_surface, with_builtin_types), collect_builtin_shadowing_names(stmts))
+  match unresolved_aggregate_export_name(stmts, published_env) {
+    Some(name) => throw(unresolved_export_message(name)),
+    None => ()
+  }
+  published_env
 }
 
-export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEnv) -> TypeEnv {
+export fn checked_module_public_env(stmts: Array[Stmt], full_checked_env: TypeEnv) -> TypeEnv with Exception {
   checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, EnvEmpty)
 }
 
@@ -5706,30 +5735,15 @@ fn check_module_impl(job: ModuleJob, observe_typing_artifact: Bool, program_tran
       // consumer of `Checked`'s env (env cache, persistent store, worker
       // transport, TDRE9, trace identities) is a publication path. The full
       // environment never needs to outlive the check itself.
+      // #2762: this call REFUSES a module whose aggregate `export { }` names
+      // something it neither declares nor imports, by throwing -- so the
+      // handler below turns it into this module's `Diagnosed`, and the
+      // `program_transport` bytes and `CheckedModuleArtifact` pushed further
+      // down are never published for it. That matters: a refused module that
+      // still cached an artifact would be reused through
+      // `checked_module_artifact_outcome` on the next build, and the refusal
+      // would disappear.
       let checked_env = checked_module_public_env_with_reexport_declarations(stmts, full_checked_env, reexport_declarations)
-      // #2762: an aggregate `export { X }` may name something this module
-      // neither declares nor imports. The export silently became a no-op, and
-      // a consumer that imported `X` was told `imported name 'X' is not
-      // exported by './dep.vibe'` -- a diagnostic pointing at ITS OWN import
-      // rather than at the module that promised the name (measured, both
-      // halves). Meanwhile `incremental_interface_identity` threw on the same
-      // module, so the two lanes disagreed about whether it was a program.
-      //
-      // Refused here rather than described in the identity: the name is
-      // NOTHING, and giving it a row would bake "this module exports a name
-      // that does not exist" into the value whose whole job is to describe the
-      // export surface -- which #2510 criterion 5 is about to make a real
-      // cache input. Rejecting it removes the case instead.
-      //
-      // `throw` rather than a `Diagnosed` built here, so the module's
-      // `program_transport` bytes and its `CheckedModuleArtifact` are never
-      // published: a refused module that still cached an artifact would be
-      // reused through `checked_module_artifact_outcome` on the next build,
-      // where this check does not run, and the refusal would disappear.
-      match unresolved_aggregate_export_name(stmts, checked_env) {
-        Some(name) => throw(unresolved_export_message(name)),
-        None => ()
-      }
       let interface_identity = if incremental_interface_trace_enabled() {
         incremental_interface_identity(job.source, checked_env)
       } else {

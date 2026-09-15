@@ -1,0 +1,53 @@
+//# #2762 (Codex P1 on #2806): every checked-compilation lane gives the SAME
+//# answer about an aggregate `export { }` naming something the module neither
+//# declares nor imports.
+//#
+//# The first fix put the refusal in `check_module_impl` -- the FS worker lane
+//# only. The IN-MEMORY walk in `runtime.vibe` (`ensure_fingerprint`, both
+//# arms) reaches publication without passing through that function, so
+//# `db_typecheck` and `compile_with_modules_cached` still accepted the module.
+//# Measured on the branch with the first fix in place, the first case below
+//# answered `accepted`. That is the very defect the issue is about -- two
+//# lanes disagreeing about whether a module is a program -- reproduced
+//# between a different pair, which is why it is refused at publication now:
+//# `checked_module_public_env_with_reexport_declarations`, the one door every
+//# lane goes through.
+//#
+//# This drives the IN-MEMORY API on purpose. The FS side is already pinned by
+//# the `export_aggregate_*` rows in fixtures/typecheck/expected.tsv, and a
+//# test that re-asked the lane which already worked would prove nothing.
+//#
+//# The message is asserted, not merely the throw: "it failed" is satisfied by
+//# any unrelated breakage. The two accepting cases are the other half -- one
+//# name resolved by a flat binding and one (a local `trait`) resolved only by
+//# the module's own statements -- so a refusal grown wide enough to reject
+//# either fails here rather than only in the FS lane.
+
+import @vibe/compiler/runtime {
+  db_new, db_set_source, db_typecheck
+}
+
+/// `label` prefixes the answer so no two expectations in this file can be the
+/// same literal. Two cases here legitimately answer "accepted", and the
+/// snapshot updater matches the EXPECTED literal -- identical ones cannot
+/// identify which call produced a failure (CLAUDE.md, executable fixture
+/// snapshots).
+fn typecheck_outcome(label: String, source: String) -> String {
+  String::concat(label, String::concat(": ", handle {
+    let db = db_set_source(db_new(), "probe.vibe", source)
+    let _ = db_typecheck(db, "probe.vibe")
+    "accepted"
+  } with { Exception::Throw(message) => message }))
+}
+
+test "in-memory lane refuses an export naming nothing" {
+  inspect(typecheck_outcome("undeclared", "export {\n  NotDeclaredAnywhere\n}\n\nexport fn mk() -> Int {\n  1\n}\n"), "undeclared: declare or import NotDeclaredAnywhere in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+test "in-memory lane accepts an export naming a private fn" {
+  inspect(typecheck_outcome("private-fn", "export {\n  helper\n}\n\nfn helper() -> Int {\n  3\n}\n\nexport fn mk() -> Int {\n  helper()\n}\n"), "private-fn: accepted")
+}
+
+test "in-memory lane accepts an export naming a local trait" {
+  inspect(typecheck_outcome("local-trait", "export {\n  Marker\n}\n\ntrait Marker\n\nexport fn mk() -> Int {\n  1\n}\n"), "local-trait: accepted")
+}
