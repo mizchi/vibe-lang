@@ -14606,8 +14606,23 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   eq_unsafe_types_fill(stmts)
 }
 
-/// Least fixpoint of "this declared name has a field this pass cannot show is
-/// compared by content". One pass can only see the names
+/// Least fixpoint of "this declared name has NO comparator": a field this pass
+/// cannot show is compared by content, and no source `<T>::equals` supplying
+/// one.
+///
+/// #2851 (Codex on #2855): the source-comparator half is what stops the mark
+/// PROPAGATING through wrappers. Judging a declaration by its fields alone
+/// marks `struct Holder { s: StringBuilder }` unsafe even when the program
+/// writes `fn Holder::equals`, and the fixpoint then marks every `struct
+/// Wrapper { h: Holder }` too -- so a wrapper was refused although its
+/// generated comparator delegates to a comparator that exists. Measured on
+/// `8c966c3` that wrapper answers 42, and it must keep answering.
+///
+/// A declaration with a source comparator is comparable, so it never enters
+/// the set and nothing containing it inherits the mark. The generator skips it
+/// for the OTHER reason (`dtd_source_op_defined`), which is why it also never
+/// reaches `dtd_eq_no_comparator`.
+/// One pass can only see the names
 /// already marked, so `struct Deep { o: Outer }` needs a second one; the loop
 /// runs until a pass adds nothing, bounded by the number of declarations
 /// because each pass that changes anything adds at least one name.
@@ -14619,7 +14634,7 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
     let mut j = 0
     while j < Array::length(stmts) {
       match Array::get(stmts, j) {
-        SStruct(_, sname, fields, _, _, decl_tparams) => if !str_array_contains(dtd_eq_unsafe_types, sname) {
+        SStruct(_, sname, fields, _, _, decl_tparams) => if !str_array_contains(dtd_eq_unsafe_types, sname) && !dtd_source_op_defined(stmts, qualified_name(sname, "equals")) {
           let mut fi = 0
           let mut bad = false
           while fi < Array::length(fields) {
@@ -14639,7 +14654,7 @@ fn eq_unsafe_types_fill(stmts: Array[Stmt]) -> Unit {
         } else {
           ()
         },
-        SEnum(_, ename, enum_tparams, variants, _) => if !str_array_contains(dtd_eq_unsafe_types, ename) {
+        SEnum(_, ename, enum_tparams, variants, _) => if !str_array_contains(dtd_eq_unsafe_types, ename) && !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) {
           let mut vi = 0
           let mut bad = false
           while vi < Array::length(variants) {
