@@ -231,4 +231,40 @@ if grep -q '^read: ' "$work/run.out"; then
   exit 1
 fi
 
-echo "host-capability-withhold: ok (both runners: granted reads, withheld links then traps by name; node red case without the branch reads)"
+# 6. viberun's BENCH path, which renders errors separately from `run()` and so
+# can lose the refusal on its own. It did: `bail!("...: {e}")` formats Display,
+# which shows only wasmtime's outer "error while executing at wasm backtrace",
+# and then builds a NEW error whose chain no longer carries the cause at all
+# (Codex on #2844, P2). A capability whose name never reaches the person
+# running the bench is a diagnostic that does not name the edit.
+#
+# Scope, stated because the red case measured it: viberun has TWO bench error
+# sites, per-block and whole-module. Both are fixed; a `bench` block exercises
+# the per-block one, which is what this case pins. Mutating the whole-module
+# site left this case GREEN -- the first red attempt did exactly that and
+# proved nothing until it was pointed at the site the probe reaches.
+cat > "$work/bench.vibe" <<'BENCH'
+bench "read_one" {
+  let _ = Fs::read_file("_build/host_capability_withhold/secret.txt")
+  ()
+}
+BENCH
+VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2" \
+  "$work/bench.vibe" "$work/bench.wasm" __no_entry__ > "$work/bench_compile.log" 2>&1 || {
+    echo "host-capability-withhold: FAIL compiling the bench probe" >&2
+    cat "$work/bench_compile.log" >&2
+    exit 1
+  }
+if run_probe env VIBE_BENCH_ITERS=2 VIBE_BENCH_WARMUP=1 VIBE_HOST_WITHHOLD=fs_read_file "$viberun" --bench "$work/bench.wasm"; then
+  echo "host-capability-withhold: FAIL viberun's withheld bench succeeded" >&2
+  cat "$work/run.out" >&2
+  exit 1
+fi
+grep -q 'vibe capability withheld: fs_read_file' "$work/run.out" || {
+  echo "host-capability-withhold: FAIL viberun's bench path lost the capability name" >&2
+  cat "$work/run.out" >&2
+  exit 1
+}
+
+echo "host-capability-withhold: ok (both runners: granted reads, withheld links then traps by name; viberun's bench path keeps the name; node red case without the branch reads)"
