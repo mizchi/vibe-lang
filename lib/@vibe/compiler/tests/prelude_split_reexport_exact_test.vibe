@@ -1,0 +1,84 @@
+import @vibe/compiler/entry/compiler/file_compile {
+  ordinary_lane_closure_edges, ordinary_lane_split_shape
+}
+
+// #2658. The regression the issue asks for: all three shapes in ONE program.
+//
+//   priv    declares `secret_add`, reached ONLY through a PRIVATE import
+//   mid     `import ./priv` -- private, so `priv` must NOT reach `main`
+//   leaf    a trait, an impl, and a bounded generic over that trait
+//   facade  `export ./leaf` -- a RE-EXPORT, so `leaf` MUST reach `main`
+//   main    imports `mid` and `facade` only; never names `priv` or `leaf`
+//
+// `prelude_split_fs_lane_test.vibe` already pins the re-export half on a
+// three-file chain. What it cannot see is the other direction: closing over
+// EVERY edge instead of re-export edges only admits `priv` too, and that is
+// wrong in the way #2623 reverted -- it hands a module its dependency's
+// private imports, which no real compile of it exposes, and it hands every
+// module the whole program, which is the live set #2494 exists to bound.
+//
+// The bounded generic in `leaf` is here as a SHAPE the closure has to carry,
+// not as a byte assertion. Measured on this program: the split lane emits a
+// module that does not instantiate ("not enough arguments on the stack for
+// call (need 3, got 2)") because the caller omits the witness dictionary --
+// and it does so for a DIRECT import of `leaf` as well, with a one-edge
+// closure. That failure is therefore not about the closure and is tracked on
+// its own; asserting bytes here would pin an unrelated defect to this file.
+//
+// Both errors fail OPEN to the same working program, so bytes cannot tell
+// them apart. The observable that can is the closure's SHAPE, and the edge
+// total is chosen here so that all three candidate rules give different
+// numbers:
+//
+//   rule                    main        mid   facade   total
+//   exact (re-export only)  mid,facade,leaf = 3    1      1       5
+//   direct edges only       mid,facade      = 2    1      1       4
+//   every edge, transitive  mid,priv,facade,leaf=4 1      1       6
+//
+// So `5` is not merely "the number it prints today" -- 4 and 6 are the two
+// ways to get it wrong, and each is one assertion away.
+
+fn rx_paths(tag: String) -> (String, String, String, String, String) {
+  let priv_p = String::concat("/tmp/vibe_rxx_priv_", String::concat(tag, ".vibe"))
+  let mid_p = String::concat("/tmp/vibe_rxx_mid_", String::concat(tag, ".vibe"))
+  let leaf_p = String::concat("/tmp/vibe_rxx_leaf_", String::concat(tag, ".vibe"))
+  let facade_p = String::concat("/tmp/vibe_rxx_facade_", String::concat(tag, ".vibe"))
+  let main_p = String::concat("/tmp/vibe_rxx_main_", String::concat(tag, ".vibe"))
+  (priv_p, mid_p, leaf_p, facade_p, main_p)
+}
+
+/// Writes the five-module program and returns the entry path.
+fn write_three_shape_program(tag: String) -> String with Exception + Fs {
+  let (priv_p, mid_p, leaf_p, facade_p, main_p) = rx_paths(tag)
+  Fs::write_file(priv_p, "export fn secret_add(a: Int, b: Int) -> Int {\n  a + b\n}\n")
+  Fs::write_file(mid_p, String::concat("import ./vibe_rxx_priv_", String::concat(tag, ".vibe {\n  secret_add\n}\n\nexport fn via_mid(n: Int) -> Int {\n  secret_add(n, 1)\n}\n")))
+  // The bounded generic is the third shape the issue asks for: `apply_dbl` is
+  // rewritten to take a witness dictionary, and the CALLER adds that argument
+  // only when the trait is in scope. `main` reaches `Doubler` ONLY across the
+  // re-export edge, so this is what makes the edge load-bearing rather than
+  // decorative -- a closure that drops it leaves `main` lowering a call into a
+  // trait it cannot see. See the header for why that is asserted on the
+  // closure's shape here and not on bytes.
+  Fs::write_file(leaf_p, "export trait Doubler {\n  dbl(Self) -> Int\n}\n\nexport struct Box {\n  v: Int\n}\n\nimpl Doubler for Box {\n  dbl(b: Box) -> Int {\n    b.v * 2\n  }\n}\n\nexport fn apply_dbl[T: Doubler](x: T) -> Int {\n  T::dbl(x)\n}\n")
+  Fs::write_file(facade_p, String::concat("export ./vibe_rxx_leaf_", String::concat(tag, ".vibe {\n  Doubler, Box, apply_dbl\n}\n")))
+  let main_tail = String::concat(tag, ".vibe {\n  Doubler, Box, apply_dbl\n}\n\nfn main() -> Int {\n  apply_dbl(Box::{ v: via_mid(20) })\n}\n")
+  let main_mid = String::concat(".vibe {\n  via_mid\n}\n\nimport ./vibe_rxx_facade_", main_tail)
+  Fs::write_file(main_p, String::concat("import ./vibe_rxx_mid_", String::concat(tag, main_mid)))
+  main_p
+}
+
+//# Misc — #2658 exact re-export closure
+
+test "2658: the closure admits a re-exported module and excludes a private one" {
+  let entry = write_three_shape_program("edges")
+  // Non-vacuity first: the lane really does build a five-module split here.
+  // Without this a `module_split_none()` fallback would leave every assertion
+  // below describing a split that was never taken.
+  let (modules, mapped) = ordinary_lane_split_shape(entry)
+  inspect(modules, content = "5")
+  inspect(mapped > 0, content = "true")
+  // 5 = 3 (main: mid, facade, and leaf THROUGH the re-export) + 1 (mid: priv)
+  //   + 1 (facade: leaf). 4 would mean the re-export edge was dropped, 6 would
+  //   mean `priv` leaked into main across a private import.
+  inspect(ordinary_lane_closure_edges(entry), content = "5")
+}
