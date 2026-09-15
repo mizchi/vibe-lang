@@ -15295,8 +15295,29 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       //
       // A SOURCE-defined `Type::equals` is the exception in both directions --
       // it suppresses generation and it IS the comparator -- so an excluded
-      // declaration that has one still dispatches to it below.
-      eq_refuse(eq_unsafe_decl_reason(n))
+      // declaration that has one never enters the set and still dispatches to
+      // it below.
+      //
+      // `eq_trap`, NOT `eq_refuse`, and that distinction is the whole reason
+      // this arm is separate from the ladder's. `eq_refuse` RECORDS a reason
+      // that `eq_refusals_report` throws at the end of the pass, so calling it
+      // from here fails the build even when the returned expression is
+      // discarded -- and this arm is reached speculatively, while a comparator
+      // is being GENERATED for a shape, not at a comparison the program
+      // performs. Measured: with `eq_refuse` here, `lib/@vibe/concurrent`
+      // stopped compiling, reporting a refusal for `TaskCell` although the
+      // module contains no `TaskCell` comparison at all -- every one of its 38
+      // `==` sites is on a scalar, and the BASELINE-emitted module source
+      // contains zero `TaskCell::equals` calls.
+      //
+      // That is the hazard AGENTS.md already records for
+      // `eq_for_typed_nonstandard_enum` and the expanding-recursion arm: a
+      // site that fires while generating rather than while comparing keeps the
+      // runtime trap, because moving it to compile time rejects the compiler's
+      // own sources. A real comparison that reaches here still fails closed;
+      // it just does so at the comparison rather than at the build. A DIRECT
+      // `a == b` is refused with the message, by the ladder arm.
+      eq_trap()
     } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) {
       // Codex round 17 on #2456: a source-owned spelling takes its declared
       // comparator BEFORE any builtin arm below can claim it. Measured: with
