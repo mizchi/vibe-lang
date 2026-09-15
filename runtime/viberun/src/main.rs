@@ -2985,7 +2985,15 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
                     .map_err(|e| format_err!("vibe fs_remove_tree '{path}': {e}"))?,
                 Ok(_) => fs::remove_file(&path)
                     .map_err(|e| format_err!("vibe fs_remove_tree '{path}': {e}"))?,
-                Err(_) => {}
+                // ONLY NotFound is swallowed, because that is all `force: true`
+                // swallows on the JS side -- `rmSync` rethrows EACCES, EPERM
+                // and I/O errors. A blanket `Err(_) => {}` here reintroduced
+                // exactly the divergence this builtin exists to remove: an
+                // unreadable parent directory made `Fs::remove_tree` report
+                // success under viberun while throwing under the JS runner,
+                // with the tree still standing in both (Codex on #2823).
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format_err!("vibe fs_remove_tree '{path}': {e}")),
             }
             Ok(())
         },

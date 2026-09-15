@@ -907,11 +907,24 @@ local checkHostRemoveParity = new Task {
   }
   deps { selfhostGeneration }
 }
-local testCheckHostRemoveParity =
-  scriptTask(
-    "test-check-host-remove-parity",
-    "scripts/check_host_remove_parity_test.sh",
-  )
+// NOT scriptTask: that factory supplies inputs but no `deps`, and this
+// companion's GREEN phase compiles a program calling `Fs::remove_tree`. Run
+// directly, or concurrently as a release-check dependency on a clean or reused
+// workspace, it would find no generation and fall back to the committed seed --
+// which predates the builtin -- or pick up an unrelated generation and certify
+// the wrong compiler (Codex on #2823). Same dependency and same artifact
+// channel as the gate it tests.
+local testCheckHostRemoveParity = new Task {
+  name = "test-check-host-remove-parity"
+  description = "red test: the parity gate FAILS when the JS runner's fs_remove is recursive again"
+  cmd = "bash scripts/check_host_remove_parity_test.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "runtime/viberun/src/main.rs"
+  }
+  deps { selfhostGeneration }
+}
 // #2758: the gc backend's host-import list is encoded in FIVE places (use_host,
 // host_defs, host_imports, the import vector-header literal, and hbo). They must
 // agree, and nothing checked that they did -- adding ONE import produced two

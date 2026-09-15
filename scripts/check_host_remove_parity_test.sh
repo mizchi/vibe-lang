@@ -14,15 +14,32 @@
 #   2. the UNmutated gate passes on the same inputs, so the failure is
 #      attributable to the mutation and not to a broken environment (#2252).
 #
-# It also unsets the variables it depends on, so an exported value from a shell
-# hook cannot silently turn a case into a no-op (#2252 again).
+# It also pins every variable the gate reads, so an exported value from a shell
+# hook cannot hand the two phases different compilers or runners (#2252 again).
 set -euo pipefail
+
+# EVERY input the gate reads is pinned here, not just the two this test sets.
+# Leaving the rest inherited meant the green phase and the red phase could be
+# handed different compilers or a different runner by whatever exported them,
+# and the comparison between the two phases is the whole test (Codex on #2823).
+#
+# PINNED, not unset. Unsetting VIBE_STAGE2_WASM would be wrong in the one place
+# this runs under CI: the compiler-gate matrix sets it for the whole lane, and
+# without it resolve_stage2 finds no generation and falls back to the committed
+# seed -- which has no `Fs::remove_tree` at all. So resolve it ONCE, here, and
+# hand the same value to both phases explicitly.
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+. "$ROOT_DIR/scripts/resolve_stage2.sh"
+PINNED_STAGE2="$(resolve_stage2 host-remove-parity-selftest "${HOST_REMOVE_PARITY_STAGE2:-${VIBE_STAGE2_WASM:-}}")"
 
 unset HOST_REMOVE_PARITY_JS_RUNNER
 unset HOST_REMOVE_PARITY_WORK
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
+unset HOST_REMOVE_PARITY_STAGE2
+unset HOST_REMOVE_PARITY_VIBERUN
+unset VIBE_STAGE2_WASM
+export HOST_REMOVE_PARITY_STAGE2="$PINNED_STAGE2"
 
 GATE="scripts/check_host_remove_parity.sh"
 WORK="_build/_gate_host_remove_parity_selftest"

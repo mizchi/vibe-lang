@@ -48,6 +48,26 @@ if [ ! -f "$STAGE2" ]; then
   exit 1
 fi
 
+# WHICH RUNNER answered is the same question as WHICH COMPILER, and `-x` does
+# not answer it: a binary left in target/ by an older revision is executable and
+# wrong, so the gate would compare today's JS runner against yesterday's Rust
+# one and call the disagreement a defect (or, worse, miss a real one). On a
+# clean checkout it is absent entirely and `release-check` stopped here before
+# testing anything (Codex on #2823).
+#
+# ensure_viberun.sh is the repo's content-hashed answer: it rebuilds when the
+# SOURCES changed and no-ops in ~0.03s when they did not, which is why it exists
+# rather than `cargo build` (cargo's own fingerprint is mtime-based and rebuilds
+# on every CI run regardless).
+if [ -z "${HOST_REMOVE_PARITY_VIBERUN:-}" ]; then
+  if ! bash "$ROOT_DIR/scripts/ensure_viberun.sh" >&2; then
+    echo "host-remove-parity: FAIL: could not build runtime/viberun." >&2
+    echo "host-remove-parity: this gate compares the TWO host runners, so one runner cannot answer it." >&2
+    echo "host-remove-parity: build it with: cargo build --release --manifest-path runtime/viberun/Cargo.toml" >&2
+    echo "host-remove-parity: or point HOST_REMOVE_PARITY_VIBERUN at an existing binary." >&2
+    exit 1
+  fi
+fi
 VIBERUN="${HOST_REMOVE_PARITY_VIBERUN:-runtime/viberun/target/release/viberun}"
 if [ ! -x "$VIBERUN" ]; then
   echo "host-remove-parity: FAIL: the Rust runner is missing at '$VIBERUN'." >&2
@@ -95,7 +115,26 @@ emit_probe remove_tree '  Fs::remove_tree("'"$WORK"'/d2")
     0
   }'
 
-for probe in remove_file remove_dir remove_tree; do
+# 4. Fs::remove_tree on a path whose PARENT COMPONENT is a regular file, so
+#    the metadata call fails with ENOTDIR rather than NotFound. Both runners
+#    must propagate it.
+#
+#    This probe exists because the gate missed a real divergence without it.
+#    The first Rust implementation swallowed EVERY metadata error (`Err(_) =>
+#    {}`), while the JS `rmSync(.., { force: true })` it mirrors suppresses only
+#    a missing path and rethrows the rest -- so a permission or I/O failure
+#    reported success under viberun and threw under the JS runner, which is the
+#    exact class of bug this gate exists to catch, inside the builtin added to
+#    fix that class of bug (Codex on #2823). Three happy-path probes did not
+#    see it.
+#
+#    ENOTDIR and not EACCES on purpose: the probe must not depend on who runs
+#    it. Measured -- as root, `chmod 000` produces no error at all, so an
+#    EACCES probe passes vacuously in any root container, this one included.
+emit_probe remove_tree_enotdir '  Fs::remove_tree("'"$WORK"'/f2/sub")
+  0'
+
+for probe in remove_file remove_dir remove_tree remove_tree_enotdir; do
   env -u VIBE_FS_COMPILE VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$STAGE2" \
     "$WORK/$probe.vibe" "$WORK/$probe.wasm" main >/dev/null 2>&1 || true
@@ -114,10 +153,12 @@ done
 # handed a tree the first one already removed -- that would let a recursive
 # Fs::remove pass on whichever runner happened to go second.
 seed_dirs() {
-  rm -rf "$WORK/d1" "$WORK/d2"
+  rm -rf "$WORK/d1" "$WORK/d2" "$WORK/f2"
   mkdir -p "$WORK/d1/nested" "$WORK/d2/nested"
   printf 'keep\n' > "$WORK/d1/nested/inside"
   printf 'gone\n' > "$WORK/d2/nested/inside"
+  # A REGULAR FILE, so "$WORK/f2/sub" is ENOTDIR rather than NotFound.
+  printf 'not a directory\n' > "$WORK/f2"
 }
 
 # <runner-label> <probe> -> "<exit-ok>:<stdout-tail>:<d1-survived>:<d2-survived>"
@@ -141,18 +182,19 @@ observe() {
   local ok="ok"; [ "$rc" -eq 0 ] || ok="failed"
   local d1="absent"; [ -e "$WORK/d1" ] && d1="present"
   local d2="absent"; [ -e "$WORK/d2" ] && d2="present"
-  printf '%s:%s:%s:%s' "$ok" "$out" "$d1" "$d2"
+  local f2="absent"; [ -e "$WORK/f2" ] && f2="present"
+  printf '%s:%s:%s:%s:%s' "$ok" "$out" "$d1" "$d2" "$f2"
 }
 
 status=0
-for probe in remove_file remove_dir remove_tree; do
+for probe in remove_file remove_dir remove_tree remove_tree_enotdir; do
   js="$(observe js "$probe")"
   rust="$(observe rust "$probe")"
   if [ "$js" != "$rust" ]; then
     echo "host-remove-parity: FAIL: '$probe' -- the two runners disagree." >&2
     echo "host-remove-parity:   js   = $js" >&2
     echo "host-remove-parity:   rust = $rust" >&2
-    echo "host-remove-parity:   (fields: exit:stdout:d1-after:d2-after)" >&2
+    echo "host-remove-parity:   (fields: exit:stdout:d1-after:d2-after:f2-after)" >&2
     status=1
     continue
   fi
@@ -160,9 +202,10 @@ for probe in remove_file remove_dir remove_tree; do
   # exact hole gc_host_builtins.vibe documents. Pin the VALUE too.
   want=""
   case "$probe" in
-    remove_file) want="ok:0:present:present" ;;
-    remove_dir)  want="failed::present:present" ;;
-    remove_tree) want="ok:0:present:absent" ;;
+    remove_file)         want="ok:0:present:present:present" ;;
+    remove_dir)          want="failed::present:present:present" ;;
+    remove_tree)         want="ok:0:present:absent:present" ;;
+    remove_tree_enotdir) want="failed::present:present:present" ;;
   esac
   if [ "$js" != "$want" ]; then
     echo "host-remove-parity: FAIL: '$probe' agreed but on the wrong answer: got '$js', want '$want'." >&2
@@ -173,4 +216,4 @@ done
 if [ "$status" -ne 0 ]; then
   exit 1
 fi
-echo "host-remove-parity: ok (3 probes x 2 runners; Fs::remove is non-recursive on both, Fs::remove_tree is recursive on both)"
+echo "host-remove-parity: ok (4 probes x 2 runners; Fs::remove is non-recursive on both, Fs::remove_tree is recursive on both)"
