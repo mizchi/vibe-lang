@@ -201,6 +201,59 @@ if [ -f "$OUT" ] && grep -q '"modules_planned"' "$OUT" 2>/dev/null; then
   fail "the artifact path holds telemetry JSON"
 fi
 
+# --- #2738: every sidecar clear removes a FILE, never a tree ---------------
+# The rows above cover VIBE_INCREMENTAL_TELEMETRY_OUT, whose #2735 guard
+# refuses a directory before the clear runs. The other four sidecar requests
+# have no such guard, and until #2738 they all reached `Fs::remove`, which
+# lowers to `rmSync(path, { recursive: true, force: true })`. Measured on main
+# at 4bd5ad0, each of the four deleted a directory destination whole -- nested
+# files included -- and the run then exited 0, so nothing marked it.
+#
+# They now call `Fs::remove_file`, which lstats and unlinks and cannot remove a
+# directory. Asserting only that the tree survives would be satisfied by a
+# clear that does NOTHING, and that failure is invisible from the outside:
+# `fs_remove_file` swallows its errors (`catch -> 0n`), so "removed nothing"
+# and "removed the right thing" have the same exit code. Each variable is
+# therefore asked BOTH questions, and the second is what a no-op fails.
+#
+# The lane matters and was measured rather than assumed. On the VIBE_FS_COMPILE
+# lane the invalidation-trace clear is never reached, so a row written there
+# would pass without executing the code it names. These run on the check lane,
+# where all four clears do run.
+sidecar_clear_case() { # sidecar_clear_case <VAR> [NONCE-VAR]
+  local var="$1" nonce="${2:-}" dir="$WORK/d_$1" file="$WORK/f_$1"
+
+  # (a) a DIRECTORY destination survives, nested entries included.
+  rm -rf "$dir"; mkdir -p "$dir/sub"; : > "$dir/keep"; : > "$dir/sub/nested"
+  set +e
+  env VIBE_CHECK_ONLY=1 VIBE_BUILD_CACHE_DIR="$WORK/cache" \
+      "$var=$dir" ${nonce:+"$nonce=guard"} \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+      "$STAGE2" "$SRC" "$WORK/build/clear_$1.wasm" main >"$WORK/run.log" 2>&1
+  set -e
+  [ -d "$dir" ] || fail "$var: the directory destination was removed"
+  [ -f "$dir/keep" ] || fail "$var: a directory destination lost its own file"
+  [ -f "$dir/sub/nested" ] || fail "$var: a directory destination lost a nested file"
+
+  # (b) a stale sidecar FILE is still cleared. Without this row the migration
+  # could have turned every clear into a no-op and (a) would still pass.
+  printf 'STALE\n' > "$file"
+  set +e
+  env VIBE_CHECK_ONLY=1 VIBE_BUILD_CACHE_DIR="$WORK/cache" \
+      "$var=$file" ${nonce:+"$nonce=guard"} \
+      bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main \
+      "$STAGE2" "$SRC" "$WORK/build/clear_$1.wasm" main >"$WORK/run.log" 2>&1
+  set -e
+  if [ -f "$file" ] && grep -q STALE "$file" 2>/dev/null; then
+    fail "$var: a stale sidecar survived the clear -- the clear is a no-op"
+  fi
+}
+
+sidecar_clear_case VIBE_INGESTION_TELEMETRY_OUT VIBE_INGESTION_TELEMETRY_NONCE
+sidecar_clear_case VIBE_INGESTION_PIPELINE_TELEMETRY_OUT VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE
+sidecar_clear_case VIBE_ARTIFACT_INPUT_TRACE_OUT VIBE_ARTIFACT_INPUT_TRACE_NONCE
+sidecar_clear_case VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE
+
 if [ "$fails" -ne 0 ]; then
   echo "[telemetry-sidecar-guards] $fails check(s) failed" >&2
   exit 1

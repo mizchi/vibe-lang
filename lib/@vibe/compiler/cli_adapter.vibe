@@ -863,8 +863,13 @@ fn derived_output_sidecar(output: String, suffix: String) -> String {
 ///     request beside it, so both sidecars can be asked for at one path and the
 ///     second write silently replaces the first observation.
 ///
-/// A DIRECTORY is refused outright: `Fs::remove` is recursive, so a clear of
-/// `lib` deletes the tree rather than a stale sidecar.
+/// A DIRECTORY is refused outright. A sidecar is a FILE, so a directory
+/// destination is a mistake however it is handled -- and #2738 is what it used
+/// to cost: the clears reached for `Fs::remove`, which is recursive, so a
+/// destination naming `lib` deleted the tree and the run continued to exit 0.
+/// The clears now call `Fs::remove_file`, which cannot remove a directory, so
+/// this refusal is no longer the only thing between a typo and a deleted tree
+/// -- it is the layer that says so instead of silently doing nothing.
 ///
 /// A SYMLINK anywhere in the comparison is refused rather than guessed. The
 /// identity test cannot resolve one, so "different tokens" would mean "not the
@@ -875,7 +880,7 @@ fn telemetry_destination_conflict(destination: String, input: String, output: St
   if destination == "" {
     ""
   } else if Fs::is_dir(destination) {
-    "a directory (Fs::remove is recursive)"
+    "a directory -- a sidecar is a file"
   } else if fs_path_is_unresolved_link(destination) || fs_path_is_unresolved_link(input) || fs_path_is_unresolved_link(output) {
     "a path reached through a symlink, which the identity check cannot resolve -- pass the real path"
   } else if fs_paths_name_same_file(destination, input) {
@@ -1366,7 +1371,7 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // argument at all.
   refuse_telemetry_destination_conflict(fs_telemetry_out, own_host_string(read_arg_or_env(0, "VIBE_INPUT")), own_host_string(read_arg_or_env(1, "VIBE_OUTPUT")), Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT"),)
   if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
-    Fs::remove(fs_telemetry_out)
+    Fs::remove_file(fs_telemetry_out)
   } else {
     ()
   }
@@ -1382,7 +1387,7 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   let artifact_input_trace_out = Env::get("VIBE_ARTIFACT_INPUT_TRACE_OUT")
   if artifact_input_trace_out != "" {
     if Fs::exists(artifact_input_trace_out) {
-      Fs::remove(artifact_input_trace_out)
+      Fs::remove_file(artifact_input_trace_out)
     } else {
       ()
     }
@@ -1407,12 +1412,12 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
   // Clear every requested ingestion observation before validating either one:
   // a malformed sibling request must not leave the other's stale sidecar.
   if ingestion_telemetry_out != "" && Fs::exists(ingestion_telemetry_out) {
-    Fs::remove(ingestion_telemetry_out)
+    Fs::remove_file(ingestion_telemetry_out)
   } else {
     ()
   }
   if ingestion_pipeline_out != "" && Fs::exists(ingestion_pipeline_out) {
-    Fs::remove(ingestion_pipeline_out)
+    Fs::remove_file(ingestion_pipeline_out)
   } else {
     ()
   }
@@ -1696,7 +1701,7 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
         // Never leave a previous successful run looking like telemetry for a
         // failed check. The sidecar is published only after check_linked_file.
         if Fs::exists(telemetry_out) {
-          Fs::remove(telemetry_out)
+          Fs::remove_file(telemetry_out)
         } else {
           ()
         }
@@ -1707,7 +1712,7 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
         // A nonce prevents a caller from mistaking a stale successful sidecar
         // for this check. Do this before the check and publish only afterwards.
         if Fs::exists(invalidation_trace_out) {
-          Fs::remove(invalidation_trace_out)
+          Fs::remove_file(invalidation_trace_out)
         } else {
           ()
         }
@@ -2039,7 +2044,7 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
       // is what makes "a sidecar only exists for a compile that produced one"
       // independent of where the write sits.
       if fs_telemetry_out != "" && Fs::exists(fs_telemetry_out) {
-        Fs::remove(fs_telemetry_out)
+        Fs::remove_file(fs_telemetry_out)
       } else {
         ()
       }
