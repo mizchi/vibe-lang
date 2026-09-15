@@ -112,9 +112,10 @@ fn axes_of(name: String, pure: Array[String], safe_mut: Array[String]) -> Array[
 
 /// DEBT -- deletions only. Registry builtins on none of the four lists when the
 /// census was introduced (measured 2026-09-14: 174 registry rows, 83 on no
-/// list, 73 of them checker-visible). Delete a row when its name reaches a
-/// list; never add one -- a new builtin that belongs on no list goes in
-/// `reviewed_unclassified_registry_names` with its reason.
+/// list, 73 of them checker-visible). `Fs::remove_tree` landed after that
+/// snapshot and is in `reviewed_unclassified_registry_names`. Delete a row
+/// when its name reaches a list; never add one -- a new builtin that belongs
+/// on no list goes in `reviewed_unclassified_registry_names` with its reason.
 fn unreviewed_registry_names() -> Array[String] {
   [
     "Env::get",
@@ -208,8 +209,9 @@ fn unreviewed_registry_names() -> Array[String] {
 /// is not the right place ("host import: performs Fs and returns a fresh
 /// String, so neither pure nor non-allocating; not a view; mutates nothing").
 fn reviewed_unclassified_registry_names() -> Array[(String, String)] {
-  let rows: Array[(String, String)] = []
-  rows
+  [
+    ("Fs::remove_tree", "host import: performs Fs and returns Unit; not a collection mutation and not a view")
+  ]
 }
 
 fn reviewed_index(reviewed: Array[(String, String)], name: String) -> Int {
@@ -340,16 +342,16 @@ test "red: a debt row naming no registry builtin is stale" {
 test "red: a reviewed row needs a reason, and a reviewed name leaves the debt table" {
   let debt = unreviewed_registry_names()
   let moved = Array::get(debt, 0)
-  let reviewed: Array[(String, String)] = [(moved, "")]
+  let reviewed = reviewed_unclassified_registry_names()
+  Array::push(reviewed, (moved, ""))
   // Still in the debt table too: both-tables violation plus the empty reason.
   let v = census_violations(registry_names(), idp_pure_builtin_names(), scps_safe_mut_builtin_names(), debt, reviewed)
   inspect(Array::length(v), content = "2")
   inspect(String::contains(Array::get(v, 0), "is in both"), content = "true")
   inspect(String::contains(Array::get(v, 1), "has an empty reason"), content = "true")
-  // Moved properly, with a reason: clean.
-  let reviewed_ok: Array[(String, String)] = [
-    (moved, "host import: performs an effect and returns a fresh value")
-  ]
+  // Moved properly, with a reason: clean. Keep the existing reviewed rows.
+  let reviewed_ok = reviewed_unclassified_registry_names()
+  Array::push(reviewed_ok, (moved, "host import: performs an effect and returns a fresh value"))
   let v2 = census_violations(registry_names(), idp_pure_builtin_names(), scps_safe_mut_builtin_names(), Array::slice(debt, 1, Array::length(debt)), reviewed_ok)
   inspect(Array::length(v2), content = "0")
 }
