@@ -69,7 +69,10 @@ payload shape requires a new version.
 
 `EnvValueBinding` encodes its type then origin. Substitution maps encode entries
 in `Map::keys` order. Duplicate map keys are malformed; duplicate environment
-rows and occurrence offsets remain intact. `EnvCached` name/value counts must
+rows and occurrence offsets remain intact. `EnvCached` stores canonical name
+rows and value bindings on the wire; decoding rebuilds its immutable name-to-row
+index. Probe slots and process-local row IDs are never serialized, so changing
+this acceleration structure does not change the format. Name/value counts must
 agree. Unsupported versions, unknown tags, invalid primitives, truncation,
 checksum mismatch, inconsistent indexes and trailing bytes return `None`.
 Writers match every constructor explicitly; extending an enum requires updating

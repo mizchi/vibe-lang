@@ -13,7 +13,11 @@ import ./exception_effect.vibe {
 }
 
 import ./sorted_index.vibe {
-  apply_perm_strings, bsearch_leftmost, sort_perm_by_names
+  apply_perm_strings, sort_perm_by_names
+}
+
+import ./env_name_index.vibe {
+  EnvNameIndex, env_name_index_at, env_name_index_find, env_name_index_length, env_name_index_new
 }
 
 import @vibe/core {
@@ -134,13 +138,10 @@ export enum TypeEnv {
   // this marker, so `env_mut_escape` treats cached indexes as transparent.
   EnvMutCell(String, Bool, TypeEnv);
   EnvFlat(Array[(String, EnvValueBinding)]);
-  // Sorted names/types pair (see core/sorted_index.vibe), instead of a
-  // Map[String, Type]: this compiler's `Map` is a flat assoc list, so
-  // `Map::has_key` + `Map::get` were TWO O(entries) linear scans per lookup
-  // -- exactly the "Map membership index is still linear" trap from #799.
-  // Names are unique (built by env_cache below), so a stable sort + leftmost
-  // bsearch gives the same result in O(log N) with no dedup step needed.
-  EnvCached(Array[String], Array[EnvValueBinding], TypeEnv)
+  // Immutable names resolve to local row IDs in the parallel binding array.
+  // The chain remains authoritative: a cache miss continues into rest, and
+  // rebuilding an index ignores any older cached rows.
+  EnvCached(EnvNameIndex, Array[EnvValueBinding], TypeEnv)
 }
 
 export enum Subst {
@@ -162,11 +163,17 @@ export fn env_bind(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
   env_bind_with_origin(env, name, ty, BindingOriginUnavailable)
 }
 
+/// Build an accelerator from canonical name rows. IDs stay local to this node;
+/// transports store the names and rebuild the index when decoding.
+export fn env_cached(names: Array[String], bindings: Array[EnvValueBinding], rest: TypeEnv) -> TypeEnv {
+  EnvCached(env_name_index_new(names), bindings, rest)
+}
+
 /// Add a one-name lookup index while preserving the authoritative environment
 /// chain. This is useful for checker-owned sentinels that are queried often
 /// but must not alter lexical binding order or the persistent TypeEnv format.
 export fn env_cache_binding(env: TypeEnv, name: String, ty: Type) -> TypeEnv {
-  EnvCached([name], [env_value_binding(ty)], env)
+  env_cached([name], [env_value_binding(ty)], env)
 }
 
 export fn env_bind_with_origin(env: TypeEnv, name: String, ty: Type, origin: BindingOrigin) -> TypeEnv {
@@ -185,7 +192,7 @@ export fn env_bind_with_origin(env: TypeEnv, name: String, ty: Type, origin: Bin
     // recent binds before any index is consulted. Misses stopped being the
     // common case when #2385's negative `#active_region` sentinel landed.
     // The complete-node redesign stays parked behind symbol interning.)
-    EnvCached(names_sorted, types_sorted, rest) => if bsearch_leftmost(names_sorted, name) >= 0 {
+    EnvCached(names_sorted, types_sorted, rest) => if env_name_index_find(names_sorted, name) >= 0 {
       EnvBind(name, binding, env)
     } else {
       EnvCached(names_sorted, types_sorted, EnvBind(name, binding, rest))
@@ -585,7 +592,7 @@ export fn env_cache(env: TypeEnv) -> TypeEnv {
       Array::push(types_sorted, Array::get(ta, Array::get(perm, i)))
       i = i + 1
     }
-    EnvCached(names_sorted, types_sorted, env)
+    env_cached(names_sorted, types_sorted, env)
   }
 }
 
@@ -1089,18 +1096,18 @@ fn env_without_reexport_surface_bindings(env: TypeEnv) -> TypeEnv {
       let kept_names = array_empty()
       let kept_bindings = array_empty()
       let mut i = 0
-      while i < Array::length(names) {
+      while i < env_name_index_length(names) {
         let binding = Array::get(bindings, i)
         match binding.origin {
           BindingOriginReExportSurface(_, _) => (),
           _ => {
-            Array::push(kept_names, Array::get(names, i))
+            Array::push(kept_names, env_name_index_at(names, i))
             Array::push(kept_bindings, binding)
           }
         }
         i = i + 1
       }
-      EnvCached(kept_names, kept_bindings, env_without_reexport_surface_bindings(rest))
+      env_cached(kept_names, kept_bindings, env_without_reexport_surface_bindings(rest))
     }
   }
 }
@@ -1184,7 +1191,7 @@ export fn env_lookup_binding(env: TypeEnv, name: String) -> Option[EnvValueBindi
         }
       },
       EnvCached(names_sorted, types_sorted, rest) => {
-        let slot = bsearch_leftmost(names_sorted, name)
+        let slot = env_name_index_find(names_sorted, name)
         if slot >= 0 {
           let binding = Array::get(types_sorted, slot)
           match binding.origin {
@@ -1253,7 +1260,7 @@ export fn env_lookup_binding_including_surface(env: TypeEnv, name: String) -> Op
         done = true
       },
       EnvCached(names_sorted, types_sorted, rest) => {
-        let slot = bsearch_leftmost(names_sorted, name)
+        let slot = env_name_index_find(names_sorted, name)
         if slot >= 0 {
           result = Some(Array::get(types_sorted, slot))
           done = true
