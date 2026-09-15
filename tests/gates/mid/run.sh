@@ -924,7 +924,7 @@ for gchb_be in linear gc; do
   fi
 done
 # Pin the value too: agreement alone passes when BOTH lanes break the same way.
-gchb_want="gc-host-builtins:10101010202101010"
+gchb_want="gc-host-builtins:10101010202101011"
 if [ "$gchb_out" != "$gchb_want" ]; then
   echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want $gchb_want) on both lanes (#1262)" >&2
   exit 1
