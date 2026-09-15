@@ -105,9 +105,7 @@ the repo; not the user manual.
 | [host-runtime-contract.md](host-runtime-contract.md) | `internal/design/` | ADR-0086 compiler-host contract |
 | [module-system-oracle.md](module-system-oracle.md) | `internal/design/` | Executable ADR-0070 oracle |
 | [module-system-v2.md](module-system-v2.md) | `internal/design/` | |
-| [naming-convention-migration.md](naming-convention-migration.md) | `internal/design/` | ADR-0083, proposed, Phase 0 not started |
-| [perceus-reuse.md](perceus-reuse.md) | `internal/design/` | ADR-0092, proposed |
-| [qualified-constructor-migration.md](qualified-constructor-migration.md) | `internal/design/` | ADR-0096 |
+| [perceus-reuse.md](perceus-reuse.md) | `internal/design/` | ADR-0092, implemented reuse and remaining coverage |
 | [region-mutable-state.md](region-mutable-state.md) | `internal/design/` | ADR-0090, current region storage and RC integration requirements |
 | [internal/compiler-memory-experiments.md](internal/compiler-memory-experiments.md) | `internal/design/` | Measured memory experiments and adoption criteria |
 | [internal/compiler-memory-baseline.json](internal/compiler-memory-baseline.json) | `internal/design/` | Raw compiler comparison and region/GC observations |
@@ -129,7 +127,7 @@ the repo; not the user manual.
 | [simd-data-structures.md](simd-data-structures.md) | `internal/design/` | Measured proposal: SIMD-first data-structure foundation |
 | [vibex-runtime-contract.md](vibex-runtime-contract.md) | `internal/design/` | ADR-0075, proposed |
 | [wasip3-effect-alignment.md](wasip3-effect-alignment.md) | `internal/design/` | ADR-0089, proposed |
-| [zero-alloc-check.md](zero-alloc-check.md) | `internal/design/` | ADR-0091, proposed |
+| [zero-alloc-check.md](zero-alloc-check.md) | `internal/design/` | ADR-0091, current conservative allocation verification |
 | [guide/builtin-effect-migration.md](guide/builtin-effect-migration.md) | `internal/design/` | Compiler/language migration plan |
 | [mutability-control-review.md](mutability-control-review.md) | `internal/design/` | Survey / fitness review |
 | [side-effect-consolidation.md](side-effect-consolidation.md) | `internal/design/` | |

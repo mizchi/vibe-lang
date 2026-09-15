@@ -40,7 +40,8 @@ read, and every feature below is one the compiler itself depends on.
   `Attempt[T, E]` that `perform?` returns are on the unstable surface and can
   still change. Non-interactive compilation lowers an unresolved optional
   operation to `NotGranted` on both backends; production grant/preflight
-  wiring remains future work (#2332).
+  wiring and the proposed instantiate-time contract are tracked in #2828.
+  That proposal is not the behavior described by this release draft.
 - **`Result` was removed** (#1324). Errors are the `Exception` effect, and
   `Error` is deprecated at the freeze in favour of it (ADR-0085).
 - **`String` is a byte string** with byte-offset indexing (ADR-0098), which is
@@ -132,9 +133,10 @@ the edit that fixes them rather than an internal pass name.
 - Async, structured concurrency, and the WASI 0.3 component surface work — the
   async serve lane streams a request body to its handler (#1540) — but remain on
   the **unstable** surface (ADR-0012/0068).
-- Region-based allocation and Perceus reuse (ADR-0090, #1770) cut allocation in
-  the compiler's own hot paths; `#zero_alloc` summaries are checked across
-  imports.
+- Region storage and guarded Perceus constructor reuse are implemented
+  (ADR-0090/0092). Their effects depend on the workload; release allocator
+  choices do not follow from a historical RC/bump ratio. `#zero_alloc`
+  summaries are checked across imports (ADR-0091).
 
 ## Documentation
 
@@ -154,26 +156,32 @@ the edit that fixes them rather than an internal pass name.
 - **The Japanese book is a translation of all 20 chapters**, checked for
   identical program output by `pkf run check-tutorial-translation-parity`;
   English (`book/en/`) is canonical.
-- **Type errors carry no source position.** `let a: Int = "not an int"` is
+- **Some type errors still lack source positions.** `let a: Int = "not an int"` is
   reported without a `line:col` on either lane, and `vibe check --single-file
   --json` answers with a synthetic `0:0` range. The checker's anchoring works;
   literal expressions have no offset slot to anchor to. `vibe check --json`
-  being `--single-file`-only is the same gap seen from the other side (#1567).
+  being `--single-file`-only is a separate output-mode limitation. #2831 owns
+  both remaining improvements; #1567 is complete for command consolidation.
 - Everything in §6 of [spec/stable-surface.md](spec/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.
 
 ## Release checklist (owner)
 
-- [ ] Bootstrap bump carrying the `allows` entry keyword, then the migration
-      of the seed-compiled sources and the rejection of `fn main with ..`
-      (ADR-0088 §5) — the language a newcomer learns must be the one the
-      shipped compiler refuses to bend
-- [ ] `seed/cfg-spans-emission-2026-09-04` (or its successor) published as a
-      release, so `scripts/ensure_seed.sh` fetches instead of rebuilding
-- [ ] `0.1.0` tag
-- [ ] `VIBE_VERSION` bumped from `0.1.0-dev` to `0.1.0`
-      (`scripts/build_release_assets.sh` fails the build if it does not match
-      the tag)
-- [ ] LICENSE is Apache-2.0 (not MIT)
-- [ ] `pkf run release-check` green on the tagged commit
+The [0.1.0 milestone](https://github.com/mizchi/vibe-lang/milestone/2) is the
+release scope and [#2834](https://github.com/mizchi/vibe-lang/issues/2834)
+holds the detailed candidate acceptance checklist. These notes remain a draft
+until that candidate is verified.
+
+- [ ] Complete or explicitly reschedule every open 0.1.0 milestone item,
+      including public contract decisions, and update these notes accordingly.
+- [ ] Verify clean-machine installation and package publication/fetch/install
+      against the release candidate, using only shipped artifacts.
+- [ ] Confirm the final candidate's pinned seed has published, verified assets.
+      The current `seed/bytes-capacity-2026-09-15` release already exists;
+      entry `allows` syntax and its compiler-source migration have landed.
+- [ ] Set `VIBE_VERSION` to `0.1.0` for the separately authorized release tag;
+      the release asset build requires the version and tag to agree.
+- [ ] Verify Apache-2.0 license, book parity, stable surface and
+      `pkf run release-check` in CI on the release candidate.
+- [ ] Publish the `0.1.0` tag/assets and verify installation from that release.
