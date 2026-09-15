@@ -2,7 +2,14 @@
 # #2669 step 2b: what a warm build reuses after a one-module edit, measured on
 # the compiler's own closure.
 #
-#   bash scripts/body_cache_reuse.sh [corpus] [leaf]
+#   bash scripts/body_cache_reuse.sh [corpus] [leaf] [entry]
+#
+# The ENTRY matters and used to be hardcoded to `__no_entry__`, which is the
+# library shape. Measured 2026-09-15 on the CLI closure, same corpus, same
+# cache, only the entry changed: `__no_entry__` offers 9752 of 10478 bodies
+# warm, `cli_main` offers ZERO and recompiles all 10287 -- warm identical to
+# cold. Every row this script has ever published was the library shape, so
+# make the entry visible rather than assumed.
 #
 # This is a MEASUREMENT, not a gate: it prints numbers and always exits 0, so
 # there is no pass/fail property for a `_test.sh` to red-test. That is also why
@@ -29,6 +36,7 @@ cd "$ROOT_DIR"
 
 CORPUS="${1:-lib/@vibe/compiler/tests/codegen_lexer_test.vibe}"
 LEAF="${2:-lib/@vibe/core/defaults.vibe}"
+ENTRY="${3:-__no_entry__}"
 MODE="${VIBE_BODY_CACHE_REUSE_MODE:-on}"
 
 for f in "$CORPUS" "$LEAF"; do
@@ -64,7 +72,7 @@ if ! grep -qx -- "$LEAF" "$closure"; then
   echo "  back equal to the unchanged one -- a vacuous measurement." >&2
   exit 2
 fi
-echo "[body-cache-reuse] corpus=$CORPUS closure=$(grep -c . "$closure") leaf=$LEAF mode=$MODE"
+echo "[body-cache-reuse] corpus=$CORPUS closure=$(grep -c . "$closure") leaf=$LEAF entry=$ENTRY mode=$MODE"
 
 cp "$LEAF" "$tmp_dir/leaf.orig"
 cache_dir="$tmp_dir/cache"
@@ -75,7 +83,7 @@ run_one() {
   local line
   line="$(VIBE_BUILD_CACHE_DIR="$cache_dir" VIBE_PREOPEN_DIR="$ROOT_DIR" \
     bash "$ROOT_DIR/scripts/vibe_run.sh" scripts/body_cache_reuse.vibex \
-    -- "$CORPUS" __no_entry__ "$MODE" 2>&1 | grep 'body-cache-reuse ' || true)"
+    -- "$CORPUS" "$ENTRY" "$MODE" 2>&1 | grep 'body-cache-reuse ' || true)"
   if [ -z "$line" ]; then
     echo "[body-cache-reuse] $label: no measurement line" >&2
     exit 1

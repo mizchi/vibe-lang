@@ -1680,6 +1680,43 @@ reproduce entry-rooted DCE independently in each module, so it prints
 `unmeasured` when that condition holds. A `dce_entry=0` comparison describes the
 unpruned closure, not every `vibe build` of that closure.
 
+## The incremental KPI, at three sizes (#1959 line)
+
+`pkf run kpi-incremental` (`scripts/incremental_kpi.mjs`) measures what an
+UNCHANGED rebuild skips, and CI runs it inside `bench_metrics.sh` so the table
+lands in every run's step summary, in the PR comment, and in the `bench-data`
+snapshot that carries the trend.
+
+Three sizes, because every incremental number this document used to carry was
+measured on the compiler's own 420-module closure, and that closure turns out
+not to represent the sizes people actually build. Each corpus is a committed
+root with a REAL entry — a `__no_entry__` root skips the capability const-fold
+and the late DCE, which is most of what a build does after the checker (#2818).
+
+Measured at `3869051`:
+
+| corpus | modules | modules skipped | heap | wall |
+|---|---:|---:|---:|---:|
+| small (`bench/incremental/edit_cycle`) | 2 | 100 % | 93 % | 95 % |
+| medium (`scripts/review_lint.vibex`) | 12 | 100 % | 86 % | 89 % |
+| selfhost (`lib/@vibe/cli/entry.vibe`) | 420 | 100 % | **76 %** | **44 %** |
+
+Read the first column against the others. **The module walk is fully skipped
+at every size** — nothing is rechecked — and a small project still pays 95 % of
+a cold build's wall and 93 % of its heap. The incremental win is almost
+entirely a selfhost-scale phenomenon, and it is the whole-program back end
+(`§Which layer a distributed cache should carry`) that decides the rest.
+
+`skipped` is `1 − modules_rechecked / modules_planned`; `heap` and `wall` are
+warm ÷ cold. The counters and `heap_ptr` are deterministic for a given input
+and cache state, so N=1 is enough for them and a move is a real move; **wall on
+a shared runner is advisory** and is labelled that way in the report. A warm
+rebuild whose output differs from the cold one fails the KPI outright rather
+than being reported — every ratio above assumes the two builds produced the
+same program, and the run checks it.
+
+This is a measurement, not a gate: it prints numbers and holds no budget.
+
 ## User-visible KPI contract
 
 Measure these endpoints separately:
@@ -1832,6 +1869,338 @@ whitespace/comment shortcut. The next safe authority milestone is a lossless
 checked-body or normalized typed-IR identity with deterministic differential
 coverage and clean-build parity. Multi-SCC persistence and production
 build/codegen/LSP integration remain later milestones.
+
+### Checked-module reuse across an edit, on the BUILD lane (2026-09-15, #1959)
+
+The table above is the check-only lane. The complete checked-module artifact
+(`VIBE_CHECKED_MODULE_CACHE`, `docs/checked-body-transport.md`) is the same
+question asked of `vibe build`, and it answers with a persisted artifact rather
+than a TypeEnv, so it has its own invalidation shape. Measured at
+`084e796` on a three-module chain (`entry` imports `mid`, `mid` imports
+`leaf`), each case editing `leaf` against a cache warmed on the tree before
+the edit:
+
+| Edit to `leaf` | rechecked | reused from artifact | warm output |
+|---|---:|---:|---|
+| none (byte-identical rewrite) | 0 | 3 | = cold |
+| comment only | 1 | 2 | = cold |
+| private body | 1 | 2 | = cold |
+| added public export | 2 | 1 | = cold |
+| signature change breaking `mid` | — | — | = cold, a diagnostic |
+| that signature repaired again | 3 | 0 | = cold |
+
+An owner whose bytes moved at all always misses, because the input identity
+binds its verbatim source — that is what keeps `///` docs and source offsets
+honest, and it is why a comment edit costs exactly what a body edit costs.
+What the two consumers do is the point: a private or non-semantic edit leaves
+the leaf's public environment alone, so both hold, while a new public export
+invalidates the direct consumer and stops there — `entry` imports only
+`mid_value`, whose own environment did not change. **A public edit does not
+invalidate the closure merely for being public.** The last row reuses nothing
+for a different reason: the compile it was warmed on was diagnosed, and a
+diagnosed module publishes no artifact, so there is nothing for `mid` or
+`entry` to have kept.
+
+The last two rows are the ones that can be silently wrong rather than slow. A
+consumer that kept a stale artifact would emit a wasm where a clean build
+reports an arity mismatch, and a cache warmed on a broken tree would keep
+diagnosing one that has been repaired. Both are asserted as
+success-versus-diagnostic, not as a counter.
+
+Every row also requires the warm result to equal a cold compile of the same
+tree at the same paths — bytes, diagnostic and exit status — and requires the
+artifacts the warm run kept to be byte-identical to the ones a clean build
+publishes. `scripts/checked_module_cache_parity.mjs` runs all of this through
+the real CLI on each gate, and `scripts/checked_module_cache_parity_test.sh`
+mutates the corpus four ways to prove each row can fail.
+
+### What that reuse costs, which is why it is still default-off (2026-09-15)
+
+#1959 makes default-on promotion conditional on "oracle parity and measured
+wall/heap benefit". Parity holds. The benefit does not exist yet — measured on
+the compiler's own sources by `scripts/checked_module_cache_cost.mjs`, three
+rounds, one isolated `VIBE_BUILD_CACHE_DIR` per (round, case, lane), medians:
+
+| Case | | wall off → on | heap off → on |
+|---|---|---|---|
+| `lib/@vibe/cli/entry.vibe` (420 modules) | cold | 12.78 s → 18.91 s (+48 %) | 2559 MB → 3364 MB (+31 %) |
+| | warm | 9.47 s → 17.66 s (**+87 %**) | 1957 MB → 3142 MB (**+61 %**) |
+| `codegen_lexer_test.vibe` | cold | 5.09 s → 5.85 s (+15 %) | 963 MB → 1131 MB (+18 %) |
+| | warm | 3.54 s → 4.82 s (+36 %) | 630 MB → 1020 MB (+62 %) |
+
+The warm row is the one that decides promotion, and it is the worse of the
+two: `off` warm is not an empty control but today's default reuse, and the
+artifact lane replaces that path rather than layering on it.
+
+The counters say where the work moved. Warm, unchanged sources, same closure:
+
+| | rechecked | reused | reuse class | non-walk parses |
+|---|---:|---:|---|---:|
+| `off` | 0 | 420 | conservative fingerprint | 420 |
+| `on` | 3 | 417 | checked-module artifact | 0 |
+
+So the artifact does exactly what it was built to do — it serves the merge
+lane's ASTs, and those 420 re-parses disappear — and the lane is still nearly
+twice as slow. A CPU profile of both warm compiles (named stage2, isolated
+caches, `lib/@vibe/cli/entry.vibe`) says why, by self time:
+
+| bucket | `off` | `on` | delta |
+|---|---:|---:|---:|
+| parser / lexer | 652 ms | 519 ms | **−133 ms** |
+| artifact codec (`ast_binary_*`, checksum, decode) | 0 ms | 2816 ms | +2816 ms |
+| `Bytes` runtime (push / append / blit) | 297 ms | 1880 ms | +1583 ms |
+| host I/O (read, UTF-8 decode) | 321 ms | 968 ms | +647 ms |
+| total profile | 9631 ms | 17543 ms | +7911 ms |
+
+**The 420 parses it removes are worth 133 ms, and the transport that replaces
+them costs about 60 times that.** The rest of the delta is the same codec seen
+through the generic runtime rows — `__rt_string_join` +1160 ms and
+`__rt_arr_push` +811 ms are the decoder rebuilding strings and arrays. The
+single largest row in the whole `on` profile is `module_artifact_checksum` at
+1416 ms (8.1 %): `decode_checked_module_artifact` verifies it over the
+artifact body on every load, a byte at a time, with two i64 modulos per byte,
+across 179 MB of artifacts.
+
+Heap splits the same way, and cold-versus-warm separates the two directions.
+A cold compile loads no artifact, so `on` cold − `off` cold is the **encode
+and store** side at +805 MB; a warm one loads 417, so `on` warm − `off` warm
+is the **read and decode** side at +1185 MB. On disk the same closure's cache
+is 8.9 MB with the cache off and **179 MB** with it on, a factor of 20.
+
+This paragraph previously blamed the retention of `parsed_stmts`
+(`commit_checked_module_artifact` keeps each module's AST so
+`parse_program_with_path` can serve the merge from it) for the warm heap. The
+profile corrects that: `parse_program_located_shared` memoizes by
+`(path, source)` as well, so the conservative lane **also** holds a whole
+closure of ASTs. Retention is not what separates the lanes; the codec at both
+ends is. The three modules `on` rechecks on an unchanged tree remain a
+separate open question.
+
+That changes what promotion waits on. Consuming the artifact one unit at a
+time (#2507, #2510) bounds the live set, but a per-unit consumer still writes,
+checksums and decodes the same 179 MB, so it does not by itself recover a cost
+that is paid per byte. Which bytes those are was then measured directly, by
+building three stage2 compilers that each drop one part of the artifact and
+running the same cost protocol on each. Every variant was first put through
+the edit rows above, so none of them is a variant that stopped invalidating
+correctly.
+
+| variant | artifact | cli warm wall | cli warm heap |
+|---|---:|---:|---:|
+| `off` (control) | 9 MB | 9.4 s | 1957 MB |
+| production `on` | 179 MB | 17.66 s (+87 %) | 3142 MB (+61 %) |
+| drop `parsed_stmts` | 138 MB | 16.78 s (+77 %) | 3116 MB (+59 %) |
+| … and the unread `CheckedProgram` fields | 95 MB | 13.54 s (+41 %) | 2731 MB (+40 %) |
+| … and the verbatim input identity | **24 MB** | **11.42 s (+22 %)** | 2563 MB (+31 %) |
+
+By bytes, the artifact is 23 % parsed AST, 24 % `CheckedProgram` fields that
+the reuse path never reads, 40 % a verbatim copy of its own input identity,
+and 13 % what is actually read back.
+
+Three separate findings, in the order the ladder produces them:
+
+- **The AST is not the problem.** Removing it recovers 0.9 s of the 8.2 s and
+  essentially no warm heap, which retires the hypothesis this paragraph used
+  to end with.
+- **Half the transport is written for a consumer that does not exist yet.**
+  `checked_module_artifact_outcome` reads exactly `final_env`,
+  `lowering_offsets`, `eq_offsets` and `eq_keys`; `checked_stmts`,
+  `type_defs`, `final_subst` and `typed_occurrences` are encoded, stored,
+  read back and dropped. They are there for the codegen unit of #2507, and
+  they are 24 % of the bytes.
+- **The artifact embeds its whole input identity**, which by
+  `checked_module_cache_input_identity` is this module's entire source plus
+  **every direct dependency's full TypeEnv text**. That makes the transport
+  superlinear in the dependency graph, and it is the single largest share at
+  40 %. Binding to a fingerprint of the identity instead keeps the edit rows
+  green, including the stale-artifact plants — though the current fingerprint
+  is the same weak two-modulo checksum, so a real version of this needs a
+  strong hash, which is the trade the verbatim copy was avoiding.
+
+The conclusion is about where the payoff can come from, not about a missing
+optimization. **Even at 24 MB the lane is still +22 % wall and +31 % heap**,
+and an artifact stripped that far carries nothing the conservative lane does
+not already persist in 9 MB. So this cache cannot pay for itself inside the
+checker: the work it saves there is 133 ms of parsing, and no arrangement of
+its contents makes the transport cheaper than that. Its value is precisely
+the payload that makes it expensive today — the checked statements the
+codegen unit would otherwise re-derive. That was where this section stopped,
+with the recommendation to decide promotion together with #2507's phase 3,
+when something reads that payload. **Measured, that does not work either.**
+
+#### Verifying the phase-3 premise (2026-09-15)
+
+Phase 3 of #2507 is "lowering + linear codegen: in one checked module and its
+dependency interfaces, out relocatable bodies". Two measurements decide
+whether handing it the payload could pay, both on the compiler's own closure
+with the codegen body cache ON — which is the honest baseline, because that
+cache (#2388) already replays the bodies phase 3 would produce.
+
+First, how big phase 3 is. A warm compile, body cache on, checked-module cache
+off, profiled by self time (9476 ms total):
+
+| bucket | ms | share |
+|---|---:|---:|
+| lowering / normalize | 1887 | 19.9 % |
+| codegen | 1713 | 18.1 % |
+| `rt` intrinsics | 2168 | 22.9 % |
+| core / types | 1591 | 16.8 % |
+| parser / lexer | 701 | 7.4 % |
+| host / JS | 455 | 4.8 % |
+| **checker** | **0** | **0.0 %** |
+
+The checker row is the first answer: **on a warm compile the conservative lane
+already spends nothing there**, so the checked-module artifact has no front-end
+work left to save, whatever it carries. Phase 3's own territory is lowering
+plus codegen — 38 %, about **3.6 s**.
+
+Second, what a phase-3-usable artifact costs. That is the one that keeps
+`checked_stmts` (the payload phase 3 exists to consume) while dropping the
+redundant parsed AST and fingerprinting the identity — 74 MB, and it passes
+the edit rows:
+
+| configuration (cli closure, warm, body cache on) | wall | heap |
+|---|---:|---:|
+| checked-module off | 9.39 s | 2090 MB |
+| phase-3-usable artifact on | 14.33 s (**+53 %**) | 3074 MB (+47 %) |
+
+**The transport costs +4.94 s; the entire phase it would feed is 3.6 s.** Even
+if phase 3 became free — no lowering, no codegen at all — the build would be
+slower than it is today. So no phase-3 consumer rescues this artifact, and the
+recommendation this section used to end with is withdrawn.
+
+Two things that conclusion does not say. It is measured with **today's codec**,
+and `module_artifact_checksum` alone is 1416 ms of it; fixing that moves +4.94 s
+to roughly +3.5 s, which is at the boundary rather than past it. And it is
+about wall and total heap, not about **peak** memory per unit of work, which is
+what #2494 and #2507 are actually for — a per-unit pipeline can still be right
+for bounding the live set while being worse on both numbers here.
+
+One fix is worth taking on its own account either way:
+`module_artifact_checksum` is a byte-at-a-time loop with two i64 modulos per
+byte, and it is 1416 ms of the warm `on` profile — the largest single row —
+independent of what the artifact ends up carrying.
+
+#### Which layer a distributed cache should carry (2026-09-15)
+
+The measurements above all ask about a LOCAL warm build. A remote or
+dependency-level cache asks a different question — can the work be skipped by
+fetching something instead of doing it — and the answer depends entirely on
+which layer the something is. Two numbers decide it.
+
+**Where a warm compile's time actually is.** Self time cannot say: the leaf
+utilities (`core/*`, `__rt_*`) are ~30 % and spread across every phase. By
+INCLUSIVE time down the call tree, the same warm compile (9476 ms total,
+8039 ms inside `compile_file_fs_mode_rc_body_cached`):
+
+| region | inclusive | share of the compile |
+|---|---:|---:|
+| `compile_wasi_module_linked_impl_with_split` (everything post-merge) | 6260 ms | 78 % |
+| ├ `effect_lowering_prelude` | 2563 ms | 32 % |
+| ├ `desugar_trait_dicts_with_typed_eq` | 688 ms | 9 % |
+| ├ `compile_expr` (body codegen) | 626 ms | 8 % |
+| ├ borrow fixpoint + perceus plan | ~945 ms | 12 % |
+| └ const-fold, DCE, index assignment, assembly | ~1180 ms | 15 % |
+| `build_grouped_merged_stmts_counted` (merge) | 832 ms | 10 % |
+| source load + parse | ~970 ms | 12 % |
+| **checker** | **0 ms** | **0 %** |
+
+The largest single phase is the effect-lowering prelude at 32 %, and it is
+already proven reproducible per module — see "The per-module prelude
+reproduces the whole-program prelude exactly" above, where the CLI closure's
+369 modules link to `linked == stmts` with `missing`, `extra`, `content` and
+`renames` all zero. Body codegen is likewise already replayable (#2388). What
+is left that no per-package artifact can skip — merge, trait-dict
+instantiation, const-fold, DCE, index assignment, assembly — is roughly
+**25 %**. So the ceiling for a cache that carries lowered and code-generated
+output is high; the ceiling for one that carries TYPING is zero, because
+typing is already free warm.
+
+**What each layer weighs.** Same closure, same compile:
+
+| transport | bytes |
+|---|---:|
+| checked-module artifacts (420 modules) | 179 MB |
+| persisted codegen body cache, whole closure | **16 MB** |
+| the emitted wasm itself | 39 MB |
+
+An order of magnitude apart, and the lighter one carries the expensive phases
+while the heavier one carries the free one. At the current codec's measured
+~22 MB/s that is 0.7 s to decode against ~8.2 s, so the codec's speed stops
+being the binding constraint once the granularity is right.
+
+**But the body cache does not fire on a real build at all (2026-09-15).**
+Everything published about it — the `offered=4431 recompiled=832` table above
+and its successors — was measured through `scripts/body_cache_reuse.sh`, which
+hardcoded the entry to `__no_entry__`. That is the LIBRARY shape. Same corpus,
+same leaf, same cache directory, only the entry changed:
+
+| entry | cold | warm (unchanged) |
+|---|---|---|
+| `__no_entry__` | offered 0 / recompiled 10478 | **offered 9752** / recompiled 726 |
+| `cli_main` | offered 0 / recompiled 10287 | **offered 0** / recompiled 10287 |
+
+With an entry point the cache offers **nothing**, on every row — unchanged,
+comment-edited and reverted alike — so a warm build recompiles exactly what a
+cold one does. The artifact is not missing: a `cli_main` build stores 6.9 MB
+under `codegen-body-cache` just as a `__no_entry__` build stores 7.3 MB.
+
+**The cause is the capability const-fold.** `fold_const_bool_params` rewrites a
+body whose Bool parameter is a literal at every call site, and
+`linked_compile.vibe` then withholds `guard_meta` from the harvest —
+deliberately, and correctly: a folded body no longer matches its source text,
+so replaying it into a compile whose call sites passed a different literal
+would be silently wrong. That fold runs only when `late_dce_has_entry`, which
+is why `__no_entry__` never hits it.
+
+What was not deliberate is that the compile still **persisted** the guardless
+harvest. `bcc_src_region_n` reads `guard_meta[0]` and answers 0 for anything
+that is not exactly five values, so
+`codegen_body_cache_filter_src_keep` drops every entry however generous the
+keep mask is — measured, a stored harvest of 10288 bodies decoding to 0. The
+file table matches perfectly (`layout_same=1`, `limit=10633`, no file
+mismatched); the refusal is entirely downstream of it.
+
+An earlier revision of this paragraph blamed the leading-prefix rule in
+`decode_body_cache_artifact_for`. That was inferred from `offered=0` and is
+wrong: the prefix rule accepts every file.
+
+This is why turning the body cache on changes nothing on a real closure —
+measured, `VIBE_CODEGEN_BODY_CACHE=on` moved the CLI closure's warm wall from
+9.47 s to 9.53 s and its heap from 1957 MB to 2091 MB, both slightly worse,
+which is the artifact being written and read and discarded. It also explains
+the phase table above: with the cache "on" and 93 % of bodies notionally
+replayed, `compile_expr`, the prelude and the lowering passes are all
+unchanged to within noise, because nothing was replayed.
+
+**Fixed in part (#2818): the guardless harvest is no longer written.**
+`body_cache_harvest_is_replayable` gates both store sites, so a compile whose
+fold withheld the guards persists nothing — measured on the CLI closure, the
+cache directory goes from 16 MB to 9 MB with zero artifact files, exactly the
+`off` lane's size, and the emitted wasm is byte-identical. What that fix does
+NOT do is make a folded build replayable; for that, the fold's own result has
+to become part of the cache identity — or, per the ADR-0088 amendment that
+supersedes that approach, for the fold to stop happening at compile time at
+all (#2825). That is the remaining half, and it is
+the same shape the capability discussion below arrives at independently. A
+guardless artifact written before the fix is still read and refused until
+something replaces it.
+
+`vibe build`, `vibe run` and `vibe test` all compile with an entry, so this
+cache has never accelerated one. `scripts/body_cache_reuse.sh` now takes the
+entry as its third argument, defaulting to `__no_entry__` so the historical
+rows still reproduce; the harness itself did not compile until 2026-09-15
+(`fn main` still used `with` where an entry now requires `allows`), which is
+how a measurement stopped being run without anyone noticing.
+
+**The constraint to design around** is not size but the capability lane.
+`--allow-*` drives const-fold plus DCE (ADR-0075/0084/0088), so a dependency's
+POST-DCE bodies depend on the consumer's grants and two consumers with
+different permissions cannot share them. Caching PRE-DCE relocatable bodies
+and leaving capability const-fold, DCE and index assignment to the link step
+keeps the cache capability-independent — which is the same split #2507's link
+unit already proposes, and the edit-stable index work (#2394, #2400) is the
+part of it that exists.
 
 ### Host filesystem ingestion telemetry
 

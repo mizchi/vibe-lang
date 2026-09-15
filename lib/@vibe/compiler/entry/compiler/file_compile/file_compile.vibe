@@ -2061,6 +2061,30 @@ export fn compile_file_fs_mode_rc_body_cached_counted(entry_path: String, entry_
   compile_file_fs_mode_rc_body_cached_impl(entry_path, entry_name, cache_mode, false, counts_out)
 }
 
+/// #2818: may this harvest ever be replayed by a LATER compile?
+///
+/// `bcc_src_region_n` reads `guard_meta[0]` and answers 0 for anything that is
+/// not exactly five values, so a guardless harvest loses every entry to
+/// `codegen_body_cache_filter_src_keep` / `_filter_src_below` before it can
+/// cross a compile. linked_compile withholds those guards on purpose when
+/// `fold_const_bool_params` rewrote a body -- a folded body no longer matches
+/// its source text, and replaying it into a compile whose call sites passed a
+/// different literal would be silently wrong.
+///
+/// The fold runs only when there IS an entry point, so this is the shape every
+/// `vibe build` / `vibe run` / `vibe test` takes. Persisting that harvest wrote
+/// the program's whole body set for a cache guaranteed to drop it: measured on
+/// the compiler's own CLI closure, 6.9 MB written and then read and discarded
+/// on every build, for `offered=0`. Storing nothing is the same reuse and less
+/// work.
+///
+/// This does not make a folded build replayable -- that needs the fold's own
+/// result to become part of the cache identity, which is #2818's remaining
+/// half. It stops paying for a harvest that cannot be used.
+fn body_cache_harvest_is_replayable(cache: CodegenBodyCache) -> Bool {
+  Array::length(cache.guard_meta) == 5
+}
+
 fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: String, cache_mode: String, use_split: Bool, counts_out: Array[Int]) -> Bytes with Exception + Fs {
   let source_groups = collect_source_groups_fs(entry_path)
   let next_db = prepare_file_fs_from_source_groups_persistent_cached(db_new(), entry_path, source_groups)
@@ -2209,7 +2233,11 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
     } else {
       ()
     }
-    store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, fresh_out))
+    if body_cache_harvest_is_replayable(fresh_out) {
+      store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, fresh_out))
+    } else {
+      ()
+    }
     Array::push(counts_out, if Array::length(verify_replay_recompiled) == 1 {
       Array::get(verify_replay_recompiled, 0)
     } else {
@@ -2242,7 +2270,11 @@ fn compile_file_fs_mode_rc_body_cached_impl(entry_path: String, entry_name: Stri
     // Stamp the merged harvest, so the artifact records THIS build's per-file
     // classification rather than whatever the consumed cache carried.
     record_typed_lowering_guard(refreshed, typed_lowering_guard)
-    store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, refreshed))
+    if body_cache_harvest_is_replayable(refreshed) {
+      store_persistent_artifact("codegen-body-cache", entry_name, artifact_key, encode_body_cache_artifact(file_paths, file_fps, file_counts, refreshed))
+    } else {
+      ()
+    }
     Array::push(counts_out, Array::length(cache_out.fn_indices))
     bytes
   }

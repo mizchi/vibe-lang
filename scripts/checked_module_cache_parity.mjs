@@ -16,6 +16,11 @@ if (!stage2 || !fs.existsSync(stage2)) {
   throw new Error("pass a freshly built stage2.wasm, or set VIBE_STAGE2_WASM");
 }
 const units = process.argv.slice(3).includes("--units");
+// The edit rows are cheap (one three-module project) and the corpus rows are
+// not, so the self-test that mutates the corpus runs only the former.
+const onlyEdits = process.argv.slice(3).includes("--only-edits");
+const editCorpus = process.env.VIBE_CHECKED_MODULE_EDIT_CORPUS
+  || path.join(root, "bench/incremental/checked_module_edit");
 const work = fs.mkdtempSync(path.join(root, "_build/checked-module-parity-"));
 const runner = path.join(root, "scripts/run_wasm_vibe_host_runner.sh");
 const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("VIBE_")));
@@ -58,6 +63,7 @@ class Compiler {
       this.lines = readline.createInterface({ input: this.process.stdout });
       this.heap = 0;
     }
+    this.counters = null;
     const output = path.join(work, `${label}.wasm`);
     fs.rmSync(output, { force: true });
     fs.rmSync(`${output}.diag`, { force: true });
@@ -95,6 +101,10 @@ class Compiler {
       if (counters.schema !== expectedSchema) throw new Error(`expected telemetry schema ${expectedSchema} in ${this.mode}`);
       this.hits += counters.modules_reused_checked_module_artifact || 0;
       this.checks += counters.checker_executions;
+      // Kept beside the result rather than in it: the edit rows below ask this
+      // run's decision shape, while the mode-to-mode rows compare only what a
+      // user can see, and reuse counters differ between modes by design.
+      this.counters = counters;
     } else if (fs.existsSync(this.telemetry)) {
       throw new Error(`failed compile retained success telemetry: ${source}`);
     }
@@ -123,7 +133,131 @@ function moduleFiles(dir) {
   });
 }
 
-try {
+// ---------------------------------------------------------------------------
+// Invalidation across an EDIT (#1959).
+//
+// Every row above compiles a program ONCE. That proves the transport is sound
+// and that a hostile cache falls back, but it never asks the question reuse
+// exists to answer: after an edit, which modules may keep their artifact?
+// Both halves of that answer can be wrong, and they fail in opposite ways --
+// reusing too little only costs time, while reusing a module whose dependency
+// changed its public interface is a silently wrong build. So each case here
+// asserts BOTH: the warm result equals a cold compile of the same tree at the
+// same paths (bytes, diagnostic and exit status), and the decision shape is
+// exactly the expected one.
+//
+// The counts are exact, not bounds. A change that reuses MORE is not
+// automatically an improvement here -- it is the invalidation contract
+// changing -- so it should land as a deliberate edit to this table together
+// with the measurement that justifies it.
+const editCases = [
+  // An untouched tree keeps every artifact.
+  { name: "noop", after: "leaf.vibe", rechecked: 0, reused: 3 },
+  // A comment is not in the leaf's public environment, so the two consumers
+  // hold. The leaf itself misses: the input identity binds its verbatim
+  // source, which is what keeps `///` docs and source offsets honest.
+  { name: "comment", after: "edits/comment.vibe", rechecked: 1, reused: 2 },
+  // The same shape for a private body change, whose output legitimately
+  // differs from the pre-edit build -- and still equals a cold build of it.
+  { name: "private_body", after: "edits/private_body.vibe", rechecked: 1, reused: 2 },
+  // A new export changes the leaf's public environment, so its direct
+  // consumer misses. `entry` imports only `mid_value`, whose own environment
+  // did not change, so a public edit does not invalidate the whole closure.
+  { name: "public_additive", after: "edits/public_additive.vibe", rechecked: 2, reused: 1 },
+  // The strongest row: the edit makes the consumer ILL-TYPED. A stale
+  // consumer artifact would emit a wasm here where a clean build reports an
+  // arity mismatch, so "invalidates every affected consumer" is observable as
+  // success-versus-diagnostic rather than only as a counter.
+  { name: "public_breaking", after: "edits/public_breaking.vibe", diagnosed: true },
+  // And the reverse: a cache warmed on a BROKEN tree may not keep the
+  // diagnosis alive once the interface is repaired.
+  { name: "repair", before: "edits/public_breaking.vibe", after: "leaf.vibe", rechecked: 3, reused: 0 },
+];
+
+function writeProject(dir, leafFile) {
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of ["entry.vibe", "mid.vibe"]) {
+    fs.copyFileSync(path.join(editCorpus, name), path.join(dir, name));
+  }
+  fs.copyFileSync(path.join(editCorpus, leafFile), path.join(dir, "leaf.vibe"));
+}
+
+async function runEditCases() {
+  let planted = 0;
+  for (const editCase of editCases) {
+    const name = editCase.name;
+    const dir = path.join(work, `edit-${name}`);
+    const entry = path.relative(root, path.join(dir, "entry.vibe"));
+    writeProject(dir, editCase.before || "leaf.vibe");
+    const warm = new Compiler("on", path.join(work, `edit-cache-${name}`));
+    await warm.compile(entry, "main", `${name}-warmup`);
+    const stalePool = moduleFiles(warm.cache).map(file => fs.readFileSync(file));
+    writeProject(dir, editCase.after);
+    const reused = await warm.compile(entry, "main", `${name}-warm`);
+    const counters = warm.counters;
+    // `verify` re-checks every module and refuses to publish a body that
+    // disagrees with what is already stored, so running it on the edited tree
+    // proves the artifacts the warm run KEPT are what a fresh check produces.
+    const verified = new Compiler("verify", warm.cache);
+    equal(reused, await verified.compile(entry, "main", `${name}-verify`), `edit ${name} verify`);
+    verified.stop();
+    // The cold control: same paths, same bytes on disk, empty cache.
+    const cold = new Compiler("off", path.join(work, `edit-cold-${name}`));
+    equal(await cold.compile(entry, "main", `${name}-cold`), reused, `edit ${name} cold parity`);
+    cold.stop();
+    if (editCase.diagnosed) {
+      if (reused.bytes || !reused.diagnostic) throw new Error(`edit ${name}: expected a diagnosed tree`);
+    } else {
+      if (!reused.bytes) throw new Error(`edit ${name}: expected an emitted artifact, got ${reused.diagnostic}`);
+      // The graph first: the counts below are only meaningful against the
+      // three-module chain they were measured on, so a corpus that no longer
+      // has that shape must say so rather than fail as a surprising count.
+      if (counters.modules_planned !== 3) throw new Error(`edit ${name}: planned ${counters.modules_planned} of 3 modules`);
+      equal({ rechecked: editCase.rechecked, reused: editCase.reused },
+        { rechecked: counters.modules_rechecked, reused: counters.modules_reused_checked_module_artifact },
+        `edit ${name} decision shape`);
+    }
+    // WHICH artifacts the edited tree consults, and what they must contain:
+    // a cold `on` compile of the same tree publishes exactly that set. The
+    // warm cache also still holds the pre-edit artifacts of every module the
+    // edit changed, and nothing looks those up again -- planting into one of
+    // those would assert a repair no run owes.
+    const canonicalCache = path.join(work, `edit-canonical-${name}`);
+    const canonicalRun = new Compiler("on", canonicalCache);
+    equal(reused, await canonicalRun.compile(entry, "main", `${name}-canonical`), `edit ${name} cold artifact cache`);
+    canonicalRun.stop();
+    for (const file of moduleFiles(canonicalCache)) {
+      const consulted = path.join(warm.cache, path.basename(file));
+      const canonical = fs.readFileSync(file);
+      if (!fs.existsSync(consulted)) throw new Error(`edit ${name}: warm cache lacks ${path.basename(file)}`);
+      // Reuse must publish the bytes a clean build publishes, not merely
+      // produce the same wasm from them.
+      if (!fs.readFileSync(consulted).equals(canonical)) {
+        throw new Error(`edit ${name}: warm artifact differs from the cold one: ${path.basename(file)}`);
+      }
+      // A stale artifact is the realistic corruption after an edit: same
+      // path, same envelope, an earlier source. The corpus probe plants
+      // another PROGRAM's artifact; this plants one this very tree published
+      // a moment ago, which is the shape a torn cache actually takes.
+      const stale = stalePool.find(bytes => !bytes.equals(canonical));
+      if (!stale) continue;
+      fs.writeFileSync(consulted, stale);
+      warm.stop();
+      equal(reused, await warm.compile(entry, "main", `${name}-stale`), `edit ${name} stale artifact`);
+      if (!fs.readFileSync(consulted).equals(canonical)) throw new Error(`edit ${name}: stale artifact was not repaired`);
+      planted++;
+    }
+    warm.stop();
+  }
+  if (!planted) throw new Error("no stale artifact was ever planted; the edit probe proved nothing");
+  return { cases: editCases.length, planted };
+}
+
+
+// The whole-corpus rows: every typecheck fixture through off/verify/on, then
+// the hostile-cache and invalid-mode probes. `--only-edits` skips all of it,
+// which is what makes the companion self-test affordable to run per mutation.
+async function runCorpusCases() {
   const off = new Compiler("off", path.join(work, "off-cache"));
   const verify = new Compiler("verify", path.join(work, "reuse-cache"));
   const on = new Compiler("on", path.join(work, "reuse-cache"));
@@ -212,9 +346,17 @@ try {
     refused = true;
   }
   if (!refused || fs.existsSync(invalid.telemetry)) throw new Error("invalid cache mode retained stale success telemetry");
+  return { cases: corpus.length, accepted, rejected, published,
+    hostile_cases: 2 * (mutations.length + 1), invalid_mode_cases: 1,
+    verified_checker_executions: verify.checks, reused_checker_executions: on.checks,
+    checked_module_hits: on.hits };
+}
+
+try {
+  const corpusReport = onlyEdits ? {} : await runCorpusCases();
+  const edits = await runEditCases();
   const report = { stage2: path.resolve(stage2), stage2_sha256: sha(fs.readFileSync(stage2)),
-    cases: corpus.length, accepted, rejected, published, hostile_cases: 2 * (mutations.length + 1), invalid_mode_cases: 1,
-    verified_checker_executions: verify.checks, reused_checker_executions: on.checks, checked_module_hits: on.hits };
+    ...corpusReport, edit_cases: edits.cases, edit_stale_artifacts_planted: edits.planted };
   fs.writeFileSync(path.join(work, "report.json"), JSON.stringify(report, null, 2));
   console.log(`[checked-module-parity] ok ${JSON.stringify(report)}`);
   console.log(`[checked-module-parity] evidence: ${work}`);

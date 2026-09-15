@@ -267,11 +267,24 @@ else
   echo "[bench-metrics] calibration skipped (runner/bench/seed unavailable)"
 fi
 
+# The incremental-build KPI (#1959 line): how much of a rebuild an UNCHANGED
+# rebuild skips, at three project sizes. Advisory like the rest of this report,
+# and non-fatal -- a KPI that can fail the run is a gate, and this is a
+# measurement. Its absence is reported as absent, never as a zero.
+incremental_kpi="$work/incremental_kpi.json"
+if node "$ROOT_DIR/scripts/incremental_kpi.mjs" "$STAGE2" "$incremental_kpi" >&2; then
+  :
+else
+  echo "[bench-metrics] incremental KPI unavailable" >&2
+  rm -f "$incremental_kpi"
+fi
+
 # --- assemble JSON ------------------------------------------------------------
 BM_HEAP="$heap" BM_WALL_MEDIAN="$wall_median" BM_WALL_RUNS="${walls[*]}" \
 BM_STAGE2="$stage2_bytes" BM_ADAPTER="$adapter_bundle_bytes" \
 BM_SOURCES="$sources_bundle_bytes" BM_MODSRC="$module_source_bytes" \
 BM_MICRO_STATUS="$micro_status" \
+BM_INCREMENTAL="$incremental_kpi" \
 BM_EXEC_STATUS="$exec_status" BM_WASMTIME="$wasmtime_version" \
 BM_CALIB_NS="$calib_ns" BM_CALIB_SEED_SHA="$calib_seed_sha" \
 BM_CALIB_RUNNER_SHA="$calib_runner_sha" BM_CALIB_BENCH_SHA="$calib_bench_sha" \
@@ -315,6 +328,11 @@ const doc = {
   // complete paired samples/provenance in main.jsonl, not just rounded cells.
   ...(process.env.BM_BUILD_METRICS ? {
     selfhost_build: JSON.parse(fs.readFileSync(process.env.BM_BUILD_METRICS, "utf8")),
+  } : {}),
+  // Absent when the KPI run failed; the renderer says so rather than
+  // printing zeros for a measurement that did not happen.
+  ...(process.env.BM_INCREMENTAL && fs.existsSync(process.env.BM_INCREMENTAL) ? {
+    incremental: JSON.parse(fs.readFileSync(process.env.BM_INCREMENTAL, "utf8")),
   } : {}),
   // Runner-normalization calibration (see file header): null fields mean the
   // calibration run didn't produce data (older snapshot, or runner/seed
