@@ -2962,6 +2962,34 @@ fn register_vibe_imports(linker: &mut Linker<HostState>) -> Result<()> {
             }
         },
     )?;
+    // #2758: Fs::remove_tree -- the RECURSIVE remove, split out of `Fs::remove`.
+    //
+    // `Fs::remove` on this host has always been `fs::remove_file`, while the JS
+    // runner's was `rmSync(.., { recursive: true, force: true })`, so one
+    // declared builtin meant two different things depending on which runner
+    // ran. The recursion moved here, under a name that asks for itself, and
+    // `fs_remove` is now non-recursive on both hosts.
+    //
+    // `force` semantics, matching the JS `rmSync` this replaces: a missing path
+    // is a no-op, not an error, so the callers that moved here from the old
+    // recursive `Fs::remove` keep working unguarded. A FILE is removed too --
+    // `rmSync` removes one, and a caller asking to clear a subtree should not
+    // have to know whether the leaf is a directory.
+    linker.func_wrap(
+        "vibe",
+        "fs_remove_tree",
+        |mut caller: Caller<'_, HostState>, path: i64| -> Result<()> {
+            let path = vibe_read_packed_str(&mut caller, path)?;
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_dir() => fs::remove_dir_all(&path)
+                    .map_err(|e| format_err!("vibe fs_remove_tree '{path}': {e}"))?,
+                Ok(_) => fs::remove_file(&path)
+                    .map_err(|e| format_err!("vibe fs_remove_tree '{path}': {e}"))?,
+                Err(_) => {}
+            }
+            Ok(())
+        },
+    )?;
     // #1220: Fs::rename -- declared builtin with real call sites
     // (lib/@vibe/cli/coverage_local_merge.vibe, coverage_acc_tool.vibe's
     // tmp-write + rename atomic-write pattern) but, like fs_remove above,

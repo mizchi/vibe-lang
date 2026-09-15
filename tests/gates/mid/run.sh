@@ -898,6 +898,12 @@ for gchb_be in linear gc; do
   # tree-removing remove_file pass on the second lane.
   mkdir -p _build/gc_host_builtins_probe/rfdir
   printf 'keep\n' > _build/gc_host_builtins_probe/rfdir/inside
+  # #2758: Fs::remove_tree must REMOVE this one, contents and all -- the
+  # opposite demand to rfdir above, and the pair that separates the two
+  # builtins on the recursion axis now that Fs::remove is non-recursive on
+  # both hosts. Nested, so a remove_tree that only unlinks the leaf fails.
+  mkdir -p _build/gc_host_builtins_probe/rtdir/nested
+  printf 'gone\n' > _build/gc_host_builtins_probe/rtdir/nested/inside
   printf 'hello\n' > _build/gc_host_builtins_probe/a.txt
   printf 'x\n' > _build/gc_host_builtins_probe/rd/f1
   printf 'y\n' > _build/gc_host_builtins_probe/rd/f2
@@ -918,7 +924,7 @@ for gchb_be in linear gc; do
   fi
 done
 # Pin the value too: agreement alone passes when BOTH lanes break the same way.
-gchb_want="gc-host-builtins:101010102021010"
+gchb_want="gc-host-builtins:10101010202101010"
 if [ "$gchb_out" != "$gchb_want" ]; then
   echo "[compiler-gate] FAIL: gc host builtin probe returned '$gchb_out' (want $gchb_want) on both lanes (#1262)" >&2
   exit 1

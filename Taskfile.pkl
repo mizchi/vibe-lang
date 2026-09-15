@@ -888,6 +888,30 @@ local testCheckTelemetrySidecarGuards =
     "test-check-telemetry-sidecar-guards",
     "scripts/check_telemetry_sidecar_guards_test.sh",
   )
+// #2758: one declared builtin, two host implementations that disagreed.
+// `Fs::remove` was `rmSync(.., { recursive: true, force: true })` in the JS
+// runner and `fs::remove_file` in the Rust one, so clearing a path that
+// happened to name a directory destroyed a tree under `vibe test` and trapped
+// under `vibe run`. `fixtures/gc_host_builtins.vibe` pins linear-vs-gc
+// agreement for this class of bug; nothing pinned JS-vs-Rust. Asked of both
+// RUNNING runners rather than read off either source.
+local checkHostRemoveParity = new Task {
+  name = "check-host-remove-parity"
+  description =
+    "the JS and Rust runners agree: Fs::remove is non-recursive on both, Fs::remove_tree is recursive on both"
+  cmd = "bash scripts/check_host_remove_parity.sh"
+  inputs {
+    ...compilerProbeInputs
+    ...scriptSources
+    "runtime/viberun/src/main.rs"
+  }
+  deps { selfhostGeneration }
+}
+local testCheckHostRemoveParity =
+  scriptTask(
+    "test-check-host-remove-parity",
+    "scripts/check_host_remove_parity_test.sh",
+  )
 // scripts/profile_compile.sh refuses a name-stripped compiler artifact. Every
 // stage2 is stripped unless built with VIBE_WASM_NAMES=1, so without the guard
 // the profiler's whole output is `wasm-function[N]` rows -- it spent minutes
@@ -2189,6 +2213,8 @@ local releaseCheck = new Task {
     testCheckExportRefusal
     checkTelemetrySidecarGuards
     testCheckTelemetrySidecarGuards
+    checkHostRemoveParity
+    testCheckHostRemoveParity
     testProfileCompile
     checkCompileOnlyLanes
     testCheckCompileOnlyLanes
@@ -2304,6 +2330,8 @@ tasks {
   testCheckExportRefusal
   checkTelemetrySidecarGuards
   testCheckTelemetrySidecarGuards
+  checkHostRemoveParity
+  testCheckHostRemoveParity
   testProfileCompile
   checkCompileOnlyLanes
   testCheckCompileOnlyLanes
