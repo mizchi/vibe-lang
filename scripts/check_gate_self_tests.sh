@@ -42,7 +42,7 @@ baseline_no_test="${VIBE_GATE_SELF_TEST_BASELINE:-}"
 baseline_failing="${VIBE_GATE_SELF_TEST_BASELINE_FAILING:-}"
 if [ -z "$baseline_no_test$baseline_failing" ]; then
 baseline_no_test="check_book_order.sh check_book_skip_blocks.sh
-check_builtin_parity.sh check_cheatsheet_signatures.sh
+check_cheatsheet_signatures.sh
 check_cli_line_termination.sh check_declaration_scale.sh check_doc_commands.sh
 check_examples_typecheck.sh check_fixture_execution.sh
 check_inline_builtin_capture.sh check_offbuild_typecheck.sh
