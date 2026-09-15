@@ -7807,8 +7807,12 @@ fn pushed_empty_elem_shape(name: String, body: Expr, struct_sets: Array[(String,
 /// comparison this whole area exists to keep out.
 ///
 /// A declared name is admitted because `desugar_derives` generates a `::equals`
-/// for EVERY declared struct/enum, not only `derive(Eq)` ones -- which is the
-/// same fact `dtd_eq_known_types` records for the shape dispatch below.
+/// for every declared struct/enum, not only `derive(Eq)` ones -- which is the
+/// same fact `dtd_eq_known_types` records for the shape dispatch below. Since
+/// #2851 that has ONE exception, and `adoptable_eq_name` below already applies
+/// it: a declaration in `dtd_eq_unsafe_types` gets no generated comparator,
+/// because a body built out of field comparisons that do not exist is what
+/// made `struct Holder { s: HostStream }` fail to compile on its own.
 /// `Option` / `Result` shapes are left out: their `?EqUnknown` positions would
 /// re-introduce exactly that raw `==`.
 fn adoptable_pushed_elem_shape(sh: String) -> Bool {
@@ -12557,7 +12561,19 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
                         // (merged) program declares under that name -- the
                         // struct dispatch would call `T::equals` on erased
                         // operands and read garbage.
-                        None => if struct_set_has(struct_sets, t) && !formal_in_scope(t) {
+                        None => if struct_set_has(struct_sets, t) && !formal_in_scope(t) && str_array_contains(dtd_eq_no_comparator, t) {
+                          // #2851: this ladder names the comparator directly
+                          // rather than going through `eq_for_typed`, so it
+                          // needs the same agreement with the generator.
+                          // `desugar_derives` skips a declaration in
+                          // `dtd_eq_unsafe_types`, and asking for its
+                          // comparator anyway reaches codegen unresolved --
+                          // measured, `struct Holder { s: StringBuilder }`
+                          // compared with `==` reported an `internal compiler
+                          // error ... please report`, blaming the compiler for
+                          // a program the language refuses.
+                          eq_refuse(eq_unsafe_decl_reason(t))
+                        } else if struct_set_has(struct_sets, t) && !formal_in_scope(t) {
                           let call = ECall(EIdent(String::concat(t, "::equals"), -1), [
                             rl,
                             rr
@@ -13636,6 +13652,14 @@ fn ty_mentions_owned_scalar(t: TypeExpr) -> Bool {
 ///
 /// Truncated at the same entry point as `dtd_eq_type_owners`, so a refusal can
 /// never outlive the one program it describes.
+/// #2851: declarations `desugar_derives` generated NO comparator for, because
+/// `eq_unsafe_types_fill` excluded them. Written by the generator, read by the
+/// `==` dispatch sites -- one writer and one reader, so the two cannot
+/// disagree about whether `<T>::equals` exists. Asking the question twice is
+/// what produced the bug: the exclusion was computed correctly and then
+/// ignored, and the call reached codegen unresolved.
+let dtd_eq_no_comparator: Array[String] = empty_str_array()
+
 let dtd_eq_refusals: Array[String] = empty_str_array()
 
 /// The fail-closed expression itself, for the rungs that stay a RUNTIME trap.
@@ -13659,6 +13683,16 @@ fn eq_trap() -> Expr {
 /// swallows the throw, the emitted trap is what keeps the contract fail-closed
 /// rather than silently wrong, which is the property that outranks the
 /// diagnostic (AGENTS.md's first pillar).
+/// #2851: the reason `==` on a declaration `eq_unsafe_types_fill` excluded is
+/// refused. It names a real edit, verified rather than assumed: a source
+/// `fn <T>::equals(a: T, b: T) -> Bool` suppresses generation AND is what the
+/// dispatch calls, so writing one makes the comparison work (measured, it
+/// answers 42 on a struct holding a `StringBuilder`).
+fn eq_unsafe_decl_reason(n: String) -> String {
+  let sig = String::concat("fn ", String::concat(n, String::concat("::equals(a: ", String::concat(n, String::concat(", b: ", String::concat(n, ") -> Bool"))))))
+  String::concat(n, String::concat(" has a field whose type has no structural comparator, so `==` on it cannot compare by content. Write `", String::concat(sig, String::concat("` to say what equality means for ", String::concat(n, ", or compare the fields you mean.")))))
+}
+
 fn eq_refuse(reason: String) -> Expr {
   if str_array_contains(dtd_eq_refusals, reason) {
     ()
@@ -14484,6 +14518,7 @@ fn eq_known_types_reset(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_eq_type_aliases, 0)
   Array::truncate(dtd_eq_type_owners, 0)
   Array::truncate(dtd_eq_refusals, 0)
+  Array::truncate(dtd_eq_no_comparator, 0)
   Array::truncate(dtd_eq_nonstandard_builtin_enums, 0)
   Array::truncate(dtd_eq_nonenum_builtin_heads, 0)
   Array::truncate(dtd_eq_specializations, 0)
@@ -15247,6 +15282,21 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
   match fty {
     TyName(n) => if n == "__EqAliasCycle" {
       eq_trap()
+    } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) && str_array_contains(dtd_eq_no_comparator, n) {
+      // #2851: the dispatch and the generator must agree about whether a
+      // comparator EXISTS, or this emits a call to a name nothing defines.
+      // `desugar_derives` skips a declaration in `dtd_eq_unsafe_types`, so
+      // asking for its comparator here reaches codegen unresolved -- measured
+      // with the generation-side change alone, `struct Holder { s:
+      // StringBuilder }` compared with `==` reported `internal compiler error:
+      // `Holder::equals` (local, @call) reached code generation unresolved ...
+      // please report`, which blames the compiler for a program the language
+      // refuses. Refuse it here instead, naming the edit.
+      //
+      // A SOURCE-defined `Type::equals` is the exception in both directions --
+      // it suppresses generation and it IS the comparator -- so an excluded
+      // declaration that has one still dispatches to it below.
+      eq_refuse(eq_unsafe_decl_reason(n))
     } else if str_array_contains(dtd_eq_type_owners, n) && str_array_contains(known_types, n) {
       // Codex round 17 on #2456: a source-owned spelling takes its declared
       // comparator BEFORE any builtin arm below can claim it. Measured: with
@@ -17673,9 +17723,37 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
         // `==` dispatch below always resolves; structural equality is the
         // sensible default for any struct, and a struct never relied on the old
         // pointer-identity `==` (which was silently always-false).
+        //
+        // #2851: "every struct" has one exception, and it is the one
+        // `eq_unsafe_types_fill` has already computed. A declaration with a
+        // field this pass cannot show is compared by content is in
+        // `dtd_eq_unsafe_types`, which is what makes `==` on it REFUSE -- so
+        // generating a body for it emits a comparator nothing calls, built out
+        // of field comparisons that do not exist. Measured on `8c966c3`,
+        // `struct Holder { s: HostStream }` ALONE -- never instantiated, never
+        // compared, no `==` in the program -- failed to compile with `unknown
+        // name: HostStream::equals`, because `gen_eq_fn` walked the field into
+        // `eq_for_typed`'s invisible-nominal arm and emitted a reference the
+        // link resolves against the module that DECLARES the type. A
+        // compiler-owned builtin is declared by no module. `ByteStream`,
+        // `StringBuilder` and `Future[Int]` failed the same way; `Array[Int]`
+        // is the control that has a real arm and compiles.
+        //
+        // The fixpoint is converged before this runs: `eq_known_types_reset`
+        // (which ends in `eq_unsafe_types_fill`) is called immediately above
+        // `desugar_derives`, so the second-order case (`struct Deep { o:
+        // Holder }`) is marked by the time this reads the set.
         if !dtd_source_op_defined(stmts, qualified_name(name, "equals")) {
-          dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_eq_fn(name, fields, known_types))
+          if str_array_contains(dtd_eq_unsafe_types, name) {
+            if str_array_contains(dtd_eq_no_comparator, name) {
+              ()
+            } else {
+              Array::push(dtd_eq_no_comparator, name)
+            }
+          } else {
+            dtd_fresh_reset_for_decl()
+            Array::push(gen, gen_eq_fn(name, fields, known_types))
+          }
         } else {
           ()
         }
@@ -17723,10 +17801,20 @@ export fn desugar_derives(stmts: Array[Stmt]) -> Unit {
           ()
         }
         // Generate `E::equals` for every enum (same rationale as structs), so
-        // the `==` dispatch resolves enum operands too.
+        // the `==` dispatch resolves enum operands too -- and the same #2851
+        // exception: `eq_unsafe_types_fill` walks variant payloads too, so an
+        // enum carrying a builtin nominal is excluded exactly like a struct.
         if !dtd_source_op_defined(stmts, qualified_name(ename, "equals")) {
-          dtd_fresh_reset_for_decl()
-          Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
+          if str_array_contains(dtd_eq_unsafe_types, ename) {
+            if str_array_contains(dtd_eq_no_comparator, ename) {
+              ()
+            } else {
+              Array::push(dtd_eq_no_comparator, ename)
+            }
+          } else {
+            dtd_fresh_reset_for_decl()
+            Array::push(gen, gen_enum_eq_fn(ename, variants, known_types))
+          }
         } else {
           ()
         }
