@@ -1,5 +1,5 @@
 import @vibe/compiler/core {
-  Expr, Pat, Stmt, is_exception_throw_handler_name
+  Expr, Pat, Stmt, is_exception_throw_handler_name, registry_pure_builtin_names
 }
 
 /// ADR-0076 Phase 2 (evidence-passing effect handlers, #817), first slice.
@@ -209,212 +209,46 @@ fn idp_call_is_unsafe(callee: Expr) -> Bool {
 /// doc comment claimed to mirror this one and did not. The audit criterion is
 /// the same for both, so a name belongs to both or to neither.
 export fn idp_pure_builtin_names() -> Array[String] {
-  [
-    "String::concat",
-    "String::equals",
-    "String::length",
-    // #2630: the three length views, registry rows with effect `None` and no
-    // function-typed parameter, served by a callsite lowering on both lanes.
+  let out = registry_pure_builtin_names()
+  // Names that are not registry rows. A new REGISTRY builtin belongs on
+  // the row's is_pure flag, not here; extras that later gain a row must
+  // leave this list (the census of extras vs registry is in
+  // tests/builtin_registry_classification_test.vibe).
+  let extras = [
     "String::unicode_length",
     "String::utf16_length",
     "String::utf8_length",
-    "String::substring",
-    "string_char_at",
-    "String::trim",
-    "String::split",
-    "String::contains",
-    "String::index_of",
-    // #2345: the Bytes-prologue half of the SAME windowed substring search
-    // `String::index_of` above reaches through a String prologue. Registry row
-    // `(Bytes, Bytes) -> Int`, effect None, no function-typed parameter -- the
-    // audit this list's doc comment demands. The consumer that needs it is
-    // scps_named_call_ok (suspend-class lowering), which has no registry
-    // fallback: without this entry a handle body calling it is refused naming
-    // the call, exactly as `Array::concat` was before #1536.
-    "Bytes::index_of_bytes",
-    // #2345: the single-byte family, on the same audit as the substring
-    // entry above -- registry rows `(Bytes, Int) -> Int`, effect None, no
-    // function-typed parameter. All three were added to the registry in this
-    // PR and to this list only after review caught it, which is the fourth
-    // time one hand-maintained declaration was missed while another was
-    // updated (see #2373).
-    "Bytes::index_of",
-    "Bytes::count",
-    "Bytes::last_index_of",
-    "Bytes::compare",
     "String::to_lower",
     "String::to_upper",
-    "String::ends_with",
-    "String::starts_with",
-    "String::char_code_at",
-    "String::last_index_of",
-    "String::from_char_code",
-    "String::join",
-    "Char::to_int",
-    "Char::from_int",
-    "Int::to_double",
-    "Int::to_float",
+    "string_char_at",
     "Int::to_string",
-    "Double::to_int",
-    "Float::to_int",
+    "Int::parse",
     "Double::to_string",
-    "Float::to_string",
     "Double::abs",
     "Double::floor",
     "Double::ceil",
     "Double::max",
     "Double::min",
-    "Int::parse",
     "Double::parse",
-    // #817 gc-backend follow-up (2026-07-23): `obj[i]` desugars to
-    // `__index(obj, i)` (desugar_trait_dict.vibe); `Array::get`/`Map::get`/
-    // `Bytes::get` are the same read operation spelled explicitly, and
-    // `Array::length`/`Map::size`/`Bytes::length` are the same class of
-    // pure, no-function-param builtin query. All seven are individually
-    // checker-verified pure (effect `None`, no function-typed parameter --
-    // checker/builtins_misc.vibe's lookup_index,
-    // builtins_array.vibe/builtins_map.vibe/builtins_bytes.vibe's own
-    // `*::get`/`*::length`/`Map::size` entries) and the `__index`/`*::get`
-    // subset is already treated as the same borrow-only-read equivalence
-    // class elsewhere in the compiler (perceus.vibe, common_analysis.vibe).
-    // Found missing via gc-backend coverage testing:
-    // `perform Logger::Log(items[i])` inside a `while i < Array::length
-    // (items) { ... }`-bodied needing function was sunk to ineligible
-    // purely because `items[i]`'s desugared `__index` call (and
-    // `Array::length`'s own call in the loop condition) weren't on this
-    // list, not because of anything about the perform itself.
-    "__index",
-    "Array::get",
-    "Map::get",
-    "Bytes::get",
-    "Array::length",
+    "Float::to_int",
+    "Float::to_string",
     "Map::size",
-    "Bytes::length",
-    // #1536: the same audit criterion, found the same way. `Array::concat`
-    // allocates a fresh array from two existing ones -- it can neither perform
-    // a user effect nor invoke a function-typed argument (registry row
-    // `(Array[_], Array[_]) -> Array[_]`, effect None). Its sibling
-    // `Array::slice` was already admitted via scps_is_safe_mut_builtin and
-    // `String::concat` via this list, so the gap was this one name: a
-    // `for x in Array::concat(a, b)` in a suspend-class handle body was refused
-    // naming the concat, not the loop.
-    "Array::concat",
-    // ADR-0076 追記34 V2: string interpolation desugars every `\{...}`
-    // segment to a `__to_string(...)` call (preprocess_interp_string_
-    // collect.vibe) BEFORE the checker runs, so any needing function
-    // formatting with interp was sunk to ineligible purely by that
-    // synthesized call name -- surfaced by gate 4b the moment the replay
-    // fallback stopped absorbing it. Checker-verified pure: effect None
-    // (checker/builtins_misc.vibe lookup_to_string) and it never INVOKES
-    // its argument (stringification only), so the function-typed-param
-    // exclusion does not apply. `not` (Bool -> Bool, effect None --
-    // checker/builtins_misc.vibe lookup_not) was surfaced the same way by
-    // quickcheck_effect's `if not(prop()) {..}` needing body.
-    "__to_string",
-    "not",
-    // #1324: the operator helpers desugar_trait_dict emits when an operand's
-    // type is not syntactically determinable. `a + b` becomes
-    // `__generic_add(a, b)` and `a < b` becomes `__generic_rel_diff(a, b) < 0`
-    // whenever `infer_arg_type_name` reports a non-concrete name (#973), and
-    // `str_lex_diff` is the String arm of the same relational rewrite. That
-    // fires for any value bound from a GENERIC callee's result -- e.g.
-    // `let v = TaskHandle::result_wait(h)` (returns `T`) followed by `v + 1`
-    // inside a `spawn_suspend` closure literal -- so an ordinary arithmetic
-    // tail sank the whole closure to ineligible on the synthesized callee
-    // name alone, exactly like `__to_string` above. All three are registered
-    // builtins with hand-written wasm bodies and a `None` effect
-    // (builtin_registry.vibe: `(Int, Int) -> Int` / `(String, String) -> Int`),
-    // so they can neither perform a user effect nor invoke a function-typed
-    // argument.
-    "__generic_add",
-    "__generic_rel_diff",
-    "str_lex_diff",
-    // #1374: the exception-kind side channel's write. Every `throw(v)` in a
-    // suspend-class closure literal now carries a preceding `Array::set
-    // (__exn_kind_cell, 0, "<Kind>")` (desugar_trait_dict.vibe), so without
-    // this entry the very throws this list already admits as performs would
-    // sink their own closure to ineligible on the synthesized WRITE alone --
-    // the same failure mode `__generic_add` above hit. What this list gates is
-    // "can neither perform a user effect nor invoke a function-typed
-    // argument", and a 3-arg store into an `Array[String]` does neither.
-    // `Array::get` (the READ, used by handler arms) is already listed above.
-    "Array::set",
-    // ADR-0089 D1 (#1218/#1312): the HOST sleeps. Not effect-free -- `sleep`
-    // carries the nominal Async row -- but what this list actually gates is
-    // "an opaque callee that cannot PERFORM a user effect and never invokes
-    // a function-typed argument", and both qualify (Int -> Unit host
-    // calls). Needed because the scoped sleep retarget deliberately leaves
-    // the raw builtin in top-level fn bodies when no entry boundary exists
-    // (Codex P1 on #1312): an Async-row fn like `fn delay() with Async
-    // { sleep(1) }` must classify as PERFORM-FREE (the stat_token
-    // precedent, edp_append_perform_free_row_fns) rather than sinking the
-    // whole effect's migration to ineligible on an unknown callee -- and
-    // the same call must pass scps_calls_ok when such a fn is driven from
-    // a suspend-class handle.
-    "sleep",
-    "sleep_blocking",
-    // ADR-0089 D2 (#1218): the Future cell primitives, same audit criterion
-    // as `sleep` above -- none can perform a user effect or invoke a
-    // function-typed argument. `Future::pending`/`Future::ready` allocate
-    // the two-slot [state, payload] cell and `Future::resolve` is two
-    // Array::set stores (compile_call.vibe's inline lowerings). Without
-    // these, any handle body (or Async-row entry under the injected
-    // boundary) that touches a PENDING future sinks to ineligible on the
-    // opaque callee name alone (measured: `sleep(1); let f =
-    // Future::pending(); Future::resolve(f, 42); await(f)` under an
-    // Async-row entry was rejected with the ADR-0076 ineligibility
-    // diagnostic before these entries existed). `await` itself needs no
-    // entry: await_poll_pass rewrites every await call into `__aw_poll`
-    // (a needing fn) before any effect pass runs.
+    "__index",
     "Future::pending",
     "Future::ready",
     "Future::resolve",
-    // ADR-0089 step 4 (#1218): the host-future surface + its raw halves,
-    // same audit criterion -- opaque host calls (`vibe.host_future_get` /
-    // `vibe.host_future_wait` component-adapter imports) that cannot
-    // perform a user effect and take/return only Ints. `host_future_get`
-    // appears in user code (a boundary-wrapped entry body touching it must
-    // stay eligible, the Future::pending precedent above);
-    // `vibe_hf_wait_raw` appears in the injected `__entry_settle`;
-    // `vibe_hf_get_raw` only after compile_call's lowering (listed for
-    // symmetry/safety).
     "host_future_get",
-    "vibe_hf_get_raw",
-    "vibe_hf_wait_raw",
-    // ADR-0089 (c) (#1218): the NAMED sibling of host_future_get. Its raw
-    // half is per-name (`vibe_hf_get_raw$<name>`), matched by prefix in
-    // idp_is_pure_builtin_call below -- same audit, same shapes (a
-    // `() -> Int` opaque host call).
     "host_future_named",
-    // ADR-0089 Decision 3 (#1218): the host-stream surface + its shared raw
-    // read half, same audit criterion -- opaque component-adapter imports
-    // (`vibe.host_stream_get$<name>` / `vibe.host_stream_read`) that cannot
-    // perform a user effect and take/return only Ints. `host_stream_named`
-    // appears in user code (a boundary-wrapped entry body creating the
-    // stream cell must stay eligible, the host_future_named precedent);
-    // `vibe_hs_read_raw` appears in the injected `__entry_settle` stream
-    // arm. `host_stream_next` needs no entry here: the boundary machinery
-    // retargets every call to the injected `__hs_next` (a needing fn)
-    // before any effect pass runs, exactly like await -> `__aw_poll`.
-    // `vibe_hs_close_raw` (the drop half, injected `__hs_close`) is inert on
-    // the same grounds -- dropping a readable end takes an Int and performs
-    // nothing.
     "host_stream_named",
-    // #1955: rewritten to the injected direct-perform `__hs_next_option`
-    // before lowering, just as the raw scalar spelling becomes `__hs_next`.
     "HostStream::next",
-    "HostStream::close",
-    "vibe_hs_close_raw",
-    "vibe_hs_read_raw",
-    // #1539: opaque stdin provider calls are inert host boundaries. Authority
-    // is carried by the checker rows; none can perform a user effect.
-    "Stdin::read_via_stream",
-    "StdinStream::next",
-    "StdinStream::close",
-    "vibe_stdin_provider_acquire_raw",
-    "vibe_stdin_provider_read_raw",
-    "vibe_stdin_provider_close_raw"
+    "HostStream::close"
   ]
+  let mut i = 0
+  while i < Array::length(extras) {
+    Array::push(out, Array::get(extras, i))
+    i = i + 1
+  }
+  out
 }
 
 /// ADR-0089 (c) (#1218): the per-name raw halves of `host_future_named`.

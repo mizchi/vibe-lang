@@ -23,11 +23,13 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$ROOT_DIR"
 
 python3 - <<'PY'
-import re, sys
+import os, re, sys
 
 LIN_CALLSITE = "lib/@vibe/compiler/codegen/expr/compile_call.vibe"
 GC_CALLSITE = "lib/@vibe/compiler/codegen/gc/backend_call.vibe"
-REGISTRY = "lib/@vibe/compiler/core/builtin_registry.vibe"
+REGISTRY = os.environ.get(
+    "VIBE_BUILTIN_PARITY_REGISTRY",
+    "lib/@vibe/compiler/core/builtin_registry.vibe")
 LINKED = "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe"
 GC_BODY = "lib/@vibe/compiler/codegen/gc/backend_body.vibe"
 CLASSIFICATION = "scripts/builtin_parity_classification.tsv"
@@ -131,16 +133,38 @@ if not lin_cs or not gc_cs:
           f"scripts/check_builtin_parity.sh alongside it.", file=sys.stderr)
     sys.exit(1)
 
+# #2584: each registry row is a 9-tuple (name, CtFn, in_linear, in_gc,
+# visible, is_pure, is_non_allocating, is_borrow_ret, is_safe_mut). The
+# first three bools are the lane flags this gate reads. A 5-tuple
+# (pre-#2584) must not match: the old pattern anchored on
+# `bool, bool, bool)` and so consumed the LAST three bools of a 9-tuple
+# -- is_non_allocating / is_borrow_ret / is_safe_mut -- as if they were
+# in_linear / in_gc / visible. Measured on #2845: that reported
+# Array::push (and every other allocating, non-borrow-returning name) as
+# a dead row claiming neither lane.
+BOOL = r'(true|false)'
+registry_text = open(REGISTRY).read()
+named = re.findall(r'\(\s*"([^"]+)"\s*,\s*CtFn', registry_text)
 rows = re.findall(
-    r'\(\s*"([^"]+)"\s*,\s*CtFn.*?,\s*(true|false)\s*,\s*(true|false)\s*,\s*(true|false)\s*\)',
-    open(REGISTRY).read())
+    r'\(\s*"([^"]+)"\s*,\s*CtFn.*?,\s*'
+    + BOOL + r'\s*,\s*' + BOOL + r'\s*,\s*' + BOOL + r'\s*,\s*'
+    + BOOL + r'\s*,\s*' + BOOL + r'\s*,\s*' + BOOL + r'\s*,\s*'
+    + BOOL + r'\s*\)',
+    registry_text)
 if len(rows) < 90:
     print(f"[builtin-parity] FAIL: parsed only {len(rows)} registry rows "
           f"(expected 90+) -- registry row shape changed? Update "
           f"scripts/check_builtin_parity.sh alongside it.", file=sys.stderr)
     sys.exit(1)
-reg_lin = {n for n, l, g, v in rows if l == "true"}
-reg_gc = {n for n, l, g, v in rows if g == "true"}
+if len(rows) != len(named):
+    print(f"[builtin-parity] FAIL: parsed {len(rows)} 9-tuple registry rows "
+          f"but found {len(named)} `(\"name\", CtFn` spellings -- a row is "
+          f"not a 9-tuple (name, CtFn, 3 lane flags, 4 classification "
+          f"flags)? Update scripts/check_builtin_parity.sh alongside it.",
+          file=sys.stderr)
+    sys.exit(1)
+reg_lin = {n for n, l, g, v, *_ in rows if l == "true"}
+reg_gc = {n for n, l, g, v, *_ in rows if g == "true"}
 # Compiler-owned wrappers can implement a checker-visible builtin without a
 # func-table row. Keep this exception exact and mutation-checked: read_chunk
 # must still be retargeted to its injected linear/RC implementation.
@@ -154,7 +178,7 @@ if wrapper_only_found != wrapper_only_expected:
     print("[builtin-parity] FAIL: compiler-owned StdinStream wrapper shape "
           f"changed (found {sorted(wrapper_only_found)})", file=sys.stderr)
     sys.exit(1)
-neither = sorted(n for n, l, g, v in rows
+neither = sorted(n for n, l, g, v, *_ in rows
                  if l == "false" and g == "false" and n not in wrapper_only_expected)
 if neither:
     print(f"[builtin-parity] FAIL: registry rows claiming NEITHER lane "

@@ -27,7 +27,7 @@ includes(
 );
 includes(
   "lib/@vibe/compiler/core/builtin_registry.vibe",
-  '("Fs::publish_immutable_text", CtFn(reg_p2(CtString, CtString), CtBool, Some("Fs")), true, false, true)',
+  '("Fs::publish_immutable_text", CtFn(reg_p2(CtString, CtString), CtBool, Some("Fs")), true, false, true, false, false, false, false)',
 );
 includes(
   "lib/@vibe/compiler/codegen/wasi/linked_compile.vibe",

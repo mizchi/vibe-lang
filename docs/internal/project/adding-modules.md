@@ -174,8 +174,10 @@ cmp _build/gen/stage2.wasm _build/gen/stage3.wasm   # fixpoint
   around in the module_source lane)
 - #534: factoring vibe/types and vibe/parser out of the compiler (layout)
 - #415: a shared builtin registry across the two backends (so adding a builtin
-  is one place). The registry row is one place; the classification lists a new
-  builtin may need to be on (pure / non-allocating / borrow-returning /
-  safe-mut) are still four, and `lib/@vibe/compiler/tests/builtin_classification_census_test.vibe`
-  fails on a registry name that reaches none of them and is recorded nowhere
-  (#2584)
+  is one place). The registry row is that place: its four classification
+  flags (pure / non-allocating / borrow-returning / safe-mut) are what the
+  lists are derived from (#2584). A name with every flag false that is on
+  neither census table fails
+  `lib/@vibe/compiler/tests/builtin_classification_census_test.vibe`. Names
+  that are not registry rows stay in small extras tables next to the
+  derived lists.
