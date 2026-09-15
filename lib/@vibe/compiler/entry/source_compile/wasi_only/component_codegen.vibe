@@ -6707,6 +6707,25 @@ fn comp_is_stdin_provider_import_name(name: String) -> Bool {
   name == "stdin_provider_acquire" || name == "stdin_provider_read" || name == "stdin_provider_close"
 }
 
+/// Wrap a compiled core into a COMMAND component -- the artifact
+/// `viberun --commands` dispatches (docs/internal/design/component-lazy-dispatch.md).
+///
+/// The face is chosen from the core's own import section, never from a flag,
+/// so the two callers that build a command component (`vibe build --component`
+/// through the launcher's `VIBE_BUILD_COMPONENT` lane, and the same verb on
+/// the user CLI) cannot disagree about what a given module gets: a core with
+/// no `vibe.*` import takes the strict wrap, which REFUSES one, and a core
+/// that has them takes the vfs wrap, whose four read operations become
+/// component imports and whose other `vibe.*` imports become traps.
+export fn comp_emit_component_wasm_command(core_wasm: Bytes, target_func_name: String, export_name: String) -> Bytes with Exception {
+  let params = ["args"]
+  if comp_core_imports_vibe_host(core_wasm) {
+    comp_emit_component_wasm_string_handler_vfs(core_wasm, target_func_name, export_name, params)
+  } else {
+    comp_emit_component_wasm_string_handler(core_wasm, target_func_name, export_name, params)
+  }
+}
+
 /// Does a compiled core module reach the HOST at all -- i.e. does it import
 /// anything from the `vibe` module?
 ///

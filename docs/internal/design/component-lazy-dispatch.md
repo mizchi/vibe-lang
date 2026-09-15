@@ -25,10 +25,35 @@ runtime/vibe  (host loop)
             └─ run: func(args: string) -> string
 ```
 
-The guest half is `vibe build --component`
-(`lib/@vibe/cli/dispatch.vibe`); the host half is `--commands`
+The guest half is `vibe build --component`; the host half is `--commands`
 (`runtime/viberun/src/commands.rs`). Neither knows how many other commands
 exist: the manifest is the only thing that does, and it holds paths, not code.
+
+### `vibe build --component` has two front doors
+
+`runtime/vibe` talks to the compiler through POSITIONAL arguments plus a
+`VIBE_*` selector, never a verb, so a verb arm alone is unreachable from the
+public launcher. The flag therefore exists in two places, over one
+implementation:
+
+| entry point | reached by | lane |
+|---|---|---|
+| `runtime/vibe build --component` | what a user types | `VIBE_BUILD_COMPONENT=1` → `cli_adapter.vibe`'s `adapter_command_component` |
+| `build --component` on the user CLI | `lib/@vibe/cli/dispatch.vibe` | `selfhost_cli_build_args` |
+
+Both call `comp_emit_component_wasm_command`, so they cannot pick different
+faces for the same module — which is the point of the split being over one
+implementation rather than two.
+
+The first version of this lane had only the verb arm. Measured:
+`vibe build --component app.vibex` printed
+`compiled app.vibex -> .vibe/build/out/app.wasm` and wrote a **core module** —
+the flag fell through the launcher's catch-all, which treats an unrecognized
+token as the source path. That is the silently-wrong failure this project
+ranks worst, and the gate missed it by invoking the CLI wasm directly instead
+of the launcher. Both are fixed: the launcher now REFUSES an unknown `build`
+option by name instead of swallowing it, and the gate drives the public
+launcher.
 
 ## The manifest — `vibe-commands-v1`
 
@@ -138,7 +163,9 @@ access, or to declare `with Fs` and be handed the strict one.
 - **Stream stdout.** Output comes back as the returned string, so a long-running
   command prints nothing until it finishes.
 - **`--component --minify`.** `vibe-opt` optimizes core modules; running it over
-  a component binary is not the same operation.
+  a component binary is not the same operation. Refused by name, as are
+  `--component --wit` (two different artifacts from one file) and
+  `--component --entry` (a component has no command entry).
 
 Each is additive: a wider wrap, or a `print` import, extends the contract
 without changing the manifest or the frame.

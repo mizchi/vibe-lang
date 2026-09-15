@@ -15,7 +15,7 @@ set -euo pipefail
 # export project-wide values. Inheriting one would silently point a case at
 # the wrong tree or the wrong compiler, which is how five self-tests in #2252
 # came to be "broken": unset first, set explicitly per case.
-unset VIBE_COMPONENT_LAZY_WORK VIBE_COMPONENT_LAZY_COMPILER
+unset VIBE_COMPONENT_LAZY_WORK VIBE_COMPONENT_LAZY_COMPILER VIBE_COMPONENT_LAZY_LAUNCHER
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GATE="$ROOT/scripts/test_component_lazy_dispatch_gate.sh"
@@ -44,12 +44,15 @@ expect_fail() {
     || { echo "component-lazy self-test [$label]: the mutation itself failed" >&2; exit 1; }
   # The stamp still matches the sources, so the gate reuses what is there
   # rather than rebuilding over the mutation.
-  if VIBE_COMPONENT_LAZY_WORK="$work" bash "$GATE" >"$work/log" 2>&1; then
+  # The log lives OUTSIDE $work: the gate wipes its work directory whenever
+  # the cache key misses, which would take the log with it.
+  local log="$TMP_ROOT/case$case_no.log"
+  if VIBE_COMPONENT_LAZY_WORK="$work" bash "$GATE" >"$log" 2>&1; then
     echo "component-lazy self-test [$label]: the gate PASSED on a mutated tree" >&2
     exit 1
   fi
-  grep -q "$want" "$work/log" \
-    || { cat "$work/log" >&2; echo "component-lazy self-test [$label]: failed, but not with '$want'" >&2; exit 1; }
+  grep -q "$want" "$log" \
+    || { cat "$log" >&2; echo "component-lazy self-test [$label]: failed, but not with '$want'" >&2; exit 1; }
   echo "component-lazy self-test [$label]: red as expected"
 }
 
@@ -110,5 +113,70 @@ expect_fail "build refusal stops naming the signature" \
 expect_fail "help passthrough answer changed" \
   "was swallowed by the runner" \
   "cp cmd/alwaysthree.component.wasm cmd/hello.component.wasm"
+
+# 9. THE ONE THIS GATE EXISTS FOR. Take `--component` back out of the public
+#    launcher -- the state the first version of this gate was green about,
+#    because it invoked the CLI wasm directly instead of the launcher the user
+#    types into. The gate must not survive that.
+#
+#    Launcher mutations, not fixture ones, so they go through
+#    VIBE_COMPONENT_LAZY_LAUNCHER rather than expect_fail's copied tree.
+expect_launcher_fail() {
+  local label="$1" want="$2" sed_script="$3" gone="$4"
+  case_no=$((case_no + 1))
+  local work="$TMP_ROOT/case$case_no" mutant="$TMP_ROOT/launcher$case_no" log="$TMP_ROOT/case$case_no.log"
+  rm -rf "$work"
+  cp -R "$MASTER" "$work"
+  sed "$sed_script" "$ROOT/runtime/vibe" > "$mutant"
+  # The mutation must have LANDED. An edit that matches nothing passes while
+  # proving nothing -- the failure mode #2248 records twice.
+  if grep -qF -- "$gone" "$mutant"; then
+    echo "component-lazy self-test [$label]: the mutation did not apply" >&2
+    exit 1
+  fi
+  # The cache key covers the launcher, so a mutated one forces a rebuild --
+  # which is what makes the mutant, not a cached artifact, give the answer.
+  if VIBE_COMPONENT_LAZY_WORK="$work" VIBE_COMPONENT_LAZY_LAUNCHER="$mutant" \
+     bash "$GATE" >"$log" 2>&1; then
+    echo "component-lazy self-test [$label]: the gate PASSED on a mutated launcher" >&2
+    exit 1
+  fi
+  grep -q "$want" "$log" \
+    || { cat "$log" >&2; echo "component-lazy self-test [$label]: failed, but not with '$want'" >&2; exit 1; }
+  echo "component-lazy self-test [$label]: red as expected"
+}
+
+expect_launcher_fail "launcher forgets --component" \
+  "vibe build --component failed" \
+  's/        --component) component=1; shift ;;//' \
+  '--component) component=1'
+
+# 10. ...and the structural half: the catch-all that swallowed `--component`
+#     as a source path is what let it through silently in the first place. With
+#     the refusal removed, any FUTURE flag can be dropped the same way, and the
+#     gate has to notice.
+expect_launcher_fail "launcher swallows an unknown flag again" \
+  "an unknown build option was swallowed" \
+  's/        -\*) die "\$cmd: unknown option: \$1" ;;//' \
+  'unknown option: $1'
+
+# 11. The compiler-source half of the cache key (Codex P2): a change under
+#     lib/@vibe/compiler must force a rebuild, or a changed emitter is reused
+#     from yesterday's artifacts and the gate is green about code it never ran.
+case_no=$((case_no + 1))
+stamp_before="$(cat "$MASTER/.sources_sha")"
+touch_work="$TMP_ROOT/case$case_no"
+rm -rf "$touch_work"
+cp -R "$MASTER" "$touch_work"
+emitter="$ROOT/lib/@vibe/compiler/entry/source_compile/wasi_only/component_codegen.vibe"
+cp "$emitter" "$TMP_ROOT/component_codegen.orig"
+printf '\n// self-test: proves the cache key covers the compiler sources.\n' >> "$emitter"
+stamp_after="$(VIBE_COMPONENT_LAZY_WORK="$touch_work" bash "$GATE" --build-only >/dev/null 2>&1; cat "$touch_work/.sources_sha")"
+cp "$TMP_ROOT/component_codegen.orig" "$emitter"
+if [ "$stamp_before" = "$stamp_after" ]; then
+  echo "component-lazy self-test [compiler source in the cache key]: a change under lib/@vibe/compiler left the key unchanged, so the fixtures would be reused" >&2
+  exit 1
+fi
+echo "component-lazy self-test [compiler source in the cache key]: red as expected"
 
 echo "component-lazy self-test: ok ($case_no cases)"

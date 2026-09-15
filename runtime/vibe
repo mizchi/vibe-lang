@@ -261,7 +261,7 @@ VIBE_SELECTOR_ORDER="VIBE_LSP VIBE_CHECK_ONLY VIBE_COVERAGE
   VIBE_RC_CLASSIFY VIBE_RC_PLAN VIBE_ALLOCS VIBE_DEPS VIBE_DEPS_DIRECT
   VIBE_GREP VIBE_GREP_JSON VIBE_DIAGNOSTICS VIBE_DIAGNOSTICS_JSON
   VIBE_EMIT_COVERAGE_DRIVER_SOURCE VIBE_EMIT_MERGED_SOURCE VIBE_EMIT_WIT
-  VIBE_SERVE_COMPONENT VIBE_EMIT_MODULE_SOURCE VIBE_INTERNAL_TRUSTED_SOURCE
+  VIBE_SERVE_COMPONENT VIBE_BUILD_COMPONENT VIBE_EMIT_MODULE_SOURCE VIBE_INTERNAL_TRUSTED_SOURCE
   VIBE_BACKEND"
 
 selector_clears_before() {
@@ -1392,15 +1392,22 @@ case "$cmd" in
     exit "$status"
     ;;
   compile|build)
-    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit] [--minify] [--jobs N]"
-    src=""; out=""; entry="main"; entry_override=0; wit=0; minify=0; jobs=1
+    [ "$#" -ge 1 ] || die "usage: vibe $cmd <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit] [--component] [--minify] [--jobs N]"
+    src=""; out=""; entry="main"; entry_override=0; wit=0; component=0; minify=0; jobs=1
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -o|--output) out="$2"; shift 2 ;;
         --entry) entry="$2"; entry_override=1; shift 2 ;;
         --wit) wit=1; shift ;;
+        --component) component=1; shift ;;
         --minify) minify=1; shift ;;
         --jobs) [ "$#" -ge 2 ] || die "--jobs requires a value"; jobs="$2"; shift 2 ;;
+        # An unknown FLAG is refused rather than swallowed as the source path.
+        # The old catch-all accepted `--component` here for one release and
+        # produced a core module while reporting success -- the flag silently
+        # discarded (Codex review of #2861). Anything starting with `-` that
+        # this arm does not know is a mistake worth naming.
+        -*) die "$cmd: unknown option: $1" ;;
         *) src="$1"; shift ;;
       esac
     done
@@ -1416,6 +1423,36 @@ case "$cmd" in
         entry="main"
         ;;
     esac
+    if [ "$component" = "1" ]; then
+      # A COMMAND component (docs/internal/design/component-lazy-dispatch.md):
+      # the module's `vibe_command` lifted to a component `run` export, which
+      # `viberun --commands` dispatches lazily.
+      [ "$wit" = "0" ] || die "--component and --wit produce different artifacts from the same file; run them separately"
+      [ "$entry_override" = "0" ] || die "--component has no command entry; its surface is the lifted \`run\` export, so --entry is not allowed"
+      # vibe-opt optimizes CORE modules; running it over a component binary is
+      # a different operation and is not wired.
+      [ "$minify" = "0" ] || die "--component and --minify cannot be combined: the minifier takes a core module, not a component"
+      if [ -z "$out" ]; then
+        case "$src" in
+          *.vibex) out="$BUILD_DIR/out/$(basename "${src%.vibex}").component.wasm" ;;
+          *) out="$BUILD_DIR/out/$(basename "${src%.vibe}").component.wasm" ;;
+        esac
+      fi
+      cli="$(pick_cli)"
+      mkdir -p "$(dirname "$out")"
+      rm -f "$out" "$out.diag"
+      # -u VIBE_FMT: same precedence hazard as the --wit arm below (#2239).
+      env $(selector_clears_before VIBE_BUILD_COMPONENT) -u VIBE_FMT VIBE_BUILD_COMPONENT=1 VIBE_IMPORT_ABI=raw \
+        "$RUNNER" "$cli" "$src" "$out" __no_entry__ >/dev/null 2>&1 || true
+      if [ ! -s "$out" ]; then
+        [ -s "$out.diag" ] && echo "error: $(cat "$out.diag")" >&2
+        rm -f "$out" "$out.diag"
+        die "component build failed: $src"
+      fi
+      rm -f "$out.diag"
+      echo "component $src -> $(display_path "$out")"
+      exit 0
+    fi
     if [ "$wit" = "1" ]; then
       case "$src" in
         *.vibex) die "--wit for .vibex requires semantic contract emission" ;;

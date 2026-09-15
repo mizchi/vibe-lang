@@ -13,8 +13,8 @@ import ../compiler {
 }
 
 import ../compiler/entry/source_compile/wasi_only {
-  comp_core_imports_vibe_host, comp_emit_component_wasm_stream_handler,
-  comp_emit_component_wasm_string_handler, comp_emit_component_wasm_string_handler_vfs
+  comp_emit_component_wasm_command, comp_emit_component_wasm_stream_handler,
+  comp_emit_component_wasm_string_handler
 }
 
 //# Effects
@@ -809,21 +809,13 @@ fn command_component_edit(input_path: String, entry: String, message: String) ->
 
 /// Wrap an already-compiled core into a command component.
 ///
-/// Which face is chosen is read from the CORE's import section, never from a
-/// flag: a core that reaches the host gets the vfs wrap (its four read ops
-/// become component imports), and one that does not gets the pure wrap, which
-/// REJECTS a `vibe.*` import so a command that grows one is refused here
-/// rather than trapping at dispatch.
+/// The wrap itself is `comp_emit_component_wasm_command`, shared with the
+/// launcher's `VIBE_BUILD_COMPONENT` lane so the two cannot pick different
+/// faces for the same module. What this adds is the actionable message.
 fn emit_command_component(core: Bytes, input_path: String) -> Bytes with Exception {
   let entry = command_component_entry()
-  let export_name = command_component_export()
-  let params = ["args"]
   handle {
-    if comp_core_imports_vibe_host(core) {
-      comp_emit_component_wasm_string_handler_vfs(core, entry, export_name, params)
-    } else {
-      comp_emit_component_wasm_string_handler(core, entry, export_name, params)
-    }
+    comp_emit_component_wasm_command(core, entry, command_component_export())
   } with { Exception::Throw(message) => throw(command_component_edit(input_path, entry, message)) }
 }
 

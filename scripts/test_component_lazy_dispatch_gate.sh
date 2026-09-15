@@ -5,6 +5,13 @@
 # artifact that `viberun --commands` dispatches, and dispatching one verb
 # costs NOTHING for the other verbs in the manifest.
 #
+# It drives the PUBLIC `runtime/vibe` launcher, not the CLI wasm underneath
+# it. The first version of this gate invoked the wasm directly and was green
+# while `vibe build --component f.vibe` through the launcher silently produced
+# a CORE module -- the flag fell through a catch-all that treated it as the
+# source path (Codex review of #2861). A gate that skips the layer the user
+# types into tests a proxy for the thing it names.
+#
 # The laziness assertion is the reason the gate exists, so it is made the way
 # that cannot be faked: the manifest's other rows point at a file that is not
 # a wasm binary and at a path that does not exist, and the run is still
@@ -41,6 +48,23 @@ done
 
 fail() { echo "[component-lazy] FAIL: $*" >&2; exit 1; }
 
+# The PUBLIC entry point, pointed at this checkout's runner and adapter. Every
+# build in this gate goes through it, so a flag the launcher drops cannot pass
+# unnoticed. VIBE_HOME is redirected so a toolchain installed on the machine
+# cannot answer instead of the one under test.
+# VIBE_COMPONENT_LAZY_LAUNCHER exists for the self-test alone: the launcher is
+# repository content, not a fixture, so `expect_fail`'s copy-and-mutate cannot
+# reach it otherwise -- and the one mutation that matters most (restoring the
+# catch-all that swallowed `--component`) is a launcher mutation.
+LAUNCHER="${VIBE_COMPONENT_LAZY_LAUNCHER:-$ROOT_DIR/runtime/vibe}"
+[ -f "$LAUNCHER" ] || fail "launcher not found: $LAUNCHER"
+
+launcher() {
+  env VIBE_RUNNER="$RUNNER" VIBE_CLI_WASM="$CLI_WASM" VIBE_LIB="$ROOT_DIR/lib" \
+      VIBE_HOME="$WORK/home" VIBE_BUILD_DIR="$WORK/build" \
+    bash "$LAUNCHER" "$@"
+}
+
 RUNNER="$ROOT_DIR/runtime/viberun/target/release/viberun"
 bash "$ROOT_DIR/scripts/ensure_viberun.sh" >/dev/null || fail "could not build runtime/viberun"
 [ -x "$RUNNER" ] || fail "no runner at $RUNNER"
@@ -63,10 +87,16 @@ hash_stdin() {
 # way).
 sources_hash() {
   {
-    printf '%s ' "compiler"; hash_stdin < "$COMPILER"
-    find lib/@vibe/cli lib/@vibe/command -type f -name '*.vibe' -o -path 'lib/@vibe/cli/*' -name '*.vibex' \
-      -o -path 'lib/@vibe/command/*' -name '*.vpkg' -o -path 'lib/@vibe/cli/*' -name '*.vpkg' 2>/dev/null \
+    printf '%s ' "seed"; hash_stdin < "$COMPILER"
+    # The whole of lib/@vibe, not just cli/ and command/. The CLI this gate
+    # builds IMPORTS the compiler, and the component emitter it calls is in
+    # lib/@vibe/compiler -- so a key over cli/ alone leaves a changed emitter
+    # reusing yesterday's artifacts and the gate green about code it never ran
+    # (Codex review of #2861). Over-approximating costs a rebuild the gate
+    # would mostly have paid anyway; under-approximating costs the guarantee.
+    find lib -type f \( -name '*.vibe' -o -name '*.vibex' -o -name '*.vpkg' \) 2>/dev/null \
       | LC_ALL=C sort | while IFS= read -r f; do printf '%s ' "$f"; hash_stdin < "$f"; done
+    printf '%s ' "launcher"; hash_stdin < "$LAUNCHER"
     printf '%s ' "gate"; hash_stdin < "$ROOT_DIR/scripts/test_component_lazy_dispatch_gate.sh"
   } | hash_stdin
 }
@@ -129,32 +159,46 @@ export fn something_else(args: String) -> String {
 }
 VIBE
 
-  # The CLI under test, built from this checkout by the seed.
+  # The compiler adapter this checkout's sources produce. This is what the
+  # launcher actually drives (positional args + a VIBE_* selector), so it is
+  # the artifact the gate has to exercise -- not lib/@vibe/cli/main.vibex,
+  # which the public launcher never reaches.
   rm -f "$CLI_WASM" "$CLI_WASM.diag"
   env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw $SEED_RUN --invoke cli_main "$COMPILER" \
-    lib/@vibe/cli/main.vibex "$CLI_WASM" main >/dev/null 2>&1 || true
+    lib/@vibe/compiler/cli_adapter.vibe "$CLI_WASM" cli_main >/dev/null 2>&1 || true
   if [ ! -s "$CLI_WASM" ]; then
     [ -s "$CLI_WASM.diag" ] && cat "$CLI_WASM.diag" >&2
-    fail "could not build the CLI wasm from lib/@vibe/cli/main.vibex"
+    fail "could not build the compiler adapter from lib/@vibe/compiler/cli_adapter.vibe"
   fi
   rm -f "$CLI_WASM.diag" "$CLI_WASM.funcmap" "$CLI_WASM.testmeta"
 
   for name in hello cat unframed alwaysthree; do
     rm -f "$WORK/cmd/$name.component.wasm"
-    env VIBE_LIB="$ROOT_DIR/lib" "$RUNNER" "$CLI_WASM" \
-      build --component "$WORK/cmd/$name.vibe" >/dev/null 2>"$WORK/cmd/$name.err" \
+    launcher build --component "$WORK/cmd/$name.vibe" \
+        -o "$WORK/cmd/$name.component.wasm" >/dev/null 2>"$WORK/cmd/$name.err" \
       || { cat "$WORK/cmd/$name.err" >&2; fail "vibe build --component failed for $name"; }
     [ -s "$WORK/cmd/$name.component.wasm" ] || fail "vibe build --component wrote nothing for $name"
   done
 
-  # ...and the refusal is recorded here, where the CLI is already built, so
-  # the assertion below costs no second compile.
+  # ...and the refusal is recorded here, where the toolchain is already built,
+  # so the assertion below costs no second compile.
   rm -f "$WORK/cmd/noentry.component.wasm"
-  if env VIBE_LIB="$ROOT_DIR/lib" "$RUNNER" "$CLI_WASM" \
-      build --component "$WORK/cmd/noentry.vibe" >"$WORK/cmd/noentry.out" 2>"$WORK/cmd/noentry.err"; then
+  if launcher build --component "$WORK/cmd/noentry.vibe" \
+      -o "$WORK/cmd/noentry.component.wasm" >"$WORK/cmd/noentry.out" 2>"$WORK/cmd/noentry.err"; then
     fail "vibe build --component accepted a module with no \`vibe_command\` export"
   fi
   cat "$WORK/cmd/noentry.out" >> "$WORK/cmd/noentry.err"
+
+  # The flag-combination refusals, recorded the same way.
+  : > "$WORK/cmd/refusals.txt"
+  for combo in "--component --wit" "--component --minify" "--component --entry x"; do
+    # shellcheck disable=SC2086
+    launcher build $combo "$WORK/cmd/hello.vibe" >>"$WORK/cmd/refusals.txt" 2>&1 \
+      && fail "vibe build $combo was accepted"
+  done
+  launcher build --definitely-not-a-flag "$WORK/cmd/hello.vibe" >>"$WORK/cmd/refusals.txt" 2>&1 \
+    && fail "vibe build accepted an unknown option instead of naming it"
+  true
 
   # The two poison rows. Neither is ever read on a lazy dispatch.
   printf 'this is not a wasm binary\n' > "$WORK/cmd/poison.component.wasm"
@@ -303,7 +347,21 @@ run_cmd hello --help || { cat "$WORK/err" >&2; fail "\`hello --help\` did not re
 grep -qx 'hello from hello, 1 arg(s)' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "\`--help\` was swallowed by the runner instead of reaching the command"; }
 
-# 12. A module without the command entry is refused at BUILD time, with the
+# 12. The flag-combination refusals reached the user, each naming its own
+#     reason. Recorded while the fixtures were built.
+grep -q -- '--component and --wit' "$WORK/cmd/refusals.txt" \
+  || { cat "$WORK/cmd/refusals.txt" >&2; fail "--component --wit was not refused with its own reason"; }
+grep -q -- '--component and --minify' "$WORK/cmd/refusals.txt" \
+  || { cat "$WORK/cmd/refusals.txt" >&2; fail "--component --minify was not refused with its own reason"; }
+grep -q -- '--entry is not allowed' "$WORK/cmd/refusals.txt" \
+  || { cat "$WORK/cmd/refusals.txt" >&2; fail "--component --entry was not refused with its own reason"; }
+# The catch-all that swallowed `--component` as a source path is gone: an
+# unknown option is NAMED. Without this, a future flag can be discarded the
+# same way and every other assertion here still passes.
+grep -q -- 'unknown option: --definitely-not-a-flag' "$WORK/cmd/refusals.txt" \
+  || { cat "$WORK/cmd/refusals.txt" >&2; fail "an unknown build option was swallowed instead of named"; }
+
+# 13. A module without the command entry is refused at BUILD time, with the
 #     signature to write. The refusal itself was recorded while the fixtures
 #     were built.
 grep -q 'export fn vibe_command(args: String) -> String' "$WORK/cmd/noentry.err" \
