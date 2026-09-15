@@ -15,15 +15,8 @@
 // rather than only `Some`/`Ok`/`Err`, which is what gives a USER enum's
 // pattern binder a type.
 //
-// The generic-parameter case (`fn f[T: Show](x: T) -> String { "\{x}" }`) is
-// closed too, and NOT by another sentinel here -- there is no shape to record,
-// because `T` is whatever the caller instantiated. It goes through the Show
-// dictionary (docs/method-bearing-traits-plan.md components 3+4), with the
-// trait injected only into the desugar pass so the checker never starts
-// enforcing `impl Show` -- see synthetic_show_sigs in
-// lib/@vibe/compiler/normalize/desugar_trait_dict.vibe. The witness is total:
-// a type with no `C::to_string` still renders through the ADR-0058 heuristic,
-// which is what the Int/String blocks below pin.
+// Generic forwarding uses a declared method-bearing Render witness. A marker
+// alone supplies no callable renderer (#2840).
 //
 // This is a separate file rather than more digits on interp_show_derive.vibe
 // because that fixture's weight is already 1e16 and vibe's Int literal ceiling
@@ -53,6 +46,25 @@ enum Wrap {
   W2(Int, P)
 } derive (Show)
 
+trait Render {
+  to_string(Self) -> String
+}
+
+impl Render for P
+impl Render for E2
+
+impl Render for Int {
+  to_string(value: Int) -> String {
+    Int::to_string(value)
+  }
+}
+
+impl Render for String {
+  to_string(value: String) -> String {
+    value
+  }
+}
+
 fn opt_param(o: Option[P]) -> String {
   match o {
     Some(v) => "\{v}",
@@ -72,18 +84,18 @@ fn array_param(a: Array[P]) -> String {
   "\{a}"
 }
 
-fn generic_interp[T: Show](v: T) -> String {
+fn generic_interp[T: Render](v: T) -> String {
   "\{v}"
 }
 
-fn generic_to_string[T: Show](v: T) -> String {
+fn generic_to_string[T: Render](v: T) -> String {
   to_string(v)
 }
 
-/// A Show-bounded generic that forwards to ANOTHER one. The witness must be
+/// A Render-bounded generic that forwards to ANOTHER one. The witness must be
 /// forwarded, not re-synthesized -- inside `generic_forward` the receiver's
 /// type is still the variable `T`, so there is nothing to synthesize from.
-fn generic_forward[T: Show](v: T) -> String {
+fn generic_forward[T: Render](v: T) -> String {
   generic_interp(v)
 }
 
@@ -103,17 +115,9 @@ test "#1445: the generic witness is forwarded through a second generic" {
   assert_eq(generic_forward(p), "P { x: 2 }")
 }
 
-test "#1445: a type with no renderer keeps the ADR-0058 heuristic" {
-  // The synthetic Show witness is TOTAL -- this is the fallback member, and
-  // it must stay byte-identical to what the same value prints outside a
-  // generic, or activating the dictionary would be a regression for every
-  // type that does not derive(Show).
+test "#1445: primitive values render through their declared witnesses" {
   assert_eq(generic_interp(5), "5")
   assert_eq(generic_interp("hi"), "hi")
-  // No `Bool` case: `[T: Show]` instantiated at `Bool` is rejected outright
-  // with `no impl 'Show' for 'Bool'` -- measured on the SEED compiler too, so
-  // it predates the witness and is a gap in which primitives
-  // register_builtin_traits gives a `Show` impl, not something this pass sees.
 }
 
 test "#1445: a tuple through a variable renders structurally" {
@@ -142,10 +146,7 @@ test "#1445: a 3-tuple through a variable keeps arity and order" {
 }
 
 test "#1445: an array through a variable renders structurally" {
-  let a = [
-    1,
-    2
-  ]
+  let a = [1, 2]
   assert_eq("\{a}", "[1, 2]")
   assert_eq("\{a}", "\{[1, 2]}")
 }
@@ -164,9 +165,7 @@ test "#1445: an array through a variable renders its struct elements" {
 test "#1445: an array binding renders element count from the runtime length" {
   // The expansion is a loop over `Array::length`, not an unrolled join over
   // the literal's elements, so a value pushed after the binding shows up.
-  let a = [
-    1
-  ]
+  let a = [1]
   Array::push(a, 2)
   Array::push(a, 3)
   assert_eq("\{a}", "[1, 2, 3]")
@@ -245,33 +244,17 @@ test "#139: a nested tuple renders all the way down" {
 }
 
 test "#139: an array of tuples renders its elements structurally" {
-  let a = [
-    (1, P::{
-      x: 3
-    })
-  ]
+  let a = [(1, P::{ x: 3 })]
   assert_eq("\{a}", "[(1, P { x: 3 })]")
 }
 
 test "#139: a tuple containing an array renders the array" {
-  let t = (1, [
-    P::{
-      x: 4
-    }
-  ])
+  let t = (1, [P::{ x: 4 }])
   assert_eq("\{t}", "(1, [P { x: 4 }])")
 }
 
 test "#139: an array of arrays renders both levels" {
-  let aa = [
-    [
-      1,
-      2
-    ],
-    [
-      3
-    ]
-  ]
+  let aa = [[1, 2], [3]]
   assert_eq("\{aa}", "[[1, 2], [3]]")
 }
 
@@ -315,10 +298,7 @@ test "#139: a COMPOSITE enum payload keeps its shape through the binder" {
 
 test "#139: already-working shapes are unchanged" {
   let t = (1, 2)
-  let a = [
-    1,
-    2
-  ]
+  let a = [1, 2]
   assert_eq("\{t}", "(1, 2)")
   assert_eq("\{a}", "[1, 2]")
   let o = Some(3)
@@ -341,10 +321,7 @@ test "#1465: rebinding a tuple name to a scalar drops the tuple shape" {
 
 test "#1465: rebinding an array name to a scalar drops the array shape" {
   // Same bug through the other sentinel; printed "[]" before the fix.
-  let a = [
-    1,
-    2
-  ]
+  let a = [1, 2]
   assert_eq("\{a}", "[1, 2]")
   let a = 7
   assert_eq("\{a}", "7")
@@ -355,9 +332,7 @@ test "#1465: rebinding to a DIFFERENT composite uses the new shape" {
   // to win, not just cancel the old one.
   let v = (1, 2)
   assert_eq("\{v}", "(1, 2)")
-  let v = [
-    9
-  ]
+  let v = [9]
   assert_eq("\{v}", "[9]")
   let v = (1, 2, 3)
   assert_eq("\{v}", "(1, 2, 3)")

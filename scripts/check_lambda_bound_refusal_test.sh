@@ -2,7 +2,7 @@
 # Red test for check_lambda_bound_refusal.sh (#2248's rule: a gate means nothing
 # until it is known to be able to fail).
 #
-# Four assertions, four mutations, and each mutation is checked for having LANDED
+# Each mutation is checked for having LANDED
 # before its verdict is believed -- an edit that matches nothing passes while
 # proving nothing, which is exactly how a red test goes quietly useless.
 set -euo pipefail
@@ -211,4 +211,35 @@ fi
 grep -qF 'matches the glob but no family' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "RED 7 failed for the wrong reason"; }
 
-echo "[lambda-bound-refusal-test] ok (7 red cases, each mutation verified to land)"
+# #2840: the erased family has a different actionable edit. Exercise both its
+# edit-content assertion and its begins-with assertion independently.
+mkdir -p "$WORK/erased"
+cp fixtures/lambda_bound_erased_interp_refused.vibe "$WORK/erased/lambda_bound_erased_interp_keep_refused.vibe"
+if ! run_gate "$WORK/erased/*.vibe"; then
+  cat "$WORK/out" >&2
+  fail "the erased-family control did not pass"
+fi
+
+sed 's/pass an explicit renderer .\* interpolate at a concrete type/RED8 edit clause removed/' \
+  scripts/check_lambda_bound_refusal.sh > "$WORK/erased/edit.sh"
+grep -q 'RED8 edit clause removed' "$WORK/erased/edit.sh" \
+  || fail "RED 8 mutation did not land"
+if VIBE_LAMBDA_BOUND_REFUSAL_ROOT="$ROOT_DIR" LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" \
+    LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/erased/*.vibe" bash "$WORK/erased/edit.sh" >"$WORK/out" 2>&1; then
+  fail "RED 8: the erased edit-clause assertion does not bind"
+fi
+grep -qF 'refusal does not name an edit' "$WORK/out" \
+  || { cat "$WORK/out" >&2; fail "RED 8 failed for the wrong reason"; }
+
+sed 's/edit="pass an explicit renderer"/edit="has no renderer witness"/' \
+  scripts/check_lambda_bound_refusal.sh > "$WORK/erased/order.sh"
+grep -q 'edit="has no renderer witness"' "$WORK/erased/order.sh" \
+  || fail "RED 9 mutation did not land"
+if VIBE_LAMBDA_BOUND_REFUSAL_ROOT="$ROOT_DIR" LAMBDA_BOUND_REFUSAL_STAGE2="$STAGE2_OVERRIDE" \
+    LAMBDA_BOUND_REFUSAL_FIXTURES="$WORK/erased/*.vibe" bash "$WORK/erased/order.sh" >"$WORK/out" 2>&1; then
+  fail "RED 9: the erased-family ordering assertion does not bind"
+fi
+grep -qF 'refusal does not BEGIN with the edit' "$WORK/out" \
+  || { cat "$WORK/out" >&2; fail "RED 9 failed for the wrong reason"; }
+
+echo "[lambda-bound-refusal-test] ok (9 red cases, each mutation verified to land)"
