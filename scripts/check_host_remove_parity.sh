@@ -35,7 +35,14 @@ cd "$ROOT_DIR"
 # which reads as "resolved to the empty string" -- measured, that is exactly how
 # this gate first failed under the self-test ratchet.
 . "$ROOT_DIR/scripts/resolve_stage2.sh"
-STAGE2="$(resolve_stage2 host-remove-parity "${HOST_REMOVE_PARITY_STAGE2:-}")"
+# VIBE_STAGE2_WASM is the channel the compiler-gate matrix job sets for the
+# whole lane, and the other companions that need a compiler read it (the job's
+# own comment names check_compile_only_lanes_test.sh and
+# check_freeze_surface_test.sh). Honouring it matters here rather than being
+# tidy: in CI the stage2 lives at _build/_ci_shard_gen/, which resolve_stage2
+# does not look in, so without this the gate fell back to the committed SEED --
+# a compiler with no Fs::remove_tree at all.
+STAGE2="$(resolve_stage2 host-remove-parity "${HOST_REMOVE_PARITY_STAGE2:-${VIBE_STAGE2_WASM:-}}")"
 if [ ! -f "$STAGE2" ]; then
   echo "host-remove-parity: FAIL: no stage2. Pass HOST_REMOVE_PARITY_STAGE2=<stage2.wasm>." >&2
   exit 1
