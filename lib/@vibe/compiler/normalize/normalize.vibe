@@ -644,22 +644,126 @@ fn fold_expr(expr: Expr) -> Expr {
 /// most-recent-first local resolution read a DEAD shadowing slot's value for
 /// a later same-name reference — silently wrong, no diagnostic. With every
 /// shadowing binding renamed, that stale entry can never capture a live name.
-fn fresh_shadow_name(counter: Array[Int], name: String) -> String {
-  let n = Array::get(counter, 0)
-  Array::set(counter, 0, n + 1)
-  String::concat(String::concat("__shadow_", __to_string(n)), String::concat("_", name))
-}
-
 struct UqEnv {
   names: Array[String];
-  values: Array[String]
+  values: Array[String];
+  source: Expr;
+  reserved: Array[String];
+  mut reserved_ready: Bool
 }
 
-fn uq_env_new() -> UqEnv {
+fn uq_env_new(source: Expr) -> UqEnv {
   UqEnv::{
     names: array_empty(),
-    values: array_empty()
+    values: array_empty(),
+    source: source,
+    reserved: array_empty(),
+    reserved_ready: false
   }
+}
+
+fn uq_reserve_name(name: String, out: Array[String]) -> Unit {
+  if String::starts_with(name, "__shadow_") {
+    let n = String::length(name)
+    let last = String::char_code_at(name, n - 1)
+    Array::push(out, if last == '~' || last == '?' {
+      name[0: n - 1]
+    } else {
+      name
+    })
+  } else {
+    ()
+  }
+}
+
+fn uq_reserve_patterns(arms: Array[(Pat, Expr)], out: Array[String]) -> Unit {
+  let mut i = 0
+  while i < Array::length(arms) {
+    let (pat, _) = Array::get(arms, i)
+    uq_pat_names(pat, out)
+    i = i + 1
+  }
+}
+
+/// Reserve source spellings before choosing the first generated name. Include
+/// future/unused binders and free references: avoiding only names already seen
+/// still lets a fresh local capture a later declaration or a global reference.
+fn uq_reserve_source(expr: Expr, out: Array[String]) -> Unit {
+  match expr {
+    EIdent(n, _) => uq_reserve_name(n, out),
+    ELet(n, _, _, _) => uq_reserve_name(n, out),
+    ELetMut(n, _, _, _) => uq_reserve_name(n, out),
+    ELetRec(n, _, _) => uq_reserve_name(n, out),
+    EAssign(n, _, _) => uq_reserve_name(n, out),
+    EAssignOp(n, _, _, _) => uq_reserve_name(n, out),
+    EFn(_, _, params, _, _, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (n, _) = Array::get(params, i)
+        uq_reserve_name(n, out)
+        i = i + 1
+      }
+    },
+    ELoop(params, _) => {
+      let mut i = 0
+      while i < Array::length(params) {
+        let (n, _) = Array::get(params, i)
+        uq_reserve_name(n, out)
+        i = i + 1
+      }
+    },
+    EForIn(n, idx, _, _) => {
+      uq_reserve_name(n, out)
+      match idx {
+        Some(n) => uq_reserve_name(n, out),
+        None => ()
+      }
+    },
+    EMatch(_, arms) => uq_reserve_patterns(arms, out),
+    EHandle(_, arms) => uq_reserve_patterns(arms, out),
+    _ => ()
+  }
+  let mark = expr_children_push(expr)
+  let end = expr_children_top()
+  let mut i = mark
+  while i < end {
+    uq_reserve_source(expr_child_at(i), out)
+    i = i + 1
+  }
+  expr_children_pop(mark)
+}
+
+fn fresh_shadow_name(counter: Array[Int], name: String, env: UqEnv, seen: Array[String]) -> String {
+  // Most functions need no rename. Scan once, lazily, and retain only the
+  // synthetic-looking names rather than growing another whole-function index.
+  if !env.reserved_ready {
+    uq_reserve_source(env.source, env.reserved)
+    let mut i = 0
+    let mut w = 0
+    while i < Array::length(env.reserved) {
+      let n = Array::get(env.reserved, i)
+      if String::starts_with(n, "__shadow_") {
+        Array::set(env.reserved, w, n)
+        w = w + 1
+      } else {
+        ()
+      }
+      i = i + 1
+    }
+    Array::truncate(env.reserved, w)
+    env.reserved_ready = true
+  } else {
+    ()
+  }
+  let mut n = Array::get(counter, 0)
+  let mut fresh = String::concat(String::concat("__shadow_", __to_string(n)), String::concat("_", name))
+  while uq_seen_contains(env.reserved, fresh) || uq_seen_contains(seen, fresh) {
+    n = n + 1
+    fresh = String::concat(String::concat("__shadow_", __to_string(n)), String::concat("_", name))
+  }
+  Array::set(counter, 0, n + 1)
+  Array::push(seen, fresh)
+  fresh
 }
 
 fn uq_env_restore(env: UqEnv, mark: Int) -> Unit {
@@ -834,7 +938,7 @@ fn uq_bind_name(name: String, env: UqEnv, counter: Array[Int], seen: Array[Strin
     Array::push(env.values, base)
     name
   } else if uq_env_has(env, name) || uq_seen_contains(seen, name) {
-    let fresh = fresh_shadow_name(counter, name)
+    let fresh = fresh_shadow_name(counter, name, env, seen)
     Array::push(env.names, name)
     Array::push(env.values, fresh)
     uq_mark()
@@ -1454,7 +1558,7 @@ fn uniquify_shadowed_bindings(expr: Expr, env: UqEnv, counter: Array[Int], seen:
 }
 
 export fn uniquify_shadowed_bindings_fresh(expr: Expr, counter: Array[Int], seen: Array[String]) -> Expr {
-  uniquify_shadowed_bindings(expr, uq_env_new(), counter, seen)
+  uniquify_shadowed_bindings(expr, uq_env_new(expr), counter, seen)
 }
 
 fn fresh_m_scrut_name(counter: Array[Int]) -> String {
