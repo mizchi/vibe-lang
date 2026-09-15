@@ -14416,16 +14416,30 @@ fn eq_nonstandard_enum_admitted(head: String, args: Array[TypeExpr]) -> Bool {
 /// compiler's CLI closure: the whole-program lane admits none of these, and a
 /// per-module lane admits exactly the ones behind an `opaque` contract
 /// declaration (#2631).
+///
+/// A name the COMPILER owns is deliberately NOT excluded here, and it was for
+/// one merge. `d3e32af` answered `false` for every `compiler_owned_type_arity`
+/// entry, so that `HostStream::equals` would not be minted. #2855 fixed the
+/// same bug the other way, and the two are mutually exclusive: both of its
+/// guards read `eq_name_is_invisible_nominal(n) && eq_name_is_unmintable_builtin(n)`,
+/// and the second is true ONLY for a compiler-owned name. With both merged,
+/// every `eq_trap()` arm was unreachable and the unmintable leaf fell through
+/// to the raw `==` below -- which compares an aggregate by REFERENCE, the
+/// answer the paragraph above calls the defect's shape.
+///
+/// It also cost content comparison for the registry names `lib/` DOES declare.
+/// Measured on `struct W { a: Attempt[Int, String] }` holding two equal
+/// `Granted(7)` values: `true` on `8c966c3` (before either fix) and on #2855's
+/// own compiler, `false` on `12cd9f0` with both merged. `MutMap`, `TaskGroup`,
+/// `TaskHandle`, `Sender` and `Receiver` are the same shape -- each is in the
+/// arity registry AND declared in source, so each has a mintable comparator
+/// that this exclusion threw away.
+///
+/// So "can anything mint `<n>::equals`?" stays in
+/// `eq_name_is_unmintable_builtin`, which asks it precisely: the registry MINUS
+/// the names `lib/` declares, with `dtd_eq_type_owners` on top.
 fn eq_name_is_invisible_nominal(n: String) -> Bool {
-  // Compiler-owned opaques (`HostStream`, `Task`, `MutBytes`, ...) are not
-  // declared structs in some other module. Treating them as invisible
-  // nominals minted `HostStream::equals`, which does not exist -- measured
-  // after #2592 wired named-hoststreams into wasi-p3-gate. They fall through
-  // to raw `==` (identity), the same as any other unmeasured head.
-  match compiler_owned_type_arity(n) {
-    Some(_) => false,
-    None => !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
-  }
+  !is_scalar_type_name(n) && !str_array_contains(dtd_type_param_names, n) && !String::starts_with(n, scope_formal_mark_prefix) && n != "?EqUnknown"
 }
 
 /// #2851: is a comparator reference for `n` one NOTHING can ever mint?
@@ -14461,6 +14475,23 @@ fn eq_name_is_unmintable_builtin(n: String) -> Bool {
       None => false
     }
   }
+}
+
+/// #2851: the exact condition the two comparator-GENERATING arms use to decide
+/// that `<n>::equals` must not be emitted at all.
+///
+/// Named once, and exported, because the two predicates it ANDs were made
+/// mutually exclusive by accident: two fixes for #2851 landed within the hour,
+/// one narrowing `eq_name_is_invisible_nominal` and one adding
+/// `eq_name_is_unmintable_builtin`, and the conjunction silently became `false`
+/// for every name. Both `eq_trap()` arms went dead and nothing failed, because
+/// every test that covered them asked only whether the program COMPILES -- and
+/// falling through to raw `==` compiles fine. `registry_name_struct_eq_test`
+/// asserts this conjunction directly, which is the property; a proxy for it
+/// (that a call site exists, that a name is on a list) is what failed to catch
+/// the collision.
+export fn eq_name_needs_unmintable_trap(n: String) -> Bool {
+  eq_name_is_invisible_nominal(n) && eq_name_is_unmintable_builtin(n)
 }
 
 /// #2634: the synthesis REQUESTS a run made -- the container comparators and
@@ -15335,7 +15366,7 @@ fn eq_for_typed(fty0: TypeExpr, lhs: Expr, rhs: Expr, known_types: Array[String]
       // `Unit` need no marker: their words are 0/1-sized, and a bit-different
       // pair can only be `false` vs `true`, which the fallback keeps unequal.
       EBinOp("==", EBinOp("+", lhs, EInt(0), -1), EBinOp("+", rhs, EInt(0), -1), -1)
-    } else if eq_name_is_invisible_nominal(n) && eq_name_is_unmintable_builtin(n) {
+    } else if eq_name_needs_unmintable_trap(n) {
       // #2851: the arm below emits `<n>::equals` as a reference the LINK
       // resolves against the module that DECLARES `n`. That is sound for a
       // declared struct or enum this statement list cannot see -- some module
@@ -15933,7 +15964,7 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
     // not the other and the two sets looked disjoint. A measurement that
     // covers one arm of a dispatch reports the arm it does not cover as
     // absence.
-    if eq_name_is_invisible_nominal(n) && !eq_name_is_unmintable_builtin(n) && !str_array_contains(dtd_eq_invisible_nominals, String::concat(n, "[]")) {
+    if eq_name_is_invisible_nominal(n) && !eq_name_needs_unmintable_trap(n) && !str_array_contains(dtd_eq_invisible_nominals, String::concat(n, "[]")) {
       Array::push(dtd_eq_invisible_nominals, String::concat(n, "[]"))
     } else {
       ()
@@ -15968,7 +15999,7 @@ fn eq_for_typed_declared_app(fty: TypeExpr, n: String, args: Array[TypeExpr], lh
     // formal has no declaration to be invisible TO, so it must not take this
     // arm; recording and emitting have to agree about that or the reference is
     // minted for something the link cannot build either.
-    if eq_name_is_invisible_nominal(n) && eq_name_is_unmintable_builtin(n) {
+    if eq_name_needs_unmintable_trap(n) {
       // #2851, the `TyApp` twin. The paragraph above records that a marked
       // FORMAL head applied to arguments emitted `__Vfp_F::equals__N3_Int` --
       // "a name nothing binds, which reached codegen as an internal compiler
