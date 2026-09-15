@@ -183,9 +183,19 @@ representation — measured `272`, the tagged pointer, for a struct. That is the
 pointer decimal the #1445 refusal exists to prevent; its guard requires a
 DECLARED struct and deliberately excludes a formal (#2141, so an erased formal
 does not produce a false "missing Show"), and the two guards' gap is where this
-sat. A TOP-LEVEL generic never reaches it: specialization gives the interpolation
-a concrete type, so `fn show_any[T](a: T) { "\{a}" }` prints `7` at `Int` and is
-refused by name at a renderless struct, both unchanged. **The cost, accepted: a
+sat. A TOP-LEVEL generic never reaches it, and this paragraph used to say that
+was because "specialization gives the interpolation a concrete type". **There is
+no specialization** — `codegen/expr/compile_call.vibe` states there is no
+monomorphization pass, and `monoify.vibe` is dead code. What reaches the concrete
+type is #2468's call-site rewrite of a show SHIM: `fn show_any[T](a: T) { "\{a}" }`
+has a body that is exactly `__to_string(a)`, so the CALL SITE is rewritten to the
+direct spelling, and it prints `7` at `Int` and is refused by name at a renderless
+struct, both unchanged. **One statement more and the body is not a shim**, nothing
+rewrites the call site, and the same top-level generic prints the tagged pointer —
+measured on `26e9d8b`, `v=232` for a `Pt` that HAS an impl. That is **#2840**, a
+live P0, and `lib/@vibe/core/set.vibe`'s `set_value_to_string[T]` is an instance of
+it in shipped library code: `StringSet::add_by` keys a struct by its pointer, so
+`contains_by` answers `true` for the same object and `false` for an equal one. **The cost, accepted: a
 nested binder applied only at a scalar rendered correctly and is now refused**
 — it was right by accident of the instantiation, since one lowering serves
 `inner(42)` and `inner(Qt::{ .. })`, and telling them apart needs the lambda
