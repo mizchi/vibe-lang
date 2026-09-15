@@ -1904,18 +1904,48 @@ The counters say where the work moved. Warm, unchanged sources, same closure:
 
 So the artifact does exactly what it was built to do — it serves the merge
 lane's ASTs, and those 420 re-parses disappear — and the lane is still nearly
-twice as slow. Decoding and retaining complete artifacts (parsed AST plus
-`CheckedProgram` plus lowering offsets) costs more than the parse it removes:
-the warm heap difference spread over the 417 reused modules is about 2.8 MB
-each, which is the whole checked module held live rather than a summary of
-it. That is a statement about the artifact's size
-and lifetime, not about whether reuse is correct; the three modules `on`
-rechecks on an unchanged tree are a separate open question.
+twice as slow. A CPU profile of both warm compiles (named stage2, isolated
+caches, `lib/@vibe/cli/entry.vibe`) says why, by self time:
 
-Promotion therefore waits on a cheaper transport, not on more evidence:
-the per-module pipeline (#2507) and the prelude work (#2510) both want the
-artifact to be consumed by one unit at a time rather than held for the whole
-closure, which is the shape that would make the warm row cheap.
+| bucket | `off` | `on` | delta |
+|---|---:|---:|---:|
+| parser / lexer | 652 ms | 519 ms | **−133 ms** |
+| artifact codec (`ast_binary_*`, checksum, decode) | 0 ms | 2816 ms | +2816 ms |
+| `Bytes` runtime (push / append / blit) | 297 ms | 1880 ms | +1583 ms |
+| host I/O (read, UTF-8 decode) | 321 ms | 968 ms | +647 ms |
+| total profile | 9631 ms | 17543 ms | +7911 ms |
+
+**The 420 parses it removes are worth 133 ms, and the transport that replaces
+them costs about 60 times that.** The rest of the delta is the same codec seen
+through the generic runtime rows — `__rt_string_join` +1160 ms and
+`__rt_arr_push` +811 ms are the decoder rebuilding strings and arrays. The
+single largest row in the whole `on` profile is `module_artifact_checksum` at
+1416 ms (8.1 %): `decode_checked_module_artifact` verifies it over the
+artifact body on every load, a byte at a time, with two i64 modulos per byte,
+across 179 MB of artifacts.
+
+Heap splits the same way, and cold-versus-warm separates the two directions.
+A cold compile loads no artifact, so `on` cold − `off` cold is the **encode
+and store** side at +805 MB; a warm one loads 417, so `on` warm − `off` warm
+is the **read and decode** side at +1185 MB. On disk the same closure's cache
+is 8.9 MB with the cache off and **179 MB** with it on, a factor of 20.
+
+This paragraph previously blamed the retention of `parsed_stmts`
+(`commit_checked_module_artifact` keeps each module's AST so
+`parse_program_with_path` can serve the merge from it) for the warm heap. The
+profile corrects that: `parse_program_located_shared` memoizes by
+`(path, source)` as well, so the conservative lane **also** holds a whole
+closure of ASTs. Retention is not what separates the lanes; the codec at both
+ends is. The three modules `on` rechecks on an unchanged tree remain a
+separate open question.
+
+That changes what promotion waits on. Consuming the artifact one unit at a
+time (#2507, #2510) bounds the live set, but a per-unit consumer still writes,
+checksums and decodes the same 179 MB, so it does not by itself recover a cost
+that is paid per byte. The measurement points somewhere more specific: the AST
+the artifact carries buys 133 ms of parsing, and an artifact holding only the
+checker's own result would be smaller at every stage. Whether that recovers
+the bulk is the next experiment, not a conclusion.
 
 ### Host filesystem ingestion telemetry
 

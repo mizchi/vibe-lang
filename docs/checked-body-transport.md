@@ -143,13 +143,20 @@ cache is **+87 % wall and +61 % heap warm**, measured by
 `scripts/checked_module_cache_cost.mjs` and recorded with its counter
 breakdown in [incremental-build.md](incremental-build.md). It removes every
 merge-lane parse — `non_walk_parse_operations` goes from 420 to 0 — and still
-loses. That is the design working as written rather than a defect to find:
-`commit_checked_module_artifact` retains each module's `parsed_stmts` so
-`parse_program_with_path` can serve the merge from them, so a whole closure's
-ASTs plus their `CheckedProgram`s are live at once, where the conservative
-lane holds a TypeEnv. The cache therefore stays default-off on evidence rather
-than on caution, and what it waits on is a transport consumed one unit at a
-time (#2507, #2510) — not more parity.
+loses, because profiled by self time those parses are worth **133 ms** while
+the transport that replaces them costs about sixty times that. The cost is the
+codec at both ends, not retention: `module_artifact_checksum` alone is 1416 ms
+(8.1 % of the warm `on` profile), verified a byte at a time with two i64
+modulos per byte over 179 MB of artifacts, and the heap splits +805 MB on the
+encode side (cold, which loads nothing) against +1185 MB on the decode side
+(warm). The same closure's persistent cache is 8.9 MB off and 179 MB on.
+
+So the cache stays default-off on evidence rather than on caution. Note what
+that evidence does **not** say: consuming the artifact one unit at a time
+(#2507, #2510) bounds the live set but still writes, checksums and decodes the
+same bytes, so it does not by itself recover a cost paid per byte. What the
+numbers point at is the artifact's contents — the AST it carries is what buys
+those 133 ms.
 
 When this cache is enabled, `VIBE_INCREMENTAL_TELEMETRY_OUT` uses schema 5 and
 reports `modules_reused_checked_module_artifact` separately from conservative
