@@ -7,7 +7,7 @@ import @vibe/compiler/codegen/common_analysis {
 }
 
 import @vibe/compiler/codegen/common_base {
-  emit_i32_mul
+  emit_i32_gt_u, emit_i32_mul
 }
 
 import @vibe/compiler/codegen/wasm_emit {
@@ -25,12 +25,45 @@ import @vibe/compiler/codegen/wasm_emit {
   emit_i64_const,
   emit_i64_gt_s,
   emit_i64_lt_s,
+  emit_i64_mul,
   emit_i64_or,
   emit_i64_shr_s,
   emit_if_void,
   emit_local_get,
   emit_local_set,
   emit_local_tee
+}
+
+/// Reject an unrepresentable doubled buffer before changing array or heap state.
+/// The shared limit includes space for the RC header and allocator alignment.
+export fn emit_array_double_capacity(b: Bytes, count_local: Int, capacity_local: Int) -> Unit {
+  emit_local_get(b, count_local)
+  emit_i32_const(b, 268435454)
+  emit_i32_gt_u(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
+  emit_local_get(b, count_local)
+  emit_i32_const(b, 2)
+  emit_i32_mul(b)
+  emit_local_set(b, capacity_local)
+}
+
+/// A headerless array buffer must fit above the current wasm32 heap frontier.
+/// RC allocations use the checked reusable allocator instead of this bump check.
+export fn emit_array_heap_growth_check(b: Bytes, capacity_local: Int) -> Unit {
+  emit_global_get(b, 0)
+  emit_i64_extend_i32_u(b)
+  emit_local_get(b, capacity_local)
+  emit_i64_extend_i32_u(b)
+  emit_i64_const(b, 8)
+  emit_i64_mul(b)
+  emit_i64_add(b)
+  emit_i64_const(b, 4294967295)
+  emit_i64_gt_s(b)
+  emit_if_void(b)
+  bytebuf_push(b, 0)
+  emit_end(b)
 }
 
 /// The shared wasm32 limit leaves room for the RC header and alignment.

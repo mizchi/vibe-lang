@@ -258,7 +258,7 @@ import ./backend_expr.vibe {
 }
 
 import @vibe/compiler/codegen/wasi {
-  stmts_use_builtin
+  collect_used_builtin_names
 }
 
 //# Functions
@@ -1720,6 +1720,9 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   if entry_user_idx < 0 {
     throw(String::concat("entry function not found: ", entry_name))
   }
+  // Share one scope-aware scan across conditional bodies and host imports.
+  let used_builtins = collect_used_builtin_names(stmts, fn_names_list)
+  let need_array_capacity = Map::has_key(used_builtins, "Array::with_capacity")
   let str_strs = collect_strings_stmts(stmts)
   // #538: StringBuilder::freeze joins with "" and println appends "\n"; both
   // must exist in the string table even when the program has no such literal.
@@ -1729,9 +1732,11 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   if !array_contains_str(str_strs, "\n") {
     Array::push(str_strs, "\n")
   }
-  // Bytes use linear storage on this backend as well.
+  // Keep the optional allocator's diagnostic out of unrelated modules too.
   let array_capacity_error_slot = Array::length(str_strs)
-  Array::push(str_strs, array_capacity_error_message())
+  if need_array_capacity {
+    Array::push(str_strs, array_capacity_error_message())
+  }
   let capacity_error_slot = Array::length(str_strs)
   Array::push(str_strs, bytes_capacity_error_message())
   let num_strings = Array::length(str_strs)
@@ -1769,7 +1774,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // Unconditional when the module has a region: linear gates on `!enable_rc`
   // because an RC block would reach a free list that the bulk release
   // invalidates, and this lane has no RC lane to guard against.
-  let need_region_arena = stmts_use_builtin(stmts, fn_names_list, "__region_run")
+  let need_region_arena = Map::has_key(used_builtins, "__region_run")
   let region_exn_tag = if stmts_contain_exceptions(stmts) {
     region_exn_tag_gc()
   } else {
@@ -1814,7 +1819,12 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // not fail at codegen: the module fails wasm VALIDATION on a function index
   // past the end. Written as base + arena so appending is one edit, not two.
   // #2344 raised the base 48 -> 51 for Int::popcount / ctz / clz.
-  let gc_unconditional_body_count = 58
+  let gc_unconditional_body_count = 57
+  let capacity_extra = if need_array_capacity {
+    1
+  } else {
+    0
+  }
   // #2405 follow-up: the shared integer renderer, pushed only when the module
   // has a statically-int `__to_string` argument. Conditional for the same
   // reason the arena pair below is: a module that never needs it should not
@@ -1827,9 +1837,9 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
     0
   }
   let num_generated = if need_region_arena {
-    gc_unconditional_body_count + ts_int_extra + 2
+    gc_unconditional_body_count + capacity_extra + ts_int_extra + 2
   } else {
-    gc_unconditional_body_count + ts_int_extra
+    gc_unconditional_body_count + capacity_extra + ts_int_extra
   }
   // #538: host imports (module "vibe", tagged-i64 ABI -- the same raw ABI the
   // linear backend and the node host runner speak). Gated as a GROUP: pure
@@ -1850,7 +1860,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // wrong: the first build that appended imports but left hbo behind produced
   // modules that validated nowhere ("not enough arguments on the stack for
   // call"), because every generated-body index still pointed low.
-  let use_host = stmts_use_builtin(stmts, fn_names_list, "Env::get") || stmts_use_builtin(stmts, fn_names_list, "Env::args_len") || stmts_use_builtin(stmts, fn_names_list, "Env::args_get") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::exists") || stmts_use_builtin(stmts, fn_names_list, "Fs::stat_token") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::publish_immutable_text") || stmts_use_builtin(stmts, fn_names_list, "Fs::write_bytes") || stmts_use_builtin(stmts, fn_names_list, "Fs::read_bytes") || stmts_use_builtin(stmts, fn_names_list, "Profiler::now_us") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove_file") || stmts_use_builtin(stmts, fn_names_list, "Fs::remove_tree") || stmts_use_builtin(stmts, fn_names_list, "Fs::rename") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_dir") || stmts_use_builtin(stmts, fn_names_list, "Fs::is_file") || stmts_use_builtin(stmts, fn_names_list, "Stdout::write_stream") || stmts_use_builtin(stmts, fn_names_list, "Fs::readdir") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_char") || stmts_use_builtin(stmts, fn_names_list, "Stdin::read_stream") || stmts_use_builtin(stmts, fn_names_list, "vibe_process_exit_raw") || stmts_use_builtin(stmts, fn_names_list, "Stderr::write_stream")
+  let use_host = Map::has_key(used_builtins, "Env::get") || Map::has_key(used_builtins, "Env::args_len") || Map::has_key(used_builtins, "Env::args_get") || Map::has_key(used_builtins, "Fs::read_file") || Map::has_key(used_builtins, "Fs::exists") || Map::has_key(used_builtins, "Fs::stat_token") || Map::has_key(used_builtins, "Fs::write_file") || Map::has_key(used_builtins, "Fs::publish_immutable_text") || Map::has_key(used_builtins, "Fs::write_bytes") || Map::has_key(used_builtins, "Fs::read_bytes") || Map::has_key(used_builtins, "Profiler::now_us") || Map::has_key(used_builtins, "Fs::remove") || Map::has_key(used_builtins, "Fs::remove_file") || Map::has_key(used_builtins, "Fs::remove_tree") || Map::has_key(used_builtins, "Fs::rename") || Map::has_key(used_builtins, "Fs::is_dir") || Map::has_key(used_builtins, "Fs::is_file") || Map::has_key(used_builtins, "Stdout::write_stream") || Map::has_key(used_builtins, "Fs::readdir") || Map::has_key(used_builtins, "Stdin::read_char") || Map::has_key(used_builtins, "Stdin::read_stream") || Map::has_key(used_builtins, "vibe_process_exit_raw") || Map::has_key(used_builtins, "Stderr::write_stream")
   let hbo = if use_host {
     23
   } else {
@@ -1868,11 +1878,10 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   // for call", which is the same symptom the hbo comment above describes.
   // Derived from num_generated rather than written as literals so appending
   // another body cannot silently point these at someone else's code.
-  // Pushed AFTER the 57 unconditional bodies and BEFORE the arena pair, so its
-  // ordinal is fixed by the unconditional count alone and the arena indices
-  // below stay derived from `num_generated` (which now includes it).
+  // The optional capacity allocator precedes the integer renderer. The arena
+  // pair stays last, with its indices derived from the total generated count.
   let to_string_int_idx = if need_to_string_int {
-    hbo + gc_unconditional_body_count + 1
+    hbo + gc_unconditional_body_count + capacity_extra + 1
   } else {
     -1
   }
@@ -1947,7 +1956,7 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
         "String::trim" => 37,
         "Bytes::new" => 18,
         "Bytes::with_capacity" => 57,
-        "Array::with_capacity" => 58,
+        "Array::with_capacity" => gc_unconditional_body_count + 1,
         "Bytes::length" => 7,
         "Bytes::get" => 19,
         "Bytes::set" => 20,
@@ -2367,7 +2376,9 @@ fn compile_wasi_module_gc_impl(stmts: Array[Stmt], entry_name: String, generated
   push_gc_builtin(gen_bytes_last_index_of_byte_body(false), 1, 3, 4)
   push_gc_builtin(gen_bytes_compare_body(false), 2, 4, 4)
   push_gc_builtin(gen_bytes_with_capacity_body(false, hbo + 2, (Array::get(str_offsets, capacity_error_slot)<<32)|Array::get(str_lengths, capacity_error_slot)), 2, 0, 3)
-  push_gc_builtin(gen_arr_with_capacity_body(false, -1, hbo + 2, (Array::get(str_offsets, array_capacity_error_slot)<<32)|Array::get(str_lengths, array_capacity_error_slot)), 3, 0, 3)
+  if need_array_capacity {
+    push_gc_builtin(gen_arr_with_capacity_body(false, -1, hbo + 2, (Array::get(str_offsets, array_capacity_error_slot)<<32)|Array::get(str_lengths, array_capacity_error_slot)), 3, 0, 3)
+  }
   // #2405 follow-up: immediately after the unconditional bodies and
   // before the arena pair -- `to_string_int_idx` above encodes exactly that.
   // Same shape as the runtime-dispatching `__to_string` body (one i64 param,

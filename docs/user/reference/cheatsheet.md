@@ -218,8 +218,9 @@ fn reserved_values() -> Array[Int] {
 
 The capacity expression is evaluated once and must be an `Int`. Negative
 values and values above 536,870,908 trap before narrowing to wasm32; an
-allocation must also fit available linear memory. Each array has one element
-type, inferred from its uses or an annotation, just like `[]`.
+allocation must also fit available linear memory. Growth that would overflow
+the buffer size or heap address traps before changing the array. Each array has
+one element type, inferred from its uses or an annotation, just like `[]`.
 
 If a trait implementation requires another trait on the elements
 (`impl [E: Element] Measured for Array[E]`), annotate the reservation explicitly,

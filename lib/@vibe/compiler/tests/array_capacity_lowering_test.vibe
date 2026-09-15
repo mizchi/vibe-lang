@@ -3,7 +3,57 @@ import ./codegen_test_support.vibe {
 }
 
 import @vibex/wasm_parser {
-  find_section
+  find_section, module_code
+}
+
+test "GC emits the capacity allocator only when used" {
+  let plain = compile_wasi_gc("export fn main() -> Int { 0 }", "main")
+  let reserved = compile_wasi_gc("export fn main() -> Int { Array::length(Array::with_capacity(2)) }", "main")
+  assert(Array::length(module_code(reserved)) == Array::length(module_code(plain)) + 1)
+  // The emitted allocator and diagnostic should not burden unrelated code.
+  assert(Bytes::length(reserved) > Bytes::length(plain) + 200)
+}
+
+test "GC retains capacity calls through aliases and optional runtime bodies" {
+  let sources = [
+    "export fn main() -> Int { let reserve = Array::with_capacity; let xs: Array[Int] = reserve(4); Array::push(xs, 7); Array::get(xs, 0) }",
+    "fn Array::with_capacity(n: Int) -> Int { n + 3 } export fn main() -> Int { Array::with_capacity(4) }",
+    "export fn main() -> Int allows Stdout { let xs: Array[Int] = Array::with_capacity(2); let n = Array::length(xs) + 1234567; println(n); String::length(\"\\{n}\") }",
+    "export fn main() -> Int { region r { let ys = MutList::empty(r); MutList::push(ys, 6); let xs: Array[Int] = Array::with_capacity(2); Array::push(xs, 1); MutList::get(ys, 0) + Array::get(xs, 0) } }"
+  ]
+  let mut i = 0
+  for source in sources {
+    let path = "/tmp/_array_capacity_gc_optional_" + Int::to_string(i) + ".wasm"
+    Fs::write_bytes(path, compile_wasi_gc(source, "main"))
+    let output = sh_lines("bash scripts/run_wasm_vibe_host_runner.sh --invoke main " + path + " 0 2>/dev/null")
+    assert(Array::get(output, Array::length(output) - 1) == "7")
+    i = i + 1
+  }
+}
+
+test "array growth rejects slot and frontier overflow before mutation" {
+  let prefix = "/tmp/_array_capacity_growth_"
+  for op in ["push", "push_all"] {
+    let body = if op == "push" {
+      "Array::push(xs, 7)"
+    } else {
+      "Array::push_all(xs, ys)"
+    }
+    let source = "export fn main() -> Int allows Stdout { let ys: Array[Int] = [11]; let xs: Array[Int] = Array::with_capacity(2); Array::push(xs, 7); println(\"ready\"); " + body + "; Array::length(xs) }"
+    let modules = [
+      compile_wasi(source, "main"),
+      compile_wasi_rc(source, "main"),
+      compile_wasi_rc_shadow(source, "main"),
+      compile_wasi_gc(source, "main")
+    ]
+    let mut mode = 0
+    for wasm in modules {
+      Fs::write_bytes(prefix + op + "_" + Int::to_string(mode) + ".wasm", wasm)
+      mode = mode + 1
+    }
+  }
+  let output = sh_lines("node --experimental-wasm-exnref lib/@vibe/compiler/tests/array_capacity_growth_test.mjs " + prefix)
+  assert(String::join(output, "") == "ok")
 }
 
 test "reserved arrays dispatch a generic Array trait witness" {
