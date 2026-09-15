@@ -48,7 +48,7 @@ cat > "$WORK/q.vibe" <<'VIBE'
 import ./dep.vibe { dep_twice }
 
 fn first_name(xs: Array[String]) -> String {
-  if Array::length(xs) > 0 { Array::get(xs, 0) } else { "" }
+  Array::get(xs, 0)
 }
 
 fn helper(n: Int) -> Int {
@@ -61,7 +61,7 @@ fn helper(n: Int) -> Int {
 fn main() -> Unit {
   let v = helper(2)
   let _ = v + v
-  let _ = first_name(["a"])
+  let _ = Array::length([first_name(["a"])])
 }
 VIBE
 

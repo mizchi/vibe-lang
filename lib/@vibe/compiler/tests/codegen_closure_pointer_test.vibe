@@ -124,10 +124,13 @@ test "RC allocation aligns a frontier left at any byte offset" {
 }
 
 test "RC allocation refuses alignment and end-address overflow" {
+  // Constructing the module validates it before the invocation trap is caught.
+  // Unit-test workers already have Node; wasm-tools is not installed there.
+  let check = "const fs=require('node:fs'); const module=new WebAssembly.Module(fs.readFileSync(process.argv[1])); const instance=new WebAssembly.Instance(module); let trapped=false; try { instance.exports.allocate(24n); } catch (e) { if (!(e instanceof WebAssembly.RuntimeError) || !e.message.includes('unreachable')) throw e; trapped=true; } if (!trapped) throw new Error('allocation did not trap'); console.log('trapped');"
   for frontier in [-1, -8] {
     let path = "/tmp/_rc_allocator_overflow_\{frontier}.wasm"
     Fs::write_bytes(path, rc_allocator_probe(frontier))
-    let output = sh_lines("wasm-tools validate \{path} && (wasmtime run --invoke allocate \{path} 24 >/dev/null 2>&1 && echo unexpected || echo trapped)")
+    let output = sh_lines("node -e \"\{check}\" \{path}")
     assert(Array::length(output) == 1)
     assert(String::equals(Array::get(output, 0), "trapped"))
   }
