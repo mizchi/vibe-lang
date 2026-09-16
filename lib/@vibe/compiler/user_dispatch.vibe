@@ -17,8 +17,11 @@
 //# index.vpkg records the first instance). lib/@vibe/cli/dispatch.vibe reaches
 //# the dispatch entry points through the facade instead.
 
+import @vibe/compiler/cache {
+  ingestion_fingerprint_telemetry_json, set_ingestion_fingerprint_telemetry_enabled
+}
+
 import @vibe/compiler/entry/compiler/file_compile {
-  check_file_fs_mode,
   compile_file_fs_mode,
   compile_file_fs_mode_break,
   compile_file_fs_mode_gc,
@@ -43,7 +46,9 @@ import @vibe/compiler/loader {
   find_deps_missing,
   find_missing_vpkg_dirs,
   ingest_source_text_fs,
+  ingestion_pipeline_telemetry_json,
   load_or_parse_module_header_fs,
+  set_ingestion_pipeline_telemetry_enabled,
   write_generated_hash_fs
 }
 
@@ -60,8 +65,13 @@ import @vibe/compiler/runtime {
   escape_spans,
   escape_spans_strict,
   grep_scan_fs_report,
+  incremental_invalidation_trace_json,
+  incremental_typecheck_telemetry_json,
   rc_classify_source,
   rc_plan_source,
+  set_experimental_typing_dependency_env_reuse_enabled,
+  set_incremental_interface_trace_enabled,
+  set_incremental_typecheck_telemetry_enabled,
   symbol_spans_fs_report,
   symbol_spans_with_docs,
   type_at_source
@@ -72,6 +82,10 @@ import @vibe/compiler/syntax {
 }
 
 import ./cli_support.vibe {
+  check_builtin_shadowing_warnings_from_source_groups,
+  check_deprecated_warnings_from_source_groups,
+  check_linked_file_source_groups,
+  check_redundant_import_warnings_from_source_groups,
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
   command_component_compile_mode,
@@ -729,12 +743,15 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
         src = arg
         ()
       } else {
-        throw("usage: vibe check [--jobs N] [--single-file] [--json] <file.vibe>")
+        // Further positionals are more files to check (`vibe check a.vibe
+        // b.vibe`, docs/user/reference/cli-commands.md); `user_check_paths`
+        // collects them all, this tuple keeps naming the first.
+        ()
       }
       i = i + 1
     }
     if src == "" {
-      throw("usage: vibe check [--jobs N] [--single-file] [--json] <file.vibe>")
+      throw("usage: vibe check [--jobs N] [--single-file] [--json] <file.vibe>...")
     } else if json && !single && !missing_vpkg && !deps_missing {
       throw("check --json needs --single-file today: the import-resolving lane has no per-diagnostic ranges to emit (#1567)")
     } else {
@@ -818,20 +835,141 @@ fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env +
   }
 }
 
-/// The import-resolving check. ADR-0068 applies here as it does to every
-/// artifact path: `check_file_fs_mode` walks the closure, so the closure gate is
-/// asked after it, and a program the build paths refuse for an unstable import
-/// is reported by `vibe check` too rather than answered clean (Codex review of
-/// #2858).
-fn user_check_linked(src: String) -> Int with Exception + Fs + Env {
+/// Every positional argument of `vibe check` is a file to check; the flags
+/// that take a value are skipped with it. `parse_user_check_args` validates
+/// the flags and names the first file, this names them all.
+fn user_check_paths(args: Array[String]) -> Array[String] {
+  let paths: Array[String] = []
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if arg == "--jobs" || arg == "--profile" || arg == "--profile-tsv" || arg == "--profile-callstack" {
+      i = i + 2
+    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+      i = i + 1
+    } else {
+      Array::push(paths, arg)
+      i = i + 1
+    }
+  }
+  paths
+}
+
+fn has_control_char(value: String) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < String::length(value) {
+    let c = String::char_code_at(value, i)
+    if c < 32 || c == 127 {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn remove_stale_sidecar(path: String) -> Unit with Fs {
+  if path != "" && Fs::exists(path) {
+    Fs::remove(path)
+  } else {
+    ()
+  }
+}
+
+fn write_warning_rows(rows: Array[String]) -> Unit with Stderr {
+  if Array::length(rows) > 0 {
+    Stderr::write_stream(line_terminated(String::join(rows, "\n")))
+  } else {
+    ()
+  }
+}
+
+/// The import-resolving check, with the policy and observation the adapter's
+/// former check-only branch carried (Codex review of #2858):
+///
+/// - typing-dependency-env reuse is the production default for this lane
+///   (`VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE=1` opts out; an invalidation
+///   trace forces it off so the trace stays observation-only);
+/// - the opt-in sidecars -- `VIBE_INCREMENTAL_TELEMETRY_OUT`,
+///   `VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT` (+ nonce),
+///   `VIBE_INGESTION_TELEMETRY_OUT` (+ nonce) and
+///   `VIBE_INGESTION_PIPELINE_TELEMETRY_OUT` (+ nonce) -- are removed before
+///   the check and published only after it succeeds, so a stale file never
+///   reads as this check's result (`scripts/edit_cycle_kpi.mjs` reads them);
+/// - the deprecated-use, redundant-import and builtin-shadowing warnings are
+///   collected from the checked source groups and written to stderr, leaving
+///   stdout and the exit code to the errors.
+///
+/// ADR-0068 applies as on every artifact path: the closure gate is asked after
+/// the walk, so a program the build refuses for an unstable import is reported
+/// by `vibe check` too rather than answered clean.
+fn user_check_linked(src: String) -> Int with Exception + Fs + Env + Stderr {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
+    let disable_reuse = Env::get("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE")
+    let telemetry_out = Env::get("VIBE_INCREMENTAL_TELEMETRY_OUT")
+    let trace_out = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT")
+    let trace_nonce = Env::get("VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+    let ingestion_out = Env::get("VIBE_INGESTION_TELEMETRY_OUT")
+    let ingestion_nonce = Env::get("VIBE_INGESTION_TELEMETRY_NONCE")
+    let pipeline_out = Env::get("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT")
+    let pipeline_nonce = Env::get("VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
+    if disable_reuse != "" && disable_reuse != "1" {
+      throw("VIBE_DISABLE_TYPING_DEPENDENCY_ENV_REUSE must be exactly 1 when set")
+    } else {
+      ()
+    }
+    set_experimental_typing_dependency_env_reuse_enabled(disable_reuse != "1" && trace_out == "")
+    remove_stale_sidecar(telemetry_out)
+    remove_stale_sidecar(trace_out)
+    remove_stale_sidecar(ingestion_out)
+    remove_stale_sidecar(pipeline_out)
+    if trace_out != "" && trace_nonce == "" {
+      throw("VIBE_INCREMENTAL_INVALIDATION_TRACE_OUT requires VIBE_INCREMENTAL_INVALIDATION_TRACE_NONCE")
+    } else if ingestion_out != "" && (ingestion_nonce == "" || has_control_char(ingestion_nonce)) {
+      throw("VIBE_INGESTION_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_TELEMETRY_NONCE")
+    } else if pipeline_out != "" && (pipeline_nonce == "" || has_control_char(pipeline_nonce)) {
+      throw("VIBE_INGESTION_PIPELINE_TELEMETRY_OUT requires a non-empty control-free VIBE_INGESTION_PIPELINE_TELEMETRY_NONCE")
+    } else {
+      ()
+    }
+    set_incremental_typecheck_telemetry_enabled(telemetry_out != "" || trace_out != "")
+    set_ingestion_fingerprint_telemetry_enabled(ingestion_out != "")
+    set_ingestion_pipeline_telemetry_enabled(pipeline_out != "")
+    set_incremental_interface_trace_enabled(trace_out != "")
     reject_unstable_entry_surface(src)
     unstable_closure_reset()
-    let code = check_file_fs_mode(src)
+    let groups = check_linked_file_source_groups(src)
+    if telemetry_out != "" {
+      Fs::write_file(telemetry_out, incremental_typecheck_telemetry_json())
+    } else {
+      ()
+    }
+    if trace_out != "" {
+      Fs::write_file(trace_out, incremental_invalidation_trace_json(src, trace_nonce))
+    } else {
+      ()
+    }
+    if ingestion_out != "" {
+      Fs::write_file(ingestion_out, ingestion_fingerprint_telemetry_json(ingestion_nonce))
+    } else {
+      ()
+    }
     reject_unstable_closure_surface()
-    code
+    write_warning_rows(check_deprecated_warnings_from_source_groups(src, groups))
+    write_warning_rows(check_redundant_import_warnings_from_source_groups(src, groups))
+    write_warning_rows(check_builtin_shadowing_warnings_from_source_groups(src, groups))
+    // Published strictly after the check has been answered: a failure above
+    // leaves no pipeline sidecar looking like a successful observation.
+    if pipeline_out != "" {
+      Fs::write_file(pipeline_out, ingestion_pipeline_telemetry_json(pipeline_nonce))
+    } else {
+      ()
+    }
+    0
   }
 }
 
@@ -904,19 +1042,34 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
     let (root, _, _) = parse_user_check_args(args)
     user_check_scan(root, missing_vpkg)
   } else {
-    let (src, single, json) = parse_user_check_args(args)
+    let (_, single, json) = parse_user_check_args(args)
+    let paths = user_check_paths(args)
     let (profile_tsv, profile_callstack) = user_check_profile_paths(args)
-    if !Fs::exists(src) {
-      throw(String::concat("not found: ", src))
-    } else {
-      // `vibe check`'s contract (AGENTS.md, #1567/#1888): the diagnostics are
-      // the REPORT -- one per line on STDOUT, `error: ` framing, exit 1 -- and
-      // empty stdout means clean. The lanes below raise them as an exception
-      // (that is how the checker hands them back); a usage error such as a
-      // missing file stays an exception and reaches stderr through the
-      // dispatcher's handler, which is where the launcher printed it before.
-      let started_us = Profiler::now_us()
-      let code = handle {
+    // Every file must exist before any is checked: a report for the files
+    // that exist would read as a complete answer to a different question.
+    let mut pi = 0
+    while pi < Array::length(paths) {
+      if !Fs::exists(Array::get(paths, pi)) {
+        throw(String::concat("not found: ", Array::get(paths, pi)))
+      } else {
+        ()
+      }
+      pi = pi + 1
+    }
+    // `vibe check`'s contract (AGENTS.md, #1567/#1888): the diagnostics are
+    // the REPORT -- one per line on STDOUT, `error: ` framing, exit 1 -- and
+    // empty stdout means clean. The lanes below raise them as an exception
+    // (that is how the checker hands them back); a usage error such as a
+    // missing file stays an exception and reaches stderr through the
+    // dispatcher's handler, which is where the launcher printed it before.
+    // Several files are checked in turn (`vibe check a.vibe b.vibe`), and
+    // one failing file fails the command.
+    let started_us = Profiler::now_us()
+    let mut code = 0
+    let mut ci = 0
+    while ci < Array::length(paths) {
+      let src = Array::get(paths, ci)
+      let file_code = handle {
         if single {
           user_check_single(src, json)
         } else {
@@ -926,12 +1079,18 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
         print(line_terminated(format_check_report(e)))
         1
       } }
-      // `--profile-tsv` / `--profile-callstack` (Codex review of #2858): the
-      // sidecars are written for a failed check too -- a profile of a check
-      // that found errors is still a profile of that check.
-      write_check_profiles(profile_tsv, profile_callstack, Profiler::now_us() - started_us)
-      code
+      if file_code != 0 {
+        code = file_code
+      } else {
+        ()
+      }
+      ci = ci + 1
     }
+    // `--profile-tsv` / `--profile-callstack` (Codex review of #2858): the
+    // sidecars are written for a failed check too -- a profile of a check
+    // that found errors is still a profile of that check.
+    write_check_profiles(profile_tsv, profile_callstack, Profiler::now_us() - started_us)
+    code
   }
 }
 
