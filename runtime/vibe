@@ -35,25 +35,19 @@ _sha256_file() {
   if sha256sum </dev/null >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
-# The wasm this launcher hands its argv to. It has to be the USER CLI
-# (lib/@vibe/cli/main.vibex -> scripts/build_user_cli_wasm.sh), not the
-# COMPILER (lib/@vibe/compiler/cli_adapter.vibe -> dist/cli/vibe-cli.wasm,
-# stage2.wasm): the compiler reads `<input> <output> <entry>` plus VIBE_*
-# selectors and has no idea what a verb is, so handed one it reads it as a
-# path -- `vibe test x.vibe` became `fs_read_file failed for 'test'`.
-#
-# VIBE_USER_CLI_WASM is checked BEFORE VIBE_CLI_WASM because the two name
-# different things: a caller that sets VIBE_CLI_WASM is choosing a COMPILER
-# (which is what it meant while this launcher did its own parsing), and
-# ~12 scripts plus CI still set it that way.
+# The wasm this launcher hands its argv to. ONE artifact answers both shapes:
+# `cli_adapter.vibe`'s `cli_main` reads argv[0] and routes a VERB to the
+# dispatcher, falling through to the positional `<input> <output> <entry>` plus
+# VIBE_* selectors for everything else. So `VIBE_CLI_WASM=<stage2>` keeps
+# meaning what it has always meant to the ~12 scripts and the CI shards that
+# set it, and there is no second artifact to find.
 pick_cli() {
   local cand
-  [ -n "${VIBE_USER_CLI_WASM:-}" ] && [ -f "$VIBE_USER_CLI_WASM" ] && { printf '%s' "$VIBE_USER_CLI_WASM"; return; }
   [ -n "${VIBE_CLI_WASM:-}" ] && [ -f "$VIBE_CLI_WASM" ] && { printf '%s' "$VIBE_CLI_WASM"; return; }
-  for cand in "$TOOLCHAIN_DIR/lib/vibe-user-cli.wasm" "$TOOLCHAIN_DIR/_build/cli/vibe-user-cli.wasm" "$CLI_CWASM" "$CLI_WASM"; do
+  for cand in "$CLI_CWASM" "$CLI_WASM"; do
     [ -f "$cand" ] && { printf '%s' "$cand"; return; }
   done
-  die "CLI wasm not found: $CLI_WASM (build one with \`bash scripts/build_user_cli_wasm.sh\`, or name it with VIBE_USER_CLI_WASM)"
+  die "compiler wasm not found: $CLI_WASM"
 }
 manifest_field_of() { [ -f "$1" ] && sed -n "s/^  \"$2\": \"\(.*\)\",\{0,1\}\$/\1/p" "$1" | sed -n '1p'; }
 manifest_field() { manifest_field_of "$TOOLCHAIN_DIR/manifest.json" "$1"; }
