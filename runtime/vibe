@@ -199,13 +199,24 @@ _sha256_file() {
 # VIBE_* selectors for everything else. So `VIBE_CLI_WASM=<stage2>` keeps
 # meaning what it has always meant to the ~12 scripts and the CI shards that
 # set it, and there is no second artifact to find.
+#
+# The AOT .cwasm is used only when NOTHING it depends on is newer than it:
+# neither the runner (viberun deserializes the image unsafely, and one built
+# by a different wasmtime is undefined behaviour) nor the portable wasm (a
+# wasm refreshed without re-precompiling leaves the image stale). `! -nt`
+# also accepts an equal-mtime image built right after the wasm. The guard was
+# lost when the verbs moved and a stale image was chosen because it existed
+# (Codex review of #2858); scripts/test_pick_cli_freshness.sh pins it.
 pick_cli() {
-  local cand
   [ -n "${VIBE_CLI_WASM:-}" ] && [ -f "$VIBE_CLI_WASM" ] && { printf '%s' "$VIBE_CLI_WASM"; return; }
-  for cand in "$CLI_CWASM" "$CLI_WASM"; do
-    [ -f "$cand" ] && { printf '%s' "$cand"; return; }
-  done
-  die "compiler wasm not found: $CLI_WASM"
+  if [ -f "$CLI_CWASM" ] && [ ! "$RUNNER" -nt "$CLI_CWASM" ] && \
+     { [ ! -f "$CLI_WASM" ] || [ ! "$CLI_WASM" -nt "$CLI_CWASM" ]; }; then
+    printf '%s' "$CLI_CWASM"
+  elif [ -f "$CLI_WASM" ]; then
+    printf '%s' "$CLI_WASM"
+  else
+    die "compiler wasm not found: $CLI_WASM (run 'vibe self update')"
+  fi
 }
 manifest_field_of() { [ -f "$1" ] && sed -n "s/^  \"$2\": \"\(.*\)\",\{0,1\}\$/\1/p" "$1" | sed -n '1p'; }
 manifest_field() { manifest_field_of "$TOOLCHAIN_DIR/manifest.json" "$1"; }
