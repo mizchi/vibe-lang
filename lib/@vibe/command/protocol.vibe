@@ -1,0 +1,49 @@
+//# @vibe/command — the guest half of viberun's lazy component dispatch.
+//
+// A command component exports `fn vibe_command(args: String) -> String`, is
+// handed argv joined by NUL, and answers with a framed result. Both halves of
+// that wire format live here so a command module never spells them by hand:
+// `runtime/viberun/src/commands.rs` is the reader, and the two constants
+// below are what it reads.
+
+/// The NUL byte viberun joins argv with. NUL cannot occur in a POSIX path or
+/// in a process argument, so the join needs no escaping and the split cannot
+/// mistake a separator for content.
+export fn command_arg_separator() -> String {
+  String::from_byte(0)
+}
+
+/// Split the single `args` parameter back into argv. `argv[0]` is the VERB
+/// viberun dispatched on, exactly as a process would see its own name there.
+///
+/// An empty parameter is an empty argv rather than `[""]`: viberun always
+/// sends at least the verb, so an empty string means no arguments at all, not
+/// one empty one.
+export fn command_args(raw: String) -> Array[String] {
+  if String::length(raw) == 0 {
+    Array::slice([""], 0, 0)
+  } else {
+    String::split(raw, command_arg_separator())
+  }
+}
+
+/// Frame `output` with the exit code viberun should exit with.
+///
+/// The frame is REQUIRED by the runner. That is deliberate: without it a
+/// command that returned a partial string would exit 0 and read as a success,
+/// which is the silently-wrong failure this project ranks above crashing.
+export fn command_result(exit: Int, output: String) -> String {
+  "vibe-command-result-v1\t\{exit}\n\{output}"
+}
+
+/// `command_result(0, output)`.
+export fn command_ok(output: String) -> String {
+  command_result(0, output)
+}
+
+/// `command_result(exit, message)` for a failure. The message is the command's
+/// output, so a caller sees it on stdout the way it sees any other output;
+/// nothing in the v1 frame is stderr.
+export fn command_failed(exit: Int, message: String) -> String {
+  command_result(exit, message)
+}

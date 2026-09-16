@@ -1,0 +1,50 @@
+import @vibe/core {
+  add_by, contains_by, empty, from_array_by, remove_by, size, struct StringSet
+}
+
+struct Key { value: Int }
+
+fn key_text(key: Key) -> String {
+  "key=\{key.value}"
+}
+
+test "#2840: equal distinct values share an explicit StringSet key" {
+  let original = Key::{ value: 5 }
+  let set = StringSet::add_by(empty(), key_text, original)
+  assert(StringSet::contains_by(set, key_text, original))
+  assert(StringSet::contains_by(set, key_text, Key::{ value: 5 }))
+  assert(!StringSet::contains_by(set, key_text, Key::{ value: 6 }))
+  let removed = StringSet::remove_by(set, key_text, Key::{ value: 5 })
+  assert(removed.is_empty())
+  assert(set.contains("key=5"))
+}
+
+test "#2840: bare helpers and arrays use the same key function" {
+  let set = from_array_by([
+    Key::{ value: 5 },
+    Key::{ value: 5 },
+    Key::{ value: 6 }
+  ], key_text)
+  assert(size(set) == 2)
+  assert(contains_by(set, key_text, Key::{ value: 5 }))
+  let added = add_by(set, key_text, Key::{ value: 7 })
+  let removed = remove_by(added, key_text, Key::{ value: 6 })
+  assert(size(removed) == 2)
+  assert(contains_by(removed, key_text, Key::{ value: 7 }))
+  assert(!contains_by(removed, key_text, Key::{ value: 6 }))
+}
+
+test "#2840: Bool keys use the supplied renderer" {
+  let render = (value: Bool) -> String {
+    if value {
+      "yes"
+    } else {
+      "no"
+    }
+  }
+  let set = from_array_by([true, false, true], render)
+  assert(set.contains("yes"))
+  assert(set.contains("no"))
+  assert(!set.contains("1"))
+  assert(size(set) == 2)
+}

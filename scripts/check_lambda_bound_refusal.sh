@@ -38,8 +38,9 @@
 # -- a route found later joins by adding a file, not by editing this script.
 #
 # #2745 joined as a second FAMILY: interpolating a value whose type a nested
-# binder bound printed the tagged pointer (`272`) rather than the value. It shares
-# the edit clause -- lift the lambda -- and differs in the reason, so the reason is
+# binder bound printed the tagged pointer (`272`) rather than the value. Its
+# edit now requests an explicit renderer (#2840), and each family
+# has its own reason, so the reason is
 # selected from the fixture name and an unclassified fixture FAILS rather than
 # being waved through.
 #
@@ -64,9 +65,8 @@ STAGE2="$(resolve_stage2 lambda-bound-refusal "${LAMBDA_BOUND_REFUSAL_STAGE2:-}"
 # corpus instead of editing the tree's own fixtures.
 FIXTURE_GLOB="${LAMBDA_BOUND_REFUSAL_FIXTURES:-fixtures/lambda_bound_*_refused.vibe}"
 
-# The clause EVERY one of these diagnostics must BEGIN with, named once so the
-# self-test's mutation is a single edit. Both families share it: the edit is the
-# same one (lift the lambda), only the reason differs.
+# Dispatch can be fixed by lifting a bounded lambda. Erased interpolation
+# requires a renderer instead: lifting an unbounded lambda is still unsafe.
 EDIT_NEEDLE="move the lambda that binds"
 
 # The reason clause, chosen PER FAMILY from the fixture's name rather than by
@@ -92,8 +92,8 @@ for src in $FIXTURE_GLOB; do
   # fixture's own issue. It named #2737 for every family, which is wrong for the
   # 23 erased-interpolation fixtures and sends a reader to the wrong thread.
   case "$name" in
-    lambda_bound_erased_interp_*) reason="$erased_reason"; issue="#2745" ;;
-    lambda_bound_dispatch_*) reason="$dispatch_reason"; issue="#2737" ;;
+    lambda_bound_erased_interp_*) reason="$erased_reason"; issue="#2745"; edit="pass an explicit renderer" ;;
+    lambda_bound_dispatch_*) reason="$dispatch_reason"; issue="#2737"; edit="$EDIT_NEEDLE" ;;
     *)
       echo "[lambda-bound-refusal] FAIL: $src matches the glob but no family" >&2
       echo "  add its reason clause here; an unclassified fixture is unchecked, not clean" >&2
@@ -109,7 +109,8 @@ for src in $FIXTURE_GLOB; do
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
-  if ! grep -qE 'move the lambda that binds .* to a top-level' "$out.diag" 2>/dev/null; then
+  if { [ "$issue" = "#2737" ] && ! grep -qE 'move the lambda that binds .* to a top-level' "$out.diag" 2>/dev/null; } ||
+     { [ "$issue" = "#2745" ] && ! grep -qE 'pass an explicit renderer .* interpolate at a concrete type' "$out.diag" 2>/dev/null; }; then
     echo "[lambda-bound-refusal] FAIL: $src refusal does not name an edit" >&2
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
@@ -129,7 +130,7 @@ for src in $FIXTURE_GLOB; do
   # So the property itself: the payload BEGINS with the edit. An optional
   # `<path>:` prefix is stripped first -- this lane's diag carries none, but a lane
   # that adds one must not silently turn "begins with" into "contains".
-  leads_ok="$(awk -v edit="$EDIT_NEEDLE" '
+  leads_ok="$(awk -v edit="$edit" '
     {
       line = $0
       sub(/^[[:space:]]+/, "", line)

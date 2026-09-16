@@ -445,94 +445,6 @@ fn lookup_trait_type_params(entries: Array[(String, Array[String])], trait_name:
   result
 }
 
-/// #1445 原因2 (#1392 slice 3): the SYNTHETIC `Show` witness trait.
-///
-/// `Show` is a marker trait in source. `lib/@vibe/builtin/builtin_traits.vibe`
-/// spells `to_string[T: Show](x: T)`, but no `trait Show { .. }` declaration
-/// exists anywhere and `register_builtin_traits` (checker_trait.vibe) does not
-/// register one, so the bound is vacuous. That has to STAY vacuous: the moment
-/// a trait carries a method the checker enforces its impls, and `to_string` is
-/// a universal function -- a real `trait Show { to_string(Self) -> String }`
-/// turns `to_string(5)` into a hard `no impl 'Show' for 'Int'` (measured).
-///
-/// So the trait is injected HERE and nowhere else. This pass collects traits
-/// from the STATEMENT LIST (`collect_method_traits`); the checker enforces
-/// impls from its OWN env. Injecting into the former and not the latter buys
-/// the dictionary threading with none of the enforcement.
-///
-/// The witness is total by construction -- `build_concrete_dict` falls back to
-/// the ADR-0058 `__to_string` heuristic for a type with no `C::to_string` --
-/// so nothing that compiles today stops compiling, and a value whose type this
-/// pass cannot resolve renders exactly as it does now.
-fn synthetic_show_sigs() -> Array[(String, Array[TypeExpr], TypeExpr)] {
-  [("to_string", [TyName("Self")], TyName("String"))]
-}
-
-fn bounds_mention_show(bounds: Array[(String, Array[String])]) -> Bool {
-  let mut i = 0
-  let mut found = false
-  while i < Array::length(bounds) {
-    let (_, trait_list) = Array::get(bounds, i)
-    if str_array_contains(trait_list, "Show") {
-      found = true
-    } else {
-      ()
-    }
-    i = i + 1
-  }
-  found
-}
-
-/// Whether this program has a `[T: Show]` bound worth threading a witness for.
-///
-/// The `__to_string` pass-through shims are excluded (`collect_show_shims` must
-/// have run first): they never render THROUGH the witness -- their whole body
-/// is the heuristic -- and threading them would put a hidden dict parameter on
-/// `to_string` itself, i.e. on every one of its call sites in the program.
-/// Without that exclusion the prelude alone would activate this for every
-/// compilation unit.
-fn program_wants_show_dict(stmts: Array[Stmt]) -> Bool {
-  let mut i = 0
-  let mut want = false
-  while i < Array::length(stmts) {
-    match Array::get(stmts, i) {
-      SLet(_, _, fname, _, body) => match body {
-        EFn(_, bounds, _, _, _, _) => if bounds_mention_show(bounds) && !str_array_contains(dtd_show_shims, fname) {
-          want = true
-        } else {
-          ()
-        },
-        _ => ()
-      },
-      _ => ()
-    }
-    i = i + 1
-  }
-  want
-}
-
-/// `collect_method_traits` plus the synthetic `Show` entry when this program
-/// wants it. A program that declares its own method-bearing `trait Show` keeps
-/// that one verbatim -- the injection must never shadow a real declaration.
-fn collect_method_traits_with_show(stmts: Array[Stmt]) -> Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])] {
-  let declared = collect_method_traits(stmts)
-  match lookup_trait_sigs(declared, "Show") {
-    Some(_) => declared,
-    None => if program_wants_show_dict(stmts) {
-      let out = array_empty()
-      let mut i = 0
-      while i < Array::length(declared) {
-        Array::push(out, Array::get(declared, i))
-        i = i + 1
-      }
-      Array::push(out, ("Show", synthetic_show_sigs()))
-      out
-    } else {
-      declared
-    }
-  }
-}
-
 // ---- rank-1 method generics (#684) ----
 //
 // A trait method may declare its own type parameters, `m: [X: Show](Self, X) ->
@@ -3168,9 +3080,8 @@ fn dtd_check_unthreaded_dispatch(resolved: Option[String], head: String, member:
 /// 8f70aa1, a `Qt` interpolated inside a nested `[T: Show]` lambda printed `Pt!`
 /// (the enclosing binder's witness, a lie about the type), and with the
 /// dictionary withheld it printed `284`, the tagged pointer. Neither is the value.
-/// A scalar does render truthfully, but it never reaches here: `interp_shape`
-/// answers first, which is why a top-level `[T: Show]` at `Int` prints `7` rather
-/// than going through `Int::to_string` at all.
+/// Concrete scalar operands use `interp_shape`. A formal remains erased even
+/// when a caller supplies a scalar; its binder must provide the witness.
 fn dtd_unthreaded_interp_msg(tp: String) -> String {
   let mut base = String::concat("move the lambda that binds `", tp)
   base = String::concat(base, "` to a top-level `fn` / `let` declaration, or interpolate at a concrete type: a value of type parameter `")
@@ -3191,50 +3102,16 @@ fn dtd_show_witness_method() -> String {
   "to_string"
 }
 
-/// #2745: the interpolated value's type is a formal bound by a NESTED binder, so
-/// its values are erased and nothing here can render them.
-///
-/// A TOP-LEVEL generic does not reach this -- but NOT because it is specialized.
-/// This paragraph said "it is specialized per instantiation before this pass"
-/// until #2840, and that is false: there is no monomorphization pass
-/// (`codegen/expr/compile_call.vibe` states it outright, and `monoify.vibe` is
-/// dead code, imported by nothing but its own test).
-///
-/// What actually happens is narrower. The body in the measurement below is
-/// exactly `__to_string(a)`, which makes it a show SHIM, so #2468 rewrites the
-/// CALL SITE to the direct spelling -- and there the concrete argument is still
-/// visible, so `infer_arg_type_name` answers with the concrete type and either a
-/// renderer is found or #1445 refuses by name. Measured on main at b4ccb37,
-/// `fn show_any[T](a: T) -> String { "\{a}" }` applied to a `Qt` is refused with
-/// "cannot interpolate a value of type `Qt`", and applied to `7` prints `7`.
-///
-/// One statement more and the body is not a shim, nothing rewrites the call site,
-/// and the SAME top-level generic prints the representation. Measured on
-/// `26e9d8b`, `{ let pre = "v="; String::concat(pre, "\{a}") }` applied to a `Pt`
-/// that HAS an impl prints `v=232`, the tagged pointer. So the top-level case is
-/// NOT covered; it is #2840, and the distinction matters here because the false
-/// version of this sentence is why nobody looked.
-///
-/// A nested lambda is not specialized, so the same interpolation prints the
-/// representation: `272`, the tagged pointer, for a struct. That is the pointer
-/// decimal the #1445 site's own comment says it exists to prevent -- the guard
-/// just could not see this shape, because `interp_missing_show_type` requires a
-/// declared struct and deliberately excludes a formal (#2141, so an erased
-/// formal does not produce a FALSE "missing Show").
-///
-/// The cost, accepted: a nested binder applied only at a SCALAR renders
-/// correctly today (`inner(42)` prints `42`) and is refused too. It renders
-/// correctly by accident of the instantiation -- the same lambda applied to a
-/// struct prints a pointer, from one lowering -- and this pass cannot tell the
-/// two apart without specializing the lambda, which is the same work #2737 left
-/// open. Refusing both is the fail-closed reading of "never be silently wrong";
-/// the edit is the same one #2737 names, and at a top-level binder the scalar
-/// case keeps working.
+/// A formal without a renderer witness cannot be interpolated safely, whether
+/// its binder is a lambda or a top-level declaration (#2745, #2840).
+/// Lifting an unbounded lambda does not fix this: top-level generic bodies are
+/// not specialized. A direct rendering shim defers to its call sites; adding
+/// any other expression removes that exception. An explicit renderer works at
+/// either binder level, including for scalar-only callers.
 fn dtd_erased_interp_msg(tp: String) -> String {
-  let mut base = String::concat("move the lambda that binds `", tp)
-  base = String::concat(base, "` to a top-level `fn` / `let` declaration, or interpolate at a concrete type: a value of type parameter `")
-  base = String::concat(base, tp)
-  base = String::concat(base, "` is erased here, so `\\{}` would print its representation rather than the value (#2745)")
+  let edit = String::concat("pass an explicit renderer `(", String::concat(tp, ") -> String`, or interpolate at a concrete type: type parameter `"))
+  let mut base = String::concat(edit, tp)
+  base = String::concat(base, "` is erased here and has no renderer witness; a marker `Show` bound does not provide one")
   let self_fn = Array::get(dtd_show_self_fn, 0)
   if String::length(self_fn) > 0 {
     String::concat(base, String::concat(" [@fn=", String::concat(self_fn, "]")))
@@ -3243,8 +3120,8 @@ fn dtd_erased_interp_msg(tp: String) -> String {
   }
 }
 
-/// The formal this interpolation would render, when it is one a nested binder
-/// bound; "" otherwise (a concrete type, a top-level formal, or no answer).
+/// The formal this interpolation would render; "" for a concrete type or no
+/// answer. Both top-level and nested binders carry erased values (#2840).
 ///
 /// #2745 (Codex, P1 round 2 on #2761): walks THROUGH the forms whose value comes
 /// from a sub-expression. `infer_arg_type_name` answers None for them, so
@@ -3496,7 +3373,7 @@ fn dtd_interp_index_of_field(field: String) -> Int {
 fn dtd_interp_lamret_src_formal(src: String, cargs: Array[Expr], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   let named = dtd_interp_lamret_type_name(src)
   if String::length(named) > 0 {
-    if formal_in_scope(named) && dtd_formal_innermost_is_nested(named) {
+    if formal_in_scope(named) {
       named
     } else {
       ""
@@ -3520,7 +3397,7 @@ fn dtd_interp_lamret_apply(slot: String, arg: Expr, cargs: Array[Expr], struct_s
     // leaf would call it so -- the same guard, because a name is a name and
     // `Int` must not be read as a type parameter (round 17 learned that by
     // making the compiler reject its own sources).
-    if formal_in_scope(named) && dtd_formal_innermost_is_nested(named) {
+    if formal_in_scope(named) {
       named
     } else {
       ""
@@ -3559,7 +3436,7 @@ fn dtd_interp_elem_formal_of(e: Expr, struct_sets: Array[(String, Array[String])
     // REJECTED ITS OWN SOURCES, which is how the first cut of this was caught
     // (as in round 1, and for the same reason: a name is a name).
     EIdent(n, _) => match lookup_var_type(var_types, array_elem_key(n)) {
-      Some(t) => if formal_in_scope(t) && dtd_formal_innermost_is_nested(t) {
+      Some(t) => if formal_in_scope(t) {
         t
       } else {
         ""
@@ -3689,7 +3566,7 @@ fn dtd_interp_recorded_slot_formal(name: String, var_types: Array[(String, Strin
   while ki < Array::length(keys) {
     if String::length(found) == 0 {
       match lookup_var_type(var_types, Array::get(keys, ki)) {
-        Some(t) => if String::length(t) > 0 && formal_in_scope(t) && dtd_formal_innermost_is_nested(t) {
+        Some(t) => if String::length(t) > 0 && formal_in_scope(t) {
           found = t
         } else {
           ()
@@ -3784,11 +3661,11 @@ fn dtd_erased_interp_any_arg(args: Array[Expr], struct_sets: Array[(String, Arra
 }
 
 /// The answer for a value this walk does not take apart: its inferred type name
-/// when that names a formal a NESTED binder bound, "" otherwise. Fail-open by
+/// when that names a formal in scope, "" otherwise. Fail-open by
 /// construction -- a type this pass cannot infer reports nothing.
 fn dtd_erased_interp_leaf(arg: Expr, struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> String {
   match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
-    Some(tn) => if formal_in_scope(tn) && dtd_formal_innermost_is_nested(tn) {
+    Some(tn) => if formal_in_scope(tn) {
       tn
     } else {
       ""
@@ -5590,6 +5467,59 @@ fn dtd_check_unthreaded_interp(resolved: Option[String], head: String, traits: A
   }
 }
 
+// #2840: a top-level formal is erased too. Only a body that is exactly a
+// rendering shim can defer to its direct call sites; taking it as a value is
+// refused separately, since that would retain the erased implementation.
+fn dtd_check_top_interp(arg: Expr, dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Unit with Exception {
+  match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
+    Some(head) => if formal_in_scope(head) && !dtd_formal_innermost_is_nested(head) && !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
+      match dtd_show_witness_dict(dict_binds, traits, head) {
+        Some(_) => (),
+        None => throw(dtd_erased_interp_msg(head))
+      }
+    },
+    None => ()
+  }
+}
+
+// A callable renderer must accept Self and return String. The method name
+// alone would permit a bound whose to_string accepts an unrelated type.
+fn dtd_show_witness_dict(dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], head: String) -> Option[String] {
+  if dtd_formal_is_shadowed(head) {
+    None
+  } else {
+    let mut result = None
+    let mut i = 0
+    while i < Array::length(dict_binds) {
+      let (tp, trait_name, pname, methods) = Array::get(dict_binds, i)
+      if tp == head && str_array_contains(methods, "to_string") {
+        match lookup_trait_sigs(traits, trait_name) {
+          Some(sigs) => {
+            let mut j = 0
+            while j < Array::length(sigs) {
+              let (method, params, ret) = Array::get(sigs, j)
+              if method == "to_string" && Array::length(params) == 1 {
+                match (Array::get(params, 0), ret) {
+                  (TyName("Self"), TyName("String")) => {
+                    result = Some(pname)
+                    i = Array::length(dict_binds)
+                    j = Array::length(sigs)
+                  },
+                  _ => ()
+                }
+              }
+              j = j + 1
+            }
+          },
+          None => ()
+        }
+      }
+      i = i + 1
+    }
+    result
+  }
+}
+
 /// #2523: the dict parameter to dispatch `==` / `!=` through, or None.
 ///
 /// Fires ONLY when the operand type names a type FORMAL in scope whose bound
@@ -5722,15 +5652,6 @@ fn specialize_trait_constructor(trait_name: String, formal: String, actual: Stri
   let substs = array_empty()
   Array::push(substs, (formal, actual))
   specialize_trait_constructors(trait_name, substs)
-}
-
-/// #1445: `(__w) -> String { __to_string(__w) }` -- the total fallback member
-/// of a synthetic `Show` witness (see synthetic_show_sigs). Same closure shape
-/// build_concrete_dict already synthesizes for a bounded generic-impl method.
-fn show_fallback_closure() -> Expr {
-  EFn(empty_str_array(), array_empty(), Array::slice([("__w", None)], 0, 1), None, None, ECall(EIdent("__to_string", -1), [
-    EIdent("__w", -1)
-  ], -1))
 }
 
 /// The first element of an array-literal receiver (for a bounded generic impl
@@ -5870,21 +5791,10 @@ fn build_concrete_dict_for_target(actual_target: TypeExpr, trait_name: String, t
           None => plain_qm
         }
         if not(fn_exists(fn_returns, qm)) {
-          // #1445: the SYNTHETIC `Show` witness is total. A type with no
-          // `C::to_string` renders through the ADR-0058 heuristic -- exactly
-          // what it does outside a generic today -- so threading a witness
-          // never turns a compiling program into a failing one. This is the
-          // one trait allowed a fabricated member, and only because its
-          // fallback is the status quo rather than a guess at an impl.
-          if trait_ref_name(trait_name) == "Show" && m == "to_string" {
-            Array::push(recfields, (m, show_fallback_closure()))
-          } else {
-            // No `cname::m` free function exists — `cname` does not actually
-            // implement `trait_name`. Refuse to fabricate a witness (which would
-            // otherwise silently dispatch to a same-shaped function), so the call
-            // is left unrewritten and fails loudly instead of miscompiling.
-            failed = true
-          }
+          // A renderer witness needs an actual implementation, like every
+          // other method. Falling back to erased __to_string would recreate
+          // the pointer-as-text defect (#2840).
+          failed = true
         } else {
           match lookup_gen(gens, qm) {
             Some(threaded) => if Array::length(threaded) == 0 {
@@ -8699,6 +8609,17 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ann) = Array::get(params, i)
+    // Generic array/tuple parameters must expand here so their elements can
+    // use witness dictionaries. The later erased codegen path cannot do so.
+    match ann {
+      Some(te) => if ty_mentions_name_in(te, tparams) {
+        let sh = texpr_shape(te)
+        if shape_is_composite(sh) {
+          Array::push(out, (shape_key(pname), sh))
+        }
+      },
+      None => ()
+    }
     // #2745 (Codex, P1 round 20 on #2761): a FUNCTION-VALUED parameter.
     // `[T](a: T, f: (T) -> T) { "\{f(a)}" }` reached leaf inference, which
     // cannot infer a call through a parameter, and printed a 3-digit pointer
@@ -8851,8 +8772,8 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
           ()
         }
       },
-      // #1445: a tuple ANNOTATION (`t: (Int, P)`) deliberately records
-      // NOTHING here for the RENDER sentinels. Measured: an annotated tuple
+      // #1445: a concrete tuple ANNOTATION (`t: (Int, P)`) records
+      // no RENDER sentinel here. Generic shapes are seeded above. Measured: an annotated tuple
       // parameter already renders structurally, and it renders NESTED tuples
       // too (`(Int, (Int, P))` -> `(5, (7, P { x: 6 }))`) -- it goes through
       // a real TypeExpr, so it beats the flat per-element name list this
@@ -10678,6 +10599,7 @@ fn is_interp_to_string_call(callee: Expr, args: Array[Expr]) -> Bool {
 // intent. A user `to_string` that does anything else has a different body, is
 // never in this set, and keeps its call sites untouched.
 let dtd_show_shims: Array[String] = array_empty()
+let dtd_generic_show_shims: Array[String] = array_empty()
 
 /// `__to_string(<pname>)` and nothing else -- the shim's whole body.
 fn is_bare_to_string_of(body: Expr, pname: String) -> Bool {
@@ -10849,12 +10771,19 @@ fn collect_local_binder_names(stmts: Array[Stmt]) -> Array[String] {
 /// being compiled -- the conservative direction.
 fn collect_show_shims(stmts: Array[Stmt]) -> Unit {
   Array::truncate(dtd_show_shims, 0)
+  Array::truncate(dtd_generic_show_shims, 0)
   let shadowed = collect_local_binder_names(stmts)
   let mut i = 0
   while i < Array::length(stmts) {
     match Array::get(stmts, i) {
       SLet(_, _, name, _, value) => if is_show_shim_value(value) && !str_array_contains(shadowed, name) {
         Array::push(dtd_show_shims, name)
+        match value {
+          EFn(tparams, _, _, _, _, _) => if Array::length(tparams) > 0 {
+            Array::push(dtd_generic_show_shims, name)
+          },
+          _ => ()
+        }
       } else {
         ()
       },
@@ -11217,6 +11146,7 @@ fn interp_arg_is_bool(arg: Expr, struct_sets: Array[(String, Array[String])], va
 /// The structural rendering for an interpolated wrapper value, or None when
 /// this pass has no shape to work from and the `__to_string` call must stand.
 fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Option[Expr] with Exception {
+  dtd_check_top_interp(arg, dict_binds, traits, struct_sets, var_types, fn_returns)
   let head = match infer_arg_type_name(arg, struct_sets, var_types, fn_returns) {
     Some(h) => h,
     None => ""
@@ -11225,7 +11155,7 @@ fn interp_expand(arg: Expr, derived_only: Bool, gens: Array[DictGen], traits: Ar
   if String::length(sh) > 0 {
     Some(interp_expand_shape(arg, sh, derived_only, gens, traits, struct_sets, dict_binds, var_types, fn_returns))
   } else {
-    let as_show = find_dict_for_method(dict_binds, head, "to_string")
+    let as_show = dtd_show_witness_dict(dict_binds, traits, head)
     // #2737: a promised `Show` witness with no dictionary renders the value's
     // representation rather than the value, so it is refused here too.
     dtd_check_unthreaded_interp(as_show, head, traits, fn_returns)
@@ -11736,6 +11666,12 @@ fn lower_assert_eq(args: Array[Expr], call_off: Int, gens: Array[DictGen], trait
 /// synthesis when the receiver is a variable.
 fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], struct_sets: Array[(String, Array[String])], dict_binds: Array[(String, String, String, Array[String])], var_types: Array[(String, String)], fn_returns: Array[(String, String)]) -> Expr with Exception {
   match expr {
+    EIdent(name, _) => if str_array_contains(dtd_generic_show_shims, name) {
+      throw("wrap the renderer in a lambda with a concrete parameter type: a generic rendering shim must be called directly so its argument type remains available")
+    },
+    _ => ()
+  }
+  match expr {
     EIdent(name, off) => match split_qualified(name) {
       Some(parts) => {
         let (head, member) = parts
@@ -11799,19 +11735,30 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
         // WHICH message, decided here rather than by which check happens to run
         // first. Hoisting this above the rendering paths also lifted it above
         // #2737's interp refusal, and a `[T: Show]` lambda is BOTH -- erased, and
-        // carrying a bound nothing honours. They name the same edit, but #2737's
-        // is the more specific diagnosis (the bound you wrote is not threaded),
+        // carrying a bound nothing honours. #2737 offers the more specific edit
+        // of lifting the bounded lambda and diagnosis (the bound you wrote is not threaded),
         // so it wins when the binder's bound promised a renderer. Choosing on the
         // FACT keeps that true no matter where either check sits.
         let erased = dtd_erased_interp_formal(Array::get(args, 0), struct_sets, var_types, fn_returns)
         if erased != "" {
-          if dtd_formal_bound_promises(traits, erased, dtd_show_witness_method()) {
-            throw(dtd_unthreaded_interp_msg(erased))
-          } else {
-            throw(dtd_erased_interp_msg(erased))
+          if dtd_formal_innermost_is_nested(erased) {
+            if dtd_formal_bound_promises(traits, erased, dtd_show_witness_method()) {
+              throw(dtd_unthreaded_interp_msg(erased))
+            } else {
+              throw(dtd_erased_interp_msg(erased))
+            }
+          } else if !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
+            // A wrapper consumes this witness when its elements are expanded.
+            // The dictionary is applied only to the matching element type by
+            // interp_expand, never to the outer container.
+            let witnessed = match dtd_show_witness_dict(dict_binds, traits, erased) {
+              Some(_) => true,
+              None => false
+            }
+            if !witnessed {
+              throw(dtd_erased_interp_msg(erased))
+            }
           }
-        } else {
-          ()
         }
         let show_target = interp_show_target(Array::get(args, 0), false, struct_sets, var_types, fn_returns)
         if show_target != "" {
@@ -11838,6 +11785,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // falling through here would print a pointer decimal.
           if interp_has_repl(expanded) {
             expanded
+          } else if erased != "" && !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
+            // A witness for an element cannot license an opaque wrapper whose
+            // renderer did not expand. Keep the erased fallback unreachable.
+            throw(dtd_erased_interp_msg(erased))
           } else {
             let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
             if missing != "" {
@@ -23203,10 +23154,8 @@ fn dtd_run(stmts: Array[Stmt], typed_eq_offsets: Array[Int], typed_eq_keys: Arra
   // still run unconditionally (those shapes need no trait machinery, #1350).
   // #1392: the `Show`-bounded `__to_string` pass-throughs in THIS program, so a
   // spelled-out `to_string(v)` renders like `"\{v}"` does. See dtd_show_shims.
-  // #1445: must run BEFORE collect_method_traits_with_show, whose gate excludes
-  // the shims -- see program_wants_show_dict.
   collect_show_shims(stmts)
-  let traits_raw = collect_method_traits_with_show(stmts)
+  let traits_raw = collect_method_traits(stmts)
   let trait_type_params = collect_trait_type_params(stmts)
   let supers_map = collect_trait_supers(stmts)
   let traits = flatten_traits(traits_raw, supers_map)

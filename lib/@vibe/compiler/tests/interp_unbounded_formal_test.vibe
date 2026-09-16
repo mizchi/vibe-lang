@@ -1,0 +1,154 @@
+import @vibe/compiler/checker {
+  check_program
+}
+import @vibe/compiler/normalize {
+  desugar_trait_dicts
+}
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+fn check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn assert_erased(source: String) -> Unit {
+  let message = check_error(source)
+  assert(String::contains(message, "pass an explicit renderer"))
+  assert(String::contains(message, "type parameter `T`"))
+}
+
+fn lowering_error(source: String) -> String {
+  handle {
+    let stmts = parse_program(lex(source))
+    desugar_trait_dicts(stmts)
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+test "#2840: a prefix cannot hide an unbounded interpolation" {
+  assert_erased("fn render[T](a: T) -> String { \"v=\\{a}\" }")
+}
+
+test "#2840: a local alias keeps the formal type" {
+  assert_erased("fn render[T](a: T) -> String { let value = a; __to_string(value) }")
+}
+
+test "#2840: conditionals retain their checked type" {
+  assert_erased("fn render[T](a: T, c: Bool) -> String { \"v=\\{if c { a } else { a }}\" }")
+}
+
+test "#2840: a marker Show bound does not provide a renderer" {
+  let source = "trait Show\nfn render[T: Show](a: T) -> String { \"v=\\{a}\" }"
+  assert_erased(source)
+  assert(String::contains(lowering_error(source), "pass an explicit renderer"))
+}
+
+test "#2840: an unrelated Eq bound is not a renderer" {
+  assert_erased("fn render[T: Eq](a: T) -> String { \"v=\\{a}\" }")
+}
+
+test "#2840: a method-bearing Show bound is supported" {
+  assert(check_error("trait Show { to_string(Self) -> String }\nfn render[T: Show](a: T) -> String { \"v=\\{a}\" }") == "")
+}
+
+test "#2840: an explicit renderer removes the erased conversion" {
+  assert(check_error("fn render[T](a: T, render: (T) -> String) -> String { \"v=\\{render(a)}\" }") == "")
+}
+
+test "#2840: concrete scalar parameters keep rendering" {
+  assert(check_error("fn render(a: Bool, b: Int) -> String { \"v=\\{a},\\{b}\" }") == "")
+}
+
+test "#2840: direct show shims remain available for call-site rendering" {
+  assert(check_error("fn render[T](a: T) -> String { __to_string(a) }") == "")
+}
+
+test "#2840: lowered shim calls cannot render a caller's erased formal" {
+  let src = "fn shim[T](a: T) -> String { __to_string(a) }\nfn render[T](a: T) -> String { let prefix = \"v=\"; String::concat(prefix, shim(a)) }"
+  assert(String::contains(lowering_error(src), "pass an explicit renderer"))
+}
+
+test "#2840: the lowering lane also rejects a non-shim body" {
+  assert(String::contains(lowering_error("fn render[T](a: T) -> String { \"v=\\{a}\" }"), "pass an explicit renderer"))
+}
+
+test "#2840: a generic renderer taken as a value cannot bypass call-site rendering" {
+  let src = "fn shim[T](a: T) -> String { __to_string(a) }\nfn main() -> String { let render = shim; render(true) }"
+  assert(String::contains(lowering_error(src), "wrap the renderer in a lambda with a concrete parameter type"))
+}
+
+test "#2840: method-bearing witnesses and concrete shim calls still lower" {
+  assert(lowering_error("trait Show { to_string(Self) -> String }\nfn render[T: Show](a: T) -> String { \"v=\\{a}\" }") == "")
+  assert(lowering_error("fn shim[T](a: T) -> String { __to_string(a) }\nfn main() -> String { shim(true) }") == "")
+}
+
+test "#2840: builtin type spellings cannot disguise a formal" {
+  let src = "fn render[Bool](a: Bool) -> String { \"v=\\{a}\" }"
+  assert(String::contains(check_error(src), "type parameter `Bool`"))
+  assert(String::contains(lowering_error(src), "type parameter `Bool`"))
+}
+
+test "#2840: a non-Self method is not a renderer witness" {
+  let source = "trait Show { to_string(Int) -> String }\nfn render[T: Show](a: T) -> String { \"v=\\{a}\" }"
+  assert_erased(source)
+  assert(String::contains(lowering_error(source), "pass an explicit renderer"))
+}
+
+test "#2840: annotated generic let bindings follow the same rule" {
+  assert_erased("let render: [T](T) -> String = (value) -> { let prefix = \"v=\"; String::concat(prefix, __to_string(value)) }")
+}
+
+test "#2840: an inherited rendering method provides the witness" {
+  let source = "trait Render { to_string(Self) -> String }\ntrait Pretty: Render\nfn render[T: Pretty](value: T) -> String { \"v=\\{value}\" }"
+  assert(check_error(source) == "")
+  assert(lowering_error(source) == "")
+}
+
+test "#2840: shadowing the renderer-state spelling does not grant an exemption" {
+  assert_erased("fn render[T](a: T) -> String { let __interp_shim_body__ = true; \"v=\\{a}\" }")
+}
+
+test "#2840: wrapping a shim argument does not hide its erased type" {
+  let source = "fn shim[T](a: T) -> String { __to_string(a) }\nfn render[T](a: T, c: Bool) -> String { String::concat(\"v=\", shim(if c { a } else { a })) }"
+  assert(String::contains(lowering_error(source), "pass an explicit renderer"))
+}
+
+test "#2860: unbounded container elements require renderers during check" {
+  assert_erased("fn render[T](xs: Array[T]) -> String { let text = __to_string(xs); text }")
+  assert_erased("fn render[T](xs: Option[T]) -> String { let text = __to_string(xs); text }")
+  assert_erased("fn render[T](xs: (Int, T)) -> String { let text = __to_string(xs); text }")
+  assert_erased("struct Box[T] { value: T }\nfn render[T](xs: Box[T]) -> String { let text = __to_string(xs); text }")
+}
+
+test "#2860: a local generic shim cannot defer rendering to its callers" {
+  assert_erased("fn main() -> String { let shim = [T](x: T) -> String { __to_string(x) }; shim(1) }")
+  assert_erased("let text = { let shim = [T](x: T) -> String { __to_string(x) }; shim(1) }")
+}
+
+test "#2860: top-level generic shims and concrete local renderers remain valid" {
+  let array_shim = "fn render[T](xs: Array[T]) -> String { \"\\{xs}\" }"
+  assert(check_error(array_shim) == "")
+  assert(lowering_error(array_shim) == "")
+  assert(check_error("let shim = [T](x: T) -> String { __to_string(x) }\nfn main() -> String { shim(1) }") == "")
+  assert(check_error("fn main() -> String { let render = (x: Bool) -> String { __to_string(x) }; render(true) }") == "")
+}
+
+test "#2840: renderer dictionary selection ignores incompatible methods in either bound order" {
+  let traits = "trait Bad { to_string(Int) -> String }\ntrait Render { to_string(Self) -> String }\n"
+  let bad_first = String::concat(traits, "fn render[T: Bad + Render](value: T) -> String { \"v=\\{value}\" }")
+  let good_first = String::concat(traits, "fn render[T: Render + Bad](value: T) -> String { \"v=\\{value}\" }")
+  assert(check_error(bad_first) == "")
+  assert(check_error(good_first) == "")
+  assert(lowering_error(bad_first) == "")
+  assert(lowering_error(good_first) == "")
+}
+
+test "#2840: every erased wrapper element still requires its own witness" {
+  let source = "trait Render { to_string(Self) -> String }\nfn render[T: Render, U](anchor: T, value: (T, U)) -> String { \"v=\\{value}\" }"
+  assert(String::contains(check_error(source), "type parameter `U`"))
+  assert(String::contains(lowering_error(source), "type parameter `U`"))
+}
