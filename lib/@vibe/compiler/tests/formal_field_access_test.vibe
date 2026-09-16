@@ -144,6 +144,21 @@ test "2848: a lambda parameter solved late by a call gets the concrete verdict" 
   assert(String::contains(msg, "`.payload`"))
 }
 
+test "2848: an impl method's `self` is judged against the impl target, not refused as open" {
+  // `impl Tr for Crate { m(self) { self.payload } }` is lowered to
+  // `let Crate::m = (self) -> ..` with `self` unannotated, so `self` is
+  // quantified like any parameter. The binding's name says what it is, and
+  // the read is judged against `Crate`: found, so accepted.
+  let src = "struct Crate {\n  payload: Int\n}\ntrait Weigh {\n  weigh(Self) -> Int\n}\nimpl Weigh for Crate {\n  weigh(self) -> Int {\n    self.payload\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: an impl method's `self` reading a field the target lacks is refused naming the target" {
+  let src = "struct Crate {\n  payload: Int\n}\nstruct Other {\n  weight: Int\n}\ntrait Weigh {\n  weigh(Self) -> Int\n}\nimpl Weigh for Crate {\n  weigh(self) -> Int {\n    self.weight\n  }\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "unknown field 'weight' on struct Crate"))
+}
+
 //# Controls (the refusal must not widen)
 
 test "2848: a generic struct's field read in a generic body is accepted" {

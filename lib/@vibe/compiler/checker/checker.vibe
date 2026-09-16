@@ -6112,7 +6112,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // rules and not one.
         let gen = let_generalize(val, vt, cenv, ns, None)
         // #2848: a field read on a parameter this binding just quantified.
-        refuse_generalized_field_reads(gen, ns, errors)
+        refuse_generalized_field_reads(gen, ns, errors, name, defs)
         let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
@@ -6171,7 +6171,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // unconditionally.
         let gen = let_generalize(val, tv, cenv, s2, Some(name))
         // #2848: see the ELet arm.
-        refuse_generalized_field_reads(gen, s2, errors)
+        refuse_generalized_field_reads(gen, s2, errors, name, defs)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
         s1 = s2
@@ -6972,10 +6972,24 @@ fn open_receiver_field_access_message(recv: String, field: String) -> String {
 /// field read on it resolves by spelling. Called right after each
 /// `let_generalize`; `gen` is the binding's generalized type, and only a
 /// `CtForAll` it produced can quantify anything.
-export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[String]) -> Unit {
+///
+/// One quantified receiver is NOT open: the `self` of an impl method.
+/// `parse_impl_methods` lowers `impl Tr for Crate { m(self) { self.x } }` to
+/// `let Crate::m = (self) -> { self.x }` with `self` unannotated, so it is
+/// quantified like any other parameter -- but the binding's own name says
+/// what it is (`impl_method_owner_head`, the same reading
+/// `trait_erased_type_param_env` takes). Measured with the open-receiver
+/// refusal alone, every `impl` reading a field of `self` in `lib/` was refused
+/// (`lib/@vibe/builtin/async_iter.vibe`'s `self.state` first). Such a row is
+/// judged against the owner struct instead, through the same arms an annotated
+/// `self: Crate` would take: the field is found and the row dropped, or it is
+/// refused as `unknown field 'x' on struct Crate`. An owner that is not a
+/// declared struct judges as before (no typedef, tolerated).
+export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[String], binding_name: String, defs: Array[TypeDef]) -> Unit {
   match gen {
     CtForAll(vars, _, _) => {
       let kept: Array[(Int, String, Int, Int, String)] = []
+      let sep = String::index_of(binding_name, "::")
       let mut i = 0
       while i < Array::length(deferred_field_reads) {
         let (vid, field, field_off, dot_off, recv) = Array::get(deferred_field_reads, i)
@@ -6983,7 +6997,10 @@ export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[Stri
           CtVar(rep) => int_array_has(vars, rep),
           _ => false
         }
-        if quantified {
+        if quantified && recv == "self" && sep >= 0 {
+          let owner = impl_method_owner_head(String::substring(binding_name, 0, sep))
+          let _ = field_read_type(CtStruct(owner), field, defs, s, errors, field_off, dot_off)
+        } else if quantified {
           Array::push(errors, String::concat(open_receiver_field_access_message(recv, field), if field_off >= 0 {
             off_marker_len(field_off, String::length(field))
           } else {
