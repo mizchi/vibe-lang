@@ -225,10 +225,31 @@ if [ -n "${VIBE_BUILD_DIR:-}" ] && [ -z "${VIBE_BUILD_CACHE_DIR:-}" ]; then
   export VIBE_BUILD_CACHE_DIR="$BUILD_DIR/cache"
 fi
 display_path() { case "$1" in "$PROJECT_ROOT"/*) printf '%s' "${1#"$PROJECT_ROOT"/}" ;; *) printf '%s' "$1" ;; esac; }
+# `context-pack` is pure shell, and `self update <version>` runs the runner it
+# DOWNLOADS rather than this toolchain's, so a launcher extracted into a
+# directory that holds no runner yet can still drive a release install.
+# `vibe symbols --legend|--help|-h` and `rc-classify|rc-plan --help|-h` are the
+# same shape (#1944): a static table or a usage line, no wasm. Answering a
+# static question is the one thing that has to keep working when the toolchain
+# does not, which is why scripts/test_vibe_symbols.sh asks for the KIND table
+# without installing anything.
+need_runner=1
 case "${1:-help}" in
-  context-pack|self|toolchain|root|clean|new|help|--help|-h|version|--version|-V) ;;
-  *) [ -x "$RUNNER" ] || die "runner not found or not executable: $RUNNER" ;;
+  context-pack|self|toolchain|root|clean|new|help|--help|-h|version|--version|-V) need_runner=0 ;;
+  symbols)
+    case "${2:-}" in
+      --legend|--help|-h) need_runner=0 ;;
+    esac
+    ;;
+  rc-classify|rc-plan)
+    case "${2:-}" in
+      --help|-h) need_runner=0 ;;
+    esac
+    ;;
 esac
+if [ "$need_runner" = 1 ]; then
+  [ -x "$RUNNER" ] || die "runner not found or not executable: $RUNNER"
+fi
 host_run_guest() {
   local wasm="$1" src="$2" trace="$3" brk="$4" mem="$5" msamp="$6" asite="$7" atop="$8" gprof="$9" gint="${10}"
   shift 10
@@ -1091,6 +1112,43 @@ REPL_HELP
         exit 0 ;;
     esac
     invoke_cli "$cmd" "$@"
+    ;;
+  symbols)
+    # `--legend` and `--help`/`-h` are answered HERE, with no compiler wasm and
+    # without starting the runner -- the same contract as `grep --help` above.
+    # The KIND table is VERSIONED (v2 / 2026-09-12, #2632), so it is a fact
+    # about the launcher's own agreement with its callers, and
+    # scripts/test_vibe_symbols.sh reads it straight out of a source checkout
+    # before it installs anything. Every other word of `symbols` is parsed in
+    # the dispatcher.
+    case "${1:-}" in
+      --legend)
+        printf '%s\n' \
+          '2 Module' \
+          '6 Method' \
+          '10 Enum' \
+          '11 Interface' \
+          '12 Function' \
+          '13 Variable' \
+          '23 Struct' \
+          '24 Event' \
+          '26 TypeParameter' \
+          '27 Test' \
+          '28 Bench'
+        exit 0
+        ;;
+      --help|-h)
+        printf '%s\n' \
+          'usage: vibe symbols [--with-path] <file.vibe|dir>...' \
+          '       vibe symbols --legend' \
+          'Prints NAME KIND START END [DOC] per declaration.' \
+          'With several paths, a directory, or --with-path, each line gains a leading PATH field.' \
+          'DOC is the `///` doc comment, omitted when there is none; newlines in it are escaped as \n.' \
+          'KIND integers are LSP SymbolKind, plus 27 Test / 28 Bench for a block label (legend v2); print the table with `vibe symbols --legend`.'
+        exit 0
+        ;;
+    esac
+    invoke_cli symbols "$@"
     ;;
   grep)
     # `vibe grep --help` is answered HERE, with no compiler wasm and without
