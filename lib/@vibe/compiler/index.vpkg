@@ -439,8 +439,36 @@ fn collect_assign_targets_stmts(stmts: Array[Stmt]) -> Array[String]
 fn detect_unused_mut(stmts: Array[Stmt]) -> Array[(String, String, String)]
 fn check_warnings(stmts: Array[Stmt]) -> Array[(String, String, String)]
 
+// --- user_dispatch.vibe: the user-facing verb dispatcher `runtime/vibe`
+// drives (#2858). cli_adapter.vibe's `cli_main` routes a verb argv[0] here;
+// lib/@vibe/cli/dispatch.vibe reaches the same entry points through this
+// facade (it cannot import the file directly across the package boundary,
+// and this package cannot import lib/@vibe/cli without the index.vpkg ->
+// cli_adapter.vibe -> cli -> index.vpkg self-loop the `_cli_probe_entry.vibe`
+// note above records). The parse_* / *_plan_args helpers are declared for
+// lib/@vibe/cli/dispatch_test.vibe.
+fn user_dispatch_is_verb(name: String) -> Bool
+// `Profiler` is on the row for `vibe check --profile-tsv` / `--profile-callstack`
+// (the sidecars are timed with `Profiler::now_us`).
+fn selfhost_cli_user_dispatch_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Stdout + Stderr + Profiler
+fn run_user_dispatch_args(args: Array[String]) -> Int with Fs + Env + Stdin + Stdout + Stderr + Profiler
+fn format_check_report(payload: String) -> String
+fn display_under_root(path: String, build_dir: String) -> String
+fn root_rel_from_invoke(invoke_rel: String, path: String) -> String
+fn rewrite_user_argv(args: Array[String], invoke_dir: String, project_root: String) -> Array[String] with Fs
+fn expand_user_test_inputs(files: Array[String]) -> Array[String] with Exception + Fs
+fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) with Exception
+fn parse_user_compile_args(args: Array[String]) -> (String, String, String, Bool, Bool, Bool) with Exception
+fn parse_user_fmt_args(args: Array[String]) -> (String, String) with Exception
+fn parse_user_type_at_args(args: Array[String]) -> (String, Int, Int) with Exception
+fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env
+fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env + Stderr
+
 // --- cli_adapter.vibe
-fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout
+// `Stderr` + `Process` + `Profiler` since #2858: the verb branch reports its
+// diagnostic on stderr, exits with its code, and times `check --profile-tsv`
+// (see cli_adapter.vibe's `cli_main`).
+fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout + Stderr + Process + Profiler
 
 // Host-side action planner used by the launcher before instantiating a
 // profiled target guest.
@@ -451,7 +479,7 @@ fn profile_plan_main() -> Int with Exception + Fs + Env
 // alongside `cli_main`, not excluded like the orphaned `main`/`cli_main`
 // variants above -- this is a REAL export of this package's canonical
 // cli_adapter.vibe, not a dead/duplicate standalone entry file.
-fn main() -> Unit with Exception + Fs + Env + Stdin + Stdout + Process
+fn main() -> Unit with Exception + Fs + Env + Stdin + Stdout + Stderr + Process + Profiler
 
 // #2497: the compile-only artifact's entry pair (scripts/build_compile_only.sh).
 // Same CLI body as `cli_main`, production lane tables only.

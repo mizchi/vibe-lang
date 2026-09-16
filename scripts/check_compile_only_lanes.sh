@@ -106,13 +106,12 @@ fi
 # Private scratch: the gate and its self-test may run side by side.
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/compile_only_lanes.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
-# Clear every CLI selector the launcher knows before each probe compile, so an
-# inherited one (`VIBE_CHECK_ONLY=1` in the caller's environment) cannot turn
-# the compile into another verb. Same source as scripts/build_compile_only.sh:
-# runtime/vibe's VIBE_SELECTOR_ORDER, kept in sync with cli_adapter.vibe by
-# scripts/check_selector_precedence.sh.
-SELECTOR_ORDER="$(sed -n '/^VIBE_SELECTOR_ORDER="/,/"$/p' "$ROOT_DIR/runtime/vibe" | tr -d '"' | sed 's/^VIBE_SELECTOR_ORDER=//')"
-[ -n "$SELECTOR_ORDER" ] || fail "runtime/vibe has no VIBE_SELECTOR_ORDER"
+# Clear every adapter selector before each probe compile, so an inherited
+# `VIBE_CHECK_ONLY=1` cannot turn the compile into another verb. Derived
+# from cli_adapter.vibe (scripts/adapter_selector_order.sh); the launcher
+# no longer embeds VIBE_SELECTOR_ORDER.
+SELECTOR_ORDER="$(bash "$ROOT_DIR/scripts/adapter_selector_order.sh")"
+[ -n "$SELECTOR_ORDER" ] || fail "no adapter selectors found in cli_adapter.vibe"
 CLEAR_ARGS=""
 for s in $SELECTOR_ORDER; do CLEAR_ARGS="$CLEAR_ARGS -u $s"; done
 # Allocating, so the RC and bump lanes have something to differ on.

@@ -142,6 +142,17 @@ expect_launcher_fail() {
   local work="$TMP_ROOT/case$case_no" mutant="$TMP_ROOT/launcher$case_no" log="$TMP_ROOT/case$case_no.log"
   rm -rf "$work"
   cp -R "$MASTER" "$work"
+  # The mutation must have something to REMOVE. `grep -qF "$gone" "$mutant"`
+  # below answers "the text is gone", and text that was never there is also
+  # gone -- so a case whose target has since moved out of the launcher keeps
+  # reporting a landed mutation while mutating nothing. That is how the three
+  # `--component` cases survived the argv move: their sed scripts address the
+  # `compile|build` arm, which now lives in lib/@vibe/cli, and deleting an
+  # absent line "applied" every time. Assert the target EXISTS first.
+  if ! grep -qF -- "$gone" "$ROOT/runtime/vibe"; then
+    echo "component-lazy self-test [$label]: the mutation targets text the launcher does not contain ('$gone') -- it moved, so this case proves nothing" >&2
+    exit 1
+  fi
   sed "$sed_script" "$ROOT/runtime/vibe" > "$mutant"
   # The mutation must have LANDED. An edit that matches nothing passes while
   # proving nothing -- the failure mode #2248 records twice.
@@ -161,29 +172,21 @@ expect_launcher_fail() {
   echo "component-lazy self-test [$label]: red as expected"
 }
 
-expect_launcher_fail "launcher forgets --component" \
+#    Since #2858 the launcher parses no build flag itself: `build`'s words are
+#    forwarded whole to the verb dispatcher (lib/@vibe/compiler/user_dispatch.vibe)
+#    through the catch-all arm, so "forgetting --component" is the launcher
+#    forwarding the verb without its arguments. The flag parsing that used to
+#    be mutated here (`--component`, the unknown-option refusal, the `.vibex`
+#    refusal) now lives in the compiler and is pinned at unit level by
+#    lib/@vibe/cli/dispatch_test.vibe; the gate still asserts each refusal's
+#    TEXT against the built stage2, which is the oracle a launcher mutation
+#    cannot reach.
+expect_launcher_fail "launcher forgets the verb's arguments" \
   "vibe build --component failed" \
-  's/        --component) component=1; shift ;;//' \
-  '--component) component=1'
+  's/^    set -- "\$cmd" "\$@"$/    set -- "$cmd"/' \
+  'set -- "$cmd" "$@"'
 
-# 10. ...and the structural half: the catch-all that swallowed `--component`
-#     as a source path is what let it through silently in the first place. With
-#     the refusal removed, any FUTURE flag can be dropped the same way, and the
-#     gate has to notice.
-expect_launcher_fail "launcher swallows an unknown flag again" \
-  "an unknown build option was swallowed" \
-  's/        -\*) die "\$cmd: unknown option: \$1" ;;//' \
-  'unknown option: $1'
-
-# 11. The `.vibex` refusal is real: take it out of the launcher and the gate
-#     must notice, rather than letting every such build fail several layers
-#     down with a message about exports.
-expect_launcher_fail "launcher accepts a .vibex for --component" \
-  "was not refused with its own reason" \
-  's/        \*.vibex) die "--component needs a .vibe module.*$//' \
-  '--component needs a .vibe module'
-
-# 12. The pruning assertion is real: make the module that avoids the formatter
+# 10. The pruning assertion is real: make the module that avoids the formatter
 #     carry it anyway (by swapping in the one that reaches it), which is
 #     exactly what a lane that stopped pruning would produce, and the gate
 #     must say so.
@@ -191,14 +194,14 @@ expect_fail "command lane stops pruning" \
   "did not prune" \
   "cp cmd/reaches.component.wasm cmd/avoids.component.wasm"
 
-# 13. A writing command must not be able to report success. Swap it for one
+# 11. A writing command must not be able to report success. Swap it for one
 #     that exits 0 and writes nothing -- exactly what the permissive vfs wrap
 #     produced before the trapping wrap replaced it -- and the gate must say so.
 expect_fail "writing command reports success" \
   "reported success; the write was answered instead of trapping" \
   "cp cmd/hello.component.wasm cmd/writer.component.wasm"
 
-# 14. The precompiled-trust boundary is real.
+# 12. The precompiled-trust boundary is real.
 #
 #     The mutation has to reach the runner's ARGUMENT POLICY, not a fixture.
 #     An earlier attempt renamed precompiled bytes onto a component row, which
@@ -243,7 +246,7 @@ grep -q 'selected a precompiled image with no --trust-precompiled' "$trust_log" 
   || { cat "$trust_log" >&2; echo "component-lazy self-test [precompiled trust boundary]: red, but not at the trust assertion" >&2; exit 1; }
 echo "component-lazy self-test [precompiled trust boundary]: red as expected"
 
-# 15. The compiler-source half of the cache key (Codex P2): a change under
+# 13. The compiler-source half of the cache key (Codex P2): a change under
 #     lib/@vibe/compiler must force a rebuild, or a changed emitter is reused
 #     from yesterday's artifacts and the gate is green about code it never ran.
 case_no=$((case_no + 1))

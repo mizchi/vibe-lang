@@ -6059,14 +6059,15 @@ echo "[compiler-gate] call-site offset does not steal an identifier token ok (#2
 #      must live under the repo checkout. So an INSTALLED user could not
 #      format at all, while 21 documents told them to run `vibe fmt`.
 #
-#      Two halves, and the second is the one that can rot silently. The
-#      launcher arm's own decisions (mode dispatch, refusal, adapter-mode env
-#      clearing) are pinned by a fake runner, so they are checked even when no
-#      compiler is built. Then the real thing: the stage2 under test formats a
-#      messy file through VIBE_FMT and must produce the canonical layout --
-#      the guest branch, not the shell around it.
+#      Two halves. Since #2858 the formatter's decisions live in the verb
+#      dispatcher (lib/@vibe/compiler/user_dispatch.vibe), so the launcher
+#      test drives the stage2 under test through runtime/vibe and pins each
+#      path as the user sees it (modes, both refusals, one file at a time,
+#      inherited adapter-mode selectors cleared). Then the guest branch on
+#      its own: the same stage2 formats a messy file through VIBE_FMT and
+#      must produce the canonical layout.
 echo "[compiler-gate] 106/106 vibe fmt reaches an installed user (#2149)"
-bash "$ROOT_DIR/scripts/test_vibe_fmt_launcher.sh"
+VIBE_CLI_WASM="$stage2_wasm" bash "$ROOT_DIR/scripts/test_vibe_fmt_launcher.sh"
 # cli_adapter dispatches on selectors in SOURCE ORDER, so a leaked one hijacks
 # every verb whose selector is evaluated later. Keeping the launcher's `env -u`
 # lists right by hand demonstrably does not work -- this PR shipped an arm
@@ -6111,7 +6112,11 @@ bash "$ROOT_DIR/scripts/check_book_console_test.sh"
 # first correct run, and it was RED: the launcher had grown an `at off=62`
 # line the chapter did not carry, and the paragraph under it still said the
 # report has no position at all, a gap #2202 closed.
-bash "$ROOT_DIR/scripts/check_book_console.sh"
+# The gate is handed THIS lane's stage2 (#2138): left to resolve_stage2 on a
+# CI shard, whose generation lives outside _build/selfhost/generations, it
+# fell back to the committed seed -- a compiler that predates the verb
+# protocol the launcher now speaks (#2858).
+BOOK_CONSOLE_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_book_console.sh"
 
 # 107/107. The host runner's `[crash debug]` dump is OFF by default (#2199).
 #      It is compiler-developer diagnostics -- heap bytes, the RC freelist, raw

@@ -242,8 +242,16 @@ if [ "$command_result" != "42" ]; then
   exit 1
 fi
 
+# `--entry` is spelled out rather than leaning on a default. The two front
+# doors disagreed about it: `runtime/vibe compile foo.vibe` defaulted to `main`
+# while this CLI's own `compile` verb defaulted to `_start`, so the same
+# command meant two entries depending on which door was used. The doors are one
+# door now (lib/@vibe/cli/user_dispatch.vibe) and it keeps the LAUNCHER's
+# `main`, which is the contract users see. What this gate is asking -- can the
+# CLI core compile a source into a runnable artifact -- does not depend on
+# which default won, so it names the entry and stops depending on it.
 cat >"$COMPILE_COMMAND_INPUT_SOURCE" <<'EOF'
-export let _start = () -> Int { 40 + 2 }
+export let answer = () -> Int { 40 + 2 }
 EOF
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
@@ -254,6 +262,7 @@ run_stage "stage1 core artifact -> command-style compile wasm compile" \
     "$STAGE1_CORE_WASM" \
     compile \
     --wasm \
+    --entry "$ENTRY_NAME" \
     "${COMPILE_COMMAND_INPUT_SOURCE#$PROJECT_ROOT/}" \
     -o "${COMPILE_COMMAND_OUTPUT_WASM#$PROJECT_ROOT/}" || exit $?
 
@@ -281,8 +290,9 @@ if [ "$compile_command_result" != "42" ]; then
   exit 1
 fi
 
+# Same reason as the compile fixture above: name the entry.
 cat >"$BUILD_COMMAND_INPUT_SOURCE" <<'EOF'
-export let _start = () -> Int { 40 + 2 }
+export let answer = () -> Int { 40 + 2 }
 EOF
 
 export VIBE_PREOPEN_DIR="$PROJECT_ROOT"
@@ -293,6 +303,7 @@ run_stage "stage1 core artifact -> command-style build release wasm compile" \
     "$STAGE1_CORE_WASM" \
     build \
     --release \
+    --entry "$ENTRY_NAME" \
     "${BUILD_COMMAND_INPUT_SOURCE#$PROJECT_ROOT/}" \
     -o "${BUILD_COMMAND_OUTPUT_WASM#$PROJECT_ROOT/}" || exit $?
 

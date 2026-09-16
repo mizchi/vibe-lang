@@ -174,8 +174,17 @@ help_block = re.search(r'^# Subcommands:.*?^#   vibe help ', launcher, re.S | re
 verbs = set(re.findall(r'^#   vibe ([a-z][a-z0-9-]*)', help_block.group(0), re.M)) if help_block else set()
 case_block = re.search(r'^case "\$cmd" in$(.*?)^esac$', launcher, re.S | re.M)
 if case_block:
-    for arm in re.findall(r'^  ([a-z][a-z0-9|-]*)\)', case_block.group(1), re.M):
-        verbs |= {v for v in arm.split("|") if v}
+    for arm in re.findall(r'^  ([A-Za-z][A-Za-z0-9|-]*)\)', case_block.group(1), re.M):
+        verbs |= {v.lstrip("-") for v in arm.split("|") if v and v.lstrip("-")[:1].isalpha()}
+# Argv verbs moved into the compiler wasm (#2858): the match in
+# lib/@vibe/compiler/user_dispatch.vibe is the dispatcher the launcher invokes,
+# so a documented command must appear there or in the remaining host-only
+# case arms.
+try:
+    ud = open("lib/@vibe/compiler/user_dispatch.vibe", encoding="utf-8").read()
+    verbs |= set(re.findall(r'^    "([a-z][a-z0-9-]*)" =>', ud, re.M))
+except OSError:
+    pass
 # A parse that finds nothing would pass every doc silently. Fail loudly instead.
 if len(verbs) < 20:
     print(f"check-doc-commands: FAIL: read only {len(verbs)} verbs from runtime/vibe -- the "

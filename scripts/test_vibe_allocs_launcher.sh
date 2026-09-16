@@ -38,10 +38,13 @@ fi
 # a shell that inherited an internal compiler-mode variable. VIBE_HASH is
 # evaluated before VIBE_ALLOCS in cli_adapter, so leaking it changes the verb.
 ENV_RUNNER="$TMP_DIR/env-runner"
+# The launcher hands the CLI a VERB (`allocs <file>`) and reads its stdout
+# (#2858), so the fake runner answers on stdout rather than into a positional
+# output path.
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'if [ "${VIBE_HASH:-}" = "1" ]; then exit 41; fi' \
-  'printf "main array 0\n" > "$3"' > "$ENV_RUNNER"
+  'printf "main array 0\n"' > "$ENV_RUNNER"
 chmod +x "$ENV_RUNNER"
 VIBE_HASH=1 VIBE_RUNNER="$ENV_RUNNER" VIBE_CLI_WASM="$CLI" \
   bash "$ROOT_DIR/runtime/vibe" allocs "$SRC" > "$OUT" 2> "$ERR"

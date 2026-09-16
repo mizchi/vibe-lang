@@ -54,11 +54,22 @@ staged_paths="$(git -C "$PROJECT_ROOT" diff "${DIFF_SELECTOR[@]}" --name-only --
 # run time, and the failure came back out as `structural regression(s) added`
 # against whatever was being committed. Actually invoke it -- one cheap call
 # answers "can this run" instead of "does this file look like it could".
+# Probe with the OPERATION, on an empty directory: `vibe version` is answered
+# without a runner (an installed toolchain that has not built one still
+# prints its manifest), so it certified a launcher whose every `vibe grep`
+# then died with `runner not found` (#2858 CI). A grep over nothing costs one
+# runner start and answers the actual question.
+grep_probe_runs() {
+  local probe_root status=0
+  probe_root="$(mktemp -d "${TMPDIR:-/tmp}/vibe_review_probe.XXXXXX")"
+  "$GREP_BIN" grep --pattern '$(f:id)' "$probe_root" >/dev/null 2>&1 || status=$?
+  rm -rf "$probe_root"
+  return "$status"
+}
 grep_available=0
 if [ -n "${VIBE_REVIEW_LINT_GREP_BIN:-}" ]; then
   grep_available=1
-elif [ -x "$GREP_BIN" ] && grep -qE '^  grep\)' "$GREP_BIN" \
-  && "$GREP_BIN" --version >/dev/null 2>&1; then
+elif [ -x "$GREP_BIN" ] && grep -qE '^  grep\)' "$GREP_BIN" && grep_probe_runs; then
   grep_available=1
 elif [ -x "$GREP_BIN" ] && grep -qE '^  grep\)' "$GREP_BIN"; then
   # #1870: `runtime/vibe` is here but its Rust runner (`bin/viberun`) is not,
