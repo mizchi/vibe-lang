@@ -35,13 +35,25 @@ _sha256_file() {
   if sha256sum </dev/null >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
+# The wasm this launcher hands its argv to. It has to be the USER CLI
+# (lib/@vibe/cli/main.vibex -> scripts/build_user_cli_wasm.sh), not the
+# COMPILER (lib/@vibe/compiler/cli_adapter.vibe -> dist/cli/vibe-cli.wasm,
+# stage2.wasm): the compiler reads `<input> <output> <entry>` plus VIBE_*
+# selectors and has no idea what a verb is, so handed one it reads it as a
+# path -- `vibe test x.vibe` became `fs_read_file failed for 'test'`.
+#
+# VIBE_USER_CLI_WASM is checked BEFORE VIBE_CLI_WASM because the two name
+# different things: a caller that sets VIBE_CLI_WASM is choosing a COMPILER
+# (which is what it meant while this launcher did its own parsing), and
+# ~12 scripts plus CI still set it that way.
 pick_cli() {
   local cand
+  [ -n "${VIBE_USER_CLI_WASM:-}" ] && [ -f "$VIBE_USER_CLI_WASM" ] && { printf '%s' "$VIBE_USER_CLI_WASM"; return; }
   [ -n "${VIBE_CLI_WASM:-}" ] && [ -f "$VIBE_CLI_WASM" ] && { printf '%s' "$VIBE_CLI_WASM"; return; }
   for cand in "$TOOLCHAIN_DIR/lib/vibe-user-cli.wasm" "$TOOLCHAIN_DIR/_build/cli/vibe-user-cli.wasm" "$CLI_CWASM" "$CLI_WASM"; do
     [ -f "$cand" ] && { printf '%s' "$cand"; return; }
   done
-  die "compiler wasm not found: $CLI_WASM"
+  die "CLI wasm not found: $CLI_WASM (build one with \`bash scripts/build_user_cli_wasm.sh\`, or name it with VIBE_USER_CLI_WASM)"
 }
 manifest_field_of() { [ -f "$1" ] && sed -n "s/^  \"$2\": \"\(.*\)\",\{0,1\}\$/\1/p" "$1" | sed -n '1p'; }
 manifest_field() { manifest_field_of "$TOOLCHAIN_DIR/manifest.json" "$1"; }
@@ -306,6 +318,37 @@ invoke_cli() {
   fi
   rm -f "$plan"; return "$status"
 }
+# vibe grep [flags] --pattern '<pattern>' [paths...]        (#1572)
+# 
+# Structural AST search. Metavariables are `$(name:kind)`, kind = exp / id / const / arg / args / pat / type.
+# `$(_:kind)` is anonymous.
+# Unlike moongrep / ast-grep, the filters run on the
+# CHECKER's answers, not on the grammar alone:
+#   --where '$x : Array[Int]'    the capture's INFERRED type (`_` wildcard)
+#   --where '$f = Iterator::map' the capture's RESOLVED name (sees through
+#                                `import { Iterator as It }`)
+#   --where-row '$f with Async' / '$f without Async'
+#                                the capture's effect ROW
+#   --only-ill-typed / --only-well-typed
+#                                keep matches in declarations that do (not)
+#                                type-check
+# Any of those switches the sweep into the typed tier, which resolves
+# imports through the same walk `vibe check` uses -- `vibe diagnostics`'s
+# import-blind false positives are not reproduced here.
+# 
+# Output is one match per line, `path:line:col: <matched text>` followed by
+# tab-separated `$var=<capture>`; `--json` emits the same matches as a JSON
+# array (each capture carrying its inferred type when the typed tier ran).
+# Empty output = no match. A report, not a failure: only a bad pattern or a
+# bad filter is an error.
+# END grep help
+grep_help_requested() {
+  local a
+  for a in "$@"; do
+    case "$a" in --help|-h) return 0 ;; --) return 1 ;; esac
+  done
+  return 1
+}
 cmd="${1:-help}"; shift || true
 case "$cmd" in
   new)
@@ -485,6 +528,22 @@ EOF
           ;;
       esac
     done
+    ;;
+  grep)
+    # `vibe grep --help` is answered HERE, with no compiler wasm and without
+    # starting the runner. Two gates pin that and neither can be satisfied from
+    # inside the CLI: scripts/test_vibe_grep_help.sh runs it with a dummy
+    # runner and FAILS if the runner is invoked, and
+    # scripts/session_start_grep_test.sh runs it with VIBE_CLI_WASM naming a
+    # file that does not exist. Explaining a flag is the one thing that has to
+    # keep working when the toolchain does not, so it stays host-side; every
+    # other word of `grep` is parsed in lib/@vibe/cli. The text above is the
+    # user-facing help, printed by the same content-anchored `sed` main used.
+    if grep_help_requested "$@"; then
+      sed -n '/^# vibe grep \[flags\]/,/^# END grep help/p' "$LAUNCHER" | sed '/^# END grep help/d; s/^# \{0,1\}//'
+      exit 0
+    fi
+    invoke_cli grep "$@"
     ;;
   help|--help|-h)
     invoke_cli help

@@ -15,6 +15,7 @@ import ../compiler/entry/compiler/file_compile {
 }
 
 import ../compiler/entry/source_compile/wasi_only {
+  comp_emit_component_wasm_command,
   comp_emit_component_wasm_stream_handler, comp_emit_component_wasm_string_handler
 }
 
@@ -56,7 +57,12 @@ import ../compiler/syntax {
 }
 
 import ../compiler {
+  check_unstable_surface_warnings_from_closure,
+  check_unstable_surface_warnings_from_path,
+  command_component_compile_mode, command_component_entry,
   compute_updated_source,
+  strip_executable_wasm_env,
+  unstable_closure_reset,
   serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler,
   wit_from_program
 }
@@ -255,14 +261,119 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String) -> By
     compile_file_fs_mode_break(input_path, entry_name)
   } else if kind == "gc" {
     compile_file_fs_mode_gc(input_path, entry_name)
+  } else if kind == "component" {
+    // A COMMAND component prunes from the module's own command entry and emits
+    // a LIBRARY, which is why it needs its own mode rather than `mvp`
+    // (docs/internal/design/component-lazy-dispatch.md). The mode comes from
+    // `cli_support.vibe` so this door and the `.vibex` CLI's `build
+    // --component` cannot drift apart (#2863: the same flag produced 40 MB
+    // through one door and 2.6 MB through the other).
+    compile_file_fs_mode(input_path, entry_name, command_component_compile_mode())
   } else {
     compile_file_fs_mode(input_path, entry_name, "mvp")
+  }
+}
+
+/// ADR-0068 (#2305): refuse an unstable import unless the caller opted in.
+///
+/// `runtime/vibe` did not carry this -- `cli_adapter.vibe` did, on the far
+/// side of the launcher's compile invocation, so every launcher verb inherited
+/// it. Calling `compile_file_fs_mode*` from here goes AROUND the adapter, so
+/// without these two calls `vibe build` / `run` / `test` / `serve` write an
+/// artifact for a program that imports `@vibe/concurrent` with no opt-in,
+/// while `vibe check` on the same file still reports it. #2305's own note on
+/// the split CLI applies unchanged: the gate belongs on the one function every
+/// artifact-producing path goes through, so it covers them by construction
+/// rather than by remembering.
+fn reject_unstable_entry_surface(input_path: String) -> Unit with Exception + Fs + Env {
+  if unstable_opt_in() {
+    ()
+  } else {
+    let diags = check_unstable_surface_warnings_from_path(input_path)
+    if Array::length(diags) > 0 {
+      throw(String::join(diags, "\n"))
+    } else {
+      ()
+    }
+  }
+}
+
+/// The closure half. A SIBLING carrying the import is invisible until the
+/// loader has walked it, so this can only be asked after the compile that
+/// ingested it -- and before the artifact is written.
+fn reject_unstable_closure_surface() -> Unit with Exception + Fs + Env {
+  if unstable_opt_in() {
+    ()
+  } else {
+    let diags = check_unstable_surface_warnings_from_closure()
+    if Array::length(diags) > 0 {
+      throw(String::join(diags, "\n"))
+    } else {
+      ()
+    }
+  }
+}
+
+/// Every artifact this dispatcher compiles goes through here: entry gate,
+/// compile, closure gate.
+fn compile_user_artifact(input_path: String, entry_name: String, kind: String) -> Bytes with Exception + Fs + Env {
+  reject_unstable_entry_surface(input_path)
+  unstable_closure_reset()
+  let bytes = compile_user_wasm(input_path, entry_name, kind)
+  reject_unstable_closure_surface()
+  bytes
+}
+
+/// Binary-size (#1100): a release executable ships without its name section
+/// and without the module-linking exports, keeping only what a runner
+/// addresses by name. `cli_adapter.vibe` applied this to everything the
+/// launcher compiled; writing the compiler's bytes straight to disk here put
+/// the name section back into every `vibe build` / `compile` artifact.
+/// Instrumented builds (trace / break) are debug artifacts whose tooling reads
+/// both, so they keep the plain write, and the strip is itself a no-op for the
+/// `__no_entry__` test/bench builds.
+fn write_user_executable(output_path: String, bytes: Bytes, entry_name: String, kind: String) -> Unit with Fs + Env {
+  ensure_parent_dir(output_path)
+  if kind == "trace" || kind == "break" {
+    Fs::write_bytes(output_path, bytes)
+  } else {
+    Fs::write_bytes(output_path, strip_executable_wasm_env(bytes, entry_name))
+  }
+}
+
+/// `VIBE_TEST_BACKEND` / `VIBE_BENCH_BACKEND` = `linear` (default) | `gc`.
+///
+/// `runtime/vibe` used to read these and hand `VIBE_BACKEND=gc` to the
+/// adapter, which selected `compile_file_fs_mode_gc`. With the translation
+/// moved here, a launcher that no longer sets the variable and a dispatcher
+/// that never reads it means `VIBE_TEST_BACKEND=gc vibe test` silently
+/// measures the LINEAR lane -- the CI `gc-gate` asks exactly that question.
+/// An unrecognised value is refused by name rather than treated as `linear`.
+fn user_backend_kind(var: String) -> String with Exception + Env {
+  let requested = Env::get(var)
+  if requested == "" || requested == "linear" {
+    "mvp"
+  } else if requested == "gc" {
+    "gc"
+  } else {
+    throw(String::concat(var, String::concat(" must be 'linear' or 'gc', got: ", requested)))
   }
 }
 
 fn write_wasm(output_path: String, bytes: Bytes) -> Unit with Fs {
   ensure_parent_dir(output_path)
   Fs::write_bytes(output_path, bytes)
+}
+
+/// The parser hands back the DEFAULT build path spelled literally
+/// (`.vibe/build/...`) because it has no `Env`; this re-anchors it on the real
+/// build directory. A `-o` the caller wrote is passed through untouched.
+fn resolve_user_build_output(output_path: String) -> String with Env {
+  if String::starts_with(output_path, ".vibe/build/") {
+    String::concat(default_build_dir(), output_path[11: String::length(output_path)])
+  } else {
+    output_path
+  }
 }
 
 fn write_host_action(action_path: String, body: String) -> Int with Exception + Fs {
@@ -657,7 +768,13 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
 
 //# compile / build
 
-export fn parse_user_compile_args(args: Array[String]) -> (String, String, String, Bool, Bool) with Exception {
+/// `(input, output, entry, wit, minify, component)`.
+///
+/// `component` is its own field rather than a mode: `--component` selects a
+/// DIFFERENT COMPILE LANE (`command_component_compile_mode()`) and a different
+/// artifact (a Component Model binary wrapping the core), so folding it into
+/// the wit/minify booleans would lose the refusals below.
+export fn parse_user_compile_args(args: Array[String]) -> (String, String, String, Bool, Bool, Bool) with Exception {
   if Array::length(args) == 0 {
     throw("compile: expected command")
   } else {
@@ -670,6 +787,7 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
       let mut entry = "main"
       let mut entry_override = false
       let mut wit = false
+      let mut component = false
       let mut minify = false
       let mut i = 1
       while i < Array::length(args) {
@@ -685,6 +803,9 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
           ()
         } else if arg == "--wit" {
           wit = true
+          ()
+        } else if arg == "--component" {
+          component = true
           ()
         } else if arg == "--minify" {
           minify = true
@@ -708,13 +829,32 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
         i = i + 1
       }
       if src == "" {
-        throw(String::concat("usage: vibe ", String::concat(cmd, " <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit] [--minify] [--jobs N]")))
+        throw(String::concat("usage: vibe ", String::concat(cmd, " <file.vibe|file.vibex> [-o <out.wasm>] [--entry <name>] [--wit] [--component] [--minify] [--jobs N]")))
       } else if is_vibex_path(src) && entry_override {
         throw(".vibex entry is always main; --entry is not allowed")
       } else if wit && is_vibex_path(src) {
         throw("--wit for .vibex requires semantic contract emission")
+      } else if component && wit {
+        throw("--component and --wit produce different artifacts from the same file; run them separately")
+      } else if component && entry_override {
+        throw("--component has no command entry; its surface is the lifted `run` export, so --entry is not allowed")
+      } else if component && minify {
+        // vibe-opt optimizes CORE modules; running it over a component binary
+        // is a different operation and is not wired.
+        throw("--component and --minify cannot be combined: the minifier takes a core module, not a component")
+      } else if component && is_vibex_path(src) {
+        // A `.vibex` is an executable root with NO export surface (ADR-0075,
+        // #2229), so it can never carry the `export fn vibe_command` a command
+        // component is made of. Refused here rather than deep in compilation,
+        // where the message would be about exports and never mention
+        // `--component`.
+        throw("--component needs a .vibe module: a .vibex is an executable root with no export surface, and a command component is built from `export fn vibe_command(args: String) -> String`")
       } else {
-        let resolved_entry = if is_vibex_path(src) {
+        let resolved_entry = if component {
+          // Shared with the `.vibex` CLI door, so the same flag cannot mean two
+          // different entries depending on which front door was used (#2863).
+          command_component_entry()
+        } else if is_vibex_path(src) {
           "main"
         } else {
           entry
@@ -722,37 +862,61 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
         let resolved_out = if out == "" {
           if wit {
             String::concat(".vibe/build/out/", String::concat(basename_of(strip_vibe_suffix(src)), ".wit"))
+          } else if component {
+            String::concat(".vibe/build/out/", String::concat(basename_of(strip_vibe_suffix(src)), ".component.wasm"))
           } else {
             String::concat(".vibe/build/out/", String::concat(basename_of(strip_vibe_suffix(src)), ".wasm"))
           }
         } else {
           out
         }
-        (src, resolved_out, resolved_entry, wit, minify)
+        (src, resolved_out, resolved_entry, wit, minify, component)
       }
     }
   }
 }
 
+/// The export name a command component lifts. `runtime/viberun`'s command
+/// loader looks it up by name; the vibe function BEHIND it is
+/// `command_component_entry()`.
+fn user_command_component_export() -> String {
+  "run"
+}
+
+/// The wrap's own message names what it found in the core; this adds the edit,
+/// which is what the reader is missing when the core has no command entry.
+fn user_command_component_edit(input_path: String, entry: String, message: String) -> String {
+  "build --component \{input_path}: \{message}; a command module exports exactly `export fn \{entry}(args: String) -> String` and returns the `vibe-command-result-v1` frame (`command_ok` / `command_result` in @vibe/command)"
+}
+
+fn emit_user_command_component(core: Bytes, input_path: String) -> Bytes with Exception {
+  let entry = command_component_entry()
+  handle {
+    comp_emit_component_wasm_command(core, entry, user_command_component_export())
+  } with { Exception::Throw(message) => throw(user_command_component_edit(input_path, entry, message)) }
+}
+
 fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdout {
-  let (src, out, entry, wit, minify) = parse_user_compile_args(args)
+  let (src, out, entry, wit, minify, component) = parse_user_compile_args(args)
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
+  } else if component {
+    let resolved = resolve_user_build_output(out)
+    let core = compile_user_artifact(src, entry, "component")
+    write_wasm(resolved, emit_user_command_component(core, src))
+    println(String::concat("component ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
+    0
   } else if wit {
-    let resolved = out
+    let resolved = resolve_user_build_output(out)
     let stmts = parse_program(lex(Fs::read_file(src)))
     ensure_parent_dir(resolved)
     Fs::write_file(resolved, wit_from_program(stmts, stmts, basename_of(strip_vibe_suffix(src))))
-    println(String::concat("wit ", String::concat(src, String::concat(" -> ", resolved))))
+    println(String::concat("wit ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
     0
   } else {
-    let resolved = if String::starts_with(out, ".vibe/build/") {
-      String::concat(default_build_dir(), out[11: String::length(out)])
-    } else {
-      out
-    }
-    let bytes = compile_user_wasm(src, entry, "mvp")
-    write_wasm(resolved, bytes)
+    let resolved = resolve_user_build_output(out)
+    let bytes = compile_user_artifact(src, entry, "mvp")
+    write_user_executable(resolved, bytes, entry, "mvp")
     println(String::concat("compiled ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
     if minify {
       let action = Env::get("VIBE_HOST_ACTION_OUT")
@@ -1606,8 +1770,8 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
     } else {
       "mvp"
     }
-    let bytes = compile_user_wasm(src, "main", kind)
-    write_wasm(out, bytes)
+    let bytes = compile_user_artifact(src, "main", kind)
+    write_user_executable(out, bytes, "main", kind)
     let acc = StringBuilder::new()
     StringBuilder::push(acc, "vibe-host-action-v1\nrun-guest\n")
     StringBuilder::push(acc, out)
@@ -1682,6 +1846,7 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
     throw("usage: vibe test [--no-cache] [--update] [--jobs N] <file_test.vibe | dir> [more...]")
   } else {
     let expanded = expand_user_test_inputs(files)
+    let backend_kind = user_backend_kind("VIBE_TEST_BACKEND")
     let acc = StringBuilder::new()
     StringBuilder::push(acc, "vibe-host-action-v1\nrun-tests\n")
     if update {
@@ -1700,7 +1865,14 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       let out = String::concat(default_build_dir(), String::concat("/test/", String::concat(strip_vibe_suffix(src), ".wasm")))
       let meta = String::concat(out, ".testmeta")
       ensure_parent_dir(out)
-      let bytes = compile_file_fs_mode_testmeta(src, "__no_entry__", "mvp", meta)
+      reject_unstable_entry_surface(src)
+      unstable_closure_reset()
+      let bytes = if backend_kind == "mvp" {
+        compile_file_fs_mode_testmeta(src, "__no_entry__", "mvp", meta)
+      } else {
+        compile_user_wasm(src, "__no_entry__", backend_kind)
+      }
+      reject_unstable_closure_surface()
       write_wasm(out, bytes)
       StringBuilder::push(acc, src)
       StringBuilder::push(acc, "\t")
@@ -1767,7 +1939,7 @@ fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exception + Fs 
       ""
     }
     let out = String::concat(default_build_dir(), String::concat("/bench/", String::concat(basename_of(strip_vibe_suffix(src)), ".wasm")))
-    let bytes = compile_user_wasm(src, "__no_entry__", "mvp")
+    let bytes = compile_user_artifact(src, "__no_entry__", user_backend_kind("VIBE_BENCH_BACKEND"))
     write_wasm(out, bytes)
     let acc = StringBuilder::new()
     StringBuilder::push(acc, "vibe-host-action-v1\nrun-benches\n")
@@ -1836,7 +2008,7 @@ fn selfhost_cli_user_serve_args(args: Array[String]) -> Int with Exception + Fs 
     }
     let entry_stmts = parse_program(lex(Fs::read_file(src)))
     validate_serve_handler(entry_stmts)
-    let core = compile_user_wasm(src, "__no_entry__", "mvp")
+    let core = compile_user_artifact(src, "__no_entry__", "mvp")
     let component = if serve_handler_takes_body_stream(entry_stmts) {
       comp_emit_component_wasm_stream_handler(core, "handler", "handler", serve_handler_param_names())
     } else {

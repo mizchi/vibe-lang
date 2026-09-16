@@ -1089,7 +1089,7 @@ test "user test plan expands a directory to *_test.vibe files" {
 }
 
 test "user compile parse defaults to the build-dir artifact" {
-  let (input_path, output_path, entry_name, wit, minify) = parse_user_compile_args([
+  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args([
     "compile",
     "app.vibe"
   ])
@@ -1098,10 +1098,11 @@ test "user compile parse defaults to the build-dir artifact" {
   assert(entry_name == "main")
   assert(!wit)
   assert(!minify)
+  assert(!component)
 }
 
 test "user compile parse honors -o and --wit" {
-  let (input_path, output_path, entry_name, wit, minify) = parse_user_compile_args([
+  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args([
     "compile",
     "--wit",
     "srv.vibe",
@@ -1113,6 +1114,94 @@ test "user compile parse honors -o and --wit" {
   assert(entry_name == "main")
   assert(wit)
   assert(!minify)
+  assert(!component)
+}
+
+/// `--component` reaches the door the LAUNCHER uses.
+///
+/// It landed on `parse_build_args` (#2861/#2863), and moving argv parsing into
+/// `user_dispatch.vibe` left that function reachable only from this file --
+/// so its `--component` tests kept passing while `vibe build --component`
+/// answered `unsupported option: --component`. A test that can only be reached
+/// by calling the function directly certifies nothing about the CLI, which is
+/// why the pair below asks `user_dispatch_is_verb` WHICH door is live and then
+/// tests that one.
+test "build/compile go to the user-dispatch door, so that is where --component has to be" {
+  assert(user_dispatch_is_verb("build"))
+  assert(user_dispatch_is_verb("compile"))
+}
+
+test "user compile parse accepts --component on the shared lane" {
+  let (input_path, output_path, entry_name, wit, minify, component) = parse_user_compile_args([
+    "build",
+    "--component",
+    "cmd.vibe"
+  ])
+  assert(input_path == "cmd.vibe")
+  assert(output_path == ".vibe/build/out/cmd.component.wasm")
+  // Not the literal "vibe_command": the point is that BOTH doors read the one
+  // spelling in cli_support.vibe, so a change there moves both or neither.
+  assert(entry_name == command_component_entry())
+  assert(!wit)
+  assert(!minify)
+  assert(component)
+}
+
+test "user compile parse refuses --component with --wit" {
+  let result = handle {
+    let _ = parse_user_compile_args([
+      "build",
+      "--component",
+      "--wit",
+      "cmd.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "--component and --wit produce different artifacts from the same file; run them separately")
+}
+
+test "user compile parse refuses --component with --entry" {
+  let result = handle {
+    let _ = parse_user_compile_args([
+      "build",
+      "--component",
+      "--entry",
+      "foo",
+      "cmd.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "--component has no command entry; its surface is the lifted `run` export, so --entry is not allowed")
+}
+
+test "user compile parse refuses --component with --minify" {
+  let result = handle {
+    let _ = parse_user_compile_args([
+      "build",
+      "--component",
+      "--minify",
+      "cmd.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "--component and --minify cannot be combined: the minifier takes a core module, not a component")
+}
+
+test "user compile parse refuses --component on a vibex" {
+  let result = handle {
+    let _ = parse_user_compile_args(["build", "--component", "app.vibex"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::starts_with(result, "--component needs a .vibe module:"))
+}
+
+/// The mode is the OTHER half of the shared lane. #2863 measured the same flag
+/// producing 40 MB through one door and 2.6 MB through the other, because each
+/// door spelled the compile mode for itself; this pins that the name still
+/// resolves rather than that it equals some literal.
+test "the command-component compile mode is the one cli_support.vibe names" {
+  assert(command_component_compile_mode() == "dce-root")
+  assert(command_component_entry() == "vibe_command")
 }
 
 test "user compile parse rejects --entry on vibex" {
