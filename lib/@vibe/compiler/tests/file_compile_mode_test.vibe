@@ -128,6 +128,34 @@ test "compile_file_fs_mode_cached: dce-root gets its own cache namespace" {
   assert(Bytes::length(bytes_rooted) < Bytes::length(bytes_no_dce))
 }
 
+test "compile_file_fs_mode: dce-root keeps what only an interpolation reaches" {
+  // `dce_stmts` collects NO references from an interpolation: the AST node is
+  // `EStringInterp(Array[String])`, so the holes are still raw source text and
+  // `collect_refs_into` has no child expressions to walk. Read on its own that
+  // says a binding reached only through `"\{x}"` would be pruned.
+  //
+  // It is not, because of ORDER: `compile_file_fs_mode` runs the typecheck
+  // (`prepare_file_fs_from_source_groups_persistent_cached`) before it merges,
+  // that pass calls `expand_interp_stmts`, which returns `Unit` and mutates the
+  // statements IN PLACE, and the merge re-enters the same memoised
+  // `parse_program_located_shared`. So DCE sees ordinary calls.
+  //
+  // That invariant is invisible at the call site and a reordering would break
+  // it silently, which is why it is pinned here rather than left to hold by
+  // accident (Codex review of #2863).
+  let main_path = "/tmp/vibe_compiler_dce_root_interp.vibe"
+  let source = "let label = \"ok\"\n\nfn only_from_interp() -> String {\n  \"fn-ok\"\n}\n\nfn never_reached() -> String {\n  \"gone\"\n}\n\nexport fn vibe_command(args: String) -> String {\n  \"\\{label} \\{only_from_interp()} \\{args}\"\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  // Would throw on a missing name if either were pruned.
+  let bytes_rooted = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  assert_wasm_magic(bytes_rooted)
+  // ...and pruning must still be HAPPENING, or this test passes for the wrong
+  // reason: `never_reached` is unreachable by any route, so rooting at
+  // `vibe_command` has to beat keeping every statement.
+  let bytes_no_dce = compile_file_fs_mode(main_path, "__no_entry__", "no-dce")
+  assert(Bytes::length(bytes_rooted) < Bytes::length(bytes_no_dce))
+}
+
 test "compile_file_fs_mode: an unknown mode is refused by name" {
   let main_path = "/tmp/vibe_compiler_dce_root_badmode.vibe"
   Fs::write_bytes(main_path, string_to_bytes("export fn vibe_command(a: String) -> String {\n  a\n}\n"))
