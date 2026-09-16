@@ -315,6 +315,87 @@ This is the third boundary the issue asks to keep separate from the other
 two: neither the WIT (which is a projection) nor Wasmtime (which is one way to
 implement step 2) appears in it.
 
+### 2.5 A component boundary is an executable boundary, never a library boundary
+
+The question this section answers: if a `.wit` and a `.component.wasm` sit in
+the build pipeline, what happens to generics? The answer is that they never
+reach one, by construction, and the design has to say so because the two
+readings of "intermediate" are easy to confuse.
+
+**What cannot cross a component boundary.** WIT has no type parameters, no
+function types and no effect rows. The canonical ABI lifts concrete values
+only, and two component instances have two linear memories, so every string,
+list or record that crosses is a copy and no heap reference survives the
+crossing. Concretely, four things vibe relies on have no representation there:
+
+| vibe | how it is compiled today | at a component boundary |
+|---|---|---|
+| a generic function `fn f[T](x: T)` | one erased body over the uniform tagged `i64` (top-level generic bodies are not specialized) | no WIT type for `T`; passing the `i64` as `s64` hands the callee a pointer into another instance's memory |
+| a closure `(T) -> U` | a funcref index plus captured environment in the caller's heap | WIT has no function type; only a `resource` with a method, in the callee's instance |
+| a trait bound `[T: Show]` | a witness dictionary threaded by `thread_dict_params` | no dictionary type; the caller's dictionary indexes the caller's function table |
+| an effect row `with e` / a handler | evidence passing (ADR-0076) through the caller's evidence frames | no effect in WIT; `Async` is the one exception and is a lift mode, not a value |
+
+Metadata cannot recover these. A custom section can carry the type scheme
+(the `.vpkg` header and the `vCHK` transport already do), but a scheme is a
+fact about source; it does not give a second instance a way to call a funcref
+or read a struct that lives in the first instance's memory. The only working
+encodings are to monomorphize every instantiation the consumer needs at the
+boundary (impossible for a prebuilt artifact whose consumer is unknown) or to
+represent every polymorphic value as a `resource` handle with a `call` method
+(every crossing becomes a host round-trip and a manual refcount, which defeats
+the boundary's purpose). Neither is taken.
+
+**So the rule is: a component boundary is only ever placed where the surface
+is already monomorphic and first-order.** Those places are the entry points
+`vibe.entry` names — `run: func(args: string) -> string`, `_start`, the
+4-string `handler`, `vibec`'s `compile` — and they are process-like: argv in,
+bytes out. A verb component is a **whole-program link** from its root: the
+formatter's, the checker's and the core library's generic code is linked into
+it, erased and dictionary-threaded exactly as it is into the monolithic CLI
+today. That is why `check` as a component is 2.6 MB and contains its own
+checker rather than importing one. Nothing generic crosses because nothing is
+imported but host capabilities, whose operations are first-order by
+definition (§1).
+
+Where code IS shared between units, the unit is a core-module function body
+in the body cache, which has no boundary at all: a cached body is linked into
+the consumer's module, same memory, same function table (after #2669's
+symbolic relocation), same tag representation. Sharing at that layer keeps
+every property above because it is the same program, assembled from parts.
+
+### 2.6 The optimization unit
+
+A component is the right unit for **authority and isolation** (a verb runs
+with exactly the interfaces its world names, in its own memory) and for
+**loading** (a verb that is not dispatched is not read). It is the wrong unit
+for **optimization**, and the design does not use it as one:
+
+- **Inside a verb: whole-program.** DCE from the root (`dce-root`), constant
+  folding, effect-lowering prelude, trait-dictionary desugar, borrow inference
+  and Perceus all run over the whole linked program, as today. A component
+  boundary would stop every one of them: an engine does not inline across
+  instances, a Perceus reuse token cannot name another memory, and a
+  `#zero_alloc` summary (ADR-0091) can be imported only from a body in the
+  same link.
+- **Across verbs: the function body.** The capability-independent body cache
+  is the sharing unit, keyed on the body's own inputs. This is a function-
+  granularity unit, not a module or a component, because that is the
+  granularity at which the compiler already proves replay is safe (the
+  `guard_*` fields of the body cache, and #2669's move to symbolic references
+  so the guards stop depending on whole-program layout).
+
+**What this does not make free.** #2825 §1 measured a warm CLI compile at
+~8 s, of which the post-merge linked compile is 6.3 s: the body codegen the
+cache replays is 0.6 s of it, and the effect-lowering prelude (2.6 s),
+trait-dictionary desugar (0.7 s), borrow + Perceus (0.9 s) and DCE / index
+assignment / assembly (1.2 s) are per-link today. Linking ten verbs is
+therefore closer to ten post-merge phases than to one, until those phases
+become per-module cacheable — which is #2507's link unit and #2669's
+relocation, not this document. The design depends on that line; it does not
+replace it. Disk is not the constraint (ten verbs at 2–3 MB each), build
+time of the toolchain is, and it lands on `vibe self update` and the release
+build rather than on a user's `vibe build`.
+
 ## 3. Lazy CLI: the manifest carries requirements, the host composes from the world
 
 ### 3.1 The row gains one column
