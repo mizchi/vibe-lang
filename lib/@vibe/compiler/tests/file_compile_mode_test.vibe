@@ -1,7 +1,7 @@
 //# Imports
 
 import @vibe/compiler/entry/compiler/file_compile {
-  compile_file_fs_mode_cached
+  compile_file_fs_mode, compile_file_fs_mode_cached
 }
 
 import @vibe/core {
@@ -43,6 +43,56 @@ test "compile_file_fs_mode_cached: mvp prunes unused fs statements relative to n
   assert_wasm_magic(bytes_no_dce)
   assert_wasm_magic(bytes_mvp)
   assert(Bytes::length(bytes_mvp) < Bytes::length(bytes_no_dce))
+}
+
+test "compile_file_fs_mode: dce-root prunes from a named root that is not a command entry" {
+  // The lane `vibe build --component` uses. Before it, a command component had
+  // to take `no-dce` -- `mvp` roots the DCE at `entry_name` and then hands the
+  // same name to a codegen that requires a 0-parameter WASI entry, which
+  // `vibe_command(args)` is not. So nothing pruned, and a command that reached
+  // the compiler came to 40.5 MB (measured), eight times the whole CLI adapter.
+  let main_path = "/tmp/vibe_compiler_dce_root_main.vibe"
+  let source = "export fn unused_one(a: Int) -> Int {\n  a + 1\n}\n\nexport fn unused_two(a: Int) -> Int {\n  unused_one(a) + unused_one(a)\n}\n\nexport fn vibe_command(args: String) -> String {\n  args\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let bytes_no_dce = compile_file_fs_mode(main_path, "__no_entry__", "no-dce")
+  let bytes_rooted = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  assert_wasm_magic(bytes_no_dce)
+  assert_wasm_magic(bytes_rooted)
+  // The point of the lane: what the root cannot reach is gone.
+  assert(Bytes::length(bytes_rooted) < Bytes::length(bytes_no_dce))
+}
+
+test "compile_file_fs_mode: dce-root still emits a library, not a command entry" {
+  // The second half of the false choice `mvp` forces. Rooting the DCE at a
+  // parameterised function is only useful if codegen then emits a LIBRARY --
+  // under `mvp` the same name becomes the WASI entry and the compile is
+  // refused with "WASI entry function must take 0 parameters" (measured).
+  let main_path = "/tmp/vibe_compiler_dce_root_lib.vibe"
+  let source = "export fn vibe_command(args: String) -> String {\n  String::concat(args, \"!\")\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  // `mvp` on the SAME name and source is refused, because it hands that name
+  // to a codegen that requires a 0-parameter WASI entry. Asserting the refusal
+  // is what makes this test about the separation of roles rather than about
+  // the output merely being non-empty.
+  let mvp_result = handle {
+    let _ = compile_file_fs_mode(main_path, "vibe_command", "mvp")
+    "COMPILED"
+  } with { Exception::Throw(e) => e }
+  assert(String::index_of(mvp_result, "0 parameters") >= 0)
+  // `dce-root` takes the same name and succeeds, as a library.
+  let bytes_rooted = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  assert_wasm_magic(bytes_rooted)
+  assert(Bytes::length(bytes_rooted) > 8)
+}
+
+test "compile_file_fs_mode: an unknown mode is refused by name" {
+  let main_path = "/tmp/vibe_compiler_dce_root_badmode.vibe"
+  Fs::write_bytes(main_path, string_to_bytes("export fn vibe_command(a: String) -> String {\n  a\n}\n"))
+  let result = handle {
+    let _ = compile_file_fs_mode(main_path, "vibe_command", "dce-roooot")
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::index_of(result, "unsupported compile mode") >= 0)
 }
 
 test "compile_file_fs_mode_cached: release compile keeps test block refs" {

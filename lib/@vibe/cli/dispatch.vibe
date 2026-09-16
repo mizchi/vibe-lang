@@ -4,6 +4,7 @@ import ../compiler {
   check_unstable_surface_warnings_from_closure, check_unstable_surface_warnings_from_path,
   unstable_closure_reset,
   check_linked_file, compile_release_file_mode, compile_release_file_mode_profiled,
+  command_component_compile_mode, command_component_entry,
   compile_release_file_mode_uncached, compile_release_file_mode_uncached_profiled,
   write_linked_debug_build, write_linked_debug_build_checked, strip_executable_wasm_env,
   configure_cfg_flags,
@@ -761,15 +762,20 @@ export fn parse_build_args(args: Array[String]) -> (String, String, String, Stri
       // exports and never mention `--component`.
       throw("build: --component needs a .vibe module: a .vibex is an executable root with no export surface, and a command component is built from `export fn vibe_command(args: String) -> String`")
     } else {
-      // A component has no command entry, so the entry-rooted DCE the `mvp`
-      // lane performs has no root and answers "no functions found to
-      // compile". `no-dce` is the lane that keeps every export reachable,
-      // which is what `serve` already relies on for the same reason. This
-      // OVERRIDES `--release` rather than refusing it: `--release` means
-      // "optimized", and the component lane IS the optimized lane -- it just
-      // cannot prune from an entry it does not have.
+      // `mvp` cannot serve a component: it roots the DCE at `entry_name` and
+      // then hands the SAME name to a codegen that requires a 0-parameter WASI
+      // entry, which `vibe_command(args)` is not. `dce-root` splits those two
+      // roles -- the name is the DCE root, the codegen entry is the library
+      // sentinel -- so a command prunes from `vibe_command` and still emits a
+      // library the wrap can lift. This OVERRIDES `--release` rather than
+      // refusing it: `--release` means "optimized", and this lane is it.
+      //
+      // Must stay the same lane the launcher's `VIBE_BUILD_COMPONENT` adapter
+      // takes. When this was `no-dce` and the adapter was not, the same
+      // `build --component` produced 40 MB through one front door and 2.6 MB
+      // through the other.
       let mode = if component {
-        "no-dce"
+        command_component_compile_mode()
       } else {
         mode
       }
@@ -780,12 +786,12 @@ export fn parse_build_args(args: Array[String]) -> (String, String, String, Stri
       } else {
         default_build_output_path(input_path)
       }
-      // A component has no command entry: its surface is the lifted export,
-      // and the core is compiled as a library so the export survives ADR-0077
-      // stripping. Same sentinel `serve` uses. (`component` implies a `.vibe`
-      // by the refusal above, so the order of these arms carries no meaning.)
+      // Under `dce-root` this name is the DCE ROOT, not the codegen entry --
+      // the core is still emitted as a library, so the lifted export survives
+      // ADR-0077 stripping. (`component` implies a `.vibe` by the refusal
+      // above, so the order of these arms carries no meaning.)
       let entry_name = if component {
-        "__no_entry__"
+        command_component_entry()
       } else if is_vibex_path(input_path) {
         "main"
       } else {
@@ -796,14 +802,11 @@ export fn parse_build_args(args: Array[String]) -> (String, String, String, Stri
   }
 }
 
-/// The one export a command component lifts, and the vibe function behind it.
-/// `runtime/viberun/src/commands.rs` looks up `command_component_export()` by
-/// name, and `lib/@vibe/command` is the guest-side helper for the frame that
-/// travels through it.
-fn command_component_entry() -> String {
-  "vibe_command"
-}
-
+/// The export name a command component lifts.
+/// `runtime/viberun/src/commands.rs` looks it up by name, and
+/// `lib/@vibe/command` is the guest-side helper for the frame that travels
+/// through it. The vibe function BEHIND it is `command_component_entry()`,
+/// which lives in `cli_support.vibe` so both front doors share one spelling.
 fn command_component_export() -> String {
   "run"
 }

@@ -18,6 +18,10 @@ import ./entry.vibe {
   format_check_report, run_cli_main_with_args
 }
 
+import ../compiler {
+  command_component_compile_mode, command_component_entry
+}
+
 test "profile command plans a versioned host action without losing spaces" {
   let plan_path = "/tmp/vibe_selfhost_cli_profile_action.txt"
   let status = selfhost_cli_profile_plan_args([
@@ -589,24 +593,39 @@ test "selfhost cli build --component defaults to a .component.wasm beside the so
   ])
   assert(input_path == "cmd/check.vibe")
   assert(output_path == "cmd/check.component.wasm")
-  // A component has no command entry: the core is compiled as a library so
-  // the lifted export survives ADR-0077 stripping.
-  assert(entry_name == "__no_entry__")
-  // ... and for the same reason the entry-rooted `mvp` DCE has no root, so
-  // the lane is `no-dce`. `--release` does not change that.
-  assert(mode == "no-dce")
+  // Under `dce-root` this name is the DCE ROOT, not the codegen entry: the
+  // core is still emitted as a library so the lifted export survives ADR-0077
+  // stripping, but what the root cannot reach is pruned.
+  assert(entry_name == "vibe_command")
+  assert(mode == "dce-root")
   assert(component)
 }
 
-test "selfhost cli build --component overrides --release with the no-dce lane" {
+test "selfhost cli build --component takes the SAME lane as the launcher adapter" {
+  // The two front doors of `vibe build --component` must not be able to
+  // disagree. They had independent literals for one commit, and the same flag
+  // produced a 40 MB artifact through the `.vibex` CLI and 2.6 MB through the
+  // launcher's `VIBE_BUILD_COMPONENT` adapter. Both now read the pair from
+  // `cli_support.vibe`, and this asserts the door actually uses it rather than
+  // a literal that happens to match today.
+  let (_, _, entry_name, mode, _) = parse_build_args([
+    "build",
+    "--component",
+    "cmd/check.vibe"
+  ])
+  assert(entry_name == command_component_entry())
+  assert(mode == command_component_compile_mode())
+}
+
+test "selfhost cli build --component overrides --release with the command lane" {
   let (_, _, entry_name, mode, component) = parse_build_args([
     "build",
     "--release",
     "--component",
     "cmd/check.vibe"
   ])
-  assert(entry_name == "__no_entry__")
-  assert(mode == "no-dce")
+  assert(entry_name == command_component_entry())
+  assert(mode == command_component_compile_mode())
   assert(component)
 }
 
@@ -620,7 +639,7 @@ test "selfhost cli build --component honours an explicit -o" {
   ])
   assert(input_path == "cmd/check.vibe")
   assert(output_path == "dist/check.component.wasm")
-  assert(entry_name == "__no_entry__")
+  assert(entry_name == command_component_entry())
   assert(component)
 }
 

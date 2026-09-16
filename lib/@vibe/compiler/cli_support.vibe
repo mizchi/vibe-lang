@@ -129,11 +129,36 @@ fn empty_source_pairs() -> Array[(String, String)] {
   array_empty()
 }
 
+/// The DCE root a command component is pruned from: the one export the wrap
+/// lifts. Under `command_component_compile_mode()` this name is the DCE ROOT
+/// and NOT the codegen entry -- the core is still emitted as a library.
+export fn command_component_entry() -> String {
+  "vibe_command"
+}
+
+/// The compile lane a command component takes.
+///
+/// Both front doors of `vibe build --component` call this rather than spelling
+/// a mode literal: the `.vibex` CLI (`lib/@vibe/cli/dispatch.vibe`) and the
+/// launcher's `VIBE_BUILD_COMPONENT` adapter (`cli_adapter.vibe`). They had
+/// independent literals for one commit, and the same flag produced a 40 MB
+/// artifact through one door and 2.6 MB through the other.
+export fn command_component_compile_mode() -> String {
+  "dce-root"
+}
+
 fn normalize_release_mode(mode: String) -> String with Exception {
   if mode == "" || mode == "release" || mode == "no-dce" {
     "no-dce"
   } else if mode == "mvp" {
     "mvp"
+  } else if mode == command_component_compile_mode() {
+    // The command-component lane: prune from a NAMED root, emit a library.
+    // Without this arm the `.vibex` CLI's `build --component` throws while the
+    // launcher's `VIBE_BUILD_COMPONENT` lane -- which calls
+    // `compile_file_fs_mode` directly -- succeeds, so the same flag would mean
+    // two different things depending on which front door was used.
+    command_component_compile_mode()
   } else {
     throw(String::concat("unsupported release mode: ", mode))
   }

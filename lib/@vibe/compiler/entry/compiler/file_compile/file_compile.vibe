@@ -1398,6 +1398,24 @@ export fn compile_file_fs_mode(entry_path: String, entry_name: String, mode: Str
     compile_wasi_module_impl_with_typed_offsets(pruned_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else if mode == "no-dce" {
     compile_wasi_module_no_dce_impl_with_typed_offsets(merged_stmts, entry_name, float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
+  } else if mode == "dce-root" {
+    // Prune from a NAMED root, then emit as a library. The two lanes above
+    // force a false choice on anything whose surface is an export rather than
+    // a command entry: `mvp` roots the DCE at `entry_name` and hands the same
+    // name to a codegen that requires a 0-parameter WASI entry, and `no-dce`
+    // keeps every statement of the merged program.
+    //
+    // A command component (`vibe build --component`) is exactly that shape --
+    // its surface is `vibe_command`, which takes a parameter -- so it took
+    // `no-dce` and paid for the whole closure. Measured on this tree: a
+    // command that calls `check_linked_file` came to a 40.4 MB component,
+    // 7.8 times the entire CLI adapter, because nothing pruned. Rooted at
+    // `vibe_command` the same command is 2.6 MB.
+    //
+    // Here `entry_name` is the DCE ROOT and the codegen entry is the library
+    // sentinel, so the two roles that `mvp` conflates are separate.
+    let pruned_stmts = dce_stmts(merged_stmts, [entry_name])
+    compile_wasi_module_no_dce_impl_with_typed_offsets(pruned_stmts, "__no_entry__", float_offsets, int_offsets, bool_offsets, eq_offsets, eq_keys)
   } else {
     throw(String::concat("unsupported compile mode: ", mode))
   }
