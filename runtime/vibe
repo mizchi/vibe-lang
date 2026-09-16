@@ -568,6 +568,34 @@ host_test_record() {
   [ -n "${VIBE_TEST_RESULTS:-}" ] || return 0
   printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$VIBE_TEST_RESULTS"
 }
+# The `[vibe-test]` summary from a results file ($1; one record per file that
+# ran) plus $2 failures that recorded no verdict (a dispatcher that refused a
+# whole batch). The test total is printed only when every count is exact; a
+# raw-occurrence count (no python3, a stripped name section) or an unrecorded
+# failure would present an over-count as a total, so the summary stays
+# files-only there. Returns non-zero when anything failed.
+host_test_summary() {
+  local results="$1" extra="${2:-0}" t_pass=0 t_fail=0 t_tests=0 t_exact=1 t_notest=0 total_files tab r_verdict r_ntests r_exact
+  tab="$(printf '\t')"
+  if [ -s "$results" ]; then
+    while IFS="$tab" read -r r_verdict r_ntests r_exact || [ -n "$r_verdict" ]; do
+      if [ "$r_verdict" = ok ]; then t_pass=$((t_pass + 1)); else t_fail=$((t_fail + 1)); fi
+      case "$r_ntests" in ''|*[!0-9]*) r_ntests=0 ;; esac
+      t_tests=$((t_tests + r_ntests))
+      [ "$r_ntests" = 0 ] && [ "$r_verdict" = ok ] && t_notest=$((t_notest + 1))
+      [ "${r_exact:-0}" = 1 ] || t_exact=0
+    done < "$results"
+  fi
+  t_fail=$((t_fail + extra)); total_files=$((t_pass + t_fail))
+  [ "$extra" -gt 0 ] && t_exact=0
+  if [ "$t_exact" = 1 ]; then
+    echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files, $t_tests tests)"
+    [ "$t_notest" -gt 0 ] && echo "[vibe-test] note: $t_notest file(s) with no tests found"
+  else
+    echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files)"
+  fi
+  [ "$t_fail" -eq 0 ]
+}
 # `vibe test`'s per-file runner. Stdout is captured ALWAYS (#2199/#2202): the
 # guest writes its diagnostics there (the assert_eq block, inspect()'s
 # actual/expected mismatch), while the trap dump arrives on stderr. On success
@@ -744,20 +772,8 @@ execute_host_action() {
       # occurrence count (no python3, a stripped name section) would present an
       # over-count as a total, so the summary stays files-only there.
       if [ "$own_results" = 1 ]; then
-        total_files=$((t_pass + t_fail)); t_tests=0; t_exact=1; t_notest=0; tab="$(printf '\t')"
-        while IFS="$tab" read -r r_verdict r_ntests r_exact || [ -n "$r_verdict" ]; do
-          case "$r_ntests" in ''|*[!0-9]*) r_ntests=0 ;; esac
-          t_tests=$((t_tests + r_ntests))
-          [ "$r_ntests" = 0 ] && [ "$r_verdict" = ok ] && t_notest=$((t_notest + 1))
-          [ "${r_exact:-0}" = 1 ] || t_exact=0
-        done < "$VIBE_TEST_RESULTS"
+        host_test_summary "$VIBE_TEST_RESULTS" 0 || t_fail=1
         rm -f "$VIBE_TEST_RESULTS"; unset VIBE_TEST_RESULTS
-        if [ "$t_exact" = 1 ]; then
-          echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files, $t_tests tests)"
-          [ "$t_notest" -gt 0 ] && echo "[vibe-test] note: $t_notest file(s) with no tests found"
-        else
-          echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files)"
-        fi
       fi
       [ "$t_fail" -eq 0 ]
       ;;
@@ -1394,23 +1410,68 @@ REPL_HELP
     # into a link back to an ancestor until it failed (Codex review of
     # #2858). The launcher expanded with find before the verbs moved; the
     # dispatcher sorts the whole list, so the report order is unchanged.
-    targs=(); tprev=""
+    tflags=(); tfiles=(); tjobflag=(); tprev=""; tjobs=""; tupdate=0
     for targ in "$@"; do
-      if [ "$tprev" = "--jobs" ]; then targs+=("$targ"); tprev=""; continue; fi
+      if [ "$tprev" = "--jobs" ]; then tjobs="$targ"; tjobflag=(--jobs "$targ"); tprev=""; continue; fi
       case "$targ" in
-        --jobs) targs+=("$targ"); tprev="$targ" ;;
-        -*) targs+=("$targ") ;;
+        --jobs) tprev="$targ" ;;
+        --update) tupdate=1; tflags+=("$targ") ;;
+        -*) tflags+=("$targ") ;;
         *)
           if [ -d "$targ" ]; then
             tfound=0
-            while IFS= read -r tfile; do targs+=("$tfile"); tfound=1; done < <(find "$targ" -type f -name '*_test.vibe' | LC_ALL=C sort)
+            while IFS= read -r tfile; do tfiles+=("$tfile"); tfound=1; done < <(find "$targ" -type f -name '*_test.vibe' | LC_ALL=C sort)
             [ "$tfound" = 1 ] || die "vibe test: no test files found under $targ"
           else
-            targs+=("$targ")
+            tfiles+=("$targ")
           fi ;;
       esac
     done
-    invoke_cli test ${targs[@]+"${targs[@]}"}
+    # `--jobs N` with several files: N dispatcher processes, each COMPILING
+    # and running a contiguous share of the files, so compile-bound suites --
+    # the part the option was introduced for -- get the concurrency asked for
+    # (Codex review of #2858). Each share reports its verdicts into its own
+    # results file; the shares are replayed in file order and summarized once.
+    # `--update` stays serial (its re-run re-enters one file at a time), and an
+    # invalid `--jobs` value is left to the dispatcher to refuse.
+    case "$tjobs" in ''|*[!0-9]*|0) tjobs=1 ;; esac
+    if [ "$tjobs" -gt 1 ] && [ "${#tfiles[@]}" -gt 1 ] && [ "$tupdate" = 0 ]; then
+      tdir="$(mktemp -d -t vibe-test-jobs-XXXXXX)"
+      tshare=$(( (${#tfiles[@]} + tjobs - 1) / tjobs )); tk=0; ti=0
+      for tfile in "${tfiles[@]}"; do
+        printf '%s\n' "$tfile" >> "$tdir/chunk.$tk"
+        ti=$((ti + 1)); [ "$ti" -ge "$tshare" ] && { tk=$((tk + 1)); ti=0; }
+      done
+      tk=0
+      while [ -f "$tdir/chunk.$tk" ]; do
+        (
+          cfiles=(); while IFS= read -r cf; do cfiles+=("$cf"); done < "$tdir/chunk.$tk"
+          VIBE_TEST_NESTED=1 VIBE_TEST_RESULTS="$tdir/results.$tk" \
+            invoke_cli test ${tflags[@]+"${tflags[@]}"} "${cfiles[@]}" >"$tdir/out.$tk" 2>"$tdir/err.$tk"
+          echo $? >"$tdir/rc.$tk"
+        ) &
+        tk=$((tk + 1))
+      done
+      wait
+      textra=0; tk=0; : > "$tdir/results"
+      while [ -f "$tdir/chunk.$tk" ]; do
+        [ -s "$tdir/out.$tk" ] && cat "$tdir/out.$tk"
+        [ -s "$tdir/err.$tk" ] && cat "$tdir/err.$tk" >&2
+        [ -s "$tdir/results.$tk" ] && cat "$tdir/results.$tk" >> "$tdir/results"
+        # A share that failed without a verdict for each of its files was
+        # refused by the dispatcher (a missing file, a bad flag): one failure
+        # the per-file records cannot carry.
+        trecorded=0; [ -s "$tdir/results.$tk" ] && trecorded="$(grep -c . "$tdir/results.$tk" || true)"
+        if [ "$(cat "$tdir/rc.$tk" 2>/dev/null)" != 0 ] && [ "${trecorded:-0}" -lt "$(grep -c . "$tdir/chunk.$tk" || true)" ]; then
+          textra=$((textra + 1))
+        fi
+        tk=$((tk + 1))
+      done
+      tstatus=0; host_test_summary "$tdir/results" "$textra" || tstatus=1
+      rm -rf "$tdir"
+      exit "$tstatus"
+    fi
+    invoke_cli test ${tflags[@]+"${tflags[@]}"} ${tjobflag[@]+"${tjobflag[@]}"} ${tfiles[@]+"${tfiles[@]}"}
     ;;
   lsp)
     # The node server (clients/js/lsp_server.js) stays the default: it carries

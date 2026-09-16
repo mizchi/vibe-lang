@@ -114,7 +114,7 @@ fn cli_bytes(value: String) -> Bytes {
   let out = Array::slice([0], 0, 0)
   let mut i = 0
   while i < String::length(value) {
-    Array::push(out, String::char_code_at(value, i))
+    Array::push(out, String::byte_at(value, i))
     i = i + 1
   }
   Bytes::from_array(out)
@@ -125,7 +125,7 @@ fn last_slash_index(path: String) -> Int {
   let mut last = -1
   let mut i = 0
   while i < len {
-    if String::char_code_at(path, i) == 47 {
+    if String::byte_at(path, i) == 47 {
       last = i
     }
     i = i + 1
@@ -220,7 +220,7 @@ fn parse_int_or(s: String, default: Int) -> Int {
     let mut acc = 0
     let mut ok = true
     while ok && i < len {
-      let c = String::char_code_at(s, i)
+      let c = String::byte_at(s, i)
       if c >= '0' && c <= '9' {
         acc = acc * 10 + (c - '0')
         i = i + 1
@@ -262,7 +262,7 @@ fn line_terminated(text: String) -> String {
   let n = String::length(text)
   if n == 0 {
     text
-  } else if String::char_code_at(text, n - 1) == 10 {
+  } else if String::byte_at(text, n - 1) == 10 {
     text
   } else {
     String::concat(text, "\n")
@@ -474,7 +474,7 @@ fn write_host_action(action_path: String, body: String) -> Int with Exception + 
 }
 
 fn path_is_absolute(path: String) -> Bool {
-  String::length(path) > 0 && String::char_code_at(path, 0) == 47
+  String::length(path) > 0 && String::byte_at(path, 0) == 47
 }
 
 fn join_path(dir: String, name: String) -> String {
@@ -583,7 +583,7 @@ export fn rewrite_user_argv(args: Array[String], invoke_dir: String, project_roo
         // path the same way the split one does (Codex review of #2858).
         Array::push(out, String::concat("--out=", root_rel_from_invoke(invoke_rel, a[6: String::length(a)])))
         prev = ""
-      } else if String::length(a) > 0 && String::char_code_at(a, 0) == 45 {
+      } else if String::length(a) > 0 && String::byte_at(a, 0) == 45 {
         Array::push(out, a)
         prev = a
       } else if looks_like_user_path(a, invoke_dir) && invoke_arg_exists(invoke_dir, a) {
@@ -610,8 +610,8 @@ fn path_bytes_lt(a: String, b: String) -> Bool {
   let mut i = 0
   let mut decided = 0
   while decided == 0 && i < n {
-    let ca = String::char_code_at(a, i)
-    let cb = String::char_code_at(b, i)
+    let ca = String::byte_at(a, i)
+    let cb = String::byte_at(b, i)
     if ca < cb {
       decided = 1
     } else if ca > cb {
@@ -737,7 +737,7 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
         i = i + 1
         let _ = need_value(args, i, "check", arg)
         ()
-      } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+      } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
         throw(String::concat("check: unknown option: ", arg))
       } else if src == "" {
         src = arg
@@ -761,6 +761,16 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
 }
 
 fn user_check_scan(root: String, missing_vpkg: Bool) -> Int with Exception + Fs + Stdout {
+  // Both scanners walk the root with `Fs::readdir`, which traps the whole
+  // instance on a non-directory; a typo has to come back as a diagnostic
+  // instead (Codex review of #2858).
+  if !Fs::exists(root) {
+    throw(String::concat("not found: ", root))
+  } else if !Fs::is_dir(root) {
+    throw(String::concat("check: ", String::concat(root, " is not a directory (--missing-vpkg and --deps-missing scan a directory tree)")))
+  } else {
+    ()
+  }
   let rows = if missing_vpkg {
     find_missing_vpkg_dirs(root)
   } else {
@@ -845,7 +855,7 @@ fn user_check_paths(args: Array[String]) -> Array[String] {
     let arg = Array::get(args, i)
     if arg == "--jobs" || arg == "--profile" || arg == "--profile-tsv" || arg == "--profile-callstack" {
       i = i + 2
-    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
       i = i + 1
     } else {
       Array::push(paths, arg)
@@ -859,7 +869,7 @@ fn has_control_char(value: String) -> Bool {
   let mut found = false
   let mut i = 0
   while i < String::length(value) {
-    let c = String::char_code_at(value, i)
+    let c = String::byte_at(value, i)
     if c < 32 || c == 127 {
       found = true
     } else {
@@ -1146,7 +1156,7 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
           ()
         } else if arg == "--debug" {
           ()
-        } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+        } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
           throw(String::concat(cmd, String::concat(": unknown option: ", arg)))
         } else if src == "" {
           src = arg
@@ -1318,7 +1328,7 @@ export fn parse_user_fmt_args(args: Array[String]) -> (String, String) with Exce
       } else if arg == "--stdout" {
         mode = "stdout"
         ()
-      } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+      } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
         throw(String::concat("vibe fmt: unknown flag: ", arg))
       } else if src == "" {
         src = arg
@@ -1405,7 +1415,7 @@ fn parse_user_normalize_args(args: Array[String]) -> (String, String) with Excep
       } else if arg == "--stdout" {
         mode = "stdout"
         ()
-      } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+      } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
         throw(String::concat("vibe normalize: unknown flag: ", arg))
       } else if src == "" {
         src = arg
@@ -1526,7 +1536,7 @@ fn escape_doc_field(text: String) -> String {
   let acc = StringBuilder::new()
   let mut i = 0
   while i < n {
-    let c = String::char_code_at(text, i)
+    let c = String::byte_at(text, i)
     if c == 92 {
       StringBuilder::push(acc, "\\\\")
     } else if c == 10 {
@@ -1534,7 +1544,7 @@ fn escape_doc_field(text: String) -> String {
     } else if c == 13 {
       ()
     } else {
-      StringBuilder::push(acc, String::from_char_code(c))
+      StringBuilder::push(acc, String::from_byte(c))
     }
     i = i + 1
   }
@@ -1546,7 +1556,7 @@ fn name_field_needs_escape(text: String) -> Bool {
   let mut i = 0
   let mut found = false
   while i < n && !found {
-    let c = String::char_code_at(text, i)
+    let c = String::byte_at(text, i)
     if c == 92 || c == 32 || (c >= 9 && c <= 13) {
       found = true
     } else {
@@ -1573,7 +1583,7 @@ fn name_field_escape_of(c: Int) -> String {
   } else if c == 13 {
     "\\r"
   } else {
-    String::from_char_code(c)
+    String::from_byte(c)
   }
 }
 
@@ -1585,7 +1595,7 @@ fn escape_name_field(text: String) -> String {
     let acc = StringBuilder::new()
     let mut i = 0
     while i < n {
-      StringBuilder::push(acc, name_field_escape_of(String::char_code_at(text, i)))
+      StringBuilder::push(acc, name_field_escape_of(String::byte_at(text, i)))
       i = i + 1
     }
     StringBuilder::freeze(acc)
@@ -1676,7 +1686,7 @@ fn selfhost_cli_user_symbols_args(args: Array[String]) -> Int with Exception + F
           Array::push(paths, Array::get(args, i))
           i = i + 1
         }
-      } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+      } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
         throw(String::concat("symbols: unknown flag: ", arg))
       } else {
         Array::push(paths, arg)
@@ -1788,7 +1798,7 @@ fn selfhost_cli_user_escapes_args(args: Array[String]) -> Int with Exception + F
     } else if arg == "--help" || arg == "-h" {
       println("usage: vibe escapes [--strict] <file.vibe>")
       return 0
-    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
       throw(String::concat("escapes: unknown flag: ", arg))
     } else {
       src = arg
@@ -1848,10 +1858,13 @@ fn selfhost_cli_user_rc_plan_args(args: Array[String]) -> Int with Exception + F
       i = i + 1
       fn_filter = need_value(args, i, "rc-plan", arg)
       ()
+    } else if String::starts_with(arg, "--fn=") {
+      fn_filter = arg[5: String::length(arg)]
+      ()
     } else if arg == "--help" || arg == "-h" {
       print_text(rc_plan_help_text())
       return 0
-    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
       throw(String::concat("rc-plan: unknown flag: ", arg))
     } else {
       src = arg
@@ -1956,7 +1969,7 @@ fn selfhost_cli_user_deps_args(args: Array[String]) -> Int with Exception + Fs +
     if arg == "--direct" {
       direct = true
       ()
-    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
       throw(String::concat("deps: unknown flag: ", arg))
     } else if src == "" {
       src = arg
@@ -2079,7 +2092,7 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Exception + Fs +
         Array::push(paths, Array::get(args, i))
         i = i + 1
       }
-    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
       throw(String::concat("vibe grep: unknown flag: ", arg))
     } else {
       Array::push(paths, arg)
@@ -2326,7 +2339,7 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       i = i + 1
       jobs = parse_jobs_value(need_value(args, i, "test", arg))
       ()
-    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
       throw(String::concat("test: unknown flag: ", arg))
     } else {
       Array::push(files, arg)
@@ -2458,7 +2471,7 @@ fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exception + Fs 
     } else if String::starts_with(arg, "--interval-us=") {
       guest_interval = arg[14: String::length(arg)]
       ()
-    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
       throw(String::concat("bench: unknown flag: ", arg))
     } else {
       src = arg
@@ -2535,7 +2548,7 @@ fn selfhost_cli_user_serve_args(args: Array[String]) -> Int with Exception + Fs 
     } else if arg == "--no-run" {
       no_run = true
       ()
-    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
       throw(String::concat("serve: unknown flag: ", arg))
     } else {
       src = arg
@@ -2661,8 +2674,11 @@ fn selfhost_cli_user_profile_args(args: Array[String]) -> Int with Exception + F
   }
 }
 
-fn selfhost_cli_user_lsp_args(_args: Array[String]) -> Int with Stdin + Stdout {
-  lsp_main(false)
+/// The embedded server (`vibe lsp --selfhost`). `VIBE_UNSTABLE=1` is the
+/// server-start policy `lsp_main` documents, the same opt-in the adapter route
+/// passed (Codex review of #2858).
+fn selfhost_cli_user_lsp_args(_args: Array[String]) -> Int with Env + Stdin + Stdout {
+  lsp_main(unstable_opt_in())
 }
 
 /// `vibe hash [--write] <pkg_dir|index.vpkg|index.vibei>` (ADR-0063 §5).
@@ -2684,7 +2700,7 @@ fn selfhost_cli_user_hash_args(args: Array[String]) -> Int with Exception + Fs +
     if arg == "--write" {
       write = true
       ()
-    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+    } else if String::length(arg) > 0 && String::byte_at(arg, 0) == 45 {
       // A mistyped `--writ` used to be taken for the target and then replaced
       // by the real one: hashes printed, exit 0, nothing written.
       throw(String::concat("hash: unknown flag: ", arg))
@@ -2770,7 +2786,7 @@ fn is_check_report_continuation(line: String) -> Bool {
   } else if String::length(line) == 0 {
     false
   } else {
-    let c = String::char_code_at(line, 0)
+    let c = String::byte_at(line, 0)
     c == ' ' || c == '\t'
   }
 }

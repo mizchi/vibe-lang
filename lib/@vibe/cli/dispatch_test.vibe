@@ -1517,3 +1517,38 @@ test "user check takes several files" {
   } with { Exception::Throw(e) => e }
   assert(missing == "not found: /nonexistent/x.vibe")
 }
+
+/// `--fn=NAME` is accepted alongside `--fn NAME`; a parse that reaches the
+/// file check has read the flag.
+test "user rc-plan accepts the equals spelling of --fn" {
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "rc-plan",
+      "--fn=make",
+      "/nonexistent/rc.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "not found: /nonexistent/rc.vibe")
+}
+
+/// The scan roots are validated before the recursive walkers read them: a
+/// missing or non-directory root is a diagnostic, not a runner trap.
+test "user check scans refuse a missing or non-directory root" {
+  let file = "/tmp/vibe_user_dispatch_scan_root.vibe"
+  Fs::write_bytes(file, string_to_bytes("let a = 1\n"))
+  let missing = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "check",
+      "--missing-vpkg",
+      "/nonexistent/tree"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(missing == "not found: /nonexistent/tree")
+  let not_dir = handle {
+    let _ = selfhost_cli_user_dispatch_args(["check", "--deps-missing", file])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::starts_with(not_dir, "check: /tmp/vibe_user_dispatch_scan_root.vibe is not a directory"))
+}
