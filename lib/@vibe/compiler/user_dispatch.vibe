@@ -753,7 +753,7 @@ fn user_check_scan(root: String, missing_vpkg: Bool) -> Int with Exception + Fs 
   }
 }
 
-fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env + Stdout {
+fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env + Stdout + Stderr {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
@@ -780,16 +780,25 @@ fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env +
         0
       }
     } else {
+      // Warnings reach STDERR and leave the exit code alone -- "clean" stays
+      // detectable as empty stdout even for a file that warns, as the
+      // launcher reported them before (Codex review of #2858).
       let errors: Array[String] = []
+      let warnings: Array[String] = []
       let mut i = 0
       while i < Array::length(diags) {
         let line = Array::get(diags, i)
         if is_warning_line(line) {
-          ()
+          Array::push(warnings, line)
         } else {
           Array::push(errors, line)
         }
         i = i + 1
+      }
+      if Array::length(warnings) > 0 {
+        Stderr::write_stream(line_terminated(String::join(warnings, "\n")))
+      } else {
+        ()
       }
       if Array::length(errors) == 0 {
         0
@@ -867,7 +876,7 @@ fn write_check_profiles(tsv_path: String, callstack_path: String, elapsed_us: In
   }
 }
 
-fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdout + Profiler {
+fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdout + Stderr + Profiler {
   let mut missing_vpkg = false
   let mut deps_missing = false
   let mut i = 1
