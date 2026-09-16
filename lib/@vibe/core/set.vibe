@@ -2,7 +2,7 @@
 //# backed by the compiler-builtin persistent `Map` (#841 item E2: the prior
 //# recursive linked-list enum made every operation O(n); the builtin map's
 //# hash index gives O(1)-avg contains/add). `StringSet` predates `Set[T]`
-//# and is kept as-is for backward compatibility -- `Set[String]` is
+//# and remains a string-keyed collection -- `Set[String]` is
 //# representationally equivalent (String's `Hash::hash_key` is the
 //# identity, so `map_key_to_string` adds no conversion) but is the
 //# moonbitlang/core-style generic spelling going forward. The contract
@@ -137,28 +137,25 @@ export fn set_difference(a: StringSet, b: StringSet) -> StringSet {
   }
 }
 
-export fn set_value_to_string[T](value: T) -> String {
-  __to_string(value)
+/// Keys are explicit so equal values never depend on an erased pointer.
+export fn add_by[T](s: StringSet, key: (T) -> String, value: T) -> StringSet {
+  add(s, key(value))
 }
 
-export fn add_by[T](s: StringSet, value: T) -> StringSet {
-  add(s, set_value_to_string(value))
+export fn remove_by[T](s: StringSet, key: (T) -> String, value: T) -> StringSet {
+  remove(s, key(value))
 }
 
-export fn remove_by[T](s: StringSet, value: T) -> StringSet {
-  remove(s, set_value_to_string(value))
+export fn contains_by[T](s: StringSet, key: (T) -> String, value: T) -> Bool {
+  contains(s, key(value))
 }
 
-export fn contains_by[T](s: StringSet, value: T) -> Bool {
-  contains(s, set_value_to_string(value))
-}
-
-export fn from_array_by[T](values: Array[T]) -> StringSet {
+export fn from_array_by[T](values: Array[T], key: (T) -> String) -> StringSet {
   let len = Array::length(values)
   let rec go = (i: Int, acc: StringSet) -> StringSet {
     if i >= len {
       acc
-    } else go(i + 1, add_by(acc, Array::get(values, i)))
+    } else go(i + 1, add_by(acc, key, Array::get(values, i)))
   }
   go(0, empty())
 }
@@ -167,7 +164,7 @@ export fn from_array_by[T](values: Array[T]) -> StringSet {
 // list.vibe's `List::xxx`: each just delegates to the existing bare
 // implementation above, so `s.size()` / `s |> StringSet::add(v)` resolve and
 // `vibe normalize` has a qualified spelling to rewrite bare dot-calls to.
-// Bare names above are unchanged (kept for pipe ergonomics + back-compat).
+// Bare and qualified key helpers take the same explicit key callback.
 
 export fn StringSet::size(s: StringSet) -> Int {
   size(s)
@@ -201,16 +198,16 @@ export fn StringSet::difference(a: StringSet, b: StringSet) -> StringSet {
   set_difference(a, b)
 }
 
-export fn StringSet::add_by[T](s: StringSet, value: T) -> StringSet {
-  add_by(s, value)
+export fn StringSet::add_by[T](s: StringSet, key: (T) -> String, value: T) -> StringSet {
+  add_by(s, key, value)
 }
 
-export fn StringSet::remove_by[T](s: StringSet, value: T) -> StringSet {
-  remove_by(s, value)
+export fn StringSet::remove_by[T](s: StringSet, key: (T) -> String, value: T) -> StringSet {
+  remove_by(s, key, value)
 }
 
-export fn StringSet::contains_by[T](s: StringSet, value: T) -> Bool {
-  contains_by(s, value)
+export fn StringSet::contains_by[T](s: StringSet, key: (T) -> String, value: T) -> Bool {
+  contains_by(s, key, value)
 }
 
 // Generic Set[T] (#1140, ADR-0082) -- see the file header for the

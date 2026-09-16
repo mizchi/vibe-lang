@@ -1,56 +1,6 @@
-// @vibe/core — assert_false / inspect (#1061).
-//
-// #1571 UPDATE: `inspect` is now ALSO reachable without importing anything --
-// `desugar_inspect_calls` (compiler normalize/) expands `inspect(value,
-// content)` to the same `__to_string` / `String::concat` / `println` /
-// `assert_true` form this function has, before the checker runs. That is what
-// lets a fixture compiled in the single-file lane -- which resolves no imports
-// at all -- carry an inline snapshot.
-//
-// This body stays live for everyone who has it in scope: the rewrite stands
-// down for any file that BINDS the name (an import, a declaration, a local),
-// so `import @vibe/core { inspect }` still calls exactly this, and so does
-// this file itself. Keep the two in step -- the expansion is this function,
-// spelled as AST.
-//
-// assert/assert_true are compiler builtins (checker + both codegen
-// backends) that trap with no message on failure. assert_eq is the same
-// builtin to the checker (effect-free); after check, desugar_trait_dicts
-// rewrites a failing call to print
-//   assert_eq failed
-//     expected: <rendered>
-//     actual:   <rendered>
-// on stderr and then trap. Scalars and String go through __to_string,
-// tuples/Show structs reuse the throw-site renderer, and anything else
-// is `<unprintable>`. The diagnostic is on stderr because `vibe test`
-// discards stdout. assert_false and inspect are deliberately plain
-// library functions built on top of those builtins plus the generic
-// __to_string builtin (already used this way by set.vibe / map.vibe),
-// not new compiler builtins -- no codegen/checker changes needed to
-// add them.
-//
-// inspect(value, content) is a minimal inline-snapshot assertion: it
-// stringifies `value` and compares it against the `content` literal
-// already written at the call site, printing both on mismatch so the
-// caller can copy the actual output back into source by hand.
-//
-// `vibe test --update` (docs/internal/design/adr.md #0087) automates that copy: it runs the
-// file, reads a mismatch's "actual/expected" diagnostic, and rewrites the
-// stale `content` literal in place, looping until the file's tests pass.
-// The patch logic itself lives in lib/@vibe/compiler/inspect_update.vibe,
-// wired into cli_adapter.vibe::cli_main as a VIBE_INSPECT_UPDATE=1
-// low-level mode (same convention as VIBE_NORMALIZE/VIBE_TYPE_AT) so it
-// works from an installed vibe-cli.wasm, not just a dev checkout; see that
-// file's header comment for the scoped-to-inspect-calls patching strategy
-// and its resulting limitations (no real source-position tracking yet).
-//
-// Caveat (#1015): __to_string on a fully-generic `T` cannot statically
-// classify a Bool value the way the specially-named prelude `to_string[T:
-// Show]` wrapper can (see fixtures/to_string_bool_param_test.vibe) -- a
-// Bool passed through `inspect` renders as the raw tagged-int "1"/"0",
-// not "true"/"false". Same pre-existing gap as set.vibe's
-// set_value_to_string / map.vibe's hash_key, which call __to_string the
-// same way.
+// Imported inspect requires a renderer because its generic body cannot
+// recover the type of an erased value. The unimported inspect syntax still
+// expands at the call site and needs no renderer argument.
 
 //# Functions
 
@@ -64,8 +14,8 @@ export fn assert_false(b: Bool) -> Unit {
 /// which are granted the standard test effect set, and the far more common
 /// path does not import this at all: `desugar_inspect_calls` expands
 /// `inspect(..)` in place before the checker runs (#1571).
-export fn inspect[T](value: T, content: String) -> Unit with Stdout {
-  let actual = __to_string(value)
+export fn inspect[T](value: T, content: String, render: (T) -> String) -> Unit with Stdout {
+  let actual = render(value)
   if actual == content {
     ()
   } else {
