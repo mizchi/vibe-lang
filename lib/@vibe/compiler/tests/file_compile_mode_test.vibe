@@ -85,6 +85,49 @@ test "compile_file_fs_mode: dce-root still emits a library, not a command entry"
   assert(Bytes::length(bytes_rooted) > 8)
 }
 
+test "compile_file_fs_mode_cached: dce-root is accepted by the CACHED lane too" {
+  // Codex review of #2863. `dce-root` was added to `compile_file_fs_mode`
+  // alone, so this lane threw `unsupported compile mode: dce-root` -- and the
+  // `.vibex` CLI's `build --component` takes it whenever the artifact cache is
+  // live (VIBE_UNSTABLE=1), which is exactly the modules that import compiler
+  // APIs. The launcher adapter, on the uncached lane, succeeded. Same flag,
+  // two answers.
+  let main_path = "/tmp/vibe_compiler_dce_root_cached.vibe"
+  let source = "export fn unused_one(a: Int) -> Int {\n  a + 1\n}\n\nexport fn vibe_command(args: String) -> String {\n  args\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let (bytes_cached, _) = compile_file_fs_mode_cached(db_new(), main_path, "vibe_command", "dce-root")
+  assert_wasm_magic(bytes_cached)
+  // And it must AGREE with the uncached lane. A cached lane that accepted the
+  // mode but compiled it as `no-dce` would pass a bare "did not throw" check
+  // while emitting an unpruned artifact -- which is what two of the codegen
+  // copies would have done, since they had no `no-dce` arm and no throw.
+  let bytes_uncached = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  assert(Bytes::length(bytes_cached) == Bytes::length(bytes_uncached))
+}
+
+test "compile_file_fs_mode_cached: dce-root gets its own cache namespace" {
+  // The in-memory artifact cache keys on (entry_path, kind, entry_name,
+  // source_groups_fingerprint) and that fingerprint does NOT carry the mode,
+  // so the two modes need different artifact KINDS. Everything below is held
+  // equal EXCEPT the mode -- same file, same entry, same fingerprint -- so a
+  // shared kind would hand the second call the first one's bytes.
+  //
+  // The entry is 0-parameter on purpose: that is the one shape BOTH modes
+  // accept, which is what makes holding entry_name equal possible. Under
+  // `no-dce` the entry name is the codegen entry, so a parameterised one is
+  // refused with "WASI entry function must take 0 parameters".
+  let main_path = "/tmp/vibe_compiler_dce_root_cache_ns.vibe"
+  let source = "export fn unused_one(a: Int) -> Int {\n  a + 1\n}\n\nexport fn unused_two(a: Int) -> Int {\n  unused_one(a) + unused_one(a)\n}\n\nexport fn run() -> Int {\n  7\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  let (bytes_no_dce, _) = compile_file_fs_mode_cached(db_new(), main_path, "run", "no-dce")
+  let (bytes_rooted, _) = compile_file_fs_mode_cached(db_new(), main_path, "run", "dce-root")
+  assert_wasm_magic(bytes_no_dce)
+  assert_wasm_magic(bytes_rooted)
+  // Measured: 2484 vs 2230. Equal lengths would mean one mode was answered
+  // with the other's cached artifact.
+  assert(Bytes::length(bytes_rooted) < Bytes::length(bytes_no_dce))
+}
+
 test "compile_file_fs_mode: an unknown mode is refused by name" {
   let main_path = "/tmp/vibe_compiler_dce_root_badmode.vibe"
   Fs::write_bytes(main_path, string_to_bytes("export fn vibe_command(a: String) -> String {\n  a\n}\n"))
