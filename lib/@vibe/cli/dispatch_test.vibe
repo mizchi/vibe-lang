@@ -412,7 +412,7 @@ test "selfhost cli compile rejects missing input before compile" {
 }
 
 test "selfhost cli parses build command args" {
-  let (input_path, output_path, entry_name, mode) = parse_build_args([
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
     "build",
     "--debug",
     "main.vibe",
@@ -423,10 +423,11 @@ test "selfhost cli parses build command args" {
   assert(output_path == "out.wasm")
   assert(entry_name == "_start")
   assert(mode == "debug")
+  assert(!component)
 }
 
 test "selfhost cli build selects main and strips vibex suffix" {
-  let (input_path, output_path, entry_name, mode) = parse_build_args([
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
     "build",
     "app.vibex"
   ])
@@ -567,7 +568,7 @@ test "selfhost cli build accepts vibex with require pin head" {
 }
 
 test "selfhost cli build consumes profile flag" {
-  let (input_path, output_path, entry_name, mode) = parse_build_args([
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
     "build",
     "--profile",
     "/tmp/build.pprof",
@@ -577,6 +578,70 @@ test "selfhost cli build consumes profile flag" {
   assert(output_path == "main.wasm")
   assert(entry_name == "_start")
   assert(mode == "mvp")
+  assert(!component)
+}
+
+test "selfhost cli build --component defaults to a .component.wasm beside the source" {
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
+    "build",
+    "--component",
+    "cmd/check.vibe"
+  ])
+  assert(input_path == "cmd/check.vibe")
+  assert(output_path == "cmd/check.component.wasm")
+  // A component has no command entry: the core is compiled as a library so
+  // the lifted export survives ADR-0077 stripping.
+  assert(entry_name == "__no_entry__")
+  // ... and for the same reason the entry-rooted `mvp` DCE has no root, so
+  // the lane is `no-dce`. `--release` does not change that.
+  assert(mode == "no-dce")
+  assert(component)
+}
+
+test "selfhost cli build --component overrides --release with the no-dce lane" {
+  let (_, _, entry_name, mode, component) = parse_build_args([
+    "build",
+    "--release",
+    "--component",
+    "cmd/check.vibe"
+  ])
+  assert(entry_name == "__no_entry__")
+  assert(mode == "no-dce")
+  assert(component)
+}
+
+test "selfhost cli build --component honours an explicit -o" {
+  let (input_path, output_path, entry_name, mode, component) = parse_build_args([
+    "build",
+    "--component",
+    "cmd/check.vibe",
+    "-o",
+    "dist/check.component.wasm"
+  ])
+  assert(input_path == "cmd/check.vibe")
+  assert(output_path == "dist/check.component.wasm")
+  assert(entry_name == "__no_entry__")
+  assert(component)
+}
+
+test "selfhost cli build --component refuses a vibex" {
+  // A .vibex is an executable root with no export surface (ADR-0075 / #2229),
+  // so it can never carry the `export fn vibe_command` a command component is
+  // made of. The refusal names the module kind to write instead.
+  let result = handle {
+    let _ = parse_build_args(["build", "--component", "cmd/check.vibex"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::index_of(result, "--component needs a .vibe module") >= 0)
+  assert(String::index_of(result, "export fn vibe_command(args: String) -> String") >= 0)
+}
+
+test "selfhost cli build refuses --component with --debug" {
+  let result = handle {
+    let _ = parse_build_args(["build", "--component", "--debug", "main.vibe"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::index_of(result, "--component and --debug cannot be combined") >= 0)
 }
 
 test "selfhost cli build rejects missing profile path" {
