@@ -6820,6 +6820,54 @@ fn builtin_field_access_message(type_name: String, field: String) -> String {
   String::concat("call `", String::concat(type_name, String::concat("::", String::concat(field, String::concat("(...)` if you meant a method; field access `.", String::concat(field, String::concat("` needs a struct, and ", String::concat(type_name, " is a builtin type"))))))))
 }
 
+/// #2848: the same shape for a receiver typed by a TYPE PARAMETER. Nothing a
+/// bound can say promises `T` a field -- there is no `HasField` bound, and a
+/// generic body is lowered once for every instantiation -- so the only edit
+/// that gives `.name` a meaning is naming the struct in the signature. Before
+/// this refusal the read typed as `CtUnknown` and codegen resolved the field
+/// by SPELLING against any struct in the program declaring it: measured on the
+/// committed seed, `struct Crate { payload: Int }` in scope and `fn read[T](m:
+/// T) -> Int { m.payload }` applied to `7` compiled clean and answered `0`,
+/// slot 0 of a tagged integer read through `Crate`'s offset; with no struct
+/// declaring the name the same program was clean in `vibe check` and died in
+/// the build with an unlocated `unknown struct field: v`.
+fn formal_field_access_message(tparam: String, field: String) -> String {
+  String::concat("write the struct that declares `", String::concat(field, String::concat("` in place of the type parameter `", String::concat(tparam, String::concat("`; field access `.", String::concat(field, String::concat("` needs a struct, and a bound on `", String::concat(tparam, "` cannot promise one"))))))))
+}
+
+/// #2848: the source name of the OPEN type parameter that unification variable
+/// `id` stands for under `s`, or "" when it stands for none. Inside a generic
+/// body a plain formal is a unification variable (#2130), so at a field-read
+/// site nothing else tells "the erased `T` of this declaration" from an
+/// ordinary not-yet-solved inference variable (`let xs = []`), which has to
+/// stay tolerated. The table `eq_formal_vars` records exactly the former, and
+/// the lookup follows the representative in both directions the way
+/// `eq_formal_names_for_var` does: unify may leave either the formal's own
+/// variable or a local's as the survivor. Only rows whose declaration is
+/// still open answer, for the reason `eq_formal_row_of` gives -- an auxiliary
+/// re-check can hand one variable id to two sibling binders.
+fn open_formal_name_for_var(id: Int, s: Subst) -> String {
+  let mut i = Array::length(eq_formal_vars) - 1
+  let mut found = ""
+  while i >= 0 && found == "" {
+    let (vid, name) = Array::get(eq_formal_vars, i)
+    if eq_group_is_open(Array::get(eq_formal_group, i)) {
+      if vid == id {
+        found = name
+      } else {
+        match subst_apply(s, CtVar(vid)) {
+          CtVar(rep) => if rep == id {
+            found = name
+          },
+          _ => ()
+        }
+      }
+    }
+    i = i - 1
+  }
+  found
+}
+
 fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool) -> (Type, Subst, Int) {
   match expr {
     EInt(_) => (CtInt, s, c),
@@ -9948,16 +9996,29 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               // and an unapplied formal are the same `CtNamed(name, [])` and
               // refusing one refuses the other.
               //
-              // Everything else this arm reaches stays tolerated, and one of
-              // those is a live defect rather than a decision: a field read on
-              // a type FORMAL resolves by SPELLING in codegen against any
-              // struct declaring the name, so `fn read[T](m: T) { m.payload }`
-              // applied to `7` answers `0` -- slot 0 of a tagged integer read
-              // through that struct's offset (#2848, #2807's shape one rung
-              // over). It is not fixed here because the SAME tolerance carries
-              // an unresolved cross-module name on the incremental per-file
-              // lane, and this arm cannot tell the two apart.
-              None => {
+              // #2848: a RIGID type formal. An unbounded formal that takes part
+              // in a higher-kinded application (`F` and `A` of `F[A]`) is bound
+              // in its body as `CtNamed("#hktformal.<name>", [])` rather than
+              // as a unification variable (the EFn arm, `hkt_related`), so it
+              // lands here with no typedef. The spelling can only come from a
+              // binder -- the parser refuses it in source -- so it is refused
+              // outright; the plain-formal twin, which arrives as `CtVar`, is
+              // refused in the non-struct arm below.
+              //
+              // Everything else this arm reaches stays tolerated: an
+              // unresolved cross-module name on the incremental per-file lane
+              // arrives as a bare `CtNamed(name, [])` too, and resolves later.
+              // A TYPE PARAMETER never takes that spelling inside its own body
+              // (it is a variable or the rigid spelling above), which is what
+              // lets the two be told apart here.
+              None => if String::starts_with(gname, "#hktformal.") {
+                Array::push(errors, String::concat(formal_field_access_message(String::substring(gname, 11, String::length(gname)), field), if field_off >= 0 {
+                  off_marker_len(field_off, String::length(field))
+                } else {
+                  off_marker(dot_off)
+                }))
+                CtUnknown
+              } else {
                 let owned_arity = match compiler_owned_type_arity(gname) {
                   Some(n) => n,
                   None => 0 - 1
@@ -10009,8 +10070,26 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             },
             // Field access on a concrete NON-struct value (`o.x` where `o :
             // Option[P]`, or a scalar / function) is a type error — only structs
-            // (and tuple `.N`) have fields. Type vars / unknown / named scrutinees
-            // are tolerated.
+            // (and tuple `.N`) have fields. Unknown / named scrutinees are
+            // tolerated, and so is a type variable UNLESS it stands for a type
+            // parameter of an open generic declaration (#2848, below).
+            //
+            // #2848: a plain type formal is a unification variable inside its
+            // body (#2130), so a field read on `m: T` reached this arm as
+            // `CtVar`, was tolerated as an unsolved inference variable, and
+            // typed `CtUnknown`. Codegen then resolved the field by SPELLING
+            // against any struct declaring it -- #2807's shape one rung over.
+            // Measured on the committed seed: `struct Crate { payload: Int }`
+            // in scope, `fn read[T](m: T) -> Int { m.payload }` applied to `7`
+            // compiled clean on both lanes and answered `0`, slot 0 of a tagged
+            // integer read through `Crate`'s offset; with no struct declaring
+            // the name, `m.v` was clean in `vibe check` and died in the build
+            // with an unlocated `unknown struct field: v`. `eq_formal_vars`
+            // records which variables ARE formals (the #2474 table), so the
+            // refusal is keyed on that identity and an ordinary unsolved
+            // variable (`let xs = []`) keeps its tolerance. A bound does not
+            // rescue the read: no trait can promise a field, and a
+            // trait-bounded formal is the same variable with bounds attached.
             //
             // #2820: `CtString` / `CtBytes` / `CtArray` were excluded here, and
             // the reason given was that "`.m` on them parses as a method call
@@ -10057,6 +10136,10 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             // and died in codegen with an unlocated `unknown struct field`. One
             // arm closes both halves.
             other => {
+              let formal_receiver = match other {
+                CtVar(vid) => open_formal_name_for_var(vid, s1),
+                _ => ""
+              }
               let enum_receiver = match other {
                 CtEnum(_) => true,
                 _ => false
@@ -10081,7 +10164,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
                 CtArray(_) => true,
                 _ => false
               }
-              if not_struct {
+              if formal_receiver != "" {
+                Array::push(errors, String::concat(formal_field_access_message(formal_receiver, field), if field_off >= 0 {
+                  off_marker_len(field_off, String::length(field))
+                } else {
+                  off_marker(dot_off)
+                }))
+              } else if not_struct {
                 // The enum case gets its OWN message because its edit is a
                 // different one: a variant payload is reached by matching, not by
                 // naming a field. CLAUDE.md — the diagnostic leads with the edit.
