@@ -1,5 +1,163 @@
 #!/usr/bin/env bash
 # vibe — host launcher. Argument parsing and compiler work live in lib/@vibe/cli.
+#
+# `vibe help` prints the block below (content-anchored: from `# Subcommands:`
+# to the `vibe help` line), with no compiler wasm and no runner -- explaining
+# a command is the one thing that has to keep working when the toolchain does
+# not. docs/user/reference/cli-commands.md names this as the authoritative
+# command list, so a new verb is documented HERE.
+#
+# Subcommands:
+#   vibe run     <file.vibex> [-- args]   compile fixed `main`, then run
+#   vibe run --trace <file.vibex>         run + print the function-call trace
+#                                         (each entry annotated with file:line)
+#   vibe run --break <fn>[,<fn>...] <file.vibex>
+#                                         pause at each named function's entry,
+#                                         print the call stack, then continue.
+#                                         At a pause type a step command (stdin):
+#                                           s/step  = step into next function
+#                                           n/next  = step over (same/shallower)
+#                                           o/finish= finish current frame
+#                                           c/empty = continue
+#                                           q/quit  = abort the run
+#   vibe run --mem <file.vibex>           run + report bump-heap usage (peak /
+#                                         total allocated) to stderr after exit
+#   vibe run --alloc-site[=N] <file.vibex>  run + report per-line alloc
+#                                         attribution (top N sites) to stderr
+#   vibe profile <file.vibex> [--out FILE] [--interval-us N]
+#                                         capture a Wasmtime guest CPU profile
+#   vibe compile <file.vibe> [-o <out>]   compile to a .wasm (default:
+#                                         .vibe/build/out/<name>.wasm)
+#   vibe compile --wit <file.vibe>        emit the WIT world for the file's
+#                                         effect surface (docs/internal/design/effect-wit-mapping.md)
+#   vibe compile --component <file.vibe>  emit a command component from the
+#                                         module's `vibe_command` export
+#   vibe build   <file.vibe> [-o <out>]   alias of compile
+#   vibe build --debug <file.vibe>        the linked debug lane
+#   vibe compile|build --minify ...       post-optimize the output with the
+#                                         standalone vibe-opt.wasm artifact
+#                                         (scripts/build_vibe_opt.sh, #1107)
+#   vibe serve   <handler.vibe> [--port N] compile + compose with the wasi-http
+#                                         P3 adapter + `wasmtime serve` (#537)
+#   vibe check [--single-file] [--json] <file.vibe>
+#                                         parse + typecheck. Diagnostics go to
+#                                         stdout, one per line; clean = EMPTY
+#                                         output + exit 0, anything reported =
+#                                         exit 1. Imports are resolved from the
+#                                         FS unless --single-file (buffer scope,
+#                                         what an editor with unsaved text
+#                                         needs). --json needs --single-file.
+#   vibe check --profile-tsv F --profile-callstack F <file.vibe>
+#                                         also write the check's timing sidecars
+#   vibe type-at <file.vibe> <line> <col> print the inferred type at a position
+#   vibe doc-at  <file.vibe> <line> <col> print the `///` doc comment at a position (#854)
+#   vibe binding-at <file.vibe> <line> <col> print binding occurrence spans (START END per line)
+#   vibe symbols [--with-path] <path>...  print declaration outline (NAME KIND START END [DOC] per line;
+#                                       a directory / several paths / --with-path prefix each line with PATH)
+#   vibe symbols --legend                 print KIND NAME table (LSP SymbolKind + 27 Test / 28 Bench, v2 2026-09-12)
+#   vibe escapes [--strict] <file.vibe>   print the `let mut` bindings a closure
+#                                         captures -- the ones codegen boxes into
+#                                         a heap ref cell instead of a wasm local
+#                                         (NAME START END per line; empty = none)
+#   vibe rc-classify <file.vibe>          print RC classifier sets, one
+#                                         `NAME SET[,SET...]` line per user
+#                                         function (empty = no special sets)
+#   vibe rc-plan [--fn NAME] <file.vibe>  print the Perceus plan, one
+#                                         `FN BINDING ACTION COUNT` line
+#                                         (empty = no actions)
+#   vibe allocs <file.vibe>               print possible heap-allocation sites
+#                                         (FN KIND OFFSET per line; empty = none)
+#   vibe deps [--direct] <file.vibe>      print the resolved import closure, one
+#                                         path per line, dependency first (#988).
+#                                         The loader's OWN collection (what the
+#                                         build compiles), so it cannot drift
+#                                         from real resolution. Errors are fatal
+#                                         (a truncated list is a wrong answer).
+#                                         --direct = one hop only; use it to
+#                                         build an index, since a cache over
+#                                         direct edges invalidates per file.
+#   vibe diagnostics <file.vibe>          DEPRECATED (#1567): use
+#                                         `vibe check --single-file`. Kept
+#                                         unchanged (raw lines, always exit 0)
+#                                         for the editors already on it.
+#   vibe grep --pattern '<pat>' [paths]   AST pattern search (#1572). Metavars
+#                                         are `$(name:kind)`, kind = exp / id /
+#                                         const / arg / args / pat / type.
+#                                         Type-aware filters (these resolve
+#                                         imports like `vibe check` does):
+#                                           --where '$x : Array[Int]'  inferred type
+#                                           --where '$f = Iterator::map' resolved name
+#                                           --where-row '$f with Async'  effect row
+#                                           --only-ill-typed / --only-well-typed
+#                                         --json for machine-readable output
+#                                         (`vibe grep --help` for the full list)
+#   vibe fmt     [--check|--stdout] <file.vibe|file.vpkg>
+#                                         format a source file in place with the
+#                                         canonical CST-token formatter
+#                                         (--check: exit 1 if not formatted;
+#                                          --stdout: print, don't write)
+#   vibe normalize [--check|--stdout] <file.vibe>
+#                                         canonicalize a source file in place
+#                                         (--check: exit 1 if not normalized;
+#                                          --stdout: print, don't write)
+#   vibe test    [--jobs N] <file_test.vibe|dir>...
+#                                         compile + run test {} blocks
+#                                         (a directory expands to *_test.vibe;
+#                                         --jobs N runs N files concurrently)
+#   vibe test --update <file_test.vibe|dir>... auto-patch stale inspect(value,
+#                                         content) snapshots to the actual
+#                                         value on a failing run, then
+#                                         recompile+rerun (#1061)
+#   vibe bench   <file.vibe> [--iters N] [--warmup N] [--guest-profile DIR]
+#                                         run bench {} blocks; report ns/op
+#                                         (min/p50/p95/mean), ops/sec, bytes/op
+#   vibe shell   [file.vibe]              interactive compiled REPL: declarations
+#                                         accumulate, each line recompiles+runs
+#                                         (type :help inside for commands)
+#   vibe hash    [--write] <pkg_dir|index.vpkg>
+#                                         print the package / contract hashes
+#                                         (--write: rewrite `generated_hash =`)
+#   vibe new     [--name @scope/name] <dir>
+#                                         scaffold a project: main.vibex, a
+#                                         root index.vpkg (the project marker
+#                                         and manifest) and a .gitignore
+#   vibe root                             print the project root
+#   vibe clean   [--all]                  remove .vibe/build (--all: .vibe/store too)
+#   vibe add     <source-spec>            fetch a package into .vibe/store/ and
+#                                         pin it in the root index.vpkg
+#                                         (github:owner/repo[/dir]@<ref> or
+#                                         git:<url>@<ref>[#<dir>]; a semver
+#                                         constraint ref picks the highest tag)
+#   vibe fetch                            restore .vibe/store/ from the pins
+#                                         (cache first, else the pinned source)
+#   vibe pkg     publish <pkg_dir>        publish a package: semver gate, CAS,
+#                                         transparency-log record (#805)
+#   vibe pkg     install <name>@<ver> [--store] [--allow-yanked]
+#                                         materialize a published version
+#                                         (verifies the log inclusion proof)
+#   vibe pkg     add <source-spec> [#pkg:sha1:<hex>]
+#                                         fetch straight from git into
+#                                         $VIBE_HOME/lib, hash-verified (no
+#                                         manifest edit; `vibe add` is the
+#                                         project lane)
+#   vibe pkg     yank <name>@<ver>        mark a version yanked (append-only)
+#   vibe pkg     update <name> [--store]  switch to the newest non-yanked
+#                                         version, showing the contract diff
+#   vibe lsp     [--selfhost]             start the stdio LSP server (the node
+#                                         server; --selfhost: the embedded one)
+#   vibe context-pack [--out FILE]        emit cheatsheet + verified golden
+#                                         examples as one file (AI-harness context, #820)
+#   vibe version                          print toolchain versions
+#   vibe toolchain list                   installed toolchains, the default marked
+#   vibe toolchain default <name>         select the default toolchain
+#   vibe toolchain remove <name>          delete a toolchain (never the default)
+#   vibe self update [<version>|latest] [--no-default] [--force]
+#                                         install a release toolchain (download,
+#                                         verify, precompile) and make it default
+#   vibe self update --cli-wasm <path>    refresh compiler wasm + rebuild .cwasm
+#   vibe self uninstall [--purge]         remove toolchains/, bin/, env, toolchain
+#                                         (--purge: cache/, lib/ and log/ too)
+#   vibe help                             this message
 set -euo pipefail
 VIBE_VERSION="0.1.0-dev"
 _src="${BASH_SOURCE[0]}"
@@ -196,9 +354,9 @@ manifest_add_pin() {
 # that trap reads as a second, unexplained failure (#2202). Any other trap is
 # real and printed.
 condense_test_trap() {
-  local errf="$1" pre_abort="${2:-0}"
+  local errf="$1" pre_abort="${2:-0}" out
   [ -s "$errf" ] || return 0
-  awk -v pre_abort="$pre_abort" '
+  out="$(awk -v pre_abort="$pre_abort" '
     function pct(s) { gsub("%20"," ",s); gsub("%25","%",s); return s }
     !seen && match($0, /at __test_/) { r=substr($0,RSTART+length("at __test_")); if (match(r,/ \(wasm:/)) { f=substr(r,1,RSTART-1); if(f!="") seen=1 } }
     !seen && match($0, /<unknown>!__test_/) { f=substr($0,RSTART+length("<unknown>!__test_")); sub(/[[:space:]]+$/,"",f); if(f!="") seen=1 }
@@ -207,7 +365,17 @@ condense_test_trap() {
       if (f!="") print "       failing test: " pct(f)
       if (why!="" && !(pre_abort == 1 && why ~ /unreachable/)) print "       trap: " why
     }
-  ' "$errf"
+  ' "$errf")"
+  # Nothing recognizable (a runner or instantiation failure, an unexpected
+  # message): replay the raw stream rather than leave `FAIL <file>` alone
+  # with no reason -- information is never lost. An assert abort whose only
+  # stderr was the suppressed trap replays nothing, by design: the assert
+  # block on stdout already tells the story.
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out"
+  elif ! { [ "$pre_abort" = 1 ] && grep -q "unreachable" "$errf"; }; then
+    sed 's/^/       /' "$errf"
+  fi
 }
 INVOKE_DIR="${VIBE_INVOKE_DIR:-$(pwd -P)}"
 project_root() {
@@ -596,6 +764,11 @@ execute_host_action() {
     run-benches)
       wasm="$(sed -n '4p' "$plan")"; be=("VIBE_BENCH_LABEL=$(basename "$(sed -n '3p' "$plan")")")
       it="$(sed -n '5p' "$plan")"; wu="$(sed -n '6p' "$plan")"; gp="$(sed -n '7p' "$plan")"; be_backend="$(sed -n '10p' "$plan")"
+      # The dispatcher made the artifact and the profile directory relative
+      # to the PROJECT ROOT; this arm runs from the invoking directory, so
+      # anchor both before anything reads them.
+      case "$wasm" in /*) ;; *) wasm="$PROJECT_ROOT/$wasm" ;; esac
+      case "$gp" in ''|/*) ;; *) gp="$PROJECT_ROOT/$gp" ;; esac
       # The wasm-gc backend can compile a file and emit no `__bench_<name>`
       # entry point; the runner then falls back to timing `_start` and prints
       # numbers for something other than the bench blocks. Refuse instead.
@@ -604,10 +777,6 @@ execute_host_action() {
       fi
       [ "$it" != 0 ] && [ -n "$it" ] && be+=("VIBE_BENCH_ITERS=$it")
       [ "$wu" != 0 ] && [ -n "$wu" ] && be+=("VIBE_BENCH_WARMUP=$wu")
-      # The dispatcher made the artifact and the profile directory relative
-      # to the PROJECT ROOT; this arm runs from the invoking directory.
-      case "$wasm" in /*) ;; *) wasm="$PROJECT_ROOT/$wasm" ;; esac
-      case "$gp" in ''|/*) ;; *) gp="$PROJECT_ROOT/$gp" ;; esac
       # VIBE_BENCH_EMIT_WASM keeps a copy of the measured module, so a caller
       # can inspect which lane it was lowered for (`wasm-tools print`).
       if [ -n "${VIBE_BENCH_EMIT_WASM:-}" ]; then
@@ -1208,7 +1377,10 @@ REPL_HELP
     invoke_cli grep "$@"
     ;;
   help|--help|-h)
-    invoke_cli help
+    # Content-anchored (not fixed line numbers): the whole Subcommands block
+    # up to the `vibe help` line, so a newly documented subcommand cannot fall
+    # outside a stale range (Codex review, PR #925). No wasm, no runner.
+    sed -n '/^# Subcommands:/,/^#   vibe help /p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
     ;;
   lsp)
     # The node server (clients/js/lsp_server.js) stays the default: it carries
