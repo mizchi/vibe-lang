@@ -1,28 +1,31 @@
 # blake3 vs sha1 vs compact_string_fingerprint — bench (2026-08-01)
 
-キャッシュ/fingerprint 用ハッシュを sha1 から blake3 (または SIMD 化しやすい
-アルゴリズム) へ置き換える検討の一次計測。`lib/@vibe/blake3` に pure-vibe の
-BLAKE3 (spec 完全準拠、公式テストベクタで検証済み — `blake3_test.vibe`) を
-実装し、`vibe bench` (linear backend, 1000 iters, viberun/wasmtime) で
-既存実装と比較した。
+Primary measurement for replacing the cache/fingerprint hash with blake3
+(or an algorithm that SIMD-izes more readily). `lib/@vibe/blake3` holds a
+pure-vibe BLAKE3 (spec-complete, checked against the official test vectors
+in `blake3_test.vibe`), compared with the existing implementations via
+`vibe bench` (linear backend, 1000 iters, viberun/wasmtime).
 
-## 前提の整理: いま sha1 は「どこ」で使われているか
+New writes later switched to `pkg:b3:` / `ct:b3:` (#2829). The pin
+spellings below are the 2026-08-01 state this measurement was taken in.
 
-- **実行時のキャッシュキーは sha1 ではない**: persistent cache の
-  fingerprint (`lib/@vibe/cache/cache.vibe`) は
-  `compact_string_fingerprint` — 2 本の 31-bit 多項式 rolling hash
-  (len:h1:h2 形式、実質 ~62-bit)。
-- **sha1 の実際の使用箇所**は contract/package の内容ハッシュ
-  (`ct:sha1:<40hex>` / `pkg:sha1:<40hex>`、ADR-0004/ADR-0065 の pin 照合、
-  `lib/@vibe/compiler/contract/contract.vibe`) と、
-  `scripts/generate_bundle.sh` 系の生成物 fingerprint。衝突耐性が意味を
-  持つのはこちら側。
+## Setup: where sha1 is actually used
 
-## 計測結果 (mean ns/op、alloc は bump-heap delta bytes/op)
+- **The runtime cache key is not sha1**: the persistent-cache fingerprint
+  (`lib/@vibe/cache/cache.vibe`) is `compact_string_fingerprint` — two
+  31-bit polynomial rolling hashes (`len:h1:h2`, effectively ~62-bit).
+- **sha1's real uses** are the contract/package content hashes
+  (`ct:sha1:<40hex>` / `pkg:sha1:<40hex>`, the pin check in ADR-0004 /
+  ADR-0065, `lib/@vibe/compiler/contract/contract.vibe`) and the generated
+  artifact fingerprint in `scripts/generate_bundle.sh`. Collision
+  resistance only matters on that side.
 
-入力構築は bench block 内で行うため、`baseline make_a` (構築のみ) を引いた
-net 値も併記する。3 つの bench file は同一の 1KiB/8KiB + baseline ケースを
-持つ (`sha1_bench.vibe` / `blake3_bench.vibe` / `cache_bench.vibe`)。
+## Results (mean ns/op; alloc is bump-heap delta bytes/op)
+
+Input construction happens inside the bench block, so a net figure that
+subtracts `baseline make_a` (construction only) is listed as well. The
+three bench files share the same 1KiB/8KiB + baseline cases
+(`sha1_bench.vibe` / `blake3_bench.vibe` / `cache_bench.vibe`).
 
 | case | sha1 | blake3 | compact_string_fingerprint |
 |---|---:|---:|---:|
@@ -32,25 +35,26 @@ net 値も併記する。3 つの bench file は同一の 1KiB/8KiB + baseline �
 | 8 KiB (net) | ~1593 µs / ~142 KiB | ~891 µs / ~145 KiB | ~76 µs / ~0.1 KiB |
 | throughput (8 KiB net) | ~5.1 MB/s | ~9.2 MB/s | ~107 MB/s |
 
-## 追記 (同日): scratch 再利用リファクタ後の再計測
+## Addendum (same day): remeasure after scratch reuse
 
-compress の作業配列 (state/message words) を呼び出し 1 回分の `Scratch` に
-まとめ全 block/chunk で使い回す + String→Bytes 変換を pre-size する改修
-(`blake3.vibe`) 後の net 値:
+Net figures after packing compress working arrays (state/message words)
+into a per-call `Scratch` reused across every block/chunk, and pre-sizing
+the String→Bytes conversion (`blake3.vibe`):
 
-| case | blake3 (初版) | blake3 (scratch 再利用) |
+| case | blake3 (first cut) | blake3 (scratch reuse) |
 |---|---:|---:|
 | 1 KiB net | ~101 µs / ~18.2 KiB | ~92 µs / **~4.3 KiB** |
 | 8 KiB net | ~891 µs / ~145 KiB | ~751 µs / **~22.5 KiB** |
 
-アロケーションは約 1/6 (残りはほぼ入力 Bytes 変換 + chunk/parent ごとの
-CV・deferred block)、時間も ~16% 改善。sha1 比は **2.1 倍**に拡大。
+Allocations drop to about 1/6 (what remains is mostly the input Bytes
+conversion plus per-chunk/parent CVs and deferred blocks). Time improves
+~16%. The ratio vs sha1 widens to **2.1×**.
 
-## 追記 (同日): SIMD の天井値 (wasmtime, ネイティブ品質 codegen)
+## Addendum (same day): SIMD ceiling (wasmtime, native-quality codegen)
 
-「SIMD で速いアルゴリズム」の上限を見るため、Rust の blake3 crate
-(公式 SIMD 実装) と sha1 crate を wasm32-wasip1 へコンパイルし、同じ
-wasmtime で実測した (input = i % 251 pattern):
+To bound "an algorithm that is fast with SIMD", the Rust blake3 crate
+(official SIMD) and sha1 crate were compiled to wasm32-wasip1 and measured
+on the same wasmtime (input = `i % 251` pattern):
 
 | case | sha1 (scalar) | blake3 (scalar) | blake3 (+simd128, wasm32_simd) |
 |---|---:|---:|---:|
@@ -58,93 +62,103 @@ wasmtime で実測した (input = i % 251 pattern):
 | 8 KiB | 20.5 µs (400 MB/s) | 16.2 µs (506 MB/s) | **6.86 µs (1195 MB/s)** |
 | 64 KiB | 161 µs (408 MB/s) | 129 µs (509 MB/s) | **56.7 µs (1157 MB/s)** |
 
-- BLAKE3 は simd128 で **scalar 比 2.3〜2.4 倍**、SHA-1 は SIMD の恩恵なし
-  (構造的に vectorize しない)。
-- pure-vibe blake3 (~11 MB/s) とネイティブ品質 scalar (506 MB/s) の差 ~46 倍は
-  codegen 品質 (bounds check / boxing / 関数呼び出しコスト)。SIMD 化の前に
-  codegen 側の伸び代が支配的。
+- BLAKE3 is **2.3–2.4× scalar** with simd128. SHA-1 gets nothing from SIMD
+  (it does not vectorize structurally).
+- The ~46× gap between pure-vibe blake3 (~11 MB/s) and native-quality
+  scalar (506 MB/s) is codegen quality (bounds checks / boxing / call
+  cost). Headroom on the codegen side dominates before SIMD.
 
-### 追記 (同日夜): inline wasm 拡張により SIMD compress を実装 — scalar 比 4〜6.6 倍
+### Addendum (same evening): SIMD compress via inline wasm — 4–6.6× scalar
 
-下の「現状不可能」節の 3 つの壁はコンパイラ拡張で解消した (同ブランチ):
+The three walls in the "not possible yet" section below were lifted by a
+compiler extension (same branch):
 
-1. **v128/i32/i64 の `(local ...)` 宣言** を inline wasm でサポート
-   (`compile_inline_wat_full` + code-entry locals header の v128 run、
-   meta_v128 配列を bodies/meta_i32/meta_i64 と並走)。
-2. **Bytes param** を許可 — 生の untagged object pointer が渡り、
-   `i32.load offset=8` で data pointer、`offset=4` で length が取れる
-   (buffer address intrinsic は builtin 追加ではなくこの形で実現)。
-3. **`i8x16.shuffle`** (16 lane-byte immediates) を WAT assembler に追加。
+1. **`(local ...)` declarations for v128/i32/i64** in inline wasm
+   (`compile_inline_wat_full` plus a v128 run in the code-entry locals
+   header, with `meta_v128` running alongside `bodies` / `meta_i32` /
+   `meta_i64`).
+2. **Bytes params allowed** — a raw untagged object pointer is passed;
+   `i32.load offset=8` is the data pointer and `offset=4` is the length
+   (the buffer-address intrinsic is this shape, not a new builtin).
+3. **`i8x16.shuffle`** (16 lane-byte immediates) added to the WAT
+   assembler.
 
-これで BLAKE3 の 1-block full compression を flat WAT の kernel として
-`lib/@vibe/blake3/simd/simd.vibe` に実装 (命令列は Python 生成器 +
-命令レベルシミュレータで公式ベクタ全一致を検証してから出力。rows 方式、
-message schedule は各 round の 4 vector を m0..m3 から 2 入力 shuffle 木で
-直接 gather、diagonalize は r1/r2/r3 lane 回転)。`simd_test.vibe` が
-公式ベクタと scalar/simd 一致を実機で pin。
+That let a 1-block full BLAKE3 compression land as a flat WAT kernel in
+`lib/@vibe/blake3/simd/simd.vibe` (the instruction stream is a Python
+generator plus an instruction-level simulator, checked against every
+official vector before emission. Rows layout; the message schedule
+gathers each round's 4 vectors from m0..m3 through a 2-input shuffle
+tree; diagonalize is r1/r2/r3 lane rotation). `simd_test.vibe` pins the
+official vectors and scalar/simd agreement on hardware.
 
-vibe bench (net of baseline、同一 wasmtime):
+vibe bench (net of baseline, same wasmtime):
 
-| case | scalar blake3 | **simd blake3** | sha1 | 現行 cache key |
+| case | scalar blake3 | **simd blake3** | sha1 | current cache key |
 |---|---:|---:|---:|---:|
 | 1 KiB | ~94 µs | **~14 µs (~72 MB/s)** | ~221 µs | ~9.8 µs |
 | 8 KiB | ~799 µs | **~202 µs (~41 MB/s)** | ~1593 µs | ~76 µs |
 
-- SIMD kernel は scalar vibe 比 **4〜6.6 倍**、sha1 比 **8〜16 倍**。
-- 現行 `compact_string_fingerprint` にほぼ並ぶ速度になり (1KiB で 14 vs
-  9.8 µs)、衝突耐性つきハッシュとしては実用域。
-- ネイティブ SIMD 天井 (~1.2 GB/s) との残差は per-call オーバーヘッド
-  (RC dup/drop + call) と driver 側の Bytes 構築。kernel を chunk 単位に
-  太らせればさらに縮む。
+- The SIMD kernel is **4–6.6×** scalar vibe and **8–16×** sha1.
+- It is nearly even with the current `compact_string_fingerprint`
+  (14 vs 9.8 µs at 1KiB), so a collision-resistant hash is in the
+  practical range.
+- Residual vs the native SIMD ceiling (~1.2 GB/s) is per-call overhead
+  (RC dup/drop + call) and Bytes construction on the driver side.
+  Thickening the kernel to a chunk would shrink that further.
 
-### (歴史) inline wasm (`= wasm`, ADR-0072) での SIMD compress は当初不可能だった
+### (History) SIMD compress via inline wasm (`= wasm`, ADR-0072) was initially impossible
 
-現行の inline wasm 制約 (v0.3 slice) を `fixtures/inline_wasm_test.vibe` と
-突き合わせた結論:
+Matching the then-current inline wasm constraints (v0.3 slice) against
+`fixtures/inline_wasm_test.vibe`:
 
-1. **v128 locals が無い** — locals は fn の i64 params のみ。BLAKE3 の
-   compress は 4 本の v128 row を 7 round 横断で保持する必要があり、
-   locals なしの folded expression では row の再利用 (fan-out) が書けない。
-2. **ポインタが取れない** — `Bytes`/`Int64Array` の線形メモリ上の
-   アドレスを得る手段がなく、`v128.load` で message words を読めない。
-   params 経由だと 16 words + cv 8 + counter/blen/flags で 27 個の
-   i64 param に手展開することになり、SIMD lane への詰め直しで利益が消える。
-3. `call` 不可のため G function を関数分割することもできない。
+1. **No v128 locals** — locals were only the fn's i64 params. BLAKE3
+   compress has to keep 4 v128 rows across 7 rounds; a folded expression
+   with no locals cannot reuse a row (fan-out).
+2. **No pointer** — there was no way to get the linear-memory address of
+   a `Bytes` / `Int64Array`, so `v128.load` could not read message words.
+   Passing them as params would unroll to 27 i64 params (16 words + cv 8
+   + counter/blen/flags) and the re-pack into SIMD lanes would eat the
+   win.
+3. No `call`, so the G function could not be split into functions either.
 
-→ vibe 内 SIMD 化には compiler 拡張 (v128 locals / buffer address intrinsic /
-`call` 許可のいずれか) が必要。それまでの現実的な高速化は
-(a) codegen 品質改善 (bounds-check 除去等) か、(b) viberun への host builtin
-(native blake3) 追加 — ただし (b) は pure/component target に host import を
-強いるため契約ハッシュ用途 (compiler 内で完結) に限定するのが筋。
+→ In-vibe SIMD needed a compiler extension (v128 locals / a buffer-address
+intrinsic / allowing `call`). Until then the realistic speedups were
+(a) codegen quality (eliding bounds checks, etc.) or (b) a host builtin
+on viberun (native blake3) — but (b) forces a host import onto the
+pure/component target, so it should stay limited to contract hashing
+(closed inside the compiler).
 
-## 読み方
+## How to read this
 
-1. **blake3 は sha1 の 1.8〜2.2 倍高速** (同一条件の pure-vibe 実装同士)。
-   BLAKE3 は SHA-1 より round 構造が浅く (7 rounds/block vs 80 rounds/block)、
-   32-bit エミュレーション下でも素直に差が出る。digest は 256-bit で
-   衝突耐性も sha1 (既知衝突あり) より強い。
-2. **アロケーションはほぼ同等** (~18 B/入力 byte)。どちらも per-block の
-   word 配列を都度確保している。blake3 側は compress ごとの
-   state/m1/m2 (48 words) + block words が主で、scratch buffer を
-   chunk 処理で使い回せば大きく削れる余地がある。
-3. **現行の実行時キャッシュキー (`compact_string_fingerprint`) は
-   blake3 の約 10 倍高速・実質ゼロアロケーション**。実行時キャッシュの
-   ホットパスを blake3 に置き換えるのは純粋な性能後退で、動機は
-   「衝突耐性が要るか」だけ。~62-bit 弱ハッシュで足りている限り
-   置き換える理由は薄い。
-4. **置き換えの本命は contract/pin ハッシュ (`ct:sha1:`/`pkg:sha1:`)**。
-   ここは衝突耐性が意味を持ち、頻度も低い (publish/pin 照合時のみ) ので
-   blake3 の速度優位はボーナス。ただし hash 形式が `#pkg:sha1:<40hex>` で
-   ADR-0004/0065 と `vibe hash` に固定されているため、`pkg:b3:<64hex>` の
-   ような format 移行 (= 全 pin の振り直し) を伴う。
-5. **SIMD 化の道**: inline wasm (`= wasm`, ADR-0072, linear backend のみ) は
-   v128/SIMD 命令をサポート済み。BLAKE3 は設計自体が SIMD 前提
-   (4-lane G function 並列) なので、compression 1 回分を inline wasm で
-   書くのが次の一手。現状の inline wasm は `call` 不可・locals は
-   params のみという制約があるため、80+ 命令の compress を 1 関数に
-   展開する形になる。
+1. **blake3 is 1.8–2.2× faster than sha1** (same-condition pure-vibe
+   implementations). BLAKE3's round structure is shallower (7
+   rounds/block vs 80), so the gap shows even under 32-bit emulation.
+   The digest is 256-bit and collision-resistant in a way sha1 (known
+   collisions) is not.
+2. **Allocations are roughly equal** (~18 B / input byte). Both allocate
+   a per-block word array each time. blake3's main cost is
+   state/m1/m2 (48 words) + block words per compress; a scratch buffer
+   reused across chunk processing can cut that a lot.
+3. **The current runtime cache key (`compact_string_fingerprint`) is
+   about 10× faster than blake3 and essentially zero-alloc**. Replacing
+   the hot path of the runtime cache with blake3 is a pure performance
+   regression; the only motive is "do we need collision resistance?"
+   While a ~62-bit weak hash is enough, there is little reason to
+   switch.
+4. **The real replacement target is the contract/pin hash
+   (`ct:sha1:` / `pkg:sha1:`).** Collision resistance matters there, and
+   the frequency is low (publish / pin check only), so blake3's speed
+   edge is a bonus. The hash form is frozen as `#pkg:sha1:<40hex>` in
+   ADR-0004/0065 and `vibe hash`, so the move is a format migration
+   (`pkg:b3:<64hex>`) — every pin has to be rewritten.
+5. **SIMD path**: inline wasm (`= wasm`, ADR-0072, linear backend only)
+   already supports v128/SIMD opcodes. BLAKE3 is designed for SIMD
+   (4-lane G function in parallel), so writing one compression as
+   inline wasm is the next step. The then-current inline wasm could not
+   `call` and locals were params only, so an 80+ instruction compress
+   would have to expand inside one function.
 
-## 再現手順
+## Reproduce
 
 ```bash
 bash scripts/build_cli_wasm.sh            # dist/cli/vibe-cli.wasm
