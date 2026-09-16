@@ -183,14 +183,22 @@ expect_launcher_fail "launcher accepts a .vibex for --component" \
   's/        \*.vibex) die "--component needs a .vibe module.*$//' \
   '--component needs a .vibe module'
 
-# 12. A writing command must not be able to report success. Swap it for one
+# 12. The pruning assertion is real: make the module that avoids the formatter
+#     carry it anyway (by swapping in the one that reaches it), which is
+#     exactly what a lane that stopped pruning would produce, and the gate
+#     must say so.
+expect_fail "command lane stops pruning" \
+  "did not prune" \
+  "cp cmd/reaches.component.wasm cmd/avoids.component.wasm"
+
+# 13. A writing command must not be able to report success. Swap it for one
 #     that exits 0 and writes nothing -- exactly what the permissive vfs wrap
 #     produced before the trapping wrap replaced it -- and the gate must say so.
 expect_fail "writing command reports success" \
   "reported success; the write was answered instead of trapping" \
   "cp cmd/hello.component.wasm cmd/writer.component.wasm"
 
-# 13. The precompiled-trust boundary is real.
+# 14. The precompiled-trust boundary is real.
 #
 #     The mutation has to reach the runner's ARGUMENT POLICY, not a fixture.
 #     An earlier attempt renamed precompiled bytes onto a component row, which
@@ -235,7 +243,7 @@ grep -q 'selected a precompiled image with no --trust-precompiled' "$trust_log" 
   || { cat "$trust_log" >&2; echo "component-lazy self-test [precompiled trust boundary]: red, but not at the trust assertion" >&2; exit 1; }
 echo "component-lazy self-test [precompiled trust boundary]: red as expected"
 
-# 14. The compiler-source half of the cache key (Codex P2): a change under
+# 15. The compiler-source half of the cache key (Codex P2): a change under
 #     lib/@vibe/compiler must force a rebuild, or a changed emitter is reused
 #     from yesterday's artifacts and the gate is green about code it never ran.
 case_no=$((case_no + 1))

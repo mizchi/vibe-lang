@@ -125,6 +125,8 @@ import ./cli_support.vibe {
   check_redundant_import_warnings_from_source_groups,
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
+  command_component_compile_mode,
+  command_component_entry,
   configure_cfg_flags,
   executable_exports_stripped,
   strip_executable_wasm_env,
@@ -1182,10 +1184,12 @@ fn adapter_command_component(input_path: String, output_path: String) -> Int wit
       ()
     }
     unstable_closure_reset()
-    // No command entry: the surface is the lifted export, so the core is a
-    // library build and `no-dce` keeps it reachable -- the entry-rooted `mvp`
-    // lane has no root and answers "no functions found to compile".
-    let core = compile_file_fs_mode(input_path, "__no_entry__", "no-dce")
+    // The surface is the lifted export, so the codegen entry is the library
+    // sentinel -- but the DCE root is `vibe_command`, which is a real root.
+    // `no-dce` (what this used before) kept the whole closure: a command
+    // calling `check_linked_file` came to 40.4 MB, 7.8 times this adapter.
+    // `dce-root` prunes from the command and still emits a library (2.6 MB).
+    let core = compile_file_fs_mode(input_path, command_component_entry(), command_component_compile_mode())
     let closure_unstable = if opt_in {
       adapter_no_warnings()
     } else {

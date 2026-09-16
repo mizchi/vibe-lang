@@ -45,6 +45,17 @@ Both call `comp_emit_component_wasm_command`, so they cannot pick different
 faces for the same module — which is the point of the split being over one
 implementation rather than two.
 
+**The compile lane is shared the same way, and had to be made so.** Each door
+originally spelled its own `(entry_name, mode)` literal, and when `dce-root`
+replaced `no-dce` on the adapter door the other kept `no-dce` — the same
+`vibe build --component` then produced a 40 MB artifact through the user CLI
+and a 2.6 MB one through the launcher. Both now read
+`command_component_entry()` and `command_component_compile_mode()` from
+`lib/@vibe/compiler/cli_support.vibe`, so the pair has one spelling and a
+future lane change cannot land on one door only. `lib/@vibe/cli/dispatch_test.vibe`
+asserts the door returns exactly that pair rather than a literal that happens
+to agree today.
+
 The first version of this lane had only the verb arm. Measured:
 `vibe build --component app.vibex` printed
 `compiled app.vibex -> .vibe/build/out/app.wasm` and wrote a **core module** —
@@ -201,9 +212,25 @@ access, or to declare `with Fs` and be handed the strict one.
 ### What a command component cannot do yet
 
 - **Write, or reach any capability outside the four read operations.** The vfs
-  wrap turns them into traps. A verb that produces files is expressible in the
-  shape `runtime/vibe` already uses — return a host-action plan as the payload
-  and let the launcher execute it — but no verb does that yet.
+  wrap turns them into traps, and after `dce-root` this — not size — is what
+  blocks the two real verbs measured here:
+  - **`check`** builds and dispatches, and traps. `check_linked_file` reaches
+    `Env::get` for its cache configuration and then writes the persistent
+    header cache, and neither is one of the four reads. Its 2.6 MB component
+    is a perfectly good artifact that cannot run.
+  - **`fmt`** is pure in its core — `format_script` is a `String -> String`,
+    and the 40 real `lib/` files it was run over through the built component
+    all came back fixpoint. But `vibe fmt`'s DEFAULT mode rewrites the file in
+    place, so the verb *as a user spells it* needs the write the wrap traps.
+    Only `--stdout` fits today's contract.
+
+  Two routes are open and neither is started. Widen the wrap to serve
+  `env-get` and the write imports for real, with the authority decided at
+  build time the way every other capability is (ADR-0075/0084). Or return a
+  host-action plan as the payload and let the launcher execute it — the shape
+  `runtime/vibe` already uses, though today it carries exactly one kind
+  (`run-guest-profile`, via `VIBE_HOST_ACTION_OUT`), so that route is an
+  expansion of the plan vocabulary and not just a new caller.
 - **Stream stdout.** Output comes back as the returned string, so a long-running
   command prints nothing until it finishes.
 - **`--component --minify`.** `vibe-opt` optimizes core modules; running it over
@@ -219,15 +246,54 @@ access, or to declare `with Fs` and be handed the strict one.
 Each is additive: a wider wrap, or a `print` import, extends the contract
 without changing the manifest or the frame.
 
-### Size: the component keeps every export
+### Size: the lane prunes from `vibe_command`
 
-The component lane compiles the core with `no-dce`, for the reason `serve` does
-— there is no command entry, so entry-rooted DCE has no root and answers "no
-functions found to compile". Every export of the module and its imports
-survives. For a command module that is what you want (one small module, one
-export); for one that pulls in a large package it is not, and the lever is the
-one `scripts/build_vibec.sh` already uses: `scripts/minify_wasm.sh
---keep-exports vibe_command,memory,__heap_ptr` on the core before the wrap.
+The compiler offered two lanes and neither fits a command:
+
+- `mvp` roots the DCE at `entry_name` and then hands the **same name** to a
+  codegen that requires a 0-parameter WASI entry. `vibe_command(args)` takes a
+  parameter, so it is refused with "WASI entry function must take 0
+  parameters".
+- `no-dce` keeps every statement of the merged program.
+
+The command lane took `no-dce`, and the cost was not theoretical. Measured on
+this tree, building each as a command component:
+
+| command module | `no-dce` | `dce-root` | |
+|---|---:|---:|---:|
+| no imports at all | 5,587 B | 5,328 B | 95% |
+| `format_script` | 84,139 B | 77,474 B | 92% |
+| `lsp_diagnostics_json_string` | 4,322,042 B | 1,650,466 B | 38% |
+| `check_linked_file` | 40,368,293 B | 2,590,728 B | **6%** |
+
+A command that called the checker came to **40 MB — 7.8 times the whole
+compiler adapter the launcher drives** (`lib/@vibe/compiler/cli_adapter.vibe`,
+5,172,686 B), which is the opposite of what a per-verb artifact is for. Both columns come from one controlled run: two CLIs built from this same
+checkout by the same seed, differing only in the mode string
+`adapter_command_component` passes.
+
+`dce-root` separates the two roles `mvp` conflates: `entry_name` is the DCE
+ROOT, and the codegen entry is the library sentinel. So a command prunes from
+`vibe_command` and still emits a library the wrap can lift. Pinned by
+`lib/@vibe/compiler/tests/file_compile_mode_test.vibe` and, end to end, by the
+gate's reachability pair — two modules that differ only in whether
+`vibe_command` reaches the formatter, compared against **each other** rather
+than a fixed size, so the assertion survives the formatter growing. That pair
+is what separates the lanes most sharply, because the only variable left is
+reachability:
+
+| lane | reaches | avoids | avoids/reaches |
+|---|---:|---:|---:|
+| `no-dce` | 84,084 B | 83,154 B | 98% |
+| `dce-root` | 77,317 B | 27,986 B | **36%** |
+
+The external lever `scripts/build_vibec.sh` uses (`scripts/minify_wasm.sh
+--keep-exports vibe_command,memory,__heap_ptr`) is independent of this and
+composes with it: measured on the `no-dce` `format_script` core, it went from
+87,014 B to 58,716 B (−32%) in 21 s. It is a separate process per pass because
+a whole round over a large module exhausts the 4 GB wasm space under the bump
+allocator — which is exactly why the in-compiler fix above is the one that
+scales, and why it had to come first.
 
 ## Laziness, and how it is proved
 
@@ -283,4 +349,13 @@ and writing a `commands.tsv` into the toolchain, which is the size lever
 [#2499](https://github.com/mizchi/vibe-lang/issues/2499) asks for and which a
 run-time branch in `cli_main` cannot provide: every handler stays reachable
 from one entry, so DCE keeps them all. Separate artifacts per verb is the
-build-time boundary that issue names.
+build-time boundary that issue names, and `dce-root` is what makes each of
+those artifacts worth cutting out — the same measurement that says a
+per-verb `check` is 2.6 MB rather than 40 MB.
+
+**The order of the remaining work is set by what was measured, not by what is
+cheapest.** Capability comes first: of the verbs worth splitting out, `check`
+traps and `fmt` is reduced to `--stdout` until the wrap serves `env-get` and
+writes. A `commands.tsv` shipped before that would enumerate verbs that
+cannot run, which is worse than not shipping one. Streaming stdout follows,
+since a verb that prints as it goes is most of what a CLI does.

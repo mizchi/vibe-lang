@@ -171,6 +171,34 @@ export fn vibe_command(args: String) -> String with Fs {
 }
 VIBE
 
+  # A PAIR that differs only in reachability. Both import the formatter; only
+  # `reaches` calls it from `vibe_command`. The command lane prunes from that
+  # root, so the two must come out very different sizes -- and comparing them
+  # against each other, rather than against a fixed number, is what keeps the
+  # assertion meaningful as the formatter grows.
+  cat > "$WORK/cmd/reaches.vibe" <<'VIBE'
+import @vibe/command { command_args, command_ok }
+import @vibe/compiler/fmt { format_script }
+
+export fn vibe_command(args: String) -> String with Fs {
+  let argv = command_args(args)
+  command_ok(format_script(Fs::read_file(Array::get(argv, 1))))
+}
+VIBE
+  cat > "$WORK/cmd/avoids.vibe" <<'VIBE'
+import @vibe/command { command_args, command_ok }
+import @vibe/compiler/fmt { format_script }
+
+// Imported, exported, and NOT reachable from vibe_command.
+export fn unreached_helper(src: String) -> String {
+  format_script(src)
+}
+
+export fn vibe_command(args: String) -> String {
+  command_ok("\{Array::length(command_args(args))}\n")
+}
+VIBE
+
   # Not a command module at all: `vibe build --component` must say so, and say
   # what to write instead.
   cat > "$WORK/cmd/noentry.vibe" <<'VIBE'
@@ -192,7 +220,7 @@ VIBE
   fi
   rm -f "$CLI_WASM.diag" "$CLI_WASM.funcmap" "$CLI_WASM.testmeta"
 
-  for name in hello cat unframed alwaysthree writer; do
+  for name in hello cat unframed alwaysthree writer reaches avoids; do
     rm -f "$WORK/cmd/$name.component.wasm"
     launcher build --component "$WORK/cmd/$name.vibe" \
         -o "$WORK/cmd/$name.component.wasm" >/dev/null 2>"$WORK/cmd/$name.err" \
@@ -387,7 +415,29 @@ fi
 grep -q 'vibe build --component' "$WORK/err" \
   || { cat "$WORK/err" >&2; fail "a core module's refusal does not name the build that fixes it"; }
 
-# 11. A command that WRITES must not report success. The wrap has no write
+# 11. The command lane PRUNES from `vibe_command`. Two modules that differ
+#     only in whether they reach the formatter must not ship the same bytes.
+#     Measured on this tree, the same pair built by each lane:
+#
+#       no-dce    reaches=84,084  avoids=83,154  ->  98%
+#       dce-root  reaches=77,317  avoids=27,986  ->  36%
+#
+#     So the threshold below separates the lanes by a wide margin in both
+#     directions: a lane that stopped pruning lands at ~98%, not near 60%.
+#
+#     Compared to EACH OTHER rather than to a fixed size, so the assertion
+#     survives the formatter growing.
+reaches_bytes="$(wc -c < "$WORK/cmd/reaches.component.wasm" | tr -d ' ')"
+avoids_bytes="$(wc -c < "$WORK/cmd/avoids.component.wasm" | tr -d ' ')"
+[ "$reaches_bytes" -gt 0 ] && [ "$avoids_bytes" -gt 0 ] \
+  || fail "could not size the reachability pair"
+# 60% of the reaching build: midway between the 36% this lane produces and
+# the 98% the unpruned lane produced (both measured above).
+if [ $((avoids_bytes * 100 / reaches_bytes)) -ge 60 ]; then
+  fail "the command lane did not prune: a module that never reaches the formatter is ${avoids_bytes}B against ${reaches_bytes}B for one that does ($((avoids_bytes * 100 / reaches_bytes))% -- expected well under 60%)"
+fi
+
+# 12. A command that WRITES must not report success. The wrap has no write
 #     capability, so the call traps -- loudly, rather than being answered with
 #     a benign zero that leaves the caller believing the file exists.
 cat > "$WORK/writer.tsv" <<TSV
@@ -402,14 +452,14 @@ fi
 [ -e "$WORK/written.txt" ] && fail "the write actually happened, so this assertion is testing the wrong thing"
 true
 
-# 12. A flag the COMMAND owns reaches the command. `--help` is the one that
+# 13. A flag the COMMAND owns reaches the command. `--help` is the one that
 #     matters: this runner has its own, scanned across the whole argv, and a
 #     verb's `--help` must not be answered by the host.
 run_cmd hello --help || { cat "$WORK/err" >&2; fail "\`hello --help\` did not reach the command"; }
 grep -qx 'hello from hello, 1 arg(s)' "$WORK/out" \
   || { cat "$WORK/out" >&2; fail "\`--help\` was swallowed by the runner instead of reaching the command"; }
 
-# 13. The flag-combination refusals reached the user, each naming its own
+# 14. The flag-combination refusals reached the user, each naming its own
 #     reason. Recorded while the fixtures were built.
 grep -q -- '--component and --wit' "$WORK/cmd/refusals.txt" \
   || { cat "$WORK/cmd/refusals.txt" >&2; fail "--component --wit was not refused with its own reason"; }
@@ -427,7 +477,7 @@ grep -q -- 'unknown option: --definitely-not-a-flag' "$WORK/cmd/refusals.txt" \
 grep -q -- '--component needs a .vibe module' "$WORK/cmd/refusals.txt" \
   || { cat "$WORK/cmd/refusals.txt" >&2; fail "--component on a .vibex was not refused with its own reason"; }
 
-# 14. A module without the command entry is refused at BUILD time, with the
+# 15. A module without the command entry is refused at BUILD time, with the
 #     signature to write. The refusal itself was recorded while the fixtures
 #     were built.
 grep -q 'export fn vibe_command(args: String) -> String' "$WORK/cmd/noentry.err" \
