@@ -109,23 +109,25 @@ install_release_toolchain() {
     && die "toolchain '$version' is already installed (\`vibe self update $version --force\` reinstalls)"
   dl="$VIBE_HOME/cache/downloads/$tag"; mkdir -p "$dl"; manifest="$dl/release-manifest.json"
   release_fetch "$base/$tag/release-manifest.json" "$manifest" \
-    || die "vibe self update: cannot fetch $base/$tag/release-manifest.json"
+    || die "vibe self update: cannot fetch $base/$tag/release-manifest.json (is $version a published release?)"
   [ "$(release_manifest_field "$manifest" version)" = "$version" ] \
-    || die "vibe self update: manifest version mismatch"
-  runner_name="$(release_manifest_runner "$manifest" "$(release_target)")"
-  [ -n "$runner_name" ] || die "vibe self update: no runner for $(release_target)"
+    || die "vibe self update: the manifest at $base/$tag names version '$(release_manifest_field "$manifest" version)', not $version"
+  target="$(release_target)"
+  runner_name="$(release_manifest_runner "$manifest" "$target")"
+  [ -n "$runner_name" ] || die "vibe self update: release $tag ships no runner for $target (it ships: $(release_manifest_targets "$manifest")); install from a checkout instead (install/install.sh --ref $tag)"
   tc_name="$(release_manifest_field "$manifest" toolchain)"
   wasm_name="$(release_manifest_field "$manifest" compiler_wasm)"
-  [ -n "$tc_name" ] && [ -n "$wasm_name" ] || die "vibe self update: manifest lists no toolchain/wasm"
+  [ -n "$tc_name" ] && [ -n "$wasm_name" ] || die "vibe self update: the release manifest lists no toolchain bundle or compiler wasm"
   for asset in "$runner_name" "$tc_name" "$wasm_name"; do
     want_sha="$(release_manifest_asset "$manifest" "$asset")"
-    [ -n "$want_sha" ] || die "vibe self update: no sha256 for $asset"
+    [ -n "$want_sha" ] || die "vibe self update: the release manifest has no sha256 for $asset"
     if [ ! -f "$dl/$asset" ] || [ "$(_sha256_file "$dl/$asset")" != "$want_sha" ]; then
       echo "vibe: downloading $asset"
-      release_fetch "$base/$tag/$asset" "$dl/$asset.part" || { rm -f "$dl/$asset.part"; die "vibe self update: download failed: $asset"; }
+      release_fetch "$base/$tag/$asset" "$dl/$asset.part" || { rm -f "$dl/$asset.part"; die "vibe self update: download failed: $base/$tag/$asset"; }
       mv "$dl/$asset.part" "$dl/$asset"
     fi
-    [ "$(_sha256_file "$dl/$asset")" = "$want_sha" ] || { rm -f "$dl/$asset"; die "vibe self update: $asset sha256 mismatch"; }
+    sha="$(_sha256_file "$dl/$asset")"
+    [ "$sha" = "$want_sha" ] || { rm -f "$dl/$asset"; die "vibe self update: $asset does not match the release manifest (sha256 $sha, manifest $want_sha); nothing was installed"; }
   done
   staging="$VIBE_HOME/toolchains/.staging-$version-$$"
   rm -rf "$staging"; mkdir -p "$staging/bin" "$staging/lib"
@@ -239,8 +241,68 @@ host_run_guest() {
   [ -s "$wasm.funcmap" ] && envp+=("VIBE_FUNCMAP=$wasm.funcmap")
   ( cd "$INVOKE_DIR" && exec env ${envp[@]+"${envp[@]}"} "$RUNNER" "$wasm" "$@" )
 }
+# `vibe test`'s per-file runner. Stdout is captured ALWAYS (#2199/#2202): the
+# guest writes its diagnostics there (the assert_eq block, inspect()'s
+# actual/expected mismatch), while the trap dump arrives on stderr. On success
+# both are replayed verbatim; on failure the verdict line comes first, then the
+# condensed trap, then the indented stdout replay (scripts/vibe_test.sh order).
+#
+# Pure-test pass cache (#634, ADR-0026): a file whose `test {}` blocks are all
+# transitively effect-free is a deterministic function of its compiled bytes,
+# so a prior PASS is reused. The compiler's `<wasm>.testmeta` verdict ("1")
+# says whether the file qualifies; the key is sha256 of the wasm (which already
+# folds source, deps and compiler). Only PASS is cached -- a fail always
+# re-runs -- and --no-cache (implied by --update) bypasses it.
+# $1 = src as the plan spelled it, $2 = compiled test wasm, $3 = --update (0|1),
+# $4 = --no-cache (0|1).
+host_run_test() {
+  local src="$1" wasm="$2" update="$3" no_cache="${4:-0}" tout terr rc=0 src_abs="$1" key=""
+  local patches="${VIBE_TEST_UPDATE_PATCHES:-0}" depth="${VIBE_TEST_UPDATE_DEPTH:-0}" tcache="$VIBE_HOME/cache/test"
+  case "$src_abs" in /*) ;; *) src_abs="$PROJECT_ROOT/$src_abs" ;; esac
+  if [ "$no_cache" = 0 ] && [ -s "$wasm.testmeta" ] && [ "$(cat "$wasm.testmeta" 2>/dev/null)" = "1" ]; then
+    key="$(_sha256_file "$wasm")"
+    if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then echo "ok   $src (cached)"; return 0; fi
+  fi
+  tout="$(mktemp -t vibe-test-out-XXXXXX)"; terr="$(mktemp -t vibe-test-err-XXXXXX)"
+  ( cd "$INVOKE_DIR" && exec "$RUNNER" "$wasm" ) >"$tout" 2>"$terr" || rc=1
+  if [ "$rc" = 0 ]; then
+    [ -s "$tout" ] && cat "$tout"
+    [ -s "$terr" ] && cat "$terr" >&2
+    if [ "$patches" -gt 0 ]; then echo "ok   $src (updated $patches snapshot(s))"; else echo "ok   $src"; fi
+    [ -n "$key" ] && mkdir -p "$tcache" && : > "$tcache/$key.pass"
+    rm -f "$tout" "$terr"; return 0
+  fi
+  # --update (#1061 follow-up, #1235 review): patch the stale inspect()
+  # literal to the value this run printed, then ask the compiler for this one
+  # file again. Compiling is the guest's job, so the re-run goes back through
+  # invoke_cli and re-enters the run-tests arm with the counters advanced;
+  # the bound keeps a file whose inspect() calls can never all agree from
+  # looping forever.
+  if [ "$update" = 1 ] && [ "$depth" -lt 50 ] && host_try_update_patch "$src_abs" "$tout"; then
+    rm -f "$tout" "$terr"
+    VIBE_TEST_NESTED=1 VIBE_TEST_UPDATE_DEPTH=$((depth + 1)) VIBE_TEST_UPDATE_PATCHES=$((patches + 1)) \
+      invoke_cli test --update "$src_abs"
+    return $?
+  fi
+  echo "FAIL $src"
+  condense_test_trap "$terr"
+  [ -s "$tout" ] && { grep -vx "assert failed: aborting" "$tout" || true; } | sed 's/^/       /'
+  rm -f "$tout" "$terr"; return 1
+}
+# $1 = absolute source path, $2 = the failing run's captured stdout.
+# Succeeds only when the patch step changed the file; an unrecognized
+# mismatch, or a literal an earlier iteration already patched, is "give up".
+host_try_update_patch() {
+  local src="$1" captured="$2" before after
+  before="$(_sha256_file "$src")"
+  invoke_cli inspect-update "$src" "$captured" >/dev/null 2>&1 || return 1
+  after="$(_sha256_file "$src")"
+  [ "$before" != "$after" ]
+}
 execute_host_action() {
-  local plan="$1" kind src wasm addr adapter line
+  # The counters are local because a `--update` re-run re-enters this
+  # function from host_run_test while the outer run-tests loop is live.
+  local plan="$1" kind src wasm addr adapter line t_fail t_pass update no_cache body_stream
   kind="$(sed -n '2p' "$plan")"
   case "$kind" in
     run-guest)
@@ -270,20 +332,15 @@ execute_host_action() {
       "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
       ;;
     run-tests)
-      t_fail=0; t_pass=0; update="$(sed -n '3p' "$plan")"
+      t_fail=0; t_pass=0; update="$(sed -n '3p' "$plan")"; no_cache="$(sed -n '4p' "$plan")"
       while IFS= read -r rec; do
         [ -n "$rec" ] || continue
-        src="${rec%%	*}"; wasm="${rec#*	}"; errf="$(mktemp -t vibe-test-err-XXXXXX)"
-        if ( cd "$INVOKE_DIR" && exec "$RUNNER" "$wasm" ) 2>"$errf"; then
-          echo "ok   $src"; t_pass=$((t_pass+1))
-        else
-          echo "FAIL $src"; condense_test_trap "$errf"
-          [ "$update" = 1 ] && invoke_cli inspect-update "$src" "$errf" || true
-          t_fail=$((t_fail+1))
-        fi
-        rm -f "$errf"
+        src="${rec%%	*}"; wasm="${rec#*	}"
+        if host_run_test "$src" "$wasm" "$update" "$no_cache"; then t_pass=$((t_pass+1)); else t_fail=$((t_fail+1)); fi
       done < <(sed -n '5,$p' "$plan")
-      echo "[vibe-test] $t_pass passed, $t_fail failed"; [ "$t_fail" -eq 0 ]
+      # A nested --update re-run reports through the outer run's summary.
+      [ "${VIBE_TEST_NESTED:-0}" = 1 ] || echo "[vibe-test] $t_pass passed, $t_fail failed"
+      [ "$t_fail" -eq 0 ]
       ;;
     run-benches)
       wasm="$(sed -n '4p' "$plan")"; be=("VIBE_BENCH_LABEL=$(basename "$(sed -n '3p' "$plan")")")
@@ -295,15 +352,37 @@ execute_host_action() {
       ;;
     wasmtime-serve)
       wasm="$(sed -n '3p' "$plan")"; addr="$(sed -n '4p' "$plan")"; adapter="$(sed -n '5p' "$plan")"
-      for cand in "$adapter" "$TOOLCHAIN_DIR/lib/vibe_http_p3_full_adapter.component.wasm" \
-                  "$PWD/_build/http_adapter/vibe_http_p3_full_adapter.component.wasm"; do
-        [ -n "$cand" ] && [ -f "$cand" ] && { adapter="$cand"; break; }
-      done
-      [ -f "${adapter:-}" ] || die "serve: P3 HTTP adapter not found"
-      command -v wac >/dev/null && command -v wasmtime >/dev/null || die "serve: wac and wasmtime are required"
+      # Line 6: the handler contract the compiler lifted (#1540 scope 4). A
+      # `body: HostStream` handler exports `handler(.., body: stream<u8>)` and
+      # only plugs into the adapter built with VIBE_HTTP_ADAPTER_BODY_STREAM=1;
+      # `wac plug` does not fail on the wrong one -- it promotes the unsatisfied
+      # edge to a root import (#1796), so the mistake would surface as a
+      # mysterious runtime failure instead of here.
+      body_stream="$(sed -n '6p' "$plan")"
+      [ -n "$adapter" ] || adapter="${VIBE_HTTP_ADAPTER:-}"
+      if [ -z "$adapter" ]; then
+        if [ "$body_stream" = 1 ]; then
+          for cand in "$TOOLCHAIN_DIR/lib/vibe_http_p3_body_stream_adapter.component.wasm" \
+                      "$INVOKE_DIR/_build/http_adapter/vibe_http_p3_body_stream_adapter.component.wasm"; do
+            [ -f "$cand" ] && { adapter="$cand"; break; }
+          done
+          [ -n "$adapter" ] || die "serve: this handler takes the body as a stream, which needs the stream-body P3 adapter; build it with 'VIBE_HTTP_ADAPTER_BODY_STREAM=1 scripts/build_wasi_http_p3_full_adapter.sh _build/http_adapter/vibe_http_p3_body_stream_adapter.component.wasm' (needs cargo + wasm-tools) or pass --adapter / set VIBE_HTTP_ADAPTER"
+        else
+          for cand in "$TOOLCHAIN_DIR/lib/vibe_http_p3_full_adapter.component.wasm" \
+                      "$INVOKE_DIR/_build/http_adapter/vibe_http_p3_full_adapter.component.wasm"; do
+            [ -f "$cand" ] && { adapter="$cand"; break; }
+          done
+          [ -n "$adapter" ] || die "serve: P3 HTTP adapter not found; build it with scripts/build_wasi_http_p3_full_adapter.sh (needs cargo + wasm-tools) or pass --adapter / set VIBE_HTTP_ADAPTER"
+        fi
+      fi
+      [ -f "$adapter" ] || die "serve: adapter not found: $adapter"
+      command -v wac >/dev/null 2>&1 || die "serve: 'wac' not found (cargo install wac-cli)"
+      command -v wasmtime >/dev/null 2>&1 || die "serve: 'wasmtime' not found (https://wasmtime.dev)"
       composed="${wasm%.component.wasm}.serve.wasm"
       wac plug --plug "$wasm" "$adapter" -o "$composed" || die "serve: wac plug failed"
-      echo "serving http://$addr/"; exec wasmtime serve -Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W component-model-async=y -W component-model-async-stackful=y --addr "$addr" "$composed"
+      echo "composed -> $composed"
+      echo "serving http://$addr/ (Ctrl-C to stop)"
+      exec wasmtime serve -Sp3 -Shttp -W exceptions=y -W concurrency-support=y -W component-model-async=y -W component-model-async-stackful=y --addr "$addr" "$composed"
       ;;
     *) die "unsupported host action: $kind" ;;
   esac
@@ -509,7 +588,20 @@ EOF
     repl_dir="$(mktemp -d -t vibe-shell-XXXXXX)"; trap 'rm -rf "$repl_dir"' EXIT
     repl_buf="$repl_dir/session.vibe"; : > "$repl_buf"
     [ -d "$TOOLCHAIN_DIR/lib/@vibe" ] && ln -sfn "$TOOLCHAIN_DIR/lib" "$repl_dir/lib"
-    [ "$#" -ge 1 ] && { [ -f "$1" ] || die "not found: $1"; cat "$1" >> "$repl_buf"; }
+    # A declaration joins the session buffer only if the WHOLE buffer still
+    # compiles with it: the candidate is compiled with an anchor entry and the
+    # append is rolled back on failure, so one malformed line cannot poison
+    # every later expression until `:clear` (Codex review of #2858).
+    repl_validate() {
+      local f="$repl_dir/__validate__.vibe" w="$repl_dir/__validate__.wasm"
+      { cat "$repl_buf"; printf 'export let __repl_anchor__: () -> Int = () -> { 0 }\n'; } > "$f"
+      invoke_cli compile "$f" -o "$w" --entry __repl_anchor__ >/dev/null
+    }
+    if [ "$#" -ge 1 ]; then
+      [ -f "$1" ] || die "not found: $1"
+      cat "$1" >> "$repl_buf"; printf '\n' >> "$repl_buf"
+      repl_validate || die "shell: preloaded file does not compile: $1"
+    fi
     while IFS= read -r -p 'vibe> ' repl_line; do
       t="${repl_line#"${repl_line%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
       [ -n "$t" ] || continue
@@ -517,10 +609,13 @@ EOF
         :q|:quit) break ;;
         :help) echo "vibe shell — :quit :list :clear" ;;
         :list) cat "$repl_buf" ;;
-        :clear) : > "$repl_buf" ;;
+        :clear) : > "$repl_buf"; echo "session cleared" ;;
         :*) echo "vibe shell: unknown command" >&2 ;;
         fn\ *|let\ *|struct\ *|enum\ *|type\ *|import\ *|effect\ *|impl\ *|trait\ *|export\ *|suberror\ *|test\ *|//*)
-          printf '%s\n' "$repl_line" >> "$repl_buf" ;;
+          cp "$repl_buf" "$repl_buf.bak"
+          printf '%s\n' "$repl_line" >> "$repl_buf"
+          if repl_validate; then rm -f "$repl_buf.bak"
+          else mv -f "$repl_buf.bak" "$repl_buf"; echo "vibe shell: declaration rejected (buffer unchanged)" >&2; fi ;;
         *)
           { cat "$repl_buf"; printf 'export let __repl_main__: () -> Int = () -> { (%s) }\n' "$t"; } > "$repl_dir/eval.vibe"
           invoke_cli compile "$repl_dir/eval.vibe" -o "$repl_dir/eval.wasm" --entry __repl_main__ \
@@ -528,6 +623,26 @@ EOF
           ;;
       esac
     done
+    ;;
+  rc-classify|rc-plan)
+    # `--help` / `-h` is answered HERE, like `grep --help` below:
+    # scripts/test_vibe_rc_help.sh runs it with a dummy runner and FAILS if the
+    # runner is invoked. The dispatcher prints the same three lines for a
+    # caller that reaches it another way (lib/@vibe/compiler/user_dispatch.vibe).
+    case "${1:-}" in
+      --help|-h)
+        if [ "$cmd" = rc-classify ]; then
+          printf '%s\n' 'usage: vibe rc-classify <file.vibe>' \
+            'NAME SET[,SET...] per user function. Empty output = no special sets.' \
+            'Sets: borrow_ret, borrow_param, view_ret, scalar_ret.'
+        else
+          printf '%s\n' 'usage: vibe rc-plan [--fn NAME] <file.vibe>' \
+            'FN BINDING ACTION COUNT per collapsed Perceus action.' \
+            'Empty output = no actions. ACTION is dup, drop, or alias_dup.'
+        fi
+        exit 0 ;;
+    esac
+    invoke_cli "$cmd" "$@"
     ;;
   grep)
     # `vibe grep --help` is answered HERE, with no compiler wasm and without

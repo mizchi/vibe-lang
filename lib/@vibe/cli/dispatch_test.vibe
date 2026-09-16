@@ -14,9 +14,16 @@ import ./dispatch.vibe {
   selfhost_cli_profile_plan_args
 }
 
-import ./user_dispatch.vibe {
+import ./entry.vibe {
+  run_cli_main_with_args
+}
+
+import ../compiler {
+  command_component_compile_mode,
+  command_component_entry,
   display_under_root,
   expand_user_test_inputs,
+  format_check_report,
   parse_user_check_args,
   parse_user_compile_args,
   parse_user_fmt_args,
@@ -27,14 +34,6 @@ import ./user_dispatch.vibe {
   selfhost_cli_test_plan_args,
   selfhost_cli_user_dispatch_args,
   user_dispatch_is_verb
-}
-
-import ./entry.vibe {
-  format_check_report, run_cli_main_with_args
-}
-
-import ../compiler {
-  command_component_compile_mode, command_component_entry
 }
 
 test "profile command plans a versioned host action without losing spaces" {
@@ -1210,6 +1209,57 @@ test "user compile parse rejects --entry on vibex" {
     "OK"
   } with { Exception::Throw(e) => e }
   assert(result == ".vibex entry is always main; --entry is not allowed")
+}
+
+/// `--debug` is the linked debug lane; it used to be accepted and then
+/// ignored, so `vibe build --debug` wrote a release artifact (Codex review of
+/// #2858). The lane has no component / wit / minify shape, so the combination
+/// is refused instead of picking one silently.
+test "user build refuses --debug combined with another artifact kind" {
+  let src = "/tmp/vibe_user_dispatch_debug_combo.vibe"
+  Fs::write_bytes(src, string_to_bytes("export fn main() -> Int { 42 }\n"))
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "build",
+      "--debug",
+      "--component",
+      src
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::contains(result, "--debug selects the linked debug lane"))
+}
+
+/// The frozen `vibe diagnostics` contract (#1567): raw lines, exit 0 even
+/// when the file is ill-typed. Editors that still call it rely on both.
+test "user diagnostics reports an ill-typed file and still exits 0" {
+  let src = "/tmp/vibe_user_dispatch_diagnostics_bad.vibe"
+  Fs::write_bytes(src, string_to_bytes("let a: Int = \"not an int\"\n"))
+  let status = selfhost_cli_user_dispatch_args(["diagnostics", src])
+  assert(status == 0)
+  let status_json = selfhost_cli_user_dispatch_args([
+    "diagnostics",
+    "--json",
+    src
+  ])
+  assert(status_json == 0)
+}
+
+/// Two JSON arrays concatenated are not JSON; the launcher refused this before
+/// the verbs moved, and the dispatcher refuses it before sweeping anything.
+test "user grep refuses --json over more than one path" {
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "grep",
+      "--json",
+      "--pattern",
+      "f($(x:exp))",
+      "lib",
+      "fixtures"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "vibe grep --json: one path at a time (JSON output is a single array)")
 }
 
 test "user check parse accepts --single-file and --json" {

@@ -4,26 +4,39 @@
 //# editor queries and host-action planning live here so the launcher is only
 //# toolchain resolve + wasm invoke + host-only execution (run a guest,
 //# wasmtime serve, minify, download/AOT).
+//#
+//# This file lives in the compiler package, next to cli_support.vibe, and not
+//# in lib/@vibe/cli, because cli_adapter.vibe -- the committed seed's entry
+//# and so the file every stage2.wasm is compiled from -- has to reach it: the
+//# launcher hands its argv to whatever compiler wasm the toolchain installed,
+//# and that is stage2. From lib/@vibe/cli this file would have to import this
+//# package's facade for the ADR-0068 gates below, and cli_adapter.vibe is a
+//# member of that facade, so `index.vpkg -> cli_adapter.vibe ->
+//# cli/user_dispatch.vibe -> index.vpkg` is the same-node self-loop the
+//# fs-mode cycle detector refuses (the `_cli_probe_entry.vibe` note in
+//# index.vpkg records the first instance). lib/@vibe/cli/dispatch.vibe reaches
+//# the dispatch entry points through the facade instead.
 
-import ../compiler/entry/compiler/file_compile {
+import @vibe/compiler/entry/compiler/file_compile {
   check_file_fs_mode,
   compile_file_fs_mode,
   compile_file_fs_mode_break,
   compile_file_fs_mode_gc,
+  compile_file_fs_mode_rc,
+  compile_file_fs_mode_rc_shadow,
   compile_file_fs_mode_testmeta,
   compile_file_fs_mode_trace
 }
 
-import ../compiler/entry/source_compile/wasi_only {
-  comp_emit_component_wasm_command,
-  comp_emit_component_wasm_stream_handler, comp_emit_component_wasm_string_handler
+import @vibe/compiler/entry/source_compile/wasi_only {
+  comp_emit_component_wasm_command, comp_emit_component_wasm_stream_handler, comp_emit_component_wasm_string_handler
 }
 
-import ../compiler/fmt {
+import @vibe/compiler/fmt {
   format_source, source_header_end
 }
 
-import ../compiler/loader {
+import @vibe/compiler/loader {
   collect_source_groups_fs,
   fill_require_pins_lenient,
   find_deps_missing,
@@ -33,13 +46,14 @@ import ../compiler/loader {
   write_generated_hash_fs
 }
 
-import ../compiler/normalize {
+import @vibe/compiler/normalize {
   normalize_source
 }
 
-import ../compiler/runtime {
+import @vibe/compiler/runtime {
   alloc_spans,
   binding_occurrences,
+  build_funcmap_from_source,
   collect_all_diagnostics_with_unstable_for_path,
   doc_at_source,
   escape_spans,
@@ -52,22 +66,29 @@ import ../compiler/runtime {
   type_at_source
 }
 
-import ../compiler/syntax {
+import @vibe/compiler/syntax {
   lex, parse_program
 }
 
-import ../compiler {
+import ./cli_support.vibe {
   check_unstable_surface_warnings_from_closure,
   check_unstable_surface_warnings_from_path,
-  command_component_compile_mode, command_component_entry,
-  compute_updated_source,
+  command_component_compile_mode,
+  command_component_entry,
   strip_executable_wasm_env,
   unstable_closure_reset,
-  serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler,
-  wit_from_program
+  write_linked_debug_build_checked
 }
 
-import ../lsp {
+import ./inspect_update.vibe {
+  compute_updated_source
+}
+
+import ./wit_gen.vibe {
+  serve_handler_param_names, serve_handler_takes_body_stream, validate_serve_handler, wit_from_program
+}
+
+import @vibe/lsp {
   lsp_diagnostics_json_of_messages, lsp_main
 }
 
@@ -270,7 +291,25 @@ fn compile_user_wasm(input_path: String, entry_name: String, kind: String) -> By
     // through one door and 2.6 MB through the other).
     compile_file_fs_mode(input_path, entry_name, command_component_compile_mode())
   } else {
+    compile_release_lane(input_path, entry_name)
+  }
+}
+
+/// The production allocator lane, selected the way `cli_adapter.vibe`'s
+/// `fs_lane_compile_full` selects it: `VIBE_RC` unset or `1` is the Perceus RC
+/// lane (#493 cutover, #705 parity), `0` opts back into the legacy bump lane,
+/// and `shadow` is the RC lane with shadow-liveness marks. Calling
+/// `compile_file_fs_mode` alone here was the bump lane for EVERY compile
+/// (Codex review of #2858): a long-running program kept every allocation until
+/// exit, and `VIBE_RC=shadow` silently did nothing.
+fn compile_release_lane(input_path: String, entry_name: String) -> Bytes with Exception + Fs + Env {
+  let rc_flag = Env::get("VIBE_RC")
+  if rc_flag == "0" {
     compile_file_fs_mode(input_path, entry_name, "mvp")
+  } else if rc_flag == "shadow" {
+    compile_file_fs_mode_rc_shadow(input_path, entry_name)
+  } else {
+    compile_file_fs_mode_rc(input_path, entry_name)
   }
 }
 
@@ -730,11 +769,20 @@ fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env +
   }
 }
 
+/// The import-resolving check. ADR-0068 applies here as it does to every
+/// artifact path: `check_file_fs_mode` walks the closure, so the closure gate is
+/// asked after it, and a program the build paths refuse for an unstable import
+/// is reported by `vibe check` too rather than answered clean (Codex review of
+/// #2858).
 fn user_check_linked(src: String) -> Int with Exception + Fs + Env {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else {
-    check_file_fs_mode(src)
+    reject_unstable_entry_surface(src)
+    unstable_closure_reset()
+    let code = check_file_fs_mode(src)
+    reject_unstable_closure_surface()
+    code
   }
 }
 
@@ -896,10 +944,41 @@ fn emit_user_command_component(core: Bytes, input_path: String) -> Bytes with Ex
   } with { Exception::Throw(message) => throw(user_command_component_edit(input_path, entry, message)) }
 }
 
+fn args_has_flag(args: Array[String], flag: String) -> Bool {
+  let mut i = 1
+  let mut found = false
+  while i < Array::length(args) {
+    if Array::get(args, i) == flag {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdout {
   let (src, out, entry, wit, minify, component) = parse_user_compile_args(args)
+  // `--debug` is the linked debug lane docs/user/reference/cli-commands.md
+  // documents for `vibe build`: library modules cached as linked wasm files,
+  // only the entry recompiled. The parser accepted the flag and this function
+  // then built the release artifact regardless (Codex review of #2858) -- a
+  // release binary reported as a debug build is the silent kind of wrong.
+  let debug = args_has_flag(args, "--debug")
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
+  } else if debug && (component || wit || minify) {
+    throw("--debug selects the linked debug lane and cannot be combined with --component, --wit or --minify")
+  } else if debug {
+    let resolved = resolve_user_build_output(out)
+    ensure_parent_dir(resolved)
+    // The GATED builder checks the closure its own compile ingested, so the
+    // verdict covers exactly the bytes it writes (#2305, Codex review).
+    reject_unstable_entry_surface(src)
+    write_linked_debug_build_checked(src, resolved, entry, unstable_opt_in())
+    println(String::concat("compiled (debug) ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
+    0
   } else if component {
     let resolved = resolve_user_build_output(out)
     let core = compile_user_artifact(src, entry, "component")
@@ -1280,7 +1359,7 @@ fn symbols_legend() -> String {
   "2 Module\n6 Method\n10 Enum\n11 Interface\n12 Function\n13 Variable\n23 Struct\n24 Event\n26 TypeParameter\n27 Test\n28 Bench"
 }
 
-fn selfhost_cli_user_symbols_args(args: Array[String]) -> Int with Exception + Fs + Stdout {
+fn selfhost_cli_user_symbols_args(args: Array[String]) -> Int with Exception + Fs + Stdout + Stderr {
   if Array::length(args) >= 2 && Array::get(args, 1) == "--legend" {
     println(symbols_legend())
     0
@@ -1340,8 +1419,13 @@ fn selfhost_cli_user_symbols_args(args: Array[String]) -> Int with Exception + F
           pi = pi + 1
         }
         print_text(StringBuilder::freeze(acc))
+        // The symbols contract (AGENTS.md): the rows that were read reach
+        // stdout, a file that could not be parsed is NAMED on stderr, and the
+        // exit is non-zero. Throwing here would append the failure to the
+        // machine-readable stream through the entry's `error:` framing.
         if Array::length(fails) > 0 {
-          throw(String::join(fails, "\n"))
+          Stderr::write_stream(line_terminated(String::join(fails, "\n")))
+          1
         } else {
           0
         }
@@ -1416,9 +1500,20 @@ fn selfhost_cli_user_escapes_args(args: Array[String]) -> Int with Exception + F
   }
 }
 
+/// The same three lines `runtime/vibe` prints for `rc-classify --help` without
+/// starting a runner (scripts/test_vibe_rc_help.sh); the two texts are kept in
+/// step by hand, the gate reads the launcher's.
+fn rc_classify_help_text() -> String {
+  "usage: vibe rc-classify <file.vibe>\nNAME SET[,SET...] per user function. Empty output = no special sets.\nSets: borrow_ret, borrow_param, view_ret, scalar_ret.\n"
+}
+
+fn rc_plan_help_text() -> String {
+  "usage: vibe rc-plan [--fn NAME] <file.vibe>\nFN BINDING ACTION COUNT per collapsed Perceus action.\nEmpty output = no actions. ACTION is dup, drop, or alias_dup.\n"
+}
+
 fn selfhost_cli_user_rc_classify_args(args: Array[String]) -> Int with Exception + Fs + Stdout {
   if Array::length(args) >= 2 && (Array::get(args, 1) == "--help" || Array::get(args, 1) == "-h") {
-    println("usage: vibe rc-classify <file.vibe>")
+    print_text(rc_classify_help_text())
     0
   } else if Array::length(args) != 2 {
     throw("usage: vibe rc-classify <file.vibe>")
@@ -1444,7 +1539,7 @@ fn selfhost_cli_user_rc_plan_args(args: Array[String]) -> Int with Exception + F
       fn_filter = need_value(args, i, "rc-plan", arg)
       ()
     } else if arg == "--help" || arg == "-h" {
-      println("usage: vibe rc-plan [--fn NAME] <file.vibe>")
+      print_text(rc_plan_help_text())
       return 0
     } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
       throw(String::concat("rc-plan: unknown flag: ", arg))
@@ -1596,11 +1691,38 @@ fn selfhost_cli_user_diagnostics_args(args: Array[String]) -> Int with Exception
   if src == "" {
     throw("usage: vibe diagnostics [--json] <file.vibe>")
   } else {
-    user_check_single(src, json)
+    user_diagnostics_report(src, json)
   }
 }
 
-fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Exception + Fs + Stdout {
+/// `vibe diagnostics` is deprecated and FROZEN for the editors that still call
+/// it (AGENTS.md, #1567): every diagnostic line raw on stdout (or the LSP
+/// Diagnostic array with `--json`), and exit 0 whether or not the file is
+/// clean. Routing it through `user_check_single` gave it `vibe check`'s
+/// `error:` framing and exit 1 (Codex review of #2858).
+fn user_diagnostics_report(src: String, json: Bool) -> Int with Exception + Fs + Env + Stdout {
+  if !Fs::exists(src) {
+    throw(String::concat("not found: ", src))
+  } else {
+    let text = Fs::read_file(src)
+    let diags = handle {
+      collect_all_diagnostics_with_unstable_for_path(src, text, unstable_opt_in())
+    } with { Exception::Throw(_) => {
+      let empty: Array[String] = []
+      empty
+    } }
+    if json {
+      print(line_terminated(lsp_diagnostics_json_of_messages(text, diags)))
+    } else if Array::length(diags) > 0 {
+      print_text(String::join(diags, "\n"))
+    } else {
+      ()
+    }
+    0
+  }
+}
+
+fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Exception + Fs + Stdout + Stderr {
   let mut pattern = ""
   let mut json = false
   let mut only = ""
@@ -1649,6 +1771,10 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Exception + Fs +
   }
   if pattern == "" {
     throw("vibe grep: --pattern needs an argument")
+  } else if json && Array::length(paths) > 1 {
+    // Each sweep returns one complete JSON array; concatenating two is not
+    // JSON. The launcher refused this before the verbs moved (Codex review).
+    throw("vibe grep --json: one path at a time (JSON output is a single array)")
   } else {
     if Array::length(paths) == 0 {
       Array::push(paths, ".")
@@ -1660,7 +1786,14 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Exception + Fs +
     let mut pi = 0
     while pi < Array::length(paths) {
       let (text, warnings) = grep_scan_fs_report(Array::get(paths, pi), pattern, wheres, where_rows, only, json)
-      let _ = warnings
+      // A file the sweep could not parse is reported, not searched: the
+      // warning is what tells "no match" from "not searched" apart, so it
+      // reaches stderr the way the launcher used to relay `<out>.warn`.
+      if warnings != "" {
+        Stderr::write_stream(line_terminated(warnings))
+      } else {
+        ()
+      }
       if text != "" {
         if first {
           StringBuilder::push(acc, text)
@@ -1757,6 +1890,25 @@ fn parse_run_flags(args: Array[String]) -> (String, String, Bool, String, Bool, 
   }
 }
 
+/// Best-effort `<wasm>.funcmap` sidecar beside a `vibe run` artifact (debugger
+/// M2): entry-file function -> 1-based source line, which `--break
+/// <file>:<line>` and the trap-frame annotation read through `VIBE_FUNCMAP`.
+/// A failure to build the map must not fail the run, but a STALE map is worse
+/// than none -- it maps an edited program with old line data -- so the sidecar
+/// is removed before the attempt (Codex review of #2858).
+fn write_user_funcmap(input_path: String, output_path: String) -> Unit with Fs {
+  let sidecar = String::concat(output_path, ".funcmap")
+  if Fs::exists(sidecar) {
+    Fs::remove(sidecar)
+  } else {
+    ()
+  }
+  handle {
+    let text = build_funcmap_from_source(Fs::read_file(input_path))
+    Fs::write_bytes(sidecar, cli_bytes(text))
+  } with { Exception::Throw(_) => () }
+}
+
 export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env {
   let (src, _, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args) = parse_run_flags(args)
   if !Fs::exists(src) {
@@ -1772,6 +1924,7 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
     }
     let bytes = compile_user_artifact(src, "main", kind)
     write_user_executable(out, bytes, "main", kind)
+    write_user_funcmap(src, out)
     let acc = StringBuilder::new()
     StringBuilder::push(acc, "vibe-host-action-v1\nrun-guest\n")
     StringBuilder::push(acc, out)
@@ -1867,9 +2020,20 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       ensure_parent_dir(out)
       reject_unstable_entry_surface(src)
       unstable_closure_reset()
-      let bytes = if backend_kind == "mvp" {
+      // The pure-test pass cache (#634, ADR-0026) reads the `.testmeta`
+      // verdict the launcher's run-tests arm keys on. Only the legacy bump
+      // lane carries the variant that emits it -- exactly the lane
+      // `cli_adapter.vibe` selected for `VIBE_TESTMETA_OUT` -- so with the RC
+      // default there is no verdict, and a verdict left by an earlier bump-lane
+      // compile of the same file is removed rather than read for these bytes.
+      let bytes = if backend_kind == "mvp" && Env::get("VIBE_RC") == "0" {
         compile_file_fs_mode_testmeta(src, "__no_entry__", "mvp", meta)
       } else {
+        if Fs::exists(meta) {
+          Fs::remove(meta)
+        } else {
+          ()
+        }
         compile_user_wasm(src, "__no_entry__", backend_kind)
       }
       reject_unstable_closure_surface()
@@ -2009,7 +2173,8 @@ fn selfhost_cli_user_serve_args(args: Array[String]) -> Int with Exception + Fs 
     let entry_stmts = parse_program(lex(Fs::read_file(src)))
     validate_serve_handler(entry_stmts)
     let core = compile_user_artifact(src, "__no_entry__", "mvp")
-    let component = if serve_handler_takes_body_stream(entry_stmts) {
+    let body_stream = serve_handler_takes_body_stream(entry_stmts)
+    let component = if body_stream {
       comp_emit_component_wasm_stream_handler(core, "handler", "handler", serve_handler_param_names())
     } else {
       comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
@@ -2033,6 +2198,16 @@ fn selfhost_cli_user_serve_args(args: Array[String]) -> Int with Exception + Fs 
       StringBuilder::push(acc, "\n")
       StringBuilder::push(acc, adapter)
       StringBuilder::push(acc, "\n")
+      // Line 6: which P3 adapter the host composes with when none is named
+      // (#1540 scope 4). A handler taking `HostStream` was lifted as the stream
+      // handler above, and the String-body adapter leaves its import
+      // unsatisfied -- `wac plug` promotes that to a root import instead of
+      // failing (#1796), so the host has to be told (Codex review of #2858).
+      if body_stream {
+        StringBuilder::push(acc, "1\n")
+      } else {
+        StringBuilder::push(acc, "0\n")
+      }
       write_host_action(Env::get("VIBE_HOST_ACTION_OUT"), StringBuilder::freeze(acc))
     }
   }
@@ -2151,7 +2326,63 @@ fn selfhost_cli_user_inspect_update_args(args: Array[String]) -> Int with Except
 
 //# Dispatch
 
-export fn selfhost_cli_user_dispatch_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Stdout {
+fn is_check_report_continuation(line: String) -> Bool {
+  if String::starts_with(line, "hint: ") {
+    true
+  } else if String::length(line) == 0 {
+    false
+  } else {
+    let c = String::char_code_at(line, 0)
+    c == ' ' || c == '\t'
+  }
+}
+
+/// Frame a thrown diagnostic the way `vibe check` reports one: `error: ` marks
+/// a diagnostic start, and `hint:` / leading-whitespace lines stay attached as
+/// indented continuations so `grep -c '^error: '` is an exact count (#1567 /
+/// #1888). Shared by both doors -- lib/@vibe/cli/entry.vibe and
+/// cli_adapter.vibe's verb branch -- so they cannot frame differently.
+export fn format_check_report(payload: String) -> String {
+  let lines = String::split(payload, "\n")
+  let n = Array::length(lines)
+  if n == 0 {
+    "error: "
+  } else {
+    let mut framed = Array::slice([""], 0, 0)
+    let mut i = 0
+    while i < n {
+      let line = Array::get(lines, i)
+      if i == n - 1 && line == "" {
+        ()
+      } else if is_check_report_continuation(line) {
+        Array::push(framed, String::concat("  ", line))
+      } else {
+        Array::push(framed, String::concat("error: ", line))
+      }
+      i = i + 1
+    }
+    if Array::length(framed) == 0 {
+      "error: "
+    } else {
+      String::join(framed, "\n")
+    }
+  }
+}
+
+/// The verb dispatcher with its exception discharged to an exit code: the
+/// framed diagnostic goes to STDERR, where `runtime/vibe` used to print the
+/// adapter's `.diag` sidecar, so a verb's machine-readable stdout (symbols
+/// rows, grep matches, check diagnostics) is never interleaved with it.
+export fn run_user_dispatch_args(args: Array[String]) -> Int with Fs + Env + Stdin + Stdout + Stderr {
+  handle {
+    selfhost_cli_user_dispatch_args(args)
+  } with { Exception::Throw(e) => {
+    Stderr::write_stream(line_terminated(format_check_report(e)))
+    1
+  } }
+}
+
+export fn selfhost_cli_user_dispatch_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Stdout + Stderr {
   let argv = rewrite_user_argv(args, Env::get("VIBE_INVOKE_DIR"), Fs::getcwd())
   let first = if Array::length(argv) == 0 {
     "help"

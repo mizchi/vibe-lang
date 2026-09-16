@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${VIBE_GUEST_PROFILE_LINT_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 runner="$ROOT/runtime/viberun/src/main.rs"
 launcher="$ROOT/runtime/vibe"
-cli="$ROOT/lib/@vibe/cli/user_dispatch.vibe"
+cli="$ROOT/lib/@vibe/compiler/user_dispatch.vibe"
 profiling_doc="$ROOT/docs/internal/design/profiling.md"
 failed=0
 

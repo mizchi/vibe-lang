@@ -47,6 +47,9 @@ case "$module" in
 esac
 
 if [ "$is_cli" -eq 1 ]; then
-  exec bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$@"
+  # Like viberun: `cli_main`'s Int is the process exit status and is NOT
+  # printed (#2858) -- the launcher reads the status for every verb, and a
+  # printed `0` would trail `vibe check`'s empty-means-clean output.
+  exec env VIBE_RUNNER_QUIET_RESULT=1 bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" --invoke cli_main "$@"
 fi
 exec bash "$SCRIPT_DIR/run_wasm_vibe_host_runner.sh" "$@"

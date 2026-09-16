@@ -25,6 +25,14 @@ import @vibe/compiler/entry/source_compile/gc_only {
   compile_generated_source_gc_only, compile_source_gc_only
 }
 
+// The user-facing verb dispatcher `runtime/vibe` drives (`vibe test ...`,
+// `vibe check ...`). Same file, same wasm: the launcher hands this artifact
+// its argv either as a verb or as the positional `<src> <out> <entry>`
+// adapter protocol, and `cli_main` tells them apart by the first argument.
+import ./user_dispatch.vibe {
+  run_user_dispatch_args, user_dispatch_is_verb
+}
+
 import @vibe/compiler/runtime {
   alloc_spans,
   binding_occurrences,
@@ -2639,8 +2647,13 @@ fn cli_main_with_lanes(fs_lanes: (FsLane, String, String) -> (Bytes, String) wit
 /// Unit-returning entry from the plain declared return type -- sugar
 /// agnostic -- so this gets the same no-print / real-exit-code `_start`
 /// without needing the sugar or a seed bump.
-export fn main() -> Unit allows Exception + Fs + Env + Stdin + Stdout + Process {
-  let code = if Env::get("VIBE_HOST_ACTION_OUT") == "" {
+export fn main() -> Unit allows Exception + Fs + Env + Stdin + Stdout + Stderr + Process {
+  // `runtime/vibe` sets VIBE_HOST_ACTION_OUT on EVERY verb it forwards (the
+  // verb may plan a host action), so the verb test has to come before the
+  // legacy `profile` planner, which reads the same variable.
+  let code = if user_dispatch_is_verb(host_argv_first()) {
+    cli_main()
+  } else if Env::get("VIBE_HOST_ACTION_OUT") == "" {
     cli_main()
   } else {
     profile_plan_main()
@@ -2652,9 +2665,44 @@ export fn main() -> Unit allows Exception + Fs + Env + Stdin + Stdout + Process 
   }
 }
 
+/// argv[0] as the host handed it, "" when there is none.
+fn host_argv_first() -> String with Env {
+  if Env::args_len() == 0 {
+    ""
+  } else {
+    own_host_string(Env::args_get(0))
+  }
+}
+
+/// The whole argv as an owned array, for the verb dispatcher.
+fn host_argv() -> Array[String] with Env {
+  let out: Array[String] = []
+  let mut i = 0
+  while i < Env::args_len() {
+    Array::push(out, own_host_string(Env::args_get(i)))
+    i = i + 1
+  }
+  out
+}
+
 /// The full env-mode CLI: every lane table entry.
-export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout {
-  cli_main_with_lanes(fs_lane_compile_full, ss_lane_compile_full)
+///
+/// A first argument that names a user verb (`test`, `check`, `grep`, ...)
+/// goes to the verb dispatcher `runtime/vibe` talks to (#2858); anything
+/// else is the positional `<src> <out> <entry>` adapter protocol selected by
+/// `VIBE_*` variables. A verb cannot collide with a source path: a verb has no
+/// `/` and no `.vibe` suffix, and the positional protocol always names a
+/// file. The verb branch discharges its own exception to stderr + exit 1,
+/// where the launcher used to print the adapter's `.diag` sidecar.
+export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout + Stderr {
+  if user_dispatch_is_verb(host_argv_first()) {
+    // #2513: the `#cfg` flag set for every module this invocation parses;
+    // cli_main_with_lanes does the same for the positional protocol.
+    configure_cfg_flags()
+    run_user_dispatch_args(host_argv())
+  } else {
+    cli_main_with_lanes(fs_lane_compile_full, ss_lane_compile_full)
+  }
 }
 
 /// #2497: the compile-only artifact's entry. Same CLI, production lane tables

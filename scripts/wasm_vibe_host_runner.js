@@ -3460,6 +3460,15 @@ async function main() {
     if (invoke.startsWith("__test_") || invoke.startsWith("__bench_")) {
       return;
     }
+    // #2858: `scripts/viberun_node.sh` stands in for the Rust `viberun`, which
+    // turns the invoked entry's Int into the PROCESS exit status and prints
+    // nothing. `runtime/vibe` now reads that status for every verb, so the
+    // printed value would be a stray `0` line appended to `vibe check` (whose
+    // empty output means clean) and to every other verb's machine-readable
+    // stdout. The exit code is set below regardless of this switch.
+    if (process.env.VIBE_RUNNER_QUIET_RESULT === "1") {
+      return;
+    }
     if (typeof result === "bigint") {
       // Check if the result is a tagged object (could be Bytes from selfbuild)
       if (
