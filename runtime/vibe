@@ -1143,6 +1143,9 @@ case "$cmd" in
   add)
     [ "$#" -eq 1 ] || die "usage: vibe add <source-spec>   (github:owner/repo[/dir]@<ref> | git:<url>@<ref>[#<dir>])"
     aspec="$1"; case "$aspec" in -*) die "usage: vibe add <source-spec>" ;; esac
+    # The manifest, the store and vibe_pkg.sh's paths are the PROJECT's, so
+    # this arm runs from the root whatever directory it was invoked in.
+    cd "$PROJECT_ROOT"
     [ -f index.vpkg ] || die "vibe add: no index.vpkg at the project root ($PROJECT_ROOT); \`vibe new\` writes one"
     # A semver constraint ref (^1.2, ~1.2.3, >=1.0, 1.x, *) resolves to the
     # highest matching tag here, and the spec handed on names that tag.
@@ -1197,6 +1200,7 @@ EOF
     ;;
   fetch)
     [ "$#" -eq 0 ] || die "usage: vibe fetch   (restores .vibe/store/ from the pins in the root index.vpkg)"
+    cd "$PROJECT_ROOT"
     [ -f index.vpkg ] || die "vibe fetch: no index.vpkg at the project root ($PROJECT_ROOT); \`vibe add <source-spec>\` records the pins this restores"
     pkg_sh="$(find_pkg_sh)" || exit 1
     cli="$(pick_cli)"
@@ -1381,6 +1385,32 @@ REPL_HELP
     # up to the `vibe help` line, so a newly documented subcommand cannot fall
     # outside a stale range (Codex review, PR #925). No wasm, no runner.
     sed -n '/^# Subcommands:/,/^#   vibe help /p' "$LAUNCHER" | sed 's/^# \{0,1\}//'
+    ;;
+  test)
+    # A directory argument is expanded HERE with find(1), which does not
+    # follow directory symlinks: the guest's `Fs::is_dir` does, so its own
+    # walk (kept for direct callers of the dispatcher) could leave the
+    # requested tree, find the same test twice through a link, or recurse
+    # into a link back to an ancestor until it failed (Codex review of
+    # #2858). The launcher expanded with find before the verbs moved; the
+    # dispatcher sorts the whole list, so the report order is unchanged.
+    targs=(); tprev=""
+    for targ in "$@"; do
+      if [ "$tprev" = "--jobs" ]; then targs+=("$targ"); tprev=""; continue; fi
+      case "$targ" in
+        --jobs) targs+=("$targ"); tprev="$targ" ;;
+        -*) targs+=("$targ") ;;
+        *)
+          if [ -d "$targ" ]; then
+            tfound=0
+            while IFS= read -r tfile; do targs+=("$tfile"); tfound=1; done < <(find "$targ" -type f -name '*_test.vibe' | LC_ALL=C sort)
+            [ "$tfound" = 1 ] || die "vibe test: no test files found under $targ"
+          else
+            targs+=("$targ")
+          fi ;;
+      esac
+    done
+    invoke_cli test ${targs[@]+"${targs[@]}"}
     ;;
   lsp)
     # The node server (clients/js/lsp_server.js) stays the default: it carries
