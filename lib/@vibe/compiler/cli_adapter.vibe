@@ -2694,12 +2694,22 @@ fn host_argv() -> Array[String] with Env {
 /// `/` and no `.vibe` suffix, and the positional protocol always names a
 /// file. The verb branch discharges its own exception to stderr + exit 1,
 /// where the launcher used to print the adapter's `.diag` sidecar.
-export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout + Stderr {
+///
+/// The verb branch EXITS with its code rather than returning it: the seed
+/// names `cli_main` as this artifact's entry, so the synthesized `_start`
+/// calls it and PRINTS the returned Int (the positional protocol's callers
+/// read `.diag` sidecars and send stdout to /dev/null, so it never showed).
+/// `runtime/vibe` reads the process status and passes stdout through, so
+/// returning would append a stray `0` (or `1`, with exit status 0) to every
+/// verb's output -- `vibe check`'s empty-means-clean output included.
+export fn cli_main() -> Int with Exception + Fs + Env + Stdin + Stdout + Stderr + Process {
   if user_dispatch_is_verb(host_argv_first()) {
     // #2513: the `#cfg` flag set for every module this invocation parses;
     // cli_main_with_lanes does the same for the positional protocol.
     configure_cfg_flags()
-    run_user_dispatch_args(host_argv())
+    let code = run_user_dispatch_args(host_argv())
+    vibe_process_exit_raw(code)
+    code
   } else {
     cli_main_with_lanes(fs_lane_compile_full, ss_lane_compile_full)
   }

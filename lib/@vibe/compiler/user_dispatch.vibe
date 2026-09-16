@@ -38,6 +38,7 @@ import @vibe/compiler/fmt {
 
 import @vibe/compiler/loader {
   collect_source_groups_fs,
+  contract_package_hashes_fs,
   fill_require_pins_lenient,
   find_deps_missing,
   find_missing_vpkg_dirs,
@@ -806,10 +807,25 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
     user_check_scan(root, missing_vpkg)
   } else {
     let (src, single, json) = parse_user_check_args(args)
-    if single {
-      user_check_single(src, json)
+    if !Fs::exists(src) {
+      throw(String::concat("not found: ", src))
     } else {
-      user_check_linked(src)
+      // `vibe check`'s contract (AGENTS.md, #1567/#1888): the diagnostics are
+      // the REPORT -- one per line on STDOUT, `error: ` framing, exit 1 -- and
+      // empty stdout means clean. The lanes below raise them as an exception
+      // (that is how the checker hands them back); a usage error such as a
+      // missing file stays an exception and reaches stderr through the
+      // dispatcher's handler, which is where the launcher printed it before.
+      handle {
+        if single {
+          user_check_single(src, json)
+        } else {
+          user_check_linked(src)
+        }
+      } with { Exception::Throw(e) => {
+        print(line_terminated(format_check_report(e)))
+        1
+      } }
     }
   }
 }
@@ -2274,6 +2290,16 @@ fn selfhost_cli_user_lsp_args(_args: Array[String]) -> Int with Stdin + Stdout {
   lsp_main(false)
 }
 
+/// `vibe hash [--write] <pkg_dir|index.vpkg|index.vibei>` (ADR-0063 §5).
+///
+/// Without `--write` it PRINTS the contract/package content hashes --
+/// `package #pkg:sha1:<hex>` (copy-pasteable as a require pin) and
+/// `contract ct:sha1:<hex>` -- which is what install/install.sh reads to
+/// verify each materialized stdlib package and what vibe_pkg.sh pins with.
+/// `--write` (#1145 follow-up 3) rewrites the target index.vpkg's
+/// `generated_hash = ` directive in place instead. A directory names its
+/// contract on either spelling (#897 / ADR-0070: `.vpkg` preferred, `.vibei`
+/// still accepted).
 fn selfhost_cli_user_hash_args(args: Array[String]) -> Int with Exception + Fs + Stdout {
   let mut write = false
   let mut src = ""
@@ -2289,13 +2315,43 @@ fn selfhost_cli_user_hash_args(args: Array[String]) -> Int with Exception + Fs +
     i = i + 1
   }
   if src == "" {
-    throw("usage: vibe hash [--write] <index.vpkg>")
-  } else if write {
-    let rewritten = write_generated_hash_fs(src)
-    Fs::write_file(src, rewritten)
-    0
+    throw("usage: vibe hash [--write] <pkg_dir|index.vpkg|index.vibei>")
   } else {
-    throw("usage: vibe hash --write <index.vpkg>")
+    let target = if Fs::is_dir(src) {
+      if Fs::exists(String::concat(src, "/index.vpkg")) {
+        String::concat(src, "/index.vpkg")
+      } else {
+        String::concat(src, "/index.vibei")
+      }
+    } else {
+      src
+    }
+    if !Fs::exists(target) {
+      throw(String::concat("not found: ", target))
+    } else if write {
+      if !path_has_suffix(target, ".vpkg") {
+        throw(String::concat("vibe hash --write requires an index.vpkg target (got ", String::concat(target, "); generated_hash is a #1128 directive, the legacy index.vibei format has no such field")))
+      } else {
+        let rewritten = write_generated_hash_fs(target)
+        Fs::write_file(target, rewritten)
+        let lines = String::split(rewritten, "\n")
+        let mut li = 0
+        while li < Array::length(lines) {
+          let line = Array::get(lines, li)
+          if String::starts_with(line, "generated_hash = ") {
+            println(String::concat("wrote to ", String::concat(target, String::concat(": ", line))))
+          } else {
+            ()
+          }
+          li = li + 1
+        }
+        0
+      }
+    } else {
+      let (pkg_hash, ct_hash) = contract_package_hashes_fs(target)
+      print_text(String::concat("package #", String::concat(pkg_hash, String::concat("\ncontract ", ct_hash))))
+      0
+    }
   }
 }
 

@@ -387,6 +387,94 @@ execute_host_action() {
     *) die "unsupported host action: $kind" ;;
   esac
 }
+# --- semver constraint resolution for `vibe add` -----------------------------
+# A ref such as `^1.2`, `~1.2.3`, `>=1.0`, `1.x` or `*` is resolved against the
+# remote's tags (`git ls-remote --tags`) to the highest satisfying tag BEFORE the
+# fetch; a bare exact version (1.2.3) or any non-semver string (a branch, a
+# commit) is passed through literally. Host-side because it needs `git`.
+ver_parts() {
+  local v="${1#[vV]}"; v="${v%%+*}"; v="${v%%-*}"
+  local IFS=.; set -- $v; echo "${1:-0} ${2:-0} ${3:-0}"
+}
+ver_cmp() {
+  local a b; a="$(ver_parts "$1")"; b="$(ver_parts "$2")"
+  local a1 a2 a3 b1 b2 b3
+  read -r a1 a2 a3 <<EOF
+$a
+EOF
+  read -r b1 b2 b3 <<EOF
+$b
+EOF
+  local p
+  for p in "$a1 $b1" "$a2 $b2" "$a3 $b3"; do
+    set -- $p
+    [ "$1" -lt "$2" ] && { echo -1; return; }
+    [ "$1" -gt "$2" ] && { echo 1; return; }
+  done
+  echo 0
+}
+ver_ge() { [ "$(ver_cmp "$1" "$2")" != "-1" ]; }
+ver_gt() { [ "$(ver_cmp "$1" "$2")" = "1" ]; }
+ver_lt() { [ "$(ver_cmp "$1" "$2")" = "-1" ]; }
+ver_le() { [ "$(ver_cmp "$1" "$2")" != "1" ]; }
+ver_satisfies() {
+  local v="$1" c="$2" maj min pat base
+  case "$c" in ""|"*"|x|X) return 0 ;; esac
+  case "$c" in
+    ^*) base="${c#^}"; read -r maj min pat <<EOF
+$(ver_parts "$base")
+EOF
+        ver_ge "$v" "$base" || return 1
+        if [ "$maj" -gt 0 ]; then ver_lt "$v" "$((maj+1)).0.0"
+        elif [ "$min" -gt 0 ]; then ver_lt "$v" "0.$((min+1)).0"
+        else ver_lt "$v" "0.0.$((pat+1))"; fi ;;
+    ~*) base="${c#\~}"; read -r maj min pat <<EOF
+$(ver_parts "$base")
+EOF
+        ver_ge "$v" "$base" && ver_lt "$v" "$maj.$((min+1)).0" ;;
+    ">="*) ver_ge "$v" "${c#>=}" ;;
+    "<="*) ver_le "$v" "${c#<=}" ;;
+    ">"*)  ver_gt "$v" "${c#>}" ;;
+    "<"*)  ver_lt "$v" "${c#<}" ;;
+    "="*)  [ "$(ver_cmp "$v" "${c#=}")" = "0" ] ;;
+    *)
+      case "$c" in
+        *.*.*) [ "$(ver_cmp "$v" "$c")" = "0" ] ;;
+        *.*)   read -r maj min pat <<EOF
+$(ver_parts "$c")
+EOF
+               ver_ge "$v" "$maj.$min.0" && ver_lt "$v" "$maj.$((min+1)).0" ;;
+        *)     case "$c" in *[!0-9]*) return 1 ;; esac
+               ver_ge "$v" "$c.0.0" && ver_lt "$v" "$((c+1)).0.0" ;;
+      esac ;;
+  esac
+}
+# Is $1 a semver constraint (vs a plain branch / commit / exact tag)?
+is_constraint() {
+  case "$1" in
+    "*"|x|X) return 0 ;;
+    ^*|\~*|">="*|"<="*|">"*|"<"*|"="*) return 0 ;;
+    *[!0-9.vV]*) return 1 ;;
+    *.*.*) return 1 ;;
+    *.*|[0-9]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+resolve_git_constraint() {
+  local remote="$1" constraint="$2" best="" bestv="" tag v
+  while IFS= read -r tag; do
+    [ -n "$tag" ] || continue
+    case "$tag" in *'^{}'*) continue ;; esac
+    v="${tag#[vV]}"
+    case "$v" in ''|*[!0-9.]*) continue ;; esac
+    if ver_satisfies "$v" "$constraint"; then
+      if [ -z "$best" ] || ver_gt "$v" "$bestv"; then best="$tag"; bestv="$v"; fi
+    fi
+  done <<EOF
+$(git ls-remote --tags --refs "$remote" 2>/dev/null | sed 's#.*refs/tags/##')
+EOF
+  [ -n "$best" ] && printf '%s' "$best"
+}
 invoke_cli() {
   local plan cli status=0
   cli="$(pick_cli)"; plan="$(mktemp -t vibe-host-action-XXXXXX)"
@@ -557,6 +645,36 @@ case "$cmd" in
     [ "$#" -eq 1 ] || die "usage: vibe add <source-spec>   (github:owner/repo[/dir]@<ref> | git:<url>@<ref>[#<dir>])"
     aspec="$1"; case "$aspec" in -*) die "usage: vibe add <source-spec>" ;; esac
     [ -f index.vpkg ] || die "vibe add: no index.vpkg at the project root ($PROJECT_ROOT); \`vibe new\` writes one"
+    # A semver constraint ref (^1.2, ~1.2.3, >=1.0, 1.x, *) resolves to the
+    # highest matching tag here, and the spec handed on names that tag.
+    aremote=""; aref=""; ahead=""; atail=""
+    case "$aspec" in
+      github:*)
+        arest="${aspec#github:}"
+        case "$arest" in *@*) ;; *) die "vibe add: a github spec needs @<ref>: $aspec" ;; esac
+        aref="${arest##*@}"; apath="${arest%@*}"
+        aowner="${apath%%/*}"; arr="${apath#*/}"; arepo="${arr%%/*}"
+        [ -n "$aowner" ] && [ -n "$arepo" ] && [ "$arr" != "$apath" ] || die "vibe add: malformed github spec (owner/repo[/dir]@<ref>): $aspec"
+        aremote="https://github.com/$aowner/$arepo.git"; ahead="github:$apath@"
+        ;;
+      git:*)
+        arest="${aspec#git:}"
+        case "$arest" in *"#"*) atail="#${arest##*#}"; arest="${arest%#*}" ;; esac
+        case "$arest" in *@*) ;; *) die "vibe add: a git spec needs <url>@<ref>: $aspec" ;; esac
+        aref="${arest##*@}"; aremote="${arest%@*}"
+        [ -n "$aremote" ] || die "vibe add: malformed git spec (git:<url>@<ref>[#<dir>]): $aspec"
+        ahead="git:$aremote@"
+        ;;
+      *) die "vibe add: unknown source spec, expected github:owner/repo[/dir]@<ref> or git:<url>@<ref>[#<dir>]: $aspec" ;;
+    esac
+    [ -n "$aref" ] || die "vibe add: empty ref in $aspec"
+    command -v git >/dev/null 2>&1 || die "vibe add: git is required"
+    if is_constraint "$aref"; then
+      aresolved="$(resolve_git_constraint "$aremote" "$aref")"
+      [ -n "$aresolved" ] || die "vibe add: no tag on $aremote satisfies '$aref'"
+      echo "resolved $aref -> $aresolved"
+      aspec="$ahead$aresolved$atail"
+    fi
     pkg_sh="$(find_pkg_sh)" || exit 1
     cli="$(pick_cli)"; aout="$(mktemp -t vibe-add-XXXXXX)"
     if ! env VIBE_PKG_RUNNER="$RUNNER" VIBE_PKG_CLI_WASM="$cli" VIBE_HOME="$VIBE_HOME" \
@@ -625,7 +743,9 @@ EOF
           else mv -f "$repl_buf.bak" "$repl_buf"; echo "vibe shell: declaration rejected (buffer unchanged)" >&2; fi ;;
         *)
           { cat "$repl_buf"; printf 'export let __repl_main__: () -> Int = () -> { (%s) }\n' "$t"; } > "$repl_dir/eval.vibe"
-          invoke_cli compile "$repl_dir/eval.vibe" -o "$repl_dir/eval.wasm" --entry __repl_main__ \
+          # The compile's own `compiled a -> b` report is not the expression's
+          # value; only the program's output belongs on the session's stdout.
+          invoke_cli compile "$repl_dir/eval.vibe" -o "$repl_dir/eval.wasm" --entry __repl_main__ >/dev/null \
             && ( cd "$INVOKE_DIR" && exec "$RUNNER" "$repl_dir/eval.wasm" ) || true
           ;;
       esac
