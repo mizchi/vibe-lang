@@ -6112,7 +6112,11 @@ bash "$ROOT_DIR/scripts/check_book_console_test.sh"
 # first correct run, and it was RED: the launcher had grown an `at off=62`
 # line the chapter did not carry, and the paragraph under it still said the
 # report has no position at all, a gap #2202 closed.
-bash "$ROOT_DIR/scripts/check_book_console.sh"
+# The gate is handed THIS lane's stage2 (#2138): left to resolve_stage2 on a
+# CI shard, whose generation lives outside _build/selfhost/generations, it
+# fell back to the committed seed -- a compiler that predates the verb
+# protocol the launcher now speaks (#2858).
+BOOK_CONSOLE_STAGE2="$stage2_wasm" bash "$ROOT_DIR/scripts/check_book_console.sh"
 
 # 107/107. The host runner's `[crash debug]` dump is OFF by default (#2199).
 #      It is compiler-developer diagnostics -- heap bytes, the RC freelist, raw

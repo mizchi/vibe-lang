@@ -196,15 +196,23 @@ manifest_add_pin() {
     rm -f "$tmp"; return 1
   fi
 }
+# $1 = captured stderr, $2 = 1 when the guest's last stdout line was the
+# assert abort marker: the trap that follows is the assert aborting through a
+# deliberate `unreachable`, and once the assert block tells the story echoing
+# that trap reads as a second, unexplained failure (#2202). Any other trap is
+# real and printed.
 condense_test_trap() {
-  local errf="$1"
+  local errf="$1" pre_abort="${2:-0}"
   [ -s "$errf" ] || return 0
-  awk '
+  awk -v pre_abort="$pre_abort" '
     function pct(s) { gsub("%20"," ",s); gsub("%25","%",s); return s }
     !seen && match($0, /at __test_/) { r=substr($0,RSTART+length("at __test_")); if (match(r,/ \(wasm:/)) { f=substr(r,1,RSTART-1); if(f!="") seen=1 } }
     !seen && match($0, /<unknown>!__test_/) { f=substr($0,RSTART+length("<unknown>!__test_")); sub(/[[:space:]]+$/,"",f); if(f!="") seen=1 }
     !why && /RuntimeError:|wasm trap:/ { why=$0; sub(/^[[:space:]]+|[0-9]+: |viberun: /,"",why) }
-    END { if (f!="") print "       failing test: " pct(f); if (why!="") print "       trap: " why }
+    END {
+      if (f!="") print "       failing test: " pct(f)
+      if (why!="" && !(pre_abort == 1 && why ~ /unreachable/)) print "       trap: " why
+    }
   ' "$errf"
 }
 INVOKE_DIR="${VIBE_INVOKE_DIR:-$(pwd -P)}"
@@ -386,7 +394,7 @@ host_test_record() {
 # $1 = src as the plan spelled it, $2 = compiled test wasm, $3 = --update (0|1),
 # $4 = --no-cache (0|1).
 host_run_test() {
-  local src="$1" wasm="$2" update="$3" no_cache="${4:-0}" tout terr rc=0 src_abs="$1" key="" note="" n_tests n_tests_exact
+  local src="$1" wasm="$2" update="$3" no_cache="${4:-0}" tout terr rc=0 src_abs="$1" key="" note="" n_tests n_tests_exact pre_abort
   local patches="${VIBE_TEST_UPDATE_PATCHES:-0}" depth="${VIBE_TEST_UPDATE_DEPTH:-0}" tcache="$VIBE_HOME/cache/test"
   case "$src_abs" in /*) ;; *) src_abs="$PROJECT_ROOT/$src_abs" ;; esac
   # An empty wasm path is the dispatcher's record of a file that did not
@@ -427,7 +435,9 @@ host_run_test() {
     return $?
   fi
   echo "FAIL $src"
-  condense_test_trap "$terr"
+  pre_abort=0
+  [ -s "$tout" ] && [ "$(tail -n 1 "$tout")" = "assert failed: aborting" ] && pre_abort=1
+  condense_test_trap "$terr" "$pre_abort"
   [ -s "$tout" ] && { grep -vx "assert failed: aborting" "$tout" || true; } | sed 's/^/       /'
   host_test_record fail "$n_tests" "$n_tests_exact"
   rm -f "$tout" "$terr"; return 1
