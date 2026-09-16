@@ -777,6 +777,10 @@ if [ -z "$pin" ]; then
   echo "[compiler-gate] FAIL: vibe hash produced no package pin (#730)" >&2
   cat "$cdir2/hash.out.diag" >&2 2>/dev/null; exit 1
 fi
+if ! printf '%s' "$pin" | grep -qE '^#pkg:b3:[0-9a-f]{64}$'; then
+  echo "[compiler-gate] FAIL: vibe hash new write is not #pkg:b3:<64hex> (#2829)" >&2
+  echo "$pin" >&2; exit 1
+fi
 printf 'require @gate/d2pkg 1.0.0 = %s\n\nimport @gate/d2pkg { triple }\nexport let _start: () -> Int = () -> { triple(14) }\n' "$pin" > "$cdir2/ok.vibe"
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
@@ -830,8 +834,8 @@ fi
 VIBE_FILL_PINS=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/unpinned.vibe" "$cdir2/filled.vibe" __no_entry__ >/dev/null 2>&1 || true
-if ! grep -q "= #pkg:sha1:" "$cdir2/filled.vibe" 2>/dev/null; then
-  echo "[compiler-gate] FAIL: VIBE_FILL_PINS did not insert the pin (#730 D-3)" >&2
+if ! grep -qE "= #pkg:b3:[0-9a-f]{64}" "$cdir2/filled.vibe" 2>/dev/null; then
+  echo "[compiler-gate] FAIL: VIBE_FILL_PINS did not insert the pin (#730 D-3 / #2829)" >&2
   cat "$cdir2/filled.vibe.diag" >&2 2>/dev/null; exit 1
 fi
 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
@@ -844,8 +848,8 @@ fi
 VIBE_NORMALIZE=1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
   bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
   "$cdir2/filled.vibe" "$cdir2/norm.vibe" >/dev/null 2>&1 || true
-if ! head -1 "$cdir2/norm.vibe" 2>/dev/null | grep -q "^require @gate/d2pkg 1.0.0 = #pkg:sha1:"; then
-  echo "[compiler-gate] FAIL: normalize did not re-emit the require pin line (#730 D-3)" >&2
+if ! head -1 "$cdir2/norm.vibe" 2>/dev/null | grep -qE "^require @gate/d2pkg 1.0.0 = #pkg:b3:[0-9a-f]{64}"; then
+  echo "[compiler-gate] FAIL: normalize did not re-emit the require pin line (#730 D-3 / #2829)" >&2
   head -3 "$cdir2/norm.vibe" >&2 2>/dev/null; exit 1
 fi
 rm -rf ".vibe/store/@gate" "$cdir2"
@@ -1091,6 +1095,10 @@ khash="$(awk -F'\t' '$1 == "@gate755/hex@1.0.0" { print $2 }' "$khome/cache/vers
 if [ -z "$khash" ]; then
   echo "[compiler-gate] FAIL: git add did not record the version mapping (#755)" >&2; exit 1
 fi
+if ! printf '%s' "$khash" | grep -qE '^pkg:b3:[0-9a-f]{64}$'; then
+  echo "[compiler-gate] FAIL: TOFU add did not record a BLAKE3 identity (#2829)" >&2
+  echo "$khash" >&2; exit 1
+fi
 if ! grep -q "@gate755/hex@1.0.0" "$khome/cache/provenance.tsv" 2>/dev/null; then
   echo "[compiler-gate] FAIL: git add did not record provenance (#755)" >&2; exit 1
 fi
@@ -1111,6 +1119,47 @@ if ! grep -q "hash mismatch" "$kdir/add2.log" || [ -f "$khome2/cache/versions.ts
   echo "[compiler-gate] FAIL: pin rejection is wrong or left side effects (#755)" >&2
   cat "$kdir/add2.log" >&2; exit 1
 fi
+# (2b) a correct SHA-1 expected pin still verifies under SHA-1 of the same
+#      payload, records pkg:sha1:, and lands in cache/pkg/sha1/. fetch-pins
+#      can restore it from the recorded source when that CAS entry is absent.
+mkdir -p "$kdir/sha1src"
+cp -R "$khome/lib/@gate755/hex/." "$kdir/sha1src/"
+VIBE_HASH=1 VIBE_HASH_ALGO=sha1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$kdir/sha1src/index.vpkg" "$kdir/sha1.out" __no_entry__ >/dev/null 2>&1 || true
+khash_sha1="$(grep '^package ' "$kdir/sha1.out" 2>/dev/null | cut -d' ' -f2)"
+khash_sha1="${khash_sha1#\#}"
+if ! printf '%s' "$khash_sha1" | grep -qE '^pkg:sha1:[0-9a-f]{40}$'; then
+  echo "[compiler-gate] FAIL: VIBE_HASH_ALGO=sha1 did not emit a SHA-1 identity (#2829)" >&2
+  cat "$kdir/sha1.out" >&2 2>/dev/null
+  cat "$kdir/sha1.out.diag" >&2 2>/dev/null
+  exit 1
+fi
+khome_sha1="$(mktemp -d)"
+if ! VIBE_HOME="$khome_sha1" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#$khash_sha1" > "$kdir/add_sha1.log" 2>&1; then
+  echo "[compiler-gate] FAIL: correct SHA-1 expected pin was rejected (#2829)" >&2
+  cat "$kdir/add_sha1.log" >&2; exit 1
+fi
+if ! awk -F'\t' '$1 == "@gate755/hex@1.0.0"' "$khome_sha1/cache/versions.tsv" | grep -qE 'pkg:sha1:[0-9a-f]{40}'; then
+  echo "[compiler-gate] FAIL: SHA-1 pin was not recorded under its algorithm (#2829)" >&2
+  cat "$khome_sha1/cache/versions.tsv" >&2; exit 1
+fi
+khex_sha1="${khash_sha1#pkg:sha1:}"
+if [ ! -f "$khome_sha1/cache/pkg/sha1/$khex_sha1/index.vpkg" ]; then
+  echo "[compiler-gate] FAIL: SHA-1 pin did not land in cache/pkg/sha1/ (#2829)" >&2
+  exit 1
+fi
+printf 'name = @local/app\nversion = 0.1.0\nrequire @gate755/hex 1.0.0 = #%s from %s\n\ngenerated_hash =\n' "$khash_sha1" "$kspec" > "$kdir/app_sha1.vpkg"
+rm -rf "$khome_sha1/cache/pkg" "$khome_sha1/lib/@gate755"
+if ! VIBE_HOME="$khome_sha1" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh fetch-pins "$kdir/app_sha1.vpkg" > "$kdir/fetch_sha1.log" 2>&1; then
+  echo "[compiler-gate] FAIL: fetch-pins could not restore a SHA-1 pin from source (#2829)" >&2
+  cat "$kdir/fetch_sha1.log" >&2; exit 1
+fi
+if [ ! -f "$khome_sha1/lib/@gate755/hex/index.vpkg" ]; then
+  echo "[compiler-gate] FAIL: fetch-pins did not materialize the SHA-1 pin (#2829)" >&2
+  cat "$kdir/fetch_sha1.log" >&2; exit 1
+fi
+rm -rf "$khome_sha1"
 # (3) correct expected pin verifies a fresh fetch
 if ! VIBE_HOME="$khome2" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh add "$kspec" "#$khash" > "$kdir/add3.log" 2>&1; then
   echo "[compiler-gate] FAIL: correct expected pin was rejected (#755)" >&2
@@ -1240,8 +1289,8 @@ if ! VIBE_HOME="$lhome805" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pk
   echo "[compiler-gate] FAIL: --allow-yanked did not override the yank refusal (#805)" >&2
   cat "$ldir805/inst5.log" >&2; exit 1
 fi
-if ! awk -F'\t' '$1 == "@gate805/logx@1.1.0"' "$lhome805/cache/versions.tsv" | grep -q "pkg:sha1:"; then
-  echo "[compiler-gate] FAIL: yank disturbed the immutable version->hash mapping (#805)" >&2; exit 1
+if ! awk -F'\t' '$1 == "@gate805/logx@1.1.0"' "$lhome805/cache/versions.tsv" | grep -qE "pkg:b3:[0-9a-f]{64}"; then
+  echo "[compiler-gate] FAIL: yank disturbed the immutable version->hash mapping (#805 / #2829)" >&2; exit 1
 fi
 # (7) the log dir is a servable static artifact: a copied dir passed via
 #     VIBE_REGISTRY_LOG_DIR verifies the same way

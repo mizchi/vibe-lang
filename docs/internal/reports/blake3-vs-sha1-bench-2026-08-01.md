@@ -77,7 +77,7 @@ wasmtime で実測した (input = i % 251 pattern):
 3. **`i8x16.shuffle`** (16 lane-byte immediates) を WAT assembler に追加。
 
 これで BLAKE3 の 1-block full compression を flat WAT の kernel として
-`lib/@vibe/blake3/simd.vibe` に実装 (命令列は Python 生成器 +
+`lib/@vibe/blake3/simd/simd.vibe` に実装 (命令列は Python 生成器 +
 命令レベルシミュレータで公式ベクタ全一致を検証してから出力。rows 方式、
 message schedule は各 round の 4 vector を m0..m3 から 2 入力 shuffle 木で
 直接 gather、diagonalize は r1/r2/r3 lane 回転)。`simd_test.vibe` が

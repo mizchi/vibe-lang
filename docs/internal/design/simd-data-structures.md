@@ -109,7 +109,7 @@ by a human rather than by a gate.
 A ~600-line WAT assembler with the full integer/float/SIMD opcode set, `v128`
 locals, `i8x16.shuffle`, structured control flow. This is the mechanism that
 makes a SIMD data-structure library possible in *library* code —
-`lib/@vibe/blake3/simd.vibe` already proves it at scale, and every kernel in the
+`lib/@vibe/blake3/simd/simd.vibe` already proves it at scale, and every kernel in the
 benches here is written this way. It is linear-backend only (the wasm-gc backend
 rejects it).
 

@@ -369,7 +369,7 @@ if command -v git >/dev/null 2>&1; then
   printf 'name = @acme/mid\nversion = 1.0.0\ndescription =\n  #|fixture\ndeps = {}\n\ngenerated_hash =\n\nfn mid(x: Int) -> Int\n' > "$mid_repo/packages/@acme/mid/index.vpkg"
   printf 'import @acme/base { base }\n\nexport fn mid(x: Int) -> Int {\n  base(x) + 2\n}\n' > "$mid_repo/packages/@acme/mid/impl.vibe"
   ( cd "$mid_repo/packages/@acme/mid" && "$VIBE" add "git:file://$base_repo@v1.0.0#packages/@acme/base" ) > "$WORK/add_base.log" 2>&1 && rc=0 || rc=$?
-  check "vibe add inside a package checkout pins in that package's index.vpkg" "yes" "$([ "$rc" = 0 ] && grep -q '^require @acme/base 1.0.0 = #pkg:sha1:' "$mid_repo/packages/@acme/mid/index.vpkg" && echo yes || echo no)"
+  check "vibe add inside a package checkout pins in that package's index.vpkg" "yes" "$([ "$rc" = 0 ] && grep -qE '^require @acme/base 1.0.0 = #pkg:b3:[0-9a-f]{64}' "$mid_repo/packages/@acme/mid/index.vpkg" && echo yes || echo no)"
   rm -rf "$mid_repo/packages/@acme/mid/.vibe"
   ( cd "$mid_repo" && git init -q )
   git_commit_all "$mid_repo" mid

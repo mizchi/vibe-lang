@@ -498,13 +498,14 @@ materialize_from_cas() {
   say "pin line: require $name $version = #$hash"
 }
 
-# add_from_spec <source-spec> <expected pkg:sha1:… or ""> <"--store" or "">:
+# add_from_spec <source-spec> <expected pkg:b3:… / pkg:sha1:… or ""> <"--store" or "">:
 # fetch a package straight from git, hash it locally, record it, and
 # materialize it. The last stdout line is machine-readable for the launcher's
 # `vibe add`, which writes the pin into the project's index.vpkg:
-#   added<TAB>name<TAB>version<TAB>pkg:sha1:<hex><TAB>spec<TAB>commit<TAB>pinned-spec
-# where pinned-spec is the spec with its ref replaced by the resolved commit
-# (the `from` clause of the require line, #2676).
+#   added<TAB>name<TAB>version<TAB>pkg:b3:<hex><TAB>spec<TAB>commit<TAB>pinned-spec
+# (a SHA-1 expected pin that matches is recorded as pkg:sha1:<hex> and stored
+# under cache/pkg/sha1/). pinned-spec is the spec with its ref replaced by
+# the resolved commit (the `from` clause of the require line, #2676).
 add_from_spec() {
   local spec="$1" expected="$2" target="$3"
   local subdir="" rest ref path owner rr repo url work commit src name version hash key recorded hex cas cas_hash prov_line pinned_spec
@@ -557,10 +558,17 @@ add_from_spec() {
 
   # hash is computed LOCALLY over the fetched sources — the transport is
   # untrusted. An expected pin rejects BEFORE any cache/install side effect.
+  # New writes are BLAKE3; a SHA-1 expected pin still verifies under SHA-1
+  # of the same payload (hash_matches_index), so a historical pin can be
+  # restored when its CAS entry is absent (#2829).
   hash="$(pkg_hash_of "$src/index.vpkg")"
   if [ -n "$expected" ] && [ "$hash" != "$expected" ]; then
-    rm -rf "$work"
-    die "hash mismatch for $name@$version from $spec: fetched #$hash, expected #$expected — rejected"
+    if hash_matches_index "$expected" "$src/index.vpkg"; then
+      hash="$expected"
+    else
+      rm -rf "$work"
+      die "hash mismatch for $name@$version from $spec: fetched #$hash, expected #$expected — rejected"
+    fi
   fi
   key="$name@$version"
   recorded="$(lookup_version "$key")"

@@ -2463,7 +2463,7 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   grouped in that order (a located error enforces the grouping); declared
   locals index past the params + closure-env slot. v128 locals are what let
   a kernel keep vector state across instructions (e.g. the BLAKE3 compress
-  in `lib/@vibe/blake3/simd.vibe`).
+  in `lib/@vibe/blake3/simd/simd.vibe`).
 - **Integer immediates** accept BOTH spellings the text format defines
   (`iN ::= n:uN | i:sN`), so `(i32.const 2654435761)` and
   `(i32.const -1640531535)` are the same instruction. Out of range for the
