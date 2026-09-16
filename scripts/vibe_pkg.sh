@@ -188,6 +188,31 @@ hash_matches_index() {
   [ "$got" = "$recorded" ]
 }
 
+# lookup_installed_version <name> <index.vpkg>
+# A versions.tsv row for <name> whose recorded identity verifies against the
+# installed contract. Historical pkg:sha1: rows do not equal a default b3
+# write of the same payload, so exact-string reverse lookup misses them.
+# Sets INSTALLED_VERSION / INSTALLED_HASH.
+lookup_installed_version() {
+  local name="$1" index="$2" k h
+  INSTALLED_VERSION=""
+  INSTALLED_HASH=""
+  [ -f "$VERSIONS_TSV" ] || return 1
+  while IFS="$(printf '\t')" read -r k h; do
+    case "$k" in
+      "$name@"*) ;;
+      *) continue ;;
+    esac
+    [ -n "$h" ] || continue
+    if hash_matches_index "$h" "$index"; then
+      INSTALLED_VERSION="${k##*@}"
+      INSTALLED_HASH="$h"
+      return 0
+    fi
+  done < "$VERSIONS_TSV"
+  return 1
+}
+
 # --- transparency log (#805): merkle tree over append-only TSV records ------
 #
 # Record line (one per publish/yank event, TAB-separated):
@@ -882,11 +907,16 @@ update)
   fi
   [ -f "$inst_dir/index.vpkg" ] || die "not installed: $name ($inst_dir) — 'vibe_pkg.sh install' it first"
   [ -f "$VERSIONS_TSV" ] || die "no published versions known (empty cache index)"
-  # current version = reverse lookup of the installed copy's hash
+  # current version = reverse lookup of the installed copy. Try the default
+  # b3 write first; a historical pkg:sha1: row still verifies under SHA-1.
   compute_pkg_hashes "$inst_dir/index.vpkg"
   cur_hash="$PKG_HASH_OUT"
   cur_ct="$CT_HASH_OUT"
   cur_version="$(awk -F'\t' -v n="$name" -v h="$cur_hash" 'index($1, n "@") == 1 && $2 == h { v = substr($1, length(n) + 2) } END { print v }' "$VERSIONS_TSV")"
+  if [ -z "$cur_version" ] && lookup_installed_version "$name" "$inst_dir/index.vpkg"; then
+    cur_version="$INSTALLED_VERSION"
+    cur_hash="$INSTALLED_HASH"
+  fi
   # newest non-yanked LOGGED publish (publish order, like latest_version_of).
   # versions.tsv also holds TOFU mappings created by `add github:...` that
   # have no publish record; selecting one of those would let update install
@@ -921,7 +951,7 @@ update)
     # CONTRACT SURFACE DIFF, textual approximation: the contract file itself.
     # The canonical set-diff over contract_surface_lines (incl. effect-row
     # capability classification) needs a compiler adapter mode that is not
-    # exposed yet — see docs/internal/design/registry-design.md "実装済みの範囲と既知の gap".
+    # exposed yet — see docs/internal/design/registry-design.md "Implemented scope and known gaps".
     say "contract diff ($inst_dir/index.vpkg -> $name@$best):"
     diff -u "$inst_dir/index.vpkg" "$best_index" | sed 's/^/[vibe-pkg]   /' || true
   fi

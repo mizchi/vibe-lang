@@ -1066,6 +1066,56 @@ fi
 rm -rf ".vibe/store/@gate754" "$jdir" "$jhome"
 echo "[compiler-gate] distribution pipeline ok"
 
+# 6j2. `vibe pkg update` must recognise an installed copy whose versions.tsv
+#      row is a historical SHA-1 identity (#2829). Default writes are b3, so
+#      a string match against the recorded pin misses and used to treat the
+#      install as untracked, then die looking for a SHA-1 CAS entry.
+echo "[compiler-gate] 6j2 update matches an installed SHA-1 identity (#2829)"
+uhome="$(mktemp -d)"
+usrc="$uhome/src/@gate2829/upx"
+mkdir -p "$usrc"
+printf 'name = @gate2829/upx\nversion = 1.0.0\n\nfn twice(x: Int) -> Int\n' > "$usrc/index.vpkg"
+printf 'export fn twice(x: Int) -> Int { x * 2 }\n' > "$usrc/impl.vibe"
+udir="_build/_gate_pkg2829"
+rm -rf "$udir"; mkdir -p "$udir"
+if ! VIBE_HOME="$uhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh publish "$usrc" > "$udir/pub.log" 2>&1; then
+  echo "[compiler-gate] FAIL: publish of @gate2829/upx@1.0.0 failed (#2829)" >&2
+  cat "$udir/pub.log" >&2; exit 1
+fi
+if ! VIBE_HOME="$uhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh install "@gate2829/upx@1.0.0" > "$udir/inst.log" 2>&1; then
+  echo "[compiler-gate] FAIL: install of @gate2829/upx@1.0.0 failed (#2829)" >&2
+  cat "$udir/inst.log" >&2; exit 1
+fi
+VIBE_HASH=1 VIBE_HASH_ALGO=sha1 VIBE_PREOPEN_DIR="$ROOT_DIR" \
+  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+  "$uhome/lib/@gate2829/upx/index.vpkg" "$udir/sha1.out" __no_entry__ >/dev/null 2>&1 || true
+uhash_sha1="$(grep '^package ' "$udir/sha1.out" 2>/dev/null | cut -d' ' -f2)"
+uhash_sha1="${uhash_sha1#\#}"
+if ! printf '%s' "$uhash_sha1" | grep -qE '^pkg:sha1:[0-9a-f]{40}$'; then
+  echo "[compiler-gate] FAIL: VIBE_HASH_ALGO=sha1 did not emit a SHA-1 identity for update (#2829)" >&2
+  cat "$udir/sha1.out" >&2 2>/dev/null
+  cat "$udir/sha1.out.diag" >&2 2>/dev/null
+  exit 1
+fi
+awk -F'\t' -v n="@gate2829/upx@1.0.0" -v h="$uhash_sha1" 'BEGIN { OFS="\t" } $1 == n { $2 = h } { print }' \
+  "$uhome/cache/versions.tsv" > "$uhome/cache/versions.tsv.new"
+mv "$uhome/cache/versions.tsv.new" "$uhome/cache/versions.tsv"
+rm -rf "$uhome/cache/pkg/b3"
+if ! VIBE_HOME="$uhome" VIBE_PKG_CLI_WASM="$stage2_wasm" bash scripts/vibe_pkg.sh update "@gate2829/upx" > "$udir/upd.log" 2>&1; then
+  echo "[compiler-gate] FAIL: update of a SHA-1-recorded install failed (#2829)" >&2
+  cat "$udir/upd.log" >&2; exit 1
+fi
+if ! grep -q "is up to date" "$udir/upd.log"; then
+  echo "[compiler-gate] FAIL: update did not treat the SHA-1-recorded install as current (#2829)" >&2
+  cat "$udir/upd.log" >&2; exit 1
+fi
+if grep -q "untracked" "$udir/upd.log"; then
+  echo "[compiler-gate] FAIL: update treated a SHA-1-recorded install as untracked (#2829)" >&2
+  cat "$udir/upd.log" >&2; exit 1
+fi
+rm -rf "$udir" "$uhome"
+echo "[compiler-gate] update matches an installed SHA-1 identity ok"
+
 # 6k. registry-less git resolution (#755 Phase 0): `vibe_pkg.sh add` fetches
 #     a package from a git source (github: is sugar over the same path),
 #     resolves the ref to a COMMIT (provenance), hashes the fetched sources
