@@ -136,3 +136,19 @@ test "#2860: top-level generic shims and concrete local renderers remain valid" 
   assert(check_error("let shim = [T](x: T) -> String { __to_string(x) }\nfn main() -> String { shim(1) }") == "")
   assert(check_error("fn main() -> String { let render = (x: Bool) -> String { __to_string(x) }; render(true) }") == "")
 }
+
+test "#2840: renderer dictionary selection ignores incompatible methods in either bound order" {
+  let traits = "trait Bad { to_string(Int) -> String }\ntrait Render { to_string(Self) -> String }\n"
+  let bad_first = String::concat(traits, "fn render[T: Bad + Render](value: T) -> String { \"v=\\{value}\" }")
+  let good_first = String::concat(traits, "fn render[T: Render + Bad](value: T) -> String { \"v=\\{value}\" }")
+  assert(check_error(bad_first) == "")
+  assert(check_error(good_first) == "")
+  assert(lowering_error(bad_first) == "")
+  assert(lowering_error(good_first) == "")
+}
+
+test "#2840: every erased wrapper element still requires its own witness" {
+  let source = "trait Render { to_string(Self) -> String }\nfn render[T: Render, U](anchor: T, value: (T, U)) -> String { \"v=\\{value}\" }"
+  assert(String::contains(check_error(source), "type parameter `U`"))
+  assert(String::contains(lowering_error(source), "type parameter `U`"))
+}
