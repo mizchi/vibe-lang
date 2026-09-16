@@ -510,7 +510,7 @@ export fn root_rel_from_invoke(invoke_rel: String, path: String) -> String {
 }
 
 fn flag_takes_output_path(flag: String) -> Bool {
-  flag == "-o" || flag == "--output" || flag == "--out" || flag == "--guest-profile" || flag == "--adapter" || flag == "--cli-wasm" || flag == "--changed"
+  flag == "-o" || flag == "--output" || flag == "--out" || flag == "--guest-profile" || flag == "--adapter" || flag == "--cli-wasm" || flag == "--changed" || flag == "--profile-tsv" || flag == "--profile-callstack"
 }
 
 fn flag_takes_non_path(flag: String) -> Bool {
@@ -2041,10 +2041,30 @@ fn write_user_funcmap(input_path: String, output_path: String) -> Unit with Fs {
   } with { Exception::Throw(_) => () }
 }
 
+/// The host-action file is line-oriented, so a value holding a newline would
+/// be read back as two. Refused rather than silently changing argv.
+fn args_contain_newline(args: Array[String]) -> Bool {
+  let mut found = false
+  let mut i = 0
+  while i < Array::length(args) {
+    if String::contains(Array::get(args, i), "\n") {
+      found = true
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
 export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env {
   let (src, _, trace, break_spec, mem, mem_sample, allocsite, allocsite_top, guest_profile, guest_interval, guest_args) = parse_run_flags(args)
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
+  } else if String::contains(src, "\n") || String::contains(guest_profile, "\n") {
+    throw("run: newlines are not supported in host-action fields")
+  } else if args_contain_newline(guest_args) {
+    throw("run: newlines are not supported in guest arguments")
   } else {
     let out = default_run_wasm(src)
     let kind = if trace {
@@ -2151,7 +2171,16 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
     let mut fi = 0
     while fi < Array::length(expanded) {
       let src = Array::get(expanded, fi)
-      let out = String::concat(default_build_dir(), String::concat("/test/", String::concat(strip_vibe_suffix(src), ".wasm")))
+      // An absolute source lives under `test/_abs/...`: with `/tmp/a_test.vibe`
+      // and a project-relative `tmp/a_test.vibe` in one invocation, the plain
+      // join gave both the same artifact path and the second compile
+      // overwrote the first before either ran (Codex review of #2858).
+      let artifact_rel = if path_is_absolute(src) {
+        String::concat("_abs", strip_vibe_suffix(src))
+      } else {
+        strip_vibe_suffix(src)
+      }
+      let out = String::concat(default_build_dir(), String::concat("/test/", String::concat(artifact_rel, ".wasm")))
       let meta = String::concat(out, ".testmeta")
       ensure_parent_dir(out)
       // A file that does not compile is one FAILED record, not the end of the
@@ -2218,9 +2247,15 @@ fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exception + Fs 
       i = i + 1
       iters = need_value(args, i, "bench", arg)
       ()
+    } else if String::starts_with(arg, "--iters=") {
+      iters = arg[8: String::length(arg)]
+      ()
     } else if arg == "--warmup" {
       i = i + 1
       warmup = need_value(args, i, "bench", arg)
+      ()
+    } else if String::starts_with(arg, "--warmup=") {
+      warmup = arg[9: String::length(arg)]
       ()
     } else if arg == "--guest-profile" {
       guest_profile_requested = true
@@ -2234,6 +2269,9 @@ fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exception + Fs 
     } else if arg == "--interval-us" {
       i = i + 1
       guest_interval = need_value(args, i, "bench", arg)
+      ()
+    } else if String::starts_with(arg, "--interval-us=") {
+      guest_interval = arg[14: String::length(arg)]
       ()
     } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
       throw(String::concat("bench: unknown flag: ", arg))
@@ -2421,6 +2459,10 @@ fn selfhost_cli_user_profile_args(args: Array[String]) -> Int with Exception + F
     throw("profile: --out must not be empty")
   } else if source == output {
     throw("profile: --out must not resolve to the source file")
+  } else if String::contains(source, "\n") || String::contains(output, "\n") || String::contains(interval, "\n") {
+    throw("profile: newlines are not supported in host-action fields")
+  } else if args_contain_newline(guest_args) {
+    throw("profile: newlines are not supported in guest arguments")
   } else {
     let mut plan = String::concat("vibe-host-action-v1\nrun-guest-profile\n", String::concat(source, "\n"))
     plan = String::concat(plan, String::concat(output, "\n"))
@@ -2457,8 +2499,15 @@ fn selfhost_cli_user_hash_args(args: Array[String]) -> Int with Exception + Fs +
     if arg == "--write" {
       write = true
       ()
-    } else {
+    } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
+      // A mistyped `--writ` used to be taken for the target and then replaced
+      // by the real one: hashes printed, exit 0, nothing written.
+      throw(String::concat("hash: unknown flag: ", arg))
+    } else if src == "" {
       src = arg
+      ()
+    } else {
+      throw("hash: takes ONE target (a package directory, index.vpkg or index.vibei)")
     }
     i = i + 1
   }

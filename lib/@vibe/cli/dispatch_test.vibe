@@ -1423,3 +1423,59 @@ test "user symbols refuses a missing root in a sweep" {
   } with { Exception::Throw(e) => e }
   assert(result == "not found: /nonexistent/path.vibe")
 }
+
+/// The equals spelling of the bench options is accepted alongside the split
+/// one; a parse that reaches the file check has accepted every flag.
+test "user bench accepts the equals spelling of its options" {
+  let result = handle {
+    let _ = selfhost_cli_user_dispatch_args([
+      "bench",
+      "--iters=100",
+      "--warmup=10",
+      "--interval-us=500",
+      "/nonexistent/bench.vibe"
+    ])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "not found: /nonexistent/bench.vibe")
+}
+
+/// A mistyped `--writ` used to be taken for the target and then replaced by
+/// the real one: hashes printed, exit 0, nothing written.
+test "user hash refuses an unknown flag and a second target" {
+  let flag = handle {
+    let _ = selfhost_cli_user_dispatch_args(["hash", "--writ", "index.vpkg"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(flag == "hash: unknown flag: --writ")
+  let extra = handle {
+    let _ = selfhost_cli_user_dispatch_args(["hash", "a.vpkg", "b.vpkg"])
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(String::starts_with(extra, "hash: takes ONE target"))
+}
+
+/// The host-action file is line-oriented: a guest argument holding a newline
+/// would reach the program as two arguments, so it is refused.
+test "user run plan refuses a guest argument with a newline" {
+  let plan_path = "/tmp/vibe_user_dispatch_run_newline.txt"
+  let src_path = "/tmp/vibe_user_dispatch_run_newline.vibex"
+  Fs::write_bytes(src_path, string_to_bytes("fn main allows Console {\n  println(\"42\")\n}\n"))
+  let result = handle {
+    let _ = selfhost_cli_run_plan_args(["run", src_path, "--", "two\nlines"], plan_path)
+    "OK"
+  } with { Exception::Throw(e) => e }
+  assert(result == "run: newlines are not supported in guest arguments")
+}
+
+/// An absolute test source is compiled under `test/_abs/...`, so it cannot
+/// share an artifact path with a project-relative source of the same name.
+test "user test plan keeps absolute sources in their own namespace" {
+  let src = "/tmp/vibe_user_dispatch_abs_ns_test.vibe"
+  let plan_path = "/tmp/vibe_user_dispatch_abs_ns_plan.txt"
+  Fs::write_bytes(src, string_to_bytes("test \"ns\" {\n  assert(1 == 1)\n}\n"))
+  let status = selfhost_cli_test_plan_args(["test", src], plan_path)
+  assert(status == 0)
+  let plan = Fs::read_file(plan_path)
+  assert(String::contains(plan, "/test/_abs/tmp/vibe_user_dispatch_abs_ns_test.wasm"))
+}

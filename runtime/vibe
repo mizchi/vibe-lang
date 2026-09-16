@@ -505,8 +505,30 @@ execute_host_action() {
       for cand in "$opt_wasm" "$TOOLCHAIN_DIR/lib/vibe-opt.wasm" "$PWD/_build/vibe-opt.wasm"; do
         [ -n "$cand" ] && [ -f "$cand" ] && { opt_wasm="$cand"; break; }
       done
-      [ -f "${opt_wasm:-}" ] || die "--minify: vibe-opt.wasm not found"
-      "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
+      [ -f "${opt_wasm:-}" ] || die "--minify: vibe-opt.wasm not found; build it with scripts/build_vibe_opt.sh or set VIBE_OPT_WASM"
+      case "$out" in /*) ;; *) out="$PROJECT_ROOT/$out" ;; esac
+      # Converge one round per PROCESS (#1109): the optimizer allocates via the
+      # bump allocator and never frees, so an in-process converge exhausts
+      # guest memory on large modules; a fresh instance per round resets it.
+      # --single-round is feature-detected in the artifact (an older
+      # vibe-opt.wasm would read the flag as its input path). Each round is
+      # backed up first and a non-shrinking round is discarded, never committed
+      # (#1122).
+      if grep -aq -- "--single-round" "$opt_wasm" 2>/dev/null; then
+        local mtmp mback mprev msize mrounds=0
+        mtmp="$(mktemp -t vibe-minify-XXXXXX.wasm)"; mback="$(mktemp -t vibe-minify-backup-XXXXXX.wasm)"
+        mprev=$(wc -c <"$out")
+        while [ "$mrounds" -lt "${VIBE_MINIFY_MAX_ROUNDS:-16}" ]; do
+          cp "$out" "$mback"
+          "$RUNNER" "$opt_wasm" --single-round "$out" "$mtmp" >/dev/null || { rm -f "$mtmp" "$mback"; die "--minify failed for $out"; }
+          msize=$(wc -c <"$mtmp"); mrounds=$((mrounds + 1))
+          if [ "$msize" -ge "$mprev" ]; then mv "$mback" "$out"; break; fi
+          mv "$mtmp" "$out"; mprev="$msize"
+        done
+        rm -f "$mtmp" "$mback"
+      else
+        "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
+      fi
       ;;
     run-tests)
       t_fail=0; t_pass=0; update="$(sed -n '3p' "$plan")"; no_cache="$(sed -n '4p' "$plan")"; jobs="$(sed -n '5p' "$plan")"
@@ -594,6 +616,10 @@ execute_host_action() {
       # edge to a root import (#1796), so the mistake would surface as a
       # mysterious runtime failure instead of here.
       body_stream="$(sed -n '6p' "$plan")"
+      # The dispatcher made both paths relative to the PROJECT ROOT, where it
+      # ran; this arm runs from the invoking directory (Codex review of #2858).
+      case "$wasm" in /*) ;; *) wasm="$PROJECT_ROOT/$wasm" ;; esac
+      case "$adapter" in ''|/*) ;; *) adapter="$PROJECT_ROOT/$adapter" ;; esac
       [ -n "$adapter" ] || adapter="${VIBE_HTTP_ADAPTER:-}"
       if [ -z "$adapter" ]; then
         if [ "$body_stream" = 1 ]; then
