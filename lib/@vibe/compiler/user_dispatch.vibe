@@ -437,9 +437,13 @@ fn write_wasm(output_path: String, bytes: Bytes) -> Unit with Fs {
 
 /// The parser hands back the DEFAULT build path spelled literally
 /// (`.vibe/build/...`) because it has no `Env`; this re-anchors it on the real
-/// build directory. A `-o` the caller wrote is passed through untouched.
-fn resolve_user_build_output(output_path: String) -> String with Env {
-  if String::starts_with(output_path, ".vibe/build/") {
+/// build directory. A `-o` the caller wrote is passed through untouched --
+/// decided by whether the flag was GIVEN, not by the path's prefix: with
+/// `VIBE_BUILD_DIR` set, an explicit `-o .vibe/build/release.wasm` used to be
+/// indistinguishable from the default and was moved into the override
+/// directory (Codex review of #2858).
+fn resolve_user_build_output(output_path: String, output_given: Bool) -> String with Env {
+  if !output_given && String::starts_with(output_path, ".vibe/build/") {
     String::concat(default_build_dir(), output_path[11: String::length(output_path)])
   } else {
     output_path
@@ -559,6 +563,11 @@ export fn rewrite_user_argv(args: Array[String], invoke_dir: String, project_roo
         prev = ""
       } else if String::starts_with(a, "--guest-profile=") {
         Array::push(out, String::concat("--guest-profile=", root_rel_from_invoke(invoke_rel, a[16: String::length(a)])))
+        prev = ""
+      } else if String::starts_with(a, "--out=") {
+        // The equals spelling `vibe profile --out=prof.json` names an output
+        // path the same way the split one does (Codex review of #2858).
+        Array::push(out, String::concat("--out=", root_rel_from_invoke(invoke_rel, a[6: String::length(a)])))
         prev = ""
       } else if String::length(a) > 0 && String::char_code_at(a, 0) == 45 {
         Array::push(out, a)
@@ -1078,12 +1087,13 @@ fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + F
   // then built the release artifact regardless (Codex review of #2858) -- a
   // release binary reported as a debug build is the silent kind of wrong.
   let debug = args_has_flag(args, "--debug")
+  let out_given = args_has_flag(args, "-o") || args_has_flag(args, "--output") || args_has_flag(args, "--out")
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
   } else if debug && (component || wit || minify) {
     throw("--debug selects the linked debug lane and cannot be combined with --component, --wit or --minify")
   } else if debug {
-    let resolved = resolve_user_build_output(out)
+    let resolved = resolve_user_build_output(out, out_given)
     ensure_parent_dir(resolved)
     // The GATED builder checks the closure its own compile ingested, so the
     // verdict covers exactly the bytes it writes (#2305, Codex review).
@@ -1092,7 +1102,7 @@ fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + F
     println(String::concat("compiled (debug) ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
     0
   } else if component {
-    let resolved = resolve_user_build_output(out)
+    let resolved = resolve_user_build_output(out, out_given)
     // The `dce-root` lane prunes from the command entry, so a module with no
     // `vibe_command` export compiles to nothing and the compiler says so in
     // its own words. The reader needs the EDIT -- the signature and the
@@ -1112,14 +1122,14 @@ fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + F
     println(String::concat("component ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
     0
   } else if wit {
-    let resolved = resolve_user_build_output(out)
+    let resolved = resolve_user_build_output(out, out_given)
     let stmts = parse_program(lex(Fs::read_file(src)))
     ensure_parent_dir(resolved)
     Fs::write_file(resolved, wit_from_program(stmts, stmts, basename_of(strip_vibe_suffix(src))))
     println(String::concat("wit ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
     0
   } else {
-    let resolved = resolve_user_build_output(out)
+    let resolved = resolve_user_build_output(out, out_given)
     let bytes = compile_user_artifact(src, entry, "mvp")
     write_user_executable(resolved, bytes, entry, "mvp")
     println(String::concat("compiled ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
@@ -1880,6 +1890,9 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Exception + Fs +
       i = i + 1
       pattern = need_value(args, i, "grep", arg)
       ()
+    } else if String::starts_with(arg, "--pattern=") {
+      pattern = arg[10: String::length(arg)]
+      ()
     } else if arg == "--json" || arg == "--output-json" {
       json = true
       ()
@@ -1887,10 +1900,14 @@ fn selfhost_cli_user_grep_args(args: Array[String]) -> Int with Exception + Fs +
       i = i + 1
       Array::push(wheres, need_value(args, i, "grep", arg))
       ()
+    } else if String::starts_with(arg, "--where=") {
+      Array::push(wheres, arg[8: String::length(arg)])
     } else if arg == "--where-row" {
       i = i + 1
       Array::push(where_rows, need_value(args, i, "grep", arg))
       ()
+    } else if String::starts_with(arg, "--where-row=") {
+      Array::push(where_rows, arg[12: String::length(arg)])
     } else if arg == "--only-ill-typed" {
       only = "ill"
       ()
