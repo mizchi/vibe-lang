@@ -34,7 +34,7 @@ import @vibe/compiler/core {
 }
 
 import @vibe/compiler/normalize {
-  desugar_trait_dicts
+  desugar_derives, desugar_trait_dicts
 }
 
 import @vibe/compiler/syntax {
@@ -112,7 +112,12 @@ fn generated_helper_sigs(src: String, prefix: String) -> String {
 
 fn generated_helper_sigs_impl(src: String, prefix: String) -> String with Exception {
   let stmts = parse_program(lex(src))
-  desugar_trait_dicts(stmts)
+  if prefix == "__arr_to_string__" {
+    // Inspect the generated binder before renderer validation rejects erasure.
+    desugar_derives(stmts)
+  } else {
+    desugar_trait_dicts(stmts)
+  }
   let out = []
   let mut i = 0
   while i < Array::length(stmts) {
@@ -215,8 +220,10 @@ test "2136: the desugared nested-array program still checks clean" {
   inspect(desugared_check_message("struct Nest[T] { rows: Array[Array[T]] } derive(Eq)\nlet main = () -> Unit { () }"), content = "")
 }
 
-test "2136: the desugared generic-struct show program still checks clean" {
-  inspect(desugared_check_message("struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }"), content = "")
+test "2840: a generated show helper cannot render an erased element" {
+  let message = desugared_check_message("struct Box[T] { xs: Array[T] } derive(Show)\nlet main = () -> Unit { () }")
+  assert(String::contains(message, "pass an explicit renderer"))
+  assert(String::contains(message, "is erased here and has no renderer witness"))
 }
 
 test "kinded constructor Eq specializes Array fields" {

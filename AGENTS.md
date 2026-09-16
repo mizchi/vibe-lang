@@ -175,15 +175,19 @@ Threading a lambda binder's own bound is the remaining half of #2737.
 **Interpolating an erased formal requires a renderer** (#2745, #2840).
 Top-level generic bodies are not specialized, so moving an unbounded lambda to
 a top-level declaration does not supply one. The checker rejects a formal
-without a method-bearing renderer bound; a marker `Show` does not suffice.
+without a method-bearing renderer bound, including formals inside arrays,
+options, tuples, and named type arguments; a marker `Show` does not suffice.
 The diagnostic asks for an explicit `(T) -> String` renderer or interpolation
 at a concrete type. A top-level method-bearing `to_string(Self) -> String`
 bound uses its witness; nested bound dispatch remains subject to #2737.
 
-A direct one-parameter rendering shim is expanded at each call site, where
-its argument type is still available. Adding a prefix or a local binding
+A direct top-level one-parameter rendering shim is expanded at each call site,
+where its argument type is still available. Local generic lambdas cannot use
+this exemption. Adding a prefix or a local binding
 makes the body cease to be a shim. Passing a generic shim as a value is
 refused by lowering; use a lambda with a concrete parameter type instead.
+A generated `derive(Show)` array helper also refuses an erased element without
+a renderer; binding its type parameter alone does not make rendering safe.
 `StringSet`'s `*_by` helpers now take an explicit key function, and the imported
 `@vibe/core` `inspect` takes an explicit renderer. The ordinary unimported
 `inspect(value, expected)` remains a call-site expansion. Regression coverage:

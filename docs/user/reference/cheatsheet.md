@@ -993,11 +993,11 @@ impl [T: Eq] Eq for Array[T]              // 宣言はできるが bound には�
 ```
 
 Generic interpolation requires a renderer when the operand still has a type
-parameter. For example, write `render(value)` using a `(T) -> String` callback
+parameter, including inside a container or tuple. For example, write `render(value)` using a `(T) -> String` callback
 inside `fn format[T]`; adding the builtin marker `Show` alone does not provide
 a callable renderer. A top-level bound on a trait declaring
-`to_string(Self) -> String` can dispatch through its witness. Direct rendering
-shims still expand at their call sites; pass a concrete lambda when a renderer
+`to_string(Self) -> String` can dispatch through its witness. Direct top-level
+rendering shims still expand at their call sites; pass a concrete lambda when a renderer
 is needed as a function value.
 
 `StringSet` key helpers take that callback explicitly:

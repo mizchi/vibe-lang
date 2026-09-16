@@ -116,3 +116,23 @@ test "#2840: wrapping a shim argument does not hide its erased type" {
   let source = "fn shim[T](a: T) -> String { __to_string(a) }\nfn render[T](a: T, c: Bool) -> String { String::concat(\"v=\", shim(if c { a } else { a })) }"
   assert(String::contains(lowering_error(source), "pass an explicit renderer"))
 }
+
+test "#2860: unbounded container elements require renderers during check" {
+  assert_erased("fn render[T](xs: Array[T]) -> String { let text = __to_string(xs); text }")
+  assert_erased("fn render[T](xs: Option[T]) -> String { let text = __to_string(xs); text }")
+  assert_erased("fn render[T](xs: (Int, T)) -> String { let text = __to_string(xs); text }")
+  assert_erased("struct Box[T] { value: T }\nfn render[T](xs: Box[T]) -> String { let text = __to_string(xs); text }")
+}
+
+test "#2860: a local generic shim cannot defer rendering to its callers" {
+  assert_erased("fn main() -> String { let shim = [T](x: T) -> String { __to_string(x) }; shim(1) }")
+  assert_erased("let text = { let shim = [T](x: T) -> String { __to_string(x) }; shim(1) }")
+}
+
+test "#2860: top-level generic shims and concrete local renderers remain valid" {
+  let array_shim = "fn render[T](xs: Array[T]) -> String { \"\\{xs}\" }"
+  assert(check_error(array_shim) == "")
+  assert(lowering_error(array_shim) == "")
+  assert(check_error("let shim = [T](x: T) -> String { __to_string(x) }\nfn main() -> String { shim(1) }") == "")
+  assert(check_error("fn main() -> String { let render = (x: Bool) -> String { __to_string(x) }; render(true) }") == "")
+}

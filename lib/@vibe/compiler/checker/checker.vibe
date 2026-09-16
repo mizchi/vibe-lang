@@ -3155,14 +3155,44 @@ fn interp_erased_formal(ty: Type, s: Subst, env: TypeEnv) -> String {
       }
       found
     },
-    CtNamed(n, _) => if String::starts_with(n, "#hktformal.") {
+    CtNamed(n, args) => if String::starts_with(n, "#hktformal.") {
       String::substring(n, 11, String::length(n))
     } else {
-      ""
+      interp_erased_formal_in(args, s, env)
     },
-    CtApplied(head, _) => interp_erased_formal(head, s, env),
+    CtArray(element) => interp_erased_formal(element, s, env),
+    CtOption(element) => interp_erased_formal(element, s, env),
+    CtTuple(items) => interp_erased_formal_in(items, s, env),
+    CtRecord(fields) => {
+      let mut found = ""
+      let mut i = 0
+      while i < Array::length(fields) && found == "" {
+        let (_, field_type) = Array::get(fields, i)
+        found = interp_erased_formal(field_type, s, env)
+        i = i + 1
+      }
+      found
+    },
+    CtApplied(head, args) => {
+      let found = interp_erased_formal(head, s, env)
+      if found == "" {
+        interp_erased_formal_in(args, s, env)
+      } else {
+        found
+      }
+    },
     _ => ""
   }
+}
+
+fn interp_erased_formal_in(types: Array[Type], s: Subst, env: TypeEnv) -> String {
+  let mut found = ""
+  let mut i = 0
+  while i < Array::length(types) && found == "" {
+    found = interp_erased_formal(Array::get(types, i), s, env)
+    i = i + 1
+  }
+  found
 }
 
 // The entire body must be a direct pass-through. Such calls are expanded at
@@ -10348,7 +10378,13 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
       }
       let (return_provenance, return_c) = fresh_var(c1)
       let return_env = env_bind(annotated_body_env, "__return_provenance__", return_provenance)
-      let body_env = env_bind(return_env, "#interp.shim.body", if interp_is_shim_body(params, body) {
+      let top_level = match env_lookup(env, "#interp.top.fn") {
+        Some(CtBool) => true,
+        _ => false
+      }
+      // Only a direct top-level declaration is expanded by collect_show_shims.
+      // Consume the marker so a nested lambda cannot inherit the exemption.
+      let body_env = env_bind(env_bind(return_env, "#interp.top.fn", CtUnit), "#interp.shim.body", if top_level && interp_is_shim_body(params, body) {
         CtBool
       } else {
         CtUnit
