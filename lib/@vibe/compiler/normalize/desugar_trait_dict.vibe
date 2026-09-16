@@ -5485,35 +5485,38 @@ fn dtd_check_top_interp(arg: Expr, dict_binds: Array[(String, String, String, Ar
 // A callable renderer must accept Self and return String. The method name
 // alone would permit a bound whose to_string accepts an unrelated type.
 fn dtd_show_witness_dict(dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], head: String) -> Option[String] {
-  match find_dict_for_method(dict_binds, head, "to_string") {
-    None => None,
-    Some(dict) => {
-      let mut result = None
-      let mut i = 0
-      while i < Array::length(dict_binds) {
-        let (_, trait_name, pname, _) = Array::get(dict_binds, i)
-        if pname == dict {
-          match lookup_trait_sigs(traits, trait_name) {
-            Some(sigs) => {
-              let mut j = 0
-              while j < Array::length(sigs) {
-                let (method, params, ret) = Array::get(sigs, j)
-                if method == "to_string" && Array::length(params) == 1 {
-                  match (Array::get(params, 0), ret) {
-                    (TyName("Self"), TyName("String")) => result = Some(dict),
-                    _ => ()
-                  }
+  if dtd_formal_is_shadowed(head) {
+    None
+  } else {
+    let mut result = None
+    let mut i = 0
+    while i < Array::length(dict_binds) {
+      let (tp, trait_name, pname, methods) = Array::get(dict_binds, i)
+      if tp == head && str_array_contains(methods, "to_string") {
+        match lookup_trait_sigs(traits, trait_name) {
+          Some(sigs) => {
+            let mut j = 0
+            while j < Array::length(sigs) {
+              let (method, params, ret) = Array::get(sigs, j)
+              if method == "to_string" && Array::length(params) == 1 {
+                match (Array::get(params, 0), ret) {
+                  (TyName("Self"), TyName("String")) => {
+                    result = Some(pname)
+                    i = Array::length(dict_binds)
+                    j = Array::length(sigs)
+                  },
+                  _ => ()
                 }
-                j = j + 1
               }
-            },
-            None => ()
-          }
+              j = j + 1
+            }
+          },
+          None => ()
         }
-        i = i + 1
       }
-      result
+      i = i + 1
     }
+    result
   }
 }
 
@@ -8606,6 +8609,17 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
   let mut i = 0
   while i < Array::length(params) {
     let (pname, ann) = Array::get(params, i)
+    // Generic array/tuple parameters must expand here so their elements can
+    // use witness dictionaries. The later erased codegen path cannot do so.
+    match ann {
+      Some(te) => if ty_mentions_name_in(te, tparams) {
+        let sh = texpr_shape(te)
+        if shape_is_composite(sh) {
+          Array::push(out, (shape_key(pname), sh))
+        }
+      },
+      None => ()
+    }
     // #2745 (Codex, P1 round 20 on #2761): a FUNCTION-VALUED parameter.
     // `[T](a: T, f: (T) -> T) { "\{f(a)}" }` reached leaf inference, which
     // cannot infer a call through a parameter, and printed a 3-digit pointer
@@ -8758,8 +8772,8 @@ fn seed_var_types(params: Array[(String, Option[TypeExpr])], tparams: Array[Stri
           ()
         }
       },
-      // #1445: a tuple ANNOTATION (`t: (Int, P)`) deliberately records
-      // NOTHING here for the RENDER sentinels. Measured: an annotated tuple
+      // #1445: a concrete tuple ANNOTATION (`t: (Int, P)`) records
+      // no RENDER sentinel here. Generic shapes are seeded above. Measured: an annotated tuple
       // parameter already renders structurally, and it renders NESTED tuples
       // too (`(Int, (Int, P))` -> `(5, (7, P { x: 6 }))`) -- it goes through
       // a real TypeExpr, so it beats the flat per-element name list this
@@ -11734,14 +11748,11 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
               throw(dtd_erased_interp_msg(erased))
             }
           } else if !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
-            // The erasure walk may identify a value inside a wrapper. Only an
-            // operand whose own type is this formal can use its dictionary.
-            let direct = match infer_arg_type_name(Array::get(args, 0), struct_sets, var_types, fn_returns) {
-              Some(head) => head == erased,
-              None => false
-            }
+            // A wrapper consumes this witness when its elements are expanded.
+            // The dictionary is applied only to the matching element type by
+            // interp_expand, never to the outer container.
             let witnessed = match dtd_show_witness_dict(dict_binds, traits, erased) {
-              Some(_) => direct,
+              Some(_) => true,
               None => false
             }
             if !witnessed {
@@ -11774,6 +11785,10 @@ fn rewrite_expr(expr: Expr, gens: Array[DictGen], traits: Array[(String, Array[(
           // falling through here would print a pointer decimal.
           if interp_has_repl(expanded) {
             expanded
+          } else if erased != "" && !str_array_contains(dtd_show_shims, Array::get(dtd_show_self_fn, 0)) {
+            // A witness for an element cannot license an opaque wrapper whose
+            // renderer did not expand. Keep the erased fallback unreachable.
+            throw(dtd_erased_interp_msg(erased))
           } else {
             let missing = interp_missing_show_type(Array::get(args, 0), struct_sets, var_types, fn_returns)
             if missing != "" {
