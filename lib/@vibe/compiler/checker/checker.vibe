@@ -101,7 +101,14 @@ import @vibe/compiler/core {
 }
 
 import @vibe/ast {
-  impl_method_owner_head, trait_ref_args, trait_ref_from_key, trait_ref_key, trait_ref_name, type_param_arity, type_param_name
+  impl_encode_name,
+  impl_method_owner_head,
+  trait_ref_args,
+  trait_ref_from_key,
+  trait_ref_key,
+  trait_ref_name,
+  type_param_arity,
+  type_param_name
 }
 
 import @vibe/parser {
@@ -7111,9 +7118,10 @@ export fn resolve_impl_self_field_reads(binding_name: String, val: Expr, vt: Typ
   if sep < 0 || !self_first {
     s
   } else {
-    let owner = impl_method_owner_head(String::substring(binding_name, 0, sep))
+    let owner_full = String::substring(binding_name, 0, sep)
+    let owner = impl_method_owner_head(owner_full)
     let method = String::substring(binding_name, sep + 2, String::length(binding_name))
-    match impl_method_target(env, env, owner, method) {
+    match impl_method_target(env, env, owner, owner_full, method) {
       None => s,
       Some(target) => {
         let self_rep = match subst_apply(s, vt) {
@@ -7164,11 +7172,15 @@ export fn resolve_impl_self_field_reads(binding_name: String, val: Expr, vt: Typ
 /// whose target's constructor is `type_name`; `None` when no trait in scope
 /// declares such a method with an impl for that type. Mirrors
 /// `collect_impl_erased_type_params`' walk, answering the target instead of
-/// the trait's erased parameters.
-fn impl_method_target(chain: TypeEnv, full: TypeEnv, type_name: String, method_name: String) -> Option[Type] {
+/// the trait's erased parameters. `owner_full` is the binding's whole owner
+/// segment (`Box$impl$<trait>$<target key>` for an applied impl), which pins
+/// the trait when two in-scope traits declare the method (Codex on #2864,
+/// round 3): the encoded trait key it carries is the impl's own, so a
+/// candidate impl of another trait is not taken for it.
+fn impl_method_target(chain: TypeEnv, full: TypeEnv, type_name: String, owner_full: String, method_name: String) -> Option[Type] {
   match chain {
     EnvEmpty => None,
-    EnvBind(_, _, rest) => impl_method_target(rest, full, type_name, method_name),
+    EnvBind(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
     // Declared OR inherited: `impl Child for P` may define `base_m`, a method
     // of `trait Child: Base`'s supertrait, and the env then records an impl of
     // `Child` for `P`, not of `Base`. `trait_method_sig_deep` walks the
@@ -7180,42 +7192,68 @@ fn impl_method_target(chain: TypeEnv, full: TypeEnv, type_name: String, method_n
         None => false
       }
       if declares {
-        match env_trait_impl_target_for(full, trait_name, type_name) {
+        match env_trait_impl_target_for(full, trait_name, type_name, owner_full) {
           Some(target) => Some(target),
-          None => impl_method_target(rest, full, type_name, method_name)
+          None => impl_method_target(rest, full, type_name, owner_full, method_name)
         }
       } else {
-        impl_method_target(rest, full, type_name, method_name)
+        impl_method_target(rest, full, type_name, owner_full, method_name)
       }
     },
-    EnvTraitImpl(_, _, rest) => impl_method_target(rest, full, type_name, method_name),
-    EnvTraitImplGen(_, _, _, _, rest) => impl_method_target(rest, full, type_name, method_name),
-    EnvMutCell(_, _, rest) => impl_method_target(rest, full, type_name, method_name),
-    EnvTypeDefs(_, _, rest) => impl_method_target(rest, full, type_name, method_name),
-    EnvCached(_, _, rest) => impl_method_target(rest, full, type_name, method_name),
+    EnvTraitImpl(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvTraitImplGen(_, _, _, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvMutCell(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvTypeDefs(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
+    EnvCached(_, _, rest) => impl_method_target(rest, full, type_name, owner_full, method_name),
     EnvFlat(_) => None
   }
 }
 
-/// `env_has_trait_impl_for`, answering the impl's recorded target type.
-fn env_trait_impl_target_for(env: TypeEnv, trait_name: String, type_name: String) -> Option[Type] {
+/// Does the impl recorded under key `tn` (a bare trait name, or the
+/// `$trait$`-prefixed applied key) belong to the trait `trait_name` names
+/// AND, when the binding's owner carries an `$impl$` segment, to THAT impl?
+/// `EnvTraitDef` holds the trait's head name while an impl holds the key it
+/// was written with -- `impl Iter[Int] for PairIter` records the applied key,
+/// and `trait_defined` compares the same way (measured: comparing the raw key
+/// refused `fixtures/iterator_trait_alias_operations_test.vibe`'s `self.first`
+/// as an open receiver). The owner segment was built by `impl_method_owner`
+/// from the same key, so `impl_encode_name(tn)` between `$impl$` and `$`
+/// identifies the impl exactly; an owner with no segment is a plain impl of a
+/// bare trait for an unapplied target, and the head is all there is to match.
+fn impl_key_matches(tn: String, trait_name: String, owner_full: String) -> Bool {
+  if trait_ref_name(tn) != trait_name {
+    false
+  } else {
+    let seg = String::index_of(owner_full, "$impl$")
+    if seg < 0 {
+      true
+    } else {
+      let encoded = String::concat("$impl$", String::concat(impl_encode_name(tn), "$"))
+      String::index_of(owner_full, encoded) >= 0
+    }
+  }
+}
+
+/// `env_has_trait_impl_for`, answering the impl's recorded target type and
+/// matching the trait by `impl_key_matches`.
+fn env_trait_impl_target_for(env: TypeEnv, trait_name: String, type_name: String, owner_full: String) -> Option[Type] {
   match env {
     EnvEmpty => None,
-    EnvBind(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name),
-    EnvTraitDef(_, _, _, _, rest, _, _) => env_trait_impl_target_for(rest, trait_name, type_name),
-    EnvTraitImpl(tn, target, rest) => if tn == trait_name && type_constructor_name(target) == type_name {
+    EnvBind(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvTraitDef(_, _, _, _, rest, _, _) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvTraitImpl(tn, target, rest) => if impl_key_matches(tn, trait_name, owner_full) && type_constructor_name(target) == type_name {
       Some(target)
     } else {
-      env_trait_impl_target_for(rest, trait_name, type_name)
+      env_trait_impl_target_for(rest, trait_name, type_name, owner_full)
     },
-    EnvTraitImplGen(tn, _, _, target, rest) => if tn == trait_name && type_constructor_name(target) == type_name {
+    EnvTraitImplGen(tn, _, _, target, rest) => if impl_key_matches(tn, trait_name, owner_full) && type_constructor_name(target) == type_name {
       Some(target)
     } else {
-      env_trait_impl_target_for(rest, trait_name, type_name)
+      env_trait_impl_target_for(rest, trait_name, type_name, owner_full)
     },
-    EnvMutCell(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name),
-    EnvTypeDefs(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name),
-    EnvCached(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name),
+    EnvMutCell(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvTypeDefs(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
+    EnvCached(_, _, rest) => env_trait_impl_target_for(rest, trait_name, type_name, owner_full),
     EnvFlat(_) => None
   }
 }
@@ -7452,28 +7490,54 @@ fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s1: Subs
       // A TYPE PARAMETER never takes that spelling inside its own body
       // (it is a variable or the rigid spelling above), which is what
       // lets the two be told apart here.
-      None => if String::starts_with(gname, "#hktformal.") {
-        Array::push(errors, String::concat(formal_field_access_message(String::substring(gname, 11, String::length(gname)), field), if field_off >= 0 {
-          off_marker_len(field_off, String::length(field))
+      None => {
+        // Codex on #2864 (round 3): an APPLIED formal, `xs: F[A]`, is the
+        // `#hkt` application `CtNamed("#hkt", [head, args..])` whose head is
+        // the rigid `#hktformal.F` (or a variable standing for `F` when the
+        // binder is bounded). Measured on the stage2 from 825cca8,
+        // `fn read[F, A](xs: F[A]) -> Int { xs.payload }` applied to `[7]`
+        // compiled clean and answered 30064771306 -- an array header read
+        // through `Crate`'s offset. The head is the formal, so the read is
+        // refused naming it.
+        let applied_formal = if is_hkt_app(resolved) {
+          match Array::get(gargs, 0) {
+            CtNamed(hname, _) => if String::starts_with(hname, "#hktformal.") {
+              String::substring(hname, 11, String::length(hname))
+            } else {
+              ""
+            },
+            CtVar(hvid) => open_formal_name_for_var(hvid, s1),
+            _ => ""
+          }
         } else {
-          off_marker(dot_off)
-        }))
-        CtUnknown
-      } else {
-        let owned_arity = match compiler_owned_type_arity(gname) {
-          Some(n) => n,
-          None => 0 - 1
+          ""
         }
-        if owned_arity >= 1 && Array::length(gargs) == owned_arity {
-          Array::push(errors, String::concat(builtin_field_access_message(gname, field), if field_off >= 0 {
+        if String::starts_with(gname, "#hktformal.") {
+          Array::push(errors, String::concat(formal_field_access_message(String::substring(gname, 11, String::length(gname)), field), if field_off >= 0 {
             off_marker_len(field_off, String::length(field))
           } else {
             off_marker(dot_off)
           }))
+          CtUnknown
+        } else if applied_formal != "" {
+          Array::push(errors, String::concat(formal_field_access_message(applied_formal, field), field_read_marker(field, field_off, dot_off)))
+          CtUnknown
         } else {
-          ()
+          let owned_arity = match compiler_owned_type_arity(gname) {
+            Some(n) => n,
+            None => 0 - 1
+          }
+          if owned_arity >= 1 && Array::length(gargs) == owned_arity {
+            Array::push(errors, String::concat(builtin_field_access_message(gname, field), if field_off >= 0 {
+              off_marker_len(field_off, String::length(field))
+            } else {
+              off_marker(dot_off)
+            }))
+          } else {
+            ()
+          }
+          CtUnknown
         }
-        CtUnknown
       }
     },
     // `t.N` tuple projection: the index must be in range, else it reads an
@@ -7577,8 +7641,23 @@ fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s1: Subs
     // and died in codegen with an unlocated `unknown struct field`. One
     // arm closes both halves.
     other => {
+      // Codex on #2864 (round 3): an APPLIED formal -- `xs: F[A]` -- arrives
+      // as `CtApplied(head, args)` whose head is the rigid `#hktformal.F` or a
+      // variable standing for `F`. Measured on the stage2 from 825cca8,
+      // `fn read[F, A](xs: F[A]) -> Int { xs.payload }` applied to `[7]`
+      // compiled clean and answered 30064771306. The head is the formal, so
+      // the read is refused naming it.
       let formal_receiver = match other {
         CtVar(vid) => open_formal_name_for_var(vid, s1),
+        CtApplied(head, _) => match head {
+          CtVar(hvid) => open_formal_name_for_var(hvid, s1),
+          CtNamed(hname, _) => if String::starts_with(hname, "#hktformal.") {
+            String::substring(hname, 11, String::length(hname))
+          } else {
+            ""
+          },
+          _ => ""
+        },
         _ => ""
       }
       let enum_receiver = match other {

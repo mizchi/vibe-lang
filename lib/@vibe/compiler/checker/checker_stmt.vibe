@@ -6376,11 +6376,14 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
     }
   }
   let (env, final_s0, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false, true)
-  check_program_bounds(env, final_s0, empty_defs, frozen_errors)
   // #2848: field reads whose receiver was still unsolved at every function
   // end are judged once more under the final substitution, which comes back
-  // extended by the resolved reads' result variables.
+  // extended by the resolved reads' result variables -- BEFORE the bound
+  // check, so a bound attached to a read's result is validated against the
+  // field's real type rather than skipped as an unresolved variable (Codex on
+  // #2864, round 3).
   let final_s = resolve_deferred_field_reads(final_s0, empty_defs, frozen_errors, false)
+  check_program_bounds(env, final_s, empty_defs, frozen_errors)
   // #1858: a bounded generic whose body calls `T::m` but whose signature has
   // no witness-carrying parameter would sail through checking and ICE in
   // codegen (`T::m reached code generation unresolved`) — reject it here with
@@ -8089,7 +8092,13 @@ export fn check_program_type_table(stmts: Array[Stmt]) -> (Array[(Int, Type)], S
   reset_return_provenance_index()
   reset_eq_formal_vars()
   handle {
-    let (_, final_s, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+    let (_, final_s0, _) = check_stmts(stmts, 0, seeded_env, empty_defs, SubstEmpty, 0, frozen_errors, tytab)
+    // #2848 (Codex on #2864, round 3): a deferred field read is typed by a
+    // result variable that the production check resolves at the end; hover
+    // reads this table through the returned substitution, so resolve here too
+    // or `p.value` under `let f: (Holder) -> Int = (p) -> { p.value }` would
+    // show the variable instead of `Int`.
+    let final_s = resolve_deferred_field_reads(final_s0, empty_defs, frozen_errors, false)
     (tytab, final_s)
   } with { Exception::Throw(_) => (tytab, SubstEmpty) }
 }
@@ -8158,9 +8167,9 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // Selected import projection carries trait definitions and impls into
       // this environment, so user-trait bounds are checked here with the same
       // rule as the standalone path.
-      check_program_bounds(env, final_s0, empty_defs, frozen_errors)
-      // #2848: see the standalone path.
+      // #2848: see the standalone path -- resolved before the bound check.
       let final_s = resolve_deferred_field_reads(final_s0, empty_defs, frozen_errors, false)
+      check_program_bounds(env, final_s, empty_defs, frozen_errors)
       // #1858: same witness-carrier validation as the standalone path — the
       // projected env supplies imported traits' method tables, so a module
       // using an imported method-bearing trait (e.g. @vibe/core's Default)

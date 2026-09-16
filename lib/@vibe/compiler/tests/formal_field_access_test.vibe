@@ -89,6 +89,29 @@ test "2848: a rigid HKT-related formal is refused by its source spelling" {
   assert(!String::contains(msg, "#hktformal"))
 }
 
+test "2848: an APPLIED formal receiver is refused naming its head" {
+  // Codex round 3 (P1): `xs: F[A]` is `CtApplied(#hktformal.F, [A])`.
+  let src = "struct Crate {\n  payload: Int\n}\nfn read[F, A](xs: F[A]) -> Int {\n  xs.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, formal_message("F", "payload")))
+}
+
+test "2848: an impl of an APPLIED trait is still an impl method" {
+  // The impl records the applied key (`$trait$..Iter..Int..`) while the trait
+  // def holds the head `Iter`; provenance compares heads the way
+  // `trait_defined` does (measured: the raw-key comparison refused
+  // `fixtures/iterator_trait_alias_operations_test.vibe`).
+  let src = "trait Iter[T] {\n  iter_length(Self) -> Int;\n  iter_get(Self, Int) -> T\n}\nstruct PairIter {\n  first: Int;\n  second: Int\n}\nimpl Iter[Int] for PairIter {\n  iter_length(_self) -> Int {\n    2\n  }\n  iter_get(self, index) -> Int {\n    if index == 0 {\n      self.first\n    } else {\n      self.second\n    }\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: two traits declaring the same method pick their own impl's target" {
+  // Codex round 3 (P2): `First::get` on `Box[Int]` must be checked against
+  // `Box[Int]`, not `Second`'s `Box[String]`, so its `-> Int` body is right.
+  let src = "struct Box[T] {\n  value: T\n}\ntrait First[T] {\n  get(Self) -> T\n}\ntrait Second[T] {\n  get(Self) -> T\n}\nimpl Second[String] for Box[String] {\n  get(self) -> String {\n    self.value\n  }\n}\nimpl First[Int] for Box[Int] {\n  get(self) -> Int {\n    self.value\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
 test "2848: a nested generic lambda's own formal is refused" {
   let src = "struct Crate {\n  payload: Int\n}\nfn outer() -> Int {\n  let inner = [U](m: U) -> Int {\n    m.payload\n  }\n  inner(7)\n}\nfn main { () }\n"
   let msg = first_check_error(src)
