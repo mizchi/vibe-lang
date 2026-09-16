@@ -109,6 +109,7 @@ import ./checker.vibe {
   reset_eq_formal_vars,
   reset_return_provenance_index,
   resolve_deferred_field_reads,
+  resolve_impl_self_field_reads,
   resolve_trait_bound_self_reference,
   trait_erased_type_param_env,
   trait_reference_display,
@@ -3010,10 +3011,14 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // own copy of the predicate, so a top-level `let g2 = g` kept
             // quantifying a captured slot after both local arms stopped --
             // three places for one rule is how they drift apart.
-            let gen = let_generalize(val, vt, env, ns0, None)
+            // #2848: an impl method's `self` is unannotated here and would be
+            // quantified below; resolve its field reads against the impl's
+            // recorded target first (provenance from the env, not the name).
+            let ns_self = resolve_impl_self_field_reads(name, val, vt, ns0, env, defs, errors)
+            let gen = let_generalize(val, vt, env, ns_self, None)
             // #2848: see the ELet arm in checker.vibe.
-            refuse_generalized_field_reads(gen, ns0, errors, name, defs)
-            (ns0, gen)
+            refuse_generalized_field_reads(gen, ns_self, errors)
+            (ns_self, gen)
           }
         }
         let env1 = bind_function_dependency_contracts(env_bind(env, name, t), name, val)
@@ -6370,11 +6375,12 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
       None => None
     }
   }
-  let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false, true)
-  check_program_bounds(env, final_s, empty_defs, frozen_errors)
+  let (env, final_s0, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false, true)
+  check_program_bounds(env, final_s0, empty_defs, frozen_errors)
   // #2848: field reads whose receiver was still unsolved at every function
-  // end are judged once more under the final substitution.
-  resolve_deferred_field_reads(final_s, empty_defs, frozen_errors, false)
+  // end are judged once more under the final substitution, which comes back
+  // extended by the resolved reads' result variables.
+  let final_s = resolve_deferred_field_reads(final_s0, empty_defs, frozen_errors, false)
   // #1858: a bounded generic whose body calls `T::m` but whose signature has
   // no witness-carrying parameter would sail through checking and ICE in
   // codegen (`T::m reached code generation unresolved`) — reject it here with
@@ -8148,13 +8154,13 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
           None => None
         }
       }
-      let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, true)
+      let (env, final_s0, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, local_defs_start, SubstEmpty, seed_next_c, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, imports_already_projected, true)
       // Selected import projection carries trait definitions and impls into
       // this environment, so user-trait bounds are checked here with the same
       // rule as the standalone path.
-      check_program_bounds(env, final_s, empty_defs, frozen_errors)
+      check_program_bounds(env, final_s0, empty_defs, frozen_errors)
       // #2848: see the standalone path.
-      resolve_deferred_field_reads(final_s, empty_defs, frozen_errors, false)
+      let final_s = resolve_deferred_field_reads(final_s0, empty_defs, frozen_errors, false)
       // #1858: same witness-carrier validation as the standalone path — the
       // projected env supplies imported traits' method tables, so a module
       // using an imported method-bearing trait (e.g. @vibe/core's Default)

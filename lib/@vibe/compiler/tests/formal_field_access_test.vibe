@@ -159,6 +159,48 @@ test "2848: an impl method's `self` reading a field the target lacks is refused 
   assert(String::contains(msg, "unknown field 'weight' on struct Crate"))
 }
 
+test "2848: an alias of an impl method's `self` is the same receiver" {
+  // Codex round 2 (P2): the receiver is identified by its type variable, not
+  // by the spelling `self`, so `let value = self` keeps the impl treatment.
+  let src = "struct Crate {\n  payload: Int\n}\ntrait Weigh {\n  weigh(Self) -> Int\n}\nimpl Weigh for Crate {\n  weigh(self) -> Int {\n    let value = self\n    value.payload\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: an impl on an ENUM target meets the enum refusal, not a fabricated struct" {
+  // Codex round 2 (P1): the receiver's type is the impl's RECORDED target,
+  // whatever its kind.
+  let src = "struct Crate {\n  payload: Int\n}\nenum Parcel {\n  Empty;\n  Full(Int)\n}\ntrait Weigh {\n  weigh(Self) -> Int\n}\nimpl Weigh for Parcel {\n  weigh(self) -> Int {\n    self.payload\n  }\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "match on Parcel to read a variant's payload"))
+}
+
+test "2848: a qualified free function cannot leave `self` unannotated at all" {
+  // Codex round 2 (P1) asked that `fn Crate::read(self) -> Int { self.payload }`
+  // not be mistaken for an impl method. The impl treatment is keyed on
+  // PROVENANCE (a trait in scope declaring the method, with an impl for the
+  // owner), not on the binding's name -- and the spelling itself is refused
+  // upstream, measured on the seed and on this checker alike, so no qualified
+  // free function can reach the deferred pass with an unannotated `self`.
+  let src = "struct Crate {\n  payload: Int\n}\nfn Crate::read(self) -> Int {\n  self.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "fn parameter 'self' requires a type annotation"))
+}
+
+test "2848: a deferred read's result type reaches its consumers" {
+  // Codex round 2 (P1): the read used to type as `CtUnknown`, so a lambda
+  // returning `p.v` (an `Int`) was accepted where `(Holder) -> String` was
+  // expected. The read now types as a result variable, and resolving the
+  // receiver unifies it with the field's type -- here against `String`.
+  let src = "struct Holder {\n  v: Int\n}\nfn apply(h: Holder, f: (Holder) -> String) -> String {\n  f(h)\n}\nfn go(h: Holder) -> String {\n  apply(h, (p) -> {\n    p.v\n  })\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "field access `.v` has type Int once its receiver is known, but the value was already used as String"))
+}
+
+test "2848: a deferred read whose result type agrees with its consumer is accepted" {
+  let src = "struct Holder {\n  v: Int\n}\nfn apply(h: Holder, f: (Holder) -> Int) -> Int {\n  f(h)\n}\nfn go(h: Holder) -> Int {\n  apply(h, (p) -> {\n    p.v\n  })\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
 //# Controls (the refusal must not widen)
 
 test "2848: a generic struct's field read in a generic body is accepted" {
