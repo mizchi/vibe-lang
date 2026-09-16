@@ -142,6 +142,17 @@ expect_launcher_fail() {
   local work="$TMP_ROOT/case$case_no" mutant="$TMP_ROOT/launcher$case_no" log="$TMP_ROOT/case$case_no.log"
   rm -rf "$work"
   cp -R "$MASTER" "$work"
+  # The mutation must have something to REMOVE. `grep -qF "$gone" "$mutant"`
+  # below answers "the text is gone", and text that was never there is also
+  # gone -- so a case whose target has since moved out of the launcher keeps
+  # reporting a landed mutation while mutating nothing. That is how the three
+  # `--component` cases survived the argv move: their sed scripts address the
+  # `compile|build` arm, which now lives in lib/@vibe/cli, and deleting an
+  # absent line "applied" every time. Assert the target EXISTS first.
+  if ! grep -qF -- "$gone" "$ROOT/runtime/vibe"; then
+    echo "component-lazy self-test [$label]: the mutation targets text the launcher does not contain ('$gone') -- it moved, so this case proves nothing" >&2
+    exit 1
+  fi
   sed "$sed_script" "$ROOT/runtime/vibe" > "$mutant"
   # The mutation must have LANDED. An edit that matches nothing passes while
   # proving nothing -- the failure mode #2248 records twice.
