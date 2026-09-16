@@ -1,0 +1,266 @@
+// #2848: a field read whose receiver is typed by a TYPE PARAMETER is refused,
+// with a message that leads with the edit. Before the fix the read typed as
+// `CtUnknown` and codegen resolved the field by SPELLING against any struct
+// declaring it: `fn read[T](m: T) -> Int { m.payload }` applied to `7` answered
+// `0` -- slot 0 of a tagged integer read through an unrelated struct's offset
+// -- and with no struct declaring the name the same program was clean in
+// `vibe check` and died in the build with `unknown struct field`.
+//
+// The refusals are asserted here through `check_program` on a source string,
+// so the MESSAGE is pinned and not merely the verdict, and so the nested /
+// captured / rigid spellings are each named. The executable fixtures in
+// `fixtures/typecheck/err_type_formal_field_access*.vibe` pin the same
+// refusals on both compile lanes; the controls below pin the ANSWERS of the
+// adjacent shapes a refusal written one arm too wide would take with it.
+
+import @vibe/compiler/checker {
+  check_program
+}
+
+import @vibe/compiler/syntax {
+  lex, parse_program
+}
+
+//# Helpers
+
+fn first_check_error(source: String) -> String {
+  handle {
+    let _ = check_program(parse_program(lex(source)))
+    ""
+  } with { Exception::Throw(msg) => msg }
+}
+
+fn formal_message(tparam: String, field: String) -> String {
+  String::concat("write the struct that declares `", String::concat(field, String::concat("` in place of the type parameter `", String::concat(tparam, String::concat("`; field access `.", String::concat(field, String::concat("` needs a struct, and a bound on `", String::concat(tparam, "` cannot promise one"))))))))
+}
+
+//# Controls (runtime answers)
+
+struct Crate {
+  payload: Int
+}
+
+struct Gbox[T] {
+  payload: T
+}
+
+fn get_payload[T](b: Gbox[T]) -> T {
+  b.payload
+}
+
+fn apply_crate(c: Crate, f: (Crate) -> Int) -> Int {
+  f(c)
+}
+
+fn through_lambda(c: Crate) -> Int {
+  apply_crate(c, (p) -> {
+    p.payload
+  })
+}
+
+//# Refusals
+
+test "2848: a field read on a plain formal is refused, naming the binder" {
+  let src = "struct Crate {\n  payload: Int\n}\nfn read[T](m: T) -> Int {\n  m.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, formal_message("T", "payload")))
+}
+
+test "2848: refused whether or not some struct spells the field" {
+  // The first half was silently wrong (read through `Crate`'s offset); the
+  // second half was check-clean and failed only in the build. Same message.
+  let src = "fn read[T](m: T) -> Int {\n  m.v\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, formal_message("T", "v")))
+}
+
+test "2848: a trait bound does not rescue the read" {
+  let src = "struct Crate {\n  payload: Int\n}\nfn read[T: Eq](m: T) -> Int {\n  m.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, formal_message("T", "payload")))
+}
+
+test "2848: a rigid HKT-related formal is refused by its source spelling" {
+  // `A` of `F[A]` is bound as `CtNamed("#hktformal.A", [])`, which lands in
+  // the `CtNamed` arm rather than the `CtVar` one. The message must say `A`.
+  let src = "struct Crate {\n  payload: Int\n}\nfn read[F, A](xs: F[A], a: A) -> Int {\n  a.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, formal_message("A", "payload")))
+  assert(!String::contains(msg, "#hktformal"))
+}
+
+test "2848: an APPLIED formal receiver is refused naming its head" {
+  // Codex round 3 (P1): `xs: F[A]` is `CtApplied(#hktformal.F, [A])`.
+  let src = "struct Crate {\n  payload: Int\n}\nfn read[F, A](xs: F[A]) -> Int {\n  xs.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, formal_message("F", "payload")))
+}
+
+test "2848: an impl of an APPLIED trait is still an impl method" {
+  // The impl records the applied key (`$trait$..Iter..Int..`) while the trait
+  // def holds the head `Iter`; provenance compares heads the way
+  // `trait_defined` does (measured: the raw-key comparison refused
+  // `fixtures/iterator_trait_alias_operations_test.vibe`).
+  let src = "trait Iter[T] {\n  iter_length(Self) -> Int;\n  iter_get(Self, Int) -> T\n}\nstruct PairIter {\n  first: Int;\n  second: Int\n}\nimpl Iter[Int] for PairIter {\n  iter_length(_self) -> Int {\n    2\n  }\n  iter_get(self, index) -> Int {\n    if index == 0 {\n      self.first\n    } else {\n      self.second\n    }\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: two traits declaring the same method pick their own impl's target" {
+  // Codex round 3 (P2): `First::get` on `Box[Int]` must be checked against
+  // `Box[Int]`, not `Second`'s `Box[String]`, so its `-> Int` body is right.
+  let src = "struct Box[T] {\n  value: T\n}\ntrait First[T] {\n  get(Self) -> T\n}\ntrait Second[T] {\n  get(Self) -> T\n}\nimpl Second[String] for Box[String] {\n  get(self) -> String {\n    self.value\n  }\n}\nimpl First[Int] for Box[Int] {\n  get(self) -> Int {\n    self.value\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: a nested generic lambda's own formal is refused" {
+  let src = "struct Crate {\n  payload: Int\n}\nfn outer() -> Int {\n  let inner = [U](m: U) -> Int {\n    m.payload\n  }\n  inner(7)\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, formal_message("U", "payload")))
+}
+
+test "2848: a formal captured by a plain closure is still the enclosing binder's" {
+  let src = "struct Crate {\n  payload: Int\n}\nfn read[T](m: T) -> Int {\n  let f = () -> {\n    m.payload\n  }\n  f()\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, formal_message("T", "payload")))
+}
+
+test "2848: a local rebinding of the formal is refused too" {
+  // `let y = m` gives `y` the same variable, or one unified with it in either
+  // direction; the lookup follows the representative both ways.
+  let src = "struct Crate {\n  payload: Int\n}\nfn read[T](m: T) -> Int {\n  let y = m\n  y.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, formal_message("T", "payload")))
+}
+
+fn open_message(recv: String, field: String) -> String {
+  String::concat("annotate `", String::concat(recv, String::concat("` with the struct that declares `", String::concat(field, String::concat("`; field access `.", String::concat(field, String::concat("` needs a struct, and this `let`-bound function leaves `", String::concat(recv, "`'s type open for every caller"))))))))
+}
+
+test "2848: a formal reached through a let-bound lambda's parameter is refused" {
+  // Codex on #2864. At the read `p` is a fresh variable, and `let f = ...`
+  // GENERALIZES it, so `f(m)` instantiates a copy and the recorded variable
+  // never resolves. The `let` refuses the read as it quantifies, naming `p`.
+  let src = "struct Crate {\n  payload: Int\n}\nfn read[T](m: T) -> Int {\n  let f = (p) -> {\n    p.payload\n  }\n  f(m)\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, open_message("p", "payload")))
+}
+
+test "2848: a let-bound lambda reading a field on its parameter is refused without any formal in scope" {
+  let src = "struct Crate {\n  payload: Int\n}\nfn read(m: Option[Int]) -> Int {\n  let f = (p) -> {\n    p.payload\n  }\n  f(m)\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, open_message("p", "payload")))
+}
+
+test "2848: a top-level let-bound lambda is refused the same way" {
+  let src = "struct Crate {\n  payload: Int\n}\nlet f = (p) -> {\n  p.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, open_message("p", "payload")))
+}
+
+test "2848: a lambda parameter solved late by a call gets the concrete verdict" {
+  // Argument position: `p` is not quantified, and `apply(m, ...)` unifies it
+  // with `Option[Int]` inside the body. The read is recorded while `p` is
+  // unsolved and judged again at the end of the body with the same arms.
+  let src = "struct Crate {\n  payload: Int\n}\nfn apply(m: Option[Int], f: (Option[Int]) -> Int) -> Int {\n  f(m)\n}\nfn read(m: Option[Int]) -> Int {\n  apply(m, (p) -> {\n    p.payload\n  })\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(msg != "")
+  assert(String::contains(msg, "`.payload`"))
+}
+
+test "2848: an impl method's `self` is judged against the impl target, not refused as open" {
+  // `impl Tr for Crate { m(self) { self.payload } }` is lowered to
+  // `let Crate::m = (self) -> ..` with `self` unannotated, so `self` is
+  // quantified like any parameter. The binding's name says what it is, and
+  // the read is judged against `Crate`: found, so accepted.
+  let src = "struct Crate {\n  payload: Int\n}\ntrait Weigh {\n  weigh(Self) -> Int\n}\nimpl Weigh for Crate {\n  weigh(self) -> Int {\n    self.payload\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: an impl method's `self` reading a field the target lacks is refused naming the target" {
+  let src = "struct Crate {\n  payload: Int\n}\nstruct Other {\n  weight: Int\n}\ntrait Weigh {\n  weigh(Self) -> Int\n}\nimpl Weigh for Crate {\n  weigh(self) -> Int {\n    self.weight\n  }\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "unknown field 'weight' on struct Crate"))
+}
+
+test "2848: an alias of an impl method's `self` is the same receiver" {
+  // Codex round 2 (P2): the receiver is identified by its type variable, not
+  // by the spelling `self`, so `let value = self` keeps the impl treatment.
+  let src = "struct Crate {\n  payload: Int\n}\ntrait Weigh {\n  weigh(Self) -> Int\n}\nimpl Weigh for Crate {\n  weigh(self) -> Int {\n    let value = self\n    value.payload\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: an impl on an ENUM target meets the enum refusal, not a fabricated struct" {
+  // Codex round 2 (P1): the receiver's type is the impl's RECORDED target,
+  // whatever its kind.
+  let src = "struct Crate {\n  payload: Int\n}\nenum Parcel {\n  Empty;\n  Full(Int)\n}\ntrait Weigh {\n  weigh(Self) -> Int\n}\nimpl Weigh for Parcel {\n  weigh(self) -> Int {\n    self.payload\n  }\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "match on Parcel to read a variant's payload"))
+}
+
+test "2848: a qualified free function cannot leave `self` unannotated at all" {
+  // Codex round 2 (P1) asked that `fn Crate::read(self) -> Int { self.payload }`
+  // not be mistaken for an impl method. The impl treatment is keyed on
+  // PROVENANCE (a trait in scope declaring the method, with an impl for the
+  // owner), not on the binding's name -- and the spelling itself is refused
+  // upstream, measured on the seed and on this checker alike, so no qualified
+  // free function can reach the deferred pass with an unannotated `self`.
+  let src = "struct Crate {\n  payload: Int\n}\nfn Crate::read(self) -> Int {\n  self.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "fn parameter 'self' requires a type annotation"))
+}
+
+test "2848: a deferred read's result type reaches its consumers" {
+  // Codex round 2 (P1): the read used to type as `CtUnknown`, so a lambda
+  // returning `p.v` (an `Int`) was accepted where `(Holder) -> String` was
+  // expected. The read now types as a result variable, and resolving the
+  // receiver unifies it with the field's type -- here against `String`.
+  let src = "struct Holder {\n  v: Int\n}\nfn apply(h: Holder, f: (Holder) -> String) -> String {\n  f(h)\n}\nfn go(h: Holder) -> String {\n  apply(h, (p) -> {\n    p.v\n  })\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, "field access `.v` has type Int once its receiver is known, but the value was already used as String"))
+}
+
+test "2848: a supertrait's method defined in a subtrait impl is still an impl method" {
+  // `base_m` is declared on `Base`; the env records an impl of `Child` for
+  // `P`. Provenance walks the supertraits, so `self.x` is judged against `P`.
+  let src = "trait Base {\n  base_m(Self) -> Int\n}\ntrait Child: Base {\n  child_m(Self) -> Int\n}\nstruct P {\n  x: Int\n}\nimpl Child for P {\n  base_m(self) -> Int {\n    self.x\n  }\n  child_m(self) -> Int {\n    1\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: a result fixed to a trait's erased type parameter is tolerated" {
+  // `T` of `Iterator[T]` reaches the return annotation as an unresolved
+  // nominal that relaxes to `CtUnknown`; the read used to absorb it as
+  // `CtUnknown` and must keep doing so rather than report `Int` vs `T`.
+  let src = "trait Iterator[T] {\n  next(Self) -> Option[(T, Self)]\n}\nstruct Counter {\n  upto: Int;\n  at: Int\n}\nimpl Iterator for Counter {\n  next(self) -> Option[(T, Counter)] {\n    if self.at < self.upto {\n      Some((self.at, Counter::{ upto: self.upto, at: self.at + 1 }))\n    } else {\n      None\n    }\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: a deferred read whose result type agrees with its consumer is accepted" {
+  let src = "struct Holder {\n  v: Int\n}\nfn apply(h: Holder, f: (Holder) -> Int) -> Int {\n  f(h)\n}\nfn go(h: Holder) -> Int {\n  apply(h, (p) -> {\n    p.v\n  })\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+//# Controls (the refusal must not widen)
+
+test "2848: a generic struct's field read in a generic body is accepted" {
+  let src = "struct Gbox[T] {\n  payload: T\n}\nfn get[T](b: Gbox[T]) -> T {\n  b.payload\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: an unannotated lambda parameter in argument position is not a formal" {
+  // Its type is a fresh inference variable no `[T]` header recorded, so the
+  // identity-keyed lookup answers nothing; the call unifies it with `Crate`
+  // inside the body and the deferred judgement finds the field.
+  let src = "struct Crate {\n  payload: Int\n}\nfn apply(c: Crate, f: (Crate) -> Int) -> Int {\n  f(c)\n}\nfn go(c: Crate) -> Int {\n  apply(c, (p) -> {\n    p.payload\n  })\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: a formal passed through without a field read is accepted" {
+  let src = "fn same[T](m: T) -> T {\n  m\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: the accepted shapes still answer" {
+  inspect(get_payload(Gbox::{ payload: 5 }), content = "5")
+  inspect(String::length(get_payload(Gbox::{ payload: "abc" })), content = "3")
+  inspect(through_lambda(Crate::{ payload: 8 }), content = "8")
+}
