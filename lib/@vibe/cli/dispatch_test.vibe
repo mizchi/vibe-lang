@@ -75,7 +75,7 @@ test "profile command rejects an --out that aliases the source" {
     ])
     "OK"
   } with { Exception::Throw(e) => e }
-  assert(result == "profile: --out must not alias the source")
+  assert(result == "profile: --out must not resolve to the source file")
 }
 
 test "user run plan keeps arguments after --" {
@@ -1359,4 +1359,50 @@ test "user dispatch run plans a versioned host action" {
   let plan = Fs::read_file(plan_path)
   assert(String::starts_with(plan, "vibe-host-action-v1\nrun-guest\n"))
   assert(String::contains(plan, src_path))
+}
+
+/// `vibe check --profile-tsv P --profile-callstack Q` writes both sidecars,
+/// timed with `Profiler::now_us`: a `total` row and a `check` row carrying a
+/// positive microsecond count (the shape scripts/test_cli_core.sh reads). The
+/// check itself still answers the file.
+test "user check writes the requested profiling sidecars" {
+  let src = "/tmp/vibe_user_dispatch_check_profile.vibe"
+  let tsv = "/tmp/vibe_user_dispatch_check_profile.tsv"
+  let callstack = "/tmp/vibe_user_dispatch_check_callstack.tsv"
+  Fs::write_bytes(src, string_to_bytes("let answer = () -> Int { 40 + 2 }\n"))
+  let status = selfhost_cli_user_dispatch_args([
+    "check",
+    "--profile-tsv",
+    tsv,
+    "--profile-callstack",
+    callstack,
+    src
+  ])
+  assert(status == 0)
+  let profile = Fs::read_file(tsv)
+  assert(String::starts_with(profile, "stage\telapsed_ms\telapsed_us\n"))
+  assert(String::contains(profile, "\ncheck\t"))
+  assert(String::contains(profile, "\ntotal\t"))
+  assert(!String::contains(profile, "\ntotal\t0\t0\n"))
+  let stacks = Fs::read_file(callstack)
+  assert(String::starts_with(stacks, "stage\telapsed_ms\telapsed_us\n"))
+  assert(String::contains(stacks, "\ncheck\t"))
+  assert(!String::contains(stacks, "\ncheck\t0\t0\n"))
+}
+
+/// A test file that does not compile is one FAILED record, not the end of the
+/// suite: the plan still lists the file that compiled, and the failed one with
+/// an EMPTY wasm path, which the launcher reports as `FAIL (compile)`.
+test "user test plan isolates a compile failure to its file" {
+  let bad = "/tmp/vibe_user_dispatch_isolation_bad_test.vibe"
+  let good = "/tmp/vibe_user_dispatch_isolation_good_test.vibe"
+  let plan_path = "/tmp/vibe_user_dispatch_isolation_plan.txt"
+  Fs::write_bytes(bad, string_to_bytes("test \"bad\" {\n  let a: Int = \"x\"\n  assert(a == 1)\n}\n"))
+  Fs::write_bytes(good, string_to_bytes("test \"good\" {\n  assert(1 == 1)\n}\n"))
+  let status = selfhost_cli_test_plan_args(["test", bad, good], plan_path)
+  assert(status == 0)
+  let plan = Fs::read_file(plan_path)
+  assert(String::contains(plan, String::concat(bad, "\t\n")))
+  assert(String::contains(plan, String::concat(good, "\t")))
+  assert(!String::contains(plan, String::concat(good, "\t\n")))
 }

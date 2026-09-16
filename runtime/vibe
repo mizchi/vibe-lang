@@ -241,7 +241,135 @@ host_run_guest() {
   [ -n "$atop" ] && envp+=("VIBE_ALLOC_SITE_TOP=$atop")
   [ -n "$gprof" ] && envp+=("VIBE_GUEST_PROFILE=$gprof" "VIBE_GUEST_PROFILE_INTERVAL_US=$gint")
   [ -s "$wasm.funcmap" ] && envp+=("VIBE_FUNCMAP=$wasm.funcmap")
-  ( cd "$INVOKE_DIR" && exec env ${envp[@]+"${envp[@]}"} "$RUNNER" "$wasm" "$@" )
+  # Runtime traps point at the SOURCE LINE: the runner's stderr goes through
+  # annotate_run_stream, which appends ` (<basename>:<line>)` to each frame
+  # naming a funcmap function (`<unknown>!boom (prog.vibex:1)`,
+  # scripts/test_vibe_trace.sh). A FIFO plus a bash `read` loop, because the
+  # annotator must be line-buffered on INPUT: a block-buffered filter would
+  # hold the runner's flushed "breakpoint hit:" until the program continued,
+  # which is the deadlock `--break` cannot afford. stdout and the exit status
+  # pass through unchanged.
+  local status=0 rerr_fifo annot_pid
+  rerr_fifo="$(mktemp -u -t vibe-run-err-XXXXXX)"; mkfifo "$rerr_fifo"
+  annotate_run_stream "$wasm.funcmap" "$(basename "$src")" < "$rerr_fifo" >&2 &
+  annot_pid=$!
+  ( cd "$INVOKE_DIR" && exec env ${envp[@]+"${envp[@]}"} "$RUNNER" "$wasm" "$@" ) 2>"$rerr_fifo" || status=$?
+  wait "$annot_pid" 2>/dev/null || true
+  rm -f "$rerr_fifo"
+  return "$status"
+}
+# Appends ` (<base>:<line>)` to every stderr line whose frame names a function
+# in the `.funcmap` sidecar (`name<TAB>declLine` per line): the `trace: ` and
+# `  at ` frames of a trace dump and the `<unknown>!name` frames of a wasmtime
+# backtrace. Lookup is one `_fmln_<name>` variable per entry (bash 3.2 has no
+# associative arrays); names are validated to `[A-Za-z_][A-Za-z0-9_]*` before
+# they reach `eval`. Runs in the backgrounded subshell host_run_guest starts,
+# so the variables never leak into the launcher's scope.
+#   $1 = funcmap path ("" / missing => pass input through unannotated)
+#   $2 = entry source basename
+annotate_run_stream() {
+  local fm="$1" base="$2"
+  local _nm _ln line rest name varname hit tab
+  tab="$(printf '\t')"
+  if [ -n "$fm" ] && [ -s "$fm" ]; then
+    while IFS="$tab" read -r _nm _ln || [ -n "$_nm" ]; do
+      _ln="${_ln%%[[:space:]]*}"
+      case "$_nm" in [A-Za-z_]*) ;; *) continue ;; esac
+      case "$_nm" in *[!A-Za-z0-9_]*) continue ;; esac
+      case "$_ln" in ""|*[!0-9]*) continue ;; esac
+      eval "_fmln_${_nm}=${_ln}"
+    done < "$fm"
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "trace: "*) rest="${line#trace: }"; name="${rest%%[[:space:]]*}" ;;
+      "  at "*)   rest="${line#  at }";   name="${rest%%[[:space:]]*}" ;;
+      *"!"*)      rest="${line#*!}";      name="${rest%%[[:space:]]*}" ;;
+      *)          printf '%s\n' "$line"; continue ;;
+    esac
+    hit=""
+    case "$name" in
+      [A-Za-z_]*) case "$name" in *[!A-Za-z0-9_]*) name="" ;; esac ;;
+      *) name="" ;;
+    esac
+    if [ -n "$name" ]; then
+      varname="_fmln_${name}"
+      if [ -n "${!varname+x}" ]; then hit="${!varname}"; fi
+    fi
+    if [ -n "$hit" ]; then
+      printf '%s (%s:%s)\n' "$line" "$base" "$hit"
+    else
+      printf '%s\n' "$line"
+    fi
+  done
+}
+# Counts the `__test_` functions in a compiled test wasm. Assigns n_tests and
+# n_tests_exact directly (a `$()` subshell would drop both). Exact when the
+# count came from the name section's function-name subsection; 0 when it is
+# the raw-occurrence fallback (no python3, or a stripped name section), which
+# over-counts -- a test name appears in more than one wasm section -- and is
+# good enough only for the zero/nonzero "(no tests found)" note.
+host_count_tests() {
+  local wasm="$1" n="" g
+  n_tests_exact=0
+  if command -v python3 >/dev/null 2>&1; then
+    n="$(python3 - "$wasm" 2>/dev/null <<'PY' || true
+import sys
+b = open(sys.argv[1], "rb").read()
+def uleb(i):
+    r = s = 0
+    while True:
+        x = b[i]; i += 1
+        r |= (x & 0x7F) << s
+        if not (x & 0x80):
+            return r, i
+        s += 7
+i, count = 8, 0
+while i < len(b):
+    sid = b[i]; i += 1
+    size, i = uleb(i)
+    end = i + size
+    if sid == 0:
+        nlen, j = uleb(i)
+        if b[j:j + nlen] == b"name":
+            j += nlen
+            while j < end:
+                subid = b[j]; j += 1
+                ssize, j = uleb(j)
+                send = j + ssize
+                if subid == 1:
+                    cnt, k = uleb(j)
+                    for _ in range(cnt):
+                        _, k = uleb(k)
+                        ln, k = uleb(k)
+                        if b[k:k + ln].startswith(b"__test_"):
+                            count += 1
+                        k += ln
+                j = send
+    i = end
+print(count)
+PY
+)"
+  fi
+  case "$n" in ''|*[!0-9]*) n="" ;; esac
+  [ -n "$n" ] && n_tests_exact=1
+  if [ -z "$n" ] || [ "$n" = 0 ]; then
+    g="$({ grep -ao '__test_' "$wasm" 2>/dev/null || true; } | wc -l | tr -d '[:space:]')"
+    case "$g" in ''|*[!0-9]*) g=0 ;; esac
+    if [ "$g" -gt 0 ] || [ -z "$n" ]; then
+      [ "$g" -gt 0 ] && n_tests_exact=0
+      n="$g"
+    fi
+  fi
+  n_tests="$n"
+}
+# One `verdict<TAB>tests<TAB>exact` row per test file, appended to the results
+# file the run-tests arm owns (VIBE_TEST_RESULTS), from which the summary's
+# test total is read. A background batch job and a nested --update re-run
+# reach the same file through the environment.
+host_test_record() {
+  [ -n "${VIBE_TEST_RESULTS:-}" ] || return 0
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$VIBE_TEST_RESULTS"
 }
 # `vibe test`'s per-file runner. Stdout is captured ALWAYS (#2199/#2202): the
 # guest writes its diagnostics there (the assert_eq block, inspect()'s
@@ -258,20 +386,32 @@ host_run_guest() {
 # $1 = src as the plan spelled it, $2 = compiled test wasm, $3 = --update (0|1),
 # $4 = --no-cache (0|1).
 host_run_test() {
-  local src="$1" wasm="$2" update="$3" no_cache="${4:-0}" tout terr rc=0 src_abs="$1" key=""
+  local src="$1" wasm="$2" update="$3" no_cache="${4:-0}" tout terr rc=0 src_abs="$1" key="" note="" n_tests n_tests_exact
   local patches="${VIBE_TEST_UPDATE_PATCHES:-0}" depth="${VIBE_TEST_UPDATE_DEPTH:-0}" tcache="$VIBE_HOME/cache/test"
   case "$src_abs" in /*) ;; *) src_abs="$PROJECT_ROOT/$src_abs" ;; esac
+  # An empty wasm path is the dispatcher's record of a file that did not
+  # compile (its diagnostic already went to stderr): one FAILED file whose
+  # test count is unknown, so the summary degrades to files-only.
+  if [ -z "$wasm" ]; then echo "FAIL (compile) $src"; host_test_record fail 0 0; return 1; fi
+  # #948: a file that lowers zero `__test_` functions (a typo'd block passes
+  # silently via an empty `_start`) is annotated; zero tests stays ok so
+  # helper-only files keep working.
+  host_count_tests "$wasm"
+  [ "$n_tests" = 0 ] && note=" (no tests found)"
   if [ "$no_cache" = 0 ] && [ -s "$wasm.testmeta" ] && [ "$(cat "$wasm.testmeta" 2>/dev/null)" = "1" ]; then
     key="$(_sha256_file "$wasm")"
-    if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then echo "ok   $src (cached)"; return 0; fi
+    if [ -n "$key" ] && [ -f "$tcache/$key.pass" ]; then
+      echo "ok   $src$note (cached)"; host_test_record ok "$n_tests" "$n_tests_exact"; return 0
+    fi
   fi
   tout="$(mktemp -t vibe-test-out-XXXXXX)"; terr="$(mktemp -t vibe-test-err-XXXXXX)"
   ( cd "$INVOKE_DIR" && exec "$RUNNER" "$wasm" ) >"$tout" 2>"$terr" || rc=1
   if [ "$rc" = 0 ]; then
     [ -s "$tout" ] && cat "$tout"
     [ -s "$terr" ] && cat "$terr" >&2
-    if [ "$patches" -gt 0 ]; then echo "ok   $src (updated $patches snapshot(s))"; else echo "ok   $src"; fi
+    if [ "$patches" -gt 0 ]; then echo "ok   $src$note (updated $patches snapshot(s))"; else echo "ok   $src$note"; fi
     [ -n "$key" ] && mkdir -p "$tcache" && : > "$tcache/$key.pass"
+    host_test_record ok "$n_tests" "$n_tests_exact"
     rm -f "$tout" "$terr"; return 0
   fi
   # --update (#1061 follow-up, #1235 review): patch the stale inspect()
@@ -289,6 +429,7 @@ host_run_test() {
   echo "FAIL $src"
   condense_test_trap "$terr"
   [ -s "$tout" ] && { grep -vx "assert failed: aborting" "$tout" || true; } | sed 's/^/       /'
+  host_test_record fail "$n_tests" "$n_tests_exact"
   rm -f "$tout" "$terr"; return 1
 }
 # $1 = absolute source path, $2 = the failing run's captured stdout.
@@ -304,7 +445,8 @@ host_try_update_patch() {
 execute_host_action() {
   # The counters are local because a `--update` re-run re-enters this
   # function from host_run_test while the outer run-tests loop is live.
-  local plan="$1" kind src wasm addr adapter line t_fail t_pass update no_cache body_stream
+  local plan="$1" kind src wasm addr adapter line t_fail t_pass update no_cache body_stream be_backend
+  local own_results total_files t_tests t_exact t_notest r_verdict r_ntests r_exact tab
   kind="$(sed -n '2p' "$plan")"
   case "$kind" in
     run-guest)
@@ -323,7 +465,7 @@ execute_host_action() {
       # directory invoke_cli runs it from), not to the invoking directory.
       case "$src" in /*) ;; *) src="$PROJECT_ROOT/$src" ;; esac
       case "$profile_out" in /*) ;; *) profile_out="$PROJECT_ROOT/$profile_out" ;; esac
-      [ "$src" -ef "$profile_out" ] && die "profile: --out must not alias the source"
+      [ "$src" -ef "$profile_out" ] && die "profile: --out must not resolve to the source file"
       VIBE_INVOKE_DIR="$INVOKE_DIR" exec "$0" run --guest-profile="$profile_out" --guest-profile-interval-us="$interval" \
         "$src" -- ${pargs[@]+"${pargs[@]}"}
       ;;
@@ -338,6 +480,13 @@ execute_host_action() {
     run-tests)
       t_fail=0; t_pass=0; update="$(sed -n '3p' "$plan")"; no_cache="$(sed -n '4p' "$plan")"; jobs="$(sed -n '5p' "$plan")"
       case "$jobs" in ''|*[!0-9]*) jobs=1 ;; esac
+      # The per-file records (host_test_record) feed the summary's test total.
+      # The outermost run owns the file; a nested --update re-run inherits it
+      # through the environment and reports through this summary.
+      own_results=0
+      if [ -z "${VIBE_TEST_RESULTS:-}" ]; then
+        VIBE_TEST_RESULTS="$(mktemp -t vibe-test-results-XXXXXX)"; export VIBE_TEST_RESULTS; own_results=1
+      fi
       if [ "$jobs" -gt 1 ] && [ "$update" != 1 ]; then
         # `--jobs N`: up to N files' wasm run concurrently, in same-sized
         # batches; each file's output is buffered and replayed in the ORIGINAL
@@ -369,13 +518,37 @@ execute_host_action() {
           if host_run_test "$src" "$wasm" "$update" "$no_cache"; then t_pass=$((t_pass+1)); else t_fail=$((t_fail+1)); fi
         done < <(sed -n '6,$p' "$plan")
       fi
-      # A nested --update re-run reports through the outer run's summary.
-      [ "${VIBE_TEST_NESTED:-0}" = 1 ] || echo "[vibe-test] $t_pass passed, $t_fail failed"
+      # A nested --update re-run reports through the outer run's summary. The
+      # test total is printed only when every file's count is exact; a raw-
+      # occurrence count (no python3, a stripped name section) would present an
+      # over-count as a total, so the summary stays files-only there.
+      if [ "$own_results" = 1 ]; then
+        total_files=$((t_pass + t_fail)); t_tests=0; t_exact=1; t_notest=0; tab="$(printf '\t')"
+        while IFS="$tab" read -r r_verdict r_ntests r_exact || [ -n "$r_verdict" ]; do
+          case "$r_ntests" in ''|*[!0-9]*) r_ntests=0 ;; esac
+          t_tests=$((t_tests + r_ntests))
+          [ "$r_ntests" = 0 ] && [ "$r_verdict" = ok ] && t_notest=$((t_notest + 1))
+          [ "${r_exact:-0}" = 1 ] || t_exact=0
+        done < "$VIBE_TEST_RESULTS"
+        rm -f "$VIBE_TEST_RESULTS"; unset VIBE_TEST_RESULTS
+        if [ "$t_exact" = 1 ]; then
+          echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files, $t_tests tests)"
+          [ "$t_notest" -gt 0 ] && echo "[vibe-test] note: $t_notest file(s) with no tests found"
+        else
+          echo "[vibe-test] $t_pass passed, $t_fail failed ($total_files files)"
+        fi
+      fi
       [ "$t_fail" -eq 0 ]
       ;;
     run-benches)
       wasm="$(sed -n '4p' "$plan")"; be=("VIBE_BENCH_LABEL=$(basename "$(sed -n '3p' "$plan")")")
-      it="$(sed -n '5p' "$plan")"; wu="$(sed -n '6p' "$plan")"; gp="$(sed -n '7p' "$plan")"
+      it="$(sed -n '5p' "$plan")"; wu="$(sed -n '6p' "$plan")"; gp="$(sed -n '7p' "$plan")"; be_backend="$(sed -n '10p' "$plan")"
+      # The wasm-gc backend can compile a file and emit no `__bench_<name>`
+      # entry point; the runner then falls back to timing `_start` and prints
+      # numbers for something other than the bench blocks. Refuse instead.
+      if [ "$be_backend" = gc ] && ! grep -qa "__bench_" "$wasm"; then
+        die "VIBE_BENCH_BACKEND=gc: the wasm-gc backend emitted no bench entry points for $(sed -n '3p' "$plan"). Bench blocks normally DO work on this lane (#1701 landed the gc __bench_ exports), so this is a real gap in what that file compiles to -- report it. To measure it meanwhile, re-run without VIBE_BENCH_BACKEND."
+      fi
       [ "$it" != 0 ] && [ -n "$it" ] && be+=("VIBE_BENCH_ITERS=$it")
       [ "$wu" != 0 ] && [ -n "$wu" ] && be+=("VIBE_BENCH_WARMUP=$wu")
       if [ -n "$gp" ]; then mkdir -p "$gp"; be+=("VIBE_BENCH_GUEST_PROFILE_DIR=$(cd "$gp" && pwd -P)" "VIBE_GUEST_PROFILE_INTERVAL_US=$(sed -n '8p' "$plan")"); fi
@@ -522,11 +695,41 @@ ADAPTER_MODE_CLEARS="-u VIBE_FS_COMPILE -u VIBE_CHECK_ONLY -u VIBE_LSP -u VIBE_H
   -u VIBE_EMIT_WIT -u VIBE_SERVE_COMPONENT -u VIBE_EMIT_MODULE_SOURCE -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK
   -u VIBE_TESTMETA_OUT -u VIBE_ENTRY_TESTMETA_OUT -u VIBE_ARTIFACT_INPUT_TRACE_OUT -u VIBE_ARTIFACT_INPUT_TRACE_NONCE"
 invoke_cli() {
-  local plan cli status=0
+  local plan cli status=0 verb="${1:-}" json=0 arg
   cli="$(pick_cli)"; plan="$(mktemp -t vibe-host-action-XXXXXX)"
+  rm -f "$plan.diag"
   # shellcheck disable=SC2086
-  ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS VIBE_HOST_ACTION_OUT="$plan" VIBE_BUILD_DIR="$BUILD_DIR" VIBE_INVOKE_DIR="$INVOKE_DIR" \
+  ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS VIBE_HOST_ACTION_OUT="$plan" VIBE_CRASH_DIAG_OUT="$plan.diag" \
+      VIBE_BUILD_DIR="$BUILD_DIR" VIBE_INVOKE_DIR="$INVOKE_DIR" \
       "$RUNNER" "$cli" "$@" ) || status=$?
+  # #946(4): a host-level crash of the COMPILER -- a native stack overflow on
+  # a pathologically deep expression -- is written by the runner to
+  # $plan.diag (VIBE_CRASH_DIAG_OUT), since nothing inside the guest can
+  # catch it. It is a diagnostic, never "clean": `vibe check` / `vibe
+  # diagnostics` report on stdout (their report channel), every other verb on
+  # stderr, and the verb fails.
+  if [ -s "$plan.diag" ]; then
+    for arg in "$@"; do [ "$arg" = "--json" ] && json=1; done
+    status=1
+    case "$verb" in
+      check|diagnostics)
+        # The crash text never went through the CLI, so in --json mode it is
+        # wrapped into a one-entry LSP array rather than leaking raw text to a
+        # JSON consumer. `vibe diagnostics` keeps its frozen contract: raw
+        # lines, exit 0 (docs/spec/1.0-freeze.md).
+        if [ "$json" = 1 ]; then
+          printf '[{"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"severity":1,"source":"vibe","message":"%s"}]\n' \
+            "$(sed 's/\\/\\\\/g; s/"/\\"/g' "$plan.diag" | tr '\n' ' ')"
+        elif [ "$verb" = check ]; then
+          sed 's/^/error: /' "$plan.diag"
+        else
+          cat "$plan.diag"
+        fi
+        [ "$verb" = diagnostics ] && status=0 ;;
+      *) sed 's/^/error: /' "$plan.diag" >&2 ;;
+    esac
+    rm -f "$plan" "$plan.diag"; return "$status"
+  fi
   # The CLI exits 0/1/2 and says why on stderr; anything else is the RUNNER
   # dying underneath it (a crash, a signal), which must not read as a clean
   # or as an explained verdict (scripts/test_vibe_allocs_launcher.sh).
@@ -845,8 +1048,22 @@ REPL_HELP
           { cat "$repl_buf"; printf 'export let __repl_main__: () -> Int = () -> { (%s) }\n' "$t"; } > "$repl_dir/eval.vibe"
           # The compile's own `compiled a -> b` report is not the expression's
           # value; only the program's output belongs on the session's stdout.
-          invoke_cli compile "$repl_dir/eval.vibe" -o "$repl_dir/eval.wasm" --entry __repl_main__ >/dev/null \
-            && ( cd "$INVOKE_DIR" && exec "$RUNNER" "$repl_dir/eval.wasm" ) || true
+          if invoke_cli compile "$repl_dir/eval.vibe" -o "$repl_dir/eval.wasm" --entry __repl_main__ >/dev/null 2>"$repl_dir/eval.err1"; then
+            ( cd "$INVOKE_DIR" && exec "$RUNNER" "$repl_dir/eval.wasm" ) || echo "vibe shell: runtime error (exit $?)" >&2
+          else
+            # Int expressions print; anything else (a String, a Unit-returning
+            # effectful call, a row the Int wrapper does not fit) is retried
+            # in an UNANNOTATED wrapper so its row is inferred, and evaluated
+            # for its effects with an honest notice. Richer printing waits on
+            # the println-in-FS-mode gap (#805 follow-ups).
+            { cat "$repl_buf"; printf 'export let __repl_main__ = () -> {\n  let _ = (\n%s\n  )\n  ()\n}\n' "$t"; } > "$repl_dir/eval.vibe"
+            if invoke_cli compile "$repl_dir/eval.vibe" -o "$repl_dir/eval.wasm" --entry __repl_main__ >/dev/null 2>&1; then
+              echo "vibe shell: non-Int value; evaluated for effects only (use :type to inspect)" >&2
+              ( cd "$INVOKE_DIR" && exec "$RUNNER" "$repl_dir/eval.wasm" ) || echo "vibe shell: runtime error (exit $?)" >&2
+            else
+              cat "$repl_dir/eval.err1" >&2
+            fi
+          fi
           ;;
       esac
     done
@@ -889,6 +1106,26 @@ REPL_HELP
     ;;
   help|--help|-h)
     invoke_cli help
+    ;;
+  lsp)
+    # The node server (clients/js/lsp_server.js) stays the default: it carries
+    # call hierarchy, the graph visualizer and whole-workspace symbols, which
+    # the embedded server in lib/@vibe/lsp still documents as deferred. It is
+    # JSON-RPC plumbing that drives this same launcher's `vibe check` /
+    # `type-at` / etc. for the actual compile. `--selfhost` selects the
+    # embedded server through the verb dispatcher instead.
+    for lsp_arg in "$@"; do
+      if [ "$lsp_arg" = "--selfhost" ]; then
+        invoke_cli lsp "$@"
+        exit $?
+      fi
+    done
+    server="$TOOLCHAIN_DIR/lib/lsp_server.js"
+    [ -f "$server" ] || server="$SELF/../clients/js/lsp_server.js"
+    [ -f "$server" ] || server="$SELF/../../clients/js/lsp_server.js"
+    [ -f "$server" ] || die "lsp server not found (looked in $TOOLCHAIN_DIR/lib and repo clients/js)"
+    command -v node >/dev/null 2>&1 || die "node is required for 'vibe lsp'"
+    exec env VIBE_BIN="$LAUNCHER" node "$server" "$@"
     ;;
   *)
     set -- "$cmd" "$@"

@@ -1681,14 +1681,29 @@ fn run(args: Vec<String>) -> Result<i32> {
             // positional one, silently losing the diagnostic all over again.
             // Match read_arg_or_env's precedence: positional arg first.
             if matches!(e.downcast_ref::<Trap>(), Some(Trap::StackOverflow)) {
-                let output_path = args
-                    .get(2)
-                    .cloned()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| std::env::var("VIBE_OUTPUT").ok());
-                if let Some(output_path) = output_path {
+                // #2858: under the verb protocol (`cli check <file>`) the
+                // positional args are the verb's own words, so `args[2]` is
+                // the user's source path or a flag -- writing `<that>.diag`
+                // would drop a sidecar beside the user's file (or a file
+                // named `--single-file.diag` in the project root). The
+                // launcher names the sidecar explicitly (VIBE_CRASH_DIAG_OUT,
+                // read back by runtime/vibe's invoke_cli); the positional /
+                // VIBE_OUTPUT convention stays for the adapter protocol.
+                let crash_diag = std::env::var("VIBE_CRASH_DIAG_OUT")
+                    .ok()
+                    .filter(|s| !s.is_empty());
+                let sidecar = match crash_diag {
+                    Some(path) => Some(path),
+                    None => args
+                        .get(2)
+                        .cloned()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| std::env::var("VIBE_OUTPUT").ok())
+                        .map(|output_path| format!("{output_path}.diag")),
+                };
+                if let Some(sidecar) = sidecar {
                     let _ = std::fs::write(
-                        format!("{output_path}.diag"),
+                        sidecar,
                         "expression too deeply nested (stack overflow while type-checking)\n",
                     );
                 }

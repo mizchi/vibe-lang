@@ -76,6 +76,7 @@ import ./cli_support.vibe {
   check_unstable_surface_warnings_from_path,
   command_component_compile_mode,
   command_component_entry,
+  strip_executable_wasm,
   strip_executable_wasm_env,
   unstable_closure_reset,
   write_linked_debug_build_checked
@@ -395,6 +396,21 @@ fn write_user_executable(output_path: String, bytes: Bytes, entry_name: String, 
   }
 }
 
+/// `vibe run`'s executable keeps the wasm `name` section that `vibe build`
+/// strips for size (#1100): a trap backtrace names the user function
+/// (`<unknown>!boom`), which is what the launcher's funcmap annotation and
+/// `vibe profile`'s frame names key on (scripts/test_vibe_trace.sh,
+/// scripts/test_vibe_bench.sh). The debug lanes carry their own sections and
+/// are written as compiled.
+fn write_user_run_executable(output_path: String, bytes: Bytes, kind: String) -> Unit with Fs + Env {
+  ensure_parent_dir(output_path)
+  if kind == "trace" || kind == "break" {
+    Fs::write_bytes(output_path, bytes)
+  } else {
+    Fs::write_bytes(output_path, strip_executable_wasm(bytes, "main", false, Env::get("VIBE_WASM_KEEP_EXPORTS") != "1"))
+  }
+}
+
 /// `VIBE_TEST_BACKEND` / `VIBE_BENCH_BACKEND` = `linear` (default) | `gc`.
 ///
 /// `runtime/vibe` used to read these and hand `VIBE_BACKEND=gc` to the
@@ -699,7 +715,7 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
         let _ = need_value(args, i, "check", arg)
         ()
       } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
-        throw(String::concat("check: unsupported option: ", arg))
+        throw(String::concat("check: unknown option: ", arg))
       } else if src == "" {
         src = arg
         ()
@@ -801,7 +817,57 @@ fn user_check_linked(src: String) -> Int with Exception + Fs + Env {
   }
 }
 
-fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdout {
+/// The two profiling sidecars `vibe check` can be asked for: `--profile-tsv P`
+/// and `--profile-callstack P`. Parsed apart from `parse_user_check_args` so
+/// that tuple keeps the shape `dispatch_test.vibe` pins; a flag without a
+/// value is refused there, so this scan only reads what it validated.
+fn user_check_profile_paths(args: Array[String]) -> (String, String) {
+  let mut tsv = ""
+  let mut callstack = ""
+  let mut i = 1
+  while i < Array::length(args) {
+    let arg = Array::get(args, i)
+    if (arg == "--profile-tsv" || arg == "--profile-callstack") && i + 1 < Array::length(args) {
+      if arg == "--profile-tsv" {
+        tsv = Array::get(args, i + 1)
+      } else {
+        callstack = Array::get(args, i + 1)
+      }
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+  }
+  (tsv, callstack)
+}
+
+fn profile_stage_row(stage: String, elapsed_us: Int) -> String {
+  let us = if elapsed_us < 0 {
+    0
+  } else {
+    elapsed_us
+  }
+  String::concat(stage, String::concat("\t", String::concat(__to_string(us / 1000), String::concat("\t", String::concat(__to_string(us), "\n")))))
+}
+
+/// Writes the check's profiling sidecars (`stage / elapsed_ms / elapsed_us`
+/// TSV, the shape `scripts/test_cli_core.sh` reads). One measured stage: the
+/// import-resolving check is a single call from here, so `check` and `total`
+/// carry the same wall time rather than a load/type split nobody measured.
+fn write_check_profiles(tsv_path: String, callstack_path: String, elapsed_us: Int) -> Unit with Fs {
+  if tsv_path != "" {
+    Fs::write_file(tsv_path, String::concat("stage\telapsed_ms\telapsed_us\n", String::concat(profile_stage_row("check", elapsed_us), profile_stage_row("total", elapsed_us))))
+  } else {
+    ()
+  }
+  if callstack_path != "" {
+    Fs::write_file(callstack_path, String::concat("stage\telapsed_ms\telapsed_us\n", profile_stage_row("check", elapsed_us)))
+  } else {
+    ()
+  }
+}
+
+fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdout + Profiler {
   let mut missing_vpkg = false
   let mut deps_missing = false
   let mut i = 1
@@ -821,6 +887,7 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
     user_check_scan(root, missing_vpkg)
   } else {
     let (src, single, json) = parse_user_check_args(args)
+    let (profile_tsv, profile_callstack) = user_check_profile_paths(args)
     if !Fs::exists(src) {
       throw(String::concat("not found: ", src))
     } else {
@@ -830,7 +897,8 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
       // (that is how the checker hands them back); a usage error such as a
       // missing file stays an exception and reaches stderr through the
       // dispatcher's handler, which is where the launcher printed it before.
-      handle {
+      let started_us = Profiler::now_us()
+      let code = handle {
         if single {
           user_check_single(src, json)
         } else {
@@ -840,6 +908,11 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
         print(line_terminated(format_check_report(e)))
         1
       } }
+      // `--profile-tsv` / `--profile-callstack` (Codex review of #2858): the
+      // sidecars are written for a failed check too -- a profile of a check
+      // that found errors is still a profile of that check.
+      write_check_profiles(profile_tsv, profile_callstack, Profiler::now_us() - started_us)
+      code
     }
   }
 }
@@ -897,7 +970,7 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
         } else if arg == "--debug" {
           ()
         } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
-          throw(String::concat(cmd, String::concat(": unsupported option: ", arg)))
+          throw(String::concat(cmd, String::concat(": unknown option: ", arg)))
         } else if src == "" {
           src = arg
           ()
@@ -1967,7 +2040,7 @@ export fn selfhost_cli_run_plan_args(args: Array[String], action_path: String) -
       "mvp"
     }
     let bytes = compile_user_artifact(src, "main", kind)
-    write_user_executable(out, bytes, "main", kind)
+    write_user_run_executable(out, bytes, kind)
     write_user_funcmap(src, out)
     let acc = StringBuilder::new()
     StringBuilder::push(acc, "vibe-host-action-v1\nrun-guest\n")
@@ -2014,7 +2087,7 @@ fn selfhost_cli_user_run_args(args: Array[String]) -> Int with Exception + Fs + 
   selfhost_cli_run_plan_args(args, Env::get("VIBE_HOST_ACTION_OUT"))
 }
 
-export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env {
+export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env + Stderr {
   let mut update = false
   let mut no_cache = false
   let mut jobs = 1
@@ -2066,29 +2139,45 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       let out = String::concat(default_build_dir(), String::concat("/test/", String::concat(strip_vibe_suffix(src), ".wasm")))
       let meta = String::concat(out, ".testmeta")
       ensure_parent_dir(out)
-      reject_unstable_entry_surface(src)
-      unstable_closure_reset()
-      // The pure-test pass cache (#634, ADR-0026) reads the `.testmeta`
-      // verdict the launcher's run-tests arm keys on. Only the legacy bump
-      // lane carries the variant that emits it -- exactly the lane
-      // `cli_adapter.vibe` selected for `VIBE_TESTMETA_OUT` -- so with the RC
-      // default there is no verdict, and a verdict left by an earlier bump-lane
-      // compile of the same file is removed rather than read for these bytes.
-      let bytes = if backend_kind == "mvp" && Env::get("VIBE_RC") == "0" {
-        compile_file_fs_mode_testmeta(src, "__no_entry__", "mvp", meta)
-      } else {
-        if Fs::exists(meta) {
-          Fs::remove(meta)
+      // A file that does not compile is one FAILED record, not the end of the
+      // suite (Codex review of #2858): its diagnostic goes to stderr here and
+      // the record carries an EMPTY wasm path, which the launcher's run-tests
+      // arm reports as `FAIL (compile) <src>` and counts, so `vibe test bad
+      // good` still runs and reports `good`.
+      let compiled = handle {
+        reject_unstable_entry_surface(src)
+        unstable_closure_reset()
+        // The pure-test pass cache (#634, ADR-0026) reads the `.testmeta`
+        // verdict the launcher's run-tests arm keys on. Only the legacy bump
+        // lane carries the variant that emits it -- exactly the lane
+        // `cli_adapter.vibe` selected for `VIBE_TESTMETA_OUT` -- so with the RC
+        // default there is no verdict, and a verdict left by an earlier
+        // bump-lane compile of the same file is removed rather than read for
+        // these bytes.
+        let bytes = if backend_kind == "mvp" && Env::get("VIBE_RC") == "0" {
+          compile_file_fs_mode_testmeta(src, "__no_entry__", "mvp", meta)
         } else {
-          ()
+          if Fs::exists(meta) {
+            Fs::remove(meta)
+          } else {
+            ()
+          }
+          compile_user_wasm(src, "__no_entry__", backend_kind)
         }
-        compile_user_wasm(src, "__no_entry__", backend_kind)
-      }
-      reject_unstable_closure_surface()
-      write_wasm(out, bytes)
+        reject_unstable_closure_surface()
+        write_wasm(out, bytes)
+        true
+      } with { Exception::Throw(e) => {
+        Stderr::write_stream(line_terminated(format_check_report(e)))
+        false
+      } }
       StringBuilder::push(acc, src)
       StringBuilder::push(acc, "\t")
-      StringBuilder::push(acc, out)
+      if compiled {
+        StringBuilder::push(acc, out)
+      } else {
+        ()
+      }
       StringBuilder::push(acc, "\n")
       fi = fi + 1
     }
@@ -2096,7 +2185,7 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
   }
 }
 
-fn selfhost_cli_user_test_args(args: Array[String]) -> Int with Exception + Fs + Env {
+fn selfhost_cli_user_test_args(args: Array[String]) -> Int with Exception + Fs + Env + Stderr {
   selfhost_cli_test_plan_args(args, Env::get("VIBE_HOST_ACTION_OUT"))
 }
 
@@ -2151,7 +2240,8 @@ fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exception + Fs 
       ""
     }
     let out = String::concat(default_build_dir(), String::concat("/bench/", String::concat(basename_of(strip_vibe_suffix(src)), ".wasm")))
-    let bytes = compile_user_artifact(src, "__no_entry__", user_backend_kind("VIBE_BENCH_BACKEND"))
+    let backend_kind = user_backend_kind("VIBE_BENCH_BACKEND")
+    let bytes = compile_user_artifact(src, "__no_entry__", backend_kind)
     write_wasm(out, bytes)
     let acc = StringBuilder::new()
     StringBuilder::push(acc, "vibe-host-action-v1\nrun-benches\n")
@@ -2168,6 +2258,12 @@ fn selfhost_cli_user_bench_args(args: Array[String]) -> Int with Exception + Fs 
     StringBuilder::push(acc, guest_interval)
     StringBuilder::push(acc, "\n")
     StringBuilder::push(acc, bench_keep_names)
+    StringBuilder::push(acc, "\n")
+    // Line 10: the backend the artifact was lowered for. The host refuses a
+    // gc artifact with no `__bench_` export before starting the runner, which
+    // would otherwise time `_start` and print numbers for something other
+    // than the bench blocks (Codex review of #2858).
+    StringBuilder::push(acc, backend_kind)
     StringBuilder::push(acc, "\n")
     write_host_action(Env::get("VIBE_HOST_ACTION_OUT"), StringBuilder::freeze(acc))
   }
@@ -2228,12 +2324,17 @@ fn selfhost_cli_user_serve_args(args: Array[String]) -> Int with Exception + Fs 
       comp_emit_component_wasm_string_handler(core, "handler", "handler", serve_handler_param_names())
     }
     write_wasm(resolved, component)
-    let wit_path = String::concat(String::substring(resolved, 0, String::length(resolved) - 15), ".wit")
-    if path_has_suffix(resolved, ".component.wasm") {
-      Fs::write_file(String::concat(resolved[0: String::length(resolved) - 15], ".wit"), wit_from_program(entry_stmts, entry_stmts, basename_of(strip_vibe_suffix(src))))
+    // The WIT sidecar sits beside the component: `<name>.component.wasm` ->
+    // `<name>.wit`, any other spelling of `-o` -> `<out>.wit` (the launcher's
+    // former `${out%.component.wasm}.wit`). The 15-byte strip belongs to the
+    // matching branch only -- applied to `app.wasm` it produced `.wit` (Codex
+    // review of #2858).
+    let wit_path = if path_has_suffix(resolved, ".component.wasm") {
+      String::concat(String::substring(resolved, 0, String::length(resolved) - 15), ".wit")
     } else {
-      Fs::write_file(wit_path, wit_from_program(entry_stmts, entry_stmts, basename_of(strip_vibe_suffix(src))))
+      String::concat(resolved, ".wit")
     }
+    Fs::write_file(wit_path, wit_from_program(entry_stmts, entry_stmts, basename_of(strip_vibe_suffix(src))))
     println(String::concat("component ", String::concat(src, String::concat(" -> ", resolved))))
     if no_run {
       0
@@ -2304,7 +2405,7 @@ fn selfhost_cli_user_profile_args(args: Array[String]) -> Int with Exception + F
   } else if output == "" {
     throw("profile: --out must not be empty")
   } else if source == output {
-    throw("profile: --out must not alias the source")
+    throw("profile: --out must not resolve to the source file")
   } else {
     let mut plan = String::concat("vibe-host-action-v1\nrun-guest-profile\n", String::concat(source, "\n"))
     plan = String::concat(plan, String::concat(output, "\n"))
@@ -2461,7 +2562,7 @@ export fn format_check_report(payload: String) -> String {
 /// framed diagnostic goes to STDERR, where `runtime/vibe` used to print the
 /// adapter's `.diag` sidecar, so a verb's machine-readable stdout (symbols
 /// rows, grep matches, check diagnostics) is never interleaved with it.
-export fn run_user_dispatch_args(args: Array[String]) -> Int with Fs + Env + Stdin + Stdout + Stderr {
+export fn run_user_dispatch_args(args: Array[String]) -> Int with Fs + Env + Stdin + Stdout + Stderr + Profiler {
   handle {
     selfhost_cli_user_dispatch_args(args)
   } with { Exception::Throw(e) => {
@@ -2470,7 +2571,7 @@ export fn run_user_dispatch_args(args: Array[String]) -> Int with Fs + Env + Std
   } }
 }
 
-export fn selfhost_cli_user_dispatch_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Stdout + Stderr {
+export fn selfhost_cli_user_dispatch_args(args: Array[String]) -> Int with Exception + Fs + Env + Stdin + Stdout + Stderr + Profiler {
   let argv = rewrite_user_argv(args, Env::get("VIBE_INVOKE_DIR"), Fs::getcwd())
   let first = if Array::length(argv) == 0 {
     "help"
