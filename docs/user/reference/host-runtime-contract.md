@@ -69,7 +69,11 @@ layout, not copy either implementation.
 
 ## Residual scope
 
-This is deliberately a first slice. #1346 remains open for:
+This is deliberately a first slice. The design that closes it -- a generated
+`vibe:host` WIT whose functions the raw `vibe.*` imports are the lowering of,
+a `vibe.entry` section, and a manifest column for lazy dispatch -- is
+[host-contract-artifact-lazy-cli.md](../../internal/design/host-contract-artifact-lazy-cli.md)
+(ADR-0112, proposed). #1346 remains open for:
 
 - executable signature comparison against both provider implementations;
 - semantic conformance fixtures for failures, path rules, handle lifecycle,
