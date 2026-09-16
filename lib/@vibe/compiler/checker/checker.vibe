@@ -6943,7 +6943,7 @@ export fn resolve_deferred_field_reads(s: Subst, defs: Array[TypeDef], errors: A
       },
       resolved => {
         let fty = field_read_type(resolved, field, defs, cur, errors, field_off, dot_off)
-        cur = unify_deferred_field_result(result_id, fty, cur, field, field_off, dot_off, errors)
+        cur = unify_deferred_field_result(result_id, fty, cur, defs, field, field_off, dot_off, errors)
       }
     }
     i = i + 1
@@ -6973,16 +6973,99 @@ fn field_read_marker(field: String, field_off: Int, dot_off: Int) -> String {
 /// consumers already fixed to a different type is the mismatch the result
 /// variable exists to catch: `(p) -> { p.v }` handed to a `(Holder) -> String`
 /// parameter, with `v: Int`.
-fn unify_deferred_field_result(result_id: Int, fty: Type, s: Subst, field: String, field_off: Int, dot_off: Int, errors: Array[String]) -> Subst {
+///
+/// A mismatch against an UNRESOLVED nominal type is tolerated, the way every
+/// other unify site tolerates one (`check_assignable`, the `==` arm): a
+/// trait's erased type parameter reaches an impl method's return annotation
+/// as a bare `CtNamed("T", [])` that `relax_unknown_named` would relax to
+/// `CtUnknown` -- `impl Iterator for Counter { next(self) -> Option[(T,
+/// Counter)] { Some((self.at, ..)) } }` fixed the result variable to `T`
+/// before `self.at` resolved to `Int`, and the strict unify refused a program
+/// the seed accepts (measured: `for_over_iterator_impl_struct.vibe`). Before
+/// this pass the read typed `CtUnknown` and absorbed `T` silently, so
+/// tolerating exactly that shape is the status quo, not a widening.
+fn unify_deferred_field_result(result_id: Int, fty: Type, s: Subst, defs: Array[TypeDef], field: String, field_off: Int, dot_off: Int, errors: Array[String]) -> Subst {
   match fty {
     CtUnknown => s,
     _ => match unify(CtVar(result_id), fty, s) {
       Some(ns) => ns,
       None => {
-        Array::push(errors, String::concat("field access `.", String::concat(field, String::concat("` has type ", String::concat(type_to_string(subst_apply(s, fty)), String::concat(" once its receiver is known, but the value was already used as ", String::concat(type_to_string(subst_apply(s, CtVar(result_id))), field_read_marker(field, field_off, dot_off))))))))
-        s
+        let existing = subst_apply(s, CtVar(result_id))
+        if type_mentions_unknown_named(existing, defs) || type_mentions_unknown_named(fty, defs) {
+          s
+        } else {
+          Array::push(errors, String::concat("field access `.", String::concat(field, String::concat("` has type ", String::concat(type_to_string(subst_apply(s, fty)), String::concat(" once its receiver is known, but the value was already used as ", String::concat(type_to_string(existing), field_read_marker(field, field_off, dot_off))))))))
+          s
+        }
       }
     }
+  }
+}
+
+/// Does `ty` mention a nominal type that resolves to nothing -- no typedef, no
+/// builtin -- i.e. one `relax_unknown_named` would relax to `CtUnknown`?
+fn type_mentions_unknown_named(ty: Type, defs: Array[TypeDef]) -> Bool {
+  match ty {
+    CtNamed(n, args) => {
+      let known = match find_typedef(defs, n) {
+        Some(_) => true,
+        None => match resolve_builtin(n) {
+          Some(_) => true,
+          None => false
+        }
+      }
+      if !known {
+        true
+      } else {
+        let mut i = 0
+        let mut found = false
+        while i < Array::length(args) && !found {
+          found = type_mentions_unknown_named(Array::get(args, i), defs)
+          i = i + 1
+        }
+        found
+      }
+    },
+    CtApplied(head, args) => {
+      let mut found = type_mentions_unknown_named(head, defs)
+      let mut i = 0
+      while i < Array::length(args) && !found {
+        found = type_mentions_unknown_named(Array::get(args, i), defs)
+        i = i + 1
+      }
+      found
+    },
+    CtArray(e) => type_mentions_unknown_named(e, defs),
+    CtOption(e) => type_mentions_unknown_named(e, defs),
+    CtTuple(es) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(es) && !found {
+        found = type_mentions_unknown_named(Array::get(es, i), defs)
+        i = i + 1
+      }
+      found
+    },
+    CtRecord(fields) => {
+      let mut i = 0
+      let mut found = false
+      while i < Array::length(fields) && !found {
+        let (_, fty) = Array::get(fields, i)
+        found = type_mentions_unknown_named(fty, defs)
+        i = i + 1
+      }
+      found
+    },
+    CtFn(ps, r, _) => {
+      let mut found = type_mentions_unknown_named(r, defs)
+      let mut i = 0
+      while i < Array::length(ps) && !found {
+        found = type_mentions_unknown_named(Array::get(ps, i), defs)
+        i = i + 1
+      }
+      found
+    },
+    _ => false
   }
 }
 
@@ -7058,7 +7141,7 @@ export fn resolve_impl_self_field_reads(binding_name: String, val: Expr, vt: Typ
             }
             if is_self {
               let fty = field_read_type(target, field, defs, cur, errors, field_off, dot_off)
-              cur = unify_deferred_field_result(result_id, fty, cur, field, field_off, dot_off, errors)
+              cur = unify_deferred_field_result(result_id, fty, cur, defs, field, field_off, dot_off, errors)
             } else {
               Array::push(kept, (vid, field, field_off, dot_off, recv, result_id))
             }
@@ -7086,13 +7169,24 @@ fn impl_method_target(chain: TypeEnv, full: TypeEnv, type_name: String, method_n
   match chain {
     EnvEmpty => None,
     EnvBind(_, _, rest) => impl_method_target(rest, full, type_name, method_name),
-    EnvTraitDef(trait_name, _, _, methods, rest, _, _) => if trait_methods_declare(methods, method_name) {
-      match env_trait_impl_target_for(full, trait_name, type_name) {
-        Some(target) => Some(target),
-        None => impl_method_target(rest, full, type_name, method_name)
+    // Declared OR inherited: `impl Child for P` may define `base_m`, a method
+    // of `trait Child: Base`'s supertrait, and the env then records an impl of
+    // `Child` for `P`, not of `Base`. `trait_method_sig_deep` walks the
+    // supertraits (measured: `trait_supertrait_bound_struct.vibe` was refused
+    // as an open receiver with the flat `trait_methods_declare` test).
+    EnvTraitDef(trait_name, _, _, _, rest, _, _) => {
+      let declares = match trait_method_sig_deep(full, trait_name, method_name) {
+        Some(_) => true,
+        None => false
       }
-    } else {
-      impl_method_target(rest, full, type_name, method_name)
+      if declares {
+        match env_trait_impl_target_for(full, trait_name, type_name) {
+          Some(target) => Some(target),
+          None => impl_method_target(rest, full, type_name, method_name)
+        }
+      } else {
+        impl_method_target(rest, full, type_name, method_name)
+      }
     },
     EnvTraitImpl(_, _, rest) => impl_method_target(rest, full, type_name, method_name),
     EnvTraitImplGen(_, _, _, _, rest) => impl_method_target(rest, full, type_name, method_name),

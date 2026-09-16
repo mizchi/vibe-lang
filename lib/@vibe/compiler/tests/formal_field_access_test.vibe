@@ -196,6 +196,21 @@ test "2848: a deferred read's result type reaches its consumers" {
   assert(String::contains(msg, "field access `.v` has type Int once its receiver is known, but the value was already used as String"))
 }
 
+test "2848: a supertrait's method defined in a subtrait impl is still an impl method" {
+  // `base_m` is declared on `Base`; the env records an impl of `Child` for
+  // `P`. Provenance walks the supertraits, so `self.x` is judged against `P`.
+  let src = "trait Base {\n  base_m(Self) -> Int\n}\ntrait Child: Base {\n  child_m(Self) -> Int\n}\nstruct P {\n  x: Int\n}\nimpl Child for P {\n  base_m(self) -> Int {\n    self.x\n  }\n  child_m(self) -> Int {\n    1\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
+test "2848: a result fixed to a trait's erased type parameter is tolerated" {
+  // `T` of `Iterator[T]` reaches the return annotation as an unresolved
+  // nominal that relaxes to `CtUnknown`; the read used to absorb it as
+  // `CtUnknown` and must keep doing so rather than report `Int` vs `T`.
+  let src = "trait Iterator[T] {\n  next(Self) -> Option[(T, Self)]\n}\nstruct Counter {\n  upto: Int;\n  at: Int\n}\nimpl Iterator for Counter {\n  next(self) -> Option[(T, Counter)] {\n    if self.at < self.upto {\n      Some((self.at, Counter::{ upto: self.upto, at: self.at + 1 }))\n    } else {\n      None\n    }\n  }\n}\nfn main { () }\n"
+  assert(first_check_error(src) == "")
+}
+
 test "2848: a deferred read whose result type agrees with its consumer is accepted" {
   let src = "struct Holder {\n  v: Int\n}\nfn apply(h: Holder, f: (Holder) -> Int) -> Int {\n  f(h)\n}\nfn go(h: Holder) -> Int {\n  apply(h, (p) -> {\n    p.v\n  })\n}\nfn main { () }\n"
   assert(first_check_error(src) == "")
