@@ -4,6 +4,10 @@ import @vibe/compiler/entry/compiler/file_compile {
   compile_file_fs_mode, compile_file_fs_mode_cached
 }
 
+import @vibe/compiler {
+  check_linked_file
+}
+
 import @vibe/core {
   array_empty
 }
@@ -152,6 +156,37 @@ test "compile_file_fs_mode: dce-root keeps what only an interpolation reaches" {
   // ...and pruning must still be HAPPENING, or this test passes for the wrong
   // reason: `never_reached` is unreachable by any route, so rooting at
   // `vibe_command` has to beat keeping every statement.
+  let bytes_no_dce = compile_file_fs_mode(main_path, "__no_entry__", "no-dce")
+  assert(Bytes::length(bytes_rooted) < Bytes::length(bytes_no_dce))
+}
+
+test "compile_file_fs_mode: dce-root keeps interpolation refs on the WARM path too" {
+  // The cold-path test above is not enough on its own (Codex review of #2863,
+  // second round). `finish_typecheck_fs_impl` has a reuse arm: when a previous
+  // run left a valid persistent type env, it returns WITHOUT running the
+  // checker -- so any argument of the form "the checker expanded it for us"
+  // does not cover a build that follows a `vibe check`.
+  //
+  // That arm is real; it was instrumented and confirmed taken on a
+  // `check` -> `build --component` sequence. What does NOT follow is the
+  // conclusion: measured end to end on that sequence, pruning is still active
+  // (a module carrying 40 unreachable functions produced a byte-identical
+  // artifact to one without them, 5,746 B) while the interpolation-only
+  // binding survived and the command printed `label=ok fn=fn-ok`.
+  //
+  // So this test drives the same order the report describes -- check first,
+  // then compile -- rather than asserting a mechanism.
+  let main_path = "/tmp/vibe_compiler_dce_root_interp_warm.vibe"
+  let source = "let label = \"ok\"\n\nfn only_from_interp() -> String {\n  \"fn-ok\"\n}\n\nfn never_reached() -> String {\n  \"gone\"\n}\n\nexport fn vibe_command(args: String) -> String {\n  \"\\{label} \\{only_from_interp()} \\{args}\"\n}\n"
+  Fs::write_bytes(main_path, string_to_bytes(source))
+  // Populate first, the way a prior `vibe check` would.
+  let _ = check_linked_file(main_path)
+  // Then compile. Would throw on a missing name if the interpolation's
+  // references had been invisible to DCE.
+  let bytes_rooted = compile_file_fs_mode(main_path, "vibe_command", "dce-root")
+  assert_wasm_magic(bytes_rooted)
+  // ...and pruning must still be happening, or this passes for the wrong
+  // reason.
   let bytes_no_dce = compile_file_fs_mode(main_path, "__no_entry__", "no-dce")
   assert(Bytes::length(bytes_rooted) < Bytes::length(bytes_no_dce))
 }
