@@ -48,11 +48,14 @@ fn get_payload[T](b: Gbox[T]) -> T {
   b.payload
 }
 
-fn through_lambda(c: Crate) -> Int {
-  let f = (p) -> {
-    p.payload
-  }
+fn apply_crate(c: Crate, f: (Crate) -> Int) -> Int {
   f(c)
+}
+
+fn through_lambda(c: Crate) -> Int {
+  apply_crate(c, (p) -> {
+    p.payload
+  })
 }
 
 //# Refusals
@@ -106,6 +109,41 @@ test "2848: a local rebinding of the formal is refused too" {
   assert(String::contains(msg, formal_message("T", "payload")))
 }
 
+fn open_message(recv: String, field: String) -> String {
+  String::concat("annotate `", String::concat(recv, String::concat("` with the struct that declares `", String::concat(field, String::concat("`; field access `.", String::concat(field, String::concat("` needs a struct, and this `let`-bound function leaves `", String::concat(recv, "`'s type open for every caller"))))))))
+}
+
+test "2848: a formal reached through a let-bound lambda's parameter is refused" {
+  // Codex on #2864. At the read `p` is a fresh variable, and `let f = ...`
+  // GENERALIZES it, so `f(m)` instantiates a copy and the recorded variable
+  // never resolves. The `let` refuses the read as it quantifies, naming `p`.
+  let src = "struct Crate {\n  payload: Int\n}\nfn read[T](m: T) -> Int {\n  let f = (p) -> {\n    p.payload\n  }\n  f(m)\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, open_message("p", "payload")))
+}
+
+test "2848: a let-bound lambda reading a field on its parameter is refused without any formal in scope" {
+  let src = "struct Crate {\n  payload: Int\n}\nfn read(m: Option[Int]) -> Int {\n  let f = (p) -> {\n    p.payload\n  }\n  f(m)\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, open_message("p", "payload")))
+}
+
+test "2848: a top-level let-bound lambda is refused the same way" {
+  let src = "struct Crate {\n  payload: Int\n}\nlet f = (p) -> {\n  p.payload\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(String::contains(msg, open_message("p", "payload")))
+}
+
+test "2848: a lambda parameter solved late by a call gets the concrete verdict" {
+  // Argument position: `p` is not quantified, and `apply(m, ...)` unifies it
+  // with `Option[Int]` inside the body. The read is recorded while `p` is
+  // unsolved and judged again at the end of the body with the same arms.
+  let src = "struct Crate {\n  payload: Int\n}\nfn apply(m: Option[Int], f: (Option[Int]) -> Int) -> Int {\n  f(m)\n}\nfn read(m: Option[Int]) -> Int {\n  apply(m, (p) -> {\n    p.payload\n  })\n}\nfn main { () }\n"
+  let msg = first_check_error(src)
+  assert(msg != "")
+  assert(String::contains(msg, "`.payload`"))
+}
+
 //# Controls (the refusal must not widen)
 
 test "2848: a generic struct's field read in a generic body is accepted" {
@@ -113,10 +151,11 @@ test "2848: a generic struct's field read in a generic body is accepted" {
   assert(first_check_error(src) == "")
 }
 
-test "2848: an unannotated lambda parameter is not a formal" {
+test "2848: an unannotated lambda parameter in argument position is not a formal" {
   // Its type is a fresh inference variable no `[T]` header recorded, so the
-  // identity-keyed lookup answers nothing and the read keeps its tolerance.
-  let src = "struct Crate {\n  payload: Int\n}\nfn go(c: Crate) -> Int {\n  let f = (p) -> {\n    p.payload\n  }\n  f(c)\n}\nfn main { () }\n"
+  // identity-keyed lookup answers nothing; the call unifies it with `Crate`
+  // inside the body and the deferred judgement finds the field.
+  let src = "struct Crate {\n  payload: Int\n}\nfn apply(c: Crate, f: (Crate) -> Int) -> Int {\n  f(c)\n}\nfn go(c: Crate) -> Int {\n  apply(c, (p) -> {\n    p.payload\n  })\n}\nfn main { () }\n"
   assert(first_check_error(src) == "")
 }
 

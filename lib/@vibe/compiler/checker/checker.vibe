@@ -2825,6 +2825,23 @@ let eq_formal_rigid: Array[Bool] = []
 let eq_group_stack: Array[Int] = []
 let eq_group_next: Array[Int] = [0]
 
+/// #2848 (Codex on #2864): field reads whose receiver was STILL an unsolved
+/// variable when the `EDot` arm judged them -- `(variable id, field, field
+/// offset, dot offset)`. An unannotated lambda parameter is such a variable,
+/// and it is unified with its argument only when the lambda is applied, which
+/// may be after the read has been checked: `let f = (p) -> { p.payload };
+/// f(m)` inside `fn read[T](m: T)` typed the read with `p` unsolved, accepted
+/// it for good, and codegen then resolved the field by spelling -- the exact
+/// silent-wrong answer the immediate refusal closes for `m.payload`. Each row
+/// is judged again by `resolve_deferred_field_reads` with the same arms once
+/// the enclosing function body has been checked, and once more with the
+/// program's final substitution; a row that resolves is dropped, a row that
+/// is still a variable stays tolerated. The fifth slot is the receiver's
+/// spelling when it is a plain identifier (`p`), so the generalization
+/// refusal (`refuse_generalized_field_reads`) can name the parameter to
+/// annotate; "" otherwise. Reset with the other per-run tables.
+let deferred_field_reads: Array[(Int, String, Int, Int, String)] = []
+
 export fn reset_eq_formal_vars() -> Unit {
   Array::truncate(eq_formal_vars, 0)
   Array::truncate(eq_formal_arity, 0)
@@ -2832,6 +2849,7 @@ export fn reset_eq_formal_vars() -> Unit {
   Array::truncate(eq_formal_rigid, 0)
   Array::truncate(eq_group_stack, 0)
   Array::set(eq_group_next, 0, 0)
+  Array::truncate(deferred_field_reads, 0)
 }
 
 /// Open a generic declaration: allocate its group id and push it.
@@ -6093,6 +6111,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // binding's to quantify. See let_generalize for why those are two
         // rules and not one.
         let gen = let_generalize(val, vt, cenv, ns, None)
+        // #2848: a field read on a parameter this binding just quantified.
+        refuse_generalized_field_reads(gen, ns, errors)
         let aliases_outer = spine_region_active && expression_aliases_outer_binding(val, cenv)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
@@ -6150,6 +6170,8 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
         // the same captured array every call, and this site generalized
         // unconditionally.
         let gen = let_generalize(val, tv, cenv, s2, Some(name))
+        // #2848: see the ELet arm.
+        refuse_generalized_field_reads(gen, s2, errors)
         cenv = env_bind(cenv, name, gen)
         cenv = bind_function_dependency_contracts(cenv, name, val)
         s1 = s2
@@ -6847,11 +6869,20 @@ fn formal_field_access_message(tparam: String, field: String) -> String {
 /// still open answer, for the reason `eq_formal_row_of` gives -- an auxiliary
 /// re-check can hand one variable id to two sibling binders.
 fn open_formal_name_for_var(id: Int, s: Subst) -> String {
+  formal_name_for_var(id, s, true)
+}
+
+/// The lookup behind `open_formal_name_for_var`. `open_only = false` also
+/// answers from a binder whose declaration has already closed; that is what
+/// the program-end pass over `deferred_field_reads` needs, because by then
+/// every declaration is closed and a variable unified with a formal during
+/// its body still stands for that formal under the final substitution.
+fn formal_name_for_var(id: Int, s: Subst, open_only: Bool) -> String {
   let mut i = Array::length(eq_formal_vars) - 1
   let mut found = ""
   while i >= 0 && found == "" {
     let (vid, name) = Array::get(eq_formal_vars, i)
-    if eq_group_is_open(Array::get(eq_formal_group, i)) {
+    if !open_only || eq_group_is_open(Array::get(eq_formal_group, i)) {
       if vid == id {
         found = name
       } else {
@@ -6866,6 +6897,471 @@ fn open_formal_name_for_var(id: Int, s: Subst) -> String {
     i = i - 1
   }
   found
+}
+
+/// #2848 (Codex on #2864): judge every pending field read in
+/// `deferred_field_reads` against the substitution as it stands now. A row
+/// whose variable resolves to a type parameter is refused with the formal
+/// message; one that resolves to any other type goes through
+/// `field_read_type`, the same arms the immediate check uses, so a receiver
+/// that turned out to be an `Option`, an enum or a struct lacking the field is
+/// refused exactly as if it had been annotated; a row that resolved to a
+/// struct carrying the field is simply dropped. A row whose variable is still
+/// unsolved is kept for a later pass -- an inner lambda's parameter is solved
+/// by a call in the ENCLOSING body, so the pass at the lambda's own end keeps
+/// it and the pass at the enclosing function's end judges it.
+///
+/// Called at the end of every function body (before its generic group closes,
+/// so `open_only` can hold) and once more with the program's final
+/// substitution (`open_only = false`, since every group has closed by then).
+export fn resolve_deferred_field_reads(s: Subst, defs: Array[TypeDef], errors: Array[String], open_only: Bool) -> Unit {
+  let kept: Array[(Int, String, Int, Int, String)] = []
+  let mut i = 0
+  while i < Array::length(deferred_field_reads) {
+    let (vid, field, field_off, dot_off, recv) = Array::get(deferred_field_reads, i)
+    match subst_apply(s, CtVar(vid)) {
+      CtVar(rep) => {
+        let formal = formal_name_for_var(rep, s, open_only)
+        if formal != "" {
+          Array::push(errors, String::concat(formal_field_access_message(formal, field), if field_off >= 0 {
+            off_marker_len(field_off, String::length(field))
+          } else {
+            off_marker(dot_off)
+          }))
+        } else {
+          Array::push(kept, (vid, field, field_off, dot_off, recv))
+        }
+      },
+      resolved => {
+        let _ = field_read_type(resolved, field, defs, s, errors, field_off, dot_off)
+      }
+    }
+    i = i + 1
+  }
+  Array::truncate(deferred_field_reads, 0)
+  let mut k = 0
+  while k < Array::length(kept) {
+    Array::push(deferred_field_reads, Array::get(kept, k))
+    k = k + 1
+  }
+}
+
+/// #2848 (Codex on #2864): the edit for a field read whose receiver's type a
+/// `let`-bound function leaves OPEN. `let f = (p) -> { p.payload }` is
+/// generalized -- `p` is quantified, and each call instantiates a fresh copy
+/// -- so nothing a caller passes ever reaches the read that was checked, and
+/// `p`'s variable never resolves. The body is still lowered once, so the read
+/// has no offset to take; the only edit is the parameter's annotation.
+fn open_receiver_field_access_message(recv: String, field: String) -> String {
+  let subject = if recv == "" {
+    String::concat("the receiver of `.", String::concat(field, "`"))
+  } else {
+    String::concat("`", String::concat(recv, "`"))
+  }
+  String::concat("annotate ", String::concat(subject, String::concat(" with the struct that declares `", String::concat(field, String::concat("`; field access `.", String::concat(field, String::concat("` needs a struct, and this `let`-bound function leaves ", String::concat(subject, "'s type open for every caller"))))))))
+}
+
+/// #2848 (Codex on #2864): refuse every pending field read whose variable a
+/// `let` binding has just QUANTIFIED. Measured with the deferred pass alone:
+/// `fn read[T](m: T) -> Int { let f = (p) -> { p.payload }; f(m) }` still
+/// compiled clean and answered `0`, because `let_generalize` made `f`
+/// polymorphic in `p` and `f(m)` unified a fresh instance, never the recorded
+/// variable -- so no later pass could ever see it resolve. A quantified
+/// receiver is an implicit type parameter of the binding, and the same
+/// argument as for a declared one applies: the body is lowered once, and a
+/// field read on it resolves by spelling. Called right after each
+/// `let_generalize`; `gen` is the binding's generalized type, and only a
+/// `CtForAll` it produced can quantify anything.
+export fn refuse_generalized_field_reads(gen: Type, s: Subst, errors: Array[String]) -> Unit {
+  match gen {
+    CtForAll(vars, _, _) => {
+      let kept: Array[(Int, String, Int, Int, String)] = []
+      let mut i = 0
+      while i < Array::length(deferred_field_reads) {
+        let (vid, field, field_off, dot_off, recv) = Array::get(deferred_field_reads, i)
+        let quantified = match subst_apply(s, CtVar(vid)) {
+          CtVar(rep) => int_array_has(vars, rep),
+          _ => false
+        }
+        if quantified {
+          Array::push(errors, String::concat(open_receiver_field_access_message(recv, field), if field_off >= 0 {
+            off_marker_len(field_off, String::length(field))
+          } else {
+            off_marker(dot_off)
+          }))
+        } else {
+          Array::push(kept, (vid, field, field_off, dot_off, recv))
+        }
+        i = i + 1
+      }
+      Array::truncate(deferred_field_reads, 0)
+      let mut k = 0
+      while k < Array::length(kept) {
+        Array::push(deferred_field_reads, Array::get(kept, k))
+        k = k + 1
+      }
+    },
+    _ => ()
+  }
+}
+
+/// The type of `.field` on a receiver of type `resolved`, pushing a located
+/// refusal onto `errors` when the receiver cannot carry a field. Split out of
+/// the `EDot` arm so the SAME judgement can be re-run later for a receiver
+/// that was still an unsolved variable when the read was checked (#2848,
+/// `resolve_deferred_field_reads`): the arms below never see a `CtVar` from
+/// that caller, which resolves the pending variable first.
+fn field_read_type(resolved: Type, field: String, defs: Array[TypeDef], s1: Subst, errors: Array[String], field_off: Int, dot_off: Int) -> Type {
+  match resolved {
+    CtStruct(sname) => match find_typedef(defs, sname) {
+      Some(td) => match td {
+        TDStruct(_, fields, _, _) => {
+          let rec find_field: (Int) -> Option[Type] = (i) -> {
+            if i >= Array::length(fields) {
+              None
+            } else {
+              let (fname, ftype) = Array::get(fields, i)
+              if fname == field {
+                Some(ftype)
+              } else find_field(i + 1)
+            }
+          }
+          match find_field(0) {
+            Some(ft) => ft,
+            None => {
+              Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), if field_off >= 0 {
+                off_marker_len(field_off, String::length(field))
+              } else {
+                off_marker(dot_off)
+              }))
+              CtUnknown
+            }
+          }
+        },
+        _ => CtUnknown
+      },
+      None => CtUnknown
+    },
+    // #1839: field read on an anonymous record — resolve by name in
+    // the record's own field list (literal order). An unknown field
+    // is a located error; the codegen/desugar positional read would
+    // otherwise reach an out-of-range slot.
+    CtRecord(rec_fields) => {
+      let rec find_field_r: (Int) -> Option[Type] = (i) -> {
+        if i >= Array::length(rec_fields) {
+          None
+        } else {
+          let (fname, ftype) = Array::get(rec_fields, i)
+          if fname == field {
+            Some(ftype)
+          } else find_field_r(i + 1)
+        }
+      }
+      match find_field_r(0) {
+        Some(ft) => ft,
+        None => {
+          Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on ", type_to_string(resolved)))), if field_off >= 0 {
+            off_marker_len(field_off, String::length(field))
+          } else {
+            off_marker(dot_off)
+          }))
+          CtUnknown
+        }
+      }
+    },
+    // #829: field read through an INSTANTIATED generic struct value —
+    // substitute the declared type params with the receiver's type args so
+    // `b.v` on `Box[Int]` is `Int` (previously the whole read was
+    // CtUnknown, letting `String::length(b.v)` compile to silent garbage).
+    // A CtNamed head that is not a known struct (Stream/i64/unresolved
+    // type params, cross-module names) stays tolerated as before.
+    CtNamed(gname, gargs) => match find_typedef(defs, gname) {
+      Some(td) => match td {
+        TDStruct(_, gfields, _, gtparams) => {
+          let rec find_field_g: (Int) -> Option[Type] = (i) -> {
+            if i >= Array::length(gfields) {
+              None
+            } else {
+              let (fname, ftype) = Array::get(gfields, i)
+              if fname == field {
+                Some(ftype)
+              } else find_field_g(i + 1)
+            }
+          }
+          match find_field_g(0) {
+            Some(ft) => inst_struct_field_ty(ft, gtparams, gargs),
+            None => {
+              Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", gname))), if field_off >= 0 {
+                off_marker_len(field_off, String::length(field))
+              } else {
+                off_marker(dot_off)
+              }))
+              CtUnknown
+            }
+          }
+        },
+        // #2807, second spelling. An INSTANTIATED generic enum resolves
+        // to `CtNamed(name, args)`, not to `CtEnum(name)`, so it never
+        // reaches the non-struct arm below and was tolerated here. The
+        // typedef proves it is an enum, which is as solid a signal as
+        // the bare `CtEnum`. Measured on the pre-fix compiler at
+        // 4905ca8: `enum Wrap[T] { W(T); Empty }` with `struct Box {
+        // payload: Int }` in scope, `let e: Wrap[Int] = W(7)` and
+        // `e.payload` compiled clean and answered `7`.
+        //
+        // Only `TDEnum` is flagged, and an alias needs no arm of its
+        // own: a type annotation is elaborated through
+        // `resolve_type_expr` before it is ever bound, so `type PAlias
+        // = Parcel` with `let p: PAlias` arrives here already resolved
+        // to `CtEnum("Parcel")` and is refused by the arm below.
+        // Measured on the fixed compiler: it reports `match on Parcel`,
+        // naming the enum rather than the alias. The same elaboration
+        // is why an alias to a STRUCT already refused a foreign field
+        // (`unknown field 'foreign' on struct Holder`) before this
+        // change -- that half was never broken.
+        TDEnum(ename, _, _) => {
+          Array::push(errors, String::concat(enum_field_access_message(ename, field), if field_off >= 0 {
+            off_marker_len(field_off, String::length(field))
+          } else {
+            off_marker(dot_off)
+          }))
+          CtUnknown
+        },
+        _ => CtUnknown
+      },
+      // #2820, the `Map` half. A `StringMap[V]` annotation does not
+      // resolve to a type of its own: `resolve_type_expr_core_shadowed`
+      // rewrites it to `CtNamed("Map", [CtString, V])` when no source
+      // declaration claims the spelling, so a map receiver arrives HERE
+      // with no typedef and was tolerated, never reaching the non-struct
+      // arm below. `Map[K, V]` written directly lands the same way.
+      //
+      // The test is the compiler's OWN type-constructor registry at the
+      // ARITY it was applied with -- not the spelling, which #2820 asks
+      // this not to widen by. Two keys have to agree: the name is one
+      // `compiler_owned_type_arity` owns, and no `find_typedef` claims
+      // it (a user's `struct Map[K, V]` is legal -- #2475 only refuses a
+      // declaration at `Array` / `Option` arity 1 and `resolve_builtin`
+      // arity 0 -- and takes the `TDStruct` arm above, where its fields
+      // resolve normally).
+      //
+      // Arity >= 1 is what keeps a shadowing type FORMAL out. A type
+      // parameter may be named for a builtin, and UNAPPLIED it reaches
+      // here as `CtNamed(name, [])` -- measured, `fn read[Map](m: Map)`
+      // compiles clean -- so the length comparison alone excludes it,
+      // whatever the registry says about the name. Applied, a formal
+      // does not arrive at all: measured on both compilers,
+      // `fn read[Map](m: Map[String, Int])` is already rejected upstream
+      // by the kinded-formal check ("a constructor parameter takes one
+      // argument"), and at arity 1 `fn read[Array](m: Array[Int])
+      // { m.v }` resolves through `CtApplied` and stays clean, before
+      // and after this change alike.
+      //
+      // The cost, named rather than closed by guessing: the four
+      // arity-0 builtins (`StringBuilder`, `ByteStream`, `HostStream`,
+      // `PromptText`) stay tolerated, because at arity 0 the builtin
+      // and an unapplied formal are the same `CtNamed(name, [])` and
+      // refusing one refuses the other.
+      //
+      // #2848: a RIGID type formal. An unbounded formal that takes part
+      // in a higher-kinded application (`F` and `A` of `F[A]`) is bound
+      // in its body as `CtNamed("#hktformal.<name>", [])` rather than
+      // as a unification variable (the EFn arm, `hkt_related`), so it
+      // lands here with no typedef. The spelling can only come from a
+      // binder -- the parser refuses it in source -- so it is refused
+      // outright; the plain-formal twin, which arrives as `CtVar`, is
+      // refused in the non-struct arm below.
+      //
+      // Everything else this arm reaches stays tolerated: an
+      // unresolved cross-module name on the incremental per-file lane
+      // arrives as a bare `CtNamed(name, [])` too, and resolves later.
+      // A TYPE PARAMETER never takes that spelling inside its own body
+      // (it is a variable or the rigid spelling above), which is what
+      // lets the two be told apart here.
+      None => if String::starts_with(gname, "#hktformal.") {
+        Array::push(errors, String::concat(formal_field_access_message(String::substring(gname, 11, String::length(gname)), field), if field_off >= 0 {
+          off_marker_len(field_off, String::length(field))
+        } else {
+          off_marker(dot_off)
+        }))
+        CtUnknown
+      } else {
+        let owned_arity = match compiler_owned_type_arity(gname) {
+          Some(n) => n,
+          None => 0 - 1
+        }
+        if owned_arity >= 1 && Array::length(gargs) == owned_arity {
+          Array::push(errors, String::concat(builtin_field_access_message(gname, field), if field_off >= 0 {
+            off_marker_len(field_off, String::length(field))
+          } else {
+            off_marker(dot_off)
+          }))
+        } else {
+          ()
+        }
+        CtUnknown
+      }
+    },
+    // `t.N` tuple projection: the index must be in range, else it reads an
+    // out-of-bounds slot (`(1, 2).5` was accepted). When `field` is a
+    // numeric index and the tuple arity is known, bounds-check it.
+    CtTuple(elems) => match parse_tuple_index(field) {
+      Some(idx) => if idx >= 0 && idx < Array::length(elems) {
+        Array::get(elems, idx)
+      } else {
+        Array::push(errors, String::concat(String::concat("tuple index ", String::concat(field, String::concat(" out of range for a ", String::concat(__to_string(Array::length(elems)), "-tuple")))), if field_off >= 0 {
+          off_marker_len(field_off, String::length(field))
+        } else {
+          off_marker(dot_off)
+        }))
+        CtUnknown
+      },
+      // #2807: a field name that is not a numeric index at all was
+      // tolerated here, and codegen then resolved it by SPELLING
+      // against any struct declaring it. Measured on the pre-fix
+      // compiler at 4905ca8: `struct Crate { payload: Int }` in scope,
+      // `let t = (7, 8)` and `t.payload` compiled clean and answered
+      // `7` — slot 0 of the tuple, read through `Crate`'s offset.
+      //
+      // Only the VALUE position reaches this arm: a method call
+      // `t.f(x)` is `ECall(EDot(t, "f"), args)` and is typed by the
+      // ECall arm, so refusing here cannot take a call with it.
+      None => {
+        Array::push(errors, String::concat(tuple_named_field_message(field, Array::length(elems)), if field_off >= 0 {
+          off_marker_len(field_off, String::length(field))
+        } else {
+          off_marker(dot_off)
+        }))
+        CtUnknown
+      }
+    },
+    // Field access on a concrete NON-struct value (`o.x` where `o :
+    // Option[P]`, or a scalar / function) is a type error — only structs
+    // (and tuple `.N`) have fields. Unknown / named scrutinees are
+    // tolerated, and so is a type variable UNLESS it stands for a type
+    // parameter of an open generic declaration (#2848, below).
+    //
+    // #2848: a plain type formal is a unification variable inside its
+    // body (#2130), so a field read on `m: T` reached this arm as
+    // `CtVar`, was tolerated as an unsolved inference variable, and
+    // typed `CtUnknown`. Codegen then resolved the field by SPELLING
+    // against any struct declaring it -- #2807's shape one rung over.
+    // Measured on the committed seed: `struct Crate { payload: Int }`
+    // in scope, `fn read[T](m: T) -> Int { m.payload }` applied to `7`
+    // compiled clean on both lanes and answered `0`, slot 0 of a tagged
+    // integer read through `Crate`'s offset; with no struct declaring
+    // the name, `m.v` was clean in `vibe check` and died in the build
+    // with an unlocated `unknown struct field: v`. `eq_formal_vars`
+    // records which variables ARE formals (the #2474 table), so the
+    // refusal is keyed on that identity and an ordinary unsolved
+    // variable (`let xs = []`) keeps its tolerance. A bound does not
+    // rescue the read: no trait can promise a field, and a
+    // trait-bounded formal is the same variable with bounds attached.
+    //
+    // #2820: `CtString` / `CtBytes` / `CtArray` were excluded here, and
+    // the reason given was that "`.m` on them parses as a method call
+    // elsewhere, not a value-position EDot". That rationale is not
+    // merely stale -- the situation it guards against cannot occur. A
+    // dot-CALL is `ECall(EDot(recv, m), args)` and is typed by the
+    // callee-is-EDot arm of the ECall case above, which checks the
+    // RECEIVER alone and never recurses into the whole EDot node, so a
+    // call never reaches here to be refused. Measured on a stage2 built
+    // from 8c966c3, the two spellings are independent: with
+    // `fn Array::my_len(xs: Array[Int]) -> Int` declared, `xs.my_len()`
+    // compiles and answers 103 (the `String` twin, `s.shout()`, answers
+    // 204), while the same file's `xs.my_len` WITHOUT the parens was
+    // clean here and died in codegen with an unlocated `unknown struct
+    // field: my_len`. A method value is not a supported form on any
+    // receiver -- the struct twin `p.my_x` is already refused here,
+    // located, as `unknown field 'my_x' on struct Pt` -- so flagging
+    // the builtin receiver makes the two agree rather than taking a
+    // working program with it.
+    //
+    // What the exclusion did cost is the whole point of the CLI query
+    // surface: `.v` on an `Array` / `Map` / `Bytes` / `String` receiver
+    // was CLEAN in `vibe check` and rejected by the build with an
+    // unlocated `unknown struct field: v`, a message that also asserts
+    // the receiver is a struct whose field list lacks `v` when the truth
+    // is that the receiver has no fields at all. Empty output has to
+    // mean clean.
+    //
+    // #2807: `CtEnum` was missing from this list, so an ENUM receiver fell
+    // through to "tolerated" and the read typed as `CtUnknown`. Codegen
+    // then resolved the field by SPELLING against any struct in the
+    // program that declares it, and emitted the load. Measured on main at
+    // 4905ca8, with `struct Box { payload: Int }` in scope,
+    // `let e = B(7); e.payload` compiled clean on both lanes and answered
+    // `7` — the enum's payload read through an unrelated struct's offset.
+    // It is the offset, not the value: a second field `Box { first,
+    // second }` and `e.second` answered `0`, and the declared TYPE is
+    // taken on faith too — `struct Named { label: String }` with
+    // `String::length(e.label)` answered `14`, reading a tagged integer
+    // as a `(ptr|len)` string.
+    //
+    // The same absence is why `vibe check` and the build disagreed even
+    // when no struct claimed the name: `e.no_such_field` was clean here
+    // and died in codegen with an unlocated `unknown struct field`. One
+    // arm closes both halves.
+    other => {
+      let formal_receiver = match other {
+        CtVar(vid) => open_formal_name_for_var(vid, s1),
+        _ => ""
+      }
+      let enum_receiver = match other {
+        CtEnum(_) => true,
+        _ => false
+      }
+      let builtin_receiver = match other {
+        CtString => true,
+        CtBytes => true,
+        CtArray(_) => true,
+        _ => false
+      }
+      let not_struct = match other {
+        CtInt => true,
+        CtDouble => true,
+        CtBool => true,
+        CtChar => true,
+        CtUnit => true,
+        CtOption(_) => true,
+        CtFn(_, _, _) => true,
+        CtEnum(_) => true,
+        CtString => true,
+        CtBytes => true,
+        CtArray(_) => true,
+        _ => false
+      }
+      if formal_receiver != "" {
+        Array::push(errors, String::concat(formal_field_access_message(formal_receiver, field), if field_off >= 0 {
+          off_marker_len(field_off, String::length(field))
+        } else {
+          off_marker(dot_off)
+        }))
+      } else if not_struct {
+        // The enum case gets its OWN message because its edit is a
+        // different one: a variant payload is reached by matching, not by
+        // naming a field. CLAUDE.md — the diagnostic leads with the edit.
+        let message = if enum_receiver {
+          enum_field_access_message(type_to_string(other), field)
+        } else if builtin_receiver {
+          // `type_name_prefix` and not `type_to_string`: the message
+          // names the QUALIFIED call to write instead, so it needs the
+          // bare head (`Array`), not the instantiation (`Array[Int]`).
+          builtin_field_access_message(type_name_prefix(other), field)
+        } else {
+          String::concat("field access `.", String::concat(field, "` on a non-struct value"))
+        }
+        Array::push(errors, String::concat(message, if field_off >= 0 {
+          off_marker_len(field_off, String::length(field))
+        } else {
+          off_marker(dot_off)
+        }))
+      } else {
+        ()
+      }
+      CtUnknown
+    }
+  }
 }
 
 fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], capture: Option[TypedOccurrenceRoleLaneCapture], lane: String, discarded_root: Bool) -> (Type, Subst, Int) {
@@ -9845,355 +10341,28 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         None => {
           let (obj_ty, s1, c1) = check_expr_capture(obj, env, defs, s, c, errors, tytab, capture, lane)
           let resolved = subst_apply(s1, obj_ty)
-          let field_ty = match resolved {
-            CtStruct(sname) => match find_typedef(defs, sname) {
-              Some(td) => match td {
-                TDStruct(_, fields, _, _) => {
-                  let rec find_field: (Int) -> Option[Type] = (i) -> {
-                    if i >= Array::length(fields) {
-                      None
-                    } else {
-                      let (fname, ftype) = Array::get(fields, i)
-                      if fname == field {
-                        Some(ftype)
-                      } else find_field(i + 1)
-                    }
-                  }
-                  match find_field(0) {
-                    Some(ft) => ft,
-                    None => {
-                      Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", sname))), if field_off >= 0 {
-                        off_marker_len(field_off, String::length(field))
-                      } else {
-                        off_marker(dot_off)
-                      }))
-                      CtUnknown
-                    }
-                  }
-                },
-                _ => CtUnknown
-              },
-              None => CtUnknown
-            },
-            // #1839: field read on an anonymous record — resolve by name in
-            // the record's own field list (literal order). An unknown field
-            // is a located error; the codegen/desugar positional read would
-            // otherwise reach an out-of-range slot.
-            CtRecord(rec_fields) => {
-              let rec find_field_r: (Int) -> Option[Type] = (i) -> {
-                if i >= Array::length(rec_fields) {
-                  None
-                } else {
-                  let (fname, ftype) = Array::get(rec_fields, i)
-                  if fname == field {
-                    Some(ftype)
-                  } else find_field_r(i + 1)
-                }
-              }
-              match find_field_r(0) {
-                Some(ft) => ft,
-                None => {
-                  Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on ", type_to_string(resolved)))), if field_off >= 0 {
-                    off_marker_len(field_off, String::length(field))
-                  } else {
-                    off_marker(dot_off)
-                  }))
-                  CtUnknown
-                }
-              }
-            },
-            // #829: field read through an INSTANTIATED generic struct value —
-            // substitute the declared type params with the receiver's type args so
-            // `b.v` on `Box[Int]` is `Int` (previously the whole read was
-            // CtUnknown, letting `String::length(b.v)` compile to silent garbage).
-            // A CtNamed head that is not a known struct (Stream/i64/unresolved
-            // type params, cross-module names) stays tolerated as before.
-            CtNamed(gname, gargs) => match find_typedef(defs, gname) {
-              Some(td) => match td {
-                TDStruct(_, gfields, _, gtparams) => {
-                  let rec find_field_g: (Int) -> Option[Type] = (i) -> {
-                    if i >= Array::length(gfields) {
-                      None
-                    } else {
-                      let (fname, ftype) = Array::get(gfields, i)
-                      if fname == field {
-                        Some(ftype)
-                      } else find_field_g(i + 1)
-                    }
-                  }
-                  match find_field_g(0) {
-                    Some(ft) => inst_struct_field_ty(ft, gtparams, gargs),
-                    None => {
-                      Array::push(errors, String::concat(String::concat("unknown field '", String::concat(field, String::concat("' on struct ", gname))), if field_off >= 0 {
-                        off_marker_len(field_off, String::length(field))
-                      } else {
-                        off_marker(dot_off)
-                      }))
-                      CtUnknown
-                    }
-                  }
-                },
-                // #2807, second spelling. An INSTANTIATED generic enum resolves
-                // to `CtNamed(name, args)`, not to `CtEnum(name)`, so it never
-                // reaches the non-struct arm below and was tolerated here. The
-                // typedef proves it is an enum, which is as solid a signal as
-                // the bare `CtEnum`. Measured on the pre-fix compiler at
-                // 4905ca8: `enum Wrap[T] { W(T); Empty }` with `struct Box {
-                // payload: Int }` in scope, `let e: Wrap[Int] = W(7)` and
-                // `e.payload` compiled clean and answered `7`.
-                //
-                // Only `TDEnum` is flagged, and an alias needs no arm of its
-                // own: a type annotation is elaborated through
-                // `resolve_type_expr` before it is ever bound, so `type PAlias
-                // = Parcel` with `let p: PAlias` arrives here already resolved
-                // to `CtEnum("Parcel")` and is refused by the arm below.
-                // Measured on the fixed compiler: it reports `match on Parcel`,
-                // naming the enum rather than the alias. The same elaboration
-                // is why an alias to a STRUCT already refused a foreign field
-                // (`unknown field 'foreign' on struct Holder`) before this
-                // change -- that half was never broken.
-                TDEnum(ename, _, _) => {
-                  Array::push(errors, String::concat(enum_field_access_message(ename, field), if field_off >= 0 {
-                    off_marker_len(field_off, String::length(field))
-                  } else {
-                    off_marker(dot_off)
-                  }))
-                  CtUnknown
-                },
-                _ => CtUnknown
-              },
-              // #2820, the `Map` half. A `StringMap[V]` annotation does not
-              // resolve to a type of its own: `resolve_type_expr_core_shadowed`
-              // rewrites it to `CtNamed("Map", [CtString, V])` when no source
-              // declaration claims the spelling, so a map receiver arrives HERE
-              // with no typedef and was tolerated, never reaching the non-struct
-              // arm below. `Map[K, V]` written directly lands the same way.
-              //
-              // The test is the compiler's OWN type-constructor registry at the
-              // ARITY it was applied with -- not the spelling, which #2820 asks
-              // this not to widen by. Two keys have to agree: the name is one
-              // `compiler_owned_type_arity` owns, and no `find_typedef` claims
-              // it (a user's `struct Map[K, V]` is legal -- #2475 only refuses a
-              // declaration at `Array` / `Option` arity 1 and `resolve_builtin`
-              // arity 0 -- and takes the `TDStruct` arm above, where its fields
-              // resolve normally).
-              //
-              // Arity >= 1 is what keeps a shadowing type FORMAL out. A type
-              // parameter may be named for a builtin, and UNAPPLIED it reaches
-              // here as `CtNamed(name, [])` -- measured, `fn read[Map](m: Map)`
-              // compiles clean -- so the length comparison alone excludes it,
-              // whatever the registry says about the name. Applied, a formal
-              // does not arrive at all: measured on both compilers,
-              // `fn read[Map](m: Map[String, Int])` is already rejected upstream
-              // by the kinded-formal check ("a constructor parameter takes one
-              // argument"), and at arity 1 `fn read[Array](m: Array[Int])
-              // { m.v }` resolves through `CtApplied` and stays clean, before
-              // and after this change alike.
-              //
-              // The cost, named rather than closed by guessing: the four
-              // arity-0 builtins (`StringBuilder`, `ByteStream`, `HostStream`,
-              // `PromptText`) stay tolerated, because at arity 0 the builtin
-              // and an unapplied formal are the same `CtNamed(name, [])` and
-              // refusing one refuses the other.
-              //
-              // #2848: a RIGID type formal. An unbounded formal that takes part
-              // in a higher-kinded application (`F` and `A` of `F[A]`) is bound
-              // in its body as `CtNamed("#hktformal.<name>", [])` rather than
-              // as a unification variable (the EFn arm, `hkt_related`), so it
-              // lands here with no typedef. The spelling can only come from a
-              // binder -- the parser refuses it in source -- so it is refused
-              // outright; the plain-formal twin, which arrives as `CtVar`, is
-              // refused in the non-struct arm below.
-              //
-              // Everything else this arm reaches stays tolerated: an
-              // unresolved cross-module name on the incremental per-file lane
-              // arrives as a bare `CtNamed(name, [])` too, and resolves later.
-              // A TYPE PARAMETER never takes that spelling inside its own body
-              // (it is a variable or the rigid spelling above), which is what
-              // lets the two be told apart here.
-              None => if String::starts_with(gname, "#hktformal.") {
-                Array::push(errors, String::concat(formal_field_access_message(String::substring(gname, 11, String::length(gname)), field), if field_off >= 0 {
-                  off_marker_len(field_off, String::length(field))
-                } else {
-                  off_marker(dot_off)
-                }))
-                CtUnknown
-              } else {
-                let owned_arity = match compiler_owned_type_arity(gname) {
-                  Some(n) => n,
-                  None => 0 - 1
-                }
-                if owned_arity >= 1 && Array::length(gargs) == owned_arity {
-                  Array::push(errors, String::concat(builtin_field_access_message(gname, field), if field_off >= 0 {
-                    off_marker_len(field_off, String::length(field))
-                  } else {
-                    off_marker(dot_off)
-                  }))
-                } else {
-                  ()
-                }
-                CtUnknown
-              }
-            },
-            // `t.N` tuple projection: the index must be in range, else it reads an
-            // out-of-bounds slot (`(1, 2).5` was accepted). When `field` is a
-            // numeric index and the tuple arity is known, bounds-check it.
-            CtTuple(elems) => match parse_tuple_index(field) {
-              Some(idx) => if idx >= 0 && idx < Array::length(elems) {
-                Array::get(elems, idx)
-              } else {
-                Array::push(errors, String::concat(String::concat("tuple index ", String::concat(field, String::concat(" out of range for a ", String::concat(__to_string(Array::length(elems)), "-tuple")))), if field_off >= 0 {
-                  off_marker_len(field_off, String::length(field))
-                } else {
-                  off_marker(dot_off)
-                }))
-                CtUnknown
-              },
-              // #2807: a field name that is not a numeric index at all was
-              // tolerated here, and codegen then resolved it by SPELLING
-              // against any struct declaring it. Measured on the pre-fix
-              // compiler at 4905ca8: `struct Crate { payload: Int }` in scope,
-              // `let t = (7, 8)` and `t.payload` compiled clean and answered
-              // `7` — slot 0 of the tuple, read through `Crate`'s offset.
-              //
-              // Only the VALUE position reaches this arm: a method call
-              // `t.f(x)` is `ECall(EDot(t, "f"), args)` and is typed by the
-              // ECall arm, so refusing here cannot take a call with it.
-              None => {
-                Array::push(errors, String::concat(tuple_named_field_message(field, Array::length(elems)), if field_off >= 0 {
-                  off_marker_len(field_off, String::length(field))
-                } else {
-                  off_marker(dot_off)
-                }))
-                CtUnknown
-              }
-            },
-            // Field access on a concrete NON-struct value (`o.x` where `o :
-            // Option[P]`, or a scalar / function) is a type error — only structs
-            // (and tuple `.N`) have fields. Unknown / named scrutinees are
-            // tolerated, and so is a type variable UNLESS it stands for a type
-            // parameter of an open generic declaration (#2848, below).
-            //
-            // #2848: a plain type formal is a unification variable inside its
-            // body (#2130), so a field read on `m: T` reached this arm as
-            // `CtVar`, was tolerated as an unsolved inference variable, and
-            // typed `CtUnknown`. Codegen then resolved the field by SPELLING
-            // against any struct declaring it -- #2807's shape one rung over.
-            // Measured on the committed seed: `struct Crate { payload: Int }`
-            // in scope, `fn read[T](m: T) -> Int { m.payload }` applied to `7`
-            // compiled clean on both lanes and answered `0`, slot 0 of a tagged
-            // integer read through `Crate`'s offset; with no struct declaring
-            // the name, `m.v` was clean in `vibe check` and died in the build
-            // with an unlocated `unknown struct field: v`. `eq_formal_vars`
-            // records which variables ARE formals (the #2474 table), so the
-            // refusal is keyed on that identity and an ordinary unsolved
-            // variable (`let xs = []`) keeps its tolerance. A bound does not
-            // rescue the read: no trait can promise a field, and a
-            // trait-bounded formal is the same variable with bounds attached.
-            //
-            // #2820: `CtString` / `CtBytes` / `CtArray` were excluded here, and
-            // the reason given was that "`.m` on them parses as a method call
-            // elsewhere, not a value-position EDot". That rationale is not
-            // merely stale -- the situation it guards against cannot occur. A
-            // dot-CALL is `ECall(EDot(recv, m), args)` and is typed by the
-            // callee-is-EDot arm of the ECall case above, which checks the
-            // RECEIVER alone and never recurses into the whole EDot node, so a
-            // call never reaches here to be refused. Measured on a stage2 built
-            // from 8c966c3, the two spellings are independent: with
-            // `fn Array::my_len(xs: Array[Int]) -> Int` declared, `xs.my_len()`
-            // compiles and answers 103 (the `String` twin, `s.shout()`, answers
-            // 204), while the same file's `xs.my_len` WITHOUT the parens was
-            // clean here and died in codegen with an unlocated `unknown struct
-            // field: my_len`. A method value is not a supported form on any
-            // receiver -- the struct twin `p.my_x` is already refused here,
-            // located, as `unknown field 'my_x' on struct Pt` -- so flagging
-            // the builtin receiver makes the two agree rather than taking a
-            // working program with it.
-            //
-            // What the exclusion did cost is the whole point of the CLI query
-            // surface: `.v` on an `Array` / `Map` / `Bytes` / `String` receiver
-            // was CLEAN in `vibe check` and rejected by the build with an
-            // unlocated `unknown struct field: v`, a message that also asserts
-            // the receiver is a struct whose field list lacks `v` when the truth
-            // is that the receiver has no fields at all. Empty output has to
-            // mean clean.
-            //
-            // #2807: `CtEnum` was missing from this list, so an ENUM receiver fell
-            // through to "tolerated" and the read typed as `CtUnknown`. Codegen
-            // then resolved the field by SPELLING against any struct in the
-            // program that declares it, and emitted the load. Measured on main at
-            // 4905ca8, with `struct Box { payload: Int }` in scope,
-            // `let e = B(7); e.payload` compiled clean on both lanes and answered
-            // `7` — the enum's payload read through an unrelated struct's offset.
-            // It is the offset, not the value: a second field `Box { first,
-            // second }` and `e.second` answered `0`, and the declared TYPE is
-            // taken on faith too — `struct Named { label: String }` with
-            // `String::length(e.label)` answered `14`, reading a tagged integer
-            // as a `(ptr|len)` string.
-            //
-            // The same absence is why `vibe check` and the build disagreed even
-            // when no struct claimed the name: `e.no_such_field` was clean here
-            // and died in codegen with an unlocated `unknown struct field`. One
-            // arm closes both halves.
-            other => {
-              let formal_receiver = match other {
-                CtVar(vid) => open_formal_name_for_var(vid, s1),
+          let field_ty = field_read_type(resolved, field, defs, s1, errors, field_off, dot_off)
+          // #2848 (Codex on #2864): a receiver that is STILL an unsolved
+          // variable here -- an unannotated lambda parameter, typically -- may
+          // be unified with a type parameter, or with a concrete non-struct,
+          // only when the lambda is applied later in the enclosing body
+          // (`let f = (p) -> { p.payload }; f(m)`). Judging it now accepts the
+          // read for good, and codegen then resolves the field by spelling. So
+          // the site is recorded and judged again, with the same arms, once
+          // the enclosing function body (and finally the program) has been
+          // checked. A variable that already stands for an open formal was
+          // refused inside `field_read_type` and is not recorded twice. A
+          // `let` that GENERALIZES the variable instead refuses the row on
+          // the spot (`refuse_generalized_field_reads`), since no later pass
+          // could see a quantified variable resolve.
+          match resolved {
+            CtVar(pending_id) => if open_formal_name_for_var(pending_id, s1) == "" {
+              Array::push(deferred_field_reads, (pending_id, field, field_off, dot_off, match obj {
+                EIdent(recv_name, _) => recv_name,
                 _ => ""
-              }
-              let enum_receiver = match other {
-                CtEnum(_) => true,
-                _ => false
-              }
-              let builtin_receiver = match other {
-                CtString => true,
-                CtBytes => true,
-                CtArray(_) => true,
-                _ => false
-              }
-              let not_struct = match other {
-                CtInt => true,
-                CtDouble => true,
-                CtBool => true,
-                CtChar => true,
-                CtUnit => true,
-                CtOption(_) => true,
-                CtFn(_, _, _) => true,
-                CtEnum(_) => true,
-                CtString => true,
-                CtBytes => true,
-                CtArray(_) => true,
-                _ => false
-              }
-              if formal_receiver != "" {
-                Array::push(errors, String::concat(formal_field_access_message(formal_receiver, field), if field_off >= 0 {
-                  off_marker_len(field_off, String::length(field))
-                } else {
-                  off_marker(dot_off)
-                }))
-              } else if not_struct {
-                // The enum case gets its OWN message because its edit is a
-                // different one: a variant payload is reached by matching, not by
-                // naming a field. CLAUDE.md — the diagnostic leads with the edit.
-                let message = if enum_receiver {
-                  enum_field_access_message(type_to_string(other), field)
-                } else if builtin_receiver {
-                  // `type_name_prefix` and not `type_to_string`: the message
-                  // names the QUALIFIED call to write instead, so it needs the
-                  // bare head (`Array`), not the instantiation (`Array[Int]`).
-                  builtin_field_access_message(type_name_prefix(other), field)
-                } else {
-                  String::concat("field access `.", String::concat(field, "` on a non-struct value"))
-                }
-                Array::push(errors, String::concat(message, if field_off >= 0 {
-                  off_marker_len(field_off, String::length(field))
-                } else {
-                  off_marker(dot_off)
-                }))
-              } else {
-                ()
-              }
-              CtUnknown
-            }
+              }))
+            },
+            _ => ()
           }
           // Record this field-access node's (raw, pre-final-subst) projection type
           // keyed by its real source offset, for typed-hover on `obj.field`.
@@ -10479,6 +10648,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
         CtUnit
       })
       let (bt, s2, c2) = check_expr_capture(body, body_env, defs, s1, return_c, errors, tytab, capture, lane)
+      // #2848: a field read on a receiver that was unsolved when checked (an
+      // unannotated parameter of a lambda in this body) may have been solved
+      // by a call in this body. Judge it now, while this declaration's own
+      // formals are still open, so a parameter that became `T` is refused as
+      // `T` and one that became a concrete type gets the concrete verdict.
+      resolve_deferred_field_reads(s2, defs, errors, true)
       if eq_gid >= 0 {
         eq_group_end()
       } else {

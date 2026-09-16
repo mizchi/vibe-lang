@@ -99,6 +99,7 @@ import ./checker.vibe {
   let_generalize,
   pat_binds_resume,
   preserve_generic_instantiation,
+  refuse_generalized_field_reads,
   reject_resume_outside_handler,
   report_formal_applications,
   report_formal_applications_across,
@@ -107,6 +108,7 @@ import ./checker.vibe {
   report_unknown_type_names_deferred_validation,
   reset_eq_formal_vars,
   reset_return_provenance_index,
+  resolve_deferred_field_reads,
   resolve_trait_bound_self_reference,
   trait_erased_type_param_env,
   trait_reference_display,
@@ -3008,7 +3010,10 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // own copy of the predicate, so a top-level `let g2 = g` kept
             // quantifying a captured slot after both local arms stopped --
             // three places for one rule is how they drift apart.
-            (ns0, let_generalize(val, vt, env, ns0, None))
+            let gen = let_generalize(val, vt, env, ns0, None)
+            // #2848: see the ELet arm in checker.vibe.
+            refuse_generalized_field_reads(gen, ns0, errors)
+            (ns0, gen)
           }
         }
         let env1 = bind_function_dependency_contracts(env_bind(env, name, t), name, val)
@@ -6367,6 +6372,9 @@ fn check_program_type_defs_observation_impl(stmts: Array[Stmt], capture: Option[
   }
   let (env, final_s, _) = check_stmts_with_binders(expanded_stmts, 0, seeded_env, empty_defs, type_def_binders, 0, SubstEmpty, 0, frozen_errors, tytab, statement_parent_path, capture, role_lane_capture, false, true)
   check_program_bounds(env, final_s, empty_defs, frozen_errors)
+  // #2848: field reads whose receiver was still unsolved at every function
+  // end are judged once more under the final substitution.
+  resolve_deferred_field_reads(final_s, empty_defs, frozen_errors, false)
   // #1858: a bounded generic whose body calls `T::m` but whose signature has
   // no witness-carrying parameter would sail through checking and ICE in
   // codegen (`T::m reached code generation unresolved`) — reject it here with
@@ -8145,6 +8153,8 @@ fn check_program_with_env_type_defs_observation_impl(stmts: Array[Stmt], initial
       // this environment, so user-trait bounds are checked here with the same
       // rule as the standalone path.
       check_program_bounds(env, final_s, empty_defs, frozen_errors)
+      // #2848: see the standalone path.
+      resolve_deferred_field_reads(final_s, empty_defs, frozen_errors, false)
       // #1858: same witness-carrier validation as the standalone path — the
       // projected env supplies imported traits' method tables, so a module
       // using an imported method-bearing trait (e.g. @vibe/core's Default)
