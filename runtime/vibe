@@ -228,11 +228,13 @@ case "${1:-help}" in
   *) [ -x "$RUNNER" ] || die "runner not found or not executable: $RUNNER" ;;
 esac
 host_run_guest() {
-  local wasm="$1" trace="$2" brk="$3" mem="$4" msamp="$5" asite="$6" atop="$7" gprof="$8" gint="$9"
-  shift 9
+  local wasm="$1" src="$2" trace="$3" brk="$4" mem="$5" msamp="$6" asite="$7" atop="$8" gprof="$9" gint="${10}"
+  shift 10
   local envp=()
   [ "$trace" = 1 ] && envp+=("VIBE_TRACE_OUT=1")
-  [ -n "$brk" ] && envp+=("VIBE_BREAK=$brk")
+  # A `--break <file>:<line>` matches only when the basename equals
+  # VIBE_BREAK_FILE (runtime/viberun), so the entry's basename rides along.
+  [ -n "$brk" ] && envp+=("VIBE_BREAK=$brk" "VIBE_BREAK_FILE=$(basename "$src")")
   [ "$mem" = 1 ] && envp+=("VIBE_MEM=1")
   [ -n "$msamp" ] && envp+=("VIBE_MEM_SAMPLE_MS=$msamp")
   [ "$asite" = 1 ] && envp+=("VIBE_ALLOC_SITE=1")
@@ -309,7 +311,7 @@ execute_host_action() {
       wasm="$(sed -n '3p' "$plan")"
       local args=()
       while IFS= read -r line; do args+=("$line"); done < <(sed -n '13,$p' "$plan")
-      host_run_guest "$wasm" "$(sed -n '5p' "$plan")" "$(sed -n '6p' "$plan")" \
+      host_run_guest "$wasm" "$(sed -n '4p' "$plan")" "$(sed -n '5p' "$plan")" "$(sed -n '6p' "$plan")" \
         "$(sed -n '7p' "$plan")" "$(sed -n '8p' "$plan")" "$(sed -n '9p' "$plan")" \
         "$(sed -n '10p' "$plan")" "$(sed -n '11p' "$plan")" "$(sed -n '12p' "$plan")" \
         ${args[@]+"${args[@]}"}
@@ -317,9 +319,11 @@ execute_host_action() {
     run-guest-profile)
       src="$(sed -n '3p' "$plan")"; profile_out="$(sed -n '4p' "$plan")"; interval="$(sed -n '5p' "$plan")"
       local pargs=(); while IFS= read -r line; do pargs+=("$line"); done < <(sed -n '6,$p' "$plan")
+      # The dispatcher rewrote both paths relative to the PROJECT ROOT (the
+      # directory invoke_cli runs it from), not to the invoking directory.
+      case "$src" in /*) ;; *) src="$PROJECT_ROOT/$src" ;; esac
+      case "$profile_out" in /*) ;; *) profile_out="$PROJECT_ROOT/$profile_out" ;; esac
       [ "$src" -ef "$profile_out" ] && die "profile: --out must not alias the source"
-      case "$src" in /*) ;; *) src="$PWD/$src" ;; esac
-      case "$profile_out" in /*) ;; *) profile_out="$PWD/$profile_out" ;; esac
       VIBE_INVOKE_DIR="$INVOKE_DIR" exec "$0" run --guest-profile="$profile_out" --guest-profile-interval-us="$interval" \
         "$src" -- ${pargs[@]+"${pargs[@]}"}
       ;;
@@ -332,12 +336,39 @@ execute_host_action() {
       "$RUNNER" "$opt_wasm" "$out" "$out" || die "--minify failed for $out"
       ;;
     run-tests)
-      t_fail=0; t_pass=0; update="$(sed -n '3p' "$plan")"; no_cache="$(sed -n '4p' "$plan")"
-      while IFS= read -r rec; do
-        [ -n "$rec" ] || continue
-        src="${rec%%	*}"; wasm="${rec#*	}"
-        if host_run_test "$src" "$wasm" "$update" "$no_cache"; then t_pass=$((t_pass+1)); else t_fail=$((t_fail+1)); fi
-      done < <(sed -n '5,$p' "$plan")
+      t_fail=0; t_pass=0; update="$(sed -n '3p' "$plan")"; no_cache="$(sed -n '4p' "$plan")"; jobs="$(sed -n '5p' "$plan")"
+      case "$jobs" in ''|*[!0-9]*) jobs=1 ;; esac
+      if [ "$jobs" -gt 1 ] && [ "$update" != 1 ]; then
+        # `--jobs N`: up to N files' wasm run concurrently, in same-sized
+        # batches; each file's output is buffered and replayed in the ORIGINAL
+        # order once its batch finishes, so the report reads the same as the
+        # serial one whichever process finished first. --update stays serial:
+        # its re-run re-enters this arm for one file at a time.
+        local recs=() rec_i=0 batch_logs=() batch_pids=() log n
+        while IFS= read -r rec; do [ -n "$rec" ] && recs+=("$rec"); done < <(sed -n '6,$p' "$plan")
+        while [ "$rec_i" -lt "${#recs[@]}" ]; do
+          batch_logs=(); batch_pids=(); n=0
+          while [ "$rec_i" -lt "${#recs[@]}" ] && [ "$n" -lt "$jobs" ]; do
+            rec="${recs[$rec_i]}"; src="${rec%%	*}"; wasm="${rec#*	}"
+            log="$(mktemp -t vibe-test-batch-XXXXXX)"
+            ( host_run_test "$src" "$wasm" 0 "$no_cache" >"$log.out" 2>"$log.err"; echo $? >"$log.rc" ) &
+            batch_pids+=($!); batch_logs+=("$log"); rec_i=$((rec_i + 1)); n=$((n + 1))
+          done
+          for p in "${batch_pids[@]}"; do wait "$p" || true; done
+          for log in "${batch_logs[@]}"; do
+            [ -s "$log.out" ] && cat "$log.out"
+            [ -s "$log.err" ] && cat "$log.err" >&2
+            if [ "$(cat "$log.rc" 2>/dev/null)" = 0 ]; then t_pass=$((t_pass+1)); else t_fail=$((t_fail+1)); fi
+            rm -f "$log" "$log.out" "$log.err" "$log.rc"
+          done
+        done
+      else
+        while IFS= read -r rec; do
+          [ -n "$rec" ] || continue
+          src="${rec%%	*}"; wasm="${rec#*	}"
+          if host_run_test "$src" "$wasm" "$update" "$no_cache"; then t_pass=$((t_pass+1)); else t_fail=$((t_fail+1)); fi
+        done < <(sed -n '6,$p' "$plan")
+      fi
       # A nested --update re-run reports through the outer run's summary.
       [ "${VIBE_TEST_NESTED:-0}" = 1 ] || echo "[vibe-test] $t_pass passed, $t_fail failed"
       [ "$t_fail" -eq 0 ]
@@ -475,11 +506,33 @@ $(git ls-remote --tags --refs "$remote" 2>/dev/null | sed 's#.*refs/tags/##')
 EOF
   [ -n "$best" ] && printf '%s' "$best"
 }
+# The compiler adapter's positional protocol is selected by VIBE_* MODE
+# variables (VIBE_HASH, VIBE_CHECK_ONLY, ...). A verb selects its own mode, so
+# one of those inherited from the caller's shell must not reach the runner
+# (scripts/test_vibe_allocs_launcher.sh pins it). Public knobs -- VIBE_RC,
+# VIBE_UNSTABLE, VIBE_TEST_BACKEND, VIBE_BENCH_BACKEND, VIBE_WASM_NAMES,
+# VIBE_BUILD_CACHE_DIR -- are the verbs' own inputs and pass through.
+ADAPTER_MODE_CLEARS="-u VIBE_FS_COMPILE -u VIBE_CHECK_ONLY -u VIBE_LSP -u VIBE_HASH -u VIBE_HASH_WRITE
+  -u VIBE_MISSING_VPKG_SCAN -u VIBE_DEPS_MISSING_SCAN -u VIBE_FILL_PINS -u VIBE_PUBLISH_CHECK
+  -u VIBE_MODULE_JOB_DIR -u VIBE_PUBLISH_ENV_CACHE -u VIBE_LIST_DEPS -u VIBE_MODULE_PLAN
+  -u VIBE_NORMALIZE -u VIBE_FMT -u VIBE_INSPECT_UPDATE -u VIBE_INSPECT_UPDATE_STDOUT -u VIBE_TYPE_AT -u VIBE_DOC_AT
+  -u VIBE_BINDING_AT -u VIBE_SYMBOLS -u VIBE_ESCAPES -u VIBE_ESCAPES_STRICT -u VIBE_ALLOCS
+  -u VIBE_DEPS -u VIBE_DEPS_DIRECT -u VIBE_GREP -u VIBE_GREP_JSON -u VIBE_RC_CLASSIFY -u VIBE_RC_PLAN -u VIBE_RC_PLAN_FN
+  -u VIBE_DIAGNOSTICS -u VIBE_DIAGNOSTICS_JSON -u VIBE_EMIT_COVERAGE_DRIVER_SOURCE -u VIBE_EMIT_MERGED_SOURCE
+  -u VIBE_EMIT_WIT -u VIBE_SERVE_COMPONENT -u VIBE_EMIT_MODULE_SOURCE -u VIBE_COVERAGE -u VIBE_DEBUG -u VIBE_DEBUG_BREAK
+  -u VIBE_TESTMETA_OUT -u VIBE_ENTRY_TESTMETA_OUT -u VIBE_ARTIFACT_INPUT_TRACE_OUT -u VIBE_ARTIFACT_INPUT_TRACE_NONCE"
 invoke_cli() {
   local plan cli status=0
   cli="$(pick_cli)"; plan="$(mktemp -t vibe-host-action-XXXXXX)"
-  ( cd "$PROJECT_ROOT" && env VIBE_HOST_ACTION_OUT="$plan" VIBE_BUILD_DIR="$BUILD_DIR" VIBE_INVOKE_DIR="$INVOKE_DIR" \
+  # shellcheck disable=SC2086
+  ( cd "$PROJECT_ROOT" && env $ADAPTER_MODE_CLEARS VIBE_HOST_ACTION_OUT="$plan" VIBE_BUILD_DIR="$BUILD_DIR" VIBE_INVOKE_DIR="$INVOKE_DIR" \
       "$RUNNER" "$cli" "$@" ) || status=$?
+  # The CLI exits 0/1/2 and says why on stderr; anything else is the RUNNER
+  # dying underneath it (a crash, a signal), which must not read as a clean
+  # or as an explained verdict (scripts/test_vibe_allocs_launcher.sh).
+  if [ "$status" -gt 2 ] && [ ! -s "$plan" ]; then
+    echo "error: vibe $1 runner failed with status $status" >&2
+  fi
   if [ -s "$plan" ] && [ "$(sed -n '1p' "$plan")" = "vibe-host-action-v1" ]; then
     execute_host_action "$plan" || status=$?
   fi
@@ -624,8 +677,16 @@ case "$cmd" in
         fi
         ;;
       uninstall)
-        purge=0; [ "${1:-}" = "--purge" ] && purge=1
-        [ "$INSTALLED_TOOLCHAIN" = 1 ] || die "vibe self uninstall: checkout launcher, nothing to remove"
+        # Destructive: only an optional `--purge` is accepted, and anything
+        # else (a typo, an extra word) refuses before the first rm -rf.
+        purge=0
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --purge) purge=1; shift ;;
+            *) die "unknown self uninstall flag: $1 (usage: vibe self uninstall [--purge])" ;;
+          esac
+        done
+        [ "$INSTALLED_TOOLCHAIN" = 1 ] || die "vibe self uninstall: this launcher runs from a checkout ($TOOLCHAIN_DIR), not from an installed toolchain; nothing to remove"
         if [ "$VIBE_HOME" = "$HOME/.vibe" ]; then
           for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
             [ -f "$rc" ] && grep -qsF '. "$HOME/.vibe/env"' "$rc" || continue
@@ -722,6 +783,26 @@ EOF
       { cat "$repl_buf"; printf 'export let __repl_anchor__: () -> Int = () -> { 0 }\n'; } > "$f"
       invoke_cli compile "$f" -o "$w" --entry __repl_anchor__ >/dev/null
     }
+    # `:load <file>` appends a file's declarations, validated the same way and
+    # rolled back on failure; `:type <expr>` asks `vibe type-at` about the
+    # expression bound at the end of the buffer.
+    repl_load() {
+      local lf="$1"
+      [ -f "$lf" ] || { echo "vibe shell: not found: $lf" >&2; return 0; }
+      cp "$repl_buf" "$repl_buf.bak"
+      cat "$lf" >> "$repl_buf"; printf '\n' >> "$repl_buf"
+      if repl_validate; then rm -f "$repl_buf.bak"; echo "loaded $lf"
+      else mv -f "$repl_buf.bak" "$repl_buf"; echo "vibe shell: load rejected (buffer unchanged): $lf" >&2; fi
+    }
+    repl_type() {
+      local expr="$1" f="$repl_dir/__type__.vibe" tline tout
+      cp "$repl_buf" "$f"
+      tline=$(( $(wc -l < "$f") + 1 ))
+      printf 'let __repl_t__ = (%s)\n' "$expr" >> "$f"
+      tout="$(invoke_cli type-at "$f" "$tline" 5 2>/dev/null || true)"
+      if [ -n "$tout" ]; then printf '%s\n' "$tout"
+      else echo "vibe shell: could not infer a type for: $expr" >&2; fi
+    }
     if [ "$#" -ge 1 ]; then
       [ -f "$1" ] || die "not found: $1"
       cat "$1" >> "$repl_buf"; printf '\n' >> "$repl_buf"
@@ -732,10 +813,29 @@ EOF
       [ -n "$t" ] || continue
       case "$t" in
         :q|:quit) break ;;
-        :help) echo "vibe shell — :quit :list :clear" ;;
+        :help)
+          cat <<'REPL_HELP'
+vibe shell — compiled REPL (accumulate + recompile; no interpreter)
+  :help            show this help
+  :quit, :q        exit
+  :list            print the session buffer (accumulated declarations)
+  :clear           reset the session buffer
+  :load <file>     append a file's declarations to the buffer (validated)
+  :type <expr>     print the inferred type of an expression
+Any line starting with a declaration keyword (fn/let/struct/enum/type/
+import/effect/impl/trait/export/suberror/test) is appended to the session
+buffer; the append is validated by a full recompile and rolled back on
+error. Any other line is compiled as an expression against the buffer and
+executed. Declarations must fit on one line.
+REPL_HELP
+          ;;
         :list) cat "$repl_buf" ;;
         :clear) : > "$repl_buf"; echo "session cleared" ;;
-        :*) echo "vibe shell: unknown command" >&2 ;;
+        :load) echo "usage: :load <file.vibe>" >&2 ;;
+        :load\ *) repl_load "${t#:load }" ;;
+        :type) echo "usage: :type <expr>" >&2 ;;
+        :type\ *) repl_type "${t#:type }" ;;
+        :*) echo "vibe shell: unknown command: ${t%% *} (try :help)" >&2 ;;
         fn\ *|let\ *|struct\ *|enum\ *|type\ *|import\ *|effect\ *|impl\ *|trait\ *|export\ *|suberror\ *|test\ *|//*)
           cp "$repl_buf" "$repl_buf.bak"
           printf '%s\n' "$repl_line" >> "$repl_buf"

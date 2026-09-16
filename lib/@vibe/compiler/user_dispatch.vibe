@@ -221,6 +221,20 @@ fn parse_int_or(s: String, default: Int) -> Int {
   }
 }
 
+/// `--jobs N`: a positive integer, refused otherwise. `vibe test` hands it to
+/// the launcher, whose run-tests arm runs that many files' wasm concurrently;
+/// for `build` / `check` it is accepted for compatibility and has no effect on
+/// the output (it only ever pre-warmed a cache), so the value is still
+/// validated rather than silently swallowed (Codex review of #2858).
+fn parse_jobs_value(raw: String) -> Int with Exception {
+  let n = parse_int_or(raw, 0)
+  if n <= 0 {
+    throw(String::concat("--jobs must be a positive integer, got: ", raw))
+  } else {
+    n
+  }
+}
+
 fn need_value(args: Array[String], index: Int, command: String, flag: String) -> String with Exception {
   if index >= Array::length(args) {
     throw(String::concat(command, String::concat(": missing value after ", flag)))
@@ -672,7 +686,7 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
         ()
       } else if arg == "--jobs" {
         i = i + 1
-        let _ = need_value(args, i, "check", arg)
+        let _ = parse_jobs_value(need_value(args, i, "check", arg))
         ()
       } else if arg == "--missing-vpkg" {
         missing_vpkg = true
@@ -876,7 +890,7 @@ export fn parse_user_compile_args(args: Array[String]) -> (String, String, Strin
           ()
         } else if arg == "--jobs" {
           i = i + 1
-          let _ = need_value(args, i, cmd, arg)
+          let _ = parse_jobs_value(need_value(args, i, cmd, arg))
           ()
         } else if arg == "--wasm" || arg == "--wasm-linear" || arg == "--release" {
           ()
@@ -997,7 +1011,21 @@ fn selfhost_cli_user_compile_args(args: Array[String]) -> Int with Exception + F
     0
   } else if component {
     let resolved = resolve_user_build_output(out)
-    let core = compile_user_artifact(src, entry, "component")
+    // The `dce-root` lane prunes from the command entry, so a module with no
+    // `vibe_command` export compiles to nothing and the compiler says so in
+    // its own words. The reader needs the EDIT -- the signature and the
+    // result frame -- which is what `user_command_component_edit` adds
+    // (scripts/test_component_lazy_dispatch_gate.sh asserts both). Other
+    // refusals (an unstable import, a type error) keep their own message.
+    let core = handle {
+      compile_user_artifact(src, entry, "component")
+    } with { Exception::Throw(message) => {
+      if String::contains(message, "no functions found to compile") {
+        throw(user_command_component_edit(src, entry, "the module has no `\{entry}` export (\{message})"))
+      } else {
+        throw(message)
+      }
+    } }
     write_wasm(resolved, emit_user_command_component(core, src))
     println(String::concat("component ", String::concat(src, String::concat(" -> ", display_under_root(resolved, default_build_dir())))))
     0
@@ -1989,6 +2017,7 @@ fn selfhost_cli_user_run_args(args: Array[String]) -> Int with Exception + Fs + 
 export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) -> Int with Exception + Fs + Env {
   let mut update = false
   let mut no_cache = false
+  let mut jobs = 1
   let files: Array[String] = []
   let mut i = 1
   while i < Array::length(args) {
@@ -2002,7 +2031,7 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
       ()
     } else if arg == "--jobs" {
       i = i + 1
-      let _ = need_value(args, i, "test", arg)
+      jobs = parse_jobs_value(need_value(args, i, "test", arg))
       ()
     } else if String::length(arg) > 0 && String::char_code_at(arg, 0) == 45 {
       throw(String::concat("test: unknown flag: ", arg))
@@ -2028,6 +2057,9 @@ export fn selfhost_cli_test_plan_args(args: Array[String], action_path: String) 
     } else {
       StringBuilder::push(acc, "0\n")
     }
+    // Line 5: how many files the host may run concurrently (`--jobs N`).
+    StringBuilder::push(acc, __to_string(jobs))
+    StringBuilder::push(acc, "\n")
     let mut fi = 0
     while fi < Array::length(expanded) {
       let src = Array::get(expanded, fi)
