@@ -140,7 +140,8 @@ Refused, each with the edit in the message:
 - an eager `Stream[T]` / `AsyncIter` (ADR-0089 D4), a `Map` with a non-`String`
   key, an `opaque type` (nothing to project), a trait bound, a row variable.
 - a `struct` / `enum` used at the boundary that is not `export`ed: a private
-  type has no name the consumer can see, so the edit is to export it.
+  type has no name the consumer can see, so the edit is to export it
+  (decided by the owner, 2026-09-17).
 
 The mapping is a bijection on this subset, and §8 checks it as one.
 
@@ -157,6 +158,8 @@ An export's row is projected label by label:
 | a bare `Exception` / legacy `Error` with no payload type | refused: annotate the payload type, because `result<T, ?>` has no `?` |
 
 ### 3.1 `Exception[E]` projects to `result<T, E>`, in both directions
+
+Decided by the owner, 2026-09-17.
 
 This revises the boundary stance from #1324, which filtered exception labels
 out of the world and let an escaping `throw` trap. That was the right call for
@@ -206,11 +209,21 @@ required operations only.
 - **Package id.** `index.vpkg`'s `name = @scope/pkg` and `version = x.y.z`
   become `scope:pkg@x.y.z`. A loose module is `vibe:app` with no version, as
   today.
-- **Interface.** A `service` component exports one interface named after the
-  package's last segment: `@acme/greeter` exports `acme:greeter/greeter@0.1.0`.
-  A consumer's world imports that id. World-level function exports (today's
-  `--wit` output) are kept only for the loose `vibe:app` case, where there is
-  no id to import by.
+- **Interface.** A `service` component exports one interface — its
+  **facade interface**, the one `import @scope/pkg { .. }` binds on the vibe
+  side. Its WIT name is an open item (below); the recommended spelling is
+  the package's last segment, `@acme/greeter` → `acme:greeter/greeter@0.1.0`,
+  the form WASI uses when a package has one main interface
+  (`wasi:random/random`, `wasi:logging/logging`). A consumer's world imports
+  that id. World-level function exports (today's `--wit` output) are kept
+  only for the loose `vibe:app` case, where there is no id to import by.
+- **A package with several interfaces.** A vibe producer has one (its
+  facade). A foreign package may have many (`wasi:http/handler`,
+  `wasi:http/types`), and their function names may collide, so the vibe
+  import path names the interface after the package: `import
+  @wasi/http/handler { handle }`. The bare `import @scope/pkg { .. }` form is
+  the facade interface, whichever spelling it has; a vibe producer's
+  interface name is therefore never something a vibe consumer types.
 - **Functions and fields**: `snake_case` ↔ `kebab-case`. **Types**:
   `CamelCase` ↔ `kebab-case` (`HttpReq` ↔ `http-req`). Both are mechanical
   inverses because vibe's own naming rules leave no ambiguity (functions are
@@ -277,7 +290,9 @@ copied, records and variants marshalled field by field, `Exception[E]`
 re-raised from `result` (§3.1). The consumer's own artifact therefore
 declares `import acme:greeter/greeter@0.1.0` in its world.
 
-**A component dependency makes the consumer a component.** A core module has
+**A component dependency makes the consumer a component** (decided by the
+owner, 2026-09-17, on the safe side: a refusal can be relaxed later, a
+second linkage in the runner cannot be taken back). A core module has
 no component imports, so a program that imports a component package cannot be
 emitted as a core `.wasm`; `vibe build` of such a program refuses with the
 edit (`--component`), and `vibe run` / `vibe test` take the component lane
@@ -370,9 +385,12 @@ current one and refuse a Patch that changed it.
 - The entry kind from the surface, three kinds, two reserved names.
 - The admitted type subset as a bijection, with `struct` / `enum` added.
 - `Exception[E]` crossing as `result<T, E>` with generated conversion on both
-  sides.
+  sides (owner, 2026-09-17).
 - Transparent consumption through the ordinary `import`, with the store
   holding a derived `.vpkg`, and host capabilities as the same mechanism.
+- A component dependency makes the consumer a component, as a refusal on a
+  core `vibe build` (owner, 2026-09-17, safe side).
+- A boundary `struct` / `enum` must be `export`ed (owner, 2026-09-17).
 
 ## What it does not decide
 
@@ -383,18 +401,25 @@ current one and refuse a Patch that changed it.
 
 ## Open for the owner
 
-1. **`Exception[E]` → `result<T, E>` (§3.1).** Recommended: yes. It is the
-   transparent form and the one that keeps the payload. The alternative is to
-   refuse an `Exception` row on a component export and require the explicit
-   `Result`; that keeps #1324's stance and costs every producer a hand-written
-   `handle` per export.
-2. **Interface naming (§4).** The package's last segment, so `@acme/greeter`
-   is `acme:greeter/greeter`. The alternative is a fixed `api`, shorter and
-   less informative in a composition graph.
-3. **"A component dependency makes the consumer a component" (§6.2).**
-   Recommended: yes, as a refusal on `vibe build`. The alternative — a core
-   executable calling a component through runner-side shims — puts a second
-   linkage into the runner and hides which lane a program is on.
-4. **Whether a boundary `struct` must be `export`ed (§2).** Recommended: yes;
-   a private type on a public surface has no name the consumer can use, and
-   inventing one would be a name the producer never wrote.
+One item remains. Three were decided on 2026-09-17 and are recorded above
+(§3.1, §6.2, §2).
+
+**The WIT name of the facade interface (§4).** It is derived, so no author
+writes it, and a vibe consumer never sees it (the bare `import @scope/pkg`
+binds the facade whatever it is called). It is visible in exactly two
+places: the WIT a non-vibe consumer reads, and the ids in a composition
+graph.
+
+| | the package's last segment | a fixed `api` |
+|---|---|---|
+| spelling | `acme:greeter/greeter@0.1.0` | `acme:greeter/api@0.1.0` |
+| derivation | from `name =` in `index.vpkg`, no new vocabulary; a segment that is not a WIT identifier is refused at build | constant |
+| precedent | WASI's one-main-interface packages: `wasi:random/random`, `wasi:logging/logging` | none in WASI |
+| in a composition graph | each node reads as its package | every vibe node ends in `/api`; only the package part distinguishes them |
+| "find the main interface without knowing the package" | not possible from the name alone | possible — but `vibe.entry`'s `component-export` already answers this, so the advantage does not survive |
+| a second interface later | the package-named one is naturally the facade | `api` is naturally the facade |
+
+Recommended: the package's last segment. It is the derived answer, it has
+the WASI precedent, and it carries more information in the one place a
+person reads it. Choosing `api` instead changes §4's spelling and nothing
+else in this document.
