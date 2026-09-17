@@ -131,7 +131,7 @@ fi
 
 # #2199: a plain (non-break) run's trap reports the trapping statement's
 # path:line via the production linemap.
-plain_trap_out="$(VIBE_RUNNER_BACKTRACE= "$VIBE" run "$T" 2>&1 || true)"
+plain_trap_out="$(env -u VIBE_RUNNER_BACKTRACE -u RUST_BACKTRACE "$VIBE" run "$T" 2>&1 || true)"
 if printf '%s' "$plain_trap_out" | grep -qF "frame: main (t.vibex:4)"; then
   ok "a plain (non-break) trap annotates the access with t.vibex:4"
 else
