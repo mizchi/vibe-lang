@@ -2463,7 +2463,7 @@ fn simd_add(a: Int, b: Int) -> Int = wasm
   grouped in that order (a located error enforces the grouping); declared
   locals index past the params + closure-env slot. v128 locals are what let
   a kernel keep vector state across instructions (e.g. the BLAKE3 compress
-  in `lib/@vibe/blake3/simd.vibe`).
+  in `lib/@vibe/blake3/simd/simd.vibe`).
 - **Integer immediates** accept BOTH spellings the text format defines
   (`iN ::= n:uN | i:sN`), so `(i32.const 2654435761)` and
   `(i32.const -1640531535)` are the same instruction. Out of range for the
@@ -2969,7 +2969,7 @@ deps = {
   @scope/dep : x.y.z
 }
 
-generated_hash =      // 任意。publish 時に自動挿入 (#pkg:sha1:<40hex>)
+generated_hash =      // 任意。publish 時に自動挿入 (#pkg:b3:<64hex>; 既存の #pkg:sha1:<40hex> は検証のみ)
 ```
 
 `name`/`version`/`description` は規約上必須だが、コンパイラはハード

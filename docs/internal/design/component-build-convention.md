@@ -80,11 +80,15 @@ The same principle that picks a command's wrap from the core's import
 section: two front doors cannot disagree about a module if neither is told
 anything the module does not already say.
 
-| the surface is | kind (`vibe.entry`) | component export |
-|---|---|---|
-| exactly one export, `vibe_command(args: String) -> String` | `command` | `run: func(args: string) -> string` |
-| exactly one export, `handler = (method, url, headers, body) -> String`, body `String` or `HostStream` | `handler` | `handler: func(..)`, sync or async lift by the body type (#1540) |
-| anything else | `service` | one interface holding every export (§4) |
+`vibe.entry` names both layers, because they are not the same export
+(host-contract §2.3): `core-export` is the vibe function on the core module,
+`component-export` the lifted name.
+
+| the surface is | `kind` | `core-export` | `component-export` |
+|---|---|---|---|
+| exactly one export, `vibe_command(args: String) -> String` | `command` | `vibe_command` | `run: func(args: string) -> string` |
+| exactly one export, `handler = (method, url, headers, body) -> String`, body `String` or `HostStream` | `handler` | `handler` | `handler: func(..)`, sync or async lift by the body type (#1540) |
+| anything else | `service` (new) | (none: no single entry) | the interface id of §4, holding every export |
 
 A module that exports `vibe_command` **and** other functions is refused: a
 command exports exactly one function (component-lazy-dispatch.md), and the
@@ -92,8 +96,10 @@ extra exports are named in the message rather than silently pruned by DCE.
 The same holds for `handler`. The reserved names are the only way to ask for
 those kinds, which keeps the reserved words to two and the flag count to one.
 
-The fourth shape, a `.vibex` entry lifted to `wasi:cli/run`, is not a
-`--component` kind in this convention. The two gates that assert
+The `wasi-command` kind of host-contract §2.3 is a core-module kind
+(`core-export=_start`, no component export), so a `.vibex` is not a
+`--component` input. A `.vibex` entry lifted to `wasi:cli/run` is not a
+`--component` kind in this convention either. The two gates that assert
 `export wasi:cli/run@0.2.6` today (`scripts/test_cli_command_component.sh`,
 `scripts/test_check_command_component.sh`) call builder scripts that are no
 longer in the tree, so that lane has no producer at the moment; when it
@@ -109,7 +115,7 @@ The subset that projects in both directions. The forward mapping is
 | `Int` | `s64` | 63-bit inside vibe (ADR-0105); a foreign `s64` outside that range is refused at the shim, never wrapped |
 | `Double` | `f64` | |
 | `Bool` | `bool` | |
-| `Char` | `char` | a Unicode scalar at the boundary; inside vibe `Char` is a byte alias (ADR-0098), so the shim validates |
+| `Char` | `char` | a Unicode scalar at the boundary; inside vibe `Char` is a transparent `Int` alias (ADR-0098), so the shim validates the range |
 | `String` | `string` | UTF-8 both ways; a byte string that is not valid UTF-8 is refused at the shim |
 | `Bytes` | `list<u8>` | |
 | `Array[T]` | `list<T>` | |
@@ -144,7 +150,7 @@ An export's row is projected label by label:
 
 | label in the row | projects to |
 |---|---|
-| a host capability (`Fs`, `Env`, `Http`, .. — the registry's provider labels) | an import of `vibe:host/<label>` (host-contract §1); derived from the emitted import section, so it can never list a capability the code does not reach |
+| a host capability (`Fs`, `Env`, `Http`, .. — the registry's provider labels) | an **inline** interface named by the label, holding only the used functions of the `vibe:host` catalog (host-contract §1.3; never `import vibe:host/<label>` whole, which would demand the full surface); derived from the emitted import section, so it can never list a function the code does not reach |
 | a user algebraic effect `effect E { .. }` | an import of interface `<kebab-e>` (today's rule); the composer, not the caller, supplies it (§6.3) |
 | `Async` | the export becomes `async func`; never an import (ADR-0089 D5) |
 | `Exception[E]` | **`result<T, E>` on the export, with the `handle` generated in the lift** (§3.1) |
@@ -184,10 +190,16 @@ in the export body" rule, done by the tool instead of by hand.
 
 ### 3.2 Optional grades
 
-`with Fs::read_file?` on an export is a `vibe.capabilities` row and a grant
-global on the artifact (capability-host-contract.md), unchanged. The WIT world
-imports the interface either way; the grade lives beside the import, not in
-it, because WIT has no optional import.
+An optional grade (`with Fs::read_file?`) is a **core-module** fact: the
+`vibe.capabilities` row and the `__vibe_granted$<label>` global live on the
+core module, and a component host cannot write that global
+(host-contract §2.3). A `perform?` inside a component would therefore read
+the default `0` and answer `NotGranted` whatever the host intended — a
+silently wrong answer, which is why `--component` **refuses** an optional
+grade on the surface or anywhere the entry reaches, naming the two lifts
+that would admit it (a WIT-exported grant, or a grant argument set before
+the export is called). Until one of those exists, a component's world lists
+required operations only.
 
 ## 4. Names and identity
 
@@ -214,7 +226,7 @@ One command, one source, two derived artifacts:
 
 | artifact | what it is | rule |
 |---|---|---|
-| `<name>.component.wasm` | the component, carrying `vibe.entry` (kind, export), `vibe.abi` / `vibe.tagmode` as applicable, `vibe.capabilities` when optional grants exist, and **`vibe.contract`** — the derived vibe-facing contract as text: a `.vpkg` header with a `kind = component` directive plus the bodyless declarations of the surface, in the producer's own spellings | the artifact is the truth; the section is what a consumer's `vibe add` extracts |
+| `<name>.component.wasm` | the component, carrying `vibe.entry` (kind, `core-export`, `component-export`), `vibe.abi` / `vibe.tagmode` as applicable, `vibe.capabilities` `used` rows, and **`vibe.contract`** — the derived vibe-facing contract as text: a `.vpkg` header with a `kind = component` directive plus the bodyless declarations of the surface, in the producer's own spellings. The wrap copies these sections out of the core into the component binary, as host-contract §2.3 has it copy `vibe.entry`, so a consumer reads them from the `.component.wasm`; a `.cwasm` is a host image and never a distribution format | the artifact is the truth; the section is what a consumer's `vibe add` extracts |
 | `<name>.wit` | the sidecar: `to_wit(vibe.contract)` | a projection; `to_wit` of the section must equal it byte for byte (§8) |
 
 Both under `.vibe/build/out/` by default (ADR-0111), `-o` for another path.
@@ -272,12 +284,15 @@ edit (`--component`), and `vibe run` / `vibe test` take the component lane
 for it. This is the one place the transparency leaks into the build command,
 and it leaks as a refusal, never as a different artifact.
 
-### 6.3 Host capabilities are component packages the host provides
+### 6.3 Host capabilities take the same shim and the same linker
 
-`vibe:host/fs` (host-contract §1) is consumed by the very same mechanism: a
-package of `kind = host` whose provider is the runner rather than the store.
 `Fs::read_file` inside a component is a call whose import the composer
-resolves, exactly as `greet` is. That is why the lazy CLI lane and
+resolves, exactly as `greet` is: the world's inline `fs` interface
+(host-contract §1.3) is satisfied by the runner's own functions where
+`acme:greeter/greeter` is satisfied by a store component. The difference is
+only who provides the instance — there is no `kind = host` package, because
+the world never imports a catalog interface whole and the runner registers
+exactly the functions the world names. That is why the lazy CLI lane and
 vibe-to-vibe consumption need one linker and one shim generator, not two —
 and why a user algebraic effect in a producer's row (§3, "supplied by the
 composer") is the same shape again: an interface the producer imports and
@@ -288,8 +303,8 @@ the message says so and names the composition edit.
 ### 6.4 Running
 
 `vibe run` and `vibe test` on a component consumer compose the instance graph
-from the store and the runner's own `vibe:host/*` providers, then call the
-entry `vibe.entry` names. The per-verb CLI manifest is the same graph with
+from the store and the runner's own host functions, then call the
+`component-export` that `vibe.entry` names. The per-verb CLI manifest is the same graph with
 the manifest naming the root. Producing a single deployable file from that
 graph (`wac plug` today, by hand) is a packaging step this convention does
 not decide; the compiler emits unlinked components and the store is where

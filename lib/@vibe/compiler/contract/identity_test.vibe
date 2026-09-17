@@ -1,0 +1,88 @@
+//# #2829 / ADR-0093: tagged content identities. Official BLAKE3 vectors
+//# pin byte order; sha1 identities remain readable.
+
+import @vibe/compiler/contract {
+  content_digest, content_id_matches, emit_content_id, is_package_pin, parse_content_id
+}
+
+import @vibe/core {
+  sha1
+}
+
+import @vibe/blake3 {
+  blake3
+}
+
+let b3_empty: String = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+
+let sha1_empty: String = "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+
+test "official blake3 empty vector is the b3 hex" {
+  inspect(blake3(""), content = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+}
+
+test "emit_content_id writes b3 with official empty digest" {
+  inspect(emit_content_id("pkg", ""), content = "pkg:b3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+  inspect(emit_content_id("ct", ""), content = "ct:b3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+}
+
+test "parse accepts sha1 and b3 package pins" {
+  match parse_content_id("#pkg:sha1:\{sha1_empty}") {
+    Some((kind, algo, hex)) => {
+      inspect(kind, content = "pkg")
+      inspect(algo, content = "sha1")
+      inspect(hex, content = "da39a3ee5e6b4b0d3255bfef95601890afd80709")
+    },
+    None => throw("sha1 pin did not parse")
+  }
+  match parse_content_id("pkg:b3:\{b3_empty}") {
+    Some((kind, algo, hex)) => {
+      inspect(kind, content = "pkg")
+      inspect(algo, content = "b3")
+      inspect(hex, content = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+    },
+    None => throw("b3 id did not parse")
+  }
+}
+
+test "is_package_pin requires hash-ref pkg identities of either algorithm" {
+  inspect(is_package_pin("#pkg:sha1:\{sha1_empty}"), content = "true")
+  inspect(is_package_pin("#pkg:b3:\{b3_empty}"), content = "true")
+  inspect(is_package_pin("pkg:b3:\{b3_empty}"), content = "false")
+  inspect(is_package_pin("#ct:b3:\{b3_empty}"), content = "false")
+  inspect(is_package_pin("#pkg:sha1:dfd1"), content = "false")
+  inspect(is_package_pin("#pkg:b3:dfd1"), content = "false")
+  inspect(is_package_pin("#pkg:md5:0123456789abcdef0123456789abcdef"), content = "false")
+  inspect(is_package_pin("#pkg:sha1:DA39A3EE5E6B4B0D3255BFEF95601890AFD80709"), content = "false")
+}
+
+test "legacy sha1 identity still verifies the payload" {
+  let empty_sha1 = sha1("")
+  let abc_sha1 = sha1("abc")
+  inspect(content_id_matches("pkg:sha1:\{empty_sha1}", ""), content = "true")
+  inspect(content_id_matches("pkg:sha1:\{abc_sha1}", "abc"), content = "true")
+}
+
+test "b3 identity verifies the official empty payload" {
+  let abc_b3 = blake3("abc")
+  inspect(content_id_matches("pkg:b3:\{b3_empty}", ""), content = "true")
+  inspect(content_id_matches("#ct:b3:\{abc_b3}", "abc"), content = "true")
+}
+
+test "cross-algorithm identities of the same payload do not match each other" {
+  let empty_sha1 = sha1("")
+  let sha1_id = "pkg:sha1:\{empty_sha1}"
+  let b3_id = emit_content_id("pkg", "")
+  inspect(sha1_id == b3_id, content = "false")
+  inspect(content_id_matches(sha1_id, ""), content = "true")
+  inspect(content_id_matches(b3_id, ""), content = "true")
+  inspect(String::starts_with(b3_id, "pkg:b3:"), content = "true")
+  inspect(content_digest("sha1", "") == content_digest("b3", ""), content = "false")
+}
+
+test "tampered payload fails both algorithms" {
+  let abc_sha1 = sha1("abc")
+  let abc_b3 = blake3("abc")
+  inspect(content_id_matches("pkg:sha1:\{abc_sha1}", "abC"), content = "false")
+  inspect(content_id_matches("pkg:b3:\{abc_b3}", "abC"), content = "false")
+}

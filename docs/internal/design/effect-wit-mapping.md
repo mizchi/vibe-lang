@@ -20,7 +20,8 @@
 > **Direction (2026-09-17, ADR-0113):** the generator below is subsumed by
 > [component-build-convention.md](component-build-convention.md), under which
 > WIT is derived from a module's export surface together with a vibe-facing
-> contract, host capabilities become `vibe:host/*` imports
+> contract, host capabilities become inline interfaces of the used functions
+> from the `vibe:host` catalog
 > ([host-contract-artifact-lazy-cli.md](host-contract-artifact-lazy-cli.md)),
 > `Exception[E]` projects to `result<T, E>` on a component export, and a vibe
 > consumer imports a vibe component with an ordinary `import`. Until that

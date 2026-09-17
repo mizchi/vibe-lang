@@ -40,7 +40,7 @@ writes a SIMD kernel without touching the compiler. It has `v128` locals, the
 full lane/bitwise/compare/shuffle set, and structured control flow, so the
 vector stays in a local for the whole loop.
 
-Worked examples: `lib/@vibe/blake3/simd.vibe` (a full BLAKE3 compression) and
+Worked examples: `lib/@vibe/blake3/simd/simd.vibe` (a full BLAKE3 compression) and
 `bench/bench_simd_*.vibe` (byte search, rank, an i32 column sum, a
 group-of-16 hash probe).
 
