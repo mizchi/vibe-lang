@@ -592,7 +592,7 @@ Invariants:
 - A store copy whose package hash differs from its pin is a compile error
   (`pin mismatch`); a store import with no pin anywhere is a compile error
   naming the manifest.
-- The pin is the `require @scope/name x.y.z = #pkg:sha1:<hex> from
+- The pin is the `require @scope/name x.y.z = #pkg:b3:<hex> from
   <source>@<commit>` line in the root `index.vpkg`: `vibe add <source-spec>`
   writes it and installs the package, `vibe fetch` restores the store from
   it (#2676). There is no separate lock file.

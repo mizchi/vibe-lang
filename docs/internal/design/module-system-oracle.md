@@ -46,7 +46,7 @@ key=value ヘッダー (ADR-0080)。`deps = { @scope/pkg : x.y.z }` が依存の
 |---|---|---|
 | declared-dependency check | `vibe check --deps-missing <root>` | — (CI: compiler_gate 60) |
 | package hash, computed and written back | `vibe hash --write <pkg_dir\|index.vpkg>` | `generated_hash` (idempotent) |
-| add a dependency and pin it | `vibe add <source-spec>` | the root `index.vpkg`: a `deps` entry plus `require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>`; the package itself in `.vibe/store/` |
+| add a dependency and pin it | `vibe add <source-spec>` | the root `index.vpkg`: a `deps` entry plus `require @scope/name x.y.z = #pkg:b3:<hex> from <source>@<commit>` (a legacy `#pkg:sha1:<hex>` still verifies); the package itself in `.vibe/store/` |
 | restore the store from the pins | `vibe fetch` | `.vibe/store/` (the `$VIBE_HOME/cache/pkg/` cache first, else the pinned source; hash-verified either way) |
 
 `@scope/name` resolves in order: `.vibe/store/` (pin-verified) → the workspace

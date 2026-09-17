@@ -272,7 +272,7 @@ if command -v git >/dev/null 2>&1; then
   check "vibe add exit" "0" "$rc"
   check "vibe add installs into .vibe/store" "yes" "$([ -s "$dproj/.vibe/store/@acme/mathx/index.vpkg" ] && echo yes || echo no)"
   check "vibe add pins version, hash and the commit-pinned source" "yes" \
-    "$(grep -qE '^require @acme/mathx 1\.0\.0 = #pkg:sha1:[0-9a-f]{40} from git:' "$dproj/index.vpkg" \
+    "$(grep -qE '^require @acme/mathx 1\.0\.0 = #pkg:b3:[0-9a-f]{64} from git:' "$dproj/index.vpkg" \
        && grep -qF "from git:file://$dep_repo@$dep_commit#packages/@acme/mathx" "$dproj/index.vpkg" && echo yes || echo no)"
   check "vibe add declares the dependency" "yes" "$(grep -qx '  @acme/mathx : 1.0.0' "$dproj/index.vpkg" && echo yes || echo no)"
   ( cd "$dproj" && "$VIBE" fmt --check index.vpkg ) >/dev/null 2>&1 && rc=0 || rc=$?
@@ -310,7 +310,7 @@ if command -v git >/dev/null 2>&1; then
   check "the replaced copy runs" "42" "$(run_number_in "$clone1" main.vibex)"
   clone3="$WORK/clone3"
   git clone -q "$dproj" "$clone3"
-  sed -i.bak -E 's/#pkg:sha1:[0-9a-f]{40}/#pkg:sha1:0000000000000000000000000000000000000000/' "$clone3/index.vpkg"
+  sed -i.bak -E 's/#pkg:b3:[0-9a-f]{64}/#pkg:b3:0000000000000000000000000000000000000000000000000000000000000000/' "$clone3/index.vpkg"
   rm -f "$clone3/index.vpkg.bak"
   ( cd "$clone3" && "$VIBE" fetch ) > "$WORK/fetch3.log" 2>&1 && rc=0 || rc=$?
   check "vibe fetch refuses a source that does not hash to the pin" "yes" "$([ "$rc" != 0 ] && grep -q 'hash mismatch' "$WORK/fetch3.log" && echo yes || echo no)"
@@ -348,7 +348,7 @@ if command -v git >/dev/null 2>&1; then
   ( cd "$sproj" && "$VIBE" add "git:file://$sem_repo@^1.0#packages/@acme/semlib" ) > "$WORK/add_sem.log" 2>&1 && rc=0 || rc=$?
   check "vibe add ^1.0 exit" "0" "$rc"
   check "vibe add ^1.0 picks v1.2.0" "120" "$(run_number_in "$sproj" main.vibex)"
-  check "vibe add ^1.0 pins the resolved release" "yes" "$(grep -qE '^require @acme/semlib 1\.2\.0 = #pkg:sha1:[0-9a-f]{40} from git:.*@[0-9a-f]{40}#packages/@acme/semlib$' "$sproj/index.vpkg" && echo yes || echo no)"
+  check "vibe add ^1.0 pins the resolved release" "yes" "$(grep -qE '^require @acme/semlib 1\.2\.0 = #pkg:b3:[0-9a-f]{64} from git:.*@[0-9a-f]{40}#packages/@acme/semlib$' "$sproj/index.vpkg" && echo yes || echo no)"
   ( cd "$sproj" && "$VIBE" add "git:file://$sem_repo@^9.0#packages/@acme/semlib" ) >/dev/null 2>&1 && rc=0 || rc=$?
   check "vibe add with an unsatisfiable constraint fails" "yes" "$([ "$rc" != 0 ] && echo yes || echo no)"
 
@@ -369,7 +369,7 @@ if command -v git >/dev/null 2>&1; then
   printf 'name = @acme/mid\nversion = 1.0.0\ndescription =\n  #|fixture\ndeps = {}\n\ngenerated_hash =\n\nfn mid(x: Int) -> Int\n' > "$mid_repo/packages/@acme/mid/index.vpkg"
   printf 'import @acme/base { base }\n\nexport fn mid(x: Int) -> Int {\n  base(x) + 2\n}\n' > "$mid_repo/packages/@acme/mid/impl.vibe"
   ( cd "$mid_repo/packages/@acme/mid" && "$VIBE" add "git:file://$base_repo@v1.0.0#packages/@acme/base" ) > "$WORK/add_base.log" 2>&1 && rc=0 || rc=$?
-  check "vibe add inside a package checkout pins in that package's index.vpkg" "yes" "$([ "$rc" = 0 ] && grep -q '^require @acme/base 1.0.0 = #pkg:sha1:' "$mid_repo/packages/@acme/mid/index.vpkg" && echo yes || echo no)"
+  check "vibe add inside a package checkout pins in that package's index.vpkg" "yes" "$([ "$rc" = 0 ] && grep -qE '^require @acme/base 1.0.0 = #pkg:b3:[0-9a-f]{64}' "$mid_repo/packages/@acme/mid/index.vpkg" && echo yes || echo no)"
   rm -rf "$mid_repo/packages/@acme/mid/.vibe"
   ( cd "$mid_repo" && git init -q )
   git_commit_all "$mid_repo" mid
