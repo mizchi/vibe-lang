@@ -194,7 +194,7 @@ if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$fill_abs" >/dev/null 2>&1; then
   echo "vibe_fmt_parse_guard_test: formatter declined an unpinned-require file" >&2
   exit 1
 fi
-if ! head -1 "$fill_abs" | grep -Eq "^require $store_pkg 0\.1\.0 = #pkg:sha1:[0-9a-f]{40}\$"; then
+if ! head -1 "$fill_abs" | grep -Eq "^require $store_pkg 0\.1\.0 = #pkg:b3:[0-9a-f]{64}\$"; then
   echo "vibe_fmt_parse_guard_test: fmt did not fill the require pin from the store" >&2
   head -1 "$fill_abs" >&2
   exit 1
@@ -221,7 +221,7 @@ if ! bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$vpkg_fill_abs" >/dev/null 2>&1; then
   echo "vibe_fmt_parse_guard_test: formatter declined a .vpkg with an unpinned require" >&2
   exit 1
 fi
-if ! grep -Eq "^require $store_pkg \^0\.1\.0 = #pkg:sha1:[0-9a-f]{40}\$" "$vpkg_fill_abs"; then
+if ! grep -Eq "^require $store_pkg \^0\.1\.0 = #pkg:b3:[0-9a-f]{64}\$" "$vpkg_fill_abs"; then
   echo "vibe_fmt_parse_guard_test: fmt did not fill the require pin in a .vpkg header" >&2
   sed -n '1,4p' "$vpkg_fill_abs" >&2
   exit 1
@@ -264,7 +264,7 @@ if ! head -1 "$fill_abs" | grep -q "^require $zero_pkg \^0\.0\.1\$"; then
 fi
 printf 'require %s ^0.0.2\n\nfn id(n:Int)->Int {\n  n\n}\n' "$zero_pkg" >"$fill_abs"
 bash "$ROOT_DIR/scripts/vibe_fmt.sh" "$fill_abs" >/dev/null 2>&1 || true
-if ! head -1 "$fill_abs" | grep -Eq "^require $zero_pkg \^0\.0\.2 = #pkg:sha1:[0-9a-f]{40}\$"; then
+if ! head -1 "$fill_abs" | grep -Eq "^require $zero_pkg \^0\.0\.2 = #pkg:b3:[0-9a-f]{64}\$"; then
   echo "vibe_fmt_parse_guard_test: the exact ^0.0.2 against an installed 0.0.2 did not fill" >&2
   head -1 "$fill_abs" >&2
   exit 1
@@ -306,7 +306,7 @@ case "$fill_report" in
     exit 1
     ;;
 esac
-if ! head -1 "$fill_abs" | grep -Eq "^require $store_pkg 0\.1\.0 = #pkg:sha1:[0-9a-f]{40}\$"; then
+if ! head -1 "$fill_abs" | grep -Eq "^require $store_pkg 0\.1\.0 = #pkg:b3:[0-9a-f]{64}\$"; then
   echo "vibe_fmt_parse_guard_test: BATCH lane did not fill the require pin" >&2
   head -1 "$fill_abs" >&2
   exit 1

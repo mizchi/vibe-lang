@@ -289,7 +289,7 @@ frozen:
   compiler updates independently of the runner.
 - **Module distribution**: distributed over git with no central registry and
   pinned by content hash in the root `index.vpkg`
-  (`require @scope/name x.y.z = #pkg:sha1:<hex> from <source>@<commit>`,
+  (`require @scope/name x.y.z = #pkg:b3:<hex> from <source>@<commit>`,
   #2676). A `vibe add` ref may be a semver constraint (`^` / `~` / `>=` / `x` /
   `*`); it resolves to a tag at add time, and the pin records the commit.
 - File conventions: `*.vibe`, `index.vpkg` (the package contract, the public

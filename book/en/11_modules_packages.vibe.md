@@ -131,7 +131,7 @@ line in the metadata header at the top of your package's `index.vpkg`,
 above the declarations:
 
 ```text
-require @vibe/core 0.2.0 = #pkg:sha1:<40hex>
+require @vibe/core 0.2.0 = #pkg:b3:<64hex>
 ```
 
 The build re-checks that hash offline on every build, so neither the
@@ -150,7 +150,7 @@ vibe add git:https://example.com/u/mono.git@^1.0#packages/@acme/json
 ```
 
 ```text
-require @acme/json 1.4.0 = #pkg:sha1:<40hex> from github:acme/json@<commit>
+require @acme/json 1.4.0 = #pkg:b3:<64hex> from github:acme/json@<commit>
 ```
 
 Commit `index.vpkg` and ignore `.vibe/`. On a fresh clone, `vibe fetch`
