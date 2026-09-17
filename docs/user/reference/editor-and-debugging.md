@@ -436,10 +436,11 @@ produces its normal result when continued.
 
 #### Static line map (`vibe.linemap`) and more precise trap frames
 
-A `--break`-instrumented module also carries a `vibe.linemap` custom section:
+A compiled module carries a `vibe.linemap` custom section (production
+builds included, not only `--break`):
 a static table mapping each user function's wasm code offset to a source
-`(file, line)`, built from the same interior-line probe sites as the live
-`--break` hook above (#644). Unlike `dbg_line`, this table needs no
+`(file, line)`, recorded at statement boundaries and call sites (#644,
+#2199). Unlike `dbg_line`, this table needs no
 cooperation from the running program — it can be read straight out of the
 compiled `.wasm`, e.g. with `viberun --dump-linemap <file.wasm>` (one
 `func_index<TAB>offset<TAB>file<TAB>line` row per probe), and the runner
@@ -466,17 +467,30 @@ Caused by:
 Here `main` is declared on line 1, but the division that actually trapped is
 on line 4 — the `frame:` line (not `  at `, to avoid colliding with the
 launcher's separate declaration-line annotator) gives the precise location.
-This only fires for debug-break builds with a non-empty linemap; a plain
-`vibe run` trap is unaffected.
+This fires whenever the module carries a non-empty linemap, including a
+plain `vibe run` / production compile. Missing or stripped mapping data
+degrades to the wasm frame and never invents a source location.
 
 **Known scope limit**: linemap entries are recorded only for TOP-LEVEL
 function bodies — a probe compiled inside a lambda/closure body is absent
 from the static table (its LIVE `--break`/`dbg_line` pause still works
 normally; only the *static*, no-execution-needed lookup has this gap).
-Genuine **instruction-offset breakpoints** (pausing mid-statement, at an
-arbitrary sub-expression) remain future work: it needs every `Expr` node to
-carry its own source span, not just statements, which the linemap alone
-doesn't provide (docs/internal/project/release-roadmap.md テーマ3, 3-P0's "残").
+The runner resolves each frame independently, so an OOB inside a lambda
+prints the wasm frame for that body and does not borrow the enclosing
+function's line. Genuine **instruction-offset breakpoints** (pausing
+mid-statement, at an arbitrary sub-expression) remain future work: it
+needs every `Expr` node to carry its own source span, not just statements,
+which the linemap alone doesn't provide
+(docs/internal/project/release-roadmap.md テーマ3, 3-P0's "残").
+
+**wasm-gc / bump**: production `vibe.linemap` is the linear/RC FS lane
+(`vibe run` / `vibe test`). `VIBE_RC=0` (bump) does not fill newline tables,
+so a trap there stays a wasm frame. A `VIBE_BACKEND=gc` module does not
+carry the section either. `Array::get` / `Array::set` on wasm-gc trap as
+the engine's `array element access out of bounds` and do not print the
+linear lane's `<op>: index <idx> out of bounds for length <len>` line;
+`Bytes::get` / `Bytes::set` keep the historical bare `unreachable`.
+`abort(msg)` still prints the message and traps on both lanes (#2199, #2397).
 
 ---
 

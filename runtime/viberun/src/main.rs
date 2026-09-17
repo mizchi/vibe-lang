@@ -617,8 +617,8 @@ fn dump_imports(input: &str) -> Result<()> {
 // `<func_index>\t<code_offset>\t<file>\t<line>` lines, sorted by
 // (func_index, offset). `<file>` is the basename from `vibe.dbgfiles` when
 // present, else the raw file id. Missing/empty section => no output (exit 0,
-// like `vibe diagnostics` on a clean file) rather than an error, since most
-// modules (non-debug-break builds) simply don't carry one.
+// like `vibe diagnostics` on a clean file) rather than an error, including
+// a production compile that recorded zero sites (#2199 skips empty tables).
 fn dump_linemap(input: &str) -> Result<()> {
     let wasm = fs::read(input).map_err(|e| format_err!("read {input}: {e}"))?;
     let dbgfiles = find_custom_section(&wasm, "vibe.dbgfiles")
@@ -1735,7 +1735,8 @@ fn run(args: Vec<String>) -> Result<i32> {
                 if let Some(refusal) = withheld_capability_refusal(&e) {
                     eprintln!("viberun: {refusal}");
                 }
-                // #644: a debug-break build (non-empty `linemap`) that traps
+                // #644 / #2199: a module with a non-empty `vibe.linemap`
+                // (production trap provenance, and debug-break) that traps
                 // mid-run -- not via an explicit `--break` pause -- still
                 // deserves a precise per-frame source line, not just the bare
                 // function name wasmtime's default Display already shows via

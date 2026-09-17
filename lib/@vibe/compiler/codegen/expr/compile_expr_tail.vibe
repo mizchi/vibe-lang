@@ -309,13 +309,11 @@ fn emit_dbg_line_for(buf: Bytes, value: Expr, ctx: CompileCtx) -> Unit {
   emit_dbg_line_stmt(buf, value, -1, ctx)
 }
 
-/// #644: append one (owning function, body-relative byte offset, file id,
-/// line) entry to `lm` for the `vibe.linemap` custom section -- called right
-/// before emit_dbg_line_stmt writes the runtime dbg_line probe, so the
-/// recorded offset is exactly where that probe's instructions begin (the
-/// static table and the live `--break` hook agree on where each source line
-/// starts). No-op when `lm` is disabled (non-debug-break builds, and every
-/// lambda-derived ctx -- see LineMapState's doc comment).
+/// #644 / #2199: append one (owning function, body-relative byte offset, file
+/// id, line) entry to `lm` for the `vibe.linemap` custom section. Called at
+/// statement boundaries and at call sites so a trap inside a bounds-checked
+/// builtin attributes the ACCESS, not a helper. No-op when `lm` is disabled
+/// (no file newline tables, and every lambda-derived ctx).
 fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit {
   if lm.enabled {
     Array::push(lm.funcs, Array::get(lm.cur_fn, 0))
@@ -327,28 +325,49 @@ fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit
   }
 }
 
+/// #2199: record the current body offset against `expr`'s source line, so a
+/// trap in a callee can resolve the caller's frame. No-op when linemap is
+/// off or the expression has no source offset.
+export fn linemap_record_expr(buf: Bytes, expr: Expr, ctx: CompileCtx) -> Unit {
+  if ctx.linemap.enabled {
+    let off = first_offset(expr)
+    if off >= 0 {
+      let line = offset_to_line(ctx.dbg_line_nl, off)
+      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
+    } else {
+      ()
+    }
+  } else {
+    ()
+  }
+}
+
 /// #644: like emit_dbg_line_for, but with the STATEMENT's own source offset as
 /// the fallback anchor. `let a = 1` binds a bare literal whose subexpression
 /// carries no offset (first_offset = -1) -- the ELet/ELetMut node's stmt offset
 /// (the `let` keyword token) still locates the line, so the probe is emitted
 /// and the line is breakpoint-able.
+///
+/// #2199: linemap recording is independent of the live dbg_line probe. A
+/// production compile records the statement even when `dbg_line_idx < 0`.
 fn emit_dbg_line_stmt(buf: Bytes, value: Expr, stmt_off: Int, ctx: CompileCtx) -> Unit {
-  if ctx.dbg_line_idx >= 0 {
-    let voff = first_offset(value)
-    let off = if voff >= 0 {
-      voff
-    } else {
-      stmt_off
-    }
-    if off >= 0 {
-      let line = offset_to_line(ctx.dbg_line_nl, off)
-      linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
-      emit_i32_const(buf, ctx.dbg_line_file_id)
-      emit_i32_const(buf, line)
-      emit_call(buf, ctx.dbg_line_idx)
-    } else {
-      ()
-    }
+  let voff = first_offset(value)
+  let off = if voff >= 0 {
+    voff
+  } else {
+    stmt_off
+  }
+  if off >= 0 && ctx.linemap.enabled {
+    let line = offset_to_line(ctx.dbg_line_nl, off)
+    linemap_record(ctx.linemap, buf, ctx.dbg_line_file_id, line)
+  } else {
+    ()
+  }
+  if ctx.dbg_line_idx >= 0 && off >= 0 {
+    let line = offset_to_line(ctx.dbg_line_nl, off)
+    emit_i32_const(buf, ctx.dbg_line_file_id)
+    emit_i32_const(buf, line)
+    emit_call(buf, ctx.dbg_line_idx)
   } else {
     ()
   }

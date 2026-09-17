@@ -2243,13 +2243,16 @@ export struct CompileCtx {
   // linked_compile.vibe's main function loop before each body. Every
   // emit_dbg_line_stmt call (compile_expr_tail.vibe) appends the body-buffer-
   // relative byte offset of its probe alongside `linemap.cur_fn`'s current
-  // value, the file id and the line. Disabled (linemap_disabled()) outside
-  // debug-break builds, and ALSO forced disabled on every lambda-derived
-  // ctx (compile_lambda.vibe) -- a lambda compiles into its OWN separate
-  // wasm function body buffer, so an offset recorded against `cur_fn`'s
-  // enclosing top-level index would point at the wrong function entirely.
-  // That is a known, documented gap (like the funcmap's entry-file-only
-  // scope): lambda-body statements are simply absent from the linemap.
+  // value, the file id and the line. Enabled for production trap provenance
+  // when newline tables are present, and for debug-break. Forced disabled on
+  // every lambda-derived ctx (compile_lambda.vibe) -- a lambda compiles into
+  // its OWN separate wasm function body buffer, so an offset recorded against
+  // `cur_fn`'s enclosing top-level index would point at the wrong function
+  // entirely. That is a known, documented gap (like the funcmap's
+  // entry-file-only scope): lambda-body statements are simply absent from
+  // the linemap. The runner resolves each frame on its own, so a trap inside
+  // a lambda degrades to a wasm frame and never borrows the enclosing
+  // function's line (#2199).
   linemap: LineMapState;
   // #2669 slice 2: where THIS body puts a reference the instruction encoding
   // cannot expose. A `call` immediate says what it is -- the opcode declares
@@ -2356,8 +2359,8 @@ export struct LineMapState {
   lines: Array[Int]
 }
 
-/// A disabled LineMapState (non-debug-break builds, and every lambda-derived
-/// CompileCtx): `record` is a no-op, so codegen output is byte-identical.
+/// A disabled LineMapState (no newline tables, and every lambda-derived
+/// CompileCtx): `record` is a no-op.
 export fn linemap_disabled() -> LineMapState {
   LineMapState::{
     enabled: false,
