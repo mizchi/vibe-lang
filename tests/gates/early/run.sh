@@ -204,8 +204,10 @@ echo "[compiler-gate] derive(Show) source-name rendering ok"
 
 # 4e. OOB abort names the operation, index, and length, and reports an
 #     editable path:line for the access (#2199). A production-style compile
-#     (no VIBE_DEBUG_BREAK) emits compact vibe.linemap; missing/stripped
+#     (no VIBE_DEBUG_BREAK) emits compact LEB vibe.linemap; missing/stripped
 #     mapping degrades to the wasm frame, never a fabricated location.
+#     `vibe build` strips the section with `name`; this compile keeps it via
+#     VIBE_WASM_NAMES=1 (the same knob `vibe run` uses).
 #     This gate is the linear/RC production lane (`vibe run` / `vibe test`).
 #     The rest of early pins VIBE_RC=0 (bump); 4e's compile unsets that so
 #     it asks the lane users actually hit. wasm-gc Array OOB is the engine's
@@ -253,7 +255,8 @@ oob_compile_one() {
   local src="$1" out="$2"
   # Production RC: this lane's VIBE_RC=0 pin would compile bump, which has
   # no production linemap.
-  env -u VIBE_RC VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+  # VIBE_WASM_NAMES=1 keeps vibe.linemap (release strip drops it with `name`).
+  env -u VIBE_RC VIBE_WASM_NAMES=1 VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
     bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
     "$src" "$out" main >/dev/null 2>&1 || true
   if [ ! -s "$out" ]; then

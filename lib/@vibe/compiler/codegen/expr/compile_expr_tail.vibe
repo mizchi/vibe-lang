@@ -316,10 +316,21 @@ fn emit_dbg_line_for(buf: Bytes, value: Expr, ctx: CompileCtx) -> Unit {
 /// (no file newline tables, and every lambda-derived ctx).
 fn linemap_record(lm: LineMapState, buf: Bytes, file_id: Int, line: Int) -> Unit {
   if lm.enabled {
-    Array::push(lm.funcs, Array::get(lm.cur_fn, 0))
-    Array::push(lm.offsets, bytebuf_length(buf))
-    Array::push(lm.file_ids, file_id)
-    Array::push(lm.lines, line)
+    let off = bytebuf_length(buf)
+    let fn_i = Array::get(lm.cur_fn, 0)
+    let n = Array::length(lm.offsets)
+    if n > 0 && Array::get(lm.funcs, n - 1) == fn_i && Array::get(lm.offsets, n - 1) == off {
+      // Same (func, offset) as the previous probe: keep ONE row and let the
+      // later record win so a call-site OOB attributes the access, not the
+      // enclosing statement (#2199 size).
+      Array::set(lm.file_ids, n - 1, file_id)
+      Array::set(lm.lines, n - 1, line)
+    } else {
+      Array::push(lm.funcs, fn_i)
+      Array::push(lm.offsets, off)
+      Array::push(lm.file_ids, file_id)
+      Array::push(lm.lines, line)
+    }
   } else {
     ()
   }

@@ -8127,8 +8127,135 @@ fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: A
 /// #2199: remap `vibe.linemap` through the prune's old->new function map, and
 /// shift each record's code offset by the call-immediate LEB size change in
 /// that body so wasmtime's func_offset still hits the right entry.
-fn lc_pf_read_u32le(mod_bytes: Bytes, pos: Int) -> Int {
-  Bytes::get(mod_bytes, pos) + (Bytes::get(mod_bytes, pos + 1)<<8) + (Bytes::get(mod_bytes, pos + 2)<<16) + (Bytes::get(mod_bytes, pos + 3)<<24)
+///
+/// Encoding (compact LEB deltas, one record = four unsigned LEBs):
+///   func_delta, offset_delta, file_id, line
+/// Sorted by (func, offset). func_delta is the increment from the previous
+/// func (the first record's func is absolute). When func_delta != 0, offset
+/// restarts as an absolute; otherwise offset_delta is from the previous
+/// offset. Duplicate (func, offset) rows are not emitted.
+fn lc_linemap_sort_idx(keys: Array[Int], idx: Array[Int]) -> Unit {
+  let n = Array::length(idx)
+  let mut i = 1
+  while i < n {
+    let x = Array::get(idx, i)
+    let kx = Array::get(keys, x)
+    let mut j = i
+    let mut more = true
+    while more && j > 0 {
+      let y = Array::get(idx, j - 1)
+      if Array::get(keys, y) <= kx {
+        more = false
+      } else {
+        Array::set(idx, j, y)
+        j = j - 1
+      }
+    }
+    Array::set(idx, j, x)
+    i = i + 1
+  }
+}
+
+fn lc_linemap_encode_idx(dst: Bytes, funcs: Array[Int], offs: Array[Int], files: Array[Int], lines: Array[Int], keys: Array[Int], idx: Array[Int], write: Bool) -> Int {
+  let n = Array::length(idx)
+  let mut size = 0
+  let mut prev_f = 0
+  let mut prev_o = 0
+  let mut have = false
+  let mut i = 0
+  while i < n {
+    let mut j = i
+    let ki = Array::get(idx, i)
+    let key = Array::get(keys, ki)
+    let mut more = true
+    while more && j + 1 < n {
+      let kj = Array::get(idx, j + 1)
+      if Array::get(keys, kj) == key {
+        j = j + 1
+      } else {
+        more = false
+      }
+    }
+    let k = Array::get(idx, j)
+    let f = Array::get(funcs, k)
+    let o = Array::get(offs, k)
+    let file_id = Array::get(files, k)
+    let line = Array::get(lines, k)
+    let fd = if have {
+      f - prev_f
+    } else {
+      f
+    }
+    let od = if have && fd == 0 {
+      o - prev_o
+    } else {
+      o
+    }
+    if write {
+      leb128_encode_u32(dst, fd)
+      leb128_encode_u32(dst, od)
+      leb128_encode_u32(dst, file_id)
+      leb128_encode_u32(dst, line)
+    } else {
+      size = size + lc_pf_leb_len(fd) + lc_pf_leb_len(od) + lc_pf_leb_len(file_id) + lc_pf_leb_len(line)
+    }
+    prev_f = f
+    prev_o = o
+    have = true
+    i = j + 1
+  }
+  size
+}
+
+fn lc_linemap_decode_payload(mod_bytes: Bytes, rec_start: Int, send: Int, out_f: Array[Int], out_o: Array[Int], out_file: Array[Int], out_line: Array[Int]) -> Unit {
+  let cell = lc_fresh_int_array()
+  Array::push(cell, rec_start)
+  let mut have = false
+  let mut func = 0
+  let mut off = 0
+  let mut more = true
+  while more && Array::get(cell, 0) < send {
+    let p0 = Array::get(cell, 0)
+    let fd = lc_pf_leb(mod_bytes, p0, cell)
+    let p1 = Array::get(cell, 0)
+    if p1 > send {
+      more = false
+    } else {
+      let od = lc_pf_leb(mod_bytes, p1, cell)
+      let p2 = Array::get(cell, 0)
+      if p2 > send {
+        more = false
+      } else {
+        let file_id = lc_pf_leb(mod_bytes, p2, cell)
+        let p3 = Array::get(cell, 0)
+        if p3 > send {
+          more = false
+        } else {
+          let line = lc_pf_leb(mod_bytes, p3, cell)
+          let p4 = Array::get(cell, 0)
+          if p4 > send {
+            more = false
+          } else {
+            if have && fd == 0 {
+              off = off + od
+            } else {
+              func = if have {
+                func + fd
+              } else {
+                fd
+              }
+              off = od
+              have = true
+            }
+            Array::push(out_f, func)
+            Array::push(out_o, off)
+            Array::push(out_file, file_id)
+            Array::push(out_line, line)
+          }
+        }
+      }
+    }
+  }
 }
 
 fn lc_pf_linemap_adjust_off(old_off: Int, body_idx: Int, body_start: Array[Int], site: Array[Int], site_from: Array[Int], newidx: Array[Int], mod_bytes: Bytes) -> Int {
@@ -8164,40 +8291,41 @@ fn lc_pf_emit_linemap(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int]
   let nlen = lc_pf_leb(mod_bytes, sstart, cell)
   let nstart = Array::get(cell, 0)
   let rec_start = nstart + nlen
-  let mut nrec = 0
-  let mut rp = rec_start
-  while rp + 16 <= send {
-    let old_f = lc_pf_read_u32le(mod_bytes, rp)
-    if old_f < Array::length(newidx) && Array::get(newidx, old_f) >= 0 {
-      nrec = nrec + 1
+  let old_f = lc_fresh_int_array()
+  let old_o = lc_fresh_int_array()
+  let old_file = lc_fresh_int_array()
+  let old_line = lc_fresh_int_array()
+  lc_linemap_decode_payload(mod_bytes, rec_start, send, old_f, old_o, old_file, old_line)
+  let funcs = lc_fresh_int_array()
+  let offs = lc_fresh_int_array()
+  let files = lc_fresh_int_array()
+  let lines = lc_fresh_int_array()
+  let keys = lc_fresh_int_array()
+  let idx = lc_fresh_int_array()
+  let mut ri = 0
+  while ri < Array::length(old_f) {
+    let f0 = Array::get(old_f, ri)
+    if f0 < Array::length(newidx) && Array::get(newidx, f0) >= 0 {
+      let nf = Array::get(newidx, f0)
+      let no = lc_pf_linemap_adjust_off(Array::get(old_o, ri), f0 - num_imported, body_start, site, site_from, newidx, mod_bytes)
+      Array::push(funcs, nf)
+      Array::push(offs, no)
+      Array::push(files, Array::get(old_file, ri))
+      Array::push(lines, Array::get(old_line, ri))
+      Array::push(keys, (nf<<32)|no)
+      Array::push(idx, Array::length(idx))
     } else {
       ()
     }
-    rp = rp + 16
+    ri = ri + 1
   }
-  let size = lc_pf_leb_len(nlen) + nlen + nrec * 16
+  lc_linemap_sort_idx(keys, idx)
+  let rec_size = lc_linemap_encode_idx(dst, funcs, offs, files, lines, keys, idx, false)
+  let size = lc_pf_leb_len(nlen) + nlen + rec_size
   if write {
     leb128_encode_u32(dst, nlen)
     Bytes::blit(dst, mod_bytes, nstart, nstart + nlen)
-    rp = rec_start
-    while rp + 16 <= send {
-      let old_f = lc_pf_read_u32le(mod_bytes, rp)
-      if old_f < Array::length(newidx) && Array::get(newidx, old_f) >= 0 {
-        let new_f = Array::get(newidx, old_f)
-        let old_off = lc_pf_read_u32le(mod_bytes, rp + 4)
-        let file_id = lc_pf_read_u32le(mod_bytes, rp + 8)
-        let line = lc_pf_read_u32le(mod_bytes, rp + 12)
-        let body_idx = old_f - num_imported
-        let new_off = lc_pf_linemap_adjust_off(old_off, body_idx, body_start, site, site_from, newidx, mod_bytes)
-        bytebuf_push_i32le(dst, new_f)
-        bytebuf_push_i32le(dst, new_off)
-        bytebuf_push_i32le(dst, file_id)
-        bytebuf_push_i32le(dst, line)
-      } else {
-        ()
-      }
-      rp = rp + 16
-    }
+    let _ = lc_linemap_encode_idx(dst, funcs, offs, files, lines, keys, idx, true)
   } else {
     ()
   }
@@ -14210,12 +14338,9 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     ci = ci + 1
   }
   bytebuf_push_section(out, 10, code_content)
-  // #644: `vibe.linemap` custom section -- one 16-byte little-endian record
-  // per recorded probe: `<wasm func index i32> <code offset i32>
-  // <file id i32> <line i32>`, back-to-back (record count = content length /
-  // 16). Binary rather than text so the runner never needs to parse decimal
-  // ASCII for what can be thousands of entries (same rationale as
-  // `vibe.dbgargs`'s raw-int encoding above). The offset is shifted by that
+  // #644 / #2199: `vibe.linemap` custom section -- four unsigned LEB deltas
+  // per unique (func, offset): func_delta, offset_delta, file_id, line.
+  // Duplicate offsets are collapsed. The offset is shifted by that
   // function's locals-header length (linemap_hdrlen_by_bi) so it lands
   // exactly where wasmtime's FrameInfo::func_offset() measures from. Emitted
   // when linemap_state is enabled AND at least one record exists (production
@@ -14230,19 +14355,32 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
       bytebuf_push(lm_content, String::char_code_at(lm_name, lmni))
       lmni = lmni + 1
     }
+    let packed_f = lc_fresh_int_array()
+    let packed_o = lc_fresh_int_array()
+    let packed_file = lc_fresh_int_array()
+    let packed_line = lc_fresh_int_array()
+    let packed_keys = lc_fresh_int_array()
+    let packed_idx = lc_fresh_int_array()
+    let hdr_n = Array::length(linemap_hdrlen_by_bi)
     let mut lm_k = 0
     while lm_k < Array::length(linemap_state.offsets) {
       let lm_bi = Array::get(linemap_state.funcs, lm_k)
-      let lm_func_idx = func_offset + lm_bi
-      let lm_off = Array::get(linemap_state.offsets, lm_k) + Array::get(linemap_hdrlen_by_bi, lm_bi)
-      let lm_file_id = Array::get(linemap_state.file_ids, lm_k)
-      let lm_line = Array::get(linemap_state.lines, lm_k)
-      bytebuf_push_i32le(lm_content, lm_func_idx)
-      bytebuf_push_i32le(lm_content, lm_off)
-      bytebuf_push_i32le(lm_content, lm_file_id)
-      bytebuf_push_i32le(lm_content, lm_line)
+      if lm_bi >= 0 && lm_bi < hdr_n {
+        let lm_func_idx = func_offset + lm_bi
+        let lm_off = Array::get(linemap_state.offsets, lm_k) + Array::get(linemap_hdrlen_by_bi, lm_bi)
+        Array::push(packed_f, lm_func_idx)
+        Array::push(packed_o, lm_off)
+        Array::push(packed_file, Array::get(linemap_state.file_ids, lm_k))
+        Array::push(packed_line, Array::get(linemap_state.lines, lm_k))
+        Array::push(packed_keys, (lm_func_idx<<32)|lm_off)
+        Array::push(packed_idx, Array::length(packed_idx))
+      } else {
+        ()
+      }
       lm_k = lm_k + 1
     }
+    lc_linemap_sort_idx(packed_keys, packed_idx)
+    let _ = lc_linemap_encode_idx(lm_content, packed_f, packed_o, packed_file, packed_line, packed_keys, packed_idx, true)
     bytebuf_push_section(out, 0, lm_content)
   } else {
     ()

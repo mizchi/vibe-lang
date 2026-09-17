@@ -65,13 +65,44 @@ function dumpLinemap(wasmPath) {
     return;
   }
   const rows = [];
-  for (let pos = 0; pos + 16 <= payload.length; pos += 16) {
-    const funcIdx = payload.readUInt32LE(pos);
-    const offset = payload.readUInt32LE(pos + 4);
-    const fileId = payload.readUInt32LE(pos + 8);
-    const line = payload.readUInt32LE(pos + 12);
+  let pos = 0;
+  const end = payload.length;
+  const uleb = () => {
+    let result = 0;
+    let shift = 0;
+    while (pos < end) {
+      const byte = payload[pos++];
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) {
+        return result >>> 0;
+      }
+      shift += 7;
+      if (shift > 35) {
+        return null;
+      }
+    }
+    return null;
+  };
+  let func = 0;
+  let offset = 0;
+  let have = false;
+  while (pos < end) {
+    const fd = uleb();
+    const od = uleb();
+    const fileId = uleb();
+    const line = uleb();
+    if (fd === null || od === null || fileId === null || line === null) {
+      break;
+    }
+    if (have && fd === 0) {
+      offset += od;
+    } else {
+      func = have ? func + fd : fd;
+      offset = od;
+      have = true;
+    }
     const file = fileId < files.length ? files[fileId] : String(fileId);
-    rows.push({ funcIdx, offset, file, line });
+    rows.push({ funcIdx: func, offset, file, line });
   }
   rows.sort((a, b) => a.funcIdx - b.funcIdx || a.offset - b.offset);
   for (const r of rows) {

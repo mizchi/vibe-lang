@@ -436,11 +436,12 @@ produces its normal result when continued.
 
 #### Static line map (`vibe.linemap`) and more precise trap frames
 
-A compiled module carries a `vibe.linemap` custom section (production
-builds included, not only `--break`):
-a static table mapping each user function's wasm code offset to a source
+A compiled module carries a `vibe.linemap` custom section (`vibe run` /
+`vibe test`; `vibe build` strips it with the name section, ADR-0077):
+a compact table mapping each user function's wasm code offset to a source
 `(file, line)`, recorded at statement boundaries and call sites (#644,
-#2199). Unlike `dbg_line`, this table needs no
+#2199). Duplicate offsets are stored once; the on-disk form is LEB
+deltas, not a source string per access. Unlike `dbg_line`, this table needs no
 cooperation from the running program — it can be read straight out of the
 compiled `.wasm`, e.g. with `viberun --dump-linemap <file.wasm>` (one
 `func_index<TAB>offset<TAB>file<TAB>line` row per probe), and the runner

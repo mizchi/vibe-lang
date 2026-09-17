@@ -98,8 +98,9 @@ fi
 
 # #2199: a NON-break production compile carries a compact `vibe.linemap`
 # so an uncaught trap can report path:line without debug-break probes.
+# VIBE_WASM_NAMES=1 keeps the section; `vibe build` strips it with `name`.
 OUT_PLAIN="$WORK/plain.wasm"
-env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw VIBE_WASM_NAMES=1 \
   "$VIBERUN" "$CLI_WASM" "$P" "$OUT_PLAIN" main >/dev/null 2>&1
 plain_dump="$("$VIBERUN" --dump-linemap "$OUT_PLAIN" 2>/dev/null || true)"
 plain_nrecords="$(printf '%s\n' "$plain_dump" | grep -c . || true)"

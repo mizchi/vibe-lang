@@ -616,9 +616,9 @@ fn dump_imports(input: &str) -> Result<()> {
 // #644: dump the `vibe.linemap` custom section (if any) as
 // `<func_index>\t<code_offset>\t<file>\t<line>` lines, sorted by
 // (func_index, offset). `<file>` is the basename from `vibe.dbgfiles` when
-// present, else the raw file id. Missing/empty section => no output (exit 0,
-// like `vibe diagnostics` on a clean file) rather than an error, including
-// a production compile that recorded zero sites (#2199 skips empty tables).
+// present, else the raw file id. Missing/empty/stripped section => no output
+// (exit 0), including a `vibe build` artifact whose mapping was dropped with
+// the name section and a compile that recorded zero sites.
 fn dump_linemap(input: &str) -> Result<()> {
     let wasm = fs::read(input).map_err(|e| format_err!("read {input}: {e}"))?;
     let dbgfiles = find_custom_section(&wasm, "vibe.dbgfiles")
@@ -4878,25 +4878,51 @@ fn parse_dbgfiles(section: &[u8]) -> Vec<String> {
         .collect()
 }
 
-// #644: parse the `vibe.linemap` custom section into a (wasm func index ->
-// sorted (code offset, file id, line) list) map. The section is a flat run of
-// 16-byte little-endian records (func_index, offset, file_id, line); a
-// trailing partial record (a corrupt/truncated section) is ignored rather
-// than panicking. Entries are grouped by func_index and sorted by offset so
-// `resolve_linemap` below can binary-search each function's list. Absent
-// section / non-debug-break build => empty map => resolution always misses,
-// callers fall back to their existing (coarser) behavior.
+// #644 / #2199: parse the `vibe.linemap` custom section into a (wasm func
+// index -> sorted (code offset, file id, line) list) map. Compact encoding:
+// a run of four unsigned LEBs per unique (func, offset) —
+// (func_delta, offset_delta, file_id, line). func_delta is relative to the
+// previous func (absolute for the first record); when it is zero, offset
+// is relative to the previous offset, otherwise absolute. A trailing
+// partial record is ignored rather than panicking. Entries are grouped by
+// func_index and sorted by offset so `resolve_linemap` can binary-search.
+// Absent / stripped section => empty map => no fabricated location.
 fn parse_linemap(section: &[u8]) -> std::collections::HashMap<u32, Vec<(u32, u32, u32)>> {
     let mut by_func: std::collections::HashMap<u32, Vec<(u32, u32, u32)>> =
         std::collections::HashMap::new();
     let mut pos = 0usize;
-    while pos + 16 <= section.len() {
-        let func_idx = read_u32_le(section, pos).unwrap_or(0);
-        let offset = read_u32_le(section, pos + 4).unwrap_or(0);
-        let file_id = read_u32_le(section, pos + 8).unwrap_or(0);
-        let line = read_u32_le(section, pos + 12).unwrap_or(0);
-        by_func.entry(func_idx).or_default().push((offset, file_id, line));
-        pos += 16;
+    let mut func: u32 = 0;
+    let mut offset: u32 = 0;
+    let mut have = false;
+    while pos < section.len() {
+        let fd = match read_leb_u32(section, &mut pos) {
+            Some(v) => v,
+            None => break,
+        };
+        let od = match read_leb_u32(section, &mut pos) {
+            Some(v) => v,
+            None => break,
+        };
+        let file_id = match read_leb_u32(section, &mut pos) {
+            Some(v) => v,
+            None => break,
+        };
+        let line = match read_leb_u32(section, &mut pos) {
+            Some(v) => v,
+            None => break,
+        };
+        if have && fd == 0 {
+            offset = offset.saturating_add(od);
+        } else {
+            func = if have {
+                func.saturating_add(fd)
+            } else {
+                fd
+            };
+            offset = od;
+            have = true;
+        }
+        by_func.entry(func).or_default().push((offset, file_id, line));
     }
     for entries in by_func.values_mut() {
         entries.sort_by_key(|e| e.0);

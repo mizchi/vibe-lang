@@ -1011,9 +1011,10 @@ function parseVibeCovBranchSection(wasmBytes) {
 }
 
 // #2199: parse `vibe.dbgfiles` (basenames, one per line) and `vibe.linemap`
-// (16-byte LE records: func_index, offset, file_id, line). Used to annotate
-// an uncaught trap with an editable path:line. Missing/empty sections =>
-// no annotation, never a fabricated location.
+// (compact LEB deltas: func_delta, offset_delta, file_id, line per unique
+// (func, offset)). Used to annotate an uncaught trap with an editable
+// path:line. Missing/empty/stripped sections => no annotation, never a
+// fabricated location.
 function findWasmCustomSection(wasmBytes, wantName) {
   const buf = Buffer.from(wasmBytes);
   if (buf.length < 8 || buf[0] !== 0x00 || buf[1] !== 0x61 || buf[2] !== 0x73 || buf[3] !== 0x6d) {
@@ -1052,23 +1053,65 @@ function parseVibeDbgfiles(wasmBytes) {
   return payload.toString("utf8").split("\n").filter((l) => l.length > 0);
 }
 
+function parseCompactLinemapPayload(payload) {
+  const rows = [];
+  if (!payload || payload.length === 0) {
+    return rows;
+  }
+  let pos = 0;
+  const end = payload.length;
+  const uleb = () => {
+    let result = 0;
+    let shift = 0;
+    while (pos < end) {
+      const byte = payload[pos++];
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) {
+        return result >>> 0;
+      }
+      shift += 7;
+      if (shift > 35) {
+        return null;
+      }
+    }
+    return null;
+  };
+  let func = 0;
+  let offset = 0;
+  let have = false;
+  while (pos < end) {
+    const fd = uleb();
+    const od = uleb();
+    const fileId = uleb();
+    const line = uleb();
+    if (fd === null || od === null || fileId === null || line === null) {
+      break;
+    }
+    if (have && fd === 0) {
+      offset += od;
+    } else {
+      func = have ? func + fd : fd;
+      offset = od;
+      have = true;
+    }
+    rows.push({ funcIdx: func, offset, fileId, line });
+  }
+  return rows;
+}
+
 function parseVibeLinemap(wasmBytes) {
   const payload = findWasmCustomSection(wasmBytes, "vibe.linemap");
   const byFunc = new Map();
   if (!payload) {
     return byFunc;
   }
-  for (let pos = 0; pos + 16 <= payload.length; pos += 16) {
-    const funcIdx = payload.readUInt32LE(pos);
-    const offset = payload.readUInt32LE(pos + 4);
-    const fileId = payload.readUInt32LE(pos + 8);
-    const line = payload.readUInt32LE(pos + 12);
-    let entries = byFunc.get(funcIdx);
+  for (const rec of parseCompactLinemapPayload(payload)) {
+    let entries = byFunc.get(rec.funcIdx);
     if (!entries) {
       entries = [];
-      byFunc.set(funcIdx, entries);
+      byFunc.set(rec.funcIdx, entries);
     }
-    entries.push({ offset, fileId, line });
+    entries.push({ offset: rec.offset, fileId: rec.fileId, line: rec.line });
   }
   for (const entries of byFunc.values()) {
     entries.sort((a, b) => a.offset - b.offset);
