@@ -52,9 +52,10 @@ artifact requires from its host, written once by the compiler at the point where
 it decides the import section, and read by a WIT generator, by a host at
 instantiate, and by a manifest at dispatch.** This document specifies that
 statement and the three readers. It does not add a second hand-maintained list
-anywhere; every table below is derived from
-`docs/generated/host-runtime-contract.json` or from the emitter, and the gate in
-§5 is what proves it.
+outside the gated generator input. Every table below is derived from the
+builtin registry, `docs/generated/host-runtime-contract.json` (including the
+resource-grouping table in §1.2), or from the emitter, and the gate in §5 is
+what proves it.
 
 ## What exists, as of `5275d33`
 
@@ -125,11 +126,17 @@ interface http {
 }
 ```
 
-`stdin`, `stdout`, `stderr`, `process`, `sh`, `tcp`, `profiler` and `clock`
-(`sleep`) follow the same rule. The names are not a design choice to be made
-here: they are the labels the registry already carries and the kebab mapping
-`wit_gen.vibe` already applies (`HttpReq` → `http-req`, `read_file` →
-`read-file`).
+The remaining interfaces are named by kebab of the registry's `Some("…")`
+label — the rest of the ten names `standard_host_provider_resource_defaults`
+lists (`lib/@vibe/compiler/core/standard_effect_policy.vibe`): `stdin`,
+`stdout`, `stderr`, `console`, `process`, `profiler`, `socket`. There is no
+`tcp`, `sh`, or `clock`. `vibe_tcp_*` is tagged `Socket`; `sh*` and `process_exit`
+share `Process`; `sleep` is tagged `Async`, which is a runtime-managed
+effect rather than a host provider, and stays out of this residual (#2832).
+`Console` is a provider this list must include. The kebab mapping
+`wit_gen.vibe` already applies (`Http` → `http`, `read_file` → `read-file`).
+The generator-diff gate pins the emitted interface set against
+`standard_host_provider_resource_defaults`.
 
 ### 1.2 The rule that makes it a contract: one function, two lowerings
 
@@ -151,7 +158,8 @@ Two consequences:
 - The three-way check `scripts/check_host_runtime_contract.py` performs today
   (emitter names, runner names, type indices) gains a fourth side: the WIT
   text. A raw signature that does not match its WIT function's mapping fails
-  the gate, so the two lowerings cannot drift.
+  the gate, so the two lowerings cannot drift. Resource methods use the
+  mapping in the grouping table below, not a 1:1 field-to-function equality.
 - A component host and a core host implement one semantics. `viberun`'s
   `--commands` face today serves `read-dir` as sorted names joined by `\n`
   (`register_vfs_imports`), while the core lane's `fs_read_dir` returns the
@@ -159,11 +167,64 @@ Two consequences:
   the raw lowering of `fs.read-dir: func(path: string) -> list<string>`, and
   the join is an artifact of the packed lane, not part of the contract.
 
-**Handles are WIT resources.** `http_request` returns an opaque `i64` today and
-`http_close` is its destructor by convention; in WIT the same is `resource
-response` with an implicit drop. The raw lane keeps the `i64` and the explicit
-close import. `sh_capture` / `sh_capture_close` and `tcp_connect` / `tcp_close`
-are the same pattern.
+**Handles are WIT resources, and the grouping is part of the generator
+input.** `docs/generated/host-runtime-contract.json` today has only field
+names, bands, and core type indices: `http_request` and `http_close` are
+sibling `i64` functions, the registry types those returns as `CtInt`, and
+`wit_type_text` maps `Int` → `s64`. Implemented from those sources alone the
+WIT would be `request: func(...) -> s64` plus a separate `close`, which is
+not the `resource response` shape in §1.1. The JSON therefore grows a
+`resources` table (schema bump), owned and gated like the rest of the
+manifest:
+
+```json
+"resources": [
+  {
+    "interface": "http",
+    "resource": "response",
+    "constructor": "http_request",
+    "methods": {
+      "status": "http_response_status",
+      "header": "http_response_header",
+      "body": "http_response_body"
+    },
+    "drop": "http_close"
+  },
+  {
+    "interface": "process",
+    "resource": "capture",
+    "constructor": "sh_capture",
+    "methods": {
+      "exit-code": "sh_capture_exit_code",
+      "stdout": "sh_capture_stdout",
+      "stderr": "sh_capture_stderr"
+    },
+    "drop": "sh_capture_close"
+  },
+  {
+    "interface": "socket",
+    "resource": "connection",
+    "constructor": "tcp_connect",
+    "methods": {
+      "read": "tcp_read",
+      "write": "tcp_write"
+    },
+    "drop": "tcp_close"
+  }
+]
+```
+
+The fourth-side mapping for a grouped field is then:
+
+| raw field role | WIT | arity |
+|---|---|---|
+| constructor | function returning the resource | same arguments, result is the resource instead of `s64` |
+| method | resource method; WIT `self` is dropped from the raw handle argument | raw has one extra `i64` (the handle) |
+| drop | implicit resource drop; no WIT function | raw field exists; the gate records it as the destructor, not as a missing WIT function |
+
+Until that table exists, the residual WIT is not generated from the registry
+and JSON alone, and `resource response` is not the emitted shape. `sh_capture`
+and `tcp_connect` follow the same table; they are not a prose convention.
 
 **Failure is a trap in this version.** Every runner today turns a host failure
 into a trap (a Rust `Err` through `func_wrap`, a thrown JS error), and the
@@ -179,28 +240,48 @@ describe a boundary that does not exist.
 `linked_compile` decides the import section from
 `collect_used_builtin_names` after late DCE, so an import is emitted only when
 the program still calls the builtin. The residual world for an entry is
-generated from **that same set**, not from a scan of `with` rows:
+generated from **that same set**, not from a scan of `with` rows. The catalog
+package still has one full interface per provider. Each entry world **inlines
+only the used functions**, the shape `vibe-compiler-host.wit` and
+`vibec-hosted.wit` already use. Wasmtime satisfies an imported WIT interface
+in full; a missing function fails instantiate. A world that wrote
+`import vibe:host/fs` would require write/remove/chdir even when
+`collect_used_builtin_names` only kept `fs_read_file`, which undoes the
+three-round compiler-host audit (six reachable `fs` ops) and expands
+`vibec-hosted.wit`'s four root-level reads into the whole `fs` surface. So
+the world never imports a catalog interface whole:
 
 ```wit
 package vibe:app;
 
 world check {
-  import vibe:host/fs;
-  import vibe:host/env;
-  import vibe:host/stdout;
+  import fs: interface {
+    read-file: func(path: string) -> string;
+    exists: func(path: string) -> bool;
+    stat-token: func(path: string) -> s64;
+    read-dir: func(path: string) -> list<string>;
+    write-bytes: func(path: string, content: list<u8>);
+    publish-immutable-text: func(path: string, content: string) -> bool;
+  }
+  import env: interface {
+    get: func(name: string) -> string;
+  }
+  import stdout: interface {
+    write-stream: func(content: string);
+  }
   export run: func(args: string) -> string;
 }
 ```
 
-With the interface granularity being the label and the authority granularity
-being the operation, the world imports whole interfaces and the artifact's
-`vibe.capabilities` section (§2) says which operations are required and which
-are optional. A host may implement an interface partially; the preflight in
-§2.4 is what decides whether that is enough, operation by operation.
+`vibe.capabilities` optional rows stay a **core-module** fact (§2): a
+component world has no partial interface. The wrap registers exactly the
+functions the world names (§3.1). The generator claim that the world cannot
+list an op the module does not import is then the same statement as "the wrap
+is the world".
 
 This replaces the `// host capability effect ... no WIT mapping yet` comment.
-Because the set is the emitter's own, the generated world cannot list an
-interface the module does not import or omit one it does — the property the
+Because the set is the emitter's own, the generated world cannot list a
+function the module does not import or omit one it does — the property the
 hand-authored compiler-host file needed three review rounds to approximate.
 
 ### 1.4 What happens to the two hand-written files
@@ -209,20 +290,22 @@ hand-authored compiler-host file needed three review rounds to approximate.
   output for `cli_main`. It is regenerated by the gate and diffed; when they
   agree the hand-authored comments go (the reachability audit they narrate is
   now the generator's job), and ADR-0086 is amended to cite the generated file.
-- The `vibec-hosted.wit` four-read face becomes `import vibe:host/fs` with a
-  `vibe.capabilities` section listing the four operations as required; its
-  `stat-token = -1 for a non-regular file` semantics moves into the `fs`
-  interface's doc comment, where the core lane's `fs_stat_token` already has
-  to agree with it.
+- The `vibec-hosted.wit` four-read face becomes an inline `fs` interface of
+  those four operations (the same shape as today's file), not
+  `import vibe:host/fs`. Its `stat-token = -1 for a non-regular file`
+  semantics moves into the catalog `fs` interface's doc comment, where the
+  core lane's `fs_stat_token` already has to agree with it.
 
 ### 1.5 Ownership, pinned
 
 | surface | owner | source of truth |
 |---|---|---|
-| operation identity and label | the builtin registry (`lib/@vibe/compiler/core/builtin_registry.vibe`) | the checker's tag |
-| WIT interfaces and functions (`vibe:host/*`) | the generator, from the registry and the manifest | a generated file under `docs/generated/`, gated |
+| operation identity and label | the builtin registry (`lib/@vibe/compiler/core/builtin_registry.vibe`) | the checker's tag; interface names are kebab of `Some("…")`, pinned against `standard_host_provider_resource_defaults` |
+| WIT catalog interfaces (`vibe:host/*`) | the generator, from the registry, the manifest, and the resource-grouping table | a generated file under `docs/generated/`, gated |
+| per-entry world | the generator, from `collect_used_builtin_names` | inline interfaces of used functions only |
+| resource grouping (constructor / method / drop) | `resources` in `docs/generated/host-runtime-contract.json` | the gate's fourth side for grouped fields |
 | raw `vibe.*` field name and core type | `lib/@vibe/compiler/codegen/wasi/linked_compile.vibe` | `docs/generated/host-runtime-contract.json` |
-| the mapping between the two | the type-mapping table in `wit_gen.vibe` | the gate's fourth side |
+| the mapping between ungrouped fields | the type-mapping table in `wit_gen.vibe` | the gate's fourth side |
 | `host_future_*`, `host_stream_*`, `stdin_provider_*` | the component adapter | private; the gate keeps them out of both standalone runners |
 | async lift, `future<T>`, `stream<u8>` | ADR-0089 | #2832, 0.2.0 |
 | Wasmtime `Linker` setup, preopens, fuel, store limits | each runner | not contract |
@@ -257,7 +340,7 @@ nothing else travels with it.
 | `vibe.abi` | `version=1\nhost_import_abi=raw\n` | exists |
 | `vibe.tagmode` | one little-endian i32: 0 plain i64, 1 tagged | exists where an adapter is selected (ADR-0106) |
 | `vibe.capabilities` | `version=1`, then one row per **optional** operation: `optional\t<label>\t<module>\t<field>\t<grant global>` | designed in [capability-host-contract.md](capability-host-contract.md); emitter pending on the `perform?` lowering (#2825 step 2) |
-| `vibe.entry` | `version=1\nkind=<kind>\nexport=<name>\n` | **new, this document** |
+| `vibe.entry` | `version=1\nkind=<kind>\ncore-export=<name-or-empty>\ncomponent-export=<name-or-empty>\n` | **new, this document** |
 | `name` | function names | exists |
 
 Two rules keep this from becoming a second import section:
@@ -282,19 +365,47 @@ Two rules keep this from becoming a second import section:
 The issue asks for initialization, invocation lifetime and re-entry constraints
 independent of Wasmtime flags. Today they are conventions per entry shape,
 known to the launcher and to nobody else. The section names the shape so a
-host applies the right protocol without being told:
+host applies the right protocol without being told. It lives on the **core
+module** and names **both** layers, because they are not the same export:
+`command_component_entry()` is `vibe_command` (`cli_support.vibe`, asserted
+in `dispatch_test.vibe`); `COMMAND_EXPORT` is `run` (`commands.rs`) after
+`comp_emit_component_wasm_command(core, "vibe_command", "run")`. A core host
+that called `run` would not find it; a component host that looked for a core
+custom section on a `.component.wasm` / `.cwasm` would not find a core export
+list unless the wrap copies and rewrites the section. `_start` is a core
+name; `run` is a lifted name. The wrap copies `vibe.entry` into the component
+blob and fills `component-export`. The gate pins both spellings
+(`command_component_entry()` and `COMMAND_EXPORT`).
 
-| `kind` | `export` | protocol |
-|---|---|---|
-| `wasi-command` | `_start` | instantiate, write grant globals, call once, discard the instance. A second `_start` on the same instance is out of contract (`__heap_ptr` and every `let mut` at module scope are live state). |
-| `command` | `run` | one instance per invocation; `args` is argv joined by NUL, the result is `vibe-command-result-v1`-framed. `viberun` already does exactly this (`invoke_command` builds a fresh `Store` and instance per call). |
-| `handler` | `handler` | the 4-string `vibe serve` contract, or its `stream<u8>` form; one instance may serve many requests, and a handler that keeps state across them is the author's choice, not the host's. |
-| `library` | none | no entry; the module is an input to composition (`vibec`'s `compile` face, a bench or test harness). Re-entry is per export and is the export's own contract. |
+| `kind` | `core-export` | `component-export` | protocol |
+|---|---|---|---|
+| `wasi-command` | `_start` | (none) | instantiate, apply grants, call `_start` once, discard the instance. A second `_start` on the same instance is out of contract (`__heap_ptr` and every `let mut` at module scope are live state). |
+| `command` | `vibe_command` | `run` | one instance per invocation; `args` is argv joined by NUL, the result is `vibe-command-result-v1`-framed. `viberun` already does exactly this (`invoke_command` builds a fresh `Store` and instance per call). |
+| `handler` | `handler` | `handler` | the 4-string `vibe serve` contract, or its `stream<u8>` form; one instance may serve many requests, and a handler that keeps state across them is the author's choice, not the host's. |
+| `library` | (none) | (none) | no entry; the module is an input to composition (`vibec`'s `compile` face, a bench or test harness). Re-entry is per export and is the export's own contract. |
 
-Initialization is one order for every kind: **link → write grant globals →
-call the export.** Nothing runs before the export is called (there is no
-`start` function on the linear lane), and a host that writes a grant global
-after the call has changed authority mid-run, which ADR-0088 forbids.
+Initialization order depends on the host class. Nothing runs before the
+named export is called (there is no `start` function on the linear lane),
+and a host that changes authority after the call has broken ADR-0088.
+
+- **Core-module host** (`viberun`, the node runner): **link → write
+  `__vibe_granted$<label>` globals → call `core-export`.** The globals are
+  exported mutable i64s on the core module (`capability-host-contract.md`
+  §3).
+- **Component host** (`--commands`, `vibe serve`, `vibec`): **compose the
+  world → call `component-export`.** `__vibe_granted$<label>` is not a WIT
+  export, and nested core globals are not `Instance::get_global` on the
+  component (`invoke_command` instantiates a component and calls `run`). A
+  `--commands` host that followed the core protocol could not write the
+  grant; when #2825 step 2 starts emitting optional rows, every `perform?`
+  would read the default `0` and take `NotGranted` even when the launcher
+  intended to grant. So the `--commands` lane has **no optional
+  capabilities** until a grant is lifted into the world (a WIT-exported
+  `static mut`, or a config argument set before `run`). Optional rows stay
+  a core-module fact. A verb component's world lists only required
+  operations; a withheld optional is omitted from the world. The older
+  hedge in `capability-host-contract.md` ("component-model global, or a
+  host-set config value") is the lift, not this document's default.
 
 ### 2.4 Preflight, and what the host answers before `main`
 
@@ -305,11 +416,13 @@ compiler:
 1. read the import section; for each `vibe.*` field with no `optional` row,
    the host must provide it or refuse — naming the label, the verb (§3) and
    the grant that supplies it;
-2. for each `optional` row, link the real implementation and write `1`, or
-   link the trapping stub and leave `0`;
+2. for each `optional` row, a **core** host links the real implementation and
+   writes `1`, or links the trapping stub and leaves `0`. A **component** host
+   does not take this step until the grant lift exists (§2.3);
 3. anything outside `portableCore` is decided by the manifest's band, as it
    is today;
-4. call the export named by `vibe.entry`.
+4. call `core-export` or `component-export` from `vibe.entry`, matching the
+   host class.
 
 This is the third boundary the issue asks to keep separate from the other
 two: neither the WIT (which is a projection) nor Wasmtime (which is one way to
@@ -347,9 +460,9 @@ the boundary's purpose). Neither is taken.
 
 **So the rule is: a component boundary is only ever placed where the surface
 is already monomorphic and first-order.** Those places are the entry points
-`vibe.entry` names — `run: func(args: string) -> string`, `_start`, the
-4-string `handler`, `vibec`'s `compile` — and they are process-like: argv in,
-bytes out. A verb component is a **whole-program link** from its root: the
+`vibe.entry` names — the lifted `run: func(args: string) -> string` (core
+`vibe_command`), core `_start`, the 4-string `handler`, `vibec`'s `compile`
+— and they are process-like: argv in, bytes out. A verb component is a **whole-program link** from its root: the
 formatter's, the checker's and the core library's generic code is linked into
 it, erased and dictionary-threaded exactly as it is into the monolithic CLI
 today. That is why `check` as a component is 2.6 MB and contains its own
@@ -366,7 +479,7 @@ every property above because it is the same program, assembled from parts.
 ### 2.6 The optimization unit
 
 A component is the right unit for **authority and isolation** (a verb runs
-with exactly the interfaces its world names, in its own memory) and for
+with exactly the functions its world names, in its own memory) and for
 **loading** (a verb that is not dispatched is not read). It is the wrong unit
 for **optimization**, and the design does not use it as one:
 
@@ -410,14 +523,32 @@ fmt	commands/fmt.cwasm	fs.read-file,fs.write-file,stdout.write-stream
 symbols	commands/symbols.cwasm	fs.read-file,fs.read-dir,stdout.write-stream
 ```
 
-The column is a comma-separated list of `<interface>.<operation>` names, an
-operation suffixed `?` when the artifact declares it optional. It is written by
-`vibe build --component` from the import section and the `vibe.capabilities`
-section — never by hand — and it is a **cache of the artifact, verified on
-load**: when the artifact is opened, its own sections are compared to the row,
-and a disagreement is refused by name. The row cannot become a second truth,
-because the artifact always wins and a stale row is an error rather than a
-quietly different answer.
+The column is a comma-separated list of `<interface>.<operation>` names. An
+operation is suffixed `?` only when the artifact declares it optional on the
+core module; `--commands` rows have no `?` until the grant lift exists
+(§2.3). It is written by `vibe build --component` from the import section
+and the `vibe.capabilities` section — never by hand — and it is a **cache of
+the artifact, verified on load**. How it is checked depends on what the row
+names:
+
+- A `.component.wasm` row is checked against the nested core import section
+  and `vibe.entry` / `vibe.capabilities`, the same way a core host reads
+  those sections. A disagreement is refused by name.
+- A `.cwasm` row is a wasmtime AOT image (`Engine::precompile_component` /
+  `Component::deserialize_file` in `commands.rs`). Custom sections
+  (`vibe.entry`, `vibe.capabilities`) and the nested core import section
+  are not in that blob. `--trust-precompiled` rows therefore do **not**
+  re-read those sections from the AOT image. After deserialize, the column
+  is compared to the **component type's import list** (WIT functions the
+  world named). That is why the world is operation-shaped (§1.3): the type
+  names exactly the operations the column lists. The installer also keeps
+  the source `.component.wasm` next to the `.cwasm` and treats the AOT
+  image as a cache of that component, the same way the column is a cache of
+  the requirement; a checkout install writes `.component.wasm` rows and
+  never needs the AOT path.
+
+On either path the row cannot become a second truth: a disagreement is an
+error rather than a quietly different answer.
 
 What the column buys, in the order the launcher uses it:
 
@@ -428,10 +559,11 @@ What the column buys, in the order the launcher uses it:
    is never read. This is the "settled once, in the earliest phase" rule
    applied to the CLI itself.
 2. **The host is composed from the row.** The linker registers exactly the
-   `vibe:host/*` functions the row names, from the same implementations the
-   core lane uses — the canonical lowering of §1.2 — and a trapping stub for
-   an optional operation the policy withholds. There is no longer a fixed
-   "pure" or "vfs" wrap: the wrap is the world.
+   functions the row names, from the same implementations the core lane uses
+   — the canonical lowering of §1.2. There is no longer a fixed "pure" or
+   "vfs" wrap: the wrap is the world. Optional operations are not a
+   `--commands` fact until the grant lift exists (§2.3); a withheld
+   required operation is refused at step 1, before the artifact is read.
 3. **Then the one read.** `CommandRegistry::load` opens the one path, as
    today. The laziness gate (`scripts/test_component_lazy_dispatch_gate.sh`)
    keeps its poisoned rows and gains one: a row whose column disagrees with
@@ -455,9 +587,10 @@ is empty for a verb that streams.
 
 - **Whether a row is precompiled is the manifest's decision** (unchanged).
   `vibe self update` and `install/install.sh` precompile each command with
-  the toolchain's own `viberun` and write `.cwasm` rows, the same way they
-  precompile `vibe-cli.wasm` today. A checkout install writes `.component.wasm`
-  rows.
+  the toolchain's own `viberun` and write `.cwasm` rows next to the source
+  `.component.wasm`, the same way they precompile `vibe-cli.wasm` today. A
+  checkout install writes `.component.wasm` rows. Verification of a
+  `.cwasm` row follows §3.1 (component type imports, not custom sections).
 - **`--trust-precompiled` is passed by the launcher only for a manifest under
   `$VIBE_HOME/toolchains/<name>/`**, the directory the installer wrote and
   `manifest.json` describes. A `commands.tsv` anywhere else is data.
@@ -501,9 +634,9 @@ each with the mutation that must turn it red:
 
 | check | what it asserts | red test |
 |---|---|---|
-| **generator diff** | the committed `vibe:host` WIT equals the generator's output from the registry and the manifest; the raw signature of every field equals the mapping of its WIT function | change one WIT parameter type; change one core type index in the JSON; each must fail naming the field |
-| **semantic conformance** | a fixture set of small programs (one per operation family: read/write/exists/read-dir ordering, `stat-token` on a non-regular path, `env.get` on an unset name, handle close-twice, a withheld optional operation) runs on both runners with byte-identical stdout and identical exit, on the linear lane | edit one runner's `read-dir` to skip the sort; the fixture must fail on that runner only |
-| **manifest row** | a `vibe-commands-v2` row equals what `vibe build --component` derives from its artifact | rewrite one row's column; dispatch must refuse before reading the artifact (the row lists a denied operation) and on reading it (the row disagrees) |
+| **generator diff** | the committed `vibe:host` catalog equals the generator's output from the registry, the manifest and the `resources` table; the emitted interface set equals kebab(`standard_host_provider_resource_defaults`); ungrouped raw signatures equal the mapping of their WIT functions; grouped fields follow the constructor / method / drop mapping | change one WIT parameter type; change one core type index in the JSON; rename `socket` to `tcp`; drop the `http` resource row; each must fail naming the field |
+| **semantic conformance** | a fixture set of small programs (one per operation family: read/write/exists/read-dir ordering, `stat-token` on a non-regular path, `env.get` on an unset name, handle close-twice, a withheld optional operation on the **core** lane) runs on both runners with byte-identical stdout and identical exit, on the linear lane | edit one runner's `read-dir` to skip the sort; the fixture must fail on that runner only |
+| **manifest row** | a `vibe-commands-v2` row equals what `vibe build --component` derives; a `.component.wasm` row is checked against core sections, a `.cwasm` row against the component type's import list | rewrite one row's column; dispatch must refuse before reading the artifact (the row lists a denied operation) and on reading it (the row disagrees). A `.cwasm` mutation that only the custom-section path would have caught, and the type-import path would miss, is a red test that the AOT path is the one under `--trust-precompiled` |
 
 The semantic fixtures pin values, not agreement: "agreement alone passes when
 both lanes break the same way" (`fixtures/gc_host_builtins.vibe` says this for
@@ -511,11 +644,14 @@ the linear/gc pair, and the same holds for the node/Rust pair).
 
 ## 6. Sequence
 
-1. **Generator** (compiler): `vibe:host` interfaces from the registry and the
-   manifest; `--wit` imports them instead of emitting the comment; the
-   compiler-host and `vibec` files become outputs. Gate side one.
-2. **`vibe.entry`** (compiler): emitted on every lane; runners read it and
-   drop their per-shape flags where one exists.
+1. **Generator** (compiler): `vibe:host` catalog from the registry, the
+   manifest and the `resources` table; per-entry worlds inline used
+   functions only; `--wit` imports those instead of emitting the comment;
+   the compiler-host and `vibec` files become outputs. Gate side one.
+2. **`vibe.entry`** (compiler): emitted on every lane with `core-export` and
+   `component-export`; the wrap copies the section into the component blob;
+   runners read the name that matches their host class and drop their
+   per-shape flags where one exists.
 3. **Canonical lowering on the hosts**: `viberun --commands` and the node
    runner serve `vibe:host/*` from the core-lane implementations; withhold
    becomes the stub, the `0n` fallback goes. Gate side two.
@@ -542,18 +678,21 @@ step 4 is that change's own deliverable; step 5 needs 3.
 
 ## Open for the owner
 
-1. **Interface granularity.** §1 imports whole interfaces (`vibe:host/fs`) and
-   lets the section and the manifest column name operations. The alternative
-   is one WIT interface per operation, which makes the world itself the
-   operation-level statement at the cost of ~50 one-function interfaces. The
-   label-level world matches how a host implements things (a filesystem
-   provider, not twenty providers) and how ADR-0088 grants (`allows Fs`), so
-   this document takes it.
+1. **Whether the catalog stays one interface per provider.** Settled: yes
+   (kebab of the registry label). Settled against: importing that catalog
+   interface whole into an entry world. The world inlines used functions
+   (§1.3). One WIT interface per operation remains available if a future
+   host cannot implement a catalog interface even as a catalog, but it is
+   not taken here.
 2. **Whether the manifest column should exist at all**, given the artifact is
    the truth. It exists so that authority is settled before any file other
    than the manifest is read, which is the property the lazy lane was built
    for. If the owner prefers to open the artifact and read its sections, the
    column is dropped and §3.1 step 1 moves after step 3; nothing else changes.
+   A `.cwasm` row still cannot be checked by reading core custom sections.
 3. **The `vibe:host` package version.** `0.1.0` here, bumped when `result`
    signatures land. Whether that version tracks the language's 0.1.0 tag or
    its own line is a release question.
+4. **The component-host grant lift** (WIT-exported `static mut` vs a config
+   argument set before `run`). Not decided here. Until it exists, command
+   components have no optional capabilities (§2.3).
