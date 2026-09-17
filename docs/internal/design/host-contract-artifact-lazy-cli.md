@@ -122,6 +122,7 @@ interface http {
     status: func() -> s64;
     header: func(name: string) -> string;
     body: func() -> string;
+    close: func();
   }
   request: func(method: string, url: string, headers: string, body: string) -> response;
 }
@@ -250,7 +251,30 @@ The fourth-side mapping for a grouped field is then:
 |---|---|---|
 | constructor | function returning the resource | same arguments, result is the resource instead of `s64` |
 | method | resource method; WIT `self` is dropped from the raw handle argument | raw has one extra `i64` (the handle) |
-| drop | implicit resource drop; no WIT function | raw field exists; the gate records it as the destructor, not as a missing WIT function |
+| drop | an explicit `close: func()` method on the resource, **idempotent**; the canonical implicit resource drop is separate and is a no-op after `close` | raw has the handle argument; the gate records the field as the resource's `close`, not as a missing WIT function |
+
+**`close` is a method and it is idempotent, because the raw lane is.** Both
+providers deliberately accept an unknown or already-closed handle and return
+success (`runtime/viberun/src/main.rs`, `http_close` / `sh_capture_close` /
+`tcp_close`; the node runner likewise), and a guest that copied its `i64`
+handle may close twice. Canonical `resource.drop` traps on a handle already
+removed from the table, so mapping the raw close onto the implicit drop would
+make the same program trap on one lane and succeed on the other. Two rules
+keep the lanes agreeing:
+
+- The provider implements `close` exactly as the raw field: a second `close`
+  on the same resource returns success. The implicit drop after `close` is a
+  no-op for the provider.
+- The component-side shim keeps a guest table from the raw `i64` handle to
+  the owned resource. `close` looks the handle up, calls the method, drops
+  the resource and removes the entry; a second `close` of a copied handle
+  finds no entry and returns success without touching the canonical handle
+  table. That table is what "absorbs repeated closes"; nothing about it is
+  visible in the WIT.
+
+The close-twice fixture in §5 therefore runs on **three** lanes — the two
+raw runners and the component lane — and pins the value (success), not
+agreement between the two raw runners alone.
 
 Until that table exists, the residual WIT is not generated from the registry
 and JSON alone, and `resource response` is not the emitted shape. `sh_capture`
@@ -434,6 +458,7 @@ kind (`command_component_entry()` and `COMMAND_EXPORT`;
 | `handler` | `handler` | `handler` | the 4-string `vibe serve` contract, or its `stream<u8>` form; one instance may serve many requests, and a handler that keeps state across them is the author's choice, not the host's. |
 | `compile` | `compile_cli_request` | `compile` | one call per request; `source` and `request` are strings, the result is the compile-face protocol (`len-mode` / `hex-chunk-mode`, empty string on error). The live wrap is `comp_emit_component_wasm_string_handler_stubbed` (`vibec-component.md`). The hosted sibling is `core-export=compile_file_request`, `component-export=compile-file`. The gate pins both pairs the same way `vibe_command`/`run` are pinned. |
 | `library` | (none) | (none) | no published entry; an uncomposed `__no_entry__` core (a bench or test harness, a body waiting to be linked). Re-entry is per export and is the export's own contract. `vibec`'s compile face is **not** this kind. |
+| `service` | (none) | the facade interface id (`scope:pkg/pkg@x.y.z`, [component-build-convention.md](component-build-convention.md) §4) | no entry call: the host instantiates the component and its **consumers** call the interface's functions; one instance serves many calls, and state kept across them is the producer's choice. The instance's host requirement is the union over every export (convention §3), satisfied at instantiation whichever function is later called. Preflight step 4 below is skipped for this kind. |
 
 Initialization order depends on the host class. Nothing runs before the
 named export is called (there is no `start` function on the linear lane),
@@ -473,7 +498,7 @@ compiler:
    does not take this step until the grant lift exists (§2.3);
 3. anything outside `portableCore` is decided by the manifest's band, as it
    is today;
-4. call `core-export` or `component-export` from `vibe.entry`, matching the
+4. unless the kind is `service` (no entry to call), call `core-export` or `component-export` from `vibe.entry`, matching the
    host class.
 
 This is the third boundary the issue asks to keep separate from the other
@@ -572,12 +597,23 @@ requirement so it can be read **before the artifact is opened**:
 
 ```text
 vibe-commands-v2
-check	commands/check.cwasm	fs.read-file,fs.exists,fs.stat-token,fs.read-dir,fs.write-bytes,env.get,stdout.write-stream
-fmt	commands/fmt.cwasm	fs.read-file,fs.write-file,stdout.write-stream
-symbols	commands/symbols.cwasm	fs.read-file,fs.read-dir,stdout.write-stream
+check	commands/check.cwasm	Fs:fs.read-file,Fs:fs.exists,Fs:fs.stat-token,Fs:fs.read-dir,Fs:fs.write-bytes,Env:env.get,Console:stdout.write-stream
+fmt	commands/fmt.cwasm	Fs:fs.read-file,Fs:fs.write-file,Console:stdout.write-stream
+symbols	commands/symbols.cwasm	Fs:fs.read-file,Fs:fs.read-dir,Stdout:stdout.write-stream
 ```
 
-The column is a comma-separated list of `<interface>.<operation>` names. An
+The column is a comma-separated list of `<label>:<interface>.<function>`
+entries: the **grant label** the module actually reached (from the
+`vibe.capabilities` `used` rows, §2.2) and the WIT function it reached it
+through. The label is not derivable from the function — `stdout.write-stream`
+is reached under `Stdout` by one verb and under `Console` by another, and the
+two are distinct grants in `standard_host_provider_resource_defaults` — so a
+column without it would let a policy that grants `Stdout` and denies `Console`
+authorize the wrong verb before opening it. When one function is reached under
+two labels the row lists it twice, once per label, and the policy must grant
+both. Whether `Stdout` / `Stderr` / `Stdin` and `Console` should be one
+authority unit is ADR-0088's question, not this column's; the column carries
+what the module declared. An
 operation is suffixed `?` only when the artifact declares it optional on the
 core module; `--commands` rows have no `?` until the grant lift exists
 (§2.3). It is written by `vibe build --component` from the import section
@@ -587,7 +623,8 @@ names:
 
 - A `.component.wasm` row is checked against the nested core import section
   and `vibe.entry` / `vibe.capabilities`, the same way a core host reads
-  those sections. A disagreement is refused by name.
+  those sections: the function part against the import section, the label
+  part against the `used` rows. A disagreement is refused by name.
 - A `.cwasm` row is a wasmtime AOT image (`Engine::precompile_component` /
   `Component::deserialize_file` in `commands.rs`). Custom sections
   (`vibe.entry`, `vibe.capabilities`) and the nested core import section

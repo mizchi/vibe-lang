@@ -50,18 +50,31 @@ rather than approximates.
 A `.vibe` module. A `.vibex` is refused as today: it is an executable root
 with no export surface (ADR-0075, #2229), so there is nothing to project.
 
-When the module is the facade of a package — its directory has an
-`index.vpkg` — the package's `name` and `version` become the WIT package id
-(§4) and the component gets a vibe-facing identity a consumer can import by
-name. A loose `.vibe` with no owning package builds too, under `vibe:app` as
-today, but such a component can only be composed by path; nothing can
-`import` it.
+There are two inputs, and they are told apart by what the author names:
+
+- **A package**: `vibe build --component <dir>` (or its `index.vpkg`). The
+  surface is the contract's own bodyless declarations — `index.vpkg` *is*
+  the public API (ADR-0063 / ADR-0070) — and the implementations are
+  resolved through the ordinary loader and checked against it by the
+  existing conformance engine. The package's `name` and `version` become
+  the WIT package id (§4) and the component gets a vibe-facing identity a
+  consumer can import by name. No implementation file's `export` list
+  stands in for the contract: a package may have several implementation
+  roots, and letting any of them publish under the package's name would let
+  two files ship incompatible components under one identity, or expose a
+  declaration the contract never listed.
+- **A loose module**: `vibe build --component file.vibe`. Its `export`
+  declarations are the surface, it builds under `vibe:app` as today, and it
+  can only be composed by path; nothing can `import` it. Sitting next to an
+  `index.vpkg` does not change this — a file is not a package.
 
 ### 1.2 The surface
 
-The surface is exactly the set of `export fn` / `export let f: (..) -> .. =`
-declarations of the module, each fully annotated (parameter types, return
-type, row). Two changes from today's `--wit`:
+The surface is exactly the set of declarations the input publishes — the
+`index.vpkg` declarations for a package, the `export fn` /
+`export let f: (..) -> .. =` declarations for a loose module — each fully
+annotated (parameter types, return type, row). Two changes from today's
+`--wit`:
 
 - **An unannotated export is refused, not skipped.** `--wit` skips one
   ("nothing is guessed at the boundary") and so silently narrows the surface;
@@ -93,7 +106,16 @@ anything the module does not already say.
 A module that exports `vibe_command` **and** other functions is refused: a
 command exports exactly one function (component-lazy-dispatch.md), and the
 extra exports are named in the message rather than silently pruned by DCE.
-The same holds for `handler`. The reserved names are the only way to ask for
+The same holds for `handler`. **The two reserved kinds also refuse a row that
+would change their ABI**: `run` is exactly `func(args: string) -> string`
+(`runtime/viberun/src/commands.rs` looks it up by that type), so
+`Exception[E]` (§3.1 would make it `result<string, E>`) and `Async` (an
+`async func`) on `vibe_command` are refused naming the edit — the frame
+(`command_failed`) is a command's failure channel. A `handler` refuses
+`Exception[E]` for the same reason (its status line is the channel) and
+takes `Async` only with a `HostStream` body, as #1540 already enforces. Host
+capabilities on either row are fine; they are imports, not signature
+changes. The reserved names are the only way to ask for
 those kinds, which keeps the reserved words to two and the flag count to one.
 
 The `wasi-command` kind of host-contract §2.3 is a core-module kind
@@ -121,7 +143,7 @@ The subset that projects in both directions. The forward mapping is
 | `Array[T]` | `list<T>` | |
 | `Option[T]` | `option<T>` | |
 | `Result[T, E]` (`@vibe/wit_runtime`) | `result<T, E>` | explicit two-track value; see §3 for the row form |
-| `Map[String, V]` | `list<tuple<string, V>>` | a non-`String` key is refused |
+| `Map[String, V]` | `list<tuple<string, V>>` | a non-`String` key is refused; the type mapping is a bijection but the value mapping is not — a list with a duplicate key has no `Map`, so the inbound shim **refuses** one naming the key rather than dropping a pair. A foreign `list<tuple<string, V>>` never becomes a `Map` (§7) |
 | `(A, B, ..)` | `tuple<A, B, ..>` | |
 | `Unit` return | no result | |
 | `Future[T]` | `future<T>` | ADR-0089 D5 |
@@ -142,6 +164,11 @@ Refused, each with the edit in the message:
 - a `struct` / `enum` used at the boundary that is not `export`ed: a private
   type has no name the consumer can see, so the edit is to export it
   (decided by the owner, 2026-09-17).
+- **a recursive boundary type** (`struct Node { next: Option[Node] }`, or a
+  cycle through several types): WIT value types are ordered and a cycle has
+  no definition, so the build refuses the strongly connected component by
+  name, with the edit (flatten, or index into a list) rather than emitting
+  a contract no tool can read.
 
 The mapping is a bijection on this subset, and §8 checks it as one.
 
@@ -152,10 +179,25 @@ An export's row is projected label by label:
 | label in the row | projects to |
 |---|---|
 | a host capability (`Fs`, `Env`, `Http`, .. — the registry's provider labels) | an **inline** interface named by the label, holding only the used functions of the `vibe:host` catalog (host-contract §1.3; never `import vibe:host/<label>` whole, which would demand the full surface); derived from the emitted import section, so it can never list a function the code does not reach |
-| a user algebraic effect `effect E { .. }` | an import of interface `<kebab-e>` (today's rule); the composer, not the caller, supplies it (§6.3) |
+| a user algebraic effect `effect E { .. }` | an import of interface `<kebab-e>` (today's rule); the composer, not the caller, supplies it (§6.3). **Tail-resumptive only**: the import is a synchronous function that returns exactly once, so a handler that stores its `resume`, resumes late or never (the first-class one-shot `resume` the cheatsheet documents) is not expressible across an instance boundary. The derived contract says so, and a producer needing those semantics keeps the `handle` inside the component. |
 | `Async` | the export becomes `async func`; never an import (ADR-0089 D5) |
-| `Exception[E]` | **`result<T, E>` on the export, with the `handle` generated in the lift** (§3.1) |
+| `Exception[E]` | **`result<T, E>` on the export, with the `handle` generated in the lift** (§3.1); exactly one exception kind per export |
+| two or more exception kinds on one export (`Exception[IoError] + Exception[ParseError]`, directly or through an effectset) | refused: one `result` has one error type, and choosing either kind would lose the other; the edit is to discharge into one payload type (an enum) in the body |
 | a bare `Exception` / legacy `Error` with no payload type | refused: annotate the payload type, because `result<T, ?>` has no `?` |
+
+**The host requirement of a `service` is the union over its exports.** A
+component is one instance with one world, and every world import is
+satisfied when the instance is created, whichever export is later called. So
+a `service` that exports a pure `add` and an `Fs`-reaching `load` has an `fs`
+import that a consumer of `add` alone must still see satisfied. The derived
+contract therefore carries a `requires = <labels>` header line, the union of
+the surface's host labels, and a consumer that imports **anything** from the
+package takes that union into its own row: `import @acme/greeter { add }`
+inside `fn main allows Stdout` is refused naming the missing `Fs` (or the
+split — one package per authority — as the other edit). Per-export rows still
+type each call (`Exception[E]`, `Async`); only the host requirement is
+instance-level. This is ADR-0075's `Entry.requires ⊆ ComposedHost.provides`
+applied to the instance it actually names.
 
 ### 3.1 `Exception[E]` projects to `result<T, E>`, in both directions
 
@@ -177,7 +219,10 @@ export fn parse_port(s: String) -> Int with Exception[String] {
 ```
 
 derives `parse-port: func(s: string) -> result<s64, string>` and a lift that
-runs the body under `handle .. with Exception[String] { Throw(e) => Err(e) }`;
+runs `handle { Ok(body) } with Exception[String] { Throw(e) => Err(e) }` — the
+success branch is wrapped in `Ok` inside the handler, the shape
+`lib/@vibe/wit_runtime/index.vpkg` already documents, so both arms have the
+`Result[T, E]` type;
 a vibe consumer sees `fn parse_port(s: String) -> Int with Exception[String]`
 in the derived contract and a lowered shim that re-raises `Err(e)` as
 `throw(e)`. A non-vibe consumer sees `result`. `E` must itself be admitted
@@ -262,9 +307,15 @@ must still get the exact vibe view.
 `vibe add <spec>` of a component package materializes
 `.vibe/store/@scope/pkg/` holding the `.component.wasm` and an `index.vpkg`
 **extracted from its `vibe.contract` section**. That `.vpkg` is derived like
-every other artifact here and is never edited; its `generated_hash` is the
-contract's identity (ADR-0093's line), and `vibe add` refuses an artifact
-whose section and sidecar disagree.
+every other artifact here and is never edited. Two identities, both on
+ADR-0093's line: the **package pin** (`pkg:b3:`, the `require` row in the
+consumer's `index.vpkg`) hashes the component bytes together with the
+extracted `.vpkg`, so a component with different code and the same contract
+does not satisfy the pin; the **contract identity** (`ct:b3:`, the
+`generated_hash`) hashes the contract text alone, which is what a consumer
+was checked against. A contract-only pin would leave the executable unpinned,
+which is the one thing a pin is for. `vibe add` refuses an artifact whose
+section and sidecar disagree.
 
 The loader's resolution rule does not change: it finds an `index.vpkg` under
 the store exactly as for a source package. The one new fact it reads is the
@@ -333,7 +384,10 @@ derives its `index.vpkg` with `from_wit`, the exact inverse of §2 / §4:
 
 - `record` → `export struct`, `enum` → payload-less `export enum`, `variant` →
   `export enum` with payloads, `option` / `list` / `tuple` / `result` as in
-  the table.
+  the table — except that a foreign `list<tuple<string, V>>` is
+  `Array[(String, V)]`, never `Map[String, V]`: the foreign author did not
+  write a map, duplicates are legal in the list, and only a vibe producer's
+  own `vibe.contract` spelling brings a `Map` back (§2).
 - **`result<T, E>` → `-> T with Exception[E]`**, the vibe idiom, because
   inside vibe failure belongs in the row (#1324). An author who wants the
   explicit `Result` can still write one on the producer side; only a foreign
@@ -394,6 +448,12 @@ current one and refuse a Patch that changed it.
 - A boundary `struct` / `enum` must be `export`ed (owner, 2026-09-17).
 - The facade interface is named after the package's last segment
   (owner, 2026-09-17).
+- A package component is built from its `index.vpkg` surface; a loose module
+  stays path-only. A `service`'s host requirement is the union over its
+  exports and is taken by any consumer of the package. `command` / `handler`
+  refuse a row that would change their fixed ABI; one exception kind per
+  export; recursive boundary types refused; the store pin covers the
+  component bytes, the contract identity the contract text.
 
 ## What it does not decide
 
