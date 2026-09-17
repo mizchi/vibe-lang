@@ -203,6 +203,13 @@ Because the set is the emitter's own, the generated world cannot list an
 interface the module does not import or omit one it does — the property the
 hand-authored compiler-host file needed three review rounds to approximate.
 
+How a *producer's* export surface becomes its WIT, its vibe-facing contract
+and its entry kind — and how a vibe consumer imports the result transparently —
+is the build-side convention in
+[component-build-convention.md](component-build-convention.md) (ADR-0113).
+This document owns the host side: the `vibe:host` interfaces, the artifact
+sections and the manifest.
+
 ### 1.4 What happens to the two hand-written files
 
 - `docs/internal/compiler/wit/vibe-compiler-host.wit` becomes the generator's
