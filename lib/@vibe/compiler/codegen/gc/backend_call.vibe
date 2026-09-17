@@ -2565,7 +2565,7 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
         // takes the "true"/"false" formatter directly — the runtime-dispatch
         // builtin below cannot distinguish Bool from Int (same
         // representation on this lane) and would mis-render `true` as "1".
-        ce(buf, EIf(Array::get(args, 0), EString("true"), EString("false")), local_names, next_local, ld)
+        ce(buf, EIf(Array::get(args, 0), EString("true", -1), EString("false", -1)), local_names, next_local, ld)
       }
       else if fname == "to_string" && ctx.gc_to_string_is_show_wrapper && Array::length(args) == 1 && (bc_expr_is_floatish(Array::get(args, 0), local_names, ctx) || bc_expr_is_boolish(Array::get(args, 0), local_names, ctx)) {
         // #1015: gc-lane counterpart of the linear call-site fast path in
@@ -3533,6 +3533,18 @@ fn compile_call_gc(buf: Bytes, callee: Expr, args: Array[Expr], local_names: Arr
           ()
         }
         emit_call_resolved(buf, ctx, ps_idx)
+        emit_i64_const(buf, 0)
+        nl
+      }
+      else if fname == "abort" && !gc_name_is_user_defined(ctx, local_names, fname) {
+        // #2397: same print-then-trap as the linear lane, via `print_str`.
+        let (ps_idx, _, _) = resolve_func(ctx.func_table, "print_str")
+        let nl = ce(buf, Array::get(args, 0), local_names, next_local, ld)
+        emit_call_resolved(buf, ctx, ps_idx)
+        let nl_idx = str_table_index_of(ctx.str_table, "\n")
+        emit_str_ref(buf, Array::get(ctx.str_table.offsets, nl_idx), Array::get(ctx.str_table.lengths, nl_idx))
+        emit_call_resolved(buf, ctx, ps_idx)
+        bytebuf_push(buf, 0)
         emit_i64_const(buf, 0)
         nl
       }

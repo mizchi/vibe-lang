@@ -58,7 +58,7 @@ import @vibe/compiler/entry/source_compile/gc_only {
 }
 
 import @vibe/compiler/entry/source_compile/wasi_only {
-  compile_source_wasi_only
+  compile_file_wasi_library, compile_file_wasi_linked_artifacts, compile_file_wasi_only, compile_source_wasi_only
 }
 
 /// `label` prefixes the answer so no two expectations in this file can be the
@@ -216,4 +216,120 @@ test "an export of a nonexistent Option member is refused" {
 //# round 4 checked.
 test "an export of real qualified builtins across families is accepted" {
   inspect(typecheck_outcome("real-qualified", "export {\n  Fs::read_file,\n  Env::get,\n  Array::get,\n  Map::get,\n  String::contains,\n  Int::to_string\n}\n\nexport fn mk() -> Int {\n  1\n}\n"), "real-qualified: accepted")
+}
+
+//# ROUND 6 (#2808). The FILE-BASED merged compile entries never asked the
+//# per-file source whether an aggregate export names something that file
+//# declares or imports. `compile_file_wasi_only` and
+//# `compile_file_wasi_library` flatten the import closure first, then check
+//# once; `compile_file_wasi_linked_artifacts` uses a third collector. A file
+//# whose only oddity is `export { NotDeclaredAnywhere }` was ACCEPTED on all
+//# three, while every user-facing lane already refuses it. The message is
+//# asserted, not merely the throw, and it must LEAD with the edit.
+
+fn wasm_magic_ok(bytes: Bytes) -> Bool {
+  Bytes::length(bytes) >= 4 && Bytes::get(bytes, 0) == 0 && Bytes::get(bytes, 1) == 97 && Bytes::get(bytes, 2) == 115 && Bytes::get(bytes, 3) == 109
+}
+
+fn write_probe_source(dir: String, source: String) -> String with Fs {
+  Fs::mkdir_p(dir)
+  let path = String::concat(dir, "/main.vibe")
+  Fs::write_file(path, source)
+  path
+}
+
+fn file_wasi_only_outcome(label: String, source: String) -> String with Fs {
+  String::concat(label, String::concat(": ", handle {
+    let path = write_probe_source(String::concat("/tmp/vibe_export_file_wasi_only_", label), source)
+    let bytes = compile_file_wasi_only(path, "main")
+    if wasm_magic_ok(bytes) {
+      "accepted"
+    } else {
+      "not-wasm"
+    }
+  } with { Exception::Throw(message) => message }))
+}
+
+fn file_wasi_library_outcome(label: String, source: String) -> String with Fs {
+  String::concat(label, String::concat(": ", handle {
+    let path = write_probe_source(String::concat("/tmp/vibe_export_file_wasi_library_", label), source)
+    let bytes = compile_file_wasi_library(path)
+    if wasm_magic_ok(bytes) {
+      "accepted"
+    } else {
+      "not-wasm"
+    }
+  } with { Exception::Throw(message) => message }))
+}
+
+fn file_wasi_linked_outcome(label: String, source: String) -> String with Fs {
+  String::concat(label, String::concat(": ", handle {
+    let path = write_probe_source(String::concat("/tmp/vibe_export_file_wasi_linked_", label), source)
+    let (bytes, _, _) = compile_file_wasi_linked_artifacts(path, "main")
+    if wasm_magic_ok(bytes) {
+      "accepted"
+    } else {
+      "not-wasm"
+    }
+  } with { Exception::Throw(message) => message }))
+}
+
+fn undeclared_export_source() -> String {
+  "export {\n  NotDeclaredAnywhere\n}\n\nexport fn main() -> Int {\n  1\n}\n"
+}
+
+fn local_export_source() -> String {
+  "export {\n  helper\n}\n\nfn helper() -> Int {\n  3\n}\n\nexport fn main() -> Int {\n  helper()\n}\n"
+}
+
+fn builtin_export_source() -> String {
+  "export {\n  Option\n}\n\nexport fn main() -> Int {\n  1\n}\n"
+}
+
+fn file_wasi_only_import_outcome(label: String) -> String with Fs {
+  String::concat(label, String::concat(": ", handle {
+    let dir = String::concat("/tmp/vibe_export_file_wasi_only_", label)
+    Fs::mkdir_p(dir)
+    Fs::write_file(String::concat(dir, "/dep.vibe"), "export fn helper() -> Int {\n  3\n}\n")
+    let path = String::concat(dir, "/main.vibe")
+    Fs::write_file(path, "import ./dep.vibe { helper }\nexport {\n  helper\n}\nexport fn main() -> Int {\n  helper()\n}\n")
+    let bytes = compile_file_wasi_only(path, "main")
+    if wasm_magic_ok(bytes) {
+      "accepted"
+    } else {
+      "not-wasm"
+    }
+  } with { Exception::Throw(message) => message }))
+}
+
+test "file wasi-only lane refuses an export naming nothing" {
+  inspect(file_wasi_only_outcome("file-wasi-only", undeclared_export_source()), "file-wasi-only: declare or import NotDeclaredAnywhere in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+test "file wasi-library lane refuses an export naming nothing" {
+  inspect(file_wasi_library_outcome("file-wasi-library", undeclared_export_source()), "file-wasi-library: declare or import NotDeclaredAnywhere in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+test "file wasi-linked lane refuses an export naming nothing" {
+  inspect(file_wasi_linked_outcome("file-wasi-linked", undeclared_export_source()), "file-wasi-linked: declare or import NotDeclaredAnywhere in this module, or remove it from the `export { }` list; the export publishes a name this module does not have, so a consumer importing it fails at its own import")
+}
+
+test "file wasi-only lane accepts an export naming a private fn" {
+  inspect(file_wasi_only_outcome("file-wasi-only-ok", local_export_source()), "file-wasi-only-ok: accepted")
+}
+
+test "file wasi-library lane accepts an export naming a private fn" {
+  inspect(file_wasi_library_outcome("file-wasi-library-ok", local_export_source()), "file-wasi-library-ok: accepted")
+}
+
+test "file wasi-linked lane accepts an export naming a private fn" {
+  inspect(file_wasi_linked_outcome("file-wasi-linked-ok", local_export_source()), "file-wasi-linked-ok: accepted")
+}
+
+test "file wasi-only lane accepts an export naming a builtin" {
+  inspect(file_wasi_only_outcome("file-wasi-only-builtin", builtin_export_source()), "file-wasi-only-builtin: accepted")
+}
+
+test "file wasi-only lane accepts an export naming an imported value" {
+  inspect(file_wasi_only_import_outcome("file-wasi-only-import"), "file-wasi-only-import: accepted")
 }

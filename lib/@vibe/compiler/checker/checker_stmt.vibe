@@ -88,6 +88,7 @@ import ./checker.vibe {
   bind_function_dependency_contracts,
   check_assignable,
   check_assignable_for,
+  check_assignable_set_end,
   check_expr,
   check_expr_capture,
   collect_formal_applications_by,
@@ -465,6 +466,98 @@ export fn validate_user_source_exports(stmts: Array[Stmt], env: TypeEnv) -> Unit
 /// `unresolved_aggregate_export_name_excluding`.
 export fn validate_user_source_exports_excluding(stmts: Array[Stmt], env: TypeEnv, synthesized: Array[String]) -> Unit with Exception {
   match unresolved_aggregate_export_name_excluding(stmts, env, synthesized) {
+    Some(name) => throw(unresolved_export_message(name)),
+    None => ()
+  }
+}
+
+/// #2808: the local name an import / re-export item binds -- alias if present,
+/// otherwise the imported name.
+fn import_item_local_name(item: ImportItem) -> String {
+  match item.alias {
+    Some(alias) => alias,
+    None => item.name
+  }
+}
+
+fn import_items_bind_name(items: Array[ImportItem], name: String) -> Bool {
+  let mut j = 0
+  let mut found = false
+  while j < Array::length(items) && !found {
+    found = import_item_local_name(Array::get(items, j)) == name
+    j = j + 1
+  }
+  found
+}
+
+/// #2808: does THIS FILE's own statements provide `name` for an aggregate
+/// `export { }` -- a local declaration, an import / re-export item, or a
+/// publishable builtin -- without asking a checked environment.
+///
+/// The env-based predicate (`export_name_resolves`) is the right question
+/// after a module has been checked. The file-based merged compile entries
+/// never have a per-file env: they flatten the import closure, namespace-
+/// rename declarations, and keep each `SExport` at its written spelling, so
+/// asking the merged program would be wrong. This walk reads the file that
+/// wrote the export list.
+export fn export_name_resolves_from_source(stmts: Array[Stmt], name: String) -> Bool {
+  if is_explicit_builtin_declaration(name) {
+    true
+  } else {
+    let mut i = 0
+    let mut found = false
+    while i < Array::length(stmts) && !found {
+      match Array::get(stmts, i) {
+        SLet(_, _, decl_name, _, _) => found = decl_name == name,
+        SLetMut(decl_name, _, _) => found = decl_name == name,
+        SExternLet(decl_name, _) => found = decl_name == name,
+        SFnDecl(_, decl_name, _, _, _) => found = decl_name == name,
+        SEnum(_, decl_name, _, _, _) => found = decl_name == name,
+        SStruct(_, decl_name, _, _, _, _) => found = decl_name == name,
+        STypeAlias(_, decl_name, _, _) => found = decl_name == name,
+        STrait(_, decl_name, _, _, _, _) => found = decl_name == name,
+        SEffectDef(_, decl_name, _, _) => found = decl_name == name,
+        SEffectSet(_, decl_name, _) => found = decl_name == name,
+        SSuberror(_, decl_name, _) => found = decl_name == name,
+        SAliasDecl(decl_name, _) => found = decl_name == name,
+        SModule(_, decl_name, _) => found = decl_name == name,
+        SResource(decl_name, _) => found = decl_name == name,
+        SImport(_, items) => found = import_items_bind_name(items, name),
+        SReExport(_, items) => found = import_items_bind_name(items, name),
+        _ => ()
+      }
+      i = i + 1
+    }
+    found
+  }
+}
+
+/// #2808: the first aggregate-export name this file neither declares nor
+/// imports, or `None`. Same source-order / first-name rule as
+/// `unresolved_aggregate_export_name`, without an environment.
+export fn unresolved_aggregate_export_name_from_source(stmts: Array[Stmt]) -> Option[String] {
+  let names = aggregate_export_names(stmts)
+  let mut i = 0
+  let mut found = None
+  while i < Array::length(names) {
+    let name = Array::get(names, i)
+    if found == None && !export_name_resolves_from_source(stmts, name) {
+      found = Some(name)
+    } else {
+      ()
+    }
+    i = i + 1
+  }
+  found
+}
+
+/// #2808: the file-based merged compile entries' door. Validate each USER
+/// source before the import closure is flattened -- `collect_parsed_sources_recursive`
+/// for `compile_file_wasi_only` / `compile_file_wasi_library`, and
+/// `collect_linked_compile_inputs` for `compile_file_wasi_linked_artifacts`.
+/// Same leading-edit message as the env-based door.
+export fn validate_user_source_exports_from_source(stmts: Array[Stmt]) -> Unit with Exception {
+  match unresolved_aggregate_export_name_from_source(stmts) {
     Some(name) => throw(unresolved_export_message(name)),
     None => ()
   }
@@ -865,6 +958,7 @@ fn statement_root_type_observation_from_capture(checked: CheckedProgram, entries
 fn top_stmt_expr_off(e: Expr) -> Int {
   match e {
     EIdent(_, off) => off,
+    EString(_, off) => off,
     ECall(callee, _, off) => if off >= 0 {
       off
     } else {
@@ -1870,7 +1964,7 @@ fn collect_deferred_type_name_sentinels(stmts: Array[Stmt]) -> Array[(Array[Stri
     match Array::get(stmts, i) {
       SLet(_, _, lname, _, value) => if String::starts_with(lname, "__vpkg_deferred_type_names_") {
         match value {
-          EString(names) => {
+          EString(names, _) => {
             // `<protected decls> : <deferred names>` -- names before the `:`
             // are the declarations the exemption applies to (Codex round 3 on
             // #2162: unscoped, a merge-lane sentinel excused an unrelated
@@ -2976,8 +3070,9 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // double-report the same diagnostic — dropped.
             // Anchor on the VALUE being bound, not the annotation: `let x: Int
             // = f()` is wrong at `f()`, and that is also where the edit goes.
-            // -1 (unlocated, as before) for a literal RHS -- EInt/EString/
-            // EBool/EFloat carry no offset in the AST.
+            // EString carries a parser offset (#2831); EInt/EBool/EFloat still
+            // do not, so those stay unlocated here and the binder-name fallback
+            // below recovers them.
             let ann_err_before = Array::length(errors)
             // #2125: a top-level binding's annotation. Reported HERE and not
             // at the forward-reference hoist above, which runs before any
@@ -2986,6 +3081,14 @@ fn check_stmts_with_binders(raw_stmts: Array[Stmt], i: Int, env: TypeEnv, defs: 
             // `defs` and would be reported as unknown. Inside the
             // `ann_err_before` window so the binder name anchors it.
             report_unknown_type_names(te, defs, array_empty(), env, array_empty(), String::concat(String::concat("the annotation of `", name), "`"), errors)
+            match val {
+              EString(s, soff) => if soff >= 0 {
+                check_assignable_set_end(soff + 2 + String::length(s))
+              } else {
+                ()
+              },
+              _ => ()
+            }
             let ns_b = check_assignable_for(resolved_te, actual_v, ns0, errors, "binding type mismatch for ", name, top_stmt_expr_off(val))
             // #1941: a literal value carries no offset, so anchor the binder
             // name instead of emitting the one unlocated diagnostic left in
@@ -8652,7 +8755,7 @@ fn collect_referenced_names_expr(expr: Expr, bound: Array[String], out: Array[St
     },
     EInt(_) => (),
     EFloat(_) => (),
-    EString(_) => (),
+    EString(_, _) => (),
     EBool(_) => (),
     EUnit => (),
     EBreak(opt) => match opt {

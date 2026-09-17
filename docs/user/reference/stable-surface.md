@@ -274,7 +274,7 @@ frozen:
 | --- | --- |
 | `vibe run <file>` | Compile and execute. `--trace` / `--break` are opt-in debugging. |
 | `vibe compile` / `vibe build [--release] <file>` | Produce a standalone `.wasm`. |
-| `vibe check [--single-file] [--json] <file>` | Type-check only. Located diagnostics (`line N:M:`) on **stdout**, one per line. **Clean = empty output + exit 0**; any diagnostic means exit 1. `--single-file` analyses one file without resolving imports (for unsaved editor buffers); `--json` exists in that mode only (#1567). |
+| `vibe check [--single-file] [--json] <file>` | Type-check only. Located diagnostics (`line N:M:`) on **stdout**, one per line. **Clean = empty output + exit 0**; any diagnostic means exit 1. `--single-file` analyses one file without resolving imports (for unsaved editor buffers). `--json` is the same LSP Diagnostic array on both the FS lane and `--single-file` (#2831). |
 | `vibe test <file\|dir>` | Run test blocks. |
 | `vibe new [--name @scope/name] <dir>` / `vibe add <source-spec>` | Scaffold a project / fetch a package into `.vibe/store/` and pin it in the root `index.vpkg`. |
 | `vibe fetch` | Restore `.vibe/store/` from the manifest's pins, hash-verified. |

@@ -1621,7 +1621,7 @@ fn lc_extract_inline_wasm(stmts: Array[Stmt], names: Array[String], wats: Array[
           ECall(iw_cal, iw_args, _) => match iw_cal {
             EIdent(iw_cn, _) => if iw_cn == "%wasm" && Array::length(iw_args) == 1 {
               match Array::get(iw_args, 0) {
-                EString(iw_wat) => {
+                EString(iw_wat, _) => {
                   Array::push(names, iw_name)
                   Array::push(wats, iw_wat)
                   Array::set(stmts, i, SLet(iw_exp, iw_rec, iw_name, iw_ann, EFn(iw_tps, iw_tbs, iw_params, iw_ret, iw_eff, EInt(0))))
@@ -2757,7 +2757,7 @@ fn lc_expr_collect_hf_names(e: Expr, active: Bool, out: Array[String]) -> Unit {
       match callee {
         EIdent(nm, _) => if active && nm == "host_future_named" && Array::length(args) == 1 {
           match Array::get(args, 0) {
-            EString(s) => Array::push(out, s),
+            EString(s, _) => Array::push(out, s),
             _ => ()
           }
         } else {
@@ -2990,7 +2990,7 @@ fn lc_expr_collect_hs_names(e: Expr, active: Bool, out: Array[String]) -> Unit {
       match callee {
         EIdent(nm, _) => if active && nm == "host_stream_named" && Array::length(args) == 1 {
           match Array::get(args, 0) {
-            EString(s) => Array::push(out, s),
+            EString(s, _) => Array::push(out, s),
             _ => ()
           }
         } else {
@@ -8053,7 +8053,7 @@ fn lc_pf_prune_with_layout(mod_bytes: Bytes, cell: Array[Int], failed: Array[Boo
       Array::set(lc_pf_refusal_cell, 0, 0 - 1)
       mod_bytes
     } else {
-      lc_pf_reemit(mod_bytes, cell, failed, sec_id, sec_start, sec_len, newidx, ftypes, keep, body_start, body_end, site, site_from)
+      lc_pf_reemit(mod_bytes, cell, failed, sec_id, sec_start, sec_len, newidx, ftypes, keep, body_start, body_end, site, site_from, num_imported)
     }
   }
 }
@@ -8124,17 +8124,107 @@ fn lc_pf_check_written(out: Bytes, content_start: Int, announced: Int, failed: A
   }
 }
 
+/// #2199: remap `vibe.linemap` through the prune's old->new function map, and
+/// shift each record's code offset by the call-immediate LEB size change in
+/// that body so wasmtime's func_offset still hits the right entry.
+fn lc_pf_linemap_name(mod_bytes: Bytes, sstart: Int) -> Bool {
+  let cell = lc_fresh_int_array()
+  Array::push(cell, 0)
+  let nlen = lc_pf_leb(mod_bytes, sstart, cell)
+  let nstart = Array::get(cell, 0)
+  nlen == 12 && Bytes::get(mod_bytes, nstart) == 118 && Bytes::get(mod_bytes, nstart + 1) == 105 && Bytes::get(mod_bytes, nstart + 2) == 98 && Bytes::get(mod_bytes, nstart + 3) == 101 && Bytes::get(mod_bytes, nstart + 4) == 46 && Bytes::get(mod_bytes, nstart + 5) == 108 && Bytes::get(mod_bytes, nstart + 6) == 105 && Bytes::get(mod_bytes, nstart + 7) == 110 && Bytes::get(mod_bytes, nstart + 8) == 101 && Bytes::get(mod_bytes, nstart + 9) == 109 && Bytes::get(mod_bytes, nstart + 10) == 97 && Bytes::get(mod_bytes, nstart + 11) == 112
+}
+
+fn lc_pf_read_u32le(mod_bytes: Bytes, pos: Int) -> Int {
+  Bytes::get(mod_bytes, pos) + (Bytes::get(mod_bytes, pos + 1) << 8) + (Bytes::get(mod_bytes, pos + 2) << 16) + (Bytes::get(mod_bytes, pos + 3) << 24)
+}
+
+fn lc_pf_linemap_adjust_off(old_off: Int, body_idx: Int, body_start: Array[Int], site: Array[Int], site_from: Array[Int], newidx: Array[Int], mod_bytes: Bytes) -> Int {
+  if body_idx < 0 || body_idx + 1 >= Array::length(site_from) || body_idx >= Array::length(body_start) {
+    old_off
+  } else {
+    let bstart = Array::get(body_start, body_idx)
+    let mut delta = 0
+    let mut k = Array::get(site_from, body_idx)
+    let kend = Array::get(site_from, body_idx + 1)
+    while k < kend {
+      let pk = Array::get(site, k)
+      let pos = pk >> 32
+      let target = pk & 4294967295
+      if target < Array::length(newidx) && Array::get(newidx, target) >= 0 {
+        let old_leb = lc_pf_skip_leb(mod_bytes, pos) - pos
+        let site_rel = pos - bstart
+        if site_rel < old_off {
+          delta = delta + (lc_pf_leb_len(Array::get(newidx, target)) - old_leb)
+        } else {
+          ()
+        }
+      } else {
+        ()
+      }
+      k = k + 1
+    }
+    old_off + delta
+  }
+}
+
+fn lc_pf_emit_linemap(mod_bytes: Bytes, sstart: Int, send: Int, cell: Array[Int], newidx: Array[Int], num_imported: Int, body_start: Array[Int], site: Array[Int], site_from: Array[Int], dst: Bytes, write: Bool) -> Int {
+  let nlen = lc_pf_leb(mod_bytes, sstart, cell)
+  let nstart = Array::get(cell, 0)
+  let rec_start = nstart + nlen
+  let mut nrec = 0
+  let mut rp = rec_start
+  while rp + 16 <= send {
+    let old_f = lc_pf_read_u32le(mod_bytes, rp)
+    if old_f < Array::length(newidx) && Array::get(newidx, old_f) >= 0 {
+      nrec = nrec + 1
+    } else {
+      ()
+    }
+    rp = rp + 16
+  }
+  let size = lc_pf_leb_len(nlen) + nlen + nrec * 16
+  if write {
+    leb128_encode_u32(dst, nlen)
+    Bytes::blit(dst, mod_bytes, nstart, nstart + nlen)
+    rp = rec_start
+    while rp + 16 <= send {
+      let old_f = lc_pf_read_u32le(mod_bytes, rp)
+      if old_f < Array::length(newidx) && Array::get(newidx, old_f) >= 0 {
+        let new_f = Array::get(newidx, old_f)
+        let old_off = lc_pf_read_u32le(mod_bytes, rp + 4)
+        let file_id = lc_pf_read_u32le(mod_bytes, rp + 8)
+        let line = lc_pf_read_u32le(mod_bytes, rp + 12)
+        let body_idx = old_f - num_imported
+        let new_off = lc_pf_linemap_adjust_off(old_off, body_idx, body_start, site, site_from, newidx, mod_bytes)
+        bytebuf_push_i32le(dst, new_f)
+        bytebuf_push_i32le(dst, new_off)
+        bytebuf_push_i32le(dst, file_id)
+        bytebuf_push_i32le(dst, line)
+      } else {
+        ()
+      }
+      rp = rp + 16
+    }
+  } else {
+    ()
+  }
+  size
+}
+
 /// Final step: write the module back out, substituting the rebuilt function
 /// and code sections and remapping every function index the other sections
-/// carry (exports, element segments, the name section). Every section goes
-/// straight into one reserved output: the sizing mode of each helper supplies
-/// both its section length and the total capacity before writing begins.
-fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], newidx: Array[Int], ftypes: Array[Int], keep: Array[Int], body_start: Array[Int], body_end: Array[Int], site: Array[Int], site_from: Array[Int]) -> Bytes {
+/// carry (exports, element segments, the name section, vibe.linemap). Every
+/// section goes straight into one reserved output: the sizing mode of each
+/// helper supplies both its section length and the total capacity before
+/// writing begins.
+fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id: Array[Int], sec_start: Array[Int], sec_len: Array[Int], newidx: Array[Int], ftypes: Array[Int], keep: Array[Int], body_start: Array[Int], body_end: Array[Int], site: Array[Int], site_from: Array[Int], num_imported: Int) -> Bytes {
   // The sizing helpers never write in this mode. Keep their results so the
   // existing sizing walk also determines the one output allocation.
   let sizing = bytebuf_new()
   let lengths = lc_fresh_int_array()
   let name_sections: Array[Bool] = []
+  let linemap_sections: Array[Bool] = []
   let nkeep = Array::length(keep)
   let mut total = 8
   let mut si = 0
@@ -8144,6 +8234,7 @@ fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id:
     let send = sstart + Array::get(sec_len, si)
     let mut size = send - sstart
     let mut is_name = false
+    let mut is_linemap = false
     if sid == 3 {
       size = lc_pf_leb_len(nkeep)
       let mut fi = 0
@@ -8161,8 +8252,11 @@ fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id:
       let nlen = lc_pf_leb(mod_bytes, sstart, cell)
       let nstart = Array::get(cell, 0)
       is_name = nlen == 4 && Bytes::get(mod_bytes, nstart) == 110 && Bytes::get(mod_bytes, nstart + 1) == 97 && Bytes::get(mod_bytes, nstart + 2) == 109 && Bytes::get(mod_bytes, nstart + 3) == 101
+      is_linemap = lc_pf_linemap_name(mod_bytes, sstart)
       if is_name {
         size = lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, sizing, false)
+      } else if is_linemap {
+        size = lc_pf_emit_linemap(mod_bytes, sstart, send, cell, newidx, num_imported, body_start, site, site_from, sizing, false)
       } else {
         ()
       }
@@ -8171,6 +8265,7 @@ fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id:
     }
     Array::push(lengths, size)
     Array::push(name_sections, is_name)
+    Array::push(linemap_sections, is_linemap)
     total = total + 1 + lc_pf_leb_len(size) + size
     si = si + 1
   }
@@ -8203,6 +8298,8 @@ fn lc_pf_reemit(mod_bytes: Bytes, cell: Array[Int], failed: Array[Bool], sec_id:
       lc_pf_emit_elements(mod_bytes, sstart, send, cell, newidx, failed, out, true)
     } else if Array::get(name_sections, si) {
       lc_pf_emit_name_section(mod_bytes, sstart, send, cell, newidx, failed, out, true)
+    } else if Array::get(linemap_sections, si) {
+      lc_pf_emit_linemap(mod_bytes, sstart, send, cell, newidx, num_imported, body_start, site, site_from, out, true)
     } else {
       Bytes::blit(out, mod_bytes, sstart, send)
     }
@@ -9998,11 +10095,16 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // work. Gated on `debug_break && prov has files`, so default builds reserve
   // nothing and stay byte-identical.
   let dbg_line_on = debug_break && Array::length(prov.files) > 0
+  // #2199: production trap provenance. A compact `vibe.linemap` is emitted
+  // whenever we have file names AND newline tables, independent of debug-break
+  // probes. Empty `file_nls` (the inert map `linked_compile_prov_inert_test`
+  // carries) keeps the section off, so that compile stays byte-identical.
+  let linemap_on = dbg_line_on || (Array::length(prov.files) > 0 && Array::length(prov.file_nls) > 0)
   // Pre-prelude name -> file, the identity that survives the prelude, and
   // pre-prelude owner key -> file for the definitions the prelude synthesizes.
-  // Built only in break mode; every other build leaves both empty and reads
-  // neither.
-  let dbg_name_file: MutMap[String, Int] = if dbg_line_on {
+  // Built when linemap or break is on; every other build leaves both empty
+  // and reads neither.
+  let dbg_name_file: MutMap[String, Int] = if linemap_on {
     lc_dbg_build_file_index(pre_prelude_let_names, pre_prelude_let_files)
   } else {
     MutMap::new_string()
@@ -10030,13 +10132,13 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     li_i = li_i + 1
   }
   let num_imported_funcs = next_import_idx
-  // #644: static (wasm code offset -> file/line) recorder for the
+  // #644 / #2199: static (wasm code offset -> file/line) recorder for the
   // `vibe.linemap` custom section, shared by reference across every
-  // top-level function's CompileCtx (mirrors cov_state above). Enabled
-  // exactly when interior-line probes are (dbg_line_on): the linemap
-  // records the SAME probe sites the live `--break`/dbg_line hook uses.
+  // top-level function's CompileCtx (mirrors cov_state above). Enabled for
+  // production trap provenance whenever newline tables are present, and
+  // also for debug-break (the live `--break`/dbg_line hook).
   let linemap_state = LineMapState::{
-    enabled: dbg_line_on,
+    enabled: linemap_on,
     cur_fn: [0],
     funcs: lc_fresh_int_array(),
     offsets: lc_fresh_int_array(),
@@ -11641,8 +11743,8 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
         let body_buf = bytebuf_new()
         // #644: tell the linemap recorder which user function `body_buf`'s
         // offsets belong to (mirrors cov_state.cur_fn below). Set unconditionally
-        // -- linemap_record itself is a no-op unless dbg_line_on, so this costs
-        // nothing on a normal build.
+        // -- linemap_record itself is a no-op unless linemap_state.enabled.
+
         Array::set(linemap_state.cur_fn, 0, bi)
         // #cov: mark this user function as executed (store 1 at cov_base + bi).
         // Stack-neutral and local-free, so prepending it to the body is safe.
@@ -11925,14 +12027,14 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
             di = di + 1
           }
         }
-        // Interior-line breakpoints: this function's source file id + that file's
-        // newline index (for mapping its statement offsets to lines). Off => 0/empty.
-        let dbg_fid = if dbg_line_on {
+        // Interior-line breakpoints / production linemap: this function's
+        // source file id + that file's newline index. Off => 0/empty.
+        let dbg_fid = if linemap_on {
           lc_dbg_file_of_fn(dbg_name_file, dbg_owner_file, fn_name_dbg)
         } else {
           0
         }
-        let dbg_nls = if dbg_line_on {
+        let dbg_nls = if linemap_on && dbg_fid >= 0 && dbg_fid < Array::length(prov.file_nls) {
           Array::get(prov.file_nls, dbg_fid)
         } else {
           lc_fresh_int_array()
@@ -13064,13 +13166,12 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   } else {
     ()
   }
-  // Interior-line breakpoints (span-arc step5, multi-file): emit a `vibe.dbgfiles`
-  // custom section listing the source-file basenames in file-id order, one per
-  // line (terminated by newline 10). `vibe::dbg_line(file_id, line)` passes the
-  // file id; the runner indexes this table to recover the basename and match a
-  // `--break <file>:<line>` spec. Only present when dbg_line is active, so off =>
-  // byte-identical (fixpoint preserved).
-  if dbg_line_on {
+  // Interior-line breakpoints / production trap provenance: emit a
+  // `vibe.dbgfiles` custom section listing the source-file basenames in
+  // file-id order, one per line (terminated by newline 10). The runner
+  // indexes this table to recover the basename for a linemap file id.
+  // Present whenever linemap is on, including production compiles.
+  if linemap_on {
     let df_content = bytebuf_new()
     let df_name = "vibe.dbgfiles"
     leb128_encode_u32(df_content, String::length(df_name))
@@ -14125,8 +14226,8 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // `vibe.dbgargs`'s raw-int encoding above). The offset is shifted by that
   // function's locals-header length (linemap_hdrlen_by_bi) so it lands
   // exactly where wasmtime's FrameInfo::func_offset() measures from. Emitted
-  // only when linemap_state is enabled (debug-break builds with interior-
-  // line probes); off => no section, byte-identical output.
+  // when linemap_state is enabled (production trap provenance, and
+  // debug-break); off => no section.
   if linemap_state.enabled {
     let lm_content = bytebuf_new()
     let lm_name = "vibe.linemap"

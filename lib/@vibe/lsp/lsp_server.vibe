@@ -560,7 +560,22 @@ fn lsp_diag_severity(text: String) -> Int {
 /// editor's caret too far right on any line with non-ASCII before the error,
 /// and silently: the diagnostic still renders, just at the wrong place.
 /// `let 日本 = 1` reports byte column 10 for `本` where LSP wants 8.
+fn lsp_located_payload(msg: String) -> String {
+  if String::starts_with(msg, "line ") {
+    msg
+  } else {
+    let marker = ": line "
+    let at = String::index_of(msg, marker)
+    if at >= 0 {
+      String::substring(msg, at + 2, String::length(msg))
+    } else {
+      msg
+    }
+  }
+}
+
 fn lsp_parse_diag_line(source: String, msg: String) -> Json {
+  let msg = lsp_located_payload(msg)
   if String::starts_with(msg, "line ") {
     let after = msg[5: String::length(msg)]
     let colon1 = String::index_of(after, ":")
@@ -622,11 +637,11 @@ fn lsp_parse_diag_line(source: String, msg: String) -> Json {
 }
 
 /// Messages with no `line L:` prefix cannot claim a real source span.
-/// Editors still require a valid LSP range, so this uses an empty range at
-/// the origin (`0:0-0:0`) and marks `data.synthetic` so clients can tell it
-/// apart from a real first-character highlight. A structured effect-row
-/// fix already occupying `data` is kept: `synthetic` is merged in as a
-/// sibling field rather than replacing the payload.
+/// Bounds are null (never an invented `0:0`) and `data.synthetic` is true
+/// so clients can tell this apart from a real first-character highlight
+/// (#2831). A structured effect-row fix already occupying `data` is kept:
+/// `synthetic` is merged in as a sibling field rather than replacing the
+/// payload.
 fn lsp_diag_fallback_data(msg: String) -> Json {
   let fix = lsp_effect_row_mismatch_fix(msg)
   match fix {
@@ -635,9 +650,13 @@ fn lsp_diag_fallback_data(msg: String) -> Json {
   }
 }
 
+fn lsp_diag_null_range() -> Json {
+  JObj(Map::from_pairs([("start", JNull), ("end", JNull)]))
+}
+
 fn lsp_diag_fallback(msg: String) -> Json {
   JObj(Map::from_pairs([
-    ("range", jrange(0, 0, 0, 0)),
+    ("range", lsp_diag_null_range()),
     ("severity", jnum_int(lsp_diag_severity(msg))),
     ("source", JStr("vibe")),
     ("message", JStr(msg)),

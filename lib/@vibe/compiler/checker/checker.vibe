@@ -19,6 +19,7 @@ import @vibe/compiler/checker/annotations {
 import @vibe/compiler/checker/type_relations {
   check_assignable as type_relations_check_assignable,
   check_assignable_for as type_relations_check_assignable_for,
+  check_assignable_set_end as type_relations_check_assignable_set_end,
   detect_narrowed_generic_mismatch_for,
   head_kind,
   row_labels,
@@ -1099,6 +1100,15 @@ fn arm_body_diverges(body: Expr) -> Bool {
 fn railway_expr_off(e: Expr) -> Int {
   match e {
     EIdent(_, off) => off,
+    EString(_, off) => off,
+    EIf(_, t, els) => {
+      let toff = railway_expr_off(t)
+      if toff >= 0 {
+        toff
+      } else {
+        railway_expr_off(els)
+      }
+    },
     ECall(callee, _, off) => if off >= 0 {
       off
     } else {
@@ -3585,6 +3595,25 @@ export fn check_assignable(expected: Type, actual: Type, s: Subst, errors: Array
   type_relations_check_assignable(expected, actual, s, errors, what, off)
 }
 
+export fn check_assignable_set_end(end: Int) -> Unit {
+  type_relations_check_assignable_set_end(end)
+}
+
+fn string_lit_end(e: Expr) -> Int {
+  match e {
+    EString(s, off) => if off >= 0 {
+      off + 2 + String::length(s)
+    } else {
+      0 - 1
+    },
+    ESeq(_, rest) => string_lit_end(rest),
+    ELet(_, _, rest, _) => string_lit_end(rest),
+    ELetRec(_, _, rest) => string_lit_end(rest),
+    ELetMut(_, _, rest, _) => string_lit_end(rest),
+    _ => 0 - 1
+  }
+}
+
 // Forward the established checker API to its owning package.
 export fn check_assignable_for(expected: Type, actual: Type, s: Subst, errors: Array[String], what_head: String, what_tail: String, off: Int) -> Subst {
   type_relations_check_assignable_for(expected, actual, s, errors, what_head, what_tail, off)
@@ -6062,7 +6091,7 @@ fn check_seq_spine(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c: 
 fn field_write_mut_check(name: String, args: Array[Expr], env: TypeEnv, defs: Array[TypeDef], s: Subst, c: Int, errors: Array[String], tytab: Array[(Int, Type)], ce: (Expr, TypeEnv, Array[TypeDef], Subst, Int, Array[String], Array[(Int, Type)]) -> (Type, Subst, Int)) -> Unit {
   if name == "__set_field" && Array::length(args) == 3 {
     match Array::get(args, 1) {
-      EString(field) => {
+      EString(field, _) => {
         let throwaway = array_empty()
         let throwtab = array_empty()
         let (obj_ty, _, _) = ce(Array::get(args, 0), env, defs, s, c, throwaway, throwtab)
@@ -6274,7 +6303,7 @@ fn tail_region_check(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Subst, c
   match expr {
     EInt(_) => (CtInt, s, c),
     EFloat(_) => (CtDouble, s, c),
-    EString(_) => (CtString, s, c),
+    EString(_, _) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
     _ => ce(expr, env, defs, s, c, array_empty(), array_empty())
@@ -6287,7 +6316,7 @@ fn tail_region_closed_ground_fn(expr: Expr) -> Bool {
       match body {
         EInt(_) => true,
         EFloat(_) => true,
-        EString(_) => true,
+        EString(_, _) => true,
         EBool(_) => true,
         EUnit => true,
         _ => false
@@ -6707,7 +6736,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
   match expr {
     EInt(_) => (CtInt, s, c),
     EFloat(_) => (CtDouble, s, c),
-    EString(_) => (CtString, s, c),
+    EString(_, _) => (CtString, s, c),
     EBool(_) => (CtBool, s, c),
     EUnit => (CtUnit, s, c),
     EIdent(name, ident_off) => if String::starts_with(name, "__fapp_") || String::starts_with(name, trait_erased_type_param_prefix) {
@@ -6867,6 +6896,12 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
               } else {
                 railway_expr_off(cond)
               }
+            }
+            let else_end = string_lit_end(else_e)
+            if else_end > 0 {
+              check_assignable_set_end(else_end)
+            } else {
+              check_assignable_set_end(string_lit_end(then_e))
             }
             (check_assignable(rtt, ret, s3, errors, "if branches have incompatible types", branch_off), tt)
           }
@@ -7117,7 +7152,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // defensively, never evaluated.
           let wasm_shape_ok = if Array::length(args) == 1 {
             match Array::get(args, 0) {
-              EString(_) => true,
+              EString(_, _) => true,
               _ => false
             }
           } else {
@@ -8692,6 +8727,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
             } else {
               call_off
             }
+            check_assignable_set_end(string_lit_end(Array::get(args, 0)))
             let ns2 = check_assignable(resolved, actual, ns0, errors, "binding type mismatch for a local let", asc_off)
             let bound_ty = preserve_generic_instantiation(resolved, subst_apply(ns2, actual))
             (tab_call_ty(tytab, call_off, bound_ty, capture, lane), ns2, nc0)
@@ -10288,10 +10324,11 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           // effectful value flowing into a pure-typed slot) via
           // effect_row_dropped, so this loosens nothing that was load-bearing.
           // Anchor on the body's TAIL expression -- the value actually being
-          // returned. -1 when the tail is a literal: EInt/EString/EBool/EFloat
-          // carry no offset in the AST. The enclosing SLet/ELet then tags
-          // the error with `[@fn=name]` so locate_type_error can recover the
-          // function name token (#1941) instead of a synthetic 0:0 range.
+          // returned. EString now carries a parser offset (#2831); other
+          // literals (EInt/EBool/EFloat) still have none, and the enclosing
+          // SLet/ELet then tags those with `[@fn=name]` so locate_type_error
+          // recovers the function name instead of a synthetic 0:0 range.
+          check_assignable_set_end(string_lit_end(body))
           let ns = check_assignable(resolved_ret, bt, s2, errors, "return type mismatch", tail_expr_off(body))
           (merge_capture_provenance(subst_apply(ns, resolved_ret), subst_apply(ns, bt)), ns)
         },
@@ -10795,6 +10832,7 @@ fn check_expr_capture_impl(expr: Expr, env: TypeEnv, defs: Array[TypeDef], s: Su
           } else {
             // Explicit `return e`: anchor on `e` itself, so this spelling locates
             // the same way the implicit tail-expression return does above.
+            check_assignable_set_end(string_lit_end(e))
             let _ = check_assignable(rte, ate, s1, errors, "return type mismatch", railway_expr_off(e))
             ()
           }

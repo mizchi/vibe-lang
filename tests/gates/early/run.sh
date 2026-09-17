@@ -202,67 +202,132 @@ if [ "$dsout" != "Point { x: 3, y: 4 }|Mix(1, 2)|Lone" ]; then
 fi
 echo "[compiler-gate] derive(Show) source-name rendering ok"
 
-# 4e. OOB abort names the operation, index, and length (#2199): an
-#     out-of-range index used to trap with a bare `unreachable` and a
-#     crash-debug dump -- nothing said what went wrong, which is
-#     indistinguishable from a compiler bug. The generated bounds check now
-#     prints `<op>: index <idx> out of bounds for length <len>` before the
-#     trap (__rt_oob_abort). The program must still FAIL (trapping stays the
-#     design answer: crash > silently wrong); only the message is new. Two
-#     runs: Array::get pins the exact line with both values, Bytes::get pins
-#     that the sibling trap sites route through the same abort.
-echo "[compiler-gate] 4e OOB abort names the operation, index, and length (#2199)"
+# 4e. OOB abort names the operation, index, and length, and reports an
+#     editable path:line for the access (#2199). A production-style compile
+#     (no VIBE_DEBUG_BREAK) emits compact vibe.linemap; missing/stripped
+#     mapping degrades to the wasm frame, never a fabricated location.
+#     This gate is the linear/RC production lane. wasm-gc Array OOB is the
+#     engine's native trap (no __rt_oob_abort, no production linemap).
+echo "[compiler-gate] 4e OOB abort names the operation, index, length, and path:line (#2199)"
 oobdir="_build/_gate_arr_oob"
 rm -rf "$oobdir"; mkdir -p "$oobdir"
-cat > "$oobdir/main.vibe" <<'VEOF'
+# Access is on line 4 of each file (1=fn, 2=let, 3=println before, 4=access).
+cat > "$oobdir/arr_get.vibe" <<'VEOF'
 fn main allows Console {
   let xs = [1, 2, 3]
   println("before")
   println("\{Array::get(xs, 10)}")
 }
 VEOF
-cat > "$oobdir/bytes.vibe" <<'VEOF'
+cat > "$oobdir/arr_set.vibe" <<'VEOF'
+fn main allows Console {
+  let xs = [1, 2, 3]
+  println("before")
+  Array::set(xs, 10, 0)
+}
+VEOF
+cat > "$oobdir/bytes_get.vibe" <<'VEOF'
 fn main allows Console {
   let b = Bytes::from_array([1, 2, 3])
+  println("before")
   println("\{Bytes::get(b, 9)}")
 }
 VEOF
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$oobdir/main.vibe" "$oobdir/main.wasm" main >/dev/null 2>&1 || true
-VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
-  bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
-  "$oobdir/bytes.vibe" "$oobdir/bytes.wasm" main >/dev/null 2>&1 || true
-if [ ! -s "$oobdir/main.wasm" ] || [ ! -s "$oobdir/bytes.wasm" ]; then
-  echo "[compiler-gate] FAIL: OOB message sample did not compile" >&2
-  cat "$oobdir/main.wasm.diag" >&2 2>/dev/null || true
-  cat "$oobdir/bytes.wasm.diag" >&2 2>/dev/null || true
-  exit 1
-fi
+cat > "$oobdir/bytes_set.vibe" <<'VEOF'
+fn main allows Console {
+  let b = Bytes::from_array([1, 2, 3])
+  println("before")
+  Bytes::set(b, 9, 0)
+}
+VEOF
+cat > "$oobdir/str_byte_at.vibe" <<'VEOF'
+fn main allows Console {
+  let s = "abc"
+  println("before")
+  println("\{String::byte_at(s, 5)}")
+}
+VEOF
+oob_compile_one() {
+  local src="$1" out="$2"
+  VIBE_PREOPEN_DIR="$ROOT_DIR" VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
+    bash scripts/run_wasm_vibe_host_runner.sh --invoke cli_main "$stage2_wasm" \
+    "$src" "$out" main >/dev/null 2>&1 || true
+  if [ ! -s "$out" ]; then
+    echo "[compiler-gate] FAIL: OOB sample did not compile: $src" >&2
+    cat "$out.diag" >&2 2>/dev/null || true
+    exit 1
+  fi
+}
+oob_compile_one "$oobdir/arr_get.vibe" "$oobdir/arr_get.wasm"
+oob_compile_one "$oobdir/arr_set.vibe" "$oobdir/arr_set.wasm"
+oob_compile_one "$oobdir/bytes_get.vibe" "$oobdir/bytes_get.wasm"
+oob_compile_one "$oobdir/bytes_set.vibe" "$oobdir/bytes_set.wasm"
+oob_compile_one "$oobdir/str_byte_at.vibe" "$oobdir/str_byte_at.wasm"
+oob_run_one() {
+  VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$1" 2>&1
+}
+oob_check() {
+  local label="$1" msg="$2" loc="$3" out="$4" rc="$5"
+  if [ "$rc" -eq 0 ]; then
+    echo "[compiler-gate] FAIL: $label OOB access did not trap (exit 0)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qF "$msg"; then
+    echo "[compiler-gate] FAIL: $label OOB trap did not report operation + index + length (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "$out" | grep -qF "$loc"; then
+    echo "[compiler-gate] FAIL: $label OOB trap did not report editable path:line $loc (#2199)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+}
 set +e
-oob_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$oobdir/main.wasm" 2>&1)"
-oob_rc=$?
-oob_bytes_out="$(VIBE_PREOPEN_DIR="$ROOT_DIR" bash scripts/run_wasm_vibe_host_runner.sh --invoke _start "$oobdir/bytes.wasm" 2>&1)"
-oob_bytes_rc=$?
+oob_arr_get_out="$(oob_run_one "$oobdir/arr_get.wasm")"
+oob_arr_get_rc=$?
+oob_arr_set_out="$(oob_run_one "$oobdir/arr_set.wasm")"
+oob_arr_set_rc=$?
+oob_bytes_get_out="$(oob_run_one "$oobdir/bytes_get.wasm")"
+oob_bytes_get_rc=$?
+oob_bytes_set_out="$(oob_run_one "$oobdir/bytes_set.wasm")"
+oob_bytes_set_rc=$?
+oob_str_out="$(oob_run_one "$oobdir/str_byte_at.wasm")"
+oob_str_rc=$?
 set -e
-rm -rf "$oobdir"
-if [ "$oob_rc" -eq 0 ] || [ "$oob_bytes_rc" -eq 0 ]; then
-  echo "[compiler-gate] FAIL: OOB access did not trap (exit 0) — bounds check regressed" >&2
-  printf '%s\n' "$oob_out" >&2
-  printf '%s\n' "$oob_bytes_out" >&2
+oob_check "Array::get" "Array::get: index 10 out of bounds for length 3" "arr_get.vibe:4" "$oob_arr_get_out" "$oob_arr_get_rc"
+oob_check "Array::set" "Array::set: index 10 out of bounds for length 3" "arr_set.vibe:4" "$oob_arr_set_out" "$oob_arr_set_rc"
+oob_check "Bytes::get" "Bytes::get: index 9 out of bounds for length 3" "bytes_get.vibe:4" "$oob_bytes_get_out" "$oob_bytes_get_rc"
+oob_check "Bytes::set" "Bytes::set: index 9 out of bounds for length 3" "bytes_set.vibe:4" "$oob_bytes_set_out" "$oob_bytes_set_rc"
+oob_check "String::byte_at" "String::byte_at: index 5 out of bounds for length 3" "str_byte_at.vibe:4" "$oob_str_out" "$oob_str_rc"
+# Stripped mapping: OOB line and wasm frame remain; no fabricated path:line.
+node scripts/wasm_custom_section.js strip "$oobdir/arr_get.wasm" "$oobdir/arr_get.stripped.wasm" vibe.linemap vibe.dbgfiles
+set +e
+oob_stripped_out="$(oob_run_one "$oobdir/arr_get.stripped.wasm")"
+oob_stripped_rc=$?
+set -e
+if [ "$oob_stripped_rc" -eq 0 ]; then
+  echo "[compiler-gate] FAIL: stripped-mapping OOB access did not trap" >&2
+  printf '%s\n' "$oob_stripped_out" >&2
   exit 1
 fi
-if ! printf '%s\n' "$oob_out" | grep -qF "Array::get: index 10 out of bounds for length 3"; then
-  echo "[compiler-gate] FAIL: Array::get OOB trap did not report operation + index + length (#2199)" >&2
-  printf '%s\n' "$oob_out" >&2
+if ! printf '%s\n' "$oob_stripped_out" | grep -qF "Array::get: index 10 out of bounds for length 3"; then
+  echo "[compiler-gate] FAIL: stripped-mapping OOB lost the operation/index/length line" >&2
+  printf '%s\n' "$oob_stripped_out" >&2
   exit 1
 fi
-if ! printf '%s\n' "$oob_bytes_out" | grep -qF "Bytes::get: index 9 out of bounds for length 3"; then
-  echo "[compiler-gate] FAIL: Bytes::get OOB trap did not report operation + index + length (#2199)" >&2
-  printf '%s\n' "$oob_bytes_out" >&2
+if printf '%s\n' "$oob_stripped_out" | grep -qE '[A-Za-z0-9_.-]+\.vibe:[0-9]+'; then
+  echo "[compiler-gate] FAIL: stripped-mapping OOB fabricated a path:line (#2199)" >&2
+  printf '%s\n' "$oob_stripped_out" >&2
   exit 1
 fi
-echo "[compiler-gate] OOB abort messages ok (Array::get, Bytes::get)"
+if ! printf '%s\n' "$oob_stripped_out" | grep -qE 'wasm-function\[|RuntimeError:'; then
+  echo "[compiler-gate] FAIL: stripped-mapping OOB lost the wasm frame" >&2
+  printf '%s\n' "$oob_stripped_out" >&2
+  exit 1
+fi
+echo "[compiler-gate] OOB abort messages + path:line ok (five ops; stripped mapping degrades)"
 
 # 4f. #2362: `insert_raw`'s probe walk is BOUNDED. `find_index` has carried a
 #     step guard since it was written; the insert path walking the same chain

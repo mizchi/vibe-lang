@@ -218,7 +218,7 @@ check "vibe check --json emits [] for a clean file" "[]" "$json_clean"
 "$VIBE" check --single-file --json "$proj/lib.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
 check "vibe check --json exits 0 for a clean file" "0" "$rc"
 "$VIBE" check --json "$proj/lib.vibe" >/dev/null 2>&1 && rc=0 || rc=$?
-check "vibe check --json without --single-file is refused" "1" "$rc"
+check "vibe check --json without --single-file is accepted on a clean file" "0" "$rc"
 
 # test: passing file exits 0, failing file exits non-zero, aggregate fails
 "$VIBE" test "$proj/pass_test.vibe" >/dev/null 2>&1 && rc=0 || rc=$?

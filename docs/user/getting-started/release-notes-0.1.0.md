@@ -156,12 +156,14 @@ the edit that fixes them rather than an internal pass name.
 - **The Japanese book is a translation of all 20 chapters**, checked for
   identical program output by `pkf run check-tutorial-translation-parity`;
   English (`book/en/`) is canonical.
-- **Some type errors still lack source positions.** `let a: Int = "not an int"` is
-  reported without a `line:col` on either lane, and `vibe check --single-file
-  --json` answers with a synthetic `0:0` range. The checker's anchoring works;
-  literal expressions have no offset slot to anchor to. `vibe check --json`
-  being `--single-file`-only is a separate output-mode limitation. #2831 owns
-  both remaining improvements; #1567 is complete for command consolidation.
+- **`vibe check --json` is available on both the FS lane and `--single-file`.**
+  Diagnostics, exit codes (`[]` + 0 when clean, array + 1 when not), and the
+  LSP conversion of byte offsets are the same contract. #1567 is complete for
+  command consolidation. Literal type-mismatch ranges now come from the
+  string literal's parser offset when that offset is present; a node the
+  parser never saw still reports `synthetic: true` with null bounds rather
+  than an invented `0:0`. Remaining measured limits of #2831 are recorded in
+  [source-range-contract.md](../reference/source-range-contract.md).
 - Everything in §6 of [spec/stable-surface.md](../reference/stable-surface.md) is
   outside the SemVer promise, most notably async/structured concurrency and the
   capability authorization surface.

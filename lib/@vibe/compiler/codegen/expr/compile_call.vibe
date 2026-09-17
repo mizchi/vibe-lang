@@ -557,6 +557,7 @@ fn cc_ladder_names() -> Array[String] {
       "__set_field",
       "__slice",
       "__to_string",
+      "abort",
       "add",
       "assert",
       "assert_eq",
@@ -3352,7 +3353,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // than a mysterious missing import later.
       let name_arg = Array::get(args, 0)
       let hf_name = match name_arg {
-        EString(s) => s,
+        EString(s, _) => s,
         _ => throw("host_future_named: the import name must be a string literal (it becomes a component import name, so it is fixed at compile time)")
       }
       if !cc_is_valid_host_future_name(hf_name) {
@@ -3378,7 +3379,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // time.
       let hs_name_arg = Array::get(args, 0)
       let hs_name = match hs_name_arg {
-        EString(s) => s,
+        EString(s, _) => s,
         _ => throw("host_stream_named: the import name must be a string literal (it becomes a component import name, so it is fixed at compile time)")
       }
       if hs_name == "stdin" {
@@ -3497,7 +3498,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
         ECall(EIdent("Array::length", -1), [EIdent("__ts_arr", -1)], -1)
       ], -1), ts_body), ECall(EIdent("String::join", -1), [
         EIdent("__ts_parts", -1),
-        EString("")
+        EString("", -1)
       ], -1)), -1), -1), -1)
       ce(buf, synth, local_names, next_local, ctx, ld)
     }
@@ -3928,7 +3929,7 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // #784: a statically-boolean argument formats as "true"/"false", not the
       // integer 1/0 the generic path below would emit. Reuse the existing
       // if/EString codegen: `if b { "true" } else { "false" }`.
-      ce(buf, EIf(Array::get(args, 0), EString("true"), EString("false")), local_names, next_local, ctx, ld)
+      ce(buf, EIf(Array::get(args, 0), EString("true", -1), EString("false", -1)), local_names, next_local, ctx, ld)
     }
     else if fname == "__to_string" && Array::length(args) == 1 && cc_expr_is_stringish(Array::get(args, 0), local_names, ctx) {
       // #950: a statically-String argument IS the result — the generic
@@ -4337,6 +4338,21 @@ fn compile_call_core(buf: Bytes, callee: Expr, args: Array[Expr], local_names: A
       // failed to consume its handle. Fail loudly instead of emitting a
       // write into a region that no longer exists.
       throw("internal: `resume` reached codegen -- its handle was neither migrated (evidence dict) nor CPS-transformed (suspend class), and the replay engine was removed (ADR-0076 追記34 V2)")
+    }
+    else if !prefer_bound_call && fname == "abort" {
+      // #2397: print the caller-supplied message on the same stream
+      // `__rt_oob_abort` uses (`print_str`), then trap. None row -- it
+      // terminates rather than returning, so it does not color the caller.
+      // Must not go through `println` (Stdout / #2107).
+      let (ps_idx, _, _) = resolve_func(ctx.func_table, "print_str")
+      let nl = ce(buf, Array::get(args, 0), local_names, next_local, ctx, ld)
+      emit_call(buf, ps_idx)
+      let nl_idx = str_table_index_of(ctx.str_table, "\n")
+      emit_str_ref(buf, Array::get(ctx.str_table.offsets, nl_idx), Array::get(ctx.str_table.lengths, nl_idx))
+      emit_call(buf, ps_idx)
+      bytebuf_push(buf, 0)
+      emit_i64_const(buf, 0)
+      nl
     }
     else if !prefer_bound_call && fname == "assert" {
       // #1095: `prefer_bound_call` is the WRONG guard here (assert_true /

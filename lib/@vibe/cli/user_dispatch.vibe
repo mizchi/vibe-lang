@@ -545,8 +545,6 @@ export fn parse_user_check_args(args: Array[String]) -> (String, Bool, Bool) wit
     }
     if src == "" {
       throw("usage: vibe check [--jobs N] [--single-file] [--json] <file.vibe>")
-    } else if json && !single && !missing_vpkg && !deps_missing {
-      throw("check --json needs --single-file today: the import-resolving lane has no per-diagnostic ranges to emit (#1567)")
     } else {
       (src, single, json)
     }
@@ -619,9 +617,26 @@ fn user_check_single(src: String, json: Bool) -> Int with Exception + Fs + Env +
   }
 }
 
-fn user_check_linked(src: String) -> Int with Exception + Fs + Env {
+fn user_check_linked(src: String, json: Bool) -> Int with Exception + Fs + Env + Stdout {
   if !Fs::exists(src) {
     throw(String::concat("not found: ", src))
+  } else if json {
+    let text = Fs::read_file(src)
+    let diags = handle {
+      let _ = check_file_fs_mode(src)
+      let empty: Array[String] = []
+      empty
+    } with { Exception::Throw(message) => {
+      let out: Array[String] = []
+      Array::push(out, message)
+      out
+    } }
+    print(line_terminated(lsp_diagnostics_json_of_messages(text, diags)))
+    if Array::length(diags) == 0 {
+      0
+    } else {
+      1
+    }
   } else {
     check_file_fs_mode(src)
   }
@@ -650,7 +665,7 @@ fn selfhost_cli_user_check_args(args: Array[String]) -> Int with Exception + Fs 
     if single {
       user_check_single(src, json)
     } else {
-      user_check_linked(src)
+      user_check_linked(src, json)
     }
   }
 }

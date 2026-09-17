@@ -322,16 +322,14 @@ vt_fail_detail() {
       sub(/[[:space:]]+$/, "", failing)
       if (failing != "") seen_test = 1
     }
-    # Assert-abort recognizer (#2202). Suppressing the trailing trap must not
-    # trust arbitrary captured output that happens to contain these lines (a
-    # test can println them and then hit a REAL unrelated trap): it requires a
-    # COMPLETE consecutive failed/expected/actual block, followed by the trap
-    # reason with only the host crash-debug dump or blank lines in between --
-    # the exact shape the generated assert_eq abort produces.
+    # Assert-abort recognizer (#2202 / #2219). Suppressing the trailing trap
+    # must not trust arbitrary captured output that happens to contain these
+    # lines (a test can println them and then hit a REAL unrelated trap).
+    # The generated abort closing marker is the signal; a marker-less
+    # assert_eq-shaped block is reported as a trap.
     { __blk = 0 }
     $0 == "assert_eq failed" {
       __blk = 1
-      ablk = 1
       ndiag++
       diags[ndiag] = "       " $0
     }
@@ -348,13 +346,11 @@ vt_fail_detail() {
     }
     $0 ~ /^  expected:/ {
       __blk = 1
-      if (ablk == 1) ablk = 2
       ndiag++
       diags[ndiag] = "       " $0
     }
     $0 ~ /^  actual:/ {
       __blk = 1
-      if (ablk == 2) ablk = 3
       ndiag++
       diags[ndiag] = "       " $0
     }
@@ -372,9 +368,7 @@ vt_fail_detail() {
     # The closing line the generated assert_eq abort prints (lower_assert_eq
     # in normalize/desugar_trait_dict.vibe): the definitive signal, immune to
     # multiline rendered values and to output that imitates the block. Hidden
-    # from the report (the block above already told the story). The
-    # consecutive-block recognizer stays for tests compiled by a seed that
-    # predates the marker.
+    # from the report (the block above already told the story).
     $0 == "assert failed: aborting" {
       __blk = 1
       pending_abort = 1
@@ -384,16 +378,15 @@ vt_fail_detail() {
     !seen_reason && /RuntimeError:|wasm trap:/ {
       __blk = 1
       seen_reason = 1
-      assert_abort = (ablk == 3 || pending_abort == 1)
+      assert_abort = (pending_abort == 1)
       reason = $0
       sub(/^[[:space:]]+/, "", reason)
       sub(/^[0-9]+: /, "", reason)
       sub(/^viberun: /, "", reason)
     }
-    # Any other non-blank, non-crash-debug line between the block/marker and
+    # Any other non-blank, non-crash-debug line between the marker and
     # the trap breaks the adjacency: the trap is then not the assert abort.
     !seen_reason && __blk == 0 && $0 != "" && $0 !~ /^\[crash debug\]/ {
-      ablk = 0
       pending_abort = 0
     }
     # Wasm backtrace frames (node: `at <fn> (wasm://...)`, wasmtime:

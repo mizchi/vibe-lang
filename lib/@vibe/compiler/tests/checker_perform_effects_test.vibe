@@ -47,34 +47,34 @@ fn no_labels() -> Array[String] {
 //# Misc
 
 test "perform of undeclared effect reports error" {
-  let errors = check_perform_effects_expr(perform_op("Stdout::WriteStream", EString("hi")), no_labels(), false)
+  let errors = check_perform_effects_expr(perform_op("Stdout::WriteStream", EString("hi", -1)), no_labels(), false)
   assert(Array::length(errors) > 0)
   assert(is_perform_err(Array::get(errors, 0)))
 }
 
 test "perform of declared effect is OK" {
-  let errors = check_perform_effects_expr(perform_op("Stdout::WriteStream", EString("hi")), [
+  let errors = check_perform_effects_expr(perform_op("Stdout::WriteStream", EString("hi", -1)), [
     "Stdout"
   ], false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "perform of a different declared effect still reports error" {
-  let errors = check_perform_effects_expr(perform_op("Stdout::WriteStream", EString("hi")), [
+  let errors = check_perform_effects_expr(perform_op("Stdout::WriteStream", EString("hi", -1)), [
     "Stdin"
   ], false)
   assert(Array::length(errors) > 0)
 }
 
 test "perform inside a handle is allowed regardless of declaration" {
-  let inner = perform_op("Console::Print", EString("hi"))
+  let inner = perform_op("Console::Print", EString("hi", -1))
   let handle_expr = EHandle(inner, [(PBind("k"), EInt(0))])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "an empty handler is rejected even when the AST bypasses the parser (#1678)" {
-  let handle_expr = EHandle(perform_op("Fs::ReadFile", EString("p")), array_empty())
+  let handle_expr = EHandle(perform_op("Fs::ReadFile", EString("p", -1)), array_empty())
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(Array::length(errors) > 0)
   assert(is_empty_handle_err(Array::get(errors, 0)))
@@ -82,13 +82,13 @@ test "an empty handler is rejected even when the AST bypasses the parser (#1678)
 }
 
 test "perform via EFn with declared effect is OK" {
-  let fn_expr = fn_with(Some("Stdout"), perform_op("Stdout::WriteStream", EString("hi")))
+  let fn_expr = fn_with(Some("Stdout"), perform_op("Stdout::WriteStream", EString("hi", -1)))
   let errors = check_perform_effects_expr(fn_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "perform via EFn without the effect reports error" {
-  let fn_expr = fn_with(None, perform_op("Stdout::WriteStream", EString("hi")))
+  let fn_expr = fn_with(None, perform_op("Stdout::WriteStream", EString("hi", -1)))
   let errors = check_perform_effects_expr(fn_expr, no_labels(), false)
   assert(Array::length(errors) > 0)
 }
@@ -96,14 +96,14 @@ test "perform via EFn without the effect reports error" {
 test "explicitly pure callback lambda does not inherit outer effects" {
   // This closure is passed through a pure callback slot while the enclosing
   // lambda has Fs. Its explicit `with ()` must replace, not inherit, that row.
-  let callback = fn_with(Some(""), perform_op("Fs::ReadFile", EString("p")))
+  let callback = fn_with(Some(""), perform_op("Fs::ReadFile", EString("p", -1)))
   let outer = fn_with(Some("Fs"), ECall(EIdent("apply_pure", -1), [callback], -1))
   let errors = check_perform_effects_expr(outer, no_labels(), false)
   assert(Array::length(errors) > 0)
 }
 
 test "perform rows trim and dedupe exact labels" {
-  let fn_expr = fn_with(Some(" Fs, Fs "), perform_op("Fs::ReadFile", EString("p")))
+  let fn_expr = fn_with(Some(" Fs, Fs "), perform_op("Fs::ReadFile", EString("p", -1)))
   let errors = check_perform_effects_expr(fn_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
 }
@@ -111,14 +111,14 @@ test "perform rows trim and dedupe exact labels" {
 test "effect-variable declaration authorizes any perform" {
   // `with e` (a polymorphic effect variable) authorizes performing anything
   // under the current representation (row-tail unification is future work).
-  let errors = check_perform_effects_expr(perform_op("Stdout::WriteStream", EString("hi")), [
+  let errors = check_perform_effects_expr(perform_op("Stdout::WriteStream", EString("hi", -1)), [
     "e"
   ], false)
   assert(eq(Array::length(errors), 0))
 }
 
 test "SLet signature effect authorizes perform in its body" {
-  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p")))
+  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p", -1)))
   let sig = TyFn([TyName("String")], TyName("String"), Some("Error, Fs"))
   let stmt = SLet(false, false, "read", Some(sig), body)
   let errors = check_perform_effects_stmt(stmt)
@@ -126,7 +126,7 @@ test "SLet signature effect authorizes perform in its body" {
 }
 
 test "SLet without the effect flags perform in its body" {
-  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p")))
+  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p", -1)))
   let sig = TyFn([TyName("String")], TyName("String"), Some("Error"))
   let stmt = SLet(false, false, "read", Some(sig), body)
   let errors = check_perform_effects_stmt(stmt)
@@ -134,13 +134,13 @@ test "SLet without the effect flags perform in its body" {
 }
 
 test "calling an effectful builtin without the effect reports error" {
-  let call = ECall(EIdent("Fs::read_file", -1), [EString("p")], -1)
+  let call = ECall(EIdent("Fs::read_file", -1), [EString("p", -1)], -1)
   let errors = check_perform_effects_expr(call, no_labels(), false)
   assert(Array::length(errors) > 0)
 }
 
 test "calling an effectful builtin with the effect declared is OK" {
-  let call = ECall(EIdent("Fs::read_file", -1), [EString("p")], -1)
+  let call = ECall(EIdent("Fs::read_file", -1), [EString("p", -1)], -1)
   let errors = check_perform_effects_expr(call, ["Fs"], false)
   assert(eq(Array::length(errors), 0))
 }
@@ -152,7 +152,7 @@ test "calling a pure builtin is never flagged" {
 }
 
 test "effect checking visits non-call expression children" {
-  let fs_call = ECall(EIdent("Fs::read_file", -1), [EString("p")], -1)
+  let fs_call = ECall(EIdent("Fs::read_file", -1), [EString("p", -1)], -1)
   let map_expr = EMap([("value", fs_call)])
   let labeled_expr = ELabeledArg("value", "v", fs_call)
   let spread_expr = ESpread(fs_call)
@@ -170,7 +170,7 @@ test "effect checking visits non-call expression children" {
 // effect still leaks.
 
 test "handle discharges its own effect for an undeclared perform" {
-  let body = perform_op("Console::Print", EString("hi"))
+  let body = perform_op("Console::Print", EString("hi", -1))
   let handle_expr = EHandle(body, [
     (PCtor("Console::Print", [PBind("s")]), EInt(0))
   ])
@@ -179,7 +179,7 @@ test "handle discharges its own effect for an undeclared perform" {
 }
 
 test "handle does not discharge a different effect" {
-  let body = perform_op("Logger::Log", EString("hi"))
+  let body = perform_op("Logger::Log", EString("hi", -1))
   let handle_expr = EHandle(body, [
     (PCtor("Console::Print", [PBind("s")]), EInt(0))
   ])
@@ -190,7 +190,7 @@ test "handle does not discharge a different effect" {
 }
 
 test "handle with an unqualified arm stays conservative" {
-  let body = perform_op("Logger::Log", EString("hi"))
+  let body = perform_op("Logger::Log", EString("hi", -1))
   let handle_expr = EHandle(body, [(PBind("k"), EInt(0))])
   let errors = check_perform_effects_expr(handle_expr, no_labels(), false)
   assert(eq(Array::length(errors), 0))
@@ -199,7 +199,7 @@ test "handle with an unqualified arm stays conservative" {
 // #639: effect-row mismatch diagnostics — set difference + with-clause fix-it.
 
 test "row mismatch names the missing effect and suggests the augmented row" {
-  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p")))
+  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p", -1)))
   let sig = TyFn([TyName("String")], TyName("String"), Some("Error"))
   let stmt = SLet(false, false, "read", Some(sig), body)
   let errors = check_perform_effects_stmt(stmt)
@@ -216,7 +216,7 @@ test "row mismatch names the missing effect and suggests the augmented row" {
 }
 
 test "row mismatch with no declared row suggests a full declaration" {
-  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p")))
+  let body = fn_with(None, perform_op("Fs::ReadFile", EString("p", -1)))
   let stmt = SLet(false, false, "load", None, body)
   let errors = check_perform_effects_stmt(stmt)
   assert(Array::length(errors) > 0)

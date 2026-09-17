@@ -30,7 +30,11 @@
 //# Imports
 
 import .{
-  lsp_diagnostics_json_string
+  lsp_diagnostics_json_of_messages, lsp_diagnostics_json_string
+}
+
+import @vibe/compiler/runtime {
+  collect_all_diagnostics
 }
 
 import @vibe/json {
@@ -38,6 +42,50 @@ import @vibe/json {
 }
 
 //# Tests
+
+test "an unlocated diagnostic is null bounds + synthetic, not 0:0 (#2831)" {
+  // Binder-name fallback is ambiguous when `fn v` and `let v` share a spelling,
+  // so the type error has no `line L:` prefix. JSON must not invent origin.
+  let src = "fn v() -> Int {\n  1\n}\n\nfn f() -> Bool {\n  let v = if true { 1 } else { true }\n  true\n}\n"
+  let parsed = Json::parse(lsp_diagnostics_json_string(src))
+  assert(Json::length(parsed) >= 1)
+  let diag = Json::index(parsed, 0)
+  let range = Json::field(diag, "range")
+  assert(Json::field(range, "start") is JNull)
+  assert(Json::field(range, "end") is JNull)
+  let data = Json::field(diag, "data")
+  assert(!(data is JNull))
+  assert(Json::bool(Json::field(data, "synthetic")))
+  let raw = lsp_diagnostics_json_of_messages(src, [
+    "if branches have incompatible types: expected Int, got Bool"
+  ])
+  assert(!String::contains(raw, "\"line\":0"))
+  assert(!String::contains(raw, "\"character\":0"))
+  assert(String::contains(raw, "\"start\":null"))
+  assert(String::contains(raw, "\"end\":null"))
+  assert(String::contains(raw, "\"synthetic\":true"))
+}
+
+test "a path-prefixed FS diagnostic still slices the string (#2831)" {
+  // `vibe check --json` on the FS lane throws `path: line L:C-E: …`. The
+  // encoder used to treat that as unlocated because it only accepted a
+  // leading `line `.
+  let src = "let a: Int = \"not an int\"\n"
+  let raw = Array::get(collect_all_diagnostics(src), 0)
+  let prefixed = String::concat("foo.vibe: ", raw)
+  let parsed = Json::parse(lsp_diagnostics_json_of_messages(src, [prefixed]))
+  let direct = Json::parse(lsp_diagnostics_json_of_messages(src, [raw]))
+  assert(Json::length(parsed) == 1)
+  let range = Json::field(Json::index(parsed, 0), "range")
+  let direct_range = Json::field(Json::index(direct, 0), "range")
+  assert(!(Json::field(range, "start") is JNull))
+  let sc = Double::to_int(Json::number(Json::field(Json::field(range, "start"), "character")))
+  let ec = Double::to_int(Json::number(Json::field(Json::field(range, "end"), "character")))
+  assert(String::substring(src, sc, ec) == "\"not an int\"")
+  assert(Json::field(Json::index(parsed, 0), "data") is JNull)
+  let dsc = Double::to_int(Json::number(Json::field(Json::field(direct_range, "start"), "character")))
+  assert(sc == dsc)
+}
 
 test "lsp diagnostics: a clean source produces an empty array" {
   inspect(lsp_diagnostics_json_string("fn f(x: Int) -> Int { x }"), "[]")
@@ -53,17 +101,16 @@ test "lsp diagnostics: a parse error carries its position and error severity" {
   inspect(lsp_diagnostics_json_string("fn f( -> Int { 1 }"), "[{\"range\":{\"start\":{\"line\":0,\"character\":6},\"end\":{\"line\":0,\"character\":7}},\"severity\":1,\"source\":\"vibe\",\"message\":\"expected parameter name, got '->'\",\"data\":null}]",)
 }
 
-test "lsp diagnostics: return-type mismatch on a literal points at the fn name (#1941)" {
-  // `tail_expr_off(EString)` is -1, so this used to take `lsp_diag_fallback`
-  // and lie as `0:0-0:1`. The checker now tags the enclosing `fn` name;
-  // `collect_all_diagnostics` emits `line L:C-E:` and JSON slices `f`.
+test "lsp diagnostics: return-type mismatch on a string slices the string (#2831)" {
+  // EString now carries a parser offset, so the edit site is `"s"` rather than
+  // the enclosing `fn` name fallback #1941 used when the literal had none.
   let src = "fn f() -> Int { \"s\" }"
-  let token = "f"
-  let start = String::index_of(src, "fn f") + 3
+  let token = "\"s\""
+  let start = String::index_of(src, token)
   let endo = start + String::length(token)
   assert(start >= 0)
   assert(String::substring(src, start, endo) == token)
-  inspect(lsp_diagnostics_json_string(src), "[{\"range\":{\"start\":{\"line\":0,\"character\":3},\"end\":{\"line\":0,\"character\":4}},\"severity\":1,\"source\":\"vibe\",\"message\":\"return type mismatch: expected Int, got String\",\"data\":null}]",)
+  inspect(lsp_diagnostics_json_string(src), "[{\"range\":{\"start\":{\"line\":0,\"character\":16},\"end\":{\"line\":0,\"character\":19}},\"severity\":1,\"source\":\"vibe\",\"message\":\"return type mismatch: expected Int, got String\",\"data\":null}]",)
   let parsed = Json::parse(lsp_diagnostics_json_string(src))
   assert(Json::length(parsed) == 1)
   let range = Json::field(Json::index(parsed, 0), "range")
@@ -127,23 +174,11 @@ test "json diagnostics slice the same unknown identifier quux (#1941)" {
   assert(Json::string(Json::field(Json::index(parsed, 0), "message")) == "unknown name: quux")
 }
 
-/// `let x: Int = "s"` at TOP LEVEL — the RHS is an `EString` with no AST
-/// offset, so the value-anchored path has nothing to report. This used to be
-/// the last shape with no `line L:` prefix at all, and the encoder marked it
-/// `0:0-0:0` + `data.synthetic` because inventing a plausible `0:0-0:1` (the
-/// first character) is worse than admitting the position is unavailable.
-///
-/// #1941: it is located now. The binder name is tagged with the `[@fn=NAME]`
-/// side channel, which `find_fn_anchor_off` already resolved for `let name` as
-/// well as `fn name` — so the range is `x` itself, character 4..5, and `data`
-/// is null because nothing is synthetic any more.
-///
-/// The `synthetic` marker is NOT deleted: it remains the honest answer for a
-/// diagnostic that genuinely has no anchor. What changed is that this shape is
-/// no longer one of those.
-test "a top-level let bound to a literal is located at its binder (#1941)" {
+/// `let x: Int = "s"` at TOP LEVEL — #2831 gives the string token a parser
+/// offset, so the range slices `"s"` rather than falling back to the binder
+/// `x`. `data` is null because the node is real source, not synthetic.
+test "a top-level let bound to a literal is located at the string (#2831)" {
   let src = "let x: Int = \"s\""
-  inspect(lsp_diagnostics_json_string(src), "[{\"range\":{\"start\":{\"line\":0,\"character\":4},\"end\":{\"line\":0,\"character\":5}},\"severity\":1,\"source\":\"vibe\",\"message\":\"binding type mismatch for x: expected Int, got String\",\"data\":null}]",)
   let parsed = Json::parse(lsp_diagnostics_json_string(src))
   assert(Json::length(parsed) == 1)
   let diag = Json::index(parsed, 0)
@@ -154,11 +189,11 @@ test "a top-level let bound to a literal is located at its binder (#1941)" {
   let sc = Double::to_int(Json::number(Json::field(rs, "character")))
   let el = Double::to_int(Json::number(Json::field(re, "line")))
   let ec = Double::to_int(Json::number(Json::field(re, "character")))
-  // Not the invented first-character range, and not the empty origin either.
   assert(!(sl == 0 && sc == 0 && el == 0 && ec == 0))
   assert(sl == 0)
   assert(el == 0)
-  // The range must SLICE the binder out of the source, not merely be nonzero.
-  assert(String::substring(src, sc, ec) == "x")
+  assert(String::substring(src, sc, ec) == "\"s\"")
   assert(Json::string(Json::field(diag, "message")) == "binding type mismatch for x: expected Int, got String")
+  let data = Json::field(diag, "data")
+  assert(data is JNull)
 }

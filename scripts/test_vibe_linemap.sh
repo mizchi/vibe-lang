@@ -96,16 +96,17 @@ else
   bad "linemap records disagree on func index: $linemap_out"
 fi
 
-# A NON-break compile carries no `vibe.linemap` section at all (off by
-# default; byte-identical normal builds).
+# #2199: a NON-break production compile carries a compact `vibe.linemap`
+# so an uncaught trap can report path:line without debug-break probes.
 OUT_PLAIN="$WORK/plain.wasm"
 env VIBE_FS_COMPILE=1 VIBE_IMPORT_ABI=raw \
   "$VIBERUN" "$CLI_WASM" "$P" "$OUT_PLAIN" main >/dev/null 2>&1
 plain_dump="$("$VIBERUN" --dump-linemap "$OUT_PLAIN" 2>/dev/null || true)"
-if [ -z "$plain_dump" ]; then
-  ok "a non-break build carries no vibe.linemap section"
+plain_nrecords="$(printf '%s\n' "$plain_dump" | grep -c . || true)"
+if [ "$plain_nrecords" -ge 1 ]; then
+  ok "a non-break build carries a compact vibe.linemap ($plain_nrecords records)"
 else
-  bad "non-break build unexpectedly produced linemap output: $plain_dump"
+  bad "non-break build produced no linemap output (#2199): $plain_dump"
 fi
 
 # End-to-end: an uncaught trap in a --break run gets a "frame:" line with the
@@ -127,13 +128,13 @@ else
   bad "frame annotation was double-annotated: $trap_out"
 fi
 
-# A plain (non-break) run's trap is completely unaffected (no linemap, no
-# "frame:" lines) -- the enhancement is additive and gated on debug-break.
+# #2199: a plain (non-break) run's trap reports the trapping statement's
+# path:line via the production linemap.
 plain_trap_out="$(VIBE_RUNNER_BACKTRACE= "$VIBE" run "$T" 2>&1 || true)"
-if ! printf '%s' "$plain_trap_out" | grep -q "frame:"; then
-  ok "a plain (non-break) run's trap output is unaffected (no 'frame:' lines)"
+if printf '%s' "$plain_trap_out" | grep -qF "frame: main (t.vibex:4)"; then
+  ok "a plain (non-break) trap annotates the access with t.vibex:4"
 else
-  bad "plain run unexpectedly emitted 'frame:' lines: $plain_trap_out"
+  bad "plain run missing 'frame: main (t.vibex:4)': $plain_trap_out"
 fi
 
 echo "----"

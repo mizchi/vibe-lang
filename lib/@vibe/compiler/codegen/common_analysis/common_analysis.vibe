@@ -128,7 +128,7 @@ fn collect_strings_pat(pat: Pat, out: Array[String], seen: MutSet[String]) -> In
 /// over a compiler-sized program (162 ms of a 5.77 s warm compile).
 export fn collect_strings_expr(expr: Expr, out: Array[String], seen: MutSet[String]) -> Int {
   match expr {
-    EString(s) => {
+    EString(s, _) => {
       collect_strings_note(s, out, seen)
       0
     },
@@ -154,8 +154,8 @@ export fn collect_strings_expr(expr: Expr, out: Array[String], seen: MutSet[Stri
       // strings.
       match callee {
         EIdent(nm, _) => if nm == "__to_string" {
-          collect_strings_expr(EString("true"), out, seen)
-          collect_strings_expr(EString("false"), out, seen)
+          collect_strings_expr(EString("true", -1), out, seen)
+          collect_strings_expr(EString("false", -1), out, seen)
         } else {
           0
         },
@@ -471,7 +471,7 @@ export fn expr_contains_exceptions(expr: Expr) -> Bool {
     },
     EInt(_) => false,
     EFloat(_) => false,
-    EString(_) => false,
+    EString(_, _) => false,
     EBool(_) => false,
     EIdent(_, _) => false,
     EStringInterp(_) => false,
@@ -836,7 +836,7 @@ fn is_inlined_async_builtin(name: String) -> Bool {
 /// the two names here removes the second reading, which is what lets the arms
 /// switch to `!prefer_bound_call` and a local binding finally win.
 fn is_inlined_scalar_builtin(name: String) -> Bool {
-  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "Double::from_i64_bits" || name == "Map::__iter_get_unchecked" || name == "Array::iter_eager" || is_runtime_prelude_dispatched_builtin(name)
+  name == "not" || name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "abort" || name == "assert" || name == "assert_true" || name == "assert_eq" || name == "Double::from_i64_bits" || name == "Map::__iter_get_unchecked" || name == "Array::iter_eager" || is_runtime_prelude_dispatched_builtin(name)
 }
 
 /// PR #2708 review: the callsite-dispatched names that lower to ONE call into
@@ -937,7 +937,7 @@ fn collect_free_vars_expr_sc(expr: Expr, bound: Array[String], fn_names: Array[S
     EInt(_) => 0,
     EBool(_) => 0,
     EFloat(_) => 0,
-    EString(_) => 0,
+    EString(_, _) => 0,
     EUnit => 0,
     EBinOp(_, lhs, rhs, _) => {
       collect_free_vars_expr_sc(lhs, bound, fn_names, encl, skip_inlined, out); collect_free_vars_expr_sc(rhs, bound, fn_names, encl, skip_inlined, out)
@@ -1398,7 +1398,7 @@ fn capture_body_mentions_name(e: Expr, name: String) -> Bool {
     EAssignOp(n, _, v, b) => n == name || capture_body_mentions_name(v, name) || capture_body_mentions_name(b, name),
     EInt(_) => false,
     EFloat(_) => false,
-    EString(_) => false,
+    EString(_, _) => false,
     EBool(_) => false,
     EUnit => false,
     EStringInterp(_) => true,
@@ -1469,7 +1469,7 @@ export fn is_mut_captured_in(expr: Expr, name: String) -> Bool {
     EInt(_) => false,
     EBool(_) => false,
     EFloat(_) => false,
-    EString(_) => false,
+    EString(_, _) => false,
     EUnit => false,
     EBinOp(_, lhs, rhs, _) => is_mut_captured_in(lhs, name) || is_mut_captured_in(rhs, name),
     EUnaryOp(_, operand) => is_mut_captured_in(operand, name),
@@ -1835,7 +1835,7 @@ fn md_collect_shadow_names(e: Expr, out: Array[String]) -> Int {
   match e {
     EInt(_) => 0,
     EFloat(_) => 0,
-    EString(_) => 0,
+    EString(_, _) => 0,
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
@@ -2083,7 +2083,7 @@ fn md_cc_go(e: Expr, name: String, bfns: Array[String], bmasks: Array[Int]) -> I
   match e {
     EInt(_) => 0,
     EFloat(_) => 0,
-    EString(_) => 0,
+    EString(_, _) => 0,
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
@@ -2319,7 +2319,7 @@ fn md_ca_go(e: Expr, names: Array[String], bfns: Array[String], bmasks: Array[In
     match e {
       EInt(_) => (),
       EFloat(_) => (),
-      EString(_) => (),
+      EString(_, _) => (),
       EBool(_) => (),
       EUnit => (),
       EStringInterp(_) => (),
@@ -2515,7 +2515,7 @@ fn typed_alloc_expr_kind(expr: Expr, names: Array[String], kinds: Array[String])
   match expr {
     EInt(_) => "Int",
     EFloat(_) => "Double",
-    EString(_) => "String",
+    EString(_, _) => "String",
     EBool(_) => "Bool",
     EIdent(name, _) => typed_alloc_name_kind(names, kinds, name),
     EBinOp(op, lhs, _, _) => if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" || op == "&&" || op == "||" {
@@ -2640,7 +2640,7 @@ fn za_walk(e: Expr, ctors: Array[String], fn_names: Array[String], fn_bodies: Ar
   match e {
     EInt(_) => "",
     EFloat(_) => "float literal (heap-boxed on the linear backend)",
-    EString(_) => "",
+    EString(_, _) => "",
     EBool(_) => "",
     EIdent(id, _) => if array_contains_str(bound, id) {
       ""
@@ -3151,7 +3151,7 @@ fn ca_collect_valued_idents(e: Expr, out: Array[String]) -> Int {
   match e {
     EInt(_) => 0,
     EFloat(_) => 0,
-    EString(_) => 0,
+    EString(_, _) => 0,
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
@@ -3345,7 +3345,7 @@ fn ca_collect_nonident_args(e: Expr, out: Array[String], out_pos: Array[Int]) ->
   match e {
     EInt(_) => 0,
     EFloat(_) => 0,
-    EString(_) => 0,
+    EString(_, _) => 0,
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
@@ -4120,7 +4120,7 @@ fn mrv_fresh(e: Expr, fresh_names: MutMap[String, Int], tainted: MutMap[String, 
   match e {
     EInt(_) => true,
     EFloat(_) => true,
-    EString(_) => true,
+    EString(_, _) => true,
     EBool(_) => true,
     EUnit => true,
     EStringInterp(_) => true,
@@ -4674,7 +4674,7 @@ export fn count_lambda_sites_expr(expr: Expr, user_fn_names: Array[String]) -> I
     },
     EInt(_) => 0,
     EFloat(_) => 0,
-    EString(_) => 0,
+    EString(_, _) => 0,
     EBool(_) => 0,
     EUnit => 0,
     EStringInterp(_) => 0,
