@@ -81,8 +81,9 @@ one generator, and turns two hand-written WIT files into outputs.
 
 A WIT package `vibe:host`, one interface per **provider label** — the capability
 effect the checker tags a builtin with (`Some("Fs")` on the registry entry) and
-the unit ADR-0088 grants by. One function per **operation**, which is the unit
-of authority ADR-0071 / ADR-0084 settled on (`Fs::read_file`, never `Fs`).
+the unit ADR-0088 grants by. One function per **raw field** (the unit of the
+import section). Authority is still the operation (`Fs::read_file`, never
+`Fs`); when two operations share a field they share the function, as below.
 
 ```wit
 package vibe:host@0.1.0;
@@ -97,7 +98,7 @@ interface fs {
   is-dir: func(path: string) -> bool;
   is-file: func(path: string) -> bool;
   stat-token: func(path: string) -> s64;
-  read-dir: func(path: string) -> list<string>;
+  read-dir: func(path: string) -> string;
   mkdir: func(path: string);
   mkdir-p: func(path: string);
   remove: func(path: string);
@@ -138,6 +139,21 @@ effect rather than a host provider, and stays out of this residual (#2832).
 The generator-diff gate pins the emitted interface set against
 `standard_host_provider_resource_defaults`.
 
+**One WIT function per raw field, not per registry spelling.**
+`Stdout::write_stream` and `Console::write_stream` both emit
+`vibe.stdout_write_stream` (`linked_compile.vibe`
+`need_stdout_write_stream_builtin`; #1460, no ABI consequence). The catalog
+therefore has `stdout.write-stream` once. `Console::write_stream` is an
+alias onto that function, not a second WIT function. The same collapse
+holds for `Stdin`/`Console` read, `Stdout`/`Console` write_char, and
+`Stderr`/`Console` write_err_*. A gated `field_labels` table in
+`host-runtime-contract.json` records the set of registry labels that can
+emit each field (`stdout_write_stream` → `Stdout`, `Console`; and
+`println` / `print`, which also gate that import). The generator-diff gate
+fails if a catalog function has no field or two catalog functions share one
+field. A v2 column names `stdout.write-stream`, so it agrees with the
+import section.
+
 ### 1.2 The rule that makes it a contract: one function, two lowerings
 
 A raw core import `vibe.fs_read_file: (i64) -> i64` and the WIT function
@@ -151,8 +167,25 @@ operation with two lowerings**:
 
 The WIT signature is therefore the *definition* and the raw signature is
 *derived* from it by a fixed mapping — the one `wit_type_text` already
-implements in reverse (`Int` ↔ `s64`, `Bool` ↔ `bool`, `String` ↔ `string`,
-`Bytes` ↔ `list<u8>`, `Array[String]` ↔ `list<string>`, `Unit` ↔ no result).
+implements in reverse, applied to the **registry type of the host field**
+(`Int` ↔ `s64`, `Bool` ↔ `bool`, `String` ↔ `string`, `Bytes` ↔ `list<u8>`,
+`Unit` ↔ no result). `Array[String]` ↔ `list<string>` is the mapping for a
+user-effect WIT whose registry type is `Array[String]`. It is **not** the
+mapping for `fs_read_dir` / `sh_lines`: those are `CtString` in
+`builtin_registry.vibe` and core type `3` (`(i64) -> i64`) in
+`host-runtime-contract.json`, the same packed-string shape as `fs_read_file`.
+`wit_type_text` therefore yields `string`. The `Array[String]` surfaces
+(`Fs::readdir`, `sh_lines`) are a language-level split in `compile_call`
+(`packed_lines_to_array_expr` / `String::split` on `\n`), not a host type.
+Today's component face is the same joined string: `register_vfs_imports`
+returns `names.join("\n")` as `String`, and `vibec-hosted.wit` is
+`read-dir: func(path: string) -> string`. A directory entry that itself
+contains a newline is already two names after that split on **both** lanes;
+calling the join a lossless `list<string>` lowering would invent a
+disagreement the current ABI does not have. Residual WIT stays `string`
+until a lossless list encoding exists, is in the mapping table, and the
+fourth-side check can reject a type-`3` field.
+
 Two consequences:
 
 - The three-way check `scripts/check_host_runtime_contract.py` performs today
@@ -160,12 +193,9 @@ Two consequences:
   text. A raw signature that does not match its WIT function's mapping fails
   the gate, so the two lowerings cannot drift. Resource methods use the
   mapping in the grouping table below, not a 1:1 field-to-function equality.
-- A component host and a core host implement one semantics. `viberun`'s
-  `--commands` face today serves `read-dir` as sorted names joined by `\n`
-  (`register_vfs_imports`), while the core lane's `fs_read_dir` returns the
-  same content as a packed string; under this rule both are the canonical and
-  the raw lowering of `fs.read-dir: func(path: string) -> list<string>`, and
-  the join is an artifact of the packed lane, not part of the contract.
+- A component host and a core host implement one semantics: both serve
+  `fs.read-dir: func(path: string) -> string` (sorted names joined by `\n`).
+  The join is the contract, not an artifact of one lowering.
 
 **Handles are WIT resources, and the grouping is part of the generator
 input.** `docs/generated/host-runtime-contract.json` today has only field
@@ -259,7 +289,7 @@ world check {
     read-file: func(path: string) -> string;
     exists: func(path: string) -> bool;
     stat-token: func(path: string) -> s64;
-    read-dir: func(path: string) -> list<string>;
+    read-dir: func(path: string) -> string;
     write-bytes: func(path: string, content: list<u8>);
     publish-immutable-text: func(path: string, content: string) -> bool;
   }
@@ -291,10 +321,11 @@ hand-authored compiler-host file needed three review rounds to approximate.
   agree the hand-authored comments go (the reachability audit they narrate is
   now the generator's job), and ADR-0086 is amended to cite the generated file.
 - The `vibec-hosted.wit` four-read face becomes an inline `fs` interface of
-  those four operations (the same shape as today's file), not
-  `import vibe:host/fs`. Its `stat-token = -1 for a non-regular file`
-  semantics moves into the catalog `fs` interface's doc comment, where the
-  core lane's `fs_stat_token` already has to agree with it.
+  those four operations (the same shape as today's file, including
+  `read-dir: func(path: string) -> string`), not `import vibe:host/fs`. Its
+  `stat-token = -1 for a non-regular file` semantics moves into the catalog
+  `fs` interface's doc comment, where the core lane's `fs_stat_token`
+  already has to agree with it.
 
 ### 1.5 Ownership, pinned
 
@@ -304,6 +335,7 @@ hand-authored compiler-host file needed three review rounds to approximate.
 | WIT catalog interfaces (`vibe:host/*`) | the generator, from the registry, the manifest, and the resource-grouping table | a generated file under `docs/generated/`, gated |
 | per-entry world | the generator, from `collect_used_builtin_names` | inline interfaces of used functions only |
 | resource grouping (constructor / method / drop) | `resources` in `docs/generated/host-runtime-contract.json` | the gate's fourth side for grouped fields |
+| field → grant labels | `field_labels` in `docs/generated/host-runtime-contract.json` | many-to-one collapses (`stdout_write_stream` ← Stdout and Console) |
 | raw `vibe.*` field name and core type | `lib/@vibe/compiler/codegen/wasi/linked_compile.vibe` | `docs/generated/host-runtime-contract.json` |
 | the mapping between ungrouped fields | the type-mapping table in `wit_gen.vibe` | the gate's fourth side |
 | `host_future_*`, `host_stream_*`, `stdin_provider_*` | the component adapter | private; the gate keeps them out of both standalone runners |
@@ -339,19 +371,28 @@ nothing else travels with it.
 |---|---|---|
 | `vibe.abi` | `version=1\nhost_import_abi=raw\n` | exists |
 | `vibe.tagmode` | one little-endian i32: 0 plain i64, 1 tagged | exists where an adapter is selected (ADR-0106) |
-| `vibe.capabilities` | `version=1`, then one row per **optional** operation: `optional\t<label>\t<module>\t<field>\t<grant global>` | designed in [capability-host-contract.md](capability-host-contract.md); emitter pending on the `perform?` lowering (#2825 step 2) |
+| `vibe.capabilities` | `version=1`, then rows `optional\t<label>\t<module>\t<field>\t<grant global>` and `used\t<label>\t<field>` | optional rows designed in [capability-host-contract.md](capability-host-contract.md); `used` rows are **new, this document** |
 | `vibe.entry` | `version=1\nkind=<kind>\ncore-export=<name-or-empty>\ncomponent-export=<name-or-empty>\n` | **new, this document** |
 | `name` | function names | exists |
 
 Two rules keep this from becoming a second import section:
 
-- **Required is the import section.** A `vibe.*` import with no
-  `vibe.capabilities` row is required. The section never lists required
-  operations; a host that needs the label for a field reads the mapping from
-  the toolchain's contract manifest, and a host that lacks the mapping can
-  still refuse by field name. This is the fail-closed reading the capability
-  contract chose, and it keeps a module built before any of this correct
-  without a version check.
+- **Required is the import section.** A `vibe.*` import with no `optional`
+  row is required: the host must provide the field or refuse **by field
+  name**. That is the fail-closed reading the capability contract chose, and
+  it keeps a module built before any of this correct without a version
+  check.
+- **The grant label is not the field name.** Today's JSON has no provider
+  labels. `stdout_write_stream` is emitted for `Stdout::write_stream`,
+  `Console::write_stream`, and `println` / `print`. A host that guessed
+  `Stdout` from the field would authorize a `Console` program under the
+  wrong grant, or refuse a valid `Console` grant. The gated `field_labels`
+  table names every label a field *can* come from. The emitter writes a
+  `used\t<label>\t<field>` row for each label this module actually reached.
+  A host names the grant from those rows. For a 1:1 field the table has one
+  label and the `used` row matches it; for a many-to-one field the `used`
+  rows are the only way to tell. Until that table and those rows exist, a
+  core host refuses by field name and does not invent a label.
 - **A sidecar is a projection.** `<out>.wit` is generated from the artifact's
   import section and sections and is for tooling and people; `<out>.funcmap`
   and `<out>.diag` likewise. A host decides from the artifact, never from a
@@ -374,15 +415,18 @@ that called `run` would not find it; a component host that looked for a core
 custom section on a `.component.wasm` / `.cwasm` would not find a core export
 list unless the wrap copies and rewrites the section. `_start` is a core
 name; `run` is a lifted name. The wrap copies `vibe.entry` into the component
-blob and fills `component-export`. The gate pins both spellings
-(`command_component_entry()` and `COMMAND_EXPORT`).
+blob and fills `component-export`. The gate pins both spellings of each
+kind (`command_component_entry()` and `COMMAND_EXPORT`;
+`compile_cli_request` and `compile`; `compile_file_request` and
+`compile-file`).
 
 | `kind` | `core-export` | `component-export` | protocol |
 |---|---|---|---|
 | `wasi-command` | `_start` | (none) | instantiate, apply grants, call `_start` once, discard the instance. A second `_start` on the same instance is out of contract (`__heap_ptr` and every `let mut` at module scope are live state). |
 | `command` | `vibe_command` | `run` | one instance per invocation; `args` is argv joined by NUL, the result is `vibe-command-result-v1`-framed. `viberun` already does exactly this (`invoke_command` builds a fresh `Store` and instance per call). |
 | `handler` | `handler` | `handler` | the 4-string `vibe serve` contract, or its `stream<u8>` form; one instance may serve many requests, and a handler that keeps state across them is the author's choice, not the host's. |
-| `library` | (none) | (none) | no entry; the module is an input to composition (`vibec`'s `compile` face, a bench or test harness). Re-entry is per export and is the export's own contract. |
+| `compile` | `compile_cli_request` | `compile` | one call per request; `source` and `request` are strings, the result is the compile-face protocol (`len-mode` / `hex-chunk-mode`, empty string on error). The live wrap is `comp_emit_component_wasm_string_handler_stubbed` (`vibec-component.md`). The hosted sibling is `core-export=compile_file_request`, `component-export=compile-file`. The gate pins both pairs the same way `vibe_command`/`run` are pinned. |
+| `library` | (none) | (none) | no published entry; an uncomposed `__no_entry__` core (a bench or test harness, a body waiting to be linked). Re-entry is per export and is the export's own contract. `vibec`'s compile face is **not** this kind. |
 
 Initialization order depends on the host class. Nothing runs before the
 named export is called (there is no `start` function on the linear lane),
@@ -414,8 +458,9 @@ now answer ADR-0075's `Entry.requires ⊆ ComposedHost.provides` without the
 compiler:
 
 1. read the import section; for each `vibe.*` field with no `optional` row,
-   the host must provide it or refuse — naming the label, the verb (§3) and
-   the grant that supplies it;
+   the host must provide it or refuse **by field name**. The grant it names
+   comes from the `used` rows for that field, not from guessing a label off
+   the field;
 2. for each `optional` row, a **core** host links the real implementation and
    writes `1`, or links the trapping stub and leaves `0`. A **component** host
    does not take this step until the grant lift exists (§2.3);
@@ -461,8 +506,10 @@ the boundary's purpose). Neither is taken.
 **So the rule is: a component boundary is only ever placed where the surface
 is already monomorphic and first-order.** Those places are the entry points
 `vibe.entry` names — the lifted `run: func(args: string) -> string` (core
-`vibe_command`), core `_start`, the 4-string `handler`, `vibec`'s `compile`
-— and they are process-like: argv in, bytes out. A verb component is a **whole-program link** from its root: the
+`vibe_command`), core `_start`, the 4-string `handler`, and `compile:
+func(source: string, request: string) -> string` (core `compile_cli_request`;
+hosted `compile-file` / `compile_file_request`) — and they are process-like:
+argv in, bytes out. A verb component is a **whole-program link** from its root: the
 formatter's, the checker's and the core library's generic code is linked into
 it, erased and dictionary-threaded exactly as it is into the monolithic CLI
 today. That is why `check` as a component is 2.6 MB and contains its own
@@ -634,7 +681,7 @@ each with the mutation that must turn it red:
 
 | check | what it asserts | red test |
 |---|---|---|
-| **generator diff** | the committed `vibe:host` catalog equals the generator's output from the registry, the manifest and the `resources` table; the emitted interface set equals kebab(`standard_host_provider_resource_defaults`); ungrouped raw signatures equal the mapping of their WIT functions; grouped fields follow the constructor / method / drop mapping | change one WIT parameter type; change one core type index in the JSON; rename `socket` to `tcp`; drop the `http` resource row; each must fail naming the field |
+| **generator diff** | the committed `vibe:host` catalog equals the generator's output from the registry, the manifest, the `resources` table and the `field_labels` table; the emitted interface set equals kebab(`standard_host_provider_resource_defaults`) minus labels that only alias another field; ungrouped raw signatures equal the mapping of their WIT functions (`fs.read-dir` / `sh_lines` are `string`, matching `CtString` and type `3`); grouped fields follow the constructor / method / drop mapping; each raw field has exactly one catalog function | change one WIT parameter type; change one core type index in the JSON; rename `socket` to `tcp`; drop the `http` resource row; emit `list<string>` for `fs.read-dir`; emit a second `console.write-stream` for the same `stdout_write_stream` field; drop `Console` from that field's labels; each must fail naming the field |
 | **semantic conformance** | a fixture set of small programs (one per operation family: read/write/exists/read-dir ordering, `stat-token` on a non-regular path, `env.get` on an unset name, handle close-twice, a withheld optional operation on the **core** lane) runs on both runners with byte-identical stdout and identical exit, on the linear lane | edit one runner's `read-dir` to skip the sort; the fixture must fail on that runner only |
 | **manifest row** | a `vibe-commands-v2` row equals what `vibe build --component` derives; a `.component.wasm` row is checked against core sections, a `.cwasm` row against the component type's import list | rewrite one row's column; dispatch must refuse before reading the artifact (the row lists a denied operation) and on reading it (the row disagrees). A `.cwasm` mutation that only the custom-section path would have caught, and the type-import path would miss, is a red test that the AOT path is the one under `--trust-precompiled` |
 
