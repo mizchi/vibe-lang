@@ -211,11 +211,12 @@ required operations only.
   today.
 - **Interface.** A `service` component exports one interface — its
   **facade interface**, the one `import @scope/pkg { .. }` binds on the vibe
-  side. Its WIT name is an open item (below); the recommended spelling is
-  the package's last segment, `@acme/greeter` → `acme:greeter/greeter@0.1.0`,
-  the form WASI uses when a package has one main interface
-  (`wasi:random/random`, `wasi:logging/logging`). A consumer's world imports
-  that id. World-level function exports (today's `--wit` output) are kept
+  side. Its WIT name is the package's last segment (decided by the owner,
+  2026-09-17): `@acme/greeter` → `acme:greeter/greeter@0.1.0`, the form WASI
+  uses when a package has one main interface (`wasi:random/random`,
+  `wasi:logging/logging`). A last segment that is not a WIT identifier after
+  the kebab mapping is refused at build, naming the package. A consumer's
+  world imports that id. World-level function exports (today's `--wit` output) are kept
   only for the loose `vibe:app` case, where there is no id to import by.
 - **A package with several interfaces.** A vibe producer has one (its
   facade). A foreign package may have many (`wasi:http/handler`,
@@ -391,6 +392,8 @@ current one and refuse a Patch that changed it.
 - A component dependency makes the consumer a component, as a refusal on a
   core `vibe build` (owner, 2026-09-17, safe side).
 - A boundary `struct` / `enum` must be `export`ed (owner, 2026-09-17).
+- The facade interface is named after the package's last segment
+  (owner, 2026-09-17).
 
 ## What it does not decide
 
@@ -401,25 +404,12 @@ current one and refuse a Patch that changed it.
 
 ## Open for the owner
 
-One item remains. Three were decided on 2026-09-17 and are recorded above
-(§3.1, §6.2, §2).
-
-**The WIT name of the facade interface (§4).** It is derived, so no author
-writes it, and a vibe consumer never sees it (the bare `import @scope/pkg`
-binds the facade whatever it is called). It is visible in exactly two
-places: the WIT a non-vibe consumer reads, and the ids in a composition
-graph.
-
-| | the package's last segment | a fixed `api` |
-|---|---|---|
-| spelling | `acme:greeter/greeter@0.1.0` | `acme:greeter/api@0.1.0` |
-| derivation | from `name =` in `index.vpkg`, no new vocabulary; a segment that is not a WIT identifier is refused at build | constant |
-| precedent | WASI's one-main-interface packages: `wasi:random/random`, `wasi:logging/logging` | none in WASI |
-| in a composition graph | each node reads as its package | every vibe node ends in `/api`; only the package part distinguishes them |
-| "find the main interface without knowing the package" | not possible from the name alone | possible — but `vibe.entry`'s `component-export` already answers this, so the advantage does not survive |
-| a second interface later | the package-named one is naturally the facade | `api` is naturally the facade |
-
-Recommended: the package's last segment. It is the derived answer, it has
-the WASI precedent, and it carries more information in the one place a
-person reads it. Choosing `api` instead changes §4's spelling and nothing
-else in this document.
+Nothing. The four items this document put to the owner — `Exception[E]` →
+`result<T, E>`, a component dependency making the consumer a component, the
+`export` requirement on a boundary type, and the facade interface's name —
+were decided on 2026-09-17 and are recorded where each applies (§3.1, §6.2,
+§2, §4). The naming comparison that informed the last one: the package's
+last segment is the derived answer, has WASI's one-main-interface precedent,
+and carries more information in the one place a person reads it; a fixed
+`api` would only have bought "find the main interface without knowing the
+package", which `vibe.entry`'s `component-export` already answers.
