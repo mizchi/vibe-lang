@@ -1,55 +1,57 @@
 #!/usr/bin/env bash
-# #2737: a witness dispatch on a bound declared by a LAMBDA binder is refused,
-# and the refusal names the edit.
+# #2745 / #2840: interpolating a formal that is ERASED here is refused, and the
+# refusal names the edit.
 #
-# Only a TOP-LEVEL generic is threaded (`build_gens` / `thread_dict_params`).
-# `rewrite_expr`'s EFn arm rebuilds a nested lambda with its bounds untouched and
-# never extends `dict_binds`, so `[T: Eq]` on a lambda binder is accepted by the
-# parser and by the checker -- which even suggests writing it (#2474) -- and then
-# honoured by nothing.
+# ## The #2737 dispatch family is GONE, and that is the point
 #
-# Left alone, the four rungs do not degrade into a worse answer; they produce
-# undefined behaviour. Measured on main at 8f70aa1:
+# This gate was born holding two families. The first was #2737: a witness
+# dispatch on a bound declared by a LAMBDA binder, refused because only a
+# TOP-LEVEL generic was threaded -- `rewrite_expr`'s EFn arm rebuilt a nested
+# lambda with its bounds untouched, so `[T: Eq]` on a lambda binder was accepted
+# by the parser and by the checker (which even suggests writing it, #2474) and
+# then honoured by nothing. Those rungs did not degrade into a worse answer;
+# they produced undefined behaviour. Measured on main at 8f70aa1, `T::equals`
+# reached codegen as an unresolved name lowered to a table call on a bogus
+# index: `true` with two impls in the program, `trap: null function or function
+# signature mismatch` with three -- the answer was a function of the module's
+# function-table layout.
 #
-#   T::equals / a.equals   an unresolved name reaching codegen, lowered to a table
-#                          call on a bogus index -- `true` with two impls in the
-#                          program, `trap: null function or function signature
-#                          mismatch` with three, so the answer was a function of
-#                          the module's function-table layout
-#   "\{a}"                 the erased representation -- `Pt!` through the enclosing
-#                          binder's witness, and `284` (a tagged pointer) with that
-#                          witness withheld
+# #2778 threaded them. The EFn arm now overlays a nested binder's own
+# dictionaries on the enclosing ones, so every rung of that family became a
+# WORKING program and its fixtures left one at a time, the last of them
+# (the shadowed spelling) once its answer was measured. Their green side is
+# `fixtures/lambda_bound_nested_witness_test.vibe`, which pins the answers.
 #
-# So the refusal is not a diagnostic standing in for a working program. It is a
-# diagnostic standing in for garbage.
+# A family emptying out is the intended end state for a gate like this, not a
+# hole in it: what it guarded is now a language feature with tests. The `*)`
+# arm below is what keeps that honest -- a fixture whose name matches the glob
+# but no family FAILS rather than being waved through, so #2737's family cannot
+# quietly come back unchecked, and a future third family cannot join unnamed.
+#
+# ## What is still guarded
+#
+# Interpolating a value whose type is a formal with no method-bearing renderer
+# bound printed the tagged pointer (`272`) rather than the value. Threading did
+# not fix that one and could not: a top-level generic body is not specialized,
+# so there is no witness to reach however the binders nest. Its edit asks for an
+# explicit renderer (#2840).
 #
 # The MESSAGE is asserted and not merely the refusal: "did not compile" is
 # satisfied by any unrelated breakage, which is how a gate ends up green about
 # something it never saw. The green side is a separate, committed fixture
-# (`fixtures/lambda_bound_toplevel_witness_test.vibe`, the same four rungs with
-# the binder at the top level) running in the unit lane -- each condition here is
-# one step from rejecting the shape the language DOES support, and a refusal that
+# (`fixtures/lambda_bound_toplevel_witness_test.vibe`, the same rungs with the
+# binder at the top level) running in the unit lane -- each condition here is one
+# step from rejecting the shape the language DOES support, and a refusal that
 # grew that wide would leave every assertion below passing.
 #
-# The fourth rung arrived from review (Codex, P1 on the first commit): a method
-# taken as a VALUE (`let cmp = T::equals`) reaches the qualified EIdent arm rather
-# than either call site, so two refusals at the call sites left it unrefused and
-# still answering `true` for `equals(7, 8)`. The corpus is a GLOB for that reason
-# -- a route found later joins by adding a file, not by editing this script.
-#
-# #2745 joined as a second FAMILY: interpolating a value whose type a nested
-# binder bound printed the tagged pointer (`272`) rather than the value. Its
-# edit now requests an explicit renderer (#2840), and each family
-# has its own reason, so the reason is
-# selected from the fixture name and an unclassified fixture FAILS rather than
-# being waved through.
-#
-# Round 2 added the KINDED case the same way. A formal declared `F[_]` is stored as
-# `type_param_key(name, arity)` while every lookup passes a bare head, so the whole
-# condition was blind to it and its nested dispatch died on a bare
-# `trap: RuntimeError: unreachable`. Both rounds are the same shape of mistake: the
-# condition was stated once and then applied through whatever spelling or arm
-# happened to be in front of it.
+# The corpus is a GLOB because routes keep being found later, and each arrived
+# the same way: the condition was stated once and then applied through whatever
+# spelling or arm happened to be in front of it. A method taken as a VALUE
+# (`let cmp = T::equals`) reached the qualified EIdent arm rather than either
+# call site (Codex, P1 on the first commit). A formal declared `F[_]` is stored
+# as `type_param_key(name, arity)` while every lookup passed a bare head, so the
+# whole condition was blind to it. A route found later joins by adding a file,
+# not by editing this script.
 set -euo pipefail
 # Overridable ONLY so this gate's own self-test can run a MUTATED COPY of this
 # script from a scratch directory -- the same escape hatch, for the same reason,
@@ -65,15 +67,12 @@ STAGE2="$(resolve_stage2 lambda-bound-refusal "${LAMBDA_BOUND_REFUSAL_STAGE2:-}"
 # corpus instead of editing the tree's own fixtures.
 FIXTURE_GLOB="${LAMBDA_BOUND_REFUSAL_FIXTURES:-fixtures/lambda_bound_*_refused.vibe}"
 
-# Dispatch can be fixed by lifting a bounded lambda. Erased interpolation
-# requires a renderer instead: lifting an unbounded lambda is still unsafe.
-EDIT_NEEDLE="move the lambda that binds"
-
-# The reason clause, chosen PER FAMILY from the fixture's name rather than by
-# accepting either. Accepting either would pass a fixture refused by the wrong
-# rule -- an erased-interp fixture that tripped the dispatch refusal, say -- which
-# is the same proxy-instead-of-property mistake this gate has already made once.
-dispatch_reason="only a top-level binder threads a bound's dictionary"
+# The reason clause, chosen from the fixture's NAME rather than accepted from
+# whatever the compiler happened to say. Accepting any refusal would pass a
+# fixture refused by the wrong rule, which is the same proxy-instead-of-property
+# mistake this gate has already made once. One family is left, so this is one
+# row; the `*)` arm below is what makes adding a second row mandatory rather
+# than optional.
 erased_reason="is erased here"
 
 WORK="$ROOT_DIR/_build/_lambda_bound_refusal"
@@ -93,10 +92,11 @@ for src in $FIXTURE_GLOB; do
   # 23 erased-interpolation fixtures and sends a reader to the wrong thread.
   case "$name" in
     lambda_bound_erased_interp_*) reason="$erased_reason"; issue="#2745"; edit="pass an explicit renderer" ;;
-    lambda_bound_dispatch_*) reason="$dispatch_reason"; issue="#2737"; edit="$EDIT_NEEDLE" ;;
     *)
       echo "[lambda-bound-refusal] FAIL: $src matches the glob but no family" >&2
       echo "  add its reason clause here; an unclassified fixture is unchecked, not clean" >&2
+      echo "  (#2737's lambda_bound_dispatch_* family was retired by #2778 -- those" >&2
+      echo "   shapes compile now; their answers live in lambda_bound_nested_witness_test.vibe)" >&2
       exit 1
       ;;
   esac
@@ -109,8 +109,7 @@ for src in $FIXTURE_GLOB; do
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1
   fi
-  if { [ "$issue" = "#2737" ] && ! grep -qE 'move the lambda that binds .* to a top-level' "$out.diag" 2>/dev/null; } ||
-     { [ "$issue" = "#2745" ] && ! grep -qE 'pass an explicit renderer .* interpolate at a concrete type' "$out.diag" 2>/dev/null; }; then
+  if [ "$issue" = "#2745" ] && ! grep -qE 'pass an explicit renderer .* interpolate at a concrete type' "$out.diag" 2>/dev/null; then
     echo "[lambda-bound-refusal] FAIL: $src refusal does not name an edit" >&2
     cat "$out.diag" >&2 2>/dev/null || true
     exit 1

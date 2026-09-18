@@ -5505,40 +5505,60 @@ fn dtd_check_top_interp(arg: Expr, dict_binds: Array[(String, String, String, Ar
 
 // A callable renderer must accept Self and return String. The method name
 // alone would permit a bound whose to_string accepts an unrelated type.
+//
+// #2778: a formal whose spelling an ENCLOSING binder also bound used to be
+// declined here, via `dtd_formal_is_shadowed`. That guard predates the overlay.
+// It was written when a nested binder got no dictionary at all, so the only
+// dictionary reachable for a shadowed spelling was the WRONG one -- the
+// enclosing binder's -- and declining was the fail-closed reading of "never be
+// silently wrong". Measured then: `fn outer[T: Show]` at `Pt` containing
+// `let inner = [T: Show](a: T) { "\{a}" }` applied to a `Qt` printed `Pt!`, a
+// `Qt` rendered through `Pt::to_string`, and `284` -- a tagged pointer -- with
+// the dictionary withheld instead. A lie, or nothing.
+//
+// The EFn arm now overlays the lambda's own dictionaries on the enclosing ones
+// and DROPS the rows this binder rebinds, so a shadowed spelling has exactly
+// one reachable dictionary and it is the inner one. Re-measured on that
+// compiler, the same program prints `Qt!`, and with the outer formal
+// interpolated as well it prints `Qt!Pt!` -- each binder through its own
+// witness. The guard is answering a question the overlay no longer poses, and
+// "refuse until someone measures it" ends when someone measures it. The answers
+// are pinned in `fixtures/lambda_bound_nested_witness_test.vibe`.
+//
+// `dtd_eq_witness_dict` keeps its own `dtd_formal_is_shadowed` check. That is
+// the `==` path, and it is NOT the same question: `Eq` is a marker trait with
+// no methods, so there is no witness to dispatch through however the formal is
+// spelled. Retiring it is #2523's, and it has to move as one change (#2612).
 fn dtd_show_witness_dict(dict_binds: Array[(String, String, String, Array[String])], traits: Array[(String, Array[(String, Array[TypeExpr], TypeExpr)])], head: String) -> Option[String] {
-  if dtd_formal_is_shadowed(head) {
-    None
-  } else {
-    let mut result = None
-    let mut i = 0
-    while i < Array::length(dict_binds) {
-      let (tp, trait_name, pname, methods) = Array::get(dict_binds, i)
-      if tp == head && str_array_contains(methods, "to_string") {
-        match lookup_trait_sigs(traits, trait_name) {
-          Some(sigs) => {
-            let mut j = 0
-            while j < Array::length(sigs) {
-              let (method, params, ret) = Array::get(sigs, j)
-              if method == "to_string" && Array::length(params) == 1 {
-                match (Array::get(params, 0), ret) {
-                  (TyName("Self"), TyName("String")) => {
-                    result = Some(pname)
-                    i = Array::length(dict_binds)
-                    j = Array::length(sigs)
-                  },
-                  _ => ()
-                }
+  let mut result = None
+  let mut i = 0
+  while i < Array::length(dict_binds) {
+    let (tp, trait_name, pname, methods) = Array::get(dict_binds, i)
+    if tp == head && str_array_contains(methods, "to_string") {
+      match lookup_trait_sigs(traits, trait_name) {
+        Some(sigs) => {
+          let mut j = 0
+          while j < Array::length(sigs) {
+            let (method, params, ret) = Array::get(sigs, j)
+            if method == "to_string" && Array::length(params) == 1 {
+              match (Array::get(params, 0), ret) {
+                (TyName("Self"), TyName("String")) => {
+                  result = Some(pname)
+                  i = Array::length(dict_binds)
+                  j = Array::length(sigs)
+                },
+                _ => ()
               }
-              j = j + 1
             }
-          },
-          None => ()
-        }
+            j = j + 1
+          }
+        },
+        None => ()
       }
-      i = i + 1
     }
-    result
+    i = i + 1
   }
+  result
 }
 
 /// #2523: the dict parameter to dispatch `==` / `!=` through, or None.

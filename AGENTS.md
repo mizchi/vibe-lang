@@ -161,19 +161,24 @@ overlay leaves only the right dictionary reachable. Pinned by
 merely "did not throw") and `fixtures/lambda_bound_toplevel_witness_test.vibe`
 (the same rungs at a top-level binder).
 
-**One rung still fails closed**: interpolating a formal whose spelling an
-ENCLOSING binder also bound. `dtd_show_witness_dict` declines what
-`dtd_formal_is_shadowed` reports, and nobody has measured the overlay's answer
-for that shape — the pre-#2778 measurements are `Pt!` (a `Qt` rendered through
-`Pt::to_string`) with the enclosing dictionary, and `284`, a tagged pointer,
-with it withheld. Refusing until it is measured is the fail-closed reading of
-"never be silently wrong"; the message LEADS with the edit (move the lambda to
-a top-level declaration — the order is asserted by the gate, not just the
-presence of both clauses). `==` is NOT refused — it falls back to the ladder,
-which is #2523's subject, not this one. Pinned by
-`fixtures/lambda_bound_dispatch_interp_refused.vibe`, message asserted by
-`scripts/check_lambda_bound_refusal.sh`. Dropping that guard is the remaining
-half of #2778.
+**The last rung is measured, and no longer refused** (#2778 complete).
+Interpolating a formal whose spelling an ENCLOSING binder also bound used to be
+declined by `dtd_show_witness_dict`, via `dtd_formal_is_shadowed`, because
+nobody had measured the overlay's answer for that shape. Now measured: an inner
+`[T: Show]` shadowing an outer one renders `Qt!` — its OWN witness — and with
+the outer formal interpolated as well the program prints `Qt!Pt!`, each binder
+through its own witness. The guard was answering a question the overlay stopped
+posing: it dropped the row the inner binder rebinds, so only the right
+dictionary is reachable. The pre-#2778 answers for that same program were `Pt!`
+(a `Qt` rendered through `Pt::to_string`, a lie about the type) and `284`, a
+tagged pointer, with the dictionary withheld instead. Pinned as ANSWERS in
+`fixtures/lambda_bound_nested_witness_test.vibe`, which is where the refusal
+fixture's content went; `scripts/check_lambda_bound_refusal.sh` no longer
+carries a `lambda_bound_dispatch_*` family at all, and its `*)` arm rejects a
+fixture in no family so the family cannot return unchecked. `==` was never
+refused here — it falls back to the ladder, which is #2523's subject, and
+`dtd_eq_witness_dict` keeps its own shadowing check because `Eq` is a marker
+trait with no method to dispatch through.
 
 **Interpolating an erased formal requires a renderer** (#2745, #2840).
 Top-level generic bodies are not specialized, so moving an unbounded lambda to

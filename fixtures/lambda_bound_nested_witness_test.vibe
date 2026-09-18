@@ -42,6 +42,20 @@ impl Show for Int {
   }
 }
 
+// #2778: a SECOND Show type, so a shadowed spelling can be caught rendering
+// through the wrong witness. With only `Pt` in the program, an inner binder
+// answering off the enclosing dictionary is indistinguishable from one
+// answering off its own.
+struct Qt {
+  w: Int
+}
+
+impl Show for Qt {
+  to_string(a: Qt) -> String {
+    "Qt!"
+  }
+}
+
 fn equality_snapshot(value: Bool) -> String {
   if value {
     "true"
@@ -139,8 +153,6 @@ test "interpolation dispatches through a nested Show witness" {
 test "nested interpolation of Int prints the value, not a pointer decimal" {
   inspect(via_nested_interp_int(), content = "7")
 }
-
-
 
 trait Mappable[F[_]] {
   map[A, B](F[A], (A) -> B) -> F[B]
@@ -285,4 +297,40 @@ fn via_eq_rebind() -> Int {
 
 test "rebinding a nested Eq lambda to a non-generic does not prepend a dict" {
   inspect(via_eq_rebind(), content = "8")
+}
+
+// #2778 (the half this file used to have a refusal fixture for instead).
+//
+// An inner `[T: Show]` whose spelling the ENCLOSING binder also bound. The
+// overlay drops the row this binder rebinds, so the only dictionary reachable
+// for `T` inside the lambda is the INNER one. `fixtures/lambda_bound_dispatch_interp_refused.vibe`
+// refused this shape until the answer was measured; these two cases ARE that
+// measurement, so they are the reason the refusal is gone.
+//
+// Before the overlay the same program printed `Pt!` -- a `Qt` rendered through
+// `Pt::to_string`, a lie about the type -- and `284`, a tagged pointer, with
+// the enclosing dictionary withheld instead.
+fn via_shadowed_inner_show[T: Show](_x: T) -> String {
+  let inner = [T: Show](a: T) -> String {
+    "\{a}"
+  }
+  inner(Qt::{ w: 5 })
+}
+
+test "an inner Show lambda shadowing the enclosing spelling uses its OWN witness" {
+  inspect(via_shadowed_inner_show(Pt::{ v: 1 }), content = "Qt!")
+}
+
+// The other half of the same question: the enclosing binder must keep working
+// while its spelling is shadowed inside the lambda. A fix that made the inner
+// one right by dropping the outer row entirely would pass the case above.
+fn via_shadowed_both_shows[T: Show](x: T) -> String {
+  let inner = [T: Show](a: T) -> String {
+    "\{a}"
+  }
+  String::concat(inner(Qt::{ w: 5 }), "\{x}")
+}
+
+test "the enclosing Show binder still renders while its spelling is shadowed" {
+  inspect(via_shadowed_both_shows(Pt::{ v: 1 }), content = "Qt!Pt!")
 }
