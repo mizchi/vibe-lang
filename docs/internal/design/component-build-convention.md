@@ -178,7 +178,7 @@ An export's row is projected label by label:
 
 | label in the row | projects to |
 |---|---|
-| a host capability (`Fs`, `Env`, `Http`, .. — the registry's provider labels) | an **inline** interface named by the label, holding only the used functions of the `vibe:host` catalog (host-contract §1.3; never `import vibe:host/<label>` whole, which would demand the full surface); derived from the emitted import section, so it can never list a function the code does not reach |
+| a host capability (`Fs`, `Env`, `Http`, .. — the registry's provider labels) | an **inline** interface named by the catalog interface that **owns the raw field** the operation lowers to, holding only the used functions (host-contract §1.3; never `import vibe:host/<label>` whole, which would demand the full surface); derived from the emitted import section, so it can never list a function the code does not reach. For an **alias-only** label the owning interface is another provider's: `Console::write_stream` lowers to `stdout_write_stream`, so the world gets `stdout.write-stream` and `Console` survives only as the grant label in `used` rows and the manifest column (host-contract §1.1). Naming the interface after the label instead would ask for a `console` interface no host registers. |
 | a user algebraic effect `effect E { .. }` | an import of interface `<kebab-e>` (today's rule); the composer, not the caller, supplies it (§6.3). **Tail-resumptive only**: the import is a synchronous function that returns exactly once, so a handler that stores its `resume`, resumes late or never (the first-class one-shot `resume` the cheatsheet documents) is not expressible across an instance boundary. The derived contract says so, and a producer needing those semantics keeps the `handle` inside the component. |
 | `Async` | the export becomes `async func`; never an import (ADR-0089 D5) |
 | `Exception[E]` | **`result<T, E>` on the export, with the `handle` generated in the lift** (§3.1); exactly one exception kind per export |
@@ -190,13 +190,20 @@ component is one instance with one world, and every world import is
 satisfied when the instance is created, whichever export is later called. So
 a `service` that exports a pure `add` and an `Fs`-reaching `load` has an `fs`
 import that a consumer of `add` alone must still see satisfied. The derived
-contract therefore carries a `requires = <labels>` header line, the union of
-the surface's host labels, and a consumer that imports **anything** from the
-package takes that union into its own row: `import @acme/greeter { add }`
-inside `fn main allows Stdout` is refused naming the missing `Fs` (or the
-split — one package per authority — as the other edit). Per-export rows still
-type each call (`Exception[E]`, `Async`); only the host requirement is
-instance-level. This is ADR-0075's `Entry.requires ⊆ ComposedHost.provides`
+contract therefore carries a `requires = <operations>` header line, and a
+consumer that imports **anything** from the package takes that union into
+its own row: `import @acme/greeter { add }` inside `fn main allows Stdout`
+is refused naming the missing operation (or the
+split — one package per authority — as the other edit).
+
+**The union is over normalized OPERATIONS, not provider labels.** Authority
+is the operation (ADR-0071 / ADR-0084), and a label denotes all of them, so
+`requires = Fs` would make a consumer of a pure export grant the whole
+filesystem to satisfy a package whose only reach is `Fs::read_file`. The
+line therefore reads `requires = Fs::read_file, Env::get`, exactly the row a
+`with` clause would carry, and `allows Fs::read_file` satisfies it. Per-export
+rows still type each call (`Exception[E]`, `Async`); only the host
+requirement is instance-level. This is ADR-0075's `Entry.requires ⊆ ComposedHost.provides`
 applied to the instance it actually names.
 
 ### 3.1 `Exception[E]` projects to `result<T, E>`, in both directions
@@ -454,11 +461,15 @@ transparent path with a value the consumer prints, on both runners.
 The derived WIT is public surface. A change to it is a change to the package
 version under the SemVer table in
 [../../user/reference/stable-surface.md](../../user/reference/stable-surface.md)
-(a removed or narrowed export is Major, an added one is Minor), and the
-`generated_hash` of the derived contract pins the exact surface a consumer
-was built against. Because the contract is derived, the version bump is
-checkable: the gate can diff the previous published contract against the
-current one and refuse a Patch that changed it.
+(a removed or narrowed export is Major, an added one is Minor), and
+**`contract_hash` is the surface pin** — the identity a consumer was
+type-checked against (§6.1). `generated_hash` is not: it covers the
+component bytes too, so an implementation-only rebuild changes it while the
+WIT is identical, and reading it as the surface would report a contract
+change where none occurred and reject a valid Patch. Because the contract is
+derived, the version bump is checkable: the gate diffs the previous
+published contract against the current one and refuses a Patch whose
+`contract_hash` moved.
 
 ## What this decides
 
