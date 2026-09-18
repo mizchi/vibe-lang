@@ -90,6 +90,55 @@ test "all-literal if branches with a string slice the string (#2831)" {
   assert(anchored_at(src, 2, 21))
 }
 
+test "an argument type mismatch points at the ARGUMENT, not the callee (#2831)" {
+  // The second of the two defects #2831 names. The offset was already in the
+  // AST -- `EString` has carried one since #2199 -- and this path simply did
+  // not read it, so the reader was sent to the function's NAME rather than to
+  // the text they have to change. Measured before the fix: `line 3:11`, the
+  // column of `takes`.
+  //    1234567890123456789012
+  //  `  let b = takes("nope")` -- `takes` is column 11, the literal column 17.
+  let src = "fn takes(n: Int) -> Int { n }\nfn f() -> Int {\n  let b = takes(\"nope\")\n  b\n}\n"
+  assert(String::contains(first_diag(src), "argument type mismatch for takes"))
+  assert(String::contains(first_diag(src), "line 3:17-23"))
+}
+
+test "the argument anchor picks the argument that actually disagrees (#2831)" {
+  // Anchoring the FIRST argument would satisfy "has a position" while
+  // pointing at the operand that is fine -- the failure mode the header of
+  // this file warns about.
+  //    1234567890123456
+  //  `  two(1, "wrong")` -- the bad literal starts at column 10.
+  let src = "fn two(a: Int, b: Int) -> Int { a + b }\nfn f() -> Int {\n  two(1, \"wrong\")\n}\n"
+  assert(String::contains(first_diag(src), "argument type mismatch for two"))
+  assert(String::contains(first_diag(src), "line 3:10-17"))
+}
+
+test "a method call anchors its argument through the prepended receiver (#2831)" {
+  // The two method-call sites build their argument TYPES from `all_args`
+  // (`prepend_expr(obj, args)`), which is one longer than `args`. Reading the
+  // expressions from `args` there is off by one, and the arity that exposes it
+  // is not this one -- a first draft passed `args` and this case still read
+  // correctly by falling back. It is pinned because the misalignment is
+  // silent, not because the path is exotic.
+  //    123456789012345678
+  //  `  b.scale("nope")` -- the literal starts at column 11.
+  let src = "struct Box { v: Int }\nfn Box::scale(self: Box, by: Int) -> Int { self.v * by }\nfn f() -> Int {\n  let b = Box::{ v: 3 }\n  b.scale(\"nope\")\n}\n"
+  assert(String::contains(first_diag(src), "argument type mismatch for Box::scale"))
+  assert(String::contains(first_diag(src), "line 5:11-17"))
+}
+
+test "an offset-less literal argument keeps the callee anchor (#2831)" {
+  // The OTHER half of #2831 -- `EInt` carries no offset slot -- is untouched
+  // here, and must stay untouched: the fallback is the callee, never a
+  // plausible-looking position invented for a node that has none.
+  //    123456789
+  //  `  takes(42)` -- `takes` is column 3; there is no offset for `42`.
+  let src = "fn takes(s: String) -> Int { String::length(s) }\nfn f() -> Int {\n  takes(42)\n}\n"
+  assert(String::contains(first_diag(src), "argument type mismatch for takes"))
+  assert(anchored_at(src, 3, 3))
+}
+
 test "a malformed require directive is located on its own line" {
   // #2253 review: the single-file lane blanks require-pin heads (#2227),
   // and a head the loader rejects becomes the diagnostic -- but the
