@@ -393,11 +393,24 @@ let registry_typed_rows: Array[(String, Type, Bool, Bool, Bool, Bool, Bool, Bool
   // harmless while nothing read these parameter types; once the checker's
   // fast-path argument check started consulting the registry it turned into a
   // false rejection (measured: `eq(Color::Red, c)` in
-  // docs/language-tour/basics.vibe.md). `reg_any()` is what the sibling
-  // polymorphic row `assert_eq` already declares, and head_kind maps it to
-  // "tolerate". Parameter COUNT and return type are unchanged, so the derived
-  // `builtin_registry()` view the codegen lanes read is byte-identical.
-  ("eq", CtFn(reg_p2(reg_any(), reg_any()), CtBool, None), true, true, true, false, true, false, false),
+  // docs/language-tour/basics.vibe.md).
+  //
+  // #2442: the two positions are ONE variable, not two `reg_any()`s. Written
+  // as independent unknowns the row said only "two arguments of some type",
+  // which `registry_builtin_pure_arity` refuses outright (`types_mention_unknown`)
+  // -- so `eq` had no value form even with the bare-name clause gone, measured
+  // `registry_builtin_pure_arity("eq") = -1` on ae838ff. It is also the
+  // `FrozenArray` lesson #2451 records one screen up: a value form typed from
+  // independent unknowns loses the relationship, and `let f = eq` would then
+  // check `f(1, "x")` clean. One variable says what `eq` means -- both operands
+  // are the same type.
+  //
+  // Direct calls are unchanged: every consumer but `registry_builtin_scheme`
+  // reads the ERASED view, where `type_erase_vars` puts `CtUnknown` back, so
+  // `eq(Color::Red, c)` keeps tolerating exactly what it tolerated. Parameter
+  // COUNT and return type are unchanged, so the derived `builtin_registry()`
+  // view the codegen lanes read is byte-identical.
+  ("eq", CtFn(reg_p2(reg_var(0), reg_var(0)), CtBool, None), true, true, true, false, true, false, false),
   ("String::ends_with", CtFn(reg_p2(CtString, CtString), CtBool, None), true, true, true, true, true, false, false),
   ("String::last_index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true, true, true, false, false),
   ("String::index_of", CtFn(reg_p2(CtString, CtString), CtInt, None), true, true, true, true, true, false, false),

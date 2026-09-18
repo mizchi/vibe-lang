@@ -94,28 +94,28 @@ fn canonical_builtin_name_ladder(name: String) -> String {
 /// load-time failure #2433 removed.
 ///
 /// An EFFECTFUL builtin is refused by `registry_builtin_pure_arity` -- see
-/// that function. A BARE (unqualified) builtin name is refused here, and that
-/// one is a compiler limitation rather than a language decision:
+/// that function.
 ///
+/// #2442: a BARE (unqualified) builtin name used to be refused here too, and
+/// that one was a compiler limitation rather than a language decision.
 /// `count_lambda_sites_expr` (codegen/common_analysis) predicts, for the whole
 /// program, exactly how many lambda table slots the codegen walk will allocate,
-/// and the walk THROWS when the two disagree. It is a purely syntactic walk
-/// with no scope -- its own comment says "binding structure is irrelevant here"
-/// -- so it can only decide the value form from the name. Codegen decides it
-/// after the locals, constructors, constants and the func table have all
-/// failed, which is the order the checker resolves names in. Those two agree
-/// for a name nothing else can bind, and disagree for one that can: with a
-/// bare name admitted, an ordinary `let eq = (a, b) -> ...` would make the
-/// planner reserve a slot for a use codegen resolves to the local, and a
-/// program that compiles today would fail with `lambda plan over-count`.
-/// `lib/@vibe/compiler/tests/builtin_ident_value_test.vibe` measures that count.
+/// and the walk THROWS when the two disagree. It was a purely syntactic walk
+/// with no scope, so it could only decide the value form from the name, while
+/// codegen decides it after the locals, constants, constructors and the func
+/// table have failed. Those two agree for a name nothing else can bind, and
+/// disagree for one that can: an ordinary `let eq = (a, b) -> ...` made the
+/// planner reserve a slot for a use codegen resolved to the local, and a
+/// program that compiled would have failed with `lambda plan over-count`.
 ///
-/// A qualified name cannot be bound by `let`, by a parameter, by a pattern or
-/// by a constructor, so the two answers cannot diverge. Admitting the bare
-/// names needs the planner to learn scope (its arms already mirror
-/// `collect_refs_into` in dce.vibe, which threads a bound set) -- that is the
-/// remaining half of #2442, and it is a real change to that walk rather than
-/// another name here.
+/// Both sides were fixed rather than the name being admitted on its own. The
+/// planner threads a bound set for locals and takes the whole-program names
+/// that shadow (user functions, module-level int constants, constructors), and
+/// the value-form arm moved BELOW the constants and the constructors in both
+/// backends, which is the order the checker already resolves in
+/// (`builtin_ident_is_value` is asked only on the `None =>` arm of the env
+/// lookup). `lib/@vibe/compiler/tests/builtin_ident_value_test.vibe` measures
+/// the count on both readings.
 /// #2451: there is no name list left here. #1733's `FrozenArray::from_array` /
 /// `FrozenArray::to_array` used to be carved out by name, because their rows
 /// were polymorphic (`Array[?] -> FrozenArray[?]`) and the unknown test below
@@ -132,13 +132,8 @@ fn canonical_builtin_name_ladder(name: String) -> String {
 /// annotated spelling still compiles; the unannotated one is now rejected.
 export fn builtin_value_form_arity(name: String) -> Int {
   // #2386: canonicalization maps qualified spellings to qualified spellings,
-  // so a bare name is answered before the ladder; the lambda-site count asks
-  // this for every identifier of the program.
-  if !String::contains(name, "::") {
-    0 - 1
-  } else {
-    registry_builtin_pure_arity(canonical_builtin_name(name))
-  }
+  // so a bare name passes through it unchanged.
+  registry_builtin_pure_arity(canonical_builtin_name(name))
 }
 
 //# Builtin deprecation table (ADR-0098 / ADR-0101).

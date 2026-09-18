@@ -1380,12 +1380,6 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           emit_local_get(buf, local_idx)
         }
         next_local
-      } else if builtin_value_form_arity(name) >= 0 && !gc_user_fn_owns_name(ctx, name) {
-        // #2442: see the linear twin in codegen/expr/compile_expr.vibe -- the
-        // placement above the func table is what keeps a builtin's negative
-        // table slot from being emitted, and only qualified names get here.
-        // A user function that declares a registry name still wins (#2448).
-        ce(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ld)
       } else {
         let ctor_idx = ctor_table_index_of(ctx.gc_ctor_table, name)
         if ctor_idx >= 0 {
@@ -1451,6 +1445,17 @@ fn compile_expr_gc(buf: Bytes, expr: Expr, local_names: Array[String], next_loca
           if glob_i >= 0 {
             emit_global_get(buf, 1 + glob_i)
             return next_local
+          }
+          // #2442: a pure builtin in value position, eta-expanded. See the
+          // linear twin in codegen/expr/compile_expr.vibe for why it sits
+          // ABOVE the func table (a builtin name resolves there and emits a
+          // NEGATIVE table slot, the #2433 failure) and, since #2442, BELOW
+          // everything else (a bare name can be a constructor, a module-level
+          // constant or a computed global on this lane, and answering those
+          // with an eta-expansion is a wrong answer rather than a refusal).
+          // A user function that declares a registry name still wins (#2448).
+          if builtin_value_form_arity(name) >= 0 && !gc_user_fn_owns_name(ctx, name) {
+            return ce(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ld)
           }
           let fn_len = Array::length(ctx.func_table.names)
           let mut fni = -1

@@ -1100,32 +1100,6 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
       }
       ce_mark_path_consume(buf, expr, name, ctx)
       next_local
-    } else if builtin_value_form_arity(name) >= 0 && !user_fn_owns_name(ctx, name) {
-      // #2442: a pure builtin in value position, eta-expanded.
-      //
-      // Placed HERE, above the func table, and that placement is load-bearing:
-      // `ctx.func_table` holds the BUILTIN bodies too, so a builtin name
-      // resolves there and emits `(table_slot<<2)|2` with
-      // `table_slot = fidx - ctx.func_offset` NEGATIVE -- the #2433 failure this
-      // eta-expansion exists to avoid. Measured while writing this: with the
-      // check below the func table instead, `let cat = String::concat` compiled
-      // to zero lambdas and the module was rejected with `lambda plan
-      // over-count: planned through 1, walk stopped at 0`.
-      //
-      // It sits below the LOCALS lookup, and only qualified names have a value
-      // form (see `builtin_value_form_arity`), so nothing this arm can shadow
-      // reaches it -- which is also why the scope-free lambda-site planner can
-      // agree with this walk.
-      //
-      // A USER FUNCTION that declares a registry name is the one thing that
-      // can still own it (Codex review on #2448), and it wins: the checker
-      // resolved the name to the declaration, so this must fall through to the
-      // func-table slot below. Measured before this guard, with
-      // `fn String::concat(a: Int) -> Int` in scope, `let f = String::concat`
-      // emitted an arity-2 eta-expansion against the checker's arity-1 type
-      // and the runtime refused to compile the module. The plan walk is given
-      // the same name set so the two agree.
-      compile_expr(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ctx, ld)
     } else {
       let mut __ci_idx = -1
       let __ci_len = Array::length(ctx.const_int_names)
@@ -1203,6 +1177,43 @@ export fn compile_expr(buf: Bytes, expr: Expr, local_names: Array[String], next_
             emit_i64_or(buf)
             next_local + 1
           }
+        } else if builtin_value_form_arity(name) >= 0 && !user_fn_owns_name(ctx, name) {
+          // #2442: a pure builtin in value position, eta-expanded.
+          //
+          // ABOVE the func table, and that placement is load-bearing:
+          // `ctx.func_table` holds the BUILTIN bodies too, so a builtin name
+          // resolves there and emits `(table_slot<<2)|2` with
+          // `table_slot = fidx - ctx.func_offset` NEGATIVE -- the #2433 failure
+          // this eta-expansion exists to avoid. Measured when #2442 first
+          // landed: with the check below the func table instead,
+          // `let cat = String::concat` compiled to zero lambdas and the module
+          // was rejected with `lambda plan over-count: planned through 1, walk
+          // stopped at 0`.
+          //
+          // BELOW the locals, the int constants and the constructors, and that
+          // is load-bearing too. It used to sit directly under the locals,
+          // which was safe only while `builtin_value_form_arity` refused every
+          // UNQUALIFIED name: nothing local, constant or constructor can be
+          // spelled `A::b`. Admitting a bare name (`eq`, `not`) makes those
+          // reachable, and both compile today -- measured on ae838ff, a
+          // top-level `let eq = 5` reads 5 through `const_int_names` and
+          // `enum E { eq }` constructs through the ctor table. Left above
+          // them, this arm would answer for both with an eta-expansion, which
+          // is a WRONG answer rather than the refusal the old restriction gave.
+          //
+          // The checker already resolves it this way: `builtin_ident_is_value`
+          // is consulted only on the `None =>` arm of the env lookup, so any
+          // binding wins. This order is that rule, spelled in codegen.
+          //
+          // A USER FUNCTION that declares a registry name is the one thing left
+          // that can own it (Codex review on #2448), and it wins: the checker
+          // resolved the name to the declaration, so this must fall through to
+          // the func-table slot below. Measured before that guard, with
+          // `fn String::concat(a: Int) -> Int` in scope, `let f = String::concat`
+          // emitted an arity-2 eta-expansion against the checker's arity-1 type
+          // and the runtime refused to compile the module. The plan walk is
+          // given the same name set so the two agree.
+          compile_expr(buf, builtin_value_closure(name, builtin_value_form_arity(name)), local_names, next_local, ctx, ld)
         } else {
           let __tf_result = func_table_index_of(ctx.func_table, name)
           if __tf_result < 0 {

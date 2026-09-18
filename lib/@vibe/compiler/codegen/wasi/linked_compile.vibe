@@ -11277,13 +11277,38 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
   // `lambda plan over-count: planned through 0, walk stopped at 1`. The
   // prefix is the same set codegen tests through the func table, where a user
   // function is an entry at or above `func_offset`.
-  let user_fn_names_only: Array[String] = []
+  //
+  // #2442 widened this from "user functions" to every WHOLE-PROGRAM name that
+  // codegen resolves BEFORE the value-form arm. While only qualified names had
+  // a value form, user functions were the only such name that could collide --
+  // nothing else in `compile_expr.vibe`'s ladder can be spelled `A::b`. A bare
+  // name (`eq`, `not`) can be a module-level int constant or a constructor,
+  // and both compile today: measured on ae838ff, `let eq = 5` reads 5 through
+  // `const_int_names` and `enum E { eq }` constructs through the ctor table.
+  // The arm now sits below both, so the plan has to see both or it counts a
+  // slot the walk never allocates.
+  //
+  // Module-level GLOBALS need no row here: on this lane a top-level `let` that
+  // is not an int literal becomes a thunk in `fn_names_list`, so it is already
+  // a user function. (The gc lane keeps them in `gc_global_names`, and that
+  // lane has no lambda plan to agree with.)
+  let shadow_names_only: Array[String] = []
   let mut ufn_i = 0
   while ufn_i < num_user_funcs {
-    Array::push(user_fn_names_only, Array::get(fn_names_list, ufn_i))
+    Array::push(shadow_names_only, Array::get(fn_names_list, ufn_i))
     ufn_i = ufn_i + 1
   }
-  let user_fn_names_sorted = sorted_names_of(user_fn_names_only)
+  let mut shadow_ci = 0
+  while shadow_ci < Array::length(const_int_names_list) {
+    Array::push(shadow_names_only, Array::get(const_int_names_list, shadow_ci))
+    shadow_ci = shadow_ci + 1
+  }
+  let mut shadow_ki = 0
+  while shadow_ki < Array::length(ctor_names_list) {
+    Array::push(shadow_names_only, Array::get(ctor_names_list, shadow_ki))
+    shadow_ki = shadow_ki + 1
+  }
+  let user_fn_names_sorted = sorted_names_of(shadow_names_only)
   let planned_bodies: Array[Expr] = []
   let lambda_bases = lc_fresh_int_array()
   let mut lambda_base_acc = 0
@@ -11314,8 +11339,15 @@ export fn compile_wasi_module_linked_impl_with_split(stmts: Array[Stmt], entry_n
     // function -- codegen takes its params and compiles its body, it never
     // routes it through compile_lambda. Counting it would reserve a dead slot
     // per user function.
+    // #2442: the whole EFn, then minus its own slot, rather than its body --
+    // the walk binds a lambda's PARAMETERS, and a top-level function's
+    // parameters shadow just as a local does. Handing it `get_efn_body`
+    // dropped them, so `fn f(eq: (Int, Int) -> Bool) { let g = eq }` planned a
+    // slot for a use codegen resolves to the parameter. The EFn arm answers
+    // `1 + body`, and the 1 is exactly the dead slot the comment above says
+    // not to count.
     lambda_base_acc = lambda_base_acc + (if is_efn(pb_expr) {
-      count_lambda_sites_expr(get_efn_body(pb_expr), user_fn_names_sorted)
+      count_lambda_sites_expr(pb_expr, user_fn_names_sorted) - 1
     } else {
       count_lambda_sites_expr(pb_expr, user_fn_names_sorted)
     })
